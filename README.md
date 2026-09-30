@@ -48,7 +48,7 @@ be discovered, and the requirement-by-requirement audit that produced 0.4.1
 and 0.4.2 is in [`docs/GAPS.md`](docs/GAPS.md), with what was fixed and what
 was deliberately left.
 
-**Go 1.24 or later.** The loop's event stream is a range-over-func iterator
+**Go 1.26.5 or later** (the `go` directive in `go.mod`). The loop's event stream is a range-over-func iterator
 and the wire structs use `omitzero`; the PRD's original "1.21+" was corrected
 in 0.4.1 rather than the code walked back.
 
@@ -71,9 +71,23 @@ in 0.4.1 rather than the code walked back.
 | `middleware` | Axis 1: `Retry`, `Budget`, `Caching`, `Tracing`, `RateLimit`, and the `CacheMeter` behind `Agent.CacheStats`. |
 | `compaction` | The context transform, four strategies, two summarizers, the REQ-GO-16 summary taxonomy and the anchored token estimate. |
 | `prompt` | The assembled system prompt: base instructions, per-tool guidelines, skills and project-context blocks. |
+| `imagex` | Image normalization to a provider's inline-image limits; used at the history boundary. |
 | `guard` | The execute boundary: `Restricted` (a program allowlist plus operator rejection) and `AllowAll`. |
 | `subagent` | Delegation: `Tool` over an agent factory, named `Definition`s in a `Registry`, `RunParallel`. The one package above the root. |
 | `.` (root) | `Agent`, its constructors, the loop, the batch executor, provider registration. |
+
+## Documentation
+
+| Document | Covers |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | Package graph, data flow of a run, invariants. |
+| [`docs/configuration.md`](docs/configuration.md) | Environment variables, `AgentConfig`, provider and tool options, TOML sections and manifests. |
+| [`docs/cli.md`](docs/cli.md) | `validate-plugins`, `difftest`, make targets, example program flags. |
+| [`docs/api.md`](docs/api.md) | The MCP server's HTTP and stdio surface. |
+| [`docs/PROVIDERS.md`](docs/PROVIDERS.md) | Wire API pins, rulings, attribution headers. |
+| [`docs/DEPS.md`](docs/DEPS.md) | The dependency ledger. |
+| [`docs/GAPS.md`](docs/GAPS.md) | Requirement audit. |
+| [`docs/adr/`](docs/adr), [`docs/errata/`](docs/errata), [`docs/prd/`](docs/prd) | Decisions, spec divergences, requirements. |
 
 ## The parts worth reading
 

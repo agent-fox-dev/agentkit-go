@@ -1,6 +1,6 @@
 # Requirement audit — PRD 0.4.2
 
-A requirement-by-requirement comparison of `docs/prd/docs/prd/agent-kit-prd.md` against the
+A requirement-by-requirement comparison of `docs/prd/agent-kit-prd.md` against the
 code. The first pass (0.4.1) was made on 2026-09-06; 0.4.2 closed every item
 that pass had recorded as deferred, and each of those rows now names what
 shipped and the test that pins it. Every row is one finding: what the requirement
@@ -35,7 +35,7 @@ reasoning, per the document's own practice (0.3.1, 0.3.2, 0.3.5, 0.4.0).
 | REQ-CAT-07 | No `Agent`-level accessor for the resolved model. | Fixed — `Agent.ResolvedModel()`. |
 | REQ-LIFE-02 | `Snapshot` read `Revision` and the messages under two separate locks, so the revision could lag its messages. | Fixed — `ConversationHistory.SnapshotBranch`; `TestSnapshotRevisionMatchesItsMessages`. |
 | NFR-REL-02.1 | The documented lock order ("a.mu never under the batch mutex") was false: image normalization and `AfterToolCall`'s panic path reached `a.fireError` inside the finalize section. | Fixed — the batch carries a lock-free reporter built from the config copy. |
-| §5 / REQ-SKILL-12.5 | `AgentConfig.TrustProject` was a dead field nothing outside `core` read; the required "untrusted default through the real constructor, absent from the assembled prompt" test existed only inside the skills package. | Fixed — `SkillsConfigFor` derives skills discovery from the agent config; `TestAnUntrustedProjectSkillNeverReachesTheAssembledPrompt` runs both arms through `NewAgent` and asserts on the prompt the provider received. |
+| §5 / REQ-SKILL-12.5 | `AgentConfig.TrustProject` was a dead field nothing outside `core` read; the required "untrusted default through the real constructor, absent from the assembled prompt" test existed only inside the skills package. | Fixed — `skills.ConfigFor` derives skills discovery from the agent config; `TestAnUntrustedProjectSkillNeverReachesTheAssembledPrompt` runs both arms through `NewAgent` and asserts on the prompt the provider received. |
 | OQ-8 | Unresolved: `execute` registered with no interceptor ran an unrestricted shell by omission. | Resolved as recommended — `ErrUnguardedExecute`, `guard.AllowAll`, `guard.Restricted`; `TestAShellToolWithNoInterceptorFailsTheRun`, `TestRestrictedPolicy`. PRD OQ-8 marked resolved. |
 | — | `TestAbortFromAnotherGoroutine` skipped on every run (the scripted double ignores ctx) and pinned nothing; `TestAbortedBatchStillProducesAResultPerCall` asserted results, not events. | Fixed — a ctx-honouring double (`blocking`) and event-counting assertions. |
 | REQ-TOOL-13.2 | The abort path discarded termination votes cast by calls blocked in prepare. | Deferred by ruling: an aborted batch did not finish, so it does not finish the run on a tool's say-so; the run ends as aborted regardless. Documented in `batch.go`. |
