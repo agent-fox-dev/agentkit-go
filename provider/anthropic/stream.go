@@ -756,8 +756,8 @@ func applyThinking(r *request, m *core.Model, requested core.ThinkingLevel) {
 	case core.ThinkingUnset:
 		return
 	case core.ThinkingOff:
-		if _, ok := catalog.ThinkingWire(m, core.ThinkingOff); ok {
-			r.Thinking = &thinking{Type: "disabled"}
+		if wire, ok := catalog.ThinkingWire(m, core.ThinkingOff); ok {
+			r.Thinking = &thinking{Type: offType(wire)}
 		}
 		return
 	}
@@ -784,6 +784,20 @@ func applyThinking(r *request, m *core.Model, requested core.ThinkingLevel) {
 	// only option that keeps the request valid; the alternative is a 400 that
 	// names sampling and not thinking, sending the reader to the wrong knob.
 	r.Temperature, r.TopP = nil, nil
+}
+
+// offType is the thinking type sent for a request of `off`, taken from the
+// row's wire value for that level. "between_tools" is the newer way to turn
+// thinking off (Claude Sonnet 5.5): the model skips up-front thinking and only
+// the short updates between tool calls come back as thinking blocks, and
+// {"type":"disabled"} is a 400 there. Anything else that is present and
+// non-null keeps the long-standing meaning, "disabled", so a row that writes
+// any other token for off behaves as it always did.
+func offType(wire string) string {
+	if strings.ToLower(strings.TrimSpace(wire)) == "between_tools" {
+		return "between_tools"
+	}
+	return "disabled"
 }
 
 // applyBudget is the budget_tokens arm of applyThinking.

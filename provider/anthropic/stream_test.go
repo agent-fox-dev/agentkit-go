@@ -925,6 +925,8 @@ func TestAShippedEffortRowReachesTheWireAsEffort(t *testing.T) {
 		{"anthropic/claude-sonnet-4-6", "max", "adaptive", core.ThinkingXHigh}, // no xhigh: clamps UP
 		{"anthropic/claude-fable-5-1", "", "", core.ThinkingOff},               // cannot stop thinking
 		{"anthropic/claude-opus-5", "", "disabled", core.ThinkingOff},
+		{"anthropic/claude-sonnet-5-5", "", "between_tools", core.ThinkingOff}, // "disabled" is a 400 there
+		{"anthropic/claude-opus-5-5", "", "", core.ThinkingOff},                // cannot stop thinking
 	} {
 		m, err := catalog.ResolveModel(c.id)
 		if err != nil {

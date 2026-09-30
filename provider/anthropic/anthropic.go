@@ -71,7 +71,8 @@ type request struct {
 
 type thinking struct {
 	// Type is "enabled" (with a budget), "adaptive" (with an effort in
-	// output_config, or none) or "disabled".
+	// output_config, or none), "disabled", or "between_tools" (thinking off on
+	// models that reject "disabled").
 	Type         string `json:"type"`
 	BudgetTokens *int   `json:"budget_tokens,omitzero"`
 }

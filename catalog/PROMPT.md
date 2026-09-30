@@ -163,7 +163,11 @@ Maps the SDK's abstract level to the **wire value the adapter sends**.
   means depends on the wire:
   - `anthropic-messages`, effort generation: effort tokens (`low`, `medium`,
     `high`, `xhigh`, `max`), sent as `output_config.effort` with adaptive
-    thinking. `off` → `"disabled"` where the model accepts it.
+    thinking. `off` is the thinking *type* sent for a request of off:
+    `"disabled"` where the model accepts it, `"between_tools"` where it
+    rejects `disabled` and offers that instead (Claude Sonnet 5.5), or
+    `null` where thinking cannot be turned off. Probe the API to find out
+    which; the docs and the error messages disagree often enough.
   - `anthropic-messages`, budget generation: integer strings (`"1024"`,
     `"4096"`, …), sent as `budget_tokens`. The minimum is 1024. `off` →
     `"disabled"`.

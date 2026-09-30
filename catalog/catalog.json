@@ -150,7 +150,7 @@
           "reasoning": true,
           "compat": { "supports_sampling": false },
           "thinking_level_map": {
-            "off": null,
+            "off": "between_tools",
             "minimal": "low",
             "low": "low",
             "medium": "medium",
@@ -158,7 +158,7 @@
             "xhigh": "xhigh",
             "max": "max"
           },
-          "note": "Adaptive thinking is on by default. `off` is present-and-null because {\"type\":\"disabled\"} is a 400 on this model (probed 2026-09-30) -- unlike Sonnet 5, which still accepts it. The vendor's replacement is {\"type\":\"between_tools\"}, which skips up-front thinking (works at effort high or below); the adapter does not send it, so a request for `off` omits the thinking key and the model thinks at its default. Every other level is an output_config.effort token sent with {\"type\":\"adaptive\"}; budget_tokens is a 400 and so is any temperature/top_p/top_k (compat.supports_sampling false). Forced tool_choice any/tool is a 400; the adapter only sends auto/none. Same $2/$10 and cache rates as Sonnet 5; cache write is the 5-minute rate ($2.50 = 1.25x input; 1h is $4). 1M context at one price, so no tiers. Released 2026-09-28; retirement not sooner than 2027-09-28."
+          "note": "Adaptive thinking is on by default. `off` is \"between_tools\", not \"disabled\": {\"type\":\"disabled\"} is a 400 on this model (probed 2026-09-30) -- unlike Sonnet 5, which still accepts it. between_tools skips up-front thinking (the short updates written between tool calls still come back as thinking blocks) and is rejected by the other 5.x rows. It works only at effort high or below, and the adapter sends no effort alongside off, so the default (high) applies. Every other level is an output_config.effort token sent with {\"type\":\"adaptive\"}; budget_tokens is a 400 and so is any temperature/top_p/top_k (compat.supports_sampling false). Forced tool_choice any/tool is a 400; the adapter only sends auto/none. Same $2/$10 and cache rates as Sonnet 5; cache write is the 5-minute rate ($2.50 = 1.25x input; 1h is $4). 1M context at one price, so no tiers. Released 2026-09-28; retirement not sooner than 2027-09-28."
         },
         "claude-sonnet-5": {
           "name": "Claude Sonnet 5",
