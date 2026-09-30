@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "catalog_version": "2026-09-09",
+  "catalog_version": "2026-09-30",
   "note": "SNAPSHOT. Every number below was correct on catalog_version and is stale the moment a vendor changes a price or ships a model. Regenerating this file is the REQ-CAT-06 ritual, and two fields must be diffed per model on every regeneration because they change the request body: thinking_level_map (REQ-PROV-15 -- an entry that silently disappears turns a clamped request into a 400, and an entry that silently appears sends a level the model does not know) and cost, including the vendor of fallback-served rows (REQ-PROV-05.5 -- dropping it bills a fallback at the wrong rate, silently). Everything else in a row is a capability hint the clamp and the budget gate can survive being slightly wrong about. This catalog is NOT an allowlist: an unknown id under a known vendor clones that vendor's default_model row (REQ-CAT-03), so a model released after this snapshot works without an SDK release. Two vendor-wide facts that do not fit in a row: (1) all three vendors have moved their reasoning control from a token budget to a discrete level -- output_config.effort on Anthropic, reasoning_effort on OpenAI, thinkingLevel on Gemini. The Anthropic and OpenAI adapters emit their vendor's current field: on an anthropic row an INTEGER wire value is a budget_tokens and an effort TOKEN (low..max) is sent as output_config.effort with adaptive thinking, and a row that rejects temperature/top_p says so with compat.supports_sampling false. The google adapter does not yet speak thinkingLevel, so its rows record levels as PRESENT-AND-NULL: checked, and not expressible on the wire this SDK sends. Present-null and absent are runtime-identical (ruling P-28); the runtime effect of a fully null ladder is that the thinking parameter is omitted, which on every such row means the vendor's own default, never a 400. An `off` entry that is present-and-null means the model cannot stop thinking and the anthropic adapter omits the key for a request of off rather than sending a rejected disable. (2) The google rows are the AI Studio deployment; Vertex AI is the same wire behind a different host and credential and is selected by configuration (Options.VertexProject or a Vertex base URL), never by a catalog row.",
   "vendors": {
     "anthropic": {
@@ -47,6 +47,25 @@
             "max": "max"
           },
           "note": "Predecessor of claude-fable-5-1 at the same per-token price and the same always-on thinking: `off` is present-and-null (disabled is a 400), levels are effort tokens with adaptive thinking, budget_tokens and temperature/top_p are rejected. The one billing difference is cache read at the standard 0.1x input rather than Fable 5.1's 0.025x."
+        },
+        "claude-opus-5-5": {
+          "name": "Claude Opus 5.5",
+          "context_window": 1000000,
+          "max_tokens": 128000,
+          "cost": { "input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0 },
+          "input": ["text", "image"],
+          "reasoning": true,
+          "compat": { "supports_sampling": false },
+          "thinking_level_map": {
+            "off": null,
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max"
+          },
+          "note": "Thinking is always on and cannot be disabled: `off` is present-and-null, so the adapter omits the thinking key ({\"type\":\"disabled\"} is a 400, as is budget_tokens -- both probed against the API on 2026-09-30, and the migration guide says the same). Every other level is an output_config.effort token sent with {\"type\":\"adaptive\"}; default effort is medium. temperature/top_p/top_k are 400s (compat.supports_sampling false). Forced tool_choice any/tool is also a 400; the adapter only sends auto/none. Priced at $4/$20, below Opus 5's $5/$25. Cache write is the 5-minute rate ($5 = 1.25x input; 1h is $8 and is priced by provider.ComputeCost); cache read is $0.20 = 0.05x input. 1M context at one price, so no tiers. Released 2026-09-22; retirement not sooner than 2027-09-22."
         },
         "claude-opus-5": {
           "name": "Claude Opus 5",
@@ -122,6 +141,25 @@
           },
           "note": "First adaptive-thinking generation: levels are effort tokens sent with {\"type\":\"adaptive\"} and `off` is \"disabled\". xhigh is ABSENT -- it arrived with Opus 4.7 -- so a request for xhigh clamps UP to max (REQ-PROV-15). budget_tokens still works but is deprecated and this adapter never sends it to an effort row; temperature/top_p are still accepted."
         },
+        "claude-sonnet-5-5": {
+          "name": "Claude Sonnet 5.5",
+          "context_window": 1000000,
+          "max_tokens": 128000,
+          "cost": { "input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5 },
+          "input": ["text", "image"],
+          "reasoning": true,
+          "compat": { "supports_sampling": false },
+          "thinking_level_map": {
+            "off": null,
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max"
+          },
+          "note": "Adaptive thinking is on by default. `off` is present-and-null because {\"type\":\"disabled\"} is a 400 on this model (probed 2026-09-30) -- unlike Sonnet 5, which still accepts it. The vendor's replacement is {\"type\":\"between_tools\"}, which skips up-front thinking (works at effort high or below); the adapter does not send it, so a request for `off` omits the thinking key and the model thinks at its default. Every other level is an output_config.effort token sent with {\"type\":\"adaptive\"}; budget_tokens is a 400 and so is any temperature/top_p/top_k (compat.supports_sampling false). Forced tool_choice any/tool is a 400; the adapter only sends auto/none. Same $2/$10 and cache rates as Sonnet 5; cache write is the 5-minute rate ($2.50 = 1.25x input; 1h is $4). 1M context at one price, so no tiers. Released 2026-09-28; retirement not sooner than 2027-09-28."
+        },
         "claude-sonnet-5": {
           "name": "Claude Sonnet 5",
           "context_window": 1000000,
@@ -172,7 +210,7 @@
             "medium": "16384",
             "high": "32768"
           },
-          "note": "Budget-wire row: the values are thinking token budgets for {\"type\":\"enabled\",\"budget_tokens\":N}, 1024 is the vendor minimum, and `off` is \"disabled\". xhigh and max are ABSENT, so a request for either clamps DOWN to high. 200k window and 64k output cap -- a sibling clone of the default_model would get 1M/128k and be wrong about this one."
+          "note": "Budget-wire row: the values are thinking token budgets for {\"type\":\"enabled\",\"budget_tokens\":N}, 1024 is the vendor minimum, and `off` is \"disabled\". xhigh and max are ABSENT, so a request for either clamps DOWN to high. 200k window and 64k output cap -- a sibling clone of the default_model would get 1M/128k and be wrong about this one. Lifecycle: active but legacy; the vendor's tentative retirement is not sooner than 2026-11-24 (checked 2026-09-30) -- the row stays until the API stops serving the id."
         },
         "claude-sonnet-4-5": {
           "name": "Claude Sonnet 4.5",
@@ -188,7 +226,7 @@
             "medium": "16384",
             "high": "32768"
           },
-          "note": "Budget-wire row like claude-opus-4-5: token budgets, 1024 minimum, `off` is \"disabled\", xhigh/max absent and clamped down to high. 200k window, 64k output cap. output_config.effort is an error on this model, which is why the ladder is budgets and not tokens."
+          "note": "Budget-wire row like claude-opus-4-5: token budgets, 1024 minimum, `off` is \"disabled\", xhigh/max absent and clamped down to high. 200k window, 64k output cap. output_config.effort is an error on this model, which is why the ladder is budgets and not tokens. Lifecycle: active but legacy; the vendor's tentative retirement is not sooner than 2026-09-29 (checked 2026-09-30) -- the row stays until the API stops serving the id."
         },
         "claude-haiku-4-5": {
           "name": "Claude Haiku 4.5",
@@ -204,7 +242,7 @@
             "medium": "16384",
             "high": "32768"
           },
-          "note": "The smallest current row and a budget-wire one: the values are thinking token budgets, 1024 is the vendor minimum, `off` is \"disabled\". xhigh and max are ABSENT rather than null -- nothing was checked, they are opt-in -- so a request for max clamps DOWN to high, REQ-PROV-15's worked example. 200k window and 64k cap; output_config.effort is an error here, so the ladder stays in budgets."
+          "note": "The smallest current row and a budget-wire one: the values are thinking token budgets, 1024 is the vendor minimum, `off` is \"disabled\". xhigh and max are ABSENT rather than null -- nothing was checked, they are opt-in -- so a request for max clamps DOWN to high, REQ-PROV-15's worked example. 200k window and 64k cap; output_config.effort is an error here, so the ladder stays in budgets. Lifecycle: active but legacy; the vendor's tentative retirement is not sooner than 2026-10-15 (checked 2026-09-30) -- the row stays until the API stops serving the id."
         }
       }
     },
@@ -240,6 +278,34 @@
             "max": "max"
           },
           "note": "The flagship, and the row where every REQ-PROV-15 shape appears at once. `off` is present-and-null: reasoning_effort:\"none\" is a 400 on Astra alone (the gpt-5.6 rows accept it), and recording that explicitly is what lets the REQ-CAT-06 diff tell a checked fact from an unfilled row -- it changes nothing at runtime, since the adapter returns before the clamp for off. `minimal` is present-and-null because this ladder starts at low, so a request for minimal clamps UP. compat keys are the openai-completions profile's OWN json names (provider/openai.Compat, REQ-PROV-12) and that profile rejects any key it does not read at request time: supports_temperature false because Astra rejects temperature and top_p, and use_max_tokens is left at the profile default (false -> max_completion_tokens) because gpt-5.x and later reject max_tokens outright. Cache read is 0.1x input and cache write is 1.25x input on this generation -- the free cache write of the gpt-4o era is gone, and a row that kept the old 0.0 would under-bill every cached prefix."
+        },
+        "gpt-6.1-sol": {
+          "name": "GPT-6.1 Sol",
+          "api": "openai-responses",
+          "context_window": 1050000,
+          "max_tokens": 128000,
+          "cost": {
+            "input": 2.0,
+            "output": 10.0,
+            "cache_read": 0.1,
+            "cache_write": 2.5,
+            "tiers": [
+              { "threshold": 272000, "input": 4.0, "output": 15.0, "cache_read": 0.2, "cache_write": 5.0 }
+            ]
+          },
+          "input": ["text", "image"],
+          "reasoning": true,
+          "compat": { "supports_sampling_params": false },
+          "thinking_level_map": {
+            "off": null,
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max"
+          },
+          "note": "Near-Astra quality at $2/$10. THIS ROW OVERRIDES THE VENDOR'S WIRE: api is openai-responses, not the vendor default openai-completions, because the model page says tool calling needs the Responses API and Chat Completions is supported only without tool calling -- an agent on the completions wire would lose every tool. compat keys are therefore the openai-responses profile's own names (provider/openairesponses.Compat): supports_sampling_params false because reasoning models on this wire reject temperature and top_p; the other flags are left at the api.openai.com defaults. The vendor documents reasoning.effort as low, medium (default), high, xhigh and max only -- `none` and `minimal` are not supported, so both are present-and-null and a request for minimal clamps UP to low (never to off). Cached input is 0.05x input ($0.10) and cache writes are 1.25x ($2.50). The tier is REQ-PROV-05.4: a request over 272,000 input tokens is repriced whole at 2x input/cache and 1.5x output."
         },
         "gpt-5.6-sol": {
           "name": "GPT-5.6 Sol",
@@ -294,6 +360,34 @@
             "max": "max"
           },
           "note": "Vendor default_model: the clone template for unknown openai ids. It is the middle of the range on purpose (REQ-CAT-03's documented guess is wrong least often in the middle), which also means an unknown id that is really a nano-class model inherits Terra's price and is over-billed by the estimate rather than under-billed."
+        },
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna",
+          "api": "openai-responses",
+          "context_window": 1050000,
+          "max_tokens": 128000,
+          "cost": {
+            "input": 0.1,
+            "output": 0.5,
+            "cache_read": 0.01,
+            "cache_write": 0.125,
+            "tiers": [
+              { "threshold": 272000, "input": 0.2, "output": 0.75, "cache_read": 0.02, "cache_write": 0.25 }
+            ]
+          },
+          "input": ["text", "image"],
+          "reasoning": true,
+          "compat": { "supports_sampling_params": false },
+          "thinking_level_map": {
+            "off": "none",
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max"
+          },
+          "note": "The GPT-6 efficiency tier at $0.10/$0.50, cheaper than gpt-5.6-luna. THIS ROW OVERRIDES THE VENDOR'S WIRE: api is openai-responses, because the model page says built-in tools and function calling belong to the Responses API and Chat Completions supports function calling only with reasoning_effort set to none -- a completions row would silently lose tools at any other level. compat keys are the openai-responses profile's own names: supports_sampling_params false (reasoning models reject temperature and top_p); everything else stays at the api.openai.com default. reasoning.effort accepts none, low, medium (default), high, xhigh and max; `minimal` is present-and-null, so a request for minimal clamps UP to low. `off` is \"none\" and is recorded although the adapter never sends reasoning for off. Cached input is 0.1x input ($0.01) and cache writes are 1.25x ($0.125). The tier is REQ-PROV-05.4: over 272,000 input tokens the whole request is repriced at 2x input/cache and 1.5x output."
         },
         "gpt-5.6-luna": {
           "name": "GPT-5.6 Luna",
@@ -364,7 +458,6 @@
           "cost": { "input": 0.75, "output": 3.75, "cache_read": 0.075, "cache_write": 0.0 },
           "input": ["text", "image"],
           "reasoning": true,
-          "compat": { "can_disable_thinking": false, "min_thinking_budget": -1 },
           "thinking_level_map": {
             "off": null,
             "minimal": null,
@@ -374,7 +467,61 @@
             "xhigh": null,
             "max": null
           },
-          "note": "Vendor default_model: the clone template for unknown google ids, and the middle of the current range. Same thinkingLevel story as the Pro row (low/medium/high here, MEDIUM by default, and MINIMAL is a validation error), same present-and-null ladder, same undisableable thinking. THIS ROW'S PRICE EXPIRES: $0.75/$3.75 is introductory pricing through 2026-12-31 and becomes $1.50/$7.50 on 2027-01-01, which the next REQ-CAT-06 regeneration must pick up -- an expired introductory rate under-bills by exactly 2x and nothing in the request will say so. Thinking tokens bill at the output rate here and never appear in the response body."
+          "note": "Vendor default_model: the clone template for unknown google ids, and the middle of the current range. Thinking levels the vendor documents are low, medium (default) and high, and MINIMAL is a validation error; this row records a present-and-null ladder because the adapter does not speak thinkingLevel, so the thinking parameter is omitted except for `off`. Unlike the Pro row, this model CAN stop thinking: the API accepts thinkingBudget 0 and returns no thought tokens (probed 2026-09-30), so the row carries no can_disable_thinking/min_thinking_budget entries and the adapter's defaults apply -- `off` sends thinkingBudget 0. An earlier snapshot recorded can_disable_thinking false with a -1 floor, which made `off` degrade to dynamic thinking and bill thought tokens the caller had asked not to buy. THIS ROW'S PRICE EXPIRES: $0.75/$3.75 is introductory pricing through 2026-12-31 and becomes $1.50/$7.50 (cache read $0.15) on 2027-01-01, which the next REQ-CAT-06 regeneration must pick up -- an expired introductory rate under-bills by exactly 2x and nothing in the request will say so. Thinking tokens bill at the output rate here and never appear in the response body."
+        },
+        "gemini-3.7-flash": {
+          "name": "Gemini 3.7 Flash",
+          "context_window": 1048576,
+          "max_tokens": 65536,
+          "cost": { "input": 0.75, "output": 3.75, "cache_read": 0.075, "cache_write": 0.0 },
+          "input": ["text", "image"],
+          "reasoning": true,
+          "thinking_level_map": {
+            "off": null,
+            "minimal": null,
+            "low": null,
+            "medium": null,
+            "high": null,
+            "xhigh": null,
+            "max": null
+          },
+          "note": "Previous-generation Flash, stable. Vendor thinking levels: low, medium (default), high. THIS ROW'S PRICE EXPIRES: $0.75/$3.75 (cache read $0.075) is introductory pricing through 2026-12-31 and becomes $1.50/$7.50 (cache read $0.15) on 2027-01-01, which the next REQ-CAT-06 regeneration must pick up -- an expired introductory rate under-bills by exactly 2x and nothing in the request will say so. Same present-and-null ladder as the rows above: the adapter does not speak thinkingLevel, so the thinking parameter is sent only for `off` (thinkingBudget 0, which this model accepts -- probed 2026-09-30: zero thought tokens, no error; no compat entry is needed because can_disable_thinking defaults to true) and is otherwise omitted, leaving the vendor's default. cache_write is 0.0 because Google bills caching by storage-hour, which the catalog does not model. "
+        },
+        "gemini-3.6-flash": {
+          "name": "Gemini 3.6 Flash",
+          "context_window": 1048576,
+          "max_tokens": 65536,
+          "cost": { "input": 0.75, "output": 3.75, "cache_read": 0.075, "cache_write": 0.0 },
+          "input": ["text", "image"],
+          "reasoning": true,
+          "thinking_level_map": {
+            "off": null,
+            "minimal": null,
+            "low": null,
+            "medium": null,
+            "high": null,
+            "xhigh": null,
+            "max": null
+          },
+          "note": "Previous-generation Flash, stable. Vendor thinking levels: minimal, low, medium (default), high. THIS ROW'S PRICE EXPIRES: $0.75/$3.75 (cache read $0.075) is introductory pricing through 2026-12-31 and becomes $1.50/$7.50 (cache read $0.15) on 2027-01-01, which the next REQ-CAT-06 regeneration must pick up -- an expired introductory rate under-bills by exactly 2x and nothing in the request will say so. Same present-and-null ladder as the rows above: the adapter does not speak thinkingLevel, so the thinking parameter is sent only for `off` (thinkingBudget 0, which this model accepts -- probed 2026-09-30: zero thought tokens, no error; no compat entry is needed because can_disable_thinking defaults to true) and is otherwise omitted, leaving the vendor's default. cache_write is 0.0 because Google bills caching by storage-hour, which the catalog does not model. "
+        },
+        "gemini-3.5-flash": {
+          "name": "Gemini 3.5 Flash",
+          "context_window": 1048576,
+          "max_tokens": 65536,
+          "cost": { "input": 1.5, "output": 9.0, "cache_read": 0.15, "cache_write": 0.0 },
+          "input": ["text", "image"],
+          "reasoning": true,
+          "thinking_level_map": {
+            "off": null,
+            "minimal": null,
+            "low": null,
+            "medium": null,
+            "high": null,
+            "xhigh": null,
+            "max": null
+          },
+          "note": "Legacy Flash, stable, at a flat $1.50/$9.00 with no expiring rate. Vendor thinking levels: minimal, low, medium (default), high. Same present-and-null ladder as the rows above: the adapter does not speak thinkingLevel, so the thinking parameter is sent only for `off` (thinkingBudget 0, which this model accepts -- probed 2026-09-30: zero thought tokens, no error; no compat entry is needed because can_disable_thinking defaults to true) and is otherwise omitted, leaving the vendor's default. cache_write is 0.0 because Google bills caching by storage-hour, which the catalog does not model. "
         },
         "gemini-3.5-flash-lite": {
           "name": "Gemini 3.5 Flash-Lite",
@@ -393,7 +540,43 @@
             "xhigh": null,
             "max": null
           },
-          "note": "The high-frequency tier. Same wire and same thinking story as the rows above; it is here so a lite-class workload is not priced against the flash row it would otherwise clone."
+          "note": "The high-frequency tier. Same wire and same thinking story as the rows above; it is here so a lite-class workload is not priced against the flash row it would otherwise clone. Verified 2026-09-30: unlike the flash rows above, this model rejects thinkingBudget 0 (400 invalid argument), so can_disable_thinking false with a -1 floor is correct here."
+        },
+        "gemini-3.1-flash-lite": {
+          "name": "Gemini 3.1 Flash-Lite",
+          "context_window": 1048576,
+          "max_tokens": 65536,
+          "cost": { "input": 0.25, "output": 1.5, "cache_read": 0.025, "cache_write": 0.0 },
+          "input": ["text", "image"],
+          "reasoning": true,
+          "thinking_level_map": {
+            "off": null,
+            "minimal": null,
+            "low": null,
+            "medium": null,
+            "high": null,
+            "xhigh": null,
+            "max": null
+          },
+          "note": "Stable lite tier, cheaper than gemini-3.5-flash-lite. Prices are the text/image/video rate; audio input is $0.50 (cache $0.05), a dimension this catalog does not model. The vendor's thinking table does not list this model; the API accepted thinkingBudget 0 with no thought tokens (probed 2026-09-30). Same present-and-null ladder as the rows above: the adapter does not speak thinkingLevel, so the thinking parameter is sent only for `off` (thinkingBudget 0, which this model accepts -- probed 2026-09-30: zero thought tokens, no error; no compat entry is needed because can_disable_thinking defaults to true) and is otherwise omitted, leaving the vendor's default. cache_write is 0.0 because Google bills caching by storage-hour, which the catalog does not model. "
+        },
+        "gemini-3-flash-preview": {
+          "name": "Gemini 3 Flash",
+          "context_window": 1048576,
+          "max_tokens": 65536,
+          "cost": { "input": 0.5, "output": 3.0, "cache_read": 0.05, "cache_write": 0.0 },
+          "input": ["text", "image"],
+          "reasoning": true,
+          "thinking_level_map": {
+            "off": null,
+            "minimal": null,
+            "low": null,
+            "medium": null,
+            "high": null,
+            "xhigh": null,
+            "max": null
+          },
+          "note": "Legacy preview Flash. The id carries the -preview suffix the vendor still ships it under; dropping the suffix resolves to a sibling clone of gemini-3.8-flash and mis-prices the request. Prices are the text/image/video rate; audio input is $1.00 (cache $0.10). Vendor thinking levels: minimal, low, medium, high (default high). Same present-and-null ladder as the rows above: the adapter does not speak thinkingLevel, so the thinking parameter is sent only for `off` (thinkingBudget 0, which this model accepts -- probed 2026-09-30: zero thought tokens, no error; no compat entry is needed because can_disable_thinking defaults to true) and is otherwise omitted, leaving the vendor's default. cache_write is 0.0 because Google bills caching by storage-hour, which the catalog does not model. "
         }
       }
     }
