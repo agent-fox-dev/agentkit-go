@@ -1,0 +1,1497 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "03",
+  "spec_name": "indexed_code_search",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-03-1",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-1.5"
+      ],
+      "title": "New with a workspace returns an index without goroutines, processes, walks or disk writes",
+      "given": [
+        "a temp workspace with files",
+        "a TempDir pointing at an empty temp directory",
+        "a fake Runner that records invocations",
+        "a counting wrapper around the walk"
+      ],
+      "when": "codesearch.New(ws, Options{TempDir: tmp, Runner: fake}) is called",
+      "then": [
+        "it returns (non-nil tools.Index, nil)",
+        "runtime.NumGoroutine is unchanged after settling",
+        "the fake Runner was never called",
+        "TempDir is still empty",
+        "the build counter is 0"
+      ],
+      "pseudocode": "g=NumGoroutine(); idx,err=New(ws,opts); assert err==nil && idx!=nil; assert NumGoroutine()<=g; assert calls==0; assert len(ReadDir(tmp))==0; assert builds(idx)==0"
+    },
+    {
+      "id": "TS-03-2",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-1.6"
+      ],
+      "title": "New with a nil workspace returns an error and no index",
+      "given": [],
+      "when": "codesearch.New(nil, Options{}) is called",
+      "then": [
+        "the returned index is nil",
+        "the returned error is non-nil"
+      ],
+      "pseudocode": "idx,err=New(nil,Options{}); assert idx==nil; assert err!=nil"
+    },
+    {
+      "id": "TS-03-3",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-1.7"
+      ],
+      "title": "Zero or negative limits resolve to defaults and nil Env resolves to the reduced environment",
+      "given": [
+        "Options values with zero, negative and positive MaxFiles, MaxBytes, MaxBuildTime and an empty TempDir"
+      ],
+      "when": "the options are normalised",
+      "then": [
+        "zero and negative limits become 100000 files, 1 GiB and 60 s",
+        "TempDir becomes os.TempDir()",
+        "positive values are kept",
+        "nil Env resolves to tools.ReducedEnv(nil)"
+      ],
+      "pseudocode": "o=normalise(Options{MaxFiles:-1,MaxBytes:0,MaxBuildTime:-5}); assert o.MaxFiles==100000; assert o.MaxBytes==1<<30; assert o.MaxBuildTime==60*time.Second; assert o.TempDir==os.TempDir(); assert equal(o.Env,tools.ReducedEnv(nil))"
+    },
+    {
+      "id": "TS-03-4",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-1.3"
+      ],
+      "title": "The codesearch module has the required path, replace directive, pinned zoekt, header comment and files",
+      "given": [
+        "the repository working tree"
+      ],
+      "when": "codesearch/go.mod and the directory listing are parsed",
+      "then": [
+        "the module path is github.com/agentfox/agentkit-go/codesearch",
+        "a replace maps github.com/agentfox/agentkit-go to ..",
+        "zoekt is required at an exact release version",
+        "the header comment states the boundary rule like difftest/go.mod",
+        "index.go, search.go, tool.go and policy_test.go exist"
+      ],
+      "pseudocode": "f=modfile.Parse('codesearch/go.mod'); assert f.Module.Path=='github.com/agentfox/agentkit-go/codesearch'; assert replace('github.com/agentfox/agentkit-go')=='..'; assert requires zoekt with semver tag; for n in files: assert exists"
+    },
+    {
+      "id": "TS-03-5",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-1.4",
+        "03-REQ-10.2"
+      ],
+      "title": "The root module is unaffected and the root policy tests pass unmodified",
+      "given": [
+        "the root go.mod, go.sum and internal/policy from before the spec"
+      ],
+      "when": "git diff on those paths is inspected, `go list -deps ./...` is run in the root and `go test ./internal/policy` is run",
+      "then": [
+        "go.mod, go.sum and internal/policy have no diff",
+        "go list -deps ./... names no zoekt module or any module absent before the spec",
+        "allowedModules is unchanged",
+        "the policy tests pass"
+      ],
+      "pseudocode": "assert gitdiff(['go.mod','go.sum','internal/policy'])==''; deps=run('go list -deps ./...'); assert no 'sourcegraph/zoekt' in deps; assert run('go test ./internal/policy').ok"
+    },
+    {
+      "id": "TS-03-6",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-1.2",
+        "03-REQ-9.1",
+        "03-REQ-10.5"
+      ],
+      "title": "codesearch/README.md leads with the go/no-go figures and records the pinned-zoekt answers",
+      "given": [
+        "codesearch/README.md"
+      ],
+      "when": "the file is read",
+      "then": [
+        "the first content is the measured figures, the repositories and a date",
+        "it records module path and packages for builder, parser and searcher, memory vs file search, byte-offset symbol fields, search options, go list -m all and four-target build/vet results",
+        "it describes the opt-in with Options.Index and the allowlist entry, known differences from search_files, and that goldens are tied to the zoekt version"
+      ],
+      "pseudocode": "t=read('codesearch/README.md'); assert firstSection(t) contains figures,repos,date; for k in required_topics: assert k in t"
+    },
+    {
+      "id": "TS-03-7",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-1.1"
+      ],
+      "title": "The gate figures in the README meet the fixed thresholds, otherwise nothing of the spec is present",
+      "given": [
+        "the recorded measurement figures: search_files share of read-phase calls, truncated-or-retried share, repository count and sizes"
+      ],
+      "when": "the gate check evaluates the figures against 25%, one third, two repositories of at least 5000 files, and the Requirement 9 checks",
+      "then": [
+        "when the thresholds are met and the checks pass the gate returns go",
+        "when the figures are below both thresholds or a Requirement 9 check fails the gate returns no-go and codesearch/ must not exist in the merged tree",
+        "the thresholds in the check equal the literal values 25% and one third and are not parameters"
+      ],
+      "pseudocode": "assert gate(share=0.30,trunc=0.1,repos=[5000,6000],r9=true)=='go'; assert gate(0.2,0.3,[5000,6000],true)=='nogo'; assert gate(0.3,0.1,[5000,6000],false)=='nogo'"
+    },
+    {
+      "id": "TS-03-8",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-2.1"
+      ],
+      "title": "The seam types exist in tools, compile against a fake index and import only the standard library and root packages",
+      "given": [
+        "a fake type implementing tools.Index with Symbols, Tools, Invalidate and Close",
+        "tools.SymbolQuery{Name,Kind,Path,Exact}, tools.SymbolAnswer{Matches,FilesIndexed}, tools.Options.Index"
+      ],
+      "when": "the fake is assigned to Options.Index and the imports of the tools package are listed with go list",
+      "then": [
+        "the code compiles",
+        "the zero value of Options.Index is nil",
+        "no import outside the standard library and this module's packages appears"
+      ],
+      "pseudocode": "var _ tools.Index = (*fake)(nil); o:=tools.Options{Index:f}; assert tools.Options{}.Index==nil; assert onlyStdlibAndRoot(imports('./tools'))"
+    },
+    {
+      "id": "TS-03-9",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-2.2"
+      ],
+      "title": "CapMarker and ClampLimit return exactly what the unexported helpers return",
+      "given": [
+        "a table of (noun,param,limit,max,alternative) including limit below, equal to and above max",
+        "a table of (n,def,cap) including zero, negative and above cap"
+      ],
+      "when": "each exported function is compared with capMarker and clampLimit in an in-package test",
+      "then": [
+        "the strings and ints are identical for every row",
+        "at limit==max the at-the-cap form is produced"
+      ],
+      "pseudocode": "for r in rows: assert CapMarker(r...)==capMarker(r...); for c in clamps: assert ClampLimit(c...)==clampLimit(c...)"
+    },
+    {
+      "id": "TS-03-10",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-2.3"
+      ],
+      "title": "With an index set All appends the index tools after the built-ins and FileNavigationTools is unchanged",
+      "given": [
+        "a fake Index whose Tools returns a tool named code_search"
+      ],
+      "when": "tools.All(Options{Workspace: ws, Index: fake}) and tools.All with Index nil are both built",
+      "then": [
+        "the first tools equal the built-in list in its pinned order",
+        "code_search is the last tool",
+        "FileNavigationTools() does not contain code_search and is identical to its previous value"
+      ],
+      "pseudocode": "with=All(opts+fake); base=All(opts); assert names(with)[:len(base)]==names(base); assert last(with).Name=='code_search'; assert 'code_search' not in FileNavigationTools()"
+    },
+    {
+      "id": "TS-03-11",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-2.4"
+      ],
+      "title": "With Options.Index nil All returns the tool list pinned by spec 02 byte for byte",
+      "given": [
+        "the pinned tool-list golden from 02_symbol_navigation_tools"
+      ],
+      "when": "tools.All is built with Index nil and the tool names, schemas and descriptions are serialised",
+      "then": [
+        "the serialisation equals the golden exactly"
+      ],
+      "pseudocode": "assert json(All(Options{Workspace:ws}))==golden"
+    },
+    {
+      "id": "TS-03-12",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-2.5"
+      ],
+      "title": "An index tool named like a built-in makes All return an error naming it",
+      "given": [
+        "a fake Index whose Tools returns a tool named search_files"
+      ],
+      "when": "tools.All is called with that Index",
+      "then": [
+        "the returned tool list is nil",
+        "the error message contains search_files"
+      ],
+      "pseudocode": "ts,err=All(opts); assert ts==nil; assert contains(err.Error(),'search_files')"
+    },
+    {
+      "id": "TS-03-13",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-2.6"
+      ],
+      "title": "write_file and edit_file call Invalidate exactly once per attempt with the relative slash path, before the lock is released, on success and failure",
+      "given": [
+        "a fake Index recording Invalidate arguments and whether the per-path lock was held",
+        "a workspace with a nested file sub/dir/a.txt"
+      ],
+      "when": "write_file succeeds, edit_file succeeds, edit_file fails because old_string is absent, and write_file fails on an unwritable path",
+      "then": [
+        "each attempt produces exactly one Invalidate call",
+        "the argument is the slash-separated workspace-relative path",
+        "the lock was still held at each call"
+      ],
+      "pseudocode": "run write_file(sub/dir/a.txt); assert calls==['sub/dir/a.txt']; run edit_file missing text; assert len(calls)==2 && calls[1]=='sub/dir/a.txt'; assert lockHeld all"
+    },
+    {
+      "id": "TS-03-14",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-2.7"
+      ],
+      "title": "execute, run_command and powershell call Invalidate with the empty string once per invocation whatever the outcome",
+      "given": [
+        "a fake Index recording calls",
+        "the shell tools available on the platform"
+      ],
+      "when": "each shell tool runs a succeeding command, a failing command and a timed out command",
+      "then": [
+        "each invocation produces exactly one Invalidate(\"\") call",
+        "no other argument is ever recorded"
+      ],
+      "pseudocode": "for tool in shells: for cmd in [ok,fail,timeout]: n=len(calls); tool.run(cmd); assert calls[n:]==['']"
+    },
+    {
+      "id": "TS-03-15",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-2.8"
+      ],
+      "title": "Invalidate returns immediately during a blocked build and never panics on a closed index",
+      "given": [
+        "a codesearch index whose build is blocked by a blocking fake Runner",
+        "a second index that has been closed"
+      ],
+      "when": "Invalidate(\"a.go\") and Invalidate(\"\") are called from another goroutine while the build is blocked, and on the closed index",
+      "then": [
+        "each call returns within 100 ms while the build is still blocked",
+        "no panic occurs on the closed index",
+        "no error is surfaced (the method has no return value)"
+      ],
+      "pseudocode": "go search(); waitBlocked(); d=timeit(Invalidate('a.go')); assert d<100ms; assert buildStillBlocked(); closed.Invalidate('x') // no panic"
+    },
+    {
+      "id": "TS-03-16",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-3.1"
+      ],
+      "title": "code_search is a Builtin parallel read-only tool with the pinned description, schema and guideline",
+      "given": [
+        "the tool returned by Index.Tools()"
+      ],
+      "when": "its definition is inspected",
+      "then": [
+        "Name is code_search and it is Builtin, parallel and read-only",
+        "query is required; path, max_files and context_lines are optional",
+        "the description contains \"zoekt query syntax\", does not contain \"RE2\" and contains the four example queries",
+        "PromptGuidelines contains the exact pinned sentence"
+      ],
+      "pseudocode": "t=idx.Tools()[0]; assert t.Builtin && t.Parallel && t.ReadOnly; assert required==['query']; assert contains(desc,'zoekt query syntax') && !contains(desc,'RE2'); for ex in four: assert ex in desc; assert guideline in t.PromptGuidelines"
+    },
+    {
+      "id": "TS-03-17",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-3.2"
+      ],
+      "title": "Empty, oversized, unparsable queries and negative context_lines are invalid_arguments before any build",
+      "given": [
+        "a fresh index with a counting build hook"
+      ],
+      "when": "code_search is called with query \"   \", a 1025-byte query, an unbalanced-paren query, and context_lines -1",
+      "then": [
+        "each result is an ErrResult with code invalid_arguments",
+        "the parser rejection message includes the parser's own message",
+        "the build counter stays 0"
+      ],
+      "pseudocode": "for args in cases: r=call(args); assert r.IsError && r.Code=='invalid_arguments'; assert contains(call('(').Message, parseErr('(').Error()); assert builds==0"
+    },
+    {
+      "id": "TS-03-18",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-3.3"
+      ],
+      "title": "context_lines and max_files default and clamp as specified",
+      "given": [
+        "a fixture repository with 40 matching files and wide match contexts"
+      ],
+      "when": "code_search runs with no optional args, with max_files 100 and with context_lines 500",
+      "then": [
+        "the default shows 2 context lines either side and 10 files",
+        "max_files 100 behaves as 25 and the marker reflects limit 25",
+        "context_lines 500 behaves as tools.MaxSearchContextLines"
+      ],
+      "pseudocode": "r=call({query}); assert len(files)==10; assert contextBefore(r)<=2; r=call({max_files:100}); assert len(files)==25; r=call({context_lines:500}); assert maxContext(r)==MaxSearchContextLines"
+    },
+    {
+      "id": "TS-03-19",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-3.4"
+      ],
+      "title": "A path outside the workspace is path_not_allowed and a missing path is read_failed, both before a build",
+      "given": [
+        "a fresh index with a counting build hook",
+        "a workspace and a sibling directory outside it"
+      ],
+      "when": "code_search is called with path \"../outside\" and with path \"nope/missing\"",
+      "then": [
+        "the first is ErrResult code path_not_allowed",
+        "the second is ErrResult code read_failed",
+        "the build counter is 0 for both"
+      ],
+      "pseudocode": "assert call({query:'x',path:'../outside'}).Code=='path_not_allowed'; assert call({query:'x',path:'nope/missing'}).Code=='read_failed'; assert builds==0"
+    },
+    {
+      "id": "TS-03-20",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-3.5"
+      ],
+      "title": "path is a conjunction that confines an or-query, for directories, files, the root and metacharacters",
+      "given": [
+        "a fixture with pkg/a/x.go, pkg/ab/y.go, other/z.go, and a directory named c++[1] with a file, all containing the word retry or fetch"
+      ],
+      "when": "code_search runs `retry or fetch` with path pkg/a, with path pkg/a/x.go, with the root, and with path c++[1]",
+      "then": [
+        "path pkg/a returns only files under pkg/a/ and not pkg/ab/",
+        "the file path returns only that file",
+        "the root adds no constraint and returns all matching files",
+        "the metacharacter directory returns only its own files",
+        "the constraint is built as query nodes (query.NewAnd), not string concatenation"
+      ],
+      "pseudocode": "r=call({query:'retry or fetch',path:'pkg/a'}); assert paths(r)==['pkg/a/x.go']; r=call(path:'c++[1]'); assert all(startswith(p,'c++[1]/'))"
+    },
+    {
+      "id": "TS-03-21",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-3.6"
+      ],
+      "title": "A cancelled call context returns aborted with Operation aborted",
+      "given": [
+        "a context cancelled before the call"
+      ],
+      "when": "code_search is called with a valid query",
+      "then": [
+        "ErrResult code is aborted",
+        "the text is \"Operation aborted\""
+      ],
+      "pseudocode": "ctx,cancel=WithCancel(); cancel(); r=tool.Run(ctx,args); assert r.Code=='aborted' && r.Text=='Operation aborted'"
+    },
+    {
+      "id": "TS-03-22",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-3.7"
+      ],
+      "title": "A build failure that is not a bound returns index_failed with the cause",
+      "given": [
+        "Options.TempDir naming a regular file so the shard directory cannot be created"
+      ],
+      "when": "code_search is called",
+      "then": [
+        "ErrResult code is index_failed",
+        "the message includes the underlying error text"
+      ],
+      "pseudocode": "f=touch(tmp/file); idx=New(ws,{TempDir:f}); r=call(query); assert r.Code=='index_failed'; assert contains(r.Message, 'not a directory')"
+    },
+    {
+      "id": "TS-03-23",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-3.8"
+      ],
+      "title": "A failing or timed-out search returns search_failed, and the timeout message says to narrow",
+      "given": [
+        "a searcher test seam that returns an error",
+        "a searcher test seam that blocks until its context ends, with the 10 s query bound shortened through an injected clock or deadline"
+      ],
+      "when": "code_search runs against each seam",
+      "then": [
+        "the error seam gives ErrResult code search_failed",
+        "the blocking seam gives ErrResult code search_failed whose message says the query timed out and should be narrowed",
+        "the blocked search context was cancelled"
+      ],
+      "pseudocode": "r=call(failing); assert r.Code=='search_failed'; r=call(blocking); assert r.Code=='search_failed' && contains(r.Message,'timed out') && contains(r.Message,'narrow'); assert searchCtx.Err()!=nil"
+    },
+    {
+      "id": "TS-03-24",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-4.1"
+      ],
+      "title": "Results are score ordered by file with a sym: hit outranking a comment hit and the chunk, file and line caps hold",
+      "given": [
+        "a fixture where one file declares func Runner and another mentions Runner only in a comment",
+        "a file with 6 separated matches",
+        "a file whose long lines exceed SearchLineChars",
+        "a fake Runner supplying symbols"
+      ],
+      "when": "code_search runs `Runner` with max_files 2 and context_lines 1, and then a multi-match query",
+      "then": [
+        "the declaring file is first",
+        "at most max_files files are returned, grouped by file",
+        "a file shows at most 3 chunks, each with lines in ascending order",
+        "overlapping chunks are merged and each line is cut to SearchLineChars"
+      ],
+      "pseudocode": "r=call({query:'sym:Runner'}); assert files(r)[0]=='decl.go'; assert all(len(f.chunks)<=3); for c in chunks: assert sorted(lines); assert all(len(line)<=SearchLineChars)"
+    },
+    {
+      "id": "TS-03-25",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-4.2"
+      ],
+      "title": "Each file header and line follows the RenderSearchText shape with path, count, note and declaration names",
+      "given": [
+        "a match on the start line of func (Server) Run and of three more declarations",
+        "a file with a control character in its name",
+        "a file with more than 3 chunks of matches",
+        "a line match on 7 declaration start lines"
+      ],
+      "when": "the result text is rendered",
+      "then": [
+        "matched lines print as `N: text` and context as `N- text`",
+        "the header shows the slash path with control characters replaced by `?`, the total match count and a note about matches not shown",
+        "member declarations appear as Container.Name",
+        "no more than 5 declaration names appear"
+      ],
+      "pseudocode": "assert regex('^\\d+: ') for matches; assert '\\x01' not in header; assert 'Server.Run' in header; assert count(names)<=5; assert contains(header,'not shown')"
+    },
+    {
+      "id": "TS-03-26",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-4.3"
+      ],
+      "title": "The first line states files, index size, symbol sources, ctags state, partial and dirty notes",
+      "given": [
+        "indexes in four states: complete with ctags, ctags unavailable, partial, with dirty overlay"
+      ],
+      "when": "code_search renders each",
+      "then": [
+        "line 1 states the number of files, the index size and files per outline backend",
+        "line 1 states whether ctags was unavailable when it was",
+        "partial and dirty-overlay notes appear only when they apply"
+      ],
+      "pseudocode": "l=firstLine(text); assert matches(l,'\\d+ files'); assert contains(l,'go/ast'); assert contains(partialL,'partial'); assert !contains(cleanL,'partial')"
+    },
+    {
+      "id": "TS-03-27",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-4.4"
+      ],
+      "title": "A query with no match is a successful result that says so and keeps the first line",
+      "given": [
+        "a built fixture index"
+      ],
+      "when": "code_search runs a query matching nothing",
+      "then": [
+        "the result is OKResult, not an error",
+        "the text says nothing matched",
+        "the first line is still present",
+        "Data.files is empty"
+      ],
+      "pseudocode": "r=call({query:'zzzznomatch'}); assert !r.IsError; assert contains(r.Text,'no match'); assert firstLine(r.Text)!=''; assert len(r.Data.files)==0"
+    },
+    {
+      "id": "TS-03-28",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-4.5"
+      ],
+      "title": "More files than max_files appends the CapMarker and records TruncatedByLines, with the at-the-cap form at 25",
+      "given": [
+        "a fixture with 30 files matching the query",
+        "golden marker text tied to the pinned zoekt version"
+      ],
+      "when": "code_search runs with max_files 10 and with max_files 25",
+      "then": [
+        "the text ends with tools.CapMarker(\"files\",\"max_files\",10,25,\"narrow the query or add a path\")",
+        "at 25 the marker is the at-the-cap form",
+        "Metadata.Truncated is TruncatedByLines in both"
+      ],
+      "pseudocode": "r=call({max_files:10}); assert endsWith(r.Text,CapMarker('files','max_files',10,25,alt)); assert r.Meta.Truncated==TruncatedByLines; r=call({max_files:25}); assert contains(r.Text,CapMarker('files','max_files',25,25,alt))"
+    },
+    {
+      "id": "TS-03-29",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-4.6"
+      ],
+      "title": "A result over the byte limit drops whole files from the end, keeps one, and ends with a bytes marker",
+      "given": [
+        "a fixture where each of 25 files yields about 4 KB of text",
+        "a fixture where one file alone yields over 50 KB of chunks"
+      ],
+      "when": "code_search runs with max_files 25 and context_lines 20, and then the single-large-file query",
+      "then": [
+        "the text is at most tools.DefaultByteLimit bytes",
+        "trailing files are dropped whole and at least one file remains",
+        "for the single big file, chunks are dropped from the end",
+        "a bytes marker names path, file: or fewer context_lines",
+        "Metadata.Truncated is TruncatedByBytes"
+      ],
+      "pseudocode": "r=call(big); assert len(r.Text)<=DefaultByteLimit; assert len(files)>=1; assert r.Meta.Truncated==TruncatedByBytes; assert regex('path|file:|context_lines', marker)"
+    },
+    {
+      "id": "TS-03-30",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-4.7"
+      ],
+      "title": "Data carries all documented fields including skipped-file counts",
+      "given": [
+        "a built index that skipped one binary and one oversized file and has one dirty file"
+      ],
+      "when": "code_search returns a result",
+      "then": [
+        "Data has files (path, score, match count, chunks with line numbers and text, symbol names)",
+        "Data has truncated, note, partial, symbol_sources, ctags_available, files_indexed, dirty_files",
+        "Data carries the skipped file counts"
+      ],
+      "pseudocode": "d=r.Data; for k in ['files','truncated','note','partial','symbol_sources','ctags_available','files_indexed','dirty_files','skipped']: assert k in d; f=d.files[0]; assert keys(f)>= {path,score,matches,chunks,symbols}"
+    },
+    {
+      "id": "TS-03-31",
+      "kind": "property",
+      "verifies": [
+        "03-REQ-4.8"
+      ],
+      "title": "Every truncation marker names an accepted call and the text never exceeds the byte limit",
+      "given": [
+        "a fixture repository large enough to trigger both caps",
+        "a fake Runner"
+      ],
+      "when": "for any generated query from the zoekt grammar, any max_files in 1..40, any context_lines in 0..30 and any optional path",
+      "then": [
+        "the text is at most tools.DefaultByteLimit bytes",
+        "every marker's suggested parameters are accepted by the tool's schema and validation, so replaying the marker's call is not invalid_arguments",
+        "at the maximum limits the marker says the cap is already the maximum rather than suggesting a larger value"
+      ],
+      "pseudocode": "for q,mf,cl,p in gen(): r=call(...); assert len(r.Text)<=DefaultByteLimit; for m in markers(r.Text): assert !call(parseCall(m)).Code=='invalid_arguments'"
+    },
+    {
+      "id": "TS-03-32",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-5.1"
+      ],
+      "title": "The index is built lazily on the first code_search and never by New or find_symbol",
+      "given": [
+        "an index with a build counter and a fixture workspace",
+        "a find_symbol tool wired with Options.Index"
+      ],
+      "when": "New is called, find_symbol is called, code_search is called twice",
+      "then": [
+        "the counter is 0 after New",
+        "the counter is still 0 after find_symbol",
+        "the counter is 1 after the first code_search and still 1 after the second"
+      ],
+      "pseudocode": "assert builds==0; find_symbol(...); assert builds==0; cs(); assert builds==1; cs(); assert builds==1"
+    },
+    {
+      "id": "TS-03-33",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-5.2"
+      ],
+      "title": "The indexed file set equals the tools.Walk set with hidden off, regular, non-binary and at most 1 MiB",
+      "given": [
+        "a tree with nested .gitignore files, a nested repository, a hidden directory, a symlink, a binary file with a NUL byte and a 1 MiB + 1 file",
+        "a file exactly 1 MiB"
+      ],
+      "when": "the index is built through code_search and its file list is compared with tools.Walk(IncludeHidden:false, Ignore) filtered by regular, size and NUL rules",
+      "then": [
+        "the two sets are equal",
+        "the hidden directory, symlink, binary and oversized files are absent",
+        "the 1 MiB file is present",
+        "document names are slash-separated workspace-relative paths"
+      ],
+      "pseudocode": "want=filter(Walk(ws,root,{Ignore,IncludeHidden:false})); got=indexedNames(idx); assert set(got)==set(want)"
+    },
+    {
+      "id": "TS-03-34",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-5.2"
+      ],
+      "title": "Skipped files are counted, zoekt's git indexer is unused and CTagsPath is empty so zoekt starts no ctags",
+      "given": [
+        "a fixture with one binary and one oversized file",
+        "a process-spawn spy and a builder-options spy"
+      ],
+      "when": "the index is built",
+      "then": [
+        "Data reports 1 binary and 1 oversized skipped file",
+        "the zoekt builder is configured with an empty CTagsPath",
+        "no ctags child process is started by zoekt",
+        "no git indexing package is imported by the module"
+      ],
+      "pseudocode": "build(); assert skipped.binary==1 && skipped.oversized==1; assert builderOpts.CTagsPath==''; assert spawns_from_zoekt==0; assert 'gitindex' not in deps"
+    },
+    {
+      "id": "TS-03-35",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-5.3"
+      ],
+      "title": "Symbols come from OutlineMany in batches of at most 100 with the right Root and Runner selection",
+      "given": [
+        "a workspace of 250 Go and text files",
+        "a recording fake Runner in Options.Runner",
+        "one index with DisableCtags and one with defaults"
+      ],
+      "when": "the index is built in each configuration",
+      "then": [
+        "OutlineMany is called with batches of at most 100 files and Root equal to the workspace root",
+        "with Options.Runner set that runner is used",
+        "with DisableCtags and no Runner the outline Runner is nil",
+        "without either, tools.CtagsRunner(Options.Env) is constructed only on first use",
+        "sections come from whatever backend produced each file"
+      ],
+      "pseudocode": "assert max(batchSizes)<=100; assert all(opts.Root==root); assert sum(batchSizes)==250; assert runnerFor(DisableCtags)==nil"
+    },
+    {
+      "id": "TS-03-36",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-5.4"
+      ],
+      "title": "Without ctags code_search works, says so in the first line, and Go files keep symbols",
+      "given": [
+        "a Runner returning tools.ErrCtagsUnavailable",
+        "a Go file declaring func Runner and a Python file with a column-0 def"
+      ],
+      "when": "code_search runs `sym:Runner`",
+      "then": [
+        "the result is successful",
+        "the first line says ctags was unavailable and non-Go symbols are the heuristic's column-0 declarations only",
+        "Data.ctags_available is false",
+        "the Go declaration is found through its go/ast symbol section"
+      ],
+      "pseudocode": "r=call({query:'sym:Runner'}); assert !r.IsError; assert contains(firstLine,'ctags') && contains(firstLine,'column-0'); assert r.Data.ctags_available==false; assert 'decl.go' in paths(r)"
+    },
+    {
+      "id": "TS-03-37",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-5.5"
+      ],
+      "title": "Shards live in <TempDir>/agentkit-codesearch-<hash>/<run id>/ with mode 0700 and a 64-bit-or-longer SHA hash",
+      "given": [
+        "a TempDir, two index instances over the same root"
+      ],
+      "when": "both indexes are built",
+      "then": [
+        "each run directory is under agentkit-codesearch-<hash of absolute root>",
+        "the hash part has at least 16 hex characters and equals a sha256 prefix of the absolute root",
+        "the two run ids differ",
+        "the directories have mode 0700 (on platforms that support it)"
+      ],
+      "pseudocode": "d1=runDir(i1); d2=runDir(i2); assert d1!=d2; assert parent(d1)==parent(d2); assert len(hashPart)>=16; assert mode(d1)==0700"
+    },
+    {
+      "id": "TS-03-38",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-5.6"
+      ],
+      "title": "A build sweeps 24-hour-old sibling run directories and leaves recent ones and its own untouched",
+      "given": [
+        "sibling run directories under the same hash dir with mtime 25 hours old and 1 hour old",
+        "a directory under a different hash 25 hours old"
+      ],
+      "when": "an index builds and is then queried several times within an hour and again after an injected clock passes an hour",
+      "then": [
+        "the 25-hour sibling is removed",
+        "the 1-hour sibling remains",
+        "the other-hash directory remains",
+        "the index touches its own directory at most once per hour and never any other run's directory"
+      ],
+      "pseudocode": "os.Chtimes(old,-25h); build(); assert !exists(old); assert exists(recent); assert exists(otherHash); touchCount(own)<=1 per hour; mtime(recent) unchanged"
+    },
+    {
+      "id": "TS-03-39",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-5.7"
+      ],
+      "title": "Hitting the file, byte or time bound gives a partial index that is not retried",
+      "given": [
+        "scaled-down MaxFiles, MaxBytes and MaxBuildTime options on a fixture bigger than each",
+        "a blocking fake Runner for the time case",
+        "a build counter"
+      ],
+      "when": "code_search is called twice for each bound",
+      "then": [
+        "Data.partial is true with partial_reason files, bytes or time respectively",
+        "the note tells the model to narrow path or use search_files",
+        "results come from what was indexed",
+        "the second call does not start a new build",
+        "the time bound fires close to the deadline"
+      ],
+      "pseudocode": "for b in [files,bytes,time]: r=call(); assert r.Data.partial && r.Data.partial_reason==b; assert contains(r.Data.note,'search_files'); call(); assert builds==1; assert elapsed<deadline+slack"
+    },
+    {
+      "id": "TS-03-40",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-5.8"
+      ],
+      "title": "A call cancelled during a build is aborted, discards the partial build and the next call builds again",
+      "given": [
+        "a blocking fake Runner that the test releases later",
+        "a build counter"
+      ],
+      "when": "code_search is cancelled while the build blocks, then called again with an unblocked Runner",
+      "then": [
+        "the first call returns ErrResult code aborted",
+        "no partial index remains",
+        "the second call starts a new build and succeeds with partial false",
+        "the build counter reaches 2"
+      ],
+      "pseudocode": "go cancelAfterBlocked(); r=call(ctx); assert r.Code=='aborted'; release(); r2=call(); assert !r2.IsError && !r2.Data.partial; assert builds==2"
+    },
+    {
+      "id": "TS-03-41",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-6.1"
+      ],
+      "title": "After edit_file or write_file or a delete, code_search shows the new content and omits the old",
+      "given": [
+        "a built index over a fixture",
+        "edit_file, write_file and tools.All wired to the index"
+      ],
+      "when": "edit_file changes a line, write_file creates a new file, and a recorded delete of a file is invalidated by path, each followed by code_search",
+      "then": [
+        "the new line is returned and the old line is not",
+        "the newly written file appears",
+        "the deleted file appears in no result"
+      ],
+      "pseudocode": "edit_file(a.go,'oldToken','newToken'); assert 'newToken' in text(cs('newToken')) && 'oldToken' not in text(cs('oldToken')); write_file(new.go,'freshWord'); assert 'new.go' in paths(cs('freshWord'))"
+    },
+    {
+      "id": "TS-03-42",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-6.2"
+      ],
+      "title": "Invalidate(\"\") triggers a revalidation walk that sees a same-size edit made through execute within the 2 s window",
+      "given": [
+        "an index built moments ago over a fixture",
+        "a file edited with a same-size, same-second replacement through execute",
+        "a file deleted and a file created through execute"
+      ],
+      "when": "execute returns (calling Invalidate(\"\")) and code_search is called",
+      "then": [
+        "the same-size edit is returned",
+        "the new file is returned",
+        "the deleted file is absent",
+        "a file indexed within the previous 2 seconds is treated as changed"
+      ],
+      "pseudocode": "cs(); execute(\"sed -i s/aaaa/bbbb/ f.txt; rm gone.txt; echo x > n.txt\"); r=cs('bbbb'); assert 'f.txt' in paths(r); assert 'gone.txt' not in paths(cs('goneToken'))"
+    },
+    {
+      "id": "TS-03-43",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-6.3"
+      ],
+      "title": "A dirty path not in the index or a changed .gitignore forces a revalidation walk before answering",
+      "given": [
+        "a built index with a revalidation counter",
+        "a new file written to a directory ignored by a new .gitignore rule"
+      ],
+      "when": "write_file creates an unknown path, and then write_file changes .gitignore to ignore an indexed file, each followed by code_search",
+      "then": [
+        "a revalidation walk runs for the unknown path before answering",
+        "a newly ignored file is no longer returned",
+        "a file newly visible after a .gitignore edit is returned",
+        "a known non-.gitignore path does not cause a walk"
+      ],
+      "pseudocode": "write_file(unknown.go); cs(); assert revals==1; write_file(known.go); cs(); assert revals==1; write_file('.gitignore','a.go\\n'); cs(); assert revals==2; assert 'a.go' not in paths(r)"
+    },
+    {
+      "id": "TS-03-44",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-6.4"
+      ],
+      "title": "Dirty files are searched through an overlay shard and merged by score, so a fresh edit survives the max_files cap",
+      "given": [
+        "a built index with 30 files that all match a query with high scores",
+        "one file edited so it matches with a lower score than the others",
+        "max_files 10"
+      ],
+      "when": "code_search runs the query after the edit",
+      "then": [
+        "the edited file appears in the result even though its score is below the cap among indexed hits",
+        "the overlay hits are merged by score and not appended after the indexed hits",
+        "Data.dirty_files is 1",
+        "the overlay is rebuilt only when the dirty set changes (counter stays 1 on a repeat query)"
+      ],
+      "pseudocode": "edit(f); r=cs(query,max_files=10); assert f in paths(r); assert isSortedByScore(r.files); assert r.Data.dirty_files==1; cs(); assert overlayBuilds==1"
+    },
+    {
+      "id": "TS-03-45",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-6.5"
+      ],
+      "title": "At 4% dirty no rebuild happens and at 6% a single rebuild replaces the index",
+      "given": [
+        "a built index of 100 files with a build counter",
+        "old shards recorded before the swap"
+      ],
+      "when": "4 files are invalidated and a query runs, then 2 more are invalidated and a query runs",
+      "then": [
+        "the build counter stays 1 at 4%",
+        "the counter becomes 2 at 6%",
+        "the old shards are closed and deleted after the swap",
+        "the new content is returned"
+      ],
+      "pseudocode": "invalidate 4; cs(); assert builds==1; invalidate 2 more; cs(); assert builds==2; assert !exists(oldShard)"
+    },
+    {
+      "id": "TS-03-46",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-6.5",
+        "03-REQ-8.2"
+      ],
+      "title": "Queries arriving during a rebuild wait, use the new index, and an abandoned wait returns aborted without waiting for the build",
+      "given": [
+        "a rebuild blocked by a blocking fake Runner",
+        "two concurrent queries, one with a context that will end"
+      ],
+      "when": "the rebuild is in progress, one waiter's context is cancelled, then the build is released",
+      "then": [
+        "the cancelled waiter returns ErrResult code aborted before the build finishes",
+        "the other waiter returns results from the new index",
+        "the old index remains valid until the swap"
+      ],
+      "pseudocode": "startRebuildBlocked(); go q1(ctxCancel); cancel(); assert q1.Code=='aborted' && buildStillBlocked(); release(); assert q2 sees newContent"
+    },
+    {
+      "id": "TS-03-47",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-6.6"
+      ],
+      "title": "A dirty mark made while a build or revalidation runs is not lost",
+      "given": [
+        "a blocking fake Runner holding a build or revalidation open",
+        "a concurrent write_file to an indexed file made during the block"
+      ],
+      "when": "the build is released and a following code_search runs",
+      "then": [
+        "the mark made during the pass survives the pass because its generation is newer",
+        "the following query shows the new content of the concurrently written file",
+        "marks older than the pass are cleared"
+      ],
+      "pseudocode": "go cs(); waitBlocked(); write_file(a.go,'midBuildToken'); release(); r=cs('midBuildToken'); assert 'a.go' in paths(r)"
+    },
+    {
+      "id": "TS-03-48",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-6.7"
+      ],
+      "title": "With no Invalidate call the index builds once and never revalidates or rebuilds",
+      "given": [
+        "a built index, a revalidation counter and a build counter"
+      ],
+      "when": "code_search runs 20 times with no Invalidate",
+      "then": [
+        "the build counter stays 1",
+        "the revalidation walk counter stays 0"
+      ],
+      "pseudocode": "for i in 1..20: cs(); assert builds==1 && revals==0"
+    },
+    {
+      "id": "TS-03-49",
+      "kind": "property",
+      "verifies": [
+        "03-REQ-6.8"
+      ],
+      "title": "After any sequence of write_file, edit_file and shell calls a code_search never shows older content than the last call",
+      "given": [
+        "a fixture workspace with a built index and tools.All wired to it",
+        "a model of file contents tracked in memory"
+      ],
+      "when": "for any sequence of 1..15 operations drawn from write_file (new or existing), edit_file (success or failure), shell edit, shell delete and shell create, followed by a code_search for a token written by the last operation",
+      "then": [
+        "the result contains the latest content of every file touched",
+        "no result line contains content that has been overwritten or deleted",
+        "a deleted file appears in no result"
+      ],
+      "pseudocode": "for seq in gen_ops(): apply(seq,model); for f in touched: r=cs(token(f)); assert content(r,f) subset model[f]; assert deleted not in paths(r)"
+    },
+    {
+      "id": "TS-03-50",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-7.1"
+      ],
+      "title": "Symbols matches from outline.File data using smart-case prefix, exact, qualified, kind and path rules",
+      "given": [
+        "an index built from fixture outline data with declarations Runner, runner, Server.Run, and directories a/ and b/"
+      ],
+      "when": "Symbols is called with queries: name run (smart-case), Run, exact Run, Server.Run, kind function, and path a",
+      "then": [
+        "lowercase queries match case-insensitively by prefix and mixed-case queries match case-sensitively",
+        "exact requires full-name equality",
+        "qualified names match Container.Name",
+        "kind and path filters restrict the matches",
+        "no zoekt query is issued",
+        "matches are unranked and untruncated beyond the 1000 limit"
+      ],
+      "pseudocode": "a,ok=Symbols(ctx,SymbolQuery{Name:'run'}); assert ok; assert names(a.Matches)==expected; assert zoektQueries==0"
+    },
+    {
+      "id": "TS-03-51",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-7.2"
+      ],
+      "title": "After a code_search built a complete index, Symbols returns ok=true with matches and FilesIndexed",
+      "given": [
+        "a code_search has built a complete, non-closed index"
+      ],
+      "when": "Symbols is called with a query matching at most 1000 declarations",
+      "then": [
+        "it returns (SymbolAnswer, true, nil)",
+        "FilesIndexed equals the number of indexed files",
+        "find_symbol's header names the index as its backend"
+      ],
+      "pseudocode": "cs(); a,ok,err=idx.Symbols(ctx,q); assert ok && err==nil && a.FilesIndexed==N; assert contains(find_symbol(q).Text,'index')"
+    },
+    {
+      "id": "TS-03-52",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-7.3"
+      ],
+      "title": "Symbols returns ok=false with nil error when unbuilt, partial, closed or over 1000 matches, and never builds",
+      "given": [
+        "an unbuilt index, a partial index, a closed index, and an index with 1001 matching declarations"
+      ],
+      "when": "Symbols is called on each",
+      "then": [
+        "each returns ok=false and a nil error",
+        "the build counter does not increase",
+        "find_symbol answers from its own table in each case"
+      ],
+      "pseudocode": "for idx in [unbuilt,partial,closed,big]: _,ok,err=idx.Symbols(ctx,q); assert !ok && err==nil; assert builds unchanged"
+    },
+    {
+      "id": "TS-03-53",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-7.4"
+      ],
+      "title": "Symbols runs a pending revalidation and re-outlines dirty files in scope before answering",
+      "given": [
+        "a built index",
+        "a file edited through write_file to add func Fresh",
+        "a pending Invalidate(\"\") after a shell rename"
+      ],
+      "when": "Symbols is called for Fresh and for the renamed symbol",
+      "then": [
+        "Fresh is found",
+        "the renamed declaration appears under its new path and not the old",
+        "the revalidation walk ran once"
+      ],
+      "pseudocode": "write_file(a.go,'func Fresh(){}'); a,ok,_=Symbols({Name:'Fresh'}); assert ok && len(a.Matches)==1; execute('mv x.go y.go'); a,_,_=Symbols(...); assert path(a.Matches[0])=='y.go'"
+    },
+    {
+      "id": "TS-03-54",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-7.5"
+      ],
+      "title": "A cancelled context passed to Symbols is the only case that returns an error",
+      "given": [
+        "a built index",
+        "a context cancelled before the call, and a dirty file making work necessary"
+      ],
+      "when": "Symbols is called with the cancelled context, and then with live contexts in every ok=false state",
+      "then": [
+        "the cancelled call returns a non-nil error",
+        "every ok=false state with a live context returns a nil error"
+      ],
+      "pseudocode": "_,_,err=Symbols(cancelled,q); assert err!=nil; for s in states: _,_,err=Symbols(live,q); assert err==nil"
+    },
+    {
+      "id": "TS-03-55",
+      "kind": "property",
+      "verifies": [
+        "03-REQ-7.6"
+      ],
+      "title": "find_symbol gives the same matches in the same order through the index as through its own table",
+      "given": [
+        "a generated fixture tree of Go and heuristic-supported files built into an index by a prior code_search",
+        "a find_symbol tool with Options.Index set and one with Index nil over the same tree"
+      ],
+      "when": "for any fixture tree and any find_symbol query (name, exact, kind, path) in the argument domain",
+      "then": [
+        "the match lists are identical in content and order",
+        "only the header's backend line may differ"
+      ],
+      "pseudocode": "for tree,q in gen(): idx=build(tree); a=findSymbol(withIdx,q); b=findSymbol(noIdx,q); assert a.Matches==b.Matches"
+    },
+    {
+      "id": "TS-03-56",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-8.1"
+      ],
+      "title": "Concurrent queries run under the read lock without data races",
+      "given": [
+        "a built index, tests run with -race"
+      ],
+      "when": "32 goroutines call code_search and Symbols concurrently with a few Invalidate calls interleaved",
+      "then": [
+        "all calls return successful results",
+        "the race detector reports nothing"
+      ],
+      "pseudocode": "wg; for i in 1..32: go cs(); go Symbols(); go Invalidate('a.go'); wg.Wait(); // go test -race"
+    },
+    {
+      "id": "TS-03-57",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-8.3"
+      ],
+      "title": "Close waits for in-flight queries, deletes the run directory and is idempotent",
+      "given": [
+        "a built index with a query blocked in flight through a test seam"
+      ],
+      "when": "Close is called concurrently with the query and then called twice more",
+      "then": [
+        "Close does not return until the in-flight query finishes",
+        "the run directory no longer exists after the first Close",
+        "every Close returns nil"
+      ],
+      "pseudocode": "go inflight(); done=go Close(); assert !done.finished; release(); assert done.err==nil; assert !exists(runDir); assert Close()==nil; assert Close()==nil"
+    },
+    {
+      "id": "TS-03-58",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-8.4"
+      ],
+      "title": "After Close tools return index_closed and Symbols returns ok=false without building or searching",
+      "given": [
+        "a closed index with a build counter and a search counter"
+      ],
+      "when": "code_search is called and Symbols is called",
+      "then": [
+        "code_search returns ErrResult code index_closed",
+        "Symbols returns ok=false",
+        "no build and no search occurs"
+      ],
+      "pseudocode": "idx.Close(); r=cs(); assert r.Code=='index_closed'; _,ok,_=Symbols(); assert !ok; assert builds==before && searches==before"
+    },
+    {
+      "id": "TS-03-59",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-8.5"
+      ],
+      "title": "tools.All returns no closer and an abandoned run directory is removed by a later sweep after 24 hours",
+      "given": [
+        "tools.All signature",
+        "an index never closed whose run directory is aged 25 hours"
+      ],
+      "when": "the signature is inspected and a later index builds",
+      "then": [
+        "All returns only ([]core.Tool, error) with no closer",
+        "the abandoned directory is removed by the later build's sweep"
+      ],
+      "pseudocode": "assert returns(All)==([]core.Tool,error); age(dir,25h); build(other); assert !exists(dir)"
+    },
+    {
+      "id": "TS-03-60",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-8.6",
+        "03-REQ-9.5"
+      ],
+      "title": "Where zoekt does not run on windows/amd64 a stub New returns the shared ErrUnsupported and the module still builds",
+      "given": [
+        "a windows-constrained file providing New that returns ErrUnsupported (only if the pinned zoekt does not build on windows)"
+      ],
+      "when": "codesearch.New is called under that constraint and `GOOS=windows GOARCH=amd64 go build ./...` is run",
+      "then": [
+        "errors.Is(err, codesearch.ErrUnsupported) is true",
+        "ErrUnsupported is the same exported value on every platform",
+        "the module builds on windows/amd64",
+        "a zoekt Windows failure is recorded as the stub and not as a no-go"
+      ],
+      "pseudocode": "_,err=New(ws,Options{}); assert errors.Is(err,ErrUnsupported); assert run('go build ./...',GOOS=windows).ok"
+    },
+    {
+      "id": "TS-03-61",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-8.7",
+        "03-REQ-10.1"
+      ],
+      "title": "The module builds and vets on the four targets with CGO_ENABLED=0",
+      "given": [
+        "codesearch/ with the pinned zoekt"
+      ],
+      "when": "go build ./... and go vet ./... run for linux/amd64, linux/arm64, darwin/arm64 and windows/amd64",
+      "then": [
+        "all eight commands succeed",
+        "the test lives in codesearch/policy_test.go"
+      ],
+      "pseudocode": "for t in targets: assert run('go build ./...',CGO_ENABLED=0,t).ok; assert run('go vet ./...',CGO_ENABLED=0,t).ok"
+    },
+    {
+      "id": "TS-03-62",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-9.2",
+        "03-REQ-10.1"
+      ],
+      "title": "TestNoCgoOutsideStdlib finds no cgo in the dependency graph and TestCgoProbeIsArmed proves the check can fail",
+      "given": [
+        "CGO_ENABLED=1",
+        "a probe package with a cgo file"
+      ],
+      "when": "go list -deps -f CgoFiles runs over the module and over the probe",
+      "then": [
+        "no non-stdlib package has CgoFiles",
+        "the probe is detected, proving the check is armed",
+        "a detected cgo file means the spec is a no-go and no code is merged"
+      ],
+      "pseudocode": "env CGO_ENABLED=1; assert noCgo(list('./...')); assert detects(probe)"
+    },
+    {
+      "id": "TS-03-63",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-9.3",
+        "03-REQ-10.1"
+      ],
+      "title": "A forbidden-import check over go list -deps rejects gRPC, Prometheus and HTTP-server packages",
+      "given": [
+        "the full dependency list of codesearch",
+        "a synthetic dependency list containing google.golang.org/grpc"
+      ],
+      "when": "the forbidden-import check runs over both",
+      "then": [
+        "the real list passes",
+        "the synthetic list fails naming grpc",
+        "the check covers gRPC, Prometheus and HTTP server packages"
+      ],
+      "pseudocode": "assert forbidden(depsOf('./...'))==[]; assert 'grpc' in forbidden(synthetic)"
+    },
+    {
+      "id": "TS-03-64",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-9.4"
+      ],
+      "title": "The pinned zoekt builder accepts symbol data from outside, so ctags is never started by zoekt",
+      "given": [
+        "a zoekt builder with CTagsPath empty",
+        "a document with a symbol section supplied as byte offsets"
+      ],
+      "when": "the document is indexed and searched with sym:Name and with a comment-only match",
+      "then": [
+        "the sym: query matches the supplied symbol",
+        "the symbol hit outranks the comment hit",
+        "no ctags process is spawned"
+      ],
+      "pseudocode": "doc={Name,Content,Symbols:[{Start,End}],SymbolsMetaData}; build; r=search('sym:Foo'); assert r.Files[0].Name==docWithSymbol; assert spawns==0"
+    },
+    {
+      "id": "TS-03-65",
+      "kind": "integration",
+      "verifies": [
+        "03-REQ-10.3"
+      ],
+      "title": "The Makefile test, vet, lint and tidy targets cover codesearch, and make check passes with and without universal-ctags",
+      "given": [
+        "the Makefile",
+        "an environment with universal-ctags and one with it removed from PATH"
+      ],
+      "when": "make -n test vet lint tidy is inspected and make check is run in both environments",
+      "then": [
+        "each target includes codesearch alongside the root and difftest",
+        "make check exits 0 in both environments"
+      ],
+      "pseudocode": "for t in [test,vet,lint,tidy]: assert 'codesearch' in dryrun(t); assert run('make check').code==0 with ctags; assert run('make check',PATH=noctags).code==0"
+    },
+    {
+      "id": "TS-03-66",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-10.4"
+      ],
+      "title": "Every codesearch test obtains symbols from a fake Runner or DisableCtags and real-ctags tests skip when it is absent",
+      "given": [
+        "the codesearch test sources",
+        "an environment without universal-ctags"
+      ],
+      "when": "the sources are statically scanned and go test is run without ctags",
+      "then": [
+        "no test constructs an index with the default runner without DisableCtags or a fake",
+        "tests using real ctags call a skip when exec.LookPath fails",
+        "go test passes without ctags",
+        "seam tests set Options.Index to a fake tools.Index"
+      ],
+      "pseudocode": "for f in testfiles: assert usesFake(f) or usesDisable(f) or hasSkip(f,'LookPath'); assert run('go test ./...',PATH=noctags).ok"
+    },
+    {
+      "id": "TS-03-67",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-10.6"
+      ],
+      "title": "The documentation set is updated with the required content",
+      "given": [
+        "docs/architecture.md, docs/DEPS.md, docs/configuration.md, docs/cli.md and README.md after the change"
+      ],
+      "when": "the files are read",
+      "then": [
+        "architecture.md shows the module boundary beside difftest/ and examples/flatline plus package table and graph rows for codesearch",
+        "DEPS.md has a new numbered ruling for zoekt confined to the nested module and an extended nested-modules sentence",
+        "configuration.md has an Index row in the tools.Options table, the code_search limits and the codesearch.Options fields",
+        "cli.md describes the changed make targets",
+        "README.md lists the codesearch module"
+      ],
+      "pseudocode": "assert 'codesearch' in architecture and 'difftest' near it; assert 'zoekt' in DEPS ruling; assert row 'Index' in configuration; assert 'codesearch' in cli and README"
+    },
+    {
+      "id": "TS-03-68",
+      "kind": "unit",
+      "verifies": [
+        "03-REQ-10.7"
+      ],
+      "title": "docs/api.md is untouched by the change",
+      "given": [
+        "the repository diff of the change"
+      ],
+      "when": "git diff --name-only is inspected",
+      "then": [
+        "docs/api.md is not among the changed files"
+      ],
+      "pseudocode": "assert 'docs/api.md' not in gitDiffNames()"
+    },
+    {
+      "id": "TS-03-69",
+      "kind": "smoke",
+      "verifies": [
+        "03-PATH-1",
+        "03-REQ-5.1",
+        "03-REQ-4.3"
+      ],
+      "title": "An embedder opts in and the model's first sym: search builds the index and returns ranked grouped text",
+      "given": [
+        "a fixture workspace on disk with Go files and a nested .gitignore",
+        "a real codesearch index created with codesearch.New and a fake Runner",
+        "tools.All wired with Options.Index"
+      ],
+      "when": "the tool list is built and code_search is called with query `sym:Runner` and a path",
+      "then": [
+        "code_search is the last tool in the list",
+        "arguments are validated and the path resolved before any build",
+        "the index is built from tools.Walk and outline.OutlineMany into a shard run directory",
+        "the result is file-grouped ranked text with the first line and populated Data fields"
+      ],
+      "real_components": [
+        "codesearch.New and index",
+        "tools.All",
+        "tools.Walk",
+        "outline.OutlineMany",
+        "zoekt builder and searcher",
+        "code_search tool",
+        "file system"
+      ]
+    },
+    {
+      "id": "TS-03-70",
+      "kind": "smoke",
+      "verifies": [
+        "03-PATH-2",
+        "03-REQ-6.1",
+        "03-REQ-6.4"
+      ],
+      "title": "The model edits a line with edit_file and immediately finds the new line, not the old one",
+      "given": [
+        "a built real index over a fixture workspace",
+        "real edit_file wired to the index"
+      ],
+      "when": "edit_file changes a line and code_search searches for the new line",
+      "then": [
+        "edit_file called Invalidate with the relative slash path",
+        "the result contains the new line and not the old",
+        "Data.dirty_files is 1"
+      ],
+      "real_components": [
+        "edit_file tool",
+        "codesearch index",
+        "overlay shard",
+        "zoekt builder and searcher",
+        "code_search tool",
+        "file system"
+      ]
+    },
+    {
+      "id": "TS-03-71",
+      "kind": "smoke",
+      "verifies": [
+        "03-PATH-3",
+        "03-REQ-6.2",
+        "03-REQ-2.7"
+      ],
+      "title": "A shell command deletes a file and the next search omits it",
+      "given": [
+        "a built real index over a fixture workspace",
+        "the real execute tool wired to the index"
+      ],
+      "when": "execute deletes an indexed file and code_search searches for text only that file contained",
+      "then": [
+        "execute called Invalidate with the empty string",
+        "the revalidation walk marked the file gone",
+        "the result is successful with no match and lists no deleted file"
+      ],
+      "real_components": [
+        "execute tool",
+        "codesearch index",
+        "tools.Walk",
+        "zoekt searcher",
+        "code_search tool",
+        "file system"
+      ]
+    },
+    {
+      "id": "TS-03-72",
+      "kind": "smoke",
+      "verifies": [
+        "03-PATH-4",
+        "03-REQ-7.2",
+        "03-REQ-7.3"
+      ],
+      "title": "find_symbol is served by the index only after a code_search built it, with identical matches",
+      "given": [
+        "a real fixture workspace",
+        "real find_symbol with Options.Index set to a real codesearch index and Options.Symbols table"
+      ],
+      "when": "find_symbol is called, then code_search, then find_symbol again with the same arguments",
+      "then": [
+        "the first find_symbol is answered from its own table",
+        "the second is answered from the index with the header naming the index",
+        "both calls return the same matches in the same order"
+      ],
+      "real_components": [
+        "find_symbol tool",
+        "codesearch index",
+        "outline.OutlineMany",
+        "symbol table",
+        "code_search tool",
+        "file system"
+      ]
+    },
+    {
+      "id": "TS-03-73",
+      "kind": "smoke",
+      "verifies": [
+        "03-PATH-5",
+        "03-REQ-5.7"
+      ],
+      "title": "A very large tree stops at a bound, answers partially and is not rebuilt on the next call",
+      "given": [
+        "a real fixture workspace larger than a scaled-down MaxFiles bound",
+        "a real codesearch index with a build counter"
+      ],
+      "when": "code_search is called twice",
+      "then": [
+        "the first result has partial true, a partial_reason and a note to narrow path or use search_files",
+        "the second call answers from the same index",
+        "the build counter stays 1"
+      ],
+      "real_components": [
+        "codesearch index",
+        "tools.Walk",
+        "zoekt builder and searcher",
+        "code_search tool",
+        "file system"
+      ]
+    },
+    {
+      "id": "TS-03-74",
+      "kind": "smoke",
+      "verifies": [
+        "03-PATH-6",
+        "03-REQ-8.3",
+        "03-REQ-8.4"
+      ],
+      "title": "The embedder closes the index, its shards vanish and a later code_search returns index_closed",
+      "given": [
+        "a real built index whose run directory exists on disk"
+      ],
+      "when": "Close is called and then code_search is called",
+      "then": [
+        "the run directory is deleted",
+        "code_search returns ErrResult code index_closed",
+        "no build or search happened after Close"
+      ],
+      "real_components": [
+        "codesearch index",
+        "zoekt searcher",
+        "code_search tool",
+        "file system"
+      ]
+    },
+    {
+      "id": "TS-03-75",
+      "kind": "smoke",
+      "verifies": [
+        "03-PATH-7",
+        "03-REQ-9.2",
+        "03-REQ-9.1"
+      ],
+      "title": "Running the risk checks against the pinned zoekt records evidence and a cgo file ends the spec",
+      "given": [
+        "the pinned zoekt release in a scratch nested module",
+        "a scratch module variant that includes a package with a cgo file"
+      ],
+      "when": "go list -m all, the CGO_ENABLED=1 cgo scan and the four-target build and vet run against both",
+      "then": [
+        "for the clean module all checks pass and their outputs are recorded in the README",
+        "for the cgo variant the scan reports a cgo file and the result is no-go",
+        "the no-go outcome yields no merged codesearch code and the evidence is recorded"
+      ],
+      "real_components": [
+        "go toolchain",
+        "go list",
+        "policy cgo scan",
+        "scratch module on disk"
+      ]
+    }
+  ]
+}

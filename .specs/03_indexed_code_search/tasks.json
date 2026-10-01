@@ -1,0 +1,476 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "03",
+  "spec_name": "indexed_code_search",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "cd codesearch && go test ./... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "01",
+      "reason": "Supplies outline.OutlineMany/Options/File/Decl/Backend, tools.Walk with WalkOptions (the only walk the index may use), tools.CtagsRunner and tools.ErrCtagsUnavailable."
+    },
+    {
+      "spec": "02",
+      "reason": "Supplies find_symbol, SymbolMatch, the matching rules the index must reproduce, Options.Symbols and the dirty-marking call sites that this spec extends with Index.Invalidate and an Index branch."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Settle the zoekt risks and create the nested codesearch module with its policy tests",
+      "criteria": [
+        "03-REQ-1.1",
+        "03-REQ-1.2",
+        "03-REQ-1.3",
+        "03-REQ-8.6",
+        "03-REQ-8.7",
+        "03-REQ-9",
+        "03-REQ-10.1"
+      ],
+      "tests": [
+        "TS-03-4",
+        "TS-03-7",
+        "TS-03-60",
+        "TS-03-61",
+        "TS-03-62",
+        "TS-03-63",
+        "TS-03-64"
+      ],
+      "steps": [
+        "Write TS-03-4, TS-03-7, TS-03-61, TS-03-62, TS-03-63 and TS-03-64 first and confirm they fail; add TS-03-60 once the Windows result is known",
+        "In a scratch module, pin a zoekt release and read its source: module path, packages for index builder, query parser and searcher, memory-vs-file shard search, per-document symbol fields (byte offsets), SearchOptions bounding result size and wall time. Record `go list -m all`, the CGO_ENABLED=1 cgo scan and the four-target build/vet outputs",
+        "Evaluate the no-go conditions: any cgo file in the graph, a need for gRPC/Prometheus/HTTP-server packages, or a builder that cannot take symbols from outside (TS-03-64 proves it can with CTagsPath empty). If one fails, stop, record the evidence in the PRD and merge no codesearch code; do not loosen any check",
+        "Implement the gate check as a small Go test helper with the literal thresholds 25% and one third (not parameters), two repositories of at least 5000 files and the Requirement 9 result; TS-03-7 asserts go/no-go outcomes",
+        "Create codesearch/go.mod: module github.com/agentfox/agentkit-go/codesearch, `replace github.com/agentfox/agentkit-go => ..`, the pinned zoekt at an exact tag, and a header comment stating the boundary rule as difftest/go.mod does. Do not edit the root go.mod, go.sum or internal/policy",
+        "Create index.go, search.go, tool.go with minimal compiling skeletons, errors.go defining the exported ErrUnsupported value once for every platform, and a windows-constrained New stub returning ErrUnsupported only if zoekt fails on windows/amd64 (with the matching non-windows constraint on the real New)",
+        "Write codesearch/policy_test.go: TestNoCgoOutsideStdlib and TestCgoProbeIsArmed under CGO_ENABLED=1 (probe package with a cgo file), a forbidden-import check over `go list -deps` (grpc, prometheus, net/http servers) tested against a synthetic list, a cross-target build and vet of linux/amd64, linux/arm64, darwin/arm64 and windows/amd64 with CGO_ENABLED=0, and a stub test asserting errors.Is(err, ErrUnsupported) where the stub is used",
+        "Write the builder/searcher test TS-03-64: index a document with symbol sections as byte offsets and CTagsPath empty, assert sym: query matches, outranks a comment hit and no ctags process runs",
+        "Start codesearch/README.md with the measured figures, repositories and date, then the pinned-zoekt answers from step 2; also record them in the spec's external API notes",
+        "Run `go mod tidy` in codesearch and confirm `go list -deps ./...` in the root names no new module"
+      ],
+      "touches": [
+        "codesearch/go.mod",
+        "codesearch/go.sum",
+        "codesearch/README.md",
+        "codesearch/index.go",
+        "codesearch/search.go",
+        "codesearch/tool.go",
+        "codesearch/errors.go",
+        "codesearch/policy_test.go",
+        "codesearch/stub_windows.go"
+      ],
+      "done_when": [
+        "`cd codesearch && go build ./... && go vet ./...` succeeds on the four targets with CGO_ENABLED=0"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Add the standard-library seam to tools and the Invalidate hooks",
+      "criteria": [
+        "03-REQ-1.4",
+        "03-REQ-2.1",
+        "03-REQ-2.2",
+        "03-REQ-2.3",
+        "03-REQ-2.4",
+        "03-REQ-2.5",
+        "03-REQ-2.6",
+        "03-REQ-2.7",
+        "03-REQ-10.2"
+      ],
+      "tests": [
+        "TS-03-5",
+        "TS-03-8",
+        "TS-03-9",
+        "TS-03-10",
+        "TS-03-11",
+        "TS-03-12",
+        "TS-03-13",
+        "TS-03-14"
+      ],
+      "steps": [
+        "Write TS-03-8 to TS-03-14 and TS-03-5 first and confirm they fail",
+        "In tools add SymbolQuery, SymbolAnswer, the Index interface (Symbols, Tools, Invalidate, Close) and Options.Index, importing only the standard library and root packages; SymbolMatch is the type from spec 02",
+        "Export CapMarker and ClampLimit as thin wrappers over the unexported capMarker and clampLimit in tools/limits.go; the in-package test TS-03-9 compares them row by row, including limit == max",
+        "In tools.All append Index.Tools() after the built-in tools when Index is set and return (nil, error) naming the tool when a name equals a built-in; leave FileNavigationTools() and the nil-Index output untouched (compare with the spec 02 golden)",
+        "In write_file and edit_file call Index.Invalidate(filepath.ToSlash(rel)) exactly once per attempt after the write attempt, before the per-path lock is released, on success and failure paths (nil-safe when Index is nil)",
+        "In execute, run_command and powershell call Index.Invalidate(\"\") exactly once on every return path (success, failure, timeout)",
+        "Write fakes recording Invalidate arguments and whether the lock was held; cover failure paths (edit_file old_string absent, unwritable path)",
+        "Confirm git diff shows no change to go.mod, go.sum or internal/policy and `go test ./internal/policy` passes unmodified"
+      ],
+      "touches": [
+        "tools/tools.go",
+        "tools/limits.go",
+        "tools/index.go",
+        "tools/write.go",
+        "tools/edit.go",
+        "tools/exec.go",
+        "tools/index_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Build the index lazily: New, options, walk filter, outline symbols, shard directory and sweep",
+      "criteria": [
+        "03-REQ-1.5",
+        "03-REQ-1.6",
+        "03-REQ-1.7",
+        "03-REQ-5.2",
+        "03-REQ-5.3",
+        "03-REQ-5.5",
+        "03-REQ-5.6"
+      ],
+      "tests": [
+        "TS-03-1",
+        "TS-03-2",
+        "TS-03-3",
+        "TS-03-33",
+        "TS-03-34",
+        "TS-03-35",
+        "TS-03-37",
+        "TS-03-38"
+      ],
+      "steps": [
+        "Write the eight tests first and confirm they fail; tests obtain symbols only through a fake Runner or DisableCtags",
+        "Implement codesearch.Options and normalisation (defaults 100000 files, 1 GiB, 60 s, os.TempDir(), nil Env -> tools.ReducedEnv(nil))",
+        "Implement New(ws, opts) (tools.Index, error): error on nil ws; no goroutine, process, walk or disk access; internal build counter and test hooks",
+        "Implement the build: tools.Walk from the workspace root with IncludeHidden false and Options.Ignore, skip non-regular, >1 MiB or NUL-in-first-8KiB files and count them by reason",
+        "Collect symbols with outline.OutlineMany in batches of at most 100, outline.Options{Root, Runner}; Runner is Options.Runner, nil with DisableCtags, else tools.CtagsRunner(Env) created on first use; turn the outline.File decls of whichever backend into byte-offset symbol sections",
+        "Write documents under slash-separated workspace-relative names with zoekt's builder, CTagsPath empty, no git indexer; record (size, mtime, indexed-at) and the outline.File per file",
+        "Create <TempDir>/agentkit-codesearch-<sha256 prefix of at least 16 hex chars of absolute root>/<unique run id>/ with mode 0700",
+        "At build start sweep sibling run directories of the same hash older than 24 hours using an injectable clock, never touching another hash or another run; touch own directory at most hourly while queried",
+        "Verify TS-03-33 compares the indexed names with the filtered tools.Walk set on a fixture with nested .gitignore, nested repository, hidden dir, symlink, binary, oversized and exactly-1-MiB files"
+      ],
+      "touches": [
+        "codesearch/index.go",
+        "codesearch/options.go",
+        "codesearch/index_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Implement the code_search tool: arguments, path conjunction, search and error codes",
+      "criteria": [
+        "03-REQ-3",
+        "03-REQ-5.1"
+      ],
+      "tests": [
+        "TS-03-16",
+        "TS-03-17",
+        "TS-03-18",
+        "TS-03-19",
+        "TS-03-20",
+        "TS-03-21",
+        "TS-03-22",
+        "TS-03-23"
+      ],
+      "steps": [
+        "Write the eight tests first and confirm they fail",
+        "Define the code_search tool in tool.go: Builtin, parallel, read-only, schema with required query and optional path, max_files, context_lines; description says \"zoekt query syntax\", never RE2, contains the four examples; PromptGuidelines carries the pinned sentence",
+        "Validate before any index work: trimmed-empty or over-1024-byte query, zoekt query.Parse failure (include parser message), negative context_lines -> invalid_arguments; default and clamp context_lines (2, MaxSearchContextLines) and max_files (10, tools.ClampLimit to 25)",
+        "Resolve path with Workspace.Resolve (path_not_allowed outside), stat it (read_failed when missing) before building; build a query.NewAnd conjunction with an anchored, regexp.QuoteMeta-escaped file: node (directory prefix with trailing slash, file anchored to the end, root adds nothing)",
+        "Return aborted (\"Operation aborted\") on a cancelled context, index_failed with the cause when the build fails for a non-bound reason, index_closed after Close, and search_failed for search errors",
+        "Run the first call's build lazily through the index from task 3 and search with the zoekt searcher with SearchOptions bounding wall time; cancel a query after 10 s (injectable duration) and return search_failed saying it timed out and should be narrowed",
+        "Expose a searcher test seam for TS-03-23 returning an error and one blocking until its context ends",
+        "Keep the first minimal result rendering so TS-03-18 and TS-03-20 can read the files; full rendering lands in the next task"
+      ],
+      "touches": [
+        "codesearch/tool.go",
+        "codesearch/search.go",
+        "codesearch/index.go",
+        "codesearch/tool_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Render ranked file-grouped code_search results with truncation markers and no-ctags header",
+      "criteria": [
+        "03-REQ-4",
+        "03-REQ-5.4"
+      ],
+      "tests": [
+        "TS-03-24",
+        "TS-03-25",
+        "TS-03-26",
+        "TS-03-27",
+        "TS-03-28",
+        "TS-03-29",
+        "TS-03-30",
+        "TS-03-31",
+        "TS-03-36"
+      ],
+      "steps": [
+        "Write the nine tests first and confirm they fail; golden marker text is tied to the pinned zoekt version and a test comment says so",
+        "Convert zoekt FileMatch results into files in score order, at most max_files, at most 3 chunks per file in zoekt order with lines sorted ascending, context_lines either side, overlapping chunks merged, each line cut to tools.SearchLineChars",
+        "Render with RenderSearchText's shape (`N: matched line`, `N- context line`), a per-file header with the slash path (control characters -> ?), total match count, a note when matches were not shown and up to 5 declaration names (Container.Name for members) for matches on a declaration start line",
+        "Emit the first line: file count, index size, symbol sources as files per outline backend, ctags-unavailable note saying non-Go symbols are the heuristic's column-0 declarations only, and partial/dirty-overlay notes only when they apply",
+        "A no-match query returns OKResult with text saying nothing matched, the first line and empty Data.files",
+        "When more files matched than max_files append tools.CapMarker(\"files\",\"max_files\",limit,25,\"narrow the query or add a path\") and set Metadata.Truncated = TruncatedByLines",
+        "When the text exceeds tools.DefaultByteLimit drop whole files from the end keeping one, then drop that file's chunks from the end, append a bytes marker naming path, file: or fewer context_lines, and set TruncatedByBytes; ensure the final text is at most the limit including the marker",
+        "Populate Data: files, truncated, note, partial, symbol_sources, ctags_available, files_indexed, dirty_files and skipped counts",
+        "Write the property test TS-03-31 over generated zoekt queries, max_files 1..40, context_lines 0..30 and optional path, checking every marker's suggested call is not invalid_arguments and the text never exceeds the limit; use a Runner returning ErrCtagsUnavailable for TS-03-36"
+      ],
+      "touches": [
+        "codesearch/search.go",
+        "codesearch/tool.go",
+        "codesearch/render_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Enforce build bounds, cancellation, locking and Close lifecycle",
+      "criteria": [
+        "03-REQ-5.7",
+        "03-REQ-5.8",
+        "03-REQ-8.1",
+        "03-REQ-8.3",
+        "03-REQ-8.4",
+        "03-REQ-8.5"
+      ],
+      "tests": [
+        "TS-03-39",
+        "TS-03-40",
+        "TS-03-56",
+        "TS-03-57",
+        "TS-03-58",
+        "TS-03-59"
+      ],
+      "steps": [
+        "Write the six tests first and confirm they fail; run the concurrency test with -race",
+        "Apply the three bounds to a build: MaxFiles, MaxBytes and MaxBuildTime as a derived context passed to the walk, OutlineMany and the builder; on a bound keep what is indexed and mark partial with partial_reason files, bytes or time and the note to narrow path or use search_files",
+        "Never retry a partial index on later calls (build counter stays 1); leave only the dirty-threshold rebuild to replace it",
+        "On a cancelled call context during a build return aborted, discard the partial build and leave state unbuilt so the next call builds again",
+        "Guard index state with one lock: queries share a read lock, builds take the write side; a waiter behind a build selects on its context and returns aborted",
+        "Implement Close: wait for in-flight queries (test seam to hold one), release the zoekt searcher, delete the run directory, return nil on every call; afterwards tools return index_closed and Symbols returns ok=false without building or searching",
+        "Assert tools.All returns only ([]core.Tool, error), and that a never-closed run directory aged 25 hours is removed by a later index's sweep"
+      ],
+      "touches": [
+        "codesearch/index.go",
+        "codesearch/tool.go",
+        "codesearch/lifecycle_test.go"
+      ],
+      "depends_on": [
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Freshness: dirty marks, generations, revalidation walk and non-blocking Invalidate",
+      "criteria": [
+        "03-REQ-2.8",
+        "03-REQ-6.1",
+        "03-REQ-6.2",
+        "03-REQ-6.3",
+        "03-REQ-6.6",
+        "03-REQ-6.7"
+      ],
+      "tests": [
+        "TS-03-15",
+        "TS-03-41",
+        "TS-03-42",
+        "TS-03-43",
+        "TS-03-47",
+        "TS-03-48"
+      ],
+      "steps": [
+        "Write the six tests first and confirm they fail; use a blocking fake Runner, a revalidation counter and tools.All wired with the real index",
+        "Implement Invalidate(rel) under a small separate mutex setting a dirty entry with a monotonically increasing generation; it never blocks on a build or query, returns nothing and does not panic on a closed index",
+        "Keep Invalidate(\"\") as a pending-revalidation flag with its generation",
+        "At query time remove every dirty path from indexed results so a deleted file appears in no result",
+        "Revalidation walk (same walk and filters as the build): compare (size, mtime) with indexed values, treat a file indexed within the previous 2 s as changed, mark changed and new files dirty and files no longer yielded dirty and gone",
+        "Run a revalidation before answering when a dirty path is unknown to the index or its base name is .gitignore; do not walk for a known non-.gitignore path",
+        "A build or revalidation pass clears only marks with a generation older than the pass's start generation, so a mark made mid-pass survives",
+        "With no Invalidate call never walk again: build counter 1 and revalidation counter 0 over 20 queries",
+        "Until the overlay lands, search dirty visible files by re-reading them minimally only if needed by the tests; the overlay replaces this in the next task"
+      ],
+      "touches": [
+        "codesearch/index.go",
+        "codesearch/dirty.go",
+        "codesearch/fresh_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Overlay shard for dirty files, score merge and the 5% rebuild threshold",
+      "criteria": [
+        "03-REQ-6.4",
+        "03-REQ-6.5",
+        "03-REQ-6.8",
+        "03-REQ-8.2"
+      ],
+      "tests": [
+        "TS-03-44",
+        "TS-03-45",
+        "TS-03-46",
+        "TS-03-49"
+      ],
+      "steps": [
+        "Write the four tests first and confirm they fail; TS-03-49 is a property test over random sequences of write_file, edit_file (success and failure) and shell edit, delete and create",
+        "Index the still-visible dirty files into a small overlay shard with symbols from outline.OutlineMany on those files; rebuild it only when the dirty set changes (overlay build counter)",
+        "Run the same parsed query (with the path conjunction) against the indexed searcher and the overlay searcher and merge the hits by score, not by appending, so a fresh edit lower-scored than the cap still appears under max_files",
+        "Report dirty_files in Data and the dirty-overlay note in the first line",
+        "When more than 5% of indexed files are dirty, rebuild the whole index under the Requirement 5 bounds instead of using an overlay: build into a new run state, swap only when ready, close and delete the old shards after the swap",
+        "Queries arriving during a rebuild wait abandonably (ctx select) and use the new index; a waiter whose context ends returns aborted without waiting for the build; the old index stays valid until the swap",
+        "Verify 4 of 100 dirty gives build counter 1 and 6 gives 2 with the old shard directory contents gone",
+        "In TS-03-49 assert the latest content of every touched file appears, no overwritten or deleted content is shown and deleted files appear in no result"
+      ],
+      "touches": [
+        "codesearch/index.go",
+        "codesearch/overlay.go",
+        "codesearch/search.go",
+        "codesearch/overlay_test.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Serve find_symbol through Index.Symbols with identical matches",
+      "criteria": [
+        "03-REQ-7"
+      ],
+      "tests": [
+        "TS-03-32",
+        "TS-03-50",
+        "TS-03-51",
+        "TS-03-52",
+        "TS-03-53",
+        "TS-03-54",
+        "TS-03-55"
+      ],
+      "steps": [
+        "Write the seven tests first and confirm they fail; TS-03-55 is a property test over generated trees and find_symbol queries comparing Index != nil with Index == nil",
+        "Implement Index.Symbols from the per-file outline.File data collected by the build (no zoekt query), using spec 02 Requirement 2 matching: smart-case prefix, exact, qualified Container.Name, kind (already lower-cased) and slash-separated path directory, producing tools.SymbolMatch values with file paths",
+        "Return (SymbolAnswer{Matches, FilesIndexed}, true, nil) only when the index was built by an earlier code_search, is not partial and not closed and the match count is at most 1000; otherwise (zero, false, nil) without starting a build",
+        "Before answering run any pending revalidation and re-outline dirty files in scope under the Requirement 6 rules",
+        "Return an error only when the context is cancelled",
+        "In tools' find_symbol add the Index branch: call Index.Symbols when Options.Index is set, rank and truncate with find_symbol's own code, name the index in the header backend line on ok=true, and fall back to the symbol table on ok=false; find_symbol never triggers a build (build counter 0 after find_symbol)",
+        "Add a fake tools.Index test confirming the fall-back path and the header, and assert the match order equals the table's"
+      ],
+      "touches": [
+        "codesearch/symbols.go",
+        "codesearch/index.go",
+        "tools/symbols.go",
+        "codesearch/symbols_test.go"
+      ],
+      "depends_on": [
+        8
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Wire the Makefile and update documentation",
+      "criteria": [
+        "03-REQ-10.3",
+        "03-REQ-10.4",
+        "03-REQ-10.5",
+        "03-REQ-10.6",
+        "03-REQ-10.7"
+      ],
+      "tests": [
+        "TS-03-6",
+        "TS-03-65",
+        "TS-03-66",
+        "TS-03-67",
+        "TS-03-68"
+      ],
+      "steps": [
+        "Write the five tests first and confirm they fail",
+        "Extend the Makefile test, vet, lint and tidy targets to run in codesearch/ beside the root and difftest; confirm `make check` passes with and without universal-ctags on PATH",
+        "Audit every codesearch test: symbols come from a fake Runner or DisableCtags, a real-ctags test skips when exec.LookPath fails, seam tests use a fake tools.Index",
+        "Complete codesearch/README.md: the go/no-go figures first, what the module is, the one-line Options.Index opt-in plus allowlist entry, the Requirement 9 answers, known differences from search_files (1 MiB limit, zoekt dialect, score order) and that goldens are tied to the pinned zoekt version",
+        "Update docs/architecture.md (module boundary beside difftest/ and examples/flatline, package table and graph rows)",
+        "Update docs/DEPS.md with a new numbered ruling for zoekt confined to the nested module (pinned, what it buys, why hand-rolling a trigram index is not credible) and extend the nested-modules sentence",
+        "Update docs/configuration.md (Index row in the tools.Options table, code_search limits, codesearch.Options fields), docs/cli.md (make target descriptions) and the root README.md module list",
+        "Do not touch docs/api.md"
+      ],
+      "touches": [
+        "Makefile",
+        "codesearch/README.md",
+        "codesearch/docs_test.go",
+        "docs/architecture.md",
+        "docs/DEPS.md",
+        "docs/configuration.md",
+        "docs/cli.md",
+        "README.md"
+      ],
+      "depends_on": [
+        9
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify every execution path end to end against the real index",
+      "tests": [
+        "TS-03-69",
+        "TS-03-70",
+        "TS-03-71",
+        "TS-03-72",
+        "TS-03-73",
+        "TS-03-74",
+        "TS-03-75"
+      ],
+      "steps": [
+        "Write the seven smoke tests against real components (real codesearch index, tools.All, tools.Walk, outline.OutlineMany, zoekt builder and searcher, file system) and confirm they pass; TS-03-75 runs the risk checks on a clean scratch module and on a cgo variant that must report no-go",
+        "Trace 03-PATH-1 through codesearch.New, tools.All, the code_search tool, tools.Walk, OutlineMany and the zoekt search; confirm each step calls the next and no stub remains",
+        "Trace 03-PATH-2 and 03-PATH-3 from edit_file/write_file/execute to Index.Invalidate, the overlay shard, the revalidation walk and the result; confirm the tools call Invalidate from production code",
+        "Trace 03-PATH-4: confirm find_symbol in production code calls Index.Symbols (spec 02 entry point) and falls back to its table, and that the header names the index",
+        "Trace 03-PATH-5 and 03-PATH-6: partial bound without retry, and Close deleting the run directory then index_closed",
+        "For every criterion with a contract (Symbols ok/err, Invalidate arguments, index_closed, partial_reason, CapMarker) confirm the producer's result is consumed by a caller in production code, not only by tests",
+        "Grep every file in the tasks' touches for panic(\"not implemented\"), TODO and bare `return nil` on non-trivial paths and remove them",
+        "Run `make check` and `go test -race ./...` in codesearch, with and without universal-ctags"
+      ],
+      "touches": [
+        "codesearch/smoke_test.go",
+        "codesearch/riskcheck_test.go"
+      ],
+      "depends_on": [
+        10
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass, including codesearch/"
+      ],
+      "state": "pending"
+    }
+  ]
+}

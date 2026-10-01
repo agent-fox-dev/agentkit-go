@@ -1,0 +1,837 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "03",
+  "spec_name": "indexed_code_search",
+  "schema_version": 2,
+  "introduction": "A nested Go module, codesearch/, adds a zoekt-backed `code_search` tool that gives a model ranked, file-grouped answers about one working tree. A small standard-library-only seam in the root `tools` package (`tools.Index`, `Options.Index`) lets the index add tools, learn about writes, and serve `find_symbol`, without the root module or any embedder that skips the index paying for zoekt. The work is conditional on a go decision and on a set of risk checks that end the spec if they fail.",
+  "glossary": {
+    "REQ-TOOL-09b": "The rule that every truncation marker names a call that works.",
+    "TruncatedByLines / TruncatedByBytes": "The Metadata.Truncated values of package tools that record a count cap and a byte cap respectively.",
+    "dirty file": "A file that AgentKit's own tools may have changed since it was indexed, recorded through Index.Invalidate or found by revalidation.",
+    "go/no-go gate": "The measured decision rule in Requirement 1 that must hold before any code of this spec is merged.",
+    "outline backend": "The mechanism outline used for one file's symbols: go/ast, ctags, heuristic or none.",
+    "overlay shard": "A small extra shard holding only the dirty but still visible files, rebuilt only when the dirty set changes.",
+    "partial index": "An index whose build was stopped by the file, byte or time bound; it answers queries with partial: true and is not retried.",
+    "revalidation": "A workspace walk comparing (size, mtime) with the indexed values to find changed, new and removed files.",
+    "run directory": "The per-index-instance shard directory <TempDir>/agentkit-codesearch-<hash of root>/<run id>/.",
+    "seam": "The standard-library-only interface in package tools (Index, SymbolQuery, SymbolAnswer, Options.Index) through which codesearch plugs into the root module.",
+    "shard": "A zoekt index file written to disk for a set of documents.",
+    "zoekt": "A trigram-based code search engine with a boolean query language (substring, regexp, sym:, file:, lang: atoms) and its own scoring. Used in-process through the nested module only."
+  },
+  "requirements": [
+    {
+      "id": "03-REQ-1",
+      "title": "The gate and the nested module",
+      "rationale": "A zoekt dependency is only worth carrying if measured search_files use justifies it, and it must stay confined to a module that embedders opt into.",
+      "criteria": [
+        {
+          "id": "03-REQ-1.1",
+          "pattern": "unwanted",
+          "condition": "the measured figures on the navigation baseline plus at least two target repositories of 5 000 files or more show search_files below 25% of read-phase tool calls and fewer than one third of search_files results truncated or retried within two turns in the same directory, or any check in Requirement 9 fails",
+          "system": "codesearch spec",
+          "action": "merge no code of this spec and close the PRD with the measured numbers recorded in it, without changing the thresholds",
+          "contract": "No codesearch/ file, tools seam change or documentation change from this spec is merged; the PRD records the figures, the repositories and the date"
+        },
+        {
+          "id": "03-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "codesearch/README.md",
+          "action": "begin with the measured go/no-go figures, the repositories measured and the measurement date"
+        },
+        {
+          "id": "03-REQ-1.3",
+          "pattern": "ubiquitous",
+          "system": "codesearch module",
+          "action": "be the nested module github.com/agentfox/agentkit-go/codesearch with `replace github.com/agentfox/agentkit-go => ..`, a pinned zoekt release, a go.mod header comment stating the boundary rule as difftest/go.mod does, and the files index.go, search.go, tool.go and policy_test.go"
+        },
+        {
+          "id": "03-REQ-1.4",
+          "pattern": "ubiquitous",
+          "system": "root module",
+          "action": "keep go.mod, go.sum and internal/policy unedited, keep allowedModules unchanged, and keep `go list -deps ./...` in the root free of any module not present before this spec"
+        },
+        {
+          "id": "03-REQ-1.5",
+          "pattern": "event_driven",
+          "condition": "codesearch.New is called with a non-nil *tools.Workspace",
+          "system": "codesearch.New",
+          "action": "return a tools.Index without starting a goroutine, running a process, walking the workspace or touching the disk",
+          "contract": "Returns (tools.Index, nil); no goroutine count change, no child process and no file created"
+        },
+        {
+          "id": "03-REQ-1.6",
+          "pattern": "unwanted",
+          "condition": "codesearch.New is called with a nil workspace",
+          "system": "codesearch.New",
+          "action": "return an error and no index",
+          "contract": "Returns (nil, non-nil error)"
+        },
+        {
+          "id": "03-REQ-1.7",
+          "pattern": "ubiquitous",
+          "system": "codesearch.Options",
+          "action": "treat a zero or negative MaxFiles, MaxBytes, MaxBuildTime or TempDir-equivalent limit as its default (100 000 files, 1 GiB, 60 s, os.TempDir()) and treat a nil Env as tools.ReducedEnv(nil)"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-2",
+      "title": "The seam in the tools package",
+      "rationale": "A standard-library interface in tools lets codesearch import tools and keeps the index a one-line opt-in.",
+      "criteria": [
+        {
+          "id": "03-REQ-2.1",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "export SymbolQuery{Name, Kind, Path string; Exact bool}, SymbolAnswer{Matches []SymbolMatch; FilesIndexed int}, the Index interface (Symbols, Tools, Invalidate, Close) and Options.Index, importing only the standard library and existing root packages"
+        },
+        {
+          "id": "03-REQ-2.2",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "export CapMarker(noun, param string, limit, max int, alternative string) string and ClampLimit(n, def, cap int) int returning exactly what the existing unexported capMarker and clampLimit return for the same arguments"
+        },
+        {
+          "id": "03-REQ-2.3",
+          "pattern": "optional",
+          "condition": "Options.Index is set",
+          "system": "tools.All",
+          "action": "append Index.Tools() after the built-in tools and leave FileNavigationTools() unchanged",
+          "contract": "The built-in tools keep their pinned order; code_search is absent from FileNavigationTools()"
+        },
+        {
+          "id": "03-REQ-2.4",
+          "pattern": "state_driven",
+          "condition": "Options.Index is nil",
+          "system": "tools.All",
+          "action": "return a tool list byte-for-byte identical to the one 02_symbol_navigation_tools pins"
+        },
+        {
+          "id": "03-REQ-2.5",
+          "pattern": "unwanted",
+          "condition": "an index tool has the same name as a built-in tool",
+          "system": "tools.All",
+          "action": "return an error naming the duplicate tool",
+          "contract": "All returns (nil, error) whose message contains the duplicate tool name"
+        },
+        {
+          "id": "03-REQ-2.6",
+          "pattern": "event_driven",
+          "condition": "write_file or edit_file finishes its write attempt, whether it succeeded or failed",
+          "system": "write_file and edit_file",
+          "action": "call Index.Invalidate with the slash-separated workspace-relative path before releasing the per-path lock",
+          "contract": "Exactly one Invalidate(rel) call per attempt, on success and failure paths"
+        },
+        {
+          "id": "03-REQ-2.7",
+          "pattern": "event_driven",
+          "condition": "execute, run_command or powershell returns, whatever its outcome",
+          "system": "shell tools",
+          "action": "call Index.Invalidate with the empty string",
+          "contract": "Exactly one Invalidate(\"\") call per invocation"
+        },
+        {
+          "id": "03-REQ-2.8",
+          "pattern": "ubiquitous",
+          "system": "Index.Invalidate",
+          "action": "block for no longer than it takes to set a flag even while a build or query is running, return no error, and not panic on a closed index"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-3",
+      "title": "code_search arguments and errors",
+      "rationale": "Validation before any index work keeps a malformed call cheap and makes every failure shape predictable to the model.",
+      "criteria": [
+        {
+          "id": "03-REQ-3.1",
+          "pattern": "ubiquitous",
+          "system": "code_search tool",
+          "action": "be Builtin, parallel and read-only, take query (required string) and path, max_files, context_lines (optional), describe itself as \"zoekt query syntax\" and never as \"RE2\" with the four examples `sym:Runner`, `retry file:\\.go$ -file:_test`, `lang:python \"def load\"` and `(compaction or summarize) case:no`, and carry the PromptGuideline \"Use code_search for ranked questions about the codebase; search_files for an exhaustive regex scan.\""
+        },
+        {
+          "id": "03-REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "query is empty after trimming, longer than 1 024 bytes, rejected by zoekt's parser, or context_lines is negative",
+          "system": "code_search tool",
+          "action": "reject the call before any index work",
+          "contract": "ErrResult with code invalid_arguments; for a parser rejection the message includes the parser's message; no build is started"
+        },
+        {
+          "id": "03-REQ-3.3",
+          "pattern": "ubiquitous",
+          "system": "code_search tool",
+          "action": "default context_lines to 2 and clamp it to tools.MaxSearchContextLines, and default max_files to 10 and clamp it to 25 with tools.ClampLimit"
+        },
+        {
+          "id": "03-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "path resolves outside the workspace or does not exist",
+          "system": "code_search tool",
+          "action": "refuse the call before any index build",
+          "contract": "ErrResult code path_not_allowed for a path outside the workspace (via Workspace.Resolve) and code read_failed for a path that does not exist; no build is started"
+        },
+        {
+          "id": "03-REQ-3.5",
+          "pattern": "ubiquitous",
+          "system": "code_search tool",
+          "action": "apply path as a conjunction with the parsed query built as query nodes, never by string concatenation: a directory becomes an anchored file: prefix on its slash-separated workspace-relative name with regexp metacharacters escaped, a file becomes the same pattern anchored to its end, and the workspace root adds no constraint, so an `or` in the query cannot return a file outside path"
+        },
+        {
+          "id": "03-REQ-3.6",
+          "pattern": "unwanted",
+          "condition": "the call context is cancelled",
+          "system": "code_search tool",
+          "action": "stop and return an aborted result",
+          "contract": "ErrResult code aborted with the text \"Operation aborted\""
+        },
+        {
+          "id": "03-REQ-3.7",
+          "pattern": "unwanted",
+          "condition": "the index build fails for a reason other than a file, byte or time bound, for example the shard directory cannot be created",
+          "system": "code_search tool",
+          "action": "return an index failure",
+          "contract": "ErrResult code index_failed whose message includes the cause"
+        },
+        {
+          "id": "03-REQ-3.8",
+          "pattern": "unwanted",
+          "condition": "the search fails or a query runs longer than 10 s",
+          "system": "code_search tool",
+          "action": "cancel the query and return a search failure",
+          "contract": "ErrResult code search_failed; for the 10 s case the message says the query timed out and should be narrowed"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-4",
+      "title": "code_search result shape and truncation",
+      "rationale": "Ranked, file-grouped output inside the 50 KB limit with working markers is the reason the tool exists.",
+      "criteria": [
+        {
+          "id": "03-REQ-4.1",
+          "pattern": "ubiquitous",
+          "system": "code_search tool",
+          "action": "return files in zoekt's score order (a sym: hit on a declaration outranks a hit in a comment), at most max_files files, each with at most 3 chunks in zoekt's order with each chunk's lines in line order, context_lines lines either side, overlapping chunks merged and every line cut to tools.SearchLineChars"
+        },
+        {
+          "id": "03-REQ-4.2",
+          "pattern": "ubiquitous",
+          "system": "code_search tool",
+          "action": "render each file as a header followed by lines in the RenderSearchText shape (`N: matched line`, `N- context line`), the header giving the workspace-relative slash path with control characters replaced by `?`, the file's total match count, a note when matches were not shown, and, for a match on a declaration's start line, that declaration's name (Container.Name for a member) with at most 5 names"
+        },
+        {
+          "id": "03-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "code_search tool",
+          "action": "begin the text with a first line stating the number of files, the index size, the symbol sources as files per outline backend, whether ctags was unavailable, and, when they apply, the partial note and the dirty-overlay note"
+        },
+        {
+          "id": "03-REQ-4.4",
+          "pattern": "event_driven",
+          "condition": "a query matches no file",
+          "system": "code_search tool",
+          "action": "return a successful result whose text says nothing matched and still shows the first line",
+          "contract": "OKResult, not an error; Data.files is empty"
+        },
+        {
+          "id": "03-REQ-4.5",
+          "pattern": "event_driven",
+          "condition": "more files matched than max_files",
+          "system": "code_search tool",
+          "action": "append tools.CapMarker(\"files\", \"max_files\", limit, 25, \"narrow the query or add a path\") to the text and record the truncation",
+          "contract": "Metadata.Truncated is TruncatedByLines; at max_files 25 the marker takes the at-the-cap form"
+        },
+        {
+          "id": "03-REQ-4.6",
+          "pattern": "event_driven",
+          "condition": "the rendered result exceeds tools.DefaultByteLimit",
+          "system": "code_search tool",
+          "action": "drop whole files from the end while keeping at least one, drop that file's chunks from the end if it alone is too large, and append a bytes marker naming a narrower call using path, file: or fewer context_lines",
+          "contract": "Rendered text is at most tools.DefaultByteLimit bytes; Metadata.Truncated is TruncatedByBytes"
+        },
+        {
+          "id": "03-REQ-4.7",
+          "pattern": "ubiquitous",
+          "system": "code_search tool",
+          "action": "return Data carrying files (path, score, match count, chunks with line numbers and text, symbol names), truncated, note, partial, symbol_sources, ctags_available, files_indexed, dirty_files and the counts of skipped files"
+        },
+        {
+          "id": "03-REQ-4.8",
+          "pattern": "ubiquitous",
+          "system": "code_search tool",
+          "action": "for any query and index, produce truncation markers that each name a call the tool accepts (REQ-TOOL-09b) and a text no longer than tools.DefaultByteLimit"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-5",
+      "title": "Building the index",
+      "rationale": "The index must hold exactly the files search_files can see, with symbol data from the project's own outline, and must stay bounded on huge trees.",
+      "criteria": [
+        {
+          "id": "03-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "the first code_search call reaches an index that has not been built",
+          "system": "codesearch index",
+          "action": "build the index lazily during that call, and never build it from New or from find_symbol",
+          "contract": "The build counter is 0 after New and after any find_symbol call, and 1 after the first code_search"
+        },
+        {
+          "id": "03-REQ-5.2",
+          "pattern": "ubiquitous",
+          "system": "codesearch index",
+          "action": "hold exactly the files tools.Walk yields from the workspace root with IncludeHidden false and Options.Ignore, restricted to regular files of at most 1 MiB with no NUL byte in the first 8 KiB, each added under its slash-separated workspace-relative name with its content and symbol sections, count the skipped files, never use zoekt's git indexer and leave CTagsPath empty so zoekt starts no ctags process"
+        },
+        {
+          "id": "03-REQ-5.3",
+          "pattern": "ubiquitous",
+          "system": "codesearch index",
+          "action": "obtain symbols from outline.OutlineMany in batches of at most 100 files with outline.Options{Root: workspace root, Runner}, where Runner is Options.Runner, else nil when DisableCtags is set, else tools.CtagsRunner(Options.Env) constructed on first use, and supply the sections from whichever outline backend produced each file"
+        },
+        {
+          "id": "03-REQ-5.4",
+          "pattern": "state_driven",
+          "condition": "universal-ctags is unavailable",
+          "system": "code_search tool",
+          "action": "keep working, say in the first line that ctags was unavailable and that non-Go symbols are the heuristic's column-0 declarations only, and keep symbol sections for Go files from go/ast",
+          "contract": "The result is successful, not an error; Data.ctags_available is false"
+        },
+        {
+          "id": "03-REQ-5.5",
+          "pattern": "ubiquitous",
+          "system": "codesearch index",
+          "action": "write shards to <TempDir>/agentkit-codesearch-<hash of root>/<run id>/ with the directory created at mode 0700, the hash being at least 64 bits of a cryptographic hash of the absolute root and the run id unique per index instance"
+        },
+        {
+          "id": "03-REQ-5.6",
+          "pattern": "event_driven",
+          "condition": "a build starts",
+          "system": "codesearch index",
+          "action": "remove sibling run directories of the same hash not modified for 24 hours, leave younger ones in place, and touch its own directory at most once an hour while it is queried and never another run's directory",
+          "contract": "A 25-hour-old sibling is removed and a recent sibling remains"
+        },
+        {
+          "id": "03-REQ-5.7",
+          "pattern": "unwanted",
+          "condition": "a build reaches 100 000 files, 1 GiB of indexed content or 60 s of wall time",
+          "system": "codesearch index",
+          "action": "stop the build, keep what it has indexed, answer from it, and never retry the partial index on later calls",
+          "contract": "Data.partial is true with partial_reason files, bytes or time, and a note tells the model to narrow path or use search_files; only the dirty-threshold rebuild replaces a partial index"
+        },
+        {
+          "id": "03-REQ-5.8",
+          "pattern": "unwanted",
+          "condition": "the call context is cancelled during a build",
+          "system": "codesearch index",
+          "action": "discard the partial build and leave the next call free to build again",
+          "contract": "The call returns code aborted; the next code_search starts a new build"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-6",
+      "title": "Freshness",
+      "rationale": "A search result that shows content older than the model's own last write is worse than no index.",
+      "criteria": [
+        {
+          "id": "03-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "Invalidate(rel) is called with a non-empty rel",
+          "system": "codesearch index",
+          "action": "record rel as dirty and, at query time, remove every dirty path from the indexed results, so a deleted file appears in no result",
+          "contract": "After edit_file of a line, code_search returns the new line and not the old one"
+        },
+        {
+          "id": "03-REQ-6.2",
+          "pattern": "event_driven",
+          "condition": "Invalidate(\"\") has been called and a query arrives",
+          "system": "codesearch index",
+          "action": "walk the workspace as in Requirement 5, compare (size, mtime) with the indexed values, treat a file indexed within the previous 2 seconds as changed, and mark changed and new files dirty and files no longer yielded dirty and gone",
+          "contract": "A same-size edit made through execute within the 2 s window is returned"
+        },
+        {
+          "id": "03-REQ-6.3",
+          "pattern": "event_driven",
+          "condition": "a dirty path is not in the index, or the changed file has the base name .gitignore",
+          "system": "codesearch index",
+          "action": "run a revalidation walk before answering, because only the walk's ignore engine can say whether a new file is visible"
+        },
+        {
+          "id": "03-REQ-6.4",
+          "pattern": "ubiquitous",
+          "system": "codesearch index",
+          "action": "search the still-visible dirty files with the same zoekt engine and the same parsed query through an overlay shard indexed with symbols from outline and rebuilt only when the dirty set changes, merge overlay hits with indexed hits by score rather than appending them, and report dirty_files",
+          "contract": "A fresh edit that would score below the max_files cap among indexed hits still appears in the result"
+        },
+        {
+          "id": "03-REQ-6.5",
+          "pattern": "event_driven",
+          "condition": "more than 5% of the indexed files are dirty",
+          "system": "codesearch index",
+          "action": "rebuild the whole index under the bounds of Requirement 5 instead of using an overlay, swap the new index in only when it is ready, close and delete the old shards after the swap, and make queries arriving meanwhile wait abandonably and use the new index",
+          "contract": "At 4% dirty the build counter is unchanged and at 6% it increases by 1"
+        },
+        {
+          "id": "03-REQ-6.6",
+          "pattern": "ubiquitous",
+          "system": "codesearch index",
+          "action": "give every dirty mark a generation number so that a build or revalidation pass clears only marks older than the pass, keeping a mark made while it runs"
+        },
+        {
+          "id": "03-REQ-6.7",
+          "pattern": "state_driven",
+          "condition": "no Invalidate call has been made (a read-only phase)",
+          "system": "codesearch index",
+          "action": "build once and never run a revalidation walk or rebuild"
+        },
+        {
+          "id": "03-REQ-6.8",
+          "pattern": "ubiquitous",
+          "system": "codesearch index",
+          "action": "for any sequence of write_file, edit_file and shell calls made through AgentKit's tools followed by a code_search, never show file content older than the last such call"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-7",
+      "title": "find_symbol through the index",
+      "rationale": "When the index is already built, find_symbol can answer from its data with an identical contract, and falls back otherwise.",
+      "criteria": [
+        {
+          "id": "03-REQ-7.1",
+          "pattern": "ubiquitous",
+          "system": "Index.Symbols",
+          "action": "answer from the per-file outline.File data collected by the build rather than from a zoekt query, using the smart-case prefix, exact, qualified-name, kind and path matching of 02_symbol_navigation_tools Requirement 2, leaving ranking and truncation to find_symbol"
+        },
+        {
+          "id": "03-REQ-7.2",
+          "pattern": "complex_event",
+          "condition": "an earlier code_search has built the index and it is neither partial nor closed",
+          "guard": "the matches number at most 1 000",
+          "system": "Index.Symbols",
+          "action": "return ok=true with the matches and SymbolAnswer.FilesIndexed",
+          "contract": "Returns (SymbolAnswer, true, nil); find_symbol's header names the index as its backend"
+        },
+        {
+          "id": "03-REQ-7.3",
+          "pattern": "unwanted",
+          "condition": "the index is not yet built, is partial, is closed, or the matches number more than 1 000",
+          "system": "Index.Symbols",
+          "action": "return no answer so that find_symbol uses its own table as if no index were set",
+          "contract": "Returns ok=false with a nil error; Symbols starts no build"
+        },
+        {
+          "id": "03-REQ-7.4",
+          "pattern": "event_driven",
+          "condition": "Symbols is called while dirty files are in scope or a revalidation is pending",
+          "system": "Index.Symbols",
+          "action": "run the pending revalidation and re-outline the dirty files in scope under the dirty-path rules of Requirement 6 before answering"
+        },
+        {
+          "id": "03-REQ-7.5",
+          "pattern": "unwanted",
+          "condition": "the context passed to Symbols is cancelled",
+          "system": "Index.Symbols",
+          "action": "stop and return the context error, this being the only use of the error return",
+          "contract": "Returns a non-nil error; no other condition returns an error"
+        },
+        {
+          "id": "03-REQ-7.6",
+          "pattern": "ubiquitous",
+          "system": "Index.Symbols",
+          "action": "for any fixture tree and query, give find_symbol the same matches in the same order as its own in-memory table over the same tree"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-8",
+      "title": "Concurrency, lifetime and platform support",
+      "rationale": "The embedder owns the index lifetime, so locking, Close and the Windows fallback must be unambiguous.",
+      "criteria": [
+        {
+          "id": "03-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "codesearch index",
+          "action": "guard index state with one lock and run queries concurrently with each other under a read lock, with no data race under `go test -race`"
+        },
+        {
+          "id": "03-REQ-8.2",
+          "pattern": "unwanted",
+          "condition": "a call waiting behind a build or rebuild has its context end",
+          "system": "code_search tool",
+          "action": "abandon the wait",
+          "contract": "ErrResult code aborted returned without waiting for the build to finish"
+        },
+        {
+          "id": "03-REQ-8.3",
+          "pattern": "event_driven",
+          "condition": "Close is called",
+          "system": "codesearch index",
+          "action": "wait for in-flight queries, release the zoekt searcher and delete the run directory, and do the same nothing on every later call",
+          "contract": "Close returns nil each time; the run directory no longer exists after the first call"
+        },
+        {
+          "id": "03-REQ-8.4",
+          "pattern": "unwanted",
+          "condition": "a tool is called or Symbols is called after Close",
+          "system": "codesearch index",
+          "action": "refuse without building or searching",
+          "contract": "Tools return ErrResult code index_closed; Symbols returns ok=false"
+        },
+        {
+          "id": "03-REQ-8.5",
+          "pattern": "ubiquitous",
+          "system": "tools.All",
+          "action": "return no closer, leave Close to the embedder, and rely on a later run's 24-hour sweep to remove a run directory abandoned without Close"
+        },
+        {
+          "id": "03-REQ-8.6",
+          "pattern": "optional",
+          "condition": "the pinned zoekt does not build or run on windows/amd64",
+          "system": "codesearch module",
+          "action": "provide, in a file constrained to that platform, codesearch.New returning the exported ErrUnsupported while the module still builds there, with ErrUnsupported the same error value on every platform",
+          "contract": "errors.Is(err, codesearch.ErrUnsupported) is true; an embedder falls back to Options.Index == nil"
+        },
+        {
+          "id": "03-REQ-8.7",
+          "pattern": "ubiquitous",
+          "system": "codesearch module",
+          "action": "build and vet on linux/amd64, linux/arm64, darwin/arm64 and windows/amd64 with CGO_ENABLED=0 and contain no cgo file anywhere in its dependency graph"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-9",
+      "title": "Risks settled before any code",
+      "rationale": "The unverified zoekt assumptions decide whether the spec can proceed, so they are checked first and a failure ends the spec instead of being worked around.",
+      "criteria": [
+        {
+          "id": "03-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "first piece of work",
+          "action": "pin a zoekt release and record in codesearch/README.md and in the spec's external API notes, against that release: the module path and the packages for the index builder, query parser and searcher; whether a shard can be searched from memory or only from a file; the builder's per-document symbol fields as byte offsets; the search options bounding result size and wall time; the `go list -m all` output; and the build and vet results for the four targets"
+        },
+        {
+          "id": "03-REQ-9.2",
+          "pattern": "unwanted",
+          "condition": "a cgo file exists anywhere in the dependency graph under CGO_ENABLED=1",
+          "system": "codesearch spec",
+          "action": "end the spec as a no-go instead of working around it",
+          "contract": "No code is merged; the evidence is recorded in the PRD"
+        },
+        {
+          "id": "03-REQ-9.3",
+          "pattern": "unwanted",
+          "condition": "codesearch needs a package that pulls in gRPC, Prometheus or an HTTP server beyond the indexing, query and search packages",
+          "system": "codesearch spec",
+          "action": "end the spec as a no-go instead of loosening the forbidden-import list",
+          "contract": "No code is merged; the evidence is recorded in the PRD"
+        },
+        {
+          "id": "03-REQ-9.4",
+          "pattern": "unwanted",
+          "condition": "the zoekt builder cannot accept symbol data from outside",
+          "system": "codesearch spec",
+          "action": "end the spec as a no-go, because accepting it would force zoekt's own ctags process",
+          "contract": "No code is merged; the evidence is recorded in the PRD"
+        },
+        {
+          "id": "03-REQ-9.5",
+          "pattern": "unwanted",
+          "condition": "zoekt fails to build or run on windows/amd64",
+          "system": "codesearch spec",
+          "action": "treat it as the ErrUnsupported stub of Requirement 8 and not as a no-go",
+          "contract": "The spec continues; the module still builds on windows/amd64"
+        }
+      ]
+    },
+    {
+      "id": "03-REQ-10",
+      "title": "Tests, build wiring and documentation",
+      "rationale": "The nested module is invisible to the root policy tests and the Makefile, so the same guarantees and docs must be added explicitly.",
+      "criteria": [
+        {
+          "id": "03-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "codesearch/policy_test.go",
+          "action": "contain its own TestNoCgoOutsideStdlib and TestCgoProbeIsArmed run with CGO_ENABLED=1, a forbidden-import check over `go list -deps` for gRPC, Prometheus and HTTP servers, a build and vet of the four targets, and, where the stub is used, a test asserting ErrUnsupported"
+        },
+        {
+          "id": "03-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "root internal/policy tests",
+          "action": "pass unmodified after this spec lands"
+        },
+        {
+          "id": "03-REQ-10.3",
+          "pattern": "ubiquitous",
+          "system": "Makefile",
+          "action": "run test, vet, lint and tidy over codesearch/ as well as the root and difftest, and make `make check` pass both with and without universal-ctags installed"
+        },
+        {
+          "id": "03-REQ-10.4",
+          "pattern": "ubiquitous",
+          "system": "codesearch tests",
+          "action": "obtain symbols in every test through a fake Runner or DisableCtags, skip a test that uses real universal-ctags when it is absent, and run seam tests with Options.Index set to a fake tools.Index"
+        },
+        {
+          "id": "03-REQ-10.5",
+          "pattern": "ubiquitous",
+          "system": "codesearch/README.md",
+          "action": "describe what the module is, how to opt in with the one-line Options.Index and the allowlist entry, the Requirement 9 answers and the known differences from search_files, and say that its goldens are tied to the pinned zoekt version"
+        },
+        {
+          "id": "03-REQ-10.6",
+          "pattern": "ubiquitous",
+          "system": "documentation set",
+          "action": "update in the same change docs/architecture.md (module boundary beside difftest/ and examples/flatline, package table and graph rows), docs/DEPS.md (a new numbered ruling for zoekt confined to the nested module and the extended nested-modules sentence), docs/configuration.md (an Index row in the tools.Options table, the code_search limits and the codesearch.Options fields), docs/cli.md (the changed make target descriptions) and the root README.md module list"
+        },
+        {
+          "id": "03-REQ-10.7",
+          "pattern": "ubiquitous",
+          "system": "documentation set",
+          "action": "leave docs/api.md untouched"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "03-PATH-1",
+      "title": "An embedder opts in and the model runs its first ranked search",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls codesearch.New(ws, Options{Ignore: ...}) and passes the result as tools.Options.Index to tools.All"
+        },
+        {
+          "actor": "tools.All",
+          "action": "appends code_search after the built-in tools and returns the tool list"
+        },
+        {
+          "actor": "model",
+          "action": "calls code_search with query `sym:Runner` and a path"
+        },
+        {
+          "actor": "code_search tool",
+          "action": "validates the arguments, resolves path and builds the path conjunction before any index work"
+        },
+        {
+          "actor": "codesearch index",
+          "action": "walks the workspace with tools.Walk, gets symbols from outline.OutlineMany, and writes shards to the run directory"
+        },
+        {
+          "actor": "code_search tool",
+          "action": "searches with zoekt and returns file-grouped ranked text with a first line and Data fields"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-2",
+      "title": "The model edits a file and immediately searches for the new line",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "calls edit_file to change a line in an indexed file"
+        },
+        {
+          "actor": "edit_file",
+          "action": "writes the file and calls Index.Invalidate with the relative slash path before releasing the lock"
+        },
+        {
+          "actor": "model",
+          "action": "calls code_search for the new line"
+        },
+        {
+          "actor": "codesearch index",
+          "action": "removes the dirty path from indexed hits, indexes the file into an overlay shard and merges overlay hits by score"
+        },
+        {
+          "actor": "code_search tool",
+          "action": "returns the new line, not the old one, with dirty_files reporting 1"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-3",
+      "title": "A shell command deletes a file and the next search omits it",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "calls execute to delete an indexed file"
+        },
+        {
+          "actor": "shell tool",
+          "action": "returns and calls Index.Invalidate with the empty string"
+        },
+        {
+          "actor": "model",
+          "action": "calls code_search for text that only the deleted file contained"
+        },
+        {
+          "actor": "codesearch index",
+          "action": "revalidates by walking the workspace, compares (size, mtime), and marks the missing file dirty and gone"
+        },
+        {
+          "actor": "code_search tool",
+          "action": "returns a successful no-match result that lists no deleted file"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-4",
+      "title": "find_symbol is served by the index after a code_search built it",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "calls find_symbol before any code_search"
+        },
+        {
+          "actor": "find_symbol",
+          "action": "calls Index.Symbols, receives ok=false and answers from its own symbol table"
+        },
+        {
+          "actor": "model",
+          "action": "calls code_search, which builds the index from tools.Walk and outline.OutlineMany data"
+        },
+        {
+          "actor": "model",
+          "action": "calls find_symbol again with the same arguments"
+        },
+        {
+          "actor": "codesearch index",
+          "action": "answers from the collected outline.File data with ok=true and FilesIndexed"
+        },
+        {
+          "actor": "find_symbol",
+          "action": "ranks and truncates the matches itself and returns the same matches in the same order as its table, with a header naming the index"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-5",
+      "title": "A build on a very large tree stops at a bound and answers partially",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "calls code_search on a workspace larger than a build bound"
+        },
+        {
+          "actor": "codesearch index",
+          "action": "stops the build at the file, byte or time bound and keeps what it has indexed"
+        },
+        {
+          "actor": "code_search tool",
+          "action": "returns results with partial true, a partial_reason and a note to narrow path or use search_files"
+        },
+        {
+          "actor": "model",
+          "action": "calls code_search again"
+        },
+        {
+          "actor": "codesearch index",
+          "action": "answers from the same partial index without starting a new build"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-6",
+      "title": "The embedder closes the index and its shards are removed",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls Close on the index after the session"
+        },
+        {
+          "actor": "codesearch index",
+          "action": "waits for in-flight queries, releases the searcher and deletes the run directory"
+        },
+        {
+          "actor": "model",
+          "action": "calls code_search after Close"
+        },
+        {
+          "actor": "code_search tool",
+          "action": "returns an index_closed error without building or searching"
+        }
+      ]
+    },
+    {
+      "id": "03-PATH-7",
+      "title": "A failed risk check ends the spec",
+      "steps": [
+        {
+          "actor": "engineer",
+          "action": "pins a zoekt release and runs go list, the CGO_ENABLED=1 check and the four-target build and vet"
+        },
+        {
+          "actor": "engineer",
+          "action": "finds a cgo file in the dependency graph"
+        },
+        {
+          "actor": "engineer",
+          "action": "records the evidence in the PRD and merges no code of the spec"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/sourcegraph/zoekt",
+      "version": "release tag chosen in the first task (Requirement 9)",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "index builder (build.NewBuilder or index.NewIndexBuilder)",
+          "import_path": "github.com/sourcegraph/zoekt/index",
+          "signature": "accepts a repository description and documents (name, content, language, symbol sections) and writes shards",
+          "notes": "Unverified; package layout may differ in the pinned release. Symbol sections are byte offsets; a builder that cannot take them is a no-go."
+        },
+        {
+          "name": "query.Parse",
+          "import_path": "github.com/sourcegraph/zoekt/query",
+          "signature": "func Parse(qStr string) (query.Q, error)",
+          "notes": "Unverified; combined with a path constraint through query.NewAnd and file-regexp nodes."
+        },
+        {
+          "name": "Searcher.Search",
+          "import_path": "github.com/sourcegraph/zoekt/shards",
+          "signature": "Search(ctx context.Context, q query.Q, opts *SearchOptions) (*SearchResult, error)",
+          "notes": "Unverified; shards.NewDirectorySearcher(dir) or index.NewSearcher(IndexFile). SearchResult.Files carries file name, score and chunk matches."
+        }
+      ]
+    },
+    {
+      "package": "github.com/agentfox/agentkit-go/outline and tools (specs 01 and 02)",
+      "version": "as delivered by 01_outline_and_walk and 02_symbol_navigation_tools",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "OutlineMany",
+          "import_path": "github.com/agentfox/agentkit-go/outline",
+          "signature": "func OutlineMany(ctx context.Context, srcs []Source, opts Options) ([]File, Stats, error)",
+          "notes": "Not yet in the working tree; assumed from spec 01."
+        },
+        {
+          "name": "Walk",
+          "import_path": "github.com/agentfox/agentkit-go/tools",
+          "signature": "func Walk(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn WalkFunc) error",
+          "notes": "Not yet in the working tree; assumed from spec 01."
+        },
+        {
+          "name": "CtagsRunner",
+          "import_path": "github.com/agentfox/agentkit-go/tools",
+          "signature": "func CtagsRunner(env []string) func(ctx context.Context, args []string) ([]byte, error)",
+          "notes": "Not yet in the working tree; assumed from spec 01."
+        },
+        {
+          "name": "SymbolMatch",
+          "import_path": "github.com/agentfox/agentkit-go/tools",
+          "signature": "type SymbolMatch struct{...}",
+          "notes": "Defined by spec 02."
+        }
+      ]
+    }
+  ]
+}
