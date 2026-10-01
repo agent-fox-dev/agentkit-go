@@ -4,8 +4,7 @@
 
 1. Before implementing any functionality, check whether it already exists in the codebase.
 2. **go.mod dependencies** -- check existing imports before adding new ones.
-3. **Standard library** -- prefer `net/http`, `slices`, `encoding/json`, etc.
-   over third-party alternatives.
+3. **Standard library** -- prefer `net/http`, `slices`, `encoding/json`, etc. over third-party alternatives.
 
 ## Documentation Freshness
 
