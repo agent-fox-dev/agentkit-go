@@ -1,0 +1,391 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "02",
+  "spec_name": "symbol_navigation_tools",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./tools/... ./prompt/... ./internal/policy/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "01",
+      "reason": "Supplies outline.Outline, outline.OutlineMany, outline.Options/Source/File/Decl/Backend, the closed kind set, tools.CtagsRunner/ErrCtagsUnavailable and tools.Walk/WalkOptions, which this spec consumes as delivered."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add file_outline tool with argument handling, disk read and error codes",
+      "criteria": [
+        "02-REQ-1"
+      ],
+      "tests": [
+        "TS-02-1",
+        "TS-02-2",
+        "TS-02-3",
+        "TS-02-4",
+        "TS-02-5",
+        "TS-02-6",
+        "TS-02-7",
+        "TS-02-8"
+      ],
+      "steps": [
+        "Write TS-02-1..TS-02-8 in tools/outline_tool_test.go (fake Runner via a SymbolOptions seam, Walk counter, 0000-mode file test skipped as root/Windows) and confirm they fail",
+        "Add `SymbolOptions{MaxFiles int; MaxDuration time.Duration; DisableCtags bool; Runner func(ctx context.Context, args []string) ([]byte, error)}` and the field `Symbols SymbolOptions` to tools.Options in tools/tools.go, with only the type and field (no behaviour yet)",
+        "Add to fileTools a lazily resolved runner (sync.Once): nil when DisableCtags, Symbols.Runner when non-nil, else CtagsRunner(opts.Env) built on first use; expose it as one method both tools will share",
+        "Create tools/outline_tool.go with a `fileOutlineTool` constructor on fileTools: schema path (required string) and include_private (optional bool) via schema.Object/Prop/Opt, Builtin, Parallel, read-only, PromptGuidelines \"Before reading a large file, outline it and read only the range you need.\"",
+        "Implement Execute: parse args and reject empty path with invalid_arguments before any filesystem access; check ctx cancelled -> aborted with detail \"Operation aborted\"; Workspace.Resolve -> path_not_allowed; os.Stat -> read_failed; non-regular -> not_a_file using notAFile; read file bytes; call outline.Outline(ctx, abs, src, outline.Options{Root: workspace root, Runner: runner}); error -> outline_failed with detail",
+        "Do not apply the ignore engine or the hidden-entry rule and never touch any symbol table; return a placeholder OK text for now (rendering comes in the next task)",
+        "Do NOT register the tool in All() or FileNavigationTools() yet (wiring task does it); tests build the tool from newFileTools directly",
+        "Run `go test ./tools -run 'Outline' -count=1` and `make test`"
+      ],
+      "touches": [
+        "tools/tools.go",
+        "tools/outline_tool.go",
+        "tools/outline_tool_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Render file_outline text and data",
+      "criteria": [
+        "02-REQ-2"
+      ],
+      "tests": [
+        "TS-02-9",
+        "TS-02-10",
+        "TS-02-11",
+        "TS-02-12",
+        "TS-02-13"
+      ],
+      "steps": [
+        "Write TS-02-9..TS-02-13 using a fake Runner and real Go files and confirm they fail",
+        "Implement a pure render function in tools/outline_tool.go producing the header `<rel slash path>  (<backend>, <N> declarations[, <M> unexported not listed])`, the unexported clause only when M>0",
+        "List declarations in source order, hiding unexported ones unless include_private is true; each line is two spaces + `L<start>-<end>` padded to align + Signature, or `L<start>` when EndLine is 0 or equals StartLine",
+        "Indent a declaration with non-empty Container two further spaces unless its Signature contains the container name",
+        "For a file with no declarations render the header and one 'no declarations found' line; when the backend is none add a neutral reason (language not recognised / file too large / binary, derived from the extension, size versus MaxFileBytes and a NUL check) and suggest read_file or search_files",
+        "Return Data keys file (the outline.File), backend, declarations (total) and listed (rendered line count); an oversized file must be OK, not an error",
+        "Run `go test ./tools -run Outline -count=1`"
+      ],
+      "touches": [
+        "tools/outline_tool.go",
+        "tools/outline_tool_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Build the lazy bounded symbol table and a find_symbol skeleton over it",
+      "criteria": [
+        "02-REQ-5",
+        "02-REQ-8.1",
+        "02-REQ-8.3",
+        "02-REQ-8.7"
+      ],
+      "tests": [
+        "TS-02-32",
+        "TS-02-33",
+        "TS-02-34",
+        "TS-02-35",
+        "TS-02-36",
+        "TS-02-37",
+        "TS-02-38",
+        "TS-02-53",
+        "TS-02-57"
+      ],
+      "steps": [
+        "Write TS-02-32..TS-02-38, TS-02-53 and TS-02-57 (scaled-down MaxFiles variant always runs; 60 000-file variant skipped under -short) and confirm they fail",
+        "Create tools/symbols.go with a symbolTable owned by fileTools, created empty (no walk, subprocess or file read at construction): per-file entry {outline.File, size, mtime, indexedAt}, a complete flag, and a Walk seam variable so tests can count/record Walk calls",
+        "Implement the build/refresh pass: tools.Walk(ctx, ws, root, WalkOptions{Ignore: fileTools memoized ig, IncludeHidden:false}) from the workspace root, keeping only regular files; skip files whose size and mtime are unchanged; read sources and call outline.OutlineMany in batches of at most 100 with outline.Options{Root, Runner: shared runner}",
+        "Enforce SymbolOptions.MaxFiles (default 50 000 when <=0) counting every regular file the walk yields, stopping at the first file past the limit, and MaxDuration (default 2 s when <=0) via context.WithTimeout passed to the walk and OutlineMany; an interrupted batch stays unindexed; distinguish the bound deadline from cancellation of the caller ctx (the latter returns aborted)",
+        "When path is given and the table is incomplete, return fs.SkipDir for directories that are neither an ancestor of nor inside path while still walking from the root; a partial table stays incomplete so later passes continue and index only unseen/changed files",
+        "Add SymbolPartialMarker(reason string) in tools/limits.go telling the model to narrow with path or fall back to search_files",
+        "Create tools/symbol_tool.go: find_symbol constructor on fileTools with schema name (required) and kind, path, exact, max_results (optional), Builtin, Parallel, read-only, PromptGuidelines \"Use find_symbol to locate a declaration; search_files for usages and text.\"; this task's Execute parses args, builds/refreshes the table and returns Data backends, files_indexed, partial, partial_reason, note and a Text header/note (matching and ranking come later); not registered in All() yet",
+        "Run `go test ./tools -count=1`"
+      ],
+      "touches": [
+        "tools/symbols.go",
+        "tools/symbol_tool.go",
+        "tools/limits.go",
+        "tools/tools.go",
+        "tools/symbols_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Validate find_symbol input and implement name matching",
+      "criteria": [
+        "02-REQ-3"
+      ],
+      "tests": [
+        "TS-02-14",
+        "TS-02-15",
+        "TS-02-16",
+        "TS-02-17",
+        "TS-02-18",
+        "TS-02-19",
+        "TS-02-20",
+        "TS-02-21"
+      ],
+      "steps": [
+        "Write TS-02-14..TS-02-21 over a fixture tree (counting Walk and Runner hooks) and confirm they fail",
+        "Validate before any walk: trimmed name non-empty and at most 256 bytes else invalid_arguments; kind trimmed and lower-cased must be in a list of the eleven kinds (func, method, type, class, interface, enum, trait, const, var, module, macro) else invalid_arguments listing them; add a test tying the list to the kinds exported or defined by package outline",
+        "Resolve path through Workspace.Resolve (path_not_allowed), os.Stat (read_failed), reject a regular file with invalid_arguments mentioning file_outline; none of this may call Walk",
+        "Implement the matcher: default prefix with smart-case (all-lowercase name matches case-insensitively, any uppercase rune makes it case-sensitive); exact=true means exact and case-sensitive",
+        "A name containing '.' is compared against Container+\".\"+Name of declarations with a container; a name without '.' is compared against Decl.Name alone",
+        "Apply kind and path filters (path restricts to files under that directory) to produce the candidate matches",
+        "Run `go test ./tools -run Symbol -count=1`"
+      ],
+      "touches": [
+        "tools/symbol_tool.go",
+        "tools/symbol_match.go",
+        "tools/symbol_tool_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Rank, limit and render find_symbol results",
+      "criteria": [
+        "02-REQ-4"
+      ],
+      "tests": [
+        "TS-02-22",
+        "TS-02-23",
+        "TS-02-24",
+        "TS-02-25",
+        "TS-02-26",
+        "TS-02-27",
+        "TS-02-28",
+        "TS-02-29",
+        "TS-02-30"
+      ],
+      "steps": [
+        "Write TS-02-22..TS-02-30 (marker text pinned like the existing marker goldens in tools tests) and confirm they fail",
+        "Implement isTestFile per the fixed rule: Go _test.go; Python test_*.py and *_test.py; JS/TS *.test.* and *.spec.*; Java/Kotlin/C#/Ruby base names ending Test, Tests or _spec; any path under a directory named test, tests, __tests__ or spec; and nothing else",
+        "Sort matches by exact (smart-case equality counts as exact) before prefix, exported before unexported, non-test before test, shorter path, path, StartLine; use sort.SliceStable with a total key so repeated calls are identical",
+        "Add `SymbolResultCap = 50` and `SymbolMarker(limit int) string` to tools/limits.go using capMarker(\"results\", \"max_results\", limit, SymbolResultCap, ...) with an alternative advising path, kind or exact at the cap",
+        "Apply clampLimit(max_results, 20, SymbolResultCap); when matches exceed the limit return the first N, append the marker, set Data truncated and note and ToolMetadata.Truncated with TruncatedByLines",
+        "Define SymbolMatch with JSON tags path, backend, kind, name, container, signature, exported, start_line, end_line; Data carries symbols (empty slice, not nil), truncated, note when truncated, backends (name -> indexed files in queried scope), files_indexed (in scope) and partial when applicable",
+        "Render Text: header `<N> symbols matching \"<name>\"  (index: <F> files; <backend> <count>, ...)`, one line `<path>:<start>-<end>  <kind>  <signature>` per match with control characters in the printed path replaced by '?', then marker or partial note; a no-match call is OK with a 'no symbols matched' line and still the index header",
+        "Run `go test ./tools -run Symbol -count=1`"
+      ],
+      "touches": [
+        "tools/symbol_tool.go",
+        "tools/symbol_rank.go",
+        "tools/limits.go",
+        "tools/symbol_tool_test.go",
+        "tools/limits_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Mark the table dirty from write_file, edit_file and the shell tools and refresh dirty paths",
+      "criteria": [
+        "02-REQ-6.1",
+        "02-REQ-6.2",
+        "02-REQ-6.3",
+        "02-REQ-6.4",
+        "02-REQ-6.5"
+      ],
+      "tests": [
+        "TS-02-39",
+        "TS-02-40",
+        "TS-02-41",
+        "TS-02-42",
+        "TS-02-43"
+      ],
+      "steps": [
+        "Write TS-02-39..TS-02-43 and confirm they fail (a hook records whether the per-path lock is held at mark time)",
+        "Add to the symbol table a tiny mutex-protected mark state separate from the abandonable table lock: a set of dirty workspace-relative paths, a whole-table flag and a generation counter advanced by every mark; marking only sets flags and never waits on a build",
+        "In write_file and edit_file call table.markDirty(rel) after the write attempt (success or failure) while still holding the per-path lock, before `release()` runs",
+        "In All() wrap the Execute of execute, run_command and powershell so the whole table is marked after the command returns for any outcome, passing the result through unchanged; leave executeTool, runCommandTool and PowerShell constructors untouched",
+        "In find_symbol, if the table is complete and nothing is marked answer from memory with no Walk or OutlineMany",
+        "For each dirty path already in the table: stat it, re-outline it if still a regular file, drop it if gone or not regular; with no whole-workspace walk",
+        "A dirty path not in the table or with base name .gitignore escalates to whole-table revalidation (walk-based, reusing the pass from the table task)",
+        "Run `go test ./tools -count=1`"
+      ],
+      "touches": [
+        "tools/symbols.go",
+        "tools/tools.go",
+        "tools/edit.go",
+        "tools/symbols_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Revalidation with racy-mtime window, mark clearing and generation counter",
+      "criteria": [
+        "02-REQ-6.6",
+        "02-REQ-6.7",
+        "02-REQ-6.8"
+      ],
+      "tests": [
+        "TS-02-44",
+        "TS-02-45",
+        "TS-02-46"
+      ],
+      "steps": [
+        "Write TS-02-44..TS-02-46 (blocking fake Runner for the race test; use os.Chtimes to place mtimes) and confirm they fail",
+        "Implement revalidation: walk the scope (whole workspace or the part under path with directory pruning) comparing size and mtime of each file; re-outline only files that changed, are new, or whose mtime is within 2 s of their indexedAt; drop entries for files not seen in a completed walk",
+        "Drop-unseen applies only for a walk that completed; a pass stopped at a bound never drops entries",
+        "Record the generation counter value at the start of each pass; at the end clear only marks (dirty paths and the whole-table flag) that predate that generation",
+        "Clear the whole-table mark only when the pass covered the whole workspace and completed within MaxFiles and MaxDuration; leave it set after a path-scoped pass or a bounded pass",
+        "Run `go test ./tools -race -run 'Symbol|Table' -count=1`"
+      ],
+      "touches": [
+        "tools/symbols.go",
+        "tools/symbols_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Abandonable table lock, cancellation semantics and failure containment",
+      "criteria": [
+        "02-REQ-7"
+      ],
+      "tests": [
+        "TS-02-47",
+        "TS-02-48",
+        "TS-02-49",
+        "TS-02-50",
+        "TS-02-51",
+        "TS-02-52"
+      ],
+      "steps": [
+        "Write TS-02-47..TS-02-52 (the race test runs under -race; the source scan test checks that the symbol/outline tool files do not import os/exec and build no sh -c) and confirm they fail",
+        "Guard all table state with one context-abandonable lock (a buffered channel of size 1 acquired with select on ctx.Done()); builds, refreshes and reading the table to answer happen under it; a waiter whose ctx ends returns aborted with detail \"Operation aborted\" without waiting for the build",
+        "Ensure the mark path (write_file, edit_file, shell wrappers) uses only the separate flag mutex so it never waits on a build",
+        "A cancelled find_symbol ctx during a build or refresh returns aborted (never partial and never marks the table complete); only the MaxFiles/MaxDuration bounds produce partial",
+        "Verify that a Runner error or ErrCtagsUnavailable leaves both tools OK with backend naming the fallback (heuristic or go/ast) in file_outline header/Data.backend and find_symbol backends",
+        "Confirm all error paths return ToolResults, with no panic or os.Exit",
+        "Run `go test ./tools -race -count=1`"
+      ],
+      "touches": [
+        "tools/symbols.go",
+        "tools/symbol_tool.go",
+        "tools/outline_tool.go",
+        "tools/symbols_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Register the tools in All() and FileNavigationTools() and update pinned tests, goldens and prompt checks",
+      "criteria": [
+        "02-REQ-5.1",
+        "02-REQ-8.2",
+        "02-REQ-8.4",
+        "02-REQ-8.5",
+        "02-REQ-8.6",
+        "02-REQ-8.8"
+      ],
+      "tests": [
+        "TS-02-31",
+        "TS-02-54",
+        "TS-02-55",
+        "TS-02-56",
+        "TS-02-58"
+      ],
+      "steps": [
+        "Write TS-02-31, TS-02-54..TS-02-56 and TS-02-58 and confirm they fail",
+        "In tools/tools.go insert file_outline and find_symbol after search_files in All() so the order is read_file, write_file, edit_file, list_files, find_files, search_files, file_outline, find_symbol, execute, run_command, powershell; extend FileNavigationTools() to the five names; update the 'trio' doc comments on both",
+        "Confirm neither tool is Sequential, declares a write capability or appears in guard.ShellToolNames, and that All() performs no walk, subprocess or file read and constructs CtagsRunner only on first use",
+        "Update TestTheDefaultToolSetIsPlatformStable in tools/reqtool06_test.go to the eleven names",
+        "Update prompt/golden_test.go so TestGoldenPromptWithoutFileNavigationTools filters the two new names; regenerate prompt/testdata/golden/system_prompt_default.txt with the test's -update flag and review the diff (only the two new guidelines in tool order); system_prompt_no_navigation.txt must not change",
+        "Add a test that the prompt builder suppresses ExecuteFallbackGuideline when only file_outline (or only find_symbol) is present and emits it for execute alone; do not change ExecuteFallbackGuideline",
+        "Confirm go.mod and internal/policy are unmodified and run `CGO_ENABLED=0 go build ./...`, `go test ./internal/policy ./tools ./prompt -count=1`, then `make test`"
+      ],
+      "touches": [
+        "tools/tools.go",
+        "tools/reqtool06_test.go",
+        "prompt/golden_test.go",
+        "prompt/testdata/golden/system_prompt_default.txt",
+        "prompt/prompt_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Update README and docs for the new tools",
+      "criteria": [
+        "02-REQ-9"
+      ],
+      "tests": [
+        "TS-02-59",
+        "TS-02-60"
+      ],
+      "steps": [
+        "Write TS-02-59 and TS-02-60 as a Go docs test (for example tools/docs_test.go reading the repo files) and confirm they fail",
+        "README.md: add file_outline and find_symbol to the tool list and state in 'What is not built' that references and callers remain unbuilt",
+        "docs/architecture.md: describe the symbol table (lazy, bounded, refreshed after write_file/edit_file/shell tools) and its place under the tools package",
+        "docs/configuration.md: add a Symbols row to the tools.Options table, add the two names to the tools.All sentence, and state find_symbol default 20 and cap 50 results, 50 000 files and 2 s",
+        "docs/GAPS.md: record that references and callers remain unbuilt, pointing to this spec's Non-goals; leave docs/api.md untouched",
+        "Run `make check`"
+      ],
+      "touches": [
+        "README.md",
+        "docs/architecture.md",
+        "docs/configuration.md",
+        "docs/GAPS.md",
+        "tools/docs_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify every symbol-navigation execution path end to end",
+      "tests": [
+        "TS-02-61",
+        "TS-02-62",
+        "TS-02-63",
+        "TS-02-64",
+        "TS-02-65",
+        "TS-02-66",
+        "TS-02-67"
+      ],
+      "steps": [
+        "Write the smoke tests TS-02-61..TS-02-67 in tools/symbol_smoke_test.go against tools from All() with real workspaces, real tools.Walk, outline.OutlineMany and the ignore engine (DisableCtags or a fake Runner for determinism); confirm they pass, and run once with and without universal-ctags",
+        "Trace 02-PATH-1 to 02-PATH-7 through the real code: confirm each step calls the next (All() -> tool Execute -> table -> tools.Walk -> outline.OutlineMany; edit_file/write_file markDirty; shell wrapper mark; abandonable lock) and no stub remains",
+        "For every criterion with a contract (e.g. markers, aborted, partial_reason, error codes), confirm the producer result is consumed by a caller in production code, not only by tests",
+        "Confirm tools.Walk and CtagsRunner (owned by spec 01) are actually called from production code in tools/symbols.go and tools/tools.go",
+        "Search every task's touched files (tools/*.go, prompt/) for `panic(\"not implemented\")`, TODO and bare `return nil` placeholders on non-trivial paths, and remove any",
+        "Run `make check` and `go test ./tools -race -count=1`; confirm go.mod is unchanged and docs/api.md has no diff"
+      ],
+      "touches": [
+        "tools/symbol_smoke_test.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "state": "pending"
+    }
+  ]
+}

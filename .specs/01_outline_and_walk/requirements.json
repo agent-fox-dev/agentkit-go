@@ -1,0 +1,820 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "01",
+  "spec_name": "outline_and_walk",
+  "schema_version": 2,
+  "introduction": "AgentKit gains a standard-library-only `outline` package that lists the declarations of a source file with line ranges (go/ast, universal-ctags through an injected runner, or anchored line heuristics), a `tools.CtagsRunner` that supplies the ctags process lifecycle, and one shared directory walk in `tools`, exported as `tools.Walk`, that replaces the three private walks behind find_files, the native search_files backend and CountCandidates.",
+  "glossary": {
+    "ErrPathNotAllowed": "The existing tools sentinel error for paths outside the workspace.",
+    "Runner": "The function type func(ctx, args []string) ([]byte, error) in outline.Options that runs ctags and returns its stdout; nil disables the ctags backend.",
+    "backend": "The mechanism that produced a File's declarations: go/ast, ctags, heuristic or none. Named on every File.",
+    "batch": "A group of at most 100 files and 32 KiB of path text passed to one ctags invocation.",
+    "closed Kind set": "The values func, method, type, class, interface, enum, trait, const, var, module, macro.",
+    "ctags": "Universal Ctags, an external program that lists tags in source files; optional at run time.",
+    "heuristic backend": "Anchored line regular expressions that report column-0 declarations for ten named languages.",
+    "hidden entry": "A file or directory whose name begins with a dot.",
+    "walk": "The single unexported directory traversal in tools that applies the layered ignore engine and calls a callback for each entry."
+  },
+  "requirements": [
+    {
+      "id": "01-REQ-1",
+      "title": "Outline data model and signature sanitising",
+      "rationale": "Every consumer must receive the same shaped, sorted and sanitised declarations regardless of which backend produced them.",
+      "criteria": [
+        {
+          "id": "01-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "outline package",
+          "action": "for any File it returns, set Backend to one of \"go/ast\", \"ctags\", \"heuristic\" or \"none\", and return Decls as a non-nil slice sorted by StartLine with ties broken by Name"
+        },
+        {
+          "id": "01-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "outline package",
+          "action": "for any Decl it returns, set Kind to one of func, method, type, class, interface, enum, trait, const, var, module or macro, and drop any declaration whose backend vocabulary does not map into that set (locals, parameters, fields, struct members, enumerators, labels, imports)"
+        },
+        {
+          "id": "01-REQ-1.3",
+          "pattern": "ubiquitous",
+          "system": "outline package",
+          "action": "keep only top-level declarations and methods of a declared type, with StartLine and EndLine 1-based and inclusive and EndLine 0 when the backend cannot tell"
+        },
+        {
+          "id": "01-REQ-1.4",
+          "pattern": "ubiquitous",
+          "system": "outline package",
+          "action": "for any source line, produce a Signature that contains no newline and no control character, has each run of whitespace collapsed to one space, and is at most 200 bytes long"
+        },
+        {
+          "id": "01-REQ-1.5",
+          "pattern": "event_driven",
+          "condition": "a signature exceeds 200 bytes and a multi-byte rune straddles byte 200",
+          "system": "outline package",
+          "action": "cut the signature before that rune so the result is valid UTF-8 and at most 200 bytes",
+          "contract": "the returned Signature never ends in a partial rune"
+        },
+        {
+          "id": "01-REQ-1.6",
+          "pattern": "event_driven",
+          "condition": "Options.Root is non-empty",
+          "system": "outline package",
+          "action": "set File.Path to the slash-separated path of the file relative to Root"
+        },
+        {
+          "id": "01-REQ-1.7",
+          "pattern": "event_driven",
+          "condition": "Options.Root is empty",
+          "system": "outline package",
+          "action": "set File.Path to the slash-converted absolute path rather than a relative one"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-2",
+      "title": "Outline entry points and file eligibility",
+      "rationale": "Callers need cheap rejection of files that cannot be outlined and a predictable error contract for single and batch calls.",
+      "criteria": [
+        {
+          "id": "01-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "Source.Src is nil",
+          "system": "outline package",
+          "action": "read the file at Source.Abs itself before outlining it"
+        },
+        {
+          "id": "01-REQ-2.2",
+          "pattern": "event_driven",
+          "condition": "the file extension is outside the fixed table (Go, Python, JS/TS, Rust, Java, Kotlin, C#, Ruby, C/C++ and the further ctags languages PHP, Swift, Scala, Lua, shell and Perl)",
+          "system": "outline package",
+          "action": "return File with Lang \"\" and Backend \"none\" and an empty non-nil Decls without reading the file",
+          "contract": "no file read occurs for such an extension"
+        },
+        {
+          "id": "01-REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "the file is larger than Options.MaxFileBytes, where zero means 1 MiB",
+          "system": "outline package",
+          "action": "return the File with Backend \"none\" and no declarations",
+          "contract": "no error is returned; a file of exactly MaxFileBytes is still outlined"
+        },
+        {
+          "id": "01-REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "the file contains a NUL byte within its first 8 KiB",
+          "system": "outline package",
+          "action": "return the File with Backend \"none\" and no declarations",
+          "contract": "no error is returned"
+        },
+        {
+          "id": "01-REQ-2.5",
+          "pattern": "unwanted",
+          "condition": "the context is cancelled before or during Outline or OutlineMany",
+          "system": "outline package",
+          "action": "stop and return the context's error",
+          "contract": "the returned error equals ctx.Err()"
+        },
+        {
+          "id": "01-REQ-2.6",
+          "pattern": "unwanted",
+          "condition": "Outline cannot read the file",
+          "system": "outline package",
+          "action": "return a non-nil error",
+          "contract": "Outline returns an error and the zero File"
+        },
+        {
+          "id": "01-REQ-2.7",
+          "pattern": "unwanted",
+          "condition": "OutlineMany cannot read one of the files",
+          "system": "outline package",
+          "action": "return that file as Backend \"none\" with no declarations and continue with the remaining files",
+          "contract": "OutlineMany returns a nil error for that file and every other file is outlined"
+        },
+        {
+          "id": "01-REQ-2.8",
+          "pattern": "ubiquitous",
+          "system": "outline package",
+          "action": "for any input slice of Sources, return from OutlineMany a []File with one entry per input in input order, together with a Stats value"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-3",
+      "title": "Go backend",
+      "rationale": "Go declarations and ranges are available exactly from go/ast without any subprocess.",
+      "criteria": [
+        {
+          "id": "01-REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "the file has the .go extension",
+          "system": "Go backend",
+          "action": "parse it with go/parser.ParseFile using parser.SkipObjectResolution, set Backend \"go/ast\" and spawn no subprocess"
+        },
+        {
+          "id": "01-REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "the file declares a function or a method",
+          "system": "Go backend",
+          "action": "emit kind func for a function and kind method for a method, with Container set to the receiver's base type name without \"*\" and without type parameters"
+        },
+        {
+          "id": "01-REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "the file declares type, const or var specs",
+          "system": "Go backend",
+          "action": "emit kind interface for an interface type and kind type for every other type, and emit one const or var Decl per declared name while skipping the blank identifier \"_\""
+        },
+        {
+          "id": "01-REQ-3.4",
+          "pattern": "ubiquitous",
+          "system": "Go backend",
+          "action": "for any Go source, set StartLine and EndLine of each Decl equal to the go/ast node positions in the token.FileSet, starting at the keyword (or at the spec inside a grouped declaration) and excluding the doc comment"
+        },
+        {
+          "id": "01-REQ-3.5",
+          "pattern": "ubiquitous",
+          "system": "Go backend",
+          "action": "for any Decl, set Exported equal to ast.IsExported(Name)"
+        },
+        {
+          "id": "01-REQ-3.6",
+          "pattern": "ubiquitous",
+          "system": "Go backend",
+          "action": "write Signature as \"func ...\" up to the body for functions and methods, \"type Name struct\" or \"type Name interface\" for those types, \"type Name <underlying type expression>\" on one line for other types, and \"const Name\" or \"var Name [Type]\" for const and var"
+        },
+        {
+          "id": "01-REQ-3.7",
+          "pattern": "unwanted",
+          "condition": "the Go file has syntax errors and the parser returns a partial AST",
+          "system": "Go backend",
+          "action": "use the partial AST for declarations and keep Backend \"go/ast\"",
+          "contract": "declarations before and after the syntax error that the parser recovered are returned and no error is returned"
+        },
+        {
+          "id": "01-REQ-3.8",
+          "pattern": "unwanted",
+          "condition": "the parser returns no AST at all",
+          "system": "Go backend",
+          "action": "fall through to the next backend as for any other language",
+          "contract": "no error is returned; the result is produced by ctags, heuristic or none"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-4",
+      "title": "ctags invocation, batching and parsing",
+      "rationale": "ctags output is untrusted external data, so the argument list is fixed and every line is validated before it is attributed to a file.",
+      "criteria": [
+        {
+          "id": "01-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "a non-Go file in the extension table is outlined and Options.Runner is non-nil",
+          "system": "outline package",
+          "action": "call the Runner with the arguments --options=NONE first, then --output-format=json, --fields=+neKS, --sort=no, -f, -, followed by the explicit absolute file paths and without the program name"
+        },
+        {
+          "id": "01-REQ-4.2",
+          "pattern": "ubiquitous",
+          "system": "outline package",
+          "action": "never pass a directory or -R to the Runner, pass absolute paths only so that no file name begins with \"-\", and never spawn a process itself"
+        },
+        {
+          "id": "01-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "outline package",
+          "action": "for any call to OutlineMany, group files into batches of at most 100 files and at most 32 KiB of path text and make one Runner call per batch rather than one per file"
+        },
+        {
+          "id": "01-REQ-4.4",
+          "pattern": "optional",
+          "condition": "Options.Runner is nil",
+          "system": "outline package",
+          "action": "skip the ctags backend and handle each file with the heuristic backend or none"
+        },
+        {
+          "id": "01-REQ-4.5",
+          "pattern": "event_driven",
+          "condition": "an output line has a _type other than \"tag\"",
+          "system": "outline package",
+          "action": "ignore the line without counting it as malformed"
+        },
+        {
+          "id": "01-REQ-4.6",
+          "pattern": "unwanted",
+          "condition": "an output line is not valid JSON or lacks a name, path or line",
+          "system": "outline package",
+          "action": "skip the line and increment the malformed-line count in Stats",
+          "contract": "the line yields no Decl and no error is returned"
+        },
+        {
+          "id": "01-REQ-4.7",
+          "pattern": "unwanted",
+          "condition": "a tag echoes a path that was not in the batch",
+          "system": "outline package",
+          "action": "drop the tag",
+          "contract": "no File in the result contains a Decl from that tag"
+        },
+        {
+          "id": "01-REQ-4.8",
+          "pattern": "event_driven",
+          "condition": "a valid tag line is read",
+          "system": "outline package",
+          "action": "attribute the tag to the file whose path the tag echoes, not to the file at the same position in the batch"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-5",
+      "title": "ctags result mapping and fallback",
+      "rationale": "ctags is optional at run time, so a broken installation must degrade to the heuristic backend and not fail the outline.",
+      "criteria": [
+        {
+          "id": "01-REQ-5.1",
+          "pattern": "ubiquitous",
+          "system": "outline package",
+          "action": "normalise each ctags kind into the closed Kind set, map struct-like kinds to type, and drop tags whose kind does not map"
+        },
+        {
+          "id": "01-REQ-5.2",
+          "pattern": "event_driven",
+          "condition": "a function-kind tag has a scope kind of class, struct, interface, enum, trait or impl",
+          "system": "outline package",
+          "action": "emit kind method with Container set to the tag's scope"
+        },
+        {
+          "id": "01-REQ-5.3",
+          "pattern": "ubiquitous",
+          "system": "outline package",
+          "action": "set EndLine from the ctags end field when present and to 0 otherwise"
+        },
+        {
+          "id": "01-REQ-5.4",
+          "pattern": "ubiquitous",
+          "system": "outline package",
+          "action": "set Signature to the trimmed source line at StartLine and use the ctags signature field only when that line is unavailable"
+        },
+        {
+          "id": "01-REQ-5.5",
+          "pattern": "ubiquitous",
+          "system": "outline package",
+          "action": "for any ctags Decl, set Exported to true unless the name begins with an underscore, and set the File's Backend to \"ctags\""
+        },
+        {
+          "id": "01-REQ-5.6",
+          "pattern": "unwanted",
+          "condition": "the Runner returns an error or a batch's output is not usable",
+          "system": "outline package",
+          "action": "handle every file in that batch with the heuristic backend when its language has one and otherwise return it as \"none\", and record the fallback in Stats",
+          "contract": "OutlineMany returns a nil error for that batch and each affected File names its actual Backend"
+        },
+        {
+          "id": "01-REQ-5.7",
+          "pattern": "unwanted",
+          "condition": "the context is cancelled while the Runner is running",
+          "system": "outline package",
+          "action": "return the context's error and not fall back to the heuristic backend",
+          "contract": "the returned error equals ctx.Err()"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-6",
+      "title": "Heuristic and none backends",
+      "rationale": "Ten common languages still get top-level declarations when ctags is absent, and everything else degrades visibly to none.",
+      "criteria": [
+        {
+          "id": "01-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "a Python, JavaScript, TypeScript, Rust, Java, Kotlin, C#, Ruby, C or C++ file is handled without usable ctags",
+          "system": "heuristic backend",
+          "action": "apply anchored line regular expressions to declarations starting at column 0, optionally after a modifier such as export, export default, async, pub, pub(crate), public or static, and set Backend \"heuristic\""
+        },
+        {
+          "id": "01-REQ-6.2",
+          "pattern": "ubiquitous",
+          "system": "heuristic backend",
+          "action": "set Container to empty and EndLine to 0 on every Decl"
+        },
+        {
+          "id": "01-REQ-6.3",
+          "pattern": "ubiquitous",
+          "system": "heuristic backend",
+          "action": "set Exported false for a leading underscore in Python and Ruby, for a missing pub in Rust, for a missing export in JavaScript and TypeScript and for a missing public in Java, Kotlin and C#, and set Exported true for C and C++"
+        },
+        {
+          "id": "01-REQ-6.4",
+          "pattern": "unwanted",
+          "condition": "a declaration is indented, such as a method inside a class",
+          "system": "heuristic backend",
+          "action": "not report it",
+          "contract": "the Decls list contains no indented declaration"
+        },
+        {
+          "id": "01-REQ-6.5",
+          "pattern": "unwanted",
+          "condition": "the language has no heuristic and ctags is unavailable or unusable",
+          "system": "outline package",
+          "action": "return the File with Backend \"none\", the detected Lang and an empty non-nil Decls",
+          "contract": "no error is returned and the file remains in any walk that listed it"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-7",
+      "title": "tools.CtagsRunner",
+      "rationale": "The process lifecycle (reduced environment, deadline, process-group kill, bounded output) lives in tools so outline needs no first-party import.",
+      "criteria": [
+        {
+          "id": "01-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "CtagsRunner(env) is called",
+          "system": "tools package",
+          "action": "return a func(ctx context.Context, args []string) ([]byte, error) that is assignable to outline.Options.Runner",
+          "contract": "tools does not import outline"
+        },
+        {
+          "id": "01-REQ-7.2",
+          "pattern": "ubiquitous",
+          "system": "CtagsRunner",
+          "action": "locate ctags with exec.LookPath once per runner and confirm it is universal-ctags by running `ctags --version` and finding \"Universal Ctags\" in the output"
+        },
+        {
+          "id": "01-REQ-7.3",
+          "pattern": "unwanted",
+          "condition": "ctags is absent from PATH or its version output lacks \"Universal Ctags\"",
+          "system": "CtagsRunner",
+          "action": "return an error wrapping the exported sentinel ErrCtagsUnavailable on every call without spawning any further process",
+          "contract": "errors.Is(err, ErrCtagsUnavailable) is true"
+        },
+        {
+          "id": "01-REQ-7.4",
+          "pattern": "ubiquitous",
+          "system": "CtagsRunner",
+          "action": "run ctags with environment env, or ReducedEnv(nil) when env is nil"
+        },
+        {
+          "id": "01-REQ-7.5",
+          "pattern": "ubiquitous",
+          "system": "CtagsRunner",
+          "action": "give the process an empty stdin, discard stderr, and capture stdout separately from stderr into an Accumulator in TruncateHead mode with a 16 MiB cap"
+        },
+        {
+          "id": "01-REQ-7.6",
+          "pattern": "unwanted",
+          "condition": "the Accumulator reports truncation",
+          "system": "CtagsRunner",
+          "action": "return an error instead of the cut-off stream",
+          "contract": "the returned byte slice is not a partial stream and the error is non-nil"
+        },
+        {
+          "id": "01-REQ-7.7",
+          "pattern": "event_driven",
+          "condition": "the context ends while ctags is running",
+          "system": "CtagsRunner",
+          "action": "kill the whole process group with killGroup, as execute does",
+          "contract": "no ctags process of that call remains running after the call returns"
+        },
+        {
+          "id": "01-REQ-7.8",
+          "pattern": "unwanted",
+          "condition": "ctags exits with a non-zero status",
+          "system": "CtagsRunner",
+          "action": "return an error",
+          "contract": "the error is non-nil and the call returns no usable stdout"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-8",
+      "title": "One directory walk and tools.Walk",
+      "rationale": "One traversal guarantees that every consumer of workspace files sees the same set of files the file tools see.",
+      "criteria": [
+        {
+          "id": "01-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "walk",
+          "action": "build newIgnoreEngine(root, opts), compute for each entry other than the root its slash-separated path relative to the root, skip (SkipDir for a directory) any entry the ignore engine matches and any dot-prefixed entry when hidden entries are excluded, call the callback for files and directories, and call ig.enter for each directory the callback did not skip"
+        },
+        {
+          "id": "01-REQ-8.2",
+          "pattern": "unwanted",
+          "condition": "an entry is unreadable or the root does not exist",
+          "system": "walk",
+          "action": "skip the unreadable entry without error, and make no callback calls for a missing root",
+          "contract": "the walk returns a nil error in both cases"
+        },
+        {
+          "id": "01-REQ-8.3",
+          "pattern": "unwanted",
+          "condition": "the context is cancelled",
+          "system": "walk",
+          "action": "check the context for each entry and stop the walk",
+          "contract": "the walk returns ctx.Err()"
+        },
+        {
+          "id": "01-REQ-8.4",
+          "pattern": "event_driven",
+          "condition": "the callback returns filepath.SkipDir, filepath.SkipAll or an error",
+          "system": "walk",
+          "action": "skip the directory for SkipDir, end the walk for SkipAll and for an error, as fs.WalkDirFunc defines",
+          "contract": "SkipAll yields a nil error and any other error is returned unchanged"
+        },
+        {
+          "id": "01-REQ-8.5",
+          "pattern": "unwanted",
+          "condition": "ws is nil, root is not absolute, or root lies outside ws.Root as decided by within",
+          "system": "tools.Walk",
+          "action": "refuse the walk before visiting any entry",
+          "contract": "returns an error wrapping ErrPathNotAllowed and the callback is never called"
+        },
+        {
+          "id": "01-REQ-8.6",
+          "pattern": "ubiquitous",
+          "system": "walk",
+          "action": "traverse with filepath.WalkDir so that no symlink is followed"
+        },
+        {
+          "id": "01-REQ-8.7",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "contain exactly one directory-walk implementation, used by find_files, the native search_files backend and CountCandidates, with tools.Walk(ctx, ws, root, WalkOptions{Ignore, IncludeHidden}, fn) as the workspace-confined wrapper"
+        },
+        {
+          "id": "01-REQ-8.8",
+          "pattern": "event_driven",
+          "condition": "Search, SearchIn or CountCandidates run, which take a root string and no Workspace",
+          "system": "tools package",
+          "action": "call the unexported walk directly without requiring a Workspace"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-9",
+      "title": "Callers keep their behaviour",
+      "rationale": "The refactor is only safe if find_files and search_files return exactly the entries they returned before.",
+      "criteria": [
+        {
+          "id": "01-REQ-9.1",
+          "pattern": "event_driven",
+          "condition": "find_files runs",
+          "system": "find_files",
+          "action": "walk through tools.Walk with IncludeHidden true so that dot-prefixed entries such as .github/ and .gitignore are still returned"
+        },
+        {
+          "id": "01-REQ-9.2",
+          "pattern": "ubiquitous",
+          "system": "find_files",
+          "action": "keep its own file_type filter, glob matching, limit, truncation marker and sorting"
+        },
+        {
+          "id": "01-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "find_files",
+          "action": "for any tree with nested .gitignore files, a nested repository, a hidden file and a symlink, return for pattern ** and file_type file the same set of paths as tools.Walk with IncludeHidden true"
+        },
+        {
+          "id": "01-REQ-9.4",
+          "pattern": "event_driven",
+          "condition": "the native search_files backend or countCandidates walks",
+          "system": "tools package",
+          "action": "call the shared walk with hidden entries excluded and keep the regular-file check, the file_glob filter and the match logic"
+        },
+        {
+          "id": "01-REQ-9.5",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "for any tree, make tools.Walk with IncludeHidden false visit the same regular files that search_files selects"
+        },
+        {
+          "id": "01-REQ-9.6",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "leave every tool description, schema, result shape and marker text unchanged, and leave the ripgrep path of search_files unchanged"
+        },
+        {
+          "id": "01-REQ-9.7",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "pass the existing find_files and search_files test suites, including the ripgrep and native parity test, without edits"
+        }
+      ]
+    },
+    {
+      "id": "01-REQ-10",
+      "title": "Dependency, build, platform and documentation constraints",
+      "rationale": "The root module must stay standard-library-only and cgo-free, and the docs must describe the new surface in the same change.",
+      "criteria": [
+        {
+          "id": "01-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "outline package",
+          "action": "import only the standard library and contain no build-constrained file and no cgo"
+        },
+        {
+          "id": "01-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "module",
+          "action": "add no require line to go.mod and pass the unmodified internal/policy tests with no new entry in allowedModules"
+        },
+        {
+          "id": "01-REQ-10.3",
+          "pattern": "ubiquitous",
+          "system": "outline package",
+          "action": "build and vet successfully with CGO_ENABLED=0 for linux/amd64, linux/arm64, darwin/arm64 and windows/amd64"
+        },
+        {
+          "id": "01-REQ-10.4",
+          "pattern": "unwanted",
+          "condition": "ctags is not on PATH or is not universal-ctags",
+          "system": "test suite",
+          "action": "skip the tests that need real ctags and still pass the default test run",
+          "contract": "make test exits 0 on a machine without ctags"
+        },
+        {
+          "id": "01-REQ-10.5",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "install no default Runner anywhere and leave FileNavigationTools(), All() and the pinned default tool set unchanged"
+        },
+        {
+          "id": "01-REQ-10.6",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "add outline to the package graph (imports: nothing first-party) and the packages table of docs/architecture.md and note tools.Walk and tools.CtagsRunner under tools"
+        },
+        {
+          "id": "01-REQ-10.7",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "add a short outline entry to the tools section of README.md, keep its \"What is not built\" list stating that references and callers remain unbuilt, and record the walk consolidation in docs/GAPS.md"
+        },
+        {
+          "id": "01-REQ-10.8",
+          "pattern": "ubiquitous",
+          "system": "documentation",
+          "action": "leave docs/api.md unchanged and pass make check after the documentation edits"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "01-PATH-1",
+      "title": "An embedder outlines a Go file without any subprocess",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls outline.Outline with the absolute path of a .go file, nil Src and Options{Root}"
+        },
+        {
+          "actor": "outline package",
+          "action": "checks extension, size and NUL bytes, then reads the file"
+        },
+        {
+          "actor": "Go backend",
+          "action": "parses with go/parser SkipObjectResolution and builds Decls from go/ast positions"
+        },
+        {
+          "actor": "outline package",
+          "action": "sanitises signatures, sorts Decls and returns a File with Backend \"go/ast\" and a root-relative slash path"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-2",
+      "title": "An embedder outlines many non-Go files with one ctags process per batch",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls outline.OutlineMany with Python and Rust sources and Options{Runner: tools.CtagsRunner(nil)}"
+        },
+        {
+          "actor": "outline package",
+          "action": "groups the files into batches of at most 100 files and 32 KiB of path text"
+        },
+        {
+          "actor": "CtagsRunner",
+          "action": "verifies Universal Ctags once, runs ctags with --options=NONE and absolute paths in its own process group and returns bounded stdout"
+        },
+        {
+          "actor": "outline package",
+          "action": "parses JSON lines, attributes tags by echoed path, maps kinds and takes signatures from the source line"
+        },
+        {
+          "actor": "outline package",
+          "action": "returns Files in input order with Backend \"ctags\" and Stats counting any malformed lines"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-3",
+      "title": "ctags is unavailable and the outline degrades to heuristics",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls outline.OutlineMany with a Python file and a Lua file using tools.CtagsRunner(nil) on a machine without universal-ctags"
+        },
+        {
+          "actor": "CtagsRunner",
+          "action": "returns an error wrapping ErrCtagsUnavailable without spawning a further process"
+        },
+        {
+          "actor": "outline package",
+          "action": "records the batch fallback in Stats and does not return the error"
+        },
+        {
+          "actor": "heuristic backend",
+          "action": "reports the column-0 declarations of the Python file with Backend \"heuristic\""
+        },
+        {
+          "actor": "outline package",
+          "action": "returns the Lua file with Backend \"none\" and an empty Decls"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-4",
+      "title": "An embedder walks a workspace and outlines the files it sees",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls tools.Walk with a Workspace, an absolute root inside it and IncludeHidden false"
+        },
+        {
+          "actor": "walk",
+          "action": "applies the layered ignore engine, skips dot-prefixed entries and calls the callback for each remaining entry"
+        },
+        {
+          "actor": "embedder",
+          "action": "collects the regular files from the callback and passes them to outline.OutlineMany"
+        },
+        {
+          "actor": "outline package",
+          "action": "returns one File per collected path, so the outlined set equals the set search_files selects"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-5",
+      "title": "A walk root outside the workspace is refused",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls tools.Walk with a root outside ws.Root"
+        },
+        {
+          "actor": "tools.Walk",
+          "action": "checks the root with within before visiting any entry"
+        },
+        {
+          "actor": "tools.Walk",
+          "action": "returns an error wrapping ErrPathNotAllowed and never calls the callback"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-6",
+      "title": "find_files lists files through the shared walk",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "calls find_files with pattern ** and file_type file"
+        },
+        {
+          "actor": "find_files",
+          "action": "resolves the root through Workspace.Resolve and calls tools.Walk with IncludeHidden true"
+        },
+        {
+          "actor": "walk",
+          "action": "applies nested .gitignore files, calls the callback for dot-prefixed entries and does not follow symlinks"
+        },
+        {
+          "actor": "find_files",
+          "action": "filters by file_type, glob and limit, sorts and returns the result with its truncation marker unchanged"
+        }
+      ]
+    },
+    {
+      "id": "01-PATH-7",
+      "title": "search_files native backend and CountCandidates share the walk",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "calls search_files with the native backend selected"
+        },
+        {
+          "actor": "search_files",
+          "action": "calls the unexported walk with hidden entries excluded"
+        },
+        {
+          "actor": "walk",
+          "action": "skips ignored and dot-prefixed entries and calls the callback for each remaining entry"
+        },
+        {
+          "actor": "search_files",
+          "action": "checks regular files, applies file_glob, matches content and returns the matches with unchanged result shape"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "go/parser",
+      "version": "go1.26.5 (stdlib)",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "ParseFile",
+          "import_path": "go/parser",
+          "signature": "func ParseFile(fset *token.FileSet, filename string, src any, mode Mode) (f *ast.File, err error)"
+        },
+        {
+          "name": "SkipObjectResolution",
+          "import_path": "go/parser",
+          "signature": "const SkipObjectResolution Mode"
+        }
+      ]
+    },
+    {
+      "package": "go/token",
+      "version": "go1.26.5 (stdlib)",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "NewFileSet",
+          "import_path": "go/token",
+          "signature": "func NewFileSet() *FileSet"
+        },
+        {
+          "name": "FileSet.Position",
+          "import_path": "go/token",
+          "signature": "func (s *FileSet) Position(p Pos) Position"
+        }
+      ]
+    },
+    {
+      "package": "go/ast",
+      "version": "go1.26.5 (stdlib)",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "IsExported",
+          "import_path": "go/ast",
+          "signature": "func IsExported(name string) bool"
+        }
+      ]
+    },
+    {
+      "package": "os/exec",
+      "version": "go1.26.5 (stdlib)",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "LookPath",
+          "import_path": "os/exec",
+          "signature": "func LookPath(file string) (string, error)",
+          "notes": "Already used in tools/search.go for rg."
+        }
+      ]
+    }
+  ]
+}

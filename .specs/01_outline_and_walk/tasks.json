@@ -1,0 +1,434 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "01",
+  "spec_name": "outline_and_walk",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./outline/... ./tools/... ./internal/policy/... -count=1"
+  },
+  "dependencies": [],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Create the outline package scaffold: data model, signature sanitising, language table and eligibility checks",
+      "criteria": [
+        "01-REQ-1.4",
+        "01-REQ-1.5",
+        "01-REQ-1.6",
+        "01-REQ-1.7",
+        "01-REQ-2.2",
+        "01-REQ-2.4",
+        "01-REQ-2.6"
+      ],
+      "tests": [
+        "TS-01-4",
+        "TS-01-5",
+        "TS-01-6",
+        "TS-01-7",
+        "TS-01-9",
+        "TS-01-11",
+        "TS-01-13"
+      ],
+      "steps": [
+        "Write TS-01-4, 5, 6, 7, 9, 11 and 13 in outline/*_test.go (package outline, or outline_test) and confirm they fail; TS-01-6 and 7 only assert File.Path so they hold even before the Go backend exists",
+        "Create outline/outline.go with Kind constants (func, method, type, class, interface, enum, trait, const, var, module, macro), Decl, File, Backend (go/ast, ctags, heuristic, none), Options{Root, MaxFileBytes, Runner func(ctx, args []string) ([]byte, error)}, Source{Abs, Src}, Stats{MalformedLines, Fallbacks}; import only the standard library, no build tags, no cgo",
+        "Create outline/lang.go with the fixed extension to Lang table: Go, Python, JS/TS, Rust, Java, Kotlin, C#, Ruby, C/C++ plus PHP, Swift, Scala, Lua, shell, Perl; an unknown extension returns Lang empty",
+        "Create outline/sig.go with a sanitiseSignature(line string) string: remove control characters, collapse whitespace runs (including newlines) to one space, trim, cut at 200 bytes on a rune boundary (utf8.RuneStart walk back)",
+        "Implement Outline(ctx, abs, src, opts) (File, error): return ctx.Err() when cancelled; detect Lang by extension first and, for an unknown extension, return Lang empty, Backend none and Decls []Decl{} WITHOUT reading; compute File.Path (filepath.Rel against Root then filepath.ToSlash, or ToSlash(abs) when Root is empty); when Src is nil read the file with os.ReadFile and return (File{}, err) on failure; apply the MaxFileBytes (zero means 1 MiB, exactly MaxFileBytes still outlined) and NUL-in-first-8-KiB checks returning Backend none with no error",
+        "Add a finishFile helper that guarantees non-nil Decls and sorts by StartLine then Name (sort.SliceStable); leave backend dispatch as a seam that later tasks fill in (return none for now)"
+      ],
+      "touches": [
+        "outline/outline.go",
+        "outline/lang.go",
+        "outline/sig.go",
+        "outline/outline_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Implement the Go backend with go/ast ranges and signatures",
+      "criteria": [
+        "01-REQ-2.1",
+        "01-REQ-2.3",
+        "01-REQ-3.1",
+        "01-REQ-3.2",
+        "01-REQ-3.3",
+        "01-REQ-3.4",
+        "01-REQ-3.5",
+        "01-REQ-3.6",
+        "01-REQ-3.7"
+      ],
+      "tests": [
+        "TS-01-8",
+        "TS-01-10",
+        "TS-01-16",
+        "TS-01-17",
+        "TS-01-18",
+        "TS-01-19",
+        "TS-01-20",
+        "TS-01-21",
+        "TS-01-22"
+      ],
+      "steps": [
+        "Write TS-01-8, 10, 16, 17, 18, 19, 20, 21 and 22 and confirm they fail; TS-01-19 compares against an independent go/ast parse in the test over fixture and generated sources including doc comments and grouped decls; add outline/testdata/go golden file",
+        "Create outline/goast.go: parse via a package-level seam variable (var parseGo = parser.ParseFile) called with token.NewFileSet and parser.SkipObjectResolution",
+        "Walk f.Decls: FuncDecl to func, or method with Container set to the receiver base type name (unwrap StarExpr, ParenExpr, IndexExpr, IndexListExpr); GenDecl TypeSpec to interface for *ast.InterfaceType else type; ValueSpec to one const or var Decl per name skipping _",
+        "StartLine/EndLine from fset.Position of the FuncDecl.Pos()/End() (keyword, not doc) and of the spec Pos()/End() inside grouped declarations; for an ungrouped GenDecl use the declaration's range from the keyword; Exported is ast.IsExported(Name)",
+        "Build signatures: func header up to the body printed on one line (go/printer on a copy with Body nil, or slice from source), 'type Name struct', 'type Name interface', 'type Name <underlying expr>' for others, 'const Name', 'var Name [Type]'; pass every signature through sanitiseSignature",
+        "Use the partial AST when ParseFile returns a non-nil file with an error and keep Backend go/ast with no error; when the AST is nil return a 'not handled' result so the dispatcher falls through to the next backend (wired fully in later tasks)",
+        "Wire dispatch in Outline: .go files go to the Go backend first and never call Runner; confirm TS-01-16 asserts the Runner is not called"
+      ],
+      "touches": [
+        "outline/goast.go",
+        "outline/outline.go",
+        "outline/goast_test.go",
+        "outline/testdata/"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Implement OutlineMany, ctags batching, argument list and JSON-line parsing",
+      "criteria": [
+        "01-REQ-2.5",
+        "01-REQ-2.7",
+        "01-REQ-2.8",
+        "01-REQ-4.1",
+        "01-REQ-4.2",
+        "01-REQ-4.3",
+        "01-REQ-4.5",
+        "01-REQ-4.6",
+        "01-REQ-4.7",
+        "01-REQ-4.8"
+      ],
+      "tests": [
+        "TS-01-12",
+        "TS-01-14",
+        "TS-01-15",
+        "TS-01-24",
+        "TS-01-25",
+        "TS-01-26",
+        "TS-01-28",
+        "TS-01-29",
+        "TS-01-30",
+        "TS-01-31"
+      ],
+      "steps": [
+        "Write TS-01-12, 14, 15, 24, 25, 26, 28, 29, 30 and 31 using a recording fake Runner returning canned JSON lines, and confirm they fail",
+        "Implement OutlineMany(ctx, srcs, opts) ([]File, Stats, error): one File per input in input order; per source do the same eligibility/Go work as Outline; an unreadable file becomes Backend none and processing continues; check ctx.Err() before each step and return it exactly",
+        "Collect non-Go in-table eligible files (Src loaded or read), make absolute paths with filepath.Abs, and group into batches of at most 100 files and 32 KiB (32768 bytes) of path text, one Runner call per batch; skip ctags entirely when opts.Runner is nil",
+        "Create outline/ctags.go: args are exactly --options=NONE, --output-format=json, --fields=+neKS, --sort=no, -f, - followed by absolute paths only; never -R, never a directory, never the program name; the package must not import os/exec",
+        "Parse stdout line by line with encoding/json (bufio.Reader or split on newline, tolerate long lines): ignore lines whose _type is not tag without counting; invalid JSON or missing name, path or line increments Stats.MalformedLines and is skipped; attribute tags by the echoed path (normalise with filepath.Clean) via a map from absolute path to file index and drop paths not in the batch",
+        "Do a basic kind mapping (function to func, class to class) and Signature from the source line so these tests can assert Decls; full normalisation comes in the next task; when a Runner call returns ctx.Err() while the context is done return ctx.Err()",
+        "Files in a batch with no tags get an empty non-nil Decls with Backend ctags"
+      ],
+      "touches": [
+        "outline/many.go",
+        "outline/ctags.go",
+        "outline/many_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Map ctags kinds, scope, end line, signature and Exported; fall through when Go parse yields no AST",
+      "criteria": [
+        "01-REQ-1.2",
+        "01-REQ-1.3",
+        "01-REQ-3.8",
+        "01-REQ-5.1",
+        "01-REQ-5.2",
+        "01-REQ-5.3",
+        "01-REQ-5.4",
+        "01-REQ-5.5"
+      ],
+      "tests": [
+        "TS-01-2",
+        "TS-01-3",
+        "TS-01-23",
+        "TS-01-32",
+        "TS-01-33",
+        "TS-01-34",
+        "TS-01-35",
+        "TS-01-36"
+      ],
+      "steps": [
+        "Write TS-01-2, 3, 23, 32, 33, 34, 35 and 36 with fake Runner output and confirm they fail; TS-01-23 swaps the parseGo seam for a stub returning nil, nil",
+        "Implement the kind table: function to func, class to class, struct to type, interface to interface, enum to enum, trait to trait, variable to var, constant to const, module to module, macro to macro (and obvious ctags aliases such as typedef/union to type, namespace/package to module); drop member, field, local, enumerator, label, import, parameter and unknown kinds",
+        "A function-kind tag whose scopeKind is class, struct, interface, enum, trait or impl becomes method with Container set to scope; a function with any other scopeKind (for example function) is dropped as a local; a type-like tag nested in a function is dropped",
+        "EndLine from the end field when present else 0; Signature is the trimmed source line at StartLine (split Src on newlines) passed through sanitiseSignature, using the ctags signature field only when the line is out of range; Exported true unless Name begins with underscore; File.Backend ctags",
+        "Make the dispatcher fall through when the Go backend returns no AST: use ctags if Runner is non-nil, otherwise none with Lang go and empty non-nil Decls, no error",
+        "Confirm TS-01-2 property test never sees a Decl kind outside the closed set from Go or ctags input"
+      ],
+      "touches": [
+        "outline/ctags.go",
+        "outline/outline.go",
+        "outline/ctags_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Implement heuristic and none backends and ctags failure fallback",
+      "criteria": [
+        "01-REQ-1.1",
+        "01-REQ-4.4",
+        "01-REQ-5.6",
+        "01-REQ-5.7",
+        "01-REQ-6.1",
+        "01-REQ-6.2",
+        "01-REQ-6.3",
+        "01-REQ-6.4",
+        "01-REQ-6.5"
+      ],
+      "tests": [
+        "TS-01-1",
+        "TS-01-27",
+        "TS-01-37",
+        "TS-01-38",
+        "TS-01-39",
+        "TS-01-40",
+        "TS-01-41",
+        "TS-01-42"
+      ],
+      "steps": [
+        "Write TS-01-1, 27, 37, 38, 39, 40, 41 and 42 and add golden fixtures under outline/testdata/ for Python, JavaScript, TypeScript, Rust, Java, Kotlin, C#, Ruby, C and C++ (column-0 declarations after modifiers export, export default, async, pub, pub(crate), public, static) plus a none case; confirm they fail",
+        "Create outline/heuristic.go with per-language lists of anchored regexps (for example ^def , ^class , ^export (async )?function , ^(pub(\\(crate\\))? )?fn ) matching only column-0 lines, optionally after the listed modifiers; Container empty, EndLine 0, Signature the sanitised source line, Kind per match",
+        "Set Exported: false for a leading underscore in Python and Ruby, missing pub in Rust, missing export in JS/TS, missing public in Java/Kotlin/C#; always true for C and C++; indented declarations are never reported",
+        "Dispatch for non-Go files: Runner nil gives heuristic if the language has one else none (Lang kept, Decls empty non-nil, Backend none), with no Stats fallback counted",
+        "When a Runner call returns an error that is not the context's error, or the batch's output is unusable (no parseable output, or non-JSON garbage when output is non-empty and yields only malformed lines), handle each file in that batch with the heuristic backend if available else none and increment Stats.Fallbacks once per batch; return a nil error",
+        "When ctx.Err() is non-nil after the Runner returns or while it runs return ctx.Err() immediately, with no heuristic fallback and no fallback counted",
+        "Generate the final TS-01-1 property test over Go, heuristic, ctags-only and unknown extensions with a fake Runner returning tags in random order, asserting backend names, non-nil Decls and (StartLine, Name) ordering"
+      ],
+      "touches": [
+        "outline/heuristic.go",
+        "outline/many.go",
+        "outline/heuristic_test.go",
+        "outline/testdata/"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Add tools.CtagsRunner and ErrCtagsUnavailable",
+      "criteria": [
+        "01-REQ-7"
+      ],
+      "tests": [
+        "TS-01-43",
+        "TS-01-44",
+        "TS-01-45",
+        "TS-01-46",
+        "TS-01-47",
+        "TS-01-48",
+        "TS-01-49"
+      ],
+      "steps": [
+        "Write TS-01-43 through TS-01-49 (fake ctags shell scripts on a temp PATH, skipped on windows; real ctags checks skip when ctags is absent or not Universal Ctags, in the manner of the ripgrep tests) and confirm they fail",
+        "Create tools/ctags.go with exported var ErrCtagsUnavailable = errors.New(...) and func CtagsRunner(env []string) func(ctx context.Context, args []string) ([]byte, error); tools must not import outline",
+        "Per runner, lazily and once (sync.Once): exec.LookPath(\"ctags\"), then run `ctags --version` with a bounded context and require 'Universal Ctags' in its output; otherwise remember an error wrapping ErrCtagsUnavailable and return it from every call without spawning",
+        "Run ctags with the given args using exec.CommandContext(path, args...): Env is env or ReducedEnv(nil) when env is nil, empty stdin, stderr discarded (nil), stdout written to a NewAccumulator(cap, TruncateHead) where cap is a package var defaulting to 16 MiB so the test can lower it",
+        "Call setProcessGroup(cmd) before Start and killGroup on ctx.Done exactly as execute in tools/exec.go does; wait for the process so no ctags process or child remains after return",
+        "Return nil and a non-nil error when the accumulator reports Truncated(), when the exit status is non-zero, or when the context ended (wrap ctx error); return stdout bytes only on success",
+        "Confirm tools/ctags.go compiles for windows and darwin (use only the helpers from proc_unix.go and proc_windows.go)"
+      ],
+      "touches": [
+        "tools/ctags.go",
+        "tools/ctags_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Add the single unexported walk and the exported tools.Walk",
+      "criteria": [
+        "01-REQ-8.1",
+        "01-REQ-8.2",
+        "01-REQ-8.3",
+        "01-REQ-8.4",
+        "01-REQ-8.5",
+        "01-REQ-8.6"
+      ],
+      "tests": [
+        "TS-01-50",
+        "TS-01-51",
+        "TS-01-52",
+        "TS-01-53",
+        "TS-01-54",
+        "TS-01-55"
+      ],
+      "steps": [
+        "Read tools/tools.go (find_files loop), tools/search.go (searchNative, countCandidates), tools/ignore.go and tools/path.go to copy the exact existing semantics",
+        "Write TS-01-50 through TS-01-55 in tools/walk_test.go and confirm they fail",
+        "Create tools/walk.go with walk(ctx, root string, opts IgnoreOptions, includeHidden bool, fn func(rel string, d fs.DirEntry) error) error: newIgnoreEngine(root, opts); filepath.WalkDir; skip root; check ctx.Err() per entry and return it; skip unreadable entries (walkErr) without error, with a missing root giving a nil error and no calls",
+        "For each non-root entry compute filepath.ToSlash(filepath.Rel(root, path)); skip (SkipDir for a dir) when ig.match says so or when !includeHidden and the name is dot-prefixed (isHidden); call fn; if fn returns SkipDir for a dir return SkipDir; SkipAll ends the walk with nil error; any other error is returned unchanged; call ig.enter for each directory fn did not skip",
+        "Add type WalkOptions struct{Ignore IgnoreOptions; IncludeHidden bool} and Walk(ctx, ws *Workspace, root string, opts WalkOptions, fn) error: return an error wrapping ErrPathNotAllowed (fmt.Errorf with %w) before visiting when ws is nil, root is not absolute (filepath.IsAbs) or !within(ws.Root, root); otherwise call walk",
+        "Do not migrate callers yet; leave existing tools behaviour untouched"
+      ],
+      "touches": [
+        "tools/walk.go",
+        "tools/walk_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Migrate find_files, searchNative and countCandidates onto the shared walk",
+      "criteria": [
+        "01-REQ-8.7",
+        "01-REQ-8.8",
+        "01-REQ-9",
+        "01-REQ-10.5"
+      ],
+      "tests": [
+        "TS-01-56",
+        "TS-01-57",
+        "TS-01-58",
+        "TS-01-59",
+        "TS-01-60",
+        "TS-01-61",
+        "TS-01-62",
+        "TS-01-63",
+        "TS-01-68"
+      ],
+      "steps": [
+        "Write TS-01-56 to TS-01-62 and TS-01-68 (TS-01-56 parses non-test tools/*.go with go/parser and counts filepath.WalkDir, filepath.Walk and fs.WalkDir calls, expecting exactly one inside walk.go; TS-01-60 and 62 are property tests over generated trees comparing find_files, tools.Walk and native search results); confirm they fail",
+        "In tools/tools.go replace the find_files filepath.WalkDir loop with tools.Walk(ctx, ws, root, WalkOptions{Ignore: ..., IncludeHidden: true}, cb); keep file_type filter, glob matching, limit, truncation marker and sorting inside the tool unchanged",
+        "In tools/search.go replace the loops in searchNative and countCandidates with the unexported walk(ctx, root, opts, false, cb), keeping the regular-file check, file_glob filter and match logic; Search, SearchIn and CountCandidates never require a Workspace; leave searchRipgrep untouched",
+        "Do not edit tools_test.go, search_test.go or any existing test file, and do not change any tool description, schema, result shape or marker text; do not change FileNavigationTools(), All() or the default tool set and install no default Runner anywhere",
+        "Run go test ./tools/ and confirm the existing suites, including the rg/native parity test, pass unedited",
+        "Add the TS-01-63 style check (existing test files have no diff; descriptions and schemas byte-identical) as a test of golden schema/description strings or by running the suites"
+      ],
+      "touches": [
+        "tools/tools.go",
+        "tools/search.go",
+        "tools/walk.go",
+        "tools/walk_test.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Verify dependency, build and platform constraints for outline",
+      "criteria": [
+        "01-REQ-10.1",
+        "01-REQ-10.2",
+        "01-REQ-10.3",
+        "01-REQ-10.4"
+      ],
+      "tests": [
+        "TS-01-64",
+        "TS-01-65",
+        "TS-01-66",
+        "TS-01-67"
+      ],
+      "steps": [
+        "Write TS-01-64 in outline/ (go list -json ./outline asserts every import is standard library, no //go:build or +build line, no GOOS/GOARCH filename suffix, no import of \"C\") and TS-01-65 (go.mod has no require, internal/policy tests unmodified and passing, allowedModules unchanged)",
+        "Write TS-01-66 as a test (or script invoked by go test) running go build ./... and go vet ./... with CGO_ENABLED=0 for linux/amd64, linux/arm64, darwin/arm64 and windows/amd64; do not edit internal/policy/crosstarget_test.go, which already covers all packages",
+        "Write TS-01-67: with PATH lacking ctags or with a non-universal ctags stub, the real-ctags tests in outline and tools report skipped and go test ./outline/ ./tools/ exits 0",
+        "Fix anything the tests expose: stray build constraints, non-stdlib imports, windows or darwin compile failures in outline or tools/ctags.go",
+        "Run go test ./internal/policy/... -count=1 and confirm it passes without edits"
+      ],
+      "touches": [
+        "outline/",
+        "tools/ctags.go",
+        "outline/build_test.go"
+      ],
+      "depends_on": [
+        5,
+        6
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Update architecture, README and GAPS documentation",
+      "criteria": [
+        "01-REQ-10.6",
+        "01-REQ-10.7",
+        "01-REQ-10.8"
+      ],
+      "tests": [
+        "TS-01-69",
+        "TS-01-70",
+        "TS-01-71"
+      ],
+      "steps": [
+        "Write TS-01-69, 70 and 71 as doc checks (read the files and assert content; TS-01-71 also asserts docs/api.md has no diff and make check passes) and confirm they fail",
+        "In docs/architecture.md add outline to the package graph (imports: nothing first-party) and a row to the packages table, and note tools.Walk and tools.CtagsRunner under tools",
+        "In README.md add a short outline entry in the section describing the tools package and keep the 'What is not built' list stating references and callers remain unbuilt",
+        "In docs/GAPS.md record the consolidation of the three directory walks into one shared walk exposed as tools.Walk",
+        "Leave docs/api.md untouched; run make check and fix any failure"
+      ],
+      "touches": [
+        "docs/architecture.md",
+        "README.md",
+        "docs/GAPS.md"
+      ],
+      "depends_on": [
+        8,
+        9
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify every outline and walk execution path end to end",
+      "tests": [
+        "TS-01-72",
+        "TS-01-73",
+        "TS-01-74",
+        "TS-01-75",
+        "TS-01-76",
+        "TS-01-77",
+        "TS-01-78"
+      ],
+      "steps": [
+        "Write smoke tests TS-01-72 to TS-01-78 against the real packages (outline with tools.CtagsRunner, tools.Walk, find_files, native search, CountCandidates, a real filesystem); TS-01-73 skips when universal-ctags is absent; put cross-package smoke tests in an external test package so tools and outline stay free of a mutual import",
+        "Trace 01-PATH-1 to 01-PATH-3 through real code: Outline/OutlineMany to extension and size checks, to Go backend or batched Runner call, to tools.CtagsRunner, to JSON parsing, to heuristic fallback; confirm each step calls the next and no stub remains",
+        "Trace 01-PATH-4 to 01-PATH-7: tools.Walk to ignore engine to callback to OutlineMany; the within check refusing an outside root; find_files calling tools.Walk with IncludeHidden true; searchNative and countCandidates calling the unexported walk with hidden excluded",
+        "For each criterion with a contract (for example 01-REQ-1.5, 2.2, 5.6, 7.3, 7.6, 8.5) confirm the producer's result is consumed in production code (for example ErrCtagsUnavailable and Runner errors consumed by the fallback in OutlineMany, Walk's ErrPathNotAllowed consumed by find_files), not only by tests",
+        "Search outline/ and tools/ and every task's touched files for panic(\"not implemented\"), TODO, FIXME and bare return nil on non-trivial paths, and remove any that remain",
+        "Run make test, make lint and make check and confirm they pass"
+      ],
+      "touches": [
+        "outline/smoke_test.go",
+        "tools/walk_smoke_test.go"
+      ],
+      "depends_on": [
+        5,
+        6,
+        8,
+        9,
+        10
+      ],
+      "done_when": [
+        "`make check` passes on a machine with and without universal-ctags"
+      ],
+      "state": "pending"
+    }
+  ]
+}

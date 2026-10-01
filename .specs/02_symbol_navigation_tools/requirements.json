@@ -1,0 +1,808 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "02",
+  "spec_name": "symbol_navigation_tools",
+  "schema_version": 2,
+  "introduction": "Two read-only built-in tools in the `tools` package, `file_outline` (declarations of one file with line ranges) and `find_symbol` (ranked workspace-wide declaration lookup). They are built on the `outline` package and `tools.Walk` from spec 01_outline_and_walk, and use an in-memory symbol table that is built lazily, bounded by file count and wall time, and refreshed after AgentKit's own write and shell tools run.",
+  "glossary": {
+    "CtagsRunner": "The function from spec 01 that runs universal-ctags and returns ErrCtagsUnavailable when it is absent.",
+    "backend": "The outline strategy that produced a file's declarations: go/ast, ctags, heuristic or none. Reported in Data and in the Text header of every result.",
+    "dirty path": "A workspace-relative path marked by write_file or edit_file because the file may have changed since it was indexed.",
+    "generation counter": "A counter advanced by every mark. A pass clears only marks that predate its start.",
+    "partial": "A find_symbol answer produced after a build or refresh pass stopped at the MaxFiles or MaxDuration bound. It carries partial: true and partial_reason `files` or `time`.",
+    "racy window": "The 2 s period after a file was indexed during which an unchanged size and mtime do not prove the file is unchanged, so revalidation always re-outlines it.",
+    "revalidation": "A walk of the scope that compares size and mtime for each file, re-outlines changed or new files and drops files not seen in a completed walk.",
+    "smart-case": "Matching rule where an all-lowercase query matches case-insensitively and any uppercase rune makes it case-sensitive.",
+    "symbol table": "The in-memory per-file store of outline.File, size, modification time and index time behind find_symbol. It is created empty with the tool set, built on the first find_symbol call and discarded with the tool set.",
+    "test file": "A file classified as a test by the fixed rule in 02-REQ-4.2; test files rank after non-test files.",
+    "whole-table mark": "A flag set after execute, run_command or powershell returns. It means every indexed file must be revalidated before the next answer."
+  },
+  "requirements": [
+    {
+      "id": "02-REQ-1",
+      "title": "file_outline: arguments, source of truth and errors",
+      "rationale": "A model that can outline one file from disk can read only the range it needs, and it must get the same file access that read_file gives it.",
+      "criteria": [
+        {
+          "id": "02-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "file_outline is called with a path that resolves through Workspace.Resolve to a regular file",
+          "system": "file_outline",
+          "action": "read and outline the file from disk on every call by calling outline.Outline with Root set to the workspace root and the same runner configuration the symbol table uses, and never consult the symbol table",
+          "contract": "A successful ToolResult with Text and Data; two calls separated by an on-disk edit return different declarations without any refresh step"
+        },
+        {
+          "id": "02-REQ-1.2",
+          "pattern": "unwanted",
+          "condition": "the arguments cannot be parsed or the path is empty",
+          "system": "file_outline",
+          "action": "return an error result without touching the filesystem",
+          "contract": "ToolResult with OK false and error code invalid_arguments"
+        },
+        {
+          "id": "02-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "the path resolves outside the workspace root",
+          "system": "file_outline",
+          "action": "refuse the call and outline nothing",
+          "contract": "ToolResult with OK false and error code path_not_allowed"
+        },
+        {
+          "id": "02-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "os.Stat of the resolved path fails",
+          "system": "file_outline",
+          "action": "return an error result",
+          "contract": "ToolResult with OK false and error code read_failed"
+        },
+        {
+          "id": "02-REQ-1.5",
+          "pattern": "unwanted",
+          "condition": "the resolved path is a directory or another non-regular file",
+          "system": "file_outline",
+          "action": "return the message produced by notAFile, which for a directory says to use list_files",
+          "contract": "ToolResult with OK false and error code not_a_file"
+        },
+        {
+          "id": "02-REQ-1.6",
+          "pattern": "unwanted",
+          "condition": "outline.Outline returns an error, for example because the file is unreadable",
+          "system": "file_outline",
+          "action": "return an error result carrying the underlying detail",
+          "contract": "ToolResult with OK false and error code outline_failed"
+        },
+        {
+          "id": "02-REQ-1.7",
+          "pattern": "unwanted",
+          "condition": "the call context is cancelled",
+          "system": "file_outline",
+          "action": "stop and return an error result",
+          "contract": "ToolResult with OK false, error code aborted and detail \"Operation aborted\""
+        },
+        {
+          "id": "02-REQ-1.8",
+          "pattern": "ubiquitous",
+          "system": "file_outline",
+          "action": "for any regular file inside the workspace that read_file can read, outline it without applying the ignore engine or the hidden-entry rule, including files that are gitignored or under dot-prefixed directories"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-2",
+      "title": "file_outline: rendering and data",
+      "rationale": "Compact text with line ranges lets the model follow the outline with read_file offset and limit without spending tokens on the whole file.",
+      "criteria": [
+        {
+          "id": "02-REQ-2.1",
+          "pattern": "ubiquitous",
+          "system": "file_outline",
+          "action": "render Text as a header line of the form `<workspace-relative slash path>  (<backend>, <N> declarations[, <M> unexported not listed])` followed by one line per listed declaration in source order, where the unexported clause appears only when M is greater than 0"
+        },
+        {
+          "id": "02-REQ-2.2",
+          "pattern": "state_driven",
+          "condition": "include_private is false or omitted",
+          "system": "file_outline",
+          "action": "count unexported declarations in the total but omit them from the listed lines, and list them when include_private is true"
+        },
+        {
+          "id": "02-REQ-2.3",
+          "pattern": "ubiquitous",
+          "system": "file_outline",
+          "action": "render each declaration line as `L<start>-<end>` followed by the declaration's Signature, and render `L<start>` alone when EndLine is 0 or equals StartLine"
+        },
+        {
+          "id": "02-REQ-2.4",
+          "pattern": "event_driven",
+          "condition": "a listed declaration has a non-empty Container",
+          "system": "file_outline",
+          "action": "indent its line two further spaces unless its Signature already contains the container's name, as a Go method receiver does"
+        },
+        {
+          "id": "02-REQ-2.5",
+          "pattern": "event_driven",
+          "condition": "the file has no declarations",
+          "system": "file_outline",
+          "action": "render the header and one line stating that no declarations were found, with no listed declaration lines"
+        },
+        {
+          "id": "02-REQ-2.6",
+          "pattern": "event_driven",
+          "condition": "the file has no declarations and the backend is none",
+          "system": "file_outline",
+          "action": "make the line state the reason in neutral wording (language not recognised, file too large, or binary) and suggest read_file or search_files"
+        },
+        {
+          "id": "02-REQ-2.7",
+          "pattern": "ubiquitous",
+          "system": "file_outline",
+          "action": "carry in Data the keys file (the outline.File), backend, declarations (total count) and listed (count of lines rendered)"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-3",
+      "title": "find_symbol: input validation and name matching",
+      "rationale": "Bad input must be rejected before any walk starts, and matching rules must be predictable so a model can find methods by bare or qualified name.",
+      "criteria": [
+        {
+          "id": "02-REQ-3.1",
+          "pattern": "unwanted",
+          "condition": "name is empty after trimming whitespace or is longer than 256 bytes",
+          "system": "find_symbol",
+          "action": "reject the call before any walk, subprocess or file read",
+          "contract": "ToolResult with OK false and error code invalid_arguments; a 256-byte name is accepted and a 257-byte name is rejected"
+        },
+        {
+          "id": "02-REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "kind, after trimming and lower-casing, is not one of func, method, type, class, interface, enum, trait, const, var, module, macro",
+          "system": "find_symbol",
+          "action": "reject the call before any walk",
+          "contract": "ToolResult with OK false, error code invalid_arguments and a detail listing the eleven allowed values"
+        },
+        {
+          "id": "02-REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "path resolves outside the workspace root",
+          "system": "find_symbol",
+          "action": "refuse the call before any walk",
+          "contract": "ToolResult with OK false and error code path_not_allowed; tools.Walk is not called"
+        },
+        {
+          "id": "02-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "path does not exist",
+          "system": "find_symbol",
+          "action": "return an error result before any walk",
+          "contract": "ToolResult with OK false and error code read_failed"
+        },
+        {
+          "id": "02-REQ-3.5",
+          "pattern": "unwanted",
+          "condition": "path names a regular file",
+          "system": "find_symbol",
+          "action": "reject the call with a detail saying to use file_outline",
+          "contract": "ToolResult with OK false and error code invalid_arguments"
+        },
+        {
+          "id": "02-REQ-3.6",
+          "pattern": "state_driven",
+          "condition": "exact is false or omitted",
+          "system": "find_symbol",
+          "action": "match Decl.Name by prefix with smart-case, so an all-lowercase name matches case-insensitively and a name containing any uppercase rune matches case-sensitively"
+        },
+        {
+          "id": "02-REQ-3.7",
+          "pattern": "state_driven",
+          "condition": "exact is true",
+          "system": "find_symbol",
+          "action": "match only declarations whose compared string equals name exactly and case-sensitively"
+        },
+        {
+          "id": "02-REQ-3.8",
+          "pattern": "event_driven",
+          "condition": "name contains a dot",
+          "system": "find_symbol",
+          "action": "compare name against Container + \".\" + Name of each declaration that has a container under the same prefix, smart-case and exact rules, and compare a name without a dot against Decl.Name alone, so `Runner.Run` and `Run` both find method Run on Runner"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-4",
+      "title": "find_symbol: filters, ranking, limits and result shape",
+      "rationale": "A bounded, deterministic, best-first list with a working truncation marker lets the model act on the first answer instead of paging blindly.",
+      "criteria": [
+        {
+          "id": "02-REQ-4.1",
+          "pattern": "ubiquitous",
+          "system": "find_symbol",
+          "action": "for any query over an unchanged tree, order matches by exact before prefix (an exact match under smart-case counts as exact), exported before unexported, non-test before test files, shorter path first, then path, then StartLine, and return the identical order on every repeated call"
+        },
+        {
+          "id": "02-REQ-4.2",
+          "pattern": "ubiquitous",
+          "system": "find_symbol",
+          "action": "classify a file as a test file only by this rule: Go `_test.go`; Python `test_*.py` and `*_test.py`; JS/TS `*.test.*` and `*.spec.*`; Java, Kotlin, C# and Ruby files whose base name ends in `Test`, `Tests` or `_spec`; and any file under a directory named test, tests, __tests__ or spec"
+        },
+        {
+          "id": "02-REQ-4.3",
+          "pattern": "event_driven",
+          "condition": "max_results is omitted, zero, negative or above 50",
+          "system": "find_symbol",
+          "action": "apply clampLimit with default 20 and cap SymbolResultCap of 50, returning at most that many matches",
+          "contract": "max_results=200 returns at most 50 symbols; omitted returns at most 20"
+        },
+        {
+          "id": "02-REQ-4.4",
+          "pattern": "event_driven",
+          "condition": "more matches exist than the effective max_results",
+          "system": "find_symbol",
+          "action": "return only the first max_results matches, append the marker built by SymbolMarker(limit) using capMarker(\"results\", \"max_results\", limit, SymbolResultCap, ...), set Data truncated and note, and set ToolMetadata.Truncated with TruncatedByLines",
+          "contract": "Below the cap the marker names max_results=<next>; at the cap it says 50 is the maximum and advises narrowing with path, kind or exact"
+        },
+        {
+          "id": "02-REQ-4.5",
+          "pattern": "ubiquitous",
+          "system": "find_symbol",
+          "action": "carry in Data the keys symbols (SymbolMatch entries with JSON keys path, backend, kind, name, container, signature, exported, start_line, end_line), truncated, backends (backend name to count of indexed files within the queried scope), files_indexed, and note and partial when they apply"
+        },
+        {
+          "id": "02-REQ-4.6",
+          "pattern": "ubiquitous",
+          "system": "find_symbol",
+          "action": "render Text as a header `<N> symbols matching \"<name>\"  (index: <F> files; <backend> <count>, ...)`, then one line per match of the form `<path>:<start>-<end>  <kind>  <signature>`, then any marker or partial note, replacing control characters in printed paths with `?` while Data keeps the real path and never printing a signature longer than outline produced"
+        },
+        {
+          "id": "02-REQ-4.7",
+          "pattern": "event_driven",
+          "condition": "no declaration matches",
+          "system": "find_symbol",
+          "action": "return a successful result whose Text states that nothing matched and still shows the index line",
+          "contract": "ToolResult with OK true and an empty symbols slice"
+        },
+        {
+          "id": "02-REQ-4.8",
+          "pattern": "optional",
+          "condition": "kind or path is supplied",
+          "system": "find_symbol",
+          "action": "keep only declarations of that kind and only files under that directory, and count only those files in backends and files_indexed"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-5",
+      "title": "Symbol table: lazy build, scope and bounds",
+      "rationale": "The table must agree with search_files about which files exist, cost nothing until first used, and never hang or error when a tree is huge or ctags is stuck.",
+      "criteria": [
+        {
+          "id": "02-REQ-5.1",
+          "pattern": "ubiquitous",
+          "system": "tool set",
+          "action": "create the symbol table empty with fileTools and perform no walk, subprocess or file read at All() time or when only file_outline is used"
+        },
+        {
+          "id": "02-REQ-5.2",
+          "pattern": "event_driven",
+          "condition": "find_symbol is called and the table has never been built",
+          "system": "symbol table",
+          "action": "build it over the workspace root from the regular files tools.Walk yields with IncludeHidden false and Options.Ignore, so the indexed set equals the set search_files selects and contains nothing under dot-prefixed directories or through symlinks"
+        },
+        {
+          "id": "02-REQ-5.3",
+          "pattern": "ubiquitous",
+          "system": "symbol table",
+          "action": "obtain declarations from outline.OutlineMany in batches of at most 100 files and keep per file its outline.File, size, modification time and index time"
+        },
+        {
+          "id": "02-REQ-5.4",
+          "pattern": "event_driven",
+          "condition": "a pass has seen SymbolOptions.MaxFiles regular files of any language and the walk yields another",
+          "system": "symbol table",
+          "action": "stop the pass at the first file past the limit, keep the table built so far, and use 50 000 when MaxFiles is zero or negative",
+          "contract": "The result carries partial: true and partial_reason `files`"
+        },
+        {
+          "id": "02-REQ-5.5",
+          "pattern": "event_driven",
+          "condition": "the SymbolOptions.MaxDuration deadline passes during the walk or outlining",
+          "system": "symbol table",
+          "action": "cancel a derived context passed to OutlineMany so a stuck ctags process is killed, leave the interrupted batch unindexed, keep the table built so far, and use 2 s when MaxDuration is zero or negative",
+          "contract": "The result is OK with partial: true and partial_reason `time`, returned within the deadline plus a small margin, never an error"
+        },
+        {
+          "id": "02-REQ-5.6",
+          "pattern": "event_driven",
+          "condition": "a pass stopped at a bound",
+          "system": "find_symbol",
+          "action": "add a note produced by SymbolPartialMarker telling the model to narrow with path or fall back to search_files",
+          "contract": "Data has partial true, partial_reason and note; Text ends with the same note"
+        },
+        {
+          "id": "02-REQ-5.7",
+          "pattern": "event_driven",
+          "condition": "find_symbol is called while the table is partial",
+          "system": "symbol table",
+          "action": "run another pass that skips files whose size and mtime are unchanged and indexes files not yet seen, so each call indexes more files until the table is complete"
+        },
+        {
+          "id": "02-REQ-5.8",
+          "pattern": "complex_event",
+          "condition": "path is given",
+          "guard": "the table is not yet complete",
+          "system": "symbol table",
+          "action": "walk from the workspace root and return SkipDir for every directory that is neither an ancestor of nor inside path, so ignore layers above path still apply"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-6",
+      "title": "Symbol table: freshness after AgentKit's own tools",
+      "rationale": "A model must never be answered from stale data about a file it just changed through write_file, edit_file or a shell tool.",
+      "criteria": [
+        {
+          "id": "02-REQ-6.1",
+          "pattern": "state_driven",
+          "condition": "the table is complete and nothing is marked",
+          "system": "find_symbol",
+          "action": "answer from memory without calling tools.Walk or outline.OutlineMany"
+        },
+        {
+          "id": "02-REQ-6.2",
+          "pattern": "event_driven",
+          "condition": "write_file or edit_file finishes its write attempt, whether it succeeded or failed",
+          "system": "write_file and edit_file",
+          "action": "mark the file's workspace-relative path dirty while still holding the per-path lock, before releasing it"
+        },
+        {
+          "id": "02-REQ-6.3",
+          "pattern": "event_driven",
+          "condition": "execute, run_command or powershell returns with any outcome, including timeout and non-zero exit",
+          "system": "All()",
+          "action": "mark the whole table for revalidation by wrapping the three tools' Execute, leaving the standalone constructors and their tests unchanged"
+        },
+        {
+          "id": "02-REQ-6.4",
+          "pattern": "event_driven",
+          "condition": "find_symbol runs and a dirty path is already in the table",
+          "system": "symbol table",
+          "action": "stat the path and re-outline it if it is still a regular file, or drop its entry if it is gone or no longer regular"
+        },
+        {
+          "id": "02-REQ-6.5",
+          "pattern": "event_driven",
+          "condition": "find_symbol runs and a dirty path is not in the table or has base name .gitignore",
+          "system": "symbol table",
+          "action": "escalate to whole-table revalidation, because only the walk's ignore engine can say whether a new file is visible"
+        },
+        {
+          "id": "02-REQ-6.6",
+          "pattern": "event_driven",
+          "condition": "revalidation runs over the whole workspace or the part under path",
+          "system": "symbol table",
+          "action": "compare size and mtime of every walked file, re-outline only files that changed, are new, or have an mtime within 2 s of their index time, and drop entries not seen in a completed walk"
+        },
+        {
+          "id": "02-REQ-6.7",
+          "pattern": "complex_event",
+          "condition": "a revalidation pass finishes",
+          "guard": "it covered the whole workspace and completed within MaxFiles and MaxDuration",
+          "system": "symbol table",
+          "action": "clear the whole-table mark, and leave the mark set after a pass scoped by path or stopped at a bound"
+        },
+        {
+          "id": "02-REQ-6.8",
+          "pattern": "ubiquitous",
+          "system": "symbol table",
+          "action": "for any mark made while a build or refresh pass is running, advance a generation counter on the mark and have the pass clear only marks that predate its start, so the mark is still set after the pass"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-7",
+      "title": "Concurrency, cancellation and failure containment",
+      "rationale": "Parallel tool calls share one table, and a model call blocked behind a slow build must still be cancellable.",
+      "criteria": [
+        {
+          "id": "02-REQ-7.1",
+          "pattern": "unwanted",
+          "condition": "a find_symbol call is waiting for the table lock behind a running build and its context is cancelled",
+          "system": "find_symbol",
+          "action": "abandon the wait immediately instead of waiting for the build to finish",
+          "contract": "ToolResult with OK false, error code aborted and detail \"Operation aborted\", returned before the build completes"
+        },
+        {
+          "id": "02-REQ-7.2",
+          "pattern": "ubiquitous",
+          "system": "symbol table",
+          "action": "guard all table state with one context-abandonable lock, serialize builds and refreshes, read the table to answer a query under the same lock, and for any set of concurrent find_symbol, write_file and edit_file calls produce no data race under `go test -race`"
+        },
+        {
+          "id": "02-REQ-7.3",
+          "pattern": "event_driven",
+          "condition": "write_file, edit_file or a shell tool marks the table while a build is in progress",
+          "system": "symbol table",
+          "action": "set the mark without waiting for the build, blocking no longer than it takes to set a flag"
+        },
+        {
+          "id": "02-REQ-7.4",
+          "pattern": "unwanted",
+          "condition": "the find_symbol call context is cancelled during a build or refresh",
+          "system": "find_symbol",
+          "action": "return aborted and not a partial answer",
+          "contract": "ToolResult with OK false, error code aborted and detail \"Operation aborted\"; partial is reserved for MaxFiles and MaxDuration"
+        },
+        {
+          "id": "02-REQ-7.5",
+          "pattern": "unwanted",
+          "condition": "ctags fails, is unavailable, or the Runner returns an error",
+          "system": "file_outline and find_symbol",
+          "action": "fall back to another backend for the affected files instead of failing the call",
+          "contract": "ToolResult with OK true whose backend field and header name the backend actually used"
+        },
+        {
+          "id": "02-REQ-7.6",
+          "pattern": "ubiquitous",
+          "system": "file_outline and find_symbol",
+          "action": "run no shell and invoke ctags only through outline and CtagsRunner, and return errors in the ToolResult instead of terminating the process"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-8",
+      "title": "Tool wiring, options and defaults",
+      "rationale": "The tools must appear in the default set and the prompt consistently, and tests need a deterministic backend seam, without adding a dependency.",
+      "criteria": [
+        {
+          "id": "02-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "tools.Options",
+          "action": "gain a field Symbols of type SymbolOptions with MaxFiles int, MaxDuration time.Duration, DisableCtags bool and Runner func(ctx context.Context, args []string) ([]byte, error), where a zero or negative MaxFiles or MaxDuration means the default"
+        },
+        {
+          "id": "02-REQ-8.2",
+          "pattern": "ubiquitous",
+          "system": "tools",
+          "action": "by default construct CtagsRunner(opts.Env) lazily on first use by either tool, so All() spawns nothing and universal-ctags is used where installed and heuristics where it is not"
+        },
+        {
+          "id": "02-REQ-8.3",
+          "pattern": "event_driven",
+          "condition": "Symbols.DisableCtags is true or Symbols.Runner is non-nil",
+          "system": "tools",
+          "action": "force the runner nil when DisableCtags is true, and use a non-nil Runner in place of the default, identically for file_outline and find_symbol"
+        },
+        {
+          "id": "02-REQ-8.4",
+          "pattern": "ubiquitous",
+          "system": "All()",
+          "action": "return exactly read_file, write_file, edit_file, list_files, find_files, search_files, file_outline, find_symbol, execute, run_command, powershell in that order, and FileNavigationTools() return exactly list_files, find_files, search_files, file_outline, find_symbol"
+        },
+        {
+          "id": "02-REQ-8.5",
+          "pattern": "complex_event",
+          "condition": "execute is in the active tool set",
+          "guard": "none of list_files, find_files, search_files, file_outline, find_symbol is present",
+          "system": "prompt builder",
+          "action": "emit ExecuteFallbackGuideline, and suppress it when only file_outline is present"
+        },
+        {
+          "id": "02-REQ-8.6",
+          "pattern": "ubiquitous",
+          "system": "file_outline and find_symbol",
+          "action": "be Builtin and Parallel with no write capability, not Sequential and absent from guard.ShellToolNames, with PromptGuidelines \"Before reading a large file, outline it and read only the range you need.\" and \"Use find_symbol to locate a declaration; search_files for usages and text.\" respectively"
+        },
+        {
+          "id": "02-REQ-8.7",
+          "pattern": "ubiquitous",
+          "system": "symbol table",
+          "action": "use the memoized Options.Ignore held in fileTools for every walk"
+        },
+        {
+          "id": "02-REQ-8.8",
+          "pattern": "ubiquitous",
+          "system": "root module",
+          "action": "remain standard-library-only and cgo-free, add no go.mod entry and no internal/policy allowedModules entry, and leave every existing tool's description, schema, result shape and marker text unchanged"
+        }
+      ]
+    },
+    {
+      "id": "02-REQ-9",
+      "title": "Documentation",
+      "rationale": "The project's steering treats outdated docs as regressions.",
+      "criteria": [
+        {
+          "id": "02-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "README.md",
+          "action": "list file_outline and find_symbol in the tool list and state in \"What is not built\" that references and callers remain unbuilt"
+        },
+        {
+          "id": "02-REQ-9.2",
+          "pattern": "ubiquitous",
+          "system": "docs/architecture.md",
+          "action": "describe the symbol table and its place under the tools package"
+        },
+        {
+          "id": "02-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "docs/configuration.md",
+          "action": "add a Symbols row to the tools.Options table, add the two tool names to the tools.All sentence, and state the limits: find_symbol default 20 and cap 50 results, 50 000 files and 2 s"
+        },
+        {
+          "id": "02-REQ-9.4",
+          "pattern": "ubiquitous",
+          "system": "docs/GAPS.md",
+          "action": "record that references and callers remain unbuilt with a pointer to this spec's Non-goals, and leave docs/api.md unmodified"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "02-PATH-1",
+      "title": "A model outlines a file and reads only the range it needs",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "calls file_outline with path internal/agentrun/phase.go"
+        },
+        {
+          "actor": "file_outline",
+          "action": "resolves the path through Workspace.Resolve, stats it and reads the file from disk"
+        },
+        {
+          "actor": "file_outline",
+          "action": "calls outline.Outline with the workspace root and the lazily built runner"
+        },
+        {
+          "actor": "file_outline",
+          "action": "renders the header with backend and counts plus one line per listed declaration with its L<start>-<end> range"
+        },
+        {
+          "actor": "model",
+          "action": "calls read_file with offset and limit taken from a listed range and receives only that declaration"
+        }
+      ]
+    },
+    {
+      "id": "02-PATH-2",
+      "title": "Cold find_symbol builds the table and returns a ranked answer",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "calls find_symbol with name Run"
+        },
+        {
+          "actor": "find_symbol",
+          "action": "validates name, kind and path before any walk"
+        },
+        {
+          "actor": "symbol table",
+          "action": "walks the workspace root with tools.Walk, IncludeHidden false and the memoized ignore options, collecting regular files"
+        },
+        {
+          "actor": "symbol table",
+          "action": "outlines the files in batches of at most 100 through outline.OutlineMany, which uses CtagsRunner or falls back to heuristics"
+        },
+        {
+          "actor": "find_symbol",
+          "action": "filters, ranks and truncates matches, then returns Text with the index header and Data with symbols and backends"
+        }
+      ]
+    },
+    {
+      "id": "02-PATH-3",
+      "title": "An edit through edit_file is visible to the next find_symbol",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "calls edit_file to add function NewThing to a Go file"
+        },
+        {
+          "actor": "edit_file",
+          "action": "writes the file and, still holding the per-path lock, marks the workspace-relative path dirty before releasing the lock"
+        },
+        {
+          "actor": "model",
+          "action": "calls find_symbol with name NewThing"
+        },
+        {
+          "actor": "symbol table",
+          "action": "stats the dirty path, re-outlines it and clears only the marks that predate the pass"
+        },
+        {
+          "actor": "find_symbol",
+          "action": "returns the new declaration with its line range"
+        }
+      ]
+    },
+    {
+      "id": "02-PATH-4",
+      "title": "A new file or a .gitignore change escalates to revalidation",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "calls write_file to create a new source file or change a .gitignore"
+        },
+        {
+          "actor": "write_file",
+          "action": "writes the file and marks its path dirty under the per-path lock"
+        },
+        {
+          "actor": "model",
+          "action": "calls find_symbol for a name declared in the new file"
+        },
+        {
+          "actor": "symbol table",
+          "action": "sees a dirty path not in the table or named .gitignore and escalates to a whole-table revalidation walk"
+        },
+        {
+          "actor": "symbol table",
+          "action": "indexes new visible files, drops files no longer visible and clears the whole-table mark"
+        },
+        {
+          "actor": "find_symbol",
+          "action": "returns matches consistent with the walk's ignore rules"
+        }
+      ]
+    },
+    {
+      "id": "02-PATH-5",
+      "title": "A shell command deletes a file and the symbol disappears",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "calls execute with a command that removes a source file"
+        },
+        {
+          "actor": "All() wrapper",
+          "action": "lets the command finish and then marks the whole table for revalidation whatever the outcome"
+        },
+        {
+          "actor": "model",
+          "action": "calls find_symbol for a name declared in the removed file"
+        },
+        {
+          "actor": "symbol table",
+          "action": "revalidates by walking, re-outlines files that changed or fall in the 2 s racy window, and drops the entry for the unseen file"
+        },
+        {
+          "actor": "find_symbol",
+          "action": "returns a successful no-match result that still shows the index line"
+        }
+      ]
+    },
+    {
+      "id": "02-PATH-6",
+      "title": "A bound stops the build and later calls finish it",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "calls find_symbol on a large tree or while ctags is slow"
+        },
+        {
+          "actor": "symbol table",
+          "action": "stops the pass at MaxFiles or at MaxDuration, cancelling the derived context so the stuck ctags batch is killed and left unindexed"
+        },
+        {
+          "actor": "find_symbol",
+          "action": "returns an OK result with partial true, partial_reason and the SymbolPartialMarker note"
+        },
+        {
+          "actor": "model",
+          "action": "calls find_symbol again or narrows with path"
+        },
+        {
+          "actor": "symbol table",
+          "action": "skips unchanged files and indexes files not yet seen, so the table grows with each call"
+        }
+      ]
+    },
+    {
+      "id": "02-PATH-7",
+      "title": "A call blocked behind a long build is abandoned",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "issues a find_symbol call while another find_symbol build is running"
+        },
+        {
+          "actor": "symbol table",
+          "action": "holds the abandonable lock for the running build, so the second call waits"
+        },
+        {
+          "actor": "model",
+          "action": "cancels the second call's context"
+        },
+        {
+          "actor": "find_symbol",
+          "action": "returns aborted with detail \"Operation aborted\" before the build completes, while the build continues"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/agentfox/agentkit-go/tools",
+      "version": "working tree",
+      "verified": true,
+      "symbols": [
+        {
+          "name": "(*Workspace).Resolve",
+          "import_path": "github.com/agentfox/agentkit-go/tools",
+          "signature": "func (w *Workspace) Resolve(p string) (string, error)",
+          "notes": "Read in tools/path.go."
+        },
+        {
+          "name": "(*Workspace).Rel",
+          "import_path": "github.com/agentfox/agentkit-go/tools",
+          "signature": "func (w *Workspace) Rel(abs string) string",
+          "notes": "Read in tools/path.go."
+        },
+        {
+          "name": "clampLimit",
+          "import_path": "github.com/agentfox/agentkit-go/tools",
+          "signature": "func clampLimit(n, def, cap int) int",
+          "notes": "Read in tools/tools.go."
+        },
+        {
+          "name": "capMarker",
+          "import_path": "github.com/agentfox/agentkit-go/tools",
+          "signature": "func capMarker(noun, param string, limit, max int, alternative string) string",
+          "notes": "Read in tools/limits.go; FindMarker(limit int) string is the precedent for SymbolMarker."
+        },
+        {
+          "name": "notAFile",
+          "import_path": "github.com/agentfox/agentkit-go/tools",
+          "signature": "func notAFile(shown string, mode fs.FileMode) string",
+          "notes": "Read in tools/tools.go."
+        },
+        {
+          "name": "lockKey",
+          "import_path": "github.com/agentfox/agentkit-go/tools",
+          "signature": "func lockKey(path string) (string, error)",
+          "notes": "Read in tools/tools.go."
+        }
+      ]
+    },
+    {
+      "package": "github.com/agentfox/agentkit-go/outline (spec 01_outline_and_walk)",
+      "version": "not yet implemented",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "Outline",
+          "import_path": "github.com/agentfox/agentkit-go/outline",
+          "signature": "func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, error)",
+          "notes": "No outline/ directory exists yet; signature taken from the PRD."
+        },
+        {
+          "name": "OutlineMany",
+          "import_path": "github.com/agentfox/agentkit-go/outline",
+          "signature": "func OutlineMany(ctx context.Context, srcs []Source, opts Options) ([]File, Stats, error)",
+          "notes": "Source{Abs string; Src []byte}; Options{Root string; MaxFileBytes; Runner func(context.Context, []string) ([]byte, error)}. Taken from the PRD."
+        }
+      ]
+    },
+    {
+      "package": "github.com/agentfox/agentkit-go/tools (spec 01_outline_and_walk)",
+      "version": "not yet implemented",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "Walk",
+          "import_path": "github.com/agentfox/agentkit-go/tools",
+          "signature": "func Walk(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(rel string, d fs.DirEntry) error) error",
+          "notes": "WalkOptions{Ignore IgnoreOptions; IncludeHidden bool}. Not in the working tree; taken from the PRD."
+        },
+        {
+          "name": "CtagsRunner",
+          "import_path": "github.com/agentfox/agentkit-go/tools",
+          "signature": "func CtagsRunner(env []string) func(ctx context.Context, args []string) ([]byte, error)",
+          "notes": "ErrCtagsUnavailable is returned when universal-ctags is absent. Taken from the PRD."
+        }
+      ]
+    }
+  ]
+}

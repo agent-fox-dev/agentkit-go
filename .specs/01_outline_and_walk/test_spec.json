@@ -1,0 +1,1455 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "01",
+  "spec_name": "outline_and_walk",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-01-1",
+      "kind": "property",
+      "verifies": [
+        "01-REQ-1.1"
+      ],
+      "title": "Every File has a named backend and a non-nil Decls sorted by StartLine then Name.",
+      "given": [
+        "a generator of sources across Go, heuristic languages, ctags-table-only languages and unknown extensions",
+        "a fake Runner that returns tags in random order"
+      ],
+      "when": "for any source file and any Options (Runner nil or fake), Outline is called",
+      "then": [
+        "Backend is one of go/ast, ctags, heuristic, none",
+        "Decls is non-nil even when empty",
+        "for every adjacent pair, StartLine is non-decreasing and equal StartLines are ordered by Name"
+      ],
+      "pseudocode": "for src in gen(): f = Outline(ctx, abs, src, opts); assert f.Backend in {go/ast,ctags,heuristic,none}; assert f.Decls != nil; assert sorted(f.Decls, key=(StartLine,Name)) == f.Decls"
+    },
+    {
+      "id": "TS-01-2",
+      "kind": "property",
+      "verifies": [
+        "01-REQ-1.2"
+      ],
+      "title": "Every Decl from any backend carries a Kind from the closed set.",
+      "given": [
+        "Go sources with locals, struct fields, imports and labels",
+        "fake ctags output containing field, local, parameter, enumerator, label, import and unknown kinds"
+      ],
+      "when": "for any generated source or ctags tag list, the file is outlined",
+      "then": [
+        "every Decl.Kind is in {func, method, type, class, interface, enum, trait, const, var, module, macro}",
+        "no Decl is produced for locals, parameters, fields, struct members, enumerators, labels or imports"
+      ],
+      "pseudocode": "for input in gen(): for d in Outline(...).Decls: assert d.Kind in CLOSED_SET"
+    },
+    {
+      "id": "TS-01-3",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-1.3"
+      ],
+      "title": "Only top-level declarations and methods of a declared type are kept, with 1-based inclusive lines.",
+      "given": [
+        "a Go file with a top-level func, a method, a func-local var and type, a struct field, on known lines",
+        "a ctags fake with a tag whose scope is a function (a local)"
+      ],
+      "when": "the Go file and the ctags fake output are outlined",
+      "then": [
+        "the func and the method are present with StartLine and EndLine matching the source lines",
+        "no local var/type and no struct field appears",
+        "a backend that cannot tell end yields EndLine 0"
+      ],
+      "pseudocode": "f = Outline(goFile); assert names(f.Decls) == ['Top','Method']; assert f.Decls[0].StartLine == 3 and EndLine == 5"
+    },
+    {
+      "id": "TS-01-4",
+      "kind": "property",
+      "verifies": [
+        "01-REQ-1.4"
+      ],
+      "title": "Any sanitised signature is one line, free of control characters, whitespace-collapsed and at most 200 bytes.",
+      "given": [
+        "a generator of source lines with newlines, tabs, runs of spaces, control characters and arbitrary lengths"
+      ],
+      "when": "for any source line used as a declaration line, the signature is produced by outline",
+      "then": [
+        "Signature contains no \\n, \\r or other control character",
+        "Signature contains no run of two or more whitespace characters",
+        "len(Signature) <= 200 and Signature is valid UTF-8"
+      ],
+      "pseudocode": "for line in gen(): s = sig(line); assert no_ctrl(s); assert '  ' not in s; assert len(s) <= 200; assert utf8.valid(s)"
+    },
+    {
+      "id": "TS-01-5",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-1.5"
+      ],
+      "title": "A signature cut at 200 bytes never ends in a partial rune.",
+      "given": [
+        "a source line where a 3-byte rune occupies bytes 199-201 and another case with a 2-byte rune straddling byte 200"
+      ],
+      "when": "the signature is produced",
+      "then": [
+        "the Signature is valid UTF-8",
+        "its length is at most 200 bytes",
+        "it ends before the straddling rune, not in the middle of it"
+      ],
+      "pseudocode": "line = 'a'*198 + '世' + 'tail'; s = sig(line); assert utf8.valid(s) and len(s) == 198"
+    },
+    {
+      "id": "TS-01-6",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-1.6"
+      ],
+      "title": "File.Path is the slash-separated path relative to Options.Root.",
+      "given": [
+        "a temp root with sub/dir/a.go"
+      ],
+      "when": "Outline is called with the absolute path and Options{Root: root}",
+      "then": [
+        "File.Path equals \"sub/dir/a.go\"",
+        "the path contains no backslash on any platform"
+      ],
+      "pseudocode": "f = Outline(ctx, root/sub/dir/a.go, nil, {Root: root}); assert f.Path == 'sub/dir/a.go'"
+    },
+    {
+      "id": "TS-01-7",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-1.7"
+      ],
+      "title": "With an empty Root, File.Path is the slash-converted absolute path.",
+      "given": [
+        "a temp file a.go"
+      ],
+      "when": "Outline is called with Options{} (empty Root)",
+      "then": [
+        "File.Path equals filepath.ToSlash(abs)",
+        "File.Path is not relative"
+      ],
+      "pseudocode": "f = Outline(ctx, abs, nil, {}); assert f.Path == ToSlash(abs)"
+    },
+    {
+      "id": "TS-01-8",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-2.1"
+      ],
+      "title": "Outline reads the file itself when Src is nil and uses Src when supplied.",
+      "given": [
+        "a file on disk whose content differs from an in-memory Src"
+      ],
+      "when": "Outline is called once with nil Src and once with a non-nil Src",
+      "then": [
+        "the nil-Src call returns declarations from the disk content",
+        "the Src call returns declarations from the supplied bytes"
+      ],
+      "pseudocode": "assert names(Outline(abs,nil).Decls) == ['OnDisk']; assert names(Outline(abs,[]byte(other)).Decls) == ['InMemory']"
+    },
+    {
+      "id": "TS-01-9",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-2.2"
+      ],
+      "title": "An extension outside the table yields Lang empty and Backend none without reading the file.",
+      "given": [
+        "a path foo.xyz that does not exist on disk, and a table of in-table extensions (.go .py .js .ts .rs .java .kt .cs .rb .c .cpp .php .swift .scala .lua .sh .pl) for Lang detection"
+      ],
+      "when": "Outline is called on foo.xyz with nil Src and a Runner that fails the test if called",
+      "then": [
+        "no error is returned (proving no read occurred)",
+        "Lang is \"\" and Backend is \"none\" and Decls is empty non-nil",
+        "the Runner is not called",
+        "every in-table extension maps to a non-empty Lang"
+      ],
+      "pseudocode": "f, err = Outline(ctx, '/nonexistent/foo.xyz', nil, opts); assert err == nil; assert f.Lang == '' and f.Backend == 'none' and f.Decls == []"
+    },
+    {
+      "id": "TS-01-10",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-2.3"
+      ],
+      "title": "A file over MaxFileBytes is returned as none with no error, while exactly MaxFileBytes is outlined; zero means 1 MiB.",
+      "given": [
+        "a Go file of exactly MaxFileBytes bytes, one of MaxFileBytes+1 bytes, and one just over 1 MiB with MaxFileBytes 0"
+      ],
+      "when": "Outline is called on each",
+      "then": [
+        "the exact-size file has Backend go/ast and declarations",
+        "the oversize files have Backend none, empty Decls and a nil error"
+      ],
+      "pseudocode": "f, err = Outline(big, {MaxFileBytes: n}); assert err == nil and f.Backend == 'none' and len(f.Decls) == 0"
+    },
+    {
+      "id": "TS-01-11",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-2.4"
+      ],
+      "title": "A file with a NUL byte in its first 8 KiB is returned as none with no error.",
+      "given": [
+        "a .py file with a NUL at offset 100, and one with a NUL only after offset 8192"
+      ],
+      "when": "Outline is called on each",
+      "then": [
+        "the first returns Backend none, empty Decls, nil error",
+        "the second is outlined normally (NUL beyond 8 KiB does not trigger the rule)"
+      ],
+      "pseudocode": "f, err = Outline(nulFile); assert err == nil and f.Backend == 'none' and f.Decls == []"
+    },
+    {
+      "id": "TS-01-12",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-2.5"
+      ],
+      "title": "A cancelled context makes Outline and OutlineMany return exactly ctx.Err().",
+      "given": [
+        "a context cancelled before the call",
+        "a second context cancelled during a blocking fake Runner"
+      ],
+      "when": "Outline and OutlineMany are called",
+      "then": [
+        "both return an error equal to ctx.Err() (context.Canceled)"
+      ],
+      "pseudocode": "cancel(); _, err = Outline(ctx, ...); assert err == ctx.Err(); _, _, err = OutlineMany(ctx, ...); assert err == ctx.Err()"
+    },
+    {
+      "id": "TS-01-13",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-2.6"
+      ],
+      "title": "Outline on an unreadable file returns a non-nil error and the zero File.",
+      "given": [
+        "a .py path that does not exist, or is a directory, with nil Src"
+      ],
+      "when": "Outline is called",
+      "then": [
+        "err is non-nil",
+        "the returned File equals File{}"
+      ],
+      "pseudocode": "f, err = Outline(ctx, missing, nil, opts); assert err != nil; assert f == File{}"
+    },
+    {
+      "id": "TS-01-14",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-2.7"
+      ],
+      "title": "OutlineMany returns an unreadable file as none and still outlines the others.",
+      "given": [
+        "three Sources: a readable .go, a missing .py with nil Src, a readable .go"
+      ],
+      "when": "OutlineMany is called with a nil Runner",
+      "then": [
+        "the error is nil",
+        "the middle File has Backend none and no Decls",
+        "the first and third Files are outlined with go/ast"
+      ],
+      "pseudocode": "fs, st, err = OutlineMany(ctx, srcs, {}); assert err == nil; assert fs[1].Backend == 'none'; assert len(fs[0].Decls) > 0"
+    },
+    {
+      "id": "TS-01-15",
+      "kind": "property",
+      "verifies": [
+        "01-REQ-2.8"
+      ],
+      "title": "OutlineMany returns one File per input in input order, plus Stats.",
+      "given": [
+        "a generator of Source slices mixing languages, unknown extensions, unreadable and oversize files"
+      ],
+      "when": "for any slice of Sources, OutlineMany is called with a fake Runner",
+      "then": [
+        "len(result) == len(input)",
+        "result[i].Path corresponds to input[i].Abs for every i",
+        "a Stats value is returned"
+      ],
+      "pseudocode": "for srcs in gen(): fs, st, err = OutlineMany(ctx, srcs, opts); assert len(fs) == len(srcs); for i: assert fs[i].Path == rel(srcs[i].Abs)"
+    },
+    {
+      "id": "TS-01-16",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-3.1"
+      ],
+      "title": "A .go file is parsed in-process with Backend go/ast and the Runner is never called.",
+      "given": [
+        "a valid Go file",
+        "a Runner that fails the test when invoked"
+      ],
+      "when": "Outline is called with that Runner in Options",
+      "then": [
+        "Backend is go/ast and Lang is go",
+        "the Runner is not called"
+      ],
+      "pseudocode": "f = Outline(goFile, {Runner: failRunner}); assert f.Backend == 'go/ast'; assert runnerCalls == 0"
+    },
+    {
+      "id": "TS-01-17",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-3.2"
+      ],
+      "title": "Functions are kind func and methods kind method with the receiver base type as Container.",
+      "given": [
+        "Go source with func F(), func (t *T) M(), func (t T) N(), and func (g *G[K, V]) P()"
+      ],
+      "when": "the file is outlined",
+      "then": [
+        "F has kind func and empty Container",
+        "M and N have kind method with Container T",
+        "P has kind method with Container G (no * and no type parameters)"
+      ],
+      "pseudocode": "assert d('P').Kind == 'method' and d('P').Container == 'G'"
+    },
+    {
+      "id": "TS-01-18",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-3.3"
+      ],
+      "title": "Type, const and var specs map to interface, type, const and var, one per name, skipping blank.",
+      "given": [
+        "Go source with an interface type, a struct type, a defined type, an alias, const (A, B = 1, 2; _ = 3), and var x, y int"
+      ],
+      "when": "the file is outlined",
+      "then": [
+        "the interface has kind interface; struct, defined type and alias have kind type",
+        "A, B are two const Decls; x, y are two var Decls",
+        "no Decl is named _"
+      ],
+      "pseudocode": "assert kinds == {'I':'interface','S':'type','A':'const','B':'const','x':'var','y':'var'}; assert '_' not in names"
+    },
+    {
+      "id": "TS-01-19",
+      "kind": "property",
+      "verifies": [
+        "01-REQ-3.4"
+      ],
+      "title": "Go Decl ranges equal the go/ast node positions and exclude doc comments.",
+      "given": [
+        "a corpus of generated and fixture Go sources with doc comments and grouped declarations"
+      ],
+      "when": "for any Go source, it is outlined and independently parsed with go/ast in the test",
+      "then": [
+        "each Decl StartLine/EndLine equals fset.Position of the node/spec Pos and End",
+        "a doc comment line is never StartLine",
+        "for a grouped declaration the range is that of the spec, not the keyword"
+      ],
+      "pseudocode": "for src in gen(): f = Outline(src); want = reference(src); assert [(d.Name,d.StartLine,d.EndLine) for d in f.Decls] == want"
+    },
+    {
+      "id": "TS-01-20",
+      "kind": "property",
+      "verifies": [
+        "01-REQ-3.5"
+      ],
+      "title": "Exported equals ast.IsExported(Name) for every Go Decl.",
+      "given": [
+        "generated Go identifiers including Unicode upper-case, lower-case and underscore-leading names"
+      ],
+      "when": "for any Go source declaring such names, it is outlined",
+      "then": [
+        "every Decl has Exported == ast.IsExported(Name)"
+      ],
+      "pseudocode": "for d in Outline(src).Decls: assert d.Exported == ast.IsExported(d.Name)"
+    },
+    {
+      "id": "TS-01-21",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-3.6"
+      ],
+      "title": "Go signatures follow the specified one-line forms.",
+      "given": [
+        "Go source with a multi-line func signature with body, type S struct, type I interface, type M map[string]int, type A = []byte, const C, var V int, var W"
+      ],
+      "when": "the file is outlined",
+      "then": [
+        "func signature is \"func ...\" up to the body on one line, without the body",
+        "signatures are \"type S struct\", \"type I interface\", \"type M map[string]int\"",
+        "const is \"const C\", var is \"var V int\" and \"var W\" without a type"
+      ],
+      "pseudocode": "assert sig('S') == 'type S struct'; assert sig('V') == 'var V int'"
+    },
+    {
+      "id": "TS-01-22",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-3.7"
+      ],
+      "title": "A syntax-broken Go file still yields recovered declarations with Backend go/ast and no error.",
+      "given": [
+        "Go source with valid func A, a syntax error in the middle, then valid func B"
+      ],
+      "when": "Outline is called",
+      "then": [
+        "err is nil and Backend is go/ast",
+        "declarations A and B that the parser recovered are returned"
+      ],
+      "pseudocode": "f, err = Outline(broken); assert err == nil and f.Backend == 'go/ast'; assert {'A','B'} <= names(f.Decls)"
+    },
+    {
+      "id": "TS-01-23",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-3.8"
+      ],
+      "title": "When the parser yields no AST, the file falls through to the next backend without an error.",
+      "given": [
+        "the package's parse seam replaced by a stub returning a nil *ast.File",
+        "once with a fake Runner returning a valid tag for the .go file, once with a nil Runner"
+      ],
+      "when": "Outline is called on a .go file in each configuration",
+      "then": [
+        "err is nil in both cases",
+        "with the Runner the Backend is ctags",
+        "without the Runner the Backend is none (Go has no heuristic) and Decls is empty non-nil"
+      ],
+      "pseudocode": "parseHook = func(...) { return nil, err }; f, err = Outline(goFile, {Runner: fake}); assert err == nil and f.Backend == 'ctags'"
+    },
+    {
+      "id": "TS-01-24",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-4.1"
+      ],
+      "title": "The Runner is called with the exact ctags argument list followed by absolute paths.",
+      "given": [
+        "a recording fake Runner returning empty output",
+        "a .py file with an absolute path"
+      ],
+      "when": "OutlineMany is called with that file",
+      "then": [
+        "args[0] is \"--options=NONE\"",
+        "args[1:6] are \"--output-format=json\", \"--fields=+neKS\", \"--sort=no\", \"-f\", \"-\"",
+        "the remaining args are the absolute file paths",
+        "args do not include the program name \"ctags\""
+      ],
+      "pseudocode": "assert args[:6] == ['--options=NONE','--output-format=json','--fields=+neKS','--sort=no','-f','-'][:6] ; assert args[6:] == [abs]"
+    },
+    {
+      "id": "TS-01-25",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-4.2"
+      ],
+      "title": "The Runner never receives a directory, -R or a path starting with a dash, and outline spawns nothing itself.",
+      "given": [
+        "Sources whose names begin with '-' in a relative-looking directory, and a directory path passed as a Source",
+        "PATH set to empty so any spawn attempt would fail",
+        "a recording Runner"
+      ],
+      "when": "OutlineMany is called",
+      "then": [
+        "no argument equals -R and no argument after position 5 is a directory",
+        "every file argument is absolute and starts with the path separator or drive letter, never '-'",
+        "the recorded Runner is the only external call (no os/exec use in the package)"
+      ],
+      "pseudocode": "for a in args[6:]: assert filepath.IsAbs(a) and not a.startswith('-'); assert '-R' not in args"
+    },
+    {
+      "id": "TS-01-26",
+      "kind": "property",
+      "verifies": [
+        "01-REQ-4.3"
+      ],
+      "title": "Batches never exceed 100 files or 32 KiB of path text and use one Runner call per batch.",
+      "given": [
+        "a recording fake Runner",
+        "a generator of file counts (0..350) and path lengths (1..4000 bytes)"
+      ],
+      "when": "for any set of non-Go in-table files, OutlineMany is called",
+      "then": [
+        "every Runner call has at most 100 file args",
+        "the summed byte length of path args per call is at most 32 KiB",
+        "the number of calls is far fewer than the number of files (e.g. 101 short files give exactly 2 calls)",
+        "every file appears in exactly one call"
+      ],
+      "pseudocode": "for files in gen(): OutlineMany(files, fake); for c in calls: assert len(c.files)<=100 and sum(map(len,c.files))<=32768; assert union(calls)==files"
+    },
+    {
+      "id": "TS-01-27",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-4.4"
+      ],
+      "title": "A nil Runner skips ctags and uses heuristic or none.",
+      "given": [
+        "a .py file, a .lua file and Options{Runner: nil}"
+      ],
+      "when": "OutlineMany is called",
+      "then": [
+        "the Python file has Backend heuristic",
+        "the Lua file has Backend none",
+        "Stats reports no fallback (ctags was never attempted)"
+      ],
+      "pseudocode": "fs, st, _ = OutlineMany(srcs, {}); assert fs[0].Backend == 'heuristic' and fs[1].Backend == 'none'; assert st.Fallbacks == 0"
+    },
+    {
+      "id": "TS-01-28",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-4.5"
+      ],
+      "title": "Lines whose _type is not tag are ignored and not counted as malformed.",
+      "given": [
+        "fake output with a ptag line (_type: ptag), a !_TAG_ line, and one valid tag line"
+      ],
+      "when": "OutlineMany is called",
+      "then": [
+        "only the valid tag becomes a Decl",
+        "Stats malformed count is 0"
+      ],
+      "pseudocode": "assert len(f.Decls) == 1; assert st.MalformedLines == 0"
+    },
+    {
+      "id": "TS-01-29",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-4.6"
+      ],
+      "title": "Invalid JSON or lines missing name, path or line are skipped and counted without error.",
+      "given": [
+        "fake output with: truncated JSON, a tag without name, a tag without path, a tag without line, and one valid tag"
+      ],
+      "when": "OutlineMany is called",
+      "then": [
+        "err is nil",
+        "exactly 4 malformed lines are counted in Stats",
+        "only the valid tag yields a Decl"
+      ],
+      "pseudocode": "assert err == nil and st.MalformedLines == 4 and len(f.Decls) == 1"
+    },
+    {
+      "id": "TS-01-30",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-4.7"
+      ],
+      "title": "A tag echoing a path outside the batch is dropped.",
+      "given": [
+        "a batch of a.py and a fake output tag with path /elsewhere/z.py plus a valid tag for a.py"
+      ],
+      "when": "OutlineMany is called",
+      "then": [
+        "no File contains the Decl from the foreign tag",
+        "the a.py Decl is present"
+      ],
+      "pseudocode": "for f in fs: assert 'Foreign' not in names(f.Decls)"
+    },
+    {
+      "id": "TS-01-31",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-4.8"
+      ],
+      "title": "Tags are attributed by echoed path, not batch position.",
+      "given": [
+        "a batch [a.py, b.py] and fake output listing b.py's tag before a.py's tag, and a file with no tags"
+      ],
+      "when": "OutlineMany is called",
+      "then": [
+        "a.py has only its own Decl and b.py only its own",
+        "the untagged file has empty Decls and Backend ctags"
+      ],
+      "pseudocode": "assert names(fs[0].Decls) == ['inA'] and names(fs[1].Decls) == ['inB']"
+    },
+    {
+      "id": "TS-01-32",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-5.1"
+      ],
+      "title": "ctags kinds are normalised into the closed set, struct-like kinds to type, others dropped.",
+      "given": [
+        "fake tags with kinds function, class, struct, interface, enum, trait, variable, constant, module, macro, member, field, local, enumerator, label, import, parameter"
+      ],
+      "when": "OutlineMany is called",
+      "then": [
+        "function→func, class→class, struct→type, interface→interface, enum→enum, trait→trait, variable→var, constant→const, module→module, macro→macro",
+        "member, field, local, enumerator, label, import and parameter produce no Decl"
+      ],
+      "pseudocode": "assert kinds(f.Decls) == expected_mapped; assert dropped_names not in names"
+    },
+    {
+      "id": "TS-01-33",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-5.2"
+      ],
+      "title": "A function tag scoped in a type-like kind becomes a method with the scope as Container.",
+      "given": [
+        "fake function tags with scopeKind class, struct, interface, enum, trait, impl, and one with scopeKind function"
+      ],
+      "when": "OutlineMany is called",
+      "then": [
+        "the type-scoped tags have kind method and Container equal to their scope",
+        "the function-scoped tag is not reported as a method (dropped as local)"
+      ],
+      "pseudocode": "assert d.Kind == 'method' and d.Container == 'Foo'"
+    },
+    {
+      "id": "TS-01-34",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-5.3"
+      ],
+      "title": "EndLine comes from the ctags end field when present, otherwise 0.",
+      "given": [
+        "one tag with end: 12 and one without an end field"
+      ],
+      "when": "OutlineMany is called",
+      "then": [
+        "the first Decl has EndLine 12",
+        "the second has EndLine 0"
+      ],
+      "pseudocode": "assert d1.EndLine == 12 and d2.EndLine == 0"
+    },
+    {
+      "id": "TS-01-35",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-5.4"
+      ],
+      "title": "Signature is the trimmed source line at StartLine, with ctags signature only as fallback.",
+      "given": [
+        "a Src with '    def foo(a, b):  ' at line 3 and a tag with signature '(x)'",
+        "a tag whose line is beyond the end of the source"
+      ],
+      "when": "OutlineMany is called",
+      "then": [
+        "the first Signature is \"def foo(a, b):\" (trimmed source line)",
+        "the second Signature uses the ctags signature field"
+      ],
+      "pseudocode": "assert d1.Signature == 'def foo(a, b):'; assert d2.Signature == '(x)'"
+    },
+    {
+      "id": "TS-01-36",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-5.5"
+      ],
+      "title": "ctags Decls are exported unless the name begins with an underscore, and the File Backend is ctags.",
+      "given": [
+        "fake tags named Public, _private and __dunder__"
+      ],
+      "when": "OutlineMany is called",
+      "then": [
+        "Public is Exported true; _private and __dunder__ Exported false",
+        "File.Backend is ctags"
+      ],
+      "pseudocode": "assert exported == {'Public':True,'_private':False}; assert f.Backend == 'ctags'"
+    },
+    {
+      "id": "TS-01-37",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-5.6"
+      ],
+      "title": "A Runner error or unusable output falls back per file with a nil error and a Stats record.",
+      "given": [
+        "a batch of a Python file and a Lua file",
+        "a Runner returning an error in one case and returning non-JSON garbage in another"
+      ],
+      "when": "OutlineMany is called in each case",
+      "then": [
+        "err is nil",
+        "the Python file has Backend heuristic with its column-0 declarations",
+        "the Lua file has Backend none and empty Decls",
+        "Stats records the batch fallback"
+      ],
+      "pseudocode": "fs, st, err = OutlineMany(srcs, {Runner: errRunner}); assert err == nil; assert [f.Backend for f in fs] == ['heuristic','none']; assert st.Fallbacks == 1"
+    },
+    {
+      "id": "TS-01-38",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-5.7"
+      ],
+      "title": "Cancellation while the Runner runs returns ctx.Err() and does not fall back to heuristics.",
+      "given": [
+        "a Runner that blocks until ctx is cancelled and returns ctx.Err()",
+        "a Python file"
+      ],
+      "when": "the context is cancelled during OutlineMany",
+      "then": [
+        "the returned error equals ctx.Err()",
+        "no heuristic result is returned for the file (Files are not produced with a heuristic backend)",
+        "no fallback is counted in Stats"
+      ],
+      "pseudocode": "go cancelAfter(10ms); fs, st, err = OutlineMany(ctx, srcs, {Runner: blocking}); assert err == ctx.Err(); assert st.Fallbacks == 0"
+    },
+    {
+      "id": "TS-01-39",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-6.1",
+        "01-REQ-6.2"
+      ],
+      "title": "Heuristic fixtures for the ten languages match their golden files with Container empty and EndLine 0.",
+      "given": [
+        "fixtures under outline/testdata for Python, JavaScript, TypeScript, Rust, Java, Kotlin, C#, Ruby, C and C++ with column-0 declarations after modifiers (export, export default, async, pub, pub(crate), public, static)"
+      ],
+      "when": "each fixture is outlined with a nil Runner and compared to its golden file",
+      "then": [
+        "Backend is heuristic for each",
+        "Decls equal the golden JSON",
+        "every Decl has Container \"\" and EndLine 0"
+      ],
+      "pseudocode": "for lang in TEN: f = Outline(fixture(lang)); assert json(f) == golden(lang); for d in f.Decls: assert d.Container=='' and d.EndLine==0"
+    },
+    {
+      "id": "TS-01-40",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-6.3"
+      ],
+      "title": "Heuristic Exported follows each language's visibility rule.",
+      "given": [
+        "fixtures with: Python/Ruby _name vs name; Rust fn vs pub fn; JS/TS function vs export function; Java/Kotlin/C# without vs with public; C and C++ functions"
+      ],
+      "when": "each is outlined with the heuristic backend",
+      "then": [
+        "underscore names are not exported in Python and Ruby",
+        "Rust without pub, JS/TS without export, Java/Kotlin/C# without public are not exported; with them they are exported",
+        "C and C++ Decls are all exported"
+      ],
+      "pseudocode": "assert exported('rust','fn a')==False and exported('rust','pub fn a')==True"
+    },
+    {
+      "id": "TS-01-41",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-6.4"
+      ],
+      "title": "Indented declarations such as methods in a class are not reported by the heuristic.",
+      "given": [
+        "a Python file with class A: and an indented '    def m(self):', and a JS class with an indented method"
+      ],
+      "when": "outlined with a nil Runner",
+      "then": [
+        "only the column-0 class is in Decls",
+        "no Decl has a StartLine of an indented line"
+      ],
+      "pseudocode": "assert names(f.Decls) == ['A']"
+    },
+    {
+      "id": "TS-01-42",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-6.5"
+      ],
+      "title": "A language with no heuristic and no usable ctags yields none with its Lang and empty Decls.",
+      "given": [
+        "a .lua file, with a nil Runner and with a failing Runner"
+      ],
+      "when": "Outline and OutlineMany are called",
+      "then": [
+        "no error",
+        "Backend is none, Lang is lua, Decls is an empty non-nil slice"
+      ],
+      "pseudocode": "f, err = Outline(lua, {}); assert err == nil and f.Lang == 'lua' and f.Backend == 'none' and f.Decls == []"
+    },
+    {
+      "id": "TS-01-43",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-7.1"
+      ],
+      "title": "CtagsRunner's return value is assignable to outline.Options.Runner and tools does not import outline.",
+      "given": [
+        "a tools_test or external test file importing both packages"
+      ],
+      "when": "the test assigns outline.Options{Runner: tools.CtagsRunner(nil)} and lists tools imports with go list",
+      "then": [
+        "the assignment compiles",
+        "the tools package import list does not include the outline package"
+      ],
+      "pseudocode": "var _ = outline.Options{Runner: tools.CtagsRunner(nil)}; assert 'outline' not in goList('./tools').Imports"
+    },
+    {
+      "id": "TS-01-44",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-7.3"
+      ],
+      "title": "With ctags absent from PATH every call returns an error wrapping ErrCtagsUnavailable.",
+      "given": [
+        "PATH set to an empty directory"
+      ],
+      "when": "CtagsRunner(nil) is created and called twice",
+      "then": [
+        "both errors satisfy errors.Is(err, ErrCtagsUnavailable)",
+        "stdout is nil",
+        "no process is spawned on the second call (the verdict is cached)"
+      ],
+      "pseudocode": "t.Setenv('PATH', emptyDir); r = CtagsRunner(nil); _, e = r(ctx, args); assert errors.Is(e, ErrCtagsUnavailable)"
+    },
+    {
+      "id": "TS-01-45",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-7.2",
+        "01-REQ-7.3"
+      ],
+      "title": "LookPath and the version check run once per runner and only Universal Ctags is accepted.",
+      "given": [
+        "a fake 'ctags' shell script on PATH that appends to a counter file on each --version call (skipped on windows)",
+        "variants printing 'Exuberant Ctags 5.8', a BSD usage error, and 'Universal Ctags 6.0'"
+      ],
+      "when": "a runner is made for each variant and called three times",
+      "then": [
+        "Exuberant and BSD variants return errors wrapping ErrCtagsUnavailable on every call",
+        "the Universal variant runs the requested arguments successfully",
+        "--version is executed exactly once per runner"
+      ],
+      "pseudocode": "assert errors.Is(err, ErrCtagsUnavailable) for non-universal; assert count(versionCalls) == 1"
+    },
+    {
+      "id": "TS-01-46",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-7.4",
+        "01-REQ-7.5"
+      ],
+      "title": "ctags runs with the given or reduced environment, empty stdin and discarded stderr, and stdout is captured alone.",
+      "given": [
+        "a fake universal ctags script that prints its environment and a stdin read to stdout and writes a marker to stderr",
+        "a secret variable in the test process environment"
+      ],
+      "when": "CtagsRunner(nil) and CtagsRunner([]string{\"FOO=bar\"}) are called",
+      "then": [
+        "with nil the child environment equals ReducedEnv(nil) and omits the secret variable",
+        "with env given the child sees exactly FOO=bar",
+        "stdin read yields EOF immediately",
+        "the stderr marker is absent from the returned stdout"
+      ],
+      "pseudocode": "out = r(ctx, args); assert 'SECRET' not in out; assert 'STDERR_MARK' not in out"
+    },
+    {
+      "id": "TS-01-47",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-7.6"
+      ],
+      "title": "Truncated output returns an error rather than a cut-off stream.",
+      "given": [
+        "the accumulator cap lowered through a test seam to 1 KiB",
+        "a fake or real ctags that emits more than 1 KiB on stdout"
+      ],
+      "when": "the runner is called",
+      "then": [
+        "the error is non-nil",
+        "the returned byte slice is nil (no partial stream)"
+      ],
+      "pseudocode": "out, err = r(ctx, args); assert err != nil and out == nil"
+    },
+    {
+      "id": "TS-01-48",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-7.7"
+      ],
+      "title": "Context cancellation kills the whole ctags process group.",
+      "given": [
+        "a fake universal ctags script that spawns a background child sleep and then sleeps itself (skipped on windows)",
+        "where real ctags is present the same check is run against it"
+      ],
+      "when": "the context is cancelled while the call is running",
+      "then": [
+        "the call returns promptly with an error",
+        "neither the script process nor its child remains running after the call returns"
+      ],
+      "pseudocode": "go cancelAfter(100ms); _, err = r(ctx, args); assert err != nil; assert not alive(pid) and not alive(childPid)"
+    },
+    {
+      "id": "TS-01-49",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-7.8"
+      ],
+      "title": "A non-zero ctags exit status returns an error and no stdout.",
+      "given": [
+        "a fake universal ctags script that prints some output and exits 3 when not called with --version"
+      ],
+      "when": "the runner is called",
+      "then": [
+        "err is non-nil and is not ErrCtagsUnavailable",
+        "the returned bytes are nil"
+      ],
+      "pseudocode": "out, err = r(ctx, args); assert err != nil and out == nil"
+    },
+    {
+      "id": "TS-01-50",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-8.1"
+      ],
+      "title": "The walk applies the ignore engine, hidden switch, relative slash paths and nested ignore files, and calls back for directories.",
+      "given": [
+        "a temp tree with a root .gitignore, a nested dir with its own .gitignore, .git, a .hidden file and dir, ignored entries and regular files"
+      ],
+      "when": "the unexported walk is run with IncludeHidden false and again with true, recording rel paths and entry types",
+      "then": [
+        "rel is slash-separated and never includes the root entry",
+        "ignored entries (including those from the nested .gitignore, applied only after ig.enter on their directory) are not called back; an ignored directory is not descended",
+        "dot-prefixed entries are absent when hidden is excluded and present when included (except those the ignore engine matches such as .git)",
+        "directories are called back as well as files"
+      ],
+      "pseudocode": "walk(ctx, root, IgnoreOptions{}, false, rec); assert rels == expectedNoHidden; walk(..., true, rec); assert '.hidden' in rels and '.git' not in rels"
+    },
+    {
+      "id": "TS-01-51",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-8.2"
+      ],
+      "title": "Missing roots and unreadable entries yield a nil error.",
+      "given": [
+        "a root path that does not exist",
+        "a tree with a directory whose permissions are 000 (skipped on windows or when running as root)"
+      ],
+      "when": "the walk runs on each",
+      "then": [
+        "the missing root gives zero callback calls and a nil error",
+        "the unreadable directory is skipped and the walk returns nil with the other entries visited"
+      ],
+      "pseudocode": "err = walk(ctx, missing, ...); assert err == nil and calls == 0"
+    },
+    {
+      "id": "TS-01-52",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-8.3"
+      ],
+      "title": "A cancelled context stops the walk with ctx.Err().",
+      "given": [
+        "a tree with several files",
+        "a context cancelled from inside the callback after the first entry, and another cancelled before the walk"
+      ],
+      "when": "the walk runs",
+      "then": [
+        "the walk returns ctx.Err()",
+        "no further callbacks occur after cancellation is observed"
+      ],
+      "pseudocode": "err = walk(ctx, root, ..., func(){ cancel(); return nil }); assert err == context.Canceled and calls == 1"
+    },
+    {
+      "id": "TS-01-53",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-8.4"
+      ],
+      "title": "SkipDir, SkipAll and callback errors have fs.WalkDirFunc semantics.",
+      "given": [
+        "a tree with dirs a/, b/ each holding files"
+      ],
+      "when": "the callback returns filepath.SkipDir for a/, then separately SkipAll at the first file, then a sentinel error",
+      "then": [
+        "SkipDir omits a/'s children but visits b/ and returns nil",
+        "SkipAll ends the walk and returns nil",
+        "the sentinel error ends the walk and is returned unchanged (errors.Is and ==)"
+      ],
+      "pseudocode": "assert walk(skipDirA) == nil and 'a/x' not in rels; assert walk(skipAll) == nil; assert walk(errCb) == sentinel"
+    },
+    {
+      "id": "TS-01-54",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-8.5"
+      ],
+      "title": "Walk refuses a nil workspace, a relative root or a root outside the workspace with ErrPathNotAllowed before any callback.",
+      "given": [
+        "a Workspace rooted at a temp dir and a sibling temp dir outside it"
+      ],
+      "when": "Walk is called with ws nil, with a relative root, and with the outside root",
+      "then": [
+        "each returns an error with errors.Is(err, ErrPathNotAllowed)",
+        "the callback is never called",
+        "a root inside the workspace is accepted"
+      ],
+      "pseudocode": "for args in cases: err = Walk(ctx, ws, root, opts, cb); assert errors.Is(err, ErrPathNotAllowed) and calls == 0"
+    },
+    {
+      "id": "TS-01-55",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-8.6"
+      ],
+      "title": "The walk does not follow symlinks.",
+      "given": [
+        "a tree with a symlink to a directory containing files and a symlink to a file (skipped where symlinks are unsupported)"
+      ],
+      "when": "the walk runs",
+      "then": [
+        "the symlink entries are called back as entries but their targets' children are never visited"
+      ],
+      "pseudocode": "assert 'link/inner.txt' not in rels"
+    },
+    {
+      "id": "TS-01-56",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-8.7"
+      ],
+      "title": "tools contains exactly one directory-walk implementation.",
+      "given": [
+        "the non-test Go sources of the tools package"
+      ],
+      "when": "they are parsed with go/parser and calls to filepath.WalkDir, filepath.Walk and fs.WalkDir are counted",
+      "then": [
+        "exactly one such call exists, inside the shared walk",
+        "find_files, searchNative and CountCandidates reach it, and Walk wraps it with confinement"
+      ],
+      "pseudocode": "count = sum(calls(f, ['WalkDir','Walk']) for f in toolsFiles); assert count == 1"
+    },
+    {
+      "id": "TS-01-57",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-8.8"
+      ],
+      "title": "Search, SearchIn and CountCandidates work from a bare root string without a Workspace.",
+      "given": [
+        "a temp tree with matching files and no Workspace constructed"
+      ],
+      "when": "Search, SearchIn and CountCandidates are called with the root string",
+      "then": [
+        "matches and candidate counts are returned with a nil error",
+        "none of the calls requires or creates a Workspace"
+      ],
+      "pseudocode": "res = Search(ctx, root, opts); n = CountCandidates(ctx, root, ...); assert n == expected"
+    },
+    {
+      "id": "TS-01-58",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-9.1"
+      ],
+      "title": "find_files still returns dot-prefixed entries through Walk with IncludeHidden true.",
+      "given": [
+        "a workspace with .github/workflows/ci.yml, .gitignore and README.md"
+      ],
+      "when": "find_files runs with pattern ** and file_type any",
+      "then": [
+        "the result includes .github, .github/workflows/ci.yml and .gitignore",
+        "README.md is included",
+        "only .git itself is excluded"
+      ],
+      "pseudocode": "out = findFiles({pattern:'**', file_type:'any'}); assert '.gitignore' in out and '.github/workflows/ci.yml' in out"
+    },
+    {
+      "id": "TS-01-59",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-9.2"
+      ],
+      "title": "find_files keeps its file_type filter, glob matching, limit, truncation marker and sorting.",
+      "given": [
+        "a workspace with files and directories whose names would sort differently in walk order and exceed a small limit"
+      ],
+      "when": "find_files is run with file_type file, a glob, and a limit below the match count",
+      "then": [
+        "only files matching the glob are returned, sorted as before",
+        "the result is cut at limit and the existing truncation marker text is appended",
+        "file_type dir returns only directories"
+      ],
+      "pseudocode": "assert out.lines == sorted(expected)[:limit]; assert out.endswith(TRUNCATION_MARKER)"
+    },
+    {
+      "id": "TS-01-60",
+      "kind": "property",
+      "verifies": [
+        "01-REQ-9.3"
+      ],
+      "title": "find_files with ** and file_type file returns the same set as Walk with IncludeHidden true.",
+      "given": [
+        "a generator of trees with nested .gitignore files, a nested repository, hidden files and symlinks"
+      ],
+      "when": "for any such tree, find_files and tools.Walk (collecting non-directory entries, including symlinks as find_files lists them) are run",
+      "then": [
+        "the two path sets are equal"
+      ],
+      "pseudocode": "for tree in gen(): a = set(findFiles('**','file')); b = set(walkFiles(ws, root, {IncludeHidden:true})); assert a == b"
+    },
+    {
+      "id": "TS-01-61",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-9.4"
+      ],
+      "title": "The native search backend and countCandidates use the walk with hidden entries excluded and keep their regular-file check and file_glob.",
+      "given": [
+        "a tree with a hidden file containing the pattern, a symlink to a file, a regular file matching, a regular file not matching file_glob"
+      ],
+      "when": "the native search_files backend and countCandidates run with a file_glob",
+      "then": [
+        "the hidden file and symlink are not searched",
+        "only regular files matching file_glob are searched and matched",
+        "files_searched equals the count of those candidates"
+      ],
+      "pseudocode": "res = searchNative(root, 'needle', glob='*.go'); assert files(res) == {'a.go'}; assert countCandidates(root, glob) == 1"
+    },
+    {
+      "id": "TS-01-62",
+      "kind": "property",
+      "verifies": [
+        "01-REQ-9.5"
+      ],
+      "title": "Walk with IncludeHidden false visits exactly the regular files search_files selects.",
+      "given": [
+        "a generator of trees with ignore files, hidden entries, nested repositories and symlinks",
+        "the native backend forced on"
+      ],
+      "when": "for any tree, regular files from tools.Walk (IncludeHidden false) are compared with the files search_files searches for a match-everything pattern",
+      "then": [
+        "the two sets are equal"
+      ],
+      "pseudocode": "for tree in gen(): w = {rel for rel,d in walk(false) if d.Type().IsRegular()}; s = filesWithMatches(searchNative('.')); assert w == s"
+    },
+    {
+      "id": "TS-01-63",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-9.6",
+        "01-REQ-9.7"
+      ],
+      "title": "Tool descriptions, schemas, markers and the ripgrep path are unchanged and the existing suites pass unedited.",
+      "given": [
+        "the repository's find_files and search_files test files, including the rg/native parity test, with no diff versus the base commit",
+        "golden schemas and descriptions"
+      ],
+      "when": "go test ./tools/... is run and git diff is checked for those test files and for searchRipgrep",
+      "then": [
+        "all existing find_files and search_files tests pass",
+        "the parity test passes (or skips only when rg is absent)",
+        "no test file for them is modified and the tool descriptions and schemas are byte-identical",
+        "searchRipgrep is unchanged apart from nothing"
+      ],
+      "pseudocode": "run('go test ./tools/'); assert gitDiff(testFiles) == ''; assert schema(find_files) == golden"
+    },
+    {
+      "id": "TS-01-64",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-10.1"
+      ],
+      "title": "outline imports only the standard library and has no build-constrained or cgo file.",
+      "given": [
+        "the outline package directory"
+      ],
+      "when": "go list -json is run and the sources are scanned",
+      "then": [
+        "every import is a standard-library package",
+        "no file has a //go:build or +build line or a GOOS/GOARCH filename suffix",
+        "no file imports \"C\""
+      ],
+      "pseudocode": "for imp in goList('./outline').Imports: assert isStd(imp); assert not grep('//go:build', files)"
+    },
+    {
+      "id": "TS-01-65",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-10.2"
+      ],
+      "title": "go.mod gains no require and the internal/policy tests pass unmodified.",
+      "given": [
+        "go.mod and internal/policy tests with no diff versus base"
+      ],
+      "when": "go test ./internal/policy/... is run and go.mod is inspected",
+      "then": [
+        "go.mod has no require line",
+        "allowedModules is unchanged and the tests pass"
+      ],
+      "pseudocode": "assert 'require' not in read('go.mod'); run('go test ./internal/policy/...') == 0"
+    },
+    {
+      "id": "TS-01-66",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-10.3"
+      ],
+      "title": "outline builds and vets for all four cross targets with CGO_ENABLED=0.",
+      "given": [
+        "the crossTargets in internal/policy/crosstarget_test.go: linux/amd64, linux/arm64, darwin/arm64, windows/amd64"
+      ],
+      "when": "go build ./... and go vet ./... run per target with CGO_ENABLED=0",
+      "then": [
+        "every command exits 0 including ./outline"
+      ],
+      "pseudocode": "for t in crossTargets: env(GOOS,GOARCH,CGO_ENABLED=0): assert run('go build ./...')==0 and run('go vet ./...')==0"
+    },
+    {
+      "id": "TS-01-67",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-10.4"
+      ],
+      "title": "Tests needing real ctags skip when ctags is absent or not universal and the default run still passes.",
+      "given": [
+        "PATH without ctags, and a PATH with a non-universal ctags stub"
+      ],
+      "when": "go test ./outline/... ./tools/... runs",
+      "then": [
+        "the real-ctags tests are reported as skipped",
+        "the command exits 0"
+      ],
+      "pseudocode": "t.Setenv('PATH', noCtags); assert run('go test ./outline/ ./tools/') == 0; assert skipped(realCtagsTests)"
+    },
+    {
+      "id": "TS-01-68",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-10.5"
+      ],
+      "title": "No default Runner is installed and the default tool set is unchanged.",
+      "given": [
+        "the pinned default tool set test in tools/reqtool06_test.go"
+      ],
+      "when": "the repository is searched for Runner installation and the tool set is listed",
+      "then": [
+        "no non-test code outside tools.CtagsRunner constructs an outline.Options with a Runner",
+        "FileNavigationTools() and All() return exactly the previously pinned names, and TestTheDefaultToolSetIsPlatformStable passes"
+      ],
+      "pseudocode": "assert grep('Runner:', nonTestFiles) == []; assert names(All()) == PINNED"
+    },
+    {
+      "id": "TS-01-69",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-10.6"
+      ],
+      "title": "architecture.md lists outline in the package graph and packages table and notes Walk and CtagsRunner.",
+      "given": [
+        "docs/architecture.md after the change"
+      ],
+      "when": "the file is read",
+      "then": [
+        "the package graph contains outline with imports 'nothing first-party'",
+        "the packages table has an outline row",
+        "the tools section mentions tools.Walk and tools.CtagsRunner"
+      ],
+      "pseudocode": "d = read('docs/architecture.md'); assert 'outline' in d and 'tools.Walk' in d and 'tools.CtagsRunner' in d"
+    },
+    {
+      "id": "TS-01-70",
+      "kind": "unit",
+      "verifies": [
+        "01-REQ-10.7"
+      ],
+      "title": "README.md and GAPS.md record the outline entry, unbuilt references/callers and the walk consolidation.",
+      "given": [
+        "README.md and docs/GAPS.md after the change"
+      ],
+      "when": "the files are read",
+      "then": [
+        "README's tools section has an outline entry",
+        "the 'What is not built' list still states references and callers are unbuilt",
+        "docs/GAPS.md records the walk consolidation"
+      ],
+      "pseudocode": "assert 'outline' in readme and 'references' in notBuilt(readme) and 'walk' in gaps"
+    },
+    {
+      "id": "TS-01-71",
+      "kind": "integration",
+      "verifies": [
+        "01-REQ-10.8"
+      ],
+      "title": "docs/api.md is unchanged and make check passes.",
+      "given": [
+        "the repository after the documentation edits"
+      ],
+      "when": "git diff on docs/api.md is inspected and make check is run",
+      "then": [
+        "docs/api.md has no diff",
+        "make check exits 0"
+      ],
+      "pseudocode": "assert gitDiff('docs/api.md') == ''; assert run('make check') == 0"
+    },
+    {
+      "id": "TS-01-72",
+      "kind": "smoke",
+      "verifies": [
+        "01-PATH-1",
+        "01-REQ-3.1"
+      ],
+      "title": "An embedder outlines a Go file with no subprocess and gets a root-relative go/ast File.",
+      "given": [
+        "a temp workspace root with pkg/a.go containing a func, a method, a type and a const",
+        "PATH set to empty so any spawn would fail"
+      ],
+      "when": "outline.Outline is called with the absolute path, nil Src and Options{Root}",
+      "then": [
+        "File.Path is pkg/a.go",
+        "Backend is go/ast",
+        "Decls are sorted, ranges match go/ast, signatures are sanitised",
+        "no process was spawned"
+      ],
+      "real_components": [
+        "outline package",
+        "Go backend",
+        "go/parser",
+        "filesystem"
+      ]
+    },
+    {
+      "id": "TS-01-73",
+      "kind": "smoke",
+      "verifies": [
+        "01-PATH-2",
+        "01-REQ-4.3"
+      ],
+      "title": "OutlineMany with the real CtagsRunner outlines Python and Rust files in one ctags batch.",
+      "given": [
+        "universal-ctags is on PATH (test skips otherwise)",
+        "a Python file and a Rust file in a temp root"
+      ],
+      "when": "outline.OutlineMany is called with Options{Runner: tools.CtagsRunner(nil)}",
+      "then": [
+        "Files are returned in input order with Backend ctags",
+        "tags are attributed to the right files and signatures are source lines",
+        "one ctags invocation served both files (apart from the version check)",
+        "Stats shows no fallback"
+      ],
+      "real_components": [
+        "outline package",
+        "tools.CtagsRunner",
+        "universal-ctags process",
+        "filesystem"
+      ]
+    },
+    {
+      "id": "TS-01-74",
+      "kind": "smoke",
+      "verifies": [
+        "01-PATH-3",
+        "01-REQ-5.6",
+        "01-REQ-6.5"
+      ],
+      "title": "Without universal-ctags, a Python file degrades to heuristics and a Lua file to none.",
+      "given": [
+        "PATH set to an empty directory so ctags is unavailable",
+        "a Python file with column-0 declarations and an indented method, and a Lua file"
+      ],
+      "when": "outline.OutlineMany is called with Options{Runner: tools.CtagsRunner(nil)}",
+      "then": [
+        "the error is nil",
+        "the Python File has Backend heuristic with only its column-0 declarations",
+        "the Lua File has Backend none, Lang lua and empty Decls",
+        "Stats records the batch fallback"
+      ],
+      "real_components": [
+        "outline package",
+        "tools.CtagsRunner",
+        "heuristic backend",
+        "filesystem"
+      ]
+    },
+    {
+      "id": "TS-01-75",
+      "kind": "smoke",
+      "verifies": [
+        "01-PATH-4",
+        "01-REQ-9.5"
+      ],
+      "title": "An embedder walks a workspace and outlines exactly the files search_files would select.",
+      "given": [
+        "a workspace tree with .gitignore, an ignored dir, a hidden file, a symlink and Go and Python sources"
+      ],
+      "when": "tools.Walk is called with IncludeHidden false, regular files are collected and passed to outline.OutlineMany with a nil Runner",
+      "then": [
+        "one File is returned per collected path",
+        "the outlined path set equals the set search_files searches",
+        "hidden and ignored files are absent",
+        "Go files have Backend go/ast and Python files heuristic"
+      ],
+      "real_components": [
+        "tools.Walk",
+        "ignore engine",
+        "Workspace",
+        "outline package",
+        "filesystem"
+      ]
+    },
+    {
+      "id": "TS-01-76",
+      "kind": "smoke",
+      "verifies": [
+        "01-PATH-5",
+        "01-REQ-8.5"
+      ],
+      "title": "A walk root outside the workspace is refused before any entry is visited.",
+      "given": [
+        "a Workspace rooted at a temp dir and a different temp dir with files"
+      ],
+      "when": "tools.Walk is called with the outside absolute root",
+      "then": [
+        "the returned error satisfies errors.Is(err, ErrPathNotAllowed)",
+        "the callback is never called"
+      ],
+      "real_components": [
+        "tools.Walk",
+        "Workspace",
+        "within check"
+      ]
+    },
+    {
+      "id": "TS-01-77",
+      "kind": "smoke",
+      "verifies": [
+        "01-PATH-6",
+        "01-REQ-9.1"
+      ],
+      "title": "find_files lists files through the shared walk with nested ignores, hidden entries and no symlink following.",
+      "given": [
+        "a workspace with nested .gitignore files, a nested repository, .github/ci.yml, a hidden file and a symlink to a directory",
+        "the find_files tool constructed from the real Workspace"
+      ],
+      "when": "find_files is executed with pattern ** and file_type file",
+      "then": [
+        "hidden files such as .github/ci.yml are returned",
+        "files ignored by nested .gitignore files are absent",
+        "the symlinked directory's contents are not listed",
+        "the result is sorted with the unchanged truncation marker when limited"
+      ],
+      "real_components": [
+        "find_files tool",
+        "tools.Walk",
+        "ignore engine",
+        "Workspace",
+        "filesystem"
+      ]
+    },
+    {
+      "id": "TS-01-78",
+      "kind": "smoke",
+      "verifies": [
+        "01-PATH-7",
+        "01-REQ-9.4"
+      ],
+      "title": "The native search_files backend and CountCandidates share the walk and keep their result shape.",
+      "given": [
+        "a temp tree with ignored files, a hidden file containing the pattern, regular files and a symlink",
+        "the native backend forced (rg bypassed)"
+      ],
+      "when": "search_files is called with a pattern and file_glob, then CountCandidates is called on the same root",
+      "then": [
+        "matches come only from non-ignored, non-hidden regular files matching file_glob",
+        "the result shape and markers are unchanged",
+        "files_searched equals the CountCandidates value"
+      ],
+      "real_components": [
+        "search_files native backend",
+        "CountCandidates",
+        "shared walk",
+        "ignore engine",
+        "filesystem"
+      ]
+    }
+  ]
+}
