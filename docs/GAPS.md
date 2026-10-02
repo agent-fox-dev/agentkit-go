@@ -187,6 +187,13 @@ Every row here is a finding of this pass, not the 0.4.2 audit above.
 | MCP HTTP | The default client followed redirects and forwarded custom credential headers cross-origin. | Fixed — `ErrUseLastResponse`. |
 | examples | `VAR=x git push` bypassed the git guard in `cleaner` and `flatline`; the pipeline's own verify ran the project's tests with the full environment while the agent's shell got the reduced one; `find -exec` in the read-only phase; issue text was pasted with no third-party framing. | Fixed. |
 
+## Outline and walk consolidation
+
+| Req | Finding | Status |
+|---|---|---|
+| — | `find_files`, `searchNative` and `countCandidates` each ran their own `filepath.WalkDir` with duplicated ignore-engine setup. | Fixed — a single unexported `walk()` in `tools/walk.go` underlies all three callers; `tools.Walk` exports it behind workspace confinement. `TestWalkAndFindFilesAgree`, `TestWalkHiddenSwitch`. |
+| — | No reusable declaration listing for source files. | Fixed — `outline/` package with Go (`go/ast`), ctags (injected `Runner`), heuristic and `none` backends. `tools.CtagsRunner` supplies the ctags process lifecycle. Standard-library-only, no first-party imports. |
+
 ### Deferred by decision
 
 | Where | Finding | Decision |

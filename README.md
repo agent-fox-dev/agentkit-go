@@ -63,7 +63,8 @@ in 0.4.1 rather than the code walked back.
 | `catalog` | Embedded model catalog, resolution, sibling-cloning, `max_tokens` and thinking-level clamping. |
 | `session` | Append-only JSONL log, damage-tolerant loader, branch tree, resume fold. |
 | `skills` | Skill manifests (hand-rolled TOML subset), progressive disclosure, project context files, and the default-off trust gate. |
-| `tools` | Built-in tools, path containment, bounded accumulator, process control, glob, a layered gitignore engine, and `fetch_url` behind an SSRF guard. |
+| `outline` | Source-file declaration listing with three backends (`go/ast`, universal-ctags via an injected runner, anchored-line heuristics) and a `none` fallback. Standard-library-only. |
+| `tools` | Built-in tools, path containment, bounded accumulator, process control, glob, a layered gitignore engine, `fetch_url` behind an SSRF guard, `Walk` (the single shared directory traversal) and `CtagsRunner` (ctags process lifecycle for `outline`). |
 | `provider` | Send-time transcript repair, HTTP transport + retry, credential resolution, header precedence, cost arithmetic, SSE decoding — everything shared by every wire API. |
 | `provider/{anthropic,openai,google,ollama,faux}` | One wire API each, encode and decode. |
 | `difftest` | Separate module: the NFR-TEST-06/07 differential harness — canonicalizing comparator, key-order side channel, divergence ledger, exit machine. |
@@ -759,6 +760,9 @@ requirement ledger, fixed and deferred alike, is [`docs/GAPS.md`](docs/GAPS.md).
   watches a handle. That is OQ-11 option (b) on purpose: when to come back is
   the embedder's decision, and a library that guessed would spend someone
   else's latency budget on a schedule it invented.
+- **Symbol navigation tools.** The `outline` package lists declarations; the
+  `file_outline` and `find_symbol` tools, the in-memory symbol table, and
+  references and callers are not built yet.
 - **WebP normalization.** REQ-TOOL-14 downscales JPEG, PNG and GIF; the
   standard library has no WebP decoder and REQ-GO-11 forbids the module that
   does, so a WebP image is forwarded as-is with its dimensions unknown — which

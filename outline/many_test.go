@@ -480,11 +480,11 @@ func TestOutlineMany_MalformedLines_TS_01_29(t *testing.T) {
 
 	// Fake ctags output with various malformed lines.
 	output := strings.Join([]string{
-		`{truncated json`,                                                                                                    // 1: invalid JSON
-		fmt.Sprintf(`{"_type": "tag", "path": %q, "line": 1, "kind": "function"}`, pyFile),                                  // 2: missing name
-		`{"_type": "tag", "name": "foo", "line": 1, "kind": "function"}`,                                                    // 3: missing path
-		fmt.Sprintf(`{"_type": "tag", "name": "bar", "path": %q, "kind": "function"}`, pyFile),                              // 4: missing line
-		fmt.Sprintf(`{"_type": "tag", "name": "hello", "path": %q, "line": 1, "kind": "function"}`, pyFile),                 // valid
+		`{truncated json`, // 1: invalid JSON
+		fmt.Sprintf(`{"_type": "tag", "path": %q, "line": 1, "kind": "function"}`, pyFile),                  // 2: missing name
+		`{"_type": "tag", "name": "foo", "line": 1, "kind": "function"}`,                                    // 3: missing path
+		fmt.Sprintf(`{"_type": "tag", "name": "bar", "path": %q, "kind": "function"}`, pyFile),              // 4: missing line
+		fmt.Sprintf(`{"_type": "tag", "name": "hello", "path": %q, "line": 1, "kind": "function"}`, pyFile), // valid
 	}, "\n") + "\n"
 
 	runner := func(_ context.Context, _ []string) ([]byte, error) {

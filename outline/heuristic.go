@@ -24,7 +24,7 @@ var heuristicLangs = map[string][]heuristicRule{
 type heuristicRule struct {
 	re       *regexp.Regexp
 	kind     Kind
-	nameIdx  int  // submatch index for the declaration name
+	nameIdx  int // submatch index for the declaration name
 	exported func(line string, name string) bool
 }
 
