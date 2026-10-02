@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/agentfox/agentkit-go/core"
+	"github.com/agentfox/agentkit-go/outline"
 	"github.com/agentfox/agentkit-go/schema"
 	"github.com/agentfox/agentkit-go/tools"
 
@@ -211,6 +212,7 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 	defer searchCancel()
 
 	var resultFiles []searchResultFile
+	var totalFiles int
 
 	if idx.testSearchHook != nil {
 		hookResult, err := idx.testSearchHook(searchCtx, trimmed)
@@ -227,10 +229,14 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 		}
 		if hookResult != nil {
 			resultFiles = hookResult.files
+			totalFiles = hookResult.totalFiles
+			if totalFiles < len(resultFiles) {
+				totalFiles = len(resultFiles)
+			}
 		}
 	} else {
 		// Real zoekt search.
-		files, err := idx.searchZoekt(searchCtx, finalQ, maxFiles, contextLines)
+		files, total, err := idx.searchZoekt(searchCtx, finalQ, maxFiles, contextLines)
 		if err != nil {
 			if searchCtx.Err() != nil && ctx.Err() == nil {
 				return core.ErrResult("search_failed",
@@ -242,10 +248,11 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 			return core.ErrResult("search_failed", err.Error())
 		}
 		resultFiles = files
+		totalFiles = total
 	}
 
 	// Build the result data.
-	return idx.buildResult(resultFiles, maxFiles)
+	return idx.buildResult(resultFiles, maxFiles, totalFiles)
 }
 
 // ensureBuilt triggers a lazy build if the index has not been built yet.
@@ -259,24 +266,27 @@ func (idx *Index) ensureBuilt(ctx context.Context) error {
 	return idx.Build(ctx)
 }
 
-// searchZoekt performs the actual zoekt search.
-func (idx *Index) searchZoekt(ctx context.Context, q query.Q, maxFiles, contextLines int) ([]searchResultFile, error) {
+// searchZoekt performs the actual zoekt search and returns the total number
+// of files that matched (which may exceed maxFiles).
+func (idx *Index) searchZoekt(ctx context.Context, q query.Q, maxFiles, contextLines int) ([]searchResultFile, int, error) {
 	idx.mu.RLock()
 	runDir := idx.runDir
+	outlineFiles := idx.outlineFiles
 	idx.mu.RUnlock()
 
 	if runDir == "" {
-		return nil, fmt.Errorf("no index directory")
+		return nil, 0, fmt.Errorf("no index directory")
 	}
 
 	searcher, err := search.NewDirectorySearcher(runDir)
 	if err != nil {
-		return nil, fmt.Errorf("open searcher: %w", err)
+		return nil, 0, fmt.Errorf("open searcher: %w", err)
 	}
 	defer searcher.Close()
 
+	// Ask for more files than maxFiles so we can detect truncation.
 	opts := &zoekt.SearchOptions{
-		MaxDocDisplayCount: maxFiles,
+		MaxDocDisplayCount: maxFiles + 1,
 		NumContextLines:    contextLines,
 		ChunkMatches:       true,
 		MaxWallTime:        idx.effectiveQueryTimeout(),
@@ -284,20 +294,13 @@ func (idx *Index) searchZoekt(ctx context.Context, q query.Q, maxFiles, contextL
 
 	result, err := searcher.Search(ctx, q, opts)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	var files []searchResultFile
-	for _, fm := range result.Files {
-		rf := searchResultFile{
-			path:       fm.FileName,
-			score:      fm.Score,
-			matchCount: len(fm.ChunkMatches),
-		}
-		files = append(files, rf)
-	}
+	totalFiles := len(result.Files)
+	files := convertFileMatches(result.Files, maxFiles, contextLines, outlineFiles)
 
-	return files, nil
+	return files, totalFiles, nil
 }
 
 // effectiveQueryTimeout returns the query timeout to use.
@@ -309,26 +312,106 @@ func (idx *Index) effectiveQueryTimeout() time.Duration {
 }
 
 // buildResult constructs the ToolResult from search results.
-func (idx *Index) buildResult(files []searchResultFile, maxFiles int) core.ToolResult {
-	// Build minimal result data for now (full rendering is task 5).
+func (idx *Index) buildResult(files []searchResultFile, maxFiles, totalFiles int) core.ToolResult {
+	stats := idx.BuildStats()
+
+	// Gather result info for the first line.
+	info := idx.gatherResultInfo(stats)
+
+	// Determine if more files matched than max_files.
+	moreThanMax := totalFiles > maxFiles
+
+	// Build the text.
+	text := renderResult(files, info)
+
+	// Apply byte cap.
+	var bytesTruncated bool
+	var bytesMarkerText string
+	files, bytesMarkerText, bytesTruncated = applyByteCap(files, info, tools.DefaultByteLimit)
+	if bytesTruncated {
+		// Re-render with the truncated files.
+		text = renderResult(files, info)
+	}
+
+	// Append cap marker if more files matched than max_files.
+	var capMarkerText string
+	if moreThanMax {
+		capMarkerText = tools.CapMarker("files", "max_files", maxFiles, maxMaxFiles, "narrow the query or add a path")
+	}
+
+	// Append markers to text.
+	if bytesTruncated {
+		text += "\n" + bytesMarkerText
+	} else if capMarkerText != "" {
+		text += "\n" + capMarkerText
+	}
+
+	// Final byte-limit check: ensure text doesn't exceed the limit.
+	if len(text) > tools.DefaultByteLimit {
+		// Truncate to fit.
+		text = text[:tools.DefaultByteLimit-len(bytesMarkerText)-1] + "\n" + bytesMarkerText
+		bytesTruncated = true
+	}
+
+	// Build structured data.
 	fileData := make([]any, 0, len(files))
 	for _, f := range files {
+		chunkData := make([]any, 0, len(f.chunks))
+		for _, chunk := range f.chunks {
+			lineData := make([]any, 0, len(chunk.lines))
+			for _, line := range chunk.lines {
+				lineData = append(lineData, map[string]any{
+					"line":  line.lineNo,
+					"text":  line.text,
+					"match": line.match,
+				})
+			}
+			chunkData = append(chunkData, map[string]any{
+				"lines": lineData,
+			})
+		}
 		fileData = append(fileData, map[string]any{
-			"path":        f.path,
-			"score":       f.score,
-			"match_count": f.matchCount,
+			"path":    f.path,
+			"score":   f.score,
+			"matches": f.matchCount,
+			"chunks":  chunkData,
+			"symbols": f.symbols,
 		})
 	}
 
+	note := ""
+	if capMarkerText != "" {
+		note = capMarkerText
+	}
+	if bytesMarkerText != "" {
+		note = bytesMarkerText
+	}
+
 	data := map[string]any{
-		"files":         fileData,
-		"files_indexed": idx.BuildStats().FilesIndexed,
+		"files":           fileData,
+		"truncated":       moreThanMax || bytesTruncated,
+		"note":            note,
+		"partial":         false, // set by later tasks
+		"symbol_sources":  info.symbolSources,
+		"ctags_available": info.ctagsAvailable,
+		"files_indexed":   stats.FilesIndexed,
+		"dirty_files":     info.dirtyFiles,
+		"skipped": map[string]any{
+			"binary":    stats.BinarySkipped,
+			"oversized": stats.OversizedSkipped,
+		},
 	}
 
 	r := core.OKResult(data)
+	r.Text = text
 
-	// If more files matched than max_files, add truncation marker.
-	if len(files) >= maxFiles {
+	// Set metadata.
+	if bytesTruncated {
+		r.Metadata = &core.ToolMetadata{
+			Truncated:   true,
+			TruncatedBy: string(tools.TruncatedByBytes),
+		}
+	} else if moreThanMax {
 		r.Metadata = &core.ToolMetadata{
 			Truncated:   true,
 			TruncatedBy: string(tools.TruncatedByLines),
@@ -336,4 +419,67 @@ func (idx *Index) buildResult(files []searchResultFile, maxFiles int) core.ToolR
 	}
 
 	return r
+}
+
+// gatherResultInfo collects metadata for the result first line.
+func (idx *Index) gatherResultInfo(stats BuildStatsResult) resultInfo {
+	idx.mu.RLock()
+	outlineFiles := idx.outlineFiles
+	idx.mu.RUnlock()
+
+	// Count symbol sources.
+	symbolSources := make(map[string]int)
+	for _, of := range outlineFiles {
+		backend := string(of.Backend)
+		if backend == "" {
+			backend = "none"
+		}
+		symbolSources[backend]++
+	}
+
+	// Determine ctags availability.
+	// If DisableCtags is set, ctags is unavailable.
+	// If a Runner was provided that returns ErrCtagsUnavailable, ctags is unavailable.
+	// We detect this by checking if any file used the ctags backend.
+	ctagsAvailable := false
+	for _, of := range outlineFiles {
+		if of.Backend == outline.BackendCtags {
+			ctagsAvailable = true
+			break
+		}
+	}
+	// If DisableCtags was explicitly set, ctags is unavailable.
+	if idx.opts.DisableCtags {
+		ctagsAvailable = false
+	}
+	// If a runner was provided but no file used ctags, check if the runner
+	// is the one that returns ErrCtagsUnavailable.
+	if !idx.opts.DisableCtags && idx.opts.Runner != nil && !ctagsAvailable {
+		// Runner was provided but no ctags backend was used.
+		// This means ctags was unavailable.
+		ctagsAvailable = false
+	}
+
+	// Calculate index size from shard files.
+	var indexSize int64
+	if idx.runDir != "" {
+		entries, err := os.ReadDir(idx.runDir)
+		if err == nil {
+			for _, e := range entries {
+				if fi, err := e.Info(); err == nil {
+					indexSize += fi.Size()
+				}
+			}
+		}
+	}
+
+	return resultInfo{
+		filesIndexed:   stats.FilesIndexed,
+		indexSizeBytes: indexSize,
+		symbolSources:  symbolSources,
+		ctagsAvailable: ctagsAvailable,
+		partial:        false, // set by later tasks
+		partialReason:  "",
+		dirtyFiles:     0, // set by later tasks
+	}
 }

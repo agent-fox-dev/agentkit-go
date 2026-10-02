@@ -108,14 +108,17 @@ func New(ws *tools.Workspace, opts Options) (*Index, error) {
 
 // searchHookResult is the return type for the testSearchHook seam.
 type searchHookResult struct {
-	files []searchResultFile
+	files      []searchResultFile
+	totalFiles int // total files that matched (may exceed len(files))
 }
 
-// searchResultFile is a minimal file result for the search hook.
+// searchResultFile is one file in a code_search result.
 type searchResultFile struct {
 	path       string
 	score      float64
 	matchCount int
+	chunks     []resultChunk
+	symbols    []string // declaration names for matches on start lines
 }
 
 // Index is the codesearch index. It implements tools.Index.
