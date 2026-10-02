@@ -8,9 +8,10 @@ disagree, fix this file.
 
 One Go module (`github.com/agentfox/agentkit-go`, `go 1.26.5`), standard
 library only. That is enforced by `internal/policy` (see
-[`DEPS.md`](DEPS.md)). Three nested modules carry their own dependency budget and
+[`DEPS.md`](DEPS.md)). Four nested modules carry their own dependency budget and
 are not in the root build graph: [`codesearch/`](../codesearch),
-[`difftest/`](../difftest) and
+[`difftest/`](../difftest),
+[`examples/codesearch/`](../examples/codesearch) and
 [`examples/flatline/`](../examples/flatline).
 
 The root package holds the `Agent` and nothing else

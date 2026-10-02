@@ -7,11 +7,13 @@ deliberately repeat their setup rather than sharing a helper package, so
 nothing you need is in a file you have not opened. The last three,
 [`issued`](issued), [`cleaner`](cleaner) and [`flatline`](flatline), are the
 opposite on purpose: finished applications, which is what the others look like
-once they stop being examples.
+once they stop being examples. Beside them, [`codesearch`](codesearch) is a
+small nested module of three programs for the optional code-search index.
 
 **Six of them need no API key at all**: `agentdemo`, `testing`, `plugins`,
 `mcp`, `mcpserver` and `skills` do their real work before any model call, so you can run
-them right now.
+them right now — and so do `codesearch/search` and `codesearch/freshness`, which
+never call a model at all.
 
 | Example | Run it | What it teaches |
 |---|---|---|
@@ -44,6 +46,17 @@ skill rebuilt as a program. The third rebuilds an orchestrator's simplest path:
 | [`issued`](issued) | `go run ./examples/issued "<a bug report>"` · `go test ./examples/issued/ -v` | **A whole application.** The read-only mandate becomes a tool policy, the issue template becomes a schema, "cite real files" becomes a check in a tool handler, and filing lives where no model output can reach it. Its test suite needs no key. |
 | [`cleaner`](cleaner) | `go run ./examples/cleaner https://github.com/{owner}/{repo}/issues/{n}` · `go test ./examples/cleaner/` | **A whole application.** Two model phases with different tool scopes, structured hand-off through terminating tools, an application-specific authorization guard, verification the model cannot fake, and an end-to-end test of all of it against a scripted provider. Its test suite needs no key. |
 | [`flatline`](flatline) | `cd examples/flatline && go run . --dir ~/src/widgets 3` · `go test ./...` | **A whole application, and a nested module.** agent-fox's `af code` for one spec pack with no dependencies: a session per task group with the spec rendered and scoped to it, memory carried from group to group, the pack's own test commands as gates, retries with the failure in the prompt, per-group squash landings, and an optional informational verifier — driven by the spec library it imports. Needs a sibling checkout of `agent-fox-dev/spec`; its test suite needs no key. |
+
+And the optional code-search index, which is useful with or without an agent.
+[`codesearch`](codesearch) is a **nested module** — the index imports zoekt,
+which the root module may not — so run its programs from inside it. Two of the
+three, and its tests, need no API key:
+
+| Example | Run it | What it teaches |
+|---|---|---|
+| [`codesearch/search`](codesearch/search) | `cd examples/codesearch && go run ./search --dir ../.. 'sym:NewWorkspace'` | **The index on its own, no agent and no key.** One index, many zoekt queries (`sym:`, `file:`, `lang:`, `case:`); calling the `code_search` tool's `Execute` directly; error codes as results; `Symbols` as a declaration lookup; structured `Data` versus rendered `Text`. |
+| [`codesearch/freshness`](codesearch/freshness) | `cd examples/codesearch && go run ./freshness` | **Keeping an index correct while files change**, no key: a write it was not told about is invisible, `Invalidate(path)` overlays one file, `Invalidate("")` revalidates the tree, past 5% dirty it rebuilds, and `Close`. |
+| [`codesearch/agent`](codesearch/agent) | `cd examples/codesearch && go run ./agent --dir ../.. "which types implement tools.Index?"` · `--compare` | **The opt-in for an agent**: `tools.Options.Index`, `code_search` in the allowlist, the Windows `ErrUnsupported` fallback; `--compare` reruns without the index and prints both runs' cost. |
 
 There is also [`agentdemo`](agentdemo), which needs **no API key and no
 network**: it drives the real loop against a scripted provider and prints
