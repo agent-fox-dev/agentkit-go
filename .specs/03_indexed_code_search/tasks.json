@@ -470,7 +470,7 @@
       "done_when": [
         "`make test` and `make lint` pass, including codesearch/"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
