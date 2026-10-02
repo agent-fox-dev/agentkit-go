@@ -202,6 +202,19 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 		finalQ = query.NewAnd(parsedQ, pathConstraint)
 	}
 
+	// Track this query as in-flight so Close waits for it.
+	idx.inFlight.Add(1)
+	defer idx.inFlight.Done()
+
+	// Re-check closed after registering in-flight (Close sets closed
+	// before waiting for in-flight to drain).
+	idx.mu.RLock()
+	if idx.closed {
+		idx.mu.RUnlock()
+		return core.ErrResult("index_closed", "index has been closed")
+	}
+	idx.mu.RUnlock()
+
 	// Search with the test hook or the real searcher.
 	queryTimeout := idx.queryTimeout
 	if queryTimeout <= 0 {
@@ -256,6 +269,7 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 }
 
 // ensureBuilt triggers a lazy build if the index has not been built yet.
+// A partial index is not retried; only the dirty-threshold rebuild replaces it.
 func (idx *Index) ensureBuilt(ctx context.Context) error {
 	idx.mu.RLock()
 	built := idx.built
@@ -386,12 +400,17 @@ func (idx *Index) buildResult(files []searchResultFile, maxFiles, totalFiles int
 	if bytesMarkerText != "" {
 		note = bytesMarkerText
 	}
+	// A partial index adds a note telling the model to narrow path or use search_files.
+	if info.partial && note == "" {
+		note = fmt.Sprintf("Index is partial (%s limit). Narrow the path argument or use search_files for a full scan.", info.partialReason)
+	}
 
 	data := map[string]any{
 		"files":           fileData,
 		"truncated":       moreThanMax || bytesTruncated,
 		"note":            note,
-		"partial":         false, // set by later tasks
+		"partial":         info.partial,
+		"partial_reason":  info.partialReason,
 		"symbol_sources":  info.symbolSources,
 		"ctags_available": info.ctagsAvailable,
 		"files_indexed":   stats.FilesIndexed,
@@ -425,6 +444,8 @@ func (idx *Index) buildResult(files []searchResultFile, maxFiles, totalFiles int
 func (idx *Index) gatherResultInfo(stats BuildStatsResult) resultInfo {
 	idx.mu.RLock()
 	outlineFiles := idx.outlineFiles
+	partial := idx.partial
+	partialReason := idx.partialReason
 	idx.mu.RUnlock()
 
 	// Count symbol sources.
@@ -478,8 +499,8 @@ func (idx *Index) gatherResultInfo(stats BuildStatsResult) resultInfo {
 		indexSizeBytes: indexSize,
 		symbolSources:  symbolSources,
 		ctagsAvailable: ctagsAvailable,
-		partial:        false, // set by later tasks
-		partialReason:  "",
+		partial:        partial,
+		partialReason:  partialReason,
 		dirtyFiles:     0, // set by later tasks
 	}
 }

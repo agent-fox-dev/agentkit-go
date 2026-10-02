@@ -129,14 +129,26 @@ type Index struct {
 	// runID is a unique identifier for this index instance.
 	runID string
 
-	// mu guards index state.
+	// mu guards index state. Builds take the write side; queries share
+	// the read side so they run concurrently with each other.
 	mu sync.RWMutex
+
+	// inFlight tracks the number of in-flight queries. Close waits for
+	// this to reach zero before deleting the run directory.
+	inFlight sync.WaitGroup
 
 	// buildCount tracks how many times the index has been built.
 	buildCount atomic.Int32
 
-	// built is true after a successful build.
+	// built is true after a successful or partial build.
 	built bool
+
+	// partial is true when the build was stopped by a bound.
+	partial bool
+
+	// partialReason is the bound that stopped the build ("files", "bytes"
+	// or "time").
+	partialReason string
 
 	// runDir is the shard directory for this instance.
 	runDir string
@@ -213,8 +225,15 @@ func (idx *Index) RunDir() string {
 	return idx.runDir
 }
 
-// Symbols implements tools.Index.
+// Symbols implements tools.Index. It returns ok=false when the index has not
+// been built, is partial, or is closed.
 func (idx *Index) Symbols(_ context.Context, _ tools.SymbolQuery) (tools.SymbolAnswer, bool, error) {
+	idx.mu.RLock()
+	closed := idx.closed
+	idx.mu.RUnlock()
+	if closed {
+		return tools.SymbolAnswer{}, false, nil
+	}
 	return tools.SymbolAnswer{}, false, nil
 }
 
@@ -225,16 +244,28 @@ func (idx *Index) Symbols(_ context.Context, _ tools.SymbolQuery) (tools.SymbolA
 // never panics on a closed index.
 func (idx *Index) Invalidate(_ string) {}
 
-// Close releases resources. It is idempotent.
+// Close releases resources. It waits for in-flight queries to finish,
+// then releases the zoekt searcher and deletes the run directory. It is
+// idempotent: every call after the first returns nil immediately.
 func (idx *Index) Close() error {
 	idx.mu.Lock()
-	defer idx.mu.Unlock()
 	if idx.closed {
+		idx.mu.Unlock()
 		return nil
 	}
 	idx.closed = true
-	if idx.runDir != "" {
-		os.RemoveAll(idx.runDir)
+	idx.mu.Unlock()
+
+	// Wait for in-flight queries to finish.
+	idx.inFlight.Wait()
+
+	idx.mu.Lock()
+	runDir := idx.runDir
+	idx.runDir = ""
+	idx.mu.Unlock()
+
+	if runDir != "" {
+		os.RemoveAll(runDir)
 	}
 	return nil
 }
@@ -306,7 +337,11 @@ func (idx *Index) sweepOldRuns() {
 }
 
 // Build triggers the index build. It walks the workspace, collects files,
-// outlines them, and builds a zoekt index.
+// outlines them, and builds a zoekt index. Three bounds apply: MaxFiles,
+// MaxBytes and MaxBuildTime. When one stops the build, the index keeps what
+// it has and marks itself partial. A partial index is not retried by later
+// calls. A cancelled call context discards the partial build and leaves the
+// next call free to build again.
 func (idx *Index) Build(ctx context.Context) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
@@ -314,6 +349,10 @@ func (idx *Index) Build(ctx context.Context) error {
 	if idx.closed {
 		return errors.New("index_closed")
 	}
+
+	// Create a derived context with the wall-time bound.
+	buildCtx, buildCancel := context.WithTimeout(ctx, idx.opts.MaxBuildTime)
+	defer buildCancel()
 
 	// Create the run directory.
 	runDir := idx.runDirPath()
@@ -337,8 +376,9 @@ func (idx *Index) Build(ctx context.Context) error {
 	}
 	var files []fileEntry
 	var stats BuildStatsResult
+	var partialReason string
 
-	err := tools.Walk(ctx, idx.ws, idx.ws.Root, tools.WalkOptions{
+	err := tools.Walk(buildCtx, idx.ws, idx.ws.Root, tools.WalkOptions{
 		Ignore:        idx.opts.Ignore,
 		IncludeHidden: false,
 	}, func(rel string, d fs.DirEntry) error {
@@ -375,16 +415,28 @@ func (idx *Index) Build(ctx context.Context) error {
 		}
 
 		files = append(files, fileEntry{rel: rel, abs: abs})
+
+		// File-count bound.
+		if len(files) >= idx.opts.MaxFiles {
+			partialReason = "files"
+			return errBoundReached
+		}
 		return nil
 	})
-	if err != nil {
+	if err != nil && err != errBoundReached {
 		if ctx.Err() != nil {
-			// Cancelled: discard partial build.
+			// The caller's context was cancelled: discard partial build.
 			os.RemoveAll(runDir)
 			idx.runDir = ""
 			return fmt.Errorf("aborted: %w", ctx.Err())
 		}
-		return fmt.Errorf("index_failed: walk error: %w", err)
+		if buildCtx.Err() != nil && ctx.Err() == nil {
+			// The build-time bound expired.
+			partialReason = "time"
+			// Fall through to index what we have.
+		} else {
+			return fmt.Errorf("index_failed: walk error: %w", err)
+		}
 	}
 
 	// Outline files in batches of at most outlineBatchSize.
@@ -395,8 +447,21 @@ func (idx *Index) Build(ctx context.Context) error {
 	}
 
 	outlineResults := make(map[string]outline.File, len(files))
+	var totalBytes int64
 
 	for i := 0; i < len(files); i += outlineBatchSize {
+		// Check the build-time bound before each batch.
+		if buildCtx.Err() != nil && ctx.Err() == nil && partialReason == "" {
+			partialReason = "time"
+			files = files[:i] // keep only what we've outlined so far
+			break
+		}
+		if ctx.Err() != nil {
+			os.RemoveAll(runDir)
+			idx.runDir = ""
+			return fmt.Errorf("aborted: %w", ctx.Err())
+		}
+
 		end := i + outlineBatchSize
 		if end > len(files) {
 			end = len(files)
@@ -412,12 +477,17 @@ func (idx *Index) Build(ctx context.Context) error {
 			srcs[j] = outline.Source{Abs: fe.abs}
 		}
 
-		outFiles, _, err := outline.OutlineMany(ctx, srcs, outlineOpts)
+		outFiles, _, err := outline.OutlineMany(buildCtx, srcs, outlineOpts)
 		if err != nil {
 			if ctx.Err() != nil {
 				os.RemoveAll(runDir)
 				idx.runDir = ""
 				return fmt.Errorf("aborted: %w", ctx.Err())
+			}
+			if buildCtx.Err() != nil && ctx.Err() == nil && partialReason == "" {
+				partialReason = "time"
+				files = files[:i]
+				break
 			}
 			// Non-fatal: continue without symbols for this batch.
 			for _, fe := range batch {
@@ -457,9 +527,28 @@ func (idx *Index) Build(ctx context.Context) error {
 	indexedFiles := make(map[string]bool, len(files))
 
 	for _, fe := range files {
+		// Check bounds before each file.
+		if ctx.Err() != nil {
+			// Caller cancelled: discard.
+			_ = builder.Finish() // best-effort finalize
+			os.RemoveAll(runDir)
+			idx.runDir = ""
+			return fmt.Errorf("aborted: %w", ctx.Err())
+		}
+		if buildCtx.Err() != nil && ctx.Err() == nil && partialReason == "" {
+			partialReason = "time"
+			break
+		}
+
 		content, err := os.ReadFile(fe.abs)
 		if err != nil {
 			continue // skip unreadable
+		}
+
+		// Byte-count bound.
+		if totalBytes+int64(len(content)) > idx.opts.MaxBytes && partialReason == "" {
+			partialReason = "bytes"
+			break
 		}
 
 		doc := zoektindex.Document{
@@ -486,6 +575,7 @@ func (idx *Index) Build(ctx context.Context) error {
 			continue // skip files that fail to add
 		}
 		indexedFiles[fe.rel] = true
+		totalBytes += int64(len(content))
 	}
 
 	if err := builder.Finish(); err != nil {
@@ -497,10 +587,15 @@ func (idx *Index) Build(ctx context.Context) error {
 	idx.outlineFiles = outlineResults
 	idx.stats = stats
 	idx.built = true
+	idx.partial = partialReason != ""
+	idx.partialReason = partialReason
 	idx.buildCount.Add(1)
 
 	return nil
 }
+
+// errBoundReached is a sentinel error used to stop the walk when a bound is hit.
+var errBoundReached = errors.New("bound reached")
 
 // declsToSymbols converts outline declarations to zoekt symbol sections.
 // It computes byte offsets from line numbers in the content.
