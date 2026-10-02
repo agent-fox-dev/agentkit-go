@@ -46,7 +46,7 @@
         "outline/sig.go",
         "outline/outline_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -89,7 +89,7 @@
         "outline/goast_test.go",
         "outline/testdata/"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -133,7 +133,7 @@
         "outline/ctags.go",
         "outline/many_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -172,7 +172,7 @@
         "outline/outline.go",
         "outline/ctags_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -214,7 +214,7 @@
         "outline/heuristic_test.go",
         "outline/testdata/"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -248,7 +248,7 @@
       "depends_on": [
         1
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -285,7 +285,7 @@
       "depends_on": [
         1
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -325,7 +325,7 @@
       "depends_on": [
         7
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -359,7 +359,7 @@
         5,
         6
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -391,7 +391,7 @@
         8,
         9
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,
@@ -428,7 +428,7 @@
       "done_when": [
         "`make check` passes on a machine with and without universal-ctags"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

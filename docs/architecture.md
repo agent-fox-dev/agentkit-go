@@ -26,6 +26,7 @@ Imports between first-party packages, taken from the source (tests excluded;
 |---|---|
 | `core` | `jsonx`, `schema` |
 | `schema` | `jsonx` |
+| `outline` | nothing first-party |
 | `jsonx`, `wire`, `imagex` | nothing first-party |
 | `catalog` | `core` |
 | `stop`, `guard`, `compaction` | `core` |
@@ -34,7 +35,7 @@ Imports between first-party packages, taken from the source (tests excluded;
 | `provider/{anthropic,openai,openairesponses,google,ollama}` | `core`, `catalog`, `provider`, `schema`; a few reuse a sibling wire package's helpers (`openairesponses` → `openai` and `wire`; `google` → `anthropic`, `openai`) |
 | `provider/faux` | `core` |
 | `session` | `core`, `jsonx` |
-| `tools` | `core`, `imagex`, `schema` |
+| `tools` | `core`, `imagex`, `schema` (exports `Walk`, `CtagsRunner`) |
 | `mcp` | `core`, `schema`, `wire` |
 | `plugins` | `core`, `provider`, `session` |
 | `skills` | `core`, `plugins` |
@@ -70,7 +71,8 @@ Rules that follow from it:
 | `middleware` | Axis 1 wrappers over the model call: `Retry`, `Budget`, `Caching`, `Tracing`, `RateLimit`, and `CacheMeter`. |
 | `compaction` | The context transform, four strategies, summarizers, summary validation, token estimate. |
 | `session` | Append-only JSONL log, damage-tolerant loader, branch tree, fold into construction inputs, recorder, `OpenOrCreate`. |
-| `tools` | Built-in tools, workspace containment, output accumulator, process control, glob, layered gitignore, `fetch_url` behind the SSRF guard. |
+| `outline` | Source-file declaration listing: Go backend (`go/ast`), ctags backend (via an injected `Runner`), anchored-line heuristics for ten languages, and a `none` fallback. Standard-library-only; no first-party imports. |
+| `tools` | Built-in tools, workspace containment, output accumulator, process control, glob, layered gitignore, `fetch_url` behind the SSRF guard. `Walk` exposes the single shared directory traversal behind workspace confinement. `CtagsRunner` supplies the ctags process lifecycle for `outline.Options.Runner`. |
 | `guard` | The `execute` authorization boundary: `Restricted`, `AllowAll`. |
 | `stop` | Stop policies. |
 | `subagent` | Delegation as a tool, named definitions, parallel runs. |

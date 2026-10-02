@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -408,29 +409,9 @@ func searchNative(ctx context.Context, root string, p SearchParams, igOpts Ignor
 	max := effectiveMax(p.MaxMatches)
 
 	out := SearchResult{Matches: []SearchMatch{}}
-	ig := newIgnoreEngine(root, igOpts)
 
-	walkErr := filepath.WalkDir(root, func(abs string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil // unreadable entries are skipped, not fatal
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		rel, rerr := filepath.Rel(root, abs)
-		if rerr != nil || rel == "." {
-			return nil
-		}
-		rel = filepath.ToSlash(rel)
-
-		if isHidden(d.Name()) || ig.match(rel, d.IsDir()) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
+	walkErr := walk(ctx, root, igOpts, false, func(rel string, d fs.DirEntry) error {
 		if d.IsDir() {
-			ig.enter(rel, abs)
 			return nil
 		}
 		if !d.Type().IsRegular() {
@@ -443,6 +424,7 @@ func searchNative(ctx context.Context, root string, p SearchParams, igOpts Ignor
 			return nil
 		}
 
+		abs := filepath.Join(root, filepath.FromSlash(rel))
 		out.FilesSearched++
 		if out.Truncated {
 			return nil // counted, but the result is already full
@@ -581,27 +563,8 @@ func CountCandidates(ctx context.Context, root string, p SearchParams) (int, err
 
 func countCandidates(ctx context.Context, root string, p SearchParams, igOpts IgnoreOptions) (int, error) {
 	n := 0
-	ig := newIgnoreEngine(root, igOpts)
-	err := filepath.WalkDir(root, func(abs string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		rel, rerr := filepath.Rel(root, abs)
-		if rerr != nil || rel == "." {
-			return nil
-		}
-		rel = filepath.ToSlash(rel)
-		if isHidden(d.Name()) || ig.match(rel, d.IsDir()) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
+	err := walk(ctx, root, igOpts, false, func(rel string, d fs.DirEntry) error {
 		if d.IsDir() {
-			ig.enter(rel, abs)
 			return nil
 		}
 		if !d.Type().IsRegular() {
