@@ -99,21 +99,25 @@ func (f *fileTools) findSymbolTool() core.Tool {
 			// Build or refresh the symbol table.
 			st.mu.Lock()
 			var br buildResult
+
+			// Snapshot the dirty state under markMu (never blocks on a build).
+			dirtyPaths, revalAll, gen := st.snapshotMarks()
+
 			switch {
-			case st.built && st.complete && !st.revalidateAll && len(st.dirtyPaths) == 0:
+			case st.built && st.complete && !revalAll && len(dirtyPaths) == 0:
 				// Table is complete and nothing is marked: answer from memory.
 				br = st.computeMetrics(scopePrefix)
-			case st.built && st.complete && !st.revalidateAll && len(st.dirtyPaths) > 0:
+			case st.built && st.complete && !revalAll && len(dirtyPaths) > 0:
 				// Only specific dirty paths: try targeted refresh.
-				if st.refreshDirtyPaths(ctx, f) {
+				if st.refreshDirtyPaths(ctx, f, dirtyPaths) {
 					br = st.computeMetrics(scopePrefix)
 				} else {
 					// Escalated to revalidation.
-					br = st.buildOrRefresh(ctx, f, scopePath)
+					br = st.buildOrRefresh(ctx, f, scopePath, true, gen)
 				}
 			default:
 				// Initial build, incomplete table, or revalidation needed.
-				br = st.buildOrRefresh(ctx, f, scopePath)
+				br = st.buildOrRefresh(ctx, f, scopePath, revalAll, gen)
 			}
 			st.mu.Unlock()
 

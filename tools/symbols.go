@@ -25,6 +25,9 @@ type symbolEntry struct {
 // with the tool set, built on the first find_symbol call and discarded with
 // the tool set.
 type symbolTable struct {
+	// mu guards entries, built, complete and partialReason. It is held for
+	// the duration of a build or refresh pass and for reading the table to
+	// answer a query.
 	mu sync.Mutex
 
 	// entries maps workspace-relative slash paths to their symbol entries.
@@ -38,13 +41,19 @@ type symbolTable struct {
 	// partialReason records why the last pass was partial ("files" or "time").
 	partialReason string
 
+	// markMu guards the dirty state: dirtyPaths, revalidateAll and
+	// generation. It is separate from mu so that markDirty and
+	// markRevalidateAll never block on a build in progress — they only
+	// set a flag. 02-REQ-6.6.
+	markMu sync.Mutex
+
 	// dirtyPaths tracks workspace-relative paths that need re-indexing.
 	dirtyPaths map[string]bool
 	// revalidateAll is set when the whole table needs revalidation.
 	revalidateAll bool
 
 	// generation is advanced by every mark; a pass clears only marks that
-	// predate its start.
+	// predate its start. 02-REQ-6.8.
 	generation uint64
 
 	// totalWalked counts the total regular files seen across all passes.
@@ -60,10 +69,10 @@ func newSymbolTable() *symbolTable {
 }
 
 // markDirty marks a single workspace-relative path as needing re-indexing.
-// It only sets a flag and never waits on a build in progress.
+// It only sets a flag and never waits on a build in progress. 02-REQ-6.2.
 func (st *symbolTable) markDirty(rel string) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
+	st.markMu.Lock()
+	defer st.markMu.Unlock()
 	if st.dirtyPaths == nil {
 		st.dirtyPaths = make(map[string]bool)
 	}
@@ -72,32 +81,57 @@ func (st *symbolTable) markDirty(rel string) {
 }
 
 // markRevalidateAll marks the whole table for revalidation. It only sets a
-// flag and never waits on a build in progress.
+// flag and never waits on a build in progress. 02-REQ-6.3.
 func (st *symbolTable) markRevalidateAll() {
-	st.mu.Lock()
-	defer st.mu.Unlock()
+	st.markMu.Lock()
+	defer st.markMu.Unlock()
 	st.revalidateAll = true
 	st.generation++
 }
 
-// isDirty returns true if any path is marked dirty or the whole table needs
-// revalidation.
-func (st *symbolTable) isDirty() bool {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.revalidateAll || len(st.dirtyPaths) > 0
+// snapshotMarks reads and clears the dirty state under markMu, returning the
+// dirty paths, whether revalidateAll was set, and the generation at the time
+// of the snapshot. The caller must hold mu (the build lock).
+func (st *symbolTable) snapshotMarks() (dirtyPaths map[string]bool, revalidateAll bool, generation uint64) {
+	st.markMu.Lock()
+	defer st.markMu.Unlock()
+	dirtyPaths = st.dirtyPaths
+	revalidateAll = st.revalidateAll
+	generation = st.generation
+	st.dirtyPaths = nil
+	// revalidateAll is NOT cleared here; it is cleared only after a full
+	// completed pass (02-REQ-6.7).
+	return
+}
+
+// clearRevalidateAll clears the whole-table mark if no new marks have arrived
+// since genAtStart. Must be called under markMu.
+func (st *symbolTable) clearRevalidateAllIfUnchanged(genAtStart uint64) {
+	st.markMu.Lock()
+	defer st.markMu.Unlock()
+	if st.generation == genAtStart {
+		st.revalidateAll = false
+	}
 }
 
 // needsRefresh returns true if the table needs a build or refresh before
 // answering a query.
 func (st *symbolTable) needsRefresh() bool {
 	st.mu.Lock()
-	defer st.mu.Unlock()
-	return !st.built || !st.complete || st.revalidateAll || len(st.dirtyPaths) > 0
+	built := st.built
+	complete := st.complete
+	st.mu.Unlock()
+
+	st.markMu.Lock()
+	revalAll := st.revalidateAll
+	hasDirty := len(st.dirtyPaths) > 0
+	st.markMu.Unlock()
+
+	return !built || !complete || revalAll || hasDirty
 }
 
 // refreshDirtyPaths handles dirty paths without a full walk. It is called
-// under the table's lock when the table is complete and only specific paths
+// under the table's mu lock when the table is complete and only specific paths
 // are dirty (no whole-table revalidation needed).
 //
 // For each dirty path:
@@ -107,12 +141,7 @@ func (st *symbolTable) needsRefresh() bool {
 //     whole-table revalidation (return false).
 //
 // Returns true if all dirty paths were handled without escalation.
-func (st *symbolTable) refreshDirtyPaths(ctx context.Context, ft *fileTools) bool {
-	// Snapshot and clear dirty paths under the mark lock.
-	paths := st.dirtyPaths
-	genAtStart := st.generation
-	st.dirtyPaths = nil
-
+func (st *symbolTable) refreshDirtyPaths(ctx context.Context, ft *fileTools, paths map[string]bool) bool {
 	if len(paths) == 0 {
 		return true
 	}
@@ -121,15 +150,13 @@ func (st *symbolTable) refreshDirtyPaths(ctx context.Context, ft *fileTools) boo
 	for rel := range paths {
 		// A .gitignore change can affect which files are visible.
 		if filepath.Base(rel) == ".gitignore" {
-			st.revalidateAll = true
-			st.generation++
+			st.markRevalidateAll()
 			return false
 		}
 		// A path not in the table is a new file; only the walk's ignore
 		// engine can say whether it is visible.
 		if _, ok := st.entries[rel]; !ok {
-			st.revalidateAll = true
-			st.generation++
+			st.markRevalidateAll()
 			return false
 		}
 	}
@@ -165,18 +192,11 @@ func (st *symbolTable) refreshDirtyPaths(ctx context.Context, ft *fileTools) boo
 		}
 	}
 
-	// Clear only marks that predate this pass (generation counter).
-	// If new marks arrived during the pass, they are preserved.
-	if st.generation == genAtStart {
-		// No new marks arrived; dirty paths are fully handled.
-	}
-	// dirtyPaths was already set to nil above; any new marks added during
-	// the pass are in the new dirtyPaths map.
-
 	return true
 }
 
 // computeMetrics returns the current table metrics without any walk or outline.
+// The caller must hold st.mu.
 func (st *symbolTable) computeMetrics(scopePrefix string) buildResult {
 	result := buildResult{
 		backends: make(map[string]int),
@@ -188,10 +208,12 @@ func (st *symbolTable) computeMetrics(scopePrefix string) buildResult {
 		result.filesIndexed++
 		result.backends[string(entry.file.Backend)]++
 	}
-	result.partial = !st.complete
-	if result.partial {
+
+	if !st.complete {
+		result.partial = true
 		result.partialReason = st.partialReason
 	}
+
 	return result
 }
 
@@ -219,23 +241,18 @@ const outlineBatchSize = 100
 var walkFn = Walk
 
 // buildOrRefresh builds or refreshes the symbol table. It is called under the
-// table's lock by find_symbol before answering.
+// table's mu lock by find_symbol before answering.
 //
 // Parameters:
 //   - ctx: the call context; cancellation returns an error
 //   - ft: the fileTools providing workspace, ignore and runner
 //   - scopePath: when non-empty, only files under this directory are indexed
 //     (but the walk starts from the workspace root for ignore layers)
-func (st *symbolTable) buildOrRefresh(ctx context.Context, ft *fileTools, scopePath string) buildResult {
-	// Snapshot the generation at the start so we only clear marks that
-	// predate this pass. 02-REQ-6.8.
-	genAtStart := st.generation
-
-	// Clear dirty paths at the start of a full build/revalidation pass.
-	// Any marks made during the pass will advance the generation counter
-	// and be preserved.
-	st.dirtyPaths = nil
-
+//   - revalidating: true when the pass is a revalidation (whole-table mark
+//     was set), which enables the racy-mtime window check
+//   - genAtStart: the generation counter value at the start of this pass,
+//     used to decide which marks to clear at the end
+func (st *symbolTable) buildOrRefresh(ctx context.Context, ft *fileTools, scopePath string, revalidating bool, genAtStart uint64) buildResult {
 	maxFiles := ft.symOpts.MaxFiles
 	if maxFiles <= 0 {
 		maxFiles = defaultMaxFiles
@@ -323,13 +340,13 @@ func (st *symbolTable) buildOrRefresh(ctx context.Context, ft *fileTools, scopeP
 
 		if existing, ok := st.entries[rel]; ok {
 			// Skip if size and mtime are unchanged.
-			// During revalidation (st.revalidateAll), the racy window
-			// forces re-outline for recently indexed files. During a
-			// build pass (table not yet complete), already-indexed
-			// unchanged files are always skipped so repeated calls
-			// make progress.
+			// During revalidation, the racy window (02-REQ-6.6) forces
+			// re-outline for recently indexed files whose mtime is within
+			// 2 s of their indexedAt. During a build pass (table not yet
+			// complete), already-indexed unchanged files are always skipped
+			// so repeated calls make progress.
 			if existing.size == fi.Size() && existing.mtime.Equal(fi.ModTime()) {
-				if !st.revalidateAll || time.Since(existing.indexedAt) > 2*time.Second {
+				if !revalidating || time.Since(existing.indexedAt) > 2*time.Second {
 					return nil
 				}
 			}
@@ -421,7 +438,9 @@ func (st *symbolTable) buildOrRefresh(ctx context.Context, ft *fileTools, scopeP
 		result.partialReason = "files"
 	}
 
-	// Drop entries for files not seen in a completed walk of the full workspace.
+	// Drop entries for files not seen in a completed walk of the full
+	// workspace. A pass stopped at a bound never drops entries (02-REQ-6.6).
+	// A path-scoped pass also never drops entries outside its scope.
 	if !result.partial && scopePrefix == "" {
 		for rel := range st.entries {
 			if !seen[rel] {
@@ -437,9 +456,7 @@ func (st *symbolTable) buildOrRefresh(ctx context.Context, ft *fileTools, scopeP
 			// Clear the whole-table mark only when the pass covered the
 			// whole workspace and completed within bounds, and no new
 			// marks arrived during the pass. 02-REQ-6.7, 02-REQ-6.8.
-			if st.generation == genAtStart {
-				st.revalidateAll = false
-			}
+			st.clearRevalidateAllIfUnchanged(genAtStart)
 		}
 	}
 	st.partialReason = result.partialReason

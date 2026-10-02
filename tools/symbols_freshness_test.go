@@ -124,17 +124,17 @@ func TestWriteAndEditMarkDirty_TS02_40(t *testing.T) {
 		t.Fatalf("write_file success: error=%s detail=%s", r.Error, r.Detail)
 	}
 	// Check that the path is marked dirty.
-	ft.table.mu.Lock()
+	ft.table.markMu.Lock()
 	dirty := ft.table.dirtyPaths["a.go"]
-	ft.table.mu.Unlock()
+	ft.table.markMu.Unlock()
 	if !dirty {
 		t.Fatal("write_file success: a.go should be marked dirty")
 	}
 
 	// Clear the dirty state.
-	ft.table.mu.Lock()
+	ft.table.markMu.Lock()
 	ft.table.dirtyPaths = nil
-	ft.table.mu.Unlock()
+	ft.table.markMu.Unlock()
 
 	// --- Test write_file to a new file ---
 	args, _ = json.Marshal(map[string]any{
@@ -145,17 +145,17 @@ func TestWriteAndEditMarkDirty_TS02_40(t *testing.T) {
 	if !r.OK {
 		t.Fatalf("write_file new: error=%s detail=%s", r.Error, r.Detail)
 	}
-	ft.table.mu.Lock()
+	ft.table.markMu.Lock()
 	dirty = ft.table.dirtyPaths["new.go"]
-	ft.table.mu.Unlock()
+	ft.table.markMu.Unlock()
 	if !dirty {
 		t.Fatal("write_file new: new.go should be marked dirty")
 	}
 
 	// Clear dirty state.
-	ft.table.mu.Lock()
+	ft.table.markMu.Lock()
 	ft.table.dirtyPaths = nil
-	ft.table.mu.Unlock()
+	ft.table.markMu.Unlock()
 
 	// --- Test edit_file success ---
 	et := ft.editFile()
@@ -169,17 +169,17 @@ func TestWriteAndEditMarkDirty_TS02_40(t *testing.T) {
 	if !r.OK {
 		t.Fatalf("edit_file success: error=%s detail=%s", r.Error, r.Detail)
 	}
-	ft.table.mu.Lock()
+	ft.table.markMu.Lock()
 	dirty = ft.table.dirtyPaths["a.go"]
-	ft.table.mu.Unlock()
+	ft.table.markMu.Unlock()
 	if !dirty {
 		t.Fatal("edit_file success: a.go should be marked dirty")
 	}
 
 	// Clear dirty state.
-	ft.table.mu.Lock()
+	ft.table.markMu.Lock()
 	ft.table.dirtyPaths = nil
-	ft.table.mu.Unlock()
+	ft.table.markMu.Unlock()
 
 	// --- Test edit_file failure (non-matching old text) ---
 	args, _ = json.Marshal(map[string]any{
@@ -193,17 +193,17 @@ func TestWriteAndEditMarkDirty_TS02_40(t *testing.T) {
 		t.Fatal("edit_file with non-matching text: expected failure")
 	}
 	// Even on failure, the path should be marked dirty.
-	ft.table.mu.Lock()
+	ft.table.markMu.Lock()
 	dirty = ft.table.dirtyPaths["a.go"]
-	ft.table.mu.Unlock()
+	ft.table.markMu.Unlock()
 	if !dirty {
 		t.Fatal("edit_file failure: a.go should be marked dirty even on failure")
 	}
 
 	// Clear dirty state.
-	ft.table.mu.Lock()
+	ft.table.markMu.Lock()
 	ft.table.dirtyPaths = nil
-	ft.table.mu.Unlock()
+	ft.table.markMu.Unlock()
 
 	// --- Test write_file failure (read-only directory) ---
 	// Create a read-only directory to cause write failure.
@@ -227,9 +227,9 @@ func TestWriteAndEditMarkDirty_TS02_40(t *testing.T) {
 	r = wt.Execute(context.Background(), args)
 	// This may or may not fail depending on OS/permissions, but the path
 	// should be marked dirty regardless of outcome.
-	ft.table.mu.Lock()
+	ft.table.markMu.Lock()
 	dirtyRO := ft.table.dirtyPaths["readonly/newfile.go"]
-	ft.table.mu.Unlock()
+	ft.table.markMu.Unlock()
 	if !dirtyRO {
 		t.Fatal("write_file to read-only dir: path should be marked dirty even on failure")
 	}
@@ -284,9 +284,9 @@ func TestShellToolsMarkRevalidateAll_TS02_41(t *testing.T) {
 	r = execTool.Execute(context.Background(), args)
 
 	// Verify the table is marked for revalidation.
-	ft.table.mu.Lock()
+	ft.table.markMu.Lock()
 	revalAfterExec := ft.table.revalidateAll
-	ft.table.mu.Unlock()
+	ft.table.markMu.Unlock()
 	if !revalAfterExec {
 		t.Fatal("table should be marked for revalidation after execute")
 	}
@@ -316,9 +316,9 @@ func TestShellToolsMarkRevalidateAll_TS02_41(t *testing.T) {
 	})
 	r = rcTool.Execute(context.Background(), args)
 
-	ft.table.mu.Lock()
+	ft.table.markMu.Lock()
 	revalAfterRC := ft.table.revalidateAll
-	ft.table.mu.Unlock()
+	ft.table.markMu.Unlock()
 	if !revalAfterRC {
 		t.Fatal("table should be marked for revalidation after run_command")
 	}
@@ -686,10 +686,10 @@ func TestWriteFileMarkUnderLock_TS02_40_lock(t *testing.T) {
 		t.Fatalf("write_file: error=%s detail=%s", r.Error, r.Detail)
 	}
 
-	ft.table.mu.Lock()
+	ft.table.markMu.Lock()
 	dirty := ft.table.dirtyPaths["a.go"]
 	gen := ft.table.generation
-	ft.table.mu.Unlock()
+	ft.table.markMu.Unlock()
 
 	if !dirty {
 		t.Fatal("a.go should be marked dirty after write_file")
@@ -701,9 +701,9 @@ func TestWriteFileMarkUnderLock_TS02_40_lock(t *testing.T) {
 	// Now test that a concurrent write_file on the same path blocks on the
 	// lock (the mark happens before release). We do this by verifying that
 	// two sequential writes both mark the path.
-	ft.table.mu.Lock()
+	ft.table.markMu.Lock()
 	ft.table.dirtyPaths = nil
-	ft.table.mu.Unlock()
+	ft.table.markMu.Unlock()
 
 	// Second write.
 	args, _ = json.Marshal(map[string]any{
@@ -715,9 +715,9 @@ func TestWriteFileMarkUnderLock_TS02_40_lock(t *testing.T) {
 		t.Fatalf("second write_file: error=%s detail=%s", r.Error, r.Detail)
 	}
 
-	ft.table.mu.Lock()
+	ft.table.markMu.Lock()
 	dirty = ft.table.dirtyPaths["a.go"]
-	ft.table.mu.Unlock()
+	ft.table.markMu.Unlock()
 	if !dirty {
 		t.Fatal("a.go should be marked dirty after second write_file")
 	}
