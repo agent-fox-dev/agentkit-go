@@ -2,11 +2,9 @@
 
 package codesearch
 
-// Zoekt imports — these ensure the packages are in the dependency graph.
-// They will be replaced by real usage in later tasks.
+// Zoekt imports — these ensure the query and search packages are in the
+// dependency graph. index.go imports zoekt and zoekt/index directly.
 import (
-	_ "github.com/sourcegraph/zoekt"
-	_ "github.com/sourcegraph/zoekt/index"
 	_ "github.com/sourcegraph/zoekt/query"
 	_ "github.com/sourcegraph/zoekt/search"
 )
