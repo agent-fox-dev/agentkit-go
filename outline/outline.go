@@ -171,7 +171,12 @@ func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, e
 		}
 	}
 
-	// TODO(task 5): heuristic backend.
+	// Heuristic backend for languages that support it.
+	if f, ok := outlineHeuristic(abs, src, opts); ok {
+		return f, nil
+	}
+
+	// No heuristic available: return none.
 	f := File{
 		Path:    filePath(abs, opts.Root),
 		Lang:    lang,
@@ -303,13 +308,17 @@ func OutlineMany(ctx context.Context, srcs []Source, opts Options) ([]File, Stat
 				// Runner error: fall back to heuristic/none for this batch.
 				stats.Fallbacks++
 				for _, e := range batch {
-					// TODO(task 5): heuristic fallback.
-					files[e.srcIdx] = finishFile(File{
-						Path:    filePath(e.abs, opts.Root),
-						Lang:    langForExt(filepath.Ext(e.abs)),
-						Backend: BackendNone,
-						Decls:   []Decl{},
-					})
+					files[e.srcIdx] = heuristicOrNone(e.abs, e.src, opts)
+				}
+				continue
+			}
+
+			// Check if the output was usable: if there were malformed
+			// lines and no valid tags were produced, the batch is unusable.
+			if malformed > 0 && len(tagsByIdx) == 0 {
+				stats.Fallbacks++
+				for _, e := range batch {
+					files[e.srcIdx] = heuristicOrNone(e.abs, e.src, opts)
 				}
 				continue
 			}
@@ -331,17 +340,25 @@ func OutlineMany(ctx context.Context, srcs []Source, opts Options) ([]File, Stat
 	} else {
 		// No Runner: fall back to heuristic/none for all non-Go files.
 		for _, e := range ctagsEntries {
-			// TODO(task 5): heuristic backend.
-			files[e.srcIdx] = finishFile(File{
-				Path:    filePath(e.abs, opts.Root),
-				Lang:    langForExt(filepath.Ext(e.abs)),
-				Backend: BackendNone,
-				Decls:   []Decl{},
-			})
+			files[e.srcIdx] = heuristicOrNone(e.abs, e.src, opts)
 		}
 	}
 
 	return files, stats, nil
+}
+
+// heuristicOrNone tries the heuristic backend for a file and falls back to none.
+func heuristicOrNone(abs string, src []byte, opts Options) File {
+	if f, ok := outlineHeuristic(abs, src, opts); ok {
+		return f
+	}
+	lang := langForExt(filepath.Ext(abs))
+	return finishFile(File{
+		Path:    filePath(abs, opts.Root),
+		Lang:    lang,
+		Backend: BackendNone,
+		Decls:   []Decl{},
+	})
 }
 
 // filePath computes the File.Path value. When root is non-empty, the path is
