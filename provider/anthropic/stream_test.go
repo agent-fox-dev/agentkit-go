@@ -478,7 +478,12 @@ func TestOnPayloadErrorPropagatesUnmodified(t *testing.T) {
 		t.Fatal("no request may be sent after OnPayload refuses")
 		return nil, nil
 	})
-	s := anthropic.Provider(anthropic.Options{}).Stream(
+	s := anthropic.Provider(anthropic.Options{Getenv: func(k string) string {
+		if k == "ANTHROPIC_API_KEY" {
+			return "sk-ant-test-key-abcdefgh"
+		}
+		return ""
+	}}).Stream(
 		context.Background(), testModel(), req, core.ProviderStreamOptions{})
 	if err := s.Err(); err != sentinel {
 		t.Fatalf("err = %v, want the caller's own error UNMODIFIED so errors.Is works "+
