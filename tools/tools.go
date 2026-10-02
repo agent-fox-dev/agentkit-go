@@ -136,13 +136,15 @@ func All(opts Options) ([]core.Tool, error) {
 		fs.listFiles(),
 		fs.findFiles(),
 		fs.searchFiles(),
+		fs.fileOutlineTool(),
+		fs.findSymbolTool(),
 		wrapShell(executeTool(opts)),
 		wrapShell(runCommandTool(opts)),
 		wrapShell(PowerShell(opts)),
 	}, nil
 }
 
-// FileNavigationTools names REQ-TOOL-04e's opt-in trio.
+// FileNavigationTools names REQ-TOOL-04e's opt-in set of five.
 //
 // They are in All() because All() is the DEFAULT set, and the requirement's
 // "opt-in" is about the tool policy of REQ-TOOL-10 rather than about this
@@ -151,7 +153,7 @@ func All(opts Options) ([]core.Tool, error) {
 // remember. What the requirement actually turns on is their ABSENCE from the
 // resolved set, which is the prompt builder's business, not this list's.
 func FileNavigationTools() []string {
-	return []string{"list_files", "find_files", "search_files"}
+	return []string{"list_files", "find_files", "search_files", "file_outline", "find_symbol"}
 }
 
 // ExecuteFallbackGuideline is REQ-TOOL-04e's sentence, verbatim.

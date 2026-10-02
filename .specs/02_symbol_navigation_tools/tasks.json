@@ -319,7 +319,7 @@
         "prompt/testdata/golden/system_prompt_default.txt",
         "prompt/prompt_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,

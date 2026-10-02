@@ -132,7 +132,7 @@ func TestGoldenPromptWithoutFileNavigationTools(t *testing.T) {
 	var kept []core.Tool
 	for _, tl := range all {
 		switch tl.Name {
-		case "list_files", "find_files", "search_files":
+		case "list_files", "find_files", "search_files", "file_outline", "find_symbol":
 		default:
 			kept = append(kept, tl)
 		}
