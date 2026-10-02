@@ -97,7 +97,11 @@ func (f *fileTools) findSymbolTool() core.Tool {
 			}
 
 			// Build or refresh the symbol table.
-			st.mu.Lock()
+			// Acquire the context-abandonable lock; a waiter whose ctx
+			// ends returns aborted without waiting for the build.
+			if !st.lock(ctx) {
+				return core.ErrResult("aborted", "Operation aborted")
+			}
 			var br buildResult
 
 			// Snapshot the dirty state under markMu (never blocks on a build).
@@ -119,7 +123,7 @@ func (f *fileTools) findSymbolTool() core.Tool {
 				// Initial build, incomplete table, or revalidation needed.
 				br = st.buildOrRefresh(ctx, f, scopePath, revalAll, gen)
 			}
-			st.mu.Unlock()
+			st.unlock()
 
 			if ctx.Err() != nil {
 				return core.ErrResult("aborted", "Operation aborted")
@@ -133,9 +137,11 @@ func (f *fileTools) findSymbolTool() core.Tool {
 			qualified := strings.Contains(name, ".")
 			caseSensitive := hasUppercase(name)
 
-			st.mu.Lock()
+			if !st.lock(ctx) {
+				return core.ErrResult("aborted", "Operation aborted")
+			}
 			matches := matchSymbols(st, name, kind, scopePrefix, a.Exact)
-			st.mu.Unlock()
+			st.unlock()
 
 			// Rank matches.
 			rankSymbols(matches, name, qualified, caseSensitive)

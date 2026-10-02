@@ -898,14 +898,14 @@ func TestRevalidationReoutlinesChangedNewRacyDropsUnseen_TS02_44(t *testing.T) {
 
 	// Backdate the indexedAt of all entries to >2s ago so they are outside
 	// the racy window, EXCEPT racy.go which stays recent.
-	ft.table.mu.Lock()
+	ft.table.lockBlocking()
 	oldTime := time.Now().Add(-10 * time.Second)
 	for rel, entry := range ft.table.entries {
 		if rel != "racy.go" {
 			entry.indexedAt = oldTime
 		}
 	}
-	ft.table.mu.Unlock()
+	ft.table.unlock()
 
 	// Now make changes:
 	// 1. changed.go: change its content (different size).
@@ -937,13 +937,13 @@ func TestRevalidationReoutlinesChangedNewRacyDropsUnseen_TS02_44(t *testing.T) {
 	ft.table.markRevalidateAll()
 
 	// Record indexedAt of unchanged.go before revalidation.
-	ft.table.mu.Lock()
+	ft.table.lockBlocking()
 	unchangedEntry := ft.table.entries["unchanged.go"]
 	var unchangedIndexedBefore time.Time
 	if unchangedEntry != nil {
 		unchangedIndexedBefore = unchangedEntry.indexedAt
 	}
-	ft.table.mu.Unlock()
+	ft.table.unlock()
 
 	// Call find_symbol to trigger revalidation.
 	r = exec(context.Background(), json.RawMessage(`{"name":"anything"}`))
@@ -1015,13 +1015,13 @@ func TestRevalidationReoutlinesChangedNewRacyDropsUnseen_TS02_44(t *testing.T) {
 		t.Fatal("Unchanged should still be found after revalidation")
 	}
 
-	ft.table.mu.Lock()
+	ft.table.lockBlocking()
 	unchangedEntry = ft.table.entries["unchanged.go"]
 	var unchangedIndexedAfter time.Time
 	if unchangedEntry != nil {
 		unchangedIndexedAfter = unchangedEntry.indexedAt
 	}
-	ft.table.mu.Unlock()
+	ft.table.unlock()
 
 	if !unchangedIndexedBefore.Equal(unchangedIndexedAfter) {
 		t.Fatalf("unchanged.go should not have been re-outlined: indexedAt changed from %v to %v",
@@ -1058,12 +1058,12 @@ func TestWholeTableMarkClearedOnlyByFullPass_TS02_45(t *testing.T) {
 	}
 
 	// Verify table is complete.
-	ft.table.mu.Lock()
+	ft.table.lockBlocking()
 	if !ft.table.complete {
-		ft.table.mu.Unlock()
+		ft.table.unlock()
 		t.Fatal("table should be complete after initial build")
 	}
-	ft.table.mu.Unlock()
+	ft.table.unlock()
 
 	// --- Test 1: Path-scoped revalidation does NOT clear the whole-table mark ---
 	ft.table.markRevalidateAll()

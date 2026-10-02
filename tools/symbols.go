@@ -25,10 +25,12 @@ type symbolEntry struct {
 // with the tool set, built on the first find_symbol call and discarded with
 // the tool set.
 type symbolTable struct {
-	// mu guards entries, built, complete and partialReason. It is held for
-	// the duration of a build or refresh pass and for reading the table to
-	// answer a query.
-	mu sync.Mutex
+	// mu guards entries, built, complete and partialReason. It is a
+	// buffered channel of size 1 used as a context-abandonable lock:
+	// a waiter whose context ends returns aborted without waiting for
+	// the build. Builds, refreshes and reading the table to answer a
+	// query happen under it. 02-REQ-7.1, 02-REQ-7.2.
+	mu chan struct{}
 
 	// entries maps workspace-relative slash paths to their symbol entries.
 	entries map[string]*symbolEntry
@@ -63,9 +65,34 @@ type symbolTable struct {
 // newSymbolTable creates an empty symbol table. No walk, subprocess or file
 // read happens at construction time.
 func newSymbolTable() *symbolTable {
+	mu := make(chan struct{}, 1)
+	mu <- struct{}{} // start unlocked
 	return &symbolTable{
+		mu:      mu,
 		entries: make(map[string]*symbolEntry),
 	}
+}
+
+// lock acquires the table lock, or returns false if ctx is cancelled first.
+// The caller must call unlock() when done if lock returned true.
+func (st *symbolTable) lock(ctx context.Context) bool {
+	select {
+	case <-st.mu:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// lockBlocking acquires the table lock unconditionally. It is used by code
+// paths that must not be abandoned (e.g. test helpers inspecting state).
+func (st *symbolTable) lockBlocking() {
+	<-st.mu
+}
+
+// unlock releases the table lock.
+func (st *symbolTable) unlock() {
+	st.mu <- struct{}{}
 }
 
 // markDirty marks a single workspace-relative path as needing re-indexing.
@@ -117,10 +144,10 @@ func (st *symbolTable) clearRevalidateAllIfUnchanged(genAtStart uint64) {
 // needsRefresh returns true if the table needs a build or refresh before
 // answering a query.
 func (st *symbolTable) needsRefresh() bool {
-	st.mu.Lock()
+	st.lockBlocking()
 	built := st.built
 	complete := st.complete
-	st.mu.Unlock()
+	st.unlock()
 
 	st.markMu.Lock()
 	revalAll := st.revalidateAll

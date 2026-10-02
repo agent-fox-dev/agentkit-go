@@ -57,9 +57,9 @@ func TestCompleteUnmarkedTableNoWalkOrOutline_TS02_39(t *testing.T) {
 	if table == nil {
 		t.Fatal("table should exist after first call")
 	}
-	table.mu.Lock()
+	table.lockBlocking()
 	complete := table.complete
-	table.mu.Unlock()
+	table.unlock()
 	if !complete {
 		t.Fatal("table should be complete after first call")
 	}
@@ -797,13 +797,13 @@ func TestDirtyPathOnlyReoutlinesDirty_TS02_42_selective(t *testing.T) {
 	}
 
 	// Record the index time of b.go.
-	ft.table.mu.Lock()
+	ft.table.lockBlocking()
 	bEntry := ft.table.entries["b.go"]
 	var bIndexedAt time.Time
 	if bEntry != nil {
 		bIndexedAt = bEntry.indexedAt
 	}
-	ft.table.mu.Unlock()
+	ft.table.unlock()
 
 	// Edit a.go and mark it dirty.
 	os.WriteFile(filepath.Join(root, "a.go"), []byte("package main\n\nfunc AEdited() {}\n"), 0o644)
@@ -834,13 +834,13 @@ func TestDirtyPathOnlyReoutlinesDirty_TS02_42_selective(t *testing.T) {
 	}
 
 	// b.go should NOT have been re-outlined (indexedAt unchanged).
-	ft.table.mu.Lock()
+	ft.table.lockBlocking()
 	bEntry2 := ft.table.entries["b.go"]
 	var bIndexedAt2 time.Time
 	if bEntry2 != nil {
 		bIndexedAt2 = bEntry2.indexedAt
 	}
-	ft.table.mu.Unlock()
+	ft.table.unlock()
 
 	if !bIndexedAt.Equal(bIndexedAt2) {
 		t.Fatalf("b.go should not have been re-outlined: indexedAt changed from %v to %v", bIndexedAt, bIndexedAt2)
