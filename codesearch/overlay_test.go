@@ -557,5 +557,3 @@ func TestFreshnessPropertySequence_TS03_49(t *testing.T) {
 }
 
 // --- helpers ---
-
-

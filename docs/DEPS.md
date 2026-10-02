@@ -21,9 +21,9 @@ hand-rolling is not credible; a row that cannot say so is not a row.
 |---|---|---|---|
 | `github.com/agentfox/agentkit-go` | the module under test | — | R1 |
 
-That is the whole list. Nested modules (`difftest/`) carry their own `go.mod`
-and their own budget; they do not appear here because they do not appear in the
-root's build graph.
+That is the whole list. Nested modules (`codesearch/`, `difftest/`,
+`examples/flatline/`) carry their own `go.mod` and their own budget; they do
+not appear here because they do not appear in the root's build graph.
 
 ## Rulings
 
@@ -66,3 +66,12 @@ re-litigated. Re-asking a settled question is itself a failure mode
   R-number here). `TestNoUnapprovedModules` prints this checklist in its
   failure message so the answer is written at the moment the question is
   asked.
+- **R7 — zoekt is confined to the `codesearch/` nested module, pinned.**
+  `github.com/sourcegraph/zoekt` (pinned at
+  `v0.0.0-20260911061844-153817f643cd`) provides trigram-based code search with
+  boolean queries, ranking and symbol awareness. Hand-rolling a trigram index
+  with ranking, a boolean query parser, chunk-match extraction and per-shard
+  search is not credible — zoekt is a mature, battle-tested engine. The module
+  is confined to `codesearch/` so the root module's zero-dependency invariant
+  is preserved. The `codesearch/policy_test.go` file replicates the root's cgo,
+  forbidden-import and cross-target gates for this module.
