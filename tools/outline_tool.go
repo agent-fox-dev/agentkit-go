@@ -74,15 +74,14 @@ func (f *fileTools) fileOutlineTool() core.Tool {
 				return core.ErrResult("outline_failed", err.Error())
 			}
 
-			// Rendering: placeholder for now (task 2 does full rendering).
-			// For this task we produce a minimal but correct Text and Data.
-			return renderOutlineResult(f.ws, abs, ofile, a.IncludePrivate)
+			// Render the outline as compact text with line ranges.
+			return renderOutlineResult(f.ws, abs, ofile, a.IncludePrivate, src)
 		},
 	}
 }
 
 // renderOutlineResult builds the ToolResult for file_outline.
-func renderOutlineResult(ws *Workspace, abs string, ofile outline.File, includePrivate bool) core.ToolResult {
+func renderOutlineResult(ws *Workspace, abs string, ofile outline.File, includePrivate bool, src []byte) core.ToolResult {
 	rel := ws.Rel(abs)
 	shown := filepath.ToSlash(rel)
 
@@ -120,7 +119,7 @@ func renderOutlineResult(ws *Workspace, abs string, ofile outline.File, includeP
 		b.WriteByte('\n')
 		if ofile.Backend == outline.BackendNone {
 			b.WriteString("  No declarations found")
-			reason := noneReason(ofile)
+			reason := noneReason(ofile, src)
 			if reason != "" {
 				b.WriteString(" (")
 				b.WriteString(reason)
@@ -166,15 +165,37 @@ func lineRange(d outline.Decl) string {
 	return "L" + itoa(d.StartLine) + "-" + itoa(d.EndLine)
 }
 
-// noneReason infers why the backend is none from the File fields.
-func noneReason(f outline.File) string {
+// noneReason infers why the backend is none from the File fields and the
+// source bytes. When src is nil the tool was unable to read the file, so
+// only the language can be checked.
+func noneReason(f outline.File, src []byte) string {
 	if f.Lang == "" {
 		return "language not recognised"
 	}
-	// If Lang is set but backend is none, it could be too large or binary.
-	// We cannot distinguish here without the source, so give a generic message.
-	return "file may be too large or binary"
+	// Check file size against the outline package's default limit.
+	if int64(len(src)) > defaultMaxFileBytes {
+		return "file too large"
+	}
+	// Check for binary content: NUL byte in the first 8 KiB.
+	sniff := src
+	if len(sniff) > binarySniffSize {
+		sniff = sniff[:binarySniffSize]
+	}
+	if len(sniff) > 0 {
+		for _, b := range sniff {
+			if b == 0 {
+				return "binary"
+			}
+		}
+	}
+	return ""
 }
+
+// Constants mirrored from outline to avoid exporting them.
+const (
+	defaultMaxFileBytes = 1 << 20  // 1 MiB
+	binarySniffSize     = 8 * 1024 // 8 KiB
+)
 
 // itoa is a minimal int-to-string without importing strconv.
 func itoa(n int) string {
