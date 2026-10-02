@@ -3,6 +3,7 @@
 package codesearch
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -196,6 +197,9 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 		return core.ErrResult("index_failed", errStr)
 	}
 
+	// Handle dirty files: revalidation and dirty-path processing.
+	idx.handleDirty()
+
 	// Build the final query with path conjunction.
 	finalQ := parsedQ
 	if pathConstraint != nil {
@@ -264,6 +268,12 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 		totalFiles = total
 	}
 
+	// Remove dirty paths from indexed results and search dirty files.
+	dirtySet := idx.dirty.dirtyPathSet()
+	if len(dirtySet) > 0 {
+		resultFiles, totalFiles = idx.filterAndSearchDirty(resultFiles, totalFiles, dirtySet, finalQ, maxFiles, contextLines)
+	}
+
 	// Build the result data.
 	return idx.buildResult(resultFiles, maxFiles, totalFiles)
 }
@@ -278,6 +288,228 @@ func (idx *Index) ensureBuilt(ctx context.Context) error {
 		return nil
 	}
 	return idx.Build(ctx)
+}
+
+// handleDirty runs revalidation if needed. It checks whether a revalidation
+// walk is required (unknown paths, .gitignore changes, or Invalidate("")),
+// and if so, walks the workspace to discover changed, new and removed files.
+func (idx *Index) handleDirty() {
+	if !idx.dirty.hasDirty() {
+		return
+	}
+
+	idx.mu.RLock()
+	indexedFiles := idx.indexedFiles
+	fileInfos := idx.fileInfos
+	idx.mu.RUnlock()
+
+	if idx.dirty.needsRevalidation(indexedFiles) {
+		if idx.testRevalHook != nil {
+			idx.testRevalHook()
+		}
+		idx.dirty.revalidate(idx.ws, idx.opts.Ignore, indexedFiles, fileInfos)
+		idx.revalCount.Add(1)
+	}
+}
+
+// filterAndSearchDirty removes dirty paths from indexed results and searches
+// dirty files that still exist on disk. Until the overlay shard lands (task 8),
+// this uses a simple substring search on the file content.
+func (idx *Index) filterAndSearchDirty(
+	resultFiles []searchResultFile,
+	totalFiles int,
+	dirtySet map[string]bool,
+	q query.Q,
+	maxFiles, contextLines int,
+) ([]searchResultFile, int) {
+	// Remove dirty paths from indexed results.
+	var clean []searchResultFile
+	for _, f := range resultFiles {
+		if !dirtySet[f.path] {
+			clean = append(clean, f)
+		}
+	}
+
+	// Adjust totalFiles: subtract dirty files that were in the results.
+	removed := len(resultFiles) - len(clean)
+	totalFiles -= removed
+	if totalFiles < 0 {
+		totalFiles = 0
+	}
+
+	// Search dirty files that still exist on disk.
+	// Extract query atoms for a simple substring search.
+	atoms := extractSubstrings(q)
+
+	for rel := range dirtySet {
+		// Skip files marked as gone (deleted or now ignored).
+		if idx.dirty.isGone(rel) {
+			continue
+		}
+
+		abs := filepath.Join(idx.ws.Root, filepath.FromSlash(rel))
+		content, err := os.ReadFile(abs)
+		if err != nil {
+			// File is gone: it was already removed from results above.
+			continue
+		}
+
+		// Check if any atom matches.
+		if !anyAtomMatches(content, atoms) {
+			continue
+		}
+
+		// Build a minimal result for this dirty file.
+		df := buildDirtyFileResult(rel, content, atoms, contextLines)
+		if df.matchCount > 0 {
+			clean = append(clean, df)
+			totalFiles++
+		}
+	}
+
+	// Sort by score (dirty files get a default score).
+	// Keep at most maxFiles.
+	if len(clean) > maxFiles {
+		clean = clean[:maxFiles]
+	}
+
+	return clean, totalFiles
+}
+
+// extractSubstrings extracts simple substring atoms from a zoekt query.
+// This is a minimal implementation for dirty-file searching until the
+// overlay shard lands.
+func extractSubstrings(q query.Q) []string {
+	var atoms []string
+	switch v := q.(type) {
+	case *query.Substring:
+		if !v.FileName {
+			atoms = append(atoms, v.Pattern)
+		}
+	case *query.And:
+		for _, child := range v.Children {
+			atoms = append(atoms, extractSubstrings(child)...)
+		}
+	case *query.Or:
+		for _, child := range v.Children {
+			atoms = append(atoms, extractSubstrings(child)...)
+		}
+	case *query.Not:
+		// Skip negated atoms.
+	case *query.Symbol:
+		atoms = append(atoms, extractSubstrings(v.Expr)...)
+	}
+	return atoms
+}
+
+// anyAtomMatches returns true if any atom substring is found in the content.
+func anyAtomMatches(content []byte, atoms []string) bool {
+	if len(atoms) == 0 {
+		// No extractable atoms: assume it might match.
+		return true
+	}
+	for _, a := range atoms {
+		if bytes.Contains(content, []byte(a)) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildDirtyFileResult builds a searchResultFile for a dirty file by
+// searching its content for the given atoms.
+func buildDirtyFileResult(rel string, content []byte, atoms []string, contextLines int) searchResultFile {
+	lines := strings.Split(string(content), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	// Find matching lines.
+	var matchedLineNos []int
+	for i, line := range lines {
+		for _, a := range atoms {
+			if strings.Contains(line, a) {
+				matchedLineNos = append(matchedLineNos, i+1)
+				break
+			}
+		}
+	}
+
+	if len(matchedLineNos) == 0 {
+		return searchResultFile{path: rel}
+	}
+
+	// Build chunks with context.
+	var allLines []resultLine
+	for _, mln := range matchedLineNos {
+		start := mln - contextLines
+		if start < 1 {
+			start = 1
+		}
+		end := mln + contextLines
+		if end > len(lines) {
+			end = len(lines)
+		}
+		for ln := start; ln <= end; ln++ {
+			allLines = append(allLines, resultLine{
+				lineNo: ln,
+				text:   capLineText(lines[ln-1]),
+				match:  ln == mln,
+			})
+		}
+	}
+
+	// Deduplicate and sort.
+	seen := make(map[int]resultLine)
+	for _, l := range allLines {
+		if existing, ok := seen[l.lineNo]; ok {
+			if l.match && !existing.match {
+				seen[l.lineNo] = l
+			}
+		} else {
+			seen[l.lineNo] = l
+		}
+	}
+	var sorted []resultLine
+	for _, l := range seen {
+		sorted = append(sorted, l)
+	}
+	sortResultLines(sorted)
+
+	// Split into chunks (contiguous ranges).
+	var chunks []resultChunk
+	var current []resultLine
+	for _, l := range sorted {
+		if len(current) > 0 && l.lineNo > current[len(current)-1].lineNo+1 {
+			chunks = append(chunks, resultChunk{lines: current})
+			current = nil
+		}
+		current = append(current, l)
+	}
+	if len(current) > 0 {
+		chunks = append(chunks, resultChunk{lines: current})
+	}
+
+	// Limit to maxChunksPerFile.
+	if len(chunks) > maxChunksPerFile {
+		chunks = chunks[:maxChunksPerFile]
+	}
+
+	return searchResultFile{
+		path:       rel,
+		score:      0.5, // default score for dirty files
+		matchCount: len(matchedLineNos),
+		chunks:     chunks,
+	}
+}
+
+// sortResultLines sorts result lines by line number.
+func sortResultLines(lines []resultLine) {
+	for i := 1; i < len(lines); i++ {
+		for j := i; j > 0 && lines[j].lineNo < lines[j-1].lineNo; j-- {
+			lines[j], lines[j-1] = lines[j-1], lines[j]
+		}
+	}
 }
 
 // searchZoekt performs the actual zoekt search and returns the total number
@@ -494,6 +726,12 @@ func (idx *Index) gatherResultInfo(stats BuildStatsResult) resultInfo {
 		}
 	}
 
+	// Count dirty files.
+	dirtyCount := 0
+	if idx.dirty != nil {
+		dirtyCount = len(idx.dirty.dirtyPathSet())
+	}
+
 	return resultInfo{
 		filesIndexed:   stats.FilesIndexed,
 		indexSizeBytes: indexSize,
@@ -501,6 +739,6 @@ func (idx *Index) gatherResultInfo(stats BuildStatsResult) resultInfo {
 		ctagsAvailable: ctagsAvailable,
 		partial:        partial,
 		partialReason:  partialReason,
-		dirtyFiles:     0, // set by later tasks
+		dirtyFiles:     dirtyCount,
 	}
 }

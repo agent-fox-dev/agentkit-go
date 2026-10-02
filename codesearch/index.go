@@ -103,6 +103,7 @@ func New(ws *tools.Workspace, opts Options) (*Index, error) {
 		ws:    ws,
 		opts:  opts,
 		runID: newRunID(),
+		dirty: newDirtyTracker(),
 	}, nil
 }
 
@@ -140,6 +141,9 @@ type Index struct {
 	// buildCount tracks how many times the index has been built.
 	buildCount atomic.Int32
 
+	// revalCount tracks how many revalidation walks have been performed.
+	revalCount atomic.Int32
+
 	// built is true after a successful or partial build.
 	built bool
 
@@ -166,6 +170,12 @@ type Index struct {
 	// closed tracks whether Close has been called.
 	closed bool
 
+	// dirty tracks files modified since the index was built.
+	dirty *dirtyTracker
+
+	// fileInfos holds the (size, mtime, indexedAt) of each indexed file.
+	fileInfos map[string]indexedFileInfo
+
 	// runner is the lazily resolved outline runner.
 	runnerOnce sync.Once
 	runner     func(ctx context.Context, args []string) ([]byte, error)
@@ -180,6 +190,10 @@ type Index struct {
 	// testSearchHook, when set, replaces the real zoekt search. Tests use
 	// it to inject errors or blocking behaviour.
 	testSearchHook func(ctx context.Context, query string) (*searchHookResult, error)
+
+	// testRevalHook, when set, is called at the start of a revalidation
+	// walk. Tests use it to block the walk and inject concurrent writes.
+	testRevalHook func()
 
 	// queryTimeout is the maximum wall time for a single search query.
 	// Zero means the default of 10 s.
@@ -197,6 +211,11 @@ type BuildStatsResult struct {
 // BuildCount returns the number of times the index has been built.
 func (idx *Index) BuildCount() int {
 	return int(idx.buildCount.Load())
+}
+
+// RevalCount returns the number of revalidation walks performed.
+func (idx *Index) RevalCount() int {
+	return int(idx.revalCount.Load())
 }
 
 // BuildStats returns statistics from the last build.
@@ -242,7 +261,17 @@ func (idx *Index) Symbols(_ context.Context, _ tools.SymbolQuery) (tools.SymbolA
 // Invalidate implements tools.Index. It never blocks on a build or query in
 // progress for longer than it takes to set a flag, never returns an error and
 // never panics on a closed index.
-func (idx *Index) Invalidate(_ string) {}
+func (idx *Index) Invalidate(rel string) {
+	// Never panic on a closed or nil index.
+	if idx == nil || idx.dirty == nil {
+		return
+	}
+	if rel == "" {
+		idx.dirty.markRevalidateAll()
+	} else {
+		idx.dirty.markDirty(rel)
+	}
+}
 
 // Close releases resources. It waits for in-flight queries to finish,
 // then releases the zoekt searcher and deletes the run directory. It is
@@ -349,6 +378,10 @@ func (idx *Index) Build(ctx context.Context) error {
 	if idx.closed {
 		return errors.New("index_closed")
 	}
+
+	// Snapshot the dirty generation so we can clear only marks older than
+	// this build when it finishes.
+	_, _, buildGenStart := idx.dirty.snapshot()
 
 	// Create a derived context with the wall-time bound.
 	buildCtx, buildCancel := context.WithTimeout(ctx, idx.opts.MaxBuildTime)
@@ -590,6 +623,29 @@ func (idx *Index) Build(ctx context.Context) error {
 	idx.partial = partialReason != ""
 	idx.partialReason = partialReason
 	idx.buildCount.Add(1)
+
+	// Record file info for revalidation.
+	now := time.Now()
+	idx.fileInfos = make(map[string]indexedFileInfo, len(indexedFiles))
+	for _, fe := range files {
+		if !indexedFiles[fe.rel] {
+			continue
+		}
+		abs := filepath.Join(idx.ws.Root, filepath.FromSlash(fe.rel))
+		fi, err := os.Stat(abs)
+		if err != nil {
+			continue
+		}
+		idx.fileInfos[fe.rel] = indexedFileInfo{
+			size:      fi.Size(),
+			mtime:     fi.ModTime(),
+			indexedAt: now,
+		}
+	}
+
+	// Clear dirty marks that predate this build, keeping any marks made
+	// during the build (generation-based clearing).
+	idx.dirty.clearOlderThan(buildGenStart)
 
 	return nil
 }
