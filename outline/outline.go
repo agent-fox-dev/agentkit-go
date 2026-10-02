@@ -137,15 +137,41 @@ func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, e
 	}
 
 	// Dispatch to backends.
-	// Go files are always parsed in-process; the Runner is never called.
+	// Go files are always parsed in-process; the Runner is never called
+	// unless the parser returns no AST at all.
 	if lang == LangGo {
 		if f, ok := outlineGo(abs, src, opts); ok {
 			return f, nil
 		}
-		// Parser returned no AST at all — fall through to other backends.
+		// Parser returned no AST at all — fall through to ctags or none.
 	}
 
-	// TODO(task 3-6): ctags, heuristic and none backends.
+	// Try ctags if Runner is available.
+	if opts.Runner != nil {
+		entry := ctagsBatchEntry{srcIdx: 0, abs: abs, src: src}
+		batch := []ctagsBatchEntry{entry}
+		tagsByIdx, _, err := runCtagsBatch(ctx, opts.Runner, batch)
+		if err != nil {
+			if ctx.Err() != nil {
+				return File{}, ctx.Err()
+			}
+			// Runner error: fall through to heuristic/none.
+		} else {
+			decls := tagsByIdx[0]
+			if decls == nil {
+				decls = []Decl{}
+			}
+			f := File{
+				Path:    filePath(abs, opts.Root),
+				Lang:    lang,
+				Backend: BackendCtags,
+				Decls:   decls,
+			}
+			return finishFile(f), nil
+		}
+	}
+
+	// TODO(task 5): heuristic backend.
 	f := File{
 		Path:    filePath(abs, opts.Root),
 		Lang:    lang,

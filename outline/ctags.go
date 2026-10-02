@@ -153,11 +153,19 @@ func parseCtagsOutput(
 			continue
 		}
 
-		// Check if this is a method (function-kind tag with type-like scope).
+		// Drop tags that are nested inside a function (locals).
+		// A function-kind tag with a non-empty, non-type-like scope is a local.
+		// A type-like tag nested in a function is also dropped.
 		container := ""
-		if (kind == KindFunc) && isTypeLikeScope(tag.ScopeKind) {
-			kind = KindMethod
-			container = tag.Scope
+		if tag.ScopeKind != "" {
+			if kind == KindFunc && isTypeLikeScope(tag.ScopeKind) {
+				// Function scoped in a type-like kind → method.
+				kind = KindMethod
+				container = tag.Scope
+			} else if isFunctionLikeScope(tag.ScopeKind) {
+				// Any tag scoped in a function-like kind is a local — drop.
+				continue
+			}
 		}
 
 		// Signature: use the source line at StartLine if available.
@@ -236,7 +244,7 @@ func mapCtagsKind(k string) Kind {
 		return KindFunc
 	case "method":
 		return KindMethod
-	case "type":
+	case "type", "struct", "typedef", "union":
 		return KindType
 	case "class":
 		return KindClass
@@ -263,6 +271,16 @@ func mapCtagsKind(k string) Kind {
 func isTypeLikeScope(scopeKind string) bool {
 	switch strings.ToLower(scopeKind) {
 	case "class", "struct", "interface", "enum", "trait", "impl", "type":
+		return true
+	}
+	return false
+}
+
+// isFunctionLikeScope returns true if the scope kind is function-like,
+// meaning tags nested in it are locals and should be dropped.
+func isFunctionLikeScope(scopeKind string) bool {
+	switch strings.ToLower(scopeKind) {
+	case "function", "func", "method", "subroutine", "procedure":
 		return true
 	}
 	return false
