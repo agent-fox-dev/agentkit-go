@@ -834,54 +834,27 @@ func (f *fileTools) findFiles() core.Tool {
 				return core.ErrResult("path_not_allowed", err.Error())
 			}
 			limit := clampLimit(a.Limit, FindResultDefault, FindResultCap)
-			ig := newIgnoreEngine(root, f.ig)
 			var found []string
 			truncated := false
-			add := func(rel string) error {
-				if len(found) >= limit {
-					truncated = true
-					return filepath.SkipAll
-				}
-				found = append(found, rel)
-				return nil
-			}
-			err = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-				if err != nil {
-					return nil // unreadable entries are skipped, not fatal
-				}
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				rel, rerr := filepath.Rel(root, p)
-				if rerr != nil || rel == "." {
-					return nil
-				}
-				// Slash-separated on every platform, like search_files: the
-				// model pastes these paths into its next call and into code,
-				// and a backslash is an escape almost everywhere it lands.
-				rel = filepath.ToSlash(rel)
-				if ig.match(rel, d.IsDir()) {
-					if d.IsDir() {
-						return filepath.SkipDir
-					}
-					return nil
-				}
+			err = Walk(ctx, f.ws, root, WalkOptions{Ignore: f.ig, IncludeHidden: true}, func(rel string, d fs.DirEntry) error {
 				if d.IsDir() {
-					// Load this directory's own ignore files before its
-					// children are matched (REQ-TOOL-05.2). WalkDir visits a
-					// directory before descending, which is what makes a
-					// single forward pass sufficient — there is no need to
-					// pre-scan for .gitignore files that may not exist.
-					ig.enter(rel, p)
 					if wantDirs && MatchGlob(a.Pattern, rel) {
 						// Suffixed like list_files, so a directory is
 						// distinguishable from a file under file_type=any.
-						return add(rel + "/")
+						if len(found) >= limit {
+							truncated = true
+							return filepath.SkipAll
+						}
+						found = append(found, rel+"/")
 					}
 					return nil
 				}
 				if wantFiles && MatchGlob(a.Pattern, rel) {
-					return add(rel)
+					if len(found) >= limit {
+						truncated = true
+						return filepath.SkipAll
+					}
+					found = append(found, rel)
 				}
 				return nil
 			})
