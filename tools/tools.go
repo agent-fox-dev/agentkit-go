@@ -22,6 +22,23 @@ import (
 	"github.com/agentfox/agentkit-go/schema"
 )
 
+// SymbolOptions configures the symbol table behind find_symbol and the
+// runner shared by file_outline and find_symbol.
+type SymbolOptions struct {
+	// MaxFiles is the file-count bound for a symbol-table build or refresh
+	// pass. Zero or negative means 50 000.
+	MaxFiles int
+	// MaxDuration is the wall-time bound for a symbol-table build or refresh
+	// pass. Zero or negative means 2 s.
+	MaxDuration time.Duration
+	// DisableCtags forces the runner to nil, so every file falls back to
+	// the heuristic or go/ast backend.
+	DisableCtags bool
+	// Runner, when non-nil, replaces the default CtagsRunner. It is the
+	// seam tests use to inject a deterministic backend.
+	Runner func(ctx context.Context, args []string) ([]byte, error)
+}
+
 // Options configures the built-in tool set.
 type Options struct {
 	Workspace *Workspace
@@ -47,6 +64,8 @@ type Options struct {
 	// reads the real one; NoGlobalExcludes() pins an empty global layer
 	// (NFR-TEST-04).
 	Ignore IgnoreOptions
+	// Symbols configures the symbol table and the outline runner.
+	Symbols SymbolOptions
 }
 
 // withDefaults applies the documented zero-value meanings. Every constructor
@@ -211,10 +230,42 @@ type fileTools struct {
 	// ig carries the ignore environment with the `git config` lookup memoized
 	// per workspace, so find_files and search_files do not spawn git per call.
 	ig IgnoreOptions
+
+	// symOpts holds the symbol configuration from Options.Symbols.
+	symOpts SymbolOptions
+	// env is the subprocess environment, kept for lazy runner construction.
+	env []string
+	// runner is the lazily resolved outline runner shared by file_outline
+	// and find_symbol. It is nil when DisableCtags is set and no custom
+	// Runner was provided.
+	runnerOnce sync.Once
+	runner     func(ctx context.Context, args []string) ([]byte, error)
 }
 
 func newFileTools(opts Options) *fileTools {
-	return &fileTools{ws: opts.Workspace, locks: newPathLocks(), ig: opts.Ignore.cached()}
+	return &fileTools{
+		ws:      opts.Workspace,
+		locks:   newPathLocks(),
+		ig:      opts.Ignore.cached(),
+		symOpts: opts.Symbols,
+		env:     opts.Env,
+	}
+}
+
+// outlineRunner returns the lazily resolved runner. It is nil when ctags is
+// disabled and no custom Runner was provided.
+func (f *fileTools) outlineRunner() func(ctx context.Context, args []string) ([]byte, error) {
+	f.runnerOnce.Do(func() {
+		switch {
+		case f.symOpts.Runner != nil:
+			f.runner = f.symOpts.Runner
+		case f.symOpts.DisableCtags:
+			f.runner = nil
+		default:
+			f.runner = CtagsRunner(f.env)
+		}
+	})
+	return f.runner
 }
 
 func (f *fileTools) readFile() core.Tool {

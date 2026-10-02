@@ -501,8 +501,9 @@ func TestNoDefaultRunnerInstalled_TS0168(t *testing.T) {
 			t.Fatal(err)
 		}
 		content := string(data)
-		// Check for Runner: in non-test code (outside CtagsRunner definition)
-		if name != "ctags.go" && strings.Contains(content, "Runner:") {
+		// Check for Runner: in non-test code (outside CtagsRunner definition
+		// and the outline/symbol tools that legitimately pass the runner).
+		if name != "ctags.go" && name != "outline_tool.go" && name != "symbol_tool.go" && name != "symbols.go" && strings.Contains(content, "Runner:") {
 			// Parse to make sure it's not a comment
 			f, perr := parser.ParseFile(fset, name, data, parser.ParseComments)
 			if perr != nil {

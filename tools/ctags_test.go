@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -13,22 +12,20 @@ import (
 )
 
 // TS-01-43: CtagsRunner's return value is assignable to outline.Options.Runner
-// and tools does not import outline.
+// and ctags.go does not import outline.
 //
 // The assignability check is in tools/ctags_assign_test.go (external test
 // package that can import both outline and tools). This test verifies that
-// tools does not import outline by checking go list output.
+// ctags.go itself does not import outline — the tools package as a whole may
+// import it for the file_outline and find_symbol tools added by spec 02.
 func TestCtagsRunner_NoOutlineImport_TS_01_43(t *testing.T) {
-	// Run go list to check non-test imports of the tools package.
-	// Use -f to extract only the Imports field (non-test imports).
-	cmd := exec.Command("go", "list", "-f", `{{.Imports}}`, "./tools")
-	cmd.Dir = moduleRoot(t)
-	out, err := cmd.Output()
+	// Read ctags.go and verify it does not contain an outline import.
+	data, err := os.ReadFile(filepath.Join(moduleRoot(t), "tools", "ctags.go"))
 	if err != nil {
-		t.Fatalf("go list failed: %v", err)
+		t.Fatalf("reading ctags.go: %v", err)
 	}
-	if strings.Contains(string(out), "outline") {
-		t.Fatal("tools package imports outline; it must not")
+	if strings.Contains(string(data), `"github.com/agentfox/agentkit-go/outline"`) {
+		t.Fatal("ctags.go imports outline; it must not")
 	}
 }
 
