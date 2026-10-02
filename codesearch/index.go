@@ -262,17 +262,7 @@ func (idx *Index) RunDir() string {
 	return idx.runDir
 }
 
-// Symbols implements tools.Index. It returns ok=false when the index has not
-// been built, is partial, or is closed.
-func (idx *Index) Symbols(_ context.Context, _ tools.SymbolQuery) (tools.SymbolAnswer, bool, error) {
-	idx.mu.RLock()
-	closed := idx.closed
-	idx.mu.RUnlock()
-	if closed {
-		return tools.SymbolAnswer{}, false, nil
-	}
-	return tools.SymbolAnswer{}, false, nil
-}
+// Symbols is implemented in symbols.go.
 
 // Tools is implemented in tool.go.
 
