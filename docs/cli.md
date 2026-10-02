@@ -47,11 +47,11 @@ DARK means.
 | Target | Does |
 |---|---|
 | `make check` | `fmt`, `vet`, `lint`, `test` — run before committing |
-| `make test` | `go test ./...` in the root, `codesearch` and `difftest` modules |
-| `make vet` | `go vet` in the root, `codesearch` and `difftest` modules |
-| `make lint` | `golangci-lint` in the root, `codesearch` and `difftest` modules (skipped if not installed) |
+| `make test` | `go test ./...` in the root, `codesearch`, `difftest` and `examples/codesearch` modules |
+| `make vet` | `go vet` in the root, `codesearch`, `difftest` and `examples/codesearch` modules |
+| `make lint` | `golangci-lint` in the root, `codesearch`, `difftest` and `examples/codesearch` modules (skipped if not installed) |
 | `make fmt` | `gofmt -l -w .` |
-| `make tidy` | `go mod tidy` in the root, `codesearch`, `difftest` (and `flatline` when `../spec/golang` exists) |
+| `make tidy` | `go mod tidy` in the root, `codesearch`, `difftest`, `examples/codesearch` (and `flatline` when `../spec/golang` exists) |
 | `make build-examples` | Installs `issued` and `cleaner` into `$GOBIN` |
 
 ## Examples
@@ -67,6 +67,19 @@ credential for its vendor ([`configuration.md`](configuration.md)).
 | `examples/mcp` | `--serve` (expose this program's tools as an MCP server on stdio), `--external CMD` (also connect to a real server spawned from this command line) |
 | `examples/mcpserver` | `--config FILE` (TOML with `[mcp_server]`), `--transport stdio\|http`, `--port N`, `--api-key-env VAR`; flags override the file |
 | `examples/agentdemo`, `examples/testing` | none; no key or network needed |
+
+### `codesearch`
+
+`cd examples/codesearch && go run ./<program> [flags]` — three programs for the
+optional code-search index, in a nested module (see
+[`examples/codesearch/README.md`](../examples/codesearch/README.md)). Not
+available on Windows, where each prints `codesearch.ErrUnsupported` and exits 1.
+
+| Program | Flags |
+|---|---|
+| `search` | `--dir` (directory to index, default `.`), `--path` (restrict every query), `--max-files N`, `--context N`, `--symbol NAME` with `--kind` and `--exact` (declaration lookup instead of a query), `--json` (structured result), `--no-ctags`; positional arguments are zoekt queries. No key needed |
+| `freshness` | none; no key or network needed |
+| `agent` | `--dir` (workspace root, default `.`), `--compare` (also answer without the index and print both runs' cost); the question is the positional arguments |
 
 ### `issued`
 

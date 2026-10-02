@@ -22,7 +22,7 @@ hand-rolling is not credible; a row that cannot say so is not a row.
 | `github.com/agentfox/agentkit-go` | the module under test | — | R1 |
 
 That is the whole list. Nested modules (`codesearch/`, `difftest/`,
-`examples/flatline/`) carry their own `go.mod` and their own budget; they do
+`examples/codesearch/`, `examples/flatline/`) carry their own `go.mod` and their own budget; they do
 not appear here because they do not appear in the root's build graph.
 
 ## Rulings

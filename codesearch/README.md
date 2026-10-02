@@ -53,6 +53,11 @@ tools, err := tools.All(tools.Options{
 
 Add `"code_search"` to your embedder's tool allowlist.
 
+The index also works without an agent: build it, call the `code_search` tool's
+`Execute` and `Symbols` directly, and call `Invalidate` when files change.
+[`examples/codesearch`](../examples/codesearch) has runnable programs for both
+uses — `search` and `freshness` on their own, `agent` wired into `tools.All`.
+
 ## Known Differences from search_files
 
 | Aspect | search_files | code_search |

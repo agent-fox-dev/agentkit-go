@@ -19,7 +19,9 @@ a test file showing how to test the agent code *you* write, and three finished
 applications: [`issued`](examples/issued), which triages a bug report into a
 structured GitHub issue, [`cleaner`](examples/cleaner), which takes that issue
 and lands the fix, and [`flatline`](examples/flatline), which implements a whole
-spec pack task group by task group. Six need no API key. [`examples/README.md`](examples/README.md)
+spec pack task group by task group. Six need no API key. The nested
+[`examples/codesearch`](examples/codesearch) module shows the optional
+code-search index on its own and wired into an agent. [`examples/README.md`](examples/README.md)
 is the configuration reference: which environment variable each vendor reads,
 what a base URL does and does not buy you, and the three decisions every
 embedding application has to make.
