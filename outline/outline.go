@@ -136,8 +136,16 @@ func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, e
 		}, nil
 	}
 
-	// Dispatch to backends. For now (task 1), return none.
-	// Later tasks will add Go, ctags, and heuristic backends.
+	// Dispatch to backends.
+	// Go files are always parsed in-process; the Runner is never called.
+	if lang == LangGo {
+		if f, ok := outlineGo(abs, src, opts); ok {
+			return f, nil
+		}
+		// Parser returned no AST at all — fall through to other backends.
+	}
+
+	// TODO(task 3-6): ctags, heuristic and none backends.
 	f := File{
 		Path:    filePath(abs, opts.Root),
 		Lang:    lang,
