@@ -16,7 +16,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/outline"
 	"github.com/agentfox/agentkit-go/tools"
 
@@ -107,6 +106,18 @@ func New(ws *tools.Workspace, opts Options) (*Index, error) {
 	}, nil
 }
 
+// searchHookResult is the return type for the testSearchHook seam.
+type searchHookResult struct {
+	files []searchResultFile
+}
+
+// searchResultFile is a minimal file result for the search hook.
+type searchResultFile struct {
+	path       string
+	score      float64
+	matchCount int
+}
+
 // Index is the codesearch index. It implements tools.Index.
 type Index struct {
 	ws   *tools.Workspace
@@ -150,6 +161,14 @@ type Index struct {
 	// testOutlineHook, when set, is called for each outline batch with
 	// (root, batchSize, runnerNonNil). Tests use it to verify batching.
 	testOutlineHook func(root string, batchSize int, runner bool)
+
+	// testSearchHook, when set, replaces the real zoekt search. Tests use
+	// it to inject errors or blocking behaviour.
+	testSearchHook func(ctx context.Context, query string) (*searchHookResult, error)
+
+	// queryTimeout is the maximum wall time for a single search query.
+	// Zero means the default of 10 s.
+	queryTimeout time.Duration
 }
 
 // BuildStatsResult holds statistics from a build.
@@ -196,10 +215,7 @@ func (idx *Index) Symbols(_ context.Context, _ tools.SymbolQuery) (tools.SymbolA
 	return tools.SymbolAnswer{}, false, nil
 }
 
-// Tools implements tools.Index.
-func (idx *Index) Tools() []core.Tool {
-	return nil
-}
+// Tools is implemented in tool.go.
 
 // Invalidate implements tools.Index. It never blocks on a build or query in
 // progress for longer than it takes to set a flag, never returns an error and

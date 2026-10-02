@@ -2,5 +2,338 @@
 
 package codesearch
 
-// This file will hold the code_search tool definition.
-// Skeleton for now; implementation is in later tasks.
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/agentfox/agentkit-go/core"
+	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agentfox/agentkit-go/tools"
+
+	zoekt "github.com/sourcegraph/zoekt"
+	"github.com/sourcegraph/zoekt/query"
+	"github.com/sourcegraph/zoekt/search"
+)
+
+// maxQueryBytes is the maximum length of a query string.
+const maxQueryBytes = 1024
+
+// defaultMaxFiles is the default max_files for code_search results.
+const defaultMaxFiles = 10
+
+// maxMaxFiles is the cap for max_files.
+const maxMaxFiles = 25
+
+// defaultContextLines is the default context_lines for code_search results.
+const defaultContextLines = 2
+
+// defaultQueryTimeout is the default maximum wall time for a single search.
+const defaultQueryTimeout = 10 * time.Second
+
+// codeSearchDescription is the tool description.
+const codeSearchDescription = `Search the codebase using zoekt query syntax. Returns ranked, file-grouped results.
+
+Examples:
+  sym:Runner
+  retry file:\.go$ -file:_test
+  lang:python "def load"
+  (compaction or summarize) case:no`
+
+// codeSearchGuideline is the PromptGuideline for code_search.
+const codeSearchGuideline = "Use code_search for ranked questions about the codebase; search_files for an exhaustive regex scan."
+
+// Tools implements tools.Index. It returns the code_search tool.
+func (idx *Index) Tools() []core.Tool {
+	return []core.Tool{idx.codeSearchTool()}
+}
+
+// codeSearchTool builds the code_search tool definition.
+func (idx *Index) codeSearchTool() core.Tool {
+	return core.Tool{
+		Name:        "code_search",
+		Description: codeSearchDescription,
+		Builtin:     true,
+		// ExecutionMode defaults to Parallel (zero value).
+		InputSchema: schema.Object(
+			schema.Prop("query", schema.String("The search query in zoekt query syntax.")),
+			schema.Opt("path", schema.String("Restrict search to this directory or file path.")),
+			schema.Opt("max_files", schema.Int("Maximum number of files to return.")),
+			schema.Opt("context_lines", schema.Int("Number of context lines around each match.")),
+		),
+		Execute:          idx.executeCodeSearch,
+		PromptGuidelines: []string{codeSearchGuideline},
+	}
+}
+
+// codeSearchArgs are the parsed arguments for code_search.
+type codeSearchArgs struct {
+	Query        string `json:"query"`
+	Path         string `json:"path"`
+	MaxFiles     int    `json:"max_files"`
+	ContextLines int    `json:"context_lines"`
+}
+
+// executeCodeSearch is the Execute handler for code_search.
+func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) core.ToolResult {
+	// Check for cancelled context early.
+	if err := ctx.Err(); err != nil {
+		return core.ErrResult("aborted", "Operation aborted")
+	}
+
+	// Parse arguments.
+	var a codeSearchArgs
+	if err := json.Unmarshal(in, &a); err != nil {
+		return core.ErrResult("invalid_arguments", err.Error())
+	}
+
+	// Validate query: empty after trimming.
+	trimmed := strings.TrimSpace(a.Query)
+	if trimmed == "" {
+		return core.ErrResult("invalid_arguments", "query must not be empty")
+	}
+
+	// Validate query: over 1024 bytes.
+	if len(a.Query) > maxQueryBytes {
+		return core.ErrResult("invalid_arguments",
+			fmt.Sprintf("query exceeds %d byte limit (%d bytes)", maxQueryBytes, len(a.Query)))
+	}
+
+	// Validate context_lines: negative is invalid.
+	if a.ContextLines < 0 {
+		return core.ErrResult("invalid_arguments", "context_lines must not be negative")
+	}
+
+	// Parse the query with zoekt's parser.
+	parsedQ, err := query.Parse(trimmed)
+	if err != nil {
+		return core.ErrResult("invalid_arguments", fmt.Sprintf("query parse error: %s", err.Error()))
+	}
+
+	// Default and clamp context_lines and max_files.
+	contextLines := a.ContextLines
+	if contextLines == 0 {
+		contextLines = defaultContextLines
+	}
+	if contextLines > tools.MaxSearchContextLines {
+		contextLines = tools.MaxSearchContextLines
+	}
+	maxFiles := tools.ClampLimit(a.MaxFiles, defaultMaxFiles, maxMaxFiles)
+
+	// Validate and resolve path before any build.
+	var pathConstraint query.Q
+	if a.Path != "" {
+		abs, err := idx.ws.Resolve(a.Path)
+		if err != nil {
+			return core.ErrResult("path_not_allowed", err.Error())
+		}
+		fi, err := os.Stat(abs)
+		if err != nil {
+			return core.ErrResult("read_failed", err.Error())
+		}
+
+		rel := filepath.ToSlash(idx.ws.Rel(abs))
+
+		// Build the file: constraint as a query node.
+		if rel != "." && rel != "" {
+			if fi.IsDir() {
+				// Directory: anchored prefix with trailing slash.
+				escaped := regexp.QuoteMeta(rel + "/")
+				pathQ, err := query.RegexpQuery("^"+escaped, false, true)
+				if err != nil {
+					return core.ErrResult("invalid_arguments",
+						fmt.Sprintf("path constraint error: %s", err.Error()))
+				}
+				pathConstraint = pathQ
+			} else {
+				// File: anchored to the end.
+				escaped := regexp.QuoteMeta(rel)
+				pathQ, err := query.RegexpQuery("^"+escaped+"$", false, true)
+				if err != nil {
+					return core.ErrResult("invalid_arguments",
+						fmt.Sprintf("path constraint error: %s", err.Error()))
+				}
+				pathConstraint = pathQ
+			}
+		}
+		// Root adds no constraint.
+	}
+
+	// Check for cancelled context again before building.
+	if err := ctx.Err(); err != nil {
+		return core.ErrResult("aborted", "Operation aborted")
+	}
+
+	// Check if closed.
+	idx.mu.RLock()
+	closed := idx.closed
+	idx.mu.RUnlock()
+	if closed {
+		return core.ErrResult("index_closed", "index has been closed")
+	}
+
+	// Ensure the index is built (lazy build on first call).
+	if err := idx.ensureBuilt(ctx); err != nil {
+		if ctx.Err() != nil {
+			return core.ErrResult("aborted", "Operation aborted")
+		}
+		errStr := err.Error()
+		if strings.HasPrefix(errStr, "index_failed:") || strings.HasPrefix(errStr, "index_closed") {
+			code := "index_failed"
+			detail := strings.TrimPrefix(errStr, "index_failed: ")
+			if strings.HasPrefix(errStr, "index_closed") {
+				code = "index_closed"
+				detail = "index has been closed"
+			}
+			return core.ErrResult(code, detail)
+		}
+		return core.ErrResult("index_failed", errStr)
+	}
+
+	// Build the final query with path conjunction.
+	finalQ := parsedQ
+	if pathConstraint != nil {
+		finalQ = query.NewAnd(parsedQ, pathConstraint)
+	}
+
+	// Search with the test hook or the real searcher.
+	queryTimeout := idx.queryTimeout
+	if queryTimeout <= 0 {
+		queryTimeout = defaultQueryTimeout
+	}
+
+	searchCtx, searchCancel := context.WithTimeout(ctx, queryTimeout)
+	defer searchCancel()
+
+	var resultFiles []searchResultFile
+
+	if idx.testSearchHook != nil {
+		hookResult, err := idx.testSearchHook(searchCtx, trimmed)
+		if err != nil {
+			if searchCtx.Err() != nil && ctx.Err() == nil {
+				// The search timed out but the parent context is still alive.
+				return core.ErrResult("search_failed",
+					"query timed out; narrow the query or add a path constraint")
+			}
+			if ctx.Err() != nil {
+				return core.ErrResult("aborted", "Operation aborted")
+			}
+			return core.ErrResult("search_failed", err.Error())
+		}
+		if hookResult != nil {
+			resultFiles = hookResult.files
+		}
+	} else {
+		// Real zoekt search.
+		files, err := idx.searchZoekt(searchCtx, finalQ, maxFiles, contextLines)
+		if err != nil {
+			if searchCtx.Err() != nil && ctx.Err() == nil {
+				return core.ErrResult("search_failed",
+					"query timed out; narrow the query or add a path constraint")
+			}
+			if ctx.Err() != nil {
+				return core.ErrResult("aborted", "Operation aborted")
+			}
+			return core.ErrResult("search_failed", err.Error())
+		}
+		resultFiles = files
+	}
+
+	// Build the result data.
+	return idx.buildResult(resultFiles, maxFiles)
+}
+
+// ensureBuilt triggers a lazy build if the index has not been built yet.
+func (idx *Index) ensureBuilt(ctx context.Context) error {
+	idx.mu.RLock()
+	built := idx.built
+	idx.mu.RUnlock()
+	if built {
+		return nil
+	}
+	return idx.Build(ctx)
+}
+
+// searchZoekt performs the actual zoekt search.
+func (idx *Index) searchZoekt(ctx context.Context, q query.Q, maxFiles, contextLines int) ([]searchResultFile, error) {
+	idx.mu.RLock()
+	runDir := idx.runDir
+	idx.mu.RUnlock()
+
+	if runDir == "" {
+		return nil, fmt.Errorf("no index directory")
+	}
+
+	searcher, err := search.NewDirectorySearcher(runDir)
+	if err != nil {
+		return nil, fmt.Errorf("open searcher: %w", err)
+	}
+	defer searcher.Close()
+
+	opts := &zoekt.SearchOptions{
+		MaxDocDisplayCount: maxFiles,
+		NumContextLines:    contextLines,
+		ChunkMatches:       true,
+		MaxWallTime:        idx.effectiveQueryTimeout(),
+	}
+
+	result, err := searcher.Search(ctx, q, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	var files []searchResultFile
+	for _, fm := range result.Files {
+		rf := searchResultFile{
+			path:       fm.FileName,
+			score:      fm.Score,
+			matchCount: len(fm.ChunkMatches),
+		}
+		files = append(files, rf)
+	}
+
+	return files, nil
+}
+
+// effectiveQueryTimeout returns the query timeout to use.
+func (idx *Index) effectiveQueryTimeout() time.Duration {
+	if idx.queryTimeout > 0 {
+		return idx.queryTimeout
+	}
+	return defaultQueryTimeout
+}
+
+// buildResult constructs the ToolResult from search results.
+func (idx *Index) buildResult(files []searchResultFile, maxFiles int) core.ToolResult {
+	// Build minimal result data for now (full rendering is task 5).
+	fileData := make([]any, 0, len(files))
+	for _, f := range files {
+		fileData = append(fileData, map[string]any{
+			"path":        f.path,
+			"score":       f.score,
+			"match_count": f.matchCount,
+		})
+	}
+
+	data := map[string]any{
+		"files":         fileData,
+		"files_indexed": idx.BuildStats().FilesIndexed,
+	}
+
+	r := core.OKResult(data)
+
+	// If more files matched than max_files, add truncation marker.
+	if len(files) >= maxFiles {
+		r.Metadata = &core.ToolMetadata{
+			Truncated:   true,
+			TruncatedBy: string(tools.TruncatedByLines),
+		}
+	}
+
+	return r
+}
