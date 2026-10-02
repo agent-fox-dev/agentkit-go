@@ -108,6 +108,13 @@ func (dt *dirtyTracker) hasDirty() bool {
 	return len(dt.paths) > 0 || dt.revalidateAll
 }
 
+// dirtyCount returns the number of dirty paths.
+func (dt *dirtyTracker) dirtyCount() int {
+	dt.mu.Lock()
+	defer dt.mu.Unlock()
+	return len(dt.paths)
+}
+
 // dirtyPathSet returns the set of dirty path names (including gone files).
 func (dt *dirtyTracker) dirtyPathSet() map[string]bool {
 	dt.mu.Lock()

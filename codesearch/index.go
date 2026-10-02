@@ -141,6 +141,9 @@ type Index struct {
 	// buildCount tracks how many times the index has been built.
 	buildCount atomic.Int32
 
+	// overlayBuildCount tracks how many times the overlay shard has been built.
+	overlayBuildCount atomic.Int32
+
 	// revalCount tracks how many revalidation walks have been performed.
 	revalCount atomic.Int32
 
@@ -169,6 +172,16 @@ type Index struct {
 
 	// closed tracks whether Close has been called.
 	closed bool
+
+	// overlay holds the current overlay shard state for dirty files.
+	overlay *overlayState
+
+	// rebuilding is true when a full rebuild is in progress.
+	rebuilding bool
+
+	// rebuildDone is closed when the current rebuild finishes.
+	// Waiters select on this and their own context.
+	rebuildDone chan struct{}
 
 	// dirty tracks files modified since the index was built.
 	dirty *dirtyTracker
@@ -211,6 +224,11 @@ type BuildStatsResult struct {
 // BuildCount returns the number of times the index has been built.
 func (idx *Index) BuildCount() int {
 	return int(idx.buildCount.Load())
+}
+
+// OverlayBuildCount returns the number of times the overlay shard has been built.
+func (idx *Index) OverlayBuildCount() int {
+	return int(idx.overlayBuildCount.Load())
 }
 
 // RevalCount returns the number of revalidation walks performed.
@@ -291,11 +309,14 @@ func (idx *Index) Close() error {
 	idx.mu.Lock()
 	runDir := idx.runDir
 	idx.runDir = ""
+	ov := idx.overlay
+	idx.overlay = nil
 	idx.mu.Unlock()
 
 	if runDir != "" {
 		os.RemoveAll(runDir)
 	}
+	cleanupOverlay(ov)
 	return nil
 }
 
@@ -365,6 +386,22 @@ func (idx *Index) sweepOldRuns() {
 	}
 }
 
+// fileEntry is a file discovered during a walk.
+type fileEntry struct {
+	rel string // slash-separated workspace-relative path
+	abs string // absolute path
+}
+
+// buildOutput holds the results of a doBuild call.
+type buildOutput struct {
+	indexedFiles  map[string]bool
+	outlineFiles  map[string]outline.File
+	stats         BuildStatsResult
+	fileInfos     map[string]indexedFileInfo
+	partial       bool
+	partialReason string
+}
+
 // Build triggers the index build. It walks the workspace, collects files,
 // outlines them, and builds a zoekt index. Three bounds apply: MaxFiles,
 // MaxBytes and MaxBuildTime. When one stops the build, the index keeps what
@@ -402,11 +439,34 @@ func (idx *Index) Build(ctx context.Context) error {
 	// Sweep old sibling run directories.
 	idx.sweepOldRuns()
 
-	// Walk the workspace and collect eligible files.
-	type fileEntry struct {
-		rel string // slash-separated workspace-relative path
-		abs string // absolute path
+	result, err := idx.doBuild(buildCtx, ctx, runDir)
+	if err != nil {
+		os.RemoveAll(runDir)
+		idx.runDir = ""
+		return err
 	}
+
+	idx.indexedFiles = result.indexedFiles
+	idx.outlineFiles = result.outlineFiles
+	idx.stats = result.stats
+	idx.fileInfos = result.fileInfos
+	idx.built = true
+	idx.partial = result.partial
+	idx.partialReason = result.partialReason
+	idx.buildCount.Add(1)
+
+	// Clear dirty marks that predate this build, keeping any marks made
+	// during the build (generation-based clearing).
+	idx.dirty.clearOlderThan(buildGenStart)
+
+	return nil
+}
+
+// doBuild performs the actual index build work. It does NOT hold the main
+// lock, so it can be used by both Build (which holds the lock) and rebuild
+// (which does not). buildCtx is the derived context with the wall-time bound;
+// callerCtx is the original caller's context for cancellation detection.
+func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*buildOutput, error) {
 	var files []fileEntry
 	var stats BuildStatsResult
 	var partialReason string
@@ -457,18 +517,13 @@ func (idx *Index) Build(ctx context.Context) error {
 		return nil
 	})
 	if err != nil && err != errBoundReached {
-		if ctx.Err() != nil {
-			// The caller's context was cancelled: discard partial build.
-			os.RemoveAll(runDir)
-			idx.runDir = ""
-			return fmt.Errorf("aborted: %w", ctx.Err())
+		if callerCtx.Err() != nil {
+			return nil, fmt.Errorf("aborted: %w", callerCtx.Err())
 		}
-		if buildCtx.Err() != nil && ctx.Err() == nil {
-			// The build-time bound expired.
+		if buildCtx.Err() != nil && callerCtx.Err() == nil {
 			partialReason = "time"
-			// Fall through to index what we have.
 		} else {
-			return fmt.Errorf("index_failed: walk error: %w", err)
+			return nil, fmt.Errorf("index_failed: walk error: %w", err)
 		}
 	}
 
@@ -483,16 +538,13 @@ func (idx *Index) Build(ctx context.Context) error {
 	var totalBytes int64
 
 	for i := 0; i < len(files); i += outlineBatchSize {
-		// Check the build-time bound before each batch.
-		if buildCtx.Err() != nil && ctx.Err() == nil && partialReason == "" {
+		if buildCtx.Err() != nil && callerCtx.Err() == nil && partialReason == "" {
 			partialReason = "time"
-			files = files[:i] // keep only what we've outlined so far
+			files = files[:i]
 			break
 		}
-		if ctx.Err() != nil {
-			os.RemoveAll(runDir)
-			idx.runDir = ""
-			return fmt.Errorf("aborted: %w", ctx.Err())
+		if callerCtx.Err() != nil {
+			return nil, fmt.Errorf("aborted: %w", callerCtx.Err())
 		}
 
 		end := i + outlineBatchSize
@@ -512,17 +564,14 @@ func (idx *Index) Build(ctx context.Context) error {
 
 		outFiles, _, err := outline.OutlineMany(buildCtx, srcs, outlineOpts)
 		if err != nil {
-			if ctx.Err() != nil {
-				os.RemoveAll(runDir)
-				idx.runDir = ""
-				return fmt.Errorf("aborted: %w", ctx.Err())
+			if callerCtx.Err() != nil {
+				return nil, fmt.Errorf("aborted: %w", callerCtx.Err())
 			}
-			if buildCtx.Err() != nil && ctx.Err() == nil && partialReason == "" {
+			if buildCtx.Err() != nil && callerCtx.Err() == nil && partialReason == "" {
 				partialReason = "time"
 				files = files[:i]
 				break
 			}
-			// Non-fatal: continue without symbols for this batch.
 			for _, fe := range batch {
 				outlineResults[fe.rel] = outline.File{
 					Path:    fe.rel,
@@ -554,31 +603,26 @@ func (idx *Index) Build(ctx context.Context) error {
 
 	builder, err := zoektindex.NewBuilder(builderOpts)
 	if err != nil {
-		return fmt.Errorf("index_failed: builder: %w", err)
+		return nil, fmt.Errorf("index_failed: builder: %w", err)
 	}
 
 	indexedFiles := make(map[string]bool, len(files))
 
 	for _, fe := range files {
-		// Check bounds before each file.
-		if ctx.Err() != nil {
-			// Caller cancelled: discard.
-			_ = builder.Finish() // best-effort finalize
-			os.RemoveAll(runDir)
-			idx.runDir = ""
-			return fmt.Errorf("aborted: %w", ctx.Err())
+		if callerCtx.Err() != nil {
+			_ = builder.Finish()
+			return nil, fmt.Errorf("aborted: %w", callerCtx.Err())
 		}
-		if buildCtx.Err() != nil && ctx.Err() == nil && partialReason == "" {
+		if buildCtx.Err() != nil && callerCtx.Err() == nil && partialReason == "" {
 			partialReason = "time"
 			break
 		}
 
 		content, err := os.ReadFile(fe.abs)
 		if err != nil {
-			continue // skip unreadable
+			continue
 		}
 
-		// Byte-count bound.
 		if totalBytes+int64(len(content)) > idx.opts.MaxBytes && partialReason == "" {
 			partialReason = "bytes"
 			break
@@ -590,14 +634,12 @@ func (idx *Index) Build(ctx context.Context) error {
 			Branches: []string{"HEAD"},
 		}
 
-		// Detect language from extension.
 		ext := filepath.Ext(fe.abs)
 		lang := langForExt(ext)
 		if lang != "" {
 			doc.Language = lang
 		}
 
-		// Add symbol sections from outline.
 		if of, ok := outlineResults[fe.rel]; ok && len(of.Decls) > 0 {
 			sections, metadata := declsToSymbols(content, of.Decls)
 			doc.Symbols = sections
@@ -605,28 +647,21 @@ func (idx *Index) Build(ctx context.Context) error {
 		}
 
 		if err := builder.Add(doc); err != nil {
-			continue // skip files that fail to add
+			continue
 		}
 		indexedFiles[fe.rel] = true
 		totalBytes += int64(len(content))
 	}
 
 	if err := builder.Finish(); err != nil {
-		return fmt.Errorf("index_failed: finish: %w", err)
+		return nil, fmt.Errorf("index_failed: finish: %w", err)
 	}
 
 	stats.FilesIndexed = len(indexedFiles)
-	idx.indexedFiles = indexedFiles
-	idx.outlineFiles = outlineResults
-	idx.stats = stats
-	idx.built = true
-	idx.partial = partialReason != ""
-	idx.partialReason = partialReason
-	idx.buildCount.Add(1)
 
 	// Record file info for revalidation.
 	now := time.Now()
-	idx.fileInfos = make(map[string]indexedFileInfo, len(indexedFiles))
+	fileInfos := make(map[string]indexedFileInfo, len(indexedFiles))
 	for _, fe := range files {
 		if !indexedFiles[fe.rel] {
 			continue
@@ -636,18 +671,21 @@ func (idx *Index) Build(ctx context.Context) error {
 		if err != nil {
 			continue
 		}
-		idx.fileInfos[fe.rel] = indexedFileInfo{
+		fileInfos[fe.rel] = indexedFileInfo{
 			size:      fi.Size(),
 			mtime:     fi.ModTime(),
 			indexedAt: now,
 		}
 	}
 
-	// Clear dirty marks that predate this build, keeping any marks made
-	// during the build (generation-based clearing).
-	idx.dirty.clearOlderThan(buildGenStart)
-
-	return nil
+	return &buildOutput{
+		indexedFiles:  indexedFiles,
+		outlineFiles:  outlineResults,
+		stats:         stats,
+		fileInfos:     fileInfos,
+		partial:       partialReason != "",
+		partialReason: partialReason,
+	}, nil
 }
 
 // errBoundReached is a sentinel error used to stop the walk when a bound is hit.

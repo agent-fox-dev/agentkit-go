@@ -3,7 +3,6 @@
 package codesearch
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -198,7 +197,19 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 	}
 
 	// Handle dirty files: revalidation and dirty-path processing.
-	idx.handleDirty()
+	idx.handleDirty(ctx)
+
+	// Check if a rebuild is needed (>5% dirty) or in progress.
+	if err := idx.waitForRebuildIfNeeded(ctx); err != nil {
+		if ctx.Err() != nil {
+			return core.ErrResult("aborted", "Operation aborted")
+		}
+		errStr := err.Error()
+		if strings.HasPrefix(errStr, "index_closed") {
+			return core.ErrResult("index_closed", "index has been closed")
+		}
+		return core.ErrResult("index_failed", errStr)
+	}
 
 	// Build the final query with path conjunction.
 	finalQ := parsedQ
@@ -271,7 +282,7 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 	// Remove dirty paths from indexed results and search dirty files.
 	dirtySet := idx.dirty.dirtyPathSet()
 	if len(dirtySet) > 0 {
-		resultFiles, totalFiles = idx.filterAndSearchDirty(resultFiles, totalFiles, dirtySet, finalQ, maxFiles, contextLines)
+		resultFiles, totalFiles = idx.filterAndSearchDirty(searchCtx, resultFiles, totalFiles, dirtySet, finalQ, maxFiles, contextLines)
 	}
 
 	// Build the result data.
@@ -293,7 +304,7 @@ func (idx *Index) ensureBuilt(ctx context.Context) error {
 // handleDirty runs revalidation if needed. It checks whether a revalidation
 // walk is required (unknown paths, .gitignore changes, or Invalidate("")),
 // and if so, walks the workspace to discover changed, new and removed files.
-func (idx *Index) handleDirty() {
+func (idx *Index) handleDirty(ctx context.Context) {
 	if !idx.dirty.hasDirty() {
 		return
 	}
@@ -312,10 +323,135 @@ func (idx *Index) handleDirty() {
 	}
 }
 
+// rebuildThreshold is the fraction of indexed files that must be dirty before
+// a full rebuild is triggered instead of using an overlay.
+const rebuildThreshold = 0.05
+
+// waitForRebuildIfNeeded checks whether more than 5% of indexed files are
+// dirty and, if so, triggers a full rebuild. If a rebuild is already in
+// progress, the caller waits abandonably (ctx select) and uses the new index.
+// Returns nil when the index is ready for querying.
+func (idx *Index) waitForRebuildIfNeeded(ctx context.Context) error {
+	for {
+		idx.mu.Lock()
+		if idx.closed {
+			idx.mu.Unlock()
+			return fmt.Errorf("index_closed")
+		}
+
+		// If a rebuild is already in progress, wait for it.
+		if idx.rebuilding {
+			done := idx.rebuildDone
+			idx.mu.Unlock()
+			select {
+			case <-done:
+				// Rebuild finished; loop to re-check state.
+				continue
+			case <-ctx.Done():
+				return fmt.Errorf("aborted: %w", ctx.Err())
+			}
+		}
+
+		// Check if we need a rebuild.
+		indexedCount := len(idx.indexedFiles)
+		if indexedCount == 0 {
+			idx.mu.Unlock()
+			return nil
+		}
+
+		dirtyCount := idx.dirty.dirtyCount()
+		threshold := float64(indexedCount) * rebuildThreshold
+		if float64(dirtyCount) <= threshold {
+			idx.mu.Unlock()
+			return nil
+		}
+
+		// Need a rebuild. Mark as rebuilding and start.
+		idx.rebuilding = true
+		idx.rebuildDone = make(chan struct{})
+		oldRunDir := idx.runDir
+		oldOverlay := idx.overlay
+		idx.overlay = nil
+		idx.mu.Unlock()
+
+		// Perform the rebuild.
+		err := idx.rebuild(ctx, oldRunDir, oldOverlay)
+
+		idx.mu.Lock()
+		idx.rebuilding = false
+		close(idx.rebuildDone)
+		idx.mu.Unlock()
+
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+}
+
+// rebuild performs a full index rebuild under the Requirement 5 bounds.
+// It builds into a new run state without holding the main lock during the
+// build, swaps only when ready, and cleans up the old shards after the swap.
+func (idx *Index) rebuild(ctx context.Context, oldRunDir string, oldOverlay *overlayState) error {
+	// Snapshot the dirty generation so we can clear only marks older than
+	// this rebuild when it finishes.
+	_, _, rebuildGenStart := idx.dirty.snapshot()
+
+	// Create a derived context with the wall-time bound.
+	buildCtx, buildCancel := context.WithTimeout(ctx, idx.opts.MaxBuildTime)
+	defer buildCancel()
+
+	// Generate a new run ID for the rebuild.
+	rebuildRunID := newRunID()
+	rebuildRunDir := filepath.Join(idx.hashDirPath(), rebuildRunID)
+
+	hashDir := idx.hashDirPath()
+	if err := os.MkdirAll(hashDir, 0o700); err != nil {
+		return fmt.Errorf("index_failed: %w", err)
+	}
+	if err := os.Mkdir(rebuildRunDir, 0o700); err != nil {
+		return fmt.Errorf("index_failed: %w", err)
+	}
+
+	// Walk, outline and build — all without holding the main lock.
+	result, err := idx.doBuild(buildCtx, ctx, rebuildRunDir)
+	if err != nil {
+		os.RemoveAll(rebuildRunDir)
+		return err
+	}
+
+	// Swap in the new index state under the lock.
+	idx.mu.Lock()
+	idx.runID = rebuildRunID
+	idx.runDir = rebuildRunDir
+	idx.indexedFiles = result.indexedFiles
+	idx.outlineFiles = result.outlineFiles
+	idx.stats = result.stats
+	idx.fileInfos = result.fileInfos
+	idx.built = true
+	idx.partial = result.partial
+	idx.partialReason = result.partialReason
+	idx.overlay = nil
+	idx.buildCount.Add(1)
+	idx.mu.Unlock()
+
+	// Clear dirty marks that predate this rebuild.
+	idx.dirty.clearOlderThan(rebuildGenStart)
+
+	// Clean up the old run directory and overlay.
+	if oldRunDir != "" {
+		os.RemoveAll(oldRunDir)
+	}
+	cleanupOverlay(oldOverlay)
+
+	return nil
+}
+
 // filterAndSearchDirty removes dirty paths from indexed results and searches
-// dirty files that still exist on disk. Until the overlay shard lands (task 8),
-// this uses a simple substring search on the file content.
+// dirty files through an overlay shard built by the same zoekt engine.
+// Overlay hits are merged with indexed hits by score, not appended.
 func (idx *Index) filterAndSearchDirty(
+	ctx context.Context,
 	resultFiles []searchResultFile,
 	totalFiles int,
 	dirtySet map[string]bool,
@@ -337,170 +473,46 @@ func (idx *Index) filterAndSearchDirty(
 		totalFiles = 0
 	}
 
-	// Search dirty files that still exist on disk.
-	// Extract query atoms for a simple substring search.
-	atoms := extractSubstrings(q)
+	// Build or reuse the overlay shard.
+	idx.mu.Lock()
+	ov := idx.overlay
+	idx.mu.Unlock()
 
-	for rel := range dirtySet {
-		// Skip files marked as gone (deleted or now ignored).
-		if idx.dirty.isGone(rel) {
-			continue
-		}
+	if ov == nil || !dirtySetEqual(ov.dirtySet, dirtySet) {
+		// Clean up old overlay.
+		cleanupOverlay(ov)
 
-		abs := filepath.Join(idx.ws.Root, filepath.FromSlash(rel))
-		content, err := os.ReadFile(abs)
+		newOv, err := idx.buildOverlayShard(ctx, dirtySet)
 		if err != nil {
-			// File is gone: it was already removed from results above.
-			continue
+			// Fall back to indexed results only.
+			if len(clean) > maxFiles {
+				clean = clean[:maxFiles]
+			}
+			return clean, totalFiles
 		}
+		ov = newOv
+		idx.mu.Lock()
+		idx.overlay = ov
+		idx.mu.Unlock()
+		idx.overlayBuildCount.Add(1)
+	}
 
-		// Check if any atom matches.
-		if !anyAtomMatches(content, atoms) {
-			continue
-		}
-
-		// Build a minimal result for this dirty file.
-		df := buildDirtyFileResult(rel, content, atoms, contextLines)
-		if df.matchCount > 0 {
-			clean = append(clean, df)
-			totalFiles++
+	// Search the overlay shard.
+	if ov.dir != "" {
+		overlayFiles, err := searchOverlay(ctx, ov.dir, q, maxFiles, contextLines, ov.outlineFiles)
+		if err == nil && len(overlayFiles) > 0 {
+			// Merge by score.
+			clean = mergeByScore(clean, overlayFiles, maxFiles)
+			// Adjust totalFiles for overlay hits.
+			totalFiles += len(overlayFiles)
 		}
 	}
 
-	// Sort by score (dirty files get a default score).
-	// Keep at most maxFiles.
 	if len(clean) > maxFiles {
 		clean = clean[:maxFiles]
 	}
 
 	return clean, totalFiles
-}
-
-// extractSubstrings extracts simple substring atoms from a zoekt query.
-// This is a minimal implementation for dirty-file searching until the
-// overlay shard lands.
-func extractSubstrings(q query.Q) []string {
-	var atoms []string
-	switch v := q.(type) {
-	case *query.Substring:
-		if !v.FileName {
-			atoms = append(atoms, v.Pattern)
-		}
-	case *query.And:
-		for _, child := range v.Children {
-			atoms = append(atoms, extractSubstrings(child)...)
-		}
-	case *query.Or:
-		for _, child := range v.Children {
-			atoms = append(atoms, extractSubstrings(child)...)
-		}
-	case *query.Not:
-		// Skip negated atoms.
-	case *query.Symbol:
-		atoms = append(atoms, extractSubstrings(v.Expr)...)
-	}
-	return atoms
-}
-
-// anyAtomMatches returns true if any atom substring is found in the content.
-func anyAtomMatches(content []byte, atoms []string) bool {
-	if len(atoms) == 0 {
-		// No extractable atoms: assume it might match.
-		return true
-	}
-	for _, a := range atoms {
-		if bytes.Contains(content, []byte(a)) {
-			return true
-		}
-	}
-	return false
-}
-
-// buildDirtyFileResult builds a searchResultFile for a dirty file by
-// searching its content for the given atoms.
-func buildDirtyFileResult(rel string, content []byte, atoms []string, contextLines int) searchResultFile {
-	lines := strings.Split(string(content), "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-
-	// Find matching lines.
-	var matchedLineNos []int
-	for i, line := range lines {
-		for _, a := range atoms {
-			if strings.Contains(line, a) {
-				matchedLineNos = append(matchedLineNos, i+1)
-				break
-			}
-		}
-	}
-
-	if len(matchedLineNos) == 0 {
-		return searchResultFile{path: rel}
-	}
-
-	// Build chunks with context.
-	var allLines []resultLine
-	for _, mln := range matchedLineNos {
-		start := mln - contextLines
-		if start < 1 {
-			start = 1
-		}
-		end := mln + contextLines
-		if end > len(lines) {
-			end = len(lines)
-		}
-		for ln := start; ln <= end; ln++ {
-			allLines = append(allLines, resultLine{
-				lineNo: ln,
-				text:   capLineText(lines[ln-1]),
-				match:  ln == mln,
-			})
-		}
-	}
-
-	// Deduplicate and sort.
-	seen := make(map[int]resultLine)
-	for _, l := range allLines {
-		if existing, ok := seen[l.lineNo]; ok {
-			if l.match && !existing.match {
-				seen[l.lineNo] = l
-			}
-		} else {
-			seen[l.lineNo] = l
-		}
-	}
-	var sorted []resultLine
-	for _, l := range seen {
-		sorted = append(sorted, l)
-	}
-	sortResultLines(sorted)
-
-	// Split into chunks (contiguous ranges).
-	var chunks []resultChunk
-	var current []resultLine
-	for _, l := range sorted {
-		if len(current) > 0 && l.lineNo > current[len(current)-1].lineNo+1 {
-			chunks = append(chunks, resultChunk{lines: current})
-			current = nil
-		}
-		current = append(current, l)
-	}
-	if len(current) > 0 {
-		chunks = append(chunks, resultChunk{lines: current})
-	}
-
-	// Limit to maxChunksPerFile.
-	if len(chunks) > maxChunksPerFile {
-		chunks = chunks[:maxChunksPerFile]
-	}
-
-	return searchResultFile{
-		path:       rel,
-		score:      0.5, // default score for dirty files
-		matchCount: len(matchedLineNos),
-		chunks:     chunks,
-	}
 }
 
 // sortResultLines sorts result lines by line number.
