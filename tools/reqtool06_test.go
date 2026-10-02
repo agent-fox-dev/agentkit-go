@@ -217,7 +217,8 @@ func TestTheDefaultToolSetIsPlatformStable(t *testing.T) {
 		got = append(got, tl.Name)
 	}
 	want := []string{"read_file", "write_file", "edit_file", "list_files",
-		"find_files", "search_files", "execute", "run_command", "powershell"}
+		"find_files", "search_files", "file_outline", "find_symbol",
+		"execute", "run_command", "powershell"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("default tool set changed.\ngot:  %v\nwant: %v\n\n"+
 			"This list is the head of the cached prompt prefix; changing it is a "+

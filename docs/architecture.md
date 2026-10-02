@@ -35,7 +35,7 @@ Imports between first-party packages, taken from the source (tests excluded;
 | `provider/{anthropic,openai,openairesponses,google,ollama}` | `core`, `catalog`, `provider`, `schema`; a few reuse a sibling wire package's helpers (`openairesponses` → `openai` and `wire`; `google` → `anthropic`, `openai`) |
 | `provider/faux` | `core` |
 | `session` | `core`, `jsonx` |
-| `tools` | `core`, `imagex`, `schema` (exports `Walk`, `CtagsRunner`) |
+| `tools` | `core`, `imagex`, `outline`, `schema` (exports `Walk`, `CtagsRunner`, `file_outline`, `find_symbol`) |
 | `mcp` | `core`, `schema`, `wire` |
 | `plugins` | `core`, `provider`, `session` |
 | `skills` | `core`, `plugins` |
@@ -72,7 +72,7 @@ Rules that follow from it:
 | `compaction` | The context transform, four strategies, summarizers, summary validation, token estimate. |
 | `session` | Append-only JSONL log, damage-tolerant loader, branch tree, fold into construction inputs, recorder, `OpenOrCreate`. |
 | `outline` | Source-file declaration listing: Go backend (`go/ast`), ctags backend (via an injected `Runner`), anchored-line heuristics for ten languages, and a `none` fallback. Standard-library-only; no first-party imports. |
-| `tools` | Built-in tools, workspace containment, output accumulator, process control, glob, layered gitignore, `fetch_url` behind the SSRF guard. `Walk` exposes the single shared directory traversal behind workspace confinement. `CtagsRunner` supplies the ctags process lifecycle for `outline.Options.Runner`. |
+| `tools` | Built-in tools, workspace containment, output accumulator, process control, glob, layered gitignore, `fetch_url` behind the SSRF guard. `Walk` exposes the single shared directory traversal behind workspace confinement. `CtagsRunner` supplies the ctags process lifecycle for `outline.Options.Runner`. `file_outline` returns a file's declarations with line ranges; `find_symbol` searches the workspace by declaration name, backed by a lazily built, bounded in-memory symbol table that is refreshed after `write_file`, `edit_file` and the shell tools run. |
 | `guard` | The `execute` authorization boundary: `Restricted`, `AllowAll`. |
 | `stop` | Stop policies. |
 | `subagent` | Delegation as a tool, named definitions, parallel runs. |

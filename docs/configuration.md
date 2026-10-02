@@ -136,13 +136,16 @@ environment), `Retry` (`provider.RetryPolicy`: `MaxRetries`, base / max delay,
 | `DisableSpill` | false. |
 | `Env` | `tools.ReducedEnv(nil)`. |
 | `Ignore` | The real gitignore environment; `tools.NoGlobalExcludes()` pins an empty global layer for tests. |
+| `Symbols` | `tools.SymbolOptions{}`. Configures the symbol table behind `find_symbol` and the outline runner shared by `file_outline` and `find_symbol`. Fields: `MaxFiles` (file-count bound per build/refresh pass; default 50 000), `MaxDuration` (wall-time bound; default 2 s), `DisableCtags` (force heuristic/go-ast backends only), `Runner` (override the default `CtagsRunner`; the seam tests use). |
 
 `tools.All` returns `read_file`, `write_file`, `edit_file`, `list_files`,
-`find_files`, `search_files`, `execute`, `run_command` and `powershell` on
-every platform. `fetch_url` is constructed separately and sits behind the SSRF
-guard. Output limits: 50 KB per result, `read_file` 2000 lines, `search_files`
-100 matches and 500 characters per line, `find_files` 200 by default (cap 1000),
-`list_files` 200 by default (cap 500).
+`find_files`, `search_files`, `file_outline`, `find_symbol`, `execute`,
+`run_command` and `powershell` on every platform. `fetch_url` is constructed
+separately and sits behind the SSRF guard. Output limits: 50 KB per result,
+`read_file` 2000 lines, `search_files` 100 matches and 500 characters per line,
+`find_files` 200 by default (cap 1000), `list_files` 200 by default (cap 500),
+`find_symbol` 20 results by default (cap 50), symbol-table build bounded at
+50 000 files and 2 s.
 
 ## TOML sections
 

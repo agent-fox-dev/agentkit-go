@@ -17,6 +17,11 @@ const (
 	FindResultCap   = 1000
 	ListEntryCap    = 500
 
+	// SymbolResultDefault is the default max_results for find_symbol.
+	SymbolResultDefault = 20
+	// SymbolResultCap is the maximum max_results for find_symbol.
+	SymbolResultCap = 50
+
 	// The DEFAULTS for find_files and list_files sit well under their caps.
 	// A model that asks for "everything" almost never wants a thousand paths
 	// in its context; it wants enough to orient and a marker that names the
@@ -130,6 +135,26 @@ func LongLineMarker(line int, size int64, limit int, path string) string {
 // which closes the quote, escapes one quote, and reopens it.
 func ShellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// SymbolMarker is emitted when find_symbol hits its result cap.
+func SymbolMarker(limit int) string {
+	return capMarker("results", "max_results", limit, SymbolResultCap,
+		"narrow with path, kind or exact")
+}
+
+// SymbolPartialMarker is emitted when a symbol-table build or refresh pass
+// stopped at a bound. It tells the model to narrow with path or fall back to
+// search_files.
+func SymbolPartialMarker(reason string) string {
+	switch reason {
+	case "files":
+		return "[partial result: file limit reached. Narrow with path or use search_files]"
+	case "time":
+		return "[partial result: time limit reached. Narrow with path or use search_files]"
+	default:
+		return "[partial result. Narrow with path or use search_files]"
+	}
 }
 
 func humanBytes(n int64) string {

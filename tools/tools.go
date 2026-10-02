@@ -22,6 +22,23 @@ import (
 	"github.com/agentfox/agentkit-go/schema"
 )
 
+// SymbolOptions configures the symbol table behind find_symbol and the
+// runner shared by file_outline and find_symbol.
+type SymbolOptions struct {
+	// MaxFiles is the file-count bound for a symbol-table build or refresh
+	// pass. Zero or negative means 50 000.
+	MaxFiles int
+	// MaxDuration is the wall-time bound for a symbol-table build or refresh
+	// pass. Zero or negative means 2 s.
+	MaxDuration time.Duration
+	// DisableCtags forces the runner to nil, so every file falls back to
+	// the heuristic or go/ast backend.
+	DisableCtags bool
+	// Runner, when non-nil, replaces the default CtagsRunner. It is the
+	// seam tests use to inject a deterministic backend.
+	Runner func(ctx context.Context, args []string) ([]byte, error)
+}
+
 // Options configures the built-in tool set.
 type Options struct {
 	Workspace *Workspace
@@ -47,6 +64,8 @@ type Options struct {
 	// reads the real one; NoGlobalExcludes() pins an empty global layer
 	// (NFR-TEST-04).
 	Ignore IgnoreOptions
+	// Symbols configures the symbol table and the outline runner.
+	Symbols SymbolOptions
 }
 
 // withDefaults applies the documented zero-value meanings. Every constructor
@@ -96,6 +115,20 @@ func All(opts Options) ([]core.Tool, error) {
 	}
 	opts = opts.withDefaults()
 	fs := newFileTools(opts)
+
+	// Wrap the shell tools so they mark the symbol table for revalidation
+	// after the command returns, whatever the outcome. The standalone
+	// constructors and their tests are unchanged. 02-REQ-6.3.
+	wrapShell := func(t core.Tool) core.Tool {
+		orig := t.Execute
+		t.Execute = func(ctx context.Context, in json.RawMessage) core.ToolResult {
+			r := orig(ctx, in)
+			fs.markTableRevalidateAll()
+			return r
+		}
+		return t
+	}
+
 	return []core.Tool{
 		fs.readFile(),
 		fs.writeFile(),
@@ -103,13 +136,15 @@ func All(opts Options) ([]core.Tool, error) {
 		fs.listFiles(),
 		fs.findFiles(),
 		fs.searchFiles(),
-		executeTool(opts),
-		runCommandTool(opts),
-		PowerShell(opts),
+		fs.fileOutlineTool(),
+		fs.findSymbolTool(),
+		wrapShell(executeTool(opts)),
+		wrapShell(runCommandTool(opts)),
+		wrapShell(PowerShell(opts)),
 	}, nil
 }
 
-// FileNavigationTools names REQ-TOOL-04e's opt-in trio.
+// FileNavigationTools names REQ-TOOL-04e's opt-in set of five.
 //
 // They are in All() because All() is the DEFAULT set, and the requirement's
 // "opt-in" is about the tool policy of REQ-TOOL-10 rather than about this
@@ -118,7 +153,7 @@ func All(opts Options) ([]core.Tool, error) {
 // remember. What the requirement actually turns on is their ABSENCE from the
 // resolved set, which is the prompt builder's business, not this list's.
 func FileNavigationTools() []string {
-	return []string{"list_files", "find_files", "search_files"}
+	return []string{"list_files", "find_files", "search_files", "file_outline", "find_symbol"}
 }
 
 // ExecuteFallbackGuideline is REQ-TOOL-04e's sentence, verbatim.
@@ -211,10 +246,74 @@ type fileTools struct {
 	// ig carries the ignore environment with the `git config` lookup memoized
 	// per workspace, so find_files and search_files do not spawn git per call.
 	ig IgnoreOptions
+
+	// symOpts holds the symbol configuration from Options.Symbols.
+	symOpts SymbolOptions
+	// env is the subprocess environment, kept for lazy runner construction.
+	env []string
+	// runner is the lazily resolved outline runner shared by file_outline
+	// and find_symbol. It is nil when DisableCtags is set and no custom
+	// Runner was provided.
+	runnerOnce sync.Once
+	runner     func(ctx context.Context, args []string) ([]byte, error)
+
+	// table is the shared symbol table, created lazily on first find_symbol
+	// call and marked dirty by write_file, edit_file and the shell tool
+	// wrappers. It is nil until find_symbol is first called.
+	tableOnce sync.Once
+	table     *symbolTable
 }
 
 func newFileTools(opts Options) *fileTools {
-	return &fileTools{ws: opts.Workspace, locks: newPathLocks(), ig: opts.Ignore.cached()}
+	return &fileTools{
+		ws:      opts.Workspace,
+		locks:   newPathLocks(),
+		ig:      opts.Ignore.cached(),
+		symOpts: opts.Symbols,
+		env:     opts.Env,
+	}
+}
+
+// outlineRunner returns the lazily resolved runner. It is nil when ctags is
+// disabled and no custom Runner was provided.
+func (f *fileTools) outlineRunner() func(ctx context.Context, args []string) ([]byte, error) {
+	f.runnerOnce.Do(func() {
+		switch {
+		case f.symOpts.DisableCtags:
+			f.runner = nil
+		case f.symOpts.Runner != nil:
+			f.runner = f.symOpts.Runner
+		default:
+			f.runner = CtagsRunner(f.env)
+		}
+	})
+	return f.runner
+}
+
+// getTable returns the shared symbol table, creating it on first call.
+// Marking methods (markDirty, markRevalidateAll) are safe to call on a nil
+// table — they are no-ops when find_symbol has never been used.
+func (f *fileTools) getTable() *symbolTable {
+	f.tableOnce.Do(func() {
+		f.table = newSymbolTable()
+	})
+	return f.table
+}
+
+// markTableDirty marks a workspace-relative path dirty in the shared symbol
+// table, if one exists. It is a no-op when find_symbol has never been called.
+func (f *fileTools) markTableDirty(rel string) {
+	if f.table != nil {
+		f.table.markDirty(rel)
+	}
+}
+
+// markTableRevalidateAll marks the whole symbol table for revalidation, if
+// one exists. It is a no-op when find_symbol has never been called.
+func (f *fileTools) markTableRevalidateAll() {
+	if f.table != nil {
+		f.table.markRevalidateAll()
+	}
 }
 
 func (f *fileTools) readFile() core.Tool {
@@ -586,9 +685,15 @@ func (f *fileTools) writeFile() core.Tool {
 			if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 				return core.ErrResult("write_failed", err.Error())
 			}
+			// Mark the path dirty after the write attempt, whether it
+			// succeeds or fails, while still holding the per-path lock
+			// (before the deferred release runs). 02-REQ-6.2.
+			rel := filepath.ToSlash(f.ws.Rel(abs))
 			if err := os.WriteFile(abs, []byte(a.Content), 0o644); err != nil {
+				f.markTableDirty(rel)
 				return core.ErrResult("write_failed", err.Error())
 			}
+			f.markTableDirty(rel)
 			return core.OKResult(map[string]any{"written": true, "bytes": len(a.Content)})
 		},
 	}
@@ -633,6 +738,12 @@ func (f *fileTools) editFile() core.Tool {
 			}
 			release := f.locks.acquire(key)
 			defer release()
+
+			// Mark the path dirty after the edit attempt, whether it
+			// succeeds or fails, while still holding the per-path lock
+			// (before the deferred release runs). 02-REQ-6.2.
+			rel := filepath.ToSlash(f.ws.Rel(abs))
+			defer f.markTableDirty(rel)
 
 			fi, err := os.Stat(abs)
 			if err != nil {

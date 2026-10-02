@@ -47,7 +47,7 @@
         "tools/outline_tool.go",
         "tools/outline_tool_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -76,7 +76,7 @@
         "tools/outline_tool.go",
         "tools/outline_tool_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -116,7 +116,7 @@
         "tools/tools.go",
         "tools/symbols_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -149,7 +149,7 @@
         "tools/symbol_match.go",
         "tools/symbol_tool_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -186,7 +186,7 @@
         "tools/symbol_tool_test.go",
         "tools/limits_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -222,7 +222,7 @@
         "tools/edit.go",
         "tools/symbols_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -250,7 +250,7 @@
         "tools/symbols.go",
         "tools/symbols_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -282,7 +282,7 @@
         "tools/outline_tool.go",
         "tools/symbols_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -319,7 +319,7 @@
         "prompt/testdata/golden/system_prompt_default.txt",
         "prompt/prompt_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -347,7 +347,7 @@
         "docs/GAPS.md",
         "tools/docs_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,
@@ -385,7 +385,7 @@
         9,
         10
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
