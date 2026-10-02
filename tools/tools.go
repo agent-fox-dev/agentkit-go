@@ -257,10 +257,10 @@ func newFileTools(opts Options) *fileTools {
 func (f *fileTools) outlineRunner() func(ctx context.Context, args []string) ([]byte, error) {
 	f.runnerOnce.Do(func() {
 		switch {
-		case f.symOpts.Runner != nil:
-			f.runner = f.symOpts.Runner
 		case f.symOpts.DisableCtags:
 			f.runner = nil
+		case f.symOpts.Runner != nil:
+			f.runner = f.symOpts.Runner
 		default:
 			f.runner = CtagsRunner(f.env)
 		}

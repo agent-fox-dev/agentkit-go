@@ -132,6 +132,26 @@ func ShellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// SymbolMarker is emitted when find_symbol hits its result cap.
+func SymbolMarker(limit int) string {
+	return capMarker("results", "max_results", limit, SymbolResultCap,
+		"narrow with path, kind or exact")
+}
+
+// SymbolPartialMarker is emitted when a symbol-table build or refresh pass
+// stopped at a bound. It tells the model to narrow with path or fall back to
+// search_files.
+func SymbolPartialMarker(reason string) string {
+	switch reason {
+	case "files":
+		return "[partial result: file limit reached. Narrow with path or use search_files]"
+	case "time":
+		return "[partial result: time limit reached. Narrow with path or use search_files]"
+	default:
+		return "[partial result. Narrow with path or use search_files]"
+	}
+}
+
 func humanBytes(n int64) string {
 	switch {
 	case n >= 1<<20:
