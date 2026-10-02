@@ -67,7 +67,7 @@
       "done_when": [
         "`cd codesearch && go build ./... && go vet ./...` succeeds on the four targets with CGO_ENABLED=0"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,

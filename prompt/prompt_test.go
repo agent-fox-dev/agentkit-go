@@ -15,8 +15,8 @@ func TestExecuteFallbackSuppression_TS02_55(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		tools     []core.Tool
+		name         string
+		tools        []core.Tool
 		wantFallback bool
 	}{
 		{
