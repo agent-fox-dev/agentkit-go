@@ -233,7 +233,9 @@ func TestCtagsTests_SkipWhenAbsent_TS_01_67(t *testing.T) {
 			continue
 		}
 		// Skip this file itself — it mentions ctags strings in assertions.
-		if name == "build_test.go" {
+		// Skip smoke_test.go — smoke tests are explicitly allowed to use real
+		// ctags (they skip when ctags is absent, per the spec).
+		if name == "build_test.go" || name == "smoke_test.go" {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(outlineDir, name))

@@ -428,7 +428,7 @@
       "done_when": [
         "`make check` passes on a machine with and without universal-ctags"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
