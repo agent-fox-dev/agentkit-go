@@ -59,6 +59,142 @@ func newSymbolTable() *symbolTable {
 	}
 }
 
+// markDirty marks a single workspace-relative path as needing re-indexing.
+// It only sets a flag and never waits on a build in progress.
+func (st *symbolTable) markDirty(rel string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.dirtyPaths == nil {
+		st.dirtyPaths = make(map[string]bool)
+	}
+	st.dirtyPaths[rel] = true
+	st.generation++
+}
+
+// markRevalidateAll marks the whole table for revalidation. It only sets a
+// flag and never waits on a build in progress.
+func (st *symbolTable) markRevalidateAll() {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.revalidateAll = true
+	st.generation++
+}
+
+// isDirty returns true if any path is marked dirty or the whole table needs
+// revalidation.
+func (st *symbolTable) isDirty() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.revalidateAll || len(st.dirtyPaths) > 0
+}
+
+// needsRefresh returns true if the table needs a build or refresh before
+// answering a query.
+func (st *symbolTable) needsRefresh() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return !st.built || !st.complete || st.revalidateAll || len(st.dirtyPaths) > 0
+}
+
+// refreshDirtyPaths handles dirty paths without a full walk. It is called
+// under the table's lock when the table is complete and only specific paths
+// are dirty (no whole-table revalidation needed).
+//
+// For each dirty path:
+//   - If it is already in the table: stat it, re-outline if still regular,
+//     drop if gone or not regular.
+//   - If it is NOT in the table or has base name .gitignore: escalate to
+//     whole-table revalidation (return false).
+//
+// Returns true if all dirty paths were handled without escalation.
+func (st *symbolTable) refreshDirtyPaths(ctx context.Context, ft *fileTools) bool {
+	// Snapshot and clear dirty paths under the mark lock.
+	paths := st.dirtyPaths
+	genAtStart := st.generation
+	st.dirtyPaths = nil
+
+	if len(paths) == 0 {
+		return true
+	}
+
+	// Check if any dirty path requires escalation.
+	for rel := range paths {
+		// A .gitignore change can affect which files are visible.
+		if filepath.Base(rel) == ".gitignore" {
+			st.revalidateAll = true
+			st.generation++
+			return false
+		}
+		// A path not in the table is a new file; only the walk's ignore
+		// engine can say whether it is visible.
+		if _, ok := st.entries[rel]; !ok {
+			st.revalidateAll = true
+			st.generation++
+			return false
+		}
+	}
+
+	// All dirty paths are known files. Re-outline or drop each one.
+	runner := ft.outlineRunner()
+	for rel := range paths {
+		abs := filepath.Join(ft.ws.Root, filepath.FromSlash(rel))
+		fi, err := os.Stat(abs)
+		if err != nil || !fi.Mode().IsRegular() {
+			// File is gone or no longer regular: drop it.
+			delete(st.entries, rel)
+			continue
+		}
+
+		// Re-outline the file.
+		ofile, err := outline.Outline(ctx, abs, nil, outline.Options{
+			Root:   ft.ws.Root,
+			Runner: runner,
+		})
+		if err != nil {
+			// On error, drop the entry rather than serving stale data.
+			delete(st.entries, rel)
+			continue
+		}
+
+		now := time.Now()
+		st.entries[rel] = &symbolEntry{
+			file:      ofile,
+			size:      fi.Size(),
+			mtime:     fi.ModTime(),
+			indexedAt: now,
+		}
+	}
+
+	// Clear only marks that predate this pass (generation counter).
+	// If new marks arrived during the pass, they are preserved.
+	if st.generation == genAtStart {
+		// No new marks arrived; dirty paths are fully handled.
+	}
+	// dirtyPaths was already set to nil above; any new marks added during
+	// the pass are in the new dirtyPaths map.
+
+	return true
+}
+
+// computeMetrics returns the current table metrics without any walk or outline.
+func (st *symbolTable) computeMetrics(scopePrefix string) buildResult {
+	result := buildResult{
+		backends: make(map[string]int),
+	}
+	for rel, entry := range st.entries {
+		if scopePrefix != "" && !strings.HasPrefix(rel, scopePrefix) {
+			continue
+		}
+		result.filesIndexed++
+		result.backends[string(entry.file.Backend)]++
+	}
+	result.partial = !st.complete
+	if result.partial {
+		result.partialReason = st.partialReason
+	}
+	return result
+}
+
 // buildResult carries the outcome of a build or refresh pass.
 type buildResult struct {
 	partial       bool
@@ -91,6 +227,15 @@ var walkFn = Walk
 //   - scopePath: when non-empty, only files under this directory are indexed
 //     (but the walk starts from the workspace root for ignore layers)
 func (st *symbolTable) buildOrRefresh(ctx context.Context, ft *fileTools, scopePath string) buildResult {
+	// Snapshot the generation at the start so we only clear marks that
+	// predate this pass. 02-REQ-6.8.
+	genAtStart := st.generation
+
+	// Clear dirty paths at the start of a full build/revalidation pass.
+	// Any marks made during the pass will advance the generation counter
+	// and be preserved.
+	st.dirtyPaths = nil
+
 	maxFiles := ft.symOpts.MaxFiles
 	if maxFiles <= 0 {
 		maxFiles = defaultMaxFiles
@@ -289,6 +434,12 @@ func (st *symbolTable) buildOrRefresh(ctx context.Context, ft *fileTools, scopeP
 	if !result.partial {
 		if scopePrefix == "" {
 			st.complete = true
+			// Clear the whole-table mark only when the pass covered the
+			// whole workspace and completed within bounds, and no new
+			// marks arrived during the pass. 02-REQ-6.7, 02-REQ-6.8.
+			if st.generation == genAtStart {
+				st.revalidateAll = false
+			}
 		}
 	}
 	st.partialReason = result.partialReason

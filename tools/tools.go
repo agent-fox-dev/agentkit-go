@@ -115,6 +115,20 @@ func All(opts Options) ([]core.Tool, error) {
 	}
 	opts = opts.withDefaults()
 	fs := newFileTools(opts)
+
+	// Wrap the shell tools so they mark the symbol table for revalidation
+	// after the command returns, whatever the outcome. The standalone
+	// constructors and their tests are unchanged. 02-REQ-6.3.
+	wrapShell := func(t core.Tool) core.Tool {
+		orig := t.Execute
+		t.Execute = func(ctx context.Context, in json.RawMessage) core.ToolResult {
+			r := orig(ctx, in)
+			fs.markTableRevalidateAll()
+			return r
+		}
+		return t
+	}
+
 	return []core.Tool{
 		fs.readFile(),
 		fs.writeFile(),
@@ -122,9 +136,9 @@ func All(opts Options) ([]core.Tool, error) {
 		fs.listFiles(),
 		fs.findFiles(),
 		fs.searchFiles(),
-		executeTool(opts),
-		runCommandTool(opts),
-		PowerShell(opts),
+		wrapShell(executeTool(opts)),
+		wrapShell(runCommandTool(opts)),
+		wrapShell(PowerShell(opts)),
 	}, nil
 }
 
@@ -240,6 +254,12 @@ type fileTools struct {
 	// Runner was provided.
 	runnerOnce sync.Once
 	runner     func(ctx context.Context, args []string) ([]byte, error)
+
+	// table is the shared symbol table, created lazily on first find_symbol
+	// call and marked dirty by write_file, edit_file and the shell tool
+	// wrappers. It is nil until find_symbol is first called.
+	tableOnce sync.Once
+	table     *symbolTable
 }
 
 func newFileTools(opts Options) *fileTools {
@@ -266,6 +286,32 @@ func (f *fileTools) outlineRunner() func(ctx context.Context, args []string) ([]
 		}
 	})
 	return f.runner
+}
+
+// getTable returns the shared symbol table, creating it on first call.
+// Marking methods (markDirty, markRevalidateAll) are safe to call on a nil
+// table — they are no-ops when find_symbol has never been used.
+func (f *fileTools) getTable() *symbolTable {
+	f.tableOnce.Do(func() {
+		f.table = newSymbolTable()
+	})
+	return f.table
+}
+
+// markTableDirty marks a workspace-relative path dirty in the shared symbol
+// table, if one exists. It is a no-op when find_symbol has never been called.
+func (f *fileTools) markTableDirty(rel string) {
+	if f.table != nil {
+		f.table.markDirty(rel)
+	}
+}
+
+// markTableRevalidateAll marks the whole symbol table for revalidation, if
+// one exists. It is a no-op when find_symbol has never been called.
+func (f *fileTools) markTableRevalidateAll() {
+	if f.table != nil {
+		f.table.markRevalidateAll()
+	}
 }
 
 func (f *fileTools) readFile() core.Tool {
@@ -637,9 +683,15 @@ func (f *fileTools) writeFile() core.Tool {
 			if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 				return core.ErrResult("write_failed", err.Error())
 			}
+			// Mark the path dirty after the write attempt, whether it
+			// succeeds or fails, while still holding the per-path lock
+			// (before the deferred release runs). 02-REQ-6.2.
+			rel := filepath.ToSlash(f.ws.Rel(abs))
 			if err := os.WriteFile(abs, []byte(a.Content), 0o644); err != nil {
+				f.markTableDirty(rel)
 				return core.ErrResult("write_failed", err.Error())
 			}
+			f.markTableDirty(rel)
 			return core.OKResult(map[string]any{"written": true, "bytes": len(a.Content)})
 		},
 	}
@@ -684,6 +736,12 @@ func (f *fileTools) editFile() core.Tool {
 			}
 			release := f.locks.acquire(key)
 			defer release()
+
+			// Mark the path dirty after the edit attempt, whether it
+			// succeeds or fails, while still holding the per-path lock
+			// (before the deferred release runs). 02-REQ-6.2.
+			rel := filepath.ToSlash(f.ws.Rel(abs))
+			defer f.markTableDirty(rel)
 
 			fi, err := os.Stat(abs)
 			if err != nil {

@@ -15,8 +15,10 @@ import (
 
 // findSymbolTool returns the find_symbol tool.
 func (f *fileTools) findSymbolTool() core.Tool {
-	// The symbol table is created empty and built on first use.
-	st := newSymbolTable()
+	// The symbol table is shared with write_file, edit_file and the shell
+	// tool wrappers so they can mark it dirty. It is created lazily here
+	// on first use.
+	st := f.getTable()
 
 	return core.Tool{
 		Name: "find_symbol",
@@ -85,9 +87,34 @@ func (f *fileTools) findSymbolTool() core.Tool {
 				scopePath = abs
 			}
 
+			// Determine scope prefix for path filtering.
+			var scopePrefix string
+			if scopePath != "" {
+				scopePrefix = filepath.ToSlash(f.ws.Rel(scopePath))
+				if scopePrefix != "" && !strings.HasSuffix(scopePrefix, "/") {
+					scopePrefix += "/"
+				}
+			}
+
 			// Build or refresh the symbol table.
 			st.mu.Lock()
-			br := st.buildOrRefresh(ctx, f, scopePath)
+			var br buildResult
+			switch {
+			case st.built && st.complete && !st.revalidateAll && len(st.dirtyPaths) == 0:
+				// Table is complete and nothing is marked: answer from memory.
+				br = st.computeMetrics(scopePrefix)
+			case st.built && st.complete && !st.revalidateAll && len(st.dirtyPaths) > 0:
+				// Only specific dirty paths: try targeted refresh.
+				if st.refreshDirtyPaths(ctx, f) {
+					br = st.computeMetrics(scopePrefix)
+				} else {
+					// Escalated to revalidation.
+					br = st.buildOrRefresh(ctx, f, scopePath)
+				}
+			default:
+				// Initial build, incomplete table, or revalidation needed.
+				br = st.buildOrRefresh(ctx, f, scopePath)
+			}
 			st.mu.Unlock()
 
 			if ctx.Err() != nil {
@@ -97,15 +124,6 @@ func (f *fileTools) findSymbolTool() core.Tool {
 			// Compute backends map scoped to the query.
 			backends := br.backends
 			filesIndexed := br.filesIndexed
-
-			// Determine scope prefix for path filtering.
-			var scopePrefix string
-			if scopePath != "" {
-				scopePrefix = filepath.ToSlash(f.ws.Rel(scopePath))
-				if scopePrefix != "" && !strings.HasSuffix(scopePrefix, "/") {
-					scopePrefix += "/"
-				}
-			}
 
 			// Match symbols.
 			qualified := strings.Contains(name, ".")
