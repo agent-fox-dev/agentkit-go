@@ -237,7 +237,7 @@ func TestSmoke_ColdFindSymbolBuild_TS02_62(t *testing.T) {
 	}
 
 	// Verify ignored/skip.go's Run is NOT in the results.
-// All matches should be from non-ignored files.
+	// All matches should be from non-ignored files.
 	// The ignored file's Run should not appear in the results.
 	_ = names
 

@@ -47,11 +47,11 @@ DARK means.
 | Target | Does |
 |---|---|
 | `make check` | `fmt`, `vet`, `lint`, `test` — run before committing |
-| `make test` | `go test ./...` in the root and `difftest` modules |
-| `make vet` | `go vet` in the root and `difftest` modules |
-| `make lint` | `golangci-lint` if installed, otherwise skipped |
+| `make test` | `go test ./...` in the root, `codesearch` and `difftest` modules |
+| `make vet` | `go vet` in the root, `codesearch` and `difftest` modules |
+| `make lint` | `golangci-lint` in the root, `codesearch` and `difftest` modules (skipped if not installed) |
 | `make fmt` | `gofmt -l -w .` |
-| `make tidy` | `go mod tidy` in the root and `difftest` (and `flatline` when `../spec/golang` exists) |
+| `make tidy` | `go mod tidy` in the root, `codesearch`, `difftest` (and `flatline` when `../spec/golang` exists) |
 | `make build-examples` | Installs `issued` and `cleaner` into `$GOBIN` |
 
 ## Examples

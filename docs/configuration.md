@@ -137,15 +137,40 @@ environment), `Retry` (`provider.RetryPolicy`: `MaxRetries`, base / max delay,
 | `Env` | `tools.ReducedEnv(nil)`. |
 | `Ignore` | The real gitignore environment; `tools.NoGlobalExcludes()` pins an empty global layer for tests. |
 | `Symbols` | `tools.SymbolOptions{}`. Configures the symbol table behind `find_symbol` and the outline runner shared by `file_outline` and `find_symbol`. Fields: `MaxFiles` (file-count bound per build/refresh pass; default 50 000), `MaxDuration` (wall-time bound; default 2 s), `DisableCtags` (force heuristic/go-ast backends only), `Runner` (override the default `CtagsRunner`; the seam tests use). |
+| `Index` | `nil` (`tools.Index`). When set, `All()` appends the index's tools after the built-ins and `write_file`, `edit_file` and the shell tools call `Index.Invalidate` to keep the index fresh. See the `codesearch` module below. |
 
 `tools.All` returns `read_file`, `write_file`, `edit_file`, `list_files`,
 `find_files`, `search_files`, `file_outline`, `find_symbol`, `execute`,
-`run_command` and `powershell` on every platform. `fetch_url` is constructed
-separately and sits behind the SSRF guard. Output limits: 50 KB per result,
-`read_file` 2000 lines, `search_files` 100 matches and 500 characters per line,
-`find_files` 200 by default (cap 1000), `list_files` 200 by default (cap 500),
-`find_symbol` 20 results by default (cap 50), symbol-table build bounded at
-50 000 files and 2 s.
+`run_command` and `powershell` on every platform. When `Options.Index` is set,
+`All()` appends the index's tools (e.g. `code_search`) after the built-in list.
+`fetch_url` is constructed separately and sits behind the SSRF guard. Output
+limits: 50 KB per result, `read_file` 2000 lines, `search_files` 100 matches
+and 500 characters per line, `find_files` 200 by default (cap 1000),
+`list_files` 200 by default (cap 500), `find_symbol` 20 results by default
+(cap 50), symbol-table build bounded at 50 000 files and 2 s.
+
+### `code_search` limits (when `codesearch` index is active)
+
+| Parameter | Default | Cap |
+|---|---|---|
+| `max_files` | 10 | 25 |
+| `context_lines` | 2 | 20 (`tools.MaxSearchContextLines`) |
+| `query` max length | — | 1 024 bytes |
+| query timeout | — | 10 s |
+| result byte limit | — | 50 KB (`tools.DefaultByteLimit`) |
+
+### `codesearch.Options`
+
+| Field | Default | Meaning |
+|---|---|---|
+| `Ignore` | — | `tools.IgnoreOptions`; pass the same value as `tools.Options.Ignore`. |
+| `Env` | `tools.ReducedEnv(nil)` | Environment for the ctags runner. |
+| `DisableCtags` | `false` | Force heuristic/go-ast backends only; no ctags process. |
+| `Runner` | `nil` | Override the default ctags runner (test seam). |
+| `MaxFiles` | 100 000 | File-count bound for the index build. |
+| `MaxBytes` | 1 GiB | Total indexed content bound. |
+| `MaxBuildTime` | 60 s | Wall-time bound for the index build. |
+| `TempDir` | `os.TempDir()` | Where shard files are written. |
 
 ## TOML sections
 

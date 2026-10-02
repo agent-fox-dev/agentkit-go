@@ -8,8 +8,9 @@ disagree, fix this file.
 
 One Go module (`github.com/agentfox/agentkit-go`, `go 1.26.5`), standard
 library only. That is enforced by `internal/policy` (see
-[`DEPS.md`](DEPS.md)). Two nested modules carry their own dependency budget and
-are not in the root build graph: [`difftest/`](../difftest) and
+[`DEPS.md`](DEPS.md)). Three nested modules carry their own dependency budget and
+are not in the root build graph: [`codesearch/`](../codesearch),
+[`difftest/`](../difftest) and
 [`examples/flatline/`](../examples/flatline).
 
 The root package holds the `Agent` and nothing else
@@ -36,6 +37,7 @@ Imports between first-party packages, taken from the source (tests excluded;
 | `provider/faux` | `core` |
 | `session` | `core`, `jsonx` |
 | `tools` | `core`, `imagex`, `outline`, `schema` (exports `Walk`, `CtagsRunner`, `file_outline`, `find_symbol`) |
+| `codesearch` (nested module) | `tools`, `core`, `schema`, `outline`; plus `github.com/sourcegraph/zoekt` (confined to this module) |
 | `mcp` | `core`, `schema`, `wire` |
 | `plugins` | `core`, `provider`, `session` |
 | `skills` | `core`, `plugins` |
@@ -89,6 +91,7 @@ Rules that follow from it:
 | `internal/policy` | Tests only: dependency, cgo and cross-target gates. |
 | `internal/testkit` | Shared test helpers. |
 | `cmd/validate-plugins` | Reference driver for `plugins.Validate` ([CLI](cli.md)). |
+| `codesearch` | Nested module: zoekt-backed `code_search` tool, lazy index build, dirty-file overlay, `find_symbol` acceleration. Imports `tools`, `core`, `schema`, `outline` from the root and `github.com/sourcegraph/zoekt` (pinned). |
 | `difftest` | Nested module: wire-level differential harness. |
 | `_skills/` | Built-in skills shipped as data (`code-review`). |
 
@@ -157,5 +160,5 @@ Extension axes:
 - `examples/testing` shows how an embedder tests its own agent code offline with
   `provider/faux`.
 
-Run everything with `make check` (fmt, vet, lint, test for the root and
-`difftest` modules).
+Run everything with `make check` (fmt, vet, lint, test for the root,
+`codesearch` and `difftest` modules).

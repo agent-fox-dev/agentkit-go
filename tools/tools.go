@@ -66,6 +66,11 @@ type Options struct {
 	Ignore IgnoreOptions
 	// Symbols configures the symbol table and the outline runner.
 	Symbols SymbolOptions
+	// Index is the optional codesearch index. When set, All() appends
+	// Index.Tools() after the built-in tools, and write_file, edit_file
+	// and the shell tools call Index.Invalidate on every write. Nil means
+	// no index.
+	Index Index
 }
 
 // withDefaults applies the documented zero-value meanings. Every constructor
@@ -117,19 +122,22 @@ func All(opts Options) ([]core.Tool, error) {
 	fs := newFileTools(opts)
 
 	// Wrap the shell tools so they mark the symbol table for revalidation
-	// after the command returns, whatever the outcome. The standalone
-	// constructors and their tests are unchanged. 02-REQ-6.3.
+	// after the command returns, whatever the outcome, and call
+	// Index.Invalidate("") when an index is set. 02-REQ-6.3, 03-REQ-2.7.
 	wrapShell := func(t core.Tool) core.Tool {
 		orig := t.Execute
 		t.Execute = func(ctx context.Context, in json.RawMessage) core.ToolResult {
 			r := orig(ctx, in)
 			fs.markTableRevalidateAll()
+			if fs.index != nil {
+				fs.index.Invalidate("")
+			}
 			return r
 		}
 		return t
 	}
 
-	return []core.Tool{
+	builtins := []core.Tool{
 		fs.readFile(),
 		fs.writeFile(),
 		fs.editFile(),
@@ -141,7 +149,23 @@ func All(opts Options) ([]core.Tool, error) {
 		wrapShell(executeTool(opts)),
 		wrapShell(runCommandTool(opts)),
 		wrapShell(PowerShell(opts)),
-	}, nil
+	}
+
+	// Append index tools when an index is set. 03-REQ-2.3.
+	if opts.Index != nil {
+		names := make(map[string]bool, len(builtins))
+		for _, t := range builtins {
+			names[t.Name] = true
+		}
+		for _, t := range opts.Index.Tools() {
+			if names[t.Name] {
+				return nil, fmt.Errorf("tools: index tool %q duplicates a built-in tool name", t.Name)
+			}
+			builtins = append(builtins, t)
+		}
+	}
+
+	return builtins, nil
 }
 
 // FileNavigationTools names REQ-TOOL-04e's opt-in set of five.
@@ -262,6 +286,10 @@ type fileTools struct {
 	// wrappers. It is nil until find_symbol is first called.
 	tableOnce sync.Once
 	table     *symbolTable
+
+	// index is the optional codesearch index. When non-nil, write_file,
+	// edit_file and the shell tool wrappers call Invalidate on it.
+	index Index
 }
 
 func newFileTools(opts Options) *fileTools {
@@ -271,6 +299,7 @@ func newFileTools(opts Options) *fileTools {
 		ig:      opts.Ignore.cached(),
 		symOpts: opts.Symbols,
 		env:     opts.Env,
+		index:   opts.Index,
 	}
 }
 
@@ -691,9 +720,15 @@ func (f *fileTools) writeFile() core.Tool {
 			rel := filepath.ToSlash(f.ws.Rel(abs))
 			if err := os.WriteFile(abs, []byte(a.Content), 0o644); err != nil {
 				f.markTableDirty(rel)
+				if f.index != nil {
+					f.index.Invalidate(rel)
+				}
 				return core.ErrResult("write_failed", err.Error())
 			}
 			f.markTableDirty(rel)
+			if f.index != nil {
+				f.index.Invalidate(rel)
+			}
 			return core.OKResult(map[string]any{"written": true, "bytes": len(a.Content)})
 		},
 	}
@@ -741,9 +776,14 @@ func (f *fileTools) editFile() core.Tool {
 
 			// Mark the path dirty after the edit attempt, whether it
 			// succeeds or fails, while still holding the per-path lock
-			// (before the deferred release runs). 02-REQ-6.2.
+			// (before the deferred release runs). 02-REQ-6.2, 03-REQ-2.6.
 			rel := filepath.ToSlash(f.ws.Rel(abs))
 			defer f.markTableDirty(rel)
+			defer func() {
+				if f.index != nil {
+					f.index.Invalidate(rel)
+				}
+			}()
 
 			fi, err := os.Stat(abs)
 			if err != nil {

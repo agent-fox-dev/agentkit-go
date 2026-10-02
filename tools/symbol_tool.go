@@ -96,6 +96,28 @@ func (f *fileTools) findSymbolTool() core.Tool {
 				}
 			}
 
+			// --- Index branch: try the codesearch index first. ---
+			// 03-REQ-7: When Options.Index is set, call Index.Symbols.
+			// On ok=true, rank and truncate with find_symbol's own code
+			// and name the index in the header. On ok=false, fall back
+			// to the symbol table. find_symbol never triggers a build.
+			if f.index != nil {
+				q := SymbolQuery{
+					Name:  name,
+					Kind:  kind,
+					Path:  scopePrefix,
+					Exact: a.Exact,
+				}
+				ans, ok, err := f.index.Symbols(ctx, q)
+				if err != nil {
+					return core.ErrResult("aborted", "Operation aborted")
+				}
+				if ok {
+					return f.renderSymbolResult(ans.Matches, name, a.MaxResults, a.Exact, scopePrefix, ans.FilesIndexed, true)
+				}
+				// ok=false: fall through to the symbol table.
+			}
+
 			// Build or refresh the symbol table.
 			// Acquire the context-abandonable lock; a waiter whose ctx
 			// ends returns aborted without waiting for the build.
@@ -266,4 +288,95 @@ func renderMatchLine(m SymbolMatch) string {
 		lineRange = fmt.Sprintf("%d-%d", m.StartLine, m.EndLine)
 	}
 	return fmt.Sprintf("%s:%s  %s  %s", path, lineRange, m.Kind, m.Signature)
+}
+
+// renderSymbolResult ranks, truncates and renders a find_symbol result from
+// matches provided by the codesearch index. It uses find_symbol's own ranking
+// and truncation code so the contract is identical to the table-based path.
+// When fromIndex is true, the header names the codesearch index as the backend.
+func (f *fileTools) renderSymbolResult(
+	matches []SymbolMatch,
+	name string,
+	maxResults int,
+	exact bool,
+	scopePrefix string,
+	filesIndexed int,
+	fromIndex bool,
+) core.ToolResult {
+	// Rank matches using find_symbol's own ranking.
+	qualified := strings.Contains(name, ".")
+	caseSensitive := hasUppercase(name)
+	rankSymbols(matches, name, qualified, caseSensitive)
+
+	// Apply limit.
+	limit := clampLimit(maxResults, SymbolResultDefault, SymbolResultCap)
+	truncated := len(matches) > limit
+	if truncated {
+		matches = matches[:limit]
+	}
+
+	// Ensure symbols is never nil.
+	if matches == nil {
+		matches = []SymbolMatch{}
+	}
+
+	// Compute backends from the matches.
+	backends := make(map[string]int)
+	for _, m := range matches {
+		if m.Backend != "" {
+			backends[m.Backend]++
+		}
+	}
+
+	// Build Data.
+	data := map[string]any{
+		"symbols":       matches,
+		"truncated":     truncated,
+		"backends":      backends,
+		"files_indexed": filesIndexed,
+	}
+
+	// Build Text.
+	var textParts []string
+
+	// Header line: name the codesearch index as the backend.
+	if fromIndex {
+		textParts = append(textParts, renderCodesearchIndexLine(len(matches), name, filesIndexed, truncated))
+	} else {
+		textParts = append(textParts, renderIndexLine(len(matches), name, filesIndexed, backends, truncated))
+	}
+
+	// No-match message.
+	if len(matches) == 0 {
+		textParts = append(textParts, "no symbols matched")
+	}
+
+	// Match lines.
+	for _, m := range matches {
+		textParts = append(textParts, renderMatchLine(m))
+	}
+
+	// Truncation marker.
+	var r core.ToolResult
+	if truncated {
+		marker := SymbolMarker(limit)
+		data["note"] = marker
+		textParts = append(textParts, marker)
+		r = core.OKResult(data)
+		r.Metadata = &core.ToolMetadata{
+			Truncated:   true,
+			TruncatedBy: string(TruncatedByLines),
+		}
+	} else {
+		r = core.OKResult(data)
+	}
+
+	r.Text = strings.Join(textParts, "\n")
+	return r
+}
+
+// renderCodesearchIndexLine builds the header line for find_symbol results
+// when the codesearch index is the backend.
+func renderCodesearchIndexLine(matchCount int, name string, filesIndexed int, truncated bool) string {
+	return fmt.Sprintf("%d symbols matching %q  (codesearch index: %d files)", matchCount, name, filesIndexed)
 }

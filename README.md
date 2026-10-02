@@ -67,6 +67,7 @@ in 0.4.1 rather than the code walked back.
 | `tools` | Built-in tools (`file_outline`, `find_symbol` and the nine others), path containment, bounded accumulator, process control, glob, a layered gitignore engine, `fetch_url` behind an SSRF guard, `Walk` (the single shared directory traversal), `CtagsRunner` (ctags process lifecycle for `outline`) and the in-memory symbol table behind `find_symbol`. |
 | `provider` | Send-time transcript repair, HTTP transport + retry, credential resolution, header precedence, cost arithmetic, SSE decoding — everything shared by every wire API. |
 | `provider/{anthropic,openai,google,ollama,faux}` | One wire API each, encode and decode. |
+| `codesearch` | Separate module: zoekt-backed `code_search` tool with ranked, file-grouped results, lazy index build, dirty-file overlay and `find_symbol` acceleration. Opt in with `tools.Options{Index: idx}`. |
 | `difftest` | Separate module: the NFR-TEST-06/07 differential harness — canonicalizing comparator, key-order side channel, divergence ledger, exit machine. |
 | `stop` | The built-in stop policies: `AfterTurns`, `OverBudget`, `AfterDuration`, `WhenToolCalled`, `Any`, `Never`. |
 | `middleware` | Axis 1: `Retry`, `Budget`, `Caching`, `Tracing`, `RateLimit`, and the `CacheMeter` behind `Agent.CacheStats`. |

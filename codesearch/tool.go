@@ -1,0 +1,756 @@
+//go:build !windows
+
+package codesearch
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/agentfox/agentkit-go/core"
+	"github.com/agentfox/agentkit-go/outline"
+	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agentfox/agentkit-go/tools"
+
+	zoekt "github.com/sourcegraph/zoekt"
+	"github.com/sourcegraph/zoekt/query"
+	"github.com/sourcegraph/zoekt/search"
+)
+
+// maxQueryBytes is the maximum length of a query string.
+const maxQueryBytes = 1024
+
+// defaultMaxFiles is the default max_files for code_search results.
+const defaultMaxFiles = 10
+
+// maxMaxFiles is the cap for max_files.
+const maxMaxFiles = 25
+
+// defaultContextLines is the default context_lines for code_search results.
+const defaultContextLines = 2
+
+// defaultQueryTimeout is the default maximum wall time for a single search.
+const defaultQueryTimeout = 10 * time.Second
+
+// codeSearchDescription is the tool description.
+const codeSearchDescription = `Search the codebase using zoekt query syntax. Returns ranked, file-grouped results.
+
+Examples:
+  sym:Runner
+  retry file:\.go$ -file:_test
+  lang:python "def load"
+  (compaction or summarize) case:no`
+
+// codeSearchGuideline is the PromptGuideline for code_search.
+const codeSearchGuideline = "Use code_search for ranked questions about the codebase; search_files for an exhaustive regex scan."
+
+// Tools implements tools.Index. It returns the code_search tool.
+func (idx *Index) Tools() []core.Tool {
+	return []core.Tool{idx.codeSearchTool()}
+}
+
+// codeSearchTool builds the code_search tool definition.
+func (idx *Index) codeSearchTool() core.Tool {
+	return core.Tool{
+		Name:        "code_search",
+		Description: codeSearchDescription,
+		Builtin:     true,
+		// ExecutionMode defaults to Parallel (zero value).
+		InputSchema: schema.Object(
+			schema.Prop("query", schema.String("The search query in zoekt query syntax.")),
+			schema.Opt("path", schema.String("Restrict search to this directory or file path.")),
+			schema.Opt("max_files", schema.Int("Maximum number of files to return.")),
+			schema.Opt("context_lines", schema.Int("Number of context lines around each match.")),
+		),
+		Execute:          idx.executeCodeSearch,
+		PromptGuidelines: []string{codeSearchGuideline},
+	}
+}
+
+// codeSearchArgs are the parsed arguments for code_search.
+type codeSearchArgs struct {
+	Query        string `json:"query"`
+	Path         string `json:"path"`
+	MaxFiles     int    `json:"max_files"`
+	ContextLines int    `json:"context_lines"`
+}
+
+// executeCodeSearch is the Execute handler for code_search.
+func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) core.ToolResult {
+	// Check for cancelled context early.
+	if err := ctx.Err(); err != nil {
+		return core.ErrResult("aborted", "Operation aborted")
+	}
+
+	// Parse arguments.
+	var a codeSearchArgs
+	if err := json.Unmarshal(in, &a); err != nil {
+		return core.ErrResult("invalid_arguments", err.Error())
+	}
+
+	// Validate query: empty after trimming.
+	trimmed := strings.TrimSpace(a.Query)
+	if trimmed == "" {
+		return core.ErrResult("invalid_arguments", "query must not be empty")
+	}
+
+	// Validate query: over 1024 bytes.
+	if len(a.Query) > maxQueryBytes {
+		return core.ErrResult("invalid_arguments",
+			fmt.Sprintf("query exceeds %d byte limit (%d bytes)", maxQueryBytes, len(a.Query)))
+	}
+
+	// Validate context_lines: negative is invalid.
+	if a.ContextLines < 0 {
+		return core.ErrResult("invalid_arguments", "context_lines must not be negative")
+	}
+
+	// Parse the query with zoekt's parser.
+	parsedQ, err := query.Parse(trimmed)
+	if err != nil {
+		return core.ErrResult("invalid_arguments", fmt.Sprintf("query parse error: %s", err.Error()))
+	}
+
+	// Default and clamp context_lines and max_files.
+	contextLines := a.ContextLines
+	if contextLines == 0 {
+		contextLines = defaultContextLines
+	}
+	if contextLines > tools.MaxSearchContextLines {
+		contextLines = tools.MaxSearchContextLines
+	}
+	maxFiles := tools.ClampLimit(a.MaxFiles, defaultMaxFiles, maxMaxFiles)
+
+	// Validate and resolve path before any build.
+	var pathConstraint query.Q
+	if a.Path != "" {
+		abs, err := idx.ws.Resolve(a.Path)
+		if err != nil {
+			return core.ErrResult("path_not_allowed", err.Error())
+		}
+		fi, err := os.Stat(abs)
+		if err != nil {
+			return core.ErrResult("read_failed", err.Error())
+		}
+
+		rel := filepath.ToSlash(idx.ws.Rel(abs))
+
+		// Build the file: constraint as a query node.
+		if rel != "." && rel != "" {
+			if fi.IsDir() {
+				// Directory: anchored prefix with trailing slash.
+				escaped := regexp.QuoteMeta(rel + "/")
+				pathQ, err := query.RegexpQuery("^"+escaped, false, true)
+				if err != nil {
+					return core.ErrResult("invalid_arguments",
+						fmt.Sprintf("path constraint error: %s", err.Error()))
+				}
+				pathConstraint = pathQ
+			} else {
+				// File: anchored to the end.
+				escaped := regexp.QuoteMeta(rel)
+				pathQ, err := query.RegexpQuery("^"+escaped+"$", false, true)
+				if err != nil {
+					return core.ErrResult("invalid_arguments",
+						fmt.Sprintf("path constraint error: %s", err.Error()))
+				}
+				pathConstraint = pathQ
+			}
+		}
+		// Root adds no constraint.
+	}
+
+	// Check for cancelled context again before building.
+	if err := ctx.Err(); err != nil {
+		return core.ErrResult("aborted", "Operation aborted")
+	}
+
+	// Check if closed.
+	idx.mu.RLock()
+	closed := idx.closed
+	idx.mu.RUnlock()
+	if closed {
+		return core.ErrResult("index_closed", "index has been closed")
+	}
+
+	// Ensure the index is built (lazy build on first call).
+	if err := idx.ensureBuilt(ctx); err != nil {
+		if ctx.Err() != nil {
+			return core.ErrResult("aborted", "Operation aborted")
+		}
+		errStr := err.Error()
+		if strings.HasPrefix(errStr, "index_failed:") || strings.HasPrefix(errStr, "index_closed") {
+			code := "index_failed"
+			detail := strings.TrimPrefix(errStr, "index_failed: ")
+			if strings.HasPrefix(errStr, "index_closed") {
+				code = "index_closed"
+				detail = "index has been closed"
+			}
+			return core.ErrResult(code, detail)
+		}
+		return core.ErrResult("index_failed", errStr)
+	}
+
+	// Handle dirty files: revalidation and dirty-path processing.
+	idx.handleDirty(ctx)
+
+	// Check if a rebuild is needed (>5% dirty) or in progress.
+	if err := idx.waitForRebuildIfNeeded(ctx); err != nil {
+		if ctx.Err() != nil {
+			return core.ErrResult("aborted", "Operation aborted")
+		}
+		errStr := err.Error()
+		if strings.HasPrefix(errStr, "index_closed") {
+			return core.ErrResult("index_closed", "index has been closed")
+		}
+		return core.ErrResult("index_failed", errStr)
+	}
+
+	// Build the final query with path conjunction.
+	finalQ := parsedQ
+	if pathConstraint != nil {
+		finalQ = query.NewAnd(parsedQ, pathConstraint)
+	}
+
+	// Track this query as in-flight so Close waits for it.
+	idx.inFlight.Add(1)
+	defer idx.inFlight.Done()
+
+	// Re-check closed after registering in-flight (Close sets closed
+	// before waiting for in-flight to drain).
+	idx.mu.RLock()
+	if idx.closed {
+		idx.mu.RUnlock()
+		return core.ErrResult("index_closed", "index has been closed")
+	}
+	idx.mu.RUnlock()
+
+	// Search with the test hook or the real searcher.
+	queryTimeout := idx.queryTimeout
+	if queryTimeout <= 0 {
+		queryTimeout = defaultQueryTimeout
+	}
+
+	searchCtx, searchCancel := context.WithTimeout(ctx, queryTimeout)
+	defer searchCancel()
+
+	var resultFiles []searchResultFile
+	var totalFiles int
+
+	if idx.testSearchHook != nil {
+		hookResult, err := idx.testSearchHook(searchCtx, trimmed)
+		if err != nil {
+			if searchCtx.Err() != nil && ctx.Err() == nil {
+				// The search timed out but the parent context is still alive.
+				return core.ErrResult("search_failed",
+					"query timed out; narrow the query or add a path constraint")
+			}
+			if ctx.Err() != nil {
+				return core.ErrResult("aborted", "Operation aborted")
+			}
+			return core.ErrResult("search_failed", err.Error())
+		}
+		if hookResult != nil {
+			resultFiles = hookResult.files
+			totalFiles = hookResult.totalFiles
+			if totalFiles < len(resultFiles) {
+				totalFiles = len(resultFiles)
+			}
+		}
+	} else {
+		// Real zoekt search.
+		files, total, err := idx.searchZoekt(searchCtx, finalQ, maxFiles, contextLines)
+		if err != nil {
+			if searchCtx.Err() != nil && ctx.Err() == nil {
+				return core.ErrResult("search_failed",
+					"query timed out; narrow the query or add a path constraint")
+			}
+			if ctx.Err() != nil {
+				return core.ErrResult("aborted", "Operation aborted")
+			}
+			return core.ErrResult("search_failed", err.Error())
+		}
+		resultFiles = files
+		totalFiles = total
+	}
+
+	// Remove dirty paths from indexed results and search dirty files.
+	dirtySet := idx.dirty.dirtyPathSet()
+	if len(dirtySet) > 0 {
+		resultFiles, totalFiles = idx.filterAndSearchDirty(searchCtx, resultFiles, totalFiles, dirtySet, finalQ, maxFiles, contextLines)
+	}
+
+	// Build the result data.
+	return idx.buildResult(resultFiles, maxFiles, totalFiles)
+}
+
+// ensureBuilt triggers a lazy build if the index has not been built yet.
+// A partial index is not retried; only the dirty-threshold rebuild replaces it.
+func (idx *Index) ensureBuilt(ctx context.Context) error {
+	idx.mu.RLock()
+	built := idx.built
+	idx.mu.RUnlock()
+	if built {
+		return nil
+	}
+	return idx.Build(ctx)
+}
+
+// handleDirty runs revalidation if needed. It checks whether a revalidation
+// walk is required (unknown paths, .gitignore changes, or Invalidate("")),
+// and if so, walks the workspace to discover changed, new and removed files.
+func (idx *Index) handleDirty(ctx context.Context) {
+	if !idx.dirty.hasDirty() {
+		return
+	}
+
+	idx.mu.RLock()
+	indexedFiles := idx.indexedFiles
+	fileInfos := idx.fileInfos
+	idx.mu.RUnlock()
+
+	if idx.dirty.needsRevalidation(indexedFiles) {
+		if idx.testRevalHook != nil {
+			idx.testRevalHook()
+		}
+		idx.dirty.revalidate(idx.ws, idx.opts.Ignore, indexedFiles, fileInfos)
+		idx.revalCount.Add(1)
+	}
+}
+
+// rebuildThreshold is the fraction of indexed files that must be dirty before
+// a full rebuild is triggered instead of using an overlay.
+const rebuildThreshold = 0.05
+
+// waitForRebuildIfNeeded checks whether more than 5% of indexed files are
+// dirty and, if so, triggers a full rebuild. If a rebuild is already in
+// progress, the caller waits abandonably (ctx select) and uses the new index.
+// Returns nil when the index is ready for querying.
+func (idx *Index) waitForRebuildIfNeeded(ctx context.Context) error {
+	for {
+		idx.mu.Lock()
+		if idx.closed {
+			idx.mu.Unlock()
+			return fmt.Errorf("index_closed")
+		}
+
+		// If a rebuild is already in progress, wait for it.
+		if idx.rebuilding {
+			done := idx.rebuildDone
+			idx.mu.Unlock()
+			select {
+			case <-done:
+				// Rebuild finished; loop to re-check state.
+				continue
+			case <-ctx.Done():
+				return fmt.Errorf("aborted: %w", ctx.Err())
+			}
+		}
+
+		// Check if we need a rebuild.
+		indexedCount := len(idx.indexedFiles)
+		if indexedCount == 0 {
+			idx.mu.Unlock()
+			return nil
+		}
+
+		dirtyCount := idx.dirty.dirtyCount()
+		threshold := float64(indexedCount) * rebuildThreshold
+		if float64(dirtyCount) <= threshold {
+			idx.mu.Unlock()
+			return nil
+		}
+
+		// Need a rebuild. Mark as rebuilding and start.
+		idx.rebuilding = true
+		idx.rebuildDone = make(chan struct{})
+		oldRunDir := idx.runDir
+		oldOverlay := idx.overlay
+		idx.overlay = nil
+		idx.mu.Unlock()
+
+		// Perform the rebuild.
+		err := idx.rebuild(ctx, oldRunDir, oldOverlay)
+
+		idx.mu.Lock()
+		idx.rebuilding = false
+		close(idx.rebuildDone)
+		idx.mu.Unlock()
+
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+}
+
+// rebuild performs a full index rebuild under the Requirement 5 bounds.
+// It builds into a new run state without holding the main lock during the
+// build, swaps only when ready, and cleans up the old shards after the swap.
+func (idx *Index) rebuild(ctx context.Context, oldRunDir string, oldOverlay *overlayState) error {
+	// Snapshot the dirty generation so we can clear only marks older than
+	// this rebuild when it finishes.
+	_, _, rebuildGenStart := idx.dirty.snapshot()
+
+	// Create a derived context with the wall-time bound.
+	buildCtx, buildCancel := context.WithTimeout(ctx, idx.opts.MaxBuildTime)
+	defer buildCancel()
+
+	// Generate a new run ID for the rebuild.
+	rebuildRunID := newRunID()
+	rebuildRunDir := filepath.Join(idx.hashDirPath(), rebuildRunID)
+
+	hashDir := idx.hashDirPath()
+	if err := os.MkdirAll(hashDir, 0o700); err != nil {
+		return fmt.Errorf("index_failed: %w", err)
+	}
+	if err := os.Mkdir(rebuildRunDir, 0o700); err != nil {
+		return fmt.Errorf("index_failed: %w", err)
+	}
+
+	// Walk, outline and build — all without holding the main lock.
+	result, err := idx.doBuild(buildCtx, ctx, rebuildRunDir)
+	if err != nil {
+		os.RemoveAll(rebuildRunDir)
+		return err
+	}
+
+	// Swap in the new index state under the lock.
+	idx.mu.Lock()
+	idx.runID = rebuildRunID
+	idx.runDir = rebuildRunDir
+	idx.indexedFiles = result.indexedFiles
+	idx.outlineFiles = result.outlineFiles
+	idx.stats = result.stats
+	idx.fileInfos = result.fileInfos
+	idx.built = true
+	idx.partial = result.partial
+	idx.partialReason = result.partialReason
+	idx.overlay = nil
+	idx.buildCount.Add(1)
+	idx.mu.Unlock()
+
+	// Clear dirty marks that predate this rebuild.
+	idx.dirty.clearOlderThan(rebuildGenStart)
+
+	// Clean up the old run directory and overlay.
+	if oldRunDir != "" {
+		os.RemoveAll(oldRunDir)
+	}
+	cleanupOverlay(oldOverlay)
+
+	return nil
+}
+
+// filterAndSearchDirty removes dirty paths from indexed results and searches
+// dirty files through an overlay shard built by the same zoekt engine.
+// Overlay hits are merged with indexed hits by score, not appended.
+func (idx *Index) filterAndSearchDirty(
+	ctx context.Context,
+	resultFiles []searchResultFile,
+	totalFiles int,
+	dirtySet map[string]bool,
+	q query.Q,
+	maxFiles, contextLines int,
+) ([]searchResultFile, int) {
+	// Remove dirty paths from indexed results.
+	var clean []searchResultFile
+	for _, f := range resultFiles {
+		if !dirtySet[f.path] {
+			clean = append(clean, f)
+		}
+	}
+
+	// Adjust totalFiles: subtract dirty files that were in the results.
+	removed := len(resultFiles) - len(clean)
+	totalFiles -= removed
+	if totalFiles < 0 {
+		totalFiles = 0
+	}
+
+	// Build or reuse the overlay shard.
+	idx.mu.Lock()
+	ov := idx.overlay
+	idx.mu.Unlock()
+
+	if ov == nil || !dirtySetEqual(ov.dirtySet, dirtySet) {
+		// Clean up old overlay.
+		cleanupOverlay(ov)
+
+		newOv, err := idx.buildOverlayShard(ctx, dirtySet)
+		if err != nil {
+			// Fall back to indexed results only.
+			if len(clean) > maxFiles {
+				clean = clean[:maxFiles]
+			}
+			return clean, totalFiles
+		}
+		ov = newOv
+		idx.mu.Lock()
+		idx.overlay = ov
+		idx.mu.Unlock()
+		idx.overlayBuildCount.Add(1)
+	}
+
+	// Search the overlay shard.
+	if ov.dir != "" {
+		overlayFiles, err := searchOverlay(ctx, ov.dir, q, maxFiles, contextLines, ov.outlineFiles)
+		if err == nil && len(overlayFiles) > 0 {
+			// Merge by score.
+			clean = mergeByScore(clean, overlayFiles, maxFiles)
+			// Adjust totalFiles for overlay hits.
+			totalFiles += len(overlayFiles)
+		}
+	}
+
+	if len(clean) > maxFiles {
+		clean = clean[:maxFiles]
+	}
+
+	return clean, totalFiles
+}
+
+// sortResultLines sorts result lines by line number.
+func sortResultLines(lines []resultLine) {
+	for i := 1; i < len(lines); i++ {
+		for j := i; j > 0 && lines[j].lineNo < lines[j-1].lineNo; j-- {
+			lines[j], lines[j-1] = lines[j-1], lines[j]
+		}
+	}
+}
+
+// searchZoekt performs the actual zoekt search and returns the total number
+// of files that matched (which may exceed maxFiles).
+func (idx *Index) searchZoekt(ctx context.Context, q query.Q, maxFiles, contextLines int) ([]searchResultFile, int, error) {
+	idx.mu.RLock()
+	runDir := idx.runDir
+	outlineFiles := idx.outlineFiles
+	idx.mu.RUnlock()
+
+	if runDir == "" {
+		return nil, 0, fmt.Errorf("no index directory")
+	}
+
+	searcher, err := search.NewDirectorySearcher(runDir)
+	if err != nil {
+		return nil, 0, fmt.Errorf("open searcher: %w", err)
+	}
+	defer searcher.Close()
+
+	// Ask for more files than maxFiles so we can detect truncation.
+	opts := &zoekt.SearchOptions{
+		MaxDocDisplayCount: maxFiles + 1,
+		NumContextLines:    contextLines,
+		ChunkMatches:       true,
+		MaxWallTime:        idx.effectiveQueryTimeout(),
+	}
+
+	result, err := searcher.Search(ctx, q, opts)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	totalFiles := len(result.Files)
+	files := convertFileMatches(result.Files, maxFiles, contextLines, outlineFiles)
+
+	return files, totalFiles, nil
+}
+
+// effectiveQueryTimeout returns the query timeout to use.
+func (idx *Index) effectiveQueryTimeout() time.Duration {
+	if idx.queryTimeout > 0 {
+		return idx.queryTimeout
+	}
+	return defaultQueryTimeout
+}
+
+// buildResult constructs the ToolResult from search results.
+func (idx *Index) buildResult(files []searchResultFile, maxFiles, totalFiles int) core.ToolResult {
+	stats := idx.BuildStats()
+
+	// Gather result info for the first line.
+	info := idx.gatherResultInfo(stats)
+
+	// Determine if more files matched than max_files.
+	moreThanMax := totalFiles > maxFiles
+
+	// Build the text.
+	text := renderResult(files, info)
+
+	// Apply byte cap.
+	var bytesTruncated bool
+	var bytesMarkerText string
+	files, bytesMarkerText, bytesTruncated = applyByteCap(files, info, tools.DefaultByteLimit)
+	if bytesTruncated {
+		// Re-render with the truncated files.
+		text = renderResult(files, info)
+	}
+
+	// Append cap marker if more files matched than max_files.
+	var capMarkerText string
+	if moreThanMax {
+		capMarkerText = tools.CapMarker("files", "max_files", maxFiles, maxMaxFiles, "narrow the query or add a path")
+	}
+
+	// Append markers to text.
+	if bytesTruncated {
+		text += "\n" + bytesMarkerText
+	} else if capMarkerText != "" {
+		text += "\n" + capMarkerText
+	}
+
+	// Final byte-limit check: ensure text doesn't exceed the limit.
+	if len(text) > tools.DefaultByteLimit {
+		// Truncate to fit.
+		text = text[:tools.DefaultByteLimit-len(bytesMarkerText)-1] + "\n" + bytesMarkerText
+		bytesTruncated = true
+	}
+
+	// Build structured data.
+	fileData := make([]any, 0, len(files))
+	for _, f := range files {
+		chunkData := make([]any, 0, len(f.chunks))
+		for _, chunk := range f.chunks {
+			lineData := make([]any, 0, len(chunk.lines))
+			for _, line := range chunk.lines {
+				lineData = append(lineData, map[string]any{
+					"line":  line.lineNo,
+					"text":  line.text,
+					"match": line.match,
+				})
+			}
+			chunkData = append(chunkData, map[string]any{
+				"lines": lineData,
+			})
+		}
+		fileData = append(fileData, map[string]any{
+			"path":    f.path,
+			"score":   f.score,
+			"matches": f.matchCount,
+			"chunks":  chunkData,
+			"symbols": f.symbols,
+		})
+	}
+
+	note := ""
+	if capMarkerText != "" {
+		note = capMarkerText
+	}
+	if bytesMarkerText != "" {
+		note = bytesMarkerText
+	}
+	// A partial index adds a note telling the model to narrow path or use search_files.
+	if info.partial && note == "" {
+		note = fmt.Sprintf("Index is partial (%s limit). Narrow the path argument or use search_files for a full scan.", info.partialReason)
+	}
+
+	data := map[string]any{
+		"files":           fileData,
+		"truncated":       moreThanMax || bytesTruncated,
+		"note":            note,
+		"partial":         info.partial,
+		"partial_reason":  info.partialReason,
+		"symbol_sources":  info.symbolSources,
+		"ctags_available": info.ctagsAvailable,
+		"files_indexed":   stats.FilesIndexed,
+		"dirty_files":     info.dirtyFiles,
+		"skipped": map[string]any{
+			"binary":    stats.BinarySkipped,
+			"oversized": stats.OversizedSkipped,
+		},
+	}
+
+	r := core.OKResult(data)
+	r.Text = text
+
+	// Set metadata.
+	if bytesTruncated {
+		r.Metadata = &core.ToolMetadata{
+			Truncated:   true,
+			TruncatedBy: string(tools.TruncatedByBytes),
+		}
+	} else if moreThanMax {
+		r.Metadata = &core.ToolMetadata{
+			Truncated:   true,
+			TruncatedBy: string(tools.TruncatedByLines),
+		}
+	}
+
+	return r
+}
+
+// gatherResultInfo collects metadata for the result first line.
+func (idx *Index) gatherResultInfo(stats BuildStatsResult) resultInfo {
+	idx.mu.RLock()
+	outlineFiles := idx.outlineFiles
+	partial := idx.partial
+	partialReason := idx.partialReason
+	idx.mu.RUnlock()
+
+	// Count symbol sources.
+	symbolSources := make(map[string]int)
+	for _, of := range outlineFiles {
+		backend := string(of.Backend)
+		if backend == "" {
+			backend = "none"
+		}
+		symbolSources[backend]++
+	}
+
+	// Determine ctags availability.
+	// If DisableCtags is set, ctags is unavailable.
+	// If a Runner was provided that returns ErrCtagsUnavailable, ctags is unavailable.
+	// We detect this by checking if any file used the ctags backend.
+	ctagsAvailable := false
+	for _, of := range outlineFiles {
+		if of.Backend == outline.BackendCtags {
+			ctagsAvailable = true
+			break
+		}
+	}
+	// If DisableCtags was explicitly set, ctags is unavailable.
+	if idx.opts.DisableCtags {
+		ctagsAvailable = false
+	}
+	// If a runner was provided but no file used ctags, check if the runner
+	// is the one that returns ErrCtagsUnavailable.
+	if !idx.opts.DisableCtags && idx.opts.Runner != nil && !ctagsAvailable {
+		// Runner was provided but no ctags backend was used.
+		// This means ctags was unavailable.
+		ctagsAvailable = false
+	}
+
+	// Calculate index size from shard files.
+	var indexSize int64
+	if idx.runDir != "" {
+		entries, err := os.ReadDir(idx.runDir)
+		if err == nil {
+			for _, e := range entries {
+				if fi, err := e.Info(); err == nil {
+					indexSize += fi.Size()
+				}
+			}
+		}
+	}
+
+	// Count dirty files.
+	dirtyCount := 0
+	if idx.dirty != nil {
+		dirtyCount = len(idx.dirty.dirtyPathSet())
+	}
+
+	return resultInfo{
+		filesIndexed:   stats.FilesIndexed,
+		indexSizeBytes: indexSize,
+		symbolSources:  symbolSources,
+		ctagsAvailable: ctagsAvailable,
+		partial:        partial,
+		partialReason:  partialReason,
+		dirtyFiles:     dirtyCount,
+	}
+}
