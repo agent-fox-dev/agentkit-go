@@ -164,22 +164,155 @@ func OutlineMany(ctx context.Context, srcs []Source, opts Options) ([]File, Stat
 	files := make([]File, len(srcs))
 	var stats Stats
 
+	maxBytes := opts.MaxFileBytes
+	if maxBytes == 0 {
+		maxBytes = defaultMaxFileBytes
+	}
+
+	// Collect non-Go, in-table, eligible files for ctags batching.
+	var ctagsEntries []ctagsBatchEntry
+
 	for i, s := range srcs {
 		if err := ctx.Err(); err != nil {
 			return nil, Stats{}, err
 		}
-		f, err := Outline(ctx, s.Abs, s.Src, opts)
-		if err != nil {
-			// Unreadable file: return as none and continue.
+
+		ext := filepath.Ext(s.Abs)
+		lang := langForExt(ext)
+
+		// Unknown extension: return immediately without reading.
+		if lang == "" {
 			files[i] = File{
 				Path:    filePath(s.Abs, opts.Root),
-				Lang:    langForExt(filepath.Ext(s.Abs)),
+				Lang:    "",
 				Backend: BackendNone,
 				Decls:   []Decl{},
 			}
 			continue
 		}
-		files[i] = f
+
+		// Go files are always parsed in-process.
+		if lang == LangGo {
+			f, err := Outline(ctx, s.Abs, s.Src, opts)
+			if err != nil {
+				files[i] = File{
+					Path:    filePath(s.Abs, opts.Root),
+					Lang:    lang,
+					Backend: BackendNone,
+					Decls:   []Decl{},
+				}
+				continue
+			}
+			files[i] = f
+			continue
+		}
+
+		// Non-Go, in-table file: read source and check eligibility.
+		src := s.Src
+		if src == nil {
+			data, err := loadSourceIfNeeded(s.Abs, nil, maxBytes)
+			if err != nil {
+				// Unreadable: return as none and continue.
+				files[i] = File{
+					Path:    filePath(s.Abs, opts.Root),
+					Lang:    lang,
+					Backend: BackendNone,
+					Decls:   []Decl{},
+				}
+				continue
+			}
+			src = data
+		}
+
+		// Check size limit.
+		if int64(len(src)) > maxBytes {
+			files[i] = File{
+				Path:    filePath(s.Abs, opts.Root),
+				Lang:    lang,
+				Backend: BackendNone,
+				Decls:   []Decl{},
+			}
+			continue
+		}
+
+		// Binary check.
+		sniff := src
+		if len(sniff) > binarySniffSize {
+			sniff = sniff[:binarySniffSize]
+		}
+		if bytes.IndexByte(sniff, 0) >= 0 {
+			files[i] = File{
+				Path:    filePath(s.Abs, opts.Root),
+				Lang:    lang,
+				Backend: BackendNone,
+				Decls:   []Decl{},
+			}
+			continue
+		}
+
+		// Eligible for ctags or heuristic.
+		ctagsEntries = append(ctagsEntries, ctagsBatchEntry{
+			srcIdx: i,
+			abs:    s.Abs,
+			src:    src,
+		})
+	}
+
+	// Run ctags batches if Runner is available.
+	if opts.Runner != nil && len(ctagsEntries) > 0 {
+		batches := makeBatches(ctagsEntries)
+		for _, batch := range batches {
+			if err := ctx.Err(); err != nil {
+				return nil, Stats{}, err
+			}
+
+			tagsByIdx, malformed, err := runCtagsBatch(ctx, opts.Runner, batch)
+			stats.MalformedLines += malformed
+
+			if err != nil {
+				// Check for context cancellation.
+				if ctx.Err() != nil {
+					return nil, Stats{}, ctx.Err()
+				}
+				// Runner error: fall back to heuristic/none for this batch.
+				stats.Fallbacks++
+				for _, e := range batch {
+					// TODO(task 5): heuristic fallback.
+					files[e.srcIdx] = finishFile(File{
+						Path:    filePath(e.abs, opts.Root),
+						Lang:    langForExt(filepath.Ext(e.abs)),
+						Backend: BackendNone,
+						Decls:   []Decl{},
+					})
+				}
+				continue
+			}
+
+			// Assign ctags results to files.
+			for _, e := range batch {
+				decls, ok := tagsByIdx[e.srcIdx]
+				if !ok {
+					decls = []Decl{}
+				}
+				files[e.srcIdx] = finishFile(File{
+					Path:    filePath(e.abs, opts.Root),
+					Lang:    langForExt(filepath.Ext(e.abs)),
+					Backend: BackendCtags,
+					Decls:   decls,
+				})
+			}
+		}
+	} else {
+		// No Runner: fall back to heuristic/none for all non-Go files.
+		for _, e := range ctagsEntries {
+			// TODO(task 5): heuristic backend.
+			files[e.srcIdx] = finishFile(File{
+				Path:    filePath(e.abs, opts.Root),
+				Lang:    langForExt(filepath.Ext(e.abs)),
+				Backend: BackendNone,
+				Decls:   []Decl{},
+			})
+		}
 	}
 
 	return files, stats, nil
