@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/agentfox/agentkit-go/core"
@@ -96,17 +97,30 @@ func (f *fileTools) findSymbolTool() core.Tool {
 			backends := br.backends
 			filesIndexed := br.filesIndexed
 
+			// Determine scope prefix for path filtering.
+			var scopePrefix string
+			if scopePath != "" {
+				scopePrefix = filepath.ToSlash(f.ws.Rel(scopePath))
+				if scopePrefix != "" && !strings.HasSuffix(scopePrefix, "/") {
+					scopePrefix += "/"
+				}
+			}
+
+			// Match symbols.
+			st.mu.Lock()
+			matches := matchSymbols(st, name, kind, scopePrefix, a.Exact)
+			st.mu.Unlock()
+
 			// Build the result.
-			// For this task (task 3), matching and ranking come in tasks 4 and 5.
-			// We return a skeleton result with the index metadata.
+			// Ranking and limiting come in task 5.
 			data := map[string]any{
-				"symbols":       []any{},
+				"symbols":       matches,
 				"backends":      backends,
 				"files_indexed": filesIndexed,
 			}
 
 			var textParts []string
-			indexLine := fmt.Sprintf("0 symbols matching %q  (index: %d files", name, filesIndexed)
+			indexLine := fmt.Sprintf("%d symbols matching %q  (index: %d files", len(matches), name, filesIndexed)
 			if len(backends) > 0 {
 				var parts []string
 				for b, n := range backends {
