@@ -17,6 +17,11 @@ const (
 	FindResultCap   = 1000
 	ListEntryCap    = 500
 
+	// SymbolResultDefault is the default max_results for find_symbol.
+	SymbolResultDefault = 20
+	// SymbolResultCap is the maximum max_results for find_symbol.
+	SymbolResultCap = 50
+
 	// The DEFAULTS for find_files and list_files sit well under their caps.
 	// A model that asks for "everything" almost never wants a thousand paths
 	// in its context; it wants enough to orient and a marker that names the

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/agentfox/agentkit-go/core"
@@ -107,39 +108,80 @@ func (f *fileTools) findSymbolTool() core.Tool {
 			}
 
 			// Match symbols.
+			qualified := strings.Contains(name, ".")
+			caseSensitive := hasUppercase(name)
+
 			st.mu.Lock()
 			matches := matchSymbols(st, name, kind, scopePrefix, a.Exact)
 			st.mu.Unlock()
 
-			// Build the result.
-			// Ranking and limiting come in task 5.
+			// Rank matches.
+			rankSymbols(matches, name, qualified, caseSensitive)
+
+			// Apply limit.
+			limit := clampLimit(a.MaxResults, SymbolResultDefault, SymbolResultCap)
+			truncated := len(matches) > limit
+			if truncated {
+				matches = matches[:limit]
+			}
+
+			// Ensure symbols is never nil.
+			if matches == nil {
+				matches = []SymbolMatch{}
+			}
+
+			// Build Data.
 			data := map[string]any{
 				"symbols":       matches,
+				"truncated":     truncated,
 				"backends":      backends,
 				"files_indexed": filesIndexed,
 			}
 
+			// Build Text.
 			var textParts []string
-			indexLine := fmt.Sprintf("%d symbols matching %q  (index: %d files", len(matches), name, filesIndexed)
-			if len(backends) > 0 {
-				var parts []string
-				for b, n := range backends {
-					parts = append(parts, fmt.Sprintf("%s %d", b, n))
-				}
-				indexLine += "; " + strings.Join(parts, ", ")
-			}
-			indexLine += ")"
+
+			// Index line with sorted backends.
+			indexLine := renderIndexLine(len(matches), name, filesIndexed, backends, truncated)
 			textParts = append(textParts, indexLine)
 
+			// No-match message.
+			if len(matches) == 0 {
+				textParts = append(textParts, "no symbols matched")
+			}
+
+			// Match lines.
+			for _, m := range matches {
+				textParts = append(textParts, renderMatchLine(m))
+			}
+
+			// Truncation marker.
+			var r core.ToolResult
+			if truncated {
+				marker := SymbolMarker(limit)
+				data["note"] = marker
+				textParts = append(textParts, marker)
+				r = core.OKResult(data)
+				r.Metadata = &core.ToolMetadata{
+					Truncated:   true,
+					TruncatedBy: string(TruncatedByLines),
+				}
+			} else {
+				r = core.OKResult(data)
+			}
+
+			// Partial note.
 			if br.partial {
 				data["partial"] = true
 				data["partial_reason"] = br.partialReason
-				note := SymbolPartialMarker(br.partialReason)
-				data["note"] = note
-				textParts = append(textParts, note)
+				partialNote := SymbolPartialMarker(br.partialReason)
+				if !truncated {
+					// Only set note if not already set by truncation.
+					data["note"] = partialNote
+				}
+				textParts = append(textParts, partialNote)
 			}
 
-			r := core.OKResult(data)
 			r.Text = strings.Join(textParts, "\n")
 			return r
 		},
@@ -162,8 +204,38 @@ func validSymbolKind(kind string) bool {
 	return false
 }
 
-// SymbolResultDefault is the default max_results for find_symbol.
-const SymbolResultDefault = 20
+// renderIndexLine builds the header line for find_symbol results.
+func renderIndexLine(matchCount int, name string, filesIndexed int, backends map[string]int, truncated bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d symbols matching %q  (index: %d files", matchCount, name, filesIndexed)
+	if len(backends) > 0 {
+		// Sort backend names for deterministic output.
+		keys := make([]string, 0, len(backends))
+		for k := range backends {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		b.WriteString("; ")
+		for i, k := range keys {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "%s %d", k, backends[k])
+		}
+	}
+	b.WriteString(")")
+	return b.String()
+}
 
-// SymbolResultCap is the maximum max_results for find_symbol.
-const SymbolResultCap = 50
+// renderMatchLine builds one match line for find_symbol results.
+// Format: <path>:<start>-<end>  <kind>  <signature>
+func renderMatchLine(m SymbolMatch) string {
+	path := sanitizePath(m.Path)
+	var lineRange string
+	if m.EndLine == 0 || m.EndLine == m.StartLine {
+		lineRange = fmt.Sprintf("%d", m.StartLine)
+	} else {
+		lineRange = fmt.Sprintf("%d-%d", m.StartLine, m.EndLine)
+	}
+	return fmt.Sprintf("%s:%s  %s  %s", path, lineRange, m.Kind, m.Signature)
+}

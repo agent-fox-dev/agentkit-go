@@ -505,4 +505,3 @@ func extractSymbolContainers(t *testing.T, r core.ToolResult) []string {
 	t.Fatalf("symbols is neither []SymbolMatch nor []any: %T", syms)
 	return nil
 }
-
