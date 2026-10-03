@@ -16,7 +16,7 @@ go run ./examples/agentdemo
 durable sessions, delegation, writing your own tools, plugins, MCP in both
 directions, a standalone MCP server, mid-run steering, skills and project context,
 a test file showing how to test the agent code *you* write, and three finished
-applications: [`issued`](examples/issued), which triages a bug report into a
+applications: [`triage`](examples/triage), which triages a bug report into a
 structured GitHub issue, [`cleaner`](examples/cleaner), which takes that issue
 and lands the fix, and [`flatline`](examples/flatline), which implements a whole
 spec pack task group by task group. Six need no API key. The nested

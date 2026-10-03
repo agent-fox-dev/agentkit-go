@@ -12,8 +12,8 @@ test: ## Run all Go tests (root module + difftest, codesearch and examples/codes
 	cd examples/codesearch && go test ./...
 
 .PHONY: build-examples
-build-examples: ## Install examples/issued, examples/cleaner and examples/flatline into ./bin
-	go install ./examples/issued
+build-examples: ## Install examples/triage, examples/cleaner and examples/flatline into ./bin
+	go install ./examples/triage
 	go install ./examples/cleaner
 
 .PHONY: fmt

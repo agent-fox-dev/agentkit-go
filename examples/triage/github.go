@@ -82,7 +82,7 @@ func (g *GitHub) ReadIssue(ref IssueRef) (ghIssue, []ghComment, error) {
 	var comments []ghComment
 	if err := g.do(http.MethodGet, path+"/comments?per_page=100", nil, &comments); err != nil {
 		// A readable issue with unreadable comments is still a usable report.
-		fmt.Fprintf(os.Stderr, "[issued] warning: could not read comments: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[triage] warning: could not read comments: %v\n", err)
 	}
 	return issue, comments, nil
 }
@@ -137,7 +137,7 @@ func (g *GitHub) do(method, path string, payload any, out any) error {
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	req.Header.Set("User-Agent", "agentkit-issued-example")
+	req.Header.Set("User-Agent", "agentkit-triage-example")
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

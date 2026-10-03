@@ -10,7 +10,7 @@ package main
 // property you can assert in CI on every commit, because none of them depend
 // on what a model happens to say.
 //
-//	go test ./examples/issued/ -v
+//	go test ./examples/triage/ -v
 
 import (
 	"bytes"
@@ -367,7 +367,7 @@ func TestRenderProducesEverySectionAndIsStable(t *testing.T) {
 		"## Suggested Fix", "**Files to modify:**", "**Risks:**", "None identified",
 		"## Acceptance Criteria", "- **AC-1:**",
 		"## Severity", "**High** —",
-		"*Triaged by `issued` from file: crash.log.*",
+		"*Triaged by `triage` from file: crash.log.*",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rendered issue missing %q", want)
@@ -506,7 +506,7 @@ func TestAnOversizedReportIsTruncatedVisibly(t *testing.T) {
 	if len(rep.Body) > maxReportBytes+200 {
 		t.Errorf("body is %d bytes, want ~%d", len(rep.Body), maxReportBytes)
 	}
-	if !strings.Contains(rep.Body, "truncated by issued") {
+	if !strings.Contains(rep.Body, "truncated by triage") {
 		t.Error("the truncation is invisible to the model")
 	}
 }
@@ -726,7 +726,7 @@ func TestDryRunGating(t *testing.T) {
 		if len(mock.labels) != 1 || mock.labels[0] != "af:fix" {
 			t.Errorf("unexpected labels: %v", mock.labels)
 		}
-		if !strings.Contains(stderr.String(), "[issued] filed: https://github.com/agent-fox-dev/coder/issues/100") {
+		if !strings.Contains(stderr.String(), "[triage] filed: https://github.com/agent-fox-dev/coder/issues/100") {
 			t.Errorf("stderr missing filed url: %s", stderr.String())
 		}
 	})
@@ -742,7 +742,7 @@ func TestDryRunGating(t *testing.T) {
 		if mock.called {
 			t.Fatal("gh.CreateIssue was called during dry run")
 		}
-		want := "[issued] dry run. Re-run without --dry-run to file it.\n"
+		want := "[triage] dry run. Re-run without --dry-run to file it.\n"
 		if stderr.String() != want {
 			t.Errorf("stderr = %q, want %q", stderr.String(), want)
 		}
@@ -759,7 +759,7 @@ func TestDryRunGating(t *testing.T) {
 		if mock.called {
 			t.Fatal("gh.CreateIssue was called during dry run")
 		}
-		want := "[issued] dry run. Re-run with --repo owner/repo to file it.\n"
+		want := "[triage] dry run. Re-run with --repo owner/repo to file it.\n"
 		if stderr.String() != want {
 			t.Errorf("stderr = %q, want %q", stderr.String(), want)
 		}
@@ -922,7 +922,7 @@ func TestFileOrDryRunOverwrite(t *testing.T) {
 		if mock.title != issue.Title {
 			t.Errorf("the triaged title must go with the body: got %q, want %q", mock.title, issue.Title)
 		}
-		if !strings.Contains(stderr.String(), "[issued] updated: https://github.com/agent-fox-dev/coder/issues/42") {
+		if !strings.Contains(stderr.String(), "[triage] updated: https://github.com/agent-fox-dev/coder/issues/42") {
 			t.Errorf("stderr missing updated url: %s", stderr.String())
 		}
 	})
@@ -943,7 +943,7 @@ func TestFileOrDryRunOverwrite(t *testing.T) {
 		if mock.owner != "agent-fox-dev" || mock.repo != "coder" || mock.title != issue.Title {
 			t.Errorf("unexpected CreateIssue args: owner=%s, repo=%s, title=%s", mock.owner, mock.repo, mock.title)
 		}
-		if !strings.Contains(stderr.String(), "[issued] filed: https://github.com/agent-fox-dev/coder/issues/100") {
+		if !strings.Contains(stderr.String(), "[triage] filed: https://github.com/agent-fox-dev/coder/issues/100") {
 			t.Errorf("stderr missing filed url: %s", stderr.String())
 		}
 	})
@@ -961,7 +961,7 @@ func TestFileOrDryRunOverwrite(t *testing.T) {
 		if mock.updateCalled {
 			t.Fatal("gh.UpdateIssue was called unexpectedly")
 		}
-		if !strings.Contains(stderr.String(), "[issued] filed: https://github.com/agent-fox-dev/coder/issues/101") {
+		if !strings.Contains(stderr.String(), "[triage] filed: https://github.com/agent-fox-dev/coder/issues/101") {
 			t.Errorf("stderr missing filed url: %s", stderr.String())
 		}
 	})
@@ -976,7 +976,7 @@ func TestFileOrDryRunOverwrite(t *testing.T) {
 		if mock.called || mock.updateCalled {
 			t.Fatal("gh client was called during dry run")
 		}
-		want := "[issued] dry run. Re-run without --dry-run to file it.\n"
+		want := "[triage] dry run. Re-run without --dry-run to file it.\n"
 		if stderr.String() != want {
 			t.Errorf("stderr = %q, want %q", stderr.String(), want)
 		}
@@ -1138,8 +1138,8 @@ func TestAC2AndAC3NonVerbosePhaseProgressAndSummary(t *testing.T) {
 
 		out := buf.String()
 		// AC-2: phase indicator and spinner frames with cleanup
-		if !strings.Contains(out, "[issued] analysing") {
-			t.Errorf("expected [issued] analysing in output, got: %q", out)
+		if !strings.Contains(out, "[triage] analysing") {
+			t.Errorf("expected [triage] analysing in output, got: %q", out)
 		}
 		if !strings.Contains(out, "|") || !strings.Contains(out, "\b \b") {
 			t.Errorf("expected spinner frames and cleanup in output, got: %q", out)
@@ -1176,7 +1176,7 @@ func TestAC2AndAC3NonVerbosePhaseProgressAndSummary(t *testing.T) {
 		if strings.Contains(out, "|") || strings.Contains(out, "\b") {
 			t.Errorf("non-terminal output should not contain spinner characters, got: %q", out)
 		}
-		if !strings.Contains(out, "[issued] analysing") || !strings.Contains(out, "↑") {
+		if !strings.Contains(out, "[triage] analysing") || !strings.Contains(out, "↑") {
 			t.Errorf("non-terminal output should still include phase timing line, got: %q", out)
 		}
 	})

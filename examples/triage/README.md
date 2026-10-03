@@ -1,16 +1,16 @@
-# `issued` — a skill, rebuilt as a program
+# `triage` — a skill, rebuilt as a program
 
-`issued` takes a problem report — free text, a `.md`/`.txt` file, piped stdin,
+`triage` takes a problem report — free text, a `.md`/`.txt` file, piped stdin,
 or a GitHub issue URL — reads the codebase it concerns, and produces a
 structured, evidence-cited GitHub issue.
 
 ```bash
-go run ./examples/issued "panic: assignment to entry in nil map in loop.go, after an abort"
-go run ./examples/issued ./crash.log --dir ./service
-go run ./examples/issued https://github.com/owner/repo/issues/42 --label af:fix
-go run ./examples/issued https://github.com/owner/repo/issues/42 --overwrite
-go run ./examples/issued ./crash.log --dir ./service --dry-run
-kubectl logs deploy/api --since 1h | go run ./examples/issued -
+go run ./examples/triage "panic: assignment to entry in nil map in loop.go, after an abort"
+go run ./examples/triage ./crash.log --dir ./service
+go run ./examples/triage https://github.com/owner/repo/issues/42 --label af:fix
+go run ./examples/triage https://github.com/owner/repo/issues/42 --overwrite
+go run ./examples/triage ./crash.log --dir ./service --dry-run
+kubectl logs deploy/api --since 1h | go run ./examples/triage -
 ```
 
 It creates the issue on GitHub by default. Pass `--dry-run` to print the
@@ -34,10 +34,10 @@ section that ends with the sentence every prompt-shaped program ends with:
 That sentence is a request. The CLI reading it has `write_file` and a shell,
 and nothing between the request and the tool.
 
-`issued` keeps the one part of that skill that genuinely needs a model — *read
+`triage` keeps the one part of that skill that genuinely needs a model — *read
 the code and work out why* — and turns every other part into a mechanism.
 
-| `af-issue` says, in prose | `issued` does, in code |
+| `af-issue` says, in prose | `triage` does, in code |
 |---|---|
 | "Analysis-only mandate. The codebase is read-only to you." | `ToolPolicy.ExcludeTools` drops `write_file`, `edit_file`, `execute`, `run_command`, `powershell`. There is nothing to call. |
 | "Use only `cat`, `ls`, `grep`…" | There is no shell. Leaving `BeforeToolCall` nil means the SDK's own guard fails any run whose resolved set carries one. |
@@ -84,7 +84,7 @@ Six files, one `main` package:
 | [`triage.go`](triage.go) | The tool policy, the read-only invariant, the system prompt, and `file_issue`. |
 | [`issue.go`](issue.go) | The `Issue` type, its schema, and the markdown renderer. |
 | [`github.go`](github.go) | ~100 lines of `net/http`: read an issue, create an issue, parse a remote. |
-| [`issued_test.go`](issued_test.go) | The whole thing, offline. |
+| [`triage_test.go`](triage_test.go) | The whole thing, offline. |
 
 Unlike the other examples this one is several files rather than a single
 `main.go` — it is meant to read like an application you would ship, not like a
@@ -161,8 +161,8 @@ existence. `Workspace.Resolve` handles both, symlinks included.
 The run summary reports how many attempts it took:
 
 ```
-[issued] 1 file_issue call(s) rejected for uncited paths: session/imagined.go
-[issued] anthropic/claude-sonnet-5 · 9 turns · stop tool_terminate · in 48211 / out 3104 tokens · $0.19
+[triage] 1 file_issue call(s) rejected for uncited paths: session/imagined.go
+[triage] anthropic/claude-sonnet-5 · 9 turns · stop tool_terminate · in 48211 / out 3104 tokens · $0.19
 ```
 
 A nonzero count is the check working. A large one is a signal to read the
@@ -201,7 +201,7 @@ before `file_issue` is ever called.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...          # see ../README.md for other vendors
-go run ./examples/issued "<report>" [flags]
+go run ./examples/triage "<report>" [flags]
 ```
 
 | Flag | Effect |
@@ -229,23 +229,23 @@ undefined flag, or `--overwrite` without an issue URL or with `--label`/`--repo`
 A typical session:
 
 ```
-$ go run ./examples/issued ./crash.log --dir . --repo agent-fox-dev/coder --dry-run
-[issued] analysing (3s) · 1.2k↑ 450↓
+$ go run ./examples/triage ./crash.log --dir . --repo agent-fox-dev/coder --dry-run
+[triage] analysing (3s) · 1.2k↑ 450↓
 session: resume folds a trailing tool call into an empty turn
 
 ## Problem
 …
-[issued] dry run. Re-run without --dry-run to file it.
+[triage] dry run. Re-run without --dry-run to file it.
 ```
 
 With `--verbose`:
 
 ```
-$ go run ./examples/issued ./crash.log --dir . --repo agent-fox-dev/coder --dry-run --verbose
-[issued] input: file (crash.log, 3184 bytes)
-[issued] workspace: /home/you/coder
-[issued] tools: read_file, list_files, find_files, search_files, file_issue
-[issued] analysing…
+$ go run ./examples/triage ./crash.log --dir . --repo agent-fox-dev/coder --dry-run --verbose
+[triage] input: file (crash.log, 3184 bytes)
+[triage] workspace: /home/you/coder
+[triage] tools: read_file, list_files, find_files, search_files, file_issue
+[triage] analysing…
   read   search_files
   read   read_file
   read   read_file
@@ -254,14 +254,14 @@ session: resume folds a trailing tool call into an empty turn
 
 ## Problem
 …
-[issued] anthropic/claude-sonnet-5 · 7 turns · stop tool_terminate · in 1200 / out 450 tokens · $0.14000
-[issued] dry run. Re-run without --dry-run to file it.
+[triage] anthropic/claude-sonnet-5 · 7 turns · stop tool_terminate · in 1200 / out 450 tokens · $0.14000
+[triage] dry run. Re-run without --dry-run to file it.
 ```
 
 ## Testing it
 
 ```bash
-go test ./examples/issued/ -v
+go test ./examples/triage/ -v
 ```
 
 No API key, no network, no environment variable. The model is a script
@@ -309,7 +309,7 @@ three files in it. Every claim this README makes is a test:
   left in, and the interceptor that then becomes mandatory.
 - [`../customtools`](../customtools) — the schema combinators, `Handler` vs
   `Execute`, and terminating tools, at reference depth.
-- [`../testing`](../testing) — the techniques `issued_test.go` uses, explained
+- [`../testing`](../testing) — the techniques `triage_test.go` uses, explained
   one per test function.
 - [`af-issue`](af-issue) — the skill this program was translated from. Worth
   reading side by side with [`triage.go`](triage.go).

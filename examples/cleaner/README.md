@@ -302,7 +302,7 @@ Stated rather than left to be discovered:
 
 ## Related
 
-- [`examples/issued`](../issued) — the other half of the workflow, one step
+- [`examples/triage`](../triage) — the other half of the workflow, one step
   earlier: the `af-issue` skill rebuilt as a program, which files the issue
   this one consumes. Same split (a read-only agent, a schema for its output,
   the side effects in Go), applied to triage instead of repair.

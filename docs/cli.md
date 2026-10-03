@@ -52,7 +52,7 @@ DARK means.
 | `make lint` | `golangci-lint` in the root, `codesearch`, `difftest` and `examples/codesearch` modules (skipped if not installed) |
 | `make fmt` | `gofmt -l -w .` |
 | `make tidy` | `go mod tidy` in the root, `codesearch`, `difftest`, `examples/codesearch` (and `flatline` when `../spec/golang` exists) |
-| `make build-examples` | Installs `issued` and `cleaner` into `$GOBIN` |
+| `make build-examples` | Installs `triage` and `cleaner` into `$GOBIN` |
 
 ## Examples
 
@@ -81,10 +81,10 @@ available on Windows, where each prints `codesearch.ErrUnsupported` and exits 1.
 | `freshness` | none; no key or network needed |
 | `agent` | `--dir` (workspace root, default `.`), `--compare` (also answer without the index and print both runs' cost); the question is the positional arguments |
 
-### `issued`
+### `triage`
 
-`go run ./examples/issued "<bug report>"` — triages a report into a GitHub
-issue. See [`examples/issued/README.md`](../examples/issued/README.md).
+`go run ./examples/triage "<bug report>"` — triages a report into a GitHub
+issue. See [`examples/triage/README.md`](../examples/triage/README.md).
 
 | Flag | Meaning |
 |---|---|
