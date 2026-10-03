@@ -30,7 +30,7 @@ type Report struct {
 	Body   string
 
 	// Upstream is set for SourceIssue: the issue this report was read from.
-	// It is what makes `issued <issue-url>` useful as a re-triage — the filed
+	// It is what makes `triage <issue-url>` useful as a re-triage — the filed
 	// issue can point back at the raw one it replaces.
 	Upstream *IssueRef
 }
@@ -182,5 +182,5 @@ func truncate(s string) string {
 	if i := strings.LastIndexByte(cut, '\n'); i > 0 {
 		cut = cut[:i]
 	}
-	return cut + "\n\n[... truncated by issued at " + strconv.Itoa(maxReportBytes) + " bytes ...]"
+	return cut + "\n\n[... truncated by triage at " + strconv.Itoa(maxReportBytes) + " bytes ...]"
 }

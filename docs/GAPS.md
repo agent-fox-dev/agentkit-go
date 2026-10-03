@@ -170,7 +170,7 @@ Every row here is a finding of this pass, not the 0.4.2 audit above.
 | `wire` | Blank keep-alive lines recursed (12 MiB of newlines was a fatal stack overflow); a 16 MiB frame of tiny arrays cost over 1 GiB. | Fixed — loop plus a node budget. |
 | `RateLimitMiddleware` | A caller that waited was credited the wait interval again. | Fixed — `TestRateLimiterDoesNotDoubleCreditTheWait`. |
 | `tools` | `edit_file` could not match a needle copied from a CRLF file; `read_file`/`edit_file` opened FIFOs and devices; the write re-check covered only the leaf; rg parity gaps (`--no-ignore-parent`, `.ignore`). | Fixed — see the tools tests. |
-| examples/cleaner | The base branch was read after the feature branch was checked out, so repos without `origin/HEAD` landed on themselves; an unverified fix was left uncommitted in a dirty tree; exit codes conflated "nothing changed" with "checks failed". examples/issued: `-overwrite` was silently ignored without an issue URL; the token was checked after the model had been paid for. | Fixed. |
+| examples/cleaner | The base branch was read after the feature branch was checked out, so repos without `origin/HEAD` landed on themselves; an unverified fix was left uncommitted in a dirty tree; exit codes conflated "nothing changed" with "checks failed". examples/triage: `-overwrite` was silently ignored without an issue URL; the token was checked after the model had been paid for. | Fixed. |
 | `internal/toml` | Unbounded array nesting overflowed the stack. | Fixed — depth 64. |
 | `schema` | The strict rewrite turned a dictionary object into a closed, property-less one. | Fixed — refused, so `prefer` falls back and `require` fails loudly. |
 

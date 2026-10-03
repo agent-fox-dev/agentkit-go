@@ -251,7 +251,7 @@ func (t *Triager) Triage(ctx context.Context, rep Report) (Issue, core.RunResult
 		start = time.Now()
 		t.outMu.Lock()
 		out := t.getOutput()
-		fmt.Fprintf(out, "[issued] analysing ")
+		fmt.Fprintf(out, "[triage] analysing ")
 		t.outMu.Unlock()
 		if isTerminal(out) {
 			sp = startSpinner(out, &t.outMu)

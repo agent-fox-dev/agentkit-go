@@ -103,7 +103,7 @@ func issueSchema() *schema.Schema {
 // Render produces the issue body. It is a pure function of the validated
 // struct, which is why two runs that reach the same diagnosis produce
 // byte-identical documents — a property no amount of "follow this template"
-// buys you, and the reason the golden test in issued_test.go can exist.
+// buys you, and the reason the golden test in triage_test.go can exist.
 func (i Issue) Render(src SourceKind, origin string) string {
 	var b strings.Builder
 	p := func(format string, args ...any) { fmt.Fprintf(&b, format, args...) }
@@ -133,7 +133,7 @@ func (i Issue) Render(src SourceKind, origin string) string {
 	}
 	p("\n## Severity\n\n**%s** — %s\n\n", i.Severity, strings.TrimSpace(i.SeverityRationale))
 
-	p("---\n*Triaged by `issued` from %s: %s.*\n", src, origin)
+	p("---\n*Triaged by `triage` from %s: %s.*\n", src, origin)
 	return b.String()
 }
 

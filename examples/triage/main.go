@@ -1,4 +1,4 @@
-// Command issued turns a problem report into a structured GitHub issue.
+// Command triage turns a problem report into a structured GitHub issue.
 //
 // It is the `af-issue` skill — a ~450-line prompt that asks a coding CLI to
 // diagnose a bug and file it — rebuilt as a program. The model still does the
@@ -10,18 +10,18 @@
 //
 //	export ANTHROPIC_API_KEY=sk-ant-...
 //
-//	go run ./examples/issued "panic: nil map write in loop.go when a tool result arrives after abort"
-//	go run ./examples/issued ./crash.log --dir .
-//	go run ./examples/issued https://github.com/owner/repo/issues/42 --label af:fix
-//	go run ./examples/issued https://github.com/owner/repo/issues/42 -overwrite
-//	kubectl logs deploy/api | go run ./examples/issued -
+//	go run ./examples/triage "panic: nil map write in loop.go when a tool result arrives after abort"
+//	go run ./examples/triage ./crash.log --dir .
+//	go run ./examples/triage https://github.com/owner/repo/issues/42 --label af:fix
+//	go run ./examples/triage https://github.com/owner/repo/issues/42 -overwrite
+//	kubectl logs deploy/api | go run ./examples/triage -
 //
 // It creates the issue on GitHub unless you pass --dry-run.
 //
-//	AGENTKIT_MODEL=openai/gpt-5.6-terra go run ./examples/issued ./crash.log
+//	AGENTKIT_MODEL=openai/gpt-5.6-terra go run ./examples/triage ./crash.log
 //
 // See examples/README.md for the full environment-variable table, and
-// examples/issued/README.md for how the pieces fit together.
+// examples/triage/README.md for how the pieces fit together.
 package main
 
 import (
@@ -79,7 +79,7 @@ type cliConfig struct {
 
 func newFlagSet() (*flag.FlagSet, *cliConfig) {
 	var cfg cliConfig
-	fs := flag.NewFlagSet("issued", flag.ContinueOnError)
+	fs := flag.NewFlagSet("triage", flag.ContinueOnError)
 	fs.StringVar(&cfg.dir, "dir", ".", "workspace root; the analysis cannot read outside it")
 	fs.StringVar(&cfg.repo, "repo", "", "target repository as owner/repo (default: the origin remote of --dir)")
 	fs.BoolVar(&cfg.dryRun, "dry-run", false, "make no changes to GitHub; only print the rendered issue")
@@ -142,7 +142,7 @@ func run() error {
 		return err
 	}
 	if cfg.verbose {
-		fmt.Fprintf(os.Stderr, "[issued] input: %s (%s, %d bytes)\n",
+		fmt.Fprintf(os.Stderr, "[triage] input: %s (%s, %d bytes)\n",
 			report.Kind, report.Origin, len(report.Body))
 	}
 
@@ -190,7 +190,7 @@ func run() error {
 		return err
 	}
 	if cfg.verbose {
-		fmt.Fprintf(os.Stderr, "[issued] workspace: %s\n[issued] tools: %s\n[issued] analysing…\n",
+		fmt.Fprintf(os.Stderr, "[triage] workspace: %s\n[triage] tools: %s\n[triage] analysing…\n",
 			ws.Root, strings.Join(triager.ToolNames(), ", "))
 	}
 
@@ -215,7 +215,7 @@ func run() error {
 		if err := os.WriteFile(cfg.outFile, []byte(issue.Title+"\n\n"+body), 0o644); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "[issued] wrote %s\n", cfg.outFile)
+		fmt.Fprintf(os.Stderr, "[triage] wrote %s\n", cfg.outFile)
 	}
 
 	// 5. The side effect, gated on a flag rather than on the model's judgement.
@@ -233,10 +233,10 @@ type issueClient interface {
 func fileOrDryRun(w io.Writer, gh issueClient, dryRun, overwrite bool, upstream *IssueRef, owner, repo string, issue Issue, body string, labels []string) error {
 	if dryRun {
 		if owner == "" {
-			fmt.Fprintf(w, "[issued] dry run. Re-run with --repo %s to file it.\n",
+			fmt.Fprintf(w, "[triage] dry run. Re-run with --repo %s to file it.\n",
 				repoLabel(owner, repo))
 		} else {
-			fmt.Fprintln(w, "[issued] dry run. Re-run without --dry-run to file it.")
+			fmt.Fprintln(w, "[triage] dry run. Re-run without --dry-run to file it.")
 		}
 		return nil
 	}
@@ -245,19 +245,19 @@ func fileOrDryRun(w io.Writer, gh issueClient, dryRun, overwrite bool, upstream 
 		if err != nil {
 			return fmt.Errorf("%w\n\n(the issue body is above; you can file it by hand)", err)
 		}
-		fmt.Fprintf(w, "[issued] updated: %s\n", url)
+		fmt.Fprintf(w, "[triage] updated: %s\n", url)
 		return nil
 	}
 	url, err := gh.CreateIssue(owner, repo, issue.Title, body, labels)
 	if err != nil {
 		return fmt.Errorf("%w\n\n(the issue body is above; you can file it by hand)", err)
 	}
-	fmt.Fprintf(w, "[issued] filed: %s\n", url)
+	fmt.Fprintf(w, "[triage] filed: %s\n", url)
 	return nil
 }
 
 // targetRepo resolves --repo, then the issue the report came from, then the
-// origin remote of the workspace. The middle one matters: `issued <issue-url>`
+// origin remote of the workspace. The middle one matters: `triage <issue-url>`
 // re-triages a report that already lives somewhere, and the obvious place for
 // the result is the repository it came from.
 func targetRepo(flagVal, dir string, rep Report) (owner, repo string, err error) {
@@ -300,18 +300,18 @@ func splitLabels(s string) []string {
 // whose diagnosis you should read more carefully.
 func summarize(w io.Writer, t *Triager, res core.RunResult, modelID string) {
 	if n, paths := t.Rejections(); n > 0 {
-		fmt.Fprintf(w, "[issued] %d file_issue call(s) rejected for uncited paths: %s\n",
+		fmt.Fprintf(w, "[triage] %d file_issue call(s) rejected for uncited paths: %s\n",
 			n, strings.Join(paths, ", "))
 	}
 	u := res.Usage
-	fmt.Fprintf(w, "[issued] %s · %d turns · stop %s · in %d / out %d tokens · $%.5f\n",
+	fmt.Fprintf(w, "[triage] %s · %d turns · stop %s · in %d / out %d tokens · $%.5f\n",
 		modelID, res.TurnCount, res.StopReason, u.InputTokens, u.OutputTokens, u.CostUSD)
 }
 
 // parseArgs interleaves flags and operands: parse, take the next operand,
 // parse again from what follows it. A lone "-" is an operand, because the flag
 // package stops on any argument shorter than two characters — which is what
-// makes `issued -` mean stdin rather than an unknown flag.
+// makes `triage -` mean stdin rather than an unknown flag.
 func parseArgs(fs *flag.FlagSet, argv []string) ([]string, error) {
 	var operands []string
 	if err := fs.Parse(argv); err != nil {
@@ -332,18 +332,18 @@ func usage() {
 }
 
 func printUsage(w io.Writer, fs *flag.FlagSet) {
-	fmt.Fprint(w, `issued — triage a problem report into a structured GitHub issue.
+	fmt.Fprint(w, `triage — triage a problem report into a structured GitHub issue.
 
 Usage:
-  issued [flags] <text | file.md | file.txt | github-issue-url | ->
+  triage [flags] <text | file.md | file.txt | github-issue-url | ->
 
 Examples:
-  issued "TestResume hangs on a session whose last entry is a tool call"
-  issued ./crash.log --dir ./service
-  issued https://github.com/owner/repo/issues/42 --label af:fix
-  issued https://github.com/owner/repo/issues/42 -overwrite
-  issued ./crash.log --dry-run
-  kubectl logs deploy/api | issued -
+  triage "TestResume hangs on a session whose last entry is a tool call"
+  triage ./crash.log --dir ./service
+  triage https://github.com/owner/repo/issues/42 --label af:fix
+  triage https://github.com/owner/repo/issues/42 -overwrite
+  triage ./crash.log --dry-run
+  kubectl logs deploy/api | triage -
 
 Files an issue to GitHub by default; pass --dry-run to only print the diagnosis.
 -overwrite needs an issue URL as the input and cannot be combined with -label or -repo.
