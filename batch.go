@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,8 +131,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 
 		tool, known := byName[c.Name]
 		if !known {
-			finalizeInline(i, errorResult(c, "unknown_tool",
-				fmt.Sprintf("no tool named %q is available in this run", c.Name)))
+			finalizeInline(i, errorResult(c, "unknown_tool", unknownToolMessage(c.Name, byName)))
 			continue
 		}
 
@@ -463,4 +464,28 @@ func errorResult(c core.ToolUseBlock, code, detail string) core.ToolResultMessag
 func abortedResult(c core.ToolUseBlock) core.ToolResultMessage {
 	m := toolResultMessage(c, core.ErrResult("aborted", "Operation aborted"))
 	return m
+}
+
+// maxListedTools bounds the tool names an unknown-tool result lists, so a run
+// with hundreds of tools does not answer one wrong call with a page of names.
+const maxListedTools = 50
+
+// unknownToolMessage tells the model that the tool it called is not there and
+// which ones are, sorted so the text does not depend on registration order.
+func unknownToolMessage(name string, available map[string]core.Tool) string {
+	msg := fmt.Sprintf("no tool named %q is available in this run", name)
+	if len(available) == 0 {
+		return msg + "; no tools are available"
+	}
+	names := make([]string, 0, len(available))
+	for n := range available {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	more := ""
+	if len(names) > maxListedTools {
+		more = fmt.Sprintf(" (and %d more)", len(names)-maxListedTools)
+		names = names[:maxListedTools]
+	}
+	return msg + "; available tools: " + strings.Join(names, ", ") + more
 }

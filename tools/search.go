@@ -115,16 +115,20 @@ func (f *fileTools) searchFiles() core.Tool {
 			"hidden (dot-prefixed) and binary files. Returns at most max_matches (<= 100) " +
 			"matches with context_lines (<= 20) lines either side.",
 		Builtin: true,
-		PromptGuidelines: []string{
-			"Prefer search_files over execute+grep: it respects .gitignore and returns structured matches.",
-		},
+		// The "prefer search_files over execute+grep" guideline compares two
+		// tools, so it is emitted by the prompt builder only when both are
+		// present (tools.SearchOverExecuteGuideline).
 		InputSchema: schema.Object(
 			schema.Prop("pattern", schema.String("Regular expression (RE2 syntax)")),
 			schema.Opt("path", schema.String("Directory to search from (default the workspace root)")),
-			schema.Opt("context_lines", schema.Int("Lines of context either side of a match")),
+			schema.Opt("context_lines", schema.Int(fmt.Sprintf(
+				"Lines of context either side of a match (0 to %d)", MaxSearchContextLines)).
+				Min(0).Max(MaxSearchContextLines)),
 			schema.Opt("file_glob", schema.String("Only search files matching this glob, e.g. **/*.go")),
 			schema.Opt("case_sensitive", schema.Bool("Omit for smart-case: a lowercase pattern matches any case")),
-			schema.Opt("max_matches", schema.Int("Maximum matches to return")),
+			schema.Opt("max_matches", schema.Int(fmt.Sprintf(
+				"Maximum matches to return (1 to %d; default %d)", SearchMatchCap, SearchMatchCap)).
+				Min(1).Max(SearchMatchCap)),
 		),
 		Execute: func(ctx context.Context, in json.RawMessage) core.ToolResult {
 			var a SearchParams
@@ -143,7 +147,9 @@ func (f *fileTools) searchFiles() core.Tool {
 			}
 			if a.ContextLines < 0 || a.ContextLines > MaxSearchContextLines {
 				return core.ErrResult("invalid_arguments", fmt.Sprintf(
-					"context_lines must be between 0 and %d", MaxSearchContextLines))
+					"context_lines must be between 0 and %d (got %d); retry with context_lines=%d or less, "+
+						"or omit it for no context",
+					MaxSearchContextLines, a.ContextLines, MaxSearchContextLines))
 			}
 
 			res, _, err := SearchIn(ctx, root, a, f.ig)
@@ -270,7 +276,11 @@ func RenderSearchText(res SearchResult, marker string) string {
 // has to change the pattern, not retry.
 type SearchPatternError struct{ Err error }
 
-func (e *SearchPatternError) Error() string { return "invalid pattern: " + e.Err.Error() }
+func (e *SearchPatternError) Error() string {
+	return "invalid pattern: " + e.Err.Error() +
+		`. The pattern is a regular expression (RE2): write a literal metacharacter with a ` +
+		`backslash, for example \( for a literal ( or \. for a literal .`
+}
 func (e *SearchPatternError) Unwrap() error { return e.Err }
 
 func effectiveMax(n int) int {

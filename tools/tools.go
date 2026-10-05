@@ -188,6 +188,12 @@ func FileNavigationTools() []string {
 // prompt builder emits it.
 const ExecuteFallbackGuideline = "Use execute for file operations like ls, rg, find."
 
+// SearchOverExecuteGuideline compares search_files with execute, so it is only
+// sound when both are present. Like ExecuteFallbackGuideline it cannot be a
+// PromptGuidelines entry on a tool, because a per-tool field fires whenever its
+// tool is present, execute or not; the prompt builder emits it.
+const SearchOverExecuteGuideline = "Prefer search_files over execute+grep: it respects .gitignore and returns structured matches."
+
 // ---------------------------------------------------------------- path locks
 
 // pathLocks is REQ-LOOP-12's file mutation queue: a REFCOUNTED per-path mutex
