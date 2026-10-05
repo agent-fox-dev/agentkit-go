@@ -110,7 +110,7 @@ func search(ctx context.Context, c config, stdout, stderr io.Writer) error {
 	//    Ignore is the same value you would pass to tools.Options.Ignore —
 	//    .gitignore files are honoured either way; this only controls the
 	//    user-global excludes layer.
-	idx, err := codesearch.New(ws, codesearch.Options{
+	index, err := codesearch.New(ws, codesearch.Options{
 		DisableCtags: c.noCtags,
 		// The three bounds below are the defaults, spelled out. When one
 		// stops a build the index keeps what it has, marks itself partial,
@@ -125,6 +125,10 @@ func search(ctx context.Context, c config, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// New returns a tools.Index, which is all an embedder needs. This example
+	// also builds explicitly and reads the build statistics, which live on
+	// the concrete type.
+	idx := index.(*codesearch.Index)
 	// 3. Close deletes the shard directory under TempDir. It waits for any
 	//    query still running, and a second call is a no-op.
 	defer idx.Close()

@@ -18,7 +18,7 @@ import (
 func builtIndex(t *testing.T, tempDir string, ws *tools.Workspace) (*Index, func() core.ToolResult) {
 	t.Helper()
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      tempDir,
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,

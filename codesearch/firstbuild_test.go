@@ -31,7 +31,7 @@ func blockedFirstBuild(t *testing.T) (idx *Index, tool core.Tool, first <-chan c
 	if err != nil {
 		t.Fatal(err)
 	}
-	idx, err = New(ws, Options{
+	idx, err = newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -197,7 +197,7 @@ func TestWaiterBuildsAgainAfterTheBuilderIsCancelled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,

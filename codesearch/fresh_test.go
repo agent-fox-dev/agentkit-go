@@ -32,7 +32,7 @@ func TestInvalidateNonBlockingAndSafeOnClosed_TS03_15(t *testing.T) {
 
 	// --- Part 1: Invalidate returns immediately while a build is blocked ---
 	blockCh := make(chan struct{})
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -103,7 +103,7 @@ func TestInvalidateNonBlockingAndSafeOnClosed_TS03_15(t *testing.T) {
 	idx.Close()
 
 	// --- Part 2: Invalidate does not panic on a closed index ---
-	idx2, err := New(ws, Options{
+	idx2, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -130,7 +130,7 @@ func TestFreshnessAfterWriteAndEdit_TS03_41(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -228,7 +228,7 @@ func TestRevalidationSeesSameSizeEdit_TS03_42(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -316,7 +316,7 @@ func TestDirtyPathForcesRevalidation_TS03_43(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -410,7 +410,7 @@ func TestDirtyMarkDuringBuildSurvives_TS03_47(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -517,7 +517,7 @@ func TestNoInvalidateNeverRebuilds_TS03_48(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,

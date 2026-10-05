@@ -44,7 +44,7 @@ func TestNewReturnsIndexWithoutSideEffects_TS03_1(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	g0 := runtime.NumGoroutine()
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir: tmpDir,
 		Runner:  fakeRunner,
 	})
@@ -87,7 +87,7 @@ func TestNewReturnsIndexWithoutSideEffects_TS03_1(t *testing.T) {
 
 // TS-03-2: New with a nil workspace returns an error and no index.
 func TestNewNilWorkspaceReturnsError_TS03_2(t *testing.T) {
-	idx, err := New(nil, Options{})
+	idx, err := newIndex(nil, Options{})
 	if idx != nil {
 		t.Fatal("expected nil index for nil workspace")
 	}
@@ -221,7 +221,7 @@ func TestIndexedFileSetEqualsWalkSet_TS03_33(t *testing.T) {
 
 	// Build the index.
 	tmpDir := t.TempDir()
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      tmpDir,
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -289,7 +289,7 @@ func TestSkippedFilesCountedAndNoCtagsProcess_TS03_34(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      tmpDir,
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -350,7 +350,7 @@ func TestOutlineSymbolBatching_TS03_35(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir: tmpDir,
 		Ignore:  tools.NoGlobalExcludes(),
 		Runner:  fakeRunner,
@@ -407,7 +407,7 @@ func TestOutlineSymbolBatching_TS03_35(t *testing.T) {
 
 	// Test 2: With DisableCtags, runner should be nil.
 	tmpDir2 := t.TempDir()
-	idx2, err := New(ws, Options{
+	idx2, err := newIndex(ws, Options{
 		TempDir:      tmpDir2,
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -448,13 +448,13 @@ func TestShardDirectoryStructure_TS03_37(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Build two indexes over the same root.
-	idx1, err := New(ws, Options{TempDir: tmpDir, Ignore: tools.NoGlobalExcludes(), DisableCtags: true})
+	idx1, err := newIndex(ws, Options{TempDir: tmpDir, Ignore: tools.NoGlobalExcludes(), DisableCtags: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer idx1.Close()
 
-	idx2, err := New(ws, Options{TempDir: tmpDir, Ignore: tools.NoGlobalExcludes(), DisableCtags: true})
+	idx2, err := newIndex(ws, Options{TempDir: tmpDir, Ignore: tools.NoGlobalExcludes(), DisableCtags: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func TestBuildSweepsOldSiblings_TS03_38(t *testing.T) {
 	}
 
 	// Build the index.
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      tmpDir,
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
