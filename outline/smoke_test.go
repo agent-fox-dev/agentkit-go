@@ -547,3 +547,98 @@ func sliceContains(ss []string, s string) bool {
 
 // Ensure tools import is used.
 var _ = tools.ErrCtagsUnavailable
+
+// A Python method is kind "member" in universal ctags, and a C++ data member is
+// the same kind in the same scope kind; with real ctags the Python methods are
+// reported and the C++ data members are not.
+func TestOutlineManyWithRealCtagsPythonMethods(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows: ctags process handling differs")
+	}
+	bin, err := exec.LookPath("ctags")
+	if err != nil {
+		t.Skip("ctags not on PATH; skipping real ctags test")
+	}
+	out, err := exec.Command(bin, "--version").Output()
+	if err != nil || !strings.Contains(string(out), "Universal Ctags") {
+		t.Skip("ctags is not Universal Ctags; skipping")
+	}
+
+	root := t.TempDir()
+	pySrc := `class Outer:
+    attr = 1
+
+    class Inner:
+        def inner_method(self):
+            pass
+
+    @staticmethod
+    def static_one():
+        pass
+
+    async def amethod(self):
+        def nested_in_method():
+            pass
+        return nested_in_method
+
+def top():
+    class LocalClass:
+        def local_class_method(self):
+            pass
+    return LocalClass
+`
+	cppSrc := `class Widget {
+public:
+    int size;
+};
+struct Pair { int a; int b; };
+void Widget_draw() {}
+`
+	pyFile := filepath.Join(root, "svc.py")
+	cppFile := filepath.Join(root, "thing.cpp")
+	if err := os.WriteFile(pyFile, []byte(pySrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cppFile, []byte(cppSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, _, err := outline.OutlineMany(context.Background(),
+		[]outline.Source{{Abs: pyFile}, {Abs: cppFile}},
+		outline.Options{Root: root, Runner: tools.CtagsRunner(nil)})
+	if err != nil {
+		t.Fatalf("OutlineMany: %v", err)
+	}
+
+	py := map[string]outline.Decl{}
+	for _, d := range files[0].Decls {
+		py[d.Name] = d
+	}
+	for name, container := range map[string]string{
+		"inner_method": "Outer.Inner", "static_one": "Outer", "amethod": "Outer",
+	} {
+		d, ok := py[name]
+		if !ok {
+			t.Errorf("Python method %q is missing: %v", name, declNames(files[0].Decls))
+			continue
+		}
+		if d.Kind != outline.KindMethod || d.Container != container {
+			t.Errorf("%s: Kind=%q Container=%q, want method in %q", name, d.Kind, d.Container, container)
+		}
+	}
+	for _, local := range []string{"nested_in_method", "LocalClass", "local_class_method"} {
+		if _, ok := py[local]; ok {
+			t.Errorf("%q is declared inside a function and was reported", local)
+		}
+	}
+
+	cppNames := declNames(files[1].Decls)
+	for _, field := range []string{"size", "a", "b"} {
+		if sliceContains(cppNames, field) {
+			t.Errorf("C++ data member %q was reported: %v", field, cppNames)
+		}
+	}
+	if !sliceContains(cppNames, "Widget") || !sliceContains(cppNames, "Pair") {
+		t.Errorf("C++ types are missing: %v", cppNames)
+	}
+}
