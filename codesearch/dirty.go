@@ -29,9 +29,10 @@ type dirtyTracker struct {
 	// searching.
 	gone map[string]bool
 
-	// validated tracks dirty paths that have been seen by a revalidation
-	// walk. These don't trigger another revalidation even if they're not
-	// in the original index.
+	// validated tracks dirty paths whose current mark has been seen by a
+	// revalidation walk. These don't trigger another revalidation even if
+	// they're not in the original index. A new mark of a .gitignore clears
+	// the entry, since each edit of it can change what the walk sees.
 	validated map[string]bool
 
 	// revalidateAll is set when the whole index needs revalidation
@@ -60,6 +61,15 @@ func (dt *dirtyTracker) markDirty(rel string) {
 	defer dt.mu.Unlock()
 	dt.generation++
 	dt.paths[rel] = dt.generation
+	if isGitignore(rel) {
+		delete(dt.validated, rel)
+	}
+}
+
+// isGitignore reports whether rel names a .gitignore at any depth: the files
+// whose edits can change which other files the walk yields.
+func isGitignore(rel string) bool {
+	return filepath.Base(rel) == ".gitignore"
 }
 
 // markRevalidateAll sets the whole-index revalidation flag.
@@ -156,7 +166,7 @@ func (dt *dirtyTracker) needsRevalidation(indexedFiles map[string]bool) bool {
 		if dt.validated[rel] {
 			continue
 		}
-		if filepath.Base(rel) == ".gitignore" {
+		if isGitignore(rel) {
 			return true
 		}
 		if !indexedFiles[rel] {
@@ -265,10 +275,22 @@ func (dt *dirtyTracker) revalidate(
 	if dt.revalidateAllGen <= genAtStart {
 		dt.revalidateAll = false
 	}
-	// Mark all currently dirty paths as validated so they don't trigger
-	// another revalidation walk.
-	for rel := range dt.paths {
+	// For every dirty path marked before the walk started, the walk is the
+	// authority on visibility: a path it did not yield is gone (deleted,
+	// ignored, hidden, binary or oversized) and one it did yield is not, so
+	// a file a later .gitignore edit hides or un-hides is settled here. The
+	// path is then validated, so it does not trigger another walk. A mark
+	// made during the walk is left alone: the walk may have missed it.
+	for rel, gen := range dt.paths {
+		if gen > genAtStart {
+			continue
+		}
 		dt.validated[rel] = true
+		if seen[rel] {
+			delete(dt.gone, rel)
+		} else {
+			dt.gone[rel] = true
+		}
 	}
 	dt.mu.Unlock()
 }

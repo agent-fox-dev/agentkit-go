@@ -316,6 +316,14 @@ func (idx *Index) handleDirty(ctx context.Context) {
 		}
 		idx.dirty.revalidate(idx.ws, idx.opts.Ignore, indexedFiles, fileInfos)
 		idx.revalCount.Add(1)
+
+		// A walk can hide or reveal files without changing the dirty set the
+		// overlay is keyed on, so the cached overlay may be stale.
+		idx.mu.Lock()
+		ov := idx.overlay
+		idx.overlay = nil
+		idx.mu.Unlock()
+		cleanupOverlay(ov)
 	}
 }
 
