@@ -111,6 +111,10 @@ func parseCtagsOutput(
 	result := make(map[int][]Decl)
 	malformed := 0
 
+	// localTypes holds, per file, the scope names that tags declared inside
+	// the type-like locals this file dropped would carry (see below).
+	localTypes := make(map[int][]string)
+
 	scanner := bufio.NewScanner(bytes.NewReader(stdout))
 	// Allow long lines (ctags can produce long lines for some tags).
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -146,10 +150,24 @@ func parseCtagsOutput(
 			continue
 		}
 
+		lang := langForExt(filepath.Ext(tag.Path))
+
 		// Map kind.
 		kind := mapCtagsKind(tag.Kind)
+		if kind == "" && isPythonMethodTag(tag, lang) {
+			// Python reports a method as kind "member" in its class; it is a
+			// function-kind tag in a type-like scope, which becomes a method
+			// below.
+			kind = KindFunc
+		}
 		if kind == "" {
 			// Kind not in the closed set — drop.
+			continue
+		}
+
+		// A tag declared inside a type this file dropped as a local is a local
+		// too: its container is never reported.
+		if underLocalType(tag.Scope, localTypes[srcIdx]) {
 			continue
 		}
 
@@ -162,8 +180,12 @@ func parseCtagsOutput(
 				// Function scoped in a type-like kind → method.
 				kind = KindMethod
 				container = tag.Scope
-			} else if isFunctionLikeScope(tag.ScopeKind) {
+			} else if isFunctionLikeScope(tag.ScopeKind, lang) {
 				// Any tag scoped in a function-like kind is a local — drop.
+				// A type among them takes what is declared in it along.
+				if isTypeKind(kind) {
+					localTypes[srcIdx] = append(localTypes[srcIdx], localScopeNames(tag)...)
+				}
 				continue
 			}
 		}
@@ -277,11 +299,67 @@ func isTypeLikeScope(scopeKind string) bool {
 }
 
 // isFunctionLikeScope returns true if the scope kind is function-like,
-// meaning tags nested in it are locals and should be dropped.
-func isFunctionLikeScope(scopeKind string) bool {
+// meaning tags nested in it are locals and should be dropped. Python names the
+// scope of what is nested in a method "member", because that is the kind
+// ctags gives a Python method.
+func isFunctionLikeScope(scopeKind, lang string) bool {
 	switch strings.ToLower(scopeKind) {
 	case "function", "func", "method", "subroutine", "procedure":
 		return true
+	case "member":
+		return lang == LangPython
+	}
+	return false
+}
+
+// isPythonMethodTag reports whether the tag is a Python method: universal
+// ctags gives it kind "member" and the scope kind of its class. A C or C++
+// data member has the same kind and a type-like scope too, and is a field, which
+// 01-REQ-1.2 drops, so the language decides, not the scope kind.
+func isPythonMethodTag(tag ctagsTag, lang string) bool {
+	return lang == LangPython &&
+		strings.EqualFold(tag.Kind, "member") &&
+		isTypeLikeScope(tag.ScopeKind)
+}
+
+// isTypeKind reports whether k declares a type.
+func isTypeKind(k Kind) bool {
+	switch k {
+	case KindType, KindClass, KindInterface, KindEnum, KindTrait:
+		return true
+	}
+	return false
+}
+
+// scopeSeparators are the separators ctags puts between the names of a tag's
+// scope: "." in most languages, "::" in C++ and Rust, "\\" in PHP.
+var scopeSeparators = []string{".", "::", "\\"}
+
+// localScopeNames returns the forms the scope of a tag declared inside the
+// dropped local type tag can take, one per separator.
+func localScopeNames(tag ctagsTag) []string {
+	names := make([]string, 0, len(scopeSeparators))
+	for _, sep := range scopeSeparators {
+		names = append(names, tag.Scope+sep+tag.Name)
+	}
+	return names
+}
+
+// underLocalType reports whether scope is, or is nested in, one of the scopes
+// a dropped local type gives its contents.
+func underLocalType(scope string, locals []string) bool {
+	if scope == "" {
+		return false
+	}
+	for _, l := range locals {
+		if scope == l {
+			return true
+		}
+		for _, sep := range scopeSeparators {
+			if strings.HasPrefix(scope, l+sep) {
+				return true
+			}
+		}
 	}
 	return false
 }
