@@ -42,6 +42,11 @@ func (idx *Index) Symbols(ctx context.Context, q tools.SymbolQuery) (tools.Symbo
 	if !built {
 		return tools.SymbolAnswer{}, false, nil
 	}
+
+	// A query of a live index keeps its run directory young for a sibling
+	// index's sweep, whether or not this one is answered from the outlines.
+	idx.touchRunDir()
+
 	if partial {
 		return tools.SymbolAnswer{}, false, nil
 	}

@@ -211,6 +211,9 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 		return core.ErrResult("index_failed", errStr)
 	}
 
+	// Keep the run directory young for a sibling index's sweep.
+	idx.touchRunDir()
+
 	// Build the final query with path conjunction.
 	finalQ := parsedQ
 	if pathConstraint != nil {
@@ -428,6 +431,7 @@ func (idx *Index) rebuild(ctx context.Context, oldRunDir string, oldOverlay *ove
 	idx.mu.Lock()
 	idx.runID = rebuildRunID
 	idx.runDir = rebuildRunDir
+	idx.lastTouch = time.Now()
 	idx.indexedFiles = result.indexedFiles
 	idx.outlineFiles = result.outlineFiles
 	idx.stats = result.stats
