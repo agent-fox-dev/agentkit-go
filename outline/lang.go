@@ -93,3 +93,11 @@ var extToLang = map[string]string{
 func langForExt(ext string) string {
 	return extToLang[strings.ToLower(ext)]
 }
+
+// LangForExt returns the language name for a file extension (with the leading
+// dot, in any case), or "" if the extension is not in the table. It is the
+// exported form of the table's lookup, so a package that names languages can
+// use the table instead of keeping a copy.
+func LangForExt(ext string) string {
+	return langForExt(ext)
+}

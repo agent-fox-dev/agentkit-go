@@ -182,6 +182,10 @@ type Index struct {
 	// or "time").
 	partialReason string
 
+	// ctagsAvailable is whether the outline runner could run ctags when the
+	// index was last built.
+	ctagsAvailable bool
+
 	// runDir is the shard directory for this instance.
 	runDir string
 
@@ -457,6 +461,9 @@ type buildOutput struct {
 	fileInfos     map[string]indexedFileInfo
 	partial       bool
 	partialReason string
+
+	// ctagsAvailable is whether the outline runner could run ctags.
+	ctagsAvailable bool
 }
 
 // Build triggers the index build. It walks the workspace, collects files,
@@ -553,6 +560,7 @@ func (idx *Index) build(ctx context.Context, onlyIfUnbuilt bool) error {
 	idx.built = true
 	idx.partial = result.partial
 	idx.partialReason = result.partialReason
+	idx.ctagsAvailable = result.ctagsAvailable
 	idx.buildCount.Add(1)
 	idx.mu.Unlock()
 
@@ -608,13 +616,13 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 			return nil
 		}
 
-		files = append(files, fileEntry{rel: rel, abs: abs})
-
-		// File-count bound.
+		// File-count bound: reached by the first eligible file past the
+		// limit, so a tree of exactly MaxFiles files is complete.
 		if len(files) >= idx.opts.MaxFiles {
 			partialReason = "files"
 			return errBoundReached
 		}
+		files = append(files, fileEntry{rel: rel, abs: abs})
 		return nil
 	})
 	if err != nil && err != errBoundReached {
@@ -628,8 +636,21 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 		}
 	}
 
-	// Outline files in batches of at most outlineBatchSize.
+	// Outline files in batches of at most outlineBatchSize. The runner is
+	// wrapped to see whether ctags answered, so the result can say whether
+	// it is available instead of guessing from which backends were used.
 	runner := idx.outlineRunner()
+	var ctagsCalled, ctagsMissing atomic.Bool
+	if inner := runner; inner != nil {
+		runner = func(ctx context.Context, args []string) ([]byte, error) {
+			out, err := inner(ctx, args)
+			ctagsCalled.Store(true)
+			if errors.Is(err, tools.ErrCtagsUnavailable) {
+				ctagsMissing.Store(true)
+			}
+			return out, err
+		}
+	}
 	outlineOpts := outline.Options{
 		Root:   idx.ws.Root,
 		Runner: runner,
@@ -638,10 +659,20 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 	outlineResults := make(map[string]outline.File, len(files))
 	var totalBytes int64
 
+	// timeCut is set when the deadline cut the list of files to those already
+	// outlined. The builder then adds that list, whose cost is bounded by the
+	// outlining already done, and does not stop at the deadline a second time.
+	timeCut := false
+
 	for i := 0; i < len(files); i += outlineBatchSize {
-		if buildCtx.Err() != nil && callerCtx.Err() == nil && partialReason == "" {
-			partialReason = "time"
+		// The deadline stops the build whatever bound stopped an earlier
+		// stage; the first reason is kept.
+		if buildCtx.Err() != nil && callerCtx.Err() == nil {
+			if partialReason == "" {
+				partialReason = "time"
+			}
 			files = files[:i]
+			timeCut = true
 			break
 		}
 		if callerCtx.Err() != nil {
@@ -668,9 +699,12 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 			if callerCtx.Err() != nil {
 				return nil, fmt.Errorf("aborted: %w", callerCtx.Err())
 			}
-			if buildCtx.Err() != nil && callerCtx.Err() == nil && partialReason == "" {
-				partialReason = "time"
+			if buildCtx.Err() != nil && callerCtx.Err() == nil {
+				if partialReason == "" {
+					partialReason = "time"
+				}
 				files = files[:i]
+				timeCut = true
 				break
 			}
 			for _, fe := range batch {
@@ -688,6 +722,20 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 				outlineResults[fe.rel] = outFiles[j]
 			}
 		}
+	}
+
+	// Whether ctags is available is a fact about the runner. Usually a batch
+	// has already shown it; a tree with no non-Go files never calls the
+	// runner, so ask it.
+	ctagsAvailable := false
+	switch {
+	case runner == nil: // disabled
+	case ctagsMissing.Load():
+	case ctagsCalled.Load():
+		ctagsAvailable = true
+	case buildCtx.Err() == nil:
+		_, err := runner(buildCtx, []string{"--version"})
+		ctagsAvailable = !errors.Is(err, tools.ErrCtagsUnavailable)
 	}
 
 	// Build the zoekt index.
@@ -715,8 +763,10 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 			_ = builder.Finish()
 			return nil, fmt.Errorf("aborted: %w", callerCtx.Err())
 		}
-		if buildCtx.Err() != nil && callerCtx.Err() == nil && partialReason == "" {
-			partialReason = "time"
+		if !timeCut && buildCtx.Err() != nil && callerCtx.Err() == nil {
+			if partialReason == "" {
+				partialReason = "time"
+			}
 			break
 		}
 
@@ -725,8 +775,10 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 			continue
 		}
 
-		if totalBytes+int64(len(content)) > idx.opts.MaxBytes && partialReason == "" {
-			partialReason = "bytes"
+		if totalBytes+int64(len(content)) > idx.opts.MaxBytes {
+			if partialReason == "" {
+				partialReason = "bytes"
+			}
 			break
 		}
 
@@ -783,12 +835,13 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 	}
 
 	return &buildOutput{
-		indexedFiles:  indexedFiles,
-		outlineFiles:  outlineResults,
-		stats:         stats,
-		fileInfos:     fileInfos,
-		partial:       partialReason != "",
-		partialReason: partialReason,
+		indexedFiles:   indexedFiles,
+		outlineFiles:   outlineResults,
+		stats:          stats,
+		fileInfos:      fileInfos,
+		partial:        partialReason != "",
+		partialReason:  partialReason,
+		ctagsAvailable: ctagsAvailable,
 	}, nil
 }
 
@@ -866,63 +919,27 @@ func computeLineOffsets(content []byte) []uint32 {
 	return offsets
 }
 
-// langForExt maps file extensions to language names for zoekt.
+// docLangs names the languages zoekt can filter on that outline does not
+// outline, so they are not in its table.
+var docLangs = map[string]string{
+	".md":   "Markdown",
+	".json": "JSON",
+	".yaml": "YAML",
+	".yml":  "YAML",
+	".xml":  "XML",
+	".html": "HTML",
+	".htm":  "HTML",
+	".css":  "CSS",
+	".sql":  "SQL",
+	".r":    "R",
+}
+
+// langForExt maps a file extension to the language name zoekt filters on:
+// outline's table, which is the one source for the languages it knows, then
+// docLangs. It returns "" for an unknown extension.
 func langForExt(ext string) string {
-	ext = strings.ToLower(ext)
-	switch ext {
-	case ".go":
-		return "Go"
-	case ".py":
-		return "Python"
-	case ".js":
-		return "JavaScript"
-	case ".ts":
-		return "TypeScript"
-	case ".java":
-		return "Java"
-	case ".c", ".h":
-		return "C"
-	case ".cpp", ".cc", ".cxx", ".hpp":
-		return "C++"
-	case ".rs":
-		return "Rust"
-	case ".rb":
-		return "Ruby"
-	case ".sh", ".bash":
-		return "Shell"
-	case ".md":
-		return "Markdown"
-	case ".json":
-		return "JSON"
-	case ".yaml", ".yml":
-		return "YAML"
-	case ".xml":
-		return "XML"
-	case ".html", ".htm":
-		return "HTML"
-	case ".css":
-		return "CSS"
-	case ".sql":
-		return "SQL"
-	case ".r":
-		return "R"
-	case ".swift":
-		return "Swift"
-	case ".kt":
-		return "Kotlin"
-	case ".scala":
-		return "Scala"
-	case ".lua":
-		return "Lua"
-	case ".pl", ".pm":
-		return "Perl"
-	case ".php":
-		return "PHP"
-	case ".cs":
-		return "C#"
-	case ".txt":
-		return ""
-	default:
-		return ""
+	if lang := outline.LangForExt(ext); lang != "" {
+		return lang
 	}
+	return docLangs[strings.ToLower(ext)]
 }

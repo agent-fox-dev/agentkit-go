@@ -64,7 +64,7 @@ func (idx *Index) Symbols(ctx context.Context, q tools.SymbolQuery) (tools.Symbo
 	// Collect matches from the outline data.
 	idx.mu.RLock()
 	outlineFiles := idx.outlineFiles
-	filesIndexed := len(idx.indexedFiles)
+	indexedFiles := idx.indexedFiles
 	idx.mu.RUnlock()
 
 	// Get the current dirty set to apply overlays.
@@ -81,6 +81,11 @@ func (idx *Index) Symbols(ctx context.Context, q tools.SymbolQuery) (tools.Symbo
 
 	var matches []tools.SymbolMatch
 
+	// The files and backends of the queried scope, as find_symbol's table
+	// counts them (02-REQ-4.5): only the files under path.
+	filesIndexed := 0
+	backends := make(map[string]int)
+
 	// Search indexed (non-dirty) outline files.
 	for rel, of := range outlineFiles {
 		if dirtySet[rel] {
@@ -88,6 +93,10 @@ func (idx *Index) Symbols(ctx context.Context, q tools.SymbolQuery) (tools.Symbo
 		}
 		if scopePrefix != "" && !strings.HasPrefix(rel, scopePrefix) {
 			continue
+		}
+		if indexedFiles[rel] {
+			filesIndexed++
+			backends[string(of.Backend)]++
 		}
 		for _, d := range of.Decls {
 			if matchesSymbolQuery(q, d, qualified, caseSensitive) {
@@ -124,6 +133,8 @@ func (idx *Index) Symbols(ctx context.Context, q tools.SymbolQuery) (tools.Symbo
 				continue
 			}
 
+			filesIndexed++
+			backends[string(of.Backend)]++
 			for _, d := range of.Decls {
 				if matchesSymbolQuery(q, d, qualified, caseSensitive) {
 					matches = append(matches, declToSymbolMatch(rel, of, d))
@@ -140,6 +151,7 @@ func (idx *Index) Symbols(ctx context.Context, q tools.SymbolQuery) (tools.Symbo
 	return tools.SymbolAnswer{
 		Matches:      matches,
 		FilesIndexed: filesIndexed,
+		Backends:     backends,
 	}, true, nil
 }
 

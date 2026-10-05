@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/outline"
 	"github.com/agentfox/agentkit-go/schema"
 	"github.com/agentfox/agentkit-go/tools"
 
@@ -446,6 +445,7 @@ func (idx *Index) rebuild(ctx context.Context, oldRunDir string, oldOverlay *ove
 	idx.built = true
 	idx.partial = result.partial
 	idx.partialReason = result.partialReason
+	idx.ctagsAvailable = result.ctagsAvailable
 	idx.overlay = nil
 	idx.buildCount.Add(1)
 	idx.mu.Unlock()
@@ -594,22 +594,26 @@ func (idx *Index) buildResult(files []searchResultFile, maxFiles, totalFiles int
 	// Determine if more files matched than max_files.
 	moreThanMax := totalFiles > maxFiles
 
+	// The cap marker is appended after the byte cap is applied, so its room is
+	// taken out of the budget first: a result that fits the limit stays within
+	// it once the marker is on.
+	var capMarkerText string
+	budget := tools.DefaultByteLimit
+	if moreThanMax {
+		capMarkerText = tools.CapMarker("files", "max_files", maxFiles, maxMaxFiles, "narrow the query or add a path")
+		budget -= len(capMarkerText) + 1
+	}
+
 	// Build the text.
 	text := renderResult(files, info)
 
 	// Apply byte cap.
 	var bytesTruncated bool
 	var bytesMarkerText string
-	files, bytesMarkerText, bytesTruncated = applyByteCap(files, info, tools.DefaultByteLimit)
+	files, bytesMarkerText, bytesTruncated = applyByteCap(files, info, budget)
 	if bytesTruncated {
 		// Re-render with the truncated files.
 		text = renderResult(files, info)
-	}
-
-	// Append cap marker if more files matched than max_files.
-	var capMarkerText string
-	if moreThanMax {
-		capMarkerText = tools.CapMarker("files", "max_files", maxFiles, maxMaxFiles, "narrow the query or add a path")
 	}
 
 	// Append markers to text.
@@ -619,10 +623,13 @@ func (idx *Index) buildResult(files []searchResultFile, maxFiles, totalFiles int
 		text += "\n" + capMarkerText
 	}
 
-	// Final byte-limit check: ensure text doesn't exceed the limit.
+	// Last resort, for a result the byte cap could not fit: keep whole lines
+	// only, so no line or rune is split, and end with the bytes marker.
 	if len(text) > tools.DefaultByteLimit {
-		// Truncate to fit.
-		text = text[:tools.DefaultByteLimit-len(bytesMarkerText)-1] + "\n" + bytesMarkerText
+		if bytesMarkerText == "" {
+			bytesMarkerText = bytesMarker()
+		}
+		text = cutLines(text, tools.DefaultByteLimit-len(bytesMarkerText)-1) + "\n" + bytesMarkerText
 		bytesTruncated = true
 	}
 
@@ -659,9 +666,15 @@ func (idx *Index) buildResult(files []searchResultFile, maxFiles, totalFiles int
 	if bytesMarkerText != "" {
 		note = bytesMarkerText
 	}
-	// A partial index adds a note telling the model to narrow path or use search_files.
-	if info.partial && note == "" {
-		note = fmt.Sprintf("Index is partial (%s limit). Narrow the path argument or use search_files for a full scan.", info.partialReason)
+	// A partial index adds a note telling the model to narrow path or use
+	// search_files, next to the truncation marker when the result has one.
+	if info.partial {
+		partialNote := fmt.Sprintf("Index is partial (%s limit). Narrow the path argument or use search_files for a full scan.", info.partialReason)
+		if note == "" {
+			note = partialNote
+		} else {
+			note += "\n" + partialNote
+		}
 	}
 
 	data := map[string]any{
@@ -705,6 +718,7 @@ func (idx *Index) gatherResultInfo(stats BuildStatsResult) resultInfo {
 	outlineFiles := idx.outlineFiles
 	partial := idx.partial
 	partialReason := idx.partialReason
+	ctagsAvailable := idx.ctagsAvailable
 	idx.mu.RUnlock()
 
 	// Count symbol sources.
@@ -715,29 +729,6 @@ func (idx *Index) gatherResultInfo(stats BuildStatsResult) resultInfo {
 			backend = "none"
 		}
 		symbolSources[backend]++
-	}
-
-	// Determine ctags availability.
-	// If DisableCtags is set, ctags is unavailable.
-	// If a Runner was provided that returns ErrCtagsUnavailable, ctags is unavailable.
-	// We detect this by checking if any file used the ctags backend.
-	ctagsAvailable := false
-	for _, of := range outlineFiles {
-		if of.Backend == outline.BackendCtags {
-			ctagsAvailable = true
-			break
-		}
-	}
-	// If DisableCtags was explicitly set, ctags is unavailable.
-	if idx.opts.DisableCtags {
-		ctagsAvailable = false
-	}
-	// If a runner was provided but no file used ctags, check if the runner
-	// is the one that returns ErrCtagsUnavailable.
-	if !idx.opts.DisableCtags && idx.opts.Runner != nil && !ctagsAvailable {
-		// Runner was provided but no ctags backend was used.
-		// This means ctags was unavailable.
-		ctagsAvailable = false
 	}
 
 	// Calculate index size from shard files.
