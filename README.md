@@ -1,11 +1,15 @@
 # A agentkit-go
 
-A dependency-free Go agent SDK. The loop, the tool system and the provider
-abstraction are ordinary Go you can read and step through — nothing is hidden
-inside a subprocess or a graph engine.
+A Go agent SDK. The loop, the tool system and the provider abstraction are
+ordinary Go you can read and step through — nothing is hidden inside a
+subprocess or a graph engine.
 
-**The root module requires nothing outside the Go standard library**, and that
-is enforced by a test rather than asserted in prose ([`internal/policy`](internal/policy/deps_test.go)).
+**The root module requires no third-party module today.** The standard library
+is the preferred default, a third-party module is allowed when
+[`docs/DEPS.md`](docs/DEPS.md) says why it earns its place, and cgo is never
+allowed — a test enforces that and the four-target cross build
+([`internal/policy`](internal/policy/deps_test.go),
+[`docs/errata/dependency_policy.md`](docs/errata/dependency_policy.md)).
 
 ```bash
 go test ./...          # everything, offline, no API key
@@ -718,7 +722,7 @@ The first id-synthesis mutation changed the streaming and whole-response paths
 identically, so the test that compares them stayed green. Replacing it with a
 global counter — the shape the real bug takes — turned it red.
 
-The dependency gate carries a third test asserting the cgo probe is armed:
+The cgo gate carries a second test asserting the cgo probe is armed:
 with `CGO_ENABLED=0` the toolchain excludes cgo files by build constraint, so
 `net` reports 0 cgo files and the check passes while the dependency is present.
 A cgo-off gate cannot see the thing it claims to check.
@@ -768,8 +772,9 @@ requirement ledger, fixed and deferred alike, is [`docs/GAPS.md`](docs/GAPS.md).
   X") and callers remain unbuilt — use `search_files` with `\bX\b` instead.
   See spec `02_symbol_navigation_tools`, Non-goals.
 - **WebP normalization.** REQ-TOOL-14 downscales JPEG, PNG and GIF; the
-  standard library has no WebP decoder and REQ-GO-11 forbids the module that
-  does, so a WebP image is forwarded as-is with its dimensions unknown — which
+  standard library has no WebP decoder and the root has not taken on a
+  third-party module for one, so a WebP image is forwarded as-is with its
+  dimensions unknown — which
   is what REQ-TOOL-14.5 asks for on any failure, and a format providers accept
   anyway.
 

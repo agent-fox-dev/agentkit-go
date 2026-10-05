@@ -6,10 +6,13 @@ disagree, fix this file.
 
 ## Shape
 
-One Go module (`github.com/agentfox/agentkit-go`, `go 1.26.5`), standard
-library only. That is enforced by `internal/policy` (see
-[`DEPS.md`](DEPS.md)). Four nested modules carry their own dependency budget and
-are not in the root build graph: [`codesearch/`](../codesearch),
+One Go module (`github.com/agentfox/agentkit-go`, `go 1.26.5`). It requires no
+third-party module today: the standard library is preferred, a third-party
+module is allowed when [`DEPS.md`](DEPS.md) says why, and cgo is never allowed
+(`internal/policy` rejects it and builds the four supported targets; see
+[`errata/dependency_policy.md`](errata/dependency_policy.md)). Four nested
+modules carry their own `go.mod` and are not in the root build graph:
+[`codesearch/`](../codesearch),
 [`difftest/`](../difftest),
 [`examples/codesearch/`](../examples/codesearch) and
 [`examples/flatline/`](../examples/flatline).
@@ -89,7 +92,7 @@ Rules that follow from it:
 | `imagex` | Image normalization to a provider's inline-image limits (resize, re-encode, base64 budget). WebP is forwarded untouched. |
 | `internal/toml` | Hand-rolled TOML subset for manifests and config. |
 | `internal/diag` | The shared non-fatal `Diagnostic`. |
-| `internal/policy` | Tests only: dependency, cgo and cross-target gates. |
+| `internal/policy` | Tests only: cgo and cross-target gates, and the check that the dependency-policy errata are recorded. |
 | `internal/testkit` | Shared test helpers. |
 | `cmd/validate-plugins` | Reference driver for `plugins.Validate` ([CLI](cli.md)). |
 | `codesearch` | Nested module: zoekt-backed `code_search` tool, lazy index build, dirty-file overlay, `find_symbol` acceleration. Imports `tools`, `core`, `schema`, `outline` from the root and `github.com/sourcegraph/zoekt` (pinned). |
@@ -154,8 +157,8 @@ Extension axes:
 - Unit and property tests sit beside their package.
 - `testdata/golden/` holds request-body and session-log goldens. They pin
   regression, not vendor truth ([`PROVIDERS.md`](PROVIDERS.md)).
-- `internal/policy` holds the dependency, cgo, cross-target build and ledger
-  gates.
+- `internal/policy` holds the cgo, cross-target build and ledger gates. Module
+  count is not gated ([`DEPS.md`](DEPS.md)).
 - `difftest/` is the differential harness; it reports DARK until a vendor
   capture exists.
 - `examples/testing` shows how an embedder tests its own agent code offline with

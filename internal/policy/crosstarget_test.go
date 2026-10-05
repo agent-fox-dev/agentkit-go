@@ -8,9 +8,9 @@ import (
 )
 
 // crossTargets is the supported matrix of NFR-COMPAT-06. It is a list in a
-// test, not a line in a Makefile, for the same reason allowedModules is: the
-// README promised a cross-target gate and nothing ran it, and a gate that
-// exists only as prose is indistinguishable from no gate.
+// test, not a line in a Makefile: the README promised a cross-target gate and
+// nothing ran it, and a gate that exists only as prose is indistinguishable
+// from no gate.
 var crossTargets = []struct{ goos, goarch string }{
 	{"linux", "amd64"},
 	{"linux", "arm64"},

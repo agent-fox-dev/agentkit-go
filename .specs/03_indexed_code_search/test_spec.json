@@ -1195,18 +1195,19 @@
         "03-REQ-9.3",
         "03-REQ-10.1"
       ],
-      "title": "A forbidden-import check over go list -deps rejects gRPC, Prometheus and HTTP-server packages",
+      "title": "A forbidden-import check over codesearch's direct imports rejects gRPC, Prometheus and HTTP-server packages",
       "given": [
-        "the full dependency list of codesearch",
-        "a synthetic dependency list containing google.golang.org/grpc"
+        "the direct imports of every package of the codesearch module",
+        "a synthetic import list containing google.golang.org/grpc"
       ],
       "when": "the forbidden-import check runs over both",
       "then": [
         "the real list passes",
         "the synthetic list fails naming grpc",
-        "the check covers gRPC, Prometheus and HTTP server packages"
+        "the check covers gRPC, Prometheus and HTTP server packages",
+        "packages that zoekt's indexing and search packages import transitively are not checked (docs/errata/03_forbidden_imports_direct_only.md)"
       ],
-      "pseudocode": "assert forbidden(depsOf('./...'))==[]; assert 'grpc' in forbidden(synthetic)"
+      "pseudocode": "assert forbidden(directImportsOf('./...'))==[]; assert 'grpc' in forbidden(synthetic)"
     },
     {
       "id": "TS-03-64",

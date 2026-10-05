@@ -100,14 +100,22 @@ cannot detect cgo dependencies.`)
 	}
 }
 
-// TS-03-63: TestForbiddenImports checks that the codesearch module does not
-// directly depend on gRPC, Prometheus or HTTP server packages beyond what
-// zoekt's indexing, query and search packages pull in transitively.
+// TS-03-63: TestForbiddenImports checks that no package of the codesearch
+// module DIRECTLY imports gRPC, Prometheus or an HTTP server package.
 // Verifies 03-REQ-9.3, 03-REQ-10.1.
+//
+// The scope is direct imports, by decision, not by omission. The spec first
+// said `go list -deps`, but zoekt's index and search packages — the ones the
+// spec allows — pull in google.golang.org/grpc, the Prometheus client and
+// sentry-go themselves, so a check over the transitive graph could never pass
+// and zoekt could not be used at all. The project owner accepted that graph
+// instead of recording a no-go; see docs/errata/03_forbidden_imports_direct_only.md
+// for the decision and the list of accepted packages. What this still stops is
+// codesearch's own code reaching for a server stack: that would be a choice made
+// here, not one inherited from zoekt.
 func TestForbiddenImports(t *testing.T) {
-	// The check is about direct imports from codesearch package files,
-	// not transitive deps through zoekt. We verify that no Go file in
-	// the codesearch module directly imports forbidden packages.
+	// We verify that no package in the codesearch module directly imports a
+	// forbidden package. Packages outside the module (zoekt's) are skipped.
 	root := moduleRoot(t)
 
 	cmd := exec.Command("go", "list",
@@ -152,8 +160,10 @@ func TestForbiddenImports(t *testing.T) {
 	}
 }
 
-// TestForbiddenImportsDetectsSynthetic proves the forbidden-import check
-// can actually detect a violation.
+// TestForbiddenImportsDetectsSynthetic proves the forbidden-import matcher
+// can actually detect a violation, so TestForbiddenImports passing means
+// something. Like that test it concerns direct imports only; see
+// docs/errata/03_forbidden_imports_direct_only.md.
 // Verifies 03-REQ-9.3, 03-REQ-10.1.
 func TestForbiddenImportsDetectsSynthetic(t *testing.T) {
 	forbidden := []string{

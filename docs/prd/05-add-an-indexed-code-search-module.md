@@ -202,7 +202,10 @@ against the pinned zoekt version, not assumed:
 - **Dependency weight.** `go list -m all` for the module is recorded in
   this PRD's spec. Packages that pull in servers (gRPC, Prometheus, the
   web server) must not be imported by `codesearch`. Only the indexing,
-  query and search packages are allowed.
+  query and search packages are allowed. *Scope, as delivered: this is a
+  direct-imports check. Those indexing and search packages pull gRPC,
+  Prometheus and sentry in transitively, and that graph is accepted; see
+  [`docs/errata/03_forbidden_imports_direct_only.md`](../errata/03_forbidden_imports_direct_only.md).*
 - **Regex dialect.** zoekt's regex support is close to RE2 but not
   identical. The tool description says "zoekt query syntax", never "RE2".
 

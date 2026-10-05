@@ -1,9 +1,18 @@
 // Package policy holds AgentKit's executable invariants. It carries no
 // non-test source and nothing imports it.
 //
-// REQ-GO-13: the dependency budget of REQ-GO-11 ships as a test, not as prose.
-// Adding a dependency is an edit to allowedModules below, and that edit is the
-// review gate.
+// The dependency policy is: the standard library is preferred, a third-party
+// module is allowed when docs/DEPS.md says why it earns its place, and cgo is
+// never allowed. REQ-GO-11's earlier rule — the root module requires nothing
+// outside the standard library, enforced by a hard allowlist — was relaxed
+// (docs/errata/dependency_policy.md): holding every dependency to a test-file
+// allowlist made the codebase harder to work in than the property was worth.
+//
+// What stays executable is what is not a matter of taste. A cgo dependency
+// breaks cross-compilation, so TestNoCgoOutsideStdlib rejects one, and
+// TestCrossTargetBuildAndVet builds the four supported targets. Module count
+// is no longer gated; go.mod is the authority on what the root requires and
+// docs/DEPS.md records why.
 package policy
 
 import (
@@ -12,20 +21,6 @@ import (
 	"strings"
 	"testing"
 )
-
-// allowedModules is the dependency budget. Every entry states, in prose, why
-// that module is allowed. The root module requires nothing outside the Go
-// standard library (REQ-GO-11), so this map holds exactly one entry: AgentKit
-// itself.
-//
-// Before adding an entry, answer in the reason string: what does this module
-// buy, is hand-rolling credible, and where is the ruling recorded? A module
-// that needs cgo is rejected outright by TestNoCgoOutsideStdlib regardless of
-// what this map says — cgo-freedom, not module count, is the property that
-// determines whether AgentKit cross-compiles (NFR-COMPAT-06).
-var allowedModules = map[string]string{
-	"github.com/agentfox/agentkit-go": "the module under test",
-}
 
 // goListDeps returns one line per package in the transitive build graph of
 // ./... as "importPath|modulePath|numCgoFiles".
@@ -66,47 +61,11 @@ func repoRoot(t *testing.T) string {
 	return strings.TrimSpace(string(out))
 }
 
-// TestNoUnapprovedModules fails on any module in the transitive build graph
-// that is not in allowedModules. Standard library packages carry an empty
-// module path and are always permitted.
-func TestNoUnapprovedModules(t *testing.T) {
-	seen := map[string][]string{}
-	for _, line := range goListDeps(t) {
-		f := strings.Split(line, "|")
-		if len(f) != 3 {
-			continue
-		}
-		importPath, modPath := f[0], f[1]
-		if modPath == "" {
-			continue // standard library
-		}
-		if _, ok := allowedModules[modPath]; !ok {
-			seen[modPath] = append(seen[modPath], importPath)
-		}
-	}
-	for modPath, importers := range seen {
-		t.Errorf(`unapproved dependency: %s
-
-	pulled in by: %s
-
-REQ-GO-11 holds the root module to the Go standard library. To resolve, pick one:
-
-  1. Remove the dependency. Usually the right answer; most of what a small
-     module buys is a few dozen lines of stdlib.
-  2. Move the code needing it into a NESTED module (its own go.mod, its own
-     tag series). Build tags and sub-packages do NOT confine a dependency —
-     it still appears in go.mod, go.sum, go list -m all, and every downstream
-     SBOM. A nested module is the only mechanism in Go that does.
-  3. If it genuinely belongs in the root, add it to allowedModules in this
-     file with a reason stating what it buys and why hand-rolling is not
-     credible, and add a numbered ruling under "Rulings" in docs/DEPS.md.
-     That edit is the review gate — it is meant to be visible in a diff.`, modPath, strings.Join(importers, ", "))
-	}
-}
-
 // TestNoCgoOutsideStdlib fails on any non-stdlib package that ships cgo files.
 // A cgo-requiring dependency breaks cross-compilation for the platform matrix
-// of NFR-COMPAT-06 even when it is otherwise approved.
+// of NFR-COMPAT-06, whatever else is said in its favour. This is the one
+// property of the dependency graph that is still gated: cgo-freedom, not
+// module count, is what determines whether AgentKit cross-compiles.
 func TestNoCgoOutsideStdlib(t *testing.T) {
 	for _, line := range goListDeps(t) {
 		f := strings.Split(line, "|")

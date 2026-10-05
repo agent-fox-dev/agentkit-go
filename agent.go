@@ -1,4 +1,4 @@
-// Package agentkit is a dependency-free Go agent SDK.
+// Package agentkit is a Go agent SDK.
 //
 // The loop, the tool system and the provider abstraction are ordinary Go you
 // can read and step through. Nothing is hidden inside a subprocess or a graph

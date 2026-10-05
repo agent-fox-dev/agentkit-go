@@ -132,11 +132,31 @@ CGO_ENABLED=1 go list -deps -f '{{.ImportPath}}|{{.Module.Path}}|{{len .CgoFiles
 
 No non-stdlib package in the dependency graph ships cgo files.
 
-### Forbidden Imports (03-REQ-9.3): PASS
+### Forbidden Imports (03-REQ-9.3): PASS (direct imports only)
 
-The codesearch module's own Go files do not directly import gRPC, Prometheus,
-or HTTP server packages. These appear as transitive dependencies of zoekt's
-index and search packages but are not imported by codesearch code.
+No package of this module directly imports gRPC, Prometheus,
+`github.com/grpc-ecosystem/…` or `net/http/httptest`. That is what
+`TestForbiddenImports` checks, and it checks **direct imports only, by
+decision**.
+
+The spec first called for the check to run over `go list -deps`. It cannot:
+the packages the spec allows, `zoekt/index` and `zoekt/search`, import these
+themselves. The project owner accepted that transitive graph instead of
+recording a no-go
+([`docs/errata/03_forbidden_imports_direct_only.md`](../docs/errata/03_forbidden_imports_direct_only.md)).
+An embedder that imports `codesearch` therefore links, among others:
+
+- `google.golang.org/grpc` and its sub-packages
+- `github.com/grpc-ecosystem/go-grpc-middleware/v2`
+- `github.com/prometheus/client_golang/prometheus` (and `promauto`),
+  `prometheus/client_model/go`, `prometheus/common/expfmt` and
+  `prometheus/procfs`
+- `github.com/getsentry/sentry-go`
+- `github.com/sourcegraph/zoekt/grpc/propagator` and
+  `github.com/sourcegraph/zoekt/grpc/protos/zoekt/webserver/v1`
+
+An embedder that does not import `codesearch` links none of them: the root
+module's graph does not include this nested module.
 
 ### Builder Accepts External Symbols (03-REQ-9.4): PASS
 

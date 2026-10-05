@@ -147,21 +147,14 @@ func TestOutline_StdlibOnly_TS_01_64(t *testing.T) {
 	}
 }
 
-// TS-01-65: go.mod gains no require and the internal/policy tests pass unmodified.
-func TestGoMod_NoRequire_TS_01_65(t *testing.T) {
+// TS-01-65: the internal/policy tests pass with outline in the tree.
+//
+// This test used to also fail on any `require` line in go.mod. The project's
+// import policy no longer holds the root module to the standard library
+// (docs/errata/dependency_policy.md), so module count is not asserted here;
+// outline's own stdlib-only design is pinned by TestOutline_StdlibOnly_TS_01_64.
+func TestInternalPolicyGreen_TS_01_65(t *testing.T) {
 	root := moduleRoot(t)
-
-	// Check go.mod has no require line.
-	gomod, err := os.ReadFile(filepath.Join(root, "go.mod"))
-	if err != nil {
-		t.Fatalf("reading go.mod: %v", err)
-	}
-	for _, line := range strings.Split(string(gomod), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "require") {
-			t.Fatalf("go.mod has a require line: %s", trimmed)
-		}
-	}
 
 	// Run internal/policy tests to confirm they pass unmodified.
 	cmd := exec.Command("go", "test", "-count=1", "./internal/policy/...")

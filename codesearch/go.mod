@@ -1,9 +1,10 @@
 // The codesearch module is a SEPARATE MODULE (like difftest/).
 //
-// It imports zoekt for trigram-based code search. REQ-GO-11 holds the root
-// module to the Go standard library, and a nested module is the only mechanism
-// in Go that keeps a dependency out of the root's graph. No embedder that does
-// not import codesearch pays for zoekt's dependency graph.
+// It imports zoekt for trigram-based code search. zoekt's graph is large
+// (gRPC, Prometheus and sentry arrive transitively), and a nested module is the
+// only mechanism in Go that keeps a dependency out of the root's graph. No
+// embedder that does not import codesearch pays for it. See docs/DEPS.md R7 and
+// docs/errata/03_forbidden_imports_direct_only.md.
 module github.com/agentfox/agentkit-go/codesearch
 
 go 1.26.5
