@@ -20,6 +20,22 @@ type symbolEntry struct {
 	indexedAt time.Time
 }
 
+// racyWindow is the filesystem timestamp granularity (1 to 2 s on some
+// filesystems), the window of 02-REQ-6.6 and Design Decision 12.
+const racyWindow = 2 * time.Second
+
+// racy reports whether the file's mtime lies within racyWindow of the moment
+// it was indexed. A same-size edit made in the same timestamp granule as the
+// write the entry records leaves (size, mtime) as they were, so for such a
+// file they cannot show that it is unchanged and a revalidation re-outlines it,
+// whenever that revalidation happens. A re-outline records indexedAt as now,
+// so once a revalidation is more than racyWindow past the file's mtime the
+// file stops being racy.
+func (e *symbolEntry) racy() bool {
+	d := e.indexedAt.Sub(e.mtime)
+	return d >= -racyWindow && d <= racyWindow
+}
+
 // symbolTable is the in-memory per-file store of outline.File, size,
 // modification time and index time behind find_symbol. It is created empty
 // with the tool set, built on the first find_symbol call and discarded with
@@ -368,12 +384,12 @@ func (st *symbolTable) buildOrRefresh(ctx context.Context, ft *fileTools, scopeP
 		if existing, ok := st.entries[rel]; ok {
 			// Skip if size and mtime are unchanged.
 			// During revalidation, the racy window (02-REQ-6.6) forces
-			// re-outline for recently indexed files whose mtime is within
-			// 2 s of their indexedAt. During a build pass (table not yet
-			// complete), already-indexed unchanged files are always skipped
-			// so repeated calls make progress.
+			// re-outline for files whose mtime is within 2 s of their
+			// indexedAt, however long ago that was. During a build pass
+			// (table not yet complete), already-indexed unchanged files are
+			// always skipped so repeated calls make progress.
 			if existing.size == fi.Size() && existing.mtime.Equal(fi.ModTime()) {
-				if !revalidating || time.Since(existing.indexedAt) > 2*time.Second {
+				if !revalidating || !existing.racy() {
 					return nil
 				}
 			}
