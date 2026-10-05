@@ -11,6 +11,11 @@ test: ## Run all Go tests (root module + difftest, codesearch and examples/codes
 	cd codesearch && go test ./...
 	cd examples/codesearch && go test ./...
 
+# Generate test coverage
+coverage:
+	go test ./... -coverprofile=coverage.txt -covermode=atomic
+	go tool cover -func=coverage.txt
+	
 .PHONY: build-examples
 build-examples: ## Install examples/triage, examples/cleaner and examples/flatline into ./bin
 	go install ./examples/triage
