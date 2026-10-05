@@ -15,6 +15,10 @@ import (
 	"strings"
 )
 
+// pathNextStep ends every path_not_allowed message, so the model that reads one
+// knows what to do instead of only what it did wrong.
+const pathNextStep = "; use a path inside the workspace (a relative path is resolved against the root)"
+
 // Errors returned by the path guard. They are sentinels so a policy can tell
 // "outside the workspace" from "malformed" without matching on strings.
 var (
@@ -84,7 +88,7 @@ func (w *Workspace) Resolve(p string) (string, error) {
 		return "", err
 	}
 	if !within(w.Root, resolved) {
-		return "", fmt.Errorf("%w: %s resolves outside the workspace root %s",
+		return "", fmt.Errorf("%w: %s resolves outside the workspace root %s"+pathNextStep,
 			ErrPathNotAllowed, p, w.Root)
 	}
 	return resolved, nil
@@ -159,10 +163,10 @@ func (w *Workspace) CheckWriteTarget(abs string) error {
 		return nil
 	}
 	if fi, lerr := os.Lstat(abs); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%w: %s is a symlink whose target %s lies outside the workspace root %s",
+		return fmt.Errorf("%w: %s is a symlink whose target %s lies outside the workspace root %s"+pathNextStep,
 			ErrPathNotAllowed, w.Rel(abs), resolved, w.Root)
 	}
-	return fmt.Errorf("%w: %s now resolves to %s, outside the workspace root %s",
+	return fmt.Errorf("%w: %s now resolves to %s, outside the workspace root %s"+pathNextStep,
 		ErrPathNotAllowed, w.Rel(abs), resolved, w.Root)
 }
 

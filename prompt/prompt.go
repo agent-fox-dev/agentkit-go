@@ -142,6 +142,9 @@ func guidelinesBlock(active []core.Tool) string {
 	if !anyPresent(active, tools.FileNavigationTools()) && hasTool(active, "execute") {
 		add(tools.ExecuteFallbackGuideline)
 	}
+	if hasTool(active, "search_files") && hasTool(active, "execute") {
+		add(tools.SearchOverExecuteGuideline)
+	}
 	for _, g := range UniversalGuidelines {
 		add(g)
 	}

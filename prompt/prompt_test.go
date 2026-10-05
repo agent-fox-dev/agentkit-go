@@ -74,3 +74,49 @@ func searchString(s, sub string) bool {
 	}
 	return false
 }
+
+// The "prefer search_files over execute+grep" guideline compares two tools, so
+// it is only sound when both are present: a run without execute must not be
+// told about a tool it does not have.
+func TestSearchOverExecuteGuidelineNeedsBothTools(t *testing.T) {
+	ws, err := tools.NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := tools.All(tools.Options{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pick := func(names ...string) []core.Tool {
+		var out []core.Tool
+		for _, tl := range all {
+			for _, n := range names {
+				if tl.Name == n {
+					out = append(out, tl)
+				}
+			}
+		}
+		if len(out) != len(names) {
+			t.Fatalf("wanted %v, resolved %d tools", names, len(out))
+		}
+		return out
+	}
+
+	for _, tc := range []struct {
+		name  string
+		tools []core.Tool
+		want  bool
+	}{
+		{"search_files and execute", pick("search_files", "execute"), true},
+		{"search_files without execute", pick("search_files", "list_files"), false},
+		{"execute without search_files", pick("execute", "list_files"), false},
+		{"search_files alone", pick("search_files"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Build(Input{Tools: tc.tools})
+			if has := contains(got, "execute+grep"); has != tc.want {
+				t.Errorf("execute+grep guideline present=%v, want %v\nprompt:\n%s", has, tc.want, got)
+			}
+		})
+	}
+}
