@@ -196,8 +196,11 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 		return core.ErrResult("index_failed", errStr)
 	}
 
-	// Handle dirty files: revalidation and dirty-path processing.
-	idx.handleDirty(ctx)
+	// Handle dirty files: revalidation and dirty-path processing. A call whose
+	// context ends during the walk is aborted.
+	if err := idx.handleDirty(ctx); err != nil {
+		return core.ErrResult("aborted", "Operation aborted")
+	}
 
 	// Check if a rebuild is needed (>5% dirty) or in progress.
 	if err := idx.waitForRebuildIfNeeded(ctx); err != nil {
@@ -303,9 +306,10 @@ func (idx *Index) ensureBuilt(ctx context.Context) error {
 // handleDirty runs revalidation if needed. It checks whether a revalidation
 // walk is required (unknown paths, .gitignore changes, or Invalidate("")),
 // and if so, walks the workspace to discover changed, new and removed files.
-func (idx *Index) handleDirty(ctx context.Context) {
+// It returns ctx.Err() when ctx ends during the walk.
+func (idx *Index) handleDirty(ctx context.Context) error {
 	if !idx.dirty.hasDirty() {
-		return
+		return nil
 	}
 
 	idx.mu.RLock()
@@ -317,7 +321,9 @@ func (idx *Index) handleDirty(ctx context.Context) {
 		if idx.testRevalHook != nil {
 			idx.testRevalHook()
 		}
-		idx.dirty.revalidate(idx.ws, idx.opts.Ignore, indexedFiles, fileInfos)
+		if err := idx.dirty.revalidate(ctx, idx.ws, idx.opts.Ignore, indexedFiles, fileInfos); err != nil {
+			return err
+		}
 		idx.revalCount.Add(1)
 
 		// A walk can hide or reveal files without changing the dirty set the
@@ -328,6 +334,7 @@ func (idx *Index) handleDirty(ctx context.Context) {
 		idx.mu.Unlock()
 		cleanupOverlay(ov)
 	}
+	return nil
 }
 
 // rebuildThreshold is the fraction of indexed files that must be dirty before

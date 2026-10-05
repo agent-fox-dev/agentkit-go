@@ -125,14 +125,15 @@ func run(ctx context.Context, w io.Writer) error {
 	// 5. When you do not know which files changed — a shell command, a git
 	//    checkout, a code generator — Invalidate("") asks for a revalidation
 	//    walk: one stat per file, re-reading only those whose size or mtime
-	//    moved, and picking up new and deleted files.
+	//    moved, and picking up new and deleted files. Here that is two files
+	//    out of eighty-odd, far below the 5% threshold in step 6, so the two
+	//    are served from the overlay and builds stays at 1.
 	//
-	//    Here it rebuilds instead (builds goes up), and that is the index being
-	//    careful rather than slow: within two seconds of a build an mtime
-	//    cannot prove a file unchanged — a write in the same clock tick leaves
-	//    it equal — so the walk counts every file as changed, which is far
-	//    past the 5% threshold below. In a session that has been running for
-	//    more than two seconds, the same call re-reads only the two that moved.
+	//    A file written within two seconds of its indexing has an mtime that
+	//    cannot prove it unchanged — a write in the same clock tick leaves it
+	//    equal — so for those the walk compares content instead, and counts a
+	//    file as changed only if it is. This tree was written a moment ago,
+	//    so every file here is in that window, and none is counted.
 	write(root, "gen/backoff.go", "package gen\n\nfunc Backoff() {}\n")
 	if err := os.Remove(filepath.Join(root, "pkg", "file00.go")); err != nil {
 		return err
