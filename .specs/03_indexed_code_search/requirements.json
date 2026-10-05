@@ -523,9 +523,9 @@
         {
           "id": "03-REQ-9.3",
           "pattern": "unwanted",
-          "condition": "codesearch needs a package that pulls in gRPC, Prometheus or an HTTP server beyond the indexing, query and search packages",
+          "condition": "a package of the codesearch module directly imports a package that pulls in gRPC, Prometheus or an HTTP server beyond zoekt's indexing, query and search packages",
           "system": "codesearch spec",
-          "action": "end the spec as a no-go instead of loosening the forbidden-import list",
+          "action": "end the spec as a no-go instead of loosening the forbidden-import list; the packages zoekt's indexing, query and search packages themselves import (gRPC, Prometheus, sentry) are accepted, per docs/errata/03_forbidden_imports_direct_only.md",
           "contract": "No code is merged; the evidence is recorded in the PRD"
         },
         {
@@ -555,7 +555,7 @@
           "id": "03-REQ-10.1",
           "pattern": "ubiquitous",
           "system": "codesearch/policy_test.go",
-          "action": "contain its own TestNoCgoOutsideStdlib and TestCgoProbeIsArmed run with CGO_ENABLED=1, a forbidden-import check over `go list -deps` for gRPC, Prometheus and HTTP servers, a build and vet of the four targets, and, where the stub is used, a test asserting ErrUnsupported"
+          "action": "contain its own TestNoCgoOutsideStdlib and TestCgoProbeIsArmed run with CGO_ENABLED=1, a forbidden-import check over codesearch's direct imports for gRPC, Prometheus and HTTP servers (the transitive graph of zoekt's packages is accepted, per docs/errata/03_forbidden_imports_direct_only.md), a build and vet of the four targets, and, where the stub is used, a test asserting ErrUnsupported"
         },
         {
           "id": "03-REQ-10.2",

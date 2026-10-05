@@ -75,7 +75,7 @@ reading. Report each as `PASS`, `FAIL`, or `SKIPPED` with the reason.
 gofmt -l .                                   # any output is a FAIL
 go vet ./...
 go test -race ./...
-go test -short ./internal/policy/...         # dependency budget, cgo probe
+go test -short ./internal/policy/...         # cgo probe, dependency-policy ledger
 go test -run TestCrossTargetBuildAndVet ./internal/policy/   # NFR-COMPAT-06
 ```
 

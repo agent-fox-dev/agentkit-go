@@ -71,3 +71,43 @@ func TestTheProviderLedgerMatchesTheCode(t *testing.T) {
 		}
 	}
 }
+
+// TestDependencyPolicyIsRecorded keeps the relaxation of the stdlib-only rule
+// (REQ-GO-11) on the record where a reader will look for it.
+//
+// The root module is no longer held to the Go standard library: a third-party
+// module may enter go.mod when docs/DEPS.md says why, and cgo is still rejected
+// by TestNoCgoOutsideStdlib. That is a policy change, and a policy change with
+// no erratum is indistinguishable from a gate somebody quietly deleted. This
+// checks the two errata that record it exist and that docs/DEPS.md — the
+// ledger a contributor reads before adding a dependency — links to them.
+//
+// Like TestTheProviderLedgerMatchesTheCode this holds the part a test can: the
+// documents exist and point at each other. It cannot check that the reasoning
+// in them is sound.
+func TestDependencyPolicyIsRecorded(t *testing.T) {
+	root := repoRoot(t)
+
+	for _, name := range []string{
+		"dependency_policy.md",
+		"03_forbidden_imports_direct_only.md",
+	} {
+		if _, err := os.Stat(filepath.Join(root, "docs", "errata", name)); err != nil {
+			t.Errorf("docs/errata/%s must exist to record the dependency policy: %v", name, err)
+		}
+	}
+
+	raw, err := os.ReadFile(filepath.Join(root, "docs", "DEPS.md"))
+	if err != nil {
+		t.Fatalf("docs/DEPS.md must exist: %v", err)
+	}
+	doc := string(raw)
+	for _, link := range []string{
+		"errata/dependency_policy.md",
+		"errata/03_forbidden_imports_direct_only.md",
+	} {
+		if !strings.Contains(doc, link) {
+			t.Errorf("docs/DEPS.md does not link to %s; the ledger must point at the errata that relax REQ-GO-11", link)
+		}
+	}
+}
