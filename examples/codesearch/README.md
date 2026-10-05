@@ -84,10 +84,10 @@ the application's decision, since the logger is the process's, not the index's.
 5. gen/backoff.go added, pkg/file00.go deleted, Invalidate("")
    sym:Backoff    -> gen/backoff.go
    sym:Helper00   -> no matches
-   builds=2 overlays=1 revalidations=1
+   builds=1 overlays=2 revalidations=1
 6. five more files rewritten and invalidated (over 5%)
    sym:Renamed    -> pkg/file01.go, pkg/file02.go, pkg/file03.go, pkg/file04.go, pkg/file05.go
-   builds=3 overlays=1 revalidations=1
+   builds=2 overlays=2 revalidations=1
 7. after Close
    sym:Retry      -> error index_closed
 ```

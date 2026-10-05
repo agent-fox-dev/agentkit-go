@@ -708,6 +708,7 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 	}
 
 	indexedFiles := make(map[string]bool, len(files))
+	hashes := make(map[string]uint64, len(files))
 
 	for _, fe := range files {
 		if callerCtx.Err() != nil {
@@ -751,6 +752,7 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 			continue
 		}
 		indexedFiles[fe.rel] = true
+		hashes[fe.rel] = contentHash(content)
 		totalBytes += int64(len(content))
 	}
 
@@ -776,6 +778,7 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 			size:      fi.Size(),
 			mtime:     fi.ModTime(),
 			indexedAt: now,
+			hash:      hashes[fe.rel],
 		}
 	}
 

@@ -162,7 +162,9 @@ func (idx *Index) symbolsHandleDirty(ctx context.Context) error {
 		if idx.testRevalHook != nil {
 			idx.testRevalHook()
 		}
-		idx.dirty.revalidate(idx.ws, idx.opts.Ignore, indexedFiles, fileInfos)
+		if err := idx.dirty.revalidate(ctx, idx.ws, idx.opts.Ignore, indexedFiles, fileInfos); err != nil {
+			return err
+		}
 		idx.revalCount.Add(1)
 	}
 

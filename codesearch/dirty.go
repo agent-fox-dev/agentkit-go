@@ -5,6 +5,7 @@ package codesearch
 import (
 	"bytes"
 	"context"
+	"hash/maphash"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -35,6 +36,13 @@ type dirtyTracker struct {
 	// the entry, since each edit of it can change what the walk sees.
 	validated map[string]bool
 
+	// verified maps a racy indexed path to the indexedAt of the record whose
+	// content a walk has compared with the indexed content after the file's
+	// timestamp granule closed. Such a file cannot hide a same-mtime edit any
+	// more, so later walks trust its (size, mtime). A rebuild writes new
+	// records with a new indexedAt, which makes the entry stale.
+	verified map[string]time.Time
+
 	// revalidateAll is set when the whole index needs revalidation
 	// (Invalidate("") was called).
 	revalidateAll bool
@@ -52,6 +60,7 @@ func newDirtyTracker() *dirtyTracker {
 		paths:     make(map[string]uint64),
 		gone:      make(map[string]bool),
 		validated: make(map[string]bool),
+		verified:  make(map[string]time.Time),
 	}
 }
 
@@ -143,11 +152,32 @@ func (dt *dirtyTracker) isGone(rel string) bool {
 	return dt.gone[rel]
 }
 
-// indexedFileInfo holds the (size, mtime) of a file at index time.
+// racyWindow is the filesystem timestamp granularity: a file edited within it
+// of the mtime recorded for it can end up with the same mtime again. It is the
+// window 02_symbol_navigation_tools uses.
+const racyWindow = 2 * time.Second
+
+// contentSeed seeds contentHash. The hashes never leave the process.
+var contentSeed = maphash.MakeSeed()
+
+// contentHash is the hash recorded for an indexed file's content, to compare
+// with the content a racy file has now.
+func contentHash(b []byte) uint64 { return maphash.Bytes(contentSeed, b) }
+
+// indexedFileInfo holds the (size, mtime) of a file at index time, when it
+// was indexed, and a hash of the content that was indexed.
 type indexedFileInfo struct {
 	size      int64
 	mtime     time.Time
 	indexedAt time.Time
+	hash      uint64
+}
+
+// racy reports whether the file's mtime lies within racyWindow of the moment
+// it was indexed (or after it). A same-size edit made after the content was
+// read can then leave (size, mtime) as they were, so they cannot vouch for it.
+func (i indexedFileInfo) racy() bool {
+	return i.indexedAt.Sub(i.mtime) <= racyWindow
 }
 
 // needsRevalidation returns true if a revalidation walk is needed before
@@ -176,17 +206,50 @@ func (dt *dirtyTracker) needsRevalidation(indexedFiles map[string]bool) bool {
 	return false
 }
 
+// racyEdit reports whether a file whose (size, mtime) match its record has
+// changed anyway. Only a racy file can have: its content is compared with the
+// hash recorded at index time, which is cheap next to marking the file dirty
+// and, for a tree indexed just after it was written, next to marking all of
+// it dirty. Once the comparison has been made after the file's timestamp
+// granule closed, the result is remembered and the file is not read again.
+func (dt *dirtyTracker) racyEdit(rel, abs string, info indexedFileInfo) bool {
+	if !info.racy() {
+		return false
+	}
+	dt.mu.Lock()
+	verified := dt.verified[rel].Equal(info.indexedAt)
+	dt.mu.Unlock()
+	if verified {
+		return false
+	}
+
+	content, err := os.ReadFile(abs)
+	if err != nil || contentHash(content) != info.hash {
+		return true
+	}
+	if time.Since(info.mtime) >= racyWindow {
+		dt.mu.Lock()
+		dt.verified[rel] = info.indexedAt
+		dt.mu.Unlock()
+	}
+	return false
+}
+
 // revalidate walks the workspace and compares (size, mtime) with the indexed
-// values. Files indexed within the previous 2 seconds are treated as changed
-// (the filesystem timestamp-granularity window). Changed, new and removed
-// files are marked dirty. It clears the revalidateAll flag using
-// generation-based clearing.
+// values; a file that matches is neither opened nor read, unless it is racy
+// (see racyEdit). Changed, new and removed files are marked dirty. It clears
+// the revalidateAll flag using generation-based clearing.
+//
+// It stops when ctx ends and returns ctx.Err(). A walk that stopped early
+// cannot say which files are gone, so it applies nothing beyond the marks of
+// files it saw: the whole-index mark stays set and the next call walks again.
 func (dt *dirtyTracker) revalidate(
+	ctx context.Context,
 	ws *tools.Workspace,
 	ig tools.IgnoreOptions,
 	indexedFiles map[string]bool,
 	fileInfos map[string]indexedFileInfo,
-) {
+) error {
 	// Snapshot the generation before the walk so we can clear
 	// revalidateAll only if no new marks arrived during the walk.
 	dt.mu.Lock()
@@ -195,7 +258,7 @@ func (dt *dirtyTracker) revalidate(
 	seen := make(map[string]bool)
 
 	_ = tools.Walk(
-		context.Background(),
+		ctx,
 		ws, ws.Root,
 		tools.WalkOptions{
 			Ignore:        ig,
@@ -215,7 +278,18 @@ func (dt *dirtyTracker) revalidate(
 				return nil
 			}
 
-			// Skip oversized and binary files (same filters as build).
+			// An indexed file whose size and mtime are as recorded passed the
+			// build's filters then and has not changed: it is seen, and is
+			// not opened.
+			info, indexed := fileInfos[rel]
+			if indexed && fi.Size() == info.size && fi.ModTime().Equal(info.mtime) &&
+				!dt.racyEdit(rel, abs, info) {
+				seen[rel] = true
+				return nil
+			}
+
+			// New or changed: skip oversized and binary files (same filters
+			// as build).
 			if fi.Size() > maxFileSize {
 				return nil
 			}
@@ -232,8 +306,6 @@ func (dt *dirtyTracker) revalidate(
 
 			seen[rel] = true
 
-			// Check if the file has changed.
-			info, indexed := fileInfos[rel]
 			if !indexed {
 				// New file: mark dirty and validated.
 				dt.markDirty(rel)
@@ -243,21 +315,13 @@ func (dt *dirtyTracker) revalidate(
 				return nil
 			}
 
-			// Check (size, mtime) and the 2-second racy window.
-			changed := false
-			if fi.Size() != info.size || !fi.ModTime().Equal(info.mtime) {
-				changed = true
-			}
-			if !changed && time.Since(info.indexedAt) <= 2*time.Second {
-				changed = true
-			}
-			if changed {
-				dt.markDirty(rel)
-			}
-
+			dt.markDirty(rel)
 			return nil
 		},
 	)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Files no longer yielded by the walk are dirty and gone.
 	for rel := range indexedFiles {
@@ -293,4 +357,6 @@ func (dt *dirtyTracker) revalidate(
 		}
 	}
 	dt.mu.Unlock()
+
+	return nil
 }
