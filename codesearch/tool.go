@@ -291,14 +291,10 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 
 // ensureBuilt triggers a lazy build if the index has not been built yet.
 // A partial index is not retried; only the dirty-threshold rebuild replaces it.
+// A call arriving during the first build waits for it and abandons the wait
+// when ctx ends.
 func (idx *Index) ensureBuilt(ctx context.Context) error {
-	idx.mu.RLock()
-	built := idx.built
-	idx.mu.RUnlock()
-	if built {
-		return nil
-	}
-	return idx.Build(ctx)
+	return idx.build(ctx, true)
 }
 
 // handleDirty runs revalidation if needed. It checks whether a revalidation
