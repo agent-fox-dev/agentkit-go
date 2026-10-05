@@ -17,9 +17,17 @@ type SymbolQuery struct {
 }
 
 // SymbolAnswer is the response from Index.Symbols.
+//
+// FilesIndexed and Backends describe the queried scope, as they do for the
+// table-based find_symbol: FilesIndexed is the number of indexed files under
+// SymbolQuery.Path (the whole workspace when it is empty), and Backends maps
+// each outline backend name to its number of those files. A nil Backends
+// means the Index does not report them, and find_symbol counts the backends
+// of the matches instead.
 type SymbolAnswer struct {
 	Matches      []SymbolMatch
 	FilesIndexed int
+	Backends     map[string]int
 }
 
 // Index is the standard-library-only seam through which a codesearch index

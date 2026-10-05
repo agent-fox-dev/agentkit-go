@@ -113,7 +113,7 @@ func (f *fileTools) findSymbolTool() core.Tool {
 					return core.ErrResult("aborted", "Operation aborted")
 				}
 				if ok {
-					return f.renderSymbolResult(ans.Matches, name, a.MaxResults, a.Exact, scopePrefix, ans.FilesIndexed, true)
+					return f.renderSymbolResult(ans.Matches, name, a.MaxResults, a.Exact, scopePrefix, ans.FilesIndexed, ans.Backends, true)
 				}
 				// ok=false: fall through to the symbol table.
 			}
@@ -301,6 +301,7 @@ func (f *fileTools) renderSymbolResult(
 	exact bool,
 	scopePrefix string,
 	filesIndexed int,
+	backends map[string]int,
 	fromIndex bool,
 ) core.ToolResult {
 	// Rank matches using find_symbol's own ranking.
@@ -320,11 +321,14 @@ func (f *fileTools) renderSymbolResult(
 		matches = []SymbolMatch{}
 	}
 
-	// Compute backends from the matches.
-	backends := make(map[string]int)
-	for _, m := range matches {
-		if m.Backend != "" {
-			backends[m.Backend]++
+	// An Index that reports no backends for the scope leaves them to be
+	// counted from the matches.
+	if backends == nil {
+		backends = make(map[string]int)
+		for _, m := range matches {
+			if m.Backend != "" {
+				backends[m.Backend]++
+			}
 		}
 	}
 

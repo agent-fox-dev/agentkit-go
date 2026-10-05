@@ -279,8 +279,9 @@ func collectDeclNames(fm zoekt.FileMatch, of outline.File) []string {
 func renderResult(files []searchResultFile, info resultInfo) string {
 	var b strings.Builder
 
-	// First line: file count, index size, symbol sources, ctags note, partial/dirty.
-	b.WriteString(renderFirstLine(info))
+	// First line: matched and indexed file counts, index size, symbol sources,
+	// ctags note, partial/dirty.
+	b.WriteString(renderFirstLine(info, len(files)))
 	b.WriteByte('\n')
 
 	if len(files) == 0 {
@@ -322,9 +323,12 @@ type resultInfo struct {
 	dirtyFiles     int
 }
 
-// renderFirstLine renders the first line of the result text.
-func renderFirstLine(info resultInfo) string {
+// renderFirstLine renders the first line of the result text. matched is the
+// number of files the text shows.
+func renderFirstLine(info resultInfo, matched int) string {
 	var parts []string
+
+	parts = append(parts, fmt.Sprintf("%d files matched", matched))
 
 	parts = append(parts, fmt.Sprintf("%d files indexed", info.filesIndexed))
 
@@ -478,4 +482,23 @@ func applyByteCap(files []searchResultFile, info resultInfo, budget int) ([]sear
 func bytesMarker() string {
 	return fmt.Sprintf("[%s limit reached. Narrow with path, add file: to the query, or reduce context_lines]",
 		humanSize(int64(tools.DefaultByteLimit)))
+}
+
+// cutLines returns the longest prefix of text that is at most max bytes and
+// ends at a line boundary, without the trailing newline. It never splits a
+// line, so it never splits a rune either; when not even the first line fits
+// it returns "".
+func cutLines(text string, max int) string {
+	if len(text) <= max {
+		return text
+	}
+	if max < 0 {
+		return ""
+	}
+	// text[max] may itself be the newline that ends a line of exactly max bytes.
+	cut := strings.LastIndexByte(text[:max+1], '\n')
+	if cut < 0 {
+		return ""
+	}
+	return text[:cut]
 }
