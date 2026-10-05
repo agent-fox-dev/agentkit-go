@@ -4,6 +4,7 @@ package codesearch
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -156,70 +157,72 @@ func chunkFromZoekt(cm zoekt.ChunkMatch, contextLines int) resultChunk {
 	return resultChunk{lines: lines}
 }
 
-// mergeChunks merges overlapping or adjacent chunks.
+// mergeChunks merges overlapping or adjacent chunks and keeps zoekt's order.
+// The chunks arrive best first, and each merged chunk keeps the place of its
+// best-ranked part: a chunk that touches an earlier one is folded into it,
+// and a chunk that bridges several is folded into the earliest. Cutting the
+// result to maxChunksPerFile therefore keeps zoekt's best chunks, best first.
 func mergeChunks(chunks []resultChunk) []resultChunk {
-	if len(chunks) <= 1 {
-		return chunks
-	}
-
-	// Sort chunks by their first line number.
-	sort.Slice(chunks, func(i, j int) bool {
-		if len(chunks[i].lines) == 0 {
-			return true
-		}
-		if len(chunks[j].lines) == 0 {
-			return false
-		}
-		return chunks[i].lines[0].lineNo < chunks[j].lines[0].lineNo
-	})
-
 	var merged []resultChunk
-	current := chunks[0]
 
-	for i := 1; i < len(chunks); i++ {
-		next := chunks[i]
-		if len(current.lines) == 0 || len(next.lines) == 0 {
-			if len(next.lines) > 0 {
-				current = next
-			}
+	for _, c := range chunks {
+		if len(c.lines) == 0 {
 			continue
 		}
 
-		currentEnd := current.lines[len(current.lines)-1].lineNo
-		nextStart := next.lines[0].lineNo
+		// The slots are pairwise disjoint, so the ones c touches are the only
+		// ones its union with them can touch.
+		var touching []int
+		for i, m := range merged {
+			if chunksTouch(m, c) {
+				touching = append(touching, i)
+			}
+		}
+		if len(touching) == 0 {
+			merged = append(merged, c)
+			continue
+		}
 
-		if nextStart <= currentEnd+1 {
-			// Overlapping or adjacent: merge.
-			lineMap := make(map[int]resultLine)
-			for _, l := range current.lines {
-				lineMap[l.lineNo] = l
-			}
-			for _, l := range next.lines {
-				if existing, ok := lineMap[l.lineNo]; ok {
-					// Prefer match over context.
-					if l.match && !existing.match {
-						lineMap[l.lineNo] = l
-					}
-				} else {
-					lineMap[l.lineNo] = l
-				}
-			}
-			var lines []resultLine
-			for _, l := range lineMap {
-				lines = append(lines, l)
-			}
-			sort.Slice(lines, func(i, j int) bool {
-				return lines[i].lineNo < lines[j].lineNo
-			})
-			current = resultChunk{lines: lines}
-		} else {
-			merged = append(merged, current)
-			current = next
+		u := c
+		for _, i := range touching {
+			u = unionChunks(merged[i], u)
+		}
+		merged[touching[0]] = u
+		for k := len(touching) - 1; k >= 1; k-- {
+			merged = slices.Delete(merged, touching[k], touching[k]+1)
 		}
 	}
-	merged = append(merged, current)
 
 	return merged
+}
+
+// chunksTouch reports whether two non-empty chunks overlap or are adjacent.
+func chunksTouch(a, b resultChunk) bool {
+	aFirst, aLast := a.lines[0].lineNo, a.lines[len(a.lines)-1].lineNo
+	bFirst, bLast := b.lines[0].lineNo, b.lines[len(b.lines)-1].lineNo
+	return bFirst <= aLast+1 && aFirst <= bLast+1
+}
+
+// unionChunks returns the lines of a and b in ascending order, preferring a
+// match over context where both have the same line.
+func unionChunks(a, b resultChunk) resultChunk {
+	lineMap := make(map[int]resultLine, len(a.lines)+len(b.lines))
+	for _, l := range a.lines {
+		lineMap[l.lineNo] = l
+	}
+	for _, l := range b.lines {
+		if existing, ok := lineMap[l.lineNo]; !ok || (l.match && !existing.match) {
+			lineMap[l.lineNo] = l
+		}
+	}
+	lines := make([]resultLine, 0, len(lineMap))
+	for _, l := range lineMap {
+		lines = append(lines, l)
+	}
+	sort.Slice(lines, func(i, j int) bool {
+		return lines[i].lineNo < lines[j].lineNo
+	})
+	return resultChunk{lines: lines}
 }
 
 // capLineText cuts a line to SearchLineChars runes, appending "…" if truncated.
