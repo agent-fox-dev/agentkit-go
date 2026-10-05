@@ -38,7 +38,7 @@ func TestOverlayShardMergeByScore_TS03_44(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -151,7 +151,7 @@ func TestRebuildThreshold_TS03_45(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -247,7 +247,7 @@ func TestRebuildWaitAndAbort_TS03_46(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -380,7 +380,7 @@ func TestFreshnessPropertySequence_TS03_49(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			idx, err := New(ws, Options{
+			idx, err := newIndex(ws, Options{
 				TempDir:      t.TempDir(),
 				Ignore:       tools.NoGlobalExcludes(),
 				DisableCtags: true,

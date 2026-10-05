@@ -35,21 +35,29 @@ learns about writes, and may serve `find_symbol`.
 ```go
 import "github.com/agentfox/agentkit-go/codesearch"
 
+opts := tools.Options{Workspace: ws /* ... */}
 idx, err := codesearch.New(ws, codesearch.Options{
     Ignore: opts.Ignore, // same value as tools.Options.Ignore
 })
-if err != nil {
-    // On Windows: errors.Is(err, codesearch.ErrUnsupported)
-    // Fall back to Options.Index == nil
+switch {
+case errors.Is(err, codesearch.ErrUnsupported):
+    // Windows: run without code search. Options.Index stays nil.
+case err != nil:
+    return err
+default:
+    defer idx.Close()
+    opts.Index = idx
 }
-defer idx.Close()
 
-tools, err := tools.All(tools.Options{
-    Workspace: ws,
-    Index:     idx,
-    // ...
-})
+tools, err := tools.All(opts)
 ```
+
+`New` returns a `tools.Index`, the same on every platform, so this is one code
+path with no build constraint. When it returns an error the index is a nil
+interface, never a nil `*codesearch.Index` inside one, so passing it on to
+`Options.Index` without checking `err` is the same as having no index. Code
+that wants the build counters or statistics (`BuildCount`, `BuildStats`,
+`Build`) asserts the result to `*codesearch.Index`; the examples do.
 
 Add `"code_search"` to your embedder's tool allowlist.
 
@@ -179,9 +187,12 @@ that returns `ErrUnsupported`, not treated as a no-go.
 
 ### Windows Stub (03-REQ-8.6)
 
-On windows/amd64, `codesearch.New` returns `ErrUnsupported`. The error value
-is the same on every platform (`errors.Is(err, codesearch.ErrUnsupported)`
-works). An embedder falls back to `Options.Index == nil`.
+On windows/amd64, `codesearch.New` returns a nil `tools.Index` and
+`ErrUnsupported`. The error value is the same on every platform
+(`errors.Is(err, codesearch.ErrUnsupported)` works). An embedder falls back to
+`Options.Index == nil`. The stub `Index` type implements `tools.Index` with
+inert methods (`Symbols` never answers, `Tools` is empty), so the code in
+[How to Opt In](#how-to-opt-in) compiles on Windows unchanged.
 
 ## Goldens
 

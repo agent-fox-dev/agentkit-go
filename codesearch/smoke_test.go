@@ -38,7 +38,7 @@ func TestSmokeFirstSymSearch_TS03_69(t *testing.T) {
 	}
 
 	// Create a real codesearch index with DisableCtags (fake Runner not needed).
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -197,7 +197,7 @@ func TestSmokeEditFileFreshness_TS03_70(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -311,7 +311,7 @@ func TestSmokeShellDeleteFreshness_TS03_71(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -412,7 +412,7 @@ func TestSmokeFindSymbolThroughIndex_TS03_72(t *testing.T) {
 	}
 
 	// Create a real codesearch index.
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -536,7 +536,7 @@ func TestSmokePartialBound_TS03_73(t *testing.T) {
 	}
 
 	// Create a real index with a very low MaxFiles bound.
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -605,7 +605,7 @@ func TestSmokeCloseAndIndexClosed_TS03_74(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,

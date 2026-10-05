@@ -33,7 +33,7 @@ func gitignoreFixture(t *testing.T) (root string, idx *Index, search func(q stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	idx, err = New(ws, Options{
+	idx, err = newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,

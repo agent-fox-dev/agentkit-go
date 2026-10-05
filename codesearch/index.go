@@ -94,10 +94,28 @@ func normalizeOptions(o Options) Options {
 	return o
 }
 
+// Index implements tools.Index; stub_windows.go asserts the same there.
+var _ tools.Index = (*Index)(nil)
+
 // New creates a codesearch index for the given workspace. It returns a
 // tools.Index without starting a goroutine, running a process, walking the
 // workspace or touching the disk. It returns an error if ws is nil.
-func New(ws *tools.Workspace, opts Options) (*Index, error) {
+//
+// On error the result is a nil interface, never a nil *Index inside one, so
+// an embedder that stores it in Options.Index without checking err gets no
+// index instead of one whose methods run on a nil receiver. An embedder that
+// wants the build counters and statistics asserts the result to *Index.
+func New(ws *tools.Workspace, opts Options) (tools.Index, error) {
+	idx, err := newIndex(ws, opts)
+	if err != nil {
+		return nil, err
+	}
+	return idx, nil
+}
+
+// newIndex is New with the concrete type, for the tests in this package that
+// use the unexported hooks.
+func newIndex(ws *tools.Workspace, opts Options) (*Index, error) {
 	if ws == nil {
 		return nil, errors.New("codesearch: workspace must not be nil")
 	}

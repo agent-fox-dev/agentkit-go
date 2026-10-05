@@ -42,7 +42,7 @@ func TestResultsScoreOrderedAndCapsHold_TS03_24(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -187,7 +187,7 @@ func (Server) Pause() {}
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -297,7 +297,7 @@ func TestFirstLineContent_TS03_26(t *testing.T) {
 	}
 
 	t.Run("complete with ctags disabled", func(t *testing.T) {
-		idx, err := New(ws, Options{
+		idx, err := newIndex(ws, Options{
 			TempDir:      t.TempDir(),
 			Ignore:       tools.NoGlobalExcludes(),
 			DisableCtags: true,
@@ -339,7 +339,7 @@ func TestFirstLineContent_TS03_26(t *testing.T) {
 		fakeRunner := func(_ context.Context, _ []string) ([]byte, error) {
 			return []byte(""), nil
 		}
-		idx, err := New(ws, Options{
+		idx, err := newIndex(ws, Options{
 			TempDir: t.TempDir(),
 			Ignore:  tools.NoGlobalExcludes(),
 			Runner:  fakeRunner,
@@ -381,7 +381,7 @@ func TestNoMatchIsSuccessful_TS03_27(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -435,7 +435,7 @@ func TestCapMarkerAndTruncatedByLines_TS03_28(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -508,7 +508,7 @@ func TestByteLimitDropsFiles_TS03_29(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -565,7 +565,7 @@ func TestByteLimitDropsFiles_TS03_29(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx2, err := New(ws2, Options{
+	idx2, err := newIndex(ws2, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -610,7 +610,7 @@ func TestDataCarriesAllFields_TS03_30(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -697,7 +697,7 @@ func TestPropertyMarkersAndByteLimit_TS03_31(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -804,7 +804,7 @@ func TestNoCtagsCodeSearchWorks_TS03_36(t *testing.T) {
 	}
 
 	// Use a runner that returns ErrCtagsUnavailable.
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
 		Ignore:  tools.NoGlobalExcludes(),
 		Runner: func(_ context.Context, _ []string) ([]byte, error) {

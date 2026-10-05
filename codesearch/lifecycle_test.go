@@ -34,7 +34,7 @@ func TestBoundsGivePartialNotRetried_TS03_39(t *testing.T) {
 	}
 
 	t.Run("files bound", func(t *testing.T) {
-		idx, err := New(ws, Options{
+		idx, err := newIndex(ws, Options{
 			TempDir:      t.TempDir(),
 			Ignore:       tools.NoGlobalExcludes(),
 			DisableCtags: true,
@@ -72,7 +72,7 @@ func TestBoundsGivePartialNotRetried_TS03_39(t *testing.T) {
 	})
 
 	t.Run("bytes bound", func(t *testing.T) {
-		idx, err := New(ws, Options{
+		idx, err := newIndex(ws, Options{
 			TempDir:      t.TempDir(),
 			Ignore:       tools.NoGlobalExcludes(),
 			DisableCtags: true,
@@ -113,7 +113,7 @@ func TestBoundsGivePartialNotRetried_TS03_39(t *testing.T) {
 		blockCh := make(chan struct{})
 		close(blockCh) // don't actually block, just use a very short time limit
 
-		idx, err := New(ws, Options{
+		idx, err := newIndex(ws, Options{
 			TempDir:      t.TempDir(),
 			Ignore:       tools.NoGlobalExcludes(),
 			DisableCtags: true,
@@ -175,7 +175,7 @@ func TestCancelledBuildAbortsAndRebuilds_TS03_40(t *testing.T) {
 	// Use a blocking outline hook to simulate a long build.
 	blockCh := make(chan struct{})
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -258,7 +258,7 @@ func TestConcurrentQueries_TS03_56(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -328,7 +328,7 @@ func TestCloseWaitsAndDeletesAndIdempotent_TS03_57(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -432,7 +432,7 @@ func TestAfterCloseToolsRefuse_TS03_58(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      t.TempDir(),
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,
@@ -532,7 +532,7 @@ func TestAllNoCloserAndSweepAbandoned_TS03_59(t *testing.T) {
 	}
 
 	// Build a new index (which triggers the sweep).
-	idx, err := New(ws, Options{
+	idx, err := newIndex(ws, Options{
 		TempDir:      tmpDir,
 		Ignore:       tools.NoGlobalExcludes(),
 		DisableCtags: true,

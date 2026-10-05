@@ -62,7 +62,7 @@ func run(ctx context.Context, w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	idx, err := codesearch.New(ws, codesearch.Options{
+	index, err := codesearch.New(ws, codesearch.Options{
 		// Both settings make the output identical on every machine: no
 		// user-global git excludes, and the built-in outline backends rather
 		// than whichever ctags happens to be installed.
@@ -77,6 +77,9 @@ func run(ctx context.Context, w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// New returns a tools.Index, which is all an embedder needs. This example
+	// also prints the build counters, which live on the concrete type.
+	idx := index.(*codesearch.Index)
 	defer idx.Close()
 
 	search := func(q string) string {
