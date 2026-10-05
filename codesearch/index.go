@@ -130,8 +130,10 @@ type Index struct {
 	// runID is a unique identifier for this index instance.
 	runID string
 
-	// mu guards index state. Builds take the write side; queries share
-	// the read side so they run concurrently with each other.
+	// mu guards index state. It is held only for short critical sections,
+	// never across a build, so a call waiting behind a build can abandon the
+	// wait when its context ends. Queries share the read side so they run
+	// concurrently with each other.
 	mu sync.RWMutex
 
 	// inFlight tracks the number of in-flight queries. Close waits for
@@ -175,6 +177,14 @@ type Index struct {
 
 	// overlay holds the current overlay shard state for dirty files.
 	overlay *overlayState
+
+	// building is true while a build started by Build or the first query is
+	// in progress.
+	building bool
+
+	// buildDone is closed when the current build finishes, whatever its
+	// outcome. Waiters select on this and their own context.
+	buildDone chan struct{}
 
 	// rebuilding is true when a full rebuild is in progress.
 	rebuilding bool
@@ -281,9 +291,9 @@ func (idx *Index) Invalidate(rel string) {
 	}
 }
 
-// Close releases resources. It waits for in-flight queries to finish,
-// then releases the zoekt searcher and deletes the run directory. It is
-// idempotent: every call after the first returns nil immediately.
+// Close releases resources. It waits for a build and in-flight queries to
+// finish, then releases the zoekt searcher and deletes the run directory. It
+// is idempotent: every call after the first returns nil immediately.
 func (idx *Index) Close() error {
 	idx.mu.Lock()
 	if idx.closed {
@@ -291,7 +301,14 @@ func (idx *Index) Close() error {
 		return nil
 	}
 	idx.closed = true
+	building, buildDone := idx.building, idx.buildDone
 	idx.mu.Unlock()
+
+	// Wait for a build in progress, so nothing writes into the run directory
+	// after it is removed. No new build starts once closed is set.
+	if building {
+		<-buildDone
+	}
 
 	// Wait for in-flight queries to finish.
 	idx.inFlight.Wait()
@@ -398,13 +415,53 @@ type buildOutput struct {
 // it has and marks itself partial. A partial index is not retried by later
 // calls. A cancelled call context discards the partial build and leaves the
 // next call free to build again.
+//
+// A call arriving while another build is running waits for it, abandonably:
+// when ctx ends first it returns an "aborted" error without waiting for the
+// build to finish. The lock is not held during the build.
 func (idx *Index) Build(ctx context.Context) error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
+	return idx.build(ctx, false)
+}
 
-	if idx.closed {
-		return errors.New("index_closed")
+// build runs a build, or waits for the one in progress. With onlyIfUnbuilt it
+// returns nil as soon as the index is built, whether by this call or by the
+// one it waited for; a build that failed or was cancelled leaves the waiter
+// free to build for itself.
+func (idx *Index) build(ctx context.Context, onlyIfUnbuilt bool) error {
+	// Claim the build slot, waiting abandonably while another call holds it.
+	for {
+		idx.mu.Lock()
+		if idx.closed {
+			idx.mu.Unlock()
+			return errors.New("index_closed")
+		}
+		if onlyIfUnbuilt && idx.built {
+			idx.mu.Unlock()
+			return nil
+		}
+		if !idx.building {
+			break
+		}
+		done := idx.buildDone
+		idx.mu.Unlock()
+		select {
+		case <-done:
+			// The build finished; loop to re-check the state.
+		case <-ctx.Done():
+			return fmt.Errorf("aborted: %w", ctx.Err())
+		}
 	}
+	idx.building = true
+	idx.buildDone = make(chan struct{})
+	done := idx.buildDone
+	idx.mu.Unlock()
+
+	defer func() {
+		idx.mu.Lock()
+		idx.building = false
+		close(done)
+		idx.mu.Unlock()
+	}()
 
 	// Snapshot the dirty generation so we can clear only marks older than
 	// this build when it finishes.
@@ -414,7 +471,8 @@ func (idx *Index) Build(ctx context.Context) error {
 	buildCtx, buildCancel := context.WithTimeout(ctx, idx.opts.MaxBuildTime)
 	defer buildCancel()
 
-	// Create the run directory.
+	// Create the run directory. idx.runID is stable here: only a rebuild
+	// changes it, and a rebuild needs a built index.
 	runDir := idx.runDirPath()
 	hashDir := idx.hashDirPath()
 
@@ -424,7 +482,6 @@ func (idx *Index) Build(ctx context.Context) error {
 	if err := os.Mkdir(runDir, 0o700); err != nil {
 		return fmt.Errorf("index_failed: %w", err)
 	}
-	idx.runDir = runDir
 
 	// Sweep old sibling run directories.
 	idx.sweepOldRuns()
@@ -432,10 +489,12 @@ func (idx *Index) Build(ctx context.Context) error {
 	result, err := idx.doBuild(buildCtx, ctx, runDir)
 	if err != nil {
 		os.RemoveAll(runDir)
-		idx.runDir = ""
 		return err
 	}
 
+	// Publish the new state under the lock.
+	idx.mu.Lock()
+	idx.runDir = runDir
 	idx.indexedFiles = result.indexedFiles
 	idx.outlineFiles = result.outlineFiles
 	idx.stats = result.stats
@@ -444,6 +503,7 @@ func (idx *Index) Build(ctx context.Context) error {
 	idx.partial = result.partial
 	idx.partialReason = result.partialReason
 	idx.buildCount.Add(1)
+	idx.mu.Unlock()
 
 	// Clear dirty marks that predate this build, keeping any marks made
 	// during the build (generation-based clearing).
