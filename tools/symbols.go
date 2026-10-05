@@ -147,6 +147,13 @@ func (st *symbolTable) snapshotMarks() (dirtyPaths map[string]bool, revalidateAl
 	return
 }
 
+// currentGeneration returns the generation counter as it is now.
+func (st *symbolTable) currentGeneration() uint64 {
+	st.markMu.Lock()
+	defer st.markMu.Unlock()
+	return st.generation
+}
+
 // clearRevalidateAll clears the whole-table mark if no new marks have arrived
 // since genAtStart. Must be called under markMu.
 func (st *symbolTable) clearRevalidateAllIfUnchanged(genAtStart uint64) {
@@ -183,6 +190,11 @@ func (st *symbolTable) needsRefresh() bool {
 //   - If it is NOT in the table or has base name .gitignore: escalate to
 //     whole-table revalidation (return false).
 //
+// When ctx ends during the refresh, the paths not yet refreshed keep their
+// entries and are marked dirty again, so the next call refreshes them; a
+// cancelled call never drops a file that is still there (02-REQ-6.4,
+// 02-REQ-7.4). The caller answers aborted.
+//
 // Returns true if all dirty paths were handled without escalation.
 func (st *symbolTable) refreshDirtyPaths(ctx context.Context, ft *fileTools, paths map[string]bool) bool {
 	if len(paths) == 0 {
@@ -206,12 +218,29 @@ func (st *symbolTable) refreshDirtyPaths(ctx context.Context, ft *fileTools, pat
 
 	// All dirty paths are known files. Re-outline or drop each one.
 	runner := ft.outlineRunner()
+	pending := make(map[string]bool, len(paths))
 	for rel := range paths {
+		pending[rel] = true
+	}
+	// remark gives back the marks of the paths this call did not get to: the
+	// snapshot that handed them over has already cleared them.
+	remark := func() {
+		for rel := range pending {
+			st.markDirty(rel)
+		}
+	}
+	for rel := range paths {
+		if ctx.Err() != nil {
+			remark()
+			return true
+		}
+
 		abs := filepath.Join(ft.ws.Root, filepath.FromSlash(rel))
 		fi, err := os.Stat(abs)
 		if err != nil || !fi.Mode().IsRegular() {
 			// File is gone or no longer regular: drop it.
 			delete(st.entries, rel)
+			delete(pending, rel)
 			continue
 		}
 
@@ -221,8 +250,14 @@ func (st *symbolTable) refreshDirtyPaths(ctx context.Context, ft *fileTools, pat
 			Runner: runner,
 		})
 		if err != nil {
+			if ctx.Err() != nil {
+				// The call ended, not the file: keep the entry and the mark.
+				remark()
+				return true
+			}
 			// On error, drop the entry rather than serving stale data.
 			delete(st.entries, rel)
+			delete(pending, rel)
 			continue
 		}
 
@@ -233,6 +268,7 @@ func (st *symbolTable) refreshDirtyPaths(ctx context.Context, ft *fileTools, pat
 			mtime:     fi.ModTime(),
 			indexedAt: now,
 		}
+		delete(pending, rel)
 	}
 
 	return true

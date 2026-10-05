@@ -138,8 +138,13 @@ func (f *fileTools) findSymbolTool() core.Tool {
 				if st.refreshDirtyPaths(ctx, f, dirtyPaths) {
 					br = st.computeMetrics(scopePrefix)
 				} else {
-					// Escalated to revalidation.
-					br = st.buildOrRefresh(ctx, f, scopePath, true, gen)
+					// Escalated to revalidation. The escalation marked the
+					// whole table, and that mark predates this pass, which
+					// is the revalidation it asks for: the pass starts from
+					// the generation as it is now and so may clear it, where
+					// the pre-escalation snapshot would leave it set and cost
+					// the next call a second walk.
+					br = st.buildOrRefresh(ctx, f, scopePath, true, st.currentGeneration())
 				}
 			default:
 				// Initial build, incomplete table, or revalidation needed.
