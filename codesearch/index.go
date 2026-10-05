@@ -35,6 +35,11 @@ const outlineBatchSize = 100
 // sweepAge is how old a sibling run directory must be before it is removed.
 const sweepAge = 24 * time.Hour
 
+// touchInterval is the longest a live index leaves its run directory untouched
+// while it is queried. It is far below sweepAge, so a sibling's sweep never
+// finds a queried index's directory old.
+const touchInterval = time.Hour
+
 // Options configures the codesearch index.
 type Options struct {
 	// Ignore is the ignore configuration, typically the same value the
@@ -203,7 +208,9 @@ type Index struct {
 	runnerOnce sync.Once
 	runner     func(ctx context.Context, args []string) ([]byte, error)
 
-	// lastTouch is the last time the run directory was touched.
+	// lastTouch is the last time the run directory's modification time was
+	// set: when a build or rebuild wrote it, or when touchRunDir refreshed
+	// it. Guarded by mu.
 	lastTouch time.Time
 
 	// testOutlineHook, when set, is called for each outline batch with
@@ -366,6 +373,31 @@ func newRunID() string {
 	return fmt.Sprintf("%x", h.Sum(nil))[:16]
 }
 
+// touchRunDir sets the modification time of this index's own run directory to
+// now, at most once per touchInterval, so that a sibling index's sweep sees a
+// directory in use as young (03-REQ-5.6). It never touches another run's
+// directory. A failure is ignored and retried by the next query.
+func (idx *Index) touchRunDir() {
+	idx.mu.RLock()
+	runDir, last := idx.runDir, idx.lastTouch
+	idx.mu.RUnlock()
+	if runDir == "" || time.Since(last) < touchInterval {
+		return
+	}
+
+	now := time.Now()
+	if err := os.Chtimes(runDir, now, now); err != nil {
+		return
+	}
+	idx.mu.Lock()
+	// The directory may have been replaced by a rebuild since it was read;
+	// that one is fresh and set its own lastTouch.
+	if idx.runDir == runDir {
+		idx.lastTouch = now
+	}
+	idx.mu.Unlock()
+}
+
 // sweepOldRuns removes sibling run directories older than sweepAge.
 func (idx *Index) sweepOldRuns() {
 	hashDir := idx.hashDirPath()
@@ -495,6 +527,7 @@ func (idx *Index) build(ctx context.Context, onlyIfUnbuilt bool) error {
 	// Publish the new state under the lock.
 	idx.mu.Lock()
 	idx.runDir = runDir
+	idx.lastTouch = time.Now()
 	idx.indexedFiles = result.indexedFiles
 	idx.outlineFiles = result.outlineFiles
 	idx.stats = result.stats
