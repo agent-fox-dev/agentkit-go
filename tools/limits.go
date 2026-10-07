@@ -130,6 +130,13 @@ func LongLineMarker(line int, size int64, limit int, path string) string {
 		line, humanBytes(size), humanBytes(int64(limit)), line, ShellQuote(path), limit)
 }
 
+// InvalidUTF8Marker is read_file's note on a page that is not valid UTF-8.
+func InvalidUTF8Marker(path string) string {
+	return fmt.Sprintf("[This file is not valid UTF-8: invalid bytes are shown as \uFFFD, and "+
+		"edit_file cannot match a line containing one. Use execute to change those lines, "+
+		"e.g. iconv -f latin1 -t utf-8 %s]", ShellQuote(path))
+}
+
 // ShellQuote wraps s in single quotes, the one quoting form under which a
 // POSIX shell interprets nothing. An embedded single quote is spelled '\”,
 // which closes the quote, escapes one quote, and reopens it.

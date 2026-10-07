@@ -711,3 +711,100 @@ exec sleep 15
 			"waited for", elapsed)
 	}
 }
+
+// TestTheBackendsAgreeOutsideGo pins five places where ripgrep and the native
+// engine disagreed out of the box (issue #89), each on every backend
+// available: Unicode classes, CRLF line ends, a NUL past the binary sniff,
+// smart-case over escapes, and BOM-marked files. Most never bite on a Go
+// tree, which is why the main parity fixture never caught them.
+func TestTheBackendsAgreeOutsideGo(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel string, body []byte) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, rel), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("u.py", []byte("def café():\n    return 1\nx = ٣\n"))
+	write("crlf.cs", []byte("class Foo\r\n{\r\n}\r\n"))
+	write("e.txt", []byte("Error: boom\n"))
+	// A NUL inside ripgrep's first buffer makes the file binary...
+	write("early.dat", append(append(bytes.Repeat([]byte("x"), 13000), "\nlate needle\n"...), 0, '\n'))
+	// ...and one far past it ends the search there, keeping what came before.
+	far := append([]byte("far needle\n"), bytes.Repeat([]byte("yyyyyyyyyyyyyyy\n"), 20000)...)
+	write("far.dat", append(far, "\x00\nfar needle again\n"...))
+	// UTF-16LE with a BOM, as Windows PowerShell writes it, and a UTF-8 BOM.
+	utf16 := []byte{0xFF, 0xFE}
+	for _, r := range "needle here\nsecond\n" {
+		utf16 = append(utf16, byte(r), 0)
+	}
+	write("w.ps1", utf16)
+	write("bom.txt", []byte("\xEF\xBB\xBFfirst line\nsecond\n"))
+
+	yes := true
+	for _, c := range []struct {
+		name string
+		q    tools.SearchParams
+		want []string
+	}{
+		{"\\w is ASCII", tools.SearchParams{Pattern: `def \w+\(`}, []string{}},
+		{"\\d is ASCII", tools.SearchParams{Pattern: `\d`, FileGlob: "u.py"}, []string{"u.py:2"}},
+		{"\\b is ASCII", tools.SearchParams{Pattern: `\bcafé\b`}, []string{}},
+		{"$ before CRLF", tools.SearchParams{Pattern: `Foo$`}, []string{"crlf.cs:1"}},
+		{"^...$ on a CRLF line", tools.SearchParams{Pattern: `^\{$`}, []string{"crlf.cs:2"}},
+		{"a NUL in the first buffer is binary", tools.SearchParams{Pattern: `late needle`}, []string{}},
+		{"a late NUL stops the search", tools.SearchParams{Pattern: `far needle`}, []string{"far.dat:1"}},
+		{"smart-case ignores escapes", tools.SearchParams{Pattern: `error\S`}, []string{"e.txt:1"}},
+		{"an uppercase literal is still sensitive", tools.SearchParams{Pattern: `ERROR\S`}, []string{}},
+		{"explicit sensitivity wins", tools.SearchParams{Pattern: `error\S`, CaseSensitive: &yes}, []string{}},
+		{"UTF-16 with a BOM is transcoded", tools.SearchParams{Pattern: `^needle here$`}, []string{"w.ps1:1"}},
+		{"a UTF-8 BOM is not part of line 1", tools.SearchParams{Pattern: `^first`}, []string{"bom.txt:1"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for _, b := range bothBackends(t) {
+				res, err := b.run(t, root, c.q)
+				if err != nil {
+					t.Fatalf("%s: %v", b.name, err)
+				}
+				if got := names(res); !reflect.DeepEqual(got, c.want) {
+					t.Errorf("%s: %q matched %v, want %v", b.name, c.q.Pattern, got, c.want)
+				}
+			}
+		})
+	}
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Log("ripgrep is not installed; only the native half of the parity was checked")
+	}
+}
+
+// TestReadFileSaysWhenAFileIsNotUTF8 (issue #89): a Latin-1 file reached the
+// model with U+FFFD for each invalid byte under `encoding: utf-8`, and an
+// edit built from what the model saw then failed not_found with no reason.
+// The envelope says the file is not UTF-8, and the text says what that costs.
+func TestReadFileSaysWhenAFileIsNotUTF8(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "l1.txt"), []byte("caf\xe9\nplain\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "ok.txt"), []byte("café\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read := readTool(t, root)
+	res := read.Execute(context.Background(), json.RawMessage(`{"path":"l1.txt"}`))
+	if !res.OK {
+		t.Fatalf("read failed: %s %s", res.Error, res.Detail)
+	}
+	data := res.Data
+	if data["encoding"] == "utf-8" {
+		t.Fatalf("encoding = %v for a file that is not valid UTF-8", data["encoding"])
+	}
+	if !strings.Contains(res.Text, "not valid UTF-8") || !strings.Contains(res.Text, "edit_file") {
+		t.Fatalf("the text does not say what invalid UTF-8 costs:\n%s", res.Text)
+	}
+
+	res = read.Execute(context.Background(), json.RawMessage(`{"path":"ok.txt"}`))
+	data = res.Data
+	if data["encoding"] != "utf-8" || strings.Contains(res.Text, "not valid UTF-8") {
+		t.Fatalf("a UTF-8 file is reported as %v:\n%s", data["encoding"], res.Text)
+	}
+}

@@ -22,9 +22,10 @@ var ctagsAccumulatorCap = 16 * 1024 * 1024 // 16 MiB
 // arguments and returns its stdout. The returned function is assignable to
 // outline.Options.Runner without tools importing outline.
 //
-// The runner locates ctags with exec.LookPath once and confirms it is
+// The runner locates ctags on its environment's PATH and confirms it is
 // Universal Ctags by running `ctags --version`. If ctags is absent or not
-// universal, every call returns ErrCtagsUnavailable without spawning.
+// universal, calls return ErrCtagsUnavailable without spawning until
+// ctagsRetryInterval (a minute) has passed, and then probe again.
 //
 // The process runs in its own process group and is killed when the context
 // ends, exactly as execute does. Stdout is captured into an Accumulator in
@@ -34,6 +35,7 @@ func CtagsRunner(env []string) func(ctx context.Context, args []string) ([]byte,
 	var (
 		mu       sync.Mutex
 		probed   bool
+		probedAt time.Time
 		ctagsBin string
 		initErr  error
 	)
@@ -49,14 +51,19 @@ func CtagsRunner(env []string) func(ctx context.Context, args []string) ([]byte,
 		// killed at the deadline (spec 02 DD14) rather than holding the
 		// symbol table's lock forever. A probe cut short by the CALLER is
 		// not a verdict on ctags, so it is not remembered.
+		//
+		// A FOUND ctags is remembered for the runner's life. "Unavailable" is
+		// remembered for ctagsRetryInterval only: it is a fact about the
+		// machine at that moment, and ctags installed while the process runs
+		// was otherwise never picked up.
 		mu.Lock()
-		if !probed {
+		if !probed || (initErr != nil && time.Since(probedAt) >= ctagsRetryInterval) {
 			bin, err := locateUniversalCtags(ctx, resolvedEnv)
 			if ctx.Err() != nil {
 				mu.Unlock()
 				return nil, ctx.Err()
 			}
-			ctagsBin, initErr, probed = bin, err, true
+			ctagsBin, initErr, probed, probedAt = bin, err, true, time.Now()
 		}
 		bin, err := ctagsBin, initErr
 		mu.Unlock()
@@ -68,15 +75,20 @@ func CtagsRunner(env []string) func(ctx context.Context, args []string) ([]byte,
 	}
 }
 
+// ctagsRetryInterval is how long an "unavailable" probe result stands before
+// the next call probes again. A variable so a test can shorten it.
+var ctagsRetryInterval = time.Minute
+
 // ctagsProbeTimeout bounds `ctags --version`. A variable so a test can
 // shorten it.
 var ctagsProbeTimeout = 5 * time.Second
 
-// locateUniversalCtags finds ctags on PATH and verifies it is Universal Ctags.
+// locateUniversalCtags finds ctags on the PATH of env — the environment it
+// will run with — and verifies it is Universal Ctags.
 // The version probe runs like any ctags call — its own process group, killed
 // when ctx or ctagsProbeTimeout ends.
 func locateUniversalCtags(ctx context.Context, env []string) (string, error) {
-	bin, err := exec.LookPath("ctags")
+	bin, err := lookPathFor("ctags", env)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrCtagsUnavailable, err)
 	}

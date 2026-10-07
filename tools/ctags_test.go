@@ -378,3 +378,33 @@ func moduleRoot(t *testing.T) string {
 	}
 	return filepath.Dir(wd)
 }
+
+// TestCtagsInstalledLaterIsPickedUp (issue #89): "unavailable" is a verdict
+// about this moment, not forever. A runner that probed before ctags was
+// installed probes again once ctagsRetryInterval has passed, through the
+// PATH its own environment carries.
+func TestCtagsInstalledLaterIsPickedUp(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake ctags is a shell script")
+	}
+	dir := t.TempDir()
+	prev := ctagsRetryInterval
+	ctagsRetryInterval = 0
+	defer func() { ctagsRetryInterval = prev }()
+
+	run := CtagsRunner([]string{"PATH=" + dir + ":/bin:/usr/bin"})
+	if _, err := run(context.Background(), []string{"--version"}); !errors.Is(err, ErrCtagsUnavailable) {
+		t.Fatalf("err = %v before install, want ErrCtagsUnavailable", err)
+	}
+	fake := "#!/bin/sh\necho 'Universal Ctags 6.2.1'\n"
+	if err := os.WriteFile(filepath.Join(dir, "ctags"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := run(context.Background(), []string{"--version"})
+	if err != nil {
+		t.Fatalf("ctags installed after the first probe was never picked up: %v", err)
+	}
+	if !strings.Contains(string(out), "Universal Ctags") {
+		t.Fatalf("output = %q, want the fake ctags's", out)
+	}
+}

@@ -21,3 +21,11 @@ public interface PublicInterface {
 public enum class Direction {
     UP, DOWN
 }
+
+private fun privateFun(): Int {
+    return 3
+}
+
+internal class InternalClass {
+    fun method() {}
+}

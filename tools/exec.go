@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -150,11 +151,43 @@ func RunArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 		// lookup and the run agree on what "." means.
 		prog = filepath.Join(opts.Dir, prog)
 	}
-	bin, err := exec.LookPath(prog)
+	bin, err := lookPathFor(prog, opts.Env)
 	if err != nil {
 		return ExecResult{}, fmt.Errorf("tools: %q not found on PATH: %w", argv[0], err)
 	}
 	return runArgv(ctx, append([]string{bin}, argv[1:]...), opts)
+}
+
+// lookPathFor resolves a program through the PATH the child will run with.
+//
+// exec.LookPath reads THIS process's PATH, and the child runs with env: a
+// custom Env with a different PATH looked up one binary and ran it with an
+// environment that names another. When env sets PATH, a bare name is looked
+// up through it — the last PATH entry wins, as it does for exec.Cmd.Env.
+// An env that sets no PATH, a nil env, and a name with a path separator keep
+// the ordinary lookup. A relative PATH directory is skipped, for the reason
+// exec.LookPath refuses a relative result: it resolves against whatever the
+// process's working directory happens to be.
+func lookPathFor(prog string, env []string) (string, error) {
+	path, ok := "", false
+	for _, kv := range env {
+		k, v, found := strings.Cut(kv, "=")
+		if found && (k == "PATH" || (runtime.GOOS == "windows" && strings.EqualFold(k, "PATH"))) {
+			path, ok = v, true
+		}
+	}
+	if !ok || hasPathSeparator(prog) {
+		return exec.LookPath(prog)
+	}
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" || !filepath.IsAbs(dir) {
+			continue
+		}
+		if bin, err := exec.LookPath(filepath.Join(dir, prog)); err == nil {
+			return bin, nil
+		}
+	}
+	return "", fmt.Errorf("exec: %q: executable file not found in the command's PATH", prog)
 }
 
 // runArgv is the shared body. Both entry points reach it with a fully

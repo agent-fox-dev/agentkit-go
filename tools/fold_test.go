@@ -209,3 +209,34 @@ func TestFoldLineTrimsATrailingCarriageReturn(t *testing.T) {
 		t.Fatalf("FoldLine = %q, want the CR trimmed with the trailing space", got)
 	}
 }
+
+// TestAFoldedEditKeepsTheBytesOfAnAdjacentBlankLine (issue #89): a needle
+// that ends — or begins — with a newline ends at the START of the next line
+// (or begins at the END of the previous one). The empty piece the split
+// leaves is not a line, and it must not match a whitespace-only line and
+// splice it away.
+func TestAFoldedEditKeepsTheBytesOfAnAdjacentBlankLine(t *testing.T) {
+	cases := []struct{ content, old, new, want string }{
+		// The report's case: "line2 " differs from the file only in trailing
+		// space, so the fold is needed; "   " must survive.
+		{"a\nline2\n   \nline3\n", "line2 \n", "new\n", "a\nnew\n   \nline3\n"},
+		// The same at the front of the needle.
+		{"a\n   \nline2\nline3\n", "\nline2 ", "\nnew", "a\n   \nnew\nline3\n"},
+		// A needle ending in a newline still matches when the next line has
+		// content: it ends at that line's start.
+		{"a\nline2\nline3\n", "line2 \n", "new\n", "a\nnew\nline3\n"},
+	}
+	for _, c := range cases {
+		out, _, err := tools.ApplyEdits(c.content, []tools.Edit{{OldString: c.old, NewString: c.new}})
+		if err != nil {
+			t.Fatalf("ApplyEdits(%q, %q): %v", c.content, c.old, err)
+		}
+		if out != c.want {
+			t.Errorf("ApplyEdits(%q, %q -> %q) = %q, want %q", c.content, c.old, c.new, out, c.want)
+		}
+	}
+	// A needle that is only newlines carries no line to match.
+	if _, _, err := tools.ApplyEdits("a\n \nb\n", []tools.Edit{{OldString: " \n\n", NewString: "x"}}); err == nil {
+		t.Error("a whitespace-only needle matched by fold; want not_found")
+	}
+}

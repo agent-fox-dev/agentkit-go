@@ -13,8 +13,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"regexp/syntax"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/schema"
@@ -54,12 +58,18 @@ type SearchResult struct {
 	TruncatedBy TruncatedBy `json:"truncated_by,omitzero"`
 }
 
-// binarySniffBytes is how much of a file is examined for a NUL byte.
+// binarySniffBytes is how much of a file is examined for a NUL byte before a
+// line is searched: ripgrep's read buffer.
 //
-// ripgrep reads a similar prefix. A file whose first 8 KiB are clean and which
-// turns binary later is searched as text by both, so the tools agree — which
-// matters more here than either answer being independently ideal.
-const binarySniffBytes = 8 << 10
+// ripgrep decides "binary" per buffer, not per prefix. A NUL in its first
+// buffer drops the whole file; a NUL in a later one stops the search there,
+// keeping the matches of the buffers before it. The native engine follows the
+// same rule with one fixed window: a NUL in the first 64 KiB makes the file
+// binary, and a NUL after that ends the search at the line holding it. The
+// one difference left is a match in the same ripgrep buffer as a late NUL,
+// which ripgrep drops and this keeps — buffers are line-aligned and grow
+// with long lines, so no fixed window reproduces them exactly.
+const binarySniffBytes = 64 << 10
 
 // MaxSearchContextLines bounds context_lines.
 //
@@ -85,11 +95,24 @@ const (
 //     insensitively, anything with an uppercase rune matches sensitively.
 //     ripgrep defaults to sensitive, so the accelerated path is asked for
 //     --smart-case explicitly.
-//   - Binary files are SKIPPED, decided by a NUL byte in the first 8 KiB.
+//   - Binary files are SKIPPED, decided by a NUL byte in the first 64 KiB; a
+//     later NUL ends the file's search (binarySniffBytes).
+//   - A file that starts with a byte-order mark is read as the text it marks:
+//     a UTF-8 BOM is not part of line 1, and UTF-16 is transcoded, as
+//     ripgrep's default --encoding auto does. A PowerShell script saved by
+//     Windows PowerShell is UTF-16, and was otherwise skipped as binary.
+//   - Lines end at "\n", and a "\r" before it is not part of the line, so
+//     `$` matches at the end of a CRLF line on both (rg --crlf).
 //   - file_glob uses AgentKit's glob dialect (MatchGlob), applied to the path
 //     RELATIVE to the search root.
-//   - The pattern is Go's regexp (RE2). ripgrep is asked for those semantics
-//     too, so a pattern that works on one works on the other.
+//   - The pattern is Go's regexp (RE2), and that includes its ASCII \w, \d,
+//     \s and \b: `\w+` does not match `café` whole. ripgrep's are Unicode,
+//     so it is handed the pattern as Go's parser reads it (ripgrepPattern),
+//     never as typed, and a pattern that works on one works on the other.
+//   - Smart-case looks at the pattern's LITERAL characters only: `error\S`
+//     is lowercase, because \S is an escape and not an uppercase letter.
+//     The decision is made once (caseSensitive) and handed to ripgrep as an
+//     explicit flag rather than left to its own --smart-case.
 //   - files_searched counts the files SELECTED for search — everything left
 //     after the ignore rules, the hidden-entry rule and file_glob. A binary
 //     file is counted as selected and then skipped, because whether a file
@@ -415,6 +438,50 @@ func SetRipgrepLookup(f func() (string, bool)) func() {
 	return func() { ripgrepPath = prev }
 }
 
+// Word-boundary placeholders for ripgrepPattern: private-use runes that
+// stand in for \b and \B while Go's printer renders the parsed pattern.
+const (
+	wordBoundaryMark    = '\U000F0000'
+	notWordBoundaryMark = '\U000F0001'
+)
+
+// ripgrepPattern renders a pattern for ripgrep with Go's meaning.
+//
+// Rust's \w, \d, \s and \b are Unicode where Go's are ASCII, so the pattern
+// is parsed with Go's own parser and printed back: the printer spells every
+// class as explicit ranges (\w is [0-9A-Z_a-z]), and the line anchors as
+// (?m:^) and (?m:$), which mean the same per line on both. \b and \B have no
+// range form, so they are carried through the printer as placeholder runes
+// and rendered as Rust's ASCII (?-u:\b) and (?-u:\B). A pattern that cannot
+// be parsed, or that contains a placeholder rune itself, is returned as
+// typed; the native backend reports the parse error.
+func ripgrepPattern(pat string) string {
+	if strings.ContainsRune(pat, wordBoundaryMark) || strings.ContainsRune(pat, notWordBoundaryMark) {
+		return pat
+	}
+	re, err := syntax.Parse(pat, syntax.Perl&^syntax.OneLine)
+	if err != nil {
+		return pat
+	}
+	var mark func(*syntax.Regexp)
+	mark = func(n *syntax.Regexp) {
+		switch n.Op {
+		case syntax.OpWordBoundary:
+			n.Op, n.Rune, n.Flags = syntax.OpLiteral, []rune{wordBoundaryMark}, 0
+		case syntax.OpNoWordBoundary:
+			n.Op, n.Rune, n.Flags = syntax.OpLiteral, []rune{notWordBoundaryMark}, 0
+		}
+		for _, sub := range n.Sub {
+			mark(sub)
+		}
+	}
+	mark(re)
+	return strings.NewReplacer(
+		`\x{f0000}`, `(?-u:\b)`,
+		`\x{f0001}`, `(?-u:\B)`,
+	).Replace(re.String())
+}
+
 // compilePattern applies the smart-case rule.
 func compilePattern(p SearchParams) (*regexp.Regexp, error) {
 	pat := p.Pattern
@@ -428,13 +495,66 @@ func compilePattern(p SearchParams) (*regexp.Regexp, error) {
 	return re, nil
 }
 
-// caseSensitive resolves the tri-state.
+// caseSensitive resolves the tri-state. It is the ONE decision both backends
+// use: ripgrep is told the answer, not asked for its own smart-case.
 func caseSensitive(p SearchParams) bool {
 	if p.CaseSensitive != nil {
 		return *p.CaseSensitive
 	}
-	// Smart-case: any uppercase rune in the pattern makes it sensitive.
-	return p.Pattern != strings.ToLower(p.Pattern)
+	// Smart-case: an uppercase LITERAL makes the pattern sensitive.
+	return hasUppercaseLiteral(p.Pattern)
+}
+
+// hasUppercaseLiteral reports whether a pattern contains an uppercase letter
+// that the pattern means literally. Escapes (\S, \W, \D, \B, \A, \p{Lu}),
+// flag groups ((?U)) and group names ((?P<Name>...)) are syntax, not text:
+// `error\S` asks for "error" in any case, as ripgrep's --smart-case reads it.
+// Text between \Q and \E is literal.
+func hasUppercaseLiteral(pat string) bool {
+	for i := 0; i < len(pat); i++ {
+		switch c := pat[i]; {
+		case c == '\\' && i+1 < len(pat):
+			i++
+			switch pat[i] {
+			case 'Q':
+				end := strings.Index(pat[i+1:], `\E`)
+				if end < 0 {
+					end = len(pat) - i - 1
+				}
+				if strings.ToLower(pat[i+1:i+1+end]) != pat[i+1:i+1+end] {
+					return true
+				}
+				i += end + 2
+			case 'p', 'P', 'x':
+				if i+1 < len(pat) && pat[i+1] == '{' {
+					if end := strings.IndexByte(pat[i:], '}'); end > 0 {
+						i += end
+					}
+				} else if pat[i] != 'x' {
+					i++ // \pL: a one-letter class name
+				}
+			}
+		case c == '(' && strings.HasPrefix(pat[i:], "(?"):
+			j := i + 2
+			if strings.HasPrefix(pat[j:], "P<") || (strings.HasPrefix(pat[j:], "<") && !strings.HasPrefix(pat[j:], "<=") && !strings.HasPrefix(pat[j:], "<!")) {
+				if end := strings.IndexByte(pat[j:], '>'); end > 0 {
+					i = j + end
+				}
+				continue
+			}
+			for j < len(pat) && (pat[j] == '-' || unicode.IsLetter(rune(pat[j]))) {
+				j++
+			}
+			i = j - 1
+		default:
+			r, size := utf8.DecodeRuneInString(pat[i:])
+			if unicode.IsUpper(r) {
+				return true
+			}
+			i += size - 1
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------- native
@@ -509,7 +629,7 @@ func searchFile(abs, rel string, re *regexp.Regexp, contextLines, budget int) (f
 	}
 	defer fh.Close()
 
-	br := bufio.NewReaderSize(fh, binarySniffBytes)
+	br := textReader(fh)
 	head, err := br.Peek(binarySniffBytes)
 	if err != nil && !errors.Is(err, bufio.ErrBufferFull) && len(head) == 0 && err.Error() != "EOF" {
 		return fileMatches{}, err
@@ -538,6 +658,9 @@ func searchFile(abs, rel string, re *regexp.Regexp, contextLines, budget int) (f
 			break // io.EOF, or a read error: report what was found
 		}
 		buf = raw
+		if bytes.IndexByte(raw, 0) >= 0 {
+			break // a NUL past the sniff window: the rest is binary (binarySniffBytes)
+		}
 		lineNo++
 		line := string(raw)
 
@@ -572,6 +695,86 @@ func searchFile(abs, rel string, re *regexp.Regexp, contextLines, budget int) (f
 		}
 	}
 	return out, nil
+}
+
+// textReader is the reader a file is searched through: the text its
+// byte-order mark declares, without the mark. No mark means the bytes as
+// they are.
+func textReader(r io.Reader) *bufio.Reader {
+	raw := bufio.NewReaderSize(r, binarySniffBytes)
+	bom, _ := raw.Peek(3)
+	switch {
+	case bytes.HasPrefix(bom, []byte{0xEF, 0xBB, 0xBF}):
+		_, _ = raw.Discard(3)
+	case bytes.HasPrefix(bom, []byte{0xFF, 0xFE}):
+		_, _ = raw.Discard(2)
+		return bufio.NewReaderSize(&utf16Reader{r: raw, little: true}, binarySniffBytes)
+	case bytes.HasPrefix(bom, []byte{0xFE, 0xFF}):
+		_, _ = raw.Discard(2)
+		return bufio.NewReaderSize(&utf16Reader{r: raw}, binarySniffBytes)
+	}
+	return raw
+}
+
+// utf16Reader transcodes UTF-16 to UTF-8. An unpaired surrogate, or a
+// trailing odd byte, becomes U+FFFD.
+type utf16Reader struct {
+	r       *bufio.Reader
+	little  bool
+	out     []byte // encoded, not yet returned
+	pending rune   // a unit read past an unpaired high surrogate, when held
+	held    bool
+}
+
+func (u *utf16Reader) Read(p []byte) (int, error) {
+	for len(u.out) == 0 {
+		r, err := u.next()
+		if err != nil {
+			return 0, err
+		}
+		if utf16.IsSurrogate(r) {
+			hi := r
+			r = utf8.RuneError
+			if hi < 0xDC00 { // a high surrogate wants a low one next
+				lo, err := u.next()
+				switch {
+				case err != nil:
+				case lo >= 0xDC00 && lo <= 0xDFFF:
+					r = utf16.DecodeRune(hi, lo)
+				default:
+					u.pending, u.held = lo, true // not ours: decode it next
+				}
+			}
+		}
+		u.out = utf8.AppendRune(u.out, r)
+	}
+	n := copy(p, u.out)
+	u.out = u.out[n:]
+	return n, nil
+}
+
+// next returns a held unit, or reads one.
+func (u *utf16Reader) next() (rune, error) {
+	if u.held {
+		u.held = false
+		return u.pending, nil
+	}
+	return u.unit()
+}
+
+// unit reads one 16-bit code unit.
+func (u *utf16Reader) unit() (rune, error) {
+	var b [2]byte
+	n, err := io.ReadFull(u.r, b[:])
+	switch {
+	case n == 1:
+		return utf8.RuneError, nil
+	case err != nil:
+		return 0, err
+	case u.little:
+		return rune(b[0]) | rune(b[1])<<8, nil
+	}
+	return rune(b[0])<<8 | rune(b[1]), nil
 }
 
 // readWholeLine reads the next line from br into buf, without its "\n" or a
@@ -683,14 +886,17 @@ func searchRipgrep(ctx context.Context, rg, root string, p SearchParams, ig Igno
 		// exactly the patterns a caller would notice.
 		"--engine", "default",
 	}
-	if p.CaseSensitive != nil {
-		if !*p.CaseSensitive {
-			args = append(args, "--ignore-case")
-		} else {
-			args = append(args, "--case-sensitive")
-		}
+	// Lines end at \n with an optional \r before it, as the native reader
+	// reads them: without this `Foo$` does not match `class Foo\r\n`.
+	args = append(args, "--crlf")
+	// The smart-case decision is ours (caseSensitive), and ripgrep is told
+	// the answer: its own --smart-case counts an escape's letter (\S) as
+	// lowercase where a naive check counted it as uppercase, and two
+	// readings of one rule is how the backends drifted apart.
+	if caseSensitive(p) {
+		args = append(args, "--case-sensitive")
 	} else {
-		args = append(args, "--smart-case")
+		args = append(args, "--ignore-case")
 	}
 	if p.ContextLines > 0 {
 		args = append(args, "--context", fmt.Sprint(p.ContextLines))
@@ -715,7 +921,7 @@ func searchRipgrep(ctx context.Context, rg, root string, p SearchParams, ig Igno
 	// dialect is broader than rg's the accelerated path silently returns less
 	// than the native one. Ours is the declared dialect (smart-case globs,
 	// among other differences), so it is the only one that gets to decide.
-	args = append(args, "--", p.Pattern, ".")
+	args = append(args, "--", ripgrepPattern(p.Pattern), ".")
 
 	// rg's own context, so it can be stopped the moment the result is full.
 	// Without this a search for a common word over a large tree read every

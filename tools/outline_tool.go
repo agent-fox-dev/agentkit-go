@@ -191,7 +191,10 @@ func noneReason(f outline.File, src []byte, size int64) string {
 			}
 		}
 	}
-	return ""
+	// A recognised, readable text file with no outline: the language has no
+	// in-process backend (Go's parser, or a heuristic) and universal-ctags,
+	// which is the only one it has, did not run.
+	return "no outline backend for " + f.Lang + " without universal-ctags"
 }
 
 // Constants mirrored from outline to avoid exporting them.

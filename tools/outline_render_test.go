@@ -503,3 +503,21 @@ func countDeclLines(lines []string) int {
 	}
 	return count
 }
+
+// TestANoneOutlineSaysThereIsNoBackend (issue #89): a recognised, readable,
+// text file with no outline is a language with no backend here — PHP, Lua,
+// shell or Perl without universal-ctags — and the line says so rather than
+// leaving the model to guess (spec 02 §1: the line "says why").
+func TestANoneOutlineSaysThereIsNoBackend(t *testing.T) {
+	root := t.TempDir()
+	ws, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := []byte("<?php\nfunction hello() {}\n")
+	f := outline.File{Path: "a.php", Lang: outline.LangPHP, Backend: outline.BackendNone, Decls: []outline.Decl{}}
+	r := renderOutlineResult(ws, filepath.Join(root, "a.php"), f, false, src, int64(len(src)))
+	if !strings.Contains(r.Text, "no outline backend for PHP without universal-ctags") {
+		t.Fatalf("none line does not say why:\n%s", r.Text)
+	}
+}
