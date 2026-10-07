@@ -245,3 +245,10 @@ Every row here is a finding of this pass, not the 0.4.2 audit above.
 | `loop.go` | `TransformContext` received history's messages with shared `Content` slices, so an in-place edit rewrote stored history. | Fixed — the transform gets a deep copy; `TestATransformCannotRewriteStoredHistory`. |
 | `batch.go`, `core` | An interceptor returning non-JSON arguments (NaN) panicked in `WithArgs` and ended the run. | Fixed — `PreparedArguments.TryWithArgs`; the call gets `invalid_arguments`; `TestNonJSONInterceptorArgumentsFailOneCall`. |
 | `agent.go` | `ToolPolicy.CustomTools` were not checked for exactly one of Handler/Execute. | Fixed — checked at construction; `TestACustomToolWithNoHandlerIsRefusedAtConstruction`. |
+
+## Compaction fallback and the import lint (issue #84)
+
+| Where | Finding | Status |
+|---|---|---|
+| `compaction` | With no `Summarizer`, the transform dropped the prefix at the strategy's own cut; `Summarization` cuts with `CutNotToolResult` and could leave a view starting on an assistant message. A nil `Deps.History` panicked. | Fixed — the fallback snaps its cut forward to a user message (ruling P-8); a nil `History` gets a private one, so the checkpoint is still permanent; `TestWithNoSummarizerTheViewStartsOnAUserMessage`, `TestANilHistoryIsNotAPanic`. |
+| `plugins` (`LintImports`, `LintSkillImports`) | A file whose import block did not parse was cleared. | Fixed — reported as a `BadImport` with `Reason` "could not parse imports", and forbidden imports in the partial AST are still named; `TestAnUnparseableImportBlockIsRefused`. |

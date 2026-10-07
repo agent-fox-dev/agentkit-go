@@ -360,8 +360,11 @@ type Deps struct {
 	// whole prefix is summarized as one block; ModelTurnSummarizer is the
 	// shipped implementation.
 	TurnSummarizer Summarizer
-	History        *core.ConversationHistory
-	Model          *core.Model
+	// History holds the checkpoint. Nil means the transform keeps its own,
+	// which is permanent for the transform's life but invisible to the
+	// caller; pass the agent's history to share it.
+	History *core.ConversationHistory
+	Model   *core.Model
 	// OnCheckpoint persists the REQ-SESS-04 entry. Optional.
 	OnCheckpoint func(core.CompactionCheckpoint) error
 	// OnError surfaces a failed summarization. Compaction never aborts the
@@ -386,6 +389,12 @@ type Deps struct {
 // returns, the check fails again — and every swing invalidates the provider's
 // cache prefix and re-sends content already paid to summarize.
 func NewContextTransform(d Deps) core.ContextTransform {
+	if d.History == nil {
+		// Without the caller's history the checkpoint lives here, so
+		// compaction is still permanent for the life of this transform
+		// (REQ-GO-12.2) rather than a nil dereference on the first call.
+		d.History = core.NewConversationHistory()
+	}
 	return func(ctx context.Context, msgs core.Messages) core.Messages {
 		if d.Strategy == nil {
 			return msgs
@@ -416,8 +425,15 @@ func NewContextTransform(d Deps) core.ContextTransform {
 		}
 
 		if d.Summarizer == nil {
-			// A window strategy with no summarizer simply drops the prefix.
-			// The cut policy guarantees the tail starts on a user message.
+			// With no summarizer the prefix is simply dropped, and nothing is
+			// prepended — so the kept tail must start on a user message
+			// (ruling P-8). The window strategies already cut there;
+			// Summarization cuts with CutNotToolResult, which may land on an
+			// assistant message because it expects to prepend a summary, so
+			// its cut is snapped forward to the next user message.
+			if cut = snapForward(msgs, cut, CutUserOnly); cut <= 0 {
+				return view
+			}
 			return msgs[cut:]
 		}
 

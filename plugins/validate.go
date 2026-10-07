@@ -277,7 +277,16 @@ func lintImports(dir string, forbidden func(string) bool) ([]BadImport, error) {
 		}
 		f, perr := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
 		if perr != nil {
-			return nil // unparseable Go is the compiler's problem, not the lint's
+			// A file whose imports do not parse is refused, not cleared: an
+			// import the lint cannot read is an import it cannot clear, and a
+			// syntax error in the import block is the cheapest way to hide
+			// one. The forbidden imports the partial AST does show are still
+			// named below.
+			out = append(out, BadImport{File: path,
+				Reason: "could not parse imports: " + perr.Error()})
+			if f == nil {
+				return nil
+			}
 		}
 		for _, imp := range f.Imports {
 			// strconv.Unquote, not a hand-rolled strip of the surrounding
