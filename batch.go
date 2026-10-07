@@ -293,11 +293,12 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				msg := toolResultMessage(c, out)
 				if cfg.AfterToolCall != nil {
 					dec := callAfter(ctx, report, cfg.AfterToolCall, core.AfterToolCallContext{
-						ToolName:  c.Name,
-						ToolUseID: c.ID,
-						Arguments: prepared.Args,
-						Result:    &msg,
-						Elapsed:   time.Since(start),
+						ToolName:   c.Name,
+						ToolUseID:  c.ID,
+						Arguments:  prepared.Args,
+						Result:     &msg,
+						Elapsed:    time.Since(start),
+						ToolResult: out,
 					})
 					// Terminate is *bool: nil means "no opinion", so an
 					// interceptor that does not care cannot accidentally vote

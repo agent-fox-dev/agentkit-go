@@ -291,6 +291,12 @@ type AfterToolCallContext struct {
 	Arguments map[string]any
 	Result    *ToolResultMessage // mutable in place
 	Elapsed   time.Duration
+	// ToolResult is the handler's result as returned, after panic and
+	// Handler-error conversion, passed by value. It is read-only: changing
+	// it (or anything reached through its Metadata pointer) has no effect
+	// on the emitted, persisted or stop-policy message. Result remains the
+	// one mutable record and already carries Metadata.
+	ToolResult ToolResult
 }
 
 type AfterToolCallDecision struct {
