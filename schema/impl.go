@@ -354,8 +354,13 @@ func coerceValue(s *Schema, v jsonx.OrderedValue, path string) (jsonx.OrderedVal
 		_ = json.Unmarshal(v.Scalar, &str)
 		switch s.Type {
 		case TypeInteger, TypeNumber:
-			if _, err := strconv.ParseFloat(str, 64); err == nil {
-				return jsonx.OrderedValue{Kind: jsonx.KindNumber, Scalar: json.RawMessage(str)},
+			// Surrounding space and trailing separators are dropped first: a
+			// model writing read_file's offset as "1, " meant 1. Anything
+			// else in the string is not a number and is left for validation
+			// to refuse.
+			num := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(str), ",;"))
+			if _, err := strconv.ParseFloat(num, 64); err == nil {
+				return jsonx.OrderedValue{Kind: jsonx.KindNumber, Scalar: json.RawMessage(num)},
 					[]Coercion{{Path: path, From: TypeString, To: s.Type}}
 			}
 		case TypeBoolean:
@@ -409,13 +414,13 @@ func validateValue(s *Schema, v jsonx.OrderedValue, path string, issues *[]Issue
 	switch s.Type {
 	case TypeObject:
 		if v.Kind != jsonx.KindObject {
-			*issues = append(*issues, Issue{Path: path, Message: "expected object, got " + kindName(v.Kind)})
+			*issues = append(*issues, Issue{Path: path, Message: "expected object, got " + kindName(v.Kind) + sentAsString(v)})
 			return
 		}
 		validateObject(s, v.Object, path, issues)
 	case TypeArray:
 		if v.Kind != jsonx.KindArray {
-			*issues = append(*issues, Issue{Path: path, Message: "expected array, got " + kindName(v.Kind)})
+			*issues = append(*issues, Issue{Path: path, Message: "expected array, got " + kindName(v.Kind) + sentAsString(v)})
 			return
 		}
 		if s.MinItems != nil && len(v.Array) < *s.MinItems {
@@ -433,7 +438,11 @@ func validateValue(s *Schema, v jsonx.OrderedValue, path string, issues *[]Issue
 		}
 	case TypeInteger, TypeNumber:
 		if v.Kind != jsonx.KindNumber && !(v.Kind == jsonx.KindNull && s.Nullable) {
-			*issues = append(*issues, Issue{Path: path, Message: "expected " + string(s.Type) + ", got " + kindName(v.Kind)})
+			msg := "expected " + string(s.Type) + ", got " + kindName(v.Kind)
+			if v.Kind == jsonx.KindString {
+				msg += " " + quotedPreview(v) + "; pass a number, e.g. 120"
+			}
+			*issues = append(*issues, Issue{Path: path, Message: msg})
 		}
 	case TypeBoolean:
 		if v.Kind != jsonx.KindBool && !(v.Kind == jsonx.KindNull && s.Nullable) {
@@ -465,8 +474,77 @@ func kindName(k jsonx.ValueKind) string {
 	return "object"
 }
 
+// echoPreviewRunes bounds each string value echoed back in a validation
+// error, and the received value quoted in an issue.
+const echoPreviewRunes = 80
+
+// sentAsString is the hint for a structure delivered as a string — an array
+// or object the model JSON-encoded into a string — with the start of what
+// arrived.
+func sentAsString(v jsonx.OrderedValue) string {
+	if v.Kind != jsonx.KindString {
+		return ""
+	}
+	return ": pass the value itself, not a JSON string (received " + quotedPreview(v) + ")"
+}
+
+// quotedPreview is a string value, quoted, cut at echoPreviewRunes.
+func quotedPreview(v jsonx.OrderedValue) string {
+	var str string
+	_ = json.Unmarshal(v.Scalar, &str)
+	q, _ := json.Marshal(abbreviate(str))
+	return string(q)
+}
+
+// abbreviate cuts s at echoPreviewRunes runes, marking the cut.
+func abbreviate(s string) string {
+	n := 0
+	for i := range s {
+		if n == echoPreviewRunes {
+			return s[:i] + "…"
+		}
+		n++
+	}
+	return s
+}
+
+// abbreviated is a copy of o with every long string value abbreviated, keys
+// and their order untouched.
+func abbreviated(o jsonx.OrderedObject) jsonx.OrderedObject {
+	out := make(jsonx.OrderedObject, len(o))
+	for i, m := range o {
+		out[i] = m
+		out[i].Value = abbreviatedValue(m.Value)
+	}
+	return out
+}
+
+func abbreviatedValue(v jsonx.OrderedValue) jsonx.OrderedValue {
+	switch v.Kind {
+	case jsonx.KindObject:
+		v.Object = abbreviated(v.Object)
+	case jsonx.KindArray:
+		arr := make([]jsonx.OrderedValue, len(v.Array))
+		for i := range v.Array {
+			arr[i] = abbreviatedValue(v.Array[i])
+		}
+		v.Array = arr
+	case jsonx.KindString:
+		var str string
+		if json.Unmarshal(v.Scalar, &str) == nil {
+			if short := abbreviate(str); short != str {
+				v.Scalar, _ = json.Marshal(short)
+			}
+		}
+	}
+	return v
+}
+
 // renderValidationError echoes the model's OWN arguments in the model's own
 // key order, which is what makes the correction self-serving (REQ-TOOL-12.3).
+// Long string values are abbreviated: the error is about the arguments'
+// shape, and echoing a kilobyte of edit text back buries the one line that
+// says what was wrong — once per failed call.
 func renderValidationError(e *ValidationError) string {
 	var b strings.Builder
 	b.WriteString("Invalid arguments:\n")
@@ -478,7 +556,7 @@ func renderValidationError(e *ValidationError) string {
 		b.WriteByte('\n')
 	}
 	b.WriteString("Arguments received:\n")
-	raw, err := e.Args.MarshalJSON()
+	raw, err := abbreviated(e.Args).MarshalJSON()
 	if err == nil {
 		b.Write(raw)
 	}

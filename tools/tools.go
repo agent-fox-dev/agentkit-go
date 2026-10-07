@@ -858,10 +858,13 @@ func repairEditArgs(args map[string]any) map[string]any {
 		out[k] = v
 	}
 
-	// (1) a JSON string where an array belongs
+	// (1) a JSON string where an array belongs — repaired first if it does
+	// not parse as written (repairEditsJSON).
 	if s, ok := out["edits"].(string); ok {
 		var parsed any
 		if err := json.Unmarshal([]byte(s), &parsed); err == nil {
+			out["edits"] = parsed
+		} else if err := json.Unmarshal([]byte(repairEditsJSON(s)), &parsed); err == nil && looksLikeEdits(parsed) {
 			out["edits"] = parsed
 		}
 	}
@@ -880,6 +883,100 @@ func repairEditArgs(args map[string]any) map[string]any {
 		}
 	}
 	return out
+}
+
+// repairEditsJSON repairs the two corruptions seen when a model writes edits
+// as a JSON string, touching only structure — never the text inside a JSON
+// string:
+//
+//   - `">` where `":"` or `":` belongs after a key (`{"old_string">\tfoo…`):
+//     the `>` becomes `:`, plus the opening quote of the value when the value
+//     does not start with one;
+//   - a trailing comma before `]` or `}`;
+//   - a raw control character (tab, newline) inside a string, which the
+//     outer JSON's decoding left there and inner JSON forbids, is escaped.
+//
+// The result is only used if it then parses into edit objects; a string that
+// is still not an edit list is left for validation to refuse.
+func repairEditsJSON(s string) string {
+	var b strings.Builder
+	inString, escaped, afterString := false, false, false
+	next := func(i int) byte { // the next non-space byte after i, or 0
+		for j := i + 1; j < len(s); j++ {
+			switch s[j] {
+			case ' ', '\t', '\n', '\r':
+				continue
+			}
+			return s[j]
+		}
+		return 0
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			if c < 0x20 && !escaped {
+				// A raw control character: the model's own JSON-in-a-string
+				// had its escapes decoded once by the outer JSON, leaving a
+				// literal tab or newline that inner JSON forbids.
+				fmt.Fprintf(&b, `\u%04x`, c)
+				continue
+			}
+			b.WriteByte(c)
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString, afterString = false, true
+			}
+			continue
+		}
+		switch {
+		case c == '"':
+			inString = true
+			b.WriteByte(c)
+		case c == '>' && afterString:
+			b.WriteByte(':')
+			if next(i) != '"' {
+				b.WriteByte('"')
+				inString = true
+			}
+		case c == ',' && (next(i) == ']' || next(i) == '}'):
+			// dropped
+		default:
+			b.WriteByte(c)
+		}
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != '"' {
+			afterString = false
+		}
+	}
+	return b.String()
+}
+
+// looksLikeEdits reports whether v is what repairEditArgs may substitute for
+// an edits string: an edit object, or an array of them.
+func looksLikeEdits(v any) bool {
+	isEdit := func(x any) bool {
+		m, ok := x.(map[string]any)
+		if !ok {
+			return false
+		}
+		_, hasOld := m["old_string"]
+		return hasOld
+	}
+	if arr, ok := v.([]any); ok {
+		if len(arr) == 0 {
+			return false
+		}
+		for _, x := range arr {
+			if !isEdit(x) {
+				return false
+			}
+		}
+		return true
+	}
+	return isEdit(v)
 }
 
 func (f *fileTools) listFiles() core.Tool {
