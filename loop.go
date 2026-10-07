@@ -116,7 +116,7 @@ func (a *Agent) stream(ctx context.Context, initial *core.UserMessage, isContinu
 	go func() {
 		defer cancel()
 		defer a.releaseSlot()
-		res, err := a.runLoop(rctx, s, initial, pending, nil)
+		res, err := a.runLoop(rctx, s, initial, pending)
 		s.End(core.StreamResult{Message: lastAssistant(res.Messages), Result: &res, Err: err})
 	}()
 	return s, nil
@@ -177,12 +177,7 @@ func lastAssistant(ms core.Messages) *core.AssistantMessage {
 // runLoop is the loop of §5. Read it top to bottom; the order of the phases is
 // the specification, and several of them are placed where they are because the
 // obvious placement is a bug.
-//
-// redeemed, when set, is an assistant turn that already exists — a redeemed
-// deferred answer (RedeemDeferred). The first iteration takes it in place of a
-// model call and runs from there exactly as from a live turn: its tool batch,
-// TurnEnd, the stop policy, and the turns after it.
-func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial *core.UserMessage, pending []core.Message, redeemed *core.AssistantMessage) (res core.RunResult, runErr error) {
+func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial *core.UserMessage, pending []core.Message) (res core.RunResult, runErr error) {
 	startedAt := time.Now()
 	var (
 		newMessages core.Messages
@@ -323,64 +318,49 @@ outer:
 	for {
 	inner:
 		for {
-			var assistant core.AssistantMessage
-			if redeemed != nil {
-				// A turn that already exists. Steering and the context
-				// transform belong to the request it would have been, which
-				// was made long ago; a message steered in meanwhile is
-				// delivered at the next turn boundary, after this answer.
-				assistant, redeemed = *redeemed, nil
-				a.setPhase(core.PhaseCallingModel)
-				s.Push(core.TurnStartEvent{TurnIndex: turnCount})
-				a.fireTurnStart(core.TurnStartEvent{TurnIndex: turnCount})
-				s.Push(core.MessageStartEvent{Message: assistant})
-				s.Push(core.MessageEndEvent{Message: assistant})
-			} else {
-				// ---- Phase 1: drain steering, BEFORE the context transform.
-				//
-				// §5's pseudocode drains after PrepareNextTurn; REQ-LOOP-13 says
-				// before, and REQ-LOOP-13 wins (ruling P-18). Under §5's order a
-				// steering message is invisible to the compaction that just built
-				// the view it will be appended to.
+			// ---- Phase 1: drain steering, BEFORE the context transform.
+			//
+			// §5's pseudocode drains after PrepareNextTurn; REQ-LOOP-13 says
+			// before, and REQ-LOOP-13 wins (ruling P-18). Under §5's order a
+			// steering message is invisible to the compaction that just built
+			// the view it will be appended to.
+			a.mu.Lock()
+			drained := a.drainSteeringLocked()
+			a.mu.Unlock()
+			delivered := len(drained)
+			record(drained...)
+
+			// ---- Phase 2: PrepareNextTurn at the head of THIS iteration,
+			// immediately before the request it prepares (REQ-LOOP-04b,
+			// NFR-REL-05). Not after TurnEnd: there it would fire for a turn
+			// that will not happen, and would miss the request issued after a
+			// tool batch within the same user turn.
+			view := a.prepareNextTurn(ctx)
+
+			// ---- Phase 3: second poll. PrepareNextTurn may be long-running
+			// (a summarization round trip), so a message that arrived during
+			// it would otherwise wait a whole turn.
+			//
+			// The guard is "nothing already delivered into THIS turn", not
+			// REQ-LOOP-13's literal `len(pending)==0`, which read literally
+			// can never yield anything — pending is empty exactly when the
+			// first drain took everything (ruling P-17).
+			if delivered == 0 {
 				a.mu.Lock()
-				drained := a.drainSteeringLocked()
+				more := a.drainSteeringLocked()
 				a.mu.Unlock()
-				delivered := len(drained)
-				record(drained...)
-
-				// ---- Phase 2: PrepareNextTurn at the head of THIS iteration,
-				// immediately before the request it prepares (REQ-LOOP-04b,
-				// NFR-REL-05). Not after TurnEnd: there it would fire for a turn
-				// that will not happen, and would miss the request issued after a
-				// tool batch within the same user turn.
-				view := a.prepareNextTurn(ctx)
-
-				// ---- Phase 3: second poll. PrepareNextTurn may be long-running
-				// (a summarization round trip), so a message that arrived during
-				// it would otherwise wait a whole turn.
-				//
-				// The guard is "nothing already delivered into THIS turn", not
-				// REQ-LOOP-13's literal `len(pending)==0`, which read literally
-				// can never yield anything — pending is empty exactly when the
-				// first drain took everything (ruling P-17).
-				if delivered == 0 {
-					a.mu.Lock()
-					more := a.drainSteeringLocked()
-					a.mu.Unlock()
-					if len(more) > 0 {
-						record(more...)
-						view = append(view.Clone(), more...)
-					}
+				if len(more) > 0 {
+					record(more...)
+					view = append(view.Clone(), more...)
 				}
-
-				// ---- Phase 4: call the provider.
-				a.setPhase(core.PhaseCallingModel)
-				s.Push(core.TurnStartEvent{TurnIndex: turnCount})
-				a.fireTurnStart(core.TurnStartEvent{TurnIndex: turnCount})
-
-				assistant = a.callModel(ctx, s, view)
-				stampDeferred(&assistant)
 			}
+
+			// ---- Phase 4: call the provider.
+			a.setPhase(core.PhaseCallingModel)
+			s.Push(core.TurnStartEvent{TurnIndex: turnCount})
+			a.fireTurnStart(core.TurnStartEvent{TurnIndex: turnCount})
+
+			assistant := a.callModel(ctx, s, view)
 			record(assistant)
 			a.addUsage(assistant.Usage)
 
@@ -891,16 +871,4 @@ func (a *Agent) fireError(err error) {
 			h.OnError(err)
 		}
 	})
-}
-
-// stampDeferred records when a deferred receipt arrived, if the provider did
-// not: PollAfterMS counts from it (DeferredHandle.PollReadyAt). The handle is
-// copied, so a provider's own value is never written through.
-func stampDeferred(m *core.AssistantMessage) {
-	if m.Deferred == nil || !m.Deferred.IssuedAt.IsZero() {
-		return
-	}
-	h := *m.Deferred
-	h.IssuedAt = time.Now()
-	m.Deferred = &h
 }

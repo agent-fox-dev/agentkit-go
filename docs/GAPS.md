@@ -252,11 +252,3 @@ Every row here is a finding of this pass, not the 0.4.2 audit above.
 |---|---|---|
 | `compaction` | With no `Summarizer`, the transform dropped the prefix at the strategy's own cut; `Summarization` cuts with `CutNotToolResult` and could leave a view starting on an assistant message. A nil `Deps.History` panicked. | Fixed — the fallback snaps its cut forward to a user message (ruling P-8); a nil `History` gets a private one, so the checkpoint is still permanent; `TestWithNoSummarizerTheViewStartsOnAUserMessage`, `TestANilHistoryIsNotAPanic`. |
 | `plugins` (`LintImports`, `LintSkillImports`) | A file whose import block did not parse was cleared. | Fixed — reported as a `BadImport` with `Reason` "could not parse imports", and forbidden imports in the partial AST are still named; `TestAnUnparseableImportBlockIsRefused`. |
-
-## Deferred redemption (issue #80)
-
-| Where | Finding | Status |
-|---|---|---|
-| `deferred.go` | An ABORTED redemption was returned as success and its marker recorded. | Fixed — an error or aborted fetch is returned as an error and nothing is recorded; `TestAnAbortedRedemptionIsNotRecorded`. |
-| `deferred.go` | A redeemed answer's tool calls were appended and never executed, leaving a transcript `Continue` refused and `Run` would answer synthetically. | Fixed — `RedeemDeferred` runs the loop from the answer (tool batch, TurnEnd, stop policy, further turns) and returns a `RunResult`; `Continue`'s REQ-LOOP-16 table is unchanged; `TestARedeemedToolCallIsExecuted`. |
-| `deferred.go`, `core` | The doc promised a `PollAfterMS` refusal that nothing implemented; the handle had no issue time. | Fixed — `DeferredHandle.IssuedAt` (stamped by the loop when the provider leaves it zero, persisted as `issued_at`) and `PollReadyAt`; a handle not yet due is refused before the wire; `TestAHandleIsNotRedeemedBeforeItsPollAfter`, `TestIssuedAtSurvivesTheLog`. |

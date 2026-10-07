@@ -534,7 +534,6 @@ func encodeDeferred(h core.DeferredHandle) jsonx.OrderedValue {
 	if h.PollAfterMS != 0 {
 		o.Set("poll_after_ms", intValue(int64(h.PollAfterMS)))
 	}
-	setTime(&o, "issued_at", h.IssuedAt)
 	if len(h.Data) > 0 {
 		if v, err := jsonx.DecodeOrdered(h.Data); err == nil {
 			o.Set("data", v)
@@ -550,7 +549,6 @@ func decodeDeferred(o jsonx.OrderedObject) core.DeferredHandle {
 		ModelID:   getString(o, "model_id"),
 		ID:        getString(o, "id"),
 		ExpiresAt: getTime(o, "expires_at"),
-		IssuedAt:  getTime(o, "issued_at"),
 	}
 	if n, ok := getInt(o, "poll_after_ms"); ok {
 		h.PollAfterMS = int(n)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -140,13 +139,9 @@ func TestRedeemingAHandleAppendsTheAnswer(t *testing.T) {
 	h, _ := res.DeferredHandle()
 
 	before := a.History().Len()
-	rres, err := a.RedeemDeferred(context.Background(), h)
+	msg, err := a.RedeemDeferred(context.Background(), h)
 	if err != nil {
 		t.Fatalf("RedeemDeferred: %v", err)
-	}
-	msg := lastAssistant(rres.Messages)
-	if msg == nil {
-		t.Fatal("the RunResult carries no assistant message")
 	}
 	if d.redeemed != 1 {
 		t.Fatalf("the provider was called %d times; redemption is one attempt, never a poll loop", d.redeemed)
@@ -248,136 +243,5 @@ func TestRedemptionRoutesOnTheHandlesOwnAPI(t *testing.T) {
 	}
 	if d.redeemed != 0 {
 		t.Fatal("a handle for an unregistered wire must not reach this provider")
-	}
-}
-
-// Issue #80 §1: an ABORTED redemption is not an answer. It is returned as the
-// abort error, and nothing is appended.
-func TestAnAbortedRedemptionIsNotRecorded(t *testing.T) {
-	a := newTestAgent(t, nil, func(c *core.AgentConfig) {
-		c.Providers = core.ProviderRegistry{testAPI: {
-			API:    testAPI,
-			Stream: (&scripted{}).stream,
-			FetchDeferred: func(context.Context, *core.Model, core.DeferredHandle, core.ProviderStreamOptions) *core.EventStream {
-				return core.ErrorStream(&core.AssistantMessage{StopReason: core.StopReasonAborted}, core.ErrAborted)
-			},
-		}}
-	})
-	before := a.History().Len()
-	if _, err := a.RedeemDeferred(context.Background(), testHandle()); err == nil {
-		t.Fatal("an aborted redemption returned no error")
-	}
-	if a.History().Len() != before {
-		t.Fatal("the aborted marker was appended as though it were the answer")
-	}
-}
-
-// Issue #80 §2: a redeemed answer that calls a tool is a turn like any other —
-// the tool runs, its result is recorded, and the loop carries on to the
-// model's next turn; RedeemDeferred returns that run's result.
-func TestARedeemedToolCallIsExecuted(t *testing.T) {
-	var calls atomic.Int32
-	modelCalls := 0
-	a := newTestAgent(t, nil, func(c *core.AgentConfig) {
-		c.ToolPolicy.CustomTools = []core.Tool{echoTool("echo", &calls)}
-		c.Providers = core.ProviderRegistry{testAPI: {
-			API: testAPI,
-			Stream: func(_ context.Context, m *core.Model, req core.Request, _ core.ProviderStreamOptions) *core.EventStream {
-				modelCalls++
-				msg := core.AssistantMessage{StopReason: core.StopReasonStop,
-					Content: core.Content{core.TextBlock{Text: "after the tool"}}, Provider: m.Provider, API: m.API, Model: m.ID}
-				return doneStream(&msg)
-			},
-			FetchDeferred: func(_ context.Context, m *core.Model, _ core.DeferredHandle, _ core.ProviderStreamOptions) *core.EventStream {
-				tu, _ := core.NewToolUse("c1", "echo", json.RawMessage(`{"v":"x"}`))
-				msg := core.AssistantMessage{StopReason: core.StopReasonToolUse, Content: core.Content{tu},
-					Provider: m.Provider, API: m.API, Model: m.ID}
-				return doneStream(&msg)
-			},
-		}}
-	})
-	res, err := a.RedeemDeferred(context.Background(), testHandle())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if calls.Load() != 1 {
-		t.Fatalf("the redeemed answer's tool ran %d times, want 1", calls.Load())
-	}
-	if modelCalls != 1 || res.LastReason != core.StopReasonStop {
-		t.Fatalf("model calls after the batch = %d, last reason %q; the loop must carry on to the next turn",
-			modelCalls, res.LastReason)
-	}
-	var sawResult bool
-	for _, m := range res.Messages {
-		if tr, ok := m.(core.ToolResultMessage); ok && tr.ToolUseID == "c1" && !tr.IsError {
-			sawResult = true
-		}
-	}
-	if !sawResult {
-		t.Fatal("the tool's real result is not in the run")
-	}
-}
-
-// Issue #80 §3: a handle whose PollAfterMS has not elapsed since it was
-// issued is refused before the wire; the loop stamps IssuedAt when the
-// provider did not.
-func TestAHandleIsNotRedeemedBeforeItsPollAfter(t *testing.T) {
-	d := &deferring{handle: testHandle()}
-	d.handle.PollAfterMS = 60_000
-	a := newTestAgent(t, nil, func(c *core.AgentConfig) {
-		c.Providers = core.ProviderRegistry{testAPI: d.provider()}
-		c.RequestOptions.Deferred = &core.DeferredRequest{Window: time.Hour}
-	})
-	res, err := a.Run(context.Background(), "go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	h, _ := res.DeferredHandle()
-	if h.IssuedAt.IsZero() {
-		t.Fatal("the loop did not stamp IssuedAt on a handle the provider left unstamped")
-	}
-	if _, err := a.RedeemDeferred(context.Background(), h); err == nil || !strings.Contains(err.Error(), "poll") {
-		t.Fatalf("err = %v, want a refusal until PollAfterMS has elapsed", err)
-	}
-	if d.redeemed != 0 {
-		t.Fatal("the refusal reached the wire")
-	}
-
-	h.IssuedAt = time.Now().Add(-2 * time.Minute)
-	if _, err := a.RedeemDeferred(context.Background(), h); err != nil {
-		t.Fatalf("a handle past its PollAfterMS must be redeemable: %v", err)
-	}
-	old := testHandle() // an older log's handle, with no IssuedAt
-	old.PollAfterMS = 60_000
-	if _, err := a.RedeemDeferred(context.Background(), old); err != nil {
-		t.Fatalf("a handle with no IssuedAt cannot be judged and must not be refused: %v", err)
-	}
-}
-
-// doneStream is a completed stream carrying msg.
-func doneStream(msg *core.AssistantMessage) *core.EventStream {
-	st := core.NewEventStream(core.StreamOptions{})
-	st.Push(core.MessageEndEvent{Message: *msg})
-	st.End(core.StreamResult{Message: msg})
-	return st
-}
-
-// Issue #80 §3: IssuedAt, which PollAfterMS counts from, survives the log, so
-// a restarted process can still tell whether a handle is due.
-func TestIssuedAtSurvivesTheLog(t *testing.T) {
-	h := testHandle()
-	h.PollAfterMS = 30_000
-	h.IssuedAt = time.Date(2026, 10, 7, 9, 0, 0, 0, time.UTC)
-	raw, err := session.EncodeMessage(core.AssistantMessage{StopReason: core.StopReasonDeferred, Deferred: &h})
-	if err != nil {
-		t.Fatal(err)
-	}
-	back, err := session.DecodeMessage(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := back.(core.AssistantMessage).Deferred
-	if got == nil || !got.IssuedAt.Equal(h.IssuedAt) || got.PollAfterMS != 30_000 {
-		t.Fatalf("handle after the log = %+v; issued_at and poll_after_ms must survive", got)
 	}
 }

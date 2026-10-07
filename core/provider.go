@@ -196,27 +196,13 @@ type DeferredRequest struct {
 // model is a 404 at best and someone else's answer at worst, so redemption
 // checks these rather than trusting the caller to pass the right model back.
 type DeferredHandle struct {
-	Provider    string    `json:"provider"`
-	API         API       `json:"api"`
-	ModelID     string    `json:"model_id"`
-	ID          string    `json:"id"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	PollAfterMS int       `json:"poll_after_ms"`
-	// IssuedAt is when the handle was received. PollAfterMS counts from it;
-	// the loop stamps it when the provider leaves it zero. Zero on a handle
-	// from an older log, where the poll delay cannot be judged.
-	IssuedAt time.Time       `json:"issued_at,omitzero"`
-	Data     json.RawMessage `json:"data,omitzero"`
-}
-
-// PollReadyAt is when the provider said to come back: IssuedAt plus
-// PollAfterMS. ok is false when the handle cannot say (no delay, or no
-// IssuedAt).
-func (h DeferredHandle) PollReadyAt() (t time.Time, ok bool) {
-	if h.PollAfterMS <= 0 || h.IssuedAt.IsZero() {
-		return time.Time{}, false
-	}
-	return h.IssuedAt.Add(time.Duration(h.PollAfterMS) * time.Millisecond), true
+	Provider    string          `json:"provider"`
+	API         API             `json:"api"`
+	ModelID     string          `json:"model_id"`
+	ID          string          `json:"id"`
+	ExpiresAt   time.Time       `json:"expires_at"`
+	PollAfterMS int             `json:"poll_after_ms"`
+	Data        json.RawMessage `json:"data,omitzero"`
 }
 
 // IsZero reports whether the handle names nothing.

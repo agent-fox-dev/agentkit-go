@@ -775,10 +775,7 @@ requirement ledger, fixed and deferred alike, is [`docs/GAPS.md`](docs/GAPS.md).
   capability probe and `Agent.RedeemDeferred` ship; nothing sleeps, retries or
   watches a handle. That is OQ-11 option (b) on purpose: when to come back is
   the embedder's decision, and a library that guessed would spend someone
-  else's latency budget on a schedule it invented. Redemption is one attempt:
-  it refuses a handle whose `PollAfterMS` has not elapsed since it was issued,
-  and on success runs the loop from the answer — its tool calls included — and
-  returns that run's `RunResult`.
+  else's latency budget on a schedule it invented.
 - **References and callers.** The `outline` package lists declarations and the
   `file_outline` and `find_symbol` tools expose them; references ("who calls
   X") and callers remain unbuilt — use `search_files` with `\bX\b` instead.
