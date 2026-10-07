@@ -61,7 +61,9 @@ func (a *Agent) audit(e core.AuditEvent) {
 	a.mu.Unlock()
 	var plugins []core.EventHookPlugin
 	if reg != nil {
-		plugins = reg.EventHooks()
+		// The registry is the embedder's code, and audit runs on the loop's
+		// panic-recovery path too, where a second panic is fatal.
+		safely(h.OnError, "PluginRegistry.EventHooks", func() { plugins = reg.EventHooks() })
 	}
 
 	switch e.Kind {

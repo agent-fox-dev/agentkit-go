@@ -90,12 +90,12 @@ provider-prefixed variables and anything ending in `_TOKEN`, `_SECRET`,
 | `MaxTokens` | Upper bound, clamped to the model. Nil → `core.DefaultMaxTokens` (32768), not the model cap. |
 | `Temperature`, `TopP` | Optional sampling parameters; dropped where the catalog row says the model does not accept them. |
 | `SystemPrompt`, `PromptBlocks` | Base prompt and extra sections appended after the built-in ones. A `SystemPrompt` replaces the built-in base instructions and universal guidelines; the active tools' own guidelines (`Tool.PromptGuidelines`, and the shell guidelines) still follow it. |
-| `StopPolicy` | `func(StopContext) bool`; compose with `stop.Any`. |
+| `StopPolicy` | `func(StopContext) bool`; compose with `stop.Any`. `StopContext.Usage`, like `RunResult.Usage`, is the current run's usage — a budget policy on a reused agent is a per-run budget; `Agent.Usage()` is the lifetime total. |
 | `ErrorOnLimit` | A limit stop also returns `ErrMaxTurns` / `ErrBudgetExceeded`. Default false. |
 | `ParallelTools` | Run a tool batch's calls concurrently. |
 | `ToolChoice` | `""` (auto), or a forced choice. |
 | `ThinkingLevel` | `""`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; clamped to the catalog row's ladder. |
-| `ToolPolicy` | `Tools`, `NoTools` (`all` / `builtin`), `ToolNames`, `ExcludeTools`, `CustomTools`; resolved in that order. Non-nil empty `Tools` means no tools. |
+| `ToolPolicy` | `Tools`, `NoTools` (`all` / `builtin`), `ToolNames`, `ExcludeTools`, `CustomTools`; resolved in that order. Non-nil empty `Tools` means no tools. A `CustomTools` entry must set exactly one of `Handler` and `Execute`; construction fails otherwise, as `RegisterTool` does. |
 | `BeforeToolCall`, `AfterToolCall` | The authorization boundary and post-processing. A shell tool in the set with a nil `BeforeToolCall` fails the run (`ErrUnguardedExecute`); use `guard.Restricted` or `guard.AllowAll`. |
 | `Hooks` | `OnTurnStart`, `OnTurnEnd`, `OnAgentDone`, `OnError`, `OnSessionStart`, `OnSessionEnd`, `OnAudit`. Observation only. |
 | `Middleware` | Axis 1; last registered is outermost. |
@@ -111,7 +111,7 @@ provider-prefixed variables and anything ending in `_TOKEN`, `_SECRET`,
 | `StreamOptions` | Streaming behaviour. |
 | `Providers` | `core.ProviderRegistry`. Nil means `agentkit.DefaultProviders()`, which is **empty**: register the wire APIs you use (`agentkit.RegisterDefaults(&cfg, anthropic.Provider(anthropic.Options{}), …)`). |
 | `SessionStore` | Optional durable log; must be empty at construction (`ErrSessionNotEmpty`) — fold a non-empty one with `NewAgentFromSession`. |
-| `OnPersistError` | Mandatory seam for store failures when the store is subscribed internally. |
+| `OnPersistError` | Mandatory seam for store failures when the store is subscribed internally. A failed (or panicking) `Append` is reported here and through `OnError`, and the run continues with the message still in the model's history: the log loses the entry, the model does not lose the turn. A panic in this hook or in the store is contained. |
 
 Header precedence, lowest to highest: attribution defaults, provider/auth
 headers, `Model.Headers`, `RequestOptions.Headers`. A nil value at a higher

@@ -91,6 +91,10 @@ type Agent struct {
 	holds int
 
 	usage core.Usage
+	// runUsage is the current run's share of usage: what RunResult.Usage
+	// and StopContext.Usage report. Reset when a run begins; usage is the
+	// lifetime aggregate Agent.Usage reports.
+	runUsage core.Usage
 
 	// meter is REQ-CACHE-08's session aggregate. It is never nil, so every
 	// call site is unconditional and the metered and unmetered paths cannot
@@ -108,6 +112,9 @@ func NewAgent(cfg core.AgentConfig) (*Agent, error) {
 	if cfg.Model == nil {
 		return nil, fmt.Errorf("agentkit: AgentConfig.Model is nil; resolve it with catalog.ResolveModel first")
 	}
+	if err := checkCustomTools(cfg); err != nil {
+		return nil, err
+	}
 	if cfg.SessionStore != nil {
 		if len(cfg.SessionStore.Entries()) > 0 {
 			return nil, core.ErrSessionNotEmpty
@@ -123,6 +130,9 @@ func NewAgentWithHistory(cfg core.AgentConfig, h *core.ConversationHistory) (*Ag
 	if cfg.Model == nil {
 		return nil, fmt.Errorf("agentkit: AgentConfig.Model is nil; resolve it with catalog.ResolveModel first")
 	}
+	if err := checkCustomTools(cfg); err != nil {
+		return nil, err
+	}
 	if h == nil {
 		h = core.NewConversationHistory()
 	}
@@ -134,6 +144,30 @@ func newAgent(cfg core.AgentConfig, h *core.ConversationHistory) *Agent {
 	a.rec = session.NewRecorder(cfg.SessionStore, h, cfg.OnPersistError)
 	a.tools = append(a.tools, cfg.ToolPolicy.CustomTools...)
 	return a
+}
+
+// checkTool is REQ-TOOL-01's "exactly one of Handler and Execute", for every
+// way a tool enters the registry. A tool with neither otherwise registers and
+// fails only when the model first calls it, as a nil-func panic.
+func checkTool(t core.Tool) error {
+	if t.Handler == nil && t.Execute == nil {
+		return fmt.Errorf("agentkit: tool %q has neither Handler nor Execute", t.Name)
+	}
+	if t.Handler != nil && t.Execute != nil {
+		return fmt.Errorf("agentkit: tool %q sets both Handler and Execute; exactly one", t.Name)
+	}
+	return nil
+}
+
+// checkCustomTools applies checkTool to ToolPolicy.CustomTools at
+// construction, as RegisterTool does for a tool added later.
+func checkCustomTools(cfg core.AgentConfig) error {
+	for _, t := range cfg.ToolPolicy.CustomTools {
+		if err := checkTool(t); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func newID(prefix string) string {
@@ -154,11 +188,8 @@ func (a *Agent) RegisterTool(t core.Tool) error {
 	if a.running {
 		return core.ErrBusy
 	}
-	if t.Handler == nil && t.Execute == nil {
-		return fmt.Errorf("agentkit: tool %q has neither Handler nor Execute", t.Name)
-	}
-	if t.Handler != nil && t.Execute != nil {
-		return fmt.Errorf("agentkit: tool %q sets both Handler and Execute; exactly one", t.Name)
+	if err := checkTool(t); err != nil {
+		return err
 	}
 	for _, ex := range a.tools {
 		if ex.Name == t.Name {
@@ -492,6 +523,7 @@ func (a *Agent) claimSlot(ctx context.Context) (context.Context, context.CancelF
 		return nil, nil, nil, core.ErrBusy
 	}
 	a.running = true
+	a.runUsage = core.Usage{}
 	a.aborted = false
 	rctx, cancel := context.WithCancel(ctx)
 	a.cancelRun = cancel
