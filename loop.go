@@ -217,14 +217,16 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial *core.
 		res = core.RunResult{
 			Messages:   newMessages,
 			StopReason: runReason,
-			Usage:      a.Usage(),
+			Usage:      a.runUsageSnapshot(),
 			TurnCount:  turnCount,
 			Error:      runErr,
 		}
 		if am := lastAssistant(newMessages); am != nil {
 			res.LastReason = am.StopReason
 		}
-		done := core.AgentDoneEvent{Result: res, Usage: res.Usage}
+		// Result.Usage is this run's; the event's own Usage is the session
+		// aggregate.
+		done := core.AgentDoneEvent{Result: res, Usage: a.Usage()}
 		s.Push(done)
 		a.fireAgentDone(done)
 
@@ -233,7 +235,7 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial *core.
 		// none: an auditor cannot then tell a session that ended badly from
 		// one still running, which is the case they most need to see.
 		end := core.AuditEvent{
-			Kind: core.AuditSessionEnd, Usage: res.Usage, StopReason: res.StopReason,
+			Kind: core.AuditSessionEnd, Usage: a.Usage(), StopReason: res.StopReason,
 		}
 		if runErr != nil {
 			end.Error = runErr.Error()
@@ -708,6 +710,9 @@ func (a *Agent) prepareNextTurn(ctx context.Context) core.Messages {
 	// agent's behalf off the loop, and reports it through core.ReportUsage
 	// so Agent.Usage and the StopPolicy budgets see it.
 	tctx := core.WithUsageReporter(ctx, a.addOffLoopUsage)
+	// The transform gets its own deep copy: a block it edits in place must
+	// not rewrite stored history, which this function promises never to do.
+	msgs = msgs.Clone()
 	view := msgs
 	safely(a.hooks().OnError, "TransformContext", func() {
 		if out := tf(tctx, msgs); out != nil {
@@ -739,7 +744,7 @@ func (a *Agent) consultStopPolicy(m core.AssistantMessage, results []core.ToolRe
 		History:     a.history,
 		NewMessages: newMessages,
 		TurnCount:   turnCount,
-		Usage:       a.Usage(),
+		Usage:       a.runUsageSnapshot(),
 		Reason:      &reason,
 		StartedAt:   startedAt,
 	}
@@ -771,12 +776,21 @@ func (a *Agent) consultStopPolicy(m core.AssistantMessage, results []core.ToolRe
 func (a *Agent) addUsage(u core.Usage) {
 	a.mu.Lock()
 	a.usage = a.usage.Add(u)
+	a.runUsage = a.runUsage.Add(u)
 	model := a.cfg.Model
 	a.mu.Unlock()
 	// Level 1 accounting is folded from the SAME reported usage the turn was
 	// billed against (REQ-CACHE-08). Recomputing it from a token estimate here
 	// would make the savings figure disagree with the invoice.
 	a.meter.ObserveTurn(model, u)
+}
+
+// runUsageSnapshot is the current run's usage, for RunResult and StopContext
+// (the PRD's "cumulative for the run"). Agent.Usage is the lifetime total.
+func (a *Agent) runUsageSnapshot() core.Usage {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.runUsage
 }
 
 // addOffLoopUsage counts a request made outside the loop, such as a
@@ -786,6 +800,7 @@ func (a *Agent) addUsage(u core.Usage) {
 func (a *Agent) addOffLoopUsage(u core.Usage) {
 	a.mu.Lock()
 	a.usage = a.usage.Add(u)
+	a.runUsage = a.runUsage.Add(u)
 	a.mu.Unlock()
 }
 

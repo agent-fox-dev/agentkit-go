@@ -45,7 +45,9 @@ func (r *Recorder) Head() core.EntryID {
 	if r.store == nil {
 		return core.NullLeaf
 	}
-	return r.store.Head()
+	head := core.NullLeaf
+	_ = contain("SessionStore.Head", func() error { head = r.store.Head(); return nil })
+	return head
 }
 
 func (r *Recorder) append(e core.Entry) (core.EntryID, error) {
@@ -55,20 +57,68 @@ func (r *Recorder) append(e core.Entry) (core.EntryID, error) {
 		}
 		return e.ID, nil
 	}
-	if err := r.store.Append(e); err != nil {
-		if r.onErr != nil {
-			r.onErr(err)
+	var head core.EntryID
+	err := contain("SessionStore.Append", func() error {
+		if err := r.store.Append(e); err != nil {
+			return err
 		}
+		head = r.store.Head()
+		return nil
+	})
+	if err != nil {
+		r.report(err)
 		return core.NullLeaf, err
 	}
-	return r.store.Head(), nil
+	return head, nil
+}
+
+// contain runs a call into the embedder's store and turns a panic in it into
+// an error. The store is user code reached from every path that records,
+// including the loop's own panic recovery, where a second panic is fatal to
+// the process (NFR-REL-02).
+func contain(what string, f func() error) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("session: panic in %s: %v", what, p)
+		}
+	}()
+	return f()
+}
+
+// report hands err to OnPersistError, containing a panic in the hook: it is
+// user code too, and is called from the same paths.
+func (r *Recorder) report(err error) {
+	if r.onErr == nil {
+		return
+	}
+	func() {
+		defer func() { _ = recover() }()
+		r.onErr(err)
+	}()
+}
+
+// recordAnyway puts msgs into history under a locally minted id when the
+// store refused the entry. The failure is already reported (REQ-SESS-08); what
+// it must not do is take the turn out of the MODEL'S view — the next request
+// would be missing the message, or answer a tool call with "No result
+// provided". The log lacks the entry; history, which is what the model is
+// sent, does not.
+func (r *Recorder) recordAnyway(msgs ...core.Message) {
+	if r.history != nil {
+		r.history.Record(core.EntryID(randomID()), msgs...)
+	}
 }
 
 // RecordMessage appends a message entry and records it in history under the
 // id the store assigned, so a later compaction anchor resolves.
+//
+// When the store fails, the error is returned and reported, and the message
+// still goes into history (recordAnyway): a persist failure costs the log an
+// entry, never the model a turn.
 func (r *Recorder) RecordMessage(m core.Message) (core.EntryID, error) {
 	id, err := r.append(NewMessageEntry(m))
 	if err != nil {
+		r.recordAnyway(m)
 		return core.NullLeaf, err
 	}
 	if r.history != nil {
@@ -82,6 +132,7 @@ func (r *Recorder) RecordMessage(m core.Message) (core.EntryID, error) {
 func (r *Recorder) RecordModelChange(provider string, api core.API, modelID string) (core.EntryID, error) {
 	id, err := r.append(NewModelChangeEntry(provider, api, modelID))
 	if err != nil {
+		r.recordAnyway()
 		return core.NullLeaf, err
 	}
 	if r.history != nil {
@@ -94,6 +145,7 @@ func (r *Recorder) RecordModelChange(provider string, api core.API, modelID stri
 func (r *Recorder) RecordThinkingLevel(l core.ThinkingLevel) (core.EntryID, error) {
 	id, err := r.append(NewThinkingLevelEntry(l))
 	if err != nil {
+		r.recordAnyway()
 		return core.NullLeaf, err
 	}
 	if r.history != nil {
@@ -117,9 +169,7 @@ func (r *Recorder) RecordThinkingLevel(l core.ThinkingLevel) (core.EntryID, erro
 func (r *Recorder) RecordCompaction(summary string, firstKept core.EntryID, previous string) (core.CompactionCheckpoint, error) {
 	if !r.hasEntry(firstKept) {
 		err := fmt.Errorf("session: compaction anchor: %w: %q", ErrUnknownEntry, firstKept)
-		if r.onErr != nil {
-			r.onErr(err)
-		}
+		r.report(err)
 		return core.CompactionCheckpoint{}, err
 	}
 	id, err := r.append(NewCompactionEntry(summary, firstKept, previous))
@@ -148,15 +198,21 @@ func (r *Recorder) hasEntry(id core.EntryID) bool {
 		return false
 	}
 	if r.store != nil {
-		if s, ok := r.store.(interface{ Has(core.EntryID) bool }); ok {
-			return s.Has(id)
-		}
-		for _, e := range r.store.Entries() {
-			if e.ID == id {
-				return true
+		found := false
+		_ = contain("SessionStore lookup", func() error {
+			if s, ok := r.store.(interface{ Has(core.EntryID) bool }); ok {
+				found = s.Has(id)
+				return nil
 			}
-		}
-		return false
+			for _, e := range r.store.Entries() {
+				if e.ID == id {
+					found = true
+					break
+				}
+			}
+			return nil
+		})
+		return found
 	}
 	if r.history != nil {
 		_, ok := r.history.IndexOfEntry(id)
@@ -170,6 +226,7 @@ func (r *Recorder) hasEntry(id core.EntryID) bool {
 func (r *Recorder) RecordCustom(kind string, c core.Content) (core.EntryID, error) {
 	id, err := r.append(NewCustomMessageEntry(kind, c))
 	if err != nil {
+		r.recordAnyway(core.UserMessage{Content: c})
 		return core.NullLeaf, err
 	}
 	if r.history != nil {
@@ -183,6 +240,9 @@ func (r *Recorder) RecordCustom(kind string, c core.Content) (core.EntryID, erro
 func (r *Recorder) RecordBranchSummary(summary string, fromLeaf, forkPoint core.EntryID) (core.EntryID, error) {
 	id, err := r.append(NewBranchSummaryEntry(summary, fromLeaf, forkPoint))
 	if err != nil {
+		r.recordAnyway(core.UserMessage{
+			Content: core.Content{core.TextBlock{Text: RenderBranchSummary(summary)}},
+		})
 		return core.NullLeaf, err
 	}
 	if r.history != nil {
@@ -200,9 +260,9 @@ func (r *Recorder) Sync() error {
 	if r.store == nil {
 		return nil
 	}
-	err := r.store.Sync()
-	if err != nil && r.onErr != nil {
-		r.onErr(err)
+	err := contain("SessionStore.Sync", r.store.Sync)
+	if err != nil {
+		r.report(err)
 	}
 	return err
 }

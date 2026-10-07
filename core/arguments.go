@@ -35,10 +35,32 @@ type PreparedArguments struct {
 // WithArgs replaces the arguments, as an interceptor may do (REQ-SEC-03.5),
 // regenerating Raw through the ordered form so the positions of keys the
 // interceptor kept survive.
+//
+// It panics if a value is not representable in JSON (NaN, a channel);
+// TryWithArgs reports that as an error instead.
 func (p PreparedArguments) WithArgs(args map[string]any) PreparedArguments {
+	out, err := p.TryWithArgs(args)
+	if err != nil {
+		panic(err)
+	}
+	return out
+}
+
+// TryWithArgs is WithArgs returning an error for a value that is not
+// representable in JSON. An interceptor's replacement arguments are the
+// embedder's code: one that produces NaN fails that call, not the run.
+func (p PreparedArguments) TryWithArgs(args map[string]any) (PreparedArguments, error) {
 	order := p.Order.Clone()
 	for k, v := range args {
-		order.Set(k, jsonx.OV(v))
+		b, err := json.Marshal(v)
+		if err != nil {
+			return PreparedArguments{}, fmt.Errorf("argument %q: %w", k, err)
+		}
+		ov, err := jsonx.DecodeOrdered(b)
+		if err != nil {
+			return PreparedArguments{}, fmt.Errorf("argument %q: %w", k, err)
+		}
+		order.Set(k, ov)
 	}
 	for i := 0; i < len(order); {
 		if _, ok := args[order[i].Key]; !ok {
@@ -51,7 +73,7 @@ func (p PreparedArguments) WithArgs(args map[string]any) PreparedArguments {
 	if err != nil {
 		raw = p.Raw
 	}
-	return PreparedArguments{Raw: raw, Order: order, Args: order.Map(), Coercions: p.Coercions}
+	return PreparedArguments{Raw: raw, Order: order, Args: order.Map(), Coercions: p.Coercions}, nil
 }
 
 // PrepareArguments runs REQ-TOOL-11's fixed pipeline before the handler. Every

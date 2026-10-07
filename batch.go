@@ -186,7 +186,15 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 			}
 			if dec.Arguments != nil {
 				// The interceptor may widen as well as narrow (REQ-SEC-03.5).
-				prepared = prepared.WithArgs(dec.Arguments)
+				// Arguments it returns that JSON cannot carry fail this call
+				// alone, as any other invalid arguments do.
+				next, err := prepared.TryWithArgs(dec.Arguments)
+				if err != nil {
+					finalizeInline(i, errorResult(c, "invalid_arguments",
+						"BeforeToolCall returned arguments that are not JSON: "+err.Error()))
+					continue
+				}
+				prepared = next
 			}
 		}
 
