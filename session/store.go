@@ -164,6 +164,7 @@ func Create(path string, h core.SessionHeader, opts Options) (*Store, error) {
 // reports the same repair forever. Open truncates the file to the last
 // newline offset the loader already computed, before the first append.
 func Open(path string, opts Options) (*Store, *Loaded, error) {
+	customID, customNow := opts.NewID != nil, opts.Now != nil
 	opts = opts.withDefaults()
 	l, err := Load(path)
 	if err != nil {
@@ -195,8 +196,35 @@ func Open(path string, opts Options) (*Store, *Loaded, error) {
 	}
 	if l.needsHeader {
 		// The file was emptied by repair (or was empty to begin with), so the
-		// next flush must write the header again.
-		line, err := EncodeHeader(l.Header)
+		// next flush must write the header again — a real one, filled as
+		// Create and OpenOrCreate fill a new file's. A touched-then-opened
+		// file (log rotation, install -D) otherwise got `"id":""`, and that
+		// empty id flowed into every audit record.
+		h := l.Header
+		if h.Version == 0 {
+			h.Version = core.SessionLogVersion
+		}
+		if h.ID == "" {
+			if customID {
+				h.ID = string(opts.NewID())
+			} else {
+				h.ID = sessionID()
+			}
+		}
+		if h.Timestamp.IsZero() {
+			if customNow {
+				h.Timestamp = opts.Now()
+			} else {
+				h.Timestamp = time.Now()
+			}
+		}
+		if h.CWD == "" {
+			if wd, err := os.Getwd(); err == nil {
+				h.CWD = wd
+			}
+		}
+		l.Header, s.header = h, h
+		line, err := EncodeHeader(h)
 		if err != nil {
 			_ = f.Close()
 			return nil, l, err

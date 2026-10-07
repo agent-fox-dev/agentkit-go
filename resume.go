@@ -29,9 +29,30 @@ func NewAgentFromSession(cfg core.AgentConfig, r *session.Resume, resolve func(p
 		return nil, fmt.Errorf("agentkit: NewAgentFromSession(nil resume)")
 	}
 
+	// The Resume must be the branch the store will append to. A store forked
+	// (ForkFrom) after Open has moved its head, and an agent built from the
+	// Resume Open returned would send the model the old branch while the log
+	// records the new one; a later resume would show a conversation that never
+	// ran. session.FoldLeaf forks and folds together.
+	if cfg.SessionStore != nil {
+		if head := cfg.SessionStore.Head(); head != r.LeafID {
+			return nil, fmt.Errorf(
+				"agentkit: the session store's head is %q but this Resume was folded from %q; "+
+					"resume a branch with session.FoldLeaf(store, leafID), which moves the head and "+
+					"folds that branch together", head, r.LeafID)
+		}
+	}
+
 	if r.ModelID != "" {
 		if resolve == nil {
-			if cfg.Model == nil || cfg.Model.ID != r.ModelID {
+			// The whole provenance TRIPLE (P-4), not the model id alone:
+			// REQ-PROV-11 rule 1's same_model is computed over (provider,
+			// api, model), so a config that matches only the id strips the
+			// session's signed thinking on its first request. A field the
+			// log does not record cannot be compared, and is not.
+			if cfg.Model == nil || cfg.Model.ID != r.ModelID ||
+				(r.Provider != "" && cfg.Model.Provider != r.Provider) ||
+				(r.API != "" && cfg.Model.API != r.API) {
 				return nil, fmt.Errorf(
 					"agentkit: session was produced by model %q (provider %q, api %q) but no "+
 						"resolver was supplied and cfg.Model does not match; replaying a "+

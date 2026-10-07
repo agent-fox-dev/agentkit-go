@@ -67,3 +67,22 @@ func sessionID() string {
 	_, _ = rand.Read(b[:])
 	return "sess_" + hex.EncodeToString(b[:])
 }
+
+// FoldLeaf moves the store's head to leafID (Store.ForkFrom) and folds that
+// branch, returning the construction inputs for an agent on it. It is the way
+// to resume on another branch (REQ-SESS-07): forking the store after Open
+// leaves the Resume Open returned on the old branch, and an agent built from
+// it would send the model one conversation while the log records another —
+// which agentkit.NewAgentFromSession refuses.
+func FoldLeaf(store *Store, leafID core.EntryID) (*Resume, error) {
+	if err := store.ForkFrom(leafID); err != nil {
+		return nil, err
+	}
+	branch, err := store.Branch(leafID)
+	if err != nil {
+		return nil, err
+	}
+	r := Fold(store.Header(), branch)
+	r.Path = store.Path()
+	return &r, nil
+}

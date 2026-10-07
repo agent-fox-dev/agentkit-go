@@ -48,7 +48,12 @@ type AuditEvent struct {
 	// describes.
 	ArgumentsHash string
 	IsError       bool
-	ElapsedMS     int64
+	// ErrorCode is the result's error code when IsError: the tool's own, or
+	// the reason the call never reached its handler — "blocked" by the
+	// interceptor, "blocked_by_plugin", "unknown_tool", "invalid_arguments",
+	// "aborted", "max_tokens". A refused call is audited like any other.
+	ErrorCode string
+	ElapsedMS int64
 
 	// Skills loaded (REQ-OBS-04).
 	Skills []string

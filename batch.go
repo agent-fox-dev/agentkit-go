@@ -99,10 +99,23 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	// execution end event and the result, so every call opens and closes
 	// exactly once on the stream whichever way it ended (REQ-LOOP-11.3), and
 	// a UI keyed on the start event never waits for an end that will not come.
-	finalizeInline := func(i int, m core.ToolResultMessage) {
+	//
+	// It is audited like a call that ran (REQ-OBS-05: "every tool call"),
+	// with the reason it did not: a blocked or refused call is the entry a
+	// security reviewer most needs, and it is the one that was missing.
+	finalizeInline := func(i int, code string, m core.ToolResultMessage) {
 		results[i] = m
 		s.Push(core.ToolExecutionEndEvent{ToolUseID: m.ToolUseID, Name: m.ToolName, IsError: m.IsError})
 		s.Push(core.ToolResultEvent{Message: m})
+		c := calls[i]
+		a.audit(core.AuditEvent{
+			Kind: core.AuditToolCall, SessionID: auditSession,
+			ToolName: c.Name, ToolUseID: c.ID,
+			ServerName:    serverNameOf(byName[c.Name], c.Name),
+			ArgumentsHash: core.HashArguments(c.Input),
+			IsError:       m.IsError,
+			ErrorCode:     code,
+		})
 	}
 
 	for i, c := range calls {
@@ -131,7 +144,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 
 		tool, known := byName[c.Name]
 		if !known {
-			finalizeInline(i, errorResult(c, "unknown_tool", unknownToolMessage(c.Name, byName)))
+			finalizeInline(i, "unknown_tool", errorResult(c, "unknown_tool", unknownToolMessage(c.Name, byName)))
 			continue
 		}
 
@@ -155,7 +168,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 		if perr != nil {
 			// The error text re-serializes the model's OWN key order, so the
 			// message is self-correcting (REQ-TOOL-11.4, REQ-TOOL-12.3).
-			finalizeInline(i, errorResult(c, "invalid_arguments", perr.Error()))
+			finalizeInline(i, "invalid_arguments", errorResult(c, "invalid_arguments", perr.Error()))
 			continue
 		}
 
@@ -181,7 +194,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				// the model into retrying (REQ-TOOL-13.2). Honoured only when
 				// Block is set.
 				votes[i] = dec.Terminate
-				finalizeInline(i, errorResult(c, core.BlockErrorCode, reason))
+				finalizeInline(i, core.BlockErrorCode, errorResult(c, core.BlockErrorCode, reason))
 				continue
 			}
 			if dec.Arguments != nil {
@@ -190,7 +203,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				// alone, as any other invalid arguments do.
 				next, err := prepared.TryWithArgs(dec.Arguments)
 				if err != nil {
-					finalizeInline(i, errorResult(c, "invalid_arguments",
+					finalizeInline(i, "invalid_arguments", errorResult(c, "invalid_arguments",
 						"BeforeToolCall returned arguments that are not JSON: "+err.Error()))
 					continue
 				}
@@ -205,7 +218,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 		// — is gone, and with it any notion of the SDK running something
 		// before the interceptor that the interceptor cannot override.
 		if d, by := pluginVeto(ctx, cfg.Plugins, c.Name, prepared.Raw); d == core.PluginBlock {
-			finalizeInline(i, toolResultMessage(c, core.ErrResult("blocked_by_plugin",
+			finalizeInline(i, "blocked_by_plugin", toolResultMessage(c, core.ErrResult("blocked_by_plugin",
 				fmt.Sprintf("plugin %q blocked this call", by.PluginName()))))
 			continue
 		}
@@ -259,6 +272,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				ServerName:    serverNameOf(tool, c.Name),
 				ArgumentsHash: core.HashArguments(prepared.Raw),
 				IsError:       !out.OK,
+				ErrorCode:     errorCodeOf(out),
 				ElapsedMS:     time.Since(start).Milliseconds(),
 			})
 
@@ -329,7 +343,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				s.Push(core.ToolExecutionStartEvent{ToolUseID: c.ID, Name: c.Name})
 				started[i] = true
 			}
-			finalizeInline(i, abortedResult(c))
+			finalizeInline(i, "aborted", abortedResult(c))
 		}
 		// The calls that were blocked in prepare keep their termination vote;
 		// an aborted call abstains. The AND over the batch is therefore false
@@ -496,4 +510,13 @@ func unknownToolMessage(name string, available map[string]core.Tool) string {
 		names = names[:maxListedTools]
 	}
 	return msg + "; available tools: " + strings.Join(names, ", ") + more
+}
+
+// errorCodeOf is a result's error code for the audit record, empty for a
+// success.
+func errorCodeOf(r core.ToolResult) string {
+	if r.OK {
+		return ""
+	}
+	return r.Error
 }
