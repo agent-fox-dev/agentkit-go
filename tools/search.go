@@ -119,6 +119,33 @@ func (f *fileTools) searchFiles() core.Tool {
 		// The "prefer search_files over execute+grep" guideline compares two
 		// tools, so it is emitted by the prompt builder only when both are
 		// present (tools.SearchOverExecuteGuideline).
+		// max_matches above the cap is clamped to it, as it always was
+		// (effectiveMax), rather than refused by the schema's maximum: asking
+		// for more than the tool returns is not an error worth a turn.
+		PrepareArguments: func(args map[string]any) map[string]any {
+			var n float64
+			switch v := args["max_matches"].(type) {
+			case json.Number: // the argument map's number form
+				f, err := v.Float64()
+				if err != nil {
+					return args
+				}
+				n = f
+			case float64:
+				n = v
+			default:
+				return args
+			}
+			if n <= SearchMatchCap {
+				return args
+			}
+			out := make(map[string]any, len(args))
+			for k, v := range args {
+				out[k] = v
+			}
+			out["max_matches"] = SearchMatchCap
+			return out
+		},
 		InputSchema: schema.Object(
 			schema.Prop("pattern", schema.String("Regular expression (RE2 syntax)")),
 			schema.Opt("path", schema.String("Directory to search from (default the workspace root)")),

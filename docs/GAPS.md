@@ -278,3 +278,11 @@ Every row here is a finding of this pass, not the 0.4.2 audit above.
 | `core.Tracer`, `middleware.Tracing` | The contract said `StartSpan` was "callback-scoped"; `Tracing` writes and ends its span after the callback returns, so an adapter built to the contract dropped every model-call attribute. | Fixed — the contract now says a span lives until `Span.End`; both call sites write before End and end exactly once; `TestTracingFollowsTheSpanContract` pins `Tracing` to it. |
 | `middleware.Retry` | `BaseDelay << (attempt-1)` overflowed: negative after attempt 35, zero from 64 — a retry storm. | Fixed — doubled step by step and capped at `MaxDelay`; `TestBackoffSaturatesInsteadOfOverflowing`. |
 | `middleware.RateLimit` | A zero, negative or NaN rate admitted every call. | Fixed — such a limiter fails every call with a clear error; `TestRateLimitRefusesANonPositiveRate`. |
+
+## Schema coercion and validation (issue #87)
+
+| Where | Finding | Status |
+|---|---|---|
+| `schema` (`Coerce`) | A string was coerced to a number whenever `strconv.ParseFloat` accepted it — "NaN", "Inf", "+5", ".5", "5.", "1_0" — and written verbatim, making the arguments invalid JSON; "1.5" was coerced onto an integer. | Fixed — coerced only when the string matches the JSON number grammar, and onto an integer only when integral; it also coerces through StrictSubset's `anyOf[T, null]`; `TestCoerceWritesOnlyJSONNumbers`, `TestCoerceThroughASingleNonNullAnyOfBranch`. |
+| `schema` (`Validate`) | Only `type` and `required` were checked: `additionalProperties: false`, `enum`, `const`, min/max, `anyOf`/`oneOf` and StrictSubset's optional shape went unenforced, and `null` on a nullable object or array was refused. | Fixed — all are enforced, with string lengths, item counts and integrality; `TestValidateEnforcesTheDeclaredConstraints`. `pattern` and `format` are still not checked. |
+| `tools` | Enforcing `enum` and `maximum` would have refused two inputs the built-in tools always accepted. | Kept as explicit argument repairs (REQ-TOOL-11.1): `fetch_url` upper-cases `method`; `search_files` clamps `max_matches` to its cap; `TestBuiltinLeniencySurvivesStrictValidation`. |
