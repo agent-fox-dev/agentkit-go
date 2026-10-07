@@ -1852,3 +1852,97 @@ func TestToolDescriptionsCarryTheOperativeFacts(t *testing.T) {
 		t.Error("REQ-TOOL-04e's guideline is pinned")
 	}
 }
+
+// Issue #71: the corruption seen in an agent-fox run — `">` where `":"`
+// belongs, and trailing commas — is repaired before the edits string is
+// given up on.
+func TestRepairEditArgsRepairsCorruptedJSONStrings(t *testing.T) {
+	cases := map[string][2]string{
+		"quote-colon-quote became quote-gt": {`[{"old_string">\tRepoMapTokens int\n", "new_string":"x"}]`, "\tRepoMapTokens int\n"},
+		"colon became gt":                   {`[{"old_string">"a", "new_string">"b"}]`, "a"},
+		"trailing commas":                   {`[{"old_string":"a","new_string":"b",},]`, "a"},
+	}
+	for name, c := range cases {
+		got := repairEditArgs(map[string]any{"path": "p.go", "edits": c[0]})
+		arr, ok := got["edits"].([]any)
+		if !ok || len(arr) != 1 {
+			t.Errorf("%s: edits = %#v, want a repaired one-element array", name, got["edits"])
+			continue
+		}
+		if e := arr[0].(map[string]any); e["old_string"] != c[1] {
+			t.Errorf("%s: old_string = %q, want %q", name, e["old_string"], c[1])
+		}
+	}
+	// A string that is not an edit list after repair is left for the
+	// validator to refuse, never turned into something else.
+	got := repairEditArgs(map[string]any{"edits": "not json at all"})
+	if _, still := got["edits"].(string); !still {
+		t.Errorf("an unrepairable string became %#v", got["edits"])
+	}
+	// The repair never touches text inside string values.
+	got = repairEditArgs(map[string]any{"edits": `[{"old_string":"a\">b,]","new_string":"c"},]`})
+	if arr, ok := got["edits"].([]any); !ok || arr[0].(map[string]any)["old_string"] != `a">b,]` {
+		t.Errorf("repair changed a string value: %#v", got["edits"])
+	}
+}
+
+// Issue #71, end to end through REQ-TOOL-11's pipeline with the registered
+// tools: each shape from the agent-fox run is either repaired or refused in
+// a short message.
+func TestIssue71ShapesThroughThePipeline(t *testing.T) {
+	ws, err := NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := All(Options{Workspace: ws, Ignore: NoGlobalExcludes()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]core.Tool{}
+	for _, tl := range all {
+		byName[tl.Name] = tl
+	}
+	prep := func(tool, args string) (core.PreparedArguments, error) {
+		t.Helper()
+		c, err := core.NewToolUse("c", tool, json.RawMessage(args))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return core.PrepareArguments(byName[tool], c)
+	}
+
+	// edit_file: edits as a string with `">` for `":"` — repaired.
+	p, err := prep("edit_file", `{"path":"issuetriage/pipeline.go","edits":"[{\"old_string\">\tRepoMapTokens int\n\", \"new_string\":\"x\"}]"}`)
+	if err != nil {
+		t.Fatalf("the corrupted edits string was not repaired: %v", err)
+	}
+	if arr, ok := p.Args["edits"].([]any); !ok || len(arr) != 1 {
+		t.Fatalf("edits = %#v, want a one-element array", p.Args["edits"])
+	}
+
+	// edit_file: an edits string beyond repair — a short, shaped refusal.
+	long := strings.Repeat("y", 1000)
+	_, err = prep("edit_file", `{"path":"p.go","edits":"[{old_string: `+long+`"}`)
+	if err == nil || !strings.Contains(err.Error(), "not a JSON string") || len(err.Error()) > 600 {
+		t.Fatalf("want a short refusal saying not to send a JSON string, got %d bytes: %v", len(fmt.Sprint(err)), err)
+	}
+
+	// read_file: offset "1, " — coerced.
+	p, err = prep("read_file", `{"path":"codefix/pipeline_test.go","offset":"1, ","limit":190}`)
+	if err != nil {
+		t.Fatalf(`offset "1, " was refused: %v`, err)
+	}
+	if fmt.Sprint(p.Args["offset"]) != "1" {
+		t.Fatalf("offset = %v, want 1", p.Args["offset"])
+	}
+}
+
+// The inner JSON of an edits string carries real tabs and newlines once the
+// outer JSON is decoded; the repair escapes them.
+func TestRepairEditArgsEscapesRawControlCharacters(t *testing.T) {
+	got := repairEditArgs(map[string]any{"edits": "[{\"old_string\">\tfoo\nbar\", \"new_string\":\"x\"}]"})
+	arr, ok := got["edits"].([]any)
+	if !ok || arr[0].(map[string]any)["old_string"] != "\tfoo\nbar" {
+		t.Fatalf("edits = %#v", got["edits"])
+	}
+}

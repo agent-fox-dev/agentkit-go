@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/agentfox/agentkit-go/jsonx"
@@ -100,6 +101,13 @@ func PrepareArguments(t Tool, c ToolUseBlock) (PreparedArguments, error) {
 
 		// ---- 4. Validate.
 		if err := schema.Validate(t.InputSchema, order); err != nil {
+			// A schema.ValidationError already echoes the arguments, in the
+			// model's order (REQ-TOOL-12.3); a second, full copy doubled every
+			// failed call's cost in context for nothing.
+			var ve *schema.ValidationError
+			if errors.As(err, &ve) {
+				return PreparedArguments{}, err
+			}
 			return PreparedArguments{}, fmt.Errorf("%w\n\narguments as provided:\n%s", err, echoArguments(c.Input))
 		}
 

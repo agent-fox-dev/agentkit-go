@@ -226,3 +226,11 @@ Every row here is a finding of this pass, not the 0.4.2 audit above.
 | `search_files` | Native search stopped reading a file at its first line over 1 MiB; the ripgrep backend failed — and with ripgrep blocked on the pipe, never returned — on a match event over 4 MiB. | Fixed — both read whole lines; `TestSearchReadsPastALongLine`, `TestRipgrepJSONReaderTakesALongEvent` (which hangs on the old reader). |
 | `write_file`, `edit_file` | `os.WriteFile` truncates before writing; a kill in between left the file cut off. | Fixed — an existing file is replaced by rename of a temp file in its directory, keeping its mode and writing through a symlink to its target; new files unchanged; `TestWritesAreAtomicAndKeepModeAndLinks`. |
 | `tools` tests | `TestDetachedDescendantOutputIsDrainedOnAReArmingTimer` had a 500 ms idle window against a 100 ms writer. | Fixed — 1.5 s window, 4 s writer: still fails a non-re-arming drain. |
+
+## Tool argument preparation (issue #71)
+
+| Where | Finding | Status |
+|---|---|---|
+| `tools` (`repairEditArgs`) | An `edits` string that did not parse as written — `">` for `":"`, trailing commas, and the raw tabs and newlines the outer JSON's decoding leaves inside it — reached the validator, and the model abandoned `edit_file` for the rest of the run. | Fixed — structural repair outside string values, accepted only if it parses into edit objects; `TestRepairEditArgsRepairsCorruptedJSONStrings`, `TestRepairEditArgsEscapesRawControlCharacters`, `TestIssue71ShapesThroughThePipeline`. |
+| `schema` coercion | `"1, "` for an integer was refused; only a bare number string was coerced. | Fixed — surrounding space and trailing `,`/`;` are dropped before parsing; anything else is refused with the value quoted and "pass a number"; `TestIntegersWithTrailingSeparatorsAreCoerced`, `TestAnUncoercibleIntegerGetsAOneLineHint`. |
+| `schema`, `core` | A validation failure echoed the arguments twice (validator and core), in full: about 2 KB per failed `edit_file` call. | Fixed — echoed once, in the model's key order (REQ-TOOL-12.3), long string values cut at 80 characters; an array or object sent as a string says to pass the value itself; `TestAValidationErrorEchoesOnceAndAbbreviatesLongStrings`. |
