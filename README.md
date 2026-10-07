@@ -249,9 +249,12 @@ that never blocks, so an unrestricted shell is something you say in code.
 `guard.Restricted` ships as the replaceable starting point: a program
 allowlist plus operator rejection under a *declared* grammar (POSIX sh
 quoting). The allowlist matches the program as spelled — `./ls` and `/tmp/ls`
-are not `ls` — and a `NAME=value` prefix is refused unless `AllowEnvPrefixes`
-is set, and even then when it is `PATH`, `LD_*`, `DYLD_*` or another name that
-changes which binary runs or what is loaded into it. `powershell` is refused
+are not `ls` — and the program word is found the way the shell finds it, so a
+quoted value is one word (`X='a ls' rm` runs `rm`). A `NAME=value` prefix is
+refused unless `AllowEnvPrefixes` is set, and even then when it is `PATH`,
+`LD_*`, `DYLD_*`, `HOME`, `GCONV_PATH` or another name that changes which binary
+runs or what is loaded into it — the shell's, the loader's, or an
+interpreter's (Perl, Python, Node, Ruby, JVM, .NET, Lua, PHP, Tcl). `powershell` is refused
 outright unless you supply a PowerShell filter — REQ-SEC-04's rule that a
 filter which silently does not hold on one supported shell is worse than none.
 It is a floor, not a sandbox.
