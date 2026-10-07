@@ -3,7 +3,7 @@ package outline
 import (
 	"bytes"
 	"context"
-	"os"
+	"errors"
 	"path/filepath"
 	"sort"
 )
@@ -98,18 +98,28 @@ func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, e
 		}, nil
 	}
 
-	// Read the file if no source was provided.
+	maxBytes := opts.MaxFileBytes
+	if maxBytes == 0 {
+		maxBytes = defaultMaxFileBytes
+	}
+
+	// Read the file if no source was provided — after checking its size, so
+	// a 500 MB tracked bundle is skipped on the stat rather than read whole
+	// and then rejected.
 	if src == nil {
-		data, err := os.ReadFile(abs)
+		data, err := loadSourceIfNeeded(abs, nil, maxBytes)
+		if errors.Is(err, errTooLarge) {
+			return File{
+				Path:    filePath(abs, opts.Root),
+				Lang:    lang,
+				Backend: BackendNone,
+				Decls:   []Decl{},
+			}, nil
+		}
 		if err != nil {
 			return File{}, err
 		}
 		src = data
-	}
-
-	maxBytes := opts.MaxFileBytes
-	if maxBytes == 0 {
-		maxBytes = defaultMaxFileBytes
 	}
 
 	// File too large.
@@ -226,6 +236,15 @@ func OutlineMany(ctx context.Context, srcs []Source, opts Options) ([]File, Stat
 		src := s.Src
 		if src == nil {
 			data, err := loadSourceIfNeeded(s.Abs, nil, maxBytes)
+			if errors.Is(err, errTooLarge) {
+				files[i] = File{
+					Path:    filePath(s.Abs, opts.Root),
+					Lang:    lang,
+					Backend: BackendNone,
+					Decls:   []Decl{},
+				}
+				continue
+			}
 			if err != nil {
 				// Unreadable: return as none and continue.
 				files[i] = File{

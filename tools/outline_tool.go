@@ -56,10 +56,14 @@ func (f *fileTools) fileOutlineTool() core.Tool {
 				return core.ErrResult("not_a_file", notAFile(f.ws.Rel(abs), fi.Mode()))
 			}
 
-			// Read the file from disk — never from the symbol table.
-			src, err := os.ReadFile(abs)
-			if err != nil {
-				return core.ErrResult("outline_failed", err.Error())
+			// Read the file from disk — never from the symbol table — unless
+			// its stat already says it is over outline's limit: then outline
+			// is handed no source and returns none without reading it either.
+			var src []byte
+			if fi.Size() <= defaultMaxFileBytes {
+				if src, err = os.ReadFile(abs); err != nil {
+					return core.ErrResult("outline_failed", err.Error())
+				}
 			}
 
 			ofile, err := outline.Outline(ctx, abs, src, outline.Options{
@@ -75,13 +79,13 @@ func (f *fileTools) fileOutlineTool() core.Tool {
 			}
 
 			// Render the outline as compact text with line ranges.
-			return renderOutlineResult(f.ws, abs, ofile, a.IncludePrivate, src)
+			return renderOutlineResult(f.ws, abs, ofile, a.IncludePrivate, src, fi.Size())
 		},
 	}
 }
 
 // renderOutlineResult builds the ToolResult for file_outline.
-func renderOutlineResult(ws *Workspace, abs string, ofile outline.File, includePrivate bool, src []byte) core.ToolResult {
+func renderOutlineResult(ws *Workspace, abs string, ofile outline.File, includePrivate bool, src []byte, size int64) core.ToolResult {
 	rel := ws.Rel(abs)
 	shown := filepath.ToSlash(rel)
 
@@ -119,7 +123,7 @@ func renderOutlineResult(ws *Workspace, abs string, ofile outline.File, includeP
 		b.WriteByte('\n')
 		if ofile.Backend == outline.BackendNone {
 			b.WriteString("  No declarations found")
-			reason := noneReason(ofile, src)
+			reason := noneReason(ofile, src, size)
 			if reason != "" {
 				b.WriteString(" (")
 				b.WriteString(reason)
@@ -165,15 +169,14 @@ func lineRange(d outline.Decl) string {
 	return "L" + itoa(d.StartLine) + "-" + itoa(d.EndLine)
 }
 
-// noneReason infers why the backend is none from the File fields and the
-// source bytes. When src is nil the tool was unable to read the file, so
-// only the language can be checked.
-func noneReason(f outline.File, src []byte) string {
+// noneReason infers why the backend is none from the File fields, the file's
+// size and the source bytes. src is nil when the file was too large to read.
+func noneReason(f outline.File, src []byte, size int64) string {
 	if f.Lang == "" {
 		return "language not recognised"
 	}
 	// Check file size against the outline package's default limit.
-	if int64(len(src)) > defaultMaxFileBytes {
+	if size > defaultMaxFileBytes {
 		return "file too large"
 	}
 	// Check for binary content: NUL byte in the first 8 KiB.

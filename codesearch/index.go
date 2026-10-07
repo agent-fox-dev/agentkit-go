@@ -163,6 +163,14 @@ type Index struct {
 	// this to reach zero before deleting the run directory.
 	inFlight sync.WaitGroup
 
+	// leaseMu guards leases and retired: the queries reading each shard
+	// directory (a run directory or an overlay), and the directories that
+	// have been swapped out and are to be removed once their last reader is
+	// done. See leaseDir.
+	leaseMu sync.Mutex
+	leases  map[string]int
+	retired map[string]bool
+
 	// buildCount tracks how many times the index has been built.
 	buildCount atomic.Int32
 
@@ -354,6 +362,68 @@ func (idx *Index) Close() error {
 	}
 	cleanupOverlay(ov)
 	return nil
+}
+
+// leaseDir records a query reading the shard directory dir and returns the
+// function that ends the read. A directory retired while it is leased stays
+// on disk until the last lease ends: removing it at the swap made a query
+// that had already read the path fail to open its searcher. Take the lease
+// while holding idx.mu, in the same critical section that read the path, so
+// a swap cannot retire the directory in between.
+func (idx *Index) leaseDir(dir string) (release func()) {
+	if dir == "" {
+		return func() {}
+	}
+	idx.leaseMu.Lock()
+	if idx.leases == nil {
+		idx.leases = make(map[string]int)
+	}
+	idx.leases[dir]++
+	idx.leaseMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			idx.leaseMu.Lock()
+			idx.leases[dir]--
+			remove := idx.leases[dir] == 0 && idx.retired[dir]
+			if idx.leases[dir] == 0 {
+				delete(idx.leases, dir)
+			}
+			if remove {
+				delete(idx.retired, dir)
+			}
+			idx.leaseMu.Unlock()
+			if remove {
+				os.RemoveAll(dir)
+			}
+		})
+	}
+}
+
+// retireDir removes the shard directory dir now if no query is reading it,
+// and otherwise when the last reader's lease ends.
+func (idx *Index) retireDir(dir string) {
+	if dir == "" {
+		return
+	}
+	idx.leaseMu.Lock()
+	if idx.leases[dir] > 0 {
+		if idx.retired == nil {
+			idx.retired = make(map[string]bool)
+		}
+		idx.retired[dir] = true
+		idx.leaseMu.Unlock()
+		return
+	}
+	idx.leaseMu.Unlock()
+	os.RemoveAll(dir)
+}
+
+// retireOverlay retires an overlay's shard directory.
+func (idx *Index) retireOverlay(ov *overlayState) {
+	if ov != nil {
+		idx.retireDir(ov.dir)
+	}
 }
 
 // outlineRunner returns the lazily resolved runner. It is nil when ctags is

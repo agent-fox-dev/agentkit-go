@@ -76,7 +76,7 @@ type codeSearchArgs struct {
 	Query        string `json:"query"`
 	Path         string `json:"path"`
 	MaxFiles     int    `json:"max_files"`
-	ContextLines int    `json:"context_lines"`
+	ContextLines *int   `json:"context_lines"`
 }
 
 // executeCodeSearch is the Execute handler for code_search.
@@ -105,7 +105,7 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 	}
 
 	// Validate context_lines: negative is invalid.
-	if a.ContextLines < 0 {
+	if a.ContextLines != nil && *a.ContextLines < 0 {
 		return core.ErrResult("invalid_arguments", "context_lines must not be negative")
 	}
 
@@ -116,9 +116,11 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 	}
 
 	// Default and clamp context_lines and max_files.
-	contextLines := a.ContextLines
-	if contextLines == 0 {
-		contextLines = defaultContextLines
+	// Only an ABSENT context_lines takes the default; 0 means no context,
+	// as it does for search_files.
+	contextLines := defaultContextLines
+	if a.ContextLines != nil {
+		contextLines = *a.ContextLines
 	}
 	if contextLines > tools.MaxSearchContextLines {
 		contextLines = tools.MaxSearchContextLines
@@ -331,7 +333,7 @@ func (idx *Index) handleDirty(ctx context.Context) error {
 		ov := idx.overlay
 		idx.overlay = nil
 		idx.mu.Unlock()
-		cleanupOverlay(ov)
+		idx.retireOverlay(ov)
 	}
 	return nil
 }
@@ -453,11 +455,10 @@ func (idx *Index) rebuild(ctx context.Context, oldRunDir string, oldOverlay *ove
 	// Clear dirty marks that predate this rebuild.
 	idx.dirty.clearOlderThan(rebuildGenStart)
 
-	// Clean up the old run directory and overlay.
-	if oldRunDir != "" {
-		os.RemoveAll(oldRunDir)
-	}
-	cleanupOverlay(oldOverlay)
+	// Retire the old run directory and overlay: removed now, or when the
+	// last query that read them before the swap is done.
+	idx.retireOverlay(oldOverlay)
+	idx.retireDir(oldRunDir)
 
 	return nil
 }
@@ -488,14 +489,20 @@ func (idx *Index) filterAndSearchDirty(
 		totalFiles = 0
 	}
 
-	// Build or reuse the overlay shard.
+	// Build or reuse the overlay shard. The overlay in use is leased, with
+	// the run directory it lives in, for as long as this query reads it.
 	idx.mu.Lock()
 	ov := idx.overlay
+	reusable := ov != nil && dirtySetEqual(ov.dirtySet, dirtySet)
+	if reusable {
+		defer idx.leaseDir(ov.runDir)()
+		defer idx.leaseDir(ov.dir)()
+	}
 	idx.mu.Unlock()
 
-	if ov == nil || !dirtySetEqual(ov.dirtySet, dirtySet) {
-		// Clean up old overlay.
-		cleanupOverlay(ov)
+	if !reusable {
+		// Retire the old overlay; a query still reading it keeps it.
+		idx.retireOverlay(ov)
 
 		newOv, err := idx.buildOverlayShard(ctx, dirtySet)
 		if err != nil {
@@ -508,6 +515,8 @@ func (idx *Index) filterAndSearchDirty(
 		ov = newOv
 		idx.mu.Lock()
 		idx.overlay = ov
+		defer idx.leaseDir(ov.runDir)()
+		defer idx.leaseDir(ov.dir)()
 		idx.mu.Unlock()
 		idx.overlayBuildCount.Add(1)
 	}
@@ -545,7 +554,11 @@ func (idx *Index) searchZoekt(ctx context.Context, q query.Q, maxFiles, contextL
 	idx.mu.RLock()
 	runDir := idx.runDir
 	outlineFiles := idx.outlineFiles
+	// Leased under the same lock that read the path: a rebuild swapping
+	// the run directory out now leaves it on disk until this search is done.
+	release := idx.leaseDir(runDir)
 	idx.mu.RUnlock()
+	defer release()
 
 	if runDir == "" {
 		return nil, 0, fmt.Errorf("no index directory")
@@ -731,18 +744,28 @@ func (idx *Index) gatherResultInfo(stats BuildStatsResult) resultInfo {
 		symbolSources[backend]++
 	}
 
-	// Calculate index size from shard files.
+	// Calculate index size from shard files. The run directory is read under
+	// the lock (a rebuild swaps it) and leased while its entries are listed;
+	// overlay subdirectories are not shards of this index.
+	idx.mu.RLock()
+	runDir := idx.runDir
+	release := idx.leaseDir(runDir)
+	idx.mu.RUnlock()
 	var indexSize int64
-	if idx.runDir != "" {
-		entries, err := os.ReadDir(idx.runDir)
+	if runDir != "" {
+		entries, err := os.ReadDir(runDir)
 		if err == nil {
 			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
 				if fi, err := e.Info(); err == nil {
 					indexSize += fi.Size()
 				}
 			}
 		}
 	}
+	release()
 
 	// Count dirty files.
 	dirtyCount := 0

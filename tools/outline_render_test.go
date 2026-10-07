@@ -278,7 +278,7 @@ func TopLevel() {}
 		},
 	}
 	pyAbs := filepath.Join(root, "mod.py")
-	pyR := renderOutlineResult(ws, pyAbs, pyFile, false, nil)
+	pyR := renderOutlineResult(ws, pyAbs, pyFile, false, nil, 0)
 
 	pyLines := strings.Split(pyR.Text, "\n")
 	// Find the my_method line — its signature "def my_method(self)" does NOT contain "MyClass",
@@ -413,7 +413,7 @@ func TestOutlineNoDeclarations_TS02_12(t *testing.T) {
 		}
 		// Pass a large source to trigger "file too large" detection
 		bigSrc := bytes.Repeat([]byte("x"), 2*1024*1024) // 2 MiB
-		r := renderOutlineResult(ws, oversizedPath, ofile, false, bigSrc)
+		r := renderOutlineResult(ws, oversizedPath, ofile, false, bigSrc, int64(len(bigSrc)))
 		if !r.OK {
 			t.Fatalf("oversized file should not be an error; error=%s detail=%s", r.Error, r.Detail)
 		}

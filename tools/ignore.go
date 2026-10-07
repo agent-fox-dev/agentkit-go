@@ -165,7 +165,7 @@ func (e *ignoreEngine) enter(rel, abs string) {
 // a file for the same reason.
 func (e *ignoreEngine) match(rel string, isDir bool) bool {
 	rel = filepath.ToSlash(rel)
-	if rel == ".git" || strings.HasPrefix(rel, ".git/") {
+	if hasGitComponent(rel) {
 		return true
 	}
 
@@ -190,6 +190,19 @@ func (e *ignoreEngine) match(rel string, isDir bool) bool {
 		}
 	}
 	return ignored
+}
+
+// hasGitComponent reports whether any segment of rel is ".git": the root
+// repository's metadata, a nested repository's (a vendored checkout), or a
+// submodule's or worktree's .git pointer file. None of it is workspace
+// content — it holds remote URLs, sometimes with tokens, and every object.
+func hasGitComponent(rel string) bool {
+	for _, seg := range strings.Split(rel, "/") {
+		if seg == ".git" {
+			return true
+		}
+	}
+	return false
 }
 
 // repoBoundary returns the index of the innermost repository-root layer

@@ -724,7 +724,7 @@ func (f *fileTools) writeFile() core.Tool {
 			// succeeds or fails, while still holding the per-path lock
 			// (before the deferred release runs). 02-REQ-6.2.
 			rel := filepath.ToSlash(f.ws.Rel(abs))
-			if err := os.WriteFile(abs, []byte(a.Content), 0o644); err != nil {
+			if err := writeFileAtomic(abs, []byte(a.Content)); err != nil {
 				f.markTableDirty(rel)
 				if f.index != nil {
 					f.index.Invalidate(rel)
@@ -780,17 +780,6 @@ func (f *fileTools) editFile() core.Tool {
 			release := f.locks.acquire(key)
 			defer release()
 
-			// Mark the path dirty after the edit attempt, whether it
-			// succeeds or fails, while still holding the per-path lock
-			// (before the deferred release runs). 02-REQ-6.2, 03-REQ-2.6.
-			rel := filepath.ToSlash(f.ws.Rel(abs))
-			defer f.markTableDirty(rel)
-			defer func() {
-				if f.index != nil {
-					f.index.Invalidate(rel)
-				}
-			}()
-
 			fi, err := os.Stat(abs)
 			if err != nil {
 				return core.ErrResult("read_failed", err.Error())
@@ -798,6 +787,20 @@ func (f *fileTools) editFile() core.Tool {
 			if !fi.Mode().IsRegular() {
 				return core.ErrResult("not_a_file", notAFile(f.ws.Rel(abs), fi.Mode()))
 			}
+
+			// Mark the path dirty after the edit attempt, whether it
+			// succeeds or fails, while still holding the per-path lock
+			// (before the deferred release runs). 02-REQ-6.2, 03-REQ-2.6.
+			// Only once the file is known to exist: an edit of a mistyped
+			// path changed nothing, and marking it would cost the symbol
+			// table and the code index a revalidation for nothing.
+			rel := filepath.ToSlash(f.ws.Rel(abs))
+			defer f.markTableDirty(rel)
+			defer func() {
+				if f.index != nil {
+					f.index.Invalidate(rel)
+				}
+			}()
 			if fi.Size() > EditFileMaxBytes {
 				return core.ErrResult("file_too_large", fmt.Sprintf(
 					"%s is %d bytes, over edit_file's %d byte limit; use execute with sed "+
@@ -821,7 +824,7 @@ func (f *fileTools) editFile() core.Tool {
 			if err := f.ws.CheckWriteTarget(abs); err != nil {
 				return core.ErrResult("path_not_allowed", err.Error())
 			}
-			if err := os.WriteFile(abs, []byte(Restore(out, bom, ending)), 0o644); err != nil {
+			if err := writeFileAtomic(abs, []byte(Restore(out, bom, ending))); err != nil {
 				return core.ErrResult("write_failed", err.Error())
 			}
 			r := core.OKResult(map[string]any{"edits_applied": n})

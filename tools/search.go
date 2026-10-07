@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -500,12 +501,18 @@ func searchFile(abs, rel string, re *regexp.Regexp, contextLines, budget int) (f
 		pending []*SearchMatch
 		lineNo  int
 	)
-	sc := bufio.NewScanner(br)
-	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
-
-	for sc.Scan() {
+	// Lines are read whole, however long. A bounded scanner stopped at the
+	// first line past its limit — a minified bundle's single line — and the
+	// file's remaining lines went unsearched, where ripgrep searches them.
+	var buf []byte
+	for {
+		raw, err := readWholeLine(br, buf[:0])
+		if err != nil {
+			break // io.EOF, or a read error: report what was found
+		}
+		buf = raw
 		lineNo++
-		line := sc.Text()
+		line := string(raw)
 
 		for i := 0; i < len(pending); {
 			m := pending[i]
@@ -537,12 +544,30 @@ func searchFile(abs, rel string, re *regexp.Regexp, contextLines, budget int) (f
 			break
 		}
 	}
-	if err := sc.Err(); err != nil {
-		// A line past the scanner's bound: report what was found rather than
-		// discarding the file's other matches.
-		return out, nil
-	}
 	return out, nil
+}
+
+// readWholeLine reads the next line from br into buf, without its "\n" or a
+// trailing "\r", whatever its length. It returns io.EOF only when there is
+// no further data; a last line with no newline is returned with a nil error.
+func readWholeLine(br *bufio.Reader, buf []byte) ([]byte, error) {
+	for {
+		chunk, err := br.ReadSlice('\n')
+		buf = append(buf, chunk...)
+		switch {
+		case err == nil:
+			buf = buf[:len(buf)-1]
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF) && len(buf) > 0:
+		default:
+			return nil, err
+		}
+		if n := len(buf); n > 0 && buf[n-1] == '\r' {
+			buf = buf[:n-1]
+		}
+		return buf, nil
+	}
 }
 
 // capLine bounds one returned line (REQ-TOOL-09's per-line cap).
@@ -784,11 +809,25 @@ func parseRipgrepJSON(r interface{ Read([]byte) (int, error) }, p SearchParams, 
 		pendingCtx = nil
 	}
 
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64<<10), 4<<20)
-	for !stopped && sc.Scan() {
+	// Events are read whole: a match on a line of several megabytes is one
+	// JSON event of that size, and a bounded scanner failed the whole search
+	// on it.
+	br := bufio.NewReaderSize(r, 64<<10)
+	var buf []byte
+	for !stopped {
+		raw, rerr := readWholeLine(br, buf[:0])
+		if errors.Is(rerr, io.EOF) {
+			break
+		}
+		if rerr != nil {
+			return SearchResult{}, false, rerr
+		}
+		buf = raw
+		if len(raw) == 0 {
+			continue
+		}
 		var ev rgEvent
-		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+		if err := json.Unmarshal(raw, &ev); err != nil {
 			return SearchResult{}, false, fmt.Errorf("ripgrep json: %w", err)
 		}
 		switch ev.Type {
@@ -841,9 +880,6 @@ func parseRipgrepJSON(r interface{ Read([]byte) (int, error) }, p SearchParams, 
 		}
 	}
 	attach()
-	if err := sc.Err(); err != nil {
-		return SearchResult{}, false, err
-	}
 	sortMatches(out.Matches)
 	return out, stopped, nil
 }
