@@ -372,33 +372,28 @@ func TestNilOrZeroMetadataLeavesMessageNil_TS04_35(t *testing.T) {
 
 // ---------------------------------------------------------------- TS-04-36
 
-// TestHandlerStyleAndPanicAndUnknownAndInvalidNilMetadata_TS04_36 verifies
-// that Handler-style tools, handler panics, unknown tools and invalid
-// arguments produce messages with nil Metadata and unchanged content.
-func TestHandlerStyleAndPanicAndUnknownAndInvalidNilMetadata_TS04_36(t *testing.T) {
-	// (a) Handler-style tool returning data.
+// runTS0436 sets up and runs the agent for TS-04-36, returning the run result
+// and captured ToolResultEvent messages.
+func runTS0436(t *testing.T) (core.RunResult, []core.ToolResultMessage) {
+	t.Helper()
 	handlerOK := core.Tool{
 		Name: "handler_ok", Description: "ok", InputSchema: schema.Object(),
 		Handler: func(ctx context.Context, in json.RawMessage) (json.RawMessage, error) {
 			return json.RawMessage(`{"x":1}`), nil
 		},
 	}
-	// (b) Handler-style tool returning an error.
 	handlerErr := core.Tool{
 		Name: "handler_err", Description: "err", InputSchema: schema.Object(),
 		Handler: func(ctx context.Context, in json.RawMessage) (json.RawMessage, error) {
 			return nil, fmt.Errorf("something broke")
 		},
 	}
-	// (c) Execute tool that panics.
 	panicTool := core.Tool{
 		Name: "panicker", Description: "panics", InputSchema: schema.Object(),
 		Execute: func(ctx context.Context, in json.RawMessage) core.ToolResult {
 			panic("boom")
 		},
 	}
-	// (d) unregistered tool name → unknown_tool
-	// (e) tool with arguments that fail schema → invalid_arguments
 	strictTool := core.Tool{
 		Name: "strict", Description: "strict",
 		InputSchema: schema.Object(schema.Prop("required_field", schema.String())),
@@ -413,7 +408,7 @@ func TestHandlerStyleAndPanicAndUnknownAndInvalidNilMetadata_TS04_36(t *testing.
 			mdToolUse(t, "c_b", "handler_err", `{}`),
 			mdToolUse(t, "c_c", "panicker", `{}`),
 			mdToolUse(t, "c_d", "nonexistent", `{}`),
-			mdToolUse(t, "c_e", "strict", `{}`), // missing required_field
+			mdToolUse(t, "c_e", "strict", `{}`),
 		),
 	}}
 	a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
@@ -424,80 +419,85 @@ func TestHandlerStyleAndPanicAndUnknownAndInvalidNilMetadata_TS04_36(t *testing.
 			t.Fatal(err)
 		}
 	}
+	return mdCollectToolResultEvents(t, a, s, "go")
+}
 
-	res, events := mdCollectToolResultEvents(t, a, s, "go")
+// TestHandlerStyleAndPanicAndUnknownAndInvalidNilMetadata_TS04_36 verifies
+// that Handler-style tools, handler panics, unknown tools and invalid
+// arguments produce messages with nil Metadata and unchanged content.
+func TestHandlerStyleAndPanicAndUnknownAndInvalidNilMetadata_TS04_36(t *testing.T) {
+	res, events := runTS0436(t)
 
-	// All five must have nil Metadata.
-	for _, msg := range events {
-		if msg.Metadata != nil {
-			t.Fatalf("ToolResultEvent %q: Metadata = %+v, want nil", msg.ToolUseID, msg.Metadata)
-		}
-	}
-	for _, m := range res.Messages {
-		if tr, ok := m.(core.ToolResultMessage); ok {
-			if tr.Metadata != nil {
-				t.Fatalf("RunResult %q: Metadata = %+v, want nil", tr.ToolUseID, tr.Metadata)
+	t.Run("all_nil_metadata", func(t *testing.T) {
+		for _, msg := range events {
+			if msg.Metadata != nil {
+				t.Fatalf("ToolResultEvent %q: Metadata = %+v, want nil", msg.ToolUseID, msg.Metadata)
 			}
 		}
-	}
+		for _, m := range res.Messages {
+			if tr, ok := m.(core.ToolResultMessage); ok {
+				if tr.Metadata != nil {
+					t.Fatalf("RunResult %q: Metadata = %+v, want nil", tr.ToolUseID, tr.Metadata)
+				}
+			}
+		}
+		if len(events) != 5 {
+			t.Fatalf("got %d ToolResultEvents, want 5", len(events))
+		}
+	})
 
-	// Verify content shapes.
-	msgA := mdFindToolResult(t, res.Messages, "c_a")
-	if msgA.IsError {
-		t.Fatal("handler_ok should not be an error")
-	}
-	if !strings.Contains(msgA.Content.Text(), `"ok":true`) {
-		t.Fatalf("handler_ok content = %q, want to contain ok:true", msgA.Content.Text())
-	}
+	t.Run("content_shapes", func(t *testing.T) {
+		msgA := mdFindToolResult(t, res.Messages, "c_a")
+		if msgA.IsError {
+			t.Fatal("handler_ok should not be an error")
+		}
+		if !strings.Contains(msgA.Content.Text(), `"ok":true`) {
+			t.Fatalf("handler_ok content = %q, want to contain ok:true", msgA.Content.Text())
+		}
 
-	msgB := mdFindToolResult(t, res.Messages, "c_b")
-	if !msgB.IsError {
-		t.Fatal("handler_err should be an error")
-	}
-	if !strings.Contains(msgB.Content.Text(), "handler_error") {
-		t.Fatalf("handler_err content = %q, want handler_error", msgB.Content.Text())
-	}
+		msgB := mdFindToolResult(t, res.Messages, "c_b")
+		if !msgB.IsError {
+			t.Fatal("handler_err should be an error")
+		}
+		if !strings.Contains(msgB.Content.Text(), "handler_error") {
+			t.Fatalf("handler_err content = %q, want handler_error", msgB.Content.Text())
+		}
 
-	msgC := mdFindToolResult(t, res.Messages, "c_c")
-	if !msgC.IsError {
-		t.Fatal("panicker should be an error")
-	}
-	if !strings.Contains(msgC.Content.Text(), "panic") {
-		t.Fatalf("panicker content = %q, want panic", msgC.Content.Text())
-	}
+		msgC := mdFindToolResult(t, res.Messages, "c_c")
+		if !msgC.IsError {
+			t.Fatal("panicker should be an error")
+		}
+		if !strings.Contains(msgC.Content.Text(), "panic") {
+			t.Fatalf("panicker content = %q, want panic", msgC.Content.Text())
+		}
 
-	msgD := mdFindToolResult(t, res.Messages, "c_d")
-	if !msgD.IsError {
-		t.Fatal("unknown tool should be an error")
-	}
-	if !strings.Contains(msgD.Content.Text(), "unknown_tool") {
-		t.Fatalf("unknown tool content = %q, want unknown_tool", msgD.Content.Text())
-	}
+		msgD := mdFindToolResult(t, res.Messages, "c_d")
+		if !msgD.IsError {
+			t.Fatal("unknown tool should be an error")
+		}
+		if !strings.Contains(msgD.Content.Text(), "unknown_tool") {
+			t.Fatalf("unknown tool content = %q, want unknown_tool", msgD.Content.Text())
+		}
 
-	msgE := mdFindToolResult(t, res.Messages, "c_e")
-	if !msgE.IsError {
-		t.Fatal("invalid args should be an error")
-	}
-	if !strings.Contains(msgE.Content.Text(), "invalid_arguments") {
-		t.Fatalf("invalid args content = %q, want invalid_arguments", msgE.Content.Text())
-	}
-
-	// Verify event sequence: each call should have start, end, result events.
-	if len(events) != 5 {
-		t.Fatalf("got %d ToolResultEvents, want 5", len(events))
-	}
+		msgE := mdFindToolResult(t, res.Messages, "c_e")
+		if !msgE.IsError {
+			t.Fatal("invalid args should be an error")
+		}
+		if !strings.Contains(msgE.Content.Text(), "invalid_arguments") {
+			t.Fatalf("invalid args content = %q, want invalid_arguments", msgE.Content.Text())
+		}
+	})
 }
 
 // ---------------------------------------------------------------- TS-04-37
 
-// TestBlockedPluginVetoedAbortedNilMetadata_TS04_37 verifies that blocked,
-// plugin-vetoed and aborted calls produce messages with nil Metadata.
-func TestBlockedPluginVetoedAbortedNilMetadata_TS04_37(t *testing.T) {
-	var ran bool
-	metaTool := core.Tool{
+// ts0437MetaTool returns a tool that records whether it ran and returns
+// non-empty metadata.
+func ts0437MetaTool(ran *bool) core.Tool {
+	return core.Tool{
 		Name: "probe", Description: "probe", InputSchema: schema.Object(),
 		Execute: func(ctx context.Context, in json.RawMessage) core.ToolResult {
-			ran = true
+			*ran = true
 			ec := 0
 			return core.ToolResult{
 				OK:       true,
@@ -506,115 +506,123 @@ func TestBlockedPluginVetoedAbortedNilMetadata_TS04_37(t *testing.T) {
 			}
 		},
 	}
+}
 
-	// (a) BeforeToolCall blocks the call.
-	t.Run("before_block", func(t *testing.T) {
-		ran = false
-		s := &mdScripted{turns: []core.AssistantMessage{
-			mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
-		}}
-		a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
-			c.BeforeToolCall = func(_ context.Context, _ core.BeforeToolCallContext) core.BeforeToolCallDecision {
-				return core.BeforeToolCallDecision{Block: true, Reason: "no"}
-			}
-		})
-		if err := a.RegisterTool(metaTool); err != nil {
-			t.Fatal(err)
-		}
-		res, events := mdCollectToolResultEvents(t, a, s, "go")
-		if ran {
-			t.Fatal("handler should not have run")
-		}
-		if len(events) == 0 {
-			t.Fatal("no ToolResultEvent")
-		}
-		if events[0].Metadata != nil {
-			t.Fatalf("blocked call Metadata = %+v, want nil", events[0].Metadata)
-		}
-		msg := mdFindToolResult(t, res.Messages, "c1")
-		if !msg.IsError {
-			t.Fatal("blocked call should be an error")
-		}
-		if !strings.Contains(msg.Content.Text(), "blocked_by_policy") {
-			t.Fatalf("blocked content = %q, want blocked_by_policy", msg.Content.Text())
+// TestBlockedNilMetadata_TS04_37 verifies that a BeforeToolCall block
+// produces a message with nil Metadata.
+func TestBlockedNilMetadata_TS04_37(t *testing.T) {
+	var ran bool
+	metaTool := ts0437MetaTool(&ran)
+
+	s := &mdScripted{turns: []core.AssistantMessage{
+		mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
+	}}
+	a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
+		c.BeforeToolCall = func(_ context.Context, _ core.BeforeToolCallContext) core.BeforeToolCallDecision {
+			return core.BeforeToolCallDecision{Block: true, Reason: "no"}
 		}
 	})
+	if err := a.RegisterTool(metaTool); err != nil {
+		t.Fatal(err)
+	}
+	res, events := mdCollectToolResultEvents(t, a, s, "go")
+	if ran {
+		t.Fatal("handler should not have run")
+	}
+	if len(events) == 0 {
+		t.Fatal("no ToolResultEvent")
+	}
+	if events[0].Metadata != nil {
+		t.Fatalf("blocked call Metadata = %+v, want nil", events[0].Metadata)
+	}
+	msg := mdFindToolResult(t, res.Messages, "c1")
+	if !msg.IsError {
+		t.Fatal("blocked call should be an error")
+	}
+	if !strings.Contains(msg.Content.Text(), "blocked_by_policy") {
+		t.Fatalf("blocked content = %q, want blocked_by_policy", msg.Content.Text())
+	}
+}
 
-	// (b) Plugin event hook vetoes the call.
-	t.Run("plugin_veto", func(t *testing.T) {
-		ran = false
-		s := &mdScripted{turns: []core.AssistantMessage{
-			mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
-		}}
-		reg := plugins.NewRegistry()
-		reg.Register(&blockingPlugin{name: "blocker"})
-		a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
-			c.BeforeToolCall = guard.AllowAll
-			c.Plugins = reg
-		})
-		if err := a.RegisterTool(metaTool); err != nil {
-			t.Fatal(err)
-		}
-		res, events := mdCollectToolResultEvents(t, a, s, "go")
-		if ran {
-			t.Fatal("handler should not have run")
-		}
-		if len(events) == 0 {
-			t.Fatal("no ToolResultEvent")
-		}
-		if events[0].Metadata != nil {
-			t.Fatalf("plugin-vetoed call Metadata = %+v, want nil", events[0].Metadata)
-		}
-		msg := mdFindToolResult(t, res.Messages, "c1")
-		if !msg.IsError {
-			t.Fatal("plugin-vetoed call should be an error")
-		}
-		if !strings.Contains(msg.Content.Text(), "blocked_by_plugin") {
-			t.Fatalf("plugin-vetoed content = %q, want blocked_by_plugin", msg.Content.Text())
-		}
-	})
+// TestPluginVetoedNilMetadata_TS04_37 verifies that a plugin veto produces
+// a message with nil Metadata.
+func TestPluginVetoedNilMetadata_TS04_37(t *testing.T) {
+	var ran bool
+	metaTool := ts0437MetaTool(&ran)
 
-	// (c) ctx is cancelled before the batch's handlers start → abort.
-	t.Run("batch_abort", func(t *testing.T) {
-		ran = false
-		s := &mdScripted{turns: []core.AssistantMessage{
-			mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
-		}}
-		ctx, cancel := context.WithCancel(context.Background())
-		a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
-			c.BeforeToolCall = guard.AllowAll
-			// Cancel context in OnTurnStart so the batch sees a cancelled ctx.
-			c.Hooks.OnTurnStart = func(core.TurnStartEvent) { cancel() }
-		})
-		if err := a.RegisterTool(metaTool); err != nil {
-			t.Fatal(err)
-		}
-		st, err := a.Stream(ctx, "go")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var abortEvents []core.ToolResultMessage
-		for e := range st.Events() {
-			if tre, ok := e.(core.ToolResultEvent); ok {
-				abortEvents = append(abortEvents, tre.Message)
-			}
-		}
-		if ran {
-			t.Fatal("handler should not have run on abort")
-		}
-		if len(abortEvents) == 0 {
-			t.Fatal("no ToolResultEvent on abort")
-		}
-		if abortEvents[0].Metadata != nil {
-			t.Fatalf("aborted call Metadata = %+v, want nil", abortEvents[0].Metadata)
-		}
-		if !abortEvents[0].IsError {
-			t.Fatal("aborted call should be an error")
-		}
-		if !strings.Contains(abortEvents[0].Content.Text(), "aborted") {
-			t.Fatalf("aborted content = %q, want aborted", abortEvents[0].Content.Text())
-		}
+	s := &mdScripted{turns: []core.AssistantMessage{
+		mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
+	}}
+	reg := plugins.NewRegistry()
+	reg.Register(&blockingPlugin{name: "blocker"})
+	a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
+		c.BeforeToolCall = guard.AllowAll
+		c.Plugins = reg
 	})
+	if err := a.RegisterTool(metaTool); err != nil {
+		t.Fatal(err)
+	}
+	res, events := mdCollectToolResultEvents(t, a, s, "go")
+	if ran {
+		t.Fatal("handler should not have run")
+	}
+	if len(events) == 0 {
+		t.Fatal("no ToolResultEvent")
+	}
+	if events[0].Metadata != nil {
+		t.Fatalf("plugin-vetoed call Metadata = %+v, want nil", events[0].Metadata)
+	}
+	msg := mdFindToolResult(t, res.Messages, "c1")
+	if !msg.IsError {
+		t.Fatal("plugin-vetoed call should be an error")
+	}
+	if !strings.Contains(msg.Content.Text(), "blocked_by_plugin") {
+		t.Fatalf("plugin-vetoed content = %q, want blocked_by_plugin", msg.Content.Text())
+	}
+}
+
+// TestAbortedNilMetadata_TS04_37 verifies that a batch abort produces
+// a message with nil Metadata.
+func TestAbortedNilMetadata_TS04_37(t *testing.T) {
+	var ran bool
+	metaTool := ts0437MetaTool(&ran)
+
+	s := &mdScripted{turns: []core.AssistantMessage{
+		mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
+		c.BeforeToolCall = guard.AllowAll
+		c.Hooks.OnTurnStart = func(core.TurnStartEvent) { cancel() }
+	})
+	if err := a.RegisterTool(metaTool); err != nil {
+		t.Fatal(err)
+	}
+	st, err := a.Stream(ctx, "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var abortEvents []core.ToolResultMessage
+	for e := range st.Events() {
+		if tre, ok := e.(core.ToolResultEvent); ok {
+			abortEvents = append(abortEvents, tre.Message)
+		}
+	}
+	if ran {
+		t.Fatal("handler should not have run on abort")
+	}
+	if len(abortEvents) == 0 {
+		t.Fatal("no ToolResultEvent on abort")
+	}
+	if abortEvents[0].Metadata != nil {
+		t.Fatalf("aborted call Metadata = %+v, want nil", abortEvents[0].Metadata)
+	}
+	if !abortEvents[0].IsError {
+		t.Fatal("aborted call should be an error")
+	}
+	if !strings.Contains(abortEvents[0].Content.Text(), "aborted") {
+		t.Fatalf("aborted content = %q, want aborted", abortEvents[0].Content.Text())
+	}
 }
 
 // blockingPlugin is a plugin event hook that blocks every tool call.

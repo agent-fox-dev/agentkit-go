@@ -22,20 +22,11 @@ import (
 	"github.com/agentfox/agentkit-go/tools"
 )
 
-// TS-04-61 (smoke): A failing execute call's metadata reaches observers and
-// the session log, never the provider request, and survives resume.
-func TestTS_04_61_ExecuteMetadataReachesObserversAndSessionLogNeverProvider(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("test uses sh and unix shell commands")
-	}
-	if _, _, err := tools.ResolveShell(); err != nil {
-		t.Skip("no shell available")
-	}
-
-	// ---- httptest server standing in for the Anthropic Messages API ----
-	//
-	// Turn 1: returns a tool_use calling execute with {"command":"printf boom; exit 2"}
-	// Turn 2: returns end_turn text
+// ts0461Server creates an httptest.Server standing in for the Anthropic
+// Messages API. Turn 1 returns a tool_use calling execute; turn 2 returns
+// end_turn text. It records every request body.
+func ts0461Server(t *testing.T) (*httptest.Server, *[][]byte, *sync.Mutex) {
+	t.Helper()
 	var (
 		requestBodies [][]byte
 		requestMu     sync.Mutex
@@ -54,7 +45,6 @@ func TestTS_04_61_ExecuteMetadataReachesObserversAndSessionLogNeverProvider(t *t
 		w.WriteHeader(200)
 
 		if turn == 0 {
-			// Turn 1: tool_use calling execute
 			fmt.Fprint(w, sseResponse(
 				`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`,
 				`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"execute","input":{}}}`,
@@ -64,7 +54,6 @@ func TestTS_04_61_ExecuteMetadataReachesObserversAndSessionLogNeverProvider(t *t
 				`{"type":"message_stop"}`,
 			))
 		} else {
-			// Turn 2: end_turn text
 			fmt.Fprint(w, sseResponse(
 				`{"type":"message_start","message":{"id":"msg_2","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`,
 				`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
@@ -75,11 +64,29 @@ func TestTS_04_61_ExecuteMetadataReachesObserversAndSessionLogNeverProvider(t *t
 			))
 		}
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
+	return srv, &requestBodies, &requestMu
+}
 
-	// ---- Set up the agent ----
+// ts0461AfterRecord holds the AfterToolCall capture.
+type ts0461AfterRecord struct {
+	ToolResult core.ToolResult
+	Result     *core.ToolResultMessage
+}
+
+// ts0461RunAgent sets up and runs the agent, returning all captured data.
+func ts0461RunAgent(t *testing.T, srv *httptest.Server, requestBodies *[][]byte, requestMu *sync.Mutex) (
+	afterRecs []ts0461AfterRecord,
+	toolResultEvents []core.ToolResultMessage,
+	turnEndResults []core.ToolResultMessage,
+	stopResults []core.ToolResultMessage,
+	sessionPath string,
+	model *core.Model,
+) {
+	t.Helper()
+
 	workspace := t.TempDir()
-	sessionPath := filepath.Join(t.TempDir(), "session.jsonl")
+	sessionPath = filepath.Join(t.TempDir(), "session.jsonl")
 
 	ws, err := tools.NewWorkspace(workspace)
 	if err != nil {
@@ -91,41 +98,31 @@ func TestTS_04_61_ExecuteMetadataReachesObserversAndSessionLogNeverProvider(t *t
 		t.Fatalf("tools.All: %v", err)
 	}
 
-	model := &core.Model{
+	model = &core.Model{
 		ID: "claude-test", Name: "Claude Test", API: anthropic.API, Provider: "anthropic",
 		ContextWindow: 200000, MaxTokens: 4096,
 	}
 
 	store, _ := openTestSession(t, sessionPath)
 
-	// Observers: AfterToolCall hook, event listener, StopPolicy.
-	type afterRecord struct {
-		ToolResult core.ToolResult
-		Result     *core.ToolResultMessage
-	}
 	var (
-		afterMu   sync.Mutex
-		afterRecs []afterRecord
+		afterMu sync.Mutex
+		eventMu sync.Mutex
 	)
 
-	var (
-		toolResultEvents []core.ToolResultMessage
-		turnEndResults   []core.ToolResultMessage
-		stopResults      []core.ToolResultMessage
-		eventMu          sync.Mutex
-	)
+	getenv := func(k string) string {
+		if k == "ANTHROPIC_API_KEY" {
+			return "sk-ant-test-key-smoke"
+		}
+		return ""
+	}
 
 	cfg := core.AgentConfig{
 		Model: model,
 		Providers: core.ProviderRegistry{
 			anthropic.API: anthropic.Provider(anthropic.Options{
 				BaseURL: srv.URL,
-				Getenv: func(k string) string {
-					if k == "ANTHROPIC_API_KEY" {
-						return "sk-ant-test-key-smoke"
-					}
-					return ""
-				},
+				Getenv:  getenv,
 			}),
 		},
 		StopPolicy: func(sc core.StopContext) bool {
@@ -139,7 +136,7 @@ func TestTS_04_61_ExecuteMetadataReachesObserversAndSessionLogNeverProvider(t *t
 		BeforeToolCall: guard.AllowAll,
 		AfterToolCall: func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			afterMu.Lock()
-			afterRecs = append(afterRecs, afterRecord{
+			afterRecs = append(afterRecs, ts0461AfterRecord{
 				ToolResult: in.ToolResult,
 				Result:     in.Result,
 			})
@@ -159,7 +156,6 @@ func TestTS_04_61_ExecuteMetadataReachesObserversAndSessionLogNeverProvider(t *t
 		}
 	}
 
-	// ---- Run the agent ----
 	st, err := a.Stream(context.Background(), "go")
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -180,169 +176,149 @@ func TestTS_04_61_ExecuteMetadataReachesObserversAndSessionLogNeverProvider(t *t
 		t.Fatalf("RunResult: %v", err)
 	}
 
-	// ---- AfterToolCall assertions ----
-	afterMu.Lock()
-	if len(afterRecs) == 0 {
-		t.Fatal("no AfterToolCall records")
-	}
-	rec := afterRecs[0]
-	afterMu.Unlock()
-
-	// in.ToolResult.Metadata
-	if rec.ToolResult.Metadata == nil {
-		t.Fatal("AfterToolCall: ToolResult.Metadata is nil")
-	}
-	if rec.ToolResult.Metadata.ExitCode == nil || *rec.ToolResult.Metadata.ExitCode != 2 {
-		t.Fatalf("AfterToolCall: ToolResult.Metadata.ExitCode = %v, want 2", rec.ToolResult.Metadata.ExitCode)
-	}
-	if rec.ToolResult.Metadata.Outcome != "exit" {
-		t.Fatalf("AfterToolCall: ToolResult.Metadata.Outcome = %q, want %q", rec.ToolResult.Metadata.Outcome, "exit")
-	}
-
-	// in.Result.Metadata
-	if rec.Result == nil {
-		t.Fatal("AfterToolCall: Result is nil")
-	}
-	if rec.Result.Metadata == nil {
-		t.Fatal("AfterToolCall: Result.Metadata is nil")
-	}
-	if rec.Result.Metadata.ExitCode == nil || *rec.Result.Metadata.ExitCode != 2 {
-		t.Fatalf("AfterToolCall: Result.Metadata.ExitCode = %v, want 2", rec.Result.Metadata.ExitCode)
-	}
-	if rec.Result.Metadata.Outcome != "exit" {
-		t.Fatalf("AfterToolCall: Result.Metadata.Outcome = %q, want %q", rec.Result.Metadata.Outcome, "exit")
-	}
-
-	// ---- ToolResultEvent assertions ----
-	eventMu.Lock()
-	if len(toolResultEvents) == 0 {
-		t.Fatal("no ToolResultEvent")
-	}
-	tre := toolResultEvents[0]
-	eventMu.Unlock()
-	if tre.Metadata == nil {
-		t.Fatal("ToolResultEvent: Metadata is nil")
-	}
-	if tre.Metadata.ExitCode == nil || *tre.Metadata.ExitCode != 2 {
-		t.Fatalf("ToolResultEvent: Metadata.ExitCode = %v, want 2", tre.Metadata.ExitCode)
-	}
-	if tre.Metadata.Outcome != "exit" {
-		t.Fatalf("ToolResultEvent: Metadata.Outcome = %q, want %q", tre.Metadata.Outcome, "exit")
-	}
-
-	// ---- TurnEndEvent.ToolResults assertions ----
-	eventMu.Lock()
-	if len(turnEndResults) == 0 {
-		t.Fatal("no TurnEndEvent tool results")
-	}
-	ter := turnEndResults[0]
-	eventMu.Unlock()
-	if ter.Metadata == nil {
-		t.Fatal("TurnEndEvent: Metadata is nil")
-	}
-	if ter.Metadata.ExitCode == nil || *ter.Metadata.ExitCode != 2 {
-		t.Fatalf("TurnEndEvent: Metadata.ExitCode = %v, want 2", ter.Metadata.ExitCode)
-	}
-
-	// ---- StopContext.ToolResults assertions ----
-	eventMu.Lock()
-	if len(stopResults) == 0 {
-		t.Fatal("no StopContext tool results")
-	}
-	sr := stopResults[0]
-	eventMu.Unlock()
-	if sr.Metadata == nil {
-		t.Fatal("StopContext: Metadata is nil")
-	}
-	if sr.Metadata.ExitCode == nil || *sr.Metadata.ExitCode != 2 {
-		t.Fatalf("StopContext: Metadata.ExitCode = %v, want 2", sr.Metadata.ExitCode)
-	}
-
-	// ---- Session log assertions ----
 	if err := store.Close(); err != nil {
 		t.Fatalf("store.Close: %v", err)
 	}
 
-	logData, err := os.ReadFile(sessionPath)
+	return afterRecs, toolResultEvents, turnEndResults, stopResults, sessionPath, model
+}
+
+// TS-04-61 (smoke): A failing execute call's metadata reaches observers and
+// the session log, never the provider request, and survives resume.
+// ts0461Data holds the shared state from the TS-04-61 agent run.
+type ts0461Data struct {
+	afterRecs        []ts0461AfterRecord
+	toolResultEvents []core.ToolResultMessage
+	turnEndResults   []core.ToolResultMessage
+	stopResults      []core.ToolResultMessage
+	sessionPath      string
+	model            *core.Model
+	srv              *httptest.Server
+	requestBodies    *[][]byte
+	requestMu        *sync.Mutex
+}
+
+func ts0461Setup(t *testing.T) ts0461Data {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses sh and unix shell commands")
+	}
+	if _, _, err := tools.ResolveShell(); err != nil {
+		t.Skip("no shell available")
+	}
+	srv, requestBodies, requestMu := ts0461Server(t)
+	afterRecs, toolResultEvents, turnEndResults, stopResults, sessionPath, model :=
+		ts0461RunAgent(t, srv, requestBodies, requestMu)
+	return ts0461Data{
+		afterRecs: afterRecs, toolResultEvents: toolResultEvents,
+		turnEndResults: turnEndResults, stopResults: stopResults,
+		sessionPath: sessionPath, model: model,
+		srv: srv, requestBodies: requestBodies, requestMu: requestMu,
+	}
+}
+
+func TestTS_04_61_AfterToolCall(t *testing.T) {
+	d := ts0461Setup(t)
+	if len(d.afterRecs) == 0 {
+		t.Fatal("no AfterToolCall records")
+	}
+	rec := d.afterRecs[0]
+	if rec.ToolResult.Metadata == nil {
+		t.Fatal("ToolResult.Metadata is nil")
+	}
+	if rec.ToolResult.Metadata.ExitCode == nil || *rec.ToolResult.Metadata.ExitCode != 2 {
+		t.Fatalf("ExitCode = %v, want 2", rec.ToolResult.Metadata.ExitCode)
+	}
+	if rec.ToolResult.Metadata.Outcome != "exit" {
+		t.Fatalf("Outcome = %q, want exit", rec.ToolResult.Metadata.Outcome)
+	}
+	if rec.Result == nil || rec.Result.Metadata == nil {
+		t.Fatal("Result.Metadata is nil")
+	}
+	if *rec.Result.Metadata.ExitCode != 2 {
+		t.Fatalf("Result.Metadata.ExitCode = %d, want 2", *rec.Result.Metadata.ExitCode)
+	}
+}
+
+func TestTS_04_61_Events(t *testing.T) {
+	d := ts0461Setup(t)
+	if len(d.toolResultEvents) == 0 {
+		t.Fatal("no ToolResultEvent")
+	}
+	tre := d.toolResultEvents[0]
+	if tre.Metadata == nil || tre.Metadata.ExitCode == nil || *tre.Metadata.ExitCode != 2 {
+		t.Fatalf("ToolResultEvent: ExitCode = %v, want 2", tre.Metadata)
+	}
+	if len(d.turnEndResults) == 0 || d.turnEndResults[0].Metadata == nil || *d.turnEndResults[0].Metadata.ExitCode != 2 {
+		t.Fatal("TurnEndEvent: ExitCode mismatch")
+	}
+	if len(d.stopResults) == 0 || d.stopResults[0].Metadata == nil || *d.stopResults[0].Metadata.ExitCode != 2 {
+		t.Fatal("StopContext: ExitCode mismatch")
+	}
+}
+
+func TestTS_04_61_SessionLog(t *testing.T) {
+	d := ts0461Setup(t)
+	logData, err := os.ReadFile(d.sessionPath)
 	if err != nil {
 		t.Fatalf("reading session log: %v", err)
 	}
-	logStr := string(logData)
-
-	// Find the tool_result line.
 	var toolResultLine string
-	for _, line := range strings.Split(logStr, "\n") {
+	for _, line := range strings.Split(string(logData), "\n") {
 		if strings.Contains(line, `"tool_result"`) && strings.Contains(line, `"metadata"`) {
 			toolResultLine = line
 			break
 		}
 	}
 	if toolResultLine == "" {
-		t.Fatal("session log has no tool_result line with metadata")
+		t.Fatal("no tool_result line with metadata")
 	}
-
-	// The metadata object should contain exit_code:2 and outcome:exit.
 	if !strings.Contains(toolResultLine, `"exit_code":2`) {
-		t.Fatalf("session log tool_result line missing \"exit_code\":2:\n%s", toolResultLine)
+		t.Fatal("missing exit_code:2")
 	}
 	if !strings.Contains(toolResultLine, `"outcome":"exit"`) {
-		t.Fatalf("session log tool_result line missing \"outcome\":\"exit\":\n%s", toolResultLine)
+		t.Fatal("missing outcome:exit")
 	}
-
-	// metadata should appear before the message's own timestamp.
-	// The entry has an outer "timestamp" and the message object has an inner
-	// one. We need to check that "metadata" appears before the LAST
-	// "timestamp" (which is the message's timestamp inside the message object).
 	metaIdx := strings.Index(toolResultLine, `"metadata"`)
 	lastTsIdx := strings.LastIndex(toolResultLine, `"timestamp"`)
 	if metaIdx < 0 || lastTsIdx < 0 || metaIdx >= lastTsIdx {
-		t.Fatalf("metadata should appear before the message timestamp in the session log line")
+		t.Fatal("metadata should appear before timestamp")
 	}
+}
 
-	// ---- Second request body assertions ----
-	// The second request body (turn 2) carries the tool result text but must
-	// NOT contain metadata, exit_code, duration_ms or outcome as keys.
-	requestMu.Lock()
-	if len(requestBodies) < 2 {
-		t.Fatalf("expected at least 2 request bodies, got %d", len(requestBodies))
+func TestTS_04_61_RequestBodyNoMetadata(t *testing.T) {
+	d := ts0461Setup(t)
+	d.requestMu.Lock()
+	if len(*d.requestBodies) < 2 {
+		t.Fatalf("expected >= 2 request bodies, got %d", len(*d.requestBodies))
 	}
-	secondBody := string(requestBodies[1])
-	requestMu.Unlock()
+	secondBody := (*d.requestBodies)[1]
+	d.requestMu.Unlock()
 
-	// The tool result text should be present.
-	if !strings.Contains(secondBody, "boom") {
-		t.Fatalf("second request body does not contain 'boom':\n%s", secondBody)
+	if !strings.Contains(string(secondBody), "boom") || !strings.Contains(string(secondBody), "[exit 2]") {
+		t.Fatal("second request body missing tool result text")
 	}
-	if !strings.Contains(secondBody, "[exit 2]") {
-		t.Fatalf("second request body does not contain '[exit 2]':\n%s", secondBody)
+	var reqBody map[string]json.RawMessage
+	if err := json.Unmarshal(secondBody, &reqBody); err != nil {
+		t.Fatalf("parsing: %v", err)
 	}
-
-	// Metadata keys must NOT appear in the request body.
-	for _, forbidden := range []string{`"metadata"`, `"exit_code"`, `"duration_ms"`, `"outcome"`} {
-		// Parse the body as JSON to check the messages array specifically.
-		var reqBody map[string]json.RawMessage
-		if err := json.Unmarshal(requestBodies[1], &reqBody); err != nil {
-			t.Fatalf("parsing second request body: %v", err)
-		}
-		// Check the messages array for forbidden keys.
-		messagesRaw := reqBody["messages"]
-		messagesStr := string(messagesRaw)
-		if strings.Contains(messagesStr, forbidden) {
-			t.Fatalf("second request body messages contain %s (metadata should never reach the provider):\n%s",
-				forbidden, messagesStr)
+	for _, s := range []string{`"metadata"`, `"exit_code"`, `"duration_ms"`, `"outcome"`} {
+		if strings.Contains(string(reqBody["messages"]), s) {
+			t.Fatalf("request messages contain %s", s)
 		}
 	}
+}
 
-	// ---- Resume assertions ----
-	// Reopen the same session file to resume.
-	store2, resume := openTestSession(t, sessionPath)
+func TestTS_04_61_Resume(t *testing.T) {
+	d := ts0461Setup(t)
+	store2, resume := openTestSession(t, d.sessionPath)
 	defer store2.Close()
 
 	cfg2 := core.AgentConfig{
-		Model:      model,
+		Model:      d.model,
 		StopPolicy: stop.AfterTurns(5),
 		Providers: core.ProviderRegistry{anthropic.API: anthropic.Provider(anthropic.Options{
-			BaseURL: srv.URL,
+			BaseURL: d.srv.URL,
 			Getenv: func(k string) string {
 				if k == "ANTHROPIC_API_KEY" {
 					return "sk-ant-test-key-smoke"
@@ -354,13 +330,11 @@ func TestTS_04_61_ExecuteMetadataReachesObserversAndSessionLogNeverProvider(t *t
 	}
 	a2, err := NewAgentFromSession(cfg2, resume,
 		func(provider string, api core.API, modelID string) (*core.Model, error) {
-			return model, nil
+			return d.model, nil
 		})
 	if err != nil {
 		t.Fatalf("NewAgentFromSession: %v", err)
 	}
-
-	// Check the resumed agent's history for the tool result metadata.
 	var resumedMD *core.ToolMetadata
 	for _, m := range a2.History().Messages() {
 		if tr, ok := m.(core.ToolResultMessage); ok && tr.ToolName == "execute" {
@@ -368,13 +342,13 @@ func TestTS_04_61_ExecuteMetadataReachesObserversAndSessionLogNeverProvider(t *t
 		}
 	}
 	if resumedMD == nil {
-		t.Fatal("resumed agent: tool result has nil Metadata")
+		t.Fatal("resumed: nil Metadata")
 	}
 	if resumedMD.ExitCode == nil || *resumedMD.ExitCode != 2 {
-		t.Fatalf("resumed agent: ExitCode = %v, want 2", resumedMD.ExitCode)
+		t.Fatalf("resumed: ExitCode = %v, want 2", resumedMD.ExitCode)
 	}
 	if resumedMD.Outcome != "exit" {
-		t.Fatalf("resumed agent: Outcome = %q, want %q", resumedMD.Outcome, "exit")
+		t.Fatalf("resumed: Outcome = %q, want exit", resumedMD.Outcome)
 	}
 }
 
@@ -382,7 +356,6 @@ func TestTS_04_61_ExecuteMetadataReachesObserversAndSessionLogNeverProvider(t *t
 func sseResponse(events ...string) string {
 	var b bytes.Buffer
 	for _, e := range events {
-		// Determine the event type from the JSON.
 		var obj map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(e), &obj); err == nil {
 			if t, ok := obj["type"]; ok {

@@ -18,9 +18,9 @@ func TestContentIdenticalWithAndWithoutMetadata_TS04_41(t *testing.T) {
 	}
 
 	r := core.ToolResult{
-		OK:   false,
-		Error: "command_exit",
-		Text:  "boom\n[exit 2]",
+		OK:     false,
+		Error:  "command_exit",
+		Text:   "boom\n[exit 2]",
 		Blocks: core.Content{core.ImageBlock{Data: "abc", MimeType: "image/png"}},
 	}
 	rm := r

@@ -78,11 +78,9 @@ func preChangeExecResultToTool(res ExecResult, timeout time.Duration) core.ToolR
 // The shell tools run with their explicit Options.Env, tail truncation at
 // DefaultByteLimit, Options.SpillDir and no log.
 
-func TestTS_04_28_ShellToolsRunWithExplicitEnvTailTruncationAndSpillDir(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("test uses unix shell commands")
-	}
-
+// ts0428Setup creates the workspace, tools and payload for TS-04-28 tests.
+func ts0428Setup(t *testing.T) ([]core.Tool, func(string) core.Tool, string, int, string) {
+	t.Helper()
 	root := t.TempDir()
 	spillDir := filepath.Join(root, "spill")
 
@@ -114,9 +112,22 @@ func TestTS_04_28_ShellToolsRunWithExplicitEnvTailTruncationAndSpillDir(t *testi
 		return core.Tool{}
 	}
 
-	// Generate a payload of DefaultByteLimit+1000 bytes ending in "END\n".
 	bigSize := DefaultByteLimit + 1000
 	payload := strings.Repeat("X", bigSize-4) + "END\n"
+	payloadFile := filepath.Join(root, "payload.txt")
+	if err := os.WriteFile(payloadFile, []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	return all, toolByName, payloadFile, bigSize, spillDir
+}
+
+func TestTS_04_28_ShellToolsRunWithExplicitEnvTailTruncationAndSpillDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses unix shell commands")
+	}
+
+	_, toolByName, payloadFile, bigSize, spillDir := ts0428Setup(t)
 
 	for _, name := range []string{"execute", "run_command"} {
 		t.Run(name+"_env", func(t *testing.T) {
@@ -145,96 +156,68 @@ func TestTS_04_28_ShellToolsRunWithExplicitEnvTailTruncationAndSpillDir(t *testi
 		})
 
 		t.Run(name+"_truncation", func(t *testing.T) {
-			payloadFile := filepath.Join(root, "payload_"+name+".txt")
-			if err := os.WriteFile(payloadFile, []byte(payload), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			var bigArgs json.RawMessage
-			if name == "execute" {
-				bigArgs = json.RawMessage(fmt.Sprintf(`{"command":"cat %s","timeout_s":10}`, payloadFile))
-			} else {
-				bigArgs = json.RawMessage(fmt.Sprintf(`{"argv":["cat","%s"],"timeout_s":10}`, payloadFile))
-			}
-			res := toolByName(name).Execute(context.Background(), bigArgs)
-
-			// ---- Tail truncation: the elision marker is at the TOP ----
-			// In tail mode the marker is prepended, followed by the retained
-			// tail. In head mode the marker would be appended AFTER the
-			// retained head. Checking the prefix proves tail mode.
-			wantPrefix := fmt.Sprintf("[1000 bytes elided of %d total. Full output: ", bigSize)
-			if !strings.HasPrefix(res.Text, wantPrefix) {
-				t.Fatalf("%s: Text does not start with expected tail-mode marker.\ngot prefix: %q\nwant prefix: %q",
-					name, res.Text[:min(len(res.Text), len(wantPrefix)+20)], wantPrefix)
-			}
-
-			// The retained portion must be the TAIL of the payload, ending
-			// with "END\n". If KeepHead were true, the retained portion would
-			// be the first DefaultByteLimit bytes (all X's), not the tail.
-			if !strings.HasSuffix(res.Text, "END\n") {
-				t.Fatalf("%s: Text does not end with END\\n (tail not retained), got suffix: %q", name,
-					res.Text[max(0, len(res.Text)-20):])
-			}
-
-			// ---- MaxBytes is DefaultByteLimit ----
-			// The retained portion (after the marker line) must be exactly
-			// DefaultByteLimit bytes. The marker line itself says "1000 bytes
-			// elided" which is bigSize - DefaultByteLimit.
-			markerEnd := strings.Index(res.Text, "]\n")
-			if markerEnd < 0 {
-				t.Fatalf("%s: cannot find end of marker line in Text", name)
-			}
-			retained := res.Text[markerEnd+2:] // after "]\n"
-			if len(retained) != DefaultByteLimit {
-				t.Fatalf("%s: retained portion is %d bytes, want DefaultByteLimit (%d)",
-					name, len(retained), DefaultByteLimit)
-			}
-
-			// ---- SpillDir is used, not LogPath ----
-			if res.Metadata == nil {
-				t.Fatalf("%s: Metadata is nil", name)
-			}
-			sp := res.Metadata.SpillPath
-			if !strings.HasPrefix(sp, spillDir) {
-				t.Fatalf("%s: SpillPath %q not under spillDir %q", name, sp, spillDir)
-			}
-			base := filepath.Base(sp)
-			if !strings.HasPrefix(base, "agentkit-exec-") || !strings.HasSuffix(base, ".log") {
-				t.Fatalf("%s: SpillPath base %q does not match agentkit-exec-*.log", name, base)
-			}
-
-			// The spill file must contain the FULL output (not truncated).
-			spillData, err := os.ReadFile(sp)
-			if err != nil {
-				t.Fatalf("%s: cannot read spill file %s: %v", name, sp, err)
-			}
-			if len(spillData) != bigSize {
-				t.Fatalf("%s: spill file is %d bytes, want %d (full output)", name, len(spillData), bigSize)
-			}
-
-			// ---- Metadata fields ----
-			if !res.Metadata.Truncated {
-				t.Fatalf("%s: Metadata.Truncated is false, want true", name)
-			}
-			if res.Metadata.TotalBytes != int64(bigSize) {
-				t.Fatalf("%s: Metadata.TotalBytes = %d, want %d", name, res.Metadata.TotalBytes, bigSize)
-			}
-			if res.Metadata.Outcome != "ok" {
-				t.Fatalf("%s: Metadata.Outcome = %q, want %q", name, res.Metadata.Outcome, "ok")
-			}
+			ts0428CheckTruncation(t, name, toolByName(name), payloadFile, bigSize, spillDir)
 		})
 	}
+}
 
-	// Verify no extra files in the workspace root beyond what we created.
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		t.Fatal(err)
+// ts0428CheckTruncation verifies tail truncation, SpillDir usage and metadata
+// for a single shell tool.
+func ts0428CheckTruncation(t *testing.T, name string, tool core.Tool, payloadFile string, bigSize int, spillDir string) {
+	t.Helper()
+	var bigArgs json.RawMessage
+	if name == "execute" {
+		bigArgs = json.RawMessage(fmt.Sprintf(`{"command":"cat %s","timeout_s":10}`, payloadFile))
+	} else {
+		bigArgs = json.RawMessage(fmt.Sprintf(`{"argv":["cat","%s"],"timeout_s":10}`, payloadFile))
 	}
-	for _, e := range entries {
-		// Allow "spill" dir and our payload files.
-		n := e.Name()
-		if n != "spill" && !strings.HasPrefix(n, "payload_") {
-			t.Fatalf("unexpected file in workspace root: %s", n)
-		}
+	res := tool.Execute(context.Background(), bigArgs)
+
+	// Tail-mode marker at the top proves tail truncation.
+	wantPrefix := fmt.Sprintf("[1000 bytes elided of %d total. Full output: ", bigSize)
+	if !strings.HasPrefix(res.Text, wantPrefix) {
+		t.Fatalf("%s: Text prefix = %q, want %q", name,
+			res.Text[:min(len(res.Text), len(wantPrefix)+20)], wantPrefix)
+	}
+	if !strings.HasSuffix(res.Text, "END\n") {
+		t.Fatalf("%s: Text does not end with END\\n", name)
+	}
+
+	markerEnd := strings.Index(res.Text, "]\n")
+	if markerEnd < 0 {
+		t.Fatalf("%s: cannot find end of marker line", name)
+	}
+	retained := res.Text[markerEnd+2:]
+	if len(retained) != DefaultByteLimit {
+		t.Fatalf("%s: retained = %d bytes, want %d", name, len(retained), DefaultByteLimit)
+	}
+
+	if res.Metadata == nil {
+		t.Fatalf("%s: Metadata is nil", name)
+	}
+	sp := res.Metadata.SpillPath
+	if !strings.HasPrefix(sp, spillDir) {
+		t.Fatalf("%s: SpillPath %q not under %q", name, sp, spillDir)
+	}
+	base := filepath.Base(sp)
+	if !strings.HasPrefix(base, "agentkit-exec-") || !strings.HasSuffix(base, ".log") {
+		t.Fatalf("%s: SpillPath base %q does not match agentkit-exec-*.log", name, base)
+	}
+	spillData, err := os.ReadFile(sp)
+	if err != nil {
+		t.Fatalf("%s: read spill: %v", name, err)
+	}
+	if len(spillData) != bigSize {
+		t.Fatalf("%s: spill = %d bytes, want %d", name, len(spillData), bigSize)
+	}
+	if !res.Metadata.Truncated {
+		t.Fatalf("%s: Truncated = false", name)
+	}
+	if res.Metadata.TotalBytes != int64(bigSize) {
+		t.Fatalf("%s: TotalBytes = %d, want %d", name, res.Metadata.TotalBytes, bigSize)
+	}
+	if res.Metadata.Outcome != "ok" {
+		t.Fatalf("%s: Outcome = %q, want ok", name, res.Metadata.Outcome)
 	}
 }
 

@@ -16,7 +16,16 @@ import (
 
 // TS-04-59 (smoke): An embedder runs a verifier with stdin, a relative named
 // log, head truncation and the default reduced environment.
-func TestTS_04_59_VerifierWithStdinLogHeadAndReducedEnv(t *testing.T) {
+// ts0459Result holds the result of the TS-04-59 verifier run.
+type ts0459Result struct {
+	res      tools.ExecResult
+	tmp      string
+	inputBuf []byte
+}
+
+// ts0459RunVerifier runs the verifier script and returns the result.
+func ts0459RunVerifier(t *testing.T) ts0459Result {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses sh and unix file modes")
 	}
@@ -26,8 +35,6 @@ func TestTS_04_59_VerifierWithStdinLogHeadAndReducedEnv(t *testing.T) {
 
 	tmp := t.TempDir()
 
-	// Write verify.sh: copies stdin to stdout, prints the env var (or
-	// "absent"), prints 4 KiB of report lines, and exits 2.
 	script := `#!/bin/sh
 cat
 printf '%s' "${AGENTKIT_TEST_API_KEY:-absent}"
@@ -42,14 +49,12 @@ exit 2
 		t.Fatal(err)
 	}
 
-	// Build a 64 KiB deterministic input.
 	inputSize := 64 * 1024
 	inputBuf := make([]byte, inputSize)
 	for i := range inputBuf {
 		inputBuf[i] = byte('A' + (i % 26))
 	}
 
-	// Set the credential variable in the test process so ReducedEnv strips it.
 	t.Setenv("AGENTKIT_TEST_API_KEY", "sekrit")
 
 	res, err := tools.RunArgv(context.Background(), []string{"sh", "verify.sh"}, tools.ExecOptions{
@@ -59,91 +64,90 @@ exit 2
 		KeepHead: true,
 		MaxBytes: 1024,
 		Timeout:  30 * time.Second,
-		// Env is nil → ReducedEnv(nil)
 	})
 	if err != nil {
 		t.Fatalf("RunArgv error = %v, want nil", err)
 	}
+	return ts0459Result{res: res, tmp: tmp, inputBuf: inputBuf}
+}
 
-	// ---- Outcome assertions ----
-	if res.Outcome != tools.OutcomeExit {
-		t.Fatalf("Outcome = %q, want %q", res.Outcome, tools.OutcomeExit)
-	}
-	if res.ExitCode != 2 {
-		t.Fatalf("ExitCode = %d, want 2", res.ExitCode)
-	}
-	if !res.Truncated {
-		t.Fatal("Truncated = false, want true")
-	}
-	if res.IOErr != nil {
-		t.Fatalf("IOErr = %v, want nil", res.IOErr)
-	}
+func TestTS_04_59_VerifierWithStdinLogHeadAndReducedEnv(t *testing.T) {
+	r := ts0459RunVerifier(t)
+	res, tmp, inputBuf := r.res, r.tmp, r.inputBuf
 
-	// ---- SpillPath assertions ----
+	t.Run("outcome", func(t *testing.T) {
+		if res.Outcome != tools.OutcomeExit {
+			t.Fatalf("Outcome = %q, want %q", res.Outcome, tools.OutcomeExit)
+		}
+		if res.ExitCode != 2 {
+			t.Fatalf("ExitCode = %d, want 2", res.ExitCode)
+		}
+		if !res.Truncated {
+			t.Fatal("Truncated = false, want true")
+		}
+		if res.IOErr != nil {
+			t.Fatalf("IOErr = %v, want nil", res.IOErr)
+		}
+	})
+
 	wantSpill := filepath.Join(tmp, "logs", "verify.log")
-	if res.SpillPath != wantSpill {
-		t.Fatalf("SpillPath = %q, want %q", res.SpillPath, wantSpill)
-	}
 
-	// Check directory and file modes on unix.
-	if runtime.GOOS != "windows" {
-		dirInfo, err := os.Stat(filepath.Join(tmp, "logs"))
+	t.Run("spill_path_and_modes", func(t *testing.T) {
+		if res.SpillPath != wantSpill {
+			t.Fatalf("SpillPath = %q, want %q", res.SpillPath, wantSpill)
+		}
+		if runtime.GOOS != "windows" {
+			dirInfo, err := os.Stat(filepath.Join(tmp, "logs"))
+			if err != nil {
+				t.Fatalf("stat logs dir: %v", err)
+			}
+			if perm := dirInfo.Mode().Perm(); perm&0o777 != 0o700 {
+				t.Fatalf("logs dir mode = %o, want 0700", perm)
+			}
+			fileInfo, err := os.Stat(wantSpill)
+			if err != nil {
+				t.Fatalf("stat log file: %v", err)
+			}
+			if perm := fileInfo.Mode().Perm(); perm&0o777 != 0o600 {
+				t.Fatalf("log file mode = %o, want 0600", perm)
+			}
+		}
+	})
+
+	t.Run("log_content", func(t *testing.T) {
+		logData, err := os.ReadFile(wantSpill)
 		if err != nil {
-			t.Fatalf("stat logs dir: %v", err)
+			t.Fatalf("reading log file: %v", err)
 		}
-		if perm := dirInfo.Mode().Perm(); perm&0o777 != 0o700 {
-			t.Fatalf("logs dir mode = %o, want 0700", perm)
+		if int64(len(logData)) != res.TotalBytes {
+			t.Fatalf("log file size = %d, TotalBytes = %d, want equal", len(logData), res.TotalBytes)
 		}
-		fileInfo, err := os.Stat(wantSpill)
-		if err != nil {
-			t.Fatalf("stat log file: %v", err)
+		if !bytes.HasPrefix(logData, inputBuf) {
+			t.Fatal("log file does not start with the input bytes")
 		}
-		if perm := fileInfo.Mode().Perm(); perm&0o777 != 0o600 {
-			t.Fatalf("log file mode = %o, want 0600", perm)
+		if bytes.Contains(logData, []byte("sekrit")) {
+			t.Fatal("log file contains 'sekrit'; ReducedEnv should have stripped it")
 		}
-	}
+		if !bytes.Contains(logData, []byte("absent")) {
+			t.Fatal("log file does not contain 'absent'")
+		}
+	})
 
-	// ---- Log file content assertions ----
-	logData, err := os.ReadFile(wantSpill)
-	if err != nil {
-		t.Fatalf("reading log file: %v", err)
-	}
-
-	// The log file should hold the complete output.
-	if int64(len(logData)) != res.TotalBytes {
-		t.Fatalf("log file size = %d, TotalBytes = %d, want equal", len(logData), res.TotalBytes)
-	}
-
-	// The log should start with the input bytes (stdin was cat'd to stdout).
-	if !bytes.HasPrefix(logData, inputBuf) {
-		t.Fatal("log file does not start with the input bytes")
-	}
-
-	// The credential variable should have been stripped by ReducedEnv.
-	if bytes.Contains(logData, []byte("sekrit")) {
-		t.Fatal("log file contains the credential value 'sekrit'; ReducedEnv should have stripped AGENTKIT_TEST_API_KEY")
-	}
-	if !bytes.Contains(logData, []byte("absent")) {
-		t.Fatal("log file does not contain 'absent'; the env var should have been absent")
-	}
-
-	// ---- Output (head-truncated) assertions ----
-	// Output should be the first 1024 bytes of the log, followed by the
-	// head-mode marker.
-	if len(res.Output) <= 1024 {
-		t.Fatalf("Output length = %d, want > 1024 (should include marker)", len(res.Output))
-	}
-	prefix := res.Output[:1024]
-	if prefix != string(logData[:1024]) {
-		t.Fatal("Output[:1024] does not match log[:1024]")
-	}
-
-	elided := res.TotalBytes - 1024
-	wantMarker := fmt.Sprintf("\n[%d bytes elided of %d total. Full output: %s]",
-		elided, res.TotalBytes, wantSpill)
-	if !strings.HasSuffix(res.Output, wantMarker) {
-		t.Fatalf("Output suffix = %q, want %q", res.Output[1024:], wantMarker)
-	}
+	t.Run("head_truncated_output", func(t *testing.T) {
+		logData, _ := os.ReadFile(wantSpill)
+		if len(res.Output) <= 1024 {
+			t.Fatalf("Output length = %d, want > 1024", len(res.Output))
+		}
+		if res.Output[:1024] != string(logData[:1024]) {
+			t.Fatal("Output[:1024] does not match log[:1024]")
+		}
+		elided := res.TotalBytes - 1024
+		wantMarker := fmt.Sprintf("\n[%d bytes elided of %d total. Full output: %s]",
+			elided, res.TotalBytes, wantSpill)
+		if !strings.HasSuffix(res.Output, wantMarker) {
+			t.Fatalf("Output suffix = %q, want %q", res.Output[1024:], wantMarker)
+		}
+	})
 }
 
 // TS-04-60 (smoke): Timeout, cancellation and a short caller deadline each

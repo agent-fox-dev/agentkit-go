@@ -63,3 +63,16 @@ Summarization usage reaches `Agent.Usage` through `core.ReportUsage`, and
 The one remaining §5 item — retrying the summarizer request — moves to the
 `transcript_pruning` scope, because it reverses REQ-GO-12.3's routing and
 belongs with the other transcript-transform changes.
+
+## Code and test references
+
+- `tools/exec.go:192` (`RunArgv`): the extended runner entry point, tested by
+  `TestTS_04_59_VerifierWithStdinLogHeadAndReducedEnv` and
+  `TestTS_04_60_TimeoutCancelDeadlineKillTreeAndDistinguish` in
+  `tools/runner_smoke_test.go`.
+- `batch.go:295` (`toolResultMessage`): metadata copy onto the message, tested
+  by `TestNonEmptyHandlerMetadataCopiedOntoMessage_TS04_33` in
+  `metadata_message_test.go`.
+- `session/codec.go` (`encodeMessage` / `decodeMessage`): metadata
+  persistence, tested by `TestCodecWritesMetadataKeyOrder_TS04_47` and
+  `TestMetadataRoundTripProperty_TS04_49` in `session/metadata_codec_test.go`.

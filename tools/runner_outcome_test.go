@@ -13,6 +13,79 @@ import (
 	"time"
 )
 
+type outcomeScenario struct {
+	name         string
+	cmd          string
+	timeout      time.Duration
+	ctxTimeout   time.Duration // 0 means no caller deadline
+	cancelAfter  time.Duration // 0 means no cancel
+	wantOutcome  Outcome
+	wantExitCode int
+}
+
+// generateOutcomeScenarios builds at least 30 deterministic scenarios.
+func generateOutcomeScenarios() []outcomeScenario {
+	rng := rand.New(rand.NewSource(42))
+	var scenarios []outcomeScenario
+
+	for i := 0; i < 15; i++ {
+		k := rng.Intn(126)
+		want := OutcomeExit
+		if k == 0 {
+			want = OutcomeOK
+		}
+		scenarios = append(scenarios, outcomeScenario{
+			name: fmt.Sprintf("exit_%d", k), cmd: fmt.Sprintf("exit %d", k),
+			wantOutcome: want, wantExitCode: k,
+		})
+	}
+
+	scenarios = append(scenarios,
+		outcomeScenario{name: "self_sigterm", cmd: "kill -TERM $$", wantOutcome: OutcomeSignal, wantExitCode: 143},
+		outcomeScenario{name: "self_sigkill", cmd: "kill -KILL $$", wantOutcome: OutcomeSignal, wantExitCode: 137},
+	)
+
+	for i := 0; i < 5; i++ {
+		ms := 100 + rng.Intn(100)
+		scenarios = append(scenarios, outcomeScenario{
+			name: fmt.Sprintf("timeout_%dms", ms), cmd: "sleep 10",
+			timeout: time.Duration(ms) * time.Millisecond, wantOutcome: OutcomeTimeout,
+		})
+	}
+
+	for i := 0; i < 5; i++ {
+		ms := 100 + rng.Intn(100)
+		scenarios = append(scenarios, outcomeScenario{
+			name: fmt.Sprintf("cancel_%dms", ms), cmd: "sleep 10",
+			cancelAfter: time.Duration(ms) * time.Millisecond, wantOutcome: OutcomeAbort,
+		})
+	}
+
+	for i := 0; i < 3; i++ {
+		ms := 100 + rng.Intn(100)
+		scenarios = append(scenarios, outcomeScenario{
+			name: fmt.Sprintf("caller_deadline_%dms", ms), cmd: "sleep 10",
+			timeout: 10 * time.Second, ctxTimeout: time.Duration(ms) * time.Millisecond,
+			wantOutcome: OutcomeAbort,
+		})
+	}
+
+	for i := 0; i < 5; i++ {
+		k := rng.Intn(5)
+		want := OutcomeExit
+		if k == 0 {
+			want = OutcomeOK
+		}
+		scenarios = append(scenarios, outcomeScenario{
+			name:        fmt.Sprintf("exit_%d_cancel_during_drain", k),
+			cmd:         fmt.Sprintf("( sleep 3 ) & echo started; exit %d", k),
+			cancelAfter: 300 * time.Millisecond, wantOutcome: want, wantExitCode: k,
+		})
+	}
+
+	return scenarios
+}
+
 // TS-04-20: Every started call returns a nil error and exactly the one
 // Outcome its scenario implies (property test).
 func TestTS_04_20_OutcomePropertyTest(t *testing.T) {
@@ -23,101 +96,7 @@ func TestTS_04_20_OutcomePropertyTest(t *testing.T) {
 		t.Skip("no shell available")
 	}
 
-	type scenario struct {
-		name         string
-		cmd          string
-		timeout      time.Duration
-		ctxTimeout   time.Duration // 0 means no caller deadline
-		cancelAfter  time.Duration // 0 means no cancel
-		wantOutcome  Outcome
-		wantExitCode int
-	}
-
-	rng := rand.New(rand.NewSource(42))
-
-	var scenarios []scenario
-
-	// exit k for k in 0..125
-	for i := 0; i < 15; i++ {
-		k := rng.Intn(126)
-		want := OutcomeExit
-		if k == 0 {
-			want = OutcomeOK
-		}
-		scenarios = append(scenarios, scenario{
-			name:         fmt.Sprintf("exit_%d", k),
-			cmd:          fmt.Sprintf("exit %d", k),
-			wantOutcome:  want,
-			wantExitCode: k,
-		})
-	}
-
-	// self-signal TERM
-	scenarios = append(scenarios, scenario{
-		name:         "self_sigterm",
-		cmd:          "kill -TERM $$",
-		wantOutcome:  OutcomeSignal,
-		wantExitCode: 143,
-	})
-
-	// self-signal KILL
-	scenarios = append(scenarios, scenario{
-		name:         "self_sigkill",
-		cmd:          "kill -KILL $$",
-		wantOutcome:  OutcomeSignal,
-		wantExitCode: 137,
-	})
-
-	// sleep past Timeout
-	for i := 0; i < 5; i++ {
-		ms := 100 + rng.Intn(100)
-		scenarios = append(scenarios, scenario{
-			name:        fmt.Sprintf("timeout_%dms", ms),
-			cmd:         "sleep 10",
-			timeout:     time.Duration(ms) * time.Millisecond,
-			wantOutcome: OutcomeTimeout,
-		})
-	}
-
-	// ctx cancelled mid-run
-	for i := 0; i < 5; i++ {
-		ms := 100 + rng.Intn(100)
-		scenarios = append(scenarios, scenario{
-			name:        fmt.Sprintf("cancel_%dms", ms),
-			cmd:         "sleep 10",
-			cancelAfter: time.Duration(ms) * time.Millisecond,
-			wantOutcome: OutcomeAbort,
-		})
-	}
-
-	// ctx deadline shorter than Timeout
-	for i := 0; i < 3; i++ {
-		ms := 100 + rng.Intn(100)
-		scenarios = append(scenarios, scenario{
-			name:        fmt.Sprintf("caller_deadline_%dms", ms),
-			cmd:         "sleep 10",
-			timeout:     10 * time.Second,
-			ctxTimeout:  time.Duration(ms) * time.Millisecond,
-			wantOutcome: OutcomeAbort,
-		})
-	}
-
-	// exit 0 or k followed by cancel during post-exit drain
-	for i := 0; i < 5; i++ {
-		k := rng.Intn(5)
-		want := OutcomeExit
-		if k == 0 {
-			want = OutcomeOK
-		}
-		scenarios = append(scenarios, scenario{
-			name:         fmt.Sprintf("exit_%d_cancel_during_drain", k),
-			cmd:          fmt.Sprintf("( sleep 3 ) & echo started; exit %d", k),
-			cancelAfter:  300 * time.Millisecond,
-			wantOutcome:  want,
-			wantExitCode: k,
-		})
-	}
-
+	scenarios := generateOutcomeScenarios()
 	if len(scenarios) < 30 {
 		t.Fatalf("only %d scenarios, want at least 30", len(scenarios))
 	}
@@ -161,7 +140,6 @@ func TestTS_04_20_OutcomePropertyTest(t *testing.T) {
 					if res.Outcome != sc.wantOutcome {
 						t.Fatalf("Outcome = %q, want %q", res.Outcome, sc.wantOutcome)
 					}
-					// For timeout and abort, we don't check ExitCode.
 					if sc.wantOutcome == OutcomeOK || sc.wantOutcome == OutcomeExit || sc.wantOutcome == OutcomeSignal {
 						if res.ExitCode != sc.wantExitCode {
 							t.Fatalf("ExitCode = %d, want %d", res.ExitCode, sc.wantExitCode)

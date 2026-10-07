@@ -11,18 +11,17 @@ import (
 	"github.com/agentfox/agentkit-go/jsonx"
 )
 
-// TS-04-47: The session codec writes metadata after usage and before timestamp,
-// with tag-named keys in declaration order.
-func TestCodecWritesMetadataAfterUsageBeforeTimestamp_TS04_47(t *testing.T) {
+// ts0447FullMessage returns a ToolResultMessage with all metadata fields set.
+func ts0447FullMessage() core.ToolResultMessage {
 	zero := 0
-	full := core.ToolResultMessage{
-		ToolUseID: "call_1",
-		ToolName:  "find_files",
-		Content:   core.Content{core.TextBlock{Text: "hello"}},
-		IsError:   true,
+	return core.ToolResultMessage{
+		ToolUseID:      "call_1",
+		ToolName:       "find_files",
+		Content:        core.Content{core.TextBlock{Text: "hello"}},
+		IsError:        true,
 		AddedToolNames: []string{"grep"},
-		Usage: &core.Usage{InputTokens: 1},
-		Timestamp: fixedTime,
+		Usage:          &core.Usage{InputTokens: 1},
+		Timestamp:      fixedTime,
 		Metadata: &core.ToolMetadata{
 			Truncated:   true,
 			TruncatedBy: "bytes",
@@ -35,14 +34,18 @@ func TestCodecWritesMetadataAfterUsageBeforeTimestamp_TS04_47(t *testing.T) {
 			LineEnding:  "crlf",
 		},
 	}
+}
 
-	// Encode the full message.
+// TS-04-47: The session codec writes metadata after usage and before timestamp,
+// with tag-named keys in declaration order.
+func TestCodecWritesMetadataKeyOrder_TS04_47(t *testing.T) {
+	full := ts0447FullMessage()
+
 	b, err := EncodeMessage(full)
 	if err != nil {
 		t.Fatalf("EncodeMessage: %v", err)
 	}
 
-	// Decode as ordered object to check key order.
 	v, err := jsonx.DecodeOrdered(b)
 	if err != nil {
 		t.Fatalf("DecodeOrdered: %v", err)
@@ -51,7 +54,6 @@ func TestCodecWritesMetadataAfterUsageBeforeTimestamp_TS04_47(t *testing.T) {
 		t.Fatal("encoded message is not an object")
 	}
 
-	// Check top-level key order.
 	var topKeys []string
 	for _, m := range v.Object {
 		topKeys = append(topKeys, m.Key)
@@ -62,7 +64,6 @@ func TestCodecWritesMetadataAfterUsageBeforeTimestamp_TS04_47(t *testing.T) {
 		t.Fatalf("top-level keys = %v, want %v", topKeys, wantTopKeys)
 	}
 
-	// Check metadata key order.
 	mdVal, ok := v.Object.Get("metadata")
 	if !ok || mdVal.Kind != jsonx.KindObject {
 		t.Fatal("metadata key missing or not an object")
@@ -76,8 +77,14 @@ func TestCodecWritesMetadataAfterUsageBeforeTimestamp_TS04_47(t *testing.T) {
 	if !reflect.DeepEqual(mdKeys, wantMDKeys) {
 		t.Fatalf("metadata keys = %v, want %v", mdKeys, wantMDKeys)
 	}
+}
 
-	// Metadata{ExitCode: &0} encodes as "metadata":{"exit_code":0}.
+// TestCodecWritesMetadataPartialAndNil_TS04_47 verifies partial metadata
+// encoding and nil metadata omission.
+func TestCodecWritesMetadataPartialAndNil_TS04_47(t *testing.T) {
+	full := ts0447FullMessage()
+	zero := 0
+
 	ecOnly := full
 	ecOnly.Metadata = &core.ToolMetadata{ExitCode: &zero}
 	b2, err := EncodeMessage(ecOnly)
@@ -88,7 +95,6 @@ func TestCodecWritesMetadataAfterUsageBeforeTimestamp_TS04_47(t *testing.T) {
 		t.Fatalf("ExitCode-only encoding = %s, want to contain \"metadata\":{\"exit_code\":0}", b2)
 	}
 
-	// Metadata{Outcome: "ok"} encodes as "metadata":{"outcome":"ok"}.
 	outcomeOnly := full
 	outcomeOnly.Metadata = &core.ToolMetadata{Outcome: "ok"}
 	b3, err := EncodeMessage(outcomeOnly)
@@ -99,7 +105,6 @@ func TestCodecWritesMetadataAfterUsageBeforeTimestamp_TS04_47(t *testing.T) {
 		t.Fatalf("Outcome-only encoding = %s, want to contain \"metadata\":{\"outcome\":\"ok\"}", b3)
 	}
 
-	// Metadata nil → no metadata key.
 	noMD := full
 	noMD.Metadata = nil
 	b4, err := EncodeMessage(noMD)
@@ -234,9 +239,9 @@ func TestAbsentOrUnknownMetadataDecodesAsNil_TS04_50(t *testing.T) {
 	}
 
 	cases := []struct {
-		name    string
-		raw     json.RawMessage
-		wantMD  *core.ToolMetadata
+		name   string
+		raw    json.RawMessage
+		wantMD *core.ToolMetadata
 	}{
 		{"no_key", base(""), nil},
 		{"empty_object", base(`"metadata":{}`), nil},
