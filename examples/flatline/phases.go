@@ -489,9 +489,9 @@ func guardProgram(argv []string) (reason string, blocked bool) {
 
 // commandVectors normalizes the two shell tools into argument vectors, one
 // per simple command. Leading NAME=value assignments are dropped, the way the
-// shell (and the shipped policy's firstProgram) drop them: `GIT_AUTHOR_NAME=x
-// git commit` runs git, and a guard that read argv[0] would see an
-// environment variable.
+// shell drops them: `GIT_AUTHOR_NAME=x git commit` runs git, and a guard that
+// read argv[0] would see an environment variable. (The shipped policy
+// refuses such prefixes unless AllowEnvPrefixes is set.)
 func commandVectors(in core.BeforeToolCallContext) [][]string {
 	switch in.ToolName {
 	case "execute":

@@ -246,9 +246,13 @@ is `ErrUnguardedExecute`; the opt-out is `guard.AllowAll`, an interceptor
 that never blocks, so an unrestricted shell is something you say in code.
 `guard.Restricted` ships as the replaceable starting point: a program
 allowlist plus operator rejection under a *declared* grammar (POSIX sh
-quoting), with `powershell` refused outright unless you supply a PowerShell
-filter — REQ-SEC-04's rule that a filter which silently does not hold on one
-supported shell is worse than none. It is a floor, not a sandbox.
+quoting). The allowlist matches the program as spelled — `./ls` and `/tmp/ls`
+are not `ls` — and a `NAME=value` prefix is refused unless `AllowEnvPrefixes`
+is set, and even then when it is `PATH`, `LD_*`, `DYLD_*` or another name that
+changes which binary runs or what is loaded into it. `powershell` is refused
+outright unless you supply a PowerShell filter — REQ-SEC-04's rule that a
+filter which silently does not hold on one supported shell is worse than none.
+It is a floor, not a sandbox.
 
 **The default tool set is platform-stable, `powershell` included**
 ([`tools/powershell.go`](tools/powershell.go)). REQ-TOOL-06 asks for the second
