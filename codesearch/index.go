@@ -11,10 +11,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/agentfox/agentkit-go/outline"
 	"github.com/agentfox/agentkit-go/tools"
@@ -28,6 +31,51 @@ const maxFileSize = 1 << 20
 
 // binarySniffSize is how many bytes are checked for a NUL byte.
 const binarySniffSize = 8 * 1024
+
+// trigramMax is the most distinct trigrams zoekt indexes in one file. It is
+// zoekt's own default, set on the builder explicitly so that skipCheck and the
+// builder cannot disagree about which files are searchable.
+const trigramMax = 20000
+
+// skipCheck applies zoekt's own document check BEFORE a file is handed to the
+// builder. A file it rejects — too many distinct trigrams (a lock file, a
+// source map, a minified bundle), a NUL past the 8 KiB sniff, or fewer than
+// three bytes — is stored by zoekt as a "not indexed" marker in place of its
+// content, so it is unsearchable. Counting it as indexed told the model a
+// file was searched that never could be. Not safe for concurrent use: one per
+// build, overlay or walk.
+type skipCheck struct{ dc zoektindex.DocChecker }
+
+// reason is "" for a file zoekt indexes, and otherwise the skipped key the
+// result reports it under.
+func (c *skipCheck) reason(content []byte) string {
+	switch c.dc.Check(content, trigramMax, false) {
+	case zoektindex.SkipReasonNone:
+		return ""
+	case zoektindex.SkipReasonBinary:
+		return "binary"
+	case zoektindex.SkipReasonTooManyTrigrams:
+		return "too_many_trigrams"
+	case zoektindex.SkipReasonTooSmall:
+		return "too_small"
+	default:
+		return "oversized"
+	}
+}
+
+// count adds a skipped file to the build statistics.
+func (st *BuildStatsResult) count(reason string) {
+	switch reason {
+	case "binary":
+		st.BinarySkipped++
+	case "too_many_trigrams":
+		st.TooManyTrigramsSkipped++
+	case "too_small":
+		st.TooSmallSkipped++
+	case "oversized":
+		st.OversizedSkipped++
+	}
+}
 
 // outlineBatchSize is the maximum number of files per OutlineMany call.
 const outlineBatchSize = 100
@@ -67,7 +115,9 @@ type Options struct {
 	MaxBytes int64
 
 	// MaxBuildTime is the wall-time bound for a build. Zero or negative means
-	// 60 s.
+	// 60 s. When it fires, the files already walked are still added, without
+	// symbols, for a grace window of a quarter of it, so a build is never
+	// left empty by a slow walk; it can therefore run up to 1.25 times this.
 	MaxBuildTime time.Duration
 
 	// TempDir is the directory for shard files. Empty means os.TempDir().
@@ -123,10 +173,11 @@ func newIndex(ws *tools.Workspace, opts Options) (*Index, error) {
 	opts = normalizeOptions(opts)
 
 	return &Index{
-		ws:    ws,
-		opts:  opts,
-		runID: newRunID(),
-		dirty: newDirtyTracker(),
+		ws:         ws,
+		opts:       opts,
+		runID:      newRunID(),
+		dirty:      newDirtyTracker(),
+		overlaySem: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -213,6 +264,11 @@ type Index struct {
 	// overlay holds the current overlay shard state for dirty files.
 	overlay *overlayState
 
+	// overlaySem single-flights reading, building and storing the overlay
+	// (filterAndSearchDirty). A one-slot channel rather than a mutex, so a
+	// query waiting for it can give up when its context ends.
+	overlaySem chan struct{}
+
 	// building is true while a build started by Build or the first query is
 	// in progress.
 	building bool
@@ -258,14 +314,6 @@ type Index struct {
 	// queryTimeout is the maximum wall time for a single search query.
 	// Zero means the default of 10 s.
 	queryTimeout time.Duration
-}
-
-// BuildStatsResult holds statistics from a build.
-type BuildStatsResult struct {
-	BinarySkipped       int
-	OversizedSkipped    int
-	CtagsProcessSpawned bool
-	FilesIndexed        int
 }
 
 // BuildCount returns the number of times the index has been built.
@@ -339,12 +387,18 @@ func (idx *Index) Close() error {
 	}
 	idx.closed = true
 	building, buildDone := idx.building, idx.buildDone
+	rebuilding, rebuildDone := idx.rebuilding, idx.rebuildDone
 	idx.mu.Unlock()
 
-	// Wait for a build in progress, so nothing writes into the run directory
-	// after it is removed. No new build starts once closed is set.
+	// Wait for a build or a rebuild in progress, so nothing writes into a run
+	// directory after it is removed. No new one starts once closed is set,
+	// and a rebuild that finishes now discards what it built instead of
+	// swapping it in (rebuild).
 	if building {
 		<-buildDone
+	}
+	if rebuilding {
+		<-rebuildDone
 	}
 
 	// Wait for in-flight queries to finish.
@@ -361,6 +415,9 @@ func (idx *Index) Close() error {
 		os.RemoveAll(runDir)
 	}
 	cleanupOverlay(ov)
+	// The per-workspace directory goes too once it is empty; another live
+	// index of the same workspace keeps it, and Remove fails harmlessly.
+	_ = os.Remove(idx.hashDirPath())
 	return nil
 }
 
@@ -729,9 +786,13 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 	outlineResults := make(map[string]outline.File, len(files))
 	var totalBytes int64
 
-	// timeCut is set when the deadline cut the list of files to those already
-	// outlined. The builder then adds that list, whose cost is bounded by the
-	// outlining already done, and does not stop at the deadline a second time.
+	// timeCut is set when the deadline stopped the outlining. The files
+	// already walked are still indexed — the ones not yet outlined without
+	// symbols — for a GRACE WINDOW of a quarter of MaxBuildTime, so a bounded
+	// build keeps what it has (spec 03 §4) and the bound stays a bound
+	// (03-REQ-5.7). Cutting the list to the files outlined so far discarded
+	// the whole walk when the deadline fired during it, and a partial index is
+	// never retried: a slow filesystem got a permanently empty index.
 	timeCut := false
 
 	for i := 0; i < len(files); i += outlineBatchSize {
@@ -741,7 +802,6 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 			if partialReason == "" {
 				partialReason = "time"
 			}
-			files = files[:i]
 			timeCut = true
 			break
 		}
@@ -773,7 +833,6 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 				if partialReason == "" {
 					partialReason = "time"
 				}
-				files = files[:i]
 				timeCut = true
 				break
 			}
@@ -812,6 +871,7 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 	builderOpts := zoektindex.Options{
 		IndexDir:     runDir,
 		DisableCTags: true,
+		TrigramMax:   trigramMax,
 		RepositoryDescription: zoekt.Repository{
 			Name: "workspace",
 			Branches: []zoekt.RepositoryBranch{
@@ -827,11 +887,16 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 
 	indexedFiles := make(map[string]bool, len(files))
 	hashes := make(map[string]uint64, len(files))
+	var check skipCheck
 
+	graceEnd := time.Now().Add(idx.opts.MaxBuildTime / 4)
 	for _, fe := range files {
 		if callerCtx.Err() != nil {
 			_ = builder.Finish()
 			return nil, fmt.Errorf("aborted: %w", callerCtx.Err())
+		}
+		if timeCut && !time.Now().Before(graceEnd) {
+			break // the grace window is spent; partialReason is already "time"
 		}
 		if !timeCut && buildCtx.Err() != nil && callerCtx.Err() == nil {
 			if partialReason == "" {
@@ -842,6 +907,10 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 
 		content, err := os.ReadFile(fe.abs)
 		if err != nil {
+			continue
+		}
+		if reason := check.reason(content); reason != "" {
+			stats.count(reason)
 			continue
 		}
 
@@ -917,62 +986,90 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 var errBoundReached = errors.New("bound reached")
 
 // declsToSymbols converts outline declarations to zoekt symbol sections.
-// It computes byte offsets from line numbers in the content.
+//
+// A section is the declared IDENTIFIER on its start line, not the
+// declaration's body: that is what zoekt's sym: query matches against, and
+// it is what keeps sections from overlapping. Body ranges nest — a class
+// spans the methods inside it — and zoekt refuses a shard whose sections
+// overlap, which failed the whole build for any ctags outline that carries
+// `end` fields, and for Go's `var a, b = 1, 2` (two names, one range).
+// A name not found on its line falls back to the whole line. Sections are
+// returned sorted, and one that would overlap the section before it — a
+// duplicate, or a fallback line holding another name — is dropped with its
+// metadata.
 func declsToSymbols(content []byte, decls []outline.Decl) ([]zoektindex.DocumentSection, []*zoekt.Symbol) {
-	// Build a line-to-byte-offset table.
 	lineOffsets := computeLineOffsets(content)
 
-	var sections []zoektindex.DocumentSection
-	var metadata []*zoekt.Symbol
-
+	type symbol struct {
+		sec  zoektindex.DocumentSection
+		meta *zoekt.Symbol
+	}
+	syms := make([]symbol, 0, len(decls))
 	for _, d := range decls {
 		if d.StartLine <= 0 || d.StartLine > len(lineOffsets) {
 			continue
 		}
-
-		start := lineOffsets[d.StartLine-1]
-		var end uint32
-		if d.EndLine > 0 && d.EndLine <= len(lineOffsets) {
-			// End of the end line.
-			if d.EndLine < len(lineOffsets) {
-				end = lineOffsets[d.EndLine] - 1 // before the newline
-			} else {
-				end = uint32(len(content))
-			}
-		} else {
-			// Just the start line.
-			if d.StartLine < len(lineOffsets) {
-				end = lineOffsets[d.StartLine] - 1
-			} else {
-				end = uint32(len(content))
-			}
+		lineStart := lineOffsets[d.StartLine-1]
+		lineEnd := uint32(len(content))
+		if d.StartLine < len(lineOffsets) {
+			lineEnd = lineOffsets[d.StartLine] - 1 // before the newline
 		}
-
+		start, end := lineStart, lineEnd
+		if i := identifierIndex(content[lineStart:lineEnd], d.Name); i >= 0 {
+			start = lineStart + uint32(i)
+			end = start + uint32(len(d.Name))
+		}
 		if end <= start {
-			end = start + 1
-			if end > uint32(len(content)) {
-				end = uint32(len(content))
-			}
+			continue // an empty line holds no symbol
 		}
 
-		sections = append(sections, zoektindex.DocumentSection{
-			Start: start,
-			End:   end,
-		})
-
-		kind := string(d.Kind)
 		sym := d.Name
 		if d.Container != "" {
 			sym = d.Container + "." + d.Name
 		}
-
-		metadata = append(metadata, &zoekt.Symbol{
-			Sym:  sym,
-			Kind: kind,
+		syms = append(syms, symbol{
+			sec:  zoektindex.DocumentSection{Start: start, End: end},
+			meta: &zoekt.Symbol{Sym: sym, Kind: string(d.Kind)},
 		})
 	}
 
+	sort.SliceStable(syms, func(i, j int) bool { return syms[i].sec.Start < syms[j].sec.Start })
+	var sections []zoektindex.DocumentSection
+	var metadata []*zoekt.Symbol
+	for _, sy := range syms {
+		if n := len(sections); n > 0 && sections[n-1].End > sy.sec.Start {
+			continue
+		}
+		sections = append(sections, sy.sec)
+		metadata = append(metadata, sy.meta)
+	}
 	return sections, metadata
+}
+
+// identifierIndex is the byte offset of name in line as a whole identifier —
+// not the `load` inside `reload` — or -1.
+func identifierIndex(line []byte, name string) int {
+	if name == "" {
+		return -1
+	}
+	for off := 0; off < len(line); {
+		i := bytes.Index(line[off:], []byte(name))
+		if i < 0 {
+			return -1
+		}
+		i += off
+		before, _ := utf8.DecodeLastRune(line[:i])
+		after, _ := utf8.DecodeRune(line[i+len(name):])
+		if !isIdentRune(before) && !isIdentRune(after) {
+			return i
+		}
+		off = i + 1
+	}
+	return -1
+}
+
+func isIdentRune(r rune) bool {
+	return r == '_' || r == '$' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 // computeLineOffsets returns the byte offset of the start of each line.

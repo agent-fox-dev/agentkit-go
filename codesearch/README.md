@@ -56,8 +56,10 @@ tools, err := tools.All(opts)
 path with no build constraint. When it returns an error the index is a nil
 interface, never a nil `*codesearch.Index` inside one, so passing it on to
 `Options.Index` without checking `err` is the same as having no index. Code
-that wants the build counters or statistics (`BuildCount`, `BuildStats`,
-`Build`) asserts the result to `*codesearch.Index`; the examples do.
+that wants the build counters or statistics (`Build`, `BuildCount`,
+`BuildStats`, `IndexedFiles`, `RunDir`, `OverlayBuildCount`, `RevalCount`)
+asserts the result to `*codesearch.Index`; the Windows stub has all of them,
+inert, so the assertion compiles everywhere.
 
 Add `"code_search"` to your embedder's tool allowlist.
 
@@ -73,7 +75,8 @@ uses — `search` and `freshness` on their own, `agent` wired into `tools.All`.
 | Query language | RE2 regex | zoekt boolean (substring, regex, sym:, file:, lang:, case:) |
 | Walk order | Deterministic (alphabetical) | Ranked by zoekt score (best first) |
 | Per-file size limit | None | 1 MiB (matches outline's default) |
-| Binary detection | NUL in first 64 KiB (ripgrep's buffer); a later NUL ends the file's search | NUL in first 8 KiB |
+| Binary detection | NUL in first 64 KiB (ripgrep's buffer); a later NUL ends the file's search | NUL anywhere in the file (zoekt's own check) |
+| Other skipped files | None | Over 20 000 distinct trigrams (lock files, source maps, minified bundles) and under 3 bytes: zoekt stores them as "not indexed", so they are skipped and reported in `skipped` (`binary`, `oversized`, `too_many_trigrams`, `too_small`), never counted in `files_indexed` |
 | Encoding | A byte-order mark is honoured: UTF-8 BOM stripped, UTF-16 transcoded | Bytes as stored |
 | Result grouping | By file, match order | By file, best chunks first |
 | Exhaustiveness | All matches up to cap | Ranked subset |
@@ -118,6 +121,12 @@ type DocumentSection struct {
 When `Symbols` and `SymbolsMetaData` are populated and `CTagsPath` is empty,
 the builder uses the supplied data without running ctags. This is verified by
 TS-03-64.
+
+Each section is the declared identifier on its start line — what `sym:`
+matches — not the declaration's body. zoekt rejects a shard whose sections
+overlap, and body ranges nest (a class spans its methods; Go's
+`var a, b = 1, 2` gives two names one range), so a section that would overlap
+the one before it is dropped.
 
 ### SearchOptions Bounding Result Size and Wall Time
 
@@ -192,8 +201,11 @@ On windows/amd64, `codesearch.New` returns a nil `tools.Index` and
 `ErrUnsupported`. The error value is the same on every platform
 (`errors.Is(err, codesearch.ErrUnsupported)` works). An embedder falls back to
 `Options.Index == nil`. The stub `Index` type implements `tools.Index` with
-inert methods (`Symbols` never answers, `Tools` is empty), so the code in
+inert methods (`Symbols` never answers, `Tools` is empty), and has the
+counters and statistics of the real one (`Build` returns `ErrUnsupported`,
+every count is 0, `BuildStats` is the zero value), so the code in
 [How to Opt In](#how-to-opt-in) compiles on Windows unchanged.
+`TestEmbedderCompilesOnEveryTarget` builds an embedder that calls them.
 
 ## Goldens
 

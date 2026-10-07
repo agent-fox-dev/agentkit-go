@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -31,6 +32,14 @@ func main() {
 	default:
 		defer idx.Close()
 		opts.Index = idx
+		// The counters and statistics the README documents, through the
+		// same assertion on every platform (the Windows stub has them too).
+		if ci, ok := idx.(*codesearch.Index); ok {
+			_ = ci.Build(context.Background())
+			st := ci.BuildStats()
+			fmt.Println(ci.BuildCount(), ci.OverlayBuildCount(), ci.RevalCount(),
+				st.FilesIndexed, len(ci.IndexedFiles()), ci.RunDir())
+		}
 	}
 
 	if _, err := tools.All(opts); err != nil {
