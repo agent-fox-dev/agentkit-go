@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -21,8 +20,8 @@ import (
 	"github.com/sourcegraph/zoekt/query"
 )
 
-// These pin issue #89's sibling, #90: the codesearch build, its skip
-// accounting, and the index's lifecycle under rebuilds and dirty files.
+// These pin issue #90: the codesearch build, its skip accounting, and the
+// index's lifecycle under rebuilds and dirty files.
 
 func newTestIndex(t *testing.T, root string, o Options) *Index {
 	t.Helper()
@@ -302,4 +301,3 @@ func TestThePathConstraintIsCaseSensitive(t *testing.T) {
 	}
 }
 
-var _ = filepath.Join
