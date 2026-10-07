@@ -77,8 +77,21 @@ type ExecOptions struct {
 	Timeout time.Duration
 	// MaxBytes bounds the window that reaches the model.
 	MaxBytes int
+	// KeepHead, when true, keeps the first MaxBytes bytes of the output
+	// (head truncation) instead of the last MaxBytes bytes (tail truncation,
+	// the default when false).
+	KeepHead bool
 	// SpillDir enables the full-output spill file.
 	SpillDir string
+	// LogPath, when set, writes the complete interleaved output to the named
+	// file as it arrives, independent of truncation. A relative path is
+	// resolved against Dir (or the process working directory when Dir is
+	// empty). Missing parent directories are created with mode 0o700 and the
+	// file is created or truncated with mode 0o600 before the process starts.
+	// When set, LogPath replaces SpillDir for that call: no temporary spill
+	// file is created, and ExecResult.SpillPath reports the absolute log path.
+	// The SDK never deletes the file.
+	LogPath string
 	// Stdin, when non-nil, is copied into the child's standard input through
 	// a pipe the runner owns. The child's stdin is closed when the reader
 	// returns io.EOF. Nil keeps the null device (REQ-TOOL-06).
@@ -122,7 +135,7 @@ const (
 //     post-exit deadline (REQ-TOOL-17.5). exec closes the pipes it made as
 //     soon as Wait returns, which truncates a detached descendant's output at
 //     a constant — losing precisely the tail of a background job's log.
-//   - Output is truncated from the TAIL (REQ-TOOL-09a).
+//   - Output is truncated from the TAIL unless KeepHead is set (REQ-TOOL-09a).
 //
 // When ExecOptions.Stdin is non-nil, the reader is copied into the child's
 // standard input through a pipe the runner owns. The child's stdin is closed
@@ -147,8 +160,8 @@ func Run(ctx context.Context, command string, opts ExecOptions) (ExecResult, err
 // them back into a shell string and hope the quoting is right.
 //
 // Everything else — process group, timeout, group kill, interleaved output,
-// tail truncation, spill — is identical, because those are properties of
-// running a subprocess and not of how the command was spelled.
+// tail truncation (unless KeepHead), spill — is identical, because those are
+// properties of running a subprocess and not of how the command was spelled.
 //
 // When ExecOptions.Stdin is non-nil, the reader is copied into the child's
 // standard input through a pipe the runner owns. The child's stdin is closed
@@ -230,8 +243,44 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 	// bound is DrainCeiling.
 	cmd.WaitDelay = 2 * time.Second
 
-	acc := NewAccumulator(opts.MaxBytes, TruncateTail)
-	acc.SpillDir, acc.SpillPrefix = opts.SpillDir, "agentkit-exec"
+	mode := TruncateTail
+	if opts.KeepHead {
+		mode = TruncateHead
+	}
+	acc := NewAccumulator(opts.MaxBytes, mode)
+
+	// LogPath: resolve, create parents, open the file eagerly so a failure
+	// is reported before anything starts (04-REQ-3.4).
+	if opts.LogPath != "" {
+		logAbs := opts.LogPath
+		if !filepath.IsAbs(logAbs) {
+			base := opts.Dir
+			if base == "" {
+				var wdErr error
+				base, wdErr = os.Getwd()
+				if wdErr != nil {
+					return ExecResult{}, fmt.Errorf("tools: opening log %s: %w", opts.LogPath, wdErr)
+				}
+			}
+			logAbs = filepath.Join(base, logAbs)
+		}
+		var absErr error
+		logAbs, absErr = filepath.Abs(logAbs)
+		if absErr != nil {
+			return ExecResult{}, fmt.Errorf("tools: opening log %s: %w", opts.LogPath, absErr)
+		}
+		if err := os.MkdirAll(filepath.Dir(logAbs), 0o700); err != nil {
+			return ExecResult{}, fmt.Errorf("tools: opening log %s: %w", opts.LogPath, err)
+		}
+		f, err := os.OpenFile(logAbs, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+		if err != nil {
+			return ExecResult{}, fmt.Errorf("tools: opening log %s: %w", opts.LogPath, err)
+		}
+		acc.useFile(f, logAbs)
+		// LogPath replaces SpillDir: no temp spill file (04-REQ-3.5).
+	} else {
+		acc.SpillDir, acc.SpillPrefix = opts.SpillDir, "agentkit-exec"
+	}
 	defer acc.Close()
 
 	// ONE pipe for both streams, so they interleave in true write order

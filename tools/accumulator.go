@@ -60,6 +60,15 @@ func NewAccumulator(capBytes int, mode TruncateMode) *Accumulator {
 	return &Accumulator{Cap: capBytes, Mode: mode}
 }
 
+// useFile installs a pre-opened file as the spill destination. SpillPath()
+// reports path from the start, including for empty output, and writeSpill
+// never calls CreateTemp. This is used by LogPath to provide a caller-named
+// log file.
+func (a *Accumulator) useFile(f *os.File, path string) {
+	a.spill = f
+	a.spillPath = path
+}
+
 // Write implements io.Writer, so an Accumulator can be handed straight to
 // exec.Cmd as its combined output sink.
 func (a *Accumulator) Write(p []byte) (int, error) {
@@ -109,10 +118,15 @@ func appendBounded(dst, src []byte, n int) []byte {
 }
 
 func (a *Accumulator) writeSpill(p []byte) {
-	if a.SpillDir == "" || a.spillErr != nil {
+	if a.spillErr != nil {
 		return
 	}
+	// When a file was installed via useFile, spill is already set;
+	// skip the SpillDir/CreateTemp path entirely.
 	if a.spill == nil {
+		if a.SpillDir == "" {
+			return
+		}
 		// Lazily created on FIRST write, so a command producing nothing leaves
 		// no file behind. The directory is created here for the same reason:
 		// the default per-workspace directory (REQ-TOOL-09d) should not
@@ -140,10 +154,9 @@ func (a *Accumulator) Total() int64 { return a.total }
 func (a *Accumulator) Truncated() bool { return a.total > int64(len(a.head)+len(a.tail)) }
 
 // SpillPath returns the spill file path, or "" if nothing spilled.
+// When a file was installed via useFile, the path is always returned
+// (even for empty output).
 func (a *Accumulator) SpillPath() string {
-	if a.spill == nil {
-		return ""
-	}
 	return a.spillPath
 }
 
