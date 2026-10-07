@@ -14,9 +14,19 @@ type Span interface {
 	End()
 }
 
-// Tracer starts spans. StartSpan is callback-scoped and deliberately does NOT
-// take a context.Context: cancellation belongs to the work the callback closes
-// over, not to the tracing of it.
+// Tracer starts spans. StartSpan deliberately does NOT take a
+// context.Context: cancellation belongs to the work the callback closes over,
+// not to the tracing of it.
+//
+// THE SPAN LIVES UNTIL Span.End, not until fn returns. fn receives the span
+// and returns once the span is set up; the caller writes attributes and calls
+// End exactly once, and may do so after fn has returned — a model call's span
+// is ended when its response completes, on another goroutine, so the stream's
+// events are not held back until then. An implementation must therefore NOT
+// end the span when fn returns (an OpenTelemetry adapter calls its span's End
+// from Span.End, never from StartSpan), and the SDK never writes to a span
+// after calling End. The tool-call span happens to end inside fn; nothing may
+// rely on that.
 type Tracer interface {
 	StartSpan(name string, fn func(Span) error) error
 }

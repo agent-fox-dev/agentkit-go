@@ -66,6 +66,15 @@ func Tool(parent *agentkit.Agent, factory Factory, opts Options) core.Tool {
 		desc = "Delegate a task to the " + opts.Name + " specialist."
 	}
 
+	// reserved is the budget granted to children still running. Delegations
+	// in one batch run in parallel, and each reads the parent's usage before
+	// any child's spend is folded into it; without the reservation every one
+	// of them was granted the same remaining budget.
+	var (
+		budgetMu sync.Mutex
+		reserved float64
+	)
+
 	return core.Tool{
 		Name:        opts.Name,
 		Description: desc,
@@ -101,12 +110,21 @@ func Tool(parent *agentkit.Agent, factory Factory, opts Options) core.Tool {
 			}
 
 			if opts.BudgetFraction > 0 && opts.MaxBudgetUSD > 0 {
-				remaining := opts.MaxBudgetUSD - parent.Usage().CostUSD
+				budgetMu.Lock()
+				remaining := opts.MaxBudgetUSD - parent.Usage().CostUSD - reserved
 				if remaining <= 0 {
+					budgetMu.Unlock()
 					return core.ErrResult("budget_exhausted",
 						"the parent has no remaining budget to delegate")
 				}
 				slice := remaining * opts.BudgetFraction
+				reserved += slice
+				budgetMu.Unlock()
+				defer func() {
+					budgetMu.Lock()
+					reserved -= slice
+					budgetMu.Unlock()
+				}()
 				existing := child.Config().StopPolicy
 				if err := child.SetStopPolicy(stop.Any(existing, stop.OverBudget(slice))); err != nil {
 					// The factory handed back an agent that is already running;
@@ -116,6 +134,13 @@ func Tool(parent *agentkit.Agent, factory Factory, opts Options) core.Tool {
 			}
 
 			res, err := child.Run(ctx, prompt)
+			// What the child spent is the parent's spend, failed run or not.
+			// It is reported to the parent at once (the loop installs the
+			// usage reporter around tool execution), before this delegation's
+			// reservation is released, so parent.Usage() — what the parent's
+			// budget and the next delegation's slice are computed from — never
+			// misses it, even within one parallel batch.
+			core.ReportUsage(ctx, child.Usage())
 			if err != nil {
 				// A child that failed is not a parent that failed. The
 				// orchestrator sees an error result and can try something

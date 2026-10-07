@@ -269,3 +269,12 @@ Every row here is a finding of this pass, not the 0.4.2 audit above.
 | `resume.go` | With no resolver, `NewAgentFromSession` compared only the model id, so a config on another provider or API was accepted and signed thinking stripped (P-4). | Fixed — the triple is compared; `TestResumeWithoutAResolverComparesTheWholeTriple`. |
 | `resume.go`, `session` | A store forked after `Open` left the `Resume` on the old branch: the model was sent one conversation and the log recorded another. | Fixed — `NewAgentFromSession` refuses a `Resume` whose leaf is not the store's head; `session.FoldLeaf` forks and folds together; `TestAResumeFromAStaleBranchIsRefused`. |
 | `session.Open` | A pre-existing empty file got a header with `"id":""`. | Fixed — id, timestamp and cwd are filled as `Create` fills them; `TestOpeningAnEmptyFileWritesARealHeader`. A non-empty file whose header line is damaged is still reported as `RepairMissingHeader` and keeps the empty in-memory header: an append-only log cannot gain a line 1. |
+
+## Delegation budget, tracing contract and middleware bounds (issue #82)
+
+| Where | Finding | Status |
+|---|---|---|
+| `subagent` | A child's spend never reached `parent.Usage()`, so `BudgetFraction` was a fraction of the whole budget on every delegation: N delegations could spend N × `MaxBudgetUSD`. Concurrent delegations in one batch were each granted the same remaining budget. | Fixed — the child's usage is reported with `core.ReportUsage` as soon as it finishes (the loop installs the reporter around tool execution), and each delegation reserves its slice while its child runs; `TestAChildsSpendCountsAgainstTheParent`, `TestParallelDelegationsDoNotShareOneSlice`. |
+| `core.Tracer`, `middleware.Tracing` | The contract said `StartSpan` was "callback-scoped"; `Tracing` writes and ends its span after the callback returns, so an adapter built to the contract dropped every model-call attribute. | Fixed — the contract now says a span lives until `Span.End`; both call sites write before End and end exactly once; `TestTracingFollowsTheSpanContract` pins `Tracing` to it. |
+| `middleware.Retry` | `BaseDelay << (attempt-1)` overflowed: negative after attempt 35, zero from 64 — a retry storm. | Fixed — doubled step by step and capped at `MaxDelay`; `TestBackoffSaturatesInsteadOfOverflowing`. |
+| `middleware.RateLimit` | A zero, negative or NaN rate admitted every call. | Fixed — such a limiter fails every call with a clear error; `TestRateLimitRefusesANonPositiveRate`. |
