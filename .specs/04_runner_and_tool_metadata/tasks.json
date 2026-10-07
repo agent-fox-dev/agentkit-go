@@ -202,7 +202,7 @@
       "done_when": [
         "`git diff <base> -- tools/tools_test.go tools/reqtool06_test.go` is empty"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
