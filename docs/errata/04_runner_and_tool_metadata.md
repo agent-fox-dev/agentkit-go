@@ -64,6 +64,23 @@ The one remaining §5 item — retrying the summarizer request — moves to the
 `transcript_pruning` scope, because it reverses REQ-GO-12.3's routing and
 belongs with the other transcript-transform changes.
 
+## An older build moves metadata behind timestamp
+
+**What the spec says.** TS-04-51 says a tool_result line with metadata,
+decoded by a build that does not know `metadata`, re-encodes to the same
+bytes.
+
+**What is implemented.** That holds only for a message with no `timestamp`.
+04-REQ-9.1 writes `metadata` before `timestamp`. An older build keeps
+`metadata` in `Unknown` and appends `Unknown` keys after the keys it models,
+so it writes `metadata` after `timestamp`. The key order changes but no data
+is lost: this build reads those bytes back to equal metadata and re-encodes
+them to the original bytes. To get byte-identity, `metadata` would have to
+follow `timestamp`, which goes against 04-REQ-9.1 and TS-04-47. The
+batch executor timestamps every tool result it makes, so logs written by the
+agent loop are affected. The session-log golden is not, because its
+tool_result has no message timestamp.
+
 ## Code and test references
 
 - `tools/exec.go:192` (`RunArgv`): the extended runner entry point, tested by
@@ -76,3 +93,8 @@ belongs with the other transcript-transform changes.
 - `session/codec.go` (`encodeMessage` / `decodeMessage`): metadata
   persistence, tested by `TestCodecWritesMetadataKeyOrder_TS04_47` and
   `TestMetadataRoundTripProperty_TS04_49` in `session/metadata_codec_test.go`.
+- `session/codec.go` (`toolResultKnown`, `appendRest`): compatibility with
+  older builds, tested by
+  `TestPreChangeLogLoadsWithNilMetadataAndReencodesIdentically_TS04_51` and
+  `TestNewMetadataSurvivesABuildWithoutIt_TS04_51` in
+  `session/metadata_compat_internal_test.go`.
