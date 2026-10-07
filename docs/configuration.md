@@ -104,7 +104,7 @@ provider-prefixed variables and anything ending in `_TOKEN`, `_SECRET`,
 | `SessionID` | Identifier carried on requests and audit events. |
 | `TrustProject` | The one place to state project trust; skills discovery derives from it (`skills.ConfigFor`). Default false. |
 | `Plugins` | A `PluginRegistry` held on the config, not globally. |
-| `Tracer` | Tool-span tracer; nil is a no-op. |
+| `Tracer` | Tool-span tracer; nil is a no-op. A span lives until `Span.End`, which may come after `StartSpan`'s callback has returned (`middleware.Tracing` ends a model-call span when the response completes), so an adapter must not end the span when the callback returns. |
 | `Attribution` | `*bool`; nil means on. |
 | `CacheRetention` | `none`, `short`, `long`. |
 | `RequestOptions` | Per-request `Headers` (nil value deletes a default), `TimeoutMs`, `MaxRetries` (nil → 0), `MaxRetryDelayMs` (nil → 60000), `SessionID`, `CacheRetention`, `Deferred`, `Env`, `Transport`, `StreamFn`, `OnPayload`, `OnResponse`. |

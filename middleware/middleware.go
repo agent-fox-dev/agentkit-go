@@ -170,8 +170,15 @@ func Retry(opts RetryOptions) core.Middleware {
 }
 
 func backoff(o RetryOptions, attempt int) time.Duration {
-	d := o.BaseDelay << (attempt - 1)
-	if d > o.MaxDelay {
+	// Doubled step by step and stopped at MaxDelay. `BaseDelay << (attempt-1)`
+	// overflowed: negative after attempt 35, zero from 64 — and a sleep of
+	// zero or less returns at once, which made a large MaxAttempts a retry
+	// storm exactly when the provider was struggling.
+	d := o.BaseDelay
+	for i := 1; i < attempt && d < o.MaxDelay; i++ {
+		d *= 2
+	}
+	if d > o.MaxDelay || d <= 0 {
 		d = o.MaxDelay
 	}
 	// Jitter is applied DOWNWARD only (REQ-PROV-13): up to 25% off, never on.
@@ -504,8 +511,9 @@ func Tracing(t core.Tracer) core.Middleware {
 			ctx, note := withCacheNote(ctx)
 			// The span opens before the call and closes when the response
 			// completes; the events are not held back for it (see
-			// teeStream). Tracer.StartSpan's callback shape is kept — the
-			// callback returns immediately and the span is ended on the tee.
+			// teeStream). The callback returns immediately and the span is
+			// written and ended on the tee — core.Tracer's contract: a span
+			// lives until End, not until the callback returns.
 			_ = t.StartSpan("agentkit.model_call", func(sp core.Span) error {
 				out = teeStream(next(ctx, req), func(msg *core.AssistantMessage) {
 					defer sp.End()
@@ -541,7 +549,19 @@ func Tracing(t core.Tracer) core.Middleware {
 // ---------------------------------------------------------------- rate limit
 
 // RateLimit is a token bucket over model calls.
+//
+// perSecond must be positive. Zero, a negative rate or NaN is a misread
+// configuration, not "no limit": every call through such a limiter fails with
+// an error saying so, rather than the division below admitting them all.
 func RateLimit(perSecond float64, burst int) core.Middleware {
+	if !(perSecond > 0) {
+		err := fmt.Errorf("middleware: RateLimit needs a positive rate, got %v calls per second", perSecond)
+		return func(core.Handler) core.Handler {
+			return func(context.Context, core.Request) *core.EventStream {
+				return core.ErrorStream(nil, err)
+			}
+		}
+	}
 	if burst < 1 {
 		burst = 1
 	}
