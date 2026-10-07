@@ -539,3 +539,72 @@ func TestAVertexHostOnTheGeneralBaseURLIsNotALeftover(t *testing.T) {
 		t.Fatalf("x-api-key = %q; an Anthropic key must never reach a Google endpoint", got)
 	}
 }
+
+// TestAnAnthropicBearerIsNeverSentToTheVertexEndpoint is the bearer half of
+// TestAnAnthropicAPIKeyIsNeverSentToTheVertexEndpoint. ANTHROPIC_OAUTH_TOKEN
+// is always an Anthropic-issued token, and an sk-ant- value is one wherever
+// it came from; a Google access token is neither.
+func TestAnAnthropicBearerIsNeverSentToTheVertexEndpoint(t *testing.T) {
+	vertex := func(extra map[string]string) map[string]string {
+		env := map[string]string{"CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "proj-1"}
+		for k, v := range extra {
+			env[k] = v
+		}
+		return env
+	}
+	for name, env := range map[string]map[string]string{
+		"oauth token":              vertex(map[string]string{"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-SECRET"}),
+		"anthropic token in auth":  vertex(map[string]string{"ANTHROPIC_AUTH_TOKEN": "sk-ant-oat01-SECRET"}),
+		"oauth token and api key":  vertex(map[string]string{"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-SECRET", "ANTHROPIC_API_KEY": "sk-ant-api03-SECRET"}),
+		"options project selected": {"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-SECRET"},
+	} {
+		opts := anthropic.Options{}
+		if name == "options project selected" {
+			opts.VertexProject = "proj-1"
+		}
+		r := sent(t, opts, env)
+		if !strings.Contains(r.URL.Host, "aiplatform.googleapis.com") {
+			t.Fatalf("%s: sent to %s, want the Vertex host", name, r.URL)
+		}
+		for _, h := range []string{"Authorization", "x-api-key"} {
+			if got := r.Header.Get(h); strings.Contains(got, "SECRET") {
+				t.Errorf("%s: %s = %q; an Anthropic credential must never reach a Google endpoint", name, h, got)
+			}
+		}
+	}
+
+	// The same rule holds for a token that arrives through a credential store.
+	creds := provider.NewCredentials(&provider.MemoryStore{})
+	_, _ = creds.Modify(context.Background(), "anthropic", func(provider.Credential) (provider.Credential, error) {
+		return provider.Credential{AccessToken: "sk-ant-oat01-SECRET", Scheme: provider.SchemeBearer}, nil
+	})
+	r := sent(t, anthropic.Options{VertexProject: "proj-1", Credentials: creds}, nil)
+	if got := r.Header.Get("Authorization"); got != "" {
+		t.Fatalf("Authorization = %q from a credential store; an sk-ant- token is Anthropic's", got)
+	}
+
+	// A Google access token in ANTHROPIC_AUTH_TOKEN survives a leftover API
+	// key, whichever the direct deployment would prefer.
+	r = sent(t, anthropic.Options{}, vertex(map[string]string{
+		"ANTHROPIC_AUTH_TOKEN": "ya29.access-token", "ANTHROPIC_API_KEY": "sk-ant-api03-SECRET"}))
+	if got := r.Header.Get("Authorization"); got != "Bearer ya29.access-token" {
+		t.Fatalf("Authorization = %q, want the Google token to survive the leftover API key", got)
+	}
+}
+
+// TestAVertex401NamesTheCredentialsItWithheld: the note says which
+// Anthropic-issued variables are set and were kept off the Google endpoint,
+// and claims nothing about one that is not set.
+func TestAVertex401NamesTheCredentialsItWithheld(t *testing.T) {
+	env := map[string]string{"CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "proj-1",
+		"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x"}
+	msg, _, _ := run(t, testModel(), core.Request{Options: core.RequestOptions{Env: env}},
+		anthropic.Options{Getenv: func(string) string { return "" }}, 401, `{}`)
+	if !strings.Contains(msg.ErrorMessage, "ANTHROPIC_OAUTH_TOKEN") ||
+		!strings.Contains(msg.ErrorMessage, "never sent to a Google endpoint") {
+		t.Fatalf("error = %q, want it to name ANTHROPIC_OAUTH_TOKEN as withheld", msg.ErrorMessage)
+	}
+	if strings.Contains(msg.ErrorMessage, "ANTHROPIC_API_KEY — which is set") {
+		t.Fatalf("error = %q claims ANTHROPIC_API_KEY is set; it is not", msg.ErrorMessage)
+	}
+}

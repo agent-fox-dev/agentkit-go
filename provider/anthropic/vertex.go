@@ -300,21 +300,24 @@ func deploymentBase(m *core.Model, configured string, env provider.Env) string {
 
 // vertexAuth NARROWS a resolved credential to what this deployment can use.
 //
-// A bearer token is kept: that is the Google OAuth access token, however it
-// arrived — ANTHROPIC_AUTH_TOKEN, a Credentials store, or an Options.HTTPClient
-// that adds its own header (in which case there is nothing here to keep and
-// the ambient state is the correct answer).
+// A bearer token is kept when it can be the Google OAuth access token, however
+// it arrived — ANTHROPIC_AUTH_TOKEN, a Credentials store, or an
+// Options.HTTPClient that adds its own header (in which case there is nothing
+// here to keep and the ambient state is the correct answer).
 //
-// An x-api-key is DROPPED, and this is the security half of the change rather
-// than tidiness. A workstation that used to call Anthropic directly still has
-// ANTHROPIC_API_KEY set; forwarding it would hand a first-party credential to
-// a third party in a header Vertex has no use for. Dropping it leaves
-// REQ-AUTH-04's ambient state, which is the truth: this process holds no
-// readable credential for this endpoint and the transport may still have one.
+// Everything Anthropic-issued is DROPPED, and this is the security half of the
+// change rather than tidiness: an x-api-key, a bearer resolved from
+// ANTHROPIC_OAUTH_TOKEN, and any bearer whose value is an sk-ant- token. A
+// workstation that used to call Anthropic directly still has those set;
+// forwarding one would hand a first-party credential to a third party in a
+// header Vertex has no use for. Dropping it leaves REQ-AUTH-04's ambient
+// state, which is the truth: this process holds no readable credential for
+// this endpoint and the transport may still have one.
 func vertexAuth(auth provider.ModelAuth) provider.ModelAuth {
-	if auth.Headers != nil && auth.Headers["Authorization"] != nil {
+	if bearer := auth.Headers["Authorization"]; bearer != nil && !isAnthropicBearer(auth) {
 		return auth
 	}
+	delete(auth.Headers, "Authorization")
 	delete(auth.Headers, "x-api-key")
 	auth.APIKey = ""
 	if auth.State == provider.CredentialResolved {
@@ -325,6 +328,22 @@ func vertexAuth(auth provider.ModelAuth) provider.ModelAuth {
 	// precedent for a source that is not an environment variable.
 	auth.Source = "vertex-adc"
 	return auth
+}
+
+// isAnthropicBearer reports whether auth's Authorization header carries a
+// token Anthropic issued: one read from ANTHROPIC_OAUTH_TOKEN, or any whose
+// value has Anthropic's sk-ant- prefix. A Google access token has neither.
+func isAnthropicBearer(auth provider.ModelAuth) bool {
+	h := auth.Headers["Authorization"]
+	return h != nil && (auth.Source == OAuthTokenVar || strings.HasPrefix(*h, "Bearer sk-ant-"))
+}
+
+// isOAuthBearer reports whether auth is an Anthropic OAuth token, which the
+// Messages API accepts only with BetaOAuth: one read from
+// ANTHROPIC_OAUTH_TOKEN, or any bearer with the sk-ant-oat prefix.
+func isOAuthBearer(auth provider.ModelAuth) bool {
+	h := auth.Headers["Authorization"]
+	return h != nil && (auth.Source == OAuthTokenVar || strings.HasPrefix(*h, "Bearer sk-ant-oat"))
 }
 
 // envOn reads a FLAG variable for truth rather than presence.

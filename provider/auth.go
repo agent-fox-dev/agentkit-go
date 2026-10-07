@@ -90,8 +90,12 @@ func Redact(s string) string {
 type AuthScheme uint8
 
 const (
-	SchemeAPIKey AuthScheme = iota // x-api-key style
-	SchemeBearer                   // Authorization: Bearer
+	// SchemeVendor is the zero value: "as this vendor sends it". On a stored
+	// Credential it is resolved against the vendor's table (Credential.AuthFor);
+	// an environment row always names its scheme.
+	SchemeVendor AuthScheme = iota
+	SchemeAPIKey            // x-api-key style
+	SchemeBearer            // Authorization: Bearer
 )
 
 // EnvVar is one row of a vendor's ordered resolution table.
@@ -188,6 +192,17 @@ func ResolveAuth(v VendorAuth, env Env) ModelAuth {
 		auth.State = CredentialAmbient
 	}
 	return auth
+}
+
+// credentialScheme is how the vendor sends a stored API key: the scheme of
+// the first row of its table that holds a credential.
+func (v VendorAuth) credentialScheme() AuthScheme {
+	for _, row := range v.Vars {
+		if !row.DiscoveryOnly && row.Scheme != SchemeVendor {
+			return row.Scheme
+		}
+	}
+	return SchemeAPIKey
 }
 
 func strp(s string) *string { return &s }

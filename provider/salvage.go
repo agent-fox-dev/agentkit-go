@@ -13,7 +13,8 @@ import "encoding/json"
 // prompt-cache prefix.
 //
 // WHAT IT DOES WITH A TRUNCATED VALUE, and why: it DROPS the incomplete
-// member rather than closing it.
+// member rather than closing it — and a member whose value is a container
+// still open at the cut is a truncated member too, dropped whole.
 //
 // Closing an open string is the friendlier-looking choice and it is the wrong
 // one here. `{"path":"/etc/pas` becomes a syntactically perfect call to delete
@@ -21,8 +22,8 @@ import "encoding/json"
 // corrupting case REQ-LOOP-10 exists for, now wearing valid JSON. Dropping the
 // member instead makes the truncation SURVIVE as a missing required property,
 // where REQ-TOOL-11's schema validation rejects it and the caller is told what
-// happened. Complete members before the cut are kept; only the partial one is
-// lost.
+// happened. Complete top-level members before the cut are kept; only the
+// partial one is lost, however deep inside it the cut fell.
 //
 // This is a safety net under REQ-LOOP-10, never a substitute for it: the loop
 // still refuses to execute any tool call from a `max_tokens` turn, because a
@@ -114,13 +115,17 @@ func SalvageJSON(b []byte) (json.RawMessage, bool) {
 		return json.RawMessage("{}"), true
 	}
 
-	out := append([]byte(nil), b[:stack[len(stack)-1].lastGood]...)
-	for i := len(stack) - 1; i >= 0; i-- {
-		if stack[i].kind == '{' {
-			out = append(out, '}')
-		} else {
-			out = append(out, ']')
-		}
+	// Every container still open at the cut is incomplete, and so is the
+	// member of its parent that holds it — all the way up. Only the OUTERMOST
+	// container is closed, at its last complete member: closing an inner one
+	// would turn `"edits":[{...},{"old":"c"` into a shorter list that parses
+	// and validates, the same partial-value hazard as a closed string.
+	top := stack[0]
+	out := append([]byte(nil), b[:top.lastGood]...)
+	if top.kind == '{' {
+		out = append(out, '}')
+	} else {
+		out = append(out, ']')
 	}
 	if !json.Valid(out) {
 		// Belt and braces: a repair that does not parse is worse than an empty

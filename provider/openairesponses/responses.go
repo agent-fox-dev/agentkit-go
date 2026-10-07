@@ -91,7 +91,10 @@ type item struct {
 	CallID    string `json:"call_id,omitzero"`
 	Name      string `json:"name,omitzero"`
 	Arguments string `json:"arguments,omitzero"`
-	Output    string `json:"output,omitzero"`
+	// Output is a POINTER because it is required on a function_call_output
+	// even when empty — a tool that succeeds silently returns "" — and
+	// absent on every other kind of item.
+	Output *string `json:"output,omitzero"`
 
 	// reasoning, and the item id every kind may carry
 	ID               string          `json:"id,omitzero"`
@@ -454,7 +457,18 @@ func clampCacheKey(s string) string {
 
 // applyReasoning maps the canonical thinking level onto `reasoning.effort`.
 func applyReasoning(out *request, m *core.Model, req core.Request, compat Compat) {
-	if req.ThinkingLevel == core.ThinkingUnset || req.ThinkingLevel == core.ThinkingOff {
+	switch req.ThinkingLevel {
+	case core.ThinkingUnset:
+		return
+	case core.ThinkingOff:
+		// Off is sent only where the row maps it ("none" on the gpt-5.6
+		// rows), and never clamped: clamping a request for no reasoning
+		// upward would spend the caller's money against their stated wish.
+		// Omitting it on such a row would leave the model at its DEFAULT
+		// effort. There is no reasoning to summarize.
+		if wire, ok := catalog.ThinkingWire(m, core.ThinkingOff); ok {
+			out.Reasoning = &reasoningConfig{Effort: wire}
+		}
 		return
 	}
 	// REQ-PROV-15: clamp upward, then downward, and send the RETURNED wire
@@ -572,9 +586,10 @@ func encodeItems(msgs core.Messages, compat Compat, stateless bool, decl *deferr
 
 		case core.ToolResultMessage:
 			callID, _ := SplitID(v.ToolUseID)
+			output := provider.ToolResultText(v)
 			out = append(out, item{
 				Type: "function_call_output", CallID: callID,
-				Output: v.Content.Text(),
+				Output: &output,
 			})
 			if decl != nil {
 				if !inRun {

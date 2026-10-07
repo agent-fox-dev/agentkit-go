@@ -173,8 +173,12 @@ Maps the SDK's abstract level to the **wire value the adapter sends**.
     `"disabled"`.
   - `openai-completions`: `reasoning_effort` tokens; `off` → `"none"` where
     accepted.
-  - `google-generative-ai`: the adapter does not yet speak `thinkingLevel`;
-    every level is recorded **present-and-null** (see below).
+  - `google-generative-ai`: `thinkingLevel` tokens (`"MINIMAL"`, `"LOW"`,
+    `"MEDIUM"`, `"HIGH"`) for the levels the vendor documents for that model;
+    an integer string is sent as `thinkingBudget` instead (never both). `off`
+    stays `null`: disabling is the row's `compat.can_disable_thinking`, and a
+    model that cannot stop thinking gets its lowest level for a request of off.
+    A model with no documented levels keeps a fully **present-and-null** ladder.
   - **Never translate between effort tokens and budgets.** `budget_tokens` is a
     400 on the newest Claude models and an effort token is an error on the older
     ones. Use whichever generation the model's docs specify.

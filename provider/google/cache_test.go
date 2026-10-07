@@ -376,3 +376,54 @@ func TestACachedContentTheServiceRefusesIsClearedAndTheTurnRetriedOnce(t *testin
 		t.Fatal("no recreation was started after the service refused the resource")
 	}
 }
+
+// TestOnlyARefusedResourceClearsTheCachedContent: a 401, 403 or 429 on a
+// cached request says nothing about the resource — the key, the quota or the
+// rate is the problem — so the entry is kept and the turn is not re-sent at
+// once. Only 400 and 404 mean the resource itself was refused.
+func TestOnlyARefusedResourceClearsTheCachedContent(t *testing.T) {
+	for _, status := range []int{401, 403, 429} {
+		created := make(chan string, 4)
+		var bodies [][]byte
+		rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if isCacheCreate(r) {
+				return &http.Response{StatusCode: 200,
+					Header: http.Header{"Content-Type": []string{"application/json"}},
+					Body:   io.NopCloser(strings.NewReader(`{"name":"cachedContents/kept"}`))}, nil
+			}
+			b, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, b)
+			if len(bodies) == 2 {
+				return &http.Response{StatusCode: status, Header: http.Header{},
+					Body: io.NopCloser(strings.NewReader(`{"error":{"message":"no"}}`))}, nil
+			}
+			return sseOK(), nil
+		})
+		p := google.Provider(google.Options{
+			Getenv:       func(string) string { return "" },
+			ContextCache: &google.ContextCacheOptions{OnCreate: func(name string, err error) { created <- name }},
+		})
+		req := cacheRequest(t, rt)
+		p.Stream(context.Background(), model(), req, core.ProviderStreamOptions{}).Result()
+		select {
+		case <-created:
+		case <-time.After(2 * time.Second):
+			t.Fatal("creation never completed")
+		}
+		p.Stream(context.Background(), model(), req, core.ProviderStreamOptions{}).Result()
+		if len(bodies) != 2 {
+			t.Fatalf("HTTP %d: %d model requests, want 2: a %d is not a refused resource and is "+
+				"not re-sent without it", status, len(bodies), status)
+		}
+		p.Stream(context.Background(), model(), req, core.ProviderStreamOptions{}).Result()
+		var third struct {
+			CachedContent string `json:"cachedContent"`
+		}
+		if err := json.Unmarshal(bodies[2], &third); err != nil {
+			t.Fatal(err)
+		}
+		if third.CachedContent != "cachedContents/kept" {
+			t.Fatalf("HTTP %d: the next turn referenced %q, want the kept resource", status, third.CachedContent)
+		}
+	}
+}

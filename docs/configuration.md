@@ -23,8 +23,9 @@ through rather than masking.
 
 | Vendor | Variables, in order | Sent as |
 |---|---|---|
-| `anthropic` | `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_OAUTH_TOKEN` | `Authorization: Bearer` |
-| | `ANTHROPIC_API_KEY` | `x-api-key` |
+| `anthropic` | `ANTHROPIC_API_KEY` | `x-api-key` |
+| | `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_OAUTH_TOKEN` | `Authorization: Bearer` (the OAuth token also adds `anthropic-beta: oauth-2025-04-20`) |
+| | on Vertex: `ANTHROPIC_AUTH_TOKEN` only — the API key and the OAuth token are Anthropic-issued and never sent to Google | `Authorization: Bearer` |
 | `openai` | `OPENAI_API_KEY` | `Authorization: Bearer` |
 | `google` | `GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `x-goog-api-key` |
 | | ambient when `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT` or `CLOUDSDK_CORE_PROJECT` is set | transport-supplied |
@@ -44,6 +45,11 @@ provider.RefreshOptions{})`: every request for that vendor then resolves its
 credential through `EnsureFresh`, which refreshes a token inside the validity
 floor once — double-checked inside the per-vendor lock — however many turns
 race. Without a registered refresher the stored credential is used as it is.
+A stored `Credential` whose `Scheme` is left at its zero value,
+`provider.SchemeVendor`, is sent the way the vendor sends it: an access token
+as `Authorization: Bearer`, an API key with the scheme of the vendor's first
+credential variable above (a bearer on OpenAI, `x-api-key` on Anthropic).
+Set `SchemeAPIKey` or `SchemeBearer` to override.
 
 ### Base URLs and deployments
 

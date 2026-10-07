@@ -325,6 +325,12 @@ func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRet
 	}
 
 	StampCacheControl(out, retention, m)
+	// Thinking is part of the request body, not the deployment, so it is
+	// applied here — where BuildRequest, the goldens' and the differential
+	// harness's capture point, sees it — rather than in Stream. The Vertex
+	// body edits and context_management stay in Stream: they follow the
+	// client's configuration, which BuildRequest does not have.
+	applyThinking(out, m, req.ThinkingLevel)
 	return out, rep, sync, nil
 }
 

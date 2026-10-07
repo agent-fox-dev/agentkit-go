@@ -34,7 +34,10 @@ type Credential struct {
 	BaseURL   string
 	Headers   map[string]*string
 	// Scheme decides how a token rides on the wire when this credential is
-	// converted to a ModelAuth.
+	// converted to a ModelAuth. The zero value, SchemeVendor, sends it the way
+	// the vendor's table does (AuthFor): an access token is always a bearer,
+	// and an API key takes the scheme of the vendor's credential variable —
+	// Authorization: Bearer on OpenAI, x-api-key on Anthropic.
 	Scheme AuthScheme
 }
 
@@ -74,8 +77,23 @@ func (c Credential) NeedsRefresh(now time.Time, floor time.Duration) bool {
 	return !now.Add(floor).Before(c.ExpiresAt)
 }
 
-// Auth converts a stored credential into REQ-AUTH-01's ModelAuth.
+// Auth converts a stored credential into REQ-AUTH-01's ModelAuth. With no
+// vendor table to consult, SchemeVendor sends an access token as a bearer
+// and an API key as x-api-key; AuthFor is the vendor-aware form.
 func (c Credential) Auth() ModelAuth {
+	return c.AuthFor(VendorAuth{})
+}
+
+// AuthFor is Auth with SchemeVendor resolved against the vendor's table, so a
+// credential stored without a scheme rides the way that vendor expects.
+func (c Credential) AuthFor(v VendorAuth) ModelAuth {
+	if c.Scheme == SchemeVendor {
+		if c.AccessToken != "" {
+			c.Scheme = SchemeBearer // OAuth access tokens are bearer tokens
+		} else {
+			c.Scheme = v.credentialScheme()
+		}
+	}
 	a := ModelAuth{BaseURL: c.BaseURL, Headers: map[string]*string{}, Source: "credential-store"}
 	for k, v := range c.Headers {
 		a.Headers[k] = v
@@ -316,7 +334,7 @@ func ResolveAuthWith(ctx context.Context, vendorID string, creds *Credentials,
 			return ModelAuth{}, err
 		}
 		if !c.Empty() {
-			return c.Auth(), nil
+			return c.AuthFor(table), nil
 		}
 	}
 	return ResolveAuth(table, env), nil

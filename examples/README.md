@@ -82,10 +82,10 @@ lookup.
 
 | Vendor | Variables, in order | Sent as |
 |---|---|---|
-| `anthropic` | `ANTHROPIC_AUTH_TOKEN` | `Authorization: Bearer` |
-| | `ANTHROPIC_OAUTH_TOKEN` | `Authorization: Bearer` |
-| | `ANTHROPIC_API_KEY` | `x-api-key` |
-| | on Vertex: a Google OAuth token, `ambient` when the transport holds it | `Authorization: Bearer` |
+| `anthropic` | `ANTHROPIC_API_KEY` | `x-api-key` |
+| | `ANTHROPIC_AUTH_TOKEN` | `Authorization: Bearer` |
+| | `ANTHROPIC_OAUTH_TOKEN` | `Authorization: Bearer` + `anthropic-beta: oauth-2025-04-20` |
+| | on Vertex: a Google OAuth token in `ANTHROPIC_AUTH_TOKEN`, `ambient` when the transport holds it | `Authorization: Bearer` |
 | `openai` | `OPENAI_API_KEY` | `Authorization: Bearer` |
 | `google` | `GOOGLE_GENERATIVE_AI_API_KEY` | `x-goog-api-key` |
 | | `GEMINI_API_KEY` | `x-goog-api-key` |
