@@ -265,6 +265,12 @@ func modelSummarizer(p core.ProviderClient, m *core.Model, reserveTokens int, tu
 			// conversation prefix and would pollute it.
 			CacheRetention: core.CacheRetentionNone,
 		})
+		// Off the middleware path is not off the bill: the request is
+		// reported to the agent whether or not its summary is usable, since a
+		// rejected summary was paid for all the same.
+		if msg != nil {
+			core.ReportUsage(ctx, msg.Usage)
+		}
 		return ValidateSummary(msg)
 	}
 }
@@ -297,16 +303,19 @@ func summaryMaxTokens(m *core.Model, reserve int) int {
 
 // ValidateSummary is REQ-GO-16's failure taxonomy, as a pure function.
 //
-// A summary is a FAILURE when its stop reason is error or max_tokens, or when
-// it contains any tool_use block — regardless of the text alongside it.
+// A summary is a FAILURE when its stop reason is error, max_tokens or
+// aborted, or when it contains any tool_use block — regardless of the text
+// alongside it.
 //
 // max_tokens is a failure because the summary is truncated mid-thought, and
 // compaction is PERMANENT: a truncated summary looks like a success and then
 // poisons every subsequent turn for the life of the session.
 //
-// An ABORTED summarization is NOT a failure: the text produced so far is kept.
-// That asymmetry is deliberate — an abort is the user's choice, and discarding
-// work they interrupted helps nobody.
+// An ABORTED summarization is a failure for the same reason. REQ-GO-16 kept
+// the partial text, as the user's choice; but an abort mid-stream — a phase
+// timeout, a Ctrl-C landing during compaction — is the same truncation, and
+// once checkpointed it cannot be undone on resume. The view is unchanged and
+// the next turn summarizes again. See docs/errata/aborted_summary_is_a_failure.md.
 func ValidateSummary(msg *core.AssistantMessage) (string, error) {
 	if msg == nil {
 		return "", &ErrBadSummary{Reason: "provider returned no message"}
@@ -325,7 +334,7 @@ func ValidateSummary(msg *core.AssistantMessage) (string, error) {
 	case core.StopReasonLength:
 		return "", &ErrBadSummary{Reason: "summary was truncated at the output limit"}
 	case core.StopReasonAborted:
-		// Keep what we have.
+		return "", &ErrBadSummary{Reason: "summarization was aborted before it finished"}
 	}
 	text := strings.TrimSpace(msg.Content.Text())
 	if text == "" {
@@ -519,6 +528,17 @@ func checkpointPtr(cp core.CompactionCheckpoint, ok bool) *core.CompactionCheckp
 // It never mutates msgs. The append-only transcript stays complete, so the UI
 // can scroll back, the session log is lossless, and a later run against a
 // larger context window can be given the full history (REQ-GO-12.1).
+//
+// Thinking produced under the OLD prefix is left out of the view. A signed
+// thinking block is bound to the whole conversation that preceded it, and a
+// tail message kept verbatim after the summary was produced before the
+// summary existed: Anthropic rejects such a block with a 400 on enforced
+// accounts (keep-tail compaction), so the first request after compacting,
+// and every one after, would fail. The original index of a message produced
+// before the checkpoint is below cp.CreatedAtLen; its thinking and redacted
+// thinking go, its text and tool calls stay. Thinking produced after the
+// checkpoint, under the summary, is kept. Removing blocks from the front of
+// the view is what the binding allows; removing them from the middle is not.
 func ApplyCheckpoint(msgs core.Messages, cp core.CompactionCheckpoint) core.Messages {
 	if cp.Summary == "" || cp.PrefixLen <= 0 || cp.PrefixLen >= len(msgs) {
 		return msgs
@@ -527,8 +547,40 @@ func ApplyCheckpoint(msgs core.Messages, cp core.CompactionCheckpoint) core.Mess
 	out = append(out, core.UserMessage{
 		Content: core.Content{core.TextBlock{Text: SummaryPrefix + cp.Summary}},
 	})
-	out = append(out, msgs[cp.PrefixLen:]...)
+	for i := cp.PrefixLen; i < len(msgs); i++ {
+		m := msgs[i]
+		if i < cp.CreatedAtLen {
+			m = withoutThinking(m)
+		}
+		out = append(out, m)
+	}
 	return out
+}
+
+// withoutThinking returns m without its thinking blocks, or m itself when it
+// is not an assistant message or has none. It copies; m is not modified.
+func withoutThinking(m core.Message) core.Message {
+	am, ok := m.(core.AssistantMessage)
+	if !ok {
+		return m
+	}
+	n := 0
+	for _, b := range am.Content {
+		if _, ok := b.(core.ThinkingBlock); !ok {
+			n++
+		}
+	}
+	if n == len(am.Content) {
+		return m
+	}
+	kept := make(core.Content, 0, n)
+	for _, b := range am.Content {
+		if _, ok := b.(core.ThinkingBlock); !ok {
+			kept = append(kept, b)
+		}
+	}
+	am.Content = kept
+	return am
 }
 
 // randomID is the summarizer's per-instance session id: eight random bytes

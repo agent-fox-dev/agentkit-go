@@ -197,8 +197,9 @@ func TestWindowStrategiesCutOnUserMessagesOnly(t *testing.T) {
 	}
 }
 
-// TestSummaryValidationTaxonomy pins REQ-GO-16, including the asymmetry that
-// aborted is NOT a failure.
+// TestSummaryValidationTaxonomy pins REQ-GO-16 as amended by
+// docs/errata/aborted_summary_is_a_failure.md: an aborted summary is a
+// failure, like a truncated one.
 func TestSummaryValidationTaxonomy(t *testing.T) {
 	tuse, _ := core.NewToolUse("c1", "t", json.RawMessage(`{}`))
 	text := core.Content{core.TextBlock{Text: "a summary"}}
@@ -213,8 +214,8 @@ func TestSummaryValidationTaxonomy(t *testing.T) {
 		{"max_tokens is a failure", &core.AssistantMessage{Content: text, StopReason: core.StopReasonLength}, true},
 		{"a tool call is a failure even with text alongside",
 			&core.AssistantMessage{Content: append(text.Clone(), tuse), StopReason: core.StopReasonStop}, true},
-		{"aborted is NOT a failure; keep the partial text",
-			&core.AssistantMessage{Content: text, StopReason: core.StopReasonAborted}, false},
+		{"aborted is a failure: the text is cut off mid-summary",
+			&core.AssistantMessage{Content: text, StopReason: core.StopReasonAborted}, true},
 		{"empty is a failure", &core.AssistantMessage{StopReason: core.StopReasonStop}, true},
 		{"nil is a failure", nil, true},
 	}

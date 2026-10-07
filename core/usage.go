@@ -1,5 +1,7 @@
 package core
 
+import "context"
+
 // UsageField is a presence bit. REQ-PROV-16 permits "a pointer OR an explicit
 // presence flag"; a mask is chosen over nine *int64 because Usage is summed on
 // every turn, and pointer arithmetic across a summation is where the
@@ -125,5 +127,26 @@ func (w UsageWire) Into(u *Usage) {
 		if p.v != nil {
 			u.SetField(p.f, *p.v)
 		}
+	}
+}
+
+// usageReporterKey carries the function ReportUsage hands usage to.
+type usageReporterKey struct{}
+
+// WithUsageReporter returns a context whose ReportUsage calls go to report.
+// The agent installs one around its context transform, so a model call made
+// off the loop — a compaction summary — is counted in Agent.Usage, and so
+// seen by StopPolicy budgets, like the turns it makes room for.
+func WithUsageReporter(ctx context.Context, report func(Usage)) context.Context {
+	return context.WithValue(ctx, usageReporterKey{}, report)
+}
+
+// ReportUsage hands u to the context's usage reporter, if there is one. Code
+// that spends on the agent's behalf outside the loop — a custom Summarizer,
+// a transform that calls a model — reports what each call cost through it.
+// Without a reporter it does nothing.
+func ReportUsage(ctx context.Context, u Usage) {
+	if report, ok := ctx.Value(usageReporterKey{}).(func(Usage)); ok && report != nil {
+		report(u)
 	}
 }

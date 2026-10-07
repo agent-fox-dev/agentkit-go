@@ -687,9 +687,13 @@ func (a *Agent) prepareNextTurn(ctx context.Context) core.Messages {
 	// over the untransformed view, which is always a valid one, and the
 	// panic is surfaced through OnError. Compaction failing must never abort
 	// the session (NFR-REL-05), and a panic is the loudest way to fail.
+	// A transform that calls a model — a compaction summary — spends on the
+	// agent's behalf off the loop, and reports it through core.ReportUsage
+	// so Agent.Usage and the StopPolicy budgets see it.
+	tctx := core.WithUsageReporter(ctx, a.addOffLoopUsage)
 	view := msgs
 	safely(a.hooks().OnError, "TransformContext", func() {
-		if out := tf(ctx, msgs); out != nil {
+		if out := tf(tctx, msgs); out != nil {
 			view = out
 		}
 	})
@@ -756,6 +760,16 @@ func (a *Agent) addUsage(u core.Usage) {
 	// billed against (REQ-CACHE-08). Recomputing it from a token estimate here
 	// would make the savings figure disagree with the invoice.
 	a.meter.ObserveTurn(model, u)
+}
+
+// addOffLoopUsage counts a request made outside the loop, such as a
+// compaction summary. It is spend, so it joins the agent's usage; it is not a
+// turn of the conversation and is sent uncached, so it is not folded into the
+// cache meter's per-turn accounting.
+func (a *Agent) addOffLoopUsage(u core.Usage) {
+	a.mu.Lock()
+	a.usage = a.usage.Add(u)
+	a.mu.Unlock()
 }
 
 // ------------------------------------------------------------------- hooks
