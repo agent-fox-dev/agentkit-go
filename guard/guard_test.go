@@ -71,6 +71,35 @@ func TestRestrictedPolicy(t *testing.T) {
 		"PERL5OPT=-Mx go test":              true,
 		"x-y=1 ls":                          true, // not an assignment: bash runs `x-y=1`
 		"./x=1 ls":                          true,
+		// A quoted value is one word: the program is the word after it.
+		`X='a ls' rm -rf /`: true,
+		`X="a ls" rm -rf /`: true,
+		"X='a\tls' rm":      true,
+		`X="a \" ls" rm`:    true,
+		`X='a ls' ls -l`:    false,
+		`X="a b" go test`:   false,
+		`'X=1' ls`:          true, // quoted, so not an assignment: bash runs `X=1`
+		`X='a ls`:           true, // unterminated quote: nothing runs
+		`"ls" -l`:           false,
+		`l\s -l`:            false, // bash runs ls
+		`l"s"x`:             true,  // bash runs lsx
+		`"./go" test`:       true,
+		// Injection variables beyond Perl, Python, Node and Ruby.
+		"JAVA_TOOL_OPTIONS=-javaagent:/x.jar go test": true,
+		"_JAVA_OPTIONS=-javaagent:/x.jar go test":     true,
+		"JDK_JAVA_OPTIONS=-javaagent:/x.jar go test":  true,
+		"CLASSPATH=/x go test":                        true,
+		"DOTNET_STARTUP_HOOKS=/tmp/evil.dll go test":  true,
+		"LUA_INIT=@/x.lua go test":                    true,
+		"LUA_INIT_5_4=@/x.lua go test":                true,
+		"LUA_PATH=/x/?.lua go test":                   true,
+		"LUA_CPATH=/x/?.so go test":                   true,
+		"GCONV_PATH=/tmp/gconv go test":               true,
+		"PHPRC=/x go test":                            true,
+		"PHP_INI_SCAN_DIR=/x go test":                 true,
+		"TCLLIBPATH=/x go test":                       true,
+		"ZDOTDIR=/x go test":                          true,
+		"HOME=/x go test":                             true,
 	} {
 		if got := env(context.Background(), core.BeforeToolCallContext{ToolName: "execute",
 			Arguments: map[string]any{"command": cmd}}).Block; got != want {

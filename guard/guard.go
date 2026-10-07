@@ -237,18 +237,89 @@ func hasPathSeparator(s string) bool {
 }
 
 // splitCommand returns the names of a command's leading NAME=value
-// assignments and its program word, unquoted. A word is an assignment only
-// when NAME is a shell identifier: bash runs `x-y=1 ls` as the command
-// `x-y=1`, so that word is the program, and it is refused.
+// assignments and its program word, unquoted. Words are split as POSIX sh
+// splits them — a quoted span is part of one word, so `X='a ls' rm` runs rm,
+// not ls. A word is an assignment only when NAME is a shell identifier
+// spelled without quotes: bash runs `x-y=1 ls` and `'X=1' ls` as the commands
+// `x-y=1` and `X=1`, so that word is the program, and it is refused. An
+// unterminated quote is a syntax error that runs nothing; prog is then empty.
 func splitCommand(cmd string) (names []string, prog string) {
-	for _, w := range strings.Fields(cmd) {
-		if i := strings.IndexByte(w, '='); i > 0 && isIdentifier(w[:i]) {
-			names = append(names, w[:i])
+	words, ok := shellWords(cmd)
+	if !ok {
+		return nil, ""
+	}
+	for _, w := range words {
+		if i := strings.IndexByte(w.raw, '='); i > 0 && isIdentifier(w.raw[:i]) {
+			names = append(names, w.raw[:i])
 			continue
 		}
-		return names, strings.Trim(w, `"'`)
+		return names, w.text
 	}
 	return names, ""
+}
+
+// shellWord is one word of a command: as written, and with its quotes and
+// escapes removed.
+type shellWord struct{ raw, text string }
+
+// shellWords splits cmd into words under the quoting rules firstShellOperator
+// honours: blanks separate words only outside quotes, single quotes are
+// literal, and a backslash escapes the next byte outside quotes and only
+// `$`, backtick, `"`, `\` and newline inside double quotes. ok is false when
+// a quote is left open.
+func shellWords(cmd string) (words []shellWord, ok bool) {
+	var raw, text strings.Builder
+	inWord := false
+	flush := func() {
+		if inWord {
+			words = append(words, shellWord{raw.String(), text.String()})
+		}
+		raw.Reset()
+		text.Reset()
+		inWord = false
+	}
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		switch c {
+		case ' ', '\t', '\n':
+			flush()
+			continue
+		case '\'':
+			end := strings.IndexByte(cmd[i+1:], '\'')
+			if end < 0 {
+				return nil, false
+			}
+			raw.WriteString(cmd[i : i+end+2])
+			text.WriteString(cmd[i+1 : i+1+end])
+			i += end + 1
+		case '"':
+			j := i + 1
+			for ; j < len(cmd) && cmd[j] != '"'; j++ {
+				if cmd[j] == '\\' && j+1 < len(cmd) && strings.IndexByte("$`\"\\\n", cmd[j+1]) >= 0 {
+					j++
+				}
+				text.WriteByte(cmd[j])
+			}
+			if j == len(cmd) {
+				return nil, false
+			}
+			raw.WriteString(cmd[i : j+1])
+			i = j
+		case '\\':
+			raw.WriteByte(c)
+			if i+1 < len(cmd) {
+				i++
+				raw.WriteByte(cmd[i])
+				text.WriteByte(cmd[i])
+			}
+		default:
+			raw.WriteByte(c)
+			text.WriteByte(c)
+		}
+		inWord = true
+	}
+	flush()
+	return words, true
 }
 
 func isIdentifier(s string) bool {
@@ -265,21 +336,30 @@ func isIdentifier(s string) bool {
 
 // envDenied reports whether an assignment to name changes which binary an
 // allowed name resolves to, or injects code into the shell, the dynamic
-// loader or a common interpreter. It is the part of "the program's own
+// loader, glibc's iconv or a common interpreter or runtime (Perl, Python,
+// Node, Ruby, the JVM, .NET, Lua, PHP, Tcl). HOME and ZDOTDIR are here
+// because they choose the startup files programs and shells read. It is the part of "the program's own
 // configuration" that is not the program's at all, so it is refused even
 // under AllowEnvPrefixes. Program-specific variables (GOFLAGS=-toolexec,
 // GIT_SSH_COMMAND, ...) remain the embedder's concern.
 func envDenied(name string) bool {
-	if strings.HasPrefix(name, "LD_") || strings.HasPrefix(name, "DYLD_") {
-		return true
+	// LUA_* by prefix: Lua reads the versioned LUA_INIT_5_4 before LUA_INIT.
+	for _, prefix := range []string{"LD_", "DYLD_", "LUA_INIT", "LUA_PATH", "LUA_CPATH"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
 	}
 	switch name {
-	case "PATH", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "IFS",
-		"GIT_EXEC_PATH",
+	case "PATH", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "IFS", "ZDOTDIR", "HOME",
+		"GIT_EXEC_PATH", "GCONV_PATH",
 		"PERL5OPT", "PERL5LIB", "PERLLIB",
 		"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP",
 		"NODE_OPTIONS", "NODE_PATH",
-		"RUBYOPT", "RUBYLIB":
+		"RUBYOPT", "RUBYLIB",
+		"JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "CLASSPATH",
+		"DOTNET_STARTUP_HOOKS",
+		"PHPRC", "PHP_INI_SCAN_DIR",
+		"TCLLIBPATH":
 		return true
 	}
 	return false
