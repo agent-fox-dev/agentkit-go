@@ -21,7 +21,7 @@ import (
 //	res, _ := agent.Run(ctx, prompt)          // ends RunStopDeferred
 //	h, _ := res.DeferredHandle()              // durable; persisted in the log
 //	                                          // ... a day and a restart later:
-//	msg, err := agent.RedeemDeferred(ctx, h)  // the answer, appended to history
+//	res, err = agent.RedeemDeferred(ctx, h)   // the answer, and the run from it
 
 // SupportsDeferred reports whether this agent's wire can accept a background
 // submission (REQ-PROV-19's capability probe). Ask BEFORE submitting: a
@@ -38,30 +38,45 @@ func (a *Agent) SupportsDeferred() bool {
 	return reg.SupportsDeferred(cfg.Model.API)
 }
 
-// RedeemDeferred collects the answer for a handle and appends it to history
-// and to the session log, exactly as a live turn would land.
+// RedeemDeferred collects the answer for a handle and runs the loop from it,
+// exactly as a live turn would land: the answer is appended to history and the
+// session log, its tool calls are executed, TurnEnd fires, the stop policy is
+// consulted, and the loop carries on to the model's next turn if the answer
+// asked for one. It returns that run's result. A redeemed answer is most often
+// a tool call — the first turn of a coding agent usually is — and appending it
+// unexecuted left a transcript no later call could continue.
 //
 // It is NOT a poller: one call, one attempt. A handle whose `PollAfterMS` has
-// not elapsed is refused rather than sent, because a provider that told us
-// when to come back has already answered the question of whether it is ready,
-// and burning the request to hear "not yet" is a round trip for nothing.
+// not elapsed since it was issued (DeferredHandle.PollReadyAt) is refused
+// rather than sent, because a provider that told us when to come back has
+// already answered the question of whether it is ready, and burning the
+// request to hear "not yet" is a round trip for nothing. A handle with no
+// IssuedAt, from an older log, cannot be judged and is not refused.
+//
+// A fetch that ends in error or ABORTED is not an answer: it is returned as
+// an error and nothing is recorded, so the handle can be redeemed again.
 //
 // The run slot is claimed for the duration, so redemption cannot interleave
 // with a live turn writing to the same history (REQ-LOOP-15).
-func (a *Agent) RedeemDeferred(ctx context.Context, h core.DeferredHandle) (core.AssistantMessage, error) {
+func (a *Agent) RedeemDeferred(ctx context.Context, h core.DeferredHandle) (core.RunResult, error) {
 	if h.IsZero() {
-		return core.AssistantMessage{}, fmt.Errorf("agentkit: RedeemDeferred: empty handle")
+		return core.RunResult{}, fmt.Errorf("agentkit: RedeemDeferred: empty handle")
 	}
 	now := time.Now()
 	if h.Expired(now) {
-		return core.AssistantMessage{}, fmt.Errorf(
+		return core.RunResult{}, fmt.Errorf(
 			"agentkit: deferred handle %q expired at %s; the answer is gone and the request must be re-issued",
 			h.ID, h.ExpiresAt.Format(time.RFC3339))
+	}
+	if ready, ok := h.PollReadyAt(); ok && now.Before(ready) {
+		return core.RunResult{}, fmt.Errorf(
+			"agentkit: deferred handle %q is not due until %s (poll_after_ms %d); redeem it then",
+			h.ID, ready.Format(time.RFC3339), h.PollAfterMS)
 	}
 
 	rctx, cancel, pending, err := a.claimSlot(ctx)
 	if err != nil {
-		return core.AssistantMessage{}, err
+		return core.RunResult{}, err
 	}
 	defer cancel()
 	defer a.releaseSlot()
@@ -86,7 +101,7 @@ func (a *Agent) RedeemDeferred(ctx context.Context, h core.DeferredHandle) (core
 	// against the wire holding the answer.
 	model := cfg.Model
 	if model == nil || model.ID != h.ModelID || model.API != h.API {
-		return core.AssistantMessage{}, fmt.Errorf(
+		return core.RunResult{}, fmt.Errorf(
 			"agentkit: deferred handle %q was issued for model %q on api %q, and this agent is on %q; "+
 				"redeem it from an agent configured for the issuing model",
 			h.ID, h.ModelID, h.API, cfg.Model.ID)
@@ -102,17 +117,20 @@ func (a *Agent) RedeemDeferred(ctx context.Context, h core.DeferredHandle) (core
 		if err == nil {
 			err = fmt.Errorf("agentkit: the provider ended the redemption stream with no message")
 		}
-		return core.AssistantMessage{}, err
+		return core.RunResult{}, err
 	}
-	if msg.StopReason == core.StopReasonError {
-		return *msg, fmt.Errorf("agentkit: redeeming deferred handle %q: %s", h.ID, msg.ErrorMessage)
+	switch msg.StopReason {
+	case core.StopReasonError:
+		return core.RunResult{}, fmt.Errorf("agentkit: redeeming deferred handle %q: %s", h.ID, msg.ErrorMessage)
+	case core.StopReasonAborted:
+		return core.RunResult{}, fmt.Errorf("agentkit: redeeming deferred handle %q: %w", h.ID, a.abortError(rctx))
 	}
 
 	// The redeemed answer replaces nothing: it is appended, so the transcript
-	// reads submission-then-answer and the append-only log stays true.
-	if _, err := a.rec.RecordMessage(*msg); err != nil {
-		a.fireError(fmt.Errorf("agentkit: persisting redeemed message: %w", err))
-	}
-	a.addUsage(msg.Usage)
-	return *msg, nil
+	// reads submission-then-answer and the append-only log stays true. The
+	// loop records it, executes its tool calls, and carries on from it.
+	s := core.NewEventStream(cfg.StreamOptions)
+	res, err := a.runLoop(rctx, s, nil, nil, msg)
+	s.End(core.StreamResult{Message: lastAssistant(res.Messages), Result: &res, Err: err})
+	return res, err
 }
