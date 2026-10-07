@@ -40,7 +40,7 @@
         "tools/exec.go",
         "tools/runner_stdin_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,

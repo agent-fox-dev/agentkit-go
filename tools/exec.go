@@ -62,6 +62,10 @@ type ExecResult struct {
 	TotalBytes int64
 	SpillPath  string
 	Duration   time.Duration
+	// IOErr is a byte-moving failure that did not stop the process: a Stdin
+	// read error, a log or spill write error, or Wait reporting an I/O
+	// completion failure. Outcome is still classified from the exit status.
+	IOErr error
 }
 
 // ExecOptions configures Run.
@@ -75,6 +79,10 @@ type ExecOptions struct {
 	MaxBytes int
 	// SpillDir enables the full-output spill file.
 	SpillDir string
+	// Stdin, when non-nil, is copied into the child's standard input through
+	// a pipe the runner owns. The child's stdin is closed when the reader
+	// returns io.EOF. Nil keeps the null device (REQ-TOOL-06).
+	Stdin io.Reader
 	// Env, when non-nil, replaces the inherited environment entirely.
 	Env []string
 	// DrainIdle is how long the output pipe must stay QUIET after the child
@@ -115,6 +123,11 @@ const (
 //     soon as Wait returns, which truncates a detached descendant's output at
 //     a constant — losing precisely the tail of a background job's log.
 //   - Output is truncated from the TAIL (REQ-TOOL-09a).
+//
+// When ExecOptions.Stdin is non-nil, the reader is copied into the child's
+// standard input through a pipe the runner owns. The child's stdin is closed
+// when the reader returns io.EOF. A read error other than io.EOF is recorded
+// in ExecResult.IOErr. Nil keeps the null device.
 func Run(ctx context.Context, command string, opts ExecOptions) (ExecResult, error) {
 	shell, args, err := ResolveShell()
 	if err != nil {
@@ -136,6 +149,11 @@ func Run(ctx context.Context, command string, opts ExecOptions) (ExecResult, err
 // Everything else — process group, timeout, group kill, interleaved output,
 // tail truncation, spill — is identical, because those are properties of
 // running a subprocess and not of how the command was spelled.
+//
+// When ExecOptions.Stdin is non-nil, the reader is copied into the child's
+// standard input through a pipe the runner owns. The child's stdin is closed
+// when the reader returns io.EOF. A read error other than io.EOF is recorded
+// in ExecResult.IOErr. Nil keeps the null device.
 func RunArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, error) {
 	if len(argv) == 0 {
 		return ExecResult{}, errors.New("tools: run_command needs at least one argument")
@@ -203,7 +221,6 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = opts.Dir
-	cmd.Stdin = nil // REQ-TOOL-06: stdin is DEVNULL, never the agent's own.
 	if opts.Env != nil {
 		cmd.Env = opts.Env
 	}
@@ -229,15 +246,71 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 	}
 	cmd.Stdout, cmd.Stderr = pw, pw
 
+	// Stdin pipe: when opts.Stdin is non-nil, create a pipe the runner owns
+	// and copy the reader into it. Nil keeps the null device (REQ-TOOL-06).
+	var (
+		stdinW     *os.File     // write end; closed by copier or after Wait
+		stdinClose sync.Once    // ensures stdinW is closed exactly once
+		stdinState stdinCopier  // mutex-guarded error from the copier
+	)
+	if opts.Stdin != nil {
+		sr, sw, pipeErr := os.Pipe()
+		if pipeErr != nil {
+			_ = pw.Close()
+			_ = pr.Close()
+			return ExecResult{}, pipeErr
+		}
+		cmd.Stdin = sr
+		stdinW = sw
+	} else {
+		cmd.Stdin = nil // REQ-TOOL-06: stdin is DEVNULL, never the agent's own.
+	}
+
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		_ = pw.Close()
 		_ = pr.Close()
+		if stdinW != nil {
+			_ = stdinW.Close()
+			_ = cmd.Stdin.(*os.File).Close() // read end
+		}
 		return ExecResult{}, err
 	}
 	// The child holds the write end now. Ours must go, or the reader never
 	// sees EOF — it would be waiting on a writer that is this very process.
 	_ = pw.Close()
+
+	// Close the read end of the stdin pipe in the parent; the child has it.
+	if opts.Stdin != nil {
+		_ = cmd.Stdin.(*os.File).Close()
+	}
+
+	// Start the stdin copier goroutine when Stdin is non-nil.
+	if stdinW != nil {
+		go func() {
+			buf := make([]byte, 32*1024)
+			for {
+				n, readErr := opts.Stdin.Read(buf)
+				if n > 0 {
+					_, writeErr := stdinW.Write(buf[:n])
+					if writeErr != nil {
+						// EPIPE or os.ErrClosed: child closed stdin or
+						// exited. Not an error (04-REQ-1.3).
+						break
+					}
+				}
+				if readErr != nil {
+					if readErr != io.EOF {
+						// Record the read error BEFORE closing the pipe
+						// (04-REQ-1.4).
+						stdinState.recordErr(readErr)
+					}
+					break
+				}
+			}
+			stdinClose.Do(func() { _ = stdinW.Close() })
+		}()
+	}
 
 	// One copier goroutine feeds the accumulator; the sink serialises its
 	// writes against this goroutine's read of the result and can be stopped,
@@ -272,6 +345,19 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 	// is the SDK waiting on a descendant, not the command running.
 	drainAfterExit(runCtx, pr, copyDone, sink, opts.DrainIdle, opts.DrainCeiling)
 
+	// Close the stdin write end (unblocking a copier stuck writing to a pipe
+	// a descendant still holds) and read the recorded stdin error. Do NOT
+	// wait for the copier goroutine (04-REQ-1.5).
+	if stdinW != nil {
+		stdinClose.Do(func() { _ = stdinW.Close() })
+	}
+	var ioErr error
+	if stdinW != nil {
+		if sErr := stdinState.finish(); sErr != nil {
+			ioErr = fmt.Errorf("tools: reading stdin: %w", sErr)
+		}
+	}
+
 	exitCode := 0
 	signaled := false
 	var ee *exec.ExitError
@@ -296,6 +382,7 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 		TotalBytes: acc.Total(),
 		SpillPath:  acc.SpillPath(),
 		Duration:   elapsed,
+		IOErr:      ioErr,
 	}, nil
 }
 
@@ -390,6 +477,35 @@ func drainAfterExit(ctx context.Context, pr *os.File, copyDone <-chan struct{}, 
 	// never what the caller sees.
 	sink.stop()
 	_ = pr.Close()
+}
+
+// stdinCopier guards the error recorded by the stdin copier goroutine.
+// The copier records a read error under the mutex; the caller reads it after
+// Wait and the drain, and marks the state finished so a reader error arriving
+// after the call returned is dropped without a data race.
+type stdinCopier struct {
+	mu       sync.Mutex
+	err      error
+	finished bool
+}
+
+// recordErr records a read error from the copier goroutine. It is a no-op
+// after finish has been called.
+func (s *stdinCopier) recordErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.finished && s.err == nil {
+		s.err = err
+	}
+}
+
+// finish marks the copier state as finished and returns the recorded error.
+// After this call, recordErr is a no-op.
+func (s *stdinCopier) finish() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.finished = true
+	return s.err
 }
 
 // ResolveShell is REQ-TOOL-06's fixed ladder.
