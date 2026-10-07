@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"regexp/syntax"
 	"strings"
 	"time"
 
@@ -128,7 +129,7 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 	maxFiles := tools.ClampLimit(a.MaxFiles, defaultMaxFiles, maxMaxFiles)
 
 	// Validate and resolve path before any build.
-	var pathConstraint query.Q
+	var pathQuery query.Q
 	if a.Path != "" {
 		abs, err := idx.ws.Resolve(a.Path)
 		if err != nil {
@@ -143,25 +144,12 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 
 		// Build the file: constraint as a query node.
 		if rel != "." && rel != "" {
-			if fi.IsDir() {
-				// Directory: anchored prefix with trailing slash.
-				escaped := regexp.QuoteMeta(rel + "/")
-				pathQ, err := query.RegexpQuery("^"+escaped, false, true)
-				if err != nil {
-					return core.ErrResult("invalid_arguments",
-						fmt.Sprintf("path constraint error: %s", err.Error()))
-				}
-				pathConstraint = pathQ
-			} else {
-				// File: anchored to the end.
-				escaped := regexp.QuoteMeta(rel)
-				pathQ, err := query.RegexpQuery("^"+escaped+"$", false, true)
-				if err != nil {
-					return core.ErrResult("invalid_arguments",
-						fmt.Sprintf("path constraint error: %s", err.Error()))
-				}
-				pathConstraint = pathQ
+			pathQ, err := pathConstraint(rel, fi.IsDir())
+			if err != nil {
+				return core.ErrResult("invalid_arguments",
+					fmt.Sprintf("path constraint error: %s", err.Error()))
 			}
+			pathQuery = pathQ
 		}
 		// Root adds no constraint.
 	}
@@ -220,8 +208,8 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 
 	// Build the final query with path conjunction.
 	finalQ := parsedQ
-	if pathConstraint != nil {
-		finalQ = query.NewAnd(parsedQ, pathConstraint)
+	if pathQuery != nil {
+		finalQ = query.NewAnd(parsedQ, pathQuery)
 	}
 
 	// Track this query as in-flight so Close waits for it.
@@ -249,6 +237,11 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 	var resultFiles []searchResultFile
 	var totalFiles int
 
+	// The dirty set is read once, before the search: the indexed hits are
+	// filtered against it before the page is cut, and the overlay searches
+	// the same set.
+	dirtySet := idx.dirty.dirtyPathSet()
+
 	if idx.testSearchHook != nil {
 		hookResult, err := idx.testSearchHook(searchCtx, trimmed)
 		if err != nil {
@@ -271,7 +264,7 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 		}
 	} else {
 		// Real zoekt search.
-		files, total, err := idx.searchZoekt(searchCtx, finalQ, maxFiles, contextLines)
+		files, total, err := idx.searchZoekt(searchCtx, finalQ, maxFiles, contextLines, dirtySet)
 		if err != nil {
 			if searchCtx.Err() != nil && ctx.Err() == nil {
 				return core.ErrResult("search_failed",
@@ -287,13 +280,13 @@ func (idx *Index) executeCodeSearch(ctx context.Context, in json.RawMessage) cor
 	}
 
 	// Remove dirty paths from indexed results and search dirty files.
-	dirtySet := idx.dirty.dirtyPathSet()
+	var overlayNote string
 	if len(dirtySet) > 0 {
-		resultFiles, totalFiles = idx.filterAndSearchDirty(searchCtx, resultFiles, totalFiles, dirtySet, finalQ, maxFiles, contextLines)
+		resultFiles, totalFiles, overlayNote = idx.filterAndSearchDirty(searchCtx, resultFiles, totalFiles, dirtySet, finalQ, maxFiles, contextLines)
 	}
 
 	// Build the result data.
-	return idx.buildResult(resultFiles, maxFiles, totalFiles)
+	return idx.buildResult(resultFiles, maxFiles, totalFiles, overlayNote)
 }
 
 // ensureBuilt triggers a lazy build if the index has not been built yet.
@@ -435,8 +428,15 @@ func (idx *Index) rebuild(ctx context.Context, oldRunDir string, oldOverlay *ove
 		return err
 	}
 
-	// Swap in the new index state under the lock.
+	// Swap in the new index state under the lock — unless the index was
+	// closed meanwhile: Close has already taken the run directory it will
+	// remove, and a new one published now would never be removed.
 	idx.mu.Lock()
+	if idx.closed {
+		idx.mu.Unlock()
+		os.RemoveAll(rebuildRunDir)
+		return fmt.Errorf("index_closed")
+	}
 	idx.runID = rebuildRunID
 	idx.runDir = rebuildRunDir
 	idx.lastTouch = time.Now()
@@ -473,7 +473,7 @@ func (idx *Index) filterAndSearchDirty(
 	dirtySet map[string]bool,
 	q query.Q,
 	maxFiles, contextLines int,
-) ([]searchResultFile, int) {
+) ([]searchResultFile, int, string) {
 	// Remove dirty paths from indexed results.
 	var clean []searchResultFile
 	for _, f := range resultFiles {
@@ -488,9 +488,31 @@ func (idx *Index) filterAndSearchDirty(
 	if totalFiles < 0 {
 		totalFiles = 0
 	}
+	capped := func() []searchResultFile {
+		if len(clean) > maxFiles {
+			return clean[:maxFiles]
+		}
+		return clean
+	}
+	// A failure here loses the fresh hits of every edited file, so it is
+	// said, not swallowed: the model would otherwise read "no match" for a
+	// file it just changed.
+	unsearched := func(err error) string {
+		return fmt.Sprintf("%d edited file(s) could not be searched (%v); use search_files for them.",
+			len(dirtySet), err)
+	}
 
-	// Build or reuse the overlay shard. The overlay in use is leased, with
-	// the run directory it lives in, for as long as this query reads it.
+	// Build or reuse the overlay shard, ONE query at a time: the check, the
+	// build and the store are a single step. Unserialised, concurrent queries
+	// over one dirty set each built their own overlay, and one that saw a
+	// changed set retired the shard another was about to open. The wait is
+	// abandonable. The overlay in use is leased, with the run directory it
+	// lives in, for as long as this query reads it.
+	select {
+	case idx.overlaySem <- struct{}{}:
+	case <-ctx.Done():
+		return capped(), totalFiles, unsearched(ctx.Err())
+	}
 	idx.mu.Lock()
 	ov := idx.overlay
 	reusable := ov != nil && dirtySetEqual(ov.dirtySet, dirtySet)
@@ -506,11 +528,8 @@ func (idx *Index) filterAndSearchDirty(
 
 		newOv, err := idx.buildOverlayShard(ctx, dirtySet)
 		if err != nil {
-			// Fall back to indexed results only.
-			if len(clean) > maxFiles {
-				clean = clean[:maxFiles]
-			}
-			return clean, totalFiles
+			<-idx.overlaySem
+			return capped(), totalFiles, unsearched(err)
 		}
 		ov = newOv
 		idx.mu.Lock()
@@ -520,11 +539,16 @@ func (idx *Index) filterAndSearchDirty(
 		idx.mu.Unlock()
 		idx.overlayBuildCount.Add(1)
 	}
+	<-idx.overlaySem
 
 	// Search the overlay shard.
+	note := ""
 	if ov.dir != "" {
 		overlayFiles, err := searchOverlay(ctx, ov.dir, q, maxFiles, contextLines, ov.outlineFiles)
-		if err == nil && len(overlayFiles) > 0 {
+		switch {
+		case err != nil:
+			note = unsearched(err)
+		case len(overlayFiles) > 0:
 			// Merge by score.
 			clean = mergeByScore(clean, overlayFiles, maxFiles)
 			// Adjust totalFiles for overlay hits.
@@ -532,11 +556,7 @@ func (idx *Index) filterAndSearchDirty(
 		}
 	}
 
-	if len(clean) > maxFiles {
-		clean = clean[:maxFiles]
-	}
-
-	return clean, totalFiles
+	return capped(), totalFiles, note
 }
 
 // sortResultLines sorts result lines by line number.
@@ -550,7 +570,12 @@ func sortResultLines(lines []resultLine) {
 
 // searchZoekt performs the actual zoekt search and returns the total number
 // of files that matched (which may exceed maxFiles).
-func (idx *Index) searchZoekt(ctx context.Context, q query.Q, maxFiles, contextLines int) ([]searchResultFile, int, error) {
+//
+// Dirty paths are dropped BEFORE the page is cut, and zoekt is asked for
+// enough files to fill the page without them. Cutting first and filtering
+// after shrank the page by every dirty file among the top hits, and took the
+// cap marker with it while more files still matched.
+func (idx *Index) searchZoekt(ctx context.Context, q query.Q, maxFiles, contextLines int, dirty map[string]bool) ([]searchResultFile, int, error) {
 	idx.mu.RLock()
 	runDir := idx.runDir
 	outlineFiles := idx.outlineFiles
@@ -572,7 +597,7 @@ func (idx *Index) searchZoekt(ctx context.Context, q query.Q, maxFiles, contextL
 
 	// Ask for more files than maxFiles so we can detect truncation.
 	opts := &zoekt.SearchOptions{
-		MaxDocDisplayCount: maxFiles + 1,
+		MaxDocDisplayCount: maxFiles + 1 + len(dirty),
 		NumContextLines:    contextLines,
 		ChunkMatches:       true,
 		MaxWallTime:        idx.effectiveQueryTimeout(),
@@ -583,8 +608,14 @@ func (idx *Index) searchZoekt(ctx context.Context, q query.Q, maxFiles, contextL
 		return nil, 0, err
 	}
 
-	totalFiles := len(result.Files)
-	files := convertFileMatches(result.Files, maxFiles, contextLines, outlineFiles)
+	clean := result.Files[:0]
+	for _, fm := range result.Files {
+		if !dirty[fm.FileName] {
+			clean = append(clean, fm)
+		}
+	}
+	totalFiles := len(clean)
+	files := convertFileMatches(clean, maxFiles, contextLines, outlineFiles)
 
 	return files, totalFiles, nil
 }
@@ -598,7 +629,7 @@ func (idx *Index) effectiveQueryTimeout() time.Duration {
 }
 
 // buildResult constructs the ToolResult from search results.
-func (idx *Index) buildResult(files []searchResultFile, maxFiles, totalFiles int) core.ToolResult {
+func (idx *Index) buildResult(files []searchResultFile, maxFiles, totalFiles int, overlayNote string) core.ToolResult {
 	stats := idx.BuildStats()
 
 	// Gather result info for the first line.
@@ -634,6 +665,9 @@ func (idx *Index) buildResult(files []searchResultFile, maxFiles, totalFiles int
 		text += "\n" + bytesMarkerText
 	} else if capMarkerText != "" {
 		text += "\n" + capMarkerText
+	}
+	if overlayNote != "" {
+		text += "\n" + overlayNote
 	}
 
 	// Last resort, for a result the byte cap could not fit: keep whole lines
@@ -689,6 +723,12 @@ func (idx *Index) buildResult(files []searchResultFile, maxFiles, totalFiles int
 			note += "\n" + partialNote
 		}
 	}
+	if overlayNote != "" {
+		if note != "" {
+			note += "\n"
+		}
+		note += overlayNote
+	}
 
 	data := map[string]any{
 		"files":           fileData,
@@ -701,8 +741,10 @@ func (idx *Index) buildResult(files []searchResultFile, maxFiles, totalFiles int
 		"files_indexed":   stats.FilesIndexed,
 		"dirty_files":     info.dirtyFiles,
 		"skipped": map[string]any{
-			"binary":    stats.BinarySkipped,
-			"oversized": stats.OversizedSkipped,
+			"binary":            stats.BinarySkipped,
+			"oversized":         stats.OversizedSkipped,
+			"too_many_trigrams": stats.TooManyTrigramsSkipped,
+			"too_small":         stats.TooSmallSkipped,
 		},
 	}
 
@@ -782,4 +824,20 @@ func (idx *Index) gatherResultInfo(stats BuildStatsResult) resultInfo {
 		partialReason:  partialReason,
 		dirtyFiles:     dirtyCount,
 	}
+}
+
+// pathConstraint is the file-name query for a path argument: a directory is
+// an anchored prefix with a trailing slash, a file is anchored at both ends.
+// It is CASE-SENSITIVE: Workspace.Resolve validated this exact path, and
+// query.RegexpQuery's case-insensitive regexp let `src` match `Src/` too.
+func pathConstraint(rel string, isDir bool) (query.Q, error) {
+	pattern := "^" + regexp.QuoteMeta(rel) + "$"
+	if isDir {
+		pattern = "^" + regexp.QuoteMeta(rel+"/")
+	}
+	re, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return nil, err
+	}
+	return &query.Regexp{Regexp: re, FileName: true, CaseSensitive: true}, nil
 }

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/agentfox/agentkit-go/core"
@@ -216,30 +217,46 @@ func (c *expiringCtx) Err() error {
 	return nil
 }
 
-// 03-REQ-5.7 (6): the build's deadline reaches the builder loop even when the
-// walk was what hit it. Files the walk found before the deadline are not all
-// read and added after it.
-func TestDeadlineHitInTheWalkStopsTheBuilderLoop(t *testing.T) {
+// 03-REQ-5.7 (6), revised for issue #90: a deadline hit in the walk keeps
+// the files the walk found — indexed without symbols — for a grace window of
+// a quarter of MaxBuildTime, and no longer. Discarding them all made a slow
+// walk a permanently empty index; adding them all without limit would make
+// the bound no bound.
+func TestDeadlineHitInTheWalkKeepsWhatItFoundWithinAGraceWindow(t *testing.T) {
 	files := map[string]string{}
 	for i := 0; i < 20; i++ {
 		files[fmt.Sprintf("f%02d.go", i)] = "package p\n// needle\n"
 	}
-	idx, _ := devFixture(t, files, Options{})
-
-	runDir := filepath.Join(t.TempDir(), "run")
-	if err := os.Mkdir(runDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// The deadline passes a few entries into the walk.
-	out, err := idx.doBuild(newExpiringCtx(5), context.Background(), runDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.partialReason != "time" {
-		t.Fatalf("partialReason = %q, want time", out.partialReason)
-	}
-	if n := len(out.indexedFiles); n != 0 {
-		t.Errorf("%d files were read and added after the deadline passed, want 0", n)
+	for _, c := range []struct {
+		name     string
+		maxBuild time.Duration
+		keep     bool
+	}{
+		{"a grace window keeps the walk", time.Minute, true},
+		{"no grace window, no files after the deadline", time.Nanosecond, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			idx, _ := devFixture(t, files, Options{MaxBuildTime: c.maxBuild})
+			runDir := filepath.Join(t.TempDir(), "run")
+			if err := os.Mkdir(runDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			// The deadline passes a few entries into the walk.
+			out, err := idx.doBuild(newExpiringCtx(5), context.Background(), runDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.partialReason != "time" {
+				t.Fatalf("partialReason = %q, want time", out.partialReason)
+			}
+			n := len(out.indexedFiles)
+			if c.keep && n == 0 {
+				t.Error("the files the walk found before the deadline were discarded")
+			}
+			if !c.keep && n != 0 {
+				t.Errorf("%d files were added after the deadline with no grace window, want 0", n)
+			}
+		})
 	}
 }
 
@@ -291,7 +308,7 @@ func TestResultAtTheByteLimitIsNotCutMidLine(t *testing.T) {
 	}
 
 	// totalFiles above maxFiles: the cap marker is appended.
-	r := idx.buildResult(files, 1, 2)
+	r := idx.buildResult(files, 1, 2, "")
 
 	if len(r.Text) > tools.DefaultByteLimit {
 		t.Errorf("text is %d bytes, over the %d limit", len(r.Text), tools.DefaultByteLimit)

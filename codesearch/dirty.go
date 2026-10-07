@@ -3,7 +3,6 @@
 package codesearch
 
 import (
-	"bytes"
 	"context"
 	"hash/maphash"
 	"io/fs"
@@ -256,6 +255,7 @@ func (dt *dirtyTracker) revalidate(
 	genAtStart := dt.generation
 	dt.mu.Unlock()
 	seen := make(map[string]bool)
+	var check skipCheck
 
 	_ = tools.Walk(
 		ctx,
@@ -288,19 +288,13 @@ func (dt *dirtyTracker) revalidate(
 				return nil
 			}
 
-			// New or changed: skip oversized and binary files (same filters
-			// as build).
+			// New or changed: skip what the build skips — oversized files,
+			// and anything zoekt would not index (skipCheck).
 			if fi.Size() > maxFileSize {
 				return nil
 			}
-			f, err := os.Open(abs)
-			if err != nil {
-				return nil
-			}
-			buf := make([]byte, binarySniffSize)
-			n, _ := f.Read(buf)
-			f.Close()
-			if bytes.IndexByte(buf[:n], 0) >= 0 {
+			content, err := os.ReadFile(abs)
+			if err != nil || check.reason(content) != "" {
 				return nil
 			}
 

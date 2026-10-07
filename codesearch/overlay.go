@@ -3,7 +3,6 @@
 package codesearch
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -45,6 +44,7 @@ func (idx *Index) buildOverlayShard(ctx context.Context, dirtySet map[string]boo
 		abs string
 	}
 	var files []fileEntry
+	var check skipCheck
 
 	for rel := range dirtySet {
 		if idx.dirty.isGone(rel) {
@@ -61,15 +61,10 @@ func (idx *Index) buildOverlayShard(ctx context.Context, dirtySet map[string]boo
 		if fi.Size() > maxFileSize {
 			continue
 		}
-		// Binary check.
-		f, err := os.Open(abs)
-		if err != nil {
-			continue
-		}
-		buf := make([]byte, binarySniffSize)
-		n, _ := f.Read(buf)
-		f.Close()
-		if bytes.IndexByte(buf[:n], 0) >= 0 {
+		// The build's filter: a file zoekt would not index is not searchable
+		// in the overlay either (skipCheck).
+		content, err := os.ReadFile(abs)
+		if err != nil || check.reason(content) != "" {
 			continue
 		}
 		files = append(files, fileEntry{rel: rel, abs: abs})
@@ -136,6 +131,7 @@ func (idx *Index) buildOverlayShard(ctx context.Context, dirtySet map[string]boo
 	builderOpts := zoektindex.Options{
 		IndexDir:     overlayDir,
 		DisableCTags: true,
+		TrigramMax:   trigramMax,
 		RepositoryDescription: zoekt.Repository{
 			Name: "workspace-overlay",
 			Branches: []zoekt.RepositoryBranch{
