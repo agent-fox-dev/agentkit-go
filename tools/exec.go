@@ -113,7 +113,11 @@ type ExecOptions struct {
 	// a pipe the runner owns. The child's stdin is closed when the reader
 	// returns io.EOF. Nil keeps the null device (REQ-TOOL-06).
 	Stdin io.Reader
-	// Env, when non-nil, replaces the inherited environment entirely.
+	// Env sets the child's environment. Nil means ReducedEnv(nil)
+	// (REQ-SEC-08, same rule as tools.Options.Env): credentials are stripped
+	// and PATH, HOME, LANG, TMPDIR and TERM are kept verbatim. A non-nil
+	// slice, including an empty one, is used verbatim with no variable added
+	// or removed. Pass os.Environ() for the full inherited environment.
 	Env []string
 	// DrainIdle is how long the output pipe must stay QUIET after the child
 	// has exited before draining stops (REQ-TOOL-17.5). Zero means
@@ -163,6 +167,7 @@ func Run(ctx context.Context, command string, opts ExecOptions) (ExecResult, err
 	if err != nil {
 		return ExecResult{}, err
 	}
+	opts.Env = effectiveEnv(opts.Env)
 	return runArgv(ctx, append(append([]string{shell}, args...), command), opts)
 }
 
@@ -199,6 +204,7 @@ func RunArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 		// lookup and the run agree on what "." means.
 		prog = filepath.Join(opts.Dir, prog)
 	}
+	opts.Env = effectiveEnv(opts.Env)
 	bin, err := lookPathFor(prog, opts.Env)
 	if err != nil {
 		return ExecResult{}, fmt.Errorf("tools: %q not found on PATH: %w", argv[0], err)
@@ -251,9 +257,7 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = opts.Dir
-	if opts.Env != nil {
-		cmd.Env = opts.Env
-	}
+	cmd.Env = opts.Env
 	setProcessGroup(cmd)
 	// REQ-TOOL-17.3: a backstop for exec's own bookkeeping. It no longer
 	// bounds the drain — the pipe below is not exec's to close — and the real
@@ -636,6 +640,16 @@ func lookPathAny(names ...string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// effectiveEnv returns ReducedEnv(nil) for a nil env and the slice verbatim
+// otherwise (an empty non-nil slice stays empty). It is the single place
+// where ExecOptions.Env's nil-means-reduced rule is applied.
+func effectiveEnv(env []string) []string {
+	if env == nil {
+		return ReducedEnv(nil)
+	}
+	return env
 }
 
 // ReducedEnv strips credentials from the inherited environment while KEEPING
