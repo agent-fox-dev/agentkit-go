@@ -102,7 +102,7 @@ provider-prefixed variables and anything ending in `_TOKEN`, `_SECRET`,
 | `ToolChoice` | `""` (auto), or a forced choice. |
 | `ThinkingLevel` | `""`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; clamped to the catalog row's ladder. |
 | `ToolPolicy` | `Tools`, `NoTools` (`all` / `builtin`), `ToolNames`, `ExcludeTools`, `CustomTools`; resolved in that order. Non-nil empty `Tools` means no tools. A `CustomTools` entry must set exactly one of `Handler` and `Execute`; construction fails otherwise, as `RegisterTool` does. |
-| `BeforeToolCall`, `AfterToolCall` | The authorization boundary and post-processing. A shell tool in the set with a nil `BeforeToolCall` fails the run (`ErrUnguardedExecute`); use `guard.Restricted` or `guard.AllowAll`. |
+| `BeforeToolCall`, `AfterToolCall` | The authorization boundary and post-processing. A shell tool in the set with a nil `BeforeToolCall` fails the run (`ErrUnguardedExecute`); use `guard.Restricted` or `guard.AllowAll`. `AfterToolCall` receives the handler's `ToolResult` by value and the mutable `Result *ToolResultMessage`. `ToolResultMessage.Metadata` carries the tool's structured metadata (persisted, in events, never sent to the model). |
 | `Hooks` | `OnTurnStart`, `OnTurnEnd`, `OnAgentDone`, `OnError`, `OnSessionStart`, `OnSessionEnd`, `OnAudit`. Observation only. `OnAudit` receives a `tool_call` event for every call, including one blocked, refused, aborted or cut off by `max_tokens`; `ErrorCode` says why. |
 | `Middleware` | Axis 1; last registered is outermost. |
 | `TransformContext` | Bound closure run before every model call; build with `compaction.NewContextTransform`. Its context carries a usage reporter: a model call made inside it (a summary) reports its usage with `core.ReportUsage`, and the agent adds it to `Agent.Usage`. |
@@ -182,6 +182,55 @@ and 500 characters per line, `find_files` 200 by default (cap 1000),
 | `MaxBytes` | 1 GiB | Total indexed content bound. |
 | `MaxBuildTime` | 60 s | Wall-time bound for the index build. |
 | `TempDir` | `os.TempDir()` | Where shard files are written. |
+
+## Subprocess runner (`tools.Run`, `tools.RunArgv`)
+
+`tools.Run` executes a shell command through the platform's shell ladder;
+`tools.RunArgv` runs a program directly from an argv without a shell. Both
+share one implementation, return `ExecResult` and accept `ExecOptions`.
+
+### `ExecOptions`
+
+| Field | Zero-value behaviour |
+|---|---|
+| `Dir` | The process working directory. |
+| `Timeout` | No timeout. |
+| `MaxBytes` | `DefaultByteLimit` (50 KB). |
+| `KeepHead` | `false`: keep the tail of the output (tail truncation). When `true`, keep the first `MaxBytes` bytes (head truncation). |
+| `SpillDir` | Disabled. When set, the complete output is written to a temporary file in this directory. |
+| `LogPath` | Disabled. When set, the complete interleaved output is written to the named file as it arrives. A relative path is resolved against `Dir` (or the process working directory when `Dir` is empty). Missing parent directories are created with mode `0o700`; the file is created or truncated with mode `0o600`. When set, `LogPath` replaces `SpillDir` for that call: no temporary spill file is created, and `ExecResult.SpillPath` reports the absolute log path. The SDK never deletes the file. |
+| `Stdin` | `nil`: the child's stdin is the null device. When non-nil, the reader is copied into the child's stdin pipe and the pipe is closed on `io.EOF`. |
+| `Env` | `nil` means `ReducedEnv(nil)` (same rule as `tools.Options.Env`): credentials are stripped and `PATH`, `HOME`, `LANG`, `TMPDIR` and `TERM` are kept. A non-nil slice, including an empty one, is used verbatim. Pass `os.Environ()` for the full inherited environment. |
+| `DrainIdle` | `defaultDrainIdle` (2 s). How long the output pipe must stay quiet after the child exits before draining stops. Every read re-arms it. |
+| `DrainCeiling` | `defaultDrainCeiling` (10 s). Absolute bound on the post-exit drain. |
+
+### `ExecResult`
+
+| Field | Meaning |
+|---|---|
+| `Output` | The truncated output (head or tail, per `KeepHead`). |
+| `Outcome` | One of `ok`, `exit`, `signal`, `timeout`, `abort`. |
+| `ExitCode` | The child's exit code. 128+signum on unix for signal-killed children. |
+| `Truncated` | Whether the output was truncated. |
+| `TotalBytes` | Total bytes the child wrote, before truncation. |
+| `SpillPath` | Path to the spill or log file, when one exists. |
+| `Duration` | Wall-clock duration to the child's exit. |
+| `IOErr` | A byte-moving failure that did not stop the process: a `Stdin` read error, a log or spill write error, or `Wait` reporting an I/O completion failure. `Outcome` is still classified from the exit status. |
+
+**Outcome rules.** For every call that starts a process, `Outcome` is exactly
+one of the five values, classified from the state at the child's exit:
+
+- `abort` — the caller's `ctx` was done at that moment, including when the
+  caller's own deadline expired.
+- `timeout` — the deadline derived from `ExecOptions.Timeout` had expired and
+  the caller's `ctx` had not.
+- `signal` — the child was killed by a signal (128+signum on unix).
+- `exit` — the child exited with a non-zero status.
+- `ok` — the child exited with status 0.
+
+A non-nil `error` return means nothing started (empty argv, program not found,
+`LogPath` unopenable, pipe or fork failure). `IOErr` reports failures that
+happened after the process started.
 
 ## TOML sections
 
