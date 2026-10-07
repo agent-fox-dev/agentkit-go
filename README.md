@@ -169,7 +169,9 @@ wire, "hidden for the rest of the session" (ruling L-10).
 shallower one; a vendored dependency that is itself a git checkout does not
 inherit the outer project's rules. Without the boundary, a rule the outer
 project wrote about *its* build output silently deletes files from the listing
-of a repository that has never heard of it.
+of a repository that has never heard of it. A `.git` entry is never listed at
+any depth — the root's, a nested checkout's, or a submodule's pointer file —
+because it holds remote URLs (sometimes with tokens) and every object.
 
 **MCP is implemented on the standard library, not on `mcp-go`**
 ([`mcp/`](mcp/)). REQ-MCP-CLIENT-01 names that library and REQ-SEC-11 names

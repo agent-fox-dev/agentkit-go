@@ -24,8 +24,12 @@ type overlayState struct {
 	// If the current dirty set matches this, the overlay is reused.
 	dirtySet map[string]bool
 
-	// dir is the directory containing the overlay shard files.
-	dir string
+	// dir is the directory containing the overlay shard files. It is a
+	// subdirectory of runDir, the run directory the overlay was built
+	// against, so the sweep of a dead process's run directory takes it too
+	// (spec 03 §4).
+	dir    string
+	runDir string
 
 	// outlineFiles holds the outline.File per overlaid file.
 	outlineFiles map[string]outline.File
@@ -109,8 +113,21 @@ func (idx *Index) buildOverlayShard(ctx context.Context, dirtySet map[string]boo
 		}
 	}
 
-	// Create a temporary directory for the overlay shard.
-	overlayDir, err := os.MkdirTemp(idx.opts.TempDir, "agentkit-overlay-*")
+	// Create the overlay shard's directory inside the run directory. The run
+	// directory is touched while this process lives and swept 24 hours after
+	// it dies; a directory beside it in TempDir was swept by nothing and
+	// leaked whenever a process ended without Close. zoekt loads only the
+	// *.zoekt files directly in a directory, so the index's own searcher does
+	// not see the overlay's shards.
+	idx.mu.RLock()
+	runDir := idx.runDir
+	release := idx.leaseDir(runDir)
+	idx.mu.RUnlock()
+	defer release()
+	if runDir == "" {
+		return nil, fmt.Errorf("create overlay dir: no run directory")
+	}
+	overlayDir, err := os.MkdirTemp(runDir, "overlay-*")
 	if err != nil {
 		return nil, fmt.Errorf("create overlay dir: %w", err)
 	}
@@ -168,6 +185,7 @@ func (idx *Index) buildOverlayShard(ctx context.Context, dirtySet map[string]boo
 	return &overlayState{
 		dirtySet:     copyStringBoolMap(dirtySet),
 		dir:          overlayDir,
+		runDir:       runDir,
 		outlineFiles: outlineResults,
 	}, nil
 }

@@ -358,7 +358,7 @@ func TestDetachedDescendantOutputIsDrainedOnAReArmingTimer(t *testing.T) {
 	// The parent shell exits IMMEDIATELY — it does not wait for the job — so
 	// every line after the first arrives on a pipe whose only remaining writer
 	// is a process the tool never started.
-	const lines = 30
+	const lines = 40
 	cmd := fmt.Sprintf(`( i=0; while [ $i -lt %d ]; do echo "late-$i"; sleep 0.1; i=$((i+1)); done ) &`, lines)
 
 	type outcome struct {
@@ -371,9 +371,11 @@ func TestDetachedDescendantOutputIsDrainedOnAReArmingTimer(t *testing.T) {
 			MaxBytes: 1 << 16,
 			// Shortened only to keep the test quick. The property under test
 			// is that output ARRIVING inside the window re-arms it; the
-			// grandchild writes every 100ms for ~3s, so a non-re-arming drain
-			// of any length under 3s truncates it.
-			DrainIdle: 500 * time.Millisecond,
+			// grandchild writes every 100ms for ~4s, so a non-re-arming drain
+			// of any length under 4s truncates it. The window is 15 gaps
+			// wide: at 500ms (5 gaps) a loaded machine stalled the writer
+			// long enough to close it early (issue #76).
+			DrainIdle: 1500 * time.Millisecond,
 		})
 		ch <- outcome{res, err}
 	}()

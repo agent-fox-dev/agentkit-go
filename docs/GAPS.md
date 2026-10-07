@@ -210,3 +210,19 @@ Every row here is a finding of this pass, not the 0.4.2 audit above.
 | Gemini | `thinkingLevel` for Gemini 3 rows. | Unverifiable here; the catalog rows for Google could not be checked against a reference. |
 | `tools` | Predictable spill directory under a shared temp dir; `read_file` re-scans the whole file per page. | Low; the spill path is documented as the embedder's to clean. |
 | examples | `git add -A` commits build outputs; a per-phase model flag. | Behaviour choices for the application authors. |
+
+## Tools and code search hardening (issue #76)
+
+| Where | Finding | Status |
+|---|---|---|
+| `tools/ignore.go` | `.git` was excluded only at the scan root, so `find_files` listed a nested checkout's `.git/config`, `HEAD` and objects. | Fixed — any path segment `.git` is excluded; `TestNestedGitDirectoriesAreNeverListed`. |
+| `outline`, `file_outline` | The whole file was read before the size check (`Outline` with no source, `OutlineMany`, the tool). | Fixed — a stat decides "too large" first; `TestFileOutlineDoesNotReadAnOversizedFile`. |
+| `tools/ctags.go` | `ctags --version` ran with no deadline inside a `sync.Once`, under the symbol table's lock. | Fixed — the probe runs in its own process group, killed at 5 s or the caller's deadline; a probe cut short by the caller is not remembered; `TestCtagsProbeHasADeadline`. |
+| `codesearch` | Overlay shards were created beside, not inside, the swept run directory and leaked when a process died. | Fixed — created inside the run directory; `TestOverlayShardsLiveUnderTheRunDirectory`. |
+| `codesearch` | `context_lines: 0` was coerced to the default 2. | Fixed — only an absent value takes the default; `TestContextLinesZeroMeansNone`. |
+| `codesearch` | A rebuild removed the old run directory (and a query the old overlay) while another query was about to open it; `BuildStats` read `runDir` without the lock. | Fixed — queries lease the shard directories they read; a swapped-out directory is removed after its last reader; `TestARetiredShardDirectoryOutlivesItsReaders`, `go test -race` clean. |
+| `tools/edit.go` | The whitespace fold re-matched exactly-found edits by line, applying one that would be `not_unique` alone. | Fixed — exact edits keep exact, unique-only matching in the fold path; `TestFoldedBatchKeepsExactEditsExact`. |
+| `edit_file` | A mistyped path marked the symbol table and the code index dirty. | Fixed — marked only once the file exists; `TestEditFileOnAMissingPathMarksNothing`. |
+| `search_files` | Native search stopped reading a file at its first line over 1 MiB; the ripgrep backend failed — and with ripgrep blocked on the pipe, never returned — on a match event over 4 MiB. | Fixed — both read whole lines; `TestSearchReadsPastALongLine`, `TestRipgrepJSONReaderTakesALongEvent` (which hangs on the old reader). |
+| `write_file`, `edit_file` | `os.WriteFile` truncates before writing; a kill in between left the file cut off. | Fixed — an existing file is replaced by rename of a temp file in its directory, keeping its mode and writing through a symlink to its target; new files unchanged; `TestWritesAreAtomicAndKeepModeAndLinks`. |
+| `tools` tests | `TestDetachedDescendantOutputIsDrainedOnAReArmingTimer` had a 500 ms idle window against a 100 ms writer. | Fixed — 1.5 s window, 4 s writer: still fails a non-re-arming drain. |

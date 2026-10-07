@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -410,10 +411,19 @@ func underLocalType(scope string, locals []string) bool {
 	return false
 }
 
-// loadSourceIfNeeded reads the file from disk if src is nil.
+// errTooLarge is loadSourceIfNeeded's report that the file is over the size
+// limit and was not read.
+var errTooLarge = errors.New("outline: file over the size limit")
+
+// loadSourceIfNeeded reads the file from disk if src is nil. A file larger
+// than maxBytes is not read at all: its size is checked on a stat first, and
+// errTooLarge returned.
 func loadSourceIfNeeded(abs string, src []byte, maxBytes int64) ([]byte, error) {
 	if src != nil {
 		return src, nil
+	}
+	if fi, err := os.Stat(abs); err == nil && fi.Size() > maxBytes {
+		return nil, errTooLarge
 	}
 	data, err := os.ReadFile(abs)
 	if err != nil {

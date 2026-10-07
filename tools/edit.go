@@ -270,21 +270,41 @@ func Restore(s string, bom bool, ending LineEnding) string {
 // error from a fallback the model never asked for would tell it to fix the
 // wrong thing.
 //
-// Matching is per LINE BLOCK and the splice puts back whole ORIGINAL lines, so
-// every line outside a matched block keeps its exact bytes — the curly quotes
-// and trailing spaces that made the fold necessary in the first place survive
-// untouched. The fold is only ever a key.
+// Only the edits exact matching could NOT find are folded. An edit that was
+// found exactly keeps exact semantics here too — it must be unique and it
+// replaces exactly its bytes — so batching it with an edit that needs the
+// fold neither widens it to whole lines nor lets an ambiguous match through
+// that would be rejected as not unique on its own.
+//
+// A folded edit matches per LINE BLOCK and the splice puts back whole
+// ORIGINAL lines, so every line outside a matched block keeps its exact bytes
+// — the curly quotes and trailing spaces that made the fold necessary in the
+// first place survive untouched. The fold is only ever a key.
 func applyEditsFolded(content string, edits []Edit) (string, int, bool) {
 	lines := strings.Split(content, "\n")
 	folded := foldLines(lines)
-
-	type block struct {
-		idx        int
-		start, end int // line range, half-open
+	// lineStart[i] is the byte offset of line i; lineStart[len(lines)] is
+	// one past the end, as if the content ended in a newline.
+	lineStart := make([]int, len(lines)+1)
+	for i, l := range lines {
+		lineStart[i+1] = lineStart[i] + len(l) + 1
 	}
-	blocks := make([]block, 0, len(edits))
+
+	type span struct {
+		idx        int
+		start, end int // byte range, half-open
+	}
+	spans := make([]span, 0, len(edits))
 
 	for i, e := range edits {
+		if strings.Contains(content, e.OldString) {
+			if countOverlapping(content, e.OldString) != 1 {
+				return "", 0, false // not unique: the exact path's rejection stands
+			}
+			off := strings.Index(content, e.OldString)
+			spans = append(spans, span{idx: i, start: off, end: off + len(e.OldString)})
+			continue
+		}
 		needle := foldLines(strings.Split(e.OldString, "\n"))
 		start, end, count := findFoldedBlock(folded, needle)
 		// Every edit must match, and match exactly once. A batch where the
@@ -294,26 +314,26 @@ func applyEditsFolded(content string, edits []Edit) (string, int, bool) {
 		if count != 1 {
 			return "", 0, false
 		}
-		blocks = append(blocks, block{idx: i, start: start, end: end})
+		// Lines [start, end): from the first line's start to the last line's
+		// end, its newline excluded.
+		spans = append(spans, span{idx: i, start: lineStart[start], end: lineStart[end] - 1})
 	}
 
-	sort.Slice(blocks, func(a, b int) bool { return blocks[a].start < blocks[b].start })
-	for k := 1; k < len(blocks); k++ {
-		if blocks[k-1].end > blocks[k].start {
-			return "", 0, false // overlapping blocks: same rejection as an exact overlap
+	sort.Slice(spans, func(a, b int) bool { return spans[a].start < spans[b].start })
+	for k := 1; k < len(spans); k++ {
+		if spans[k-1].end > spans[k].start {
+			return "", 0, false // overlapping: same rejection as an exact overlap
 		}
 	}
 
 	// Splice right to left so earlier ranges stay valid.
-	out := append([]string(nil), lines...)
-	for k := len(blocks) - 1; k >= 0; k-- {
-		b := blocks[k]
-		replacement := strings.Split(edits[b.idx].NewString, "\n")
-		out = append(out[:b.start], append(replacement, out[b.end:]...)...)
+	out := content
+	for k := len(spans) - 1; k >= 0; k-- {
+		sp := spans[k]
+		out = out[:sp.start] + edits[sp.idx].NewString + out[sp.end:]
 	}
-	joined := strings.Join(out, "\n")
-	if joined == content {
+	if out == content {
 		return "", 0, false // no-op, rejected exactly as the exact path rejects one
 	}
-	return joined, len(edits), true
+	return out, len(edits), true
 }

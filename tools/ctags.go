@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sync"
+	"time"
 )
 
 // ErrCtagsUnavailable is returned by a CtagsRunner when ctags is not on PATH
@@ -31,7 +32,8 @@ var ctagsAccumulatorCap = 16 * 1024 * 1024 // 16 MiB
 // an error rather than a partial stream.
 func CtagsRunner(env []string) func(ctx context.Context, args []string) ([]byte, error) {
 	var (
-		once     sync.Once
+		mu       sync.Mutex
+		probed   bool
 		ctagsBin string
 		initErr  error
 	)
@@ -42,30 +44,46 @@ func CtagsRunner(env []string) func(ctx context.Context, args []string) ([]byte,
 	}
 
 	return func(ctx context.Context, args []string) ([]byte, error) {
-		// Locate and verify ctags exactly once per runner.
-		once.Do(func() {
-			ctagsBin, initErr = locateUniversalCtags(resolvedEnv)
-		})
-		if initErr != nil {
-			return nil, initErr
+		// Locate and verify ctags once per runner. The probe is bounded by
+		// ctagsProbeTimeout and by the caller's context: a wedged ctags is
+		// killed at the deadline (spec 02 DD14) rather than holding the
+		// symbol table's lock forever. A probe cut short by the CALLER is
+		// not a verdict on ctags, so it is not remembered.
+		mu.Lock()
+		if !probed {
+			bin, err := locateUniversalCtags(ctx, resolvedEnv)
+			if ctx.Err() != nil {
+				mu.Unlock()
+				return nil, ctx.Err()
+			}
+			ctagsBin, initErr, probed = bin, err, true
+		}
+		bin, err := ctagsBin, initErr
+		mu.Unlock()
+		if err != nil {
+			return nil, err
 		}
 
-		return runCtagsProcess(ctx, ctagsBin, resolvedEnv, args)
+		return runCtagsProcess(ctx, bin, resolvedEnv, args)
 	}
 }
 
+// ctagsProbeTimeout bounds `ctags --version`. A variable so a test can
+// shorten it.
+var ctagsProbeTimeout = 5 * time.Second
+
 // locateUniversalCtags finds ctags on PATH and verifies it is Universal Ctags.
-func locateUniversalCtags(env []string) (string, error) {
+// The version probe runs like any ctags call — its own process group, killed
+// when ctx or ctagsProbeTimeout ends.
+func locateUniversalCtags(ctx context.Context, env []string) (string, error) {
 	bin, err := exec.LookPath("ctags")
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrCtagsUnavailable, err)
 	}
 
-	// Run ctags --version and check for "Universal Ctags" in the output.
-	cmd := exec.Command(bin, "--version")
-	cmd.Env = env
-	cmd.Stdin = nil
-	out, err := cmd.Output()
+	probeCtx, cancel := context.WithTimeout(ctx, ctagsProbeTimeout)
+	defer cancel()
+	out, err := runCtagsProcess(probeCtx, bin, env, []string{"--version"})
 	if err != nil {
 		return "", fmt.Errorf("%w: ctags --version failed: %v", ErrCtagsUnavailable, err)
 	}

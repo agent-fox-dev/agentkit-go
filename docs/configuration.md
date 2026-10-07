@@ -154,7 +154,7 @@ and 500 characters per line, `find_files` 200 by default (cap 1000),
 | Parameter | Default | Cap |
 |---|---|---|
 | `max_files` | 10 | 25 |
-| `context_lines` | 2 | 20 (`tools.MaxSearchContextLines`) |
+| `context_lines` | 2 when absent; an explicit 0 means none | 20 (`tools.MaxSearchContextLines`) |
 | `query` max length | — | 1 024 bytes |
 | query timeout | — | 10 s |
 | result byte limit | — | 50 KB (`tools.DefaultByteLimit`) |
