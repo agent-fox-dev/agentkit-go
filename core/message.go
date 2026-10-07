@@ -65,9 +65,13 @@ type AssistantMessage struct {
 	// (REQ-LOOP-01) — use ExtractToolUse.
 	StopReason    StopReason
 	RawStopReason string
-	ErrorMessage  string
-	Usage         Usage
-	Timestamp     time.Time
+	// StopDetail is the provider's own account of why it stopped, when it
+	// gives one beyond the reason — a refusal's category and explanation
+	// ("cyber: …"). Like RawStopReason it never drives control flow.
+	StopDetail   string
+	ErrorMessage string
+	Usage        Usage
+	Timestamp    time.Time
 
 	// Provenance (§5, "Provenance is not optional"). REQ-PROV-11 rule 1
 	// computes same_model from exactly (Provider, API, Model). Model is the

@@ -119,6 +119,33 @@ func StatusError(prefix string, resp *http.Response, detail func([]byte) string)
 	return fmt.Sprintf("%s: HTTP %d: %s", prefix, resp.StatusCode, text)
 }
 
+// HTTPStatusError is a non-2xx response as an error: StatusError's text, the
+// status code, and the server-dictated retry delay when the response named
+// one. It implements core.RetryAfterError, which is how a Retry-After reaches
+// the semantic retry layer (middleware.Retry) when the transport layer is not
+// retrying itself — its default (OQ-9).
+type HTTPStatusError struct {
+	Text       string
+	StatusCode int
+	Delay      time.Duration
+	HasDelay   bool
+}
+
+func (e *HTTPStatusError) Error() string { return e.Text }
+
+// RetryAfter reports the server-dictated delay (REQ-PROV-13's order:
+// retry-after-ms, Retry-After as seconds, Retry-After as an HTTP date).
+func (e *HTTPStatusError) RetryAfter() (time.Duration, bool) { return e.Delay, e.HasDelay }
+
+// StatusErr is StatusError as an *HTTPStatusError carrying the response's
+// status and retry delay. Adapters end a failed stream with it, so the stream
+// error a middleware sees still knows what the server asked for.
+func StatusErr(prefix string, resp *http.Response, detail func([]byte) string) error {
+	d, ok := serverDelay(resp.Header, time.Now())
+	return &HTTPStatusError{Text: StatusError(prefix, resp, detail),
+		StatusCode: resp.StatusCode, Delay: d, HasDelay: ok}
+}
+
 // JSONErrorDetail is the extractor for the shape almost every vendor uses:
 // {"error": {"type": ..., "message": ...}} or {"error": "text"}.
 func JSONErrorDetail(body []byte) string {

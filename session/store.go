@@ -89,6 +89,9 @@ func randomID() core.EntryID {
 type Store struct {
 	mu   sync.Mutex
 	opts Options
+	// failed is the error a locked section recorded for OnPersistError,
+	// reported once the lock is released (fail, reportFailure).
+	failed error
 
 	path   string
 	header core.SessionHeader
@@ -230,6 +233,7 @@ func (s *Store) SetOnPersistError(fn func(error)) {
 // It returns its error. REQ-SESS-08: marshal and write failures must not be
 // discarded.
 func (s *Store) Append(e core.Entry) error {
+	defer s.reportFailure() // after the unlock below: defers run last-in first-out
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -348,11 +352,27 @@ func (s *Store) ensureFile() error {
 	return nil
 }
 
+// fail records err for REQ-SESS-08's hook. It is called with s.mu held, so
+// it does not call the hook: a hook that reads the store (Entries, Head)
+// would deadlock on the lock its caller holds. The public method reports it
+// once the lock is released (reportFailure).
 func (s *Store) fail(err error) error {
-	if err != nil && s.opts.OnPersistError != nil {
-		s.opts.OnPersistError(err)
+	if err != nil {
+		s.failed = err
 	}
 	return err
+}
+
+// reportFailure hands the error recorded by fail to OnPersistError. The
+// caller must NOT hold s.mu.
+func (s *Store) reportFailure() {
+	s.mu.Lock()
+	err, hook := s.failed, s.opts.OnPersistError
+	s.failed = nil
+	s.mu.Unlock()
+	if err != nil && hook != nil {
+		hook(err)
+	}
 }
 
 // Entries returns every entry in file order.
@@ -412,6 +432,7 @@ func (s *Store) ForkFrom(id core.EntryID) error {
 // Sync on a store that has never flushed creates the file and writes the
 // header, so a session is on disk from the moment its owner asks for it.
 func (s *Store) Sync() error {
+	defer s.reportFailure() // after the unlock below: defers run last-in first-out
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -428,6 +449,7 @@ func (s *Store) Sync() error {
 
 // Close syncs and closes the file. It is idempotent.
 func (s *Store) Close() error {
+	defer s.reportFailure() // after the unlock below: defers run last-in first-out
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {

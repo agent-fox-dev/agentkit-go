@@ -298,8 +298,9 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg := statusError(resp) + vertexAuthNote(resp.StatusCode, vx, env)
-		d.fail(msg, errors.New(msg))
+		err := statusErr(resp)
+		err.Text += vertexAuthNote(resp.StatusCode, vx, env)
+		d.fail(err.Text, err)
 		return
 	}
 
@@ -368,14 +369,14 @@ func vertexAuthNote(status int, vx Vertex, env provider.Env) string {
 		VertexProjectVar + " or set " + VertexEnableVar + "=0.]"
 }
 
-func statusError(resp *http.Response) string {
-	return provider.StatusError("anthropic", resp, func(body []byte) string {
+func statusErr(resp *http.Response) *provider.HTTPStatusError {
+	return provider.StatusErr("anthropic", resp, func(body []byte) string {
 		var we wireError
 		if json.Unmarshal(body, &we) == nil {
 			return we.String()
 		}
 		return ""
-	})
+	}).(*provider.HTTPStatusError)
 }
 
 // ---------------------------------------------------------------- decode state
@@ -389,12 +390,13 @@ type decodeState struct {
 	model  *core.Model
 	lookup func(string) *core.Model
 
-	accs    map[int]*blockAcc
-	order   []int
-	final   map[int]core.ContentBlock
-	stopRaw string
-	stopSeq string
-	usage   core.Usage
+	accs       map[int]*blockAcc
+	order      []int
+	final      map[int]core.ContentBlock
+	stopRaw    string
+	stopDetail string
+	stopSeq    string
+	usage      core.Usage
 
 	sawStop  bool
 	salvaged int
@@ -559,8 +561,9 @@ func (d *decodeState) event(ev provider.SSEEvent) error {
 	case "message_delta":
 		var p struct {
 			Delta struct {
-				StopReason   string  `json:"stop_reason"`
-				StopSequence *string `json:"stop_sequence"`
+				StopReason   string           `json:"stop_reason"`
+				StopDetails  *wireStopDetails `json:"stop_details"`
+				StopSequence *string          `json:"stop_sequence"`
 			} `json:"delta"`
 			Usage wireUsage `json:"usage"`
 		}
@@ -569,6 +572,9 @@ func (d *decodeState) event(ev provider.SSEEvent) error {
 		}
 		if p.Delta.StopReason != "" {
 			d.stopRaw = p.Delta.StopReason
+		}
+		if p.Delta.StopDetails != nil {
+			d.stopDetail = p.Delta.StopDetails.String()
 		}
 		if p.Delta.StopSequence != nil {
 			d.stopSeq = *p.Delta.StopSequence
@@ -600,6 +606,7 @@ func (d *decodeState) finish(m *core.Model, lookup func(string) *core.Model) {
 	final := d.partial
 	final.StopReason = MapStopReason(d.stopRaw)
 	final.RawStopReason = d.stopRaw
+	final.StopDetail = d.stopDetail
 	final.Usage = d.usage
 	final.Usage.BilledModel = ""
 
@@ -689,7 +696,7 @@ func DecodeResponse(m *core.Model, data []byte, lookup func(string) *core.Model)
 	msg := &core.AssistantMessage{
 		Provider: m.Provider, API: m.API, Model: m.ID,
 		ResponseID: wr.ID, ResponseModel: wr.Model,
-		StopReason: MapStopReason(wr.StopReason), RawStopReason: wr.StopReason,
+		StopReason: MapStopReason(wr.StopReason), RawStopReason: wr.StopReason, StopDetail: wr.StopDetails.String(),
 	}
 	for _, raw := range wr.Content {
 		acc, err := startFrom(raw, true)

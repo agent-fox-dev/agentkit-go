@@ -86,8 +86,32 @@ type wireResponse struct {
 	Model        string            `json:"model"`
 	Content      []json.RawMessage `json:"content"`
 	StopReason   string            `json:"stop_reason"`
+	StopDetails  *wireStopDetails  `json:"stop_details"`
 	StopSequence *string           `json:"stop_sequence"`
 	Usage        wireUsage         `json:"usage"`
+}
+
+// wireStopDetails is the stop_details object a refusal carries: its
+// classifier category and an explanation.
+type wireStopDetails struct {
+	Type        string `json:"type"`
+	Category    string `json:"category"`
+	Explanation string `json:"explanation"`
+}
+
+// String renders the details for AssistantMessage.StopDetail:
+// "category: explanation", or whichever part is present.
+func (w *wireStopDetails) String() string {
+	if w == nil {
+		return ""
+	}
+	switch {
+	case w.Category != "" && w.Explanation != "":
+		return w.Category + ": " + w.Explanation
+	case w.Category != "":
+		return w.Category
+	}
+	return w.Explanation
 }
 
 type wireError struct {

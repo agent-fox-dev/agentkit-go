@@ -283,3 +283,13 @@ func mustToolUse(t *testing.T, id, name, args string) core.ToolUseBlock {
 	}
 	return b
 }
+
+// Issue #75 §3: a refusal's provider detail survives the log.
+func TestStopDetailSurvivesTheLog(t *testing.T) {
+	in := core.AssistantMessage{StopReason: core.StopReasonRefusal, RawStopReason: "refusal",
+		StopDetail: "cyber: request declined", Timestamp: fixedTime}
+	out := roundTrip(t, in).(core.AssistantMessage)
+	if out.StopDetail != in.StopDetail {
+		t.Fatalf("StopDetail = %q, want %q", out.StopDetail, in.StopDetail)
+	}
+}

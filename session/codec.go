@@ -371,7 +371,7 @@ const (
 var (
 	userKnown      = []string{msgKeyRole, "content", msgKeyTime}
 	assistantKnown = []string{
-		msgKeyRole, "content", "stop_reason", "raw_stop_reason", "error_message",
+		msgKeyRole, "content", "stop_reason", "raw_stop_reason", "stop_detail", "error_message",
 		"usage", "provider", "api", "model", "response_model", "response_id",
 		"thinking_level", "deferred", msgKeyTime,
 	}
@@ -397,6 +397,7 @@ func encodeMessage(m core.Message) jsonx.OrderedValue {
 		o.Set("content", encodeContent(v.Content))
 		setString(&o, "stop_reason", string(v.StopReason))
 		setString(&o, "raw_stop_reason", v.RawStopReason)
+		setString(&o, "stop_detail", v.StopDetail)
 		setString(&o, "error_message", v.ErrorMessage)
 		if v.Usage.Reported() {
 			o.Set("usage", encodeUsage(v.Usage))
@@ -466,6 +467,7 @@ func decodeMessage(v jsonx.OrderedValue) (core.Message, error) {
 			Content:       content,
 			StopReason:    core.StopReason(getString(o, "stop_reason")),
 			RawStopReason: getString(o, "raw_stop_reason"),
+			StopDetail:    getString(o, "stop_detail"),
 			ErrorMessage:  getString(o, "error_message"),
 			Provider:      getString(o, "provider"),
 			API:           core.API(getString(o, "api")),

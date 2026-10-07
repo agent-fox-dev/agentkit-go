@@ -1,6 +1,9 @@
 package core
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // UsageField is a presence bit. REQ-PROV-16 permits "a pointer OR an explicit
 // presence flag"; a mask is chosen over nine *int64 because Usage is summed on
@@ -149,4 +152,14 @@ func ReportUsage(ctx context.Context, u Usage) {
 	if report, ok := ctx.Value(usageReporterKey{}).(func(Usage)); ok && report != nil {
 		report(u)
 	}
+}
+
+// RetryAfterError is implemented by a provider error that carries a
+// server-dictated retry delay — REQ-PROV-13's retry-after-ms / Retry-After.
+// The transport layer reads the header itself; this carries it past the
+// transport, whose default is a single attempt (OQ-9), to the semantic retry
+// layer above it. ok is false when the server named no delay.
+type RetryAfterError interface {
+	error
+	RetryAfter() (d time.Duration, ok bool)
 }

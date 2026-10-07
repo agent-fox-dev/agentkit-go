@@ -248,8 +248,8 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 		}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg := provider.StatusError("openai", resp, provider.JSONErrorDetail)
-		d.fail(msg, errors.New(msg))
+		err := provider.StatusErr("openai", resp, provider.JSONErrorDetail)
+		d.fail(err.Error(), err)
 		return
 	}
 

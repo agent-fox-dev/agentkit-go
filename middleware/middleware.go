@@ -54,6 +54,10 @@ type RetryOptions struct {
 	MaxAttempts int
 	BaseDelay   time.Duration // default 500ms
 	MaxDelay    time.Duration // default 8s
+	// MaxServerDelay is REQ-PROV-13's ceiling on a server-dictated delay
+	// (Retry-After), default 60s. A failure whose server asked for longer is
+	// returned, not slept: an hour's Retry-After is not a transient throttle.
+	MaxServerDelay time.Duration
 	// Sleep is injectable so tests do not actually wait.
 	Sleep func(ctx context.Context, d time.Duration) error
 	// Rand returns a value in [0,1) for jitter. Injectable for determinism.
@@ -69,6 +73,9 @@ func (o RetryOptions) withDefaults() RetryOptions {
 	}
 	if o.MaxDelay == 0 {
 		o.MaxDelay = 8 * time.Second
+	}
+	if o.MaxServerDelay == 0 {
+		o.MaxServerDelay = 60 * time.Second
 	}
 	if o.Sleep == nil {
 		o.Sleep = func(ctx context.Context, d time.Duration) error {
@@ -96,19 +103,30 @@ func (o RetryOptions) withDefaults() RetryOptions {
 // and gateway text bodies all arrive as a completed message carrying prose,
 // and a policy that keys only on status sees none of them.
 //
-// The transport layer (status codes, x-should-retry, Retry-After, and the
-// 60s server-delay ceiling above which a request is abandoned rather than
-// slept) belongs inside the provider (REQ-PROV-13). It is NOT implemented in
-// v1 and deliberately has no knobs here: exposing MaxServerDelay on this
-// struct would advertise a control that nothing reads.
+// A server-dictated delay is honoured here too. The transport layer
+// (provider.RetryPolicy, REQ-PROV-13) reads Retry-After itself, but its
+// default is a single attempt (OQ-9): retry policy is owned above it, here.
+// So a failed attempt whose stream error carries the server's delay
+// (core.RetryAfterError — provider.StatusErr builds one from a 429 or 503) is
+// retried no sooner than that delay, and not at all past MaxServerDelay. Our
+// own backoff of 500ms, then 1s, inside a 30s cool-down spends every attempt
+// on a window the server already said was closed.
+//
+// An attempt this layer discards was still billed — a 5xx mid-stream after
+// the input was priced — so its usage is reported with core.ReportUsage; the
+// agent counts it in Agent.Usage.
 func Retry(opts RetryOptions) core.Middleware {
 	o := opts.withDefaults()
 	return func(next core.Handler) core.Handler {
 		return func(ctx context.Context, req core.Request) *core.EventStream {
 			var last *core.EventStream
+			var serverDelay time.Duration
 			for attempt := 0; attempt < o.MaxAttempts; attempt++ {
 				if attempt > 0 {
 					d := backoff(o, attempt)
+					if serverDelay > d {
+						d = serverDelay
+					}
 					if err := o.Sleep(ctx, d); err != nil {
 						// A cancellation landing during the backoff sleep
 						// normalizes to an ABORTED message with the error
@@ -133,6 +151,18 @@ func Retry(opts RetryOptions) core.Middleware {
 				if msg == nil || !Retryable(msg) {
 					return s
 				}
+				serverDelay = 0
+				var ra core.RetryAfterError
+				if errors.As(s.Err(), &ra) {
+					if d, ok := ra.RetryAfter(); ok {
+						if d > o.MaxServerDelay {
+							return s // the server asked for longer than we will wait
+						}
+						serverDelay = d
+					}
+				}
+				// This attempt is discarded; what it cost is not.
+				core.ReportUsage(ctx, msg.Usage)
 			}
 			return last
 		}

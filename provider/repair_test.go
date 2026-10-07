@@ -454,3 +454,49 @@ func TestSameModelToolCallIDsAreNotRewritten(t *testing.T) {
 		t.Fatal("the foreign result did not follow its call's rewrite")
 	}
 }
+
+// Issue #75 §2: Ollama and Gemini pair results with calls BY POSITION, so a
+// synthetic result for a middle call must sit in that call's position, not
+// ahead of the real results. For [c1,c2,c3] with results [r1,r3] the
+// repaired order is r1, synth(c2), r3.
+func TestSyntheticResultsTakeTheirCallsPosition(t *testing.T) {
+	in := core.Messages{
+		core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}},
+		sameModelAssistant(tu(t, "c1", "read"), tu(t, "c2", "read"), tu(t, "c3", "read")),
+		core.ToolResultMessage{ToolUseID: "c1", ToolName: "read", Content: core.Content{core.TextBlock{Text: "r1"}}},
+		core.ToolResultMessage{ToolUseID: "c3", ToolName: "read", Content: core.Content{core.TextBlock{Text: "r3"}}},
+		core.UserMessage{Content: core.Content{core.TextBlock{Text: "next"}}},
+	}
+	out, rep := RepairTranscript(in, target())
+	if rep.SyntheticResults != 1 {
+		t.Fatalf("SyntheticResults = %d, want 1", rep.SyntheticResults)
+	}
+	var ids []string
+	for _, m := range out {
+		if tr, ok := m.(core.ToolResultMessage); ok {
+			ids = append(ids, tr.ToolUseID)
+		}
+	}
+	if strings.Join(ids, ",") != "c1,c2,c3" {
+		t.Fatalf("results in order %v, want c1,c2,c3: a positional wire would pair c1 with the synthetic", ids)
+	}
+	if roles(out) != "user,assistant,tool_result,tool_result,tool_result,user" {
+		t.Fatalf("roles = %s", roles(out))
+	}
+}
+
+// A turn whose results are all present keeps them in the order they were
+// recorded: the repair pass reorders only a turn it has to complete, so no
+// request body that needed no repair changes.
+func TestCompleteTurnsKeepTheirResultOrder(t *testing.T) {
+	in := core.Messages{
+		core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}},
+		sameModelAssistant(tu(t, "c1", "read"), tu(t, "c2", "read")),
+		core.ToolResultMessage{ToolUseID: "c2", ToolName: "read"},
+		core.ToolResultMessage{ToolUseID: "c1", ToolName: "read"},
+	}
+	out, _ := RepairTranscript(in, target())
+	if a, b := out[2].(core.ToolResultMessage).ToolUseID, out[3].(core.ToolResultMessage).ToolUseID; a != "c2" || b != "c1" {
+		t.Fatalf("a complete turn was reordered to %s,%s", a, b)
+	}
+}
