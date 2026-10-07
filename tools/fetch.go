@@ -105,6 +105,21 @@ func FetchTool(opts FetchOptions) core.Tool {
 		Description: "Fetch a URL over HTTPS and return its body. Private, loopback, " +
 			"link-local and reserved addresses are refused.",
 		Builtin: true,
+		// The method is case-insensitive here, as it always was: the enum is
+		// upper-case, and a model writing "get" is not wrong about anything
+		// but case (REQ-TOOL-11.1's repair, ahead of the enum check).
+		PrepareArguments: func(args map[string]any) map[string]any {
+			m, ok := args["method"].(string)
+			if !ok || m == strings.ToUpper(m) {
+				return args
+			}
+			out := make(map[string]any, len(args))
+			for k, v := range args {
+				out[k] = v
+			}
+			out["method"] = strings.ToUpper(m)
+			return out
+		},
 		InputSchema: schema.Object(
 			schema.Prop("url", schema.String("Absolute https:// URL")),
 			schema.Opt("method", schema.Enum("HTTP method", "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE")),

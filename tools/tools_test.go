@@ -1946,3 +1946,47 @@ func TestRepairEditArgsEscapesRawControlCharacters(t *testing.T) {
 		t.Fatalf("edits = %#v", got["edits"])
 	}
 }
+
+// Issue #87: the schema now enforces enum and maximum. Two leniencies the
+// built-in tools always had are kept as explicit argument repairs
+// (REQ-TOOL-11.1), not lost to the stricter validation: fetch_url's method is
+// case-insensitive, and search_files clamps max_matches to its cap.
+func TestBuiltinLeniencySurvivesStrictValidation(t *testing.T) {
+	ws, err := NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := All(Options{Workspace: ws, Ignore: NoGlobalExcludes()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]core.Tool{}
+	for _, tl := range all {
+		byName[tl.Name] = tl
+	}
+	prep := func(tool, args string) (core.PreparedArguments, error) {
+		t.Helper()
+		c, err := core.NewToolUse("c", tool, json.RawMessage(args))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return core.PrepareArguments(byName[tool], c)
+	}
+	byName["fetch_url"] = FetchTool(FetchOptions{})
+	{
+		p, err := prep("fetch_url", `{"url":"https://example.com","method":"get"}`)
+		if err != nil {
+			t.Fatalf("method \"get\" refused: %v", err)
+		}
+		if p.Args["method"] != "GET" {
+			t.Fatalf("method = %v, want GET", p.Args["method"])
+		}
+	}
+	p, err := prep("search_files", fmt.Sprintf(`{"pattern":"x","max_matches":%d}`, SearchMatchCap*5))
+	if err != nil {
+		t.Fatalf("max_matches over the cap refused: %v", err)
+	}
+	if fmt.Sprint(p.Args["max_matches"]) != fmt.Sprint(SearchMatchCap) {
+		t.Fatalf("max_matches = %v, want the cap %d", p.Args["max_matches"], SearchMatchCap)
+	}
+}

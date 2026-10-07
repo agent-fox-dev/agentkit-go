@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
+	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/agentfox/agentkit-go/jsonx"
 )
@@ -334,6 +338,13 @@ func coerceValue(s *Schema, v jsonx.OrderedValue, path string) (jsonx.OrderedVal
 	if s == nil {
 		return v, nil
 	}
+	// StrictSubset writes an optional property as anyOf[T, null]. A value
+	// coerces through that shape as it would through T alone.
+	if s.Type == "" {
+		if only := soleNonNullBranch(s.AnyOf); only != nil {
+			s = only
+		}
+	}
 	switch v.Kind {
 	case jsonx.KindObject:
 		o, l := coerce(s, v.Object)
@@ -355,11 +366,13 @@ func coerceValue(s *Schema, v jsonx.OrderedValue, path string) (jsonx.OrderedVal
 		switch s.Type {
 		case TypeInteger, TypeNumber:
 			// Surrounding space and trailing separators are dropped first: a
-			// model writing read_file's offset as "1, " meant 1. Anything
-			// else in the string is not a number and is left for validation
-			// to refuse.
+			// model writing read_file's offset as "1, " meant 1. What is left
+			// is written as a number only if it IS a JSON number: ParseFloat
+			// also takes "NaN", "+5", ".5", "5." and "1_0", and writing those
+			// verbatim made the arguments invalid JSON. Anything else is left
+			// as the string for validation to refuse.
 			num := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(str), ",;"))
-			if _, err := strconv.ParseFloat(num, 64); err == nil {
+			if jsonNumber.MatchString(num) && (s.Type == TypeNumber || isIntegral(num)) {
 				return jsonx.OrderedValue{Kind: jsonx.KindNumber, Scalar: json.RawMessage(num)},
 					[]Coercion{{Path: path, From: TypeString, To: s.Type}}
 			}
@@ -383,6 +396,32 @@ func coerceValue(s *Schema, v jsonx.OrderedValue, path string) (jsonx.OrderedVal
 	return v, nil
 }
 
+// jsonNumber is RFC 8259's number grammar.
+var jsonNumber = regexp.MustCompile(`^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$`)
+
+// isIntegral reports whether a JSON number literal has an integral value
+// (2, 2.0 and 2e3 do; 1.5 does not).
+func isIntegral(num string) bool {
+	f, err := strconv.ParseFloat(num, 64)
+	return err == nil && f == math.Trunc(f) && !math.IsInf(f, 0)
+}
+
+// soleNonNullBranch is the one branch of alts that is not {type: null}, or nil
+// when there is not exactly one.
+func soleNonNullBranch(alts []*Schema) *Schema {
+	var only *Schema
+	for _, a := range alts {
+		if a == nil || (a.Type == TypeNull && len(a.AnyOf) == 0) {
+			continue
+		}
+		if only != nil {
+			return nil
+		}
+		only = a
+	}
+	return only
+}
+
 func validate(s *Schema, in jsonx.OrderedObject) error {
 	var issues []Issue
 	validateObject(s, in, "", &issues)
@@ -404,28 +443,101 @@ func validateObject(s *Schema, in jsonx.OrderedObject, path string, issues *[]Is
 	for _, m := range in {
 		sub := s.Properties[m.Key]
 		if sub == nil {
+			// additionalProperties: false is a promise strict mode makes to
+			// the model; a key outside the declared set breaks it.
+			if ap := s.AdditionalProperties; ap != nil {
+				switch {
+				case !ap.Allowed:
+					*issues = append(*issues, Issue{Path: join(path, m.Key),
+						Message: "property not allowed: this object accepts only its declared properties"})
+				case ap.Schema != nil:
+					validateValue(ap.Schema, m.Value, join(path, m.Key), issues)
+				}
+			}
 			continue
 		}
 		validateValue(sub, m.Value, join(path, m.Key), issues)
 	}
 }
 
+// validateValue checks v against everything s declares: type (nullable
+// included, for containers as for scalars), const and enum, the anyOf, oneOf
+// and allOf combinators, numeric bounds and integrality, string lengths and
+// item counts. A schema that only states `type` is checked for its type, as
+// before; the other keywords are what strict mode promises the model, and a
+// promise the SDK does not check is a promise to nobody.
 func validateValue(s *Schema, v jsonx.OrderedValue, path string, issues *[]Issue) {
+	if s == nil {
+		return
+	}
+	if v.Kind == jsonx.KindNull && s.Nullable {
+		return
+	}
+	add := func(msg string) { *issues = append(*issues, Issue{Path: path, Message: msg}) }
+
+	if s.HasConst && !sameJSON(v, s.Const) {
+		add("must be " + string(s.Const))
+		return
+	}
+	if len(s.Enum) > 0 {
+		match := false
+		for _, e := range s.Enum {
+			if sameJSON(v, e) {
+				match = true
+				break
+			}
+		}
+		if !match {
+			add("must be one of " + enumList(s.Enum) + ", got " + preview(v))
+			return
+		}
+	}
+	if len(s.AnyOf) > 0 {
+		passing := 0
+		for _, alt := range s.AnyOf {
+			if conforms(alt, v) {
+				passing++
+				break
+			}
+		}
+		if passing == 0 {
+			add("matches no anyOf alternative (got " + kindName(v.Kind) + ")")
+			return
+		}
+	}
+	if len(s.OneOf) > 0 {
+		passing := 0
+		for _, alt := range s.OneOf {
+			if conforms(alt, v) {
+				passing++
+			}
+		}
+		if passing != 1 {
+			add(fmt.Sprintf("must match exactly one oneOf alternative, matches %d", passing))
+			return
+		}
+	}
+	for _, all := range s.AllOf {
+		validateValue(all, v, path, issues)
+	}
+
 	switch s.Type {
 	case TypeObject:
 		if v.Kind != jsonx.KindObject {
-			*issues = append(*issues, Issue{Path: path, Message: "expected object, got " + kindName(v.Kind) + sentAsString(v)})
+			add("expected object, got " + kindName(v.Kind) + sentAsString(v))
 			return
 		}
 		validateObject(s, v.Object, path, issues)
 	case TypeArray:
 		if v.Kind != jsonx.KindArray {
-			*issues = append(*issues, Issue{Path: path, Message: "expected array, got " + kindName(v.Kind) + sentAsString(v)})
+			add("expected array, got " + kindName(v.Kind) + sentAsString(v))
 			return
 		}
 		if s.MinItems != nil && len(v.Array) < *s.MinItems {
-			*issues = append(*issues, Issue{Path: path,
-				Message: fmt.Sprintf("expected at least %d items, got %d", *s.MinItems, len(v.Array))})
+			add(fmt.Sprintf("expected at least %d items, got %d", *s.MinItems, len(v.Array)))
+		}
+		if s.MaxItems != nil && len(v.Array) > *s.MaxItems {
+			add(fmt.Sprintf("expected at most %d items, got %d", *s.MaxItems, len(v.Array)))
 		}
 		if s.Items != nil {
 			for i := range v.Array {
@@ -433,22 +545,110 @@ func validateValue(s *Schema, v jsonx.OrderedValue, path string, issues *[]Issue
 			}
 		}
 	case TypeString:
-		if v.Kind != jsonx.KindString && !(v.Kind == jsonx.KindNull && s.Nullable) {
-			*issues = append(*issues, Issue{Path: path, Message: "expected string, got " + kindName(v.Kind)})
+		if v.Kind != jsonx.KindString {
+			add("expected string, got " + kindName(v.Kind))
+			return
+		}
+		var str string
+		_ = json.Unmarshal(v.Scalar, &str)
+		n := utf8.RuneCountInString(str)
+		if s.MinLength != nil && n < *s.MinLength {
+			add(fmt.Sprintf("expected at least %d characters, got %d", *s.MinLength, n))
+		}
+		if s.MaxLength != nil && n > *s.MaxLength {
+			add(fmt.Sprintf("expected at most %d characters, got %d", *s.MaxLength, n))
 		}
 	case TypeInteger, TypeNumber:
-		if v.Kind != jsonx.KindNumber && !(v.Kind == jsonx.KindNull && s.Nullable) {
+		if v.Kind != jsonx.KindNumber {
 			msg := "expected " + string(s.Type) + ", got " + kindName(v.Kind)
 			if v.Kind == jsonx.KindString {
 				msg += " " + quotedPreview(v) + "; pass a number, e.g. 120"
 			}
-			*issues = append(*issues, Issue{Path: path, Message: msg})
+			add(msg)
+			return
+		}
+		f, err := strconv.ParseFloat(string(v.Scalar), 64)
+		if err != nil {
+			add("expected " + string(s.Type) + ", got " + string(v.Scalar))
+			return
+		}
+		if s.Type == TypeInteger && f != math.Trunc(f) {
+			add("expected integer, got " + string(v.Scalar))
+			return
+		}
+		bound := func(ok bool, rel string, b float64) {
+			if !ok {
+				add(fmt.Sprintf("must be %s %s, got %s", rel, strconv.FormatFloat(b, 'g', -1, 64), v.Scalar))
+			}
+		}
+		if s.Minimum != nil {
+			bound(f >= *s.Minimum, "at least", *s.Minimum)
+		}
+		if s.Maximum != nil {
+			bound(f <= *s.Maximum, "at most", *s.Maximum)
+		}
+		if s.ExclusiveMinimum != nil {
+			bound(f > *s.ExclusiveMinimum, "greater than", *s.ExclusiveMinimum)
+		}
+		if s.ExclusiveMaximum != nil {
+			bound(f < *s.ExclusiveMaximum, "less than", *s.ExclusiveMaximum)
+		}
+		if s.MultipleOf != nil && *s.MultipleOf > 0 {
+			q := f / *s.MultipleOf
+			bound(q == math.Trunc(q), "a multiple of", *s.MultipleOf)
 		}
 	case TypeBoolean:
-		if v.Kind != jsonx.KindBool && !(v.Kind == jsonx.KindNull && s.Nullable) {
-			*issues = append(*issues, Issue{Path: path, Message: "expected boolean, got " + kindName(v.Kind)})
+		if v.Kind != jsonx.KindBool {
+			add("expected boolean, got " + kindName(v.Kind))
+		}
+	case TypeNull:
+		if v.Kind != jsonx.KindNull {
+			add("expected null, got " + kindName(v.Kind))
 		}
 	}
+}
+
+// conforms reports whether v satisfies s, for the combinators.
+func conforms(s *Schema, v jsonx.OrderedValue) bool {
+	var issues []Issue
+	validateValue(s, v, "", &issues)
+	return len(issues) == 0
+}
+
+// sameJSON compares a value with a raw JSON literal by meaning, not bytes:
+// 1 and 1.0 are equal, key order does not matter.
+func sameJSON(v jsonx.OrderedValue, raw json.RawMessage) bool {
+	var want any
+	if err := json.Unmarshal(raw, &want); err != nil {
+		return false
+	}
+	b, err := v.MarshalJSON()
+	if err != nil {
+		return false
+	}
+	var got any
+	if err := json.Unmarshal(b, &got); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(got, want)
+}
+
+func enumList(vals []json.RawMessage) string {
+	parts := make([]string, len(vals))
+	for i, v := range vals {
+		parts[i] = string(v)
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+// preview renders a value for an issue: a string quoted and abbreviated, any
+// other value as its JSON.
+func preview(v jsonx.OrderedValue) string {
+	if v.Kind == jsonx.KindString {
+		return quotedPreview(v)
+	}
+	b, _ := v.MarshalJSON()
+	return string(b)
 }
 
 func join(path, k string) string {
