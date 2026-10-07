@@ -74,6 +74,42 @@ type ts0461AfterRecord struct {
 	Result     *core.ToolResultMessage
 }
 
+// ts0461Tools builds the real tool set over a temp workspace.
+func ts0461Tools(t *testing.T) []core.Tool {
+	t.Helper()
+	ws, err := tools.NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWorkspace: %v", err)
+	}
+	allTools, err := tools.All(tools.Options{Workspace: ws})
+	if err != nil {
+		t.Fatalf("tools.All: %v", err)
+	}
+	return allTools
+}
+
+// ts0461Drain streams one run of a and returns the tool results its
+// ToolResultEvents and TurnEndEvents carried.
+func ts0461Drain(t *testing.T, a *Agent) (toolResultEvents, turnEndResults []core.ToolResultMessage) {
+	t.Helper()
+	st, err := a.Stream(context.Background(), "go")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for e := range st.Events() {
+		switch ev := e.(type) {
+		case core.ToolResultEvent:
+			toolResultEvents = append(toolResultEvents, ev.Message)
+		case core.TurnEndEvent:
+			turnEndResults = append(turnEndResults, ev.ToolResults...)
+		}
+	}
+	if _, err := st.RunResult(); err != nil {
+		t.Fatalf("RunResult: %v", err)
+	}
+	return toolResultEvents, turnEndResults
+}
+
 // ts0461RunAgent sets up and runs the agent, returning all captured data.
 func ts0461RunAgent(t *testing.T, srv *httptest.Server, requestBodies *[][]byte, requestMu *sync.Mutex) (
 	afterRecs []ts0461AfterRecord,
@@ -85,18 +121,7 @@ func ts0461RunAgent(t *testing.T, srv *httptest.Server, requestBodies *[][]byte,
 ) {
 	t.Helper()
 
-	workspace := t.TempDir()
 	sessionPath = filepath.Join(t.TempDir(), "session.jsonl")
-
-	ws, err := tools.NewWorkspace(workspace)
-	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
-	}
-
-	allTools, err := tools.All(tools.Options{Workspace: ws})
-	if err != nil {
-		t.Fatalf("tools.All: %v", err)
-	}
 
 	model = &core.Model{
 		ID: "claude-test", Name: "Claude Test", API: anthropic.API, Provider: "anthropic",
@@ -150,31 +175,13 @@ func ts0461RunAgent(t *testing.T, srv *httptest.Server, requestBodies *[][]byte,
 	if err != nil {
 		t.Fatalf("NewAgent: %v", err)
 	}
-	for _, tool := range allTools {
+	for _, tool := range ts0461Tools(t) {
 		if err := a.RegisterTool(tool); err != nil {
 			t.Fatalf("RegisterTool(%s): %v", tool.Name, err)
 		}
 	}
 
-	st, err := a.Stream(context.Background(), "go")
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	for e := range st.Events() {
-		switch ev := e.(type) {
-		case core.ToolResultEvent:
-			eventMu.Lock()
-			toolResultEvents = append(toolResultEvents, ev.Message)
-			eventMu.Unlock()
-		case core.TurnEndEvent:
-			eventMu.Lock()
-			turnEndResults = append(turnEndResults, ev.ToolResults...)
-			eventMu.Unlock()
-		}
-	}
-	if _, err := st.RunResult(); err != nil {
-		t.Fatalf("RunResult: %v", err)
-	}
+	toolResultEvents, turnEndResults = ts0461Drain(t, a)
 
 	if err := store.Close(); err != nil {
 		t.Fatalf("store.Close: %v", err)

@@ -2,107 +2,183 @@ package session
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/jsonx"
 )
 
-// TS-04-51: A session log written before this change loads with nil Metadata
-// and re-encodes byte-identically, and new metadata stays losslessly readable
-// by an older build.
-func TestPreChangeLogLoadsWithNilMetadataAndReencodesIdentically_TS04_51(t *testing.T) {
-	// The pre-change tool_result line from the golden (no metadata key).
-	const preToolResult = `{"role":"tool_result","tool_use_id":"call_1","tool_name":"find_files","content":[{"type":"text","text":"{\"ok\":true,\"data\":{\"entries\":[\"main.go\"]}}"}]}`
+// goldenMetadata is the one metadata object the session-log golden gained
+// with tool metadata. TS-04-48 pins it as the golden's only change, so
+// removing it gives back the golden exactly as it was before the change.
+const goldenMetadata = `,"metadata":{"total_lines":1,"duration_ms":3}`
 
-	// Decode the pre-change line.
-	m, err := DecodeMessage(json.RawMessage(preToolResult))
-	if err != nil {
-		t.Fatalf("DecodeMessage: %v", err)
-	}
-	tr := m.(core.ToolResultMessage)
-	if tr.Metadata != nil {
-		t.Fatalf("pre-change tool result decoded with non-nil Metadata: %+v", tr.Metadata)
-	}
-
-	// Re-encode must produce the same bytes.
-	b, err := EncodeMessage(m)
+// preChangeGoldenLog returns testdata/golden/session_log.jsonl as of the
+// commit before tool metadata: a log with no metadata key.
+func preChangeGoldenLog(t *testing.T) []byte {
+	t.Helper()
+	golden, err := os.ReadFile(filepath.Join("..", "testdata", "golden", "session_log.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(b) != preToolResult {
-		t.Fatalf("re-encode mismatch:\ngot:  %s\nwant: %s", b, preToolResult)
+	if n := strings.Count(string(golden), goldenMetadata); n != 1 {
+		t.Fatalf("golden holds %d copies of %s, want 1", n, goldenMetadata)
+	}
+	return []byte(strings.Replace(string(golden), goldenMetadata, "", 1))
+}
+
+// TS-04-51: A session log written before this change loads with nil Metadata
+// and re-encodes byte-identically.
+func TestPreChangeLogLoadsWithNilMetadataAndReencodesIdentically_TS04_51(t *testing.T) {
+	pre := preChangeGoldenLog(t)
+	lines := strings.Split(strings.TrimSuffix(string(pre), "\n"), "\n")
+
+	loaded := LoadBytes("pre.jsonl", pre)
+	if len(loaded.Repairs) != 0 {
+		t.Fatalf("pre-change log loaded with repairs: %+v", loaded.Repairs)
 	}
 
-	// A full pre-change session log round-trips byte-identically.
-	const preLog = `{"type":"session","version":1,"id":"sess-1","timestamp":"2024-03-01T12:00:00Z","cwd":"/work"}
-{"id":"e1","parent_id":"","type":"message","timestamp":"2024-03-01T12:00:00Z","message":{"role":"tool_result","tool_use_id":"call_1","tool_name":"find_files","content":[{"type":"text","text":"hello"}]}}
-`
-	path := writeLog(t, strings.Split(strings.TrimSuffix(preLog, "\n"), "\n")...)
-	loaded := mustLoad(t, path)
-	for _, e := range loaded.Entries() {
+	header, err := EncodeHeader(loaded.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(header) != lines[0] {
+		t.Fatalf("header re-encode mismatch:\ngot:  %s\nwant: %s", header, lines[0])
+	}
+
+	entries := loaded.Entries()
+	if len(entries) != len(lines)-1 {
+		t.Fatalf("loaded %d entries, want %d", len(entries), len(lines)-1)
+	}
+	toolResults := 0
+	for i, e := range entries {
 		if e.Message != nil {
 			if tr, ok := e.Message.Message.(core.ToolResultMessage); ok {
+				toolResults++
 				if tr.Metadata != nil {
-					t.Fatalf("loaded pre-change tool result has non-nil Metadata: %+v", tr.Metadata)
+					t.Fatalf("pre-change tool result decoded with non-nil Metadata: %+v", tr.Metadata)
 				}
 			}
 		}
+		// Drop the verbatim bytes so the entry is rebuilt through the codec
+		// rather than passed through.
+		e.Raw = nil
+		b, err := EncodeEntry(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != lines[i+1] {
+			t.Fatalf("entry %d re-encode mismatch:\ngot:  %s\nwant: %s", i, b, lines[i+1])
+		}
 	}
+	if toolResults != 1 {
+		t.Fatalf("pre-change log holds %d tool results, want 1", toolResults)
+	}
+}
 
-	// Now test that new metadata is a top-level key and survives an older build.
-	ec := 0
-	newMsg := core.ToolResultMessage{
-		ToolUseID: "call_1",
-		ToolName:  "probe",
-		Content:   core.Content{core.TextBlock{Text: "x"}},
-		Metadata:  &core.ToolMetadata{ExitCode: &ec, Outcome: "ok"},
-		Timestamp: fixedTime,
-	}
-	newBytes, err := EncodeMessage(newMsg)
+// decodeAsOldBuild decodes a tool_result the way a build without tool
+// metadata does: the same decoder, with "metadata" missing from the known
+// key list, so the key lands in Unknown.
+func decodeAsOldBuild(t *testing.T, raw []byte) core.ToolResultMessage {
+	t.Helper()
+	v, err := jsonx.DecodeOrdered(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// metadata must be a top-level key of the tool_result object.
-	v, err := jsonx.DecodeOrdered(newBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := v.Object.Get("metadata"); !ok {
-		t.Fatal("metadata is not a top-level key in the new encoding")
-	}
-
-	// Simulate an older build that does not know "metadata": decode with
-	// toolResultKnown minus "metadata".
 	oldKnown := make([]string, 0, len(toolResultKnown))
 	for _, k := range toolResultKnown {
 		if k != "metadata" {
 			oldKnown = append(oldKnown, k)
 		}
 	}
-
-	// Decode the new bytes, but compute Unknown using the old known list.
-	decoded, err := DecodeMessage(newBytes)
+	m, err := DecodeMessage(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The current build decodes metadata properly. Now simulate old build:
-	// re-decode with rest() using oldKnown.
-	oldUnknown := rest(v.Object, oldKnown...)
-	if oldUnknown.Index("metadata") < 0 {
-		t.Fatal("with old known list, metadata should land in Unknown")
-	}
+	tr := m.(core.ToolResultMessage)
+	tr.Metadata = nil
+	tr.Unknown = rest(v.Object, oldKnown...)
+	return tr
+}
 
-	// An old build would re-encode with appendRest, preserving the metadata key.
-	// Verify the decoded message re-encodes to the same bytes.
-	reencoded, err := EncodeMessage(decoded)
-	if err != nil {
-		t.Fatal(err)
+// TS-04-51: New metadata is a top-level key of the tool_result object, and a
+// build without this change keeps it in Unknown and loses none of it.
+//
+// Byte-identity through an older build holds only for a message with no
+// timestamp: REQ-9.1 writes metadata before timestamp, and an older build
+// appends Unknown keys after its modelled ones, so it moves metadata behind
+// timestamp. See docs/errata/04_runner_and_tool_metadata.md.
+func TestNewMetadataSurvivesABuildWithoutIt_TS04_51(t *testing.T) {
+	ec := 2
+	md := &core.ToolMetadata{DurationMS: 7, ExitCode: &ec, Outcome: "exit"}
+	cases := []struct {
+		name      string
+		timestamp time.Time
+		new       string
+		old       string
+	}{
+		{
+			name: "no timestamp",
+			new:  `{"role":"tool_result","tool_use_id":"call_1","tool_name":"execute","content":[{"type":"text","text":"x"}],"metadata":{"duration_ms":7,"exit_code":2,"outcome":"exit"}}`,
+			old:  `{"role":"tool_result","tool_use_id":"call_1","tool_name":"execute","content":[{"type":"text","text":"x"}],"metadata":{"duration_ms":7,"exit_code":2,"outcome":"exit"}}`,
+		},
+		{
+			name:      "timestamped",
+			timestamp: fixedTime,
+			new:       `{"role":"tool_result","tool_use_id":"call_1","tool_name":"execute","content":[{"type":"text","text":"x"}],"metadata":{"duration_ms":7,"exit_code":2,"outcome":"exit"},"timestamp":"2024-03-01T12:00:00Z"}`,
+			old:       `{"role":"tool_result","tool_use_id":"call_1","tool_name":"execute","content":[{"type":"text","text":"x"}],"timestamp":"2024-03-01T12:00:00Z","metadata":{"duration_ms":7,"exit_code":2,"outcome":"exit"}}`,
+		},
 	}
-	// The current build knows metadata, so it re-encodes it properly.
-	if !strings.Contains(string(reencoded), `"metadata":{`) {
-		t.Fatalf("re-encoded does not contain metadata: %s", reencoded)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := core.ToolResultMessage{
+				ToolUseID: "call_1",
+				ToolName:  "execute",
+				Content:   core.Content{core.TextBlock{Text: "x"}},
+				Metadata:  md,
+				Timestamp: tc.timestamp,
+			}
+			newBytes, err := EncodeMessage(msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(newBytes) != tc.new {
+				t.Fatalf("new encoding:\ngot:  %s\nwant: %s", newBytes, tc.new)
+			}
+
+			old := decodeAsOldBuild(t, newBytes)
+			if old.Unknown.Index("metadata") < 0 {
+				t.Fatalf("an older build does not keep metadata in Unknown: %+v", old.Unknown)
+			}
+			oldBytes, err := EncodeMessage(old)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(oldBytes) != tc.old {
+				t.Fatalf("older build re-encoding:\ngot:  %s\nwant: %s", oldBytes, tc.old)
+			}
+
+			// Nothing is lost: this build reads the older build's bytes back
+			// to the same message, and re-encodes them to the original bytes.
+			back, err := DecodeMessage(json.RawMessage(oldBytes))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(back.(core.ToolResultMessage).Metadata, md) {
+				t.Fatalf("metadata after an older build: %+v, want %+v", back.(core.ToolResultMessage).Metadata, md)
+			}
+			again, err := EncodeMessage(back)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(again) != tc.new {
+				t.Fatalf("re-encoding after an older build:\ngot:  %s\nwant: %s", again, tc.new)
+			}
+		})
 	}
 }
