@@ -73,7 +73,8 @@ uses — `search` and `freshness` on their own, `agent` wired into `tools.All`.
 | Query language | RE2 regex | zoekt boolean (substring, regex, sym:, file:, lang:, case:) |
 | Walk order | Deterministic (alphabetical) | Ranked by zoekt score (best first) |
 | Per-file size limit | None | 1 MiB (matches outline's default) |
-| Binary detection | NUL in first 8 KiB | Same |
+| Binary detection | NUL in first 64 KiB (ripgrep's buffer); a later NUL ends the file's search | NUL in first 8 KiB |
+| Encoding | A byte-order mark is honoured: UTF-8 BOM stripped, UTF-16 transcoded | Bytes as stored |
 | Result grouping | By file, match order | By file, best chunks first |
 | Exhaustiveness | All matches up to cap | Ranked subset |
 

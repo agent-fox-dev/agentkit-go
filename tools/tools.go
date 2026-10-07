@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/imagex"
@@ -459,8 +460,21 @@ func (f *fileTools) readFile() core.Tool {
 				// lines, so the offset it names is the next unseen line.
 				body = append(body, ReadOffsetMarker(from, page.to, page.total))
 			}
+			// A file that is not valid UTF-8 (Latin-1, CP1252, Shift-JIS…)
+			// reaches the model with U+FFFD in place of each invalid byte.
+			// It is not decoded under a guessed charset: the envelope says
+			// so, and the text says what it costs, because edit_file cannot
+			// match a line the model only ever saw with U+FFFD in it.
+			encoding := "utf-8"
+			for _, l := range page.lines {
+				if !l.long && !utf8.ValidString(l.text) {
+					encoding = "unknown (not valid UTF-8)"
+					body = append(body, InvalidUTF8Marker(shown))
+					break
+				}
+			}
 			content := strings.Join(body, "\n")
-			r := core.OKResult(map[string]any{"content": content, "encoding": "utf-8"})
+			r := core.OKResult(map[string]any{"content": content, "encoding": encoding})
 			r.Metadata = md
 			// The model reads the file itself, not a JSON string containing
 			// it (core.ToolResult.Text): no envelope, no escaping, the

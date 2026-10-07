@@ -305,8 +305,35 @@ func applyEditsFolded(content string, edits []Edit) (string, int, bool) {
 			spans = append(spans, span{idx: i, start: off, end: off + len(e.OldString)})
 			continue
 		}
-		needle := foldLines(strings.Split(e.OldString, "\n"))
-		start, end, count := findFoldedBlock(folded, needle)
+		// A needle that begins or ends with a newline: the empty piece the
+		// split leaves at that end is not a line. A trailing one says the
+		// needle runs THROUGH the last line's newline, to the start of the
+		// next line; a leading one says it starts at the END of the line
+		// before. Matched as a line, it folded to "" and claimed a
+		// whitespace-only neighbour, whose bytes the splice then dropped.
+		parts := strings.Split(e.OldString, "\n")
+		lead := len(parts) > 1 && parts[0] == ""
+		if lead {
+			parts = parts[1:]
+		}
+		trail := len(parts) > 1 && parts[len(parts)-1] == ""
+		if trail {
+			parts = parts[:len(parts)-1]
+		}
+		// A leading newline needs a line before the match, a trailing one a
+		// newline after it: the last element of lines has none.
+		lo, hi := 0, len(folded)
+		if lead {
+			lo = 1
+		}
+		if trail {
+			hi = len(folded) - 1
+		}
+		start, end, count := 0, 0, 0
+		if lo < hi {
+			start, end, count = findFoldedBlock(folded[lo:hi], foldLines(parts))
+			start, end = start+lo, end+lo
+		}
 		// Every edit must match, and match exactly once. A batch where the
 		// fold rescues some edits and not others is not a batch the model
 		// meant, and applying the subset would be the silent partial
@@ -315,8 +342,16 @@ func applyEditsFolded(content string, edits []Edit) (string, int, bool) {
 			return "", 0, false
 		}
 		// Lines [start, end): from the first line's start to the last line's
-		// end, its newline excluded.
-		spans = append(spans, span{idx: i, start: lineStart[start], end: lineStart[end] - 1})
+		// end, its newline excluded — widened by the newline before or after
+		// when the needle carries one.
+		sp := span{idx: i, start: lineStart[start], end: lineStart[end] - 1}
+		if lead {
+			sp.start--
+		}
+		if trail {
+			sp.end++
+		}
+		spans = append(spans, sp)
 	}
 
 	sort.Slice(spans, func(a, b int) bool { return spans[a].start < spans[b].start })

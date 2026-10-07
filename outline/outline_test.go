@@ -184,7 +184,7 @@ func TestUnknownExtension_TS_01_9(t *testing.T) {
 		".go", ".py", ".js", ".jsx", ".ts", ".tsx",
 		".rs", ".java", ".kt", ".kts", ".cs",
 		".rb", ".c", ".h", ".cpp", ".cxx", ".cc", ".hpp",
-		".php", ".swift", ".scala", ".lua", ".sh", ".bash", ".pl", ".pm",
+		".php", ".lua", ".sh", ".bash", ".pl", ".pm",
 	}
 	for _, ext := range knownExts {
 		lang := langForExt(ext)

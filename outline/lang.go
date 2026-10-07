@@ -20,11 +20,15 @@ const (
 	LangC          = "C"
 	LangCPP        = "C++"
 	LangPHP        = "PHP"
-	LangSwift      = "Swift"
-	LangScala      = "Scala"
-	LangLua        = "Lua"
-	LangShell      = "Shell"
-	LangPerl       = "Perl"
+	// LangSwift and LangScala are not in the extension table: Universal
+	// Ctags has no parser for either and there is no heuristic, so a file
+	// in them has no outline backend. The names are kept for callers that
+	// spell them.
+	LangSwift = "Swift"
+	LangScala = "Scala"
+	LangLua   = "Lua"
+	LangShell = "Shell"
+	LangPerl  = "Perl"
 
 	// Languages with no heuristic, outlined by universal ctags alone.
 	LangAda           = "Ada"
@@ -69,9 +73,10 @@ const (
 // `.s` assembly or R) or the parser's output is not worth having (Haskell's
 // reports type constructors as functions and misses ordinary functions).
 // Markup and data formats (Markdown, JSON, YAML, HTML) are left out: their
-// tags are headings and keys, not declarations. Swift and Scala are listed
-// although Universal Ctags 6.2 has no parser for them, so that a ctags build
-// that has one is used.
+// tags are headings and keys, not declarations. Swift and Scala are NOT
+// listed: no Universal Ctags build has a parser for either, and a listed
+// extension with no backend read as "0 declarations" whenever ctags was
+// installed, where "language not recognised" is the truth.
 var extToLang = map[string]string{
 	// Go
 	".go": LangGo,
@@ -122,8 +127,6 @@ var extToLang = map[string]string{
 
 	// ctags-only languages
 	".php":     LangPHP,
-	".swift":   LangSwift,
-	".scala":   LangScala,
 	".lua":     LangLua,
 	".sh":      LangShell,
 	".bash":    LangShell,

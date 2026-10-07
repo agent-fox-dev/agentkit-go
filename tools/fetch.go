@@ -47,7 +47,8 @@ var returnedHeaders = []string{
 type FetchOptions struct {
 	// AllowHTTP is REQ-SEC-09's opt-in (`tools.allow_http`). Off by default.
 	AllowHTTP bool
-	// Guard is the SSRF guard. Nil builds one from AllowHTTP.
+	// Guard is the SSRF guard. Nil builds one from AllowHTTP. http:// is
+	// permitted when either this AllowHTTP or the Guard's is set.
 	Guard *SSRFGuard
 	// DefaultTimeout applies when the call supplies no timeout_s.
 	DefaultTimeout time.Duration
@@ -68,6 +69,10 @@ func FetchTool(opts FetchOptions) core.Tool {
 	if guard == nil {
 		guard = &SSRFGuard{AllowHTTP: opts.AllowHTTP}
 	}
+	// The opt-in holds wherever it was stated. A Guard supplied for its
+	// resolver or dialer used to replace FetchOptions.AllowHTTP with its own
+	// (usually false), silently.
+	allowHTTP := opts.AllowHTTP || guard.AllowHTTP
 	timeout := opts.DefaultTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
@@ -79,7 +84,7 @@ func FetchTool(opts FetchOptions) core.Tool {
 			if len(via) >= FetchMaxRedirects {
 				return fmt.Errorf("tools: stopped after %d redirects", FetchMaxRedirects)
 			}
-			if err := checkScheme(req.URL, guard.AllowHTTP); err != nil {
+			if err := checkScheme(req.URL, allowHTTP); err != nil {
 				// Per-hop scheme re-validation. Without it an https URL
 				// redirects to http and the guard's HTTPS-only promise holds
 				// for exactly one hop.
@@ -145,7 +150,7 @@ func FetchTool(opts FetchOptions) core.Tool {
 			if err != nil {
 				return core.ErrResult("invalid_arguments", err.Error())
 			}
-			if err := checkScheme(u, guard.AllowHTTP); err != nil {
+			if err := checkScheme(u, allowHTTP); err != nil {
 				return core.ErrResult("scheme_not_allowed", err.Error())
 			}
 

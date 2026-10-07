@@ -1,9 +1,59 @@
 package outline
 
 import (
+	"bytes"
 	"regexp"
 	"strings"
 )
+
+// An identifier is letters, digits and underscore in ANY script. Go's \w is
+// ASCII, so a rule written with it cut `def café()` to `caf` and found no
+// `class Ölfass` at all; rx and jsRx compile every rule with \w widened.
+// JavaScript and TypeScript add `$`, which is an identifier character there
+// (`$init`, a jQuery or Svelte `$store`).
+const (
+	identChars   = `\p{L}\p{N}_`
+	jsIdentChars = identChars + `$`
+)
+
+// rx compiles a heuristic pattern with a Unicode \w.
+func rx(pattern string) *regexp.Regexp { return regexp.MustCompile(widenWord(pattern, identChars)) }
+
+// jsRx compiles a JavaScript or TypeScript pattern, whose \w also takes `$`.
+func jsRx(pattern string) *regexp.Regexp {
+	return regexp.MustCompile(widenWord(pattern, jsIdentChars))
+}
+
+// widenWord rewrites every \w in pattern as the class of chars: `[chars]`
+// outside a bracket expression and the bare chars inside one.
+func widenWord(pattern, chars string) string {
+	var b strings.Builder
+	inClass := false
+	for i := 0; i < len(pattern); i++ {
+		c := pattern[i]
+		switch {
+		case c == '\\' && i+1 < len(pattern):
+			if pattern[i+1] == 'w' {
+				if inClass {
+					b.WriteString(chars)
+				} else {
+					b.WriteString("[" + chars + "]")
+				}
+			} else {
+				b.WriteByte(c)
+				b.WriteByte(pattern[i+1])
+			}
+			i++
+			continue
+		case c == '[' && !inClass:
+			inClass = true
+		case c == ']' && inClass:
+			inClass = false
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
 
 // heuristicLangs maps language names to their heuristic rule sets.
 // Only the ten languages with heuristic support are listed.
@@ -53,15 +103,15 @@ func prefixed(p string) func(string, string) bool {
 // namespaceBlock is the opener of a namespace with a body: `namespace X {`
 // or `namespace X` with the brace on the next line, but not C#'s
 // file-scoped `namespace X;`.
-var namespaceBlock = regexp.MustCompile(`^namespace\s+[\w.:]+\s*\{?\s*$`)
+var namespaceBlock = rx(`^namespace\s+[\w.:]+\s*\{?\s*$`)
 
 // --- Python ---
 // def name(... and class Name...
 // async def name(...
 // Exported: true unless name starts with underscore.
 var pythonRules = []heuristicRule{
-	{re: regexp.MustCompile(`^(?:async\s+)?def\s+(\w+)`), kind: KindFunc, nameIdx: 1, exported: notUnderscore},
-	{re: regexp.MustCompile(`^class\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: notUnderscore},
+	{re: rx(`^(?:async\s+)?def\s+(\w+)`), kind: KindFunc, nameIdx: 1, exported: notUnderscore},
+	{re: rx(`^class\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: notUnderscore},
 }
 
 // --- JavaScript ---
@@ -77,20 +127,20 @@ const jsExport = `^(?:(export)\s+)?(?:default\s+)?(?:declare\s+)?`
 const jsArrow = jsExport + `(?:const|let|var)\s+(\w+)\s*(?::[^=]+)?=\s*(?:async\s+)?(?:function\b|(?:\([^)]*\)|\w+)\s*(?::[^=]+)?=>)`
 
 var javascriptRules = []heuristicRule{
-	{re: regexp.MustCompile(jsExport + `(?:async\s+)?function\s*\*?\s*(\w+)`), kind: KindFunc, nameIdx: 2, exported: prefixed("export")},
-	{re: regexp.MustCompile(jsExport + `class\s+(\w+)`), kind: KindClass, nameIdx: 2, exported: prefixed("export")},
-	{re: regexp.MustCompile(jsArrow), kind: KindFunc, nameIdx: 2, exported: prefixed("export")},
+	{re: jsRx(jsExport + `(?:async\s+)?function\s*\*?\s*(\w+)`), kind: KindFunc, nameIdx: 2, exported: prefixed("export")},
+	{re: jsRx(jsExport + `class\s+(\w+)`), kind: KindClass, nameIdx: 2, exported: prefixed("export")},
+	{re: jsRx(jsArrow), kind: KindFunc, nameIdx: 2, exported: prefixed("export")},
 }
 
 // --- TypeScript ---
 // Same as JavaScript plus abstract and declare, interface, enum and type.
 var typescriptRules = []heuristicRule{
-	{re: regexp.MustCompile(jsExport + `(?:async\s+)?function\s*\*?\s*(\w+)`), kind: KindFunc, nameIdx: 2, exported: prefixed("export")},
-	{re: regexp.MustCompile(jsExport + `(?:abstract\s+)?class\s+(\w+)`), kind: KindClass, nameIdx: 2, exported: prefixed("export")},
-	{re: regexp.MustCompile(jsExport + `interface\s+(\w+)`), kind: KindInterface, nameIdx: 2, exported: prefixed("export")},
-	{re: regexp.MustCompile(jsExport + `(?:const\s+)?enum\s+(\w+)`), kind: KindEnum, nameIdx: 2, exported: prefixed("export")},
-	{re: regexp.MustCompile(jsExport + `type\s+(\w+)\s*(?:<[^=]*>)?\s*=`), kind: KindType, nameIdx: 2, exported: prefixed("export")},
-	{re: regexp.MustCompile(jsArrow), kind: KindFunc, nameIdx: 2, exported: prefixed("export")},
+	{re: jsRx(jsExport + `(?:async\s+)?function\s*\*?\s*(\w+)`), kind: KindFunc, nameIdx: 2, exported: prefixed("export")},
+	{re: jsRx(jsExport + `(?:abstract\s+)?class\s+(\w+)`), kind: KindClass, nameIdx: 2, exported: prefixed("export")},
+	{re: jsRx(jsExport + `interface\s+(\w+)`), kind: KindInterface, nameIdx: 2, exported: prefixed("export")},
+	{re: jsRx(jsExport + `(?:const\s+)?enum\s+(\w+)`), kind: KindEnum, nameIdx: 2, exported: prefixed("export")},
+	{re: jsRx(jsExport + `type\s+(\w+)\s*(?:<[^=]*>)?\s*=`), kind: KindType, nameIdx: 2, exported: prefixed("export")},
+	{re: jsRx(jsArrow), kind: KindFunc, nameIdx: 2, exported: prefixed("export")},
 }
 
 // --- Rust ---
@@ -107,12 +157,12 @@ var typescriptRules = []heuristicRule{
 const rustPub = `^(?:(pub(?:\([^)]*\))?)\s+)?`
 
 var rustRules = []heuristicRule{
-	{re: regexp.MustCompile(rustPub + `(?:(?:const|async|unsafe|extern(?:\s+"[^"]*")?)\s+)*fn\s+(\w+)`), kind: KindFunc, nameIdx: 2, exported: prefixed("pub")},
-	{re: regexp.MustCompile(rustPub + `struct\s+(\w+)`), kind: KindType, nameIdx: 2, exported: prefixed("pub")},
-	{re: regexp.MustCompile(rustPub + `enum\s+(\w+)`), kind: KindEnum, nameIdx: 2, exported: prefixed("pub")},
-	{re: regexp.MustCompile(rustPub + `(?:unsafe\s+)?trait\s+(\w+)`), kind: KindTrait, nameIdx: 2, exported: prefixed("pub")},
-	{re: regexp.MustCompile(rustPub + `const\s+(\w+)`), kind: KindConst, nameIdx: 2, exported: prefixed("pub")},
-	{re: regexp.MustCompile(`^macro_rules!\s*(\w+)`), kind: KindMacro, nameIdx: 1, exported: never},
+	{re: rx(rustPub + `(?:(?:const|async|unsafe|extern(?:\s+"[^"]*")?)\s+)*fn\s+(\w+)`), kind: KindFunc, nameIdx: 2, exported: prefixed("pub")},
+	{re: rx(rustPub + `struct\s+(\w+)`), kind: KindType, nameIdx: 2, exported: prefixed("pub")},
+	{re: rx(rustPub + `enum\s+(\w+)`), kind: KindEnum, nameIdx: 2, exported: prefixed("pub")},
+	{re: rx(rustPub + `(?:unsafe\s+)?trait\s+(\w+)`), kind: KindTrait, nameIdx: 2, exported: prefixed("pub")},
+	{re: rx(rustPub + `const\s+(\w+)`), kind: KindConst, nameIdx: 2, exported: prefixed("pub")},
+	{re: rx(`^macro_rules!\s*(\w+)`), kind: KindMacro, nameIdx: 1, exported: never},
 }
 
 // --- Java ---
@@ -123,26 +173,43 @@ var rustRules = []heuristicRule{
 const javaMods = `^(?:(?:public|protected|private|static|abstract|final|sealed|non-sealed|strictfp)\s+)*`
 
 var javaRules = []heuristicRule{
-	{re: regexp.MustCompile(javaMods + `class\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: prefixed("public")},
-	{re: regexp.MustCompile(javaMods + `@?interface\s+(\w+)`), kind: KindInterface, nameIdx: 1, exported: prefixed("public")},
-	{re: regexp.MustCompile(javaMods + `enum\s+(\w+)`), kind: KindEnum, nameIdx: 1, exported: prefixed("public")},
-	{re: regexp.MustCompile(javaMods + `record\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: prefixed("public")},
+	{re: rx(javaMods + `class\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: prefixed("public")},
+	{re: rx(javaMods + `@?interface\s+(\w+)`), kind: KindInterface, nameIdx: 1, exported: prefixed("public")},
+	{re: rx(javaMods + `enum\s+(\w+)`), kind: KindEnum, nameIdx: 1, exported: prefixed("public")},
+	{re: rx(javaMods + `record\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: prefixed("public")},
 }
 
 // --- Kotlin ---
 // fun name(... including generic (`fun <T> name`) and extension
 // (`fun Type.name`) functions; class, interface (and `fun interface`), enum
 // class, object and typealias; each after any of Kotlin's modifiers.
-// Exported: true when prefixed with public.
+// Exported: true unless private, internal or protected is among the
+// modifiers — Kotlin's default visibility is public, and `public` is almost
+// never written.
 const kotlinMods = `^(?:(?:public|private|internal|protected|open|abstract|sealed|data|inline|value|annotation|inner|suspend|override|operator|infix|tailrec|external|expect|actual|final|const|lateinit)\s+)*`
 
 var kotlinRules = []heuristicRule{
-	{re: regexp.MustCompile(kotlinMods + `enum\s+class\s+(\w+)`), kind: KindEnum, nameIdx: 1, exported: prefixed("public")},
-	{re: regexp.MustCompile(kotlinMods + `(?:fun\s+)?interface\s+(\w+)`), kind: KindInterface, nameIdx: 1, exported: prefixed("public")},
-	{re: regexp.MustCompile(kotlinMods + `fun\s+(?:<[^>]*>\s*)?(?:[\w<>?,. ]*\.)?(\w+)\s*\(`), kind: KindFunc, nameIdx: 1, exported: prefixed("public")},
-	{re: regexp.MustCompile(kotlinMods + `class\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: prefixed("public")},
-	{re: regexp.MustCompile(kotlinMods + `object\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: prefixed("public")},
-	{re: regexp.MustCompile(kotlinMods + `typealias\s+(\w+)`), kind: KindType, nameIdx: 1, exported: prefixed("public")},
+	{re: rx(kotlinMods + `enum\s+class\s+(\w+)`), kind: KindEnum, nameIdx: 1, exported: kotlinExported},
+	{re: rx(kotlinMods + `(?:fun\s+)?interface\s+(\w+)`), kind: KindInterface, nameIdx: 1, exported: kotlinExported},
+	{re: rx(kotlinMods + `fun\s+(?:<[^>]*>\s*)?(?:[\w<>?,. ]*\.)?(\w+)\s*\(`), kind: KindFunc, nameIdx: 1, exported: kotlinExported},
+	{re: rx(kotlinMods + `class\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: kotlinExported},
+	{re: rx(kotlinMods + `object\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: kotlinExported},
+	{re: rx(kotlinMods + `typealias\s+(\w+)`), kind: KindType, nameIdx: 1, exported: kotlinExported},
+}
+
+// kotlinModsRe is the run of modifiers in front of a Kotlin declaration.
+var kotlinModsRe = regexp.MustCompile(kotlinMods)
+
+// kotlinExported reports a declaration visible outside its module: any
+// that no private, internal or protected modifier narrows.
+func kotlinExported(line, _ string) bool {
+	for _, m := range strings.Fields(kotlinModsRe.FindString(line)) {
+		switch m {
+		case "private", "internal", "protected":
+			return false
+		}
+	}
+	return true
 }
 
 // --- C# ---
@@ -153,12 +220,12 @@ var kotlinRules = []heuristicRule{
 const csharpMods = `^(?:(?:public|private|protected|internal|static|abstract|sealed|partial|readonly|unsafe|new|file|ref)\s+)*`
 
 var csharpRules = []heuristicRule{
-	{re: regexp.MustCompile(`^namespace\s+([\w.]+)`), kind: KindModule, nameIdx: 1, exported: always},
-	{re: regexp.MustCompile(csharpMods + `interface\s+(\w+)`), kind: KindInterface, nameIdx: 1, exported: prefixed("public")},
-	{re: regexp.MustCompile(csharpMods + `enum\s+(\w+)`), kind: KindEnum, nameIdx: 1, exported: prefixed("public")},
-	{re: regexp.MustCompile(csharpMods + `struct\s+(\w+)`), kind: KindType, nameIdx: 1, exported: prefixed("public")},
-	{re: regexp.MustCompile(csharpMods + `record\s+(?:class\s+|struct\s+)?(\w+)`), kind: KindClass, nameIdx: 1, exported: prefixed("public")},
-	{re: regexp.MustCompile(csharpMods + `class\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: prefixed("public")},
+	{re: rx(`^namespace\s+([\w.]+)`), kind: KindModule, nameIdx: 1, exported: always},
+	{re: rx(csharpMods + `interface\s+(\w+)`), kind: KindInterface, nameIdx: 1, exported: prefixed("public")},
+	{re: rx(csharpMods + `enum\s+(\w+)`), kind: KindEnum, nameIdx: 1, exported: prefixed("public")},
+	{re: rx(csharpMods + `struct\s+(\w+)`), kind: KindType, nameIdx: 1, exported: prefixed("public")},
+	{re: rx(csharpMods + `record\s+(?:class\s+|struct\s+)?(\w+)`), kind: KindClass, nameIdx: 1, exported: prefixed("public")},
+	{re: rx(csharpMods + `class\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: prefixed("public")},
 }
 
 // --- Ruby ---
@@ -166,9 +233,9 @@ var csharpRules = []heuristicRule{
 // A method name may end in ?, ! or =.
 // Exported: true unless name starts with underscore.
 var rubyRules = []heuristicRule{
-	{re: regexp.MustCompile(`^def\s+(?:self\.)?(\w+[?!=]?)`), kind: KindFunc, nameIdx: 1, exported: notUnderscore},
-	{re: regexp.MustCompile(`^class\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: notUnderscore},
-	{re: regexp.MustCompile(`^module\s+(\w+)`), kind: KindModule, nameIdx: 1, exported: notUnderscore},
+	{re: rx(`^def\s+(?:self\.)?(\w+[?!=]?)`), kind: KindFunc, nameIdx: 1, exported: notUnderscore},
+	{re: rx(`^class\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: notUnderscore},
+	{re: rx(`^module\s+(\w+)`), kind: KindModule, nameIdx: 1, exported: notUnderscore},
 }
 
 // --- C ---
@@ -180,23 +247,23 @@ var rubyRules = []heuristicRule{
 // The typedef rules come first: `typedef void (*fn)(int);` would otherwise
 // read as a function named void.
 var cTypedefRules = []heuristicRule{
-	{re: regexp.MustCompile(`^typedef\b[^;{]*\(\s*\*\s*(\w+)\s*\)`), kind: KindType, nameIdx: 1, exported: always},
-	{re: regexp.MustCompile(`^typedef\b.*\}\s*\*?\s*(\w+)\s*;`), kind: KindType, nameIdx: 1, exported: always},
-	{re: regexp.MustCompile(`^typedef\b[^;{(]*?\b(\w+)\s*(?:\[[^\]]*\])?\s*;`), kind: KindType, nameIdx: 1, exported: always},
+	{re: rx(`^typedef\b[^;{]*\(\s*\*\s*(\w+)\s*\)`), kind: KindType, nameIdx: 1, exported: always},
+	{re: rx(`^typedef\b.*\}\s*\*?\s*(\w+)\s*;`), kind: KindType, nameIdx: 1, exported: always},
+	{re: rx(`^typedef\b[^;{(]*?\b(\w+)\s*(?:\[[^\]]*\])?\s*;`), kind: KindType, nameIdx: 1, exported: always},
 }
 
 var cRules = append(append([]heuristicRule(nil), cTypedefRules...),
 	heuristicRule{
 		// Match: optional-type name( — a function definition at column 0.
 		// This matches lines like "void hello(int x) {" or "int add(int a, int b) {"
-		re:       regexp.MustCompile(`^(?:(?:static|inline|extern|unsigned|signed|const|volatile)\s+)*(?:\w+[\s*]+)+(\w+)\s*\(`),
+		re:       rx(`^(?:(?:static|inline|extern|unsigned|signed|const|volatile)\s+)*(?:\w+[\s*]+)+(\w+)\s*\(`),
 		kind:     KindFunc,
 		nameIdx:  1,
 		exported: always,
 	},
-	heuristicRule{re: regexp.MustCompile(`^struct\s+(\w+)`), kind: KindType, nameIdx: 1, exported: always},
-	heuristicRule{re: regexp.MustCompile(`^enum\s+(\w+)`), kind: KindEnum, nameIdx: 1, exported: always},
-	heuristicRule{re: regexp.MustCompile(`^#define\s+(\w+)`), kind: KindMacro, nameIdx: 1, exported: always},
+	heuristicRule{re: rx(`^struct\s+(\w+)`), kind: KindType, nameIdx: 1, exported: always},
+	heuristicRule{re: rx(`^enum\s+(\w+)`), kind: KindEnum, nameIdx: 1, exported: always},
+	heuristicRule{re: rx(`^#define\s+(\w+)`), kind: KindMacro, nameIdx: 1, exported: always},
 )
 
 // --- C++ ---
@@ -207,7 +274,7 @@ const cppFuncMods = `^(?:(?:static|inline|extern|unsigned|signed|const|volatile|
 
 var cppRules = append(append([]heuristicRule(nil), cTypedefRules...),
 	heuristicRule{
-		re:           regexp.MustCompile(cppFuncMods + `(?:[\w:<>,]+[\s*&]+)*?((?:\w+::)+)(~?\w+)\s*\(`),
+		re:           rx(cppFuncMods + `(?:[\w:<>,]+[\s*&]+)*?((?:\w+::)+)(~?\w+)\s*\(`),
 		kind:         KindMethod,
 		nameIdx:      2,
 		containerIdx: 1,
@@ -215,23 +282,23 @@ var cppRules = append(append([]heuristicRule(nil), cTypedefRules...),
 	},
 	heuristicRule{
 		// Function definitions at column 0.
-		re:       regexp.MustCompile(cppFuncMods + `(?:[\w:<>,]+[\s*&]+)+(\w+)\s*\(`),
+		re:       rx(cppFuncMods + `(?:[\w:<>,]+[\s*&]+)+(\w+)\s*\(`),
 		kind:     KindFunc,
 		nameIdx:  1,
 		exported: always,
 	},
-	heuristicRule{re: regexp.MustCompile(`^class\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: always},
-	heuristicRule{re: regexp.MustCompile(`^struct\s+(\w+)`), kind: KindType, nameIdx: 1, exported: always},
-	heuristicRule{re: regexp.MustCompile(`^namespace\s+([\w:]+)`), kind: KindModule, nameIdx: 1, exported: always},
-	heuristicRule{re: regexp.MustCompile(`^enum\s+(?:class\s+|struct\s+)?(\w+)`), kind: KindEnum, nameIdx: 1, exported: always},
-	heuristicRule{re: regexp.MustCompile(`^#define\s+(\w+)`), kind: KindMacro, nameIdx: 1, exported: always},
+	heuristicRule{re: rx(`^class\s+(\w+)`), kind: KindClass, nameIdx: 1, exported: always},
+	heuristicRule{re: rx(`^struct\s+(\w+)`), kind: KindType, nameIdx: 1, exported: always},
+	heuristicRule{re: rx(`^namespace\s+([\w:]+)`), kind: KindModule, nameIdx: 1, exported: always},
+	heuristicRule{re: rx(`^enum\s+(?:class\s+|struct\s+)?(\w+)`), kind: KindEnum, nameIdx: 1, exported: always},
+	heuristicRule{re: rx(`^#define\s+(\w+)`), kind: KindMacro, nameIdx: 1, exported: always},
 )
 
 // typedefOpen is the first line of a typedef whose body spans lines, and
 // typedefClose the line that names it.
 var (
-	typedefOpen  = regexp.MustCompile(`^typedef\s+(?:struct|union|enum)\b[^;]*$`)
-	typedefClose = regexp.MustCompile(`^\}\s*\*?\s*(\w+)\s*;`)
+	typedefOpen  = rx(`^typedef\s+(?:struct|union|enum)\b[^;]*$`)
+	typedefClose = rx(`^\}\s*\*?\s*(\w+)\s*;`)
 )
 
 // hasHeuristic returns true if the language has a heuristic backend.
@@ -259,6 +326,9 @@ func outlineHeuristic(abs string, src []byte, opts Options) (File, bool) {
 		return File{}, false
 	}
 
+	// A UTF-8 byte-order mark is not part of line 1: left in, it stood in
+	// front of the first declaration and no anchored rule matched it.
+	src = bytes.TrimPrefix(src, []byte("\xEF\xBB\xBF"))
 	lines := strings.Split(string(src), "\n")
 	var decls []Decl
 	var scopes []openScope

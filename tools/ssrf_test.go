@@ -626,3 +626,28 @@ func TestDropElementMatchesWholeTagNamesInOnePass(t *testing.T) {
 		t.Fatalf("scripts survived or text was lost: %.40q", got)
 	}
 }
+
+// TestAllowHTTPHoldsWithACustomGuard (issue #89): FetchOptions.AllowHTTP is
+// the tools.allow_http opt-in, and supplying a Guard — for its resolver or
+// dialer — must not silently switch it off.
+func TestAllowHTTPHoldsWithACustomGuard(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	defer srv.Close()
+	g := &SSRFGuard{ // AllowHTTP left false: the guard is here for its dialer
+		Resolve: func(context.Context, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
+		},
+		DialAddr: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, strings.TrimPrefix(srv.URL, "http://"))
+		},
+	}
+	res := fetchThrough(t, srv, FetchOptions{Guard: g, AllowHTTP: true},
+		map[string]any{"url": "http://example.com/x"})
+	if !res.OK {
+		t.Fatalf("FetchOptions.AllowHTTP was ignored under a custom Guard: %s %s", res.Error, res.Detail)
+	}
+	res = fetchThrough(t, srv, FetchOptions{Guard: g}, map[string]any{"url": "http://example.com/x"})
+	if res.OK || res.Error != "scheme_not_allowed" {
+		t.Fatalf("with neither opt-in, http:// must be refused; got ok=%v %s", res.OK, res.Error)
+	}
+}

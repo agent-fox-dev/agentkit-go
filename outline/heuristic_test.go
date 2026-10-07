@@ -410,11 +410,13 @@ func TestHeuristicFixtures_TS_01_39(t *testing.T) {
 			lang:    LangKotlin,
 			expected: []expected{
 				{"publicFun", KindFunc, true},
-				{"packageFun", KindFunc, false},
+				{"packageFun", KindFunc, true}, // Kotlin's default visibility is public
 				{"PublicClass", KindClass, true},
-				{"PackageClass", KindClass, false},
+				{"PackageClass", KindClass, true},
 				{"PublicInterface", KindInterface, true},
 				{"Direction", KindEnum, true},
+				{"privateFun", KindFunc, false},
+				{"InternalClass", KindClass, false},
 			},
 		},
 		{
@@ -547,9 +549,16 @@ func TestHeuristicExported_TS_01_40(t *testing.T) {
 		{LangJava, ".java", "public class Pub {}\n", "Pub", true},
 		{LangJava, ".java", "class Pkg {}\n", "Pkg", false},
 
-		// Kotlin: public = exported, no public = not exported
+		// Kotlin: PUBLIC BY DEFAULT — exported unless private, internal or
+		// protected (issue #89; erratum 01_outline_kotlin_unicode_swift).
 		{LangKotlin, ".kt", "public fun pubFun() {}\n", "pubFun", true},
-		{LangKotlin, ".kt", "fun pkgFun() {}\n", "pkgFun", false},
+		{LangKotlin, ".kt", "fun pkgFun() {}\n", "pkgFun", true},
+		{LangKotlin, ".kt", "class Plain\n", "Plain", true},
+		{LangKotlin, ".kt", "data class Point(val x: Int)\n", "Point", true},
+		{LangKotlin, ".kt", "private fun hidden() {}\n", "hidden", false},
+		{LangKotlin, ".kt", "internal class Inner\n", "Inner", false},
+		{LangKotlin, ".kt", "protected open fun prot() {}\n", "prot", false},
+		{LangKotlin, ".kt", "private data class P(val x: Int)\n", "P", false},
 
 		// C#: public = exported, no public = not exported
 		{LangCSharp, ".cs", "public class Pub {}\n", "Pub", true},
@@ -725,5 +734,80 @@ func TestNoHeuristicNoCtags_TS_01_42(t *testing.T) {
 	}
 	if fs2[0].Decls == nil {
 		t.Error("OutlineMany failing Runner: Decls is nil")
+	}
+}
+
+// TestHeuristicIdentifiersAreUnicode (issue #89): an identifier is letters,
+// digits and underscore in any script, plus the characters a language adds to
+// its own — JavaScript's $, Ruby's trailing ? and ! — so a name is never cut
+// at its first non-ASCII letter.
+func TestHeuristicIdentifiersAreUnicode(t *testing.T) {
+	dir := t.TempDir()
+	for i, c := range []struct{ file, src, want string }{
+		{"a.py", "def café():\n    pass\n", "café"},
+		{"b.py", "class Größe:\n    pass\n", "Größe"},
+		{"c.java", "public class Ölfass {}\n", "Ölfass"},
+		{"d.kt", "fun größe() {}\n", "größe"},
+		{"e.js", "function $init() {}\n", "$init"},
+		{"f.ts", "export const $store = () => 1\n", "$store"},
+		{"g.rb", "def valid?\nend\n", "valid?"},
+		{"h.rs", "pub fn naïve() {}\n", "naïve"},
+	} {
+		p := filepath.Join(dir, fmt.Sprintf("%d_%s", i, c.file))
+		if err := os.WriteFile(p, []byte(c.src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		f, err := Outline(context.Background(), p, nil, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := declMap(f.Decls)[c.want]; !ok {
+			t.Errorf("%s: decls %v, want %q", c.file, declNames(f.Decls), c.want)
+		}
+	}
+}
+
+// TestHeuristicReadsLineOneBehindABOM (issue #89): a UTF-8 byte-order mark
+// is not part of the first declaration's line.
+func TestHeuristicReadsLineOneBehindABOM(t *testing.T) {
+	dir := t.TempDir()
+	bom := "\xEF\xBB\xBF"
+	for _, c := range []struct {
+		file, src string
+		want      []string
+	}{
+		{"a.java", bom + "public class First {}\npublic class Second {}\n", []string{"First", "Second"}},
+		{"b.py", bom + "def first():\n    pass\n", []string{"first"}},
+	} {
+		p := filepath.Join(dir, c.file)
+		if err := os.WriteFile(p, []byte(c.src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		f, err := Outline(context.Background(), p, nil, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		dm := declMap(f.Decls)
+		for _, w := range c.want {
+			d, ok := dm[w]
+			if !ok {
+				t.Errorf("%s: decls %v, want %q", c.file, declNames(f.Decls), w)
+				continue
+			}
+			if d.StartLine == 1 && d.Signature != "" && d.Signature[0] == 0xEF {
+				t.Errorf("%s: %q's signature carries the BOM: %q", c.file, w, d.Signature)
+			}
+		}
+	}
+}
+
+// TestSwiftAndScalaAreNotInTheTable (issue #89): Universal Ctags has no
+// parser for either, and neither has a heuristic, so listing them only turned
+// "no backend" into a false "0 declarations".
+func TestSwiftAndScalaAreNotInTheTable(t *testing.T) {
+	for _, ext := range []string{".swift", ".scala"} {
+		if lang := LangForExt(ext); lang != "" {
+			t.Errorf("LangForExt(%q) = %q, want it outside the table", ext, lang)
+		}
 	}
 }

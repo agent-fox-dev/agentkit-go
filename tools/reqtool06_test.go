@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -224,5 +225,35 @@ func TestTheDefaultToolSetIsPlatformStable(t *testing.T) {
 			"This list is the head of the cached prompt prefix; changing it is a "+
 			"cache invalidation for every consumer, so it is pinned deliberately.",
 			got, want)
+	}
+}
+
+// TestRunArgvResolvesTheProgramWithTheChildsPATH (issue #89): the program is
+// looked up through the PATH the child will run with. Looked up through the
+// parent's instead, a custom Env named one binary and ran another — or, as
+// here, could not find a program its own PATH holds.
+func TestRunArgvResolvesTheProgramWithTheChildsPATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the probe is a shell script")
+	}
+	dir := t.TempDir()
+	probe := filepath.Join(dir, "agentkit-envpath-probe")
+	if err := os.WriteFile(probe, []byte("#!/bin/sh\necho from-env-path\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res, err := tools.RunArgv(context.Background(), []string{"agentkit-envpath-probe"}, tools.ExecOptions{
+		Env: []string{"PATH=" + dir + string(os.PathListSeparator) + "/bin:/usr/bin"},
+	})
+	if err != nil {
+		t.Fatalf("RunArgv: %v", err)
+	}
+	if !strings.Contains(res.Output, "from-env-path") {
+		t.Fatalf("output = %q, want the program on the child's PATH", res.Output)
+	}
+
+	// An Env with no PATH keeps the process's own lookup.
+	res, err = tools.RunArgv(context.Background(), []string{"sh", "-c", "echo ok"}, tools.ExecOptions{Env: []string{"FOO=1"}})
+	if err != nil || !strings.Contains(res.Output, "ok") {
+		t.Fatalf("an Env without PATH: %v %q", err, res.Output)
 	}
 }
