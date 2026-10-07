@@ -153,7 +153,7 @@ func parseCtagsOutput(
 		lang := langForExt(filepath.Ext(tag.Path))
 
 		// Map kind.
-		kind := mapCtagsKind(tag.Kind)
+		kind := mapCtagsKind(tag.Kind, lang)
 		if kind == "" && isPythonMethodTag(tag, lang) {
 			// Python reports a method as kind "member" in its class; it is a
 			// function-kind tag in a type-like scope, which becomes a method
@@ -176,8 +176,10 @@ func parseCtagsOutput(
 		// A type-like tag nested in a function is also dropped.
 		container := ""
 		if tag.ScopeKind != "" {
-			if kind == KindFunc && isTypeLikeScope(tag.ScopeKind) {
-				// Function scoped in a type-like kind → method.
+			if (kind == KindFunc || kind == KindMethod) && isTypeLikeScope(tag.ScopeKind, lang) {
+				// A function or method scoped in a type-like kind is a method
+				// of that type. Most parsers say "method"; C++, PHP and
+				// Python say "function" or "member".
 				kind = KindMethod
 				container = tag.Scope
 			} else if isFunctionLikeScope(tag.ScopeKind, lang) {
@@ -188,6 +190,12 @@ func parseCtagsOutput(
 				}
 				continue
 			}
+		}
+
+		// A "method" in no type is a function: Kotlin and GDScript report a
+		// top-level function as kind "method" with no scope.
+		if kind == KindMethod && container == "" {
+			kind = KindFunc
 		}
 
 		// Signature: use the source line at StartLine if available.
@@ -258,20 +266,40 @@ func sourceLineAt(src []byte, lineNum int) string {
 	return ""
 }
 
-// mapCtagsKind maps a ctags kind string to the closed Kind set.
+// mapCtagsKind maps a ctags kind string to the closed Kind set. lang
+// decides the words whose meaning differs between universal ctags' parsers.
 // Returns "" for kinds that should be dropped.
-func mapCtagsKind(k string) Kind {
+func mapCtagsKind(k, lang string) Kind {
 	switch strings.ToLower(k) {
-	case "function", "func", "subroutine", "procedure":
+	case "function", "func", "subroutine", "procedure", "generator",
+		"subprogram", "subprogspec":
 		return KindFunc
-	case "method":
+	case "method", "singletonmethod", "rpc":
 		return KindMethod
-	case "type", "struct", "typedef", "union":
+	case "type", "struct", "typedef", "union", "alias", "typealias",
+		"message", "record", "table", "view":
 		return KindType
 	case "class":
 		return KindClass
 	case "interface":
+		switch lang {
+		case LangRust:
+			// The Rust parser reports a trait as "interface".
+			return KindTrait
+		case LangObjectiveC:
+			// An Objective-C @interface declares a class.
+			return KindClass
+		}
 		return KindInterface
+	case "protocol", "service":
+		return KindInterface
+	case "object":
+		// A Kotlin object is a singleton class. Other parsers (JSON among
+		// them) use the word for things that are not declarations.
+		if lang == LangKotlin {
+			return KindClass
+		}
+		return ""
 	case "enum":
 		return KindEnum
 	case "trait":
@@ -280,7 +308,13 @@ func mapCtagsKind(k string) Kind {
 		return KindConst
 	case "variable", "var":
 		return KindVar
-	case "module", "namespace", "package":
+	case "resource", "data", "output":
+		// Terraform's named blocks are its declarations.
+		if lang == LangTerraform {
+			return KindVar
+		}
+		return ""
+	case "module", "namespace", "package", "packspec":
 		return KindModule
 	case "macro", "define":
 		return KindMacro
@@ -289,11 +323,23 @@ func mapCtagsKind(k string) Kind {
 	}
 }
 
-// isTypeLikeScope returns true if the scope kind is type-like.
-func isTypeLikeScope(scopeKind string) bool {
+// isTypeLikeScope returns true if the scope kind is type-like: a function or
+// method scoped in it is a method of it.
+func isTypeLikeScope(scopeKind, lang string) bool {
 	switch strings.ToLower(scopeKind) {
-	case "class", "struct", "interface", "enum", "trait", "impl", "type":
+	case "class", "struct", "interface", "enum", "trait", "impl", "type",
+		// Rust's and Objective-C's parsers name an impl block, or an
+		// @implementation, "implementation".
+		"implementation",
+		// A Protobuf or Thrift rpc belongs to its service.
+		"service",
+		// Kotlin methods of an object, Objective-C methods of a protocol.
+		"object", "protocol":
 		return true
+	case "module":
+		// A Ruby module holds methods (`def self.x`, mixins); in Elixir,
+		// Erlang or Fortran a module holds functions.
+		return lang == LangRuby
 	}
 	return false
 }
@@ -319,7 +365,7 @@ func isFunctionLikeScope(scopeKind, lang string) bool {
 func isPythonMethodTag(tag ctagsTag, lang string) bool {
 	return lang == LangPython &&
 		strings.EqualFold(tag.Kind, "member") &&
-		isTypeLikeScope(tag.ScopeKind)
+		isTypeLikeScope(tag.ScopeKind, lang)
 }
 
 // isTypeKind reports whether k declares a type.

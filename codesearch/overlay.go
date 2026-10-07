@@ -145,9 +145,7 @@ func (idx *Index) buildOverlayShard(ctx context.Context, dirtySet map[string]boo
 			Branches: []string{"HEAD"},
 		}
 
-		ext := filepath.Ext(fe.abs)
-		lang := langForExt(ext)
-		if lang != "" {
+		if lang := langFor(fe.abs, content); lang != "" {
 			doc.Language = lang
 		}
 

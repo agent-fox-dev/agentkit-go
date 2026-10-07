@@ -642,3 +642,71 @@ void Widget_draw() {}
 		t.Errorf("C++ types are missing: %v", cppNames)
 	}
 }
+
+// Issue #73 §1, §3 and §5 against real universal ctags: methods in the
+// languages whose parser says "method" carry their type, and a language the
+// table used to gate out is outlined.
+func TestOutlineManyWithRealCtagsMethodContainers(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows: ctags process handling differs")
+	}
+	bin, err := exec.LookPath("ctags")
+	if err != nil {
+		t.Skip("ctags not on PATH; skipping real ctags test")
+	}
+	out, err := exec.Command(bin, "--version").Output()
+	if err != nil || !strings.Contains(string(out), "Universal Ctags") {
+		t.Skip("ctags is not Universal Ctags; skipping")
+	}
+
+	root := t.TempDir()
+	srcs := map[string]string{
+		"Shape.java": "public abstract class Shape {\n  public abstract double area();\n}\n",
+		"runner.rb":  "module M\n  class Runner\n    def run; end\n    def self.helper; end\n  end\nend\n",
+		"lib.rs":     "pub trait Tr { fn t(&self); }\npub struct S;\nimpl S { pub async fn run(&self) {} }\n",
+		"m.ex":       "defmodule M do\n  def f(x), do: x\nend\n",
+		"api.proto":  "syntax = \"proto3\";\nmessage Req { int32 a = 1; }\nservice Api { rpc Call(Req) returns (Req); }\n",
+	}
+	names := []string{"Shape.java", "runner.rb", "lib.rs", "m.ex", "api.proto"}
+	var sources []outline.Source
+	for _, n := range names {
+		p := filepath.Join(root, n)
+		if err := os.WriteFile(p, []byte(srcs[n]), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sources = append(sources, outline.Source{Abs: p})
+	}
+	files, _, err := outline.OutlineMany(context.Background(), sources,
+		outline.Options{Root: root, Runner: tools.CtagsRunner(nil)})
+	if err != nil {
+		t.Fatalf("OutlineMany: %v", err)
+	}
+	type want struct {
+		kind      outline.Kind
+		container string
+	}
+	expect := []map[string]want{
+		{"Shape": {outline.KindClass, ""}, "area": {outline.KindMethod, "Shape"}},
+		{"M": {outline.KindModule, ""}, "Runner": {outline.KindClass, ""},
+			"run": {outline.KindMethod, "M.Runner"}, "helper": {outline.KindMethod, "M.Runner"}},
+		{"Tr": {outline.KindTrait, ""}, "t": {outline.KindMethod, "Tr"}, "run": {outline.KindMethod, "S"}},
+		{"M": {outline.KindModule, ""}, "f": {outline.KindFunc, ""}},
+		{"Req": {outline.KindType, ""}, "Api": {outline.KindInterface, ""}, "Call": {outline.KindMethod, "Api"}},
+	}
+	for i, f := range files {
+		if f.Backend != outline.BackendCtags {
+			t.Errorf("%s: backend %v, want ctags", names[i], f.Backend)
+			continue
+		}
+		got := map[string]outline.Decl{}
+		for _, d := range f.Decls {
+			got[d.Name] = d
+		}
+		for name, w := range expect[i] {
+			d, ok := got[name]
+			if !ok || d.Kind != w.kind || d.Container != w.container {
+				t.Errorf("%s %s = %+v (present=%v), want %s in %q", names[i], name, d, ok, w.kind, w.container)
+			}
+		}
+	}
+}

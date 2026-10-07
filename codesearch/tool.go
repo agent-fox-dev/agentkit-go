@@ -41,7 +41,7 @@ const codeSearchDescription = `Search the codebase using zoekt query syntax. Ret
 
 Examples:
   sym:Runner
-  retry file:\.go$ -file:_test
+  retry file:^src/ -file:test
   lang:python "def load"
   (compaction or summarize) case:no`
 

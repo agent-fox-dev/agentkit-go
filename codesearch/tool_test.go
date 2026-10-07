@@ -71,7 +71,7 @@ func TestCodeSearchToolDefinition_TS03_16(t *testing.T) {
 	// Four examples
 	examples := []string{
 		"sym:Runner",
-		`retry file:\.go$ -file:_test`,
+		`retry file:^src/ -file:test`,
 		`lang:python "def load"`,
 		`(compaction or summarize) case:no`,
 	}
