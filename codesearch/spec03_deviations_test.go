@@ -389,3 +389,17 @@ func TestSymbolsCountsFilesWithinTheQueriedScope(t *testing.T) {
 		t.Errorf("FilesIndexed for the whole workspace = %d, want 5", ans.FilesIndexed)
 	}
 }
+
+// Issue #73 §5: a `.h` header holding C++ is indexed as C++, so `lang:c++`
+// finds a C++ project's headers; a C header stays C.
+func TestLangForSniffsHeaders(t *testing.T) {
+	if got := langFor("/r/w.h", []byte("namespace ui {\nclass Widget {};\n}\n")); got != "C++" {
+		t.Errorf("langFor(C++ header) = %q, want C++", got)
+	}
+	if got := langFor("/r/c.h", []byte("struct point { int x; };\n")); got != "C" {
+		t.Errorf("langFor(C header) = %q, want C", got)
+	}
+	if got := langFor("/r/README.md", []byte("# x")); got != "Markdown" {
+		t.Errorf("langFor(README.md) = %q, want Markdown", got)
+	}
+}

@@ -788,9 +788,7 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 			Branches: []string{"HEAD"},
 		}
 
-		ext := filepath.Ext(fe.abs)
-		lang := langForExt(ext)
-		if lang != "" {
+		if lang := langFor(fe.abs, content); lang != "" {
 			doc.Language = lang
 		}
 
@@ -930,8 +928,16 @@ var docLangs = map[string]string{
 	".html": "HTML",
 	".htm":  "HTML",
 	".css":  "CSS",
-	".sql":  "SQL",
-	".r":    "R",
+}
+
+// langFor is the language of the file at path with this content: outline's
+// answer, which tells a C++ header from a C one by its content, then
+// docLangs by extension.
+func langFor(path string, content []byte) string {
+	if lang := outline.LangFor(path, content); lang != "" {
+		return lang
+	}
+	return docLangs[strings.ToLower(filepath.Ext(path))]
 }
 
 // langForExt maps a file extension to the language name zoekt filters on:

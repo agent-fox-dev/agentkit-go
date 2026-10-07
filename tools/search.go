@@ -124,7 +124,7 @@ func (f *fileTools) searchFiles() core.Tool {
 			schema.Opt("context_lines", schema.Int(fmt.Sprintf(
 				"Lines of context either side of a match (0 to %d)", MaxSearchContextLines)).
 				Min(0).Max(MaxSearchContextLines)),
-			schema.Opt("file_glob", schema.String("Only search files matching this glob, e.g. **/*.go")),
+			schema.Opt("file_glob", schema.String("Only search files matching this glob, e.g. **/*.py or src/**/*.ts")),
 			schema.Opt("case_sensitive", schema.Bool("Omit for smart-case: a lowercase pattern matches any case")),
 			schema.Opt("max_matches", schema.Int(fmt.Sprintf(
 				"Maximum matches to return (1 to %d; default %d)", SearchMatchCap, SearchMatchCap)).

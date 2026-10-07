@@ -13,7 +13,8 @@ file and line, the claim the code breaks, and the evidence.
 
 It is **not** responsible for:
 
-- Style, naming, or formatting. `gofmt` decides formatting; nothing else does.
+- Style, naming, or formatting. The project's formatter decides formatting;
+  nothing else does.
 - Performance, unless a numeric budget in the PRD (NFR-PERF-09) is exceeded
   and a benchmark shows it.
 - Architecture opinions. Whether a package boundary is in the right place is a
@@ -71,10 +72,23 @@ boilerplate and gets reasoned away.
 Run these first. Their exit status is the result; do not re-derive it by
 reading. Report each as `PASS`, `FAIL`, or `SKIPPED` with the reason.
 
+The gates are the project's own, not a fixed list: look for them in its
+`Makefile`, CI configuration, manifest (`package.json` scripts,
+`pyproject.toml`, `Cargo.toml`) or README, and run what it runs. There are
+always three kinds, whatever the language:
+
+- **format**: the formatter in check mode (`gofmt -l .`, `ruff format
+  --check`, `prettier --check .`, `cargo fmt --check`); any output is a FAIL.
+- **lint**: the static checks (`go vet ./...`, `ruff check`, `eslint .`,
+  `cargo clippy`).
+- **test**: the test suite, with the race detector or sanitizers where the
+  toolchain has them (`go test -race ./...`, `pytest`, `npm test`,
+  `cargo test`).
+
+and any further gates the project defines. In this SDK's own repository
+those are the dependency-policy ledger and the cross-target build:
+
 ```
-gofmt -l .                                   # any output is a FAIL
-go vet ./...
-go test -race ./...
 go test -short ./internal/policy/...         # cgo probe, dependency-policy ledger
 go test -run TestCrossTargetBuildAndVet ./internal/policy/   # NFR-COMPAT-06
 ```
@@ -91,11 +105,10 @@ summary paragraph.
 
 ```
 gates:
-  gofmt: PASS|FAIL|SKIPPED <reason>
-  vet: PASS|FAIL|SKIPPED <reason>
-  test-race: PASS|FAIL|SKIPPED <reason>
-  policy: PASS|FAIL|SKIPPED <reason>
-  cross-target: PASS|FAIL|SKIPPED <reason>
+  format: PASS|FAIL|SKIPPED <reason>
+  lint: PASS|FAIL|SKIPPED <reason>
+  test: PASS|FAIL|SKIPPED <reason>
+  <each further gate>: PASS|FAIL|SKIPPED <reason>
 findings:
   - severity: bug|risk|nit
     at: <path>:<line>

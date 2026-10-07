@@ -953,7 +953,7 @@ func (f *fileTools) findFiles() core.Tool {
 		Description: "Find files by glob pattern, skipping .gitignored paths.",
 		Builtin:     true,
 		InputSchema: schema.Object(
-			schema.Prop("pattern", schema.String("Glob pattern, e.g. **/*.go")),
+			schema.Prop("pattern", schema.String("Glob pattern, e.g. **/*.py or src/**/*.ts")),
 			schema.Opt("path", schema.String("Directory to search from (default the workspace root)")),
 			schema.Opt("file_type", schema.String("What to match: \"file\" (default), \"dir\" or \"any\"")),
 			schema.Opt("limit", schema.Int(fmt.Sprintf("Maximum results (default %d, at most %d)",

@@ -157,17 +157,7 @@ func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, e
 			}
 			// Runner error: fall through to heuristic/none.
 		} else {
-			decls := tagsByIdx[0]
-			if decls == nil {
-				decls = []Decl{}
-			}
-			f := File{
-				Path:    filePath(abs, opts.Root),
-				Lang:    lang,
-				Backend: BackendCtags,
-				Decls:   decls,
-			}
-			return finishFile(f), nil
+			return ctagsFile(abs, src, tagsByIdx[0], opts), nil
 		}
 	}
 
@@ -177,13 +167,7 @@ func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, e
 	}
 
 	// No heuristic available: return none.
-	f := File{
-		Path:    filePath(abs, opts.Root),
-		Lang:    lang,
-		Backend: BackendNone,
-		Decls:   []Decl{},
-	}
-	return finishFile(f), nil
+	return heuristicOrNone(abs, src, opts), nil
 }
 
 // OutlineMany outlines many files, returning one File per input in order.
@@ -325,16 +309,7 @@ func OutlineMany(ctx context.Context, srcs []Source, opts Options) ([]File, Stat
 
 			// Assign ctags results to files.
 			for _, e := range batch {
-				decls, ok := tagsByIdx[e.srcIdx]
-				if !ok {
-					decls = []Decl{}
-				}
-				files[e.srcIdx] = finishFile(File{
-					Path:    filePath(e.abs, opts.Root),
-					Lang:    langForExt(filepath.Ext(e.abs)),
-					Backend: BackendCtags,
-					Decls:   decls,
-				})
+				files[e.srcIdx] = ctagsFile(e.abs, e.src, tagsByIdx[e.srcIdx], opts)
 			}
 		}
 	} else {
@@ -347,15 +322,33 @@ func OutlineMany(ctx context.Context, srcs []Source, opts Options) ([]File, Stat
 	return files, stats, nil
 }
 
+// ctagsFile is the File for the declarations ctags gave a file. A file ctags
+// gave nothing — no parser for it, or a parser that classifies everything
+// as something the closed set drops — is not "usable output" (spec 01 §3):
+// it goes to the heuristic, when that finds something, rather than becoming
+// an outline poorer than the one without ctags.
+func ctagsFile(abs string, src []byte, decls []Decl, opts Options) File {
+	if len(decls) == 0 {
+		if f, ok := outlineHeuristic(abs, src, opts); ok && len(f.Decls) > 0 {
+			return f
+		}
+	}
+	return finishFile(File{
+		Path:    filePath(abs, opts.Root),
+		Lang:    LangFor(abs, src),
+		Backend: BackendCtags,
+		Decls:   decls,
+	})
+}
+
 // heuristicOrNone tries the heuristic backend for a file and falls back to none.
 func heuristicOrNone(abs string, src []byte, opts Options) File {
 	if f, ok := outlineHeuristic(abs, src, opts); ok {
 		return f
 	}
-	lang := langForExt(filepath.Ext(abs))
 	return finishFile(File{
 		Path:    filePath(abs, opts.Root),
-		Lang:    lang,
+		Lang:    LangFor(abs, src),
 		Backend: BackendNone,
 		Decls:   []Decl{},
 	})
