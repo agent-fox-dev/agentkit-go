@@ -102,7 +102,13 @@ type ToolResultMessage struct {
 	// transcript (REQ-CACHE-10). Opaque to the loop.
 	AddedToolNames []string
 	Usage          *Usage // optional (§5); a pointer, never omitempty
-	Unknown        jsonx.OrderedObject
+	// Metadata is the producing handler's structured metadata (exit code,
+	// outcome, truncation, spill path, totals, duration, line ending).
+	// Persisted by the session codec, never sent to a provider. Nil for
+	// handler-less results (unknown tool, invalid arguments, blocked,
+	// aborted, max_tokens synthesis, repair synthesis).
+	Metadata *ToolMetadata
+	Unknown  jsonx.OrderedObject
 }
 
 func (UserMessage) Role() Role       { return RoleUser }
@@ -138,6 +144,7 @@ func (m ToolResultMessage) Clone() Message {
 		u := *m.Usage
 		m.Usage = &u
 	}
+	m.Metadata = m.Metadata.Clone()
 	return m
 }
 

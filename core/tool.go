@@ -204,6 +204,38 @@ type ToolMetadata struct {
 	LineEnding  string `json:"line_ending,omitzero"`
 }
 
+// Clone returns a deep copy of m, including a fresh ExitCode pointer. Nil
+// returns nil.
+func (m *ToolMetadata) Clone() *ToolMetadata {
+	if m == nil {
+		return nil
+	}
+	c := *m
+	if m.ExitCode != nil {
+		v := *m.ExitCode
+		c.ExitCode = &v
+	}
+	return &c
+}
+
+// IsEmpty reports whether m is nil or has every field at its zero value
+// (including a nil ExitCode pointer). An empty metadata carries no
+// information and is treated as nil on the message.
+func (m *ToolMetadata) IsEmpty() bool {
+	if m == nil {
+		return true
+	}
+	return !m.Truncated &&
+		m.TruncatedBy == "" &&
+		m.TotalBytes == 0 &&
+		m.TotalLines == 0 &&
+		m.SpillPath == "" &&
+		m.DurationMS == 0 &&
+		m.ExitCode == nil &&
+		m.Outcome == "" &&
+		m.LineEnding == ""
+}
+
 // ---------------------------------------------------------- exposure policy
 
 type NoToolsMode string
