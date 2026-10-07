@@ -135,3 +135,34 @@ func TestARawStringImportPathIsLintedLikeAQuotedOne(t *testing.T) {
 		t.Fatalf("skill lint violations = %+v, want the same finding", bad)
 	}
 }
+
+// Issue #84: a file whose import block does not parse is refused, not
+// cleared — a syntax error in the imports is the cheapest way to hide one —
+// and a forbidden import the partial parse can see is still named.
+func TestAnUnparseableImportBlockIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	writeGo(t, dir, "x.go", "package p\n\nimport (\n\t\"github.com/agentfox/agentkit-go/internal/secret\"\n\t\"fmt\"\n\nfunc F() { fmt.Println() }\n")
+	for name, lint := range map[string]func(string) ([]plugins.BadImport, error){
+		"LintImports": plugins.LintImports, "LintSkillImports": plugins.LintSkillImports,
+	} {
+		bad, err := lint(dir)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var unreadable, internal bool
+		for _, b := range bad {
+			if strings.Contains(b.Reason, "could not parse") {
+				unreadable = true
+			}
+			if b.Import == "github.com/agentfox/agentkit-go/internal/secret" && b.Reason == "" {
+				internal = true
+			}
+		}
+		if !unreadable {
+			t.Errorf("%s: %+v; a file whose imports do not parse must be refused", name, bad)
+		}
+		if !internal {
+			t.Errorf("%s: %+v; the internal import visible in the partial parse must be named", name, bad)
+		}
+	}
+}

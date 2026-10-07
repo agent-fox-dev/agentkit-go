@@ -157,3 +157,42 @@ func TestANewCheckpointViewHasNoStaleThinking(t *testing.T) {
 		}
 	}
 }
+
+// Issue #84: Summarization cuts with CutNotToolResult, which may land on an
+// assistant message — fine when a summary is prepended. With no Summarizer
+// the prefix is just dropped, so the kept tail must start on a user message,
+// as the window strategies guarantee; a view starting on an assistant turn is
+// rejected by Anthropic and not repaired by REQ-PROV-11.
+func TestWithNoSummarizerTheViewStartsOnAUserMessage(t *testing.T) {
+	msgs := longConversation(10) // user, assistant, … ~1000 tokens each
+	for keep := 500; keep <= 6000; keep += 500 {
+		tf := NewContextTransform(Deps{
+			Strategy: Summarization{ThresholdFraction: 0.5, KeepTokens: keep},
+			History:  core.NewConversationHistory(),
+			Model:    &core.Model{ContextWindow: 10000},
+		})
+		view := tf(context.Background(), msgs)
+		if len(view) > 0 && view[0].Role() != core.RoleUser {
+			t.Fatalf("KeepTokens %d: view of %d messages starts on %q, want a user message",
+				keep, len(view), view[0].Role())
+		}
+	}
+}
+
+// Issue #84: a nil Deps.History is not a panic. The transform keeps its own
+// checkpoint, so compaction is still permanent within it.
+func TestANilHistoryIsNotAPanic(t *testing.T) {
+	calls := 0
+	tf := NewContextTransform(Deps{
+		Strategy:   Summarization{ThresholdFraction: 0.1, KeepTokens: 1000},
+		Summarizer: func(context.Context, core.Messages, string) (string, error) { calls++; return "S", nil },
+		Model:      &core.Model{ContextWindow: 10000},
+	})
+	msgs := longConversation(10)
+	for i := 0; i < 3; i++ {
+		_ = tf(context.Background(), msgs)
+	}
+	if calls != 1 {
+		t.Fatalf("summarized %d times over an unchanged history, want once: the checkpoint must persist", calls)
+	}
+}
