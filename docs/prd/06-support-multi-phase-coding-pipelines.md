@@ -7,7 +7,8 @@ which rebuild `fix` and `impl` on a shared engine and need nine things from
 the SDK they build on. The split follows agent-fox
 [ADR 07](https://github.com/agent-fox-dev/agent-fox/blob/main/docs/adr/07-split-code-navigation-between-agentkit-and-agent-fox.md):
 mechanism here, policy and prompts there. Nothing in this PRD names a phase,
-a spec or an envelope.
+a spec or an envelope. Amended on 2026-10-07 with §12, prompt text as
+documents.
 
 ## 1. The problem
 
@@ -49,6 +50,11 @@ program; a process runner the embedder re-wrote without process-group kill.
    as for a Go one, with or without ctags, and an embedder's outline agrees
    with `file_outline`.
 9. The root module stays standard-library-only and cgo-free (REQ-GO-11).
+10. Every text the SDK puts in front of a model — base instructions,
+    guidelines, tool descriptions, refusals, summarizer prompts, synthetic
+    results — is a document bundled with the binary, listed with its hash,
+    and replaceable by name, so an embedder can audit and override what
+    its agents read without patching strings.
 
 **Non-goals.**
 
@@ -268,16 +274,67 @@ revalidate what changed. An embedder that changes the tree itself (a
 checkout, a reset) calls `Mark` or `MarkAll`, which is what agent-fox's
 invalidation does today through two separate calls.
 
-## 12. Tests, documentation, order
+## 12. Prompt text as documents (goal 10)
+
+`prompt.BaseInstructions`, `UniversalGuidelines`, every built-in tool's
+`Description` and `PromptGuidelines`, `ExecuteFallbackGuideline` and
+`SearchOverExecuteGuideline`, `guard.Restricted`'s refusal sentences, the
+compaction summarizer and turn-summarizer system prompts, and
+`provider.SyntheticResultText` are Go string constants spread over six
+packages. An embedder that wants to know, or change, what its agents read
+greps for them, and one that wants a phase-specific tool description
+appends to the SDK's string (agent-fox's `describeForPhase`). They become
+documents:
+
+- **One tree.** `prompt/texts/` holds every text as a Markdown file with a
+  small YAML header (`name`, `kind`: `instructions | guideline | tool |
+  refusal | summarizer | synthetic`, `for`: the tool or package it belongs
+  to), embedded with `go:embed`. A package that owns a text (`tools`,
+  `guard`, `compaction`, `provider`) reads it through
+  `prompt.Text(name) string`, which panics at init on a missing name, so a
+  renamed file is a build failure, not a hole in a prompt. Package
+  dependencies are unchanged: `prompt` imports only the standard library
+  and `core`, as ADR 01 requires, and the texts are data.
+- **Templates where a text has holes.** A text that carries a value — a
+  tool description that names its limits (`read_file`'s 2 000 lines), a
+  refusal that names the programs refused, the summarizer prompt that
+  names the reserve — is a `text/template` over a small typed value with
+  `missingkey=error`, rendered by `prompt.Render(name, view)`. Values are
+  inserted verbatim and never parsed, so a refusal that quotes a command
+  containing `{{` is text. Texts without holes are plain Markdown.
+- **A catalog.** `prompt.Catalog() []TextInfo{Name, Kind, For, SHA256}`
+  lists every embedded text with the hash of its source, so an embedder can
+  record which text version an agent ran with; agent-fox writes it beside
+  its own `prompt_templates`.
+- **Replacement by name.** `AgentConfig.Texts map[string]string` and
+  `tools.Options.Texts` let an embedder replace any text by name for one
+  agent or one tool set: a whole description, a whole guideline, a whole
+  refusal. The SDK renders the replacement with the same view the original
+  gets, so an embedder's `execute` description can name the SDK's limits
+  without copying them. A replaced text is reported in `Catalog()` with
+  `Replaced: true` and the replacement's hash. This is what lets agent-fox
+  make a tool description one document instead of a base string plus
+  patches (agent-fox PRD 13 §6.6).
+- **Golden renderings.** `prompt/testdata/golden/` already holds the
+  assembled prompt's goldens; every text and every templated text gains
+  one, and `UPDATE_GOLDEN=1` regenerates them, so a change to what a model
+  reads is a Markdown diff in review.
+- Nothing is sent that is not in the catalog: a test walks the SDK's
+  packages for string literals longer than one sentence outside
+  `prompt/texts/` and the tests, and fails on any that reaches a provider
+  request.
+
+## 13. Tests, documentation, order
 
 - Every item has a test in its package; §3 and §4 also have a test against
   the recording provider that asserts request bytes.
 - `internal/policy` stays green: no new module, no cgo, all cross-targets.
 - `docs/configuration.md` (`PrefixMessages`, `CacheRetention`, `Prune`,
-  `DedupeReads`, `KeepGuidelines`, `ToolChoice`), `docs/api.md` (`Exec`,
-  `OutlineRunner`, `Classify`, `Journal`), `docs/architecture.md` (the
-  journal in the data flow), README (what is not built: callers stay;
-  "methods without containers" leaves), `docs/GAPS.md`.
+  `DedupeReads`, `KeepGuidelines`, `ToolChoice`, `Texts`), `docs/api.md`
+  (`Exec`, `OutlineRunner`, `Classify`, `Journal`, `prompt.Text`,
+  `Render`, `Catalog`), `docs/architecture.md` (the journal in the data
+  flow; the texts tree), README (what is not built: callers stay; "methods
+  without containers" leaves), `docs/GAPS.md`.
 - Order, by what agent-fox needs first: §6 and §9 (the engine's runner and
-  metadata), §7 and §5 (correctness, small), §3 and §4 (the token goal),
-  §10 and §11 (language equality), §8 last.
+  metadata), §7, §5 and §12 (correctness and the documents, small), §3 and
+  §4 (the token goal), §10 and §11 (language equality), §8 last.
