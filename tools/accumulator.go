@@ -32,9 +32,10 @@ type Accumulator struct {
 	// total is every byte ever written, including discarded ones.
 	total int64
 
-	spill     *os.File
-	spillPath string
-	spillErr  error
+	spill       *os.File
+	spillWriter fileWriter // wraps spill; set by setSpillWriter or writeSpill
+	spillPath   string
+	spillErr    error
 }
 
 // TruncateMode selects which end of the stream survives truncation.
@@ -66,6 +67,7 @@ func NewAccumulator(capBytes int, mode TruncateMode) *Accumulator {
 // log file.
 func (a *Accumulator) useFile(f *os.File, path string) {
 	a.spill = f
+	a.spillWriter = wrapExecFile(f)
 	a.spillPath = path
 }
 
@@ -121,9 +123,9 @@ func (a *Accumulator) writeSpill(p []byte) {
 	if a.spillErr != nil {
 		return
 	}
-	// When a file was installed via useFile, spill is already set;
+	// When a file was installed via useFile, spillWriter is already set;
 	// skip the SpillDir/CreateTemp path entirely.
-	if a.spill == nil {
+	if a.spillWriter == nil {
 		if a.SpillDir == "" {
 			return
 		}
@@ -141,8 +143,9 @@ func (a *Accumulator) writeSpill(p []byte) {
 			return
 		}
 		a.spill, a.spillPath = f, f.Name()
+		a.spillWriter = wrapExecFile(f)
 	}
-	if _, err := a.spill.Write(p); err != nil {
+	if _, err := a.spillWriter.Write(p); err != nil {
 		a.spillErr = err
 	}
 }
@@ -160,6 +163,10 @@ func (a *Accumulator) SpillPath() string {
 	return a.spillPath
 }
 
+// fileError returns the spill/log write error, if any. It also covers a
+// SpillDir MkdirAll/CreateTemp failure on first write.
+func (a *Accumulator) fileError() error { return a.spillErr }
+
 // Close releases the spill file handle.
 func (a *Accumulator) Close() error {
 	if a.spill == nil {
@@ -167,6 +174,7 @@ func (a *Accumulator) Close() error {
 	}
 	err := a.spill.Close()
 	a.spill = nil
+	a.spillWriter = nil
 	return err
 }
 

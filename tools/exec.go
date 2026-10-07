@@ -15,6 +15,23 @@ import (
 	"time"
 )
 
+// fileWriter is the interface the Accumulator's spill/log file writer must
+// satisfy. In production it is the *os.File itself; in tests it can be
+// replaced through wrapExecFile to inject write failures.
+type fileWriter interface {
+	io.Writer
+	io.Closer
+}
+
+// wrapExecFile wraps the *os.File used for the spill or log file. In
+// production it returns the file unchanged. Tests replace it to inject write
+// failures (TS-04-15).
+var wrapExecFile = func(w *os.File) fileWriter { return w }
+
+// waitCmd calls cmd.Wait. Tests replace it to inject non-ExitError Wait
+// errors (TS-04-27).
+var waitCmd = func(c *exec.Cmd) error { return c.Wait() }
+
 // Outcome classifies how a command ended. It is a distinct type because the
 // classification is a PURE FUNCTION with a pinned precedence, unit-tested on
 // its own (REQ-TOOL-17.6): mixing it into the run path is how "the command
@@ -382,7 +399,7 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 		}
 	}()
 
-	waitErr := cmd.Wait()
+	waitErr := waitCmd(cmd)
 	close(done)
 	elapsed := time.Since(start)
 	// The outcome is classified from the state AT EXIT. A cancellation that
@@ -400,15 +417,29 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 	if stdinW != nil {
 		stdinClose.Do(func() { _ = stdinW.Close() })
 	}
-	var ioErr error
+	// Collect stdin read error.
+	var stdinIOErr error
 	if stdinW != nil {
 		if sErr := stdinState.finish(); sErr != nil {
-			ioErr = fmt.Errorf("tools: reading stdin: %w", sErr)
+			stdinIOErr = fmt.Errorf("tools: reading stdin: %w", sErr)
 		}
 	}
 
+	// Collect file (log/spill) write error. Read it after drainSink.stop()
+	// so no write races the read (04-REQ-3.6).
+	var fileIOErr error
+	if fErr := acc.fileError(); fErr != nil {
+		path := acc.SpillPath()
+		if path == "" {
+			path = "spill"
+		}
+		fileIOErr = fmt.Errorf("tools: writing %s: %w", path, fErr)
+	}
+
+	// Classify exit status and handle Wait errors.
 	exitCode := 0
 	signaled := false
+	var waitIOErr error
 	var ee *exec.ExitError
 	if errors.As(waitErr, &ee) {
 		exitCode = ee.ExitCode()
@@ -421,7 +452,27 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 		} else if exitCode == -1 {
 			signaled = true
 		}
+	} else if waitErr != nil {
+		// A Wait error that is neither an *exec.ExitError nor nil is an I/O
+		// completion failure (e.g. exec.ErrWaitDelay). Record it in IOErr
+		// and derive the exit status from ProcessState when available
+		// (04-REQ-5.8).
+		waitIOErr = waitErr
+		if cmd.ProcessState != nil {
+			exitCode = cmd.ProcessState.ExitCode()
+			if exitCode == -1 {
+				// Check for signal.
+				if code, ok := signalExitCode(&exec.ExitError{ProcessState: cmd.ProcessState}); ok {
+					exitCode, signaled = code, true
+				} else {
+					signaled = true
+				}
+			}
+		}
 	}
+
+	// Build IOErr from all byte-moving failures (04-REQ-5.8).
+	ioErr := errors.Join(stdinIOErr, fileIOErr, waitIOErr)
 
 	return ExecResult{
 		Output:     acc.String(),
