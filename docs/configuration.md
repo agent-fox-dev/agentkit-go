@@ -94,7 +94,7 @@ provider-prefixed variables and anything ending in `_TOKEN`, `_SECRET`,
 | `BeforeToolCall`, `AfterToolCall` | The authorization boundary and post-processing. A shell tool in the set with a nil `BeforeToolCall` fails the run (`ErrUnguardedExecute`); use `guard.Restricted` or `guard.AllowAll`. |
 | `Hooks` | `OnTurnStart`, `OnTurnEnd`, `OnAgentDone`, `OnError`, `OnSessionStart`, `OnSessionEnd`, `OnAudit`. Observation only. |
 | `Middleware` | Axis 1; last registered is outermost. |
-| `TransformContext` | Bound closure run before every model call; build with `compaction.NewContextTransform`. |
+| `TransformContext` | Bound closure run before every model call; build with `compaction.NewContextTransform`. Its context carries a usage reporter: a model call made inside it (a summary) reports its usage with `core.ReportUsage`, and the agent adds it to `Agent.Usage`. |
 | `SteeringQueueMode`, `FollowUpQueueMode` | `QueueOneAtATime` (default) or `QueueDrainAll`. |
 | `SessionID` | Identifier carried on requests and audit events. |
 | `TrustProject` | The one place to state project trust; skills discovery derives from it (`skills.ConfigFor`). Default false. |
