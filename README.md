@@ -389,7 +389,10 @@ refresh token, the provider rotates it N times, and N−1 turns are left holding
 a credential the provider has already invalidated. The session does not fail
 cleanly — it fails N−1 times out of N, intermittently, and reads as a flaky
 provider. The first check, outside the lock, exists so the common case (a valid
-token) does not serialize turns that have nothing to coordinate.
+token) does not serialize turns that have nothing to coordinate. It runs on the
+request path once the vendor's refresh flow is registered with
+`Credentials.SetRefresher`: every adapter resolves its credential through
+`ResolveAuthWith`, which then goes through `EnsureFresh`.
 
 Two nearby details: the refresh carries **its own timeout** because it holds
 the per-vendor lock, and a zero `ExpiresAt` means *never expires*, not *expired

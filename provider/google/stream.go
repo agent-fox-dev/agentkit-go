@@ -375,8 +375,8 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 		}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg := provider.StatusError("google", resp, provider.JSONErrorDetail)
-		d.fail(msg, errors.New(msg))
+		err := provider.StatusErr("google", resp, provider.JSONErrorDetail)
+		d.fail(err.Error(), err)
 		return
 	}
 

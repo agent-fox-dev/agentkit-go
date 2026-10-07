@@ -638,3 +638,30 @@ func equalIDs(a, b []core.EntryID) bool {
 	}
 	return true
 }
+
+// Issue #75: OnPersistError runs after the store's lock is released, so a
+// hook that reads the store (Entries, Head) does not deadlock.
+func TestOnPersistErrorMayReadTheStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	if err := os.WriteFile(path, []byte("pre-existing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions("e")
+	var s *Store
+	read := make(chan int, 1)
+	opts.OnPersistError = func(error) { read <- len(s.Entries()); _ = s.Head() }
+	s = mustCreate(t, path, opts)
+
+	done := make(chan error, 1)
+	go func() { done <- s.Append(NewMessageEntry(userMsg("hi"))) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Append never returned: OnPersistError ran under the store's lock and the hook's read deadlocked")
+	}
+	select {
+	case <-read:
+	default:
+		t.Fatal("the hook did not run")
+	}
+}

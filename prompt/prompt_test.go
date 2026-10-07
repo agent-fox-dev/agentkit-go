@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/agentfox/agentkit-go/core"
@@ -118,5 +119,50 @@ func TestSearchOverExecuteGuidelineNeedsBothTools(t *testing.T) {
 				t.Errorf("execute+grep guideline present=%v, want %v\nprompt:\n%s", has, tc.want, got)
 			}
 		})
+	}
+}
+
+// Issue #75 §4: a custom system prompt replaces the BUILT-IN text — the base
+// instructions and the universal guidelines — but a tool's own guidelines
+// travel with the tool (NFR-TEST-08a), so they still reach the model.
+func TestACustomPromptKeepsTheToolsGuidelines(t *testing.T) {
+	got := Build(Input{
+		Custom: "You are a release engineer.",
+		Tools: []core.Tool{
+			{Name: "search_files", PromptGuidelines: []string{"Search before reading whole files."}},
+			{Name: "execute"},
+		},
+	})
+	for _, want := range []string{"You are a release engineer.", "Search before reading whole files.", tools.SearchOverExecuteGuideline} {
+		if !strings.Contains(got, want) {
+			t.Errorf("custom prompt lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, BaseInstructions) {
+		t.Error("a custom prompt must replace the built-in base instructions")
+	}
+	for _, g := range UniversalGuidelines {
+		if strings.Contains(got, g) {
+			t.Errorf("a custom prompt must replace the built-in universal guideline %q", g)
+		}
+	}
+}
+
+// Issue #75 §4: the shell guidelines are keyed on whichever shell tool is
+// active, not on the literal name "execute", and name that tool.
+func TestShellGuidelinesNameTheActiveShell(t *testing.T) {
+	for _, shell := range []string{"run_command", "powershell"} {
+		got := Build(Input{Tools: []core.Tool{{Name: shell}}})
+		if want := "Use " + shell + " for file operations like ls, rg, find."; !strings.Contains(got, want) {
+			t.Errorf("%s alone: prompt lacks %q:\n%s", shell, want, got)
+		}
+		got = Build(Input{Tools: []core.Tool{{Name: "search_files"}, {Name: shell}}})
+		if want := "Prefer search_files over " + shell + "+grep"; !strings.Contains(got, want) {
+			t.Errorf("%s with search_files: prompt lacks %q:\n%s", shell, want, got)
+		}
+	}
+	// execute keeps its exact, pinned wording.
+	if got := Build(Input{Tools: []core.Tool{{Name: "execute"}}}); !strings.Contains(got, tools.ExecuteFallbackGuideline) {
+		t.Errorf("execute alone: prompt lacks the pinned %q", tools.ExecuteFallbackGuideline)
 	}
 }

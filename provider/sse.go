@@ -43,6 +43,12 @@ type SSEEvent struct {
 // or last-event-id reconnection, because REQ-OBS-09 forbids replay: a consumer
 // that lost events must rebuild from a snapshot, so a reconnecting reader
 // would produce exactly the duplicate-application the requirement rules out.
+//
+// One deliberate departure from the WHATWG dispatch rule: an event whose only
+// field is an empty `data:` is NOT dispatched (the standard would dispatch it
+// with empty data). No model API sends a meaningful empty event, and every
+// decoder here parses Data as JSON, so dispatching a keep-alive written as a
+// bare `data:` would turn it into a parse error and fail the stream.
 type SSEReader struct {
 	br   *bufio.Reader
 	max  int

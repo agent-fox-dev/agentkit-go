@@ -200,6 +200,20 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial *core.
 	// audit, or an auditor cannot tell it from one still running.
 	finish := func() {
 		a.setPhase(core.PhaseIdle)
+		// A run that ended because the model refused is not a clean
+		// end_turn. Control flow does not change (REQ-LOOP-01: a refusal
+		// does not short-circuit, and one with tool calls carries on); only
+		// the account of how the run ended does, so a caller that checks
+		// for its terminator is told it was a refusal, and why.
+		if runReason == core.RunStopEndTurn && runErr == nil {
+			if am := lastAssistant(newMessages); am != nil && am.StopReason == core.StopReasonRefusal {
+				runReason = core.RunStopRefusal
+				runErr = core.ErrRefusal
+				if am.StopDetail != "" {
+					runErr = fmt.Errorf("%w: %s", core.ErrRefusal, am.StopDetail)
+				}
+			}
+		}
 		res = core.RunResult{
 			Messages:   newMessages,
 			StopReason: runReason,
@@ -533,6 +547,9 @@ func (a *Agent) abortError(ctx context.Context) error {
 // encoded in the message (REQ-PROV-04), which is what lets a provider emit
 // half a message and then fail without the partial content being lost.
 func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.Messages) core.AssistantMessage {
+	// A middleware that discards a billed attempt (Retry) reports its usage
+	// through the context; it joins Agent.Usage like a summary's does.
+	ctx = core.WithUsageReporter(ctx, a.addOffLoopUsage)
 	a.mu.Lock()
 	cfg := a.cfg
 	tools := cfg.ToolPolicy.Resolve(a.tools)

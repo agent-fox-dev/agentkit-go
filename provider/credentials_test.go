@@ -321,3 +321,50 @@ func TestTheStoreOutranksTheEnvironment(t *testing.T) {
 		t.Fatalf("resolved %q, want the environment fallback", auth.APIKey)
 	}
 }
+
+// Issue #75: the refresh is on the REQUEST path. Every adapter resolves its
+// auth through ResolveAuthWith; with a Refresher registered for the vendor,
+// an expiring token is refreshed there — once, however many requests race —
+// instead of being sent until the provider rejects it.
+func TestResolveAuthWithRefreshesThroughTheRegisteredRefresher(t *testing.T) {
+	creds, _ := expiringCreds(t, time.Minute) // inside the 5-minute floor
+	var refreshes atomic.Int32
+	creds.SetRefresher("acme", func(_ context.Context, cur provider.Credential) (provider.Credential, error) {
+		refreshes.Add(1)
+		time.Sleep(20 * time.Millisecond)
+		cur.AccessToken = "fresh-access-token"
+		cur.ExpiresAt = time.Now().Add(time.Hour)
+		return cur, nil
+	}, provider.RefreshOptions{})
+
+	var wg sync.WaitGroup
+	auths := make([]provider.ModelAuth, 12)
+	errs := make([]error, 12)
+	for i := range auths {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			auths[i], errs[i] = provider.ResolveAuthWith(context.Background(), "acme", creds,
+				provider.VendorAuth{}, provider.Env{})
+		}(i)
+	}
+	wg.Wait()
+	if n := refreshes.Load(); n != 1 {
+		t.Fatalf("%d refreshes, want exactly 1", n)
+	}
+	for i := range auths {
+		if errs[i] != nil {
+			t.Fatalf("request %d: %v", i, errs[i])
+		}
+		if auths[i].APIKey != "fresh-access-token" {
+			t.Fatalf("request %d sent %q, want the refreshed token", i, auths[i].APIKey)
+		}
+	}
+
+	// A vendor with no Refresher registered is read as stored, as before.
+	other, _ := expiringCreds(t, time.Minute)
+	a, err := provider.ResolveAuthWith(context.Background(), "acme", other, provider.VendorAuth{}, provider.Env{})
+	if err != nil || a.APIKey != "old-access-token-value" {
+		t.Fatalf("no refresher: %q, %v; want the stored token unchanged", a.APIKey, err)
+	}
+}

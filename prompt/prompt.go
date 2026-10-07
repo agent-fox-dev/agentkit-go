@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/agentfox/agentkit-go/core"
+	"github.com/agentfox/agentkit-go/guard"
 	"github.com/agentfox/agentkit-go/skills"
 	"github.com/agentfox/agentkit-go/tools"
 )
@@ -53,7 +54,9 @@ var UniversalGuidelines = []string{
 
 // Input is everything the assembler needs.
 type Input struct {
-	// Custom replaces the BUILT-IN sections when non-empty (AgentConfig.SystemPrompt).
+	// Custom replaces the BUILT-IN sections when non-empty
+	// (AgentConfig.SystemPrompt): the base instructions and the universal
+	// guidelines. The active tools' own guidelines still follow it.
 	Custom string
 	// Tools is the set actually active after the REQ-TOOL-10 policy resolved,
 	// never the registry. The guidelines the model sees must describe the
@@ -72,19 +75,26 @@ type Input struct {
 
 // Build assembles the prompt.
 //
-// A CUSTOM prompt replaces the built-in base and the built-in guidelines, and
-// nothing else. Skills and project context still append: an embedder enables
-// those by a separate affirmative act — discovery, and REQ-SEC-10's project
-// trust — and having a custom prompt silently switch them off would mean the
-// trust decision quietly stopped applying.
+// A CUSTOM prompt replaces the built-in base and the built-in UNIVERSAL
+// guidelines, and nothing else. The tools' guidelines are not built-in text:
+// they travel with the tool (NFR-TEST-08a) and describe how to use what the
+// model has been given, so they follow a custom prompt as they follow the
+// built-in one — otherwise every embedder with its own prompt has to re-render
+// them by hand. Skills and project context still append too: an embedder
+// enables those by a separate affirmative act — discovery, and REQ-SEC-10's
+// project trust — and having a custom prompt silently switch them off would
+// mean the trust decision quietly stopped applying.
 func Build(in Input) string {
 	var blocks []string
 
 	if in.Custom != "" {
 		blocks = append(blocks, strings.TrimRight(in.Custom, "\n"))
+		if g := guidelinesBlock(in.Tools, false); g != "" {
+			blocks = append(blocks, g)
+		}
 	} else {
 		blocks = append(blocks, BaseInstructions)
-		if g := guidelinesBlock(in.Tools); g != "" {
+		if g := guidelinesBlock(in.Tools, true); g != "" {
 			blocks = append(blocks, g)
 		}
 	}
@@ -111,12 +121,13 @@ func SkillBlocks(sk []skills.Skill, ctxFiles []skills.ContextFile, active []core
 	return []string{s}
 }
 
-// guidelinesBlock is NFR-TEST-08a's collection.
+// guidelinesBlock is NFR-TEST-08a's collection. universal adds the built-in
+// UniversalGuidelines, which a custom prompt replaces.
 //
 // Deduplicated while PRESERVING FIRST-SEEN ORDER. Sorting would be tidier and
 // wrong: the order tools were resolved in is the order the model reads them,
 // and an alphabetical list separates a guideline from the tool it is about.
-func guidelinesBlock(active []core.Tool) string {
+func guidelinesBlock(active []core.Tool, universal bool) string {
 	var (
 		lines []string
 		seen  = map[string]bool{}
@@ -135,24 +146,48 @@ func guidelinesBlock(active []core.Tool) string {
 			add(g)
 		}
 	}
-	// REQ-TOOL-04e: emitted when the file-navigation tools are ABSENT and
-	// execute is present. It cannot be a PromptGuidelines entry on any tool,
+	// REQ-TOOL-04e: emitted when the file-navigation tools are ABSENT and a
+	// shell is present. It cannot be a PromptGuidelines entry on any tool,
 	// because a per-tool field can only fire when its tool is there — which is
-	// the opposite of the condition.
-	if !anyPresent(active, tools.FileNavigationTools()) && hasTool(active, "execute") {
-		add(tools.ExecuteFallbackGuideline)
+	// the opposite of the condition. The shell is whichever of execute,
+	// run_command and powershell is active, and the guideline names it: a
+	// guideline about `execute` given to a model that has `run_command` points
+	// at a tool it cannot call.
+	if shell := activeShell(active); shell != "" {
+		if !anyPresent(active, tools.FileNavigationTools()) {
+			add(shellGuideline(tools.ExecuteFallbackGuideline, shell))
+		}
+		if hasTool(active, "search_files") {
+			add(shellGuideline(tools.SearchOverExecuteGuideline, shell))
+		}
 	}
-	if hasTool(active, "search_files") && hasTool(active, "execute") {
-		add(tools.SearchOverExecuteGuideline)
-	}
-	for _, g := range UniversalGuidelines {
-		add(g)
+	if universal {
+		for _, g := range UniversalGuidelines {
+			add(g)
+		}
 	}
 
 	if len(lines) == 0 {
 		return ""
 	}
 	return "Guidelines:\n" + strings.Join(lines, "\n")
+}
+
+// activeShell returns the first shell tool in the active set, in
+// guard.ShellToolNames order, or "".
+func activeShell(active []core.Tool) string {
+	for _, n := range guard.ShellToolNames {
+		if hasTool(active, n) {
+			return n
+		}
+	}
+	return ""
+}
+
+// shellGuideline is a guideline written about execute, naming shell instead.
+// For execute itself it is the pinned text, byte for byte.
+func shellGuideline(g, shell string) string {
+	return strings.ReplaceAll(g, "execute", shell)
 }
 
 func hasTool(set []core.Tool, name string) bool {

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/provider"
 )
 
@@ -303,5 +304,30 @@ func TestANonRetryableResponseIsReturnedWhateverItsRetryAfter(t *testing.T) {
 	}
 	if len(slept) != 0 {
 		t.Fatalf("slept %v on a non-retryable status", slept)
+	}
+}
+
+// Issue #75 §1: a non-2xx response becomes an error that carries the
+// server-dictated delay, so the semantic retry layer above the transport
+// can honour Retry-After.
+func TestStatusErrCarriesTheServerDelay(t *testing.T) {
+	resp := &http.Response{StatusCode: 429, Header: http.Header{"Retry-After": {"30"}},
+		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"slow down"}}`))}
+	err := provider.StatusErr("acme", resp, provider.JSONErrorDetail)
+	var ra core.RetryAfterError
+	if !errors.As(err, &ra) {
+		t.Fatalf("%T does not carry a retry delay", err)
+	}
+	if d, ok := ra.RetryAfter(); !ok || d != 30*time.Second {
+		t.Fatalf("RetryAfter = %v, %v; want 30s", d, ok)
+	}
+	if !strings.Contains(err.Error(), "HTTP 429") || !strings.Contains(err.Error(), "slow down") {
+		t.Fatalf("text %q must keep what StatusError renders", err.Error())
+	}
+	resp = &http.Response{StatusCode: 500, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))}
+	if errors.As(provider.StatusErr("acme", resp, nil), &ra) {
+		if _, ok := ra.RetryAfter(); ok {
+			t.Fatal("no Retry-After header must mean no dictated delay")
+		}
 	}
 }

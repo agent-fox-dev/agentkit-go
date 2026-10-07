@@ -81,7 +81,10 @@ func TestGoldenDefaultSystemPrompt(t *testing.T) {
 }
 
 // TestGoldenCustomSystemPrompt is the second golden NFR-TEST-08(a) asks for:
-// assembly order, and the assertion that built-in blocks are ABSENT.
+// assembly order, and the assertion that built-in blocks are ABSENT. The
+// built-in blocks are the base instructions and the universal guidelines; the
+// tools' own guidelines are not built-in and follow a custom prompt
+// (NFR-TEST-08a; docs/errata/custom_prompt_keeps_tool_guidelines.md).
 //
 // PROVENANCE (NFR-TEST-08.1)
 //
@@ -106,8 +109,14 @@ func TestGoldenCustomSystemPrompt(t *testing.T) {
 	if strings.Contains(got, BaseInstructions) {
 		t.Fatal("a custom system prompt must replace the built-in base instructions")
 	}
-	if strings.Contains(got, "Guidelines:") {
-		t.Fatal("a custom system prompt must replace the built-in guidelines block")
+	for _, g := range UniversalGuidelines {
+		if strings.Contains(got, g) {
+			t.Fatalf("a custom system prompt must replace the built-in universal guideline %q", g)
+		}
+	}
+	if !strings.Contains(got, tools.SearchOverExecuteGuideline) {
+		t.Fatal("the tools' own guidelines must follow a custom system prompt: they " +
+			"describe the tools the model has, not the built-in persona")
 	}
 	if !strings.Contains(got, "project_context") {
 		t.Fatal("discovered content must survive a custom prompt: an embedder enabled " +

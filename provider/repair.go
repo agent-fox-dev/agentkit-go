@@ -319,6 +319,13 @@ func withSuffix(base string, n int) string {
 //
 // An orphaned tool_use is what every cancellation, crashed tool and killed
 // process leaves behind, and every provider rejects it with a 400.
+//
+// The synthetic goes in its CALL'S POSITION among the turn's results, not
+// ahead of them. Ollama and Gemini pair results with calls by position: for
+// calls [c1,c2,c3] with results [r1,r3], "synth(c2), r1, r3" gives c1 the
+// synthetic and c2 c1's result. A turn that needs a synthetic therefore has
+// its results emitted in tool_use order; a turn that needs none is left
+// exactly as recorded, so no request that needed no repair changes.
 func insertSyntheticResults(in core.Messages, rep *RepairReport) core.Messages {
 	answered := make(map[string]bool)
 	for _, m := range in {
@@ -328,7 +335,8 @@ func insertSyntheticResults(in core.Messages, rep *RepairReport) core.Messages {
 	}
 
 	out := make(core.Messages, 0, len(in))
-	for i, m := range in {
+	for i := 0; i < len(in); i++ {
+		m := in[i]
 		out = append(out, m)
 		am, ok := m.(core.AssistantMessage)
 		if !ok {
@@ -343,10 +351,39 @@ func insertSyntheticResults(in core.Messages, rep *RepairReport) core.Messages {
 			}
 			j++
 		}
+		run := in[i+1 : j]
+
+		missing := false
+		for _, b := range am.Content {
+			if tu, isToolUse := b.(core.ToolUseBlock); isToolUse && !answered[tu.ID] {
+				missing = true
+				break
+			}
+		}
+		if !missing {
+			continue // the run is copied as it stands by the outer loop
+		}
+
+		// Rebuild the run in call order: each call's own result where the
+		// run has it, a synthetic where nothing anywhere answers it. Results
+		// in the run that answer no call of this turn follow, in order.
+		inRun := make(map[string]int, len(run))
+		for k, r := range run {
+			inRun[r.(core.ToolResultMessage).ToolUseID] = k
+		}
+		used := make([]bool, len(run))
 		for _, b := range am.Content {
 			tu, isToolUse := b.(core.ToolUseBlock)
-			if !isToolUse || answered[tu.ID] {
+			if !isToolUse {
 				continue
+			}
+			if k, ok := inRun[tu.ID]; ok && !used[k] {
+				used[k] = true
+				out = append(out, run[k])
+				continue
+			}
+			if answered[tu.ID] {
+				continue // answered elsewhere in the transcript
 			}
 			answered[tu.ID] = true
 			rep.SyntheticResults++
@@ -357,6 +394,12 @@ func insertSyntheticResults(in core.Messages, rep *RepairReport) core.Messages {
 				IsError:   true,
 			})
 		}
+		for k, r := range run {
+			if !used[k] {
+				out = append(out, r)
+			}
+		}
+		i = j - 1
 	}
 	return out
 }

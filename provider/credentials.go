@@ -139,6 +139,39 @@ func (m *MemoryStore) Save(_ context.Context, vendorID string, c Credential) err
 type Credentials struct {
 	store CredentialStore
 	locks *keyedLocks
+
+	refreshMu  sync.Mutex
+	refreshers map[string]registeredRefresher
+}
+
+type registeredRefresher struct {
+	fn   Refresher
+	opts RefreshOptions
+}
+
+// SetRefresher registers the refresh flow for vendorID. With one registered,
+// every request for that vendor resolves its credential through EnsureFresh
+// (ResolveAuthWith): a token inside the validity floor is refreshed —
+// double-checked inside the vendor lock, so concurrent turns refresh once —
+// before it is sent. A nil fn removes the registration.
+func (c *Credentials) SetRefresher(vendorID string, fn Refresher, opts RefreshOptions) {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	if fn == nil {
+		delete(c.refreshers, vendorID)
+		return
+	}
+	if c.refreshers == nil {
+		c.refreshers = make(map[string]registeredRefresher)
+	}
+	c.refreshers[vendorID] = registeredRefresher{fn: fn, opts: opts}
+}
+
+func (c *Credentials) refresherFor(vendorID string) (registeredRefresher, bool) {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	r, ok := c.refreshers[vendorID]
+	return r, ok
 }
 
 func NewCredentials(store CredentialStore) *Credentials {
@@ -262,12 +295,23 @@ func (c *Credentials) EnsureFresh(ctx context.Context, vendorID string,
 // REQ-AUTH-03 environment table.
 //
 // The store wins because it is the layer that can hold a refreshed OAuth
-// token; the environment is a static fallback and cannot.
+// token; the environment is a static fallback and cannot. When a Refresher is
+// registered for the vendor (SetRefresher), the credential is read through
+// EnsureFresh, so the request path is where REQ-AUTH-06's double-checked
+// refresh happens; without one it is read as stored.
 func ResolveAuthWith(ctx context.Context, vendorID string, creds *Credentials,
 	table VendorAuth, env Env) (ModelAuth, error) {
 
 	if creds != nil {
-		c, err := creds.Get(ctx, vendorID)
+		var (
+			c   Credential
+			err error
+		)
+		if r, ok := creds.refresherFor(vendorID); ok {
+			c, err = creds.EnsureFresh(ctx, vendorID, r.fn, r.opts)
+		} else {
+			c, err = creds.Get(ctx, vendorID)
+		}
 		if err != nil {
 			return ModelAuth{}, err
 		}

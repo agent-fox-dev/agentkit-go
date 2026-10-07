@@ -47,6 +47,9 @@ const (
 	RunStopToolTerminate  RunStopReason = "tool_terminate"
 	RunStopError          RunStopReason = "error"
 	RunStopAborted        RunStopReason = "aborted"
+	// RunStopRefusal: the run ended on a model's refusal (StopReasonRefusal
+	// with no tool calls). Run also returns an error wrapping ErrRefusal.
+	RunStopRefusal RunStopReason = "refusal"
 	// RunStopDeferred: the provider accepted a background submission and the
 	// run ended holding a receipt rather than an answer (REQ-PROV-19). It is
 	// a CLEAN end, not an error — the handle is on the last assistant message

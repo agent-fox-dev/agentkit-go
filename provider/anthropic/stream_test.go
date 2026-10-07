@@ -1274,3 +1274,16 @@ func TestPerRequestTimeoutIsIndependentOfTheCallerContext(t *testing.T) {
 			"has no deadline")
 	}
 }
+
+// Issue #75 §3: a refusal's stop_details reach the message, streamed and not.
+func TestARefusalCarriesItsStopDetails(t *testing.T) {
+	body := sseBody(
+		[2]string{"message_start", `{"message":{"id":"m","model":"claude-test","usage":{"input_tokens":5}}}`},
+		[2]string{"message_delta", `{"delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"request declined"}},"usage":{"output_tokens":0}}`},
+		[2]string{"message_stop", `{}`},
+	)
+	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, body)
+	if msg.StopReason != core.StopReasonRefusal || msg.StopDetail != "cyber: request declined" {
+		t.Fatalf("StopReason=%q StopDetail=%q", msg.StopReason, msg.StopDetail)
+	}
+}

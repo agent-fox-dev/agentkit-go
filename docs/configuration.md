@@ -38,7 +38,12 @@ treat `ambient` as configured. Stringifying a `ModelAuth` or `Credential`
 redacts it (first 4 and last 4 characters; shorter secrets entirely).
 
 Long-running processes should supply a `provider.Credentials` store on the
-provider options instead; refresh is serialized per vendor.
+provider options instead. To have expiring OAuth tokens refreshed, register the
+vendor's refresh flow with `Credentials.SetRefresher(vendorID, refresher,
+provider.RefreshOptions{})`: every request for that vendor then resolves its
+credential through `EnsureFresh`, which refreshes a token inside the validity
+floor once — double-checked inside the per-vendor lock — however many turns
+race. Without a registered refresher the stored credential is used as it is.
 
 ### Base URLs and deployments
 
@@ -84,7 +89,7 @@ provider-prefixed variables and anything ending in `_TOKEN`, `_SECRET`,
 | `Provider` | Vendor id, used only for credential resolution and catalog lookup. |
 | `MaxTokens` | Upper bound, clamped to the model. Nil → `core.DefaultMaxTokens` (32768), not the model cap. |
 | `Temperature`, `TopP` | Optional sampling parameters; dropped where the catalog row says the model does not accept them. |
-| `SystemPrompt`, `PromptBlocks` | Base prompt and extra sections appended after the built-in ones. |
+| `SystemPrompt`, `PromptBlocks` | Base prompt and extra sections appended after the built-in ones. A `SystemPrompt` replaces the built-in base instructions and universal guidelines; the active tools' own guidelines (`Tool.PromptGuidelines`, and the shell guidelines) still follow it. |
 | `StopPolicy` | `func(StopContext) bool`; compose with `stop.Any`. |
 | `ErrorOnLimit` | A limit stop also returns `ErrMaxTurns` / `ErrBudgetExceeded`. Default false. |
 | `ParallelTools` | Run a tool batch's calls concurrently. |
