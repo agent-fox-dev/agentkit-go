@@ -20,7 +20,15 @@ func TestRestrictedPolicy(t *testing.T) {
 		why   string
 	}{
 		{"execute", map[string]any{"command": "go test ./..."}, false, "allowed program"},
-		{"execute", map[string]any{"command": "GOFLAGS=-mod=mod go build"}, false, "env assignment prefix"},
+		{"execute", map[string]any{"command": "GOFLAGS=-mod=mod go build"}, true, "env prefix refused by default"},
+		{"execute", map[string]any{"command": "PATH=/tmp/x go test"}, true, "PATH prefix chooses the binary"},
+		{"execute", map[string]any{"command": "./go test"}, true, "relative path named after an allowed program"},
+		{"execute", map[string]any{"command": "/tmp/go test"}, true, "absolute path named after an allowed program"},
+		{"execute", map[string]any{"command": "'./go' test"}, true, "quoted relative path"},
+		{"execute", map[string]any{"command": "/usr/bin/git log"}, false, "the exact allowlisted path"},
+		{"execute", map[string]any{"command": "/opt/bin/git log"}, true, "another path with an allowlisted basename"},
+		{"run_command", map[string]any{"argv": []any{"./go", "test"}}, true, "argv relative path named after an allowed program"},
+		{"run_command", map[string]any{"argv": []any{"/usr/bin/git", "log"}}, false, "argv exact allowlisted path"},
 		{"execute", map[string]any{"command": "git log 'a;b'"}, false, "operator inside single quotes"},
 		{"execute", map[string]any{"command": "go test | tee out"}, true, "pipe"},
 		{"execute", map[string]any{"command": "go test; rm -rf /"}, true, "list operator"},
@@ -45,6 +53,29 @@ func TestRestrictedPolicy(t *testing.T) {
 	if loose(context.Background(), core.BeforeToolCallContext{ToolName: "execute",
 		Arguments: map[string]any{"command": "go test | tee"}}).Block {
 		t.Fatal("AllowShellOperators must permit the pipe")
+	}
+	// AllowEnvPrefixes admits an assignment prefix, but never one that changes
+	// which binary runs or what is loaded into it.
+	env := Restricted(Options{AllowedPrograms: []string{"go", "ls"}, AllowEnvPrefixes: true})
+	for cmd, want := range map[string]bool{
+		"GOFLAGS=-mod=mod go build":         false,
+		"CGO_ENABLED=0 GOOS=linux go test":  false,
+		"PATH=/anything ls":                 true,
+		"LD_PRELOAD=/x.so ls":               true,
+		"LD_LIBRARY_PATH=/x ls":             true,
+		"DYLD_INSERT_LIBRARIES=/x.dylib ls": true,
+		"FOO=1 BASH_ENV=/x go test":         true,
+		"GIT_EXEC_PATH=/x go test":          true,
+		"NODE_OPTIONS=--require=/x go test": true,
+		"PYTHONPATH=/x go test":             true,
+		"PERL5OPT=-Mx go test":              true,
+		"x-y=1 ls":                          true, // not an assignment: bash runs `x-y=1`
+		"./x=1 ls":                          true,
+	} {
+		if got := env(context.Background(), core.BeforeToolCallContext{ToolName: "execute",
+			Arguments: map[string]any{"command": cmd}}).Block; got != want {
+			t.Errorf("AllowEnvPrefixes %q: block=%v, want %v", cmd, got, want)
+		}
 	}
 	term := Restricted(Options{TerminateOnBlock: true})
 	if d := term(context.Background(), core.BeforeToolCallContext{ToolName: "execute",
