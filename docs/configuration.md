@@ -97,7 +97,7 @@ provider-prefixed variables and anything ending in `_TOKEN`, `_SECRET`,
 | `ThinkingLevel` | `""`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; clamped to the catalog row's ladder. |
 | `ToolPolicy` | `Tools`, `NoTools` (`all` / `builtin`), `ToolNames`, `ExcludeTools`, `CustomTools`; resolved in that order. Non-nil empty `Tools` means no tools. A `CustomTools` entry must set exactly one of `Handler` and `Execute`; construction fails otherwise, as `RegisterTool` does. |
 | `BeforeToolCall`, `AfterToolCall` | The authorization boundary and post-processing. A shell tool in the set with a nil `BeforeToolCall` fails the run (`ErrUnguardedExecute`); use `guard.Restricted` or `guard.AllowAll`. |
-| `Hooks` | `OnTurnStart`, `OnTurnEnd`, `OnAgentDone`, `OnError`, `OnSessionStart`, `OnSessionEnd`, `OnAudit`. Observation only. |
+| `Hooks` | `OnTurnStart`, `OnTurnEnd`, `OnAgentDone`, `OnError`, `OnSessionStart`, `OnSessionEnd`, `OnAudit`. Observation only. `OnAudit` receives a `tool_call` event for every call, including one blocked, refused, aborted or cut off by `max_tokens`; `ErrorCode` says why. |
 | `Middleware` | Axis 1; last registered is outermost. |
 | `TransformContext` | Bound closure run before every model call; build with `compaction.NewContextTransform`. Its context carries a usage reporter: a model call made inside it (a summary) reports its usage with `core.ReportUsage`, and the agent adds it to `Agent.Usage`. |
 | `SteeringQueueMode`, `FollowUpQueueMode` | `QueueOneAtATime` (default) or `QueueDrainAll`. |
@@ -110,7 +110,7 @@ provider-prefixed variables and anything ending in `_TOKEN`, `_SECRET`,
 | `RequestOptions` | Per-request `Headers` (nil value deletes a default), `TimeoutMs`, `MaxRetries` (nil → 0), `MaxRetryDelayMs` (nil → 60000), `SessionID`, `CacheRetention`, `Deferred`, `Env`, `Transport`, `StreamFn`, `OnPayload`, `OnResponse`. |
 | `StreamOptions` | Streaming behaviour. |
 | `Providers` | `core.ProviderRegistry`. Nil means `agentkit.DefaultProviders()`, which is **empty**: register the wire APIs you use (`agentkit.RegisterDefaults(&cfg, anthropic.Provider(anthropic.Options{}), …)`). |
-| `SessionStore` | Optional durable log; must be empty at construction (`ErrSessionNotEmpty`) — fold a non-empty one with `NewAgentFromSession`. |
+| `SessionStore` | Optional durable log; must be empty at construction (`ErrSessionNotEmpty`) — fold a non-empty one with `NewAgentFromSession`, which refuses a `Resume` not folded from the store's current head (resume another branch with `session.FoldLeaf`) and, with no resolver, a `cfg.Model` whose provider, API or id differs from the log's. |
 | `OnPersistError` | Mandatory seam for store failures when the store is subscribed internally. A failed (or panicking) `Append` is reported here and through `OnError`, and the run continues with the message still in the model's history: the log loses the entry, the model does not lose the turn. A panic in this hook or in the store is contained. |
 
 Header precedence, lowest to highest: attribution defaults, provider/auth

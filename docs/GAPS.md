@@ -260,3 +260,12 @@ Every row here is a finding of this pass, not the 0.4.2 audit above.
 | `deferred.go` | An ABORTED redemption was returned as success and its marker recorded. | Fixed — an error or aborted fetch is returned as an error and nothing is recorded; `TestAnAbortedRedemptionIsNotRecorded`. |
 | `deferred.go` | A redeemed answer's tool calls were appended and never executed, leaving a transcript `Continue` refused and `Run` would answer synthetically. | Fixed — `RedeemDeferred` runs the loop from the answer (tool batch, TurnEnd, stop policy, further turns) and returns a `RunResult`; `Continue`'s REQ-LOOP-16 table is unchanged; `TestARedeemedToolCallIsExecuted`. |
 | `deferred.go`, `core` | The doc promised a `PollAfterMS` refusal that nothing implemented; the handle had no issue time. | Fixed — `DeferredHandle.IssuedAt` (stamped by the loop when the provider leaves it zero, persisted as `issued_at`) and `PollReadyAt`; a handle not yet due is refused before the wire; `TestAHandleIsNotRedeemedBeforeItsPollAfter`, `TestIssuedAtSurvivesTheLog`. |
+
+## Audit coverage and resume consistency (issue #81)
+
+| Where | Finding | Status |
+|---|---|---|
+| `batch.go`, `loop.go` | `AuditToolCall` was emitted only for calls that reached a handler: blocked, unknown, invalid, vetoed, aborted and `max_tokens`-truncated calls produced none. | Fixed — every call is audited; `AuditEvent.ErrorCode` carries the reason; `TestEveryToolCallIsAuditedWithItsReason`. |
+| `resume.go` | With no resolver, `NewAgentFromSession` compared only the model id, so a config on another provider or API was accepted and signed thinking stripped (P-4). | Fixed — the triple is compared; `TestResumeWithoutAResolverComparesTheWholeTriple`. |
+| `resume.go`, `session` | A store forked after `Open` left the `Resume` on the old branch: the model was sent one conversation and the log recorded another. | Fixed — `NewAgentFromSession` refuses a `Resume` whose leaf is not the store's head; `session.FoldLeaf` forks and folds together; `TestAResumeFromAStaleBranchIsRefused`. |
+| `session.Open` | A pre-existing empty file got a header with `"id":""`. | Fixed — id, timestamp and cwd are filled as `Create` fills them; `TestOpeningAnEmptyFileWritesARealHeader`. A non-empty file whose header line is damaged is still reported as `RepairMissingHeader` and keeps the empty in-memory header: an append-only log cannot gain a line 1. |

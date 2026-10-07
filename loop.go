@@ -701,9 +701,29 @@ func (a *Agent) synthesizeTruncated(s *core.EventStream, calls []core.ToolUseBlo
 		}
 		s.Push(core.ToolExecutionEndEvent{ToolUseID: c.ID, Name: c.Name, IsError: true})
 		s.Push(core.ToolResultEvent{Message: m})
+		// Audited like any call (REQ-OBS-05), with the reason it did not run.
+		a.audit(core.AuditEvent{
+			Kind: core.AuditToolCall, ToolName: c.Name, ToolUseID: c.ID,
+			ServerName:    serverNameOf(a.toolNamed(c.Name), c.Name),
+			ArgumentsHash: core.HashArguments(c.Input),
+			IsError:       true,
+			ErrorCode:     "max_tokens",
+		})
 		out = append(out, m)
 	}
 	return out
+}
+
+// toolNamed is the registered tool called name, or the zero Tool.
+func (a *Agent) toolNamed(name string) core.Tool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, t := range a.tools {
+		if t.Name == name {
+			return t
+		}
+	}
+	return core.Tool{}
 }
 
 // prepareNextTurn applies the context transform (REQ-GO-12). It produces the

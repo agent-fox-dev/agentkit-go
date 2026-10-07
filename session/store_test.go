@@ -665,3 +665,29 @@ func TestOnPersistErrorMayReadTheStore(t *testing.T) {
 		t.Fatal("the hook did not run")
 	}
 }
+
+// Issue #81 §4: a pre-existing empty file (touch-then-open, log rotation)
+// gets a real header — an id, a timestamp, a cwd — as a new file does.
+func TestOpeningAnEmptyFileWritesARealHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, r, err := OpenOrCreate(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := store.Header()
+	if !strings.HasPrefix(h.ID, "sess_") || h.Timestamp.IsZero() || h.CWD == "" {
+		t.Fatalf("header = %+v; an empty file must get an id, timestamp and cwd", h)
+	}
+	if r.Header.ID != h.ID {
+		t.Fatalf("Resume.Header.ID = %q, want %q", r.Header.ID, h.ID)
+	}
+	if err := store.Append(NewMessageEntry(userMsg("hi"))); err != nil {
+		t.Fatal(err)
+	}
+	if line := strings.SplitN(readFile(t, path), "\n", 2)[0]; strings.Contains(line, `"id":""`) {
+		t.Fatalf("the written header has an empty id: %s", line)
+	}
+}
