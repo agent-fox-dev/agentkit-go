@@ -390,7 +390,7 @@
       "done_when": [
         "`make test` and `make lint` pass with the three smoke tests running against real processes, the real Anthropic encoder and a real session log"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
