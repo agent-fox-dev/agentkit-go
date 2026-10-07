@@ -59,6 +59,19 @@ func canonicalRequest(t *testing.T) core.Request {
 				ToolUseID: "call_1", ToolName: "find_files",
 				Content: core.Content{core.TextBlock{
 					Text: `{"ok":true,"data":{"entries":["main.go"]}}`}},
+				Metadata: func() *core.ToolMetadata {
+					two := 2
+					return &core.ToolMetadata{
+						Truncated:   true,
+						TruncatedBy: "bytes",
+						TotalBytes:  123,
+						SpillPath:   "/tmp/agentkit-golden-sentinel.log",
+						DurationMS:  42,
+						ExitCode:    &two,
+						Outcome:     "exit",
+						LineEnding:  "lf",
+					}
+				}(),
 			},
 		},
 		Tools: core.ToolWires([]core.Tool{{
@@ -132,6 +145,19 @@ func indentJSON(t *testing.T, raw []byte) string {
 	}
 	out.WriteByte('\n')
 	return out.String()
+}
+
+// TS-04-54: Populated Metadata on the canonical request's tool result leaves
+// all five request goldens byte-identical.
+func TestMetadataNotInRequestBodies_TS04_54(t *testing.T) {
+	sentinels := []string{"agentkit-golden-sentinel", "spill_path", "exit_code", "duration_ms"}
+	for _, tc := range goldenRequestCases(t) {
+		for _, s := range sentinels {
+			if strings.Contains(tc.body, s) {
+				t.Errorf("%s request body contains %q", tc.name, s)
+			}
+		}
+	}
 }
 
 func goldenRequestCases(t *testing.T) []goldenCase {

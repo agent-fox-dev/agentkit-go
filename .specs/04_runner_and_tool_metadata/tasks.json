@@ -288,7 +288,7 @@
       "done_when": [
         "`git diff <base> -- testdata/golden/request_*.json` is empty"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
