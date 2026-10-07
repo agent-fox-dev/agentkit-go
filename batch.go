@@ -293,11 +293,12 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				msg := toolResultMessage(c, out)
 				if cfg.AfterToolCall != nil {
 					dec := callAfter(ctx, report, cfg.AfterToolCall, core.AfterToolCallContext{
-						ToolName:  c.Name,
-						ToolUseID: c.ID,
-						Arguments: prepared.Args,
-						Result:    &msg,
-						Elapsed:   time.Since(start),
+						ToolName:   c.Name,
+						ToolUseID:  c.ID,
+						Arguments:  prepared.Args,
+						Result:     &msg,
+						Elapsed:    time.Since(start),
+						ToolResult: out,
 					})
 					// Terminate is *bool: nil means "no opinion", so an
 					// interceptor that does not care cannot accidentally vote
@@ -473,13 +474,17 @@ func callAfter(ctx context.Context, report func(error), f core.AfterToolCall, in
 func toolResultMessage(c core.ToolUseBlock, r core.ToolResult) core.ToolResultMessage {
 	content := core.Content{core.TextBlock{Text: r.LLMText()}}
 	content = append(content, r.Blocks...)
-	return core.ToolResultMessage{
+	msg := core.ToolResultMessage{
 		ToolUseID: c.ID,
 		ToolName:  c.Name,
 		Content:   content,
 		IsError:   !r.OK,
 		Timestamp: time.Now(),
 	}
+	if !r.Metadata.IsEmpty() {
+		msg.Metadata = r.Metadata.Clone()
+	}
+	return msg
 }
 
 func errorResult(c core.ToolUseBlock, code, detail string) core.ToolResultMessage {

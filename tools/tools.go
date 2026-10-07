@@ -1207,6 +1207,9 @@ func executeTool(opts Options) core.Tool {
 			if err != nil {
 				return core.ErrResult("invalid_arguments", err.Error())
 			}
+			// Stdin, LogPath and KeepHead are deliberately unset:
+			// REQ-TOOL-06 null-device stdin, tail truncation at
+			// DefaultByteLimit, spill to SpillDir.
 			res, err := Run(ctx, a.Command, ExecOptions{
 				Dir:      workspaceRoot(opts),
 				Timeout:  timeout,
@@ -1248,6 +1251,10 @@ func timeoutArg(s *int) (time.Duration, error) {
 // after 30s]`, `[aborted]`, `[killed by signal 9]`. A command that exited 0
 // adds nothing — "exit_code":0,"outcome":"ok" on every successful call is
 // pure cost. Data keeps exit_code and outcome for programmatic readers.
+//
+// IOErr is deliberately not rendered into the tool result (04-REQ-6.4):
+// only Output, Outcome, ExitCode, Truncated, TotalBytes, SpillPath and
+// Duration are read from the ExecResult.
 func execResultToTool(res ExecResult, timeout time.Duration) core.ToolResult {
 	code := res.ExitCode
 	md := &core.ToolMetadata{
@@ -1341,6 +1348,9 @@ func runCommandTool(opts Options) core.Tool {
 			if err != nil {
 				return core.ErrResult("invalid_arguments", err.Error())
 			}
+			// Stdin, LogPath and KeepHead are deliberately unset:
+			// REQ-TOOL-06 null-device stdin, tail truncation at
+			// DefaultByteLimit, spill to SpillDir.
 			res, err := RunArgv(ctx, a.Argv, ExecOptions{
 				Dir:      workspaceRoot(opts),
 				Timeout:  timeout,

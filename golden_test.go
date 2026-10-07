@@ -147,7 +147,8 @@ func TestGoldenSessionLog(t *testing.T) {
 	}
 	if _, err := rec.RecordMessage(core.ToolResultMessage{
 		ToolUseID: "call_1", ToolName: "find_files",
-		Content: core.Content{core.TextBlock{Text: `{"ok":true,"data":{"entries":["main.go"]}}`}},
+		Content:  core.Content{core.TextBlock{Text: `{"ok":true,"data":{"entries":["main.go"]}}`}},
+		Metadata: &core.ToolMetadata{TotalLines: 1, DurationMS: 3},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -164,6 +165,48 @@ func TestGoldenSessionLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkGolden(t, "session_log.jsonl", string(raw))
+}
+
+// TS-04-48: The session-log golden changes by exactly one metadata object on
+// its tool_result line.
+func TestGoldenSessionLogMetadataDiff_TS04_48(t *testing.T) {
+	// The pre-change tool_result line (no metadata key).
+	const preToolResultLine = `{"id":"00000000000000000000000000000004","parent_id":"00000000000000000000000000000003","type":"message","timestamp":"2024-03-01T12:00:04Z","message":{"role":"tool_result","tool_use_id":"call_1","tool_name":"find_files","content":[{"type":"text","text":"{\"ok\":true,\"data\":{\"entries\":[\"main.go\"]}}"}]}}`
+
+	golden, err := os.ReadFile(filepath.Join("testdata", "golden", "session_log.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newLines := strings.Split(strings.TrimRight(string(golden), "\n"), "\n")
+	preLines := strings.Split(strings.TrimRight(string(golden), "\n"), "\n")
+
+	// The tool_result line is line index 3 (0-based: header, user, model_change, assistant, tool_result, branch_summary).
+	const toolResultIdx = 3 // 0-based: header=0, user=1, model_change=2, assistant=3, tool_result=4
+	// Actually: header(0), user(1), model_change(2), assistant(3), tool_result(4), branch_summary(5)
+	const trIdx = 4
+
+	if len(newLines) != 6 {
+		t.Fatalf("golden has %d lines, want 6", len(newLines))
+	}
+
+	// Verify the tool_result line is the only one that differs from the pre-change version.
+	preLines[trIdx] = preToolResultLine
+	for i, l := range preLines {
+		if i == trIdx {
+			continue
+		}
+		if l != newLines[i] {
+			t.Fatalf("line %d differs unexpectedly:\npre:  %s\nnew:  %s", i, l, newLines[i])
+		}
+	}
+
+	// Removing the metadata substring from the new line yields the pre-change line.
+	const mdSubstring = `,"metadata":{"total_lines":1,"duration_ms":3}`
+	stripped := strings.Replace(newLines[trIdx], mdSubstring, "", 1)
+	if stripped != preToolResultLine {
+		t.Fatalf("stripping metadata from new line does not yield pre-change line:\nstripped: %s\npre:      %s", stripped, preToolResultLine)
+	}
 }
 
 func padID(n int) string {

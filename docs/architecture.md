@@ -78,7 +78,7 @@ Rules that follow from it:
 | `compaction` | The context transform, four strategies, summarizers, summary validation, token estimate. |
 | `session` | Append-only JSONL log, damage-tolerant loader, branch tree, fold into construction inputs, recorder, `OpenOrCreate`. |
 | `outline` | Source-file declaration listing: Go backend (`go/ast`), ctags backend (via an injected `Runner`), anchored-line heuristics for ten languages, and a `none` fallback. The extension table covers the programming languages universal-ctags parses; `LangFor` also reads a `.h` header's content to tell C++ from C. A file ctags gives nothing for falls back to the heuristic. See `docs/errata/01_outline_language_coverage.md`. Standard-library-only; no first-party imports. |
-| `tools` | Built-in tools, workspace containment, output accumulator, process control, glob, layered gitignore, `fetch_url` behind the SSRF guard. `Walk` exposes the single shared directory traversal behind workspace confinement. `CtagsRunner` supplies the ctags process lifecycle for `outline.Options.Runner`. `file_outline` returns a file's declarations with line ranges; `find_symbol` searches the workspace by declaration name, backed by a lazily built, bounded in-memory symbol table that is refreshed after `write_file`, `edit_file` and the shell tools run. |
+| `tools` | Built-in tools, workspace containment, output accumulator, process control, glob, layered gitignore, `fetch_url` behind the SSRF guard. `RunArgv` is the embedder's process runner (no shell, argv-based, with stdin, head/tail truncation, log file, reduced environment and a pinned outcome contract). `Walk` exposes the single shared directory traversal behind workspace confinement. `CtagsRunner` supplies the ctags process lifecycle for `outline.Options.Runner`. `file_outline` returns a file's declarations with line ranges; `find_symbol` searches the workspace by declaration name, backed by a lazily built, bounded in-memory symbol table that is refreshed after `write_file`, `edit_file` and the shell tools run. |
 | `guard` | The `execute` authorization boundary: `Restricted`, `AllowAll`. |
 | `stop` | Stop policies. |
 | `subagent` | Delegation as a tool, named definitions, parallel runs. |
@@ -116,8 +116,8 @@ Agent.Run / Stream / Continue
          6. tool_use blocks present? (never the stop reason decides)
               └─ batch.go: prepare (sequential: policy, BeforeToolCall,
                  plugin hooks, argument repair) → execute (parallel or
-                 sequential) → finalize (AfterToolCall, image normalization,
-                 one ToolResultMessage per call)
+                 sequential) → finalize (AfterToolCall, metadata copy,
+                 image normalization, one ToolResultMessage per call)
          7. StopPolicy evaluated at the turn boundary
   └─ terminal marker, OnSessionEnd hook, RunResult
 ```

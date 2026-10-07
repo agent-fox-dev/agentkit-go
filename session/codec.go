@@ -232,6 +232,85 @@ func decodeUsage(o jsonx.OrderedObject) core.Usage {
 	return u
 }
 
+// ---------------------------------------------------------------- metadata
+
+// encodeMetadata builds an ordered object with keys in ToolMetadata's JSON tag
+// declaration order, omitting zero fields but writing exit_code whenever
+// ExitCode is non-nil (including 0).
+func encodeMetadata(md *core.ToolMetadata) jsonx.OrderedValue {
+	var o jsonx.OrderedObject
+	if md.Truncated {
+		o.Set("truncated", boolValue(true))
+	}
+	setString(&o, "truncated_by", md.TruncatedBy)
+	if md.TotalBytes != 0 {
+		o.Set("total_bytes", intValue(md.TotalBytes))
+	}
+	if md.TotalLines != 0 {
+		o.Set("total_lines", intValue(md.TotalLines))
+	}
+	setString(&o, "spill_path", md.SpillPath)
+	if md.DurationMS != 0 {
+		o.Set("duration_ms", intValue(md.DurationMS))
+	}
+	if md.ExitCode != nil {
+		o.Set("exit_code", intValue(int64(*md.ExitCode)))
+	}
+	setString(&o, "outcome", md.Outcome)
+	setString(&o, "line_ending", md.LineEnding)
+	return objValue(o)
+}
+
+// decodeMetadata reads only the nine known keys, drops unknown nested keys,
+// and returns nil when no known key is present.
+func decodeMetadata(o jsonx.OrderedObject) *core.ToolMetadata {
+	var md core.ToolMetadata
+	any := false
+
+	if getBool(o, "truncated") {
+		md.Truncated = true
+		any = true
+	}
+	if s := getString(o, "truncated_by"); s != "" {
+		md.TruncatedBy = s
+		any = true
+	}
+	if n, ok := getInt(o, "total_bytes"); ok {
+		md.TotalBytes = n
+		any = true
+	}
+	if n, ok := getInt(o, "total_lines"); ok {
+		md.TotalLines = n
+		any = true
+	}
+	if s := getString(o, "spill_path"); s != "" {
+		md.SpillPath = s
+		any = true
+	}
+	if n, ok := getInt(o, "duration_ms"); ok {
+		md.DurationMS = n
+		any = true
+	}
+	if n, ok := getInt(o, "exit_code"); ok {
+		v := int(n)
+		md.ExitCode = &v
+		any = true
+	}
+	if s := getString(o, "outcome"); s != "" {
+		md.Outcome = s
+		any = true
+	}
+	if s := getString(o, "line_ending"); s != "" {
+		md.LineEnding = s
+		any = true
+	}
+
+	if !any {
+		return nil
+	}
+	return &md
+}
+
 // ---------------------------------------------------------------- content
 
 func encodeBlock(b core.ContentBlock) jsonx.OrderedValue {
@@ -377,7 +456,7 @@ var (
 	}
 	toolResultKnown = []string{
 		msgKeyRole, "tool_use_id", "tool_name", "content", "is_error",
-		"added_tool_names", "usage", msgKeyTime,
+		"added_tool_names", "usage", "metadata", msgKeyTime,
 	}
 )
 
@@ -435,6 +514,9 @@ func encodeMessage(m core.Message) jsonx.OrderedValue {
 		}
 		if v.Usage != nil {
 			o.Set("usage", encodeUsage(*v.Usage))
+		}
+		if !v.Metadata.IsEmpty() {
+			o.Set("metadata", encodeMetadata(v.Metadata))
 		}
 		setTime(&o, msgKeyTime, v.Timestamp)
 		appendRest(&o, v.Unknown)
@@ -505,6 +587,9 @@ func decodeMessage(v jsonx.OrderedValue) (core.Message, error) {
 		if u, ok := getObject(o, "usage"); ok {
 			usage := decodeUsage(u)
 			m.Usage = &usage
+		}
+		if md, ok := getObject(o, "metadata"); ok {
+			m.Metadata = decodeMetadata(md)
 		}
 		return m, nil
 	}

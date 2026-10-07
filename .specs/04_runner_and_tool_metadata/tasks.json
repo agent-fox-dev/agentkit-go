@@ -40,7 +40,7 @@
         "tools/exec.go",
         "tools/runner_stdin_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -87,7 +87,7 @@
       "depends_on": [
         1
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -119,7 +119,7 @@
       "depends_on": [
         2
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -166,7 +166,7 @@
       "depends_on": [
         3
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -202,7 +202,7 @@
       "done_when": [
         "`git diff <base> -- tools/tools_test.go tools/reqtool06_test.go` is empty"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -241,7 +241,7 @@
         "metadata_message_test.go",
         "metadata_message_internal_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -288,7 +288,7 @@
       "done_when": [
         "`git diff <base> -- testdata/golden/request_*.json` is empty"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -321,7 +321,7 @@
       "depends_on": [
         7
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -359,7 +359,7 @@
       "done_when": [
         "`make check` exits 0"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -390,7 +390,7 @@
       "done_when": [
         "`make test` and `make lint` pass with the three smoke tests running against real processes, the real Anthropic encoder and a real session log"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

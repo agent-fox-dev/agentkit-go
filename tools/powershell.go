@@ -70,6 +70,9 @@ func PowerShell(opts Options) core.Tool {
 			}
 
 			argv := []string{bin, "-NoProfile", "-NonInteractive", "-Command", a.Command}
+			// Stdin, LogPath and KeepHead are deliberately unset:
+			// REQ-TOOL-06 null-device stdin, tail truncation at
+			// DefaultByteLimit, spill to SpillDir.
 			res, err := RunArgv(ctx, argv, ExecOptions{
 				Dir:      workspaceRoot(opts),
 				Timeout:  timeout,

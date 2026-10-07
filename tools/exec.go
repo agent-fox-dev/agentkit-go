@@ -15,6 +15,23 @@ import (
 	"time"
 )
 
+// fileWriter is the interface the Accumulator's spill/log file writer must
+// satisfy. In production it is the *os.File itself; in tests it can be
+// replaced through wrapExecFile to inject write failures.
+type fileWriter interface {
+	io.Writer
+	io.Closer
+}
+
+// wrapExecFile wraps the *os.File used for the spill or log file. In
+// production it returns the file unchanged. Tests replace it to inject write
+// failures (TS-04-15).
+var wrapExecFile = func(w *os.File) fileWriter { return w }
+
+// waitCmd calls cmd.Wait. Tests replace it to inject non-ExitError Wait
+// errors (TS-04-27).
+var waitCmd = func(c *exec.Cmd) error { return c.Wait() }
+
 // Outcome classifies how a command ended. It is a distinct type because the
 // classification is a PURE FUNCTION with a pinned precedence, unit-tested on
 // its own (REQ-TOOL-17.6): mixing it into the run path is how "the command
@@ -62,6 +79,10 @@ type ExecResult struct {
 	TotalBytes int64
 	SpillPath  string
 	Duration   time.Duration
+	// IOErr is a byte-moving failure that did not stop the process: a Stdin
+	// read error, a log or spill write error, or Wait reporting an I/O
+	// completion failure. Outcome is still classified from the exit status.
+	IOErr error
 }
 
 // ExecOptions configures Run.
@@ -73,9 +94,30 @@ type ExecOptions struct {
 	Timeout time.Duration
 	// MaxBytes bounds the window that reaches the model.
 	MaxBytes int
+	// KeepHead, when true, keeps the first MaxBytes bytes of the output
+	// (head truncation) instead of the last MaxBytes bytes (tail truncation,
+	// the default when false).
+	KeepHead bool
 	// SpillDir enables the full-output spill file.
 	SpillDir string
-	// Env, when non-nil, replaces the inherited environment entirely.
+	// LogPath, when set, writes the complete interleaved output to the named
+	// file as it arrives, independent of truncation. A relative path is
+	// resolved against Dir (or the process working directory when Dir is
+	// empty). Missing parent directories are created with mode 0o700 and the
+	// file is created or truncated with mode 0o600 before the process starts.
+	// When set, LogPath replaces SpillDir for that call: no temporary spill
+	// file is created, and ExecResult.SpillPath reports the absolute log path.
+	// The SDK never deletes the file.
+	LogPath string
+	// Stdin, when non-nil, is copied into the child's standard input through
+	// a pipe the runner owns. The child's stdin is closed when the reader
+	// returns io.EOF. Nil keeps the null device (REQ-TOOL-06).
+	Stdin io.Reader
+	// Env sets the child's environment. Nil means ReducedEnv(nil)
+	// (REQ-SEC-08, same rule as tools.Options.Env): credentials are stripped
+	// and PATH, HOME, LANG, TMPDIR and TERM are kept verbatim. A non-nil
+	// slice, including an empty one, is used verbatim with no variable added
+	// or removed. Pass os.Environ() for the full inherited environment.
 	Env []string
 	// DrainIdle is how long the output pipe must stay QUIET after the child
 	// has exited before draining stops (REQ-TOOL-17.5). Zero means
@@ -114,12 +156,18 @@ const (
 //     post-exit deadline (REQ-TOOL-17.5). exec closes the pipes it made as
 //     soon as Wait returns, which truncates a detached descendant's output at
 //     a constant — losing precisely the tail of a background job's log.
-//   - Output is truncated from the TAIL (REQ-TOOL-09a).
+//   - Output is truncated from the TAIL unless KeepHead is set (REQ-TOOL-09a).
+//
+// When ExecOptions.Stdin is non-nil, the reader is copied into the child's
+// standard input through a pipe the runner owns. The child's stdin is closed
+// when the reader returns io.EOF. A read error other than io.EOF is recorded
+// in ExecResult.IOErr. Nil keeps the null device.
 func Run(ctx context.Context, command string, opts ExecOptions) (ExecResult, error) {
 	shell, args, err := ResolveShell()
 	if err != nil {
 		return ExecResult{}, err
 	}
+	opts.Env = effectiveEnv(opts.Env)
 	return runArgv(ctx, append(append([]string{shell}, args...), command), opts)
 }
 
@@ -134,8 +182,13 @@ func Run(ctx context.Context, command string, opts ExecOptions) (ExecResult, err
 // them back into a shell string and hope the quoting is right.
 //
 // Everything else — process group, timeout, group kill, interleaved output,
-// tail truncation, spill — is identical, because those are properties of
-// running a subprocess and not of how the command was spelled.
+// tail truncation (unless KeepHead), spill — is identical, because those are
+// properties of running a subprocess and not of how the command was spelled.
+//
+// When ExecOptions.Stdin is non-nil, the reader is copied into the child's
+// standard input through a pipe the runner owns. The child's stdin is closed
+// when the reader returns io.EOF. A read error other than io.EOF is recorded
+// in ExecResult.IOErr. Nil keeps the null device.
 func RunArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, error) {
 	if len(argv) == 0 {
 		return ExecResult{}, errors.New("tools: run_command needs at least one argument")
@@ -151,6 +204,7 @@ func RunArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 		// lookup and the run agree on what "." means.
 		prog = filepath.Join(opts.Dir, prog)
 	}
+	opts.Env = effectiveEnv(opts.Env)
 	bin, err := lookPathFor(prog, opts.Env)
 	if err != nil {
 		return ExecResult{}, fmt.Errorf("tools: %q not found on PATH: %w", argv[0], err)
@@ -193,87 +247,41 @@ func lookPathFor(prog string, env []string) (string, error) {
 // runArgv is the shared body. Both entry points reach it with a fully
 // resolved argv, so there is exactly one implementation of the process
 // lifecycle rather than two that drift.
-func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, error) {
-	runCtx := ctx
-	var cancel context.CancelFunc
-	if opts.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
-		defer cancel()
-	}
-
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Dir = opts.Dir
-	cmd.Stdin = nil // REQ-TOOL-06: stdin is DEVNULL, never the agent's own.
-	if opts.Env != nil {
-		cmd.Env = opts.Env
-	}
-	setProcessGroup(cmd)
-	// REQ-TOOL-17.3: a backstop for exec's own bookkeeping. It no longer
-	// bounds the drain — the pipe below is not exec's to close — and the real
-	// bound is DrainCeiling.
-	cmd.WaitDelay = 2 * time.Second
-
-	acc := NewAccumulator(opts.MaxBytes, TruncateTail)
-	acc.SpillDir, acc.SpillPrefix = opts.SpillDir, "agentkit-exec"
-	defer acc.Close()
-
-	// ONE pipe for both streams, so they interleave in true write order
-	// (REQ-TOOL-17.4), and OUR pipe rather than the one exec would create for
-	// an io.Writer: exec closes the pipes it created the moment Wait returns,
-	// which is the fixed post-exit deadline REQ-TOOL-17.5 rules out. A pipe
-	// exec did not create, exec does not close — the same reason the MCP
-	// stdio transport owns its pipes.
-	pr, pw, err := os.Pipe()
-	if err != nil {
-		return ExecResult{}, err
-	}
-	cmd.Stdout, cmd.Stderr = pw, pw
-
-	start := time.Now()
-	if err := cmd.Start(); err != nil {
-		_ = pw.Close()
-		_ = pr.Close()
-		return ExecResult{}, err
-	}
-	// The child holds the write end now. Ours must go, or the reader never
-	// sees EOF — it would be waiting on a writer that is this very process.
-	_ = pw.Close()
-
-	// One copier goroutine feeds the accumulator; the sink serialises its
-	// writes against this goroutine's read of the result and can be stopped,
-	// so a descendant still writing after the drain gave up cannot race the
-	// accumulator or resurrect its spill file.
-	sink := &drainSink{acc: acc}
-	copyDone := make(chan struct{})
-	go func() {
-		defer close(copyDone)
-		_, _ = io.Copy(sink, pr)
-	}()
-
-	// Kill the GROUP on cancellation or timeout, not just the child.
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-runCtx.Done():
-			killGroup(cmd)
-		case <-done:
+// openLogFile resolves opts.LogPath (relative to opts.Dir or the working
+// directory), creates parent directories with mode 0o700 and opens the file
+// with mode 0o600. It returns the absolute path and the open file, or an
+// error that should be returned to the caller without starting a process.
+func openLogFile(opts ExecOptions) (string, *os.File, error) {
+	logAbs := opts.LogPath
+	if !filepath.IsAbs(logAbs) {
+		base := opts.Dir
+		if base == "" {
+			var wdErr error
+			base, wdErr = os.Getwd()
+			if wdErr != nil {
+				return "", nil, fmt.Errorf("tools: opening log %s: %w", opts.LogPath, wdErr)
+			}
 		}
-	}()
+		logAbs = filepath.Join(base, logAbs)
+	}
+	var absErr error
+	logAbs, absErr = filepath.Abs(logAbs)
+	if absErr != nil {
+		return "", nil, fmt.Errorf("tools: opening log %s: %w", opts.LogPath, absErr)
+	}
+	if err := os.MkdirAll(filepath.Dir(logAbs), 0o700); err != nil {
+		return "", nil, fmt.Errorf("tools: opening log %s: %w", opts.LogPath, err)
+	}
+	f, err := os.OpenFile(logAbs, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return "", nil, fmt.Errorf("tools: opening log %s: %w", opts.LogPath, err)
+	}
+	return logAbs, f, nil
+}
 
-	waitErr := cmd.Wait()
-	close(done)
-	elapsed := time.Since(start)
-	// The outcome is classified from the state AT EXIT. A cancellation that
-	// arrives during the drain below — after the command has already finished
-	// — must not turn a completed command into an aborted one.
-	aborted := ctx.Err() != nil
-	timedOut := !aborted && runCtx.Err() != nil
-	// Duration is measured at the child's exit, above: the drain that follows
-	// is the SDK waiting on a descendant, not the command running.
-	drainAfterExit(runCtx, pr, copyDone, sink, opts.DrainIdle, opts.DrainCeiling)
-
-	exitCode := 0
-	signaled := false
+// classifyWait extracts the exit code, signal flag and any non-exit I/O error
+// from the result of cmd.Wait.
+func classifyWait(cmd *exec.Cmd, waitErr error) (exitCode int, signaled bool, waitIOErr error) {
 	var ee *exec.ExitError
 	if errors.As(waitErr, &ee) {
 		exitCode = ee.ExitCode()
@@ -286,7 +294,180 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 		} else if exitCode == -1 {
 			signaled = true
 		}
+	} else if waitErr != nil {
+		// A Wait error that is neither an *exec.ExitError nor nil is an I/O
+		// completion failure (e.g. exec.ErrWaitDelay). Record it in IOErr
+		// and derive the exit status from ProcessState when available
+		// (04-REQ-5.8).
+		waitIOErr = waitErr
+		if cmd.ProcessState != nil {
+			exitCode = cmd.ProcessState.ExitCode()
+			if exitCode == -1 {
+				if code, ok := signalExitCode(&exec.ExitError{ProcessState: cmd.ProcessState}); ok {
+					exitCode, signaled = code, true
+				} else {
+					signaled = true
+				}
+			}
+		}
 	}
+	return exitCode, signaled, waitIOErr
+}
+
+// collectIOErr gathers byte-moving failures from stdin, the log/spill file
+// and cmd.Wait into a single error (nil when none occurred).
+func collectIOErr(stdinW *os.File, stdinState *stdinCopier, acc *Accumulator, waitIOErr error) error {
+	var stdinIOErr error
+	if stdinW != nil {
+		if sErr := stdinState.finish(); sErr != nil {
+			stdinIOErr = fmt.Errorf("tools: reading stdin: %w", sErr)
+		}
+	}
+
+	var fileIOErr error
+	if fErr := acc.fileError(); fErr != nil {
+		path := acc.SpillPath()
+		if path == "" {
+			path = "spill"
+		}
+		fileIOErr = fmt.Errorf("tools: writing %s: %w", path, fErr)
+	}
+
+	return errors.Join(stdinIOErr, fileIOErr, waitIOErr)
+}
+
+// setupAccumulator creates and configures the output accumulator, opening the
+// log file when LogPath is set or configuring SpillDir otherwise.
+func setupAccumulator(opts ExecOptions) (*Accumulator, error) {
+	mode := TruncateTail
+	if opts.KeepHead {
+		mode = TruncateHead
+	}
+	acc := NewAccumulator(opts.MaxBytes, mode)
+
+	if opts.LogPath != "" {
+		logAbs, f, err := openLogFile(opts)
+		if err != nil {
+			return nil, err
+		}
+		acc.useFile(f, logAbs)
+	} else {
+		acc.SpillDir, acc.SpillPrefix = opts.SpillDir, "agentkit-exec"
+	}
+	return acc, nil
+}
+
+// copyStdin copies from src into the write end of the stdin pipe, recording
+// any read error in state and closing w through closeOnce when done.
+func copyStdin(src io.Reader, w *os.File, closeOnce *sync.Once, state *stdinCopier) {
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			_, writeErr := w.Write(buf[:n])
+			if writeErr != nil {
+				// EPIPE or os.ErrClosed: child closed stdin or
+				// exited. Not an error (04-REQ-1.3).
+				break
+			}
+		}
+		if readErr != nil {
+			if readErr != io.EOF {
+				// Record the read error BEFORE closing the pipe
+				// (04-REQ-1.4).
+				state.recordErr(readErr)
+			}
+			break
+		}
+	}
+	closeOnce.Do(func() { _ = w.Close() })
+}
+
+func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, error) {
+	runCtx, cancel := ctx, context.CancelFunc(nil)
+	if opts.Timeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
+	}
+	if cancel != nil {
+		defer cancel()
+	}
+
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = opts.Dir
+	cmd.Env = opts.Env
+	setProcessGroup(cmd)
+	cmd.WaitDelay = 2 * time.Second // REQ-TOOL-17.3 backstop
+
+	acc, err := setupAccumulator(opts)
+	if err != nil {
+		return ExecResult{}, err
+	}
+	defer acc.Close()
+
+	pr, pw, err := os.Pipe() // our pipe for both streams (REQ-TOOL-17.4)
+	if err != nil {
+		return ExecResult{}, err
+	}
+	cmd.Stdout, cmd.Stderr = pw, pw
+
+	var (
+		stdinW     *os.File
+		stdinClose sync.Once
+		stdinState stdinCopier
+	)
+	if opts.Stdin != nil {
+		sr, sw, pipeErr := os.Pipe()
+		if pipeErr != nil {
+			_ = pw.Close()
+			_ = pr.Close()
+			return ExecResult{}, pipeErr
+		}
+		cmd.Stdin = sr
+		stdinW = sw
+	}
+
+	start := time.Now()
+	if startErr := cmd.Start(); startErr != nil {
+		_ = pw.Close()
+		_ = pr.Close()
+		if stdinW != nil {
+			_ = stdinW.Close()
+			_ = cmd.Stdin.(*os.File).Close()
+		}
+		return ExecResult{}, startErr
+	}
+	_ = pw.Close()
+	if stdinW != nil {
+		_ = cmd.Stdin.(*os.File).Close() // parent closes read end
+		go copyStdin(opts.Stdin, stdinW, &stdinClose, &stdinState)
+	}
+
+	sink := &drainSink{acc: acc}
+	copyDone := make(chan struct{})
+	go func() { defer close(copyDone); _, _ = io.Copy(sink, pr) }()
+
+	done := make(chan struct{})
+	go func() { // kill the process GROUP on cancellation or timeout
+		select {
+		case <-runCtx.Done():
+			killGroup(cmd)
+		case <-done:
+		}
+	}()
+
+	waitErr := waitCmd(cmd)
+	close(done)
+	elapsed := time.Since(start)
+	aborted := ctx.Err() != nil // classify at exit, before the drain
+	timedOut := !aborted && runCtx.Err() != nil
+	drainAfterExit(runCtx, pr, copyDone, sink, opts.DrainIdle, opts.DrainCeiling)
+
+	if stdinW != nil { // close stdin write end (04-REQ-1.5)
+		stdinClose.Do(func() { _ = stdinW.Close() })
+	}
+
+	exitCode, signaled, waitIOErr := classifyWait(cmd, waitErr)
+	ioErr := collectIOErr(stdinW, &stdinState, acc, waitIOErr)
 
 	return ExecResult{
 		Output:     acc.String(),
@@ -296,6 +477,7 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 		TotalBytes: acc.Total(),
 		SpillPath:  acc.SpillPath(),
 		Duration:   elapsed,
+		IOErr:      ioErr,
 	}, nil
 }
 
@@ -392,6 +574,35 @@ func drainAfterExit(ctx context.Context, pr *os.File, copyDone <-chan struct{}, 
 	_ = pr.Close()
 }
 
+// stdinCopier guards the error recorded by the stdin copier goroutine.
+// The copier records a read error under the mutex; the caller reads it after
+// Wait and the drain, and marks the state finished so a reader error arriving
+// after the call returned is dropped without a data race.
+type stdinCopier struct {
+	mu       sync.Mutex
+	err      error
+	finished bool
+}
+
+// recordErr records a read error from the copier goroutine. It is a no-op
+// after finish has been called.
+func (s *stdinCopier) recordErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.finished && s.err == nil {
+		s.err = err
+	}
+}
+
+// finish marks the copier state as finished and returns the recorded error.
+// After this call, recordErr is a no-op.
+func (s *stdinCopier) finish() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.finished = true
+	return s.err
+}
+
 // ResolveShell is REQ-TOOL-06's fixed ladder.
 //
 // It never consults $SHELL and never falls back to cmd.exe. $SHELL is the
@@ -420,6 +631,16 @@ func lookPathAny(names ...string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// effectiveEnv returns ReducedEnv(nil) for a nil env and the slice verbatim
+// otherwise (an empty non-nil slice stays empty). It is the single place
+// where ExecOptions.Env's nil-means-reduced rule is applied.
+func effectiveEnv(env []string) []string {
+	if env == nil {
+		return ReducedEnv(nil)
+	}
+	return env
 }
 
 // ReducedEnv strips credentials from the inherited environment while KEEPING
