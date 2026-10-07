@@ -1,0 +1,614 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "04",
+  "spec_name": "runner_and_tool_metadata",
+  "schema_version": 2,
+  "introduction": "This spec makes the SDK's subprocess runner (`tools.Run`, `tools.RunArgv`) a complete embedder-facing process runner. It adds standard input, a choice of keeping the head or the tail of the output, a log file the caller names, the credential-stripped environment by default and a pinned outcome contract with an `IOErr` field. It also carries the `core.ToolMetadata` every tool handler already computes onto `core.ToolResultMessage` and `AfterToolCallContext`. From there the metadata reaches events, stop policies, run results, the session log and resumed agents, and it never reaches a provider request.",
+  "glossary": {
+    "ExecOptions": "The options struct of tools.Run and tools.RunArgv (Dir, Timeout, MaxBytes, KeepHead, SpillDir, LogPath, Stdin, Env, DrainIdle, DrainCeiling).",
+    "ExecResult": "The value tools.Run and tools.RunArgv return for a started process: Output, Outcome, ExitCode, Truncated, TotalBytes, SpillPath, Duration and IOErr.",
+    "IOErr": "The ExecResult field reporting a failure to move bytes between the caller and the process (stdin read, log or spill write, Wait I/O completion) that did not stop the process.",
+    "Outcome": "tools.Outcome, one of ok, exit, signal, timeout or abort, classified by ClassifyOutcome with the precedence abort > timeout > signal > exit.",
+    "handler-less result": "A tool result finalized without running a tool's Execute function: unknown tool, invalid arguments, BeforeToolCall block, plugin block, batch abort, max_tokens synthesis, the no_result backstop, and provider.RepairTranscript's synthetic results.",
+    "head-mode marker": "The Accumulator's TruncateHead marker, appended after the retained bytes: `[N bytes elided of T total. Full output: PATH]`, without the path clause when there is no file.",
+    "non-empty metadata": "A *core.ToolMetadata that is non-nil and has at least one field set: a non-zero scalar, or a non-nil ExitCode pointer.",
+    "post-exit drain": "The re-arming idle read of the shared output pipe after the child exits, bounded by DrainIdle and DrainCeiling (REQ-TOOL-17.5).",
+    "process tree": "The child process and every process it starts. It runs in its own process group on unix (Setpgid) and is killed with taskkill /T on Windows.",
+    "request goldens": "testdata/golden/request_{anthropic,openai,openai_responses,google,ollama}.json, the byte-exact wire bodies golden_requests_test.go builds from canonicalRequest.",
+    "session codec": "session.EncodeMessage / session.DecodeMessage (encodeMessage/decodeMessage in session/codec.go). It is the lossless message encoding used by the session log and, through core.MarshalEvent, by the event JSON union.",
+    "spill file": "The temporary file in SpillDir into which the Accumulator writes the complete output on first write."
+  },
+  "requirements": [
+    {
+      "id": "04-REQ-1",
+      "title": "Standard input for the runner",
+      "rationale": "An embedder's verifier and phase runner must feed a program its input without falling back to a hand-written exec.CommandContext runner that has no process-group kill.",
+      "criteria": [
+        {
+          "id": "04-REQ-1.1",
+          "pattern": "optional",
+          "condition": "ExecOptions.Stdin is nil",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "give the child the null device as its standard input, as before this change",
+          "contract": "A child that reads stdin sees end-of-file at once; Outcome and Output are unchanged from the pre-change behaviour"
+        },
+        {
+          "id": "04-REQ-1.2",
+          "pattern": "event_driven",
+          "condition": "ExecOptions.Stdin is a non-nil io.Reader",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "copy the reader into the child's standard input through a pipe the runner owns, and close the child's standard input when the reader returns io.EOF",
+          "contract": "A child that copies stdin to stdout produces Output byte-identical to the reader's content; IOErr is nil"
+        },
+        {
+          "id": "04-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "the child exits or closes its standard input before reading all of the reader's bytes",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "stop copying, treat the unread input as no error, and classify Outcome from the exit status",
+          "contract": "Returned error is nil; IOErr is nil; Outcome is ok when the child exited 0"
+        },
+        {
+          "id": "04-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "the Stdin reader returns an error other than io.EOF",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "close the child's standard input and record the read error in ExecResult.IOErr whatever the child's exit status, classifying Outcome from the exit status",
+          "contract": "Returned error is nil; errors.Is(res.IOErr, readerErr) is true for both a zero and a non-zero exit; Outcome is ok or exit from the wait status"
+        },
+        {
+          "id": "04-REQ-1.5",
+          "pattern": "complex_event",
+          "condition": "the child has exited and the post-exit drain has finished",
+          "guard": "the Stdin reader is still blocked in Read",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "return the ExecResult without waiting for the reader, and end the stdin copier goroutine when the reader's Read returns",
+          "contract": "The call returns within DrainIdle plus scheduling slack of the child's exit; no copier goroutine remains after the blocked reader is unblocked"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-2",
+      "title": "Which end of the output is kept",
+      "rationale": "A caller reading a test log or a report wants its beginning, while every existing caller relies on tail truncation as the zero value.",
+      "criteria": [
+        {
+          "id": "04-REQ-2.1",
+          "pattern": "optional",
+          "condition": "ExecOptions.KeepHead is false (the zero value)",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "keep the last MaxBytes bytes of the output preceded by the tail-mode marker, exactly as before this change",
+          "contract": "Output is byte-identical to the pre-change Output for the same command and MaxBytes"
+        },
+        {
+          "id": "04-REQ-2.2",
+          "pattern": "complex_event",
+          "condition": "ExecOptions.KeepHead is true",
+          "guard": "the process writes more than the effective MaxBytes bytes",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "keep the first MaxBytes bytes of the output followed by the Accumulator's head-mode marker, which names the elided byte count, the total and the spill or log path when one exists",
+          "contract": "Output == first MaxBytes bytes + \"\\n[E bytes elided of T total. Full output: P]\" with P present only when a spill or log file exists; Truncated is true"
+        },
+        {
+          "id": "04-REQ-2.3",
+          "pattern": "ubiquitous",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "treat MaxBytes <= 0 as DefaultByteLimit (50 KB) in both head and tail mode"
+        },
+        {
+          "id": "04-REQ-2.4",
+          "pattern": "ubiquitous",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "for any output byte sequence and any MaxBytes, report the same TotalBytes (every byte the process wrote) and the same Truncated (TotalBytes exceeds the retained window) in head mode as in tail mode"
+        },
+        {
+          "id": "04-REQ-2.5",
+          "pattern": "event_driven",
+          "condition": "the process writes exactly MaxBytes bytes",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "return the whole output with no marker in both modes",
+          "contract": "Truncated is false; Output equals the bytes written; TotalBytes == MaxBytes"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-3",
+      "title": "A caller-named log of the full output",
+      "rationale": "An embedder needs the complete output in a file it chose, and needs to know before the run starts if it cannot have one.",
+      "criteria": [
+        {
+          "id": "04-REQ-3.1",
+          "pattern": "optional",
+          "condition": "ExecOptions.LogPath is set",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "write the complete interleaved stdout and stderr to that file as it arrives, independent of truncation",
+          "contract": "After the call the file's content is byte-identical to the full output, including when Output is truncated; TotalBytes equals the file size"
+        },
+        {
+          "id": "04-REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "ExecOptions.LogPath is a relative path",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "resolve it against ExecOptions.Dir, or against the process working directory when Dir is empty",
+          "contract": "ExecResult.SpillPath is the absolute resolved path, and the file exists there"
+        },
+        {
+          "id": "04-REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "ExecOptions.LogPath is set and the call is about to start the process",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "create missing parent directories with mode 0o700 and create or truncate the log file with mode 0o600 before starting the process",
+          "contract": "On unix the created directories have permission bits 0o700 and the file 0o600; a pre-existing file's old content is gone"
+        },
+        {
+          "id": "04-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "the LogPath file or its parent directory cannot be created or opened",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "return an error without starting the process",
+          "contract": "Returns (ExecResult{}, non-nil error); a marker file the command would have created does not exist"
+        },
+        {
+          "id": "04-REQ-3.5",
+          "pattern": "optional",
+          "condition": "ExecOptions.LogPath is set",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "use the log file in place of SpillDir for that call, creating no temporary spill file, and report the absolute log path in SpillPath, including when the command printed nothing, and in the truncation marker",
+          "contract": "SpillDir contains no agentkit-exec-*.log file after the call; SpillPath == absolute LogPath for a command with empty output; a truncated Output's marker names the log path"
+        },
+        {
+          "id": "04-REQ-3.6",
+          "pattern": "unwanted",
+          "condition": "writing to the log file or to a SpillDir spill file fails after the process has started",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "stop writing to that file, leave the process running to completion, keep accumulating Output, and record the write error in ExecResult.IOErr",
+          "contract": "Returned error is nil; IOErr is non-nil; Outcome is classified from the exit status; Output holds the retained window"
+        },
+        {
+          "id": "04-REQ-3.7",
+          "pattern": "ubiquitous",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "never delete a LogPath file, whatever the Outcome",
+          "contract": "The log file exists after calls ending in ok, exit, signal, timeout and abort"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-4",
+      "title": "The reduced environment by default",
+      "rationale": "The runner's nil environment inherited every credential in the process, while tools.Options already defaults to ReducedEnv (REQ-SEC-08).",
+      "criteria": [
+        {
+          "id": "04-REQ-4.1",
+          "pattern": "optional",
+          "condition": "ExecOptions.Env is nil",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "run the child with ReducedEnv(nil)",
+          "contract": "A credential variable set in the test process (for example AGENTKIT_TEST_API_KEY) is absent from the child's environment; PATH and HOME are present verbatim"
+        },
+        {
+          "id": "04-REQ-4.2",
+          "pattern": "optional",
+          "condition": "ExecOptions.Env is non-nil, including an empty slice",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "pass it to the child verbatim, with no variable added or removed",
+          "contract": "A child given Env {\"FOO=1\"} sees FOO=1 and no credential variable from the parent; os.Environ() passed as Env exposes the parent's credential variables"
+        },
+        {
+          "id": "04-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "tools.RunArgv",
+          "action": "resolve a bare program name through the PATH of the environment the child runs with, so a nil Env resolves the same binary as the process PATH because ReducedEnv keeps PATH verbatim"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-5",
+      "title": "The outcome and error contract",
+      "rationale": "An embedder must tell a timeout from its own cancellation from a failed or successful exit without parsing text, and must never see an I/O failure reported as a clean exit 0.",
+      "criteria": [
+        {
+          "id": "04-REQ-5.1",
+          "pattern": "ubiquitous",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "for any call that starts a process, return a nil error and an ExecResult whose Outcome is exactly one of ok, exit, signal, timeout or abort, classified from the state at the moment the child exited"
+        },
+        {
+          "id": "04-REQ-5.2",
+          "pattern": "event_driven",
+          "condition": "the caller's ctx is cancelled while the child is running",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "kill the whole process tree, grandchildren included, and classify the call as abort",
+          "contract": "Outcome == OutcomeAbort; Duration is measured to the child's exit; a grandchild that would create a marker file after the kill never creates it"
+        },
+        {
+          "id": "04-REQ-5.3",
+          "pattern": "event_driven",
+          "condition": "the deadline derived from ExecOptions.Timeout expires while the caller's ctx is not done",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "kill the whole process tree, grandchildren included, and classify the call as timeout",
+          "contract": "Outcome == OutcomeTimeout; Duration >= Timeout and is measured to the child's exit; a grandchild that would create a marker file after the kill never creates it"
+        },
+        {
+          "id": "04-REQ-5.4",
+          "pattern": "event_driven",
+          "condition": "the caller's own ctx deadline, shorter than ExecOptions.Timeout, expires while the child is running",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "kill the whole process tree and classify the call as abort, not timeout",
+          "contract": "Outcome == OutcomeAbort"
+        },
+        {
+          "id": "04-REQ-5.5",
+          "pattern": "event_driven",
+          "condition": "the child exits on its own and the caller's ctx is cancelled later, during the post-exit drain",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "keep the outcome classified at the child's exit",
+          "contract": "Outcome is ok or exit from the wait status, never abort"
+        },
+        {
+          "id": "04-REQ-5.6",
+          "pattern": "event_driven",
+          "condition": "the child exits before any deadline or cancellation",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "classify the outcome as signal, exit or ok from the wait status and report the exit status in ExitCode, using 128+signum for a signal-killed child on unix",
+          "contract": "exit 0 → (ok, 0); exit 3 → (exit, 3); killed by SIGTERM on unix → (signal, 143)"
+        },
+        {
+          "id": "04-REQ-5.7",
+          "pattern": "unwanted",
+          "condition": "the call cannot start a process because argv is empty, the program is not found, LogPath cannot be opened, or creating a pipe or forking fails",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "return an error and run nothing; no other condition returns a non-nil error",
+          "contract": "Returns (ExecResult{}, non-nil error) for exactly these start failures"
+        },
+        {
+          "id": "04-REQ-5.8",
+          "pattern": "unwanted",
+          "condition": "cmd.Wait returns an error that is neither an exit status nor a signal, such as exec.ErrWaitDelay",
+          "system": "tools.Run and tools.RunArgv",
+          "action": "record that error in ExecResult.IOErr instead of discarding it, and classify Outcome from the exit status",
+          "contract": "Returned error is nil; errors.Is(res.IOErr, waitErr) is true; IOErr is nil on every call where no stdin, log, spill or Wait I/O failure occurred"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-6",
+      "title": "The built-in shell tools are unchanged",
+      "rationale": "The runner's new options are for embedders; the model's execute, run_command and powershell tools must produce byte-identical results.",
+      "criteria": [
+        {
+          "id": "04-REQ-6.1",
+          "pattern": "ubiquitous",
+          "system": "execute, run_command and powershell tools",
+          "action": "call tools.Run or tools.RunArgv with their explicit Options.Env, KeepHead false, MaxBytes DefaultByteLimit and Options.SpillDir, and with Stdin nil and LogPath empty"
+        },
+        {
+          "id": "04-REQ-6.2",
+          "pattern": "event_driven",
+          "condition": "a model command run by execute, run_command or powershell reads standard input",
+          "system": "execute, run_command and powershell tools",
+          "action": "give it the null device (REQ-TOOL-06)",
+          "contract": "The command sees end-of-file at once and does not block"
+        },
+        {
+          "id": "04-REQ-6.3",
+          "pattern": "ubiquitous",
+          "system": "execResultToTool",
+          "action": "produce ToolResult.Text, the status line, Data, Error and Metadata byte-identical to the pre-change values for every ExecResult with the same Output, Outcome, ExitCode, Truncated, TotalBytes, SpillPath and Duration"
+        },
+        {
+          "id": "04-REQ-6.4",
+          "pattern": "unwanted",
+          "condition": "the ExecResult a shell tool receives has a non-nil IOErr",
+          "system": "execResultToTool",
+          "action": "leave the IOErr out of the tool result",
+          "contract": "Text, Data, Error and Metadata equal those of the same ExecResult with IOErr nil"
+        },
+        {
+          "id": "04-REQ-6.5",
+          "pattern": "ubiquitous",
+          "system": "tools package test suite",
+          "action": "pass the existing tests in tools/tools_test.go and tools/reqtool06_test.go with no edit to either file"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-7",
+      "title": "Tool metadata on the result message",
+      "rationale": "An embedder reads exit code, outcome and truncation from the transcript record rather than parsing `[exit N]` out of model-facing text.",
+      "criteria": [
+        {
+          "id": "04-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "a tool's Execute function returns a ToolResult whose Metadata is non-empty metadata",
+          "system": "batch executor",
+          "action": "set core.ToolResultMessage.Metadata to a copy of that metadata owned by the message, with its own ExitCode pointer",
+          "contract": "msg.Metadata is equal by value to the handler's Metadata; msg.Metadata != handler pointer; msg.Metadata.ExitCode != handler ExitCode pointer when non-nil"
+        },
+        {
+          "id": "04-REQ-7.2",
+          "pattern": "ubiquitous",
+          "system": "batch executor",
+          "action": "for any tool that reuses one ToolMetadata value or ExitCode pointer across calls, including in a parallel batch, keep each message's Metadata unchanged when the tool later mutates that value"
+        },
+        {
+          "id": "04-REQ-7.3",
+          "pattern": "event_driven",
+          "condition": "a tool's Execute function returns a ToolResult whose Metadata is nil, or non-nil with every field zero and ExitCode nil",
+          "system": "batch executor",
+          "action": "leave ToolResultMessage.Metadata nil",
+          "contract": "msg.Metadata == nil"
+        },
+        {
+          "id": "04-REQ-7.4",
+          "pattern": "unwanted",
+          "condition": "a result comes from a Handler-style tool, from a handler panic, or is a handler-less result (unknown tool, invalid arguments, BeforeToolCall block, plugin block, batch abort, max_tokens synthesis, the no_result backstop, or a provider.RepairTranscript synthetic result)",
+          "system": "batch executor, agent loop and provider.RepairTranscript",
+          "action": "produce the ToolResultMessage with nil Metadata",
+          "contract": "msg.Metadata == nil; Content, IsError and the emitted events are unchanged from the pre-change values"
+        },
+        {
+          "id": "04-REQ-7.5",
+          "pattern": "ubiquitous",
+          "system": "core.ToolResultMessage.Clone",
+          "action": "deep-copy Metadata, including a fresh ExitCode pointer, so that mutating the clone's metadata leaves the original unchanged"
+        },
+        {
+          "id": "04-REQ-7.6",
+          "pattern": "event_driven",
+          "condition": "a tool call whose handler returned non-empty metadata is finalized",
+          "system": "agent loop",
+          "action": "expose that metadata on the message in ToolResultEvent.Message, TurnEndEvent.ToolResults, StopContext.ToolResults, the agent's History and RunResult.Messages",
+          "contract": "Each of the five carries a Metadata equal by value to the handler's, for example ExitCode 2 and Outcome \"exit\" from a failing execute call"
+        },
+        {
+          "id": "04-REQ-7.7",
+          "pattern": "ubiquitous",
+          "system": "batch executor",
+          "action": "build ToolResultMessage.Content from ToolResult.LLMText and Blocks as before, leaving ToolResult.ToLLMMap and LLMText unchanged, so Content is byte-identical whether or not Metadata is set"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-8",
+      "title": "The handler's result reaches AfterToolCall",
+      "rationale": "A post-tool hook needs the structured result the handler produced, while the message stays the one record that is emitted and persisted.",
+      "criteria": [
+        {
+          "id": "04-REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "AfterToolCall is configured and a tool handler has run",
+          "system": "batch executor",
+          "action": "pass core.AfterToolCallContext.ToolResult as the handler's result by value, after panic and Handler-error conversion, and pass Result as the already built *ToolResultMessage carrying its Metadata",
+          "contract": "in.ToolResult equals the handler's returned ToolResult; in.Result.Metadata equals by value in.ToolResult.Metadata when that is non-empty"
+        },
+        {
+          "id": "04-REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "an AfterToolCall hook edits in.Result.Metadata",
+          "system": "batch executor",
+          "action": "use the edited metadata in the emitted ToolResultEvent, the persisted session entry, StopContext.ToolResults and history",
+          "contract": "All four carry the hook's edited value"
+        },
+        {
+          "id": "04-REQ-8.3",
+          "pattern": "event_driven",
+          "condition": "an AfterToolCall hook modifies its in.ToolResult copy, including fields reached through its Metadata pointer",
+          "system": "batch executor",
+          "action": "leave the emitted, persisted and stop-policy message unchanged",
+          "contract": "The ToolResultEvent message equals the message the batch built before the hook"
+        },
+        {
+          "id": "04-REQ-8.4",
+          "pattern": "event_driven",
+          "condition": "a tool handler panics and AfterToolCall is configured",
+          "system": "batch executor",
+          "action": "pass the panic-converted result in ToolResult and a Result with nil Metadata",
+          "contract": "in.ToolResult.Error == \"panic\"; in.Result.Metadata == nil"
+        },
+        {
+          "id": "04-REQ-8.5",
+          "pattern": "ubiquitous",
+          "system": "batch executor",
+          "action": "keep the REQ-TOOL-13.3 termination-vote rules and the image normalization after the hook unchanged"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-9",
+      "title": "Metadata is persisted and never sent to the model",
+      "rationale": "Metadata has to survive the session log, event JSON and resume, and the model's request bytes must stay identical.",
+      "criteria": [
+        {
+          "id": "04-REQ-9.1",
+          "pattern": "event_driven",
+          "condition": "a tool_result message with non-empty metadata is encoded",
+          "system": "session codec",
+          "action": "write a `metadata` object after `usage` and before `timestamp`, keyed by ToolMetadata's JSON tag names in declaration order (truncated, truncated_by, total_bytes, total_lines, spill_path, duration_ms, exit_code, outcome, line_ending), omitting zero fields and writing exit_code whenever ExitCode is non-nil, including 0",
+          "contract": "testdata/golden/session_log.jsonl differs from its previous content only by one metadata object on the tool_result line written by golden_test.go"
+        },
+        {
+          "id": "04-REQ-9.2",
+          "pattern": "ubiquitous",
+          "system": "session codec",
+          "action": "for any ToolResultMessage whose Metadata is nil or non-empty, decode the encoding back to a message whose Metadata is equal by value (nil stays nil, ExitCode 0 stays a pointer to 0), and re-encode the decoded message to the same bytes"
+        },
+        {
+          "id": "04-REQ-9.3",
+          "pattern": "event_driven",
+          "condition": "a tool_result entry is decoded whose `metadata` key is absent or holds an object with no known field",
+          "system": "session codec",
+          "action": "decode Metadata as nil, drop unknown keys nested inside a metadata object, and keep `metadata` in toolResultKnown so it never lands in Unknown",
+          "contract": "msg.Metadata == nil for absent or all-unknown metadata; msg.Unknown has no `metadata` key"
+        },
+        {
+          "id": "04-REQ-9.4",
+          "pattern": "event_driven",
+          "condition": "a session log written before this change, with no metadata key, is loaded",
+          "system": "session codec",
+          "action": "read every tool result back with nil Metadata and re-encode the log byte-identically, writing metadata only as a top-level key of the tool_result object so a build without this change keeps it in Unknown",
+          "contract": "Decoded Metadata is nil; re-encoded bytes equal the input bytes"
+        },
+        {
+          "id": "04-REQ-9.5",
+          "pattern": "event_driven",
+          "condition": "session.EventJSON encodes a ToolResultEvent, TurnEndEvent or AgentDoneEvent containing a tool result with non-empty metadata",
+          "system": "event JSON union",
+          "action": "include the same metadata object in the encoded message, through session.EncodeMessage",
+          "contract": "The message JSON inside the event carries a metadata object byte-identical to the session log's for the same message"
+        },
+        {
+          "id": "04-REQ-9.6",
+          "pattern": "event_driven",
+          "condition": "NewAgentFromSession resumes a session whose tool_result entries carry metadata",
+          "system": "NewAgentFromSession",
+          "action": "restore the metadata into the agent's history",
+          "contract": "Agent.History() tool results carry Metadata equal by value to the values recorded before the restart"
+        },
+        {
+          "id": "04-REQ-9.7",
+          "pattern": "event_driven",
+          "condition": "the Anthropic, OpenAI chat, OpenAI responses, Google or Ollama encoder builds a request whose history holds a tool result with populated Metadata",
+          "system": "provider encoders",
+          "action": "emit a request body containing nothing derived from Metadata",
+          "contract": "With canonicalRequest's tool result carrying a populated Metadata, the five request goldens stay byte-identical"
+        },
+        {
+          "id": "04-REQ-9.8",
+          "pattern": "ubiquitous",
+          "system": "compaction token estimate",
+          "action": "compute the same estimate for a ToolResultMessage whether or not its Metadata is set"
+        }
+      ]
+    },
+    {
+      "id": "04-REQ-10",
+      "title": "Documentation and module policy",
+      "rationale": "The steering rules treat stale docs as regressions, and the root module must stay standard-library-only and cgo-free.",
+      "criteria": [
+        {
+          "id": "04-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "docs/configuration.md",
+          "action": "contain a subsection titled \"Subprocess runner (`tools.Run`, `tools.RunArgv`)\" with an ExecOptions table listing Dir, Timeout, MaxBytes, KeepHead, SpillDir, LogPath, Stdin, Env, DrainIdle and DrainCeiling, and the ExecResult fields with the Outcome rules and IOErr"
+        },
+        {
+          "id": "04-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "docs/configuration.md",
+          "action": "state in its `BeforeToolCall`, `AfterToolCall` row that AfterToolCall receives the handler's ToolResult and that ToolResultMessage.Metadata carries the tool's metadata"
+        },
+        {
+          "id": "04-REQ-10.3",
+          "pattern": "ubiquitous",
+          "system": "docs/architecture.md",
+          "action": "mention the metadata in the finalize step of the data flow and name RunArgv as the embedder's process runner in the `tools` package row"
+        },
+        {
+          "id": "04-REQ-10.4",
+          "pattern": "ubiquitous",
+          "system": "docs/errata",
+          "action": "contain a new erratum file prefixed `04_` recording the departures from docs/prd/06 §6 and §9: RunArgv instead of Exec, Outcome instead of TimedOut/Aborted, no ExitCode -1, KeepHead instead of KeepTail, no WaitDelay option. It also records that §7 and §5's usage and abort items were already implemented"
+        },
+        {
+          "id": "04-REQ-10.5",
+          "pattern": "ubiquitous",
+          "system": "root module",
+          "action": "stay standard-library-only and cgo-free, with go.mod gaining no require line and the internal/policy tests and `make check` passing"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "04-PATH-1",
+      "title": "An embedder runs a verifier with stdin, a named log and head truncation",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls tools.RunArgv(ctx, argv, ExecOptions{Dir, Stdin: reader, LogPath: \"logs/verify.log\", KeepHead: true, MaxBytes: small, Timeout}) with a nil Env"
+        },
+        {
+          "actor": "tools.RunArgv",
+          "action": "resolves the program through the PATH of ReducedEnv(nil), resolves LogPath against Dir, creates the parent directory 0o700 and the log file 0o600 before starting anything"
+        },
+        {
+          "actor": "tools.RunArgv",
+          "action": "starts the child in its own process group, copies the reader into the child's stdin and closes it at io.EOF"
+        },
+        {
+          "actor": "child process",
+          "action": "reads its input, writes more than MaxBytes bytes to the shared output pipe and exits with status 2"
+        },
+        {
+          "actor": "tools.RunArgv",
+          "action": "writes every output byte to the log file and keeps the first MaxBytes bytes in Output, followed by the head-mode marker naming the log path"
+        },
+        {
+          "actor": "embedder",
+          "action": "receives ExecResult{Outcome: exit, ExitCode: 2, Truncated: true, SpillPath: absolute log path, IOErr: nil} and reads the complete output from the log file"
+        }
+      ]
+    },
+    {
+      "id": "04-PATH-2",
+      "title": "Timeout and cancellation kill the process tree and are told apart",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls tools.RunArgv with ExecOptions.Timeout on a command that starts a background grandchild, which would create a marker file later, and then sleeps past the timeout"
+        },
+        {
+          "actor": "tools.RunArgv",
+          "action": "detects that the Timeout-derived deadline expired while the caller's ctx is live, and kills the whole process group"
+        },
+        {
+          "actor": "operating system",
+          "action": "terminates the child and the grandchild before the marker file is created"
+        },
+        {
+          "actor": "tools.RunArgv",
+          "action": "returns ExecResult{Outcome: timeout} with Duration measured to the child's exit"
+        },
+        {
+          "actor": "embedder",
+          "action": "runs the same command with a ctx it cancels, and with a ctx deadline shorter than Timeout, and receives Outcome abort both times with no marker file created"
+        }
+      ]
+    },
+    {
+      "id": "04-PATH-3",
+      "title": "Tool metadata reaches every observer and the session log but never the provider",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "returns an assistant turn calling the execute tool with a command that exits 2"
+        },
+        {
+          "actor": "batch executor",
+          "action": "runs the execute handler, which calls tools.Run and returns a ToolResult whose Metadata carries ExitCode 2 and Outcome exit"
+        },
+        {
+          "actor": "batch executor",
+          "action": "builds the ToolResultMessage with its own copy of the Metadata and calls AfterToolCall with the handler's ToolResult and the message"
+        },
+        {
+          "actor": "agent loop",
+          "action": "emits ToolResultEvent and TurnEndEvent and calls the stop policy, each carrying the message with its Metadata"
+        },
+        {
+          "actor": "session recorder",
+          "action": "writes the tool_result entry with a metadata object between usage and timestamp"
+        },
+        {
+          "actor": "provider encoder",
+          "action": "builds the next request body from the message Content only, with no metadata in the bytes"
+        },
+        {
+          "actor": "embedder",
+          "action": "resumes the session with NewAgentFromSession and reads ExitCode 2 and Outcome exit from the restored history's tool result"
+        }
+      ]
+    }
+  ]
+}

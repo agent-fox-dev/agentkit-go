@@ -1,0 +1,1188 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "04",
+  "spec_name": "runner_and_tool_metadata",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-04-1",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-1.1"
+      ],
+      "title": "A nil Stdin gives the child the null device, so a command that reads stdin sees end-of-file at once",
+      "given": [
+        "a bash-family shell is available (the test is skipped otherwise)",
+        "ExecOptions.Stdin is nil"
+      ],
+      "when": "RunArgv(ctx, ['sh','-c','cat; echo done'], ExecOptions{Timeout: 5s}) and Run(ctx, 'cat; echo done', ExecOptions{Timeout: 5s}) are called",
+      "then": [
+        "both return a nil error",
+        "Output == \"done\\n\", Outcome == OutcomeOK, ExitCode == 0",
+        "Duration < 1s: cat did not block waiting for input",
+        "IOErr is nil"
+      ],
+      "pseudocode": "for call in [RunArgv(ctx, ['sh','-c','cat; echo done'], {Timeout:5s}), Run(ctx, 'cat; echo done', {Timeout:5s})]:\n  res, err = call\n  assert err == nil and res.IOErr == nil\n  assert res.Output == 'done\\n' and res.Outcome == OutcomeOK and res.ExitCode == 0\n  assert res.Duration < 1s"
+    },
+    {
+      "id": "TS-04-2",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-1.2"
+      ],
+      "title": "A non-nil Stdin is copied into the child and closed at io.EOF, so cat echoes it byte for byte",
+      "given": [
+        "input is 256 KiB of deterministic bytes including newlines and NUL bytes, larger than an OS pipe buffer"
+      ],
+      "when": "RunArgv(ctx, ['cat'], ExecOptions{Stdin: bytes.NewReader(input), MaxBytes: 1<<20, Timeout: 10s}) and Run(ctx, 'cat', same options with a fresh reader) are called",
+      "then": [
+        "both return a nil error and IOErr nil",
+        "Output equals string(input) byte for byte, Truncated is false, TotalBytes == len(input)",
+        "Outcome == OutcomeOK: cat saw end-of-file after the last byte and exited before the Timeout"
+      ],
+      "pseudocode": "input = deterministicBytes(256*1024)\nres, err = RunArgv(ctx, ['cat'], {Stdin: bytes.NewReader(input), MaxBytes: 1<<20, Timeout: 10s})\nassert err == nil and res.IOErr == nil\nassert res.Output == string(input) and not res.Truncated and res.TotalBytes == len(input)\nassert res.Outcome == OutcomeOK\nrepeat with Run(ctx, 'cat', ...)"
+    },
+    {
+      "id": "TS-04-3",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-1.3"
+      ],
+      "title": "A child that exits or closes stdin without reading all input is not an error",
+      "given": [
+        "Stdin is a 16 MiB reader for each call"
+      ],
+      "when": "RunArgv is called with ['true'], ['head','-c','1'] and ['sh','-c','exec 0<&-; echo closed'], each with Timeout 10s",
+      "then": [
+        "each call returns a nil error",
+        "each ExecResult has IOErr == nil (the copier's broken-pipe write is not reported)",
+        "each Outcome == OutcomeOK with ExitCode 0",
+        "each call returns well before the Timeout"
+      ],
+      "pseudocode": "for argv in [['true'], ['head','-c','1'], ['sh','-c','exec 0<&-; echo closed']]:\n  res, err = RunArgv(ctx, argv, {Stdin: zeroReader(16<<20), Timeout: 10s})\n  assert err == nil and res.IOErr == nil\n  assert res.Outcome == OutcomeOK and res.ExitCode == 0\n  assert res.Duration < 5s"
+    },
+    {
+      "id": "TS-04-4",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-1.4"
+      ],
+      "title": "A Stdin read error closes the child's stdin and is reported in IOErr whatever the exit status",
+      "given": [
+        "readerErr = errors.New(\"source failed\")",
+        "a reader that yields \"partial\\n\" and then returns readerErr"
+      ],
+      "when": "RunArgv(ctx, ['sh','-c','cat; exit 0'], {Stdin: failing, Timeout: 5s}) and RunArgv(ctx, ['sh','-c','cat; exit 3'], {Stdin: failing, Timeout: 5s}) are called",
+      "then": [
+        "both return a nil error",
+        "errors.Is(res.IOErr, readerErr) is true for both the exit-0 and the exit-3 call",
+        "the exit-0 call has Outcome ok and ExitCode 0; the exit-3 call has Outcome exit and ExitCode 3",
+        "Output == \"partial\\n\" and Outcome is not timeout: the child's stdin was closed after the error, so cat ended instead of blocking until the Timeout"
+      ],
+      "pseudocode": "for code, want in [(0, OutcomeOK), (3, OutcomeExit)]:\n  res, err = RunArgv(ctx, ['sh','-c','cat; exit '+code], {Stdin: failingReader('partial\\n', readerErr), Timeout: 5s})\n  assert err == nil\n  assert errors.Is(res.IOErr, readerErr)\n  assert res.Outcome == want and res.ExitCode == code\n  assert res.Output == 'partial\\n'"
+    },
+    {
+      "id": "TS-04-5",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-1.5"
+      ],
+      "title": "The call does not wait for a Stdin reader still blocked after the child exits, and the copier ends once the reader returns",
+      "given": [
+        "pr, pw = io.Pipe(); pr is wrapped to record each Read call and its return",
+        "nothing is ever written to pw before the call returns",
+        "baseline = runtime.NumGoroutine() before the call"
+      ],
+      "when": "RunArgv(ctx, ['true'], {Stdin: wrapped(pr), DrainIdle: 100ms, Timeout: 10s}) is called, and afterwards the test calls pw.CloseWithError(errors.New(\"late\"))",
+      "then": [
+        "the call returns within DrainIdle + 1s of starting, with a nil error and Outcome ok",
+        "after pw.CloseWithError the blocked Read returns, and within 2s runtime.NumGoroutine() is back to baseline",
+        "the wrapped reader records no Read call after that return"
+      ],
+      "pseudocode": "pr, pw = io.Pipe(); r = recording(pr); base = NumGoroutine()\nstart = now(); res, err = RunArgv(ctx, ['true'], {Stdin: r, DrainIdle: 100ms, Timeout: 10s})\nassert err == nil and res.Outcome == OutcomeOK and now()-start < 1.1s\npw.CloseWithError(errors.New('late'))\neventually(2s): NumGoroutine() <= base\nn = r.reads; sleep(200ms); assert r.reads == n"
+    },
+    {
+      "id": "TS-04-6",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-2.1"
+      ],
+      "title": "KeepHead false keeps the tail with the tail-mode marker, exactly as the Accumulator rendered it before",
+      "given": [
+        "s is a 100-byte string of distinct printable characters"
+      ],
+      "when": "RunArgv(ctx, ['printf','%s',s], {MaxBytes: 10}) is called once without SpillDir and once with SpillDir set, KeepHead left false",
+      "then": [
+        "without SpillDir, Output == \"[90 bytes elided of 100 total.]\\n\" + s[90:]",
+        "Output equals the String() of NewAccumulator(10, TruncateTail) fed the same bytes",
+        "with SpillDir, Output == \"[90 bytes elided of 100 total. Full output: \" + res.SpillPath + \"]\\n\" + s[90:]",
+        "Truncated is true and TotalBytes == 100 in both calls"
+      ],
+      "pseudocode": "res, _ = RunArgv(ctx, ['printf','%s',s], {MaxBytes:10})\nacc = NewAccumulator(10, TruncateTail); acc.Write(s)\nassert res.Output == '[90 bytes elided of 100 total.]\\n' + s[90:] == acc.String()\nres2, _ = RunArgv(ctx, ['printf','%s',s], {MaxBytes:10, SpillDir: tmp})\nassert res2.Output == '[90 bytes elided of 100 total. Full output: '+res2.SpillPath+']\\n' + s[90:]\nassert res.Truncated and res.TotalBytes == 100"
+    },
+    {
+      "id": "TS-04-7",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-2.2"
+      ],
+      "title": "KeepHead true keeps the first MaxBytes bytes followed by the head-mode marker naming the spill or log path when one exists",
+      "given": [
+        "s is a 100-byte string of distinct printable characters"
+      ],
+      "when": "RunArgv(ctx, ['printf','%s',s], {MaxBytes: 10, KeepHead: true}) is called with no file, with SpillDir set, and with LogPath set",
+      "then": [
+        "with no file, Output == s[:10] + \"\\n[90 bytes elided of 100 total.]\"",
+        "with SpillDir, Output == s[:10] + \"\\n[90 bytes elided of 100 total. Full output: \" + res.SpillPath + \"]\"",
+        "with LogPath, the marker names the absolute log path",
+        "Truncated is true and TotalBytes == 100 in every call"
+      ],
+      "pseudocode": "res = RunArgv(ctx, ['printf','%s',s], {MaxBytes:10, KeepHead:true})\nassert res.Output == s[:10] + '\\n[90 bytes elided of 100 total.]'\nres = RunArgv(..., {MaxBytes:10, KeepHead:true, SpillDir: tmp})\nassert res.Output == s[:10] + '\\n[90 bytes elided of 100 total. Full output: '+res.SpillPath+']'\nres = RunArgv(..., {MaxBytes:10, KeepHead:true, LogPath: tmp+'/run.log'})\nassert res.Output.endswith('Full output: '+abs(tmp+'/run.log')+']')\nassert res.Truncated and res.TotalBytes == 100"
+    },
+    {
+      "id": "TS-04-8",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-2.3",
+        "04-REQ-2.5"
+      ],
+      "title": "MaxBytes <= 0 means DefaultByteLimit in both modes, and output of exactly MaxBytes bytes is returned whole with no marker",
+      "given": [
+        "Stdin readers supply the output to ['cat'] so the byte counts are exact"
+      ],
+      "when": "for KeepHead in {false, true} and MaxBytes in {0, -1}, cat is fed exactly DefaultByteLimit bytes and then DefaultByteLimit+1 bytes; then for KeepHead in {false, true} with MaxBytes 64, cat is fed exactly 64 bytes",
+      "then": [
+        "DefaultByteLimit bytes with MaxBytes 0 or -1: Truncated false, Output equals the input, TotalBytes == DefaultByteLimit",
+        "DefaultByteLimit+1 bytes: Truncated true, TotalBytes == DefaultByteLimit+1, the retained window is DefaultByteLimit bytes (the first in head mode, the last in tail mode), and the marker reads \"[1 bytes elided of <DefaultByteLimit+1> total.]\"",
+        "exactly 64 bytes with MaxBytes 64: Truncated false, Output equals the 64 bytes with no marker, TotalBytes == 64, in both modes"
+      ],
+      "pseudocode": "for head in [false,true]:\n  for mb in [0,-1]:\n    r = RunArgv(ctx, ['cat'], {Stdin: bytesN(DefaultByteLimit), MaxBytes: mb, KeepHead: head})\n    assert not r.Truncated and len(r.Output) == DefaultByteLimit\n    r = RunArgv(ctx, ['cat'], {Stdin: bytesN(DefaultByteLimit+1), MaxBytes: mb, KeepHead: head})\n    assert r.Truncated and r.TotalBytes == DefaultByteLimit+1 and '[1 bytes elided of' in r.Output\n  r = RunArgv(ctx, ['cat'], {Stdin: bytesN(64), MaxBytes: 64, KeepHead: head})\n  assert not r.Truncated and r.Output == bytesN(64) and r.TotalBytes == 64"
+    },
+    {
+      "id": "TS-04-9",
+      "kind": "property",
+      "verifies": [
+        "04-REQ-2.4"
+      ],
+      "title": "Head and tail mode report the same TotalBytes and Truncated for any output and any MaxBytes",
+      "given": [
+        "a fixed-seed generator producing at least 40 cases"
+      ],
+      "when": "for any byte sequence of length 0..4*MaxBytes (including newlines and NUL bytes) and any MaxBytes in 1..256, the sequence is fed through Stdin to ['cat'] once with KeepHead false and once with KeepHead true",
+      "then": [
+        "TotalBytes is equal across the two modes and equals len(sequence)",
+        "Truncated is equal across the two modes and equals len(sequence) > MaxBytes",
+        "the retained window before or after the marker has length min(len(sequence), MaxBytes) in both modes"
+      ],
+      "pseudocode": "for (seq, mb) in gen(seed, n=40):\n  t = RunArgv(ctx, ['cat'], {Stdin: bytes.NewReader(seq), MaxBytes: mb})\n  h = RunArgv(ctx, ['cat'], {Stdin: bytes.NewReader(seq), MaxBytes: mb, KeepHead: true})\n  assert t.TotalBytes == h.TotalBytes == len(seq)\n  assert t.Truncated == h.Truncated == (len(seq) > mb)"
+    },
+    {
+      "id": "TS-04-10",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-3.1"
+      ],
+      "title": "LogPath receives the complete interleaved output even when Output is truncated",
+      "given": [
+        "a temp directory",
+        "a command that writes about 200 KiB alternating stdout and stderr lines: for i in $(seq 1 4000); do echo out$i; echo err$i >&2; done"
+      ],
+      "when": "RunArgv(ctx, ['sh','-c',cmd], {LogPath: tmp+'/run.log', MaxBytes: 1024, Timeout: 30s}) is called in tail mode and again in head mode with a second log",
+      "then": [
+        "each log file's content equals the expected full text out1\\nerr1\\nout2\\nerr2\\n... byte for byte",
+        "each log file's size equals res.TotalBytes",
+        "Output is truncated (Truncated true), and its retained bytes are the tail of the log in tail mode and the head of the log in head mode",
+        "the two logs are byte-identical"
+      ],
+      "pseudocode": "want = join('out%d\\nerr%d\\n' for i in 1..4000)\nfor head in [false,true]:\n  res, err = RunArgv(ctx, ['sh','-c',cmd], {LogPath: log[head], MaxBytes: 1024, KeepHead: head, Timeout: 30s})\n  got = readFile(log[head])\n  assert err == nil and got == want and len(got) == res.TotalBytes and res.Truncated"
+    },
+    {
+      "id": "TS-04-11",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-3.2"
+      ],
+      "title": "A relative LogPath resolves against Dir, or against the process working directory when Dir is empty",
+      "given": [
+        "two temp directories tmpA and tmpB"
+      ],
+      "when": "RunArgv(ctx, ['true'], {Dir: tmpA, LogPath: 'logs/run.log'}) is called; then, with the process working directory changed to tmpB (t.Chdir), RunArgv(ctx, ['true'], {LogPath: 'run.log'}) is called",
+      "then": [
+        "the first SpillPath == filepath.Join(tmpA, 'logs', 'run.log'), is absolute, and the file exists",
+        "the second SpillPath == filepath.Join(tmpB, 'run.log') after symlink evaluation, is absolute, and the file exists",
+        "no run.log is created under tmpA by the second call or under tmpB by the first"
+      ],
+      "pseudocode": "r1 = RunArgv(ctx, ['true'], {Dir: tmpA, LogPath: 'logs/run.log'})\nassert isAbs(r1.SpillPath) and r1.SpillPath == join(tmpA,'logs','run.log') and exists(r1.SpillPath)\nt.Chdir(tmpB)\nr2 = RunArgv(ctx, ['true'], {LogPath: 'run.log'})\nassert evalSymlinks(r2.SpillPath) == evalSymlinks(join(tmpB,'run.log')) and exists(r2.SpillPath)"
+    },
+    {
+      "id": "TS-04-12",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-3.3"
+      ],
+      "title": "Missing log parents are created 0o700 and the log file 0o600 before the process starts, truncating an existing file",
+      "given": [
+        "a unix platform",
+        "a temp directory tmp",
+        "tmp/old.log already contains \"OLD CONTENT\\n\""
+      ],
+      "when": "RunArgv(ctx, ['sh','-c','test -f \"$1\" && echo present','_',log], {LogPath: log}) is called with log = tmp/a/b/c/run.log; then RunArgv(ctx, ['printf','new'], {LogPath: tmp+'/old.log'}) is called",
+      "then": [
+        "the first Output is \"present\\n\": the log file existed before the child started",
+        "tmp/a, tmp/a/b and tmp/a/b/c have permission bits 0o700, and run.log has 0o600",
+        "after the second call tmp/old.log contains exactly \"new\""
+      ],
+      "pseudocode": "log = join(tmp,'a/b/c/run.log')\nres = RunArgv(ctx, ['sh','-c','test -f \"$1\" && echo present','_',log], {LogPath: log})\nassert res.Output == 'present\\n'\nfor d in ['a','a/b','a/b/c']: assert stat(join(tmp,d)).Mode().Perm() == 0o700\nassert stat(log).Mode().Perm() == 0o600\nRunArgv(ctx, ['printf','new'], {LogPath: join(tmp,'old.log')})\nassert readFile(join(tmp,'old.log')) == 'new'"
+    },
+    {
+      "id": "TS-04-13",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-3.4"
+      ],
+      "title": "An unopenable LogPath returns a zero result and an error, and the command never runs",
+      "given": [
+        "tmp/blocker is a regular file, so tmp/blocker/run.log cannot be created",
+        "marker = tmp/marker does not exist",
+        "on unix and not as root, tmp/ro is a directory with mode 0o500"
+      ],
+      "when": "RunArgv(ctx, ['touch', marker], {LogPath: tmp+'/blocker/run.log'}), Run(ctx, 'touch '+marker, same options) and RunArgv(ctx, ['touch', marker], {LogPath: tmp+'/ro/run.log'}) are called",
+      "then": [
+        "each returns ExecResult{} (deep-equal to the zero value)",
+        "each returns a non-nil error naming the log path",
+        "the marker file does not exist after any of the calls"
+      ],
+      "pseudocode": "for call in calls:\n  res, err = call\n  assert reflect.DeepEqual(res, ExecResult{})\n  assert err != nil and logPath in err.Error()\nassert not exists(marker)"
+    },
+    {
+      "id": "TS-04-14",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-3.5"
+      ],
+      "title": "LogPath replaces SpillDir: no temporary spill file, SpillPath is the log even for empty output, and the marker names it",
+      "given": [
+        "spill = tmp/spill and log = tmp/logs/run.log"
+      ],
+      "when": "RunArgv(ctx, ['true'], {SpillDir: spill, LogPath: log}) is called, then RunArgv(ctx, ['sh','-c','head -c 10240 /dev/zero | tr \"\\\\0\" x'], {SpillDir: spill, LogPath: log, MaxBytes: 100}) is called",
+      "then": [
+        "for the empty-output call, SpillPath == the absolute log path and the log exists with size 0",
+        "for the truncated call, Output contains \"Full output: \" + absolute log path + \"]\"",
+        "after both calls, filepath.Glob(spill/agentkit-exec-*.log) is empty"
+      ],
+      "pseudocode": "r1 = RunArgv(ctx, ['true'], {SpillDir: spill, LogPath: log})\nassert r1.SpillPath == abs(log) and size(log) == 0\nr2 = RunArgv(ctx, bigCmd, {SpillDir: spill, LogPath: log, MaxBytes: 100})\nassert 'Full output: '+abs(log)+']' in r2.Output\nassert glob(join(spill,'agentkit-exec-*.log')) == []"
+    },
+    {
+      "id": "TS-04-15",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-3.6"
+      ],
+      "title": "A log or spill write failure after start stops that file, leaves the process running and is reported in IOErr",
+      "given": [
+        "writeErr is a sentinel error",
+        "a package-internal test seam replaces the log-file writer, and in a second case the spill-file writer, with one that fails with writeErr after its first Write and counts later Write calls",
+        "on Linux an extra real-file case uses LogPath /dev/full, whose writes fail with ENOSPC"
+      ],
+      "when": "RunArgv(ctx, ['sh','-c','printf first; sleep 0.1; printf second; exit 3'], {LogPath or SpillDir, MaxBytes: 4096}) is called for each case",
+      "then": [
+        "the returned error is nil",
+        "IOErr is non-nil: errors.Is(res.IOErr, writeErr) with the seam, errors.Is(res.IOErr, syscall.ENOSPC) with /dev/full",
+        "Outcome == OutcomeExit and ExitCode == 3: the process ran to completion",
+        "Output == \"firstsecond\" and the failing writer received no Write after the one that failed"
+      ],
+      "pseudocode": "for target in ['log','spill']:\n  w = failingAfterFirst(writeErr); installSeam(target, w)\n  res, err = RunArgv(ctx, ['sh','-c','printf first; sleep 0.1; printf second; exit 3'], opts[target])\n  assert err == nil and errors.Is(res.IOErr, writeErr)\n  assert res.Outcome == OutcomeExit and res.ExitCode == 3 and res.Output == 'firstsecond'\n  assert w.writesAfterFailure == 0"
+    },
+    {
+      "id": "TS-04-16",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-3.7"
+      ],
+      "title": "The SDK never deletes a LogPath file, whatever the outcome",
+      "given": [
+        "a unix shell",
+        "a distinct LogPath under a temp directory for each call"
+      ],
+      "when": "RunArgv is called with ['sh','-c','echo ok'], ['sh','-c','exit 4'], ['sh','-c','kill -TERM $$'], ['sleep','5'] with Timeout 200ms, and ['sleep','5'] with a ctx cancelled after 200ms",
+      "then": [
+        "the outcomes are ok, exit, signal, timeout and abort respectively",
+        "each call's log file still exists after the call returns",
+        "the ok call's log contains \"ok\\n\""
+      ],
+      "pseudocode": "for (argv, opts, ctx, want) in cases:\n  res, err = RunArgv(ctx, argv, opts)\n  assert err == nil and res.Outcome == want\n  assert exists(opts.LogPath)\nassert readFile(cases[0].LogPath) == 'ok\\n'"
+    },
+    {
+      "id": "TS-04-17",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-4.1"
+      ],
+      "title": "A nil Env runs the child with ReducedEnv(nil): credentials are stripped and PATH and HOME are kept verbatim",
+      "given": [
+        "t.Setenv(\"AGENTKIT_TEST_API_KEY\", \"sekrit\")",
+        "t.Setenv(\"MY_SERVICE_TOKEN\", \"tok\")"
+      ],
+      "when": "RunArgv(ctx, ['env'], ExecOptions{}) and Run(ctx, 'env', ExecOptions{}) are called with Env nil",
+      "then": [
+        "neither output has a line starting AGENTKIT_TEST_API_KEY= or MY_SERVICE_TOKEN=",
+        "both outputs contain the line \"PATH=\" + os.Getenv(\"PATH\") and the line \"HOME=\" + os.Getenv(\"HOME\")",
+        "the RunArgv output's variables equal ReducedEnv(nil) as a set"
+      ],
+      "pseudocode": "t.Setenv('AGENTKIT_TEST_API_KEY','sekrit'); t.Setenv('MY_SERVICE_TOKEN','tok')\nfor res in [RunArgv(ctx, ['env'], {}), Run(ctx, 'env', {})]:\n  lines = splitLines(res.Output)\n  assert no line has prefix 'AGENTKIT_TEST_API_KEY=' or 'MY_SERVICE_TOKEN='\n  assert 'PATH='+getenv('PATH') in lines and 'HOME='+getenv('HOME') in lines\nassert set(splitLines(RunArgv(ctx,['env'],{}).Output)) == set(ReducedEnv(nil))"
+    },
+    {
+      "id": "TS-04-18",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-4.2"
+      ],
+      "title": "A non-nil Env, including an empty one, is passed verbatim and os.Environ() restores the full environment",
+      "given": [
+        "t.Setenv(\"AGENTKIT_TEST_API_KEY\", \"sekrit\")",
+        "t.Setenv(\"MY_SERVICE_TOKEN\", \"tok\")"
+      ],
+      "when": "RunArgv(ctx, ['env'], …) is called with Env []string{\"FOO=1\"}, with Env []string{} and with Env os.Environ()",
+      "then": [
+        "with {\"FOO=1\"} the output is exactly \"FOO=1\\n\"",
+        "with the empty slice the output is empty",
+        "with os.Environ() the output contains AGENTKIT_TEST_API_KEY=sekrit and MY_SERVICE_TOKEN=tok"
+      ],
+      "pseudocode": "assert RunArgv(ctx, ['env'], {Env: ['FOO=1']}).Output == 'FOO=1\\n'\nassert RunArgv(ctx, ['env'], {Env: []}).Output == ''\nout = RunArgv(ctx, ['env'], {Env: os.Environ()}).Output\nassert 'AGENTKIT_TEST_API_KEY=sekrit' in out and 'MY_SERVICE_TOKEN=tok' in out"
+    },
+    {
+      "id": "TS-04-19",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-4.3"
+      ],
+      "title": "RunArgv looks a bare name up through the PATH of the environment the child runs with, which for a nil Env is the process PATH",
+      "given": [
+        "binA contains an executable script agentkit-probe-04 that prints \"A\"",
+        "binB contains an executable script agentkit-probe-04 that prints \"B\"",
+        "t.Setenv(\"PATH\", binA + PathListSeparator + original PATH)"
+      ],
+      "when": "RunArgv(ctx, ['agentkit-probe-04'], {}) is called with Env nil, then with Env {\"PATH=\" + binB + PathListSeparator + original PATH}",
+      "then": [
+        "the nil-Env call returns Output \"A\\n\" and Outcome ok: ReducedEnv(nil) kept PATH verbatim and the lookup used it",
+        "the explicit-Env call returns Output \"B\\n\": the lookup used the child's PATH, not the process PATH"
+      ],
+      "pseudocode": "t.Setenv('PATH', binA + sep + orig)\nassert RunArgv(ctx, ['agentkit-probe-04'], {}).Output == 'A\\n'\nassert RunArgv(ctx, ['agentkit-probe-04'], {Env: ['PATH='+binB+sep+orig]}).Output == 'B\\n'"
+    },
+    {
+      "id": "TS-04-20",
+      "kind": "property",
+      "verifies": [
+        "04-REQ-5.1"
+      ],
+      "title": "Every started call returns a nil error and exactly the one Outcome its scenario implies",
+      "given": [
+        "a unix shell",
+        "a fixed-seed generator producing at least 30 scenarios"
+      ],
+      "when": "for any scenario drawn from {exit k for k in 0..125, kill -TERM or -KILL of itself, sleep past ExecOptions.Timeout, ctx cancelled mid-run, ctx deadline shorter than Timeout, exit 0 or k followed by a cancel during the post-exit drain}, with random k and timings, run once through RunArgv and once through Run",
+      "then": [
+        "the error is nil",
+        "Outcome is one of ok, exit, signal, timeout, abort",
+        "Outcome equals the scenario's class: exit 0 → ok, exit k>0 → exit, self-signal → signal, Timeout → timeout, cancel or caller deadline → abort, cancel during drain → the class at exit",
+        "ExitCode is 0 for ok, k for exit, and 128+signum for signal on unix"
+      ],
+      "pseudocode": "for sc in gen(seed, n=30):\n  for runner in [RunArgv, Run]:\n    res, err = runner(sc.ctx(), sc.cmd, sc.opts)\n    assert err == nil\n    assert res.Outcome in {ok, exit, signal, timeout, abort}\n    assert res.Outcome == sc.expected and res.ExitCode == sc.expectedCode"
+    },
+    {
+      "id": "TS-04-21",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-5.2"
+      ],
+      "title": "Cancelling the caller's ctx kills the whole process tree through RunArgv and classifies the call as abort",
+      "given": [
+        "a unix shell",
+        "marker = tmp/grandchild-survived does not exist"
+      ],
+      "when": "RunArgv(ctx, ['sh','-c','( sleep 1; touch '+marker+' ) & sleep 5'], {Dir: tmp}) is called and ctx is cancelled after 150ms",
+      "then": [
+        "the error is nil and Outcome == OutcomeAbort",
+        "Duration is at least 150ms and under 1s: it is measured to the child's exit",
+        "after waiting a further 1.5s the marker file does not exist: the grandchild was killed"
+      ],
+      "pseudocode": "ctx, cancel = WithCancel(bg); after(150ms, cancel)\nres, err = RunArgv(ctx, ['sh','-c','( sleep 1; touch '+marker+' ) & sleep 5'], {Dir: tmp})\nassert err == nil and res.Outcome == OutcomeAbort\nassert 150ms <= res.Duration < 1s\nsleep(1.5s); assert not exists(marker)"
+    },
+    {
+      "id": "TS-04-22",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-5.3"
+      ],
+      "title": "Timeout expiry kills the whole process tree through RunArgv and classifies the call as timeout",
+      "given": [
+        "a unix shell",
+        "marker = tmp/grandchild-survived does not exist",
+        "the caller's ctx is context.Background()"
+      ],
+      "when": "RunArgv(ctx, ['sh','-c','( sleep 1; touch '+marker+' ) & sleep 5'], {Dir: tmp, Timeout: 200ms}) is called",
+      "then": [
+        "the error is nil and Outcome == OutcomeTimeout",
+        "Duration is at least 200ms and under 1s",
+        "after waiting a further 1.5s the marker file does not exist: no grandchild survived the timeout"
+      ],
+      "pseudocode": "res, err = RunArgv(bg, ['sh','-c','( sleep 1; touch '+marker+' ) & sleep 5'], {Dir: tmp, Timeout: 200ms})\nassert err == nil and res.Outcome == OutcomeTimeout\nassert 200ms <= res.Duration < 1s\nsleep(1.5s); assert not exists(marker)"
+    },
+    {
+      "id": "TS-04-23",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-5.4"
+      ],
+      "title": "A caller deadline shorter than Timeout is classified as abort, not timeout",
+      "given": [
+        "a unix shell",
+        "marker = tmp/grandchild-survived does not exist"
+      ],
+      "when": "RunArgv(ctx, ['sh','-c','( sleep 1; touch '+marker+' ) & sleep 5'], {Dir: tmp, Timeout: 5s}) is called with ctx = context.WithTimeout(bg, 200ms)",
+      "then": [
+        "the error is nil and Outcome == OutcomeAbort, not OutcomeTimeout",
+        "Duration is under 1s",
+        "after waiting a further 1.5s the marker file does not exist"
+      ],
+      "pseudocode": "ctx, _ = WithTimeout(bg, 200ms)\nres, err = RunArgv(ctx, cmd, {Dir: tmp, Timeout: 5s})\nassert err == nil and res.Outcome == OutcomeAbort and res.Duration < 1s\nsleep(1.5s); assert not exists(marker)"
+    },
+    {
+      "id": "TS-04-24",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-5.5"
+      ],
+      "title": "A cancellation during the post-exit drain does not reclassify a command that already finished",
+      "given": [
+        "a unix shell",
+        "DrainIdle and DrainCeiling are both 10s, so the drain is still running when the cancel arrives"
+      ],
+      "when": "for E in {0, 3}, RunArgv(ctx, ['sh','-c','( sleep 3 ) & echo started; exit '+E], {DrainIdle: 10s, DrainCeiling: 10s}) is called and ctx is cancelled 300ms after the call starts",
+      "then": [
+        "the error is nil",
+        "E=0 gives Outcome ok with ExitCode 0; E=3 gives Outcome exit with ExitCode 3; neither is abort",
+        "Output contains \"started\"",
+        "the call returns within 2s because the drain stops on cancellation"
+      ],
+      "pseudocode": "for E in [0,3]:\n  ctx, cancel = WithCancel(bg); after(300ms, cancel)\n  start = now(); res, err = RunArgv(ctx, ['sh','-c','( sleep 3 ) & echo started; exit '+E], {DrainIdle:10s, DrainCeiling:10s})\n  assert err == nil and res.Outcome != OutcomeAbort\n  assert (res.Outcome, res.ExitCode) == ((ok,0) if E==0 else (exit,3))\n  assert 'started' in res.Output and now()-start < 2s"
+    },
+    {
+      "id": "TS-04-25",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-5.6"
+      ],
+      "title": "A child that exits on its own is classified ok, exit or signal from its wait status, with 128+signum for a signal on unix",
+      "given": [
+        "a unix shell"
+      ],
+      "when": "RunArgv is called with ['sh','-c','exit 0'], ['sh','-c','exit 3'] and ['sh','-c','kill -TERM $$']",
+      "then": [
+        "exit 0 gives (Outcome ok, ExitCode 0)",
+        "exit 3 gives (Outcome exit, ExitCode 3)",
+        "SIGTERM gives (Outcome signal, ExitCode 143)",
+        "each call returns a nil error and IOErr nil"
+      ],
+      "pseudocode": "for (cmd, want, code) in [('exit 0', ok, 0), ('exit 3', exit, 3), ('kill -TERM $$', signal, 143)]:\n  res, err = RunArgv(ctx, ['sh','-c',cmd], {})\n  assert err == nil and res.IOErr == nil\n  assert res.Outcome == want and res.ExitCode == code"
+    },
+    {
+      "id": "TS-04-26",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-5.7"
+      ],
+      "title": "Exactly the start failures return a zero ExecResult and a non-nil error",
+      "given": [
+        "tmp/missing does not exist",
+        "tmp/blocker is a regular file"
+      ],
+      "when": "RunArgv is called with an empty argv, with ['agentkit-no-such-program-04'], with ['true'] and Dir tmp/missing (cmd.Start fails), and with ['true'] and LogPath tmp/blocker/run.log; then calls that start and fail are made: ['sh','-c','exit 3'], ['sleep','5'] with Timeout 100ms, and ['sleep','5'] with a ctx cancelled after 100ms",
+      "then": [
+        "each of the four start failures returns ExecResult{} deep-equal to the zero value and a non-nil error",
+        "the not-found error names agentkit-no-such-program-04",
+        "each started call returns a nil error, with Outcome exit, timeout and abort respectively"
+      ],
+      "pseudocode": "for call in [RunArgv(ctx, nil, {}), RunArgv(ctx, ['agentkit-no-such-program-04'], {}), RunArgv(ctx, ['true'], {Dir: tmp+'/missing'}), RunArgv(ctx, ['true'], {LogPath: tmp+'/blocker/run.log'})]:\n  res, err = call; assert reflect.DeepEqual(res, ExecResult{}) and err != nil\nfor (call, want) in started: res, err = call; assert err == nil and res.Outcome == want"
+    },
+    {
+      "id": "TS-04-27",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-5.8"
+      ],
+      "title": "A Wait error that is neither an exit status nor a signal lands in IOErr, and IOErr is nil on every clean call",
+      "given": [
+        "a package-internal test seam wraps cmd.Wait so that, after the real child has exited 0, it returns exec.ErrWaitDelay"
+      ],
+      "when": "RunArgv(ctx, ['sh','-c','exit 0'], {}) is called with the seam installed; then, without the seam, clean calls are made: exit 0, exit 3, a Timeout, a cancellation, a Stdin round-trip and a LogPath run",
+      "then": [
+        "with the seam the error is nil and errors.Is(res.IOErr, exec.ErrWaitDelay) is true",
+        "with the seam Outcome == OutcomeOK and ExitCode == 0, classified from the process state",
+        "every clean call has res.IOErr == nil"
+      ],
+      "pseudocode": "installWaitSeam(func(cmd) error { cmd.Wait(); return exec.ErrWaitDelay })\nres, err = RunArgv(ctx, ['sh','-c','exit 0'], {})\nassert err == nil and errors.Is(res.IOErr, exec.ErrWaitDelay)\nassert res.Outcome == OutcomeOK and res.ExitCode == 0\nremoveSeam()\nfor call in cleanCalls: res, _ = call; assert res.IOErr == nil"
+    },
+    {
+      "id": "TS-04-28",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-6.1"
+      ],
+      "title": "The shell tools run with their explicit Options.Env, tail truncation at DefaultByteLimit, Options.SpillDir and no log",
+      "given": [
+        "tools.Options with a temp workspace, SpillDir tmp/spill and Env {\"PATH=\" + os.Getenv(\"PATH\"), \"MARK04=1\"}",
+        "AGENTKIT_TEST_API_KEY is set in the test process"
+      ],
+      "when": "execute and run_command (and powershell where installed) are invoked once to print the environment and once to print DefaultByteLimit+1000 bytes ending in the line END",
+      "then": [
+        "the printed environment holds MARK04=1 and the given PATH, and no AGENTKIT_TEST_API_KEY; for execute only the shell's own PWD, SHLVL and _ are added",
+        "the large output's Text begins \"[1000 bytes elided of <DefaultByteLimit+1000> total. Full output: \" and ends with END plus no status line: tail mode at DefaultByteLimit",
+        "Metadata.SpillPath lies under tmp/spill and matches agentkit-exec-*.log",
+        "no file other than the spill file appears in the workspace or tmp/spill"
+      ],
+      "pseudocode": "opts = Options{Workspace: ws, SpillDir: tmp+'/spill', Env: ['PATH='+getenv('PATH'), 'MARK04=1']}\nfor tool in [executeTool(opts), runCommandTool(opts)]:\n  env = tool.Execute(ctx, envArgs).Text\n  assert 'MARK04=1' in env and 'AGENTKIT_TEST_API_KEY' not in env\n  r = tool.Execute(ctx, bigArgs)\n  assert r.Text.startswith('[1000 bytes elided of '+str(DefaultByteLimit+1000)+' total. Full output: ')\n  assert match(tmp+'/spill/agentkit-exec-*.log', r.Metadata.SpillPath)"
+    },
+    {
+      "id": "TS-04-29",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-6.2"
+      ],
+      "title": "A model command that reads stdin through the shell tools sees end-of-file at once",
+      "given": [
+        "tools.Options with a temp workspace"
+      ],
+      "when": "execute runs 'cat; echo after' with timeout_s 5, run_command runs ['sh','-c','cat; echo after'] with timeout_s 5, and powershell (where installed) runs '$input | Out-Null; \"after\"'",
+      "then": [
+        "each result is OK with Text \"after\\n\" and no status line",
+        "each Metadata.Outcome is \"ok\" and Metadata.DurationMS < 2000: the command did not block on stdin"
+      ],
+      "pseudocode": "r = executeTool(opts).Execute(ctx, {command:'cat; echo after', timeout_s:5})\nassert r.OK and r.Text == 'after\\n' and r.Metadata.Outcome == 'ok' and r.Metadata.DurationMS < 2000\nrepeat for run_command and powershell"
+    },
+    {
+      "id": "TS-04-30",
+      "kind": "property",
+      "verifies": [
+        "04-REQ-6.3"
+      ],
+      "title": "execResultToTool produces the same Text, Data, Error and Metadata as the pre-change function for any ExecResult",
+      "given": [
+        "preChangeExecResultToTool is a verbatim copy of execResultToTool and execStatusLine as they were before this spec, frozen in the test file"
+      ],
+      "when": "for any ExecResult over Output (empty, with or without a trailing newline, multi-line), Outcome in the five values, ExitCode in {0,1,2,3,137,143,-1}, Truncated, TotalBytes, SpillPath (empty or a path) and Duration, and any timeout in {0, 30s}",
+      "then": [
+        "execResultToTool(res, timeout) deep-equals preChangeExecResultToTool(res, timeout) in OK, Text, Data, Error and Detail",
+        "Metadata is equal by value, including the ExitCode pointee"
+      ],
+      "pseudocode": "for (res, to) in gen(seed, n=500):\n  got = execResultToTool(res, to); want = preChangeExecResultToTool(res, to)\n  assert got.OK == want.OK and got.Text == want.Text and got.Error == want.Error\n  assert deepEqual(got.Data, want.Data) and deepEqual(*got.Metadata, *want.Metadata)"
+    },
+    {
+      "id": "TS-04-31",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-6.4"
+      ],
+      "title": "An IOErr on the runner's result never reaches the shell tool's result",
+      "given": [
+        "base results: ok with output, exit 2, and a truncated timeout with a SpillPath"
+      ],
+      "when": "execResultToTool(res, 30s) and execResultToTool(res with IOErr = errors.New(\"log write failed: disk full\"), 30s) are computed for each base result",
+      "then": [
+        "Text, Data, Error and Metadata are equal between the two calls",
+        "Text does not contain \"disk full\"",
+        "Data has exactly the keys output, exit_code and outcome"
+      ],
+      "pseudocode": "for res in bases:\n  a = execResultToTool(res, 30s); res.IOErr = errors.New('log write failed: disk full'); b = execResultToTool(res, 30s)\n  assert a.Text == b.Text and deepEqual(a.Data, b.Data) and a.Error == b.Error and deepEqual(*a.Metadata, *b.Metadata)\n  assert 'disk full' not in b.Text and keys(b.Data) == {'output','exit_code','outcome'}"
+    },
+    {
+      "id": "TS-04-32",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-6.5"
+      ],
+      "title": "The existing tools tests pass with no edit to tools_test.go or reqtool06_test.go",
+      "given": [
+        "the commit this spec's work starts from is recorded as base"
+      ],
+      "when": "the two test files are compared with base and the tools package tests are run",
+      "then": [
+        "git diff --exit-code base -- tools/tools_test.go tools/reqtool06_test.go reports no change",
+        "go test ./tools passes, including TestGrandchildDoesNotSurviveTreeKill, TestExecuteDoesNotLeakAPIKeys, TestExecuteTruncatesFromTheTail, TestRunCommandCarriesTheSameEnvelopeAsExecute and TestRunArgvResolvesTheProgramWithTheChildsPATH"
+      ],
+      "pseudocode": "assert sh('git diff --exit-code '+base+' -- tools/tools_test.go tools/reqtool06_test.go').exit == 0\nassert sh('go test ./tools').exit == 0"
+    },
+    {
+      "id": "TS-04-33",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-7.1"
+      ],
+      "title": "Non-empty handler metadata is copied onto the message as the message's own value with its own ExitCode pointer",
+      "given": [
+        "a scripted provider whose turn 1 calls tool probe and whose turn 2 stops",
+        "probe's Execute returns ToolResult{Text: \"boom\\n[exit 2]\", Error: \"command_exit\", Metadata: md}, where md = &ToolMetadata{ExitCode: &two, Outcome: \"exit\", TotalBytes: 5, DurationMS: 12} and the test keeps md",
+        "a second probe variant returns Metadata &ToolMetadata{ExitCode: &zero}"
+      ],
+      "when": "agent.Run is called and the ToolResultEvent message is captured for each variant",
+      "then": [
+        "msg.Metadata is non-nil and *msg.Metadata deep-equals *md, with ExitCode pointee 2",
+        "msg.Metadata != md and msg.Metadata.ExitCode != md.ExitCode",
+        "the ExitCode-0-only variant also yields a non-nil msg.Metadata with *ExitCode == 0"
+      ],
+      "pseudocode": "md = &ToolMetadata{ExitCode:&two, Outcome:'exit', TotalBytes:5, DurationMS:12}\nmsg = captureToolResultEvent(runWith(probe(md)))\nassert msg.Metadata != nil and deepEqual(*msg.Metadata, *md)\nassert msg.Metadata != md and msg.Metadata.ExitCode != md.ExitCode\nmsg0 = captureToolResultEvent(runWith(probe(&ToolMetadata{ExitCode:&zero})))\nassert msg0.Metadata != nil and *msg0.Metadata.ExitCode == 0"
+    },
+    {
+      "id": "TS-04-34",
+      "kind": "property",
+      "verifies": [
+        "04-REQ-7.2"
+      ],
+      "title": "A tool reusing its metadata value or ExitCode pointer cannot alias any message, in sequential turns or a parallel batch",
+      "given": [
+        "cfg.ParallelTools is true and the tool's ExecutionMode is Parallel",
+        "the tool keeps every *ToolMetadata it returns: one shared value it mutates at the start of each sequential call, and one retained value per call of a parallel batch",
+        "the test runs under go test -race"
+      ],
+      "when": "for any number of turns n in 1..4 and batch size k in 1..4, the scripted provider issues the turns, and after Run returns the test overwrites every retained value and every ExitCode pointee",
+      "then": [
+        "every message in RunResult.Messages, History() and the captured ToolResultEvents carries the Metadata recorded when its handler returned (ExitCode == call index, Outcome == \"call-<index>\")",
+        "the race detector reports no race"
+      ],
+      "pseudocode": "for (n, k) in gen(seed):\n  res = runWith(reusingTool, turns(n, batch=k))\n  for md in retained: md.Outcome = 'mutated'; *md.ExitCode = 999\n  for msg in toolResults(res.Messages) + toolResults(agent.History()) + capturedEvents:\n    assert *msg.Metadata.ExitCode == msg.callIndex and msg.Metadata.Outcome == 'call-'+msg.callIndex"
+    },
+    {
+      "id": "TS-04-35",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-7.3"
+      ],
+      "title": "Nil or all-zero handler metadata leaves the message's Metadata nil",
+      "given": [
+        "probe variants whose Execute returns Metadata nil, &ToolMetadata{} and &ToolMetadata{DurationMS: 0}, the last matching the subagent tool's empty value"
+      ],
+      "when": "agent.Run executes one call of each variant",
+      "then": [
+        "msg.Metadata == nil in each ToolResultEvent and in history",
+        "session.EncodeMessage of each message has no metadata key"
+      ],
+      "pseudocode": "for md in [nil, &ToolMetadata{}, &ToolMetadata{DurationMS:0}]:\n  msg = captureToolResultEvent(runWith(probe(md)))\n  assert msg.Metadata == nil\n  assert 'metadata' not in keys(json(session.EncodeMessage(msg)))"
+    },
+    {
+      "id": "TS-04-36",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-7.4"
+      ],
+      "title": "Handler-style tools, handler panics, unknown tools and invalid arguments produce messages with nil Metadata and unchanged content",
+      "given": [
+        "one assistant turn calling (a) a Handler-style tool returning {\"x\":1}, (b) a Handler-style tool returning an error, (c) an Execute tool that panics, (d) an unregistered tool name, (e) a tool with arguments that fail its schema"
+      ],
+      "when": "agent.Run executes the batch",
+      "then": [
+        "every resulting ToolResultMessage has Metadata == nil in its ToolResultEvent, in history and in RunResult.Messages",
+        "Content text and IsError equal the pre-change values: (a) {\"ok\":true,\"data\":{\"x\":1}}, (b) the handler_error envelope, (c) the panic envelope, (d) the unknown_tool envelope, (e) the invalid_arguments envelope",
+        "each call emits ToolExecutionStartEvent, ToolExecutionEndEvent and ToolResultEvent exactly once, as before"
+      ],
+      "pseudocode": "res = runWith(batch(a,b,c,d,e))\nfor msg in toolResultEvents + toolResults(res.Messages):\n  assert msg.Metadata == nil\n  assert msg.Content.Text() == preChangeText[msg.ToolUseID] and msg.IsError == preChangeIsError[msg.ToolUseID]\nassert eventSequence(res) == preChangeSequence"
+    },
+    {
+      "id": "TS-04-37",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-7.4"
+      ],
+      "title": "Blocked, plugin-vetoed, aborted and no_result calls produce messages with nil Metadata and unchanged content",
+      "given": [
+        "a tool whose Execute would return non-empty metadata and records whether it ran"
+      ],
+      "when": "(a) BeforeToolCall blocks the call with reason \"no\", (b) a plugin event hook vetoes it, (c) ctx is cancelled before the batch's handlers start, and (d) the no_result backstop is reached by a package-internal test that leaves one call's result slot empty",
+      "then": [
+        "each ToolResultMessage has Metadata == nil",
+        "Content and IsError are the pre-change shapes: blocked_by_policy with \"no\", blocked_by_plugin naming the plugin, the abortedResult shape, and the no_result internal detail",
+        "the metadata-returning handler never ran in cases a to c"
+      ],
+      "pseudocode": "for case in [beforeBlock, pluginVeto, batchAbort, noResultBackstop]:\n  msg = finalizedMessage(case)\n  assert msg.Metadata == nil\n  assert msg.Content.Text() == preChangeText[case] and msg.IsError\nassert not tool.ran"
+    },
+    {
+      "id": "TS-04-38",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-7.4"
+      ],
+      "title": "max_tokens-synthesized and RepairTranscript-synthesized results carry nil Metadata",
+      "given": [
+        "a scripted assistant turn with StopReasonLength that contains a tool call to a metadata-returning tool",
+        "a transcript whose assistant message holds a tool_use with no matching tool result"
+      ],
+      "when": "agent.Run processes the max_tokens turn, and provider.RepairTranscript is applied to the damaged transcript",
+      "then": [
+        "the synthesized max_tokens message has Metadata == nil, IsError true, Content text == fmt.Sprintf(maxTokensToolText, toolName), and the handler never ran",
+        "the RepairTranscript synthetic ToolResultMessage has Metadata == nil and Content text == provider.SyntheticResultText"
+      ],
+      "pseudocode": "msg = captureToolResultEvent(runWith(maxTokensTurnCalling(probe)))\nassert msg.Metadata == nil and msg.IsError and msg.Content.Text() == sprintf(maxTokensToolText, 'probe') and not probe.ran\nout, _ = provider.RepairTranscript(damaged, target)\nsyn = syntheticResult(out)\nassert syn.Metadata == nil and syn.Content.Text() == provider.SyntheticResultText"
+    },
+    {
+      "id": "TS-04-39",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-7.5"
+      ],
+      "title": "ToolResultMessage.Clone deep-copies Metadata including the ExitCode pointer",
+      "given": [
+        "orig = ToolResultMessage{Metadata: &ToolMetadata{ExitCode: &three, Outcome: \"exit\", SpillPath: \"/tmp/x.log\"}}"
+      ],
+      "when": "c = orig.Clone().(ToolResultMessage), then c.Metadata.Outcome = \"changed\" and *c.Metadata.ExitCode = 9; also a message with nil Metadata is cloned",
+      "then": [
+        "c.Metadata != orig.Metadata and c.Metadata.ExitCode != orig.Metadata.ExitCode",
+        "orig.Metadata.Outcome is still \"exit\" and *orig.Metadata.ExitCode is still 3",
+        "the clone of a nil-Metadata message has nil Metadata"
+      ],
+      "pseudocode": "c = orig.Clone().(ToolResultMessage)\nassert c.Metadata != orig.Metadata and c.Metadata.ExitCode != orig.Metadata.ExitCode\nc.Metadata.Outcome = 'changed'; *c.Metadata.ExitCode = 9\nassert orig.Metadata.Outcome == 'exit' and *orig.Metadata.ExitCode == 3\nassert ToolResultMessage{}.Clone().(ToolResultMessage).Metadata == nil"
+    },
+    {
+      "id": "TS-04-40",
+      "kind": "integration",
+      "verifies": [
+        "04-REQ-7.6"
+      ],
+      "title": "A failing execute call's metadata reaches ToolResultEvent, TurnEndEvent, StopContext, History and RunResult",
+      "given": [
+        "an agent with the real execute tool (tools.Options with a temp workspace)",
+        "a scripted provider whose turn 1 calls execute with {\"command\":\"printf boom; exit 2\"} and whose turn 2 stops",
+        "a StopPolicy that records StopContext.ToolResults, and an event listener recording ToolResultEvent and TurnEndEvent"
+      ],
+      "when": "agent.Run is called",
+      "then": [
+        "the ToolResultEvent message, TurnEndEvent.ToolResults[0], StopContext.ToolResults[0], the matching History() entry and the matching RunResult.Messages entry each have Metadata with *ExitCode == 2 and Outcome == \"exit\"",
+        "all five Metadata values are equal by value"
+      ],
+      "pseudocode": "res = agent.Run(ctx, 'go')\nfor m in [evt.Message, turnEnd.ToolResults[0], stopCtx.ToolResults[0], toolResult(agent.History()), toolResult(res.Messages)]:\n  assert *m.Metadata.ExitCode == 2 and m.Metadata.Outcome == 'exit'\nassert allEqualByValue(metadatas)"
+    },
+    {
+      "id": "TS-04-41",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-7.7"
+      ],
+      "title": "Message Content is byte-identical whether or not the handler's result carries Metadata",
+      "given": [
+        "r is a ToolResult with Text, Data and an ImageBlock in Blocks",
+        "rm is r with a populated Metadata"
+      ],
+      "when": "toolResultMessage(call, r) and toolResultMessage(call, rm) are built, and r.ToLLMMap(), rm.ToLLMMap(), r.LLMText() and rm.LLMText() are computed, with and without Text set",
+      "then": [
+        "the two messages' Content values are deep-equal",
+        "rm.ToLLMMap() has no metadata key and equals r.ToLLMMap()",
+        "rm.LLMText() == r.LLMText()"
+      ],
+      "pseudocode": "assert deepEqual(toolResultMessage(c, r).Content, toolResultMessage(c, rm).Content)\nassert 'metadata' not in rm.ToLLMMap() and deepEqual(r.ToLLMMap(), rm.ToLLMMap())\nassert r.LLMText() == rm.LLMText()"
+    },
+    {
+      "id": "TS-04-42",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-8.1"
+      ],
+      "title": "AfterToolCall receives the handler's ToolResult by value and a Result message already carrying its Metadata",
+      "given": [
+        "probe's Execute returns r = ToolResult{OK: false, Error: \"command_exit\", Text: \"x\", Data: {\"k\":1}, Metadata: &ToolMetadata{ExitCode: &two, Outcome: \"exit\"}}",
+        "a Handler-style tool returning errors.New(\"bad\")",
+        "an AfterToolCall hook that records in"
+      ],
+      "when": "agent.Run executes one call of each tool",
+      "then": [
+        "for probe, in.ToolResult deep-equals r",
+        "for probe, *in.Result.Metadata equals *r.Metadata by value, and in.Result is the message later emitted in ToolResultEvent",
+        "for the Handler-style tool, in.ToolResult equals ErrResult(\"handler_error\", \"bad\") and in.Result.Metadata is nil"
+      ],
+      "pseudocode": "rec = recordAfter()\nrunWith(probe(r), handlerErr('bad'))\nassert deepEqual(rec['probe'].ToolResult, r)\nassert deepEqual(*rec['probe'].Result.Metadata, *r.Metadata)\nassert deepEqual(*rec['probe'].Result, toolResultEvent('probe').Message)\nassert rec['h'].ToolResult == ErrResult('handler_error','bad') and rec['h'].Result.Metadata == nil"
+    },
+    {
+      "id": "TS-04-43",
+      "kind": "integration",
+      "verifies": [
+        "04-REQ-8.2"
+      ],
+      "title": "Metadata edited through in.Result is what is emitted, persisted, seen by the stop policy and kept in history",
+      "given": [
+        "an agent with a real session store created by session.Create in a temp directory",
+        "probe returns Metadata{ExitCode: &two, Outcome: \"exit\"}",
+        "an AfterToolCall hook that sets in.Result.Metadata.Outcome = \"edited\" and *in.Result.Metadata.ExitCode = 99",
+        "a StopPolicy recording StopContext.ToolResults and a listener recording ToolResultEvent"
+      ],
+      "when": "agent.Run executes one probe call, the store is closed and the log is reopened and decoded",
+      "then": [
+        "the ToolResultEvent message has Outcome \"edited\" and ExitCode 99",
+        "the persisted tool_result entry decodes to Outcome \"edited\" and ExitCode 99",
+        "StopContext.ToolResults[0] and the History() entry carry the same edited values"
+      ],
+      "pseudocode": "agent.Run(ctx, 'go'); store.Close()\nfor md in [evt.Message.Metadata, decodedEntry(reopen(path)).Metadata, stopCtx.ToolResults[0].Metadata, toolResult(agent.History()).Metadata]:\n  assert md.Outcome == 'edited' and *md.ExitCode == 99"
+    },
+    {
+      "id": "TS-04-44",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-8.3"
+      ],
+      "title": "Changes a hook makes to its ToolResult copy, including through its Metadata pointer, leave the emitted message unchanged",
+      "given": [
+        "probe returns Text \"x\", Data {\"k\":1} and Metadata{ExitCode: &two, Outcome: \"exit\"}",
+        "an AfterToolCall hook that snapshots in.Result.Clone() on entry and then sets in.ToolResult.Text = \"y\", in.ToolResult.Data[\"k\"] = 2, in.ToolResult.Metadata.Outcome = \"hacked\" and *in.ToolResult.Metadata.ExitCode = 7"
+      ],
+      "when": "agent.Run executes one probe call",
+      "then": [
+        "the ToolResultEvent message deep-equals the snapshot: same Content, IsError and Metadata (Outcome \"exit\", ExitCode 2)",
+        "the History() entry and StopContext.ToolResults[0] equal the snapshot too"
+      ],
+      "pseudocode": "runWith(probe, after=func(in){ snap = in.Result.Clone(); in.ToolResult.Text='y'; in.ToolResult.Data['k']=2; in.ToolResult.Metadata.Outcome='hacked'; *in.ToolResult.Metadata.ExitCode=7 })\nfor m in [evt.Message, toolResult(agent.History()), stopCtx.ToolResults[0]]:\n  assert deepEqual(m.Content, snap.Content) and m.IsError == snap.IsError and deepEqual(*m.Metadata, *snap.Metadata)"
+    },
+    {
+      "id": "TS-04-45",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-8.4"
+      ],
+      "title": "After a handler panic, AfterToolCall gets the panic-converted ToolResult and a Result with nil Metadata",
+      "given": [
+        "an Execute tool that panics with \"kaboom\"",
+        "an AfterToolCall hook that records in"
+      ],
+      "when": "agent.Run executes one call of the tool",
+      "then": [
+        "in.ToolResult.Error == \"panic\" and in.ToolResult.OK is false",
+        "in.ToolResult.Metadata == nil and in.Result.Metadata == nil",
+        "in.Result.IsError is true"
+      ],
+      "pseudocode": "rec = recordAfter(); runWith(panicky)\nassert rec.ToolResult.Error == 'panic' and not rec.ToolResult.OK\nassert rec.Result.Metadata == nil and rec.Result.IsError"
+    },
+    {
+      "id": "TS-04-46",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-8.5"
+      ],
+      "title": "Termination votes and post-hook image normalization behave as before when tools carry metadata",
+      "given": [
+        "a probe tool that returns Metadata and Terminate true",
+        "the existing tests TestBatchTerminationIsAnAndNotAnOr and TestAnImageFromAnyToolIsNormalizedAtTheHistoryBoundary"
+      ],
+      "when": "the existing tests run unmodified; then probe runs with an AfterToolCall returning Terminate nil, then one returning Terminate &false, then one that appends an oversized ImageBlock to in.Result.Content",
+      "then": [
+        "the existing tests pass",
+        "with Terminate nil the run ends after the batch on the tool's vote; with &false it continues to the next turn",
+        "the hook-appended image is normalized in history within the image limits, and the message's Metadata is unchanged by the normalization"
+      ],
+      "pseudocode": "assert goTest('-run','TestBatchTerminationIsAnAndNotAnOr|TestAnImageFromAnyToolIsNormalizedAtTheHistoryBoundary').ok\nassert runWith(probeTerminate, after=nilVote).TurnCount == 1\nassert runWith(probeTerminate, after=vote(false)).TurnCount == 2\nmsg = toolResult(runWith(probe, after=appendBigImage).Messages)\nassert withinImageLimits(msg) and deepEqual(*msg.Metadata, probeMetadata)"
+    },
+    {
+      "id": "TS-04-47",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-9.1"
+      ],
+      "title": "The session codec writes metadata after usage and before timestamp, with tag-named keys in declaration order",
+      "given": [
+        "m = ToolResultMessage with ToolUseID, ToolName, Content, IsError true, AddedToolNames, Usage, Timestamp and Metadata with every field set (Truncated, TruncatedBy \"bytes\", TotalBytes, TotalLines, SpillPath, DurationMS, ExitCode &0, Outcome \"ok\", LineEnding \"crlf\")"
+      ],
+      "when": "session.EncodeMessage is applied to m, to m with Metadata{ExitCode: &0}, to m with Metadata{Outcome: \"ok\"}, and to m with Metadata nil",
+      "then": [
+        "the top-level keys of the full encoding are, in order: role, tool_use_id, tool_name, content, is_error, added_tool_names, usage, metadata, timestamp",
+        "the metadata keys are, in order: truncated, truncated_by, total_bytes, total_lines, spill_path, duration_ms, exit_code, outcome, line_ending",
+        "Metadata{ExitCode: &0} encodes as \"metadata\":{\"exit_code\":0}, and Metadata{Outcome: \"ok\"} as \"metadata\":{\"outcome\":\"ok\"} with the zero fields omitted",
+        "with Metadata nil there is no metadata key"
+      ],
+      "pseudocode": "o = orderedDecode(session.EncodeMessage(m))\nassert keys(o) == ['role','tool_use_id','tool_name','content','is_error','added_tool_names','usage','metadata','timestamp']\nassert keys(o['metadata']) == ['truncated','truncated_by','total_bytes','total_lines','spill_path','duration_ms','exit_code','outcome','line_ending']\nassert '\"metadata\":{\"exit_code\":0}' in session.EncodeMessage(withMD({ExitCode:&0}))\nassert 'metadata' not in keys(orderedDecode(session.EncodeMessage(withMD(nil))))"
+    },
+    {
+      "id": "TS-04-48",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-9.1"
+      ],
+      "title": "The session-log golden changes by exactly one metadata object on its tool_result line",
+      "given": [
+        "golden_test.go's TestGoldenSessionLog tool result gains Metadata{TotalLines: 1, DurationMS: 3}, a find_files-like value",
+        "previous is testdata/golden/session_log.jsonl as of the base commit"
+      ],
+      "when": "TestGoldenSessionLog runs without -update against the updated golden, and the updated golden is compared with previous",
+      "then": [
+        "TestGoldenSessionLog passes",
+        "the two goldens differ only on the tool_result line",
+        "removing the single \"metadata\":{\"total_lines\":1,\"duration_ms\":3}, substring, placed immediately before \"timestamp\", from the new line yields the previous line byte for byte"
+      ],
+      "pseudocode": "assert goTest('-run','TestGoldenSessionLog').ok\nold, new = lines(previous), lines(readFile('testdata/golden/session_log.jsonl'))\ndiff = [i for i in range(len(old)) if old[i] != new[i]]\nassert len(old) == len(new) and diff == [toolResultLine]\nassert new[toolResultLine].replace('\"metadata\":{\"total_lines\":1,\"duration_ms\":3},', '') == old[toolResultLine]"
+    },
+    {
+      "id": "TS-04-49",
+      "kind": "property",
+      "verifies": [
+        "04-REQ-9.2"
+      ],
+      "title": "Encoding and decoding a tool result round-trips its Metadata exactly and re-encodes to the same bytes",
+      "given": [
+        "a fixed-seed generator"
+      ],
+      "when": "for any ToolResultMessage whose Metadata is nil or non-empty, with random field subsets, ExitCode nil, &0 or &k, and random strings for spill_path, outcome and line_ending",
+      "then": [
+        "DecodeMessage(EncodeMessage(m)).Metadata is nil exactly when m.Metadata is nil, and otherwise equal by value, with ExitCode &0 decoding to a pointer to 0",
+        "EncodeMessage(DecodeMessage(EncodeMessage(m))) equals EncodeMessage(m) byte for byte"
+      ],
+      "pseudocode": "for m in gen(seed, n=1000):\n  b = session.EncodeMessage(m); d = session.DecodeMessage(b)\n  assert (d.Metadata == nil) == (m.Metadata == nil)\n  if m.Metadata != nil: assert deepEqual(*d.Metadata, *m.Metadata)\n  assert session.EncodeMessage(d) == b"
+    },
+    {
+      "id": "TS-04-50",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-9.3"
+      ],
+      "title": "Absent or all-unknown metadata decodes as nil, unknown nested keys are dropped, and metadata never lands in Unknown",
+      "given": [
+        "tool_result JSON objects with no metadata key, with \"metadata\":{}, with \"metadata\":{\"future\":1}, and with \"metadata\":{\"outcome\":\"exit\",\"future\":1}"
+      ],
+      "when": "session.DecodeMessage is applied to each, and the last result is re-encoded",
+      "then": [
+        "the first three decode with Metadata == nil",
+        "the fourth decodes with Metadata == &ToolMetadata{Outcome: \"exit\"}, and its re-encoding contains \"metadata\":{\"outcome\":\"exit\"} with no future key",
+        "no decoded message has a metadata key in Unknown"
+      ],
+      "pseudocode": "for raw in [noKey, empty, allUnknown]: m = DecodeMessage(raw); assert m.Metadata == nil and not m.Unknown.Has('metadata')\nm = DecodeMessage(mixed)\nassert *m.Metadata == ToolMetadata{Outcome:'exit'} and not m.Unknown.Has('metadata')\nb = EncodeMessage(m); assert '\"metadata\":{\"outcome\":\"exit\"}' in b and 'future' not in b"
+    },
+    {
+      "id": "TS-04-51",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-9.4"
+      ],
+      "title": "A session log written before this change loads with nil Metadata and re-encodes byte-identically, and new metadata stays losslessly readable by an older build",
+      "given": [
+        "pre is testdata/golden/session_log.jsonl as of the base commit, a log with no metadata key",
+        "new is a tool_result line encoded with non-empty metadata"
+      ],
+      "when": "pre is loaded through the session store and every message entry is re-encoded; then new is decoded with the pre-change known-key list (toolResultKnown without \"metadata\") and re-encoded",
+      "then": [
+        "every tool result decoded from pre has Metadata == nil",
+        "the re-encoded pre log equals the input bytes",
+        "in new, metadata is a top-level key of the tool_result object; decoded with the old key list it lands in Unknown and re-encodes to the same bytes"
+      ],
+      "pseudocode": "for e in load(pre): if e is ToolResultMessage: assert e.Metadata == nil\nassert reencode(pre) == pre\no = orderedDecode(new); assert 'metadata' in topLevelKeys(o)\nold = decodeWithKnown(new, toolResultKnownWithout('metadata')); assert old.Unknown.Has('metadata') and encode(old) == new"
+    },
+    {
+      "id": "TS-04-52",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-9.5"
+      ],
+      "title": "The event JSON union carries the same metadata object as the session log for ToolResultEvent, TurnEndEvent and AgentDoneEvent",
+      "given": [
+        "m is a ToolResultMessage with Metadata{ExitCode: &two, Outcome: \"exit\", DurationMS: 8}",
+        "want is the metadata object's bytes inside session.EncodeMessage(m)"
+      ],
+      "when": "session.EventJSON is applied to ToolResultEvent{Message: m}, TurnEndEvent{ToolResults: [m]} and AgentDoneEvent{Result: RunResult{Messages: [m]}}",
+      "then": [
+        "each encoding contains the tool result message with a metadata object byte-identical to want",
+        "the message JSON embedded in each event equals session.EncodeMessage(m)"
+      ],
+      "pseudocode": "want = metadataBytes(session.EncodeMessage(m))\nfor e in [ToolResultEvent{m}, TurnEndEvent{ToolResults:[m]}, AgentDoneEvent{Result: RunResult{Messages:[m]}}]:\n  b = session.EventJSON(e)\n  assert metadataBytes(embeddedMessage(b)) == want and embeddedMessage(b) == session.EncodeMessage(m)"
+    },
+    {
+      "id": "TS-04-53",
+      "kind": "integration",
+      "verifies": [
+        "04-REQ-9.6"
+      ],
+      "title": "NewAgentFromSession restores tool-result metadata into the resumed agent's history",
+      "given": [
+        "an agent with a real session store in a temp directory and a probe tool returning Metadata{ExitCode: &two, Outcome: \"exit\", TotalBytes: 5}",
+        "a scripted provider: turn 1 calls probe, turn 2 stops"
+      ],
+      "when": "agent.Run completes, the store is closed, the log is reopened with session.Open, and NewAgentFromSession builds a new agent from the resume",
+      "then": [
+        "the resumed agent's History() tool result has Metadata equal by value to the original History() entry's Metadata",
+        "*ExitCode == 2, Outcome == \"exit\" and TotalBytes == 5 after resume"
+      ],
+      "pseudocode": "a1.Run(ctx, 'go'); before = toolResult(a1.History()).Metadata; store.Close()\nstore2, r = session.Open(path, opts)\na2 = NewAgentFromSession(cfgWith(store2), r, resolve)\nafter = toolResult(a2.History()).Metadata\nassert deepEqual(*after, *before) and *after.ExitCode == 2"
+    },
+    {
+      "id": "TS-04-54",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-9.7"
+      ],
+      "title": "Populated Metadata on the canonical request's tool result leaves all five request goldens byte-identical",
+      "given": [
+        "canonicalRequest's ToolResultMessage gains Metadata{Truncated: true, TruncatedBy: \"bytes\", TotalBytes: 123, SpillPath: \"/tmp/agentkit-golden-sentinel.log\", DurationMS: 42, ExitCode: &two, Outcome: \"exit\", LineEnding: \"lf\"}"
+      ],
+      "when": "TestGoldenProviderRequestBodies runs without -update and the five goldens are compared with the base commit",
+      "then": [
+        "the test passes for anthropic, openai, openai_responses, google and ollama",
+        "git diff --exit-code base -- testdata/golden/request_*.json reports no change",
+        "no request body contains agentkit-golden-sentinel, spill_path, exit_code or duration_ms"
+      ],
+      "pseudocode": "assert goTest('-run','TestGoldenProviderRequestBodies').ok\nassert sh('git diff --exit-code '+base+' -- testdata/golden/request_*.json').exit == 0\nfor tc in goldenRequestCases(t): for s in ['agentkit-golden-sentinel','spill_path','exit_code','duration_ms']: assert s not in tc.body"
+    },
+    {
+      "id": "TS-04-55",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-9.8"
+      ],
+      "title": "The compaction token estimate is the same whether or not a tool result carries Metadata",
+      "given": [
+        "msgs = [user, assistant with a tool call and no usage, tool result]",
+        "msgsMD is msgs with the tool result's Metadata populated, including a long SpillPath"
+      ],
+      "when": "compaction.EstimateContextTokens is computed for msgs and msgsMD, with no checkpoint, and again with an anchored assistant usage before the tool result",
+      "then": [
+        "EstimateContextTokens(msgs, nil) == EstimateContextTokens(msgsMD, nil)",
+        "the anchored estimates are equal too"
+      ],
+      "pseudocode": "assert EstimateContextTokens(msgs, nil) == EstimateContextTokens(msgsMD, nil)\nassert EstimateContextTokens(anchored(msgs), nil) == EstimateContextTokens(anchored(msgsMD), nil)"
+    },
+    {
+      "id": "TS-04-56",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-10.1",
+        "04-REQ-10.2"
+      ],
+      "title": "docs/configuration.md documents the subprocess runner and the AfterToolCall ToolResult and Metadata",
+      "given": [
+        "docs/configuration.md as committed"
+      ],
+      "when": "a docs test reads the file",
+      "then": [
+        "it has a heading whose text is Subprocess runner (`tools.Run`, `tools.RunArgv`)",
+        "that section's ExecOptions table has rows for Dir, Timeout, MaxBytes, KeepHead, SpillDir, LogPath, Stdin, Env, DrainIdle and DrainCeiling",
+        "that section names the ExecResult fields Output, Outcome, ExitCode, Truncated, TotalBytes, SpillPath, Duration and IOErr, and the outcome words ok, exit, signal, timeout and abort",
+        "the table row naming BeforeToolCall and AfterToolCall mentions ToolResult and ToolResultMessage.Metadata"
+      ],
+      "pseudocode": "doc = readFile('docs/configuration.md')\nsec = section(doc, 'Subprocess runner (`tools.Run`, `tools.RunArgv`)')\nfor f in ExecOptionsFields: assert tableRow(sec, f)\nfor f in ExecResultFields + ['ok','exit','signal','timeout','abort']: assert f in sec\nrow = rowContaining(doc, 'AfterToolCall'); assert 'ToolResult' in row and 'ToolResultMessage.Metadata' in row"
+    },
+    {
+      "id": "TS-04-57",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-10.3",
+        "04-REQ-10.4"
+      ],
+      "title": "architecture.md mentions metadata at finalize and RunArgv in the tools row, and a 04_ erratum records the departures",
+      "given": [
+        "docs/architecture.md and docs/errata/ as committed"
+      ],
+      "when": "a docs test reads the architecture document and globs docs/errata/04_*.md",
+      "then": [
+        "the data-flow finalize step mentions metadata",
+        "the tools package row names RunArgv",
+        "exactly one or more docs/errata/04_*.md files exist, and together they mention RunArgv, Exec, Outcome, TimedOut, Aborted, ExitCode -1, KeepHead, KeepTail and WaitDelay",
+        "the erratum states that §7 and §5's usage and abort items were already implemented"
+      ],
+      "pseudocode": "arch = readFile('docs/architecture.md')\nassert 'metadata' in finalizeStep(arch).lower() and 'RunArgv' in rowFor(arch, 'tools')\nerr = concat(readFile(f) for f in glob('docs/errata/04_*.md')); assert err != ''\nfor s in ['RunArgv','Exec','Outcome','TimedOut','Aborted','ExitCode -1','KeepHead','KeepTail','WaitDelay','§7','§5']: assert s in err"
+    },
+    {
+      "id": "TS-04-58",
+      "kind": "unit",
+      "verifies": [
+        "04-REQ-10.5"
+      ],
+      "title": "The root module stays standard-library-only and cgo-free and make check passes",
+      "given": [
+        "go.mod as of the base commit has no require line"
+      ],
+      "when": "go.mod is inspected, the internal/policy tests run and make check runs",
+      "then": [
+        "go.mod still has no require line",
+        "TestNoCgoOutsideStdlib, TestCgoProbeIsArmed and TestCrossTargetBuildAndVet pass",
+        "make check exits 0"
+      ],
+      "pseudocode": "assert 'require' not in readFile('go.mod')\nassert sh('go test ./internal/policy/...').exit == 0\nassert sh('make check').exit == 0"
+    },
+    {
+      "id": "TS-04-59",
+      "kind": "smoke",
+      "verifies": [
+        "04-PATH-1",
+        "04-REQ-1.2",
+        "04-REQ-2.2",
+        "04-REQ-3.1"
+      ],
+      "title": "An embedder runs a verifier with stdin, a relative named log, head truncation and the default reduced environment",
+      "given": [
+        "a temp Dir containing verify.sh, which copies stdin to stdout, prints ${AGENTKIT_TEST_API_KEY:-absent}, prints 4 KiB of report lines and exits 2",
+        "AGENTKIT_TEST_API_KEY=sekrit is set in the test process",
+        "input is a 64 KiB deterministic text"
+      ],
+      "when": "tools.RunArgv(ctx, ['sh','verify.sh'], ExecOptions{Dir: tmp, Stdin: bytes.NewReader(input), LogPath: 'logs/verify.log', KeepHead: true, MaxBytes: 1024, Timeout: 30s}) is called with Env nil",
+      "then": [
+        "the error is nil and ExecResult is {Outcome: exit, ExitCode: 2, Truncated: true, IOErr: nil}",
+        "SpillPath == filepath.Join(tmp, 'logs', 'verify.log'); logs has mode 0o700 and the file 0o600 on unix",
+        "the log file holds the complete output: the input byte for byte, then \"absent\", then the report lines; its size equals TotalBytes",
+        "Output equals the log's first 1024 bytes followed by \"\\n[<TotalBytes-1024> bytes elided of <TotalBytes> total. Full output: \" + SpillPath + \"]\""
+      ],
+      "real_components": [
+        "tools.RunArgv and runArgv",
+        "tools.Accumulator in head mode",
+        "tools.ReducedEnv",
+        "a real sh child process in its own process group",
+        "the real filesystem for Dir and LogPath"
+      ]
+    },
+    {
+      "id": "TS-04-60",
+      "kind": "smoke",
+      "verifies": [
+        "04-PATH-2",
+        "04-REQ-5.2",
+        "04-REQ-5.3",
+        "04-REQ-5.4"
+      ],
+      "title": "Timeout, cancellation and a short caller deadline each kill the process tree and are told apart through RunArgv",
+      "given": [
+        "a unix shell",
+        "cmd = ['sh','-c','( sleep 1; touch \"$1\" ) & sleep 5','_',marker] with a fresh marker path per run"
+      ],
+      "when": "RunArgv runs cmd three times: with ExecOptions.Timeout 200ms and a background ctx; with a ctx cancelled after 200ms and no Timeout; and with a ctx deadline of 200ms and Timeout 5s",
+      "then": [
+        "the outcomes are timeout, abort and abort respectively, each with a nil error",
+        "each Duration is under 1s, and the timeout run's Duration is at least 200ms",
+        "1.5s after each call no marker file exists: no grandchild survived"
+      ],
+      "real_components": [
+        "tools.RunArgv and runArgv",
+        "process-group setup and group kill (proc_unix.go)",
+        "tools.ClassifyOutcome",
+        "real sh, sleep and touch processes"
+      ]
+    },
+    {
+      "id": "TS-04-61",
+      "kind": "smoke",
+      "verifies": [
+        "04-PATH-3",
+        "04-REQ-7.6",
+        "04-REQ-9.6",
+        "04-REQ-9.7"
+      ],
+      "title": "A failing execute call's metadata reaches observers and the session log, never the provider request, and survives resume",
+      "given": [
+        "an httptest.Server standing in for the Anthropic Messages API: it answers turn 1 with a tool_use calling execute with {\"command\":\"printf boom; exit 2\"} and turn 2 with end_turn text, and records every request body",
+        "an agent using the real Anthropic provider pointed at that server, the real execute tool over a temp workspace, and a real session store created in a temp directory",
+        "an AfterToolCall hook, an event listener and a StopPolicy that record what they see"
+      ],
+      "when": "agent.Run is called, the store is closed, the log is reopened with session.Open and NewAgentFromSession builds a second agent",
+      "then": [
+        "AfterToolCall saw in.ToolResult.Metadata and in.Result.Metadata with ExitCode 2 and Outcome exit, and ToolResultEvent, TurnEndEvent.ToolResults and StopContext.ToolResults carry the same metadata",
+        "the session log's tool_result line has a metadata object with \"exit_code\":2 and \"outcome\":\"exit\", placed before \"timestamp\"",
+        "the second request body holds the tool result text \"boom\\n[exit 2]\" and contains none of metadata, exit_code, duration_ms or outcome",
+        "the resumed agent's History() tool result has Metadata with *ExitCode == 2 and Outcome == \"exit\""
+      ],
+      "real_components": [
+        "agentkit.Agent loop and batch executor",
+        "tools execute tool and tools.Run with a real shell process",
+        "Anthropic provider request encoder",
+        "session store, recorder and codec",
+        "NewAgentFromSession"
+      ]
+    }
+  ]
+}

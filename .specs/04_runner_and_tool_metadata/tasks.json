@@ -1,0 +1,396 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "04",
+  "spec_name": "runner_and_tool_metadata",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test . ./tools/... ./core/... ./session/... ./compaction/... ./provider/... ./docs/... ./internal/policy/... -count=1"
+  },
+  "dependencies": [],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Give tools.Run and tools.RunArgv a runner-owned standard input and the ExecResult.IOErr field",
+      "criteria": [
+        "04-REQ-1"
+      ],
+      "tests": [
+        "TS-04-1",
+        "TS-04-2",
+        "TS-04-3",
+        "TS-04-4",
+        "TS-04-5"
+      ],
+      "steps": [
+        "Write TS-04-1 to TS-04-5 in a new file tools/runner_stdin_test.go (package tools, so later seams are reachable); skip when ResolveShell fails or on windows; never edit tools/tools_test.go or tools/reqtool06_test.go (04-REQ-6.5). Confirm they fail to compile or fail",
+        "In tools/exec.go add `Stdin io.Reader` to ExecOptions (doc: nil means the null device, as REQ-TOOL-06; non-nil is copied through a pipe the runner owns and closed at io.EOF) and `IOErr error` to ExecResult (doc: a byte-moving failure that did not stop the process; Outcome is still classified from the exit status)",
+        "In runArgv keep `cmd.Stdin = nil` when opts.Stdin is nil",
+        "When opts.Stdin is non-nil, create a second os.Pipe (sr, sw) before cmd.Start and set cmd.Stdin = sr; on pipe failure close every fd already opened and return (ExecResult{}, err); after a successful Start close sr in the parent; on Start failure close sr, sw, pr and pw",
+        "Start a copier goroutine that loops: Read a chunk from opts.Stdin, Write it to sw. A Write error (EPIPE, os.ErrClosed) ends the copier quietly with no recorded error (04-REQ-1.3). io.EOF closes sw and ends. Any other read error is recorded under a mutex-guarded stdin state BEFORE sw is closed, then sw is closed and the copier ends; it never calls Read again after Read returned an error",
+        "Close sw through a sync.Once so the copier and the caller can both close it safely",
+        "After cmd.Wait and drainAfterExit, close sw (unblocking a copier stuck writing to a pipe a descendant still holds), read the recorded stdin error under the mutex and mark the state finished so a reader error arriving after the call returned is dropped without a data race; do not wait for the copier goroutine (04-REQ-1.5)",
+        "Set ExecResult.IOErr to fmt.Errorf(\"tools: reading stdin: %w\", err) when a read error was recorded, so errors.Is(res.IOErr, readerErr) holds; leave Outcome/ExitCode classification from the wait status untouched",
+        "Update the Run and RunArgv doc comments to describe stdin",
+        "Run go test ./tools/ -run 'TS_04|Stdin' -race (where the toolchain supports -race) and confirm TS-04-5's goroutine count returns to baseline"
+      ],
+      "touches": [
+        "tools/exec.go",
+        "tools/runner_stdin_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Add KeepHead head truncation and the caller-named LogPath to the runner",
+      "criteria": [
+        "04-REQ-2",
+        "04-REQ-3.1",
+        "04-REQ-3.2",
+        "04-REQ-3.3",
+        "04-REQ-3.4",
+        "04-REQ-3.5",
+        "04-REQ-3.7"
+      ],
+      "tests": [
+        "TS-04-6",
+        "TS-04-7",
+        "TS-04-8",
+        "TS-04-9",
+        "TS-04-10",
+        "TS-04-11",
+        "TS-04-12",
+        "TS-04-13",
+        "TS-04-14",
+        "TS-04-16"
+      ],
+      "steps": [
+        "Write TS-04-6 to TS-04-14 and TS-04-16 in a new file tools/runner_output_test.go (package tools); TS-04-8 and TS-04-9 feed exact byte counts to ['cat'] through Stdin; TS-04-9 uses a fixed seed and at least 40 cases; TS-04-12 and the ro case of TS-04-13 skip on windows and as root",
+        "Add `KeepHead bool` (zero value keeps today's tail truncation; true keeps the first MaxBytes bytes) and `LogPath string` (complete output to a caller-chosen file, replacing SpillDir for that call, never deleted) to ExecOptions with doc comments",
+        "In runArgv choose the mode: TruncateTail unless opts.KeepHead, then TruncateHead; keep NewAccumulator(opts.MaxBytes, mode) so MaxBytes <= 0 still means DefaultByteLimit in both modes",
+        "Resolve LogPath: when relative, join it to opts.Dir, or to os.Getwd() when Dir is empty, then filepath.Abs the result so SpillPath is absolute",
+        "Before creating the output pipe and before cmd.Start: os.MkdirAll(filepath.Dir(path), 0o700) and os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600); on either failure return (ExecResult{}, fmt.Errorf(\"tools: opening log %s: %w\", path, err)) and start nothing (04-REQ-3.4)",
+        "In tools/accumulator.go add an unexported method (e.g. useFile(f *os.File, path string)) that installs a pre-opened file as the spill, so SpillPath reports the path from the start, including for empty output, and writeSpill never calls CreateTemp; when LogPath is set leave acc.SpillDir empty so no agentkit-exec-*.log is created (04-REQ-3.5)",
+        "If os.Pipe, the stdin pipe or cmd.Start fails after the log was opened, close the log handle and return the zero result and the error; leave the file in place",
+        "Keep Accumulator.Close as a handle close only and confirm no code path removes a LogPath file for any Outcome (04-REQ-3.7)",
+        "Confirm the head-mode and tail-mode markers come from Accumulator.marker unchanged, naming the spill or log path when one exists; do not change marker text",
+        "Update the Run/RunArgv doc comments (\"tail truncation\" becomes \"tail truncation unless KeepHead\") and run go test ./tools/"
+      ],
+      "touches": [
+        "tools/exec.go",
+        "tools/accumulator.go",
+        "tools/runner_output_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Report log and spill write failures and non-exit Wait errors in ExecResult.IOErr",
+      "criteria": [
+        "04-REQ-3.6",
+        "04-REQ-5.8"
+      ],
+      "tests": [
+        "TS-04-15",
+        "TS-04-27"
+      ],
+      "steps": [
+        "Write TS-04-15 and TS-04-27 in a new file tools/runner_ioerr_test.go (package tools); the /dev/full case of TS-04-15 runs on linux only; restore every seam with t.Cleanup",
+        "Add package-level test seams in tools/exec.go, identity in production: `var wrapExecFile = func(w io.Writer) io.Writer { return w }` applied to the Accumulator's spill/log file writer, and `var waitCmd = func(c *exec.Cmd) error { return c.Wait() }` used in place of cmd.Wait()",
+        "In tools/accumulator.go route writeSpill through an unexported io.Writer field (defaulting to the *os.File) that runArgv sets via wrapExecFile for both the LogPath file and the lazily created SpillDir file; keep the existing rule that the first error sets spillErr and stops further file writes while Write still returns len(p), nil so Output keeps accumulating",
+        "Add an unexported accessor (e.g. fileErr()) returning spillErr, which also covers a SpillDir MkdirAll/CreateTemp failure on first write",
+        "In runArgv, when waitErr is an *exec.ExitError keep today's exit-code and 128+signum logic; when waitErr is non-nil and not an ExitError record it as a Wait I/O error and derive exitCode and signaled from cmd.ProcessState (when non-nil) with the same signalExitCode rule, so Outcome is classified from the process state",
+        "Build ExecResult.IOErr with errors.Join of the stdin read error, the file write error wrapped as fmt.Errorf(\"tools: writing %s: %w\", path, err), and the Wait I/O error, so errors.Is reaches each and IOErr is nil when none occurred",
+        "Read the file error only after drainSink.stop so no write races the read",
+        "Run TS-04-27's clean calls (exit 0, exit 3, Timeout, cancellation, Stdin round-trip, LogPath run) and confirm IOErr is nil on each; run go test ./tools/"
+      ],
+      "touches": [
+        "tools/exec.go",
+        "tools/accumulator.go",
+        "tools/runner_ioerr_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Default ExecOptions.Env to ReducedEnv(nil) and pin the outcome and start-failure contract through RunArgv",
+      "criteria": [
+        "04-REQ-4",
+        "04-REQ-5.1",
+        "04-REQ-5.2",
+        "04-REQ-5.3",
+        "04-REQ-5.4",
+        "04-REQ-5.5",
+        "04-REQ-5.6",
+        "04-REQ-5.7"
+      ],
+      "tests": [
+        "TS-04-17",
+        "TS-04-18",
+        "TS-04-19",
+        "TS-04-20",
+        "TS-04-21",
+        "TS-04-22",
+        "TS-04-23",
+        "TS-04-24",
+        "TS-04-25",
+        "TS-04-26"
+      ],
+      "steps": [
+        "Write TS-04-17 to TS-04-19 in tools/runner_env_test.go and TS-04-20 to TS-04-26 in tools/runner_outcome_test.go (package tools); skip unix-only cases on windows; give TS-04-20 a fixed seed, at least 30 scenarios, through both RunArgv and Run, using t.Parallel subtests and short timings to bound runtime",
+        "Add an unexported helper effectiveEnv(env []string) []string returning ReducedEnv(nil) for a nil env and the slice verbatim otherwise (an empty non-nil slice stays empty)",
+        "In RunArgv compute the effective env before lookPathFor, pass it to lookPathFor so a bare name resolves through the child's PATH (04-REQ-4.3), and pass opts with Env set to it into runArgv; in Run do the same before runArgv",
+        "In runArgv always assign cmd.Env = opts.Env, so a non-nil empty slice gives the child an empty environment rather than the inherited one",
+        "Rewrite the ExecOptions.Env doc comment: nil means ReducedEnv(nil) (REQ-SEC-08, as tools.Options.Env); non-nil is used verbatim; pass os.Environ() for the full environment",
+        "Review the classification in runArgv: aborted = ctx.Err() != nil at the child's exit (so a caller deadline is abort), timedOut = !aborted && runCtx.Err() != nil, Duration taken before drainAfterExit, and the drain stopping on runCtx.Done without reclassifying; keep ClassifyOutcome's abort > timeout > signal > exit precedence",
+        "Confirm killGroup runs on both timeout and cancellation for the whole process group (proc_unix.go Setpgid, proc_windows.go taskkill /T) with no change to either file",
+        "Audit every return in Run, RunArgv and runArgv: only empty argv, ResolveShell/program-not-found, LogPath unopenable, pipe failure and cmd.Start failure (including a missing Dir) return a non-nil error, each with the zero ExecResult and every opened fd and log handle closed; every started call returns a nil error",
+        "Run go test ./tools/ and confirm the existing TestRunArgvResolvesTheProgramWithTheChildsPATH and TestGrandchildDoesNotSurviveTreeKill still pass unmodified"
+      ],
+      "touches": [
+        "tools/exec.go",
+        "tools/runner_env_test.go",
+        "tools/runner_outcome_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Keep the execute, run_command and powershell tools byte-identical over the extended runner",
+      "criteria": [
+        "04-REQ-6"
+      ],
+      "tests": [
+        "TS-04-28",
+        "TS-04-29",
+        "TS-04-30",
+        "TS-04-31",
+        "TS-04-32"
+      ],
+      "steps": [
+        "Create tools/shelltools_unchanged_test.go (package tools) and first copy execResultToTool and execStatusLine from tools/tools.go verbatim into it as preChangeExecResultToTool and preChangeExecStatusLine, frozen",
+        "Write TS-04-28 to TS-04-31 there; TS-04-30 uses a fixed seed and 500 generated ExecResults; powershell cases skip when ResolvePowerShell finds none",
+        "Write TS-04-32 as a Go test that runs `git diff --exit-code <base> -- tools/tools_test.go tools/reqtool06_test.go`, with base recorded as the commit preceding this spec's first change, skipping when git or that commit is unavailable",
+        "Confirm executeTool (tools.Run call) and runCommandTool and PowerShell (tools.RunArgv calls) pass exactly Dir, Timeout, MaxBytes: DefaultByteLimit, SpillDir: opts.SpillDir and Env: opts.Env, and add a comment at each call that Stdin, LogPath and KeepHead are deliberately unset (REQ-TOOL-06 null-device stdin, tail truncation)",
+        "Confirm opts.Env reaching the tools is the explicit ReducedEnv from Options.withDefaults, so the runner's new nil-Env default does not alter the tools' environment",
+        "Confirm execResultToTool reads only Output, Outcome, ExitCode, Truncated, TotalBytes, SpillPath and Duration, and add a comment that IOErr is deliberately not rendered into the tool result (04-REQ-6.4)",
+        "Run go test ./tools/ and confirm every existing test in tools/tools_test.go and tools/reqtool06_test.go passes with neither file edited"
+      ],
+      "touches": [
+        "tools/tools.go",
+        "tools/powershell.go",
+        "tools/shelltools_unchanged_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "`git diff <base> -- tools/tools_test.go tools/reqtool06_test.go` is empty"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Carry the handler's ToolMetadata on core.ToolResultMessage through the batch executor",
+      "criteria": [
+        "04-REQ-7"
+      ],
+      "tests": [
+        "TS-04-33",
+        "TS-04-34",
+        "TS-04-35",
+        "TS-04-36",
+        "TS-04-37",
+        "TS-04-38",
+        "TS-04-39",
+        "TS-04-40",
+        "TS-04-41"
+      ],
+      "steps": [
+        "Write TS-04-39 in a new core/metadata_test.go, TS-04-41 and the no_result backstop case of TS-04-37 as package-internal tests in a new root file metadata_message_internal_test.go (package agentkit), and TS-04-33 to TS-04-38 and TS-04-40 in a new root file metadata_message_test.go with a scripted provider (provider/faux) and probe tools; TS-04-34 runs under go test -race where supported",
+        "In core/tool.go add nil-safe `func (m *ToolMetadata) Clone() *ToolMetadata` (fresh struct with its own ExitCode pointer, nil for nil) and `func (m *ToolMetadata) IsEmpty() bool` (true for nil, or every scalar zero and ExitCode nil)",
+        "In core/message.go add `Metadata *ToolMetadata` to ToolResultMessage, documented as the producing handler's structured metadata, persisted by the session codec, never sent to a provider, nil for handler-less results",
+        "Make ToolResultMessage.Clone set m.Metadata = m.Metadata.Clone() (04-REQ-7.5)",
+        "In batch.go toolResultMessage set Metadata to r.Metadata.Clone() only when !r.Metadata.IsEmpty(); leave Content built from r.LLMText() and r.Blocks exactly as now and do not touch ToolResult.ToLLMMap or LLMText (04-REQ-7.7)",
+        "Confirm handler-less paths stay nil: errorResult, abortedResult and the plugin block build from core.ErrResult (nil Metadata); invokeHandler's panic result and Handler-style results come from ErrResult/OKResult; loop.go synthesizeTruncated, the no_result backstop and provider.RepairTranscript build messages without Metadata; change none of their Content",
+        "Search the repository for every other `core.ToolResultMessage{` literal and every field-by-field copy of a ToolResultMessage (subagent, deferred, mcp, difftest canon) and make sure none drops or invents Metadata",
+        "Confirm ToolResultEvent, TurnEndEvent.ToolResults, StopContext.ToolResults, History and RunResult.Messages all carry the message value from results[i], so TS-04-40 sees the metadata on all five with no further plumbing",
+        "Run make test (root, difftest, codesearch submodules) and fix any canonicalisation or whole-message comparison that now sees handler metadata, without changing provider request bytes"
+      ],
+      "touches": [
+        "core/tool.go",
+        "core/message.go",
+        "batch.go",
+        "core/metadata_test.go",
+        "metadata_message_test.go",
+        "metadata_message_internal_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Persist tool metadata in the session codec, carry it through event JSON and resume, and prove providers and compaction ignore it",
+      "criteria": [
+        "04-REQ-9"
+      ],
+      "tests": [
+        "TS-04-47",
+        "TS-04-48",
+        "TS-04-49",
+        "TS-04-50",
+        "TS-04-51",
+        "TS-04-52",
+        "TS-04-53",
+        "TS-04-54",
+        "TS-04-55"
+      ],
+      "steps": [
+        "Write TS-04-47, TS-04-49, TS-04-50 and TS-04-52 in a new session/metadata_codec_test.go, TS-04-51 in a package-internal session/metadata_compat_internal_test.go (it decodes with toolResultKnown minus \"metadata\"), TS-04-53 in a new root resume_metadata_test.go, and TS-04-55 in a new compaction/metadata_estimate_test.go; record the pre-change session_log.jsonl tool_result line as a constant for TS-04-48 and TS-04-51",
+        "In session/codec.go add encodeMetadata(md core.ToolMetadata) building an ordered object with keys truncated, truncated_by, total_bytes, total_lines, spill_path, duration_ms, exit_code, outcome, line_ending in that order, omitting zero values but writing exit_code whenever ExitCode is non-nil (including 0)",
+        "In encodeMessage's ToolResultMessage case set \"metadata\" after \"usage\" and before setTime(msgKeyTime) when !v.Metadata.IsEmpty()",
+        "Add decodeMetadata(o jsonx.OrderedObject) *core.ToolMetadata using the same getters decodeUsage uses; read only the nine known keys, drop unknown nested keys, and return nil when no known key is present",
+        "In decodeMessage's tool_result case set m.Metadata from getObject(o, \"metadata\"), and add \"metadata\" to toolResultKnown between \"usage\" and msgKeyTime so it never lands in Unknown",
+        "Confirm session.EventJSON / core.MarshalEvent reach session.EncodeMessage for ToolResultEvent, TurnEndEvent and AgentDoneEvent with no second encoder, and that NewAgentFromSession and session load/fold pass decoded ToolResultMessages through without rebuilding them field by field",
+        "In golden_test.go give TestGoldenSessionLog's tool result Metadata{TotalLines: 1, DurationMS: 3}, regenerate testdata/golden/session_log.jsonl with -update, and confirm the only change is the one metadata object before \"timestamp\" on the tool_result line",
+        "In golden_requests_test.go give canonicalRequest's ToolResultMessage the populated Metadata from TS-04-54 (sentinel SpillPath /tmp/agentkit-golden-sentinel.log) and add the assertion that no request body contains agentkit-golden-sentinel, spill_path, exit_code or duration_ms; run TestGoldenProviderRequestBodies without -update; if a golden would change, fix the encoder, never the golden",
+        "Leave compaction/estimate.go unchanged and confirm TS-04-55 passes; run go test . ./session/... ./compaction/... ./provider/..."
+      ],
+      "touches": [
+        "session/codec.go",
+        "session/metadata_codec_test.go",
+        "session/metadata_compat_internal_test.go",
+        "golden_test.go",
+        "testdata/golden/session_log.jsonl",
+        "golden_requests_test.go",
+        "resume_metadata_test.go",
+        "compaction/metadata_estimate_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "done_when": [
+        "`git diff <base> -- testdata/golden/request_*.json` is empty"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Pass the handler's ToolResult to AfterToolCall beside the mutable Result message",
+      "criteria": [
+        "04-REQ-8"
+      ],
+      "tests": [
+        "TS-04-42",
+        "TS-04-43",
+        "TS-04-44",
+        "TS-04-45",
+        "TS-04-46"
+      ],
+      "steps": [
+        "Write TS-04-42 to TS-04-46 in a new root file after_tool_result_test.go; TS-04-43 uses a real session store from session.Create in t.TempDir() and decodes the reopened log",
+        "In core/tool.go add `ToolResult ToolResult` to AfterToolCallContext, documented as the handler's result as returned after panic and Handler-error conversion, passed by value and read-only: changing it (or anything reached through its Metadata pointer) has no effect; Result remains the one mutable record and already carries Metadata",
+        "In batch.go's finalize section keep msg := toolResultMessage(c, out) before the hook, and add ToolResult: out to the core.AfterToolCallContext literal passed to callAfter",
+        "Keep the dec.Terminate override of out.Terminate, votes[i] = out.Terminate and normalizeImages(&msg, report) after the hook exactly as now (REQ-TOOL-13.3, REQ-TOOL-14), so a hook's edits to in.Result.Metadata flow into results[i], the ToolResultEvent, the recorder and the stop policy",
+        "Confirm the hook's in.ToolResult.Metadata aliases only the handler's value, never the message's copy made by toolResultMessage, so TS-04-44's edits leave the emitted message equal to the pre-hook snapshot",
+        "Search for other constructions of core.AfterToolCallContext (middleware, plugins, examples, tests) and confirm keyed literals still compile",
+        "Run go test . and confirm TestBatchTerminationIsAnAndNotAnOr and TestAnImageFromAnyToolIsNormalizedAtTheHistoryBoundary pass unmodified"
+      ],
+      "touches": [
+        "core/tool.go",
+        "batch.go",
+        "after_tool_result_test.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Document the subprocess runner and tool metadata, record the erratum, and hold the module policy",
+      "criteria": [
+        "04-REQ-10"
+      ],
+      "tests": [
+        "TS-04-56",
+        "TS-04-57",
+        "TS-04-58"
+      ],
+      "steps": [
+        "Write TS-04-56 and TS-04-57 in a new docs/runner_metadata_doc_test.go (package docs_test) and TS-04-58's go.mod and policy assertions in a new internal/policy/spec04_test.go; do not call make check from inside a test (make check runs go test and would recurse)",
+        "In docs/configuration.md add a subsection titled exactly Subprocess runner (`tools.Run`, `tools.RunArgv`) with an ExecOptions table with rows Dir, Timeout, MaxBytes, KeepHead, SpillDir, LogPath, Stdin, Env, DrainIdle and DrainCeiling, each giving its zero-value behaviour (Env nil means ReducedEnv(nil); LogPath relative to Dir, 0o700 parents, 0o600 file, replaces SpillDir, never deleted; Stdin nil means the null device)",
+        "In the same subsection list the ExecResult fields Output, Outcome, ExitCode, Truncated, TotalBytes, SpillPath, Duration and IOErr, the Outcome rules (ok, exit, signal, timeout, abort; abort when the caller's ctx is done including its own deadline; timeout only for ExecOptions.Timeout; 128+signum on unix; classified at the child's exit), the rule that an error means nothing started, and what IOErr reports",
+        "Rewrite the `BeforeToolCall`, `AfterToolCall` row of docs/configuration.md to say AfterToolCall receives the handler's ToolResult by value and that ToolResultMessage.Metadata carries the tool's metadata (persisted, in events, never sent to the model)",
+        "In docs/architecture.md mention in the data-flow finalize step that the message carries a copy of the handler's ToolMetadata, and name RunArgv as the embedder's process runner in the tools package row",
+        "Create docs/errata/04_runner_and_tool_metadata.md recording the departures from docs/prd/06 §6 and §9: RunArgv instead of Exec, Outcome instead of TimedOut/Aborted, no ExitCode -1, KeepHead instead of KeepTail, no WaitDelay option; and that §7 and §5's usage and abort items were already implemented (citing custom_prompt_keeps_tool_guidelines.md and aborted_summary_is_a_failure.md), with the summarizer retry moved to transcript_pruning",
+        "Leave docs/api.md untouched so the existing TestAPImd_Unchanged_TS_01_71 keeps passing",
+        "Confirm go.mod gained no require line and no cgo import was added; run go test ./internal/policy/... ./docs/... and then make check by hand"
+      ],
+      "touches": [
+        "docs/configuration.md",
+        "docs/architecture.md",
+        "docs/errata/04_runner_and_tool_metadata.md",
+        "docs/runner_metadata_doc_test.go",
+        "internal/policy/spec04_test.go"
+      ],
+      "depends_on": [
+        5,
+        8
+      ],
+      "done_when": [
+        "`make check` exits 0"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "integration",
+      "title": "Verify the runner and the tool-metadata paths end to end on real processes, a real provider encoder and a real session log",
+      "tests": [
+        "TS-04-59",
+        "TS-04-60",
+        "TS-04-61"
+      ],
+      "steps": [
+        "Write TS-04-59 and TS-04-60 in a new tools/runner_smoke_test.go (package tools_test) against real sh, sleep and touch processes and the real filesystem, and TS-04-61 in a new root runner_metadata_smoke_test.go with an httptest.Server standing in for the Anthropic Messages API, the real execute tool, a real session store and NewAgentFromSession; confirm all three pass",
+        "Trace 04-PATH-1 through the code: RunArgv → effectiveEnv → lookPathFor(env) → runArgv → LogPath resolve/MkdirAll/OpenFile before Start → setProcessGroup → stdin copier → Accumulator in TruncateHead with the log file → ExecResult with SpillPath and nil IOErr; confirm each step calls the next and no stub remains",
+        "Trace 04-PATH-2: runCtx deadline or ctx cancel → killGroup (proc_unix.go/proc_windows.go) → classification at exit → ClassifyOutcome; confirm timeout versus abort is decided from ctx.Err() and runCtx.Err() in production code",
+        "Trace 04-PATH-3: executeTool → tools.Run → execResultToTool Metadata → invokeHandler → toolResultMessage copy → callAfter with ToolResult and Result → results[i] and ToolResultEvent → TurnEndEvent and StopContext → session recorder → encodeMessage metadata → Anthropic encoder building from Content only → decodeMessage on resume → History",
+        "For every contract criterion confirm the producer's result is consumed in production code: Stdin, LogPath, KeepHead, Env default and IOErr are reachable through the exported Run/RunArgv API and documented in docs/configuration.md; the built-in shell tools deliberately ignore IOErr (04-REQ-6.4); ToolResultMessage.Metadata is consumed by the session recorder, event JSON and resume, and AfterToolCallContext.ToolResult is populated in batch.go",
+        "Search every file in the tasks' touches (tools/exec.go, tools/accumulator.go, tools/tools.go, tools/powershell.go, core/tool.go, core/message.go, batch.go, session/codec.go and the docs) for panic(\"not implemented\"), TODO, FIXME, TBD and bare `return nil` on non-trivial paths, and remove any that remain",
+        "Confirm the cross-target build still compiles the stdin pipe and seams for windows (internal/policy TestCrossTargetBuildAndVet) and that go.mod has no require line",
+        "Run make test and make lint, and run go test ./tools/ . -race where the toolchain supports it"
+      ],
+      "touches": [
+        "tools/runner_smoke_test.go",
+        "runner_metadata_smoke_test.go"
+      ],
+      "depends_on": [
+        9
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass with the three smoke tests running against real processes, the real Anthropic encoder and a real session log"
+      ],
+      "state": "pending"
+    }
+  ]
+}

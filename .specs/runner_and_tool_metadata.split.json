@@ -1,0 +1,45 @@
+{
+  "input": {
+    "kind": "file",
+    "origin": "docs/prd/06-support-multi-phase-coding-pipelines.md",
+    "sha256": "a5546cfcc3cab47fde910724c92c41baea7a9cdcc0696b5f262b4e75dd45d7cd"
+  },
+  "created_at": "2026-10-07T12:24:48Z",
+  "updated_at": "2026-10-07T12:41:53Z",
+  "scopes": [
+    {
+      "name": "runner_and_tool_metadata",
+      "scope": "Input §6 and §9. Extend `tools.RunArgv`/`Run`'s `ExecOptions`/`ExecResult` with stdin, head-or-tail truncation, a caller-named full-output log, the reduced environment by default and an I/O error field, with the timeout/abort/exit outcome contract pinned. Carry `ToolMetadata` onto `core.ToolResultMessage` and into `AfterToolCallContext`, persisted in the session log and never sent to a provider.",
+      "spec_id": "04",
+      "dir": "04_runner_and_tool_metadata"
+    },
+    {
+      "name": "prompt_text_documents",
+      "scope": "Input §12. Move every model-facing string (base instructions, universal guidelines, tool descriptions and guidelines, the shell fallback guidelines, guard refusals, summarizer prompts, the synthetic tool-result text) into embedded Markdown documents with a catalog of hashes, templated rendering, per-agent and per-tool-set replacement by name, and per-text goldens. The store must live in a standard-library-only leaf package, because `prompt` imports `tools`, `guard` and `skills`, which cannot import it back."
+    },
+    {
+      "name": "stable_cache_prefix",
+      "scope": "Input §3. Add `AgentConfig.PrefixMessages` sent before the conversation with their own cache breakpoint: a fourth Anthropic breakpoint, leading messages on OpenAI, cached content or inline on Gemini. Build `provider.ToolPrefix` per agent rather than per provider value, and report `CacheStats.PrefixHitFirstTurn`/`PrefixTokens`, so two agents built in a row share and can see a cache prefix."
+    },
+    {
+      "name": "transcript_pruning",
+      "scope": "Input §4 (pruning and composition) and the remainder of §5. Add `compaction.Prune` (threshold-batched elision of old tool results to a one-line stub, pairing kept, pinned messages exempt, `OnPrune` reporting) and `ChainTransforms`. Have the summarizer's request retried on transient failure, reconciling this with REQ-GO-12.3's routing."
+    },
+    {
+      "name": "workspace_change_journal",
+      "scope": "Input §11. Add `Workspace.Journal()` (Mark, MarkAll, Since, Gen) to replace the separate dirty sets of the `find_symbol` table and the `codesearch` overlay. `write_file`/`edit_file` mark the paths they write, and shell tools mark what a bounded (size, mtime) scan finds changed instead of marking everything. Modifies specs 02 and 03."
+    },
+    {
+      "name": "read_deduplication",
+      "scope": "Input §4's `tools.Options.DedupeReads`. Repeated `read_file` and navigation-tool calls whose answer is unchanged return a one-line back-reference instead of the full result, unless the earlier result was pruned. Built on the change journal for invalidation and on the pruner for knowing what was elided."
+    },
+    {
+      "name": "symbol_navigation_parity",
+      "scope": "The remainder of input §10 (type-like scope containers and ctags `end` are already done). Stop gating ctags on the extension table, fall through to the heuristic when ctags emits no tag, add the heuristic indented-member pass and the mainstream declaration forms with fixtures, export `tools.OutlineRunner`, and add `outline.Classify` for test, generated and vendored files. Modifies specs 01 and 02."
+    },
+    {
+      "name": "required_tool_choice",
+      "scope": "Input §8. Add `ToolChoiceRequired` and a named-tool choice to `core.ToolChoice`, encoded on every wire that supports them, and report support per model (no `Model.Capabilities` exists today). Give a stop policy a way to ask for one more turn with a forced tool, which needs a change to today's `func(StopContext) bool` signature."
+    }
+  ]
+}
