@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,11 @@ const APIVersion = "2023-06-01"
 // on later turns; nothing else in the SDK needs to model them.
 const BetaCompaction = "compact-2026-01-12"
 
+// BetaOAuth is the beta the Messages API requires alongside an OAuth bearer
+// (an ANTHROPIC_OAUTH_TOKEN, sk-ant-oat...). It is sent automatically with
+// such a token, after any Options.Betas.
+const BetaOAuth = "oauth-2025-04-20"
+
 // VendorAuth is REQ-AUTH-03's ORDERED table for the Anthropic vendor.
 //
 // The order is load-bearing and so is the per-row scheme. ANTHROPIC_AUTH_TOKEN
@@ -35,6 +41,11 @@ const BetaCompaction = "compact-2026-01-12"
 // sending either under the other's header is a 401 whose body says nothing
 // about which variable was picked. This is precisely why REQ-AUTH-03 rejects a
 // single `<VENDOR>_API_KEY` convention.
+//
+// The API key comes FIRST, as it does in the official SDKs: a machine that
+// carries both must authenticate the way every first-party client on it does
+// (docs/errata/auth_anthropic_precedence.md records the divergence from the
+// PRD's order).
 //
 // The names are constants because the deployment switch reads the same three
 // (directCredential): a credential only the direct deployment can use is what
@@ -48,9 +59,9 @@ const (
 
 var VendorAuth = provider.VendorAuth{
 	Vars: []provider.EnvVar{
+		{Name: APIKeyVar, Scheme: provider.SchemeAPIKey},
 		{Name: AuthTokenVar, Scheme: provider.SchemeBearer},
 		{Name: OAuthTokenVar, Scheme: provider.SchemeBearer},
-		{Name: APIKeyVar, Scheme: provider.SchemeAPIKey},
 		// A base URL is configuration, not a credential (REQ-AUTH-03's
 		// "discovery and retrieval are distinct operations"). Sending a proxy
 		// URL as a bearer token is nonsense; its presence still means the
@@ -65,6 +76,21 @@ var VendorAuth = provider.VendorAuth{
 	// message saying the vendor is unconfigured. It is configured — for a
 	// deployment the table did not know existed.
 	Ambient: VertexSelected,
+}
+
+// vertexVendorAuth is the table the Vertex deployment resolves the
+// environment through. ANTHROPIC_AUTH_TOKEN is the one variable that can
+// carry a Google access token (`gcloud auth print-access-token`); the API key
+// and the OAuth token are Anthropic-issued, so on this deployment they are not
+// credentials at all, and reading them would let a leftover one outrank — and
+// then be dropped in place of — the token that works.
+var vertexVendorAuth = provider.VendorAuth{
+	Vars: []provider.EnvVar{
+		{Name: AuthTokenVar, Scheme: provider.SchemeBearer},
+		{Name: VertexBaseURLVar, DiscoveryOnly: true},
+	},
+	BaseURLVar: BaseURLVar,
+	Ambient:    VertexSelected,
 }
 
 // Options configures the provider. The zero value is usable.
@@ -176,7 +202,6 @@ func (c *client) Stream(ctx context.Context, m *core.Model, req core.Request, o 
 	if rep.Changed() && o.Warnf != nil {
 		o.Warnf("anthropic: %s", rep.String())
 	}
-	applyThinking(body, m, req.ThinkingLevel)
 	if vx.On() {
 		// The body half of NFR-COMPAT-05's second deployment. The model id is
 		// a URL segment here and the body field is rejected; the version moves
@@ -241,7 +266,11 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 	}
 
 	env := provider.Env{Override: req.Options.Env, Getenv: c.opts.Getenv}
-	auth, err := provider.ResolveAuthWith(ctx, m.Provider, c.opts.Credentials, VendorAuth, env)
+	table := VendorAuth
+	if vx.On() {
+		table = vertexVendorAuth
+	}
+	auth, err := provider.ResolveAuthWith(ctx, m.Provider, c.opts.Credentials, table, env)
 	if err != nil {
 		d.fail(provider.TransportErrorText("anthropic", caller, ctx, err), err)
 		return
@@ -272,8 +301,12 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 		// request that names it in both places.
 		headers["anthropic-version"] = APIVersion
 	}
-	if len(c.opts.Betas) > 0 {
-		headers["anthropic-beta"] = strings.Join(c.opts.Betas, ",")
+	betas := c.opts.Betas
+	if !vx.On() && isOAuthBearer(auth) {
+		betas = append(slices.Clip(betas), BetaOAuth)
+	}
+	if len(betas) > 0 {
+		headers["anthropic-beta"] = strings.Join(betas, ",")
 	}
 
 	call := provider.Call{
@@ -358,12 +391,22 @@ func vertexAuthNote(status int, vx Vertex, env provider.Env) string {
 	}
 	note := " [Claude on Vertex AI: project " + vx.Project + ", location " + vx.Location +
 		", selected by " + vx.SelectedBy + ". This deployment authenticates with " +
-		"Google Application Default Credentials, not " + APIKeyVar
-	if directCredential(env) {
-		// Saying so is the whole point: the key IS set, it was deliberately
-		// withheld from a Google endpoint, and without this line the operator
-		// reads the 401 as the key being rejected.
-		note += " — which is set, and is never sent to a Google endpoint"
+		"Google Application Default Credentials, not " + APIKeyVar + " or " + OAuthTokenVar
+	var withheld []string
+	for _, v := range []string{APIKeyVar, OAuthTokenVar} {
+		if env.Has(v) {
+			withheld = append(withheld, v)
+		}
+	}
+	if len(withheld) > 0 {
+		// Saying so is the whole point: the credential IS set, it was
+		// deliberately withheld from a Google endpoint, and without this line
+		// the operator reads the 401 as that credential being rejected.
+		verb := " is set, and is"
+		if len(withheld) > 1 {
+			verb = " are set, and are"
+		}
+		note += " — " + strings.Join(withheld, " and ") + verb + " never sent to a Google endpoint"
 	}
 	return note + ". To use the Anthropic API directly instead, unset " +
 		VertexProjectVar + " or set " + VertexEnableVar + "=0.]"

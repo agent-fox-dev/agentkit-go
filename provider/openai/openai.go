@@ -506,10 +506,22 @@ func buildRequest(m *core.Model, req core.Request, retention core.CacheRetention
 	// REQ-PROV-15: clamp upward, then downward, and send the RETURNED wire
 	// value. `reasoning_effort: "xhigh"` to a model that does not know it is
 	// a 400, and a model with no map at all gets no key.
-	if compat.SupportsReasoningEffort && req.ThinkingLevel != core.ThinkingUnset &&
-		req.ThinkingLevel != core.ThinkingOff {
-		if _, wire, ok := catalog.ClampThinkingLevel(m, req.ThinkingLevel); ok {
-			out.ReasoningEffort = wire
+	//
+	// Off is the exception to the clamp: it is sent only where the row maps
+	// it ("none" on gpt-5.6), never clamped upward to the lowest level, and
+	// omitted where the row's off is null — on such a model the default
+	// effort is the least it will do.
+	if compat.SupportsReasoningEffort {
+		switch req.ThinkingLevel {
+		case core.ThinkingUnset:
+		case core.ThinkingOff:
+			if wire, ok := catalog.ThinkingWire(m, core.ThinkingOff); ok {
+				out.ReasoningEffort = wire
+			}
+		default:
+			if _, wire, ok := catalog.ClampThinkingLevel(m, req.ThinkingLevel); ok {
+				out.ReasoningEffort = wire
+			}
 		}
 	}
 	applyThinkingBudget(out, m, req.ThinkingLevel, compat)
@@ -851,7 +863,7 @@ func encodeMessages(ms core.Messages, system []core.ContentBlock, compat Compat,
 
 		case core.ToolResultMessage:
 			// ONE MESSAGE PER RESULT. This is the asymmetry.
-			tm := message{Role: "tool", ToolCallID: v.ToolUseID, Content: v.Content.Text()}
+			tm := message{Role: "tool", ToolCallID: v.ToolUseID, Content: provider.ToolResultText(v)}
 			if compat.RequiresToolResultName {
 				tm.Name = v.ToolName
 			}

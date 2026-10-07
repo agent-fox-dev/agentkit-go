@@ -368,3 +368,47 @@ func TestResolveAuthWithRefreshesThroughTheRegisteredRefresher(t *testing.T) {
 		t.Fatalf("no refresher: %q, %v; want the stored token unchanged", a.APIKey, err)
 	}
 }
+
+// TestAStoredCredentialWithNoSchemeTakesTheVendors: the zero Scheme means
+// "as this vendor sends it", which the vendor's table already knows. An
+// OpenAI key stored as Credential{APIKey: ...} rides as a bearer; under
+// x-api-key it is a 401.
+func TestAStoredCredentialWithNoSchemeTakesTheVendors(t *testing.T) {
+	ctx := context.Background()
+	openaiTable := provider.VendorAuth{Vars: []provider.EnvVar{{Name: "OPENAI_API_KEY", Scheme: provider.SchemeBearer}}}
+	resolve := func(table provider.VendorAuth, c provider.Credential) provider.ModelAuth {
+		t.Helper()
+		store := &provider.MemoryStore{}
+		_ = store.Save(ctx, "v", c)
+		auth, err := provider.ResolveAuthWith(ctx, "v", provider.NewCredentials(store), table, envOf(nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return auth
+	}
+	header := func(a provider.ModelAuth, h string) string {
+		if v := a.Headers[h]; v != nil {
+			return *v
+		}
+		return ""
+	}
+
+	a := resolve(openaiTable, provider.Credential{APIKey: "sk-openai"})
+	if header(a, "Authorization") != "Bearer sk-openai" || header(a, "x-api-key") != "" {
+		t.Fatalf("headers = %v, want the OpenAI key as a bearer", a.Headers)
+	}
+	a = resolve(anthropicTable, provider.Credential{APIKey: "sk-ant-key"})
+	if header(a, "x-api-key") != "sk-ant-key" || header(a, "Authorization") != "" {
+		t.Fatalf("headers = %v, want the Anthropic key as x-api-key", a.Headers)
+	}
+	// An OAuth access token is a bearer token on every vendor.
+	a = resolve(anthropicTable, provider.Credential{AccessToken: "oauth-access"})
+	if header(a, "Authorization") != "Bearer oauth-access" {
+		t.Fatalf("headers = %v, want an access token as a bearer", a.Headers)
+	}
+	// An explicit scheme is kept.
+	a = resolve(openaiTable, provider.Credential{APIKey: "gw-key", Scheme: provider.SchemeAPIKey})
+	if header(a, "x-api-key") != "gw-key" {
+		t.Fatalf("headers = %v, want the explicit x-api-key kept", a.Headers)
+	}
+}

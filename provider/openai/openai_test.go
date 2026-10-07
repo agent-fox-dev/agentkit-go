@@ -342,3 +342,54 @@ func mustJSON(t *testing.T, v any) []byte {
 	}
 	return b
 }
+
+// TestAnErrorResultIsMarkedInItsContent: the tool message has no is_error
+// field, so a failed tool is marked in the text the model reads, as on Ollama.
+func TestAnErrorResultIsMarkedInItsContent(t *testing.T) {
+	call, err := core.NewToolUse("call_1", "execute", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentOf := func(r core.ToolResultMessage) any {
+		r.ToolUseID, r.ToolName = "call_1", "execute"
+		req := core.Request{Messages: core.Messages{
+			core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}},
+			core.AssistantMessage{Content: core.Content{call}, StopReason: core.StopReasonToolUse},
+			r,
+		}}
+		msgs, _ := body(t, model("openai", "gpt-4o", "https://api.openai.com/v1"), req)["messages"].([]any)
+		for _, m := range msgs {
+			if mm, _ := m.(map[string]any); mm["role"] == "tool" {
+				return mm["content"]
+			}
+		}
+		t.Fatal("no tool message was emitted")
+		return nil
+	}
+	if got := contentOf(core.ToolResultMessage{IsError: true,
+		Content: core.Content{core.TextBlock{Text: "No result provided"}}}); got != "Error: No result provided" {
+		t.Fatalf("content = %v, want the error marked", got)
+	}
+	if got := contentOf(core.ToolResultMessage{Content: core.Content{core.TextBlock{Text: "done"}}}); got != "done" {
+		t.Fatalf("content = %v, want a successful result unmarked", got)
+	}
+}
+
+// TestThinkingOffSendsTheRowsOffValue: off is sent where the row maps it
+// (gpt-5.6 accepts reasoning_effort "none") and omitted where it is null.
+func TestThinkingOffSendsTheRowsOffValue(t *testing.T) {
+	none, low := "none", "low"
+	m := model("openai", "gpt-5.6-terra", "https://api.openai.com/v1")
+	m.Reasoning = true
+	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingOff: &none, core.ThinkingLow: &low}
+	req := userReq()
+	req.ThinkingLevel = core.ThinkingOff
+	if got := body(t, m, req)["reasoning_effort"]; got != "none" {
+		t.Fatalf("reasoning_effort = %v for off on a row that maps it to none, want none", got)
+	}
+	m.ThinkingLevelMap[core.ThinkingOff] = nil
+	if got, ok := body(t, m, req)["reasoning_effort"]; ok {
+		t.Fatalf("reasoning_effort = %v for off on a row whose off is null, want it omitted "+
+			"(never clamped up to low)", got)
+	}
+}

@@ -3,11 +3,13 @@ package google_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/agentfox/agentkit-go/catalog"
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/provider/google"
 	"github.com/agentfox/agentkit-go/schema"
@@ -99,8 +101,9 @@ type wire struct {
 	GenerationConfig *struct {
 		Temperature    *float64 `json:"temperature"`
 		ThinkingConfig *struct {
-			ThinkingBudget  *int  `json:"thinkingBudget"`
-			IncludeThoughts *bool `json:"includeThoughts"`
+			ThinkingBudget  *int    `json:"thinkingBudget"`
+			ThinkingLevel   *string `json:"thinkingLevel"`
+			IncludeThoughts *bool   `json:"includeThoughts"`
 		} `json:"thinkingConfig"`
 	} `json:"generationConfig"`
 }
@@ -890,5 +893,140 @@ func TestAThoughtSignatureOnAnImagePartIsKeptAndReplayed(t *testing.T) {
 	}
 	if len(w.Contents) != 3 || w.Contents[1].Role != google.RoleModel {
 		t.Fatalf("contents = %+v, want user, model, user", w.Contents)
+	}
+}
+
+// thinkingAt builds a one-turn request at level and returns its thinkingConfig.
+func thinkingAt(t *testing.T, m *core.Model, level core.ThinkingLevel) (string, *int, *bool, bool) {
+	t.Helper()
+	raw, w := build(t, m, core.Request{
+		Messages:      core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}},
+		ThinkingLevel: level,
+	})
+	if w.GenerationConfig == nil || w.GenerationConfig.ThinkingConfig == nil {
+		return "", nil, nil, false
+	}
+	tc := w.GenerationConfig.ThinkingConfig
+	if tc.ThinkingLevel != nil && tc.ThinkingBudget != nil {
+		t.Fatalf("thinkingLevel and thinkingBudget sent together, which Gemini rejects: %s", raw)
+	}
+	lvl := ""
+	if tc.ThinkingLevel != nil {
+		lvl = *tc.ThinkingLevel
+	}
+	return lvl, tc.ThinkingBudget, tc.IncludeThoughts, true
+}
+
+// TestALevelTokenIsSentAsThinkingLevel: Gemini 3 speaks a thinkingLevel
+// enum, and a row whose wire value is a token rather than an integer sends
+// it there, clamped like every other level (REQ-PROV-15).
+func TestALevelTokenIsSentAsThinkingLevel(t *testing.T) {
+	m := model()
+	lo, hi := "LOW", "HIGH"
+	m.Reasoning = true
+	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingLow: &lo, core.ThinkingHigh: &hi}
+
+	lvl, budget, thoughts, ok := thinkingAt(t, m, core.ThinkingHigh)
+	if !ok || lvl != "HIGH" || budget != nil {
+		t.Fatalf("thinkingConfig = {level:%q budget:%v}, want thinkingLevel HIGH alone", lvl, budget)
+	}
+	if thoughts == nil || !*thoughts {
+		t.Error("includeThoughts was not requested for a thinking turn")
+	}
+	if lvl, _, _, _ := thinkingAt(t, m, core.ThinkingMedium); lvl != "HIGH" {
+		t.Fatalf("thinkingLevel = %q for medium on a LOW/HIGH row, want HIGH (clamped up)", lvl)
+	}
+}
+
+// TestOffOnAFamilyThatCannotStopThinking: off cannot be honoured, so it is
+// the LEAST the model will do — its lowest level — and never the -1 budget,
+// which is Gemini's dynamic default rather than a minimum. With no level to
+// fall back to and no positive floor, the parameter is omitted: the same
+// default, said honestly.
+func TestOffOnAFamilyThatCannotStopThinking(t *testing.T) {
+	m := model()
+	lo, hi := "LOW", "HIGH"
+	m.Reasoning = true
+	m.Compat = json.RawMessage(`{"can_disable_thinking":false,"min_thinking_budget":-1}`)
+	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingOff: nil, core.ThinkingLow: &lo, core.ThinkingHigh: &hi}
+	if lvl, budget, _, ok := thinkingAt(t, m, core.ThinkingOff); !ok || lvl != "LOW" || budget != nil {
+		t.Fatalf("off on a LOW/HIGH row that cannot stop thinking = {level:%q budget:%v}, want LOW", lvl, budget)
+	}
+
+	m.ThinkingLevelMap = nil
+	if lvl, budget, _, ok := thinkingAt(t, m, core.ThinkingOff); ok {
+		t.Fatalf("off with no ladder and a -1 floor = {level:%q budget:%v}, want thinkingConfig omitted",
+			lvl, budgetText(budget))
+	}
+}
+
+func budgetText(b *int) any {
+	if b == nil {
+		return nil
+	}
+	return *b
+}
+
+// TestEveryGoogleRowExpressesItsLevels: the shipped rows speak thinkingLevel,
+// so a level is no longer silently inert on them.
+func TestEveryGoogleRowExpressesItsLevels(t *testing.T) {
+	for _, c := range []struct {
+		id    string
+		level core.ThinkingLevel
+		want  string
+	}{
+		{"gemini-3.1-pro-preview", core.ThinkingLow, "LOW"},
+		{"gemini-3.1-pro-preview", core.ThinkingHigh, "HIGH"},
+		{"gemini-3.1-pro-preview", core.ThinkingOff, "LOW"},
+		{"gemini-3.8-flash", core.ThinkingLow, "LOW"},
+		{"gemini-3.8-flash", core.ThinkingMinimal, "LOW"},
+		{"gemini-3.8-flash", core.ThinkingMax, "HIGH"},
+		{"gemini-3-flash-preview", core.ThinkingMinimal, "MINIMAL"},
+	} {
+		m, err := catalog.ResolveModel("google/" + c.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if lvl, budget, _, _ := thinkingAt(t, m, c.level); lvl != c.want || budget != nil {
+			t.Errorf("%s at %s: thinkingConfig = {level:%q budget:%v}, want thinkingLevel %s",
+				c.id, c.level, lvl, budgetText(budget), c.want)
+		}
+	}
+	// A row that can stop thinking still does so with a zero budget.
+	m, err := catalog.ResolveModel("google/gemini-3.8-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, budget, _, _ := thinkingAt(t, m, core.ThinkingOff); budget == nil || *budget != 0 {
+		t.Fatalf("off on gemini-3.8-flash: thinkingBudget = %v, want 0", budgetText(budget))
+	}
+}
+
+// TestADroppedLevelIsReported: a level the row cannot express is omitted
+// rather than guessed, and the caller is told — otherwise the turn runs at
+// the vendor's default and nothing says the setting was ignored.
+func TestADroppedLevelIsReported(t *testing.T) {
+	m := model()
+	m.Reasoning = true
+	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingLow: nil, core.ThinkingHigh: nil}
+	var warned []string
+	req := core.Request{
+		Messages:      core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}},
+		ThinkingLevel: core.ThinkingHigh,
+		Options: core.RequestOptions{
+			Env: map[string]string{"GEMINI_API_KEY": "k"},
+			Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Header: http.Header{},
+					Body: io.NopCloser(strings.NewReader(data(
+						`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)))}, nil
+			}),
+		},
+	}
+	google.Provider(google.Options{Getenv: func(string) string { return "" }}).
+		Stream(context.Background(), m, req, core.ProviderStreamOptions{
+			Warnf: func(f string, a ...any) { warned = append(warned, fmt.Sprintf(f, a...)) },
+		}).Result()
+	if len(warned) == 0 || !strings.Contains(strings.Join(warned, "\n"), "high") {
+		t.Fatalf("warnings = %q, want one naming the dropped level", warned)
 	}
 }

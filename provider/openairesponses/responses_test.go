@@ -861,3 +861,87 @@ func TestStrictRidesOnlyOnTheRewrittenSchema(t *testing.T) {
 			msg.StopReason, msg.ErrorMessage)
 	}
 }
+
+// toolResultItem sends one tool call and its result, and returns the
+// function_call_output item the wire carried.
+func toolResultItem(t *testing.T, result core.ToolResultMessage) map[string]any {
+	t.Helper()
+	call, err := core.NewToolUse("call_1|fc_1", "execute", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.ToolUseID, result.ToolName = "call_1|fc_1", "execute"
+	body := send(t, openairesponses.Options{}, core.Request{
+		Messages: core.Messages{
+			core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}},
+			core.AssistantMessage{Content: core.Content{call}, StopReason: core.StopReasonToolUse},
+			result,
+		},
+	}, completedStream)
+	for _, it := range items(t, body) {
+		if it["type"] == "function_call_output" {
+			return it
+		}
+	}
+	t.Fatal("no function_call_output item was emitted")
+	return nil
+}
+
+// TestAnEmptyToolResultStillCarriesItsOutput pins the 400 an empty result
+// used to be: `output` is required on a function_call_output, and a tool that
+// succeeds silently — `rm`, `mkdir`, an edit — returns "".
+func TestAnEmptyToolResultStillCarriesItsOutput(t *testing.T) {
+	it := toolResultItem(t, core.ToolResultMessage{})
+	out, ok := it["output"]
+	if !ok {
+		t.Fatalf("function_call_output has no output key: %v\n"+
+			"the API answers 400 Missing required parameter 'input[N].output'", it)
+	}
+	if out != "" {
+		t.Fatalf("output = %v, want the empty string", out)
+	}
+}
+
+// TestAnErrorResultIsMarkedInItsOutput: this wire has no is_error flag, so a
+// failed tool is marked in the text the model reads, as on Ollama.
+func TestAnErrorResultIsMarkedInItsOutput(t *testing.T) {
+	it := toolResultItem(t, core.ToolResultMessage{IsError: true,
+		Content: core.Content{core.TextBlock{Text: "No result provided"}}})
+	if it["output"] != "Error: No result provided" {
+		t.Fatalf("output = %v, want the error marked; the model cannot tell a failed tool "+
+			"from one that printed that text", it["output"])
+	}
+	ok := toolResultItem(t, core.ToolResultMessage{Content: core.Content{core.TextBlock{Text: "done"}}})
+	if ok["output"] != "done" {
+		t.Fatalf("output = %v, want a successful result unmarked", ok["output"])
+	}
+}
+
+// TestThinkingOffSendsTheRowsOffValue: a row that maps off to "none" can be
+// told not to reason, and omitting reasoning leaves the model at its default
+// effort, billed for thinking the caller switched off.
+func TestThinkingOffSendsTheRowsOffValue(t *testing.T) {
+	none := "none"
+	m := reasoningModel()
+	m.ThinkingLevelMap[core.ThinkingOff] = &none
+	body := sendTo(t, m, openairesponses.Options{}, core.Request{ThinkingLevel: core.ThinkingOff,
+		Messages: core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}}},
+		completedStream)
+	r, _ := body["reasoning"].(map[string]any)
+	if r == nil || r["effort"] != "none" {
+		t.Fatalf("reasoning = %v, want effort none for off on a row that maps it", body["reasoning"])
+	}
+	if _, ok := r["summary"]; ok {
+		t.Fatalf("reasoning = %v; no reasoning, so nothing to summarize", r)
+	}
+
+	// A row whose off is null cannot be told not to reason: omit, never clamp
+	// a request for no thinking upward to the lowest level.
+	m.ThinkingLevelMap[core.ThinkingOff] = nil
+	body = sendTo(t, m, openairesponses.Options{}, core.Request{ThinkingLevel: core.ThinkingOff,
+		Messages: core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}}},
+		completedStream)
+	if r, ok := body["reasoning"]; ok {
+		t.Fatalf("reasoning = %v for off on a row whose off is null, want it omitted", r)
+	}
+}

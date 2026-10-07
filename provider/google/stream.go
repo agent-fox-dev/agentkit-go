@@ -199,6 +199,14 @@ func (c *client) Stream(ctx context.Context, m *core.Model, req core.Request, o 
 	if rep.Changed() && o.Warnf != nil {
 		o.Warnf("google: %s", rep.String())
 	}
+	if req.ThinkingLevel != core.ThinkingUnset && o.Warnf != nil &&
+		(body.GenerationConfig == nil || body.GenerationConfig.ThinkingConfig == nil) {
+		// The row cannot express the level, so the parameter is omitted and
+		// the turn runs at the model's default. Saying so is the difference
+		// between a setting that was ignored and one that silently was.
+		o.Warnf("google: thinking level %q is not expressible on %s; the model's default applies",
+			req.ThinkingLevel, m.ID)
+	}
 
 	// §6.2a Level 1 / NFR-PERF-08. The lookup is a map read and a mutex: if
 	// the resource for this prefix exists and has not expired it is
@@ -344,12 +352,16 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 		d.fail(provider.TransportErrorText("google", caller, ctx, err), err)
 		return
 	}
-	if attached != nil && fallback != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
+	if attached != nil && fallback != nil &&
+		(resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound) {
 		// The request referenced a CachedContent resource and the service
 		// refused it: the resource expired or was deleted under us, or the
 		// service rejected the pairing. The entry is cleared — the next turn
 		// starts a fresh creation — and THIS turn is retried once without
 		// the reference rather than failed for a cache it never needed.
+		// Only 400 and 404 say that: a 401, 403 or 429 is about the key, the
+		// quota or the rate, and would fail the retry the same way while
+		// throwing away a resource that is fine.
 		_ = resp.Body.Close()
 		c.entry(attached.key).clear(attached.name)
 		if call.Body, err = fallback(); err != nil {

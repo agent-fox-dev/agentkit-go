@@ -159,6 +159,9 @@ type thinkingConfig struct {
 	// ThinkingBudget is a POINTER so an explicit 0 — "do not think" — is
 	// emitted rather than omitted (REQ-PROV-16.1).
 	ThinkingBudget *int `json:"thinkingBudget,omitzero"`
+	// ThinkingLevel is the Gemini 3 enum (MINIMAL, LOW, MEDIUM, HIGH). It
+	// and ThinkingBudget are never sent together: the API rejects the pair.
+	ThinkingLevel string `json:"thinkingLevel,omitzero"`
 }
 
 // ------------------------------------------------------------------- compat
@@ -236,15 +239,22 @@ func DefaultThinkingBudgets() map[core.ThinkingLevel]int {
 // Three outcomes, and the difference between them is the whole requirement:
 //
 //	unset  -> no thinkingConfig at all (absent is not the same as zero)
-//	off    -> budget 0, or the family's FLOOR when it cannot disable thinking
-//	level  -> the model's own budget for that level, CLAMPED to a level the
-//	          row prices (upward first, then downward); nothing at all when
-//	          the row prices no reachable level
+//	off    -> budget 0; on a family that cannot disable thinking, the least
+//	          it will do: its lowest level, else a positive floor, else
+//	          nothing (the -1 floor is the DYNAMIC default, not a minimum)
+//	level  -> the model's own wire value for that level, CLAMPED to a level
+//	          the row prices (upward first, then downward); nothing at all
+//	          when the row prices no reachable level
+//
+// A wire value is a budget when it is an integer and a thinkingLevel token
+// otherwise — the Gemini 3 rows speak the enum, and the API rejects the two
+// fields together.
 //
 // `off` bypasses the clamp: disabling is a per-family capability handled by
 // the compat profile below, not a catalog level, and clamping a request for
 // no thinking upward to the model's lowest level would spend the caller's
-// money against their stated wish.
+// money against their stated wish — except on a family that will think
+// anyway, where the lowest level IS the least it will spend.
 func resolveThinking(m *core.Model, level core.ThinkingLevel, c Compat) *thinkingConfig {
 	if level == core.ThinkingUnset {
 		return nil
@@ -255,19 +265,49 @@ func resolveThinking(m *core.Model, level core.ThinkingLevel, c Compat) *thinkin
 	}
 
 	if level == core.ThinkingOff {
-		budget := 0
-		if !c.canDisableThinking() {
-			// The floor, not zero. Sending 0 to a family that cannot disable
-			// thinking is rejected outright, so "off" degrades to "as little
-			// as this model will do" rather than to a failed request.
-			budget = floor
+		if c.canDisableThinking() {
+			budget := 0
+			return &thinkingConfig{ThinkingBudget: &budget}
 		}
-		return &thinkingConfig{ThinkingBudget: &budget}
+		// Sending 0 to a family that cannot disable thinking is rejected
+		// outright, so "off" degrades to "as little as this model will do"
+		// rather than to a failed request.
+		if m != nil && len(m.ThinkingLevelMap) > 0 {
+			if _, wire, ok := catalog.ClampThinkingLevel(m, core.ThinkingMinimal); ok {
+				if tc := thinkingFor(wire, floor, c); tc != nil {
+					return tc
+				}
+			}
+		}
+		if floor > 0 {
+			return &thinkingConfig{ThinkingBudget: &floor}
+		}
+		return nil
 	}
 
-	budget, ok := budgetFor(m, level)
+	_, wire, ok := clampedWire(m, level)
 	if !ok {
 		return nil
+	}
+	tc := thinkingFor(wire, floor, c)
+	if tc != nil && c.includeThoughts() {
+		t := true
+		tc.IncludeThoughts = &t
+	}
+	return tc
+}
+
+// thinkingFor turns one wire value into a thinkingConfig: an integer is a
+// budget, held to the family's floor and ceiling (a "-1" is Gemini's dynamic
+// budget and passes through), and anything else is a thinkingLevel token.
+func thinkingFor(wire string, floor int, c Compat) *thinkingConfig {
+	wire = strings.TrimSpace(wire)
+	budget, err := strconv.Atoi(wire)
+	if err != nil {
+		if wire == "" {
+			return nil
+		}
+		return &thinkingConfig{ThinkingLevel: strings.ToUpper(wire)}
 	}
 	if budget >= 0 && budget < floor {
 		budget = floor
@@ -275,42 +315,28 @@ func resolveThinking(m *core.Model, level core.ThinkingLevel, c Compat) *thinkin
 	if c.MaxThinkingBudget != nil && budget > *c.MaxThinkingBudget {
 		budget = *c.MaxThinkingBudget
 	}
-	tc := &thinkingConfig{ThinkingBudget: &budget}
-	if c.includeThoughts() {
-		t := true
-		tc.IncludeThoughts = &t
-	}
-	return tc
+	return &thinkingConfig{ThinkingBudget: &budget}
 }
 
-// budgetFor prices a level against the model's own ThinkingLevelMap, CLAMPING
-// the request to a level the map prices (REQ-PROV-15: upward first, then
-// downward) and using the RETURNED wire value. A wire value of "-1" is
-// Gemini's "dynamic" budget and is passed through as such.
+// clampedWire returns the model's wire value for a level, CLAMPING the
+// request to a level the map prices (REQ-PROV-15: upward first, then
+// downward) and using the RETURNED wire value.
 //
-// The default table is consulted only for a model with NO map at all — a
-// hand-built descriptor with nothing to clamp against. A row that prices
+// The default budget table is consulted only for a model with NO map at all —
+// a hand-built descriptor with nothing to clamp against. A row that prices
 // some levels but not the requested one is clamped, never defaulted: the
 // default for `max` is 32768, which on a family whose row tops out at 8192 is
 // a 400, and on one that accepts it is money the row said not to spend.
 // ok == false means the row prices no reachable level and the thinking
 // config is omitted rather than guessed.
-func budgetFor(m *core.Model, level core.ThinkingLevel) (int, bool) {
+func clampedWire(m *core.Model, level core.ThinkingLevel) (core.ThinkingLevel, string, bool) {
 	if m != nil && len(m.ThinkingLevelMap) > 0 {
-		_, wire, ok := catalog.ClampThinkingLevel(m, level)
-		if !ok {
-			return 0, false
-		}
-		n, err := strconv.Atoi(strings.TrimSpace(wire))
-		if err != nil {
-			return 0, false
-		}
-		return n, true
+		return catalog.ClampThinkingLevel(m, level)
 	}
 	if n, ok := DefaultThinkingBudgets()[level]; ok {
-		return n, true
+		return level, strconv.Itoa(n), true
 	}
-	return 0, false
+	return core.ThinkingUnset, "", false
 }
 
 // ------------------------------------------------------------ id normalization

@@ -50,8 +50,15 @@ func TestATruncatedMemberIsDroppedNotClosed(t *testing.T) {
 		{"dangling colon", `{"a":1,"path":`, `{"a":1}`},
 		{"trailing comma", `{"a":1,`, `{"a":1}`},
 		{"open object", `{"a":1`, `{}`},
-		{"nested open", `{"a":{"b":"x","c":"y`, `{"a":{"b":"x"}}`},
-		{"array element", `{"a":[1,2`, `{"a":[1]}`},
+		// A member whose value is an open container is itself incomplete,
+		// and is dropped whole: closing it would pass a partial value — an
+		// edits list missing its last edit, an object missing a member —
+		// through schema validation unless the inner object says `required`.
+		{"nested open", `{"a":{"b":"x","c":"y`, `{}`},
+		{"array element", `{"a":[1,2`, `{}`},
+		{"nested after complete members", `{"a":"x","b":{"c":1`, `{"a":"x"}`},
+		{"partial edits list", `{"path":"/x","edits":[{"old":"a","new":"b"},{"old":"c","new":"d`, `{"path":"/x"}`},
+		{"complete nested member survives", `{"a":{"b":1},"c":"y`, `{"a":{"b":1}}`},
 		{"empty input", ``, `{}`},
 		{"bare open brace", `{`, `{}`},
 	}

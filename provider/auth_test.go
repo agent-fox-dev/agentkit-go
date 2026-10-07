@@ -14,9 +14,9 @@ func envOf(pairs map[string]string) provider.Env {
 
 var anthropicTable = provider.VendorAuth{
 	Vars: []provider.EnvVar{
+		{Name: "ANTHROPIC_API_KEY", Scheme: provider.SchemeAPIKey},
 		{Name: "ANTHROPIC_AUTH_TOKEN", Scheme: provider.SchemeBearer},
 		{Name: "ANTHROPIC_OAUTH_TOKEN", Scheme: provider.SchemeBearer},
-		{Name: "ANTHROPIC_API_KEY", Scheme: provider.SchemeAPIKey},
 	},
 	BaseURLVar: "ANTHROPIC_BASE_URL",
 }
@@ -36,12 +36,15 @@ func TestAuthTokenIsSentAsBearerNotAsAPIKey(t *testing.T) {
 		wantValue  string
 		wantSource string
 	}{
-		{"auth token wins and rides as Bearer",
-			map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok", "ANTHROPIC_API_KEY": "key"},
+		{"auth token rides as Bearer",
+			map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok"},
 			"Authorization", "Bearer tok", "ANTHROPIC_AUTH_TOKEN"},
-		{"oauth token outranks the api key",
-			map[string]string{"ANTHROPIC_OAUTH_TOKEN": "oa", "ANTHROPIC_API_KEY": "key"},
-			"Authorization", "Bearer oa", "ANTHROPIC_OAUTH_TOKEN"},
+		{"auth token outranks the oauth token",
+			map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok", "ANTHROPIC_OAUTH_TOKEN": "oa"},
+			"Authorization", "Bearer tok", "ANTHROPIC_AUTH_TOKEN"},
+		{"api key wins and rides as x-api-key",
+			map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok", "ANTHROPIC_API_KEY": "key"},
+			"x-api-key", "key", "ANTHROPIC_API_KEY"},
 		{"api key rides as x-api-key",
 			map[string]string{"ANTHROPIC_API_KEY": "key"},
 			"x-api-key", "key", "ANTHROPIC_API_KEY"},

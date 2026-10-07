@@ -1287,3 +1287,69 @@ func TestARefusalCarriesItsStopDetails(t *testing.T) {
 		t.Fatalf("StopReason=%q StopDetail=%q", msg.StopReason, msg.StopDetail)
 	}
 }
+
+// TestTheAPIKeyOutranksTheBearerVariables pins the official SDK's order:
+// ANTHROPIC_API_KEY first, so a machine that carries both authenticates the
+// way every first-party client on it does.
+func TestTheAPIKeyOutranksTheBearerVariables(t *testing.T) {
+	r := sent(t, anthropic.Options{}, map[string]string{
+		"ANTHROPIC_API_KEY": "key", "ANTHROPIC_AUTH_TOKEN": "tok", "ANTHROPIC_OAUTH_TOKEN": "oa"})
+	if got := r.Header.Get("x-api-key"); got != "key" {
+		t.Fatalf("x-api-key = %q, want the API key to win", got)
+	}
+	if got := r.Header.Get("Authorization"); got != "" {
+		t.Fatalf("Authorization = %q, want none alongside the API key", got)
+	}
+	r = sent(t, anthropic.Options{}, map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok", "ANTHROPIC_OAUTH_TOKEN": "oa"})
+	if got := r.Header.Get("Authorization"); got != "Bearer tok" {
+		t.Fatalf("Authorization = %q, want ANTHROPIC_AUTH_TOKEN before ANTHROPIC_OAUTH_TOKEN", got)
+	}
+}
+
+// TestAnOAuthTokenCarriesTheOAuthBeta: the Messages API accepts an OAuth
+// bearer only with the oauth beta, and the configured betas ride alongside.
+func TestAnOAuthTokenCarriesTheOAuthBeta(t *testing.T) {
+	r := sent(t, anthropic.Options{}, map[string]string{"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x"})
+	if got := r.Header.Get("anthropic-beta"); got != anthropic.BetaOAuth {
+		t.Fatalf("anthropic-beta = %q, want %q", got, anthropic.BetaOAuth)
+	}
+	r = sent(t, anthropic.Options{Betas: []string{anthropic.BetaCompaction}},
+		map[string]string{"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x"})
+	if got := r.Header.Get("anthropic-beta"); got != anthropic.BetaCompaction+","+anthropic.BetaOAuth {
+		t.Fatalf("anthropic-beta = %q, want both betas", got)
+	}
+	r = sent(t, anthropic.Options{}, map[string]string{"ANTHROPIC_API_KEY": "key"})
+	if got := r.Header.Get("anthropic-beta"); got != "" {
+		t.Fatalf("anthropic-beta = %q for an API key, want none", got)
+	}
+}
+
+// TestBuildRequestCarriesTheThinkingConfig: BuildRequest is the capture point
+// for the goldens and the differential harness, so it must produce the body
+// Stream sends — thinking included. Without it the goldens cannot regress the
+// effort logic at all.
+func TestBuildRequestCarriesTheThinkingConfig(t *testing.T) {
+	m, err := catalog.ResolveModel("anthropic/claude-opus-4-8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := anthropic.BuildRequest(m, core.Request{
+		Messages:      core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}},
+		ThinkingLevel: core.ThinkingHigh,
+	}, core.CacheRetentionNone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(out)
+	var body struct {
+		Thinking     *struct{ Type string }   `json:"thinking"`
+		OutputConfig *struct{ Effort string } `json:"output_config"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Thinking == nil || body.Thinking.Type != "adaptive" ||
+		body.OutputConfig == nil || body.OutputConfig.Effort != "high" {
+		t.Fatalf("BuildRequest at high = %s, want thinking adaptive and output_config.effort high", raw)
+	}
+}
