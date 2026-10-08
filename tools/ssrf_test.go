@@ -452,6 +452,22 @@ func TestHTMLToTextDropsScriptAndStyleContent(t *testing.T) {
 	}
 }
 
+// TestHTMLToTextDecodesEntitiesOnceAndParsesAttributes pins the three bugs
+// the old tag stripper had: double entity decoding, undecoded numeric
+// entities, and a `>` inside an attribute value ending the tag.
+func TestHTMLToTextDecodesEntitiesOnceAndParsesAttributes(t *testing.T) {
+	for in, want := range map[string]string{
+		`<p>&amp;lt;b&amp;gt;</p>`:                 `&lt;b&gt;`,
+		`<p>caf&#233; &#x2014; ok</p>`:             "café \u2014 ok",
+		`<a title="x > y" href="/">link</a> after`: "link after",
+		`<p>a<!-- <b>hidden</b> -->b</p>`:          "ab",
+	} {
+		if got := HTMLToText(in); got != want {
+			t.Errorf("HTMLToText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestFetchIsNotInTheDefaultToolSet(t *testing.T) {
 	all, err := All(Options{Workspace: mustWorkspace(t)})
 	if err != nil {

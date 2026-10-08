@@ -13,6 +13,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"golang.org/x/net/html"
+
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/schema"
 )
@@ -318,90 +320,33 @@ func hopSafeHeader(name string) bool {
 	return false
 }
 
-// HTMLToText is REQ-TOOL-07's optional extraction.
+// HTMLToText is REQ-TOOL-07's optional extraction: the text of an HTML page,
+// whitespace-collapsed, with script and style content dropped.
 //
-// It is a deliberately small tag stripper, not a parser: script and style
-// CONTENT is dropped, tags are removed, a handful of entities are decoded and
-// whitespace is collapsed. A real extractor needs a dependency, and REQ-GO-11
-// makes that a decision rather than a default — so this is documented as
-// approximate rather than sold as readability extraction.
+// It runs golang.org/x/net/html's tokenizer — the HTML5 tokenization rules —
+// so entities are decoded exactly once (numeric ones included), a `>` inside
+// an attribute value does not end the tag, comments are dropped, and an
+// unclosed <script> runs to the end of the input. It is text extraction, not
+// readability extraction.
 func HTMLToText(s string) string {
-	s = dropElement(s, "script")
-	s = dropElement(s, "style")
-
+	z := html.NewTokenizer(strings.NewReader(s))
 	var b strings.Builder
-	inTag := false
-	for i := 0; i < len(s); i++ {
-		switch {
-		case s[i] == '<':
-			inTag = true
-		case s[i] == '>':
-			inTag = false
-			b.WriteByte(' ')
-		case !inTag:
-			b.WriteByte(s[i])
-		}
-	}
-
-	out := b.String()
-	for _, e := range [][2]string{
-		{"&nbsp;", " "}, {"&amp;", "&"}, {"&lt;", "<"}, {"&gt;", ">"},
-		{"&quot;", "\""}, {"&#39;", "'"}, {"&apos;", "'"},
-	} {
-		out = strings.ReplaceAll(out, e[0], e[1])
-	}
-	return strings.Join(strings.Fields(out), " ")
-}
-
-// dropElement removes an element and its content, case-insensitively, in ONE
-// forward pass over the input.
-//
-// The previous version re-lowercased and re-spliced the whole string per
-// element removed, which on a page with a few thousand inline scripts is
-// quadratic in the 512 KB the tool allows. It also matched `<script` as a
-// prefix, so `<scripts>` and `<scriptlet>` were dropped too; the tag name
-// must now END where a name ends — at whitespace, `>` or `/`.
-func dropElement(s, tag string) string {
-	open, closing := "<"+tag, "</"+tag
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); {
-		if !tagAt(s, i, open) {
-			b.WriteByte(s[i])
-			i++
-			continue
-		}
-		// Inside the element: scan forward to its closing tag.
-		end := -1
-		for j := i + len(open); j+len(closing) <= len(s); j++ {
-			if s[j] == '<' && tagAt(s, j, closing) {
-				end = len(s)
-				if k := strings.IndexByte(s[j:], '>'); k >= 0 {
-					end = j + k + 1
-				}
-				break
+	raw := false // inside <script> or <style>
+	for {
+		switch z.Next() {
+		case html.ErrorToken:
+			return strings.Join(strings.Fields(b.String()), " ")
+		case html.TextToken:
+			if !raw {
+				b.Write(z.Text())
 			}
+		case html.StartTagToken:
+			name, _ := z.TagName()
+			raw = string(name) == "script" || string(name) == "style"
+			b.WriteByte(' ')
+		case html.EndTagToken, html.SelfClosingTagToken:
+			raw = false
+			b.WriteByte(' ')
 		}
-		if end < 0 {
-			break // unclosed: the element runs to the end of the input
-		}
-		i = end
 	}
-	return b.String()
-}
-
-// tagAt reports whether s[i:] starts with tag (case-insensitively) as a WHOLE
-// tag name, i.e. followed by whitespace, `>`, `/` or the end of input.
-func tagAt(s string, i int, tag string) bool {
-	if len(s)-i < len(tag) || !strings.EqualFold(s[i:i+len(tag)], tag) {
-		return false
-	}
-	if i+len(tag) == len(s) {
-		return true
-	}
-	switch s[i+len(tag)] {
-	case ' ', '\t', '\n', '\r', '\f', '>', '/':
-		return true
-	}
-	return false
 }
