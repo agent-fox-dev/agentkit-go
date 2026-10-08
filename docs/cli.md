@@ -77,7 +77,7 @@ available on Windows, where each prints `codesearch.ErrUnsupported` and exits 1.
 
 | Program | Flags |
 |---|---|
-| `search` | `--dir` (directory to index, default `.`), `--path` (restrict every query), `--max-files N`, `--context N`, `--symbol NAME` with `--kind` and `--exact` (declaration lookup instead of a query), `--json` (structured result), `--no-ctags`; positional arguments are zoekt queries. No key needed |
+| `search` | `--dir` (directory to index, default `.`), `--path` (restrict every query), `--max-files N`, `--context N`, `--symbol NAME` with `--kind` and `--exact` (declaration lookup instead of a query), `--json` (structured result); positional arguments are zoekt queries. No key needed |
 | `freshness` | none; no key or network needed |
 | `agent` | `--dir` (workspace root, default `.`), `--compare` (also answer without the index and print both runs' cost); the question is the positional arguments |
 

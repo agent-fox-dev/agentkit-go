@@ -147,7 +147,7 @@ environment), `Retry` (`provider.RetryPolicy`: `MaxRetries`, base / max delay,
 | `DisableSpill` | false. |
 | `Env` | `tools.ReducedEnv(nil)`. |
 | `Ignore` | The real gitignore environment; `tools.NoGlobalExcludes()` pins an empty global layer for tests. |
-| `Symbols` | `tools.SymbolOptions{}`. Configures the symbol table behind `find_symbol` and the outline runner shared by `file_outline` and `find_symbol`. Fields: `MaxFiles` (file-count bound per build/refresh pass; default 50 000), `MaxDuration` (wall-time bound; default 2 s), `DisableCtags` (force heuristic/go-ast backends only), `Runner` (override the default `CtagsRunner`; the seam tests use). |
+| `Symbols` | `tools.SymbolOptions{}`. Configures the symbol table behind `find_symbol`. Fields: `MaxFiles` (file-count bound per build/refresh pass; default 50 000), `MaxDuration` (wall-time bound; default 2 s). |
 | `Index` | `nil` (`tools.Index`). When set, `All()` appends the index's tools after the built-ins and `write_file`, `edit_file` and the shell tools call `Index.Invalidate` to keep the index fresh. See the `codesearch` module below. |
 
 `tools.All` returns `read_file`, `write_file`, `edit_file`, `list_files`,
@@ -175,9 +175,6 @@ and 500 characters per line, `find_files` 200 by default (cap 1000),
 | Field | Default | Meaning |
 |---|---|---|
 | `Ignore` | — | `tools.IgnoreOptions`; pass the same value as `tools.Options.Ignore`. |
-| `Env` | `tools.ReducedEnv(nil)` | Environment for the ctags runner. |
-| `DisableCtags` | `false` | Force heuristic/go-ast backends only; no ctags process. |
-| `Runner` | `nil` | Override the default ctags runner (test seam). |
 | `MaxFiles` | 100 000 | File-count bound for the index build. |
 | `MaxBytes` | 1 GiB | Total indexed content bound. |
 | `MaxBuildTime` | 60 s | Wall-time bound for the index build. |

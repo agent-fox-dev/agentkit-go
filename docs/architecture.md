@@ -31,7 +31,7 @@ Imports between first-party packages, taken from the source (tests excluded;
 |---|---|
 | `core` | `jsonx`, `schema` |
 | `schema` | `jsonx` |
-| `outline` | nothing first-party |
+| `outline` | nothing first-party; `github.com/tree-sitter/go-tree-sitter` and grammar modules in `//go:build cgo` files |
 | `jsonx`, `wire`, `imagex` | nothing first-party |
 | `catalog` | `core` |
 | `stop`, `guard`, `compaction` | `core` |
@@ -40,7 +40,7 @@ Imports between first-party packages, taken from the source (tests excluded;
 | `provider/{anthropic,openai,openairesponses,google,ollama}` | `core`, `catalog`, `provider`, `schema`; a few reuse a sibling wire package's helpers (`openairesponses` → `openai` and `wire`; `google` → `anthropic`, `openai`) |
 | `provider/faux` | `core` |
 | `session` | `core`, `jsonx` |
-| `tools` | `core`, `imagex`, `outline`, `schema` (exports `Walk`, `CtagsRunner`, `file_outline`, `find_symbol`, `find_references`) |
+| `tools` | `core`, `imagex`, `outline`, `schema` (exports `Walk`, `file_outline`, `find_symbol`, `find_references`) |
 | `codesearch` (nested module) | `tools`, `core`, `schema`, `outline`; plus `github.com/sourcegraph/zoekt` (confined to this module) |
 | `mcp` | `core`, `schema`, `wire`; plus `github.com/modelcontextprotocol/go-sdk` |
 | `plugins` | `core`, `provider`, `session` |
@@ -77,8 +77,8 @@ Rules that follow from it:
 | `middleware` | Axis 1 wrappers over the model call: `Retry`, `Budget`, `Caching`, `Tracing`, `RateLimit` (a `golang.org/x/time/rate` limiter), and `CacheMeter`. |
 | `compaction` | The context transform, four strategies, summarizers, summary validation, token estimate. |
 | `session` | Append-only JSONL log, damage-tolerant loader, branch tree, fold into construction inputs, recorder, `OpenOrCreate`. |
-| `outline` | Source-file declaration listing: Go backend (`go/ast`), ctags backend (via an injected `Runner`), anchored-line heuristics for ten languages, and a `none` fallback. The extension table covers the programming languages universal-ctags parses; `LangFor` also reads a `.h` header's content to tell C++ from C. A file ctags gives nothing for falls back to the heuristic. See `docs/errata/01_outline_language_coverage.md`. Standard-library-only; no first-party imports. |
-| `tools` | Built-in tools, workspace containment, output accumulator, process control, glob (`github.com/bmatcuk/doublestar/v4` plus smart-case and bare-pattern basename matching), layered gitignore, `fetch_url` behind the SSRF guard (every resolved address and the connect-time address are checked against `code.dny.dev/ssrf`'s IANA special-purpose table; IPv6 outside 2000::/3 is refused). `RunArgv` is the embedder's process runner (no shell, argv-based, with stdin, head/tail truncation, log file, reduced environment and a pinned outcome contract). `Walk` exposes the single shared directory traversal behind workspace confinement. `CtagsRunner` supplies the ctags process lifecycle for `outline.Options.Runner`. `file_outline` returns a file's declarations with line ranges; `find_symbol` searches the workspace by declaration name, backed by a lazily built, bounded in-memory symbol table that is refreshed after `write_file`, `edit_file` and the shell tools run; `find_references` searches for callers and usages of declarations across the workspace with exact Go type resolution and outline attribution, backed by a lazily built, bounded in-memory reference cache (`referenceCache`). |
+| `outline` | Source-file declaration listing with real line ranges. Go files use `go/ast` in every build. With cgo, Python, JavaScript, TypeScript/TSX, Java, Kotlin, C#, Scala, Rust, C, C++, PHP, Ruby, Lua and shell are parsed in-process by tree-sitter grammars driven by tags queries (`outline/treesitter*.go`, `//go:build cgo`); without cgo those files are `none`. Anything outside the extension table is `none` and is not read; `LangFor` also reads a `.h` header's content to tell C++ from C. `CommentAndStringSpans` gives `find_references` the comment and string ranges of a file from the same grammars. Languages universal-ctags used to cover with no maintained Go-binding grammar (Swift, Perl, Elixir, Erlang, OCaml, Clojure, Lisp/Scheme, Julia, R, SQL, Terraform, Protobuf, Thrift, Fortran, COBOL, Ada, Pascal, VHDL, SystemVerilog, Raku, Tcl, D, Elm, GDScript, PowerShell, Vim script, Objective-C, CUDA) are not outlined. No first-party imports. |
+| `tools` | Built-in tools, workspace containment, output accumulator, process control, glob (`github.com/bmatcuk/doublestar/v4` plus smart-case and bare-pattern basename matching), layered gitignore, `fetch_url` behind the SSRF guard (every resolved address and the connect-time address are checked against `code.dny.dev/ssrf`'s IANA special-purpose table; IPv6 outside 2000::/3 is refused). `RunArgv` is the embedder's process runner (no shell, argv-based, with stdin, head/tail truncation, log file, reduced environment and a pinned outcome contract). `Walk` exposes the single shared directory traversal behind workspace confinement. `file_outline` returns a file's declarations with line ranges; `find_symbol` searches the workspace by declaration name, backed by a lazily built, bounded in-memory symbol table that is refreshed after `write_file`, `edit_file` and the shell tools run; `find_references` searches for callers and usages of declarations across the workspace with exact Go type resolution and outline attribution, backed by a lazily built, bounded in-memory reference cache (`referenceCache`). |
 | `guard` | The `execute` authorization boundary: `Restricted`, `AllowAll`. |
 | `stop` | Stop policies. |
 | `subagent` | Delegation as a tool, named definitions, parallel runs. |
@@ -158,7 +158,7 @@ Extension axes:
 The `tools` package provides in-memory, workspace-confined symbol lookup and reference finding:
 
 - `find_symbol` searches workspace declarations by name, backed by a lazily built, bounded in-memory symbol table (`symbolTable`).
-- `find_references` finds usages and callers of declarations across the workspace. It combines exact Go type resolution (`go/parser`, `go/types` with workspace-local imports and synthetic external stubs) with outline-attributed lexical matching for other languages, attributing each site to its enclosing declaration from the outline (or `<file>` at top level).
+- `find_references` finds usages and callers of declarations across the workspace. It combines exact Go type resolution (`go/parser`, `go/types` with workspace-local imports and synthetic external stubs) with outline-attributed lexical matching for other languages (a hit is `lexical` outside the comments and strings tree-sitter finds, and `text` in a build without cgo), attributing each site to its enclosing declaration from the outline (or `<file>` at top level).
 - **Reference caching**: A thread-safe in-memory cache (`refCache`, of type `referenceCache`) persists parsed Go packages, candidate file sets, and outlines across queries. File edits (`write_file`, `edit_file`) mark touched files and packages dirty; shell executions (`execute`, `run_command`, `powershell`) mark all cached entries for revalidation. Queries lazily re-parse dirty Go packages and re-outline modified files without unbounded memory growth or cross-session persistence.
 
 ## Testing layout
