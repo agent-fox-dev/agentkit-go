@@ -386,6 +386,25 @@ func TestLastRegisteredIsOutermost(t *testing.T) {
 	}
 }
 
+// TestRateLimitWaitEndsWithTheContext: a caller cancelled while waiting for
+// a token gets an aborted turn and the call never reaches the provider.
+func TestRateLimitWaitEndsWithTheContext(t *testing.T) {
+	h, calls := handlerReturning()
+	chained := RateLimit(0.01, 1)(h) // one token, then one per 100 s
+	_ = chained(context.Background(), core.Request{}).Result()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	start := time.Now()
+	msg := chained(ctx, core.Request{}).Result()
+	if msg == nil || msg.StopReason != core.StopReasonAborted {
+		t.Fatalf("stop = %+v, want aborted", msg)
+	}
+	if time.Since(start) > 5*time.Second || calls.Load() != 1 {
+		t.Fatalf("waited %v, %d provider calls; want a prompt abort and one call", time.Since(start), calls.Load())
+	}
+}
+
 // TestRateLimitDelaysTheSecondCall.
 func TestRateLimitDelaysTheSecondCall(t *testing.T) {
 	h, _ := handlerReturning()

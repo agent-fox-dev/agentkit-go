@@ -28,6 +28,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/agentfox/agentkit-go/core"
 )
 
@@ -548,11 +550,13 @@ func Tracing(t core.Tracer) core.Middleware {
 
 // ---------------------------------------------------------------- rate limit
 
-// RateLimit is a token bucket over model calls.
+// RateLimit is a token bucket over model calls (golang.org/x/time/rate):
+// perSecond calls a second on average, burst at once. A caller whose context
+// ends while it waits gets an aborted turn.
 //
 // perSecond must be positive. Zero, a negative rate or NaN is a misread
 // configuration, not "no limit": every call through such a limiter fails with
-// an error saying so, rather than the division below admitting them all.
+// an error saying so, rather than the limiter admitting them all.
 func RateLimit(perSecond float64, burst int) core.Middleware {
 	if !(perSecond > 0) {
 		err := fmt.Errorf("middleware: RateLimit needs a positive rate, got %v calls per second", perSecond)
@@ -562,46 +566,13 @@ func RateLimit(perSecond float64, burst int) core.Middleware {
 			}
 		}
 	}
-	if burst < 1 {
-		burst = 1
-	}
-	var (
-		mu     sync.Mutex
-		tokens = float64(burst)
-		last   = time.Now()
-	)
+	lim := rate.NewLimiter(rate.Limit(perSecond), max(burst, 1))
 	return func(next core.Handler) core.Handler {
 		return func(ctx context.Context, req core.Request) *core.EventStream {
-			mu.Lock()
-			now := time.Now()
-			tokens += now.Sub(last).Seconds() * perSecond
-			if tokens > float64(burst) {
-				tokens = float64(burst)
-			}
-			last = now
-			wait := time.Duration(0)
-			if tokens < 1 {
-				wait = time.Duration((1 - tokens) / perSecond * float64(time.Second))
-				tokens = 0
-				// The wait spends the token that accrues during it, so the
-				// clock advances past the wait: crediting that interval again
-				// on the next call let two callers through at ~2x the rate.
-				last = now.Add(wait)
-			} else {
-				tokens--
-			}
-			mu.Unlock()
-
-			if wait > 0 {
-				t := time.NewTimer(wait)
-				defer t.Stop()
-				select {
-				case <-t.C:
-				case <-ctx.Done():
-					return core.ErrorStream(&core.AssistantMessage{
-						StopReason: core.StopReasonAborted,
-					}, core.ErrAborted)
-				}
+			if lim.Wait(ctx) != nil {
+				return core.ErrorStream(&core.AssistantMessage{
+					StopReason: core.StopReasonAborted,
+				}, core.ErrAborted)
 			}
 			return next(ctx, req)
 		}

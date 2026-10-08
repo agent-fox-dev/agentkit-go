@@ -80,7 +80,7 @@ TBD
 | `codesearch` | Separate module: zoekt-backed `code_search` tool with ranked, file-grouped results, lazy index build, dirty-file overlay and `find_symbol` acceleration. Opt in with `tools.Options{Index: idx}`. |
 | `difftest` | Separate module: the NFR-TEST-06/07 differential harness — canonicalizing comparator, key-order side channel, divergence ledger, exit machine. |
 | `stop` | The built-in stop policies: `AfterTurns`, `OverBudget`, `AfterDuration`, `WhenToolCalled`, `Any`, `Never`. |
-| `middleware` | Axis 1: `Retry`, `Budget`, `Caching`, `Tracing`, `RateLimit`, and the `CacheMeter` behind `Agent.CacheStats`. |
+| `middleware` | Axis 1: `Retry`, `Budget`, `Caching`, `Tracing`, `RateLimit` (on `golang.org/x/time/rate`), and the `CacheMeter` behind `Agent.CacheStats`. |
 | `compaction` | The context transform, four strategies, two summarizers, the REQ-GO-16 summary taxonomy and the anchored token estimate. |
 | `prompt` | The assembled system prompt: base instructions, per-tool guidelines, skills and project-context blocks. |
 | `imagex` | Image normalization to a provider's inline-image limits; used at the history boundary. |

@@ -74,7 +74,7 @@ Rules that follow from it:
 | `provider/google` | Gemini, AI Studio and Vertex, with opt-in `CachedContent`. |
 | `provider/ollama` | Ollama native chat. |
 | `provider/faux` | Scripted provider for offline tests and demos. |
-| `middleware` | Axis 1 wrappers over the model call: `Retry`, `Budget`, `Caching`, `Tracing`, `RateLimit`, and `CacheMeter`. |
+| `middleware` | Axis 1 wrappers over the model call: `Retry`, `Budget`, `Caching`, `Tracing`, `RateLimit` (a `golang.org/x/time/rate` limiter), and `CacheMeter`. |
 | `compaction` | The context transform, four strategies, summarizers, summary validation, token estimate. |
 | `session` | Append-only JSONL log, damage-tolerant loader, branch tree, fold into construction inputs, recorder, `OpenOrCreate`. |
 | `outline` | Source-file declaration listing: Go backend (`go/ast`), ctags backend (via an injected `Runner`), anchored-line heuristics for ten languages, and a `none` fallback. The extension table covers the programming languages universal-ctags parses; `LangFor` also reads a `.h` header's content to tell C++ from C. A file ctags gives nothing for falls back to the heuristic. See `docs/errata/01_outline_language_coverage.md`. Standard-library-only; no first-party imports. |
