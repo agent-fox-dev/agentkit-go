@@ -57,6 +57,7 @@ TBD
 | [`docs/configuration.md`](docs/configuration.md) | Environment variables, `AgentConfig`, provider and tool options, TOML sections and manifests. |
 | [`docs/cli.md`](docs/cli.md) | `validate-plugins`, `difftest`, make targets, example program flags. |
 | [`docs/api.md`](docs/api.md) | The MCP server's HTTP and stdio surface. |
+| [`examples/README.md`](dexamples/README.md) | Overview of the examples |
 | [`docs/adr/`](docs/adr), [`docs/errata/`](docs/errata), [`docs/prd/`](docs/prd) | Decisions, spec divergences, requirements. |
 
 ## Packages
