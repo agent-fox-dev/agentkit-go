@@ -54,6 +54,36 @@ func walkAll(t *testing.T, e *ignoreEngine, root string) map[string]bool {
 	return out
 }
 
+// TestGitignorePatternDialect pins the gitignore line syntax: negated
+// classes, `**` that must backtrack, escaped leading `#` and `!`, and
+// trailing spaces (trimmed unless escaped).
+func TestGitignorePatternDialect(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, ".gitignore", "*.[!o]\n"+
+		"a/**/b/c\n"+
+		"\\#notes\n"+
+		"\\!bang\n"+
+		"trail   \n"+
+		"space\\ \n"+
+		"/rooted\n")
+	for _, f := range []string{"x.c", "x.o", "a/b/x/b/c", "#notes", "!bang", "trail", "space ", "space",
+		"rooted", "sub/rooted"} {
+		writeFile(t, dir, f, "")
+	}
+	got := walkAll(t, newIgnoreEngine(dir, NoGlobalExcludes()), dir)
+	for f, want := range map[string]bool{
+		"x.c": true, "x.o": false, // [!o] negates
+		"a/b/x/b/c": true,                // ** backtracks past the first "b"
+		"#notes":    true, "!bang": true, // escaped, not a comment or a negation
+		"trail": true, "space ": true, "space": false, // trailing space trimmed unless escaped
+		"rooted": true, "sub/rooted": false,
+	} {
+		if got[f] != want {
+			t.Errorf("%q ignored = %v, want %v", f, got[f], want)
+		}
+	}
+}
+
 // TestADeeperGitignoreOverridesAShallowerOne is REQ-TOOL-05.2's precedence
 // rule, and the case a root-only engine cannot express.
 //

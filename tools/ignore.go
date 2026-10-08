@@ -35,7 +35,11 @@ import (
 //     do not leak outward. The user's global excludes still apply, because
 //     they are the user's and not the repository's.
 
-// ignorePattern is one parsed gitignore line.
+// ignorePattern is one parsed gitignore line, matched with the same
+// doublestar call as MatchGlob. go-git's plumbing/format/gitignore was
+// considered (PRD 09) and rejected: its segment matcher is filepath.Match, so
+// `[!x]` stops negating, and its `**` does not backtrack (`a/**/b/c` misses
+// a/b/x/b/c).
 type ignorePattern struct {
 	glob    string
 	negate  bool
@@ -261,7 +265,11 @@ func parseIgnoreFile(path string) []ignorePattern {
 	var out []ignorePattern
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimRight(line, "\r")
-		line = strings.TrimSpace(line)
+		// Trailing spaces are dropped unless escaped (`foo\ `); a leading `\`
+		// escapes `#` and `!`, which the glob matcher then reads literally.
+		for strings.HasSuffix(line, " ") && !strings.HasSuffix(line, `\ `) {
+			line = line[:len(line)-1]
+		}
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
