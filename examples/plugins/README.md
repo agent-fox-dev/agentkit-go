@@ -37,8 +37,9 @@ export ANTHROPIC_API_KEY=sk-ant-...
 go run ./examples/plugins "Convert 20 celsius to fahrenheit, then read the config file at /etc/passwd."
 ```
 
-Without a key, section 7 stops with the usual `no credential for vendor` error
-and exit status 1. Set `AGENTKIT_PLUGINS_NO_RUN=1` to skip section 7 and exit 0.
+Without a key, section 7 prints `skipped:` with the usual `no credential for
+vendor` message and the program exits 0. `AGENTKIT_PLUGINS_NO_RUN=1` skips
+section 7 outright.
 
 ## What you'll see
 

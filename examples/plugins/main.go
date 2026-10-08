@@ -274,7 +274,8 @@ func run() error {
 	}
 
 	if err := checkCredentials(model); err != nil {
-		return err
+		fmt.Printf("  skipped: %v\n", err)
+		return nil
 	}
 	agent, err := agentkit.NewAgent(cfg)
 	if err != nil {
