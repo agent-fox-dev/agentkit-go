@@ -476,7 +476,7 @@ func TestToolDescriptionsAndSchemasUnchanged_TS0163(t *testing.T) {
 		got = append(got, tl.Name)
 	}
 	want := []string{"read_file", "write_file", "edit_file", "list_files",
-		"find_files", "search_files", "file_outline", "find_symbol",
+		"find_files", "search_files", "file_outline", "find_symbol", "find_references",
 		"execute", "run_command", "powershell"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("default tool set changed.\ngot:  %v\nwant: %v", got, want)
@@ -529,7 +529,7 @@ func TestNoDefaultRunnerInstalled_TS0168(t *testing.T) {
 
 	// Verify FileNavigationTools() returns the expected names
 	navTools := FileNavigationTools()
-	wantNav := []string{"list_files", "find_files", "search_files", "file_outline", "find_symbol"}
+	wantNav := []string{"list_files", "find_files", "search_files", "file_outline", "find_symbol", "find_references"}
 	if strings.Join(navTools, ",") != strings.Join(wantNav, ",") {
 		t.Fatalf("FileNavigationTools() changed.\ngot:  %v\nwant: %v", navTools, wantNav)
 	}
@@ -549,7 +549,7 @@ func TestNoDefaultRunnerInstalled_TS0168(t *testing.T) {
 		got = append(got, tl.Name)
 	}
 	want := []string{"read_file", "write_file", "edit_file", "list_files",
-		"find_files", "search_files", "file_outline", "find_symbol",
+		"find_files", "search_files", "file_outline", "find_symbol", "find_references",
 		"execute", "run_command", "powershell"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("All() tool set changed.\ngot:  %v\nwant: %v", got, want)

@@ -5,6 +5,7 @@ Guidelines:
 - Prefer edit_file for an existing file; write_file replaces the whole file.
 - Before reading a large file, outline it and read only the range you need.
 - Use find_symbol to locate a declaration; search_files for usages and text.
+- Use find_symbol for where a name is declared, find_references for who uses it, and search_files for text.
 - Use run_command when an argument contains spaces or shell metacharacters; nothing is re-parsed by a shell.
 - powershell runs only on Windows; prefer execute for portable commands.
 - Prefer search_files over execute+grep: it respects .gitignore and returns structured matches.

@@ -40,7 +40,7 @@ Imports between first-party packages, taken from the source (tests excluded;
 | `provider/{anthropic,openai,openairesponses,google,ollama}` | `core`, `catalog`, `provider`, `schema`; a few reuse a sibling wire package's helpers (`openairesponses` → `openai` and `wire`; `google` → `anthropic`, `openai`) |
 | `provider/faux` | `core` |
 | `session` | `core`, `jsonx` |
-| `tools` | `core`, `imagex`, `outline`, `schema` (exports `Walk`, `CtagsRunner`, `file_outline`, `find_symbol`) |
+| `tools` | `core`, `imagex`, `outline`, `schema` (exports `Walk`, `CtagsRunner`, `file_outline`, `find_symbol`, `find_references`) |
 | `codesearch` (nested module) | `tools`, `core`, `schema`, `outline`; plus `github.com/sourcegraph/zoekt` (confined to this module) |
 | `mcp` | `core`, `schema`, `wire` |
 | `plugins` | `core`, `provider`, `session` |
@@ -78,7 +78,7 @@ Rules that follow from it:
 | `compaction` | The context transform, four strategies, summarizers, summary validation, token estimate. |
 | `session` | Append-only JSONL log, damage-tolerant loader, branch tree, fold into construction inputs, recorder, `OpenOrCreate`. |
 | `outline` | Source-file declaration listing: Go backend (`go/ast`), ctags backend (via an injected `Runner`), anchored-line heuristics for ten languages, and a `none` fallback. The extension table covers the programming languages universal-ctags parses; `LangFor` also reads a `.h` header's content to tell C++ from C. A file ctags gives nothing for falls back to the heuristic. See `docs/errata/01_outline_language_coverage.md`. Standard-library-only; no first-party imports. |
-| `tools` | Built-in tools, workspace containment, output accumulator, process control, glob, layered gitignore, `fetch_url` behind the SSRF guard. `RunArgv` is the embedder's process runner (no shell, argv-based, with stdin, head/tail truncation, log file, reduced environment and a pinned outcome contract). `Walk` exposes the single shared directory traversal behind workspace confinement. `CtagsRunner` supplies the ctags process lifecycle for `outline.Options.Runner`. `file_outline` returns a file's declarations with line ranges; `find_symbol` searches the workspace by declaration name, backed by a lazily built, bounded in-memory symbol table that is refreshed after `write_file`, `edit_file` and the shell tools run. |
+| `tools` | Built-in tools, workspace containment, output accumulator, process control, glob, layered gitignore, `fetch_url` behind the SSRF guard. `RunArgv` is the embedder's process runner (no shell, argv-based, with stdin, head/tail truncation, log file, reduced environment and a pinned outcome contract). `Walk` exposes the single shared directory traversal behind workspace confinement. `CtagsRunner` supplies the ctags process lifecycle for `outline.Options.Runner`. `file_outline` returns a file's declarations with line ranges; `find_symbol` searches the workspace by declaration name, backed by a lazily built, bounded in-memory symbol table that is refreshed after `write_file`, `edit_file` and the shell tools run; `find_references` searches for callers and usages of declarations across the workspace with exact Go type resolution and outline attribution, backed by a lazily built, bounded in-memory reference cache (`referenceCache`). |
 | `guard` | The `execute` authorization boundary: `Restricted`, `AllowAll`. |
 | `stop` | Stop policies. |
 | `subagent` | Delegation as a tool, named definitions, parallel runs. |
@@ -151,6 +151,14 @@ Extension axes:
   live on the config.
 - **Session entries are appended, never rewritten**; a compaction is an entry
   and the checkpoint is applied as a view on each request.
+
+## Symbol and reference navigation
+
+The `tools` package provides in-memory, workspace-confined symbol lookup and reference finding:
+
+- `find_symbol` searches workspace declarations by name, backed by a lazily built, bounded in-memory symbol table (`symbolTable`).
+- `find_references` finds usages and callers of declarations across the workspace. It combines exact Go type resolution (`go/parser`, `go/types` with workspace-local imports and synthetic external stubs) with outline-attributed lexical matching for other languages, attributing each site to its enclosing declaration from the outline (or `<file>` at top level).
+- **Reference caching**: A thread-safe in-memory cache (`refCache`, of type `referenceCache`) persists parsed Go packages, candidate file sets, and outlines across queries. File edits (`write_file`, `edit_file`) mark touched files and packages dirty; shell executions (`execute`, `run_command`, `powershell`) mark all cached entries for revalidation. Queries lazily re-parse dirty Go packages and re-outline modified files without unbounded memory growth or cross-session persistence.
 
 ## Testing layout
 

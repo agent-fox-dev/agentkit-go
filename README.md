@@ -70,7 +70,7 @@ in 0.4.1 rather than the code walked back.
 | `session` | Append-only JSONL log, damage-tolerant loader, branch tree, resume fold. |
 | `skills` | Skill manifests (hand-rolled TOML subset), progressive disclosure, project context files, and the default-off trust gate. |
 | `outline` | Source-file declaration listing with three backends (`go/ast`, universal-ctags via an injected runner, anchored-line heuristics) and a `none` fallback. Standard-library-only. |
-| `tools` | Built-in tools (`file_outline`, `find_symbol` and the nine others), path containment, bounded accumulator, process control, glob, a layered gitignore engine, `fetch_url` behind an SSRF guard, `Walk` (the single shared directory traversal), `CtagsRunner` (ctags process lifecycle for `outline`) and the in-memory symbol table behind `find_symbol`. |
+| `tools` | Built-in tools (`file_outline`, `find_symbol`, `find_references` and the nine others), path containment, bounded accumulator, process control, glob, a layered gitignore engine, `fetch_url` behind an SSRF guard, `Walk` (the single shared directory traversal), `CtagsRunner` (ctags process lifecycle for `outline`), the in-memory symbol table behind `find_symbol`, and the reference engine and cache behind `find_references`. |
 | `provider` | Send-time transcript repair, HTTP transport + retry, credential resolution, header precedence, cost arithmetic, SSE decoding — everything shared by every wire API. |
 | `provider/{anthropic,openai,google,ollama,faux}` | One wire API each, encode and decode. |
 | `codesearch` | Separate module: zoekt-backed `code_search` tool with ranked, file-grouped results, lazy index build, dirty-file overlay and `find_symbol` acceleration. Opt in with `tools.Options{Index: idx}`. |
@@ -782,10 +782,6 @@ requirement ledger, fixed and deferred alike, is [`docs/GAPS.md`](docs/GAPS.md).
   it refuses a handle whose `PollAfterMS` has not elapsed since it was issued,
   and on success runs the loop from the answer — its tool calls included — and
   returns that run's `RunResult`.
-- **References and callers.** The `outline` package lists declarations and the
-  `file_outline` and `find_symbol` tools expose them; references ("who calls
-  X") and callers remain unbuilt — use `search_files` with `\bX\b` instead.
-  See spec `02_symbol_navigation_tools`, Non-goals.
 - **WebP normalization.** REQ-TOOL-14 downscales JPEG, PNG and GIF; the
   standard library has no WebP decoder and the root has not taken on a
   third-party module for one, so a WebP image is forwarded as-is with its

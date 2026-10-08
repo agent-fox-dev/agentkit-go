@@ -89,6 +89,41 @@ travels in the body with HTTP `200` unless a row above says otherwise.
 
 `ping` and any other method return `-32601`.
 
+## Programmatic Workspace reference search
+
+Embedders can query references programmatically without model execution through the exported `Workspace.References` method:
+
+```go
+type ReferenceOptions struct {
+	Path         string // Subdirectory filter ("" for entire workspace)
+	IncludeTests bool   // Whether to include test files (default false in struct, tool defaults to true)
+	MaxResults   int    // 0 or negative defaults to 30; capped at 100
+}
+
+type ReferenceSite struct {
+	Path       string       // Slash-separated workspace-relative path
+	Line       int          // 1-based line number
+	Column     int          // 1-based byte column
+	Confidence string       // "resolved", "lexical", or "text"
+	Enclosing  outline.Decl // Enclosing declaration, or Kind "file" at top-level
+	Source     string       // Trimmed source line, max 200 bytes, no control chars
+}
+
+type ReferenceResult struct {
+	Target          outline.Decl
+	Sites           []ReferenceSite
+	Backend         string
+	Partial         bool
+	PackagesChecked int
+	Errors          int
+	Truncated       bool
+}
+
+func (ws *Workspace) References(ctx context.Context, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error)
+```
+
+`Workspace.References` enforces workspace containment, validates subdirectories, and executes exact Go type resolution and multi-language outline attribution with identical ranking and bounds to the `find_references` tool.
+
 ## Client side
 
 `mcp.Pool.Connect` consumes servers over stdio (`command`) or Streamable HTTP
