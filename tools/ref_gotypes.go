@@ -286,23 +286,6 @@ func parseGoPackageWithComments(dir string) (*token.FileSet, []*ast.File, error)
 	return fset, files, nil
 }
 
-// sanitizeSnippet trims whitespace, replaces control characters, and caps at 200 bytes.
-func sanitizeSnippet(line string) string {
-	line = strings.TrimSpace(line)
-	var b strings.Builder
-	for _, r := range line {
-		if r < 32 || r == 127 {
-			b.WriteByte(' ')
-		} else {
-			b.WriteRune(r)
-		}
-	}
-	res := strings.TrimSpace(b.String())
-	if len(res) > 200 {
-		res = res[:200]
-	}
-	return res
-}
 
 // findSite locates a ReferenceSite whose Source contains needle.
 func findSite(sites []ReferenceSite, needle string) *ReferenceSite {
