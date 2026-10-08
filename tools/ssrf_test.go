@@ -52,6 +52,7 @@ func TestBlockedAddressCoversEveryReservedRange(t *testing.T) {
 		{"::169.254.169.254", "IPv4-compatible IPv6 embedding the metadata endpoint"},
 		{"::8.8.8.8", "IPv4-compatible IPv6 (deprecated ::/96) even with a public embedded address"},
 		{"::1.2.3.4", "IPv4-compatible IPv6"},
+		{"1::1", "IPv6 outside global unicast (2000::/3)"},
 	}
 	for _, c := range blocked {
 		t.Run(c.addr, func(t *testing.T) {
@@ -66,13 +67,7 @@ func TestBlockedAddressCoversEveryReservedRange(t *testing.T) {
 		})
 	}
 
-	// ::169.254.169.254 says WHY in terms of the embedded address: the
-	// low 32 bits are unmapped and classified before the generic reason.
-	if _, why := BlockedAddress(netip.MustParseAddr("::169.254.169.254")); !strings.Contains(why, "link-local") {
-		t.Fatalf("an IPv4-compatible address must be classified by its embedded IPv4 address: %q", why)
-	}
-
-	for _, ok := range []string{"93.184.216.34", "8.8.8.8", "1.1.1.1", "2606:4700::1111", "1::1"} {
+	for _, ok := range []string{"93.184.216.34", "8.8.8.8", "1.1.1.1", "2606:4700::1111", "::ffff:93.184.216.34"} {
 		if blocked, why := BlockedAddress(netip.MustParseAddr(ok)); blocked {
 			t.Fatalf("%s was refused as %q; a guard that blocks the public internet is "+
 				"an outage, not a control", ok, why)

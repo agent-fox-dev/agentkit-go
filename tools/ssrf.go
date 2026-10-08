@@ -10,6 +10,8 @@ import (
 	"net/netip"
 	"syscall"
 	"time"
+
+	"code.dny.dev/ssrf"
 )
 
 // This file is REQ-SEC-05: the SSRF guard.
@@ -147,82 +149,25 @@ func (g *SSRFGuard) resolve(ctx context.Context, host string) ([]netip.Addr, err
 
 // BlockedAddress classifies one address and says why.
 //
-// The IPv4-MAPPED IPv6 case is the reason this unwraps before classifying.
-// `::ffff:169.254.169.254` is a perfectly ordinary IPv6 address to any check
-// that only asks netip whether it is loopback or private — those predicates
-// answer for the IPv6 form, which is neither — and it routes to the IPv4 cloud
-// metadata endpoint. Unmapping first is what makes the classification mean
-// what it says.
+// The table is code.dny.dev/ssrf's: the IANA special-purpose registries for
+// IPv4 and IPv6, and any IPv6 address outside global unicast (2000::/3) —
+// loopback, link-local (where the cloud instance metadata endpoint lives),
+// private, multicast, NAT64, the deprecated IPv4-compatible ::/96.
+//
+// An IPv4-MAPPED address is unmapped first. `::ffff:169.254.169.254` routes to
+// the IPv4 metadata endpoint, and is judged by the IPv4 table rather than
+// refused merely for being outside 2000::/3, so a resolver that hands back
+// mapped spellings of public addresses still works.
 func BlockedAddress(a netip.Addr) (bool, string) {
 	if !a.IsValid() {
 		return true, "invalid address"
 	}
-	if a.Is4In6() {
-		a = a.Unmap()
-	}
-	// The IPv4-COMPATIBLE form (::a.b.c.d, ::/96) is the mapped form's
-	// deprecated sibling. It is refused outright — no modern stack routes it,
-	// so a request to one is a probe, not a fetch — but the embedded address
-	// is classified first so the refusal can say "link-local" for
-	// ::169.254.169.254 rather than the generic reason.
-	if a.Is6() && ipv4Compatible.Contains(a) {
-		if blocked, why := BlockedAddress(netip.AddrFrom4([4]byte(a.AsSlice()[12:16]))); blocked {
-			return true, "IPv4-compatible IPv6 embedding " + why
-		}
-		return true, "IPv4-compatible IPv6 (deprecated ::/96)"
-	}
-
-	switch {
-	case a.IsUnspecified():
-		return true, "unspecified"
-	case a.IsLoopback():
-		return true, "loopback"
-	case a.IsLinkLocalUnicast(), a.IsLinkLocalMulticast():
-		// 169.254.0.0/16 and fe80::/10. This is where the cloud instance
-		// metadata endpoint lives, and it is the single highest-value target
-		// an SSRF has.
-		return true, "link-local"
-	case a.IsInterfaceLocalMulticast(), a.IsMulticast():
-		return true, "multicast"
-	case a.IsPrivate():
-		return true, "private"
-	}
-
-	for _, r := range reservedRanges {
-		if r.prefix.Contains(a) {
-			return true, r.why
-		}
+	if err := ipGuardian.SafeAddr(a.Unmap()); err != nil {
+		return true, err.Error()
 	}
 	return false, ""
 }
 
-type reserved struct {
-	prefix netip.Prefix
-	why    string
-}
-
-// reservedRanges covers what netip's own predicates do not.
-//
-// Each entry is a range that is routable-looking and must not be reachable:
-// netip.Addr.IsPrivate covers only RFC1918 and fc00::/7, so carrier-grade NAT,
-// the benchmarking range and the documentation ranges all pass it.
-var reservedRanges = []reserved{
-	{netip.MustParsePrefix("0.0.0.0/8"), "this network"},
-	{netip.MustParsePrefix("100.64.0.0/10"), "carrier-grade NAT"},
-	{netip.MustParsePrefix("192.0.0.0/24"), "IETF protocol assignments"},
-	{netip.MustParsePrefix("192.0.2.0/24"), "documentation (TEST-NET-1)"},
-	{netip.MustParsePrefix("198.18.0.0/15"), "benchmarking"},
-	{netip.MustParsePrefix("198.51.100.0/24"), "documentation (TEST-NET-2)"},
-	{netip.MustParsePrefix("203.0.113.0/24"), "documentation (TEST-NET-3)"},
-	{netip.MustParsePrefix("240.0.0.0/4"), "reserved for future use"},
-	{netip.MustParsePrefix("255.255.255.255/32"), "broadcast"},
-	{netip.MustParsePrefix("64:ff9b::/96"), "NAT64"},
-	{netip.MustParsePrefix("64:ff9b:1::/48"), "local-use NAT64"},
-	{netip.MustParsePrefix("100::/64"), "discard-only"},
-	{netip.MustParsePrefix("2001:db8::/32"), "documentation"},
-	{netip.MustParsePrefix("2002::/16"), "6to4 relay"},
-}
-
-// ipv4Compatible is ::/96, handled in BlockedAddress rather than in the table
-// because the embedded address decides the reason.
-var ipv4Compatible = netip.MustParsePrefix("::/96")
+// ipGuardian checks addresses only: the port and network checks are the
+// caller's business (fetch_url dials whatever port the URL names).
+var ipGuardian = ssrf.New(ssrf.WithAnyNetwork(), ssrf.WithAnyPort())
