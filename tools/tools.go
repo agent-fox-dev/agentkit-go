@@ -130,6 +130,7 @@ func All(opts Options) ([]core.Tool, error) {
 		t.Execute = func(ctx context.Context, in json.RawMessage) core.ToolResult {
 			r := orig(ctx, in)
 			fs.markTableRevalidateAll()
+			fs.markRefCacheRevalidateAll()
 			if fs.index != nil {
 				fs.index.Invalidate("")
 			}
@@ -294,6 +295,12 @@ type fileTools struct {
 	tableOnce sync.Once
 	table     *symbolTable
 
+	// refCache is the shared reference cache, created lazily on first
+	// find_references call and marked dirty by write_file, edit_file
+	// and shell tools.
+	refCacheOnce sync.Once
+	refCache     *referenceCache
+
 	// index is the optional codesearch index. When non-nil, write_file,
 	// edit_file and the shell tool wrappers call Invalidate on it.
 	index Index
@@ -336,19 +343,57 @@ func (f *fileTools) getTable() *symbolTable {
 	return f.table
 }
 
+// getRefCache returns the shared reference cache, creating it on first call.
+func (f *fileTools) getRefCache() *referenceCache {
+	f.refCacheOnce.Do(func() {
+		f.refCache = newReferenceCache(f.ws, f)
+	})
+	return f.refCache
+}
+
+// markRefCacheDirty marks a workspace-relative path dirty in the shared reference cache.
+func (f *fileTools) markRefCacheDirty(rel string) {
+	if f.refCache != nil {
+		f.refCache.markDirty(rel)
+	}
+}
+
+// markRefCacheRevalidateAll marks the whole reference cache for revalidation.
+func (f *fileTools) markRefCacheRevalidateAll() {
+	if f.refCache != nil {
+		f.refCache.markRevalidateAll()
+	}
+}
+
+// findReferencesTool returns the find_references tool.
+func (f *fileTools) findReferencesTool() core.Tool {
+	rc := f.getRefCache()
+	if rc == nil {
+		return core.Tool{Name: "find_references"}
+	}
+	return rc.tool()
+}
+
 // markTableDirty marks a workspace-relative path dirty in the shared symbol
-// table, if one exists. It is a no-op when find_symbol has never been called.
+// table and reference cache, if they exist. It is a no-op when find_symbol
+// or find_references has never been called.
 func (f *fileTools) markTableDirty(rel string) {
 	if f.table != nil {
 		f.table.markDirty(rel)
 	}
+	if f.refCache != nil {
+		f.refCache.markDirty(rel)
+	}
 }
 
-// markTableRevalidateAll marks the whole symbol table for revalidation, if
-// one exists. It is a no-op when find_symbol has never been called.
+// markTableRevalidateAll marks the whole symbol table and reference cache
+// for revalidation, if they exist. It is a no-op when neither has been used.
 func (f *fileTools) markTableRevalidateAll() {
 	if f.table != nil {
 		f.table.markRevalidateAll()
+	}
+	if f.refCache != nil {
+		f.refCache.markRevalidateAll()
 	}
 }
 
@@ -740,12 +785,14 @@ func (f *fileTools) writeFile() core.Tool {
 			rel := filepath.ToSlash(f.ws.Rel(abs))
 			if err := writeFileAtomic(abs, []byte(a.Content)); err != nil {
 				f.markTableDirty(rel)
+				f.markRefCacheDirty(rel)
 				if f.index != nil {
 					f.index.Invalidate(rel)
 				}
 				return core.ErrResult("write_failed", err.Error())
 			}
 			f.markTableDirty(rel)
+			f.markRefCacheDirty(rel)
 			if f.index != nil {
 				f.index.Invalidate(rel)
 			}
@@ -810,6 +857,7 @@ func (f *fileTools) editFile() core.Tool {
 			// table and the code index a revalidation for nothing.
 			rel := filepath.ToSlash(f.ws.Rel(abs))
 			defer f.markTableDirty(rel)
+			defer f.markRefCacheDirty(rel)
 			defer func() {
 				if f.index != nil {
 					f.index.Invalidate(rel)
