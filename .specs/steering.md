@@ -6,6 +6,11 @@
 2. **go.mod dependencies** -- check existing imports before adding new ones.
 3. **Standard library** -- prefer `net/http`, `slices`, `encoding/json`, etc. over third-party alternatives.
 
+## Target Platforms
+
+The library MUST run on Linux or MacOS systems. 
+Support for Windows or other operating systems is "best effort", but not a requirement.
+
 ## Documentation Freshness
 
 After implementing any spec, you **must** update all affected documentation
@@ -23,6 +28,8 @@ session — not as a follow-up task.
 | Config keys or env vars added/changed | `docs/configuration.md` |
 | Architecture, package layout, or data flow changed | `docs/architecture.md` and/or relevant ADR |
 | Setup, quickstart, or project overview changed | `README.md` |
+
+*Important:* Do NOT write tests for testing the presence or the content of the docs or PRDs.
 
 **Instructions:**
 
