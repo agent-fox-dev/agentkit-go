@@ -9,13 +9,13 @@
 // a malformed message into an allocation the peer chose, a duplicate key into
 // a value the peer chose, and a deep nest into a stack the peer chose.
 //
-// WHY NOT encoding/json. REQ-SEC-11.5 states it plainly: encoding/json
-// satisfies none of rules 1-4 and silently accepts duplicate keys. json.Decoder
-// with Token() could be driven to enforce depth and container bounds, but
-// duplicate keys are invisible through it — Token() reports both — and the
-// unescaping is not reachable without re-implementing it anyway. So the scanner
-// here is hand-rolled: it is one pass, it allocates nothing it was not asked
-// to, and every bound is checked before the allocation it guards.
+// WHY encoding/json/v2, NOT v1. REQ-SEC-11.5 states it plainly: encoding/json
+// satisfies none of rules 1-4 and silently accepts duplicate keys, and it
+// matches field names case-insensitively. jsontext rejects duplicate names
+// itself and exposes a token stream, so the bounds are a loop over it, each
+// checked before the token that would exceed it is read; json/v2 binds with
+// unknown members rejected and names matched exactly, and a hook adds the
+// number rules and the Validator.
 package wire
 
 import (

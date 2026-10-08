@@ -86,7 +86,7 @@ Rules that follow from it:
 | `skills` | Skill manifests, three-tier discovery, trust gate, project context files, prompt blocks, activation. |
 | `plugins` | Four plugin categories, registry, manifest discovery, import lint, conformance `Validate`. |
 | `mcp` | AgentKit's layer over the official MCP Go SDK, which owns the protocol and version negotiation: the tool pool (qualified names, collision checks, schema conversion, `${VAR}` resolution), subprocess spawning with process-group kill and a reduced environment, respawn, result cap, call limit, audit and sampling gate on the client; the handler adapter, concurrency bound, audit and API-key/Origin HTTP middleware and `Run` on the server; and strict `wire` checks at the stdio, inbound-HTTP and HTTP-response boundaries. |
-| `wire` | Bounded strict decoder for untrusted bytes; frame readers. |
+| `wire` | Bounded strict decoder for untrusted bytes, on `encoding/json/v2` and `encoding/json/jsontext`: a token loop adds the size, depth, container-length and node bounds to jsontext's grammar and duplicate-name rejection; `Bind` is v2 with unknown members rejected, exact-case names, REQ-SEC-12.2 integer rules and the `Validator` hook. Frame readers. |
 | `jsonx` | Order-preserving JSON. |
 | `schema` | JSON Schema value and typed combinators. |
 | `imagex` | Image normalization to a provider's inline-image limits (resize with `golang.org/x/image/draw` Catmull-Rom, quality ladder, base64 budget) for JPEG, PNG, GIF and WebP (decoded with `golang.org/x/image/webp`; a WebP that must shrink is re-encoded as JPEG). APNG, CMYK JPEG and non-IHDR PNG are refused. |

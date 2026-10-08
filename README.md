@@ -66,7 +66,7 @@ TBD
 |---|---|
 | `mcp` | Model Context Protocol, client and server, on the official Go SDK (all revisions, negotiated): tool pool with qualified names, subprocess servers with a reduced environment and respawn, result cap, audit, HTTP serving with API-key auth, strict decoding at every trust boundary. |
 | `plugins` | Four plugin categories, registry, manifest discovery, import lint, conformance report. |
-| `wire` | Bounded, strict decoder for bytes AgentKit did not produce: hand-rolled scanner, reflective binder, framed reader. |
+| `wire` | Bounded, strict decoder for bytes AgentKit did not produce, on the standard library's `encoding/json/v2` and `jsontext`: size, depth, container and node bounds, duplicate-key and unknown-member rejection, safe-integer binding; plus framed readers. |
 | `jsonx` | Order-preserving JSON. Decodes once, marshals in slice order at every depth. |
 | `schema` | Structured JSON Schema value + typed combinators. No reflection, no codegen. |
 | `core` | Canonical vocabulary and every interface seam: messages, content blocks, events, `EventStream`, `Tool`, `ProviderClient`. |
