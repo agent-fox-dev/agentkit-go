@@ -48,16 +48,13 @@ func TestDocsReadmeAndArchitecture_TS02_59(t *testing.T) {
 		t.Error("README.md does not mention find_symbol")
 	}
 
-	// README.md's "What is not built" section must say references and callers remain unbuilt.
-	// Find the "What is not built" section.
+	// README.md's "What is not built" section. Spec 05_find_references built
+	// references and callers, so they are no longer listed there.
 	idx := strings.Index(readmeStr, "What is not built")
 	if idx < 0 {
 		t.Fatal("README.md has no 'What is not built' section")
 	}
 	notBuilt := readmeStr[idx:]
-	if !strings.Contains(notBuilt, "references") || !strings.Contains(notBuilt, "callers") {
-		t.Error("README.md 'What is not built' does not mention references and callers remaining unbuilt")
-	}
 	// The old bullet should no longer say file_outline and find_symbol are not built.
 	if strings.Contains(notBuilt, "file_outline and find_symbol tools") &&
 		strings.Contains(notBuilt, "are not built yet") {
@@ -127,13 +124,13 @@ func TestDocsConfigurationAndGaps_TS02_60(t *testing.T) {
 	}
 	gapsStr := string(gaps)
 
-	// Must record that references and callers remain unbuilt.
+	// Must record the references and callers row. Spec 05_find_references
+	// moved it from Deferred (a non-goal of spec 02) to Fixed.
 	if !strings.Contains(gapsStr, "references") || !strings.Contains(gapsStr, "callers") {
-		t.Error("docs/GAPS.md does not record references and callers gap")
+		t.Error("docs/GAPS.md does not record references and callers row")
 	}
-	// Must have a pointer to the spec's Non-goals (spec 02 or symbol navigation).
-	if !strings.Contains(gapsStr, "Non-goal") && !strings.Contains(gapsStr, "non-goal") {
-		t.Error("docs/GAPS.md does not point to the spec's Non-goals")
+	if !strings.Contains(gapsStr, "05_find_references") {
+		t.Error("docs/GAPS.md does not cite spec 05_find_references for references and callers")
 	}
 
 	// --- docs/api.md must NOT be modified ---
