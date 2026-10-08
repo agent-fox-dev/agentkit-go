@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
