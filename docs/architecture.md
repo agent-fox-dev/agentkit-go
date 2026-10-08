@@ -42,7 +42,7 @@ Imports between first-party packages, taken from the source (tests excluded;
 | `session` | `core`, `jsonx` |
 | `tools` | `core`, `imagex`, `outline`, `schema` (exports `Walk`, `CtagsRunner`, `file_outline`, `find_symbol`, `find_references`) |
 | `codesearch` (nested module) | `tools`, `core`, `schema`, `outline`; plus `github.com/sourcegraph/zoekt` (confined to this module) |
-| `mcp` | `core`, `schema`, `wire` |
+| `mcp` | `core`, `schema`, `wire`; plus `github.com/modelcontextprotocol/go-sdk` |
 | `plugins` | `core`, `provider`, `session` |
 | `skills` | `core`, `plugins` |
 | `prompt` | `core`, `skills`, `tools` |
@@ -85,7 +85,7 @@ Rules that follow from it:
 | `prompt` | Assembly of the system prompt. |
 | `skills` | Skill manifests, three-tier discovery, trust gate, project context files, prompt blocks, activation. |
 | `plugins` | Four plugin categories, registry, manifest discovery, import lint, conformance `Validate`. |
-| `mcp` | MCP client (stdio and Streamable HTTP), tool pool, and server (stdio and HTTP), on `wire`. |
+| `mcp` | AgentKit's layer over the official MCP Go SDK, which owns the protocol and version negotiation: the tool pool (qualified names, collision checks, schema conversion, `${VAR}` resolution), subprocess spawning with process-group kill and a reduced environment, respawn, result cap, call limit, audit and sampling gate on the client; the handler adapter, concurrency bound, audit and API-key/Origin HTTP middleware and `Run` on the server; and strict `wire` checks at the stdio, inbound-HTTP and HTTP-response boundaries. |
 | `wire` | Bounded strict decoder for untrusted bytes; frame readers. |
 | `jsonx` | Order-preserving JSON. |
 | `schema` | JSON Schema value and typed combinators. |
@@ -146,7 +146,8 @@ Extension axes:
   `ErrUnguardedExecute`; `guard.AllowAll` is the explicit opt-out.
 - **Untrusted bytes go through `wire`**: bounds before allocation, duplicate
   keys rejected, case-sensitive matching. Locally authored config decodes
-  leniently and reports diagnostics.
+  leniently and reports diagnostics. Where a library decodes untrusted bytes
+  (the MCP SDK), `wire.Guard` checks them first at the transport boundary.
 - **No global state, no `init()` registration.** Providers, plugins and tracers
   live on the config.
 - **Session entries are appended, never rewritten**; a compaction is an entry

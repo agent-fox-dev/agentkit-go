@@ -1,10 +1,12 @@
 # Add a classic MCP client
 
-Status: **proposed**. Written as a proposal: it records what the client
-speaks today, what a server that has not migrated expects, the parts of the
-existing implementation that carry over unchanged, the parts that cannot, and
-the order of the work so that every step leaves `make check` green and the
-modern client untouched.
+Status: **largely delivered by [PRD 09](09-replace-hand-rolled-code-with-libraries.md)
+step 1**, not by the plan below. `mcp/` now runs on the official MCP Go SDK,
+which negotiates every revision from `2024-11-05` to `2026-07-28` on both ends
+(the `initialize` handshake, `Mcp-Session-Id`, the HTTP+SSE transport via
+`transport = "sse"`). What this document still records that the SDK does not
+settle: a dedicated `auto` probe policy (§4.8) and batch handling (§4.5). The
+rest is kept as the record of the original proposal.
 
 ## 1. The problem
 

@@ -250,15 +250,15 @@ the last value wins.
 |---|---|
 | `name` | Required, unique. Keys the pool, the tool prefix and audit events. |
 | `command`, `args`, `dir` | Spawn a stdio server. |
-| `url` | Connect over Streamable HTTP. If both `command` and `url` are set, the command wins and a warning is emitted; one of them is required. |
+| `url` | Connect to a remote server (see `transport`); the protocol version is negotiated. If both `command` and `url` are set, the command wins and a warning is emitted; one of them is required. |
 | `env` (table) | Environment for the subprocess; values may use `${VAR}`, resolved from the secrets store at spawn time. |
 | `headers` (table) | Headers for every request to a `url` server; `${VAR}` supported. The default HTTP client does not follow redirects. |
 | `tool_prefix` | Override the default `<name>__`. |
 | `timeout_s` | Integer or float seconds; default 30. |
-| `allow_sampling` | Permit the server to request sampling. Default false. |
+| `allow_sampling` | Advertise sampling to the server and answer its requests through `ConnectionOptions.Sampling`; each request is audited. Default false. |
 | `per_session_call_limit` | Default 1000; negative disables. |
 | `per_session_reconnect_limit` | Default 3; negative means never reconnect. |
-| `transport` | Obsolete. `"streamable-http"` is accepted with a warning; any other value (e.g. `"sse"`) is an error and the server is dropped. |
+| `transport` | For a `url` server: `"streamable-http"` (default) or `"sse"` (the 2024-11-05 HTTP+SSE transport). Any other value is an error and the server is dropped. |
 
 ### `[mcp_server]`
 
@@ -304,7 +304,7 @@ built-in. The user tier is skipped when the home directory cannot be resolved.
 
 `wire.Defaults()`: 16 MiB per message, 1,000,000 elements per container, depth
 64, 2,000,000 nodes. MCP HTTP bodies are capped at the smaller of
-`HTTPOptions.MaxBodyBytes` and the decoder's bound.
+`HTTPOptions.MaxBodyBytes` and `ServerOptions.Limits.MaxMessageBytes`. The MCP SDK decodes protocol messages, but every inbound stdio frame, HTTP request body, JSON response body and SSE event is held to these limits (and to duplicate-key rejection) first.
 
 ## Compatibility
 

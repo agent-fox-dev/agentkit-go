@@ -64,7 +64,7 @@ TBD
 
 | Package | What it owns |
 |---|---|
-| `mcp` | Model Context Protocol, client and server, on the standard library: JSON-RPC, stdio transport, tool pool, HTTP serving with API-key auth. |
+| `mcp` | Model Context Protocol, client and server, on the official Go SDK (all revisions, negotiated): tool pool with qualified names, subprocess servers with a reduced environment and respawn, result cap, audit, HTTP serving with API-key auth, strict decoding at every trust boundary. |
 | `plugins` | Four plugin categories, registry, manifest discovery, import lint, conformance report. |
 | `wire` | Bounded, strict decoder for bytes AgentKit did not produce: hand-rolled scanner, reflective binder, framed reader. |
 | `jsonx` | Order-preserving JSON. Decodes once, marshals in slice order at every depth. |
