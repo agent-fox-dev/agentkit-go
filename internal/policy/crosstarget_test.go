@@ -1,3 +1,11 @@
+// Package policy holds AgentKit's executable build invariants. It carries no
+// non-test source and nothing imports it.
+//
+// cgo is allowed, but only in files constrained by //go:build cgo, and every
+// package keeps a pure-Go fallback (docs/prd/09-replace-hand-rolled-code-with-libraries.md,
+// decision D1). Two gates follow from that: TestCrossTargetBuildAndVet builds
+// the pure-Go fallback for every supported target, and TestHostCgoBuildAndVet
+// builds the cgo variant for the host.
 package policy
 
 import (
@@ -6,6 +14,15 @@ import (
 	"strings"
 	"testing"
 )
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+	if err != nil {
+		t.Fatalf("locating module root: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
 
 // crossTargets is the supported matrix of NFR-COMPAT-06. It is a list in a
 // test, not a line in a Makefile: the README promised a cross-target gate and
@@ -30,9 +47,8 @@ var crossTargets = []struct{ goos, goarch string }{
 //
 // CGO_ENABLED=0 is forced. A cross build needs it anyway (there is no cross C
 // toolchain here), and it is the honest setting: NFR-COMPAT-06 is a promise
-// about the pure-Go build. Whether a cgo dependency has crept in is
-// TestNoCgoOutsideStdlib's job, and that one runs with cgo ON for the reason
-// its comment gives.
+// about the pure-Go build, which is the fallback every cgo-tagged file must
+// have.
 func TestCrossTargetBuildAndVet(t *testing.T) {
 	if testing.Short() {
 		t.Skip("cross-target build gate skipped under -short")
@@ -67,5 +83,25 @@ Fix the target; do not narrow the matrix.`, verb, target.goos, target.goarch, er
 				}
 			}
 		})
+	}
+}
+
+// TestHostCgoBuildAndVet builds and vets the host target with cgo ON, which is
+// the only build that compiles the //go:build cgo files. The cross-target gate
+// cannot see them, so without this a broken cgo file would leave the suite
+// green whenever the tests themselves run with cgo off.
+func TestHostCgoBuildAndVet(t *testing.T) {
+	if testing.Short() {
+		t.Skip("host cgo build gate skipped under -short")
+	}
+	root := repoRoot(t)
+	for _, verb := range []string{"build", "vet"} {
+		cmd := exec.Command("go", verb, "./...")
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("go %s ./... with CGO_ENABLED=1 failed: %v\n%s", verb, err,
+				strings.TrimSpace(string(out)))
+		}
 	}
 }

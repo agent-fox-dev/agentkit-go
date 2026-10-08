@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -223,11 +224,24 @@ func TestNewFileUnderTheWorkspaceIsAllowed(t *testing.T) {
 	}
 }
 
-func TestTildeUserIsRejectedNotExpanded(t *testing.T) {
-	_, err := Normalize("~root/secrets")
+func TestTildeUserExpandsToThatUsersHome(t *testing.T) {
+	me, err := user.Current()
+	if err != nil || me.HomeDir == "" {
+		t.Skip("no current user to look up")
+	}
+	got, err := Normalize("~" + me.Username + "/secrets")
+	if err != nil {
+		t.Fatalf("Normalize(~%s/secrets): %v", me.Username, err)
+	}
+	if want := filepath.Join(me.HomeDir, "secrets"); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestTildeUnknownUserIsMalformed(t *testing.T) {
+	_, err := Normalize("~no-such-user-agentkit/secrets")
 	if !errors.Is(err, ErrPathMalformed) {
-		t.Fatalf("err = %v, want ErrPathMalformed: ~user needs a cgo-backed lookup, "+
-			"which is exactly what the dependency gate exists to catch (ruling P-46)", err)
+		t.Fatalf("err = %v, want ErrPathMalformed", err)
 	}
 }
 

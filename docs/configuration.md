@@ -304,5 +304,7 @@ built-in. The user tier is skipped when the home directory cannot be resolved.
 
 ## Compatibility
 
-Go 1.26.5 or later (`go.mod`). Builds are checked for linux/amd64,
-linux/arm64, darwin/arm64 and windows/amd64; cgo is rejected.
+Go 1.27 or later (`go.mod`). Builds are checked for linux/amd64,
+linux/arm64, darwin/arm64 and windows/amd64 with cgo off; the host is also
+built with cgo on. cgo code lives only in `//go:build cgo` files, each with a
+pure-Go fallback.

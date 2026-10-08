@@ -4,12 +4,12 @@ A Go agent SDK. The loop, the tool system and the provider abstraction are
 ordinary Go you can read and step through — nothing is hidden inside a
 subprocess or a graph engine.
 
-**The root module requires no third-party module today.** The standard library
-is the preferred default, a third-party module is allowed when
-[`docs/DEPS.md`](docs/DEPS.md) says why it earns its place, and cgo is never
-allowed — a test enforces that and the four-target cross build
-([`internal/policy`](internal/policy/deps_test.go),
-[`docs/errata/dependency_policy.md`](docs/errata/dependency_policy.md)).
+**Dependencies.** Maintained third-party modules replace hand-rolled
+infrastructure where they carry the same guarantees
+([PRD 09](docs/prd/09-replace-hand-rolled-code-with-libraries.md)). cgo is
+allowed only behind `//go:build cgo` with a pure-Go fallback;
+[`internal/policy`](internal/policy/crosstarget_test.go) builds the four
+supported targets with cgo off and the host with cgo on.
 
 ```bash
 go test ./...          # everything, offline, no API key
@@ -57,8 +57,8 @@ TBD
 | [`docs/configuration.md`](docs/configuration.md) | Environment variables, `AgentConfig`, provider and tool options, TOML sections and manifests. |
 | [`docs/cli.md`](docs/cli.md) | `validate-plugins`, `difftest`, make targets, example program flags. |
 | [`docs/api.md`](docs/api.md) | The MCP server's HTTP and stdio surface. |
-| [`examples/README.md`](dexamples/README.md) | Overview of the examples |
-| [`docs/adr/`](docs/adr), [`docs/errata/`](docs/errata), [`docs/prd/`](docs/prd) | Decisions, spec divergences, requirements. |
+| [`examples/README.md`](examples/README.md) | Overview of the examples |
+| [`docs/prd/`](docs/prd) | Requirements. |
 
 ## Packages
 

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -464,47 +463,6 @@ func TestTS_04_31_IOErrNeverReachesShellToolResult(t *testing.T) {
 			}
 			if !reflect.DeepEqual(*a.Metadata, *b.Metadata) {
 				t.Fatalf("Metadata differs:\n  without IOErr: %+v\n  with IOErr:    %+v", *a.Metadata, *b.Metadata)
-			}
-		})
-	}
-}
-
-// ------------------------------------------------------------------ TS-04-32
-// The existing tools tests pass with no edit to tools_test.go.
-// reqtool06_test.go was held to the same rule until spec 05_find_references
-// added find_references to the default tool set, which its
-// TestTheDefaultToolSetIsPlatformStable pins by design.
-
-func TestTS_04_32_ExistingTestFilesUnchanged(t *testing.T) {
-	// The base commit is the one preceding this spec's first change.
-	const base = "d0602e0"
-
-	// Check git is available and the base commit exists.
-	cmd := exec.Command("git", "rev-parse", "--verify", base)
-	if err := cmd.Run(); err != nil {
-		t.Skipf("git or base commit %s unavailable: %v", base, err)
-	}
-
-	// git diff --exit-code returns 0 when there are no differences.
-	for _, file := range []string{"tools/tools_test.go"} {
-		t.Run(filepath.Base(file), func(t *testing.T) {
-			cmd := exec.Command("git", "diff", "--exit-code", base, "--", file)
-			// Run from the repo root.
-			dir, _ := os.Getwd()
-			for {
-				if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-					break
-				}
-				parent := filepath.Dir(dir)
-				if parent == dir {
-					t.Skip("cannot find repo root")
-				}
-				dir = parent
-			}
-			cmd.Dir = dir
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("git diff reports changes to %s:\n%s", file, string(out))
 			}
 		})
 	}

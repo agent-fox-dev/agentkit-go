@@ -1,15 +1,15 @@
 // The codesearch examples are a SEPARATE MODULE, like codesearch/ itself.
 //
-// They import codesearch, which imports zoekt. REQ-GO-11 holds the root module
-// to the standard library, and a nested module is the only mechanism in Go that
-// keeps a dependency out of the root's graph — so an example that imports
-// codesearch cannot live in the root module beside the others.
+// They import codesearch, which imports zoekt. zoekt's graph is large, and a
+// nested module is the only mechanism in Go that keeps a dependency out of the
+// root's graph — so an example that imports codesearch lives here rather than
+// in the root module beside the others.
 //
 // Both agentkit-go modules are consumed from this checkout through replaces,
 // so the examples always build against the code next to them.
 module github.com/agentfox/agentkit-go/examples/codesearch
 
-go 1.26.5
+go 1.27
 
 require (
 	github.com/agentfox/agentkit-go v0.0.0

@@ -7,7 +7,7 @@
 // docs/errata/03_forbidden_imports_direct_only.md.
 module github.com/agentfox/agentkit-go/codesearch
 
-go 1.26.5
+go 1.27
 
 require (
 	github.com/agentfox/agentkit-go v0.0.0

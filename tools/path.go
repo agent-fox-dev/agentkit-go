@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 )
@@ -186,10 +187,8 @@ func within(root, target string) bool {
 
 // Normalize applies the pre-canonicalization rewrites.
 //
-// `~user` is REJECTED rather than expanded. Expanding it needs os/user, which
-// is cgo-backed on most platforms — exactly the dependency the REQ-GO-13 gate
-// exists to catch, and it would silently break cross-compilation for the
-// NFR-COMPAT-06 matrix (ruling P-46).
+// `~user` expands to that user's home directory via os/user; an unknown user
+// is malformed rather than left as a literal `~user` path.
 //
 // An unresolvable HOME is also a rejection, not a fallback to a relative path.
 // A relative path resolves against the process working directory — whatever
@@ -228,9 +227,12 @@ func Normalize(p string) (string, error) {
 		}
 		s = filepath.Join(home, s[2:])
 	case strings.HasPrefix(s, "~"):
-		return "", fmt.Errorf(
-			"%w: ~user expansion is not supported (it requires a cgo-backed user "+
-				"lookup, which would break cross-compilation); use an absolute path", ErrPathMalformed)
+		name, rest, _ := strings.Cut(s[1:], "/")
+		u, err := user.Lookup(name)
+		if err != nil || u.HomeDir == "" {
+			return "", fmt.Errorf("%w: cannot expand ~%s: unknown user", ErrPathMalformed, name)
+		}
+		s = filepath.Join(u.HomeDir, rest)
 	}
 
 	if strings.ContainsRune(s, 0) {
