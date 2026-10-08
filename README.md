@@ -72,7 +72,7 @@ TBD
 | `core` | Canonical vocabulary and every interface seam: messages, content blocks, events, `EventStream`, `Tool`, `ProviderClient`. |
 | `catalog` | Embedded model catalog, resolution, sibling-cloning, `max_tokens` and thinking-level clamping. |
 | `session` | Append-only JSONL log, damage-tolerant loader, branch tree, resume fold. |
-| `skills` | Skill manifests (hand-rolled TOML subset), progressive disclosure, project context files, and the default-off trust gate. |
+| `skills` | Skill manifests (TOML via `go-toml/v2/unstable`, read leniently with line-numbered diagnostics), progressive disclosure, project context files, and the default-off trust gate. |
 | `outline` | Source-file declaration listing with three backends (`go/ast`, universal-ctags via an injected runner, anchored-line heuristics) and a `none` fallback. Standard-library-only. |
 | `tools` | Built-in tools (`file_outline`, `find_symbol`, `find_references` and the nine others), path containment, bounded accumulator, process control, glob, a layered gitignore engine, `fetch_url` behind an SSRF guard, `Walk` (the single shared directory traversal), `CtagsRunner` (ctags process lifecycle for `outline`), the in-memory symbol table behind `find_symbol`, and the reference engine and cache behind `find_references`. |
 | `provider` | Send-time transcript repair, HTTP transport + retry, credential resolution, header precedence, cost arithmetic, SSE decoding — everything shared by every wire API. |

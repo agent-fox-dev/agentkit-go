@@ -90,7 +90,7 @@ Rules that follow from it:
 | `jsonx` | Order-preserving JSON. |
 | `schema` | JSON Schema value and typed combinators. |
 | `imagex` | Image normalization to a provider's inline-image limits (resize, re-encode, base64 budget). WebP is forwarded untouched. |
-| `internal/toml` | Hand-rolled TOML subset for manifests and config. |
+| `internal/toml` | Lenient TOML reader for manifests and config: `github.com/pelletier/go-toml/v2/unstable` (pinned) parses; a small adapter folds it into an ordered `Table` with line numbers and "duplicate warns, last wins". |
 | `internal/diag` | The shared non-fatal `Diagnostic`. |
 | `internal/policy` | Tests only: the cross-target (cgo off) and host (cgo on) build gates. |
 | `internal/testkit` | Shared test helpers. |

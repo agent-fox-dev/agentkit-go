@@ -256,10 +256,10 @@ func TestTOMLKeyOrderFollowsTheFileNotTheMap(t *testing.T) {
 	}
 }
 
-// A manifest is untrusted input, and parseArray recurses once per '['. Without
-// a depth bound the stack is whatever the file says it is; with one, a file
-// that nests past the bound is a SyntaxError on the line that opened it, and
-// the process is still standing to report it.
+// A manifest is untrusted input, and the parser recurses once per '['. Without
+// a depth bound the stack is whatever the file says it is; with one (go-toml's,
+// 10 000 levels), a file that nests past the bound is a SyntaxError on the
+// line that opened it, and the process is still standing to report it.
 func TestTOMLArrayNestingIsBoundedNotRecursedWithoutLimit(t *testing.T) {
 	src := "a = " + strings.Repeat("[", 200_000)
 	_, _, err := ParseTOML([]byte(src))
@@ -270,7 +270,7 @@ func TestTOMLArrayNestingIsBoundedNotRecursedWithoutLimit(t *testing.T) {
 	if !errors.As(err, &se) {
 		t.Fatalf("error %v is not a *SyntaxError", err)
 	}
-	if !strings.Contains(se.Msg, "nested deeper than") || se.Line != 1 {
+	if !strings.Contains(se.Msg, "nested") || se.Line != 1 {
 		t.Fatalf("error = %v, want the nesting bound named on line 1", err)
 	}
 
@@ -285,5 +285,26 @@ func TestTOMLArrayNestingIsBoundedNotRecursedWithoutLimit(t *testing.T) {
 	}
 	if len(diags) != 1 || tbl.vals["b"].Str != "kept" {
 		t.Fatalf("diags = %v, b = %+v", diags, tbl.vals["b"])
+	}
+}
+
+// Line numbers are what a manifest diagnostic points the author at: every
+// value, table header and skipped-key warning carries the line it was
+// written on.
+func TestTOMLValuesTablesAndDiagnosticsCarryTheirLine(t *testing.T) {
+	tbl, diags := mustParse(t, "# c\nname = \"x\"\n\n[skill.tools]\nmodule = \"m\"\nwhen = 1979-05-27\n")
+	if v, _ := tbl.Get("name"); v.Line != 2 {
+		t.Errorf("name line = %d, want 2", v.Line)
+	}
+	skill, _ := tbl.Sub("skill")
+	tools, _ := skill.Sub("tools")
+	if tools.Line() != 4 {
+		t.Errorf("[skill.tools] line = %d, want 4", tools.Line())
+	}
+	if v, _ := tools.Get("module"); v.Line != 5 {
+		t.Errorf("module line = %d, want 5", v.Line)
+	}
+	if len(diags) != 1 || diags[0].Line != 6 || !strings.Contains(diags[0].Message, `"skill.tools.when"`) {
+		t.Errorf("diags = %+v, want one warning on line 6 naming skill.tools.when", diags)
 	}
 }

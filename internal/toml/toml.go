@@ -1,10 +1,12 @@
 package toml
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
-	"unicode/utf8"
+
+	"github.com/pelletier/go-toml/v2/unstable"
 
 	"github.com/agentfox/agentkit-go/internal/diag"
 )
@@ -23,49 +25,34 @@ const (
 
 const bomPrefix = diag.BOMPrefix
 
-// ---------------------------------------------------------------- TOML subset
+// ParseTOML reads TOML with github.com/pelletier/go-toml/v2/unstable, which
+// owns the grammar (strings and escapes, numbers, comments, headers, dotted
+// keys, nesting bound). This file only folds the parser's expression stream
+// into an ordered Table, because the decoders built on go-toml cannot report
+// the line of a value, keep written key order, or let a duplicate key warn
+// and win instead of failing the file. The version is pinned in go.mod:
+// `unstable` is outside go-toml's semver promise.
 //
-// There is no TOML parser in the Go standard library and REQ-GO-11 forbids a
-// dependency, so this is a hand-written parser for the subset a skill manifest
-// needs (REQ-SKILL-03). The honest statement of that subset follows; an honest
-// subset beats a broken superset, because the failure mode of a "mostly TOML"
-// parser is a value silently read as the wrong thing.
+// VALUES a manifest reader receives: strings (basic and literal), booleans,
+// decimal integers, floats (including inf and nan) and arrays of strings,
+// plus tables and arrays of tables.
 //
-// SUPPORTED, exhaustively:
-//   - '#' comments, on their own line or trailing a value
-//   - bare keys ([A-Za-z0-9_-]+) and quoted keys ("k" and 'k')
-//   - dotted keys (a.b.c = 1) and table headers [a] and [a.b]
-//   - basic strings "..." with the escapes \b \t \n \f \r \" \\ \/ \uXXXX
-//     and \UXXXXXXXX
-//   - literal strings '...' (no escape processing, per TOML)
-//   - booleans true and false
-//   - decimal integers with an optional sign and '_' digit separators
-//   - floats: fractional, exponent, inf and nan, with '_' separators
-//     (REQ-MCP-CLIENT-07 writes its default timeout as `30.0`)
-//   - arrays of strings, single- or multi-line, trailing comma allowed
-//   - a leading UTF-8 BOM
-//
-// NOT SUPPORTED, and each one is a DIAGNOSTIC THAT SKIPS THE KEY rather than a
-// failure of the file. REQ-SKILL-10: a manifest is authored content whose
+// Every other well-formed value is a DIAGNOSTIC THAT SKIPS THE KEY rather than
+// a failure of the file. REQ-SKILL-10: a manifest is authored content whose
 // consumer is a language model, and a value form we do not read must not
 // delete the whole skill.
 //   - dates, times and datetimes
 //   - multi-line strings (""" and ''')
 //   - inline tables { }
+//   - non-decimal integers (0x, 0o, 0b)
 //   - arrays that are not arrays of strings (numbers, nested arrays, tables)
 //
-// SUPPORTED since REQ-MCP-CLIENT-07 needed it:
-//   - arrays of tables [[a.b]]
-//   - non-decimal integers (0x, 0o, 0b)
-//
-// NOT SUPPORTED and a HARD ERROR, because after one of these the file's
-// structure is unknown and every later key would be filed under the wrong
-// table — a silently misplaced key is worse than a rejected manifest:
-//   - an unterminated string, array or table header
-//   - anything that is not a comment, a table header or `key = value`
-//   - an array nested deeper than maxNesting levels (see parseArray)
+// A grammar error is a HARD ERROR (*SyntaxError with a line), because after
+// one the file's structure is unknown and every later key would be filed
+// under the wrong table — a silently misplaced key is worse than a rejected
+// manifest.
 
-// ValueKind enumerates the value types the subset above can produce.
+// ValueKind enumerates the value types listed above.
 type ValueKind uint8
 
 const (
@@ -223,555 +210,103 @@ type SyntaxError struct {
 
 func (e *SyntaxError) Error() string { return fmt.Sprintf("line %d: %s", e.Line, e.Msg) }
 
-// ParseTOML parses the documented subset. It returns the root table, the
-// diagnostics for keys it deliberately skipped, and an error only for the
-// structural failures listed above.
+// ParseTOML returns the root table, the diagnostics for keys it deliberately
+// skipped, and an error only for a grammar failure.
 func ParseTOML(src []byte) (*Table, []Diagnostic, error) {
 	// A BOM at the head of a manifest is common on Windows editors and is not
-	// a key. Written as an escape because a literal BOM is illegal in Go
-	// source (REQ-CTX-02 requires the same strip for context files).
+	// a key (REQ-CTX-02 requires the same strip for context files).
 	src = []byte(strings.TrimPrefix(string(src), bomPrefix))
 
-	p := &tomlParser{src: src, line: 1}
-	p.root = newTable("", 0)
-	p.cur = p.root
-	if err := p.parse(); err != nil {
-		return nil, p.diags, err
+	var p unstable.Parser
+	p.Reset(src)
+	lineOf := func(r unstable.Range) int { return p.Shape(r).Start.Line }
+	root := newTable("", 0)
+	cur := root
+	var diags []Diagnostic
+	warnf := func(line int, f string, a ...any) {
+		diags = append(diags, Diagnostic{Severity: SeverityWarning, Line: line, Message: fmt.Sprintf(f, a...)})
 	}
-	return p.root, p.diags, nil
-}
-
-// maxNesting bounds array nesting. Nested arrays are not even a SUPPORTED
-// value — they are skipped with a diagnostic — but skipping one still parses
-// it, and parseArray recurses through parseValue once per '['. A manifest is
-// untrusted input (a project skill.toml is repository-authored), and an
-// unbounded recursion is a stack the input controls: a few hundred thousand
-// '[' bytes were enough to make the parser the thing that crashed. No
-// manifest nests sixty-four deep; a file that does is not a manifest.
-const maxNesting = 64
-
-type tomlParser struct {
-	src   []byte
-	i     int
-	line  int
-	root  *Table
-	cur   *Table
-	diags []Diagnostic
-	// depth is the current array nesting, checked against maxNesting.
-	depth int
-}
-
-func (p *tomlParser) errf(f string, a ...any) error {
-	return &SyntaxError{Line: p.line, Msg: fmt.Sprintf(f, a...)}
-}
-
-func (p *tomlParser) warnf(line int, f string, a ...any) {
-	p.diags = append(p.diags, Diagnostic{
-		Severity: SeverityWarning,
-		Line:     line,
-		Message:  fmt.Sprintf(f, a...),
-	})
-}
-
-func (p *tomlParser) eof() bool { return p.i >= len(p.src) }
-
-func (p *tomlParser) peek() byte {
-	if p.eof() {
-		return 0
-	}
-	return p.src[p.i]
-}
-
-func (p *tomlParser) at(off int) byte {
-	if p.i+off >= len(p.src) {
-		return 0
-	}
-	return p.src[p.i+off]
-}
-
-func (p *tomlParser) advance() byte {
-	c := p.src[p.i]
-	p.i++
-	if c == '\n' {
-		p.line++
-	}
-	return c
-}
-
-func (p *tomlParser) skipSpace() {
-	for !p.eof() && (p.peek() == ' ' || p.peek() == '\t') {
-		p.i++
-	}
-}
-
-func (p *tomlParser) skipComment() {
-	if p.peek() == '#' {
-		for !p.eof() && p.peek() != '\n' {
-			p.i++
-		}
-	}
-}
-
-// skipBlank consumes whitespace, newlines and comments.
-func (p *tomlParser) skipBlank() {
-	for !p.eof() {
-		switch p.peek() {
-		case ' ', '\t', '\r', '\n':
-			p.advance()
-		case '#':
-			p.skipComment()
-		default:
-			return
-		}
-	}
-}
-
-// endOfLine consumes trailing space, an optional trailing comment and the
-// newline. Requiring it is what makes `key = garbage extra` an error rather
-// than a value silently truncated at the first space.
-func (p *tomlParser) endOfLine() error {
-	p.skipSpace()
-	p.skipComment()
-	if p.eof() {
-		return nil
-	}
-	if p.peek() == '\r' && p.at(1) == '\n' {
-		p.i++
-	}
-	if p.peek() == '\n' {
-		p.advance()
-		return nil
-	}
-	return p.errf("unexpected %q; expected end of line", string(p.peek()))
-}
-
-func (p *tomlParser) parse() error {
-	for {
-		p.skipBlank()
-		if p.eof() {
-			return nil
-		}
-		if p.peek() == '[' {
-			if err := p.parseHeader(); err != nil {
-				return err
+	for p.NextExpression() {
+		e := p.Expression()
+		var path []string
+		line := 0
+		for it := e.Key(); it.Next(); {
+			if line == 0 {
+				line = lineOf(it.Node().Raw)
 			}
-			continue
+			path = append(path, string(it.Node().Data))
 		}
-		if err := p.parseKeyValue(); err != nil {
-			return err
-		}
-	}
-}
-
-func (p *tomlParser) parseHeader() error {
-	line := p.line
-	p.i++ // '['
-	array := false
-	if p.peek() == '[' {
-		// [[a.b]] — an array of tables. Added for REQ-MCP-CLIENT-07's
-		// [[mcp.servers]]; nothing else in the module uses one.
-		array = true
-		p.i++
-	}
-	path, err := p.parseKeyPath()
-	if err != nil {
-		return err
-	}
-	p.skipSpace()
-	if p.peek() != ']' {
-		return p.errf("expected ']' to close table header [%s]", strings.Join(path, "."))
-	}
-	p.i++
-	if array {
-		if p.peek() != ']' {
-			return p.errf("expected ']]' to close array-of-tables header [[%s]]",
-				strings.Join(path, "."))
-		}
-		p.i++
-	}
-	if err := p.endOfLine(); err != nil {
-		return err
-	}
-
-	if !array {
-		p.cur = p.root.ensure(path, line)
-		return nil
-	}
-	if len(path) == 0 {
-		return p.errf("array-of-tables header needs a name")
-	}
-	parent := p.root.ensure(path[:len(path)-1], line)
-	key := path[len(path)-1]
-	p.cur = parent.appendArray(key, parent.Qualify(key), line)
-	return nil
-}
-
-func (p *tomlParser) parseKeyPath() ([]string, error) {
-	var parts []string
-	for {
-		p.skipSpace()
-		part, err := p.parseKeyPart()
-		if err != nil {
-			return nil, err
-		}
-		parts = append(parts, part)
-		p.skipSpace()
-		if p.peek() == '.' {
-			p.i++
-			continue
-		}
-		return parts, nil
-	}
-}
-
-func isBareKeyByte(c byte) bool {
-	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '-'
-}
-
-func (p *tomlParser) parseKeyPart() (string, error) {
-	switch p.peek() {
-	case '"':
-		if p.at(1) == '"' && p.at(2) == '"' {
-			return "", p.errf("multi-line strings are not supported as keys")
-		}
-		return p.parseBasicString()
-	case '\'':
-		if p.at(1) == '\'' && p.at(2) == '\'' {
-			return "", p.errf("multi-line strings are not supported as keys")
-		}
-		return p.parseLiteralString()
-	default:
-		start := p.i
-		for !p.eof() && isBareKeyByte(p.peek()) {
-			p.i++
-		}
-		if p.i == start {
-			return "", p.errf("expected a key")
-		}
-		return string(p.src[start:p.i]), nil
-	}
-}
-
-func (p *tomlParser) parseKeyValue() error {
-	line := p.line
-	path, err := p.parseKeyPath()
-	if err != nil {
-		return err
-	}
-	p.skipSpace()
-	if p.peek() != '=' {
-		return p.errf("expected '=' after key %q", strings.Join(path, "."))
-	}
-	p.i++
-	p.skipSpace()
-
-	v, ok, why, err := p.parseValue()
-	if err != nil {
-		return err
-	}
-	if err := p.endOfLine(); err != nil {
-		return err
-	}
-
-	tbl := p.cur
-	if len(path) > 1 {
-		tbl = p.cur.ensure(path[:len(path)-1], line)
-	}
-	key := path[len(path)-1]
-	if !ok {
-		p.warnf(line, "key %q skipped: %s", tbl.Qualify(key), why)
-		return nil
-	}
-	v.Line = line
-	if !tbl.set(key, v) {
-		p.warnf(line, "duplicate key %q; the last value wins", tbl.Qualify(key))
-	}
-	return nil
-}
-
-// parseValue returns (value, supported, whyUnsupported, error). An unsupported
-// value is still fully CONSUMED before returning, so the parser stays in sync
-// and the rest of the manifest still loads.
-func (p *tomlParser) parseValue() (Value, bool, string, error) {
-	if p.eof() {
-		return Value{}, false, "", p.errf("expected a value")
-	}
-	switch c := p.peek(); {
-	case c == '"':
-		if p.at(1) == '"' && p.at(2) == '"' {
-			if err := p.skipMultilineString('"'); err != nil {
-				return Value{}, false, "", err
+		last := path[len(path)-1]
+		switch e.Kind {
+		case unstable.Table:
+			cur = root.ensure(path, line)
+		case unstable.ArrayTable:
+			parent := root.ensure(path[:len(path)-1], line)
+			cur = parent.appendArray(last, parent.Qualify(last), line)
+		case unstable.KeyValue:
+			tbl := cur.ensure(path[:len(path)-1], line)
+			v, why := convert(&p, e.Value())
+			v.Line = line
+			switch {
+			case why != "":
+				warnf(line, "key %q skipped: %s", tbl.Qualify(last), why)
+			case !tbl.set(last, v):
+				warnf(line, "duplicate key %q; the last value wins", tbl.Qualify(last))
 			}
-			return Value{}, false, "multi-line strings are not supported", nil
 		}
-		s, err := p.parseBasicString()
-		if err != nil {
-			return Value{}, false, "", err
-		}
-		return Value{Kind: KindString, Str: s}, true, "", nil
-
-	case c == '\'':
-		if p.at(1) == '\'' && p.at(2) == '\'' {
-			if err := p.skipMultilineString('\''); err != nil {
-				return Value{}, false, "", err
-			}
-			return Value{}, false, "multi-line strings are not supported", nil
-		}
-		s, err := p.parseLiteralString()
-		if err != nil {
-			return Value{}, false, "", err
-		}
-		return Value{Kind: KindString, Str: s}, true, "", nil
-
-	case c == '[':
-		return p.parseArray()
-
-	case c == '{':
-		if err := p.skipInlineTable(); err != nil {
-			return Value{}, false, "", err
-		}
-		return Value{}, false, "inline tables are not supported", nil
-
-	default:
-		return p.parseBareToken()
 	}
+	if err := p.Error(); err != nil {
+		se := &SyntaxError{Msg: err.Error()}
+		if perr := (*unstable.ParserError)(nil); errors.As(err, &perr) && perr.Highlight != nil {
+			se.Line = lineOf(p.Range(perr.Highlight))
+		}
+		return nil, diags, se
+	}
+	return root, diags, nil
 }
 
-// bareTokenEnd delimits an unquoted value. ']' and ',' are included so array
-// elements terminate correctly.
-func isValueDelim(c byte) bool {
-	switch c {
-	case ' ', '\t', '\r', '\n', ',', ']', '}', '#':
-		return true
-	}
-	return false
-}
-
-func (p *tomlParser) parseBareToken() (Value, bool, string, error) {
-	start := p.i
-	for !p.eof() && !isValueDelim(p.peek()) {
-		p.i++
-	}
-	tok := string(p.src[start:p.i])
-	if tok == "" {
-		return Value{}, false, "", p.errf("expected a value")
-	}
-	switch tok {
-	case "true":
-		return Value{Kind: KindBool, Bool: true}, true, "", nil
-	case "false":
-		return Value{Kind: KindBool, Bool: false}, true, "", nil
-	}
-
-	body := strings.TrimPrefix(strings.TrimPrefix(tok, "+"), "-")
-	// A date is recognised by SHAPE before the float test runs: an exponent
-	// float such as 6.626e-34 carries a '-' too, and testing for that byte
-	// alone would file every negative exponent under "dates".
-	isDate := strings.Contains(tok, ":") ||
-		(len(body) >= 10 && body[4] == '-' && body[7] == '-')
-	switch {
-	case isDate:
-		return Value{}, false, "dates and times are not supported", nil
-	case body == "inf" || body == "nan" ||
-		(strings.ContainsAny(tok, ".eE") && !strings.HasPrefix(body, "0x")):
-		f, err := strconv.ParseFloat(strings.ReplaceAll(tok, "_", ""), 64)
+// convert maps one value node to a Value, or names why it is not read.
+func convert(p *unstable.Parser, n *unstable.Node) (Value, string) {
+	raw := string(p.Raw(n.Raw))
+	switch n.Kind {
+	case unstable.String:
+		if strings.HasPrefix(raw, `"""`) || strings.HasPrefix(raw, "'''") {
+			return Value{}, "multi-line strings are not supported"
+		}
+		return Value{Kind: KindString, Str: string(n.Data)}, ""
+	case unstable.Bool:
+		return Value{Kind: KindBool, Bool: string(n.Data) == "true"}, ""
+	case unstable.Integer:
+		if body := strings.TrimLeft(raw, "+-"); len(body) > 1 && body[0] == '0' {
+			return Value{}, "only decimal integers are supported"
+		}
+		i, err := strconv.ParseInt(strings.ReplaceAll(raw, "_", ""), 10, 64)
 		if err != nil {
-			return Value{}, false, fmt.Sprintf("unrecognized value %q", tok), nil
+			return Value{}, fmt.Sprintf("unrecognized value %q", raw)
 		}
-		return Value{Kind: KindFloat, Float: f}, true, "", nil
-	case strings.HasPrefix(body, "0x"), strings.HasPrefix(body, "0o"), strings.HasPrefix(body, "0b"):
-		return Value{}, false, "only decimal integers are supported", nil
-	}
-	n, err := strconv.ParseInt(strings.ReplaceAll(tok, "_", ""), 10, 64)
-	if err != nil {
-		return Value{}, false, fmt.Sprintf("unrecognized value %q", tok), nil
-	}
-	return Value{Kind: KindInt, Int: n}, true, "", nil
-}
-
-func (p *tomlParser) parseArray() (Value, bool, string, error) {
-	openLine := p.line
-	if p.depth >= maxNesting {
-		return Value{}, false, "", p.errf("array nested deeper than %d levels", maxNesting)
-	}
-	p.depth++
-	defer func() { p.depth-- }()
-	p.i++ // '['
-	out := []string{}
-	unsupported := ""
-	for {
-		p.skipBlank()
-		if p.eof() {
-			// Report the OPENING line. By the time EOF is reached the parser
-			// has walked to the end of the file, and pointing an author at the
-			// last line of the manifest for a bracket they left open several
-			// lines earlier is not a diagnosis.
-			p.line = openLine
-			return Value{}, false, "", p.errf("unterminated array")
-		}
-		if p.peek() == ']' {
-			p.i++
-			break
-		}
-		ev, ok, why, err := p.parseValue()
+		return Value{Kind: KindInt, Int: i}, ""
+	case unstable.Float:
+		f, err := strconv.ParseFloat(strings.ReplaceAll(string(n.Data), "_", ""), 64)
 		if err != nil {
-			return Value{}, false, "", err
+			return Value{}, fmt.Sprintf("unrecognized value %q", n.Data)
 		}
-		switch {
-		case !ok:
-			if unsupported == "" {
-				unsupported = why
+		return Value{Kind: KindFloat, Float: f}, ""
+	case unstable.Array:
+		out := []string{}
+		for it := n.Children(); it.Next(); {
+			ev, why := convert(p, it.Node())
+			if why == "" && ev.Kind != KindString {
+				why = "only arrays of strings are supported"
 			}
-		case ev.Kind != KindString:
-			if unsupported == "" {
-				unsupported = "only arrays of strings are supported"
+			if why != "" {
+				return Value{}, why
 			}
-		default:
 			out = append(out, ev.Str)
 		}
-		p.skipBlank()
-		if p.peek() == ',' {
-			p.i++
-			continue
-		}
-		if p.peek() == ']' {
-			p.i++
-			break
-		}
-		return Value{}, false, "", p.errf("expected ',' or ']' in array")
-	}
-	if unsupported != "" {
-		return Value{}, false, unsupported, nil
-	}
-	return Value{Kind: KindStringArray, Array: out}, true, "", nil
-}
-
-func (p *tomlParser) parseBasicString() (string, error) {
-	openLine := p.line
-	p.i++ // '"'
-	var b strings.Builder
-	for {
-		if p.eof() || p.peek() == '\n' {
-			p.line = openLine
-			return "", p.errf("unterminated string")
-		}
-		c := p.advance()
-		switch c {
-		case '"':
-			return b.String(), nil
-		case '\\':
-			if p.eof() {
-				p.line = openLine
-				return "", p.errf("unterminated escape")
-			}
-			e := p.advance()
-			switch e {
-			case 'b':
-				b.WriteByte('\b')
-			case 't':
-				b.WriteByte('\t')
-			case 'n':
-				b.WriteByte('\n')
-			case 'f':
-				b.WriteByte('\f')
-			case 'r':
-				b.WriteByte('\r')
-			case '"':
-				b.WriteByte('"')
-			case '\\':
-				b.WriteByte('\\')
-			case '/':
-				b.WriteByte('/')
-			case 'u', 'U':
-				n := 4
-				if e == 'U' {
-					n = 8
-				}
-				if p.i+n > len(p.src) {
-					return "", p.errf("truncated \\%c escape", e)
-				}
-				hex := string(p.src[p.i : p.i+n])
-				cp, err := strconv.ParseUint(hex, 16, 32)
-				if err != nil {
-					return "", p.errf("invalid \\%c escape %q", e, hex)
-				}
-				p.i += n
-				r := rune(cp)
-				if !utf8.ValidRune(r) {
-					r = utf8.RuneError
-				}
-				b.WriteRune(r)
-			default:
-				return "", p.errf("unknown escape \\%c", e)
-			}
-		default:
-			b.WriteByte(c)
-		}
-	}
-}
-
-func (p *tomlParser) parseLiteralString() (string, error) {
-	openLine := p.line
-	p.i++ // '\''
-	start := p.i
-	for {
-		if p.eof() || p.peek() == '\n' {
-			p.line = openLine
-			return "", p.errf("unterminated literal string")
-		}
-		if p.peek() == '\'' {
-			s := string(p.src[start:p.i])
-			p.i++
-			return s, nil
-		}
-		p.advance()
-	}
-}
-
-func (p *tomlParser) skipMultilineString(q byte) error {
-	openLine := p.line
-	p.i += 3
-	for {
-		if p.eof() {
-			p.line = openLine
-			return p.errf("unterminated multi-line string")
-		}
-		if p.peek() == q && p.at(1) == q && p.at(2) == q {
-			p.i += 3
-			return nil
-		}
-		p.advance()
-	}
-}
-
-func (p *tomlParser) skipInlineTable() error {
-	openLine := p.line
-	depth := 0
-	for {
-		if p.eof() {
-			p.line = openLine
-			return p.errf("unterminated inline table")
-		}
-		switch p.peek() {
-		case '{':
-			depth++
-			p.i++
-		case '}':
-			depth--
-			p.i++
-			if depth == 0 {
-				return nil
-			}
-		case '"':
-			if _, err := p.parseBasicString(); err != nil {
-				return err
-			}
-		case '\'':
-			if _, err := p.parseLiteralString(); err != nil {
-				return err
-			}
-		default:
-			p.advance()
-		}
+		return Value{Kind: KindStringArray, Array: out}, ""
+	case unstable.InlineTable:
+		return Value{}, "inline tables are not supported"
+	default: // LocalDate, LocalTime, LocalDateTime, DateTime
+		return Value{}, "dates and times are not supported"
 	}
 }

@@ -237,8 +237,12 @@ happened after the process started.
 These are loaded by the embedding application, with `ParseConfig`, from a file
 it chooses. Parsing is lenient (locally authored): an unknown key or a value of
 the wrong type is a `Diagnostic`, and the rest of the file still loads. The
-parser accepts a TOML subset: strings, booleans, integers, floats, string
-arrays, tables and arrays of tables.
+file is parsed as TOML 1.0 (`go-toml/v2`); a grammar error rejects the file
+with its line. The values read are strings, booleans, decimal integers,
+floats, string arrays, tables and arrays of tables. Any other well-formed
+value (dates, multi-line strings, inline tables, hex/octal/binary integers,
+non-string arrays) skips its key with a warning. A duplicate key warns and
+the last value wins.
 
 ### `[[mcp.servers]]` — `mcp.ParseConfig`
 

@@ -248,22 +248,11 @@ func TestRootModuleStdlibOnly_TS02_58(t *testing.T) {
 	}
 }
 
-// TS-05-51 (property): Root module maintains zero external dependencies and cgo purity across target platforms.
-// Verifies 05-REQ-10.1.
+// TS-05-51 (property): find_references is registered and the tools package
+// builds with cgo off on every target platform. (The zero-dependency half of
+// 05-REQ-10.1 was lifted by PRD 09 D2.)
 func TestPolicyAndCrossTarget_TS05_51(t *testing.T) {
 	root := filepath.Clean("..")
-	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
-	if err != nil {
-		t.Fatalf("reading go.mod: %v", err)
-	}
-	content := string(data)
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "require") {
-			t.Fatalf("go.mod has a require line: %s", trimmed)
-		}
-	}
-
 	ws, err := tools.NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
