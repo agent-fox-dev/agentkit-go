@@ -18,11 +18,9 @@
 // Server mode speaks the protocol on stdin and stdout, which is what an agent
 // that spawns you as a subprocess expects. Try it by hand; under revision
 // 2026-07-28 the frame carries the protocol version in its own `_meta`,
-// because there is no handshake in which to have agreed one. Keep stdin open
-// for a moment after the request: the server stops at end of input, and a
-// bare echo closes it before the response is written.
+// because there is no handshake in which to have agreed one:
 //
-//	{ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'; sleep 1; } \
+//	echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}' \
 //	  | go run ./examples/mcp --serve
 //
 // The protocol is the official Go SDK's (github.com/modelcontextprotocol/go-sdk),

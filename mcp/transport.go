@@ -42,21 +42,60 @@ type strictConn struct {
 	writeMu sync.Mutex
 	once    sync.Once
 	err     error
+
+	// pending counts inbound calls not yet answered. The SDK closes the
+	// connection as soon as Read reports EOF, which drops a reply still being
+	// computed: a client that writes its last request and closes stdin would
+	// never see the answer. So EOF is held back until every call read so far
+	// has had its response written (or the connection is closed).
+	mu       sync.Mutex
+	pending  int
+	answered chan struct{}
+	closed   chan struct{}
 }
 
 func newStrictConn(r io.Reader, w io.Writer, limits wire.Limits, closeFn func() error) *strictConn {
-	return &strictConn{frames: wire.NewNDJSON(r, limits), limits: limits, w: w, close: closeFn}
+	return &strictConn{frames: wire.NewNDJSON(r, limits), limits: limits, w: w, close: closeFn,
+		answered: make(chan struct{}, 1), closed: make(chan struct{})}
 }
 
-func (c *strictConn) Read(context.Context) (jsonrpc.Message, error) {
+func (c *strictConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	frame, err := c.frames.Next()
+	if err == io.EOF {
+		return nil, c.drain(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
 	if err := wire.Guard(frame, c.limits); err != nil {
 		return nil, err
 	}
-	return jsonrpc.DecodeMessage(frame)
+	msg, err := jsonrpc.DecodeMessage(frame)
+	if req, ok := msg.(*jsonrpc.Request); ok && err == nil && req.ID.IsValid() {
+		c.mu.Lock()
+		c.pending++
+		c.mu.Unlock()
+	}
+	return msg, err
+}
+
+// drain waits for every pending call to be answered, then reports EOF.
+func (c *strictConn) drain(ctx context.Context) error {
+	for {
+		c.mu.Lock()
+		n := c.pending
+		c.mu.Unlock()
+		if n == 0 {
+			return io.EOF
+		}
+		select {
+		case <-c.answered:
+		case <-c.closed:
+			return io.EOF
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // Write honours ctx even when the peer has stopped draining its pipe: the
@@ -75,6 +114,9 @@ func (c *strictConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 		_, err := c.w.Write(append(data, '\n'))
 		done <- err
 	}()
+	if resp, ok := msg.(*jsonrpc.Response); ok && resp.ID.IsValid() {
+		defer c.answer()
+	}
 	select {
 	case err := <-done:
 		return err
@@ -83,8 +125,24 @@ func (c *strictConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	}
 }
 
+// answer records that one pending call has had its response written.
+func (c *strictConn) answer() {
+	c.mu.Lock()
+	if c.pending > 0 {
+		c.pending--
+	}
+	c.mu.Unlock()
+	select {
+	case c.answered <- struct{}{}:
+	default:
+	}
+}
+
 func (c *strictConn) Close() error {
-	c.once.Do(func() { c.err = c.close() })
+	c.once.Do(func() {
+		close(c.closed)
+		c.err = c.close()
+	})
 	return c.err
 }
 

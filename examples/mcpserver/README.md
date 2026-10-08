@@ -37,11 +37,10 @@ shutdown (EOF on stdin, SIGINT/SIGTERM), 1 on a startup or transport failure.
 
 ## What you'll see
 
-stdio, one `tools/call` at revision 2026-07-28 (keep stdin open briefly — the
-server stops at end of input):
+stdio, one `tools/call` at revision 2026-07-28:
 
 ```
-$ { echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hello"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'; sleep 1; } | go run ./examples/mcpserver
+$ echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hello"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}' | go run ./examples/mcpserver
 {"jsonrpc":"2.0","id":1,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"agentkit-mcp-server","version":"0.1.0"}},"content":[{"type":"text","text":"hello"}],"resultType":"complete"}}
 ```
 

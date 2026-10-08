@@ -2,10 +2,14 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/agentfox/agentkit-go/wire"
 )
@@ -101,5 +105,46 @@ func TestTheSSEGuardKeepsEventBoundaries(t *testing.T) {
 	out, err := io.ReadAll(g)
 	if err != nil || string(out) != src {
 		t.Fatalf("out = %q, err = %v", out, err)
+	}
+}
+
+// lockedBuffer is a bytes.Buffer safe for the SDK's writer goroutine.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// TestStdioAnswersACallMadeJustBeforeEOF: a client that writes its request and
+// closes its end at once (`echo '<request>' | server`) must still get the
+// answer. The SDK closes the connection when Read reports EOF, so the reply of
+// a call still running was dropped.
+func TestStdioAnswersACallMadeJustBeforeEOF(t *testing.T) {
+	s := NewServer(ServerOptions{})
+	if err := s.RegisterTool(&Tool{Name: "slow"}, func(context.Context, map[string]any) (*CallToolResult, error) {
+		time.Sleep(100 * time.Millisecond)
+		return &CallToolResult{Content: []Content{&TextContent{Text: "done"}}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	meta := `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}`
+	in := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"slow","arguments":{},` + meta + `}}` + "\n"
+	var out lockedBuffer
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = s.Server.Run(ctx, NewPipeTransport(strings.NewReader(in), &out, wire.Limits{}))
+	if got := out.String(); !strings.Contains(got, `"id":7`) || !strings.Contains(got, "done") {
+		t.Fatalf("the call's reply was dropped at EOF; wrote %q", got)
 	}
 }

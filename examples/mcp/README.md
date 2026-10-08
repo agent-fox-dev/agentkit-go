@@ -28,7 +28,7 @@ go run ./examples/mcp --external "npx -y @modelcontextprotocol/server-github"   
 stdout:
 
 ```bash
-{ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'; sleep 1; } \
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}' \
   | go run ./examples/mcp --serve
 ```
 
@@ -95,8 +95,8 @@ and calls `srv.RegisterTool(&mcp.Tool{…}, handler)` with a raw JSON Schema;
 - **Audit events hash the arguments** (`ArgumentsHash`); arguments themselves
   never reach the audit trail.
 - In server mode **only protocol frames may go to stdout**; log to stderr.
-- The stdio server stops at end of input, so a bare `echo … |` closes stdin
-  before the reply is written — hence the `sleep` above.
+- The stdio server stops at end of input, after answering every request it
+  has already read.
 - For HTTP serving (API-key auth, bound to 127.0.0.1) see
   [`mcpserver`](../mcpserver).
 
