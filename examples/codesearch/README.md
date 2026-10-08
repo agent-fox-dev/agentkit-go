@@ -1,6 +1,6 @@
 # codesearch examples
 
-Three programs that use the [`codesearch`](../../codesearch) index: two on
+Four programs that use the [`codesearch`](../../codesearch) index: three on
 its own, with no agent and no API key, and one that hands it to an agent as the
 `code_search` tool.
 
@@ -8,6 +8,7 @@ its own, with no agent and no API key, and one that hands it to an agent as the
 cd examples/codesearch
 go run ./search --dir ../.. 'sym:NewWorkspace'    # no key
 go run ./freshness                                # no key
+go run ./code_search -dir ../.. '{"query":"sym:NewWorkspace"}'   # no key
 go run ./agent --dir ../.. "Which types implement tools.Index?"
 go test ./...                                     # no key
 ```
@@ -27,6 +28,7 @@ zoekt does not build on Windows. There, `codesearch.New` returns
 |---|---|---|
 | [`search`](search) | `go run ./search --dir ../.. 'retry file:\.go$ -file:_test'` | **The index without an agent.** `New` is free and `Build` is optional; one index answers many queries; calling the `code_search` tool's `Execute` directly is the whole query surface; errors are results with stable codes; `Symbols` as a declaration lookup; the structured `Data` an application consumes instead of the rendered text. |
 | [`freshness`](freshness) | `go run ./freshness` | **Keeping an index correct while files change.** The index never watches the filesystem: a write it is not told about is invisible, `Invalidate(path)` serves the file from an overlay, `Invalidate("")` revalidates the whole tree, more than 5% dirty rebuilds, and a closed index answers `index_closed`. |
+| [`code_search`](code_search) | `go run ./code_search -dir ../.. '{"query":"sym:NewWorkspace"}'` · `-schema` | **The tool as the model calls it.** Takes `code_search`'s JSON arguments and prints the text the model would read, built through `tools.Options.Index` exactly as an agent gets it. The codesearch counterpart of the per-tool programs in [`examples/tools`](../tools), sharing their flags. |
 | [`agent`](agent) | `go run ./agent --dir ../.. "<question>"` · `--compare` | **The opt-in.** `codesearch.New`, `tools.Options.Index`, `"code_search"` in the allowlist; the `ErrUnsupported` fallback; closing after the run, not after `tools.All`. `--compare` asks again without the index and prints both runs' turns, tool calls and cost. |
 
 ## `search`
@@ -65,7 +67,7 @@ timings on stderr show the difference. That is the reason to keep an `Index`
 around rather than search per call.
 
 zoekt reports shard builds through the standard library's global `log`
-package. All three examples silence it with `log.SetOutput(io.Discard)`; that is
+package. All four examples silence it with `log.SetOutput(io.Discard)`; that is
 the application's decision, since the logger is the process's, not the index's.
 
 ## `freshness`

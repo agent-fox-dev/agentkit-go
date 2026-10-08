@@ -68,17 +68,42 @@ credential for its vendor ([`configuration.md`](configuration.md)).
 | `examples/mcpserver` | `--config FILE` (TOML with `[mcp_server]`), `--transport stdio\|http`, `--port N`, `--api-key-env VAR`; flags override the file |
 | `examples/agentdemo`, `examples/testing` | none; no key or network needed |
 
+### `tools`
+
+`go run ./examples/tools/<tool> [flags] ['<json arguments>']` — one program per
+built-in tool, named as the model sees it: `read_file`, `write_file`,
+`edit_file`, `list_files`, `find_files`, `search_files`, `file_outline`,
+`find_symbol`, `find_references`, `execute`, `run_command`, `powershell`,
+`fetch_url`; `code_search` is `examples/codesearch/code_search` in the nested
+module. Each takes the tool's JSON arguments as the model sends them (one
+positional argument, else stdin), runs them through argument preparation, the
+authorization guard and the tool's `Execute`, and prints the text the model
+would read on stdout. No key needed. See
+[`examples/tools/README.md`](../examples/tools/README.md).
+
+| Flag | Meaning |
+|---|---|
+| `-dir` | Workspace root (default `.`) |
+| `-schema` | Print the name, description, input schema and prompt guidelines the model sees, then exit |
+| `-data` | Also print the structured result (data, metadata) as JSON on stderr |
+| `-allow PROG` | Add a program to the shell guard's allowlist (default `go`, `git`, `ls`, `cat`, `rg`); repeatable or comma-separated |
+| `-allow-all` | Use `guard.AllowAll` instead of `guard.Restricted`: an unrestricted shell (required for `powershell`) |
+
+Exit codes: `0` OK result, `1` error result (`is_error`), `2` no call made (usage, or the tool set could not be built).
+
 ### `codesearch`
 
-`cd examples/codesearch && go run ./<program> [flags]` — three programs for the
+`cd examples/codesearch && go run ./<program> [flags]` — four programs for the
 optional code-search index, in a nested module (see
 [`examples/codesearch/README.md`](../examples/codesearch/README.md)). Not
-available on Windows, where each prints `codesearch.ErrUnsupported` and exits 1.
+available on Windows, where each prints `codesearch.ErrUnsupported` and exits 1
+(`code_search`: 2, per the [`tools`](#tools) exit codes).
 
 | Program | Flags |
 |---|---|
 | `search` | `--dir` (directory to index, default `.`), `--path` (restrict every query), `--max-files N`, `--context N`, `--symbol NAME` with `--kind` and `--exact` (declaration lookup instead of a query), `--json` (structured result); positional arguments are zoekt queries. No key needed |
 | `freshness` | none; no key or network needed |
+| `code_search` | the [`tools`](#tools) flags above; the argument is the `code_search` tool's JSON (`{"query":"sym:NewWorkspace"}`). No key needed |
 | `agent` | `--dir` (workspace root, default `.`), `--compare` (also answer without the index and print both runs' cost); the question is the positional arguments |
 
 ### `triage`
