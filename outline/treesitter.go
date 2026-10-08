@@ -101,7 +101,16 @@ func (g *grammar) parse(ctx context.Context, src []byte) (*ts.Tree, error) {
 	if err := p.SetLanguage(g.lang); err != nil {
 		return nil, err
 	}
-	t := p.ParseCtx(ctx, src, nil)
+	// Not ParseCtx: in go-tree-sitter v0.25 it cancels through a flag pointer
+	// the C library no longer allocates, and segfaults when ctx ends.
+	read := func(off int, _ ts.Point) []byte {
+		if off < len(src) {
+			return src[off:]
+		}
+		return nil
+	}
+	cancelled := func(ts.ParseState) bool { return ctx.Err() != nil }
+	t := p.ParseWithOptions(read, nil, &ts.ParseOptions{ProgressCallback: cancelled})
 	if t == nil {
 		return nil, ctx.Err()
 	}

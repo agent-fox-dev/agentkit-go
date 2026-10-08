@@ -26,6 +26,17 @@ func TestCgoBuildSelectsTreeSitter(t *testing.T) {
 	}
 }
 
+// A context that has ended stops the parse instead of crashing it:
+// go-tree-sitter's ParseCtx wrote through a nil cancellation flag.
+func TestCancelledParseDoesNotCrash(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	src := []byte(strings.Repeat("def f():\n    pass\n", 10000))
+	if _, ok := outline.CommentAndStringSpans(ctx, "/x/a.py", src); ok {
+		t.Fatal("spans reported for a cancelled parse")
+	}
+}
+
 // show renders a declaration as "kind Container.Name L<start>-<end>", with a
 // trailing "-" when it is not exported.
 func show(d outline.Decl) string {
