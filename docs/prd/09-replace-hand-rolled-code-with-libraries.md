@@ -1,8 +1,8 @@
 # Replace hand-rolled code with maintained libraries
 
-Status: **proposed**. A plan, not yet implemented. Each step below lands on its
-own `feature/` branch with `make check` green and its docs updated in the same
-branch.
+Status: **implemented** (steps 0–5). Each step landed on its own `feature/`
+branch with `make check` green and its docs updated in the same branch. What
+was delivered, and where it differs from the plan, is recorded in §6.
 
 ## 1. The problem
 
@@ -231,6 +231,8 @@ Recorded so they are not re-proposed without new information.
 | `tools/edit.go` | go-diff, difflib, udiff | It does exact/folded matching, not diffing. |
 | `middleware` LRU | `hashicorp/golang-lru/v2` | ≈ −40 LOC for a module; `container/list` fixes the O(n) `touch` equally well. |
 | `tools/fold.go` | `x/text/unicode/norm` | NFKC does not fold smart quotes to ASCII. |
+| `tools/ignore.go` matcher | go-git `plumbing/format/gitignore` | Matches segments with `filepath.Match`: `[!x]` would stop negating and `**` would not backtrack (`a/**/b/c` misses `a/b/x/b/c`), and it pulls go-git, go-billy and gcfg into the root. The doublestar matcher from step 4 already handles `\#` and `\!`; the escaped-trailing-space bug was fixed in place. |
+| Swift outline | `alex-pinkus/tree-sitter-swift` | Its Go module is an untagged branch commit whose test imports a path that does not exist, so `go mod tidy` fails for every importer. |
 | `outline/lang.go` | `go-enry/go-enry/v2` | The table encodes deliberate per-backend exclusions. |
 | Tracing | OpenTelemetry | `core.Tracer` is already an interface; an adapter adds code. |
 
@@ -249,3 +251,27 @@ For every step:
   branch.
 - The commit message for each new module says what it buys and why
   hand-rolling it is not credible.
+
+## 6. Outcome
+
+Across steps 0–5: **−8,138 net source LOC and −7,001 net test LOC** in Go
+files (+2,645/−10,783 source, +2,227/−9,228 tests). The plan estimated −6,200
+and −3,000; the find-references cleanup and the ctags/heuristic deletion
+removed more than expected, the `wire` swap less.
+
+| Step | Delivered | Differs from plan |
+|---|---|---|
+| 0 | cgo/stdlib gates and doc-prose tests removed; `go 1.27`; `TestHostCgoBuildAndVet` added; `~user` expanded via `os/user`. | `TestTS_04_32_ExistingTestFilesUnchanged` (froze `tools_test.go`) and the `require`-line half of `TestPolicyAndCrossTarget_TS05_51` were also removed. |
+| 1 | `mcp/` on `modelcontextprotocol/go-sdk` v1.8.0: 6,023 → 2,096 source, 3,715 → 1,747 test LOC. Strict-JSON checks on stdio frames, inbound HTTP bodies and client responses. | Beyond D4: tool lists are cached only on a positive `ttlMs`; input-schema properties decode in alphabetical order and large integers in `structuredContent` as float64; HTTP over-size/malformed bodies answer 413/400; stdio has no batches and no parse-error reply; HTTP serving is stateless; `transport = "sse"` is accepted. `NewConnection`, `Discover`, `RefreshTools`, `StartStdio` and the protocol types are gone; `Connect` and `ServerConnection.Session` are new. |
+| 2 | `wire` scanner and binder on `encoding/json/v2`/`jsontext`: 1,019 → 644 LOC. Existing wire tests unchanged; 418 lines of pin tests added first. | Saving is ≈−375, not ≈−700: the `Value` tree stays because callers use it. A malformed value exactly at the node limit is now rule `syntax`, not `nodes`; a member name starting with `[` gets `$.[` paths. `Guard` allocates more (≈24 vs 10 per SSE event). `wire.Bind` has no production caller. |
+| 3 | Tree-sitter backend under `//go:build cgo` for Python, JS, TS/TSX, Java, Kotlin, C#, Scala, Rust, C, C++, PHP, Ruby, Lua and shell; `go/ast` for Go; `none` without cgo. ctags runner and heuristic backend deleted; reference-scanner masks come from tree-sitter. | Swift dropped (§4) along with the ctags long tail (listed in `docs/architecture.md`). `OutlineMany` returns `([]File, error)`; ctags options are gone from `outline`, `tools` and `codesearch`. go-tree-sitter's `ParseCtx` segfaults on mid-parse cancellation, so parses cancel through the progress callback. ≈+29 MB test binary for 14 grammars. |
+| 4 | go-toml/v2 `unstable`, doublestar, `x/net/html`, `x/time/rate`, `x/image/draw` + WebP decode, `code.dny.dev/ssrf`. | gitignore matcher kept (§4). TOML nesting limit is go-toml's. SSRF blocks every IPv6 address outside 2000::/3. Oversized WebP is re-encoded as JPEG. |
+| 5 | ripgrep backend removed; Ollama reads NDJSON through `wire.FrameReader`; find-references internals 2,881 → 1,548 LOC (one type-check per query, no globals, one index interface). | No SSE reader was left to merge after step 1. |
+
+**Found during step 5, not fixed (behaviour changes):** spec 05's
+enclosing-declaration attribution for non-Go hits (TS-05-25–27, TS-05-56) and
+its file/time bounds (TS-05-33) were implemented only in code the tool never
+called; their tests exercised that dead code and were removed with it. Non-Go
+sites report `<file>` and queries are unbounded. The reference cache rebuilds
+packages and outlines that queries never read, and its candidate-file list is
+not reset by `write_file`/`edit_file`.
