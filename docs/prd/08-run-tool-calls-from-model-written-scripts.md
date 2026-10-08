@@ -29,10 +29,7 @@ embedder's policy.
    output schema and structured result passed through.
 6. A script can run several tool calls concurrently, and a group of N
    independent calls takes about as long as the slowest one, not the sum.
-7. The root module stays standard-library-only and cgo-free; the script
-   runtime lives in a nested module, so `go list -m all` for the root is
-   unchanged.
-8. The whole feature is testable offline against the scripted provider, with
+7. The whole feature is testable offline against the scripted provider, with
    no API key.
 
 ## Non-goals
@@ -89,8 +86,6 @@ What exists today:
   result's `structuredContent`, and uses neither.
 - `subagent` is the one existing tool that runs other work on the agent's
   behalf. Its child's tool calls belong to the child agent, not the parent.
-- `docs/DEPS.md` ruling R1 sends a dependency only some embedders want to a
-  nested module; `codesearch/` (zoekt, ruling R7) is the precedent.
 
 ## Requirements
 
@@ -167,13 +162,10 @@ What exists today:
 
 ### The code-mode tool
 
-- A nested module, separate from the root, offers one constructor: given a
-  set of tools and options, it returns one tool that runs a script written
-  by the model. The tool declares the given tools as the tools it reaches.
-- Constraint: scripts are written in Starlark and run on `go.starlark.net`,
-  which is pure Go. The module builds on linux/amd64, linux/arm64,
-  darwin/arm64 and windows/amd64 with cgo off. The dependency is recorded as
-  a ruling in `docs/DEPS.md`.
+- A code-mode package offers one constructor: given a set of tools and
+  options, it returns one tool that runs a script written by the model. The tool declares the given tools as the tools it reaches.
+- Constraint: scripts are written in Starlark and run on `go.starlark.net`.
+  The dependency is recorded as a ruling in `docs/DEPS.md`.
 - The model sees one tool. Its description states the language, the rules
   of the runtime (no exceptions, how errors are returned, how to run calls
   concurrently, that side effects are not undone), and a declaration for
@@ -212,45 +204,43 @@ What exists today:
 - An example program shows code mode over the built-in read tools and over
   an MCP pool, and runs with no API key against the scripted provider.
 - `docs/architecture.md`, `docs/configuration.md` and `README.md` describe
-  the module, its options and its limits.
+  the tool, its options and its limits.
 
 ## Design Decisions
 
 1. Code mode is a tool, not a loop mode. It needs no change to the loop's
    iteration rule, and an embedder can mix it with direct tools.
-2. The runtime lives in a nested module, because it is a third-party
-   dependency only some embedders want (DEPS.md, R1).
-3. Nested dispatch, the reach declaration and output schemas live in the
-   root, because they are seams any wrapper needs (an MCP proxy, a macro
-   tool), not code-mode features.
-4. Starlark, because it has no I/O unless the host adds it, counts execution
+2. Nested dispatch, the reach declaration and output schemas live in the
+   core packages, not the code-mode package, because they are seams any
+   wrapper needs (an MCP proxy, a macro tool), not code-mode features.
+3. Starlark, because it has no I/O unless the host adds it, counts execution
    steps, is deterministic, and is pure Go. That fits the SDK's "ordinary Go
    you can read" stance better than embedding a JavaScript engine. The cost
    is that models know Python better than Starlark's dialect of it, which the
    tool description has to make up for.
-5. A blocked nested call is a tool error the script can handle, not an
+4. A blocked nested call is a tool error the script can handle, not an
    abort, because that is what the model gets for a direct blocked call.
-6. Terminating tools are refused as nested calls when marked, and an
+5. Terminating tools are refused as nested calls when marked, and an
    unmarked terminate vote is ignored and reported. A run ends on a result
    the model chose to submit as a direct call, and an embedder's "the result
    is a tool call" contract holds whatever the script does.
-7. The session log keeps only the wrapper call. It keeps resume simple and
+6. The session log keeps only the wrapper call. It keeps resume simple and
    the log a record of what the model saw; the audit trail and the events
    carry every nested call for anyone who needs them.
-8. Stop policies see only direct calls, matching the log.
-9. Output schemas are documentation and are not enforced at run time. A
+7. Stop policies see only direct calls, matching the log.
+8. Output schemas are documentation and are not enforced at run time. A
    conformance test holds the built-ins to theirs; enforcing every call
    would turn a schema drift into a broken tool.
-10. Every bound tool is declared up front. The tool sets agentkit's
-    embedders bind are small enough, and discovery functions can be added
-    later without changing what a script that does not use them sees.
+9. Every bound tool is declared up front. The tool sets agentkit's
+   embedders bind are small enough, and discovery functions can be added
+   later without changing what a script that does not use them sees.
 
 ## Dependencies
 
 - PRD 06 §12, prompt text as documents: the code-mode tool's text is one.
 - PRD 03, the classic MCP client: output schema and structured content
   pass-through.
-- `go.starlark.net`, in the nested module only.
+- `go.starlark.net`.
 - agent-fox's `AssertReadOnly` (`internal/agentrun/policy.go`) is the first
   consumer of the reachable-set query. agent-fox changes nothing until its
   own PRD.
