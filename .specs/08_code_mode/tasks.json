@@ -1,0 +1,385 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "08",
+  "spec_name": "code_mode",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./codemode/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "06_tool_output_schemas",
+      "reason": "Consumes OutputSchema from core.Tool to dynamically generate typed return shapes in tool descriptions and map MCP structuredContent."
+    },
+    {
+      "spec": "07_nested_tool_calls",
+      "reason": "Dispatches nested calls via core.CallNested(ctx, calls...), relies on ReachableTools declarations, interceptor context propagation, and parallel nested execution."
+    },
+    {
+      "spec": "04_runner_and_tool_metadata",
+      "reason": "Uses core.ToolMetadata truncation fields (Truncated, SpillPath, TotalBytes, DurationMS) and tools.Accumulator middle truncation."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add go.starlark.net dependency, implement codemode constructor, options defaults, and reachability validation",
+      "criteria": [
+        "08-REQ-1"
+      ],
+      "tests": [
+        "TS-08-1",
+        "TS-08-2",
+        "TS-08-3",
+        "TS-08-4",
+        "TS-08-5",
+        "TS-08-6"
+      ],
+      "steps": [
+        "Add `go.starlark.net` to `go.mod` using `go get go.starlark.net` and verify `go.sum` updates cleanly.",
+        "Define `codemode.Options` in `codemode/options.go` with fields `Name`, `Description`, `DescriptionTemplate`, `Guidelines`, `MaxTimeout`, `MaxSteps`, `MaxCalls`, `MaxConcurrentCalls`, `MaxOutputBytes`, `SpillDir`, and `DisableSpill`, and implement `DefaultOptions()` applying default values (Name 'code_mode', MaxTimeout 30s, MaxSteps 100k, MaxCalls 50, MaxConcurrentCalls 8, MaxOutputBytes 100KB).",
+        "Define `codemode.BuildInfo` in `codemode/buildinfo.go` with fields `DescriptionBytes int`, `DescriptionChars int`, and `BoundToolsCount int`.",
+        "Implement `codemode.New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error)` in `codemode/codemode.go`: validate that tool names in `tools` are unique, returning 'codemode: duplicate tool name: <name>' on duplicates, and verify no tool matches `opts.Name` or is already a code-mode tool, returning 'codemode: cannot bind code_mode tool inside code_mode'.",
+        "In `codemode.New`, construct a `core.Tool` with `Name: opts.Name`, `ReachableTools: tools`, `PromptGuidelines` set from `opts.Guidelines` (or default guidelines), `InputSchema` requiring string property 'script', structured `OutputSchema` ('output', 'return_value', 'calls_completed'), and initial stub runner `Execute`.",
+        "Compute `BuildInfo` in `codemode.New` with `BoundToolsCount: len(tools)`, `DescriptionBytes: len([]byte(tool.Description))`, and `DescriptionChars: utf8.RuneCountInString(tool.Description)`.",
+        "Write unit and property tests TS-08-1, TS-08-2, TS-08-3, TS-08-4, TS-08-5, and TS-08-6 in `codemode/codemode_test.go` verifying constructor properties, input/output schemas, self-nesting rejection, duplicate tool name rejection, custom/default prompt guidelines, and exact BuildInfo size metrics."
+      ],
+      "touches": [
+        "go.mod",
+        "go.sum",
+        "codemode/codemode.go",
+        "codemode/options.go",
+        "codemode/buildinfo.go",
+        "codemode/codemode_test.go"
+      ],
+      "done_when": [
+        "`go test ./codemode/... -run 'Test(New|Options|BuildInfo|Schema)'` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Implement dynamic description rendering and typed Starlark function signature generation from tool schemas",
+      "criteria": [
+        "08-REQ-2"
+      ],
+      "tests": [
+        "TS-08-7",
+        "TS-08-8",
+        "TS-08-9",
+        "TS-08-10",
+        "TS-08-11"
+      ],
+      "steps": [
+        "In `codemode/schema.go`, implement schema type translation converting JSON Schema types (schema.TypeString, TypeInteger, TypeNumber, TypeBoolean, TypeArray, TypeObject) to Starlark signature types (str, int, float, bool, list, dict).",
+        "In `codemode/schema.go`, implement `RenderSignature(tool core.Tool) string` formatting Python/Starlark function signatures with parameter names, types, optional indicators ('= None' when property is not required), and docstrings describing tool and parameters.",
+        "In `codemode/schema.go`, extract return type signatures from `tool.OutputSchema`: if `tool.OutputSchema` is non-nil, format documented return properties and types; if nil, document return type as 'Any'.",
+        "In `codemode/description.go`, define the default instructions prompt template documenting Starlark runtime dialect, sandbox boundaries, keyword-only calling rules, ToolError convention, parallel concurrency helper, and output capturing.",
+        "In `codemode/description.go`, implement description generator rendering `opts.DescriptionTemplate` (or the default template) using text/template and concatenating rendered signatures of all bound tools, unless `opts.Description` is explicitly set.",
+        "Connect dynamic description rendering to `codemode.New` and verify `BuildInfo` reflects the rendered description length.",
+        "Write unit and property tests TS-08-7, TS-08-8, TS-08-9, TS-08-10, and TS-08-11 in `codemode/description_test.go` and `codemode/schema_test.go` verifying description override bypass, dynamic template rendering, custom template substitution, schema property type mapping with optional defaults, and OutputSchema return type mapping."
+      ],
+      "touches": [
+        "codemode/description.go",
+        "codemode/schema.go",
+        "codemode/description_test.go",
+        "codemode/schema_test.go",
+        "codemode/codemode.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`go test ./codemode/... -run 'Test(RenderSignature|Description)'` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Implement sandboxed Starlark thread initialization, keyword-argument tool bindings, and CallNested dispatch",
+      "criteria": [
+        "08-REQ-3",
+        "08-REQ-4"
+      ],
+      "tests": [
+        "TS-08-12",
+        "TS-08-13",
+        "TS-08-14",
+        "TS-08-15",
+        "TS-08-16",
+        "TS-08-17",
+        "TS-08-18",
+        "TS-08-19"
+      ],
+      "steps": [
+        "In `codemode/runtime.go`, implement thread creation using `starlark.Thread`, configuring `thread.Load` to fail unconditionally with 'load is not permitted in code_mode scripts', and populating safe language builtins (len, range, str, int, float, bool, list, dict, min, max, sorted, enumerate, zip, print, type, repr, abs, hasattr, getattr, dir) while strictly omitting host primitives (open, os, socket, http, environ, subprocess, time).",
+        "In `codemode/convert.go`, implement bidirectional conversions between Starlark values and Go JSON-compatible values (starlark.String <-> string, starlark.Int <-> int64, starlark.Float <-> float64, starlark.Bool <-> bool, *starlark.List <-> []any, *starlark.Dict <-> map[string]any, starlark.None <-> nil).",
+        "In `codemode/binding.go`, implement tool function binding using `starlark.NewBuiltin`: reject any positional arguments (`len(args) > 0`) with a Starlark error '<tool> only accepts keyword arguments'.",
+        "In `codemode/binding.go`, convert keyword arguments into Go map/JSON message, construct a `core.ToolUseBlock`, and invoke `core.CallNested(ctx, block)`.",
+        "In `codemode/binding.go`, handle `core.CallNested` return: if `core.ErrTerminated` is returned, immediately abort thread and set Terminate = true on the execution result; if context cancellation/timeout occurs, halt execution with an 'aborted' error result.",
+        "In `codemode/binding.go`, on successful tool call (res.OK == true): if `res.Data` is non-nil, convert `res.Data` to a Starlark dictionary/value; if `res.Data` is nil, return a Starlark dictionary {'text': res.Text}.",
+        "Write unit and integration tests TS-08-12 through TS-08-19 in `codemode/runtime_test.go` and `codemode/binding_test.go` verifying isolated thread globals, module load rejection, ambient host I/O omission, positional argument rejection, keyword argument conversion and structured Data return, nil-Data fallback, ErrTerminated propagation, and context cancellation abortion."
+      ],
+      "touches": [
+        "codemode/runtime.go",
+        "codemode/binding.go",
+        "codemode/convert.go",
+        "codemode/runtime_test.go",
+        "codemode/binding_test.go"
+      ],
+      "depends_on": [
+        1,
+        2
+      ],
+      "done_when": [
+        "`go test ./codemode/... -run 'Test(Runtime|Sandbox|Binding|CallNested)'` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Implement non-exceptional ToolError value type and parallel tool call concurrency helper",
+      "criteria": [
+        "08-REQ-5",
+        "08-REQ-6"
+      ],
+      "tests": [
+        "TS-08-20",
+        "TS-08-21",
+        "TS-08-22",
+        "TS-08-23",
+        "TS-08-24",
+        "TS-08-25",
+        "TS-08-26",
+        "TS-08-27"
+      ],
+      "steps": [
+        "In `codemode/toolerror.go`, define custom `starlark.Value` type `ToolError` implementing `starlark.Mapping` and `starlark.HasAttrs` with `Type() == 'tool_error'`, attributes ok = False, is_error = True, error (string code), detail (string description), and data (structured payload).",
+        "In `codemode/toolerror.go`, implement key indexing (`Get(key)`) on `ToolError` allowing dictionary access for 'error', 'detail', 'ok', and 'is_error'.",
+        "In `codemode/toolerror.go`, implement global helper function `is_error(val)` returning `starlark.True` if `val` is a `ToolError`, and `starlark.False` otherwise.",
+        "In `codemode/binding.go`, when a nested tool call returns `OK == false`, construct and return a `ToolError` instead of raising a Starlark runtime error.",
+        "In `codemode/parallel.go`, implement `call(tool_fn, **kwargs)` builtin returning a `CallDescriptor` capturing the target tool callable and kwargs dict.",
+        "In `codemode/parallel.go`, implement `parallel(calls)` builtin accepting a list or tuple of call descriptors, `(tool, kwargs)` tuples, or `{'tool': tool, 'args': kwargs}` dicts.",
+        "In `codemode/parallel.go`, validate all calls against bound tools and remaining call budget, partition into concurrent batches bounded by `opts.MaxConcurrentCalls`, dispatch via `core.CallNested(ctx, blocks...)` concurrently, and reassemble completed results in the exact original call order.",
+        "In `codemode/parallel.go`, if any nested call returns `core.ErrTerminated`, immediately halt concurrent batch execution and propagate Terminate = true.",
+        "Write tests TS-08-20 through TS-08-27 in `codemode/toolerror_test.go` and `codemode/parallel_test.go` verifying non-exceptional ToolError return, ToolError attributes and key indexing, is_error helper, call descriptor creation, parallel batch execution bounded by MaxConcurrentCalls, result order preservation, and ErrTerminated immediate halt."
+      ],
+      "touches": [
+        "codemode/toolerror.go",
+        "codemode/parallel.go",
+        "codemode/binding.go",
+        "codemode/toolerror_test.go",
+        "codemode/parallel_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "done_when": [
+        "`go test ./codemode/... -run 'Test(ToolError|Parallel|Call)'` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Enforce execution limits: wall timeout, Starlark step count, nested call count, and output byte limit",
+      "criteria": [
+        "08-REQ-7"
+      ],
+      "tests": [
+        "TS-08-28",
+        "TS-08-29",
+        "TS-08-30",
+        "TS-08-31",
+        "TS-08-32"
+      ],
+      "steps": [
+        "In `codemode/limits.go`, implement limit tracker monitoring timeout context (`opts.MaxTimeout`), execution steps (`opts.MaxSteps`), nested call count (`opts.MaxCalls`), and cumulative output bytes (`opts.MaxOutputBytes`).",
+        "In `codemode/runtime.go`, configure `thread.SetMaxExecutionSteps(opts.MaxSteps)`: on step limit exhaustion error from Starlark, format and return `core.ToolResult{OK: false, Error: 'step_limit_exceeded', Detail: ...}` naming the step limit.",
+        "In `codemode/runtime.go`, wrap script execution context with `opts.MaxTimeout`: on context deadline exceeded, halt script execution and return `core.ToolResult{OK: false, Error: 'timeout', Detail: ...}` naming the timeout duration.",
+        "In `codemode/binding.go` and `codemode/parallel.go`, check and atomically increment nested call count against `opts.MaxCalls`: if exceeding `MaxCalls`, reject the call and return `core.ToolResult{OK: false, Error: 'call_limit_exceeded', Detail: ...}` naming the call limit.",
+        "In `codemode/runtime.go`, monitor cumulative output bytes against `opts.MaxOutputBytes`: when output exceeds limit, halt execution and return `core.ToolResult{OK: false, Error: 'output_limit_exceeded', Detail: ...}` naming the byte limit.",
+        "In `codemode/limits.go`, on any limit termination, assemble partial printed output and completed calls ledger into `ToolResult.Data` and format them into `ToolResult.Text`.",
+        "Write tests TS-08-28 through TS-08-32 in `codemode/limits_test.go` verifying MaxTimeout enforcement, MaxSteps enforcement, MaxCalls enforcement across single and parallel calls, MaxOutputBytes termination, and retention of partial output and call ledgers upon limit termination."
+      ],
+      "touches": [
+        "codemode/limits.go",
+        "codemode/runtime.go",
+        "codemode/binding.go",
+        "codemode/parallel.go",
+        "codemode/limits_test.go"
+      ],
+      "depends_on": [
+        3,
+        4
+      ],
+      "done_when": [
+        "`go test ./codemode/... -run 'TestLimits'` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Implement output buffering, return value resolution, middle truncation, and spill file management",
+      "criteria": [
+        "08-REQ-8"
+      ],
+      "tests": [
+        "TS-08-33",
+        "TS-08-34",
+        "TS-08-35",
+        "TS-08-36",
+        "TS-08-37",
+        "TS-08-38"
+      ],
+      "steps": [
+        "In `codemode/output.go`, implement output capture hooking `thread.Print` to route printed lines into an internal `tools.Accumulator` configured with `tools.TruncateMiddle`, capacity `opts.MaxOutputBytes`, and spill directory `opts.SpillDir`.",
+        "In `codemode/output.go`, implement return value resolution following precedence: check if callable `main()` exists in module globals and invoke it; otherwise check if global variable `result` is defined; otherwise default to `nil` (`starlark.None`).",
+        "In `codemode/output.go`, implement `FormatResultText(printed string, returnValue any) string`: if both are present, format combined text; if only printed text exists, return printed text; if only return value exists, return formatted return value; if neither exists, return '[Script finished with no output]'.",
+        "In `codemode/output.go`, handle output exceeding `opts.MaxOutputBytes`: when `opts.DisableSpill` is false, write complete output to a spill file in `opts.SpillDir` and include the spill path in the middle truncation marker; when `opts.DisableSpill` is true, omit creating a spill file.",
+        "In `codemode/output.go`, populate `core.ToolMetadata` on `ToolResult` when output truncation occurs: set `Truncated: true`, `TruncatedBy: 'bytes'`, `TotalBytes`, `SpillPath`, and `DurationMS`.",
+        "Write tests TS-08-33 through TS-08-38 in `codemode/output_test.go` verifying print buffering in Accumulator, return value precedence (main > result > None), result text formatting variants, middle truncation with spill file creation, middle truncation with DisableSpill, and ToolMetadata population."
+      ],
+      "touches": [
+        "codemode/output.go",
+        "codemode/runtime.go",
+        "codemode/output_test.go"
+      ],
+      "depends_on": [
+        3,
+        5
+      ],
+      "done_when": [
+        "`go test ./codemode/... -run 'TestOutput'` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Implement script syntax/runtime error classification, telemetry ledger tracking, and cancellation handling",
+      "criteria": [
+        "08-REQ-9"
+      ],
+      "tests": [
+        "TS-08-39",
+        "TS-08-40",
+        "TS-08-41",
+        "TS-08-42",
+        "TS-08-43"
+      ],
+      "steps": [
+        "In `codemode/ledger.go`, define execution ledger recording `{tool: string, arguments: map[string]any, ok: bool, error: string}` for every nested tool call dispatched during a script run.",
+        "In `codemode/diagnostics.go`, implement Starlark error parsing classifying syntax errors (syntax_error), runtime errors (runtime_error), and invalid argument errors (invalid_arguments), extracting file and line numbers.",
+        "In `codemode/runtime.go`, on syntax or runtime error, populate `ToolResult{OK: false, Error: code, Detail: msg}` and include `error`, `message`, `line`, `partial_output`, and `calls_completed` in `ToolResult.Data` and `ToolResult.Text` without rolling back side effects.",
+        "In `codemode/runtime.go`, on context cancellation before or during script execution, abort cleanly and return `core.ToolResult{OK: false, Error: 'aborted', Detail: 'Operation aborted'}`.",
+        "In `codemode/runtime.go`, ensure `calls_completed` in `ToolResult.Data` contains the full chronological ledger of all nested calls on success, failure, or limit abort.",
+        "Write tests TS-08-39 through TS-08-43 in `codemode/ledger_test.go` and `codemode/diagnostics_test.go` verifying syntax error classification with line numbers, runtime error classification with stack detail, telemetry ledger recording for success/failure calls, ledger formatting in ToolResult Text/Data without side effect rollback, and context cancellation abortion."
+      ],
+      "touches": [
+        "codemode/ledger.go",
+        "codemode/diagnostics.go",
+        "codemode/runtime.go",
+        "codemode/ledger_test.go",
+        "codemode/diagnostics_test.go"
+      ],
+      "depends_on": [
+        4,
+        5,
+        6
+      ],
+      "done_when": [
+        "`go test ./codemode/... -run 'Test(Diagnostics|Ledger)'` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Implement offline example application, dependency governance documentation, and architectural updates",
+      "criteria": [
+        "08-REQ-10"
+      ],
+      "tests": [
+        "TS-08-44"
+      ],
+      "steps": [
+        "Create `examples/codemode/main.go` demonstrating an offline agent using `provider/faux` that binds navigation tools (read_file, list_files, find_files) and an in-memory MCP tool into a `code_mode` tool, running multi-step filtering and parallel tool queries.",
+        "Create `examples/codemode/README.md` documenting how to run `go run ./examples/codemode` completely offline without API keys or network access.",
+        "Create `docs/DEPS.md` recording the dependency ruling for `go.starlark.net` (sandboxed deterministic execution, pure Go, zero host I/O, step counters).",
+        "Update `docs/architecture.md` detailing the code mode component, data flow, sandboxing boundaries, and nested execution integration.",
+        "Update `docs/configuration.md` documenting `codemode.Options` properties, defaults, and budget limits.",
+        "Update `README.md` to introduce code mode, list its capabilities, and link to `examples/codemode`.",
+        "Write unit test TS-08-44 in `codemode/deps_test.go` verifying that default Options match architectural specifications (MaxTimeout 30s, MaxSteps 100k, MaxCalls 50, MaxConcurrentCalls 8, MaxOutputBytes 100KB) and that the runtime maintains strict dependency isolation."
+      ],
+      "touches": [
+        "examples/codemode/main.go",
+        "examples/codemode/README.md",
+        "docs/DEPS.md",
+        "docs/architecture.md",
+        "docs/configuration.md",
+        "README.md",
+        "codemode/deps_test.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        7
+      ],
+      "done_when": [
+        "`go test ./codemode/... -run 'TestDeps'` passes",
+        "`go run ./examples/codemode` runs without error"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "integration",
+      "title": "Verify execution paths, error contracts, and complete end-to-end integration for code mode",
+      "tests": [
+        "TS-08-45",
+        "TS-08-46",
+        "TS-08-47",
+        "TS-08-48",
+        "TS-08-49"
+      ],
+      "steps": [
+        "Write smoke tests TS-08-45, TS-08-46, TS-08-47, TS-08-48 in `codemode/smoke_test.go` and TS-08-49 in `examples/codemode/main_test.go` confirming they execute against real components (codemode.New, starlark.Thread, core.CallNested, tools.ListFiles, tools.ReadFile, tools.Accumulator, provider/faux) and pass.",
+        "Trace 08-PATH-1 through codemode.New, thread initialization, list_files keyword binding, CallNested execution, in-memory filtering, print accumulation, and ToolResult return; confirm each step calls the next with no stubs.",
+        "Trace 08-PATH-2 through parallel helper, call descriptors, MaxConcurrentCalls batching, concurrent CallNested execution, original order preservation, and telemetry ledger recording; confirm end-to-end execution with no stubs.",
+        "Trace 08-PATH-3 through Accumulator buffering, MaxOutputBytes limit detection, middle truncation with elided marker, spill file creation in SpillDir, and ToolMetadata population with SpillPath and TruncatedBy; confirm each step calls the next.",
+        "Trace 08-PATH-4 through failing nested tool call via CallNested, ToolError construction, Starlark script is_error inspection, and fallback output generation with OK=true; confirm no exceptions are raised.",
+        "Trace 08-PATH-5 through examples/codemode/main.go execution with provider/faux, verifying navigation and parallel query execution runs offline and exits with zero status.",
+        "For every criterion with a contract (08-REQ-1.3, 08-REQ-1.4, 08-REQ-3.2, 08-REQ-4.1, 08-REQ-4.5, 08-REQ-4.6, 08-REQ-6.4, 08-REQ-7.1, 08-REQ-7.2, 08-REQ-7.3, 08-REQ-7.4, 08-REQ-9.1, 08-REQ-9.2, 08-REQ-9.5), confirm the producer's result is consumed by a caller in production code, not only by tests.",
+        "Search all files listed in every task's touches (codemode/*.go, examples/codemode/*.go) for stub markers including panic(\"not implemented\"), TODO, NotImplementedError, and bare return nil / None on non-trivial paths, confirming none remain.",
+        "Run `make check` to ensure all tests, formatting, and linters pass cleanly."
+      ],
+      "touches": [
+        "codemode/smoke_test.go",
+        "examples/codemode/main_test.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "done_when": [
+        "`make check` passes completely without errors or linter warnings",
+        "`go test ./codemode/... ./examples/codemode/... -count=1` passes with all smoke tests green"
+      ],
+      "state": "pending"
+    }
+  ]
+}

@@ -1,0 +1,262 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "07",
+  "spec_name": "nested_tool_calls",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "06_tool_output_schemas",
+      "reason": "Builds on OutputSchema on core.Tool to ensure wrapper tools and nested execution observe typed structured outputs."
+    },
+    {
+      "spec": "04_runner_and_tool_metadata",
+      "reason": "Uses shell tool metadata definitions and guard.IsShellTool for transitive unguarded shell checks."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add ReachableTools and Terminating fields to core.Tool and enforce cycle and terminating validation in agent constructors and registration",
+      "criteria": [
+        "07-REQ-1"
+      ],
+      "tests": [
+        "TS-07-1",
+        "TS-07-2",
+        "TS-07-3",
+        "TS-07-4",
+        "TS-07-5"
+      ],
+      "steps": [
+        "In core/tool.go, add ReachableTools []Tool and Terminating bool to the core.Tool struct definition.",
+        "In core/tool.go, verify ToolWire and ToolWires functions project only Name, Description, InputSchema, and ConstrainedSampling, omitting ReachableTools and Terminating.",
+        "In agent.go, implement a depth-first traversal cycle detector for ReachableTools hierarchies.",
+        "In agent.go, update checkTool and checkCustomTools to validate reachable tool hierarchies: if a cycle is found, return an error matching 'agentkit: reachable tools cycle detected: <path>'.",
+        "In agent.go, update checkTool to verify that no wrapper tool declares a reachable tool with Terminating set to true, returning 'agentkit: terminating tool \\\"<terminating>\\\" cannot be reached through wrapper \\\"<wrapper>\\\"' if violated.",
+        "Ensure diamond dependencies without cycles are accepted without error during validation.",
+        "Write unit and property tests TS-07-1, TS-07-2, TS-07-3, TS-07-4, and TS-07-5 in core/tool_test.go and agent_test.go to verify declaration, wire projection, cycle rejection, terminating reachability restriction, and diamond dependency acceptance."
+      ],
+      "touches": [
+        "core/tool.go",
+        "agent.go"
+      ],
+      "done_when": [
+        "`go test ./... -run 'Test(Reachable|Cycle|Terminating)'` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Implement transitive reachable tool queries, recursive policy resolution, and transitive unguarded shell tool checks",
+      "criteria": [
+        "07-REQ-2",
+        "07-REQ-3"
+      ],
+      "tests": [
+        "TS-07-6",
+        "TS-07-7",
+        "TS-07-8",
+        "TS-07-9",
+        "TS-07-10",
+        "TS-07-11",
+        "TS-07-12",
+        "TS-07-13"
+      ],
+      "steps": [
+        "In core/tool.go, implement core.ReachableTools(tools []Tool) []Tool computing the deduplicated transitive closure of all reachable tools, preserving the order of first appearance.",
+        "In agent.go, implement (*Agent).ReachableTools() []core.Tool by resolving the agent's ToolPolicy against registered tools and calling core.ReachableTools on the resolved set.",
+        "In core/toolpolicy.go, update ToolPolicy.Resolve to recursively filter ReachableTools of wrapper tools using NoTools, ToolNames, and ExcludeTools.",
+        "In core/toolpolicy.go, drop wrapper tools whose original ReachableTools was non-empty but is reduced to empty after filtering; retain leaf tools whose original ReachableTools was empty.",
+        "In execguard.go, update checkExecuteGuard to call core.ReachableTools on resolved tools when cfg.BeforeToolCall is nil.",
+        "In execguard.go, if an unguarded shell tool (guard.IsShellTool) is reachable through a wrapper, return an error wrapping core.ErrUnguardedExecute naming both the wrapper and the shell tool: 'agentkit: a shell tool is registered but AgentConfig.BeforeToolCall is nil; wrapper \\\"<wrapper>\\\" reached shell tool \\\"<shell>\\\"'.",
+        "Write unit tests TS-07-6, TS-07-7, TS-07-8, TS-07-9, TS-07-10, TS-07-11, TS-07-12, and TS-07-13 in core/toolpolicy_test.go and execguard_test.go."
+      ],
+      "touches": [
+        "core/tool.go",
+        "core/toolpolicy.go",
+        "agent.go",
+        "execguard.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`go test ./... -run 'Test(ReachableTools|ToolPolicyResolve|ExecuteGuard)'` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Implement NestedCaller interface, context injection in executeBatch, and interceptor authorization and rewriting semantics",
+      "criteria": [
+        "07-REQ-4",
+        "07-REQ-5"
+      ],
+      "tests": [
+        "TS-07-14",
+        "TS-07-15",
+        "TS-07-16",
+        "TS-07-17",
+        "TS-07-18",
+        "TS-07-19",
+        "TS-07-20",
+        "TS-07-21"
+      ],
+      "steps": [
+        "In core/tool.go, define NestedCaller interface with Call(ctx context.Context, calls ...ToolUseBlock) ([]ToolResult, error), context key for NestedCaller, WithNestedCaller helper, and CallNested invocation helper.",
+        "In core/errors.go, define ErrNoNestedCaller, and ensure CallNested returns core.ErrNoNestedCaller when no NestedCaller is present in ctx.",
+        "In core/tool.go, add ParentToolUseID string and ParentToolName string to BeforeToolCallContext and AfterToolCallContext.",
+        "Create nested execution dispatcher in batch.go that binds parent tool-use ID, parent tool name, and resolved reachable tools.",
+        "In batch.go, when executeBatch prepares invocation for a tool with len(t.ReachableTools) > 0, inject the nested execution dispatcher into ctx via WithNestedCaller.",
+        "In the nested execution dispatcher, validate requested tool names against resolved reachable tools, returning ToolResult{OK: false, Error: 'unknown_tool', Detail: ...} and nil Go error for undeclared tools.",
+        "In the nested execution dispatcher, run BeforeToolCall with populated ParentToolUseID and ParentToolName: if Block=true and Terminate=false, return ToolResult{OK: false, Error: 'blocked_by_policy', Detail: reason} without aborting the wrapper or returning a Go error; if Block=true and Terminate=true, abort the wrapper and return core.ErrTerminated, propagating Terminate=true to the batch.",
+        "In the nested execution dispatcher, substitute non-nil Arguments from BeforeToolCallDecision before input validation and tool execution.",
+        "Write tests TS-07-14, TS-07-15, TS-07-16, TS-07-17, TS-07-18, TS-07-19, TS-07-20, and TS-07-21 verifying caller context, dispatcher injection, interceptor parent context, policy blocking, terminate propagation, and argument rewriting."
+      ],
+      "touches": [
+        "core/tool.go",
+        "core/errors.go",
+        "batch.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "`go test ./... -run 'TestNested(Caller|Dispatch|Interceptor)'` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Implement terminating vote isolation, nested concurrency dispatch, execution modes, and cancellation handling",
+      "criteria": [
+        "07-REQ-6",
+        "07-REQ-7"
+      ],
+      "tests": [
+        "TS-07-22",
+        "TS-07-23",
+        "TS-07-24",
+        "TS-07-25",
+        "TS-07-26",
+        "TS-07-27"
+      ],
+      "steps": [
+        "In the nested execution dispatcher, implement terminating vote isolation: if an unmarked child tool handler returns ToolResult{Terminate: true}, override Terminate to false, set TerminateIgnored=true in the audit record, and annotate both the nested ToolResult Detail and wrapper ToolResult Detail that the terminate vote was ignored.",
+        "In the nested execution dispatcher, execute CallNested calls concurrently using goroutines joined by sync.WaitGroup when parallel tools is enabled and all invoked tools have ExecutionMode != core.Sequential.",
+        "In the nested execution dispatcher, execute CallNested calls sequentially in caller order when cfg.ParallelTools is false or any invoked tool has ExecutionMode == core.Sequential.",
+        "Ensure results in CallNested are collected and returned in the exact slice order corresponding to the input calls slice.",
+        "Isolate individual call failures (panics, handler errors, validation errors) so sibling nested calls in the same CallNested invocation complete unaffected.",
+        "Handle context cancellation in CallNested: abort in-flight nested tool calls and return ToolResult{OK: false, Error: 'aborted', Detail: 'Operation aborted'}.",
+        "Write tests TS-07-22, TS-07-23, TS-07-24, TS-07-25, TS-07-26, and TS-07-27 verifying terminating vote isolation, concurrent execution, sequential fallback, ordering preservation, sibling failure isolation, and context cancellation aborts."
+      ],
+      "touches": [
+        "batch.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "done_when": [
+        "`go test ./... -run 'TestNested(Concurrency|Sequential|Isolation|Cancel|TerminateVote)'` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Implement nested telemetry, events, audit records, subagent usage propagation, and transcript and stop policy isolation",
+      "criteria": [
+        "07-REQ-8",
+        "07-REQ-9"
+      ],
+      "tests": [
+        "TS-07-28",
+        "TS-07-29",
+        "TS-07-30",
+        "TS-07-31",
+        "TS-07-32",
+        "TS-07-33",
+        "TS-07-34"
+      ],
+      "steps": [
+        "In core/event.go and core/eventjson.go, add ParentToolUseID string to ToolExecutionStartEvent, ToolExecutionUpdateEvent, and ToolExecutionEndEvent with omitempty JSON serialization.",
+        "In core/audit.go, add ParentToolUseID string and TerminateIgnored bool to AuditEvent.",
+        "In the nested execution dispatcher, generate a unique tool-use ID for each nested call and emit ToolExecutionStartEvent, ToolExecutionUpdateEvent, and ToolExecutionEndEvent with ParentToolUseID populated. Suppress ToolResultEvent emissions for nested calls.",
+        "In the nested execution dispatcher, emit an AuditEvent with Kind=AuditToolCall, ParentToolUseID, ArgumentsHash, error status, and elapsed duration upon completion.",
+        "In the nested execution dispatcher, wrap handler execution in a tracer span named 'agentkit.tool_call' recording tool_name, tool_use_id, parent_tool_use_id, and status attributes.",
+        "In the nested execution dispatcher, propagate core.WithUsageReporter on context to nested handlers so that subagent off-loop spend is credited to the agent immediately.",
+        "Ensure session recording (SessionStore) and conversation history (ConversationHistory) persist only the top-level wrapper tool call and result, omitting nested tool calls.",
+        "Ensure turn stop policies (including stop.WhenToolCalled) evaluate exclusively against top-level tool calls and results, ignoring nested tool calls.",
+        "Write tests TS-07-28, TS-07-29, TS-07-30, TS-07-31, TS-07-32, TS-07-33, and TS-07-34 verifying unique IDs, execution events, suppressed result events, audit logging, tracer spans, subagent spend reporting, history isolation, and stop policy scoping."
+      ],
+      "touches": [
+        "core/event.go",
+        "core/eventjson.go",
+        "core/audit.go",
+        "batch.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "`go test ./... -run 'TestNested(Events|Audit|Tracing|Usage|History|Stop)'` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "integration",
+      "title": "Verify execution paths, error contracts, and complete end-to-end integration for nested tool calls",
+      "tests": [
+        "TS-07-35",
+        "TS-07-36",
+        "TS-07-37",
+        "TS-07-38"
+      ],
+      "steps": [
+        "Write smoke tests TS-07-35, TS-07-36, TS-07-37, and TS-07-38 in a dedicated smoke test file nested_smoke_test.go and confirm they execute against the real Agent runtime and pass.",
+        "Trace 07-PATH-1 through NewAgent, executeBatch, WithNestedCaller, CallNested, interceptors, events, tracer spans, and session persistence; confirm concurrent child tool execution, result ordering, and top-level only history recording with no stubs.",
+        "Trace 07-PATH-2 through NewAgent and RegisterTool; confirm depth-first cycle detection rejects recursive reachable tools and produces the formatted error 'agentkit: reachable tools cycle detected: <path>'.",
+        "Trace 07-PATH-3 through BeforeToolCall, CallNested, and executeBatch; confirm interceptor Block+Terminate aborts wrapper with core.ErrTerminated and propagates Terminate=true to the batch.",
+        "Trace 07-PATH-4 through checkExecuteGuard; confirm transitively reachable shell tool detection aborts before provider requests with core.ErrUnguardedExecute.",
+        "For every criterion with a contract (07-REQ-1.3, 07-REQ-1.4, 07-REQ-3.2, 07-REQ-4.2, 07-REQ-4.4, 07-REQ-7.5), verify that the returned error or result structure is produced by production code and consumed by runtime callers.",
+        "Search all touched files (core/tool.go, core/toolpolicy.go, core/errors.go, core/event.go, core/eventjson.go, core/audit.go, agent.go, execguard.go, batch.go) for stub markers such as panic(\\\"not implemented\\\"), TODO, and empty implementations, confirming none remain.",
+        "Verify documentation freshness per steering directives, updating docs/api.md, docs/architecture.md, and README.md with the new ReachableTools, NestedCaller, and execute guard behaviors, and run `make check`."
+      ],
+      "touches": [
+        "core/tool.go",
+        "core/toolpolicy.go",
+        "core/errors.go",
+        "core/event.go",
+        "core/eventjson.go",
+        "core/audit.go",
+        "agent.go",
+        "execguard.go",
+        "batch.go",
+        "docs/api.md",
+        "docs/architecture.md",
+        "README.md"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "done_when": [
+        "`make check` passes completely without errors or linter warnings"
+      ],
+      "state": "pending"
+    }
+  ]
+}

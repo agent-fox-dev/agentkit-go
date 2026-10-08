@@ -1,0 +1,371 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "06",
+  "spec_name": "tool_output_schemas",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "01_outline_and_walk",
+      "reason": "Adds output schema declarations and conformance tests for file_outline."
+    },
+    {
+      "spec": "02_symbol_navigation_tools",
+      "reason": "Adds output schema declarations and conformance tests for find_symbol."
+    },
+    {
+      "spec": "03_indexed_code_search",
+      "reason": "Adds output schema declarations and conformance tests for code_search."
+    },
+    {
+      "spec": "04_runner_and_tool_metadata",
+      "reason": "Adds output schema declarations and conformance tests for shell tools (execute, run_command, powershell) matching ToolMetadata shapes."
+    },
+    {
+      "spec": "05_find_references",
+      "reason": "Adds output schema declarations and conformance tests for find_references."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add OutputSchema to core.Tool, preserve core.ToolWire projection, and verify request golden invariance",
+      "criteria": [
+        "06-REQ-1.1",
+        "06-REQ-1.2",
+        "06-REQ-1.3",
+        "06-REQ-1.4"
+      ],
+      "tests": [
+        "TS-06-1",
+        "TS-06-2",
+        "TS-06-3"
+      ],
+      "steps": [
+        "In core/tool.go, add OutputSchema *schema.Schema to the core.Tool struct definition.",
+        "Ensure core.ToolWire remains unchanged with Name, Description, InputSchema, and ConstrainedSampling, and core.Tool.Wire() projects only those four fields without OutputSchema.",
+        "Write unit tests TS-06-1 and TS-06-2 in core/contract_test.go confirming Tool.OutputSchema is accessible, ToolWire omits OutputSchema, and tools leaving OutputSchema nil register and execute normally.",
+        "Write property test TS-06-3 in golden_requests_test.go verifying that constructing requests with tools having arbitrary populated OutputSchema declarations produces byte-identical request bodies matching golden fixtures across Anthropic, Google, Ollama, OpenAI, and OpenAI Responses wire formats."
+      ],
+      "touches": [
+        "core/tool.go",
+        "core/contract_test.go",
+        "golden_requests_test.go"
+      ],
+      "done_when": [
+        "go test ./core/... ./... -run 'TestOutputSchema|TestWire|TestGolden' passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Implement MCP tool output schema conversion, non-fatal diagnostic recording, and pool diagnostics accessor",
+      "criteria": [
+        "06-REQ-2.1",
+        "06-REQ-2.2",
+        "06-REQ-2.3",
+        "06-REQ-2.4"
+      ],
+      "tests": [
+        "TS-06-4",
+        "TS-06-5",
+        "TS-06-6"
+      ],
+      "steps": [
+        "In mcp/pool.go, add a diagnostics []diag.Diagnostic field to Pool and implement the exported Diagnostics() []diag.Diagnostic method returning a copy of collected diagnostics.",
+        "In mcp/pool.go adapt(), check whether d.OutputSchema is non-nil; if present, convert it into *schema.Schema using a helper that parses the schema and captures failures.",
+        "When outputSchema parsing or conversion fails, set core.Tool.OutputSchema to nil and append a diag.Diagnostic with SeverityError naming the server and tool to the pool's diagnostics, without closing the connection or aborting tool adaptation.",
+        "When outputSchema is omitted (nil), assign OutputSchema = nil on the adapted core.Tool without logging diagnostics.",
+        "Write unit tests TS-06-4, TS-06-5, and TS-06-6 in mcp/mcp_test.go covering valid MCP output schema mapping, malformed schema error diagnostic recording without connection teardown, and omitted schema behavior."
+      ],
+      "touches": [
+        "mcp/pool.go",
+        "mcp/mcp_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "go test ./mcp/... passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Map MCP tool StructuredContent results to ToolResult.Data and concatenate text content",
+      "criteria": [
+        "06-REQ-3.1",
+        "06-REQ-3.2",
+        "06-REQ-3.3",
+        "06-REQ-3.4"
+      ],
+      "tests": [
+        "TS-06-7",
+        "TS-06-8",
+        "TS-06-9",
+        "TS-06-10"
+      ],
+      "steps": [
+        "In mcp/pool.go adapt() Execute closure, inspect res.StructuredContent on tool execution results.",
+        "If res.StructuredContent is a map[string]any, set ToolResult.Data directly to that map.",
+        "If res.StructuredContent is a non-nil non-map JSON value, wrap it as map[string]any{\"value\": res.StructuredContent} in ToolResult.Data.",
+        "If res.StructuredContent is nil, preserve the fallback Data payload containing key 'text' with joined text and key 'content' with raw content.",
+        "Ensure ToolResult.Text consistently contains the joined text from all TextContent blocks for model consumption.",
+        "Write unit tests TS-06-7, TS-06-8, TS-06-9 and property test TS-06-10 in mcp/mcp_test.go validating object pass-through, primitive value wrapping, fallback behavior, and text block concatenation."
+      ],
+      "touches": [
+        "mcp/pool.go",
+        "mcp/mcp_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "go test ./mcp/... passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Declare OutputSchema for built-in file operations tools",
+      "criteria": [
+        "06-REQ-4.1",
+        "06-REQ-4.2",
+        "06-REQ-4.3",
+        "06-REQ-4.4",
+        "06-REQ-4.5"
+      ],
+      "tests": [
+        "TS-06-11",
+        "TS-06-12",
+        "TS-06-13"
+      ],
+      "steps": [
+        "In tools/tools.go readFile(), set OutputSchema to schema.OneOf with two branches: a text read object (schema.Prop(\"content\", schema.String()), schema.Prop(\"encoding\", schema.String())) and an image read object (schema.Prop(\"note\", schema.String()), schema.Prop(\"mime_type\", schema.String()), schema.Prop(\"width\", schema.Int()), schema.Prop(\"height\", schema.Int())).",
+        "In tools/tools.go writeFile(), declare OutputSchema as schema.Object(schema.Prop(\"written\", schema.Bool()), schema.Prop(\"bytes\", schema.Int())).",
+        "In tools/tools.go editFile(), declare OutputSchema as schema.Object(schema.Prop(\"edits_applied\", schema.Int())).",
+        "In tools/tools.go listFiles(), declare OutputSchema as schema.Object(schema.Prop(\"entries\", schema.Array(schema.String())), schema.Prop(\"truncated\", schema.Bool()), schema.Opt(\"note\", schema.String())).",
+        "In tools/tools.go findFiles(), declare OutputSchema as schema.Object(schema.Prop(\"files\", schema.Array(schema.String())), schema.Prop(\"truncated\", schema.Bool()), schema.Opt(\"marker\", schema.String())).",
+        "Write unit tests TS-06-11, TS-06-12, and TS-06-13 in tools/tools_test.go verifying the exact OutputSchema definitions for read_file, write_file, edit_file, list_files, and find_files."
+      ],
+      "touches": [
+        "tools/tools.go",
+        "tools/tools_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "go test ./tools/... -run 'TestOutputSchema' passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Declare OutputSchema for search, outline, symbol, and reference tools",
+      "criteria": [
+        "06-REQ-5.1",
+        "06-REQ-5.2",
+        "06-REQ-6.1",
+        "06-REQ-6.2"
+      ],
+      "tests": [
+        "TS-06-14",
+        "TS-06-15",
+        "TS-06-16",
+        "TS-06-17"
+      ],
+      "steps": [
+        "In tools/search.go, declare OutputSchema on search_files containing 'matches' (array of objects with file, line, text, opt context_before, opt context_after), 'truncated' (bool), 'files_searched' (int), and opt 'note' (string).",
+        "In tools/outline_tool.go, declare OutputSchema on file_outline containing 'file' (object with path, lang, backend, decls array), 'backend' (string), 'declarations' (int), and 'listed' (int).",
+        "In tools/symbol_tool.go, declare OutputSchema on find_symbol containing 'symbols' (array of symbol match objects with name, kind, path, start_line, end_line, opt signature, opt container, opt exported, opt score), 'truncated' (bool), 'backends' (array of strings), 'files_indexed' (int), opt 'note', opt 'partial', opt 'partial_reason'.",
+        "In tools/find_references.go, declare OutputSchema on find_references containing 'target' (string), 'sites' (array of reference site objects with path, line, text, opt container, opt kind), 'backend' (string), 'partial' (bool), 'truncated' (bool), 'packages_checked' (int), 'errors' (array of string), and 'result' (object).",
+        "Write unit tests TS-06-14, TS-06-15, TS-06-16, and TS-06-17 in tools/search_test.go, tools/outline_tool_test.go, tools/symbol_tool_test.go, and tools/find_references_test.go asserting the output schemas."
+      ],
+      "touches": [
+        "tools/search.go",
+        "tools/outline_tool.go",
+        "tools/symbol_tool.go",
+        "tools/find_references.go",
+        "tools/search_test.go",
+        "tools/outline_tool_test.go",
+        "tools/symbol_tool_test.go",
+        "tools/find_references_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "go test ./tools/... passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Declare OutputSchema for subprocess shell, fetch_url, code_search, and subagent tools",
+      "criteria": [
+        "06-REQ-7.1",
+        "06-REQ-7.2",
+        "06-REQ-8.1",
+        "06-REQ-8.2",
+        "06-REQ-8.3"
+      ],
+      "tests": [
+        "TS-06-18",
+        "TS-06-19",
+        "TS-06-20",
+        "TS-06-21"
+      ],
+      "steps": [
+        "In tools/tools.go, define helper execResultOutputSchema() returning schema.Object(schema.Prop(\"output\", schema.String()), schema.Prop(\"exit_code\", schema.Int()), schema.Prop(\"outcome\", schema.Enum(\"ok\", \"exit\", \"signal\", \"timeout\", \"abort\"))).",
+        "Assign execResultOutputSchema() as OutputSchema on execute, run_command, and powershell (tools/powershell.go), and verify execResultToTool populates output, exit_code, and outcome on failure outcomes.",
+        "In tools/fetch.go, declare OutputSchema on fetch_url containing status (int), url (string), content_type (string), headers (object), truncated (bool), opt binary (bool), opt bytes (int).",
+        "In codesearch/tool.go, declare OutputSchema on code_search containing files (array), truncated (bool), note (string), partial (bool), partial_reason (string), symbol_sources (array), files_indexed (int), dirty_files (array), and skipped (object with binary, oversized, too_many_trigrams, too_small).",
+        "In subagent/subagent.go, declare OutputSchema on subagent containing result (string) and turns (int).",
+        "Write unit tests TS-06-18, TS-06-19, TS-06-20, and TS-06-21 asserting these OutputSchema declarations and non-zero exit Data population."
+      ],
+      "touches": [
+        "tools/tools.go",
+        "tools/powershell.go",
+        "tools/fetch.go",
+        "codesearch/tool.go",
+        "subagent/subagent.go",
+        "tools/runner_outcome_test.go",
+        "codesearch/tool_test.go",
+        "subagent/subagent_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "go test ./tools/... ./codesearch/... ./subagent/... passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Implement conformance tests verifying documented error codes across built-in tools",
+      "criteria": [
+        "06-REQ-9.2",
+        "06-REQ-9.3",
+        "06-REQ-9.4",
+        "06-REQ-9.5",
+        "06-REQ-9.7",
+        "06-REQ-9.8"
+      ],
+      "tests": [
+        "TS-06-23",
+        "TS-06-24",
+        "TS-06-25",
+        "TS-06-26",
+        "TS-06-28",
+        "TS-06-29"
+      ],
+      "steps": [
+        "Create tools/conformance_test.go with test cases inducing each documented error condition on built-in tools.",
+        "Write TS-06-23 testing invalid_arguments on malformed JSON arguments or invalid parameter values across tools.",
+        "Write TS-06-24 testing path_not_allowed on file and outline tools with paths traversing outside the workspace boundary.",
+        "Write TS-06-25 testing not_a_file on read_file, edit_file, and file_outline when given directory targets.",
+        "Write TS-06-26 testing aborted on cancellable tools invoked with an already-cancelled context.",
+        "Write TS-06-28 testing offset_past_end on read_file and scheme_not_allowed/address_not_allowed on fetch_url.",
+        "Write TS-06-29 testing read_failed, write_failed, edit_precondition, edit_failed, list_failed, outline_failed, and subagent_failed under their respective failure conditions."
+      ],
+      "touches": [
+        "tools/conformance_test.go"
+      ],
+      "depends_on": [
+        4,
+        5,
+        6
+      ],
+      "done_when": [
+        "go test ./tools/... -run 'TestErrorCodes' passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Implement conformance tests validating ToolResult.Data against OutputSchema on success and subprocess failure",
+      "criteria": [
+        "06-REQ-9.1",
+        "06-REQ-9.6"
+      ],
+      "tests": [
+        "TS-06-22",
+        "TS-06-27"
+      ],
+      "steps": [
+        "In tools/conformance_test.go, implement helper validateToolData(t *testing.T, tool core.Tool, data map[string]any) that marshals data to JSON, decodes via jsonx.DecodeOrderedObject, and asserts schema.Validate(tool.OutputSchema, ordered) == nil.",
+        "Implement integration test TS-06-22 executing every built-in tool (read_file, write_file, edit_file, list_files, find_files, search_files, file_outline, find_symbol, find_references, fetch_url, execute, run_command, powershell, code_search, subagent) with valid arguments, asserting res.OK == true and validating res.Data against tool.OutputSchema.",
+        "Implement integration test TS-06-27 executing subprocess tools (execute, run_command) on commands with non-zero exit status or execution failure, asserting res.OK == false, res.Error in ['command_exit', 'exec_failed'], and validating res.Data against tool.OutputSchema."
+      ],
+      "touches": [
+        "tools/conformance_test.go"
+      ],
+      "depends_on": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "done_when": [
+        "go test ./tools/... -run 'TestConformance' passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "integration",
+      "title": "Verify output schema conformance, MCP pass-through, and provider wire invariance end to end",
+      "tests": [
+        "TS-06-30",
+        "TS-06-31",
+        "TS-06-32",
+        "TS-06-33",
+        "TS-06-34"
+      ],
+      "steps": [
+        "Write smoke test TS-06-30 in tools/conformance_test.go executing real read_file and list_files on a live Workspace and validating ToolResult.Data against OutputSchema (06-PATH-1).",
+        "Write smoke test TS-06-31 in mcp/mcp_test.go with an in-process MCP server advertising tools with outputSchema and returning structuredContent, verifying OutputSchema adaptation and Data mapping (06-PATH-2).",
+        "Write smoke test TS-06-32 in golden_requests_test.go executing wire serialization for Anthropic, Google, Ollama, OpenAI, and OpenAI Responses with OutputSchema tools, verifying byte-identical match to goldens (06-PATH-3).",
+        "Write smoke test TS-06-33 in tools/conformance_test.go running Execute/RunCommand with an exit-code failure, asserting res.Error == 'command_exit' and verifying res.Data conforms to OutputSchema (06-PATH-4).",
+        "Write smoke test TS-06-34 in mcp/mcp_test.go connecting to an MCP server with a malformed outputSchema, verifying OutputSchema is nil, a SeverityError diagnostic is recorded, and the connection remains alive (06-PATH-5).",
+        "Trace execution paths 06-PATH-1 through 06-PATH-5 end to end; confirm each step calls the next and no stub remains.",
+        "Confirm contract fulfillment for 06-REQ-2.2, 06-REQ-9.2, 06-REQ-9.3, 06-REQ-9.4, 06-REQ-9.5, 06-REQ-9.6, 06-REQ-9.7, and 06-REQ-9.8 in production code.",
+        "Scan all files touched across tasks (core/, mcp/, tools/, codesearch/, subagent/) for stub markers including panic(\"not implemented\"), TODO, and empty returns."
+      ],
+      "touches": [
+        "tools/conformance_test.go",
+        "mcp/mcp_test.go",
+        "golden_requests_test.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "done_when": [
+        "make test passes",
+        "make lint passes"
+      ],
+      "state": "pending"
+    }
+  ]
+}

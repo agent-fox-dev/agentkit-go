@@ -1,0 +1,444 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "07",
+  "spec_name": "nested_tool_calls",
+  "schema_version": 2,
+  "introduction": "Enables tools to declare reachable child tools, validates tool hierarchies against cycles and terminating tools, recursively filters reachable tools through tool policies, checks unguarded shell tools across wrappers, and executes nested tool calls through a uniform authorization, audit, event, and concurrency pipeline with parent tool-use ID tracking.",
+  "glossary": {
+    "leaf tool": "A tool that declares no child tools in ReachableTools.",
+    "nested tool call": "An invocation of a tool by a wrapper tool via CallNested rather than directly by the model provider.",
+    "parent tool-use ID": "The unique identifier of the wrapper tool call that initiated a nested tool call.",
+    "terminating tool": "A tool marked with Terminating: true that signals the agent run should terminate upon successful completion.",
+    "wrapper tool": "A tool that declares child tools in ReachableTools and invokes them programmatically during execution."
+  },
+  "requirements": [
+    {
+      "id": "07-REQ-1",
+      "title": "Reachable and terminating tool declarations and validation",
+      "rationale": "Validating reachable tool hierarchies and terminating restrictions at registration prevents recursive loops and unauthorized run terminations.",
+      "criteria": [
+        {
+          "id": "07-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "core tool definition",
+          "action": "declare reachable child tools via ReachableTools []Tool and intentional run termination via Terminating bool on core.Tool"
+        },
+        {
+          "id": "07-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "wire projection",
+          "action": "exclude ReachableTools and Terminating from core.ToolWire and ToolWires output so provider payloads remain byte-identical"
+        },
+        {
+          "id": "07-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "NewAgent, NewAgentWithHistory, or RegisterTool is called with tools containing a direct or transitive reachability cycle",
+          "system": "agent tool validator",
+          "action": "reject agent construction or registration and return an error identifying the cyclic path",
+          "contract": "returns an error matching 'agentkit: reachable tools cycle detected: <path>'"
+        },
+        {
+          "id": "07-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "NewAgent, NewAgentWithHistory, or RegisterTool is called where a wrapper tool declares a reachable tool with Terminating set to true",
+          "system": "agent tool validator",
+          "action": "reject agent construction or registration and return an error naming both the wrapper and the terminating tool",
+          "contract": "returns an error formatted as 'agentkit: terminating tool \\\"<terminating>\\\" cannot be reached through wrapper \\\"<wrapper>\\\"'"
+        },
+        {
+          "id": "07-REQ-1.5",
+          "pattern": "ubiquitous",
+          "system": "cycle detector",
+          "action": "for any tool hierarchy containing diamond dependencies without cycles, validate the hierarchy successfully without cycle errors"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-2",
+      "title": "Reachable tool queries and tool policy resolution",
+      "rationale": "Deduplicating transitive reachable sets and pruning empty wrappers ensures accurate tool access queries and clean prompt schemas for the model.",
+      "criteria": [
+        {
+          "id": "07-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "core.ReachableTools is called with a tool slice",
+          "system": "reachability query",
+          "action": "return the deduplicated transitive closure of all input tools and their reachable tools hierarchies, preserving the order of first appearance"
+        },
+        {
+          "id": "07-REQ-2.2",
+          "pattern": "event_driven",
+          "condition": "(*Agent).ReachableTools is called on an agent",
+          "system": "agent query",
+          "action": "resolve the agent's current ToolPolicy against registered tools and return core.ReachableTools on the resolved tool set"
+        },
+        {
+          "id": "07-REQ-2.3",
+          "pattern": "event_driven",
+          "condition": "ToolPolicy.Resolve is invoked on a registered tool slice",
+          "system": "tool policy resolver",
+          "action": "apply NoTools, ToolNames, and ExcludeTools filtering recursively to the ReachableTools slice of each wrapper tool"
+        },
+        {
+          "id": "07-REQ-2.4",
+          "pattern": "complex_event",
+          "condition": "ToolPolicy.Resolve evaluates a wrapper tool",
+          "guard": "the wrapper originally declared one or more reachable tools and policy filtering leaves it with zero reachable tools",
+          "system": "tool policy resolver",
+          "action": "drop the wrapper tool from the returned resolved tool slice"
+        },
+        {
+          "id": "07-REQ-2.5",
+          "pattern": "complex_event",
+          "condition": "ToolPolicy.Resolve evaluates a leaf tool",
+          "guard": "the leaf tool originally declared zero reachable tools and policy filtering admits the tool",
+          "system": "tool policy resolver",
+          "action": "retain the leaf tool in the resolved tool slice despite having an empty ReachableTools slice"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-3",
+      "title": "Transitive unguarded shell tool checking",
+      "rationale": "Inspecting transitively reachable tools closes security loopholes where shell tools could otherwise be executed through wrappers without authorization hooks.",
+      "criteria": [
+        {
+          "id": "07-REQ-3.1",
+          "pattern": "complex_event",
+          "condition": "checkExecuteGuard is invoked at the start of an agent run",
+          "guard": "AgentConfig.BeforeToolCall is nil",
+          "system": "execute guard",
+          "action": "inspect all transitively reachable tools of the resolved tool set using core.ReachableTools"
+        },
+        {
+          "id": "07-REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "AgentConfig.BeforeToolCall is nil and any resolved wrapper tool transitively reaches a tool satisfying guard.IsShellTool",
+          "system": "execute guard",
+          "action": "abort agent execution before issuing any model provider requests",
+          "contract": "returns an error wrapping core.ErrUnguardedExecute naming both the wrapper tool and the reachable shell tool"
+        },
+        {
+          "id": "07-REQ-3.3",
+          "pattern": "complex_event",
+          "condition": "checkExecuteGuard is invoked at the start of an agent run",
+          "guard": "AgentConfig.BeforeToolCall is non-nil",
+          "system": "execute guard",
+          "action": "permit execution to proceed without failing on reachable shell tools"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-4",
+      "title": "Nested execution caller API and context dispatch",
+      "rationale": "Providing context-propagated nested dispatchers enforces that wrappers can only invoke their explicitly declared reachable tools.",
+      "criteria": [
+        {
+          "id": "07-REQ-4.1",
+          "pattern": "ubiquitous",
+          "system": "nested execution API",
+          "action": "define core.NestedCaller interface with Call(ctx, calls...), WithNestedCaller context injector, and CallNested invocation helper"
+        },
+        {
+          "id": "07-REQ-4.2",
+          "pattern": "unwanted",
+          "condition": "CallNested is invoked on a context where no NestedCaller is attached",
+          "system": "nested execution helper",
+          "action": "return an error without executing any tool calls",
+          "contract": "returns nil result slice and core.ErrNoNestedCaller"
+        },
+        {
+          "id": "07-REQ-4.3",
+          "pattern": "complex_event",
+          "condition": "executeBatch prepares invocation for a tool handler",
+          "guard": "the tool declares one or more reachable tools in ReachableTools",
+          "system": "execution batch",
+          "action": "construct a NestedCaller dispatcher bound to parent tool-use ID, parent tool name, and resolved reachable tools, and attach it to ctx via WithNestedCaller"
+        },
+        {
+          "id": "07-REQ-4.4",
+          "pattern": "unwanted",
+          "condition": "a nested tool call specifies a tool name not present in the wrapper tool's resolved reachable tools",
+          "system": "nested execution dispatcher",
+          "action": "reject the nested tool call inline without invoking any tool handler",
+          "contract": "returns ToolResult with OK=false, Error='unknown_tool', and a descriptive Detail message, while CallNested returns a nil Go error"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-5",
+      "title": "Interceptor context, blocking, and argument rewriting",
+      "rationale": "Passing parent context and honouring interceptor decisions enables fine-grained authorization, parameter rewriting, and wrapper termination.",
+      "criteria": [
+        {
+          "id": "07-REQ-5.1",
+          "pattern": "ubiquitous",
+          "system": "interceptor context",
+          "action": "set ParentToolUseID and ParentToolName to the parent wrapper call identifiers for nested calls, and empty strings for direct calls, in BeforeToolCallContext and AfterToolCallContext"
+        },
+        {
+          "id": "07-REQ-5.2",
+          "pattern": "complex_event",
+          "condition": "BeforeToolCall evaluates a nested tool call",
+          "guard": "the interceptor returns Block=true and Terminate=false",
+          "system": "nested execution pipeline",
+          "action": "return a blocked tool result to the wrapper caller without terminating the wrapper or returning a Go error from CallNested"
+        },
+        {
+          "id": "07-REQ-5.3",
+          "pattern": "complex_event",
+          "condition": "BeforeToolCall evaluates a nested tool call",
+          "guard": "the interceptor returns Block=true and Terminate=true",
+          "system": "nested execution pipeline",
+          "action": "terminate wrapper execution immediately and propagate the termination vote to the batch"
+        },
+        {
+          "id": "07-REQ-5.4",
+          "pattern": "complex_event",
+          "condition": "BeforeToolCall evaluates a nested tool call",
+          "guard": "the interceptor returns non-nil Arguments in BeforeToolCallDecision",
+          "system": "nested execution pipeline",
+          "action": "substitute the decision arguments for the nested call arguments prior to input schema validation and handler invocation"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-6",
+      "title": "Terminating vote isolation for nested calls",
+      "rationale": "Preventing untrusted child tools from unilaterally terminating runs protects agent loop integrity while recording audit trails for debugging.",
+      "criteria": [
+        {
+          "id": "07-REQ-6.1",
+          "pattern": "complex_event",
+          "condition": "a tool handler executes during a nested tool call",
+          "guard": "the tool handler returns ToolResult with Terminate=true and the tool is not a top-level terminating tool",
+          "system": "nested execution pipeline",
+          "action": "override Terminate to false on the returned ToolResult and continue agent execution"
+        },
+        {
+          "id": "07-REQ-6.2",
+          "pattern": "event_driven",
+          "condition": "an unmarked tool handler returns Terminate=true during a nested tool call",
+          "system": "nested execution pipeline",
+          "action": "set TerminateIgnored=true on the nested AuditEvent and append an annotation to the nested ToolResult Detail indicating the terminate vote was ignored"
+        },
+        {
+          "id": "07-REQ-6.3",
+          "pattern": "event_driven",
+          "condition": "an unmarked tool handler returns Terminate=true during a nested tool call",
+          "system": "execution batch",
+          "action": "record in the parent wrapper ToolResult Detail that a nested terminate vote was ignored"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-7",
+      "title": "Nested concurrency, execution modes, and cancellation",
+      "rationale": "Parallel execution with sequential fallbacks preserves performance and ordering while isolating failures and supporting clean context cancellation.",
+      "criteria": [
+        {
+          "id": "07-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "CallNested is invoked with multiple tool calls in a single call group",
+          "system": "nested execution dispatcher",
+          "action": "execute the calls concurrently using goroutines joined by sync.WaitGroup"
+        },
+        {
+          "id": "07-REQ-7.2",
+          "pattern": "complex_event",
+          "condition": "CallNested is invoked with multiple tool calls",
+          "guard": "AgentConfig.ParallelTools is false or any invoked tool has ExecutionMode equal to core.Sequential",
+          "system": "nested execution dispatcher",
+          "action": "execute the tool calls sequentially in caller order"
+        },
+        {
+          "id": "07-REQ-7.3",
+          "pattern": "ubiquitous",
+          "system": "nested execution dispatcher",
+          "action": "for any batch of calls provided to CallNested, return the ToolResult slice in the exact order matching the input calls slice"
+        },
+        {
+          "id": "07-REQ-7.4",
+          "pattern": "event_driven",
+          "condition": "a nested tool call fails due to handler error, panic, or validation failure",
+          "system": "nested execution dispatcher",
+          "action": "isolate the failure to that call and allow sibling nested calls in the same call group to complete their execution"
+        },
+        {
+          "id": "07-REQ-7.5",
+          "pattern": "unwanted",
+          "condition": "the context passed to CallNested is cancelled while nested tool calls are pending or in flight",
+          "system": "nested execution dispatcher",
+          "action": "abort in-flight nested tool calls and return aborted tool results",
+          "contract": "returns ToolResult{OK: false, Error: 'aborted', Detail: 'Operation aborted'} for aborted calls"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-8",
+      "title": "Telemetry, events, audit records, and subagent spend",
+      "rationale": "Comprehensive telemetry, parent-linked tracing, and immediate spend reporting give full visibility into nested execution without stream pollution.",
+      "criteria": [
+        {
+          "id": "07-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "nested execution dispatcher",
+          "action": "generate a unique tool-use ID for each nested tool call"
+        },
+        {
+          "id": "07-REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "a nested tool call is prepared, updated, or finalized",
+          "system": "nested event emitter",
+          "action": "emit ToolExecutionStartEvent, ToolExecutionUpdateEvent, and ToolExecutionEndEvent to the event stream with ParentToolUseID populated and serialized with omitempty"
+        },
+        {
+          "id": "07-REQ-8.3",
+          "pattern": "event_driven",
+          "condition": "a nested tool call completes",
+          "system": "nested event emitter",
+          "action": "suppress ToolResultEvent from being emitted to the agent event stream"
+        },
+        {
+          "id": "07-REQ-8.4",
+          "pattern": "event_driven",
+          "condition": "a nested tool call completes",
+          "system": "nested audit logger",
+          "action": "emit an AuditEvent with Kind=AuditToolCall, ParentToolUseID populated, ArgumentsHash, error status, and elapsed duration"
+        },
+        {
+          "id": "07-REQ-8.5",
+          "pattern": "event_driven",
+          "condition": "a nested tool call handler executes",
+          "system": "nested tracer",
+          "action": "wrap handler execution in a tracer span named 'agentkit.tool_call' recording tool_name, tool_use_id, parent_tool_use_id, and status attributes"
+        },
+        {
+          "id": "07-REQ-8.6",
+          "pattern": "ubiquitous",
+          "system": "nested execution dispatcher",
+          "action": "propagate core.WithUsageReporter on context to nested tool handlers so that off-loop subagent usage is reported immediately to the parent agent"
+        }
+      ]
+    },
+    {
+      "id": "07-REQ-9",
+      "title": "Session log and turn stop policy isolation",
+      "rationale": "Confining session logs and turn stop policies to top-level wrapper calls keeps resumed transcripts clean and aligned with provider conversation turns.",
+      "criteria": [
+        {
+          "id": "07-REQ-9.1",
+          "pattern": "event_driven",
+          "condition": "a turn containing nested tool calls concludes",
+          "system": "agent session recorder",
+          "action": "persist only the top-level wrapper tool call and result to the session store and conversation history, omitting all nested tool calls"
+        },
+        {
+          "id": "07-REQ-9.2",
+          "pattern": "event_driven",
+          "condition": "turn stop policies are evaluated at turn conclusion",
+          "system": "agent stop evaluator",
+          "action": "evaluate stop policies including stop.WhenToolCalled exclusively against top-level tool calls and results, ignoring nested tool calls"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "07-PATH-1",
+      "title": "Parallel execution of nested child tools through a wrapper tool",
+      "steps": [
+        {
+          "actor": "Agent Embedder",
+          "action": "constructs an Agent with a wrapper tool declaring child tools and starts a run"
+        },
+        {
+          "actor": "Agent Loop",
+          "action": "executes a tool batch containing the wrapper tool call and injects a NestedCaller dispatcher into context"
+        },
+        {
+          "actor": "Wrapper Tool Handler",
+          "action": "calls CallNested with multiple child tool calls concurrently"
+        },
+        {
+          "actor": "Nested Dispatcher",
+          "action": "executes child tool calls concurrently, invoking interceptors, audit logs, and tracer spans with parent tool-use IDs"
+        },
+        {
+          "actor": "Nested Dispatcher",
+          "action": "returns child tool results to the wrapper tool handler in caller order"
+        },
+        {
+          "actor": "Wrapper Tool Handler",
+          "action": "synthesizes child results and returns final wrapper result to the agent batch"
+        },
+        {
+          "actor": "Agent Recorder",
+          "action": "commits only the top-level wrapper tool call and result to conversation history and session storage"
+        }
+      ]
+    },
+    {
+      "id": "07-PATH-2",
+      "title": "Cycle detection rejection at agent construction",
+      "steps": [
+        {
+          "actor": "Agent Embedder",
+          "action": "calls NewAgent with custom tools where tool A reaches tool B and tool B reaches tool A"
+        },
+        {
+          "actor": "Agent Tool Validator",
+          "action": "performs depth-first traversal of reachable tool hierarchies and detects the cycle A -> B -> A"
+        },
+        {
+          "actor": "Agent Tool Validator",
+          "action": "rejects agent initialization and returns an error naming the cycle path"
+        }
+      ]
+    },
+    {
+      "id": "07-PATH-3",
+      "title": "Interceptor blocking and terminating a nested tool call",
+      "steps": [
+        {
+          "actor": "Agent Embedder",
+          "action": "configures an Agent with a BeforeToolCall interceptor and invokes a wrapper tool"
+        },
+        {
+          "actor": "Wrapper Tool Handler",
+          "action": "invokes CallNested for a child tool"
+        },
+        {
+          "actor": "BeforeToolCall Interceptor",
+          "action": "inspects BeforeToolCallContext with ParentToolUseID and returns Block=true with Terminate=true"
+        },
+        {
+          "actor": "Nested Dispatcher",
+          "action": "aborts wrapper execution and returns core.ErrTerminated to CallNested"
+        },
+        {
+          "actor": "Execution Batch",
+          "action": "sets Terminate=true on the wrapper tool result and terminates the agent run"
+        }
+      ]
+    },
+    {
+      "id": "07-PATH-4",
+      "title": "Unguarded shell tool detection across reachable tool wrappers",
+      "steps": [
+        {
+          "actor": "Agent Embedder",
+          "action": "constructs an Agent with a wrapper tool reaching a shell tool without configuring BeforeToolCall"
+        },
+        {
+          "actor": "Agent Loop",
+          "action": "invokes Run and executes checkExecuteGuard across transitively reachable tools"
+        },
+        {
+          "actor": "Execute Guard",
+          "action": "detects the reachable shell tool and aborts execution before any provider requests with core.ErrUnguardedExecute"
+        }
+      ]
+    }
+  ]
+}
