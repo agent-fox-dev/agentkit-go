@@ -10,42 +10,39 @@ import (
 	"time"
 
 	"github.com/agentfox/agentkit-go/mcp"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // TestTheReferenceBinaryServesOverRealStdio drives the demonstration binary as a
 // subprocess with the SHIPPED client.
 //
-// Everything else exercises Serve over in-memory pipes, which cannot catch the
-// failures specific to a real process: a stray write to stdout corrupting the
-// frame stream, ServeStdio wiring the wrong file descriptors, or a signal
-// handler that never lets the process exit. This is the only test that runs
-// the binary the way an MCP host would launch it.
+// Everything else exercises the server over in-memory pipes, which cannot
+// catch the failures specific to a real process: a stray write to stdout
+// corrupting the frame stream, ServeStdio wiring the wrong file descriptors,
+// or a signal handler that never lets the process exit. This is the only test
+// that runs the binary the way an MCP host would launch it.
 func TestTheReferenceBinaryServesOverRealStdio(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a binary")
 	}
 	bin := build(t)
 
-	var stderr []string
-	tr, err := mcp.StartStdio(context.Background(), mcp.StdioOptions{
-		Command: bin,
-		Stderr:  func(line string) { stderr = append(stderr, line) },
-	})
-	if err != nil {
-		t.Fatalf("start: %v (stderr: %v)", err, stderr)
-	}
-	conn := mcp.NewConnection(mcp.ServerConfig{Name: "ref"}, tr, mcp.ConnectionOptions{})
-	t.Cleanup(func() { _ = conn.Close() })
+	pool := mcp.NewPool(mcp.ConnectionOptions{})
+	t.Cleanup(func() { _ = pool.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	if err := conn.Discover(ctx); err != nil {
-		t.Fatalf("server/discover: %v (stderr: %v)", err, stderr)
+	conn, err := pool.Connect(ctx, mcp.ServerConfig{Name: "ref", Command: bin}, nil, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
 	}
-	got := conn.Info().SupportedVersions
-	if len(got) == 0 || got[0] != mcp.ProtocolVersion {
-		t.Fatalf("supportedVersions = %v, want %s", got, mcp.ProtocolVersion)
+	sess, err := conn.Session(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info := sess.InitializeResult().ServerInfo; info == nil || info.Name != "agentkit-mcp-server" {
+		t.Fatalf("server identity = %+v", info)
 	}
 
 	tools, err := conn.ListTools(ctx)
@@ -60,13 +57,13 @@ func TestTheReferenceBinaryServesOverRealStdio(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tools/call: %v", err)
 	}
-	if res.IsError || len(res.Content) != 1 || res.Content[0].Text != "over a real pipe" {
+	if tc, ok := res.Content[0].(*mcp.TextContent); res.IsError || !ok || tc.Text != "over a real pipe" {
 		t.Fatalf("echo returned %+v", res)
 	}
 
 	// The templated resource: the only path that proves URI variables survive
 	// a real transport.
-	read, err := conn.ReadResource(ctx, "agentkit://echo/hello")
+	read, err := sess.ReadResource(ctx, &sdk.ReadResourceParams{URI: "agentkit://echo/hello"})
 	if err != nil {
 		t.Fatalf("resources/read: %v", err)
 	}

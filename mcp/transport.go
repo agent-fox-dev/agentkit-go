@@ -2,10 +2,12 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -13,305 +15,328 @@ import (
 	"time"
 
 	"github.com/agentfox/agentkit-go/wire"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Transport carries framed JSON-RPC messages in both directions.
+// The SDK owns the protocol; this file owns the three trust boundaries where
+// bytes AgentKit did not write enter the process (REQ-SEC-11). The SDK's own
+// decoder accepts duplicate keys (last wins) and its bounds are not ours, so
+// every inbound message is held to wire's rules BEFORE the SDK decodes it:
+// stdio frames here, inbound HTTP bodies in Server.HTTPHandler, and HTTP
+// response bodies (JSON or SSE) in strictRoundTripper.
+
+// strictConn is an sdk.Connection speaking newline-delimited JSON, whose
+// inbound frames are bounded by wire.FrameReader and checked by wire.Guard.
 //
-// Receive returns ONE message. It does not take a context: a transport read is
-// unblocked by closing the transport, not by cancelling a read, and a
-// context-aware Receive would have to either leak the goroutine still blocked
-// on the socket or lie about having stopped. Close is the cancellation.
-type Transport interface {
-	Send(msg []byte) error
-	Receive() ([]byte, error)
-	Close() error
+// A rejected frame is a Read error, and the SDK closes a connection whose Read
+// fails: REQ-SEC-11.4's "poisoned by the first malformed message" holds,
+// because there is no safe place in a stream with untrustworthy framing to
+// resume from.
+type strictConn struct {
+	frames *wire.FrameReader
+	limits wire.Limits
+	w      io.Writer
+	close  func() error
+
+	writeMu sync.Mutex
+	once    sync.Once
+	err     error
 }
 
-// ContextSender is a Transport whose Send honours a per-call deadline.
-//
-// It exists because Streamable HTTP does real work inside Send: the POST and,
-// for a JSON-answered request, the body read. Running those under the
-// TRANSPORT's context meant a server that accepted the POST and then stalled
-// held the caller forever — REQ-MCP-CLIENT-07's timeout_s never fired, because
-// the call was still inside Send when its context expired. The client uses
-// this method when a transport offers it and falls back to Send otherwise.
-type ContextSender interface {
-	SendContext(ctx context.Context, msg []byte) error
+func newStrictConn(r io.Reader, w io.Writer, limits wire.Limits, closeFn func() error) *strictConn {
+	return &strictConn{frames: wire.NewNDJSON(r, limits), limits: limits, w: w, close: closeFn}
 }
 
-// sendContext sends through SendContext when the transport has one.
-func sendContext(ctx context.Context, tr Transport, msg []byte) error {
-	if cs, ok := tr.(ContextSender); ok {
-		return cs.SendContext(ctx, msg)
+func (c *strictConn) Read(context.Context) (jsonrpc.Message, error) {
+	frame, err := c.frames.Next()
+	if err != nil {
+		return nil, err
 	}
-	return tr.Send(msg)
+	if err := wire.Guard(frame, c.limits); err != nil {
+		return nil, err
+	}
+	return jsonrpc.DecodeMessage(frame)
 }
 
-// ErrTransportClosed is returned once a transport has been shut down. A write
-// that fails because the peer is gone wraps it too, so a caller can tell "the
-// link is dead" from "this message was refused" without matching on text.
-var ErrTransportClosed = errors.New("mcp: transport is closed")
-
-// ---------------------------------------------------------------- stdio
-
-// StdioOptions configures a subprocess transport.
-type StdioOptions struct {
-	Command string
-	Args    []string
-	Dir     string
-	// Env is the COMPLETE environment for the child. REQ-MCP-CLIENT-10 and
-	// REQ-SEC-08 both require a reduced one: a stdio MCP server inheriting the
-	// parent environment receives every provider API key in it, which is the
-	// same class of mistake as passing a credential on a command line.
-	//
-	// Nil means an EMPTY environment, not the parent's. Defaulting to
-	// inheritance would make the safe case the one you have to remember.
-	Env []string
-	// Stderr receives the server's diagnostics line by line. Nil discards
-	// them — but discarding is the caller's explicit choice, because a stdio
-	// server that fails to start says why on stderr and nowhere else.
-	Stderr func(line string)
-	Limits wire.Limits
+// Write honours ctx even when the peer has stopped draining its pipe: the
+// write runs on its own goroutine, so REQ-MCP-CLIENT-07's timeout_s is a
+// timeout on returning and not only on the response. An abandoned write keeps
+// the lock until it completes or Close unblocks it, so frames never interleave.
+func (c *strictConn) Write(ctx context.Context, msg jsonrpc.Message) error {
+	data, err := jsonrpc.EncodeMessage(msg)
+	if err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() {
+		c.writeMu.Lock()
+		defer c.writeMu.Unlock()
+		_, err := c.w.Write(append(data, '\n'))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
-// maxStderrLine bounds one stderr line delivered to StdioOptions.Stderr.
+func (c *strictConn) Close() error {
+	c.once.Do(func() { c.err = c.close() })
+	return c.err
+}
+
+func (c *strictConn) SessionID() string { return "" }
+
+// connTransport hands the SDK one already-built connection.
+type connTransport struct{ conn sdk.Connection }
+
+func (t connTransport) Connect(context.Context) (sdk.Connection, error) { return t.conn, nil }
+
+// NewPipeTransport speaks strict NDJSON over a reader/writer pair: the server's
+// stdio mode, and an in-process client/server pair with no subprocess and no
+// port. Close closes both ends that are io.Closers, the reader first, because
+// that is what unblocks a read loop waiting on it.
+func NewPipeTransport(r io.Reader, w io.Writer, limits wire.Limits) sdk.Transport {
+	return connTransport{newStrictConn(r, w, limits, func() error {
+		var err error
+		for _, x := range []any{r, w} {
+			if c, ok := x.(io.Closer); ok {
+				err = errors.Join(err, c.Close())
+			}
+		}
+		return err
+	})}
+}
+
+// maxStderrLine bounds one stderr line delivered to the Warnf hook.
 const maxStderrLine = 1 << 20
 
-// StdioTransport runs an MCP server as a subprocess and speaks NDJSON to it.
-type StdioTransport struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *os.File
-	frames *wire.FrameReader
-
-	sendMu sync.Mutex
-	once   sync.Once
-	closed chan struct{}
-	waitCh chan error
+// commandTransport runs an MCP server as a subprocess.
+//
+// It replaces the SDK's CommandTransport for three reasons: the child gets
+// exactly Env and never the parent's environment (REQ-MCP-CLIENT-10); it runs
+// in its own process group and Close kills the GROUP, so helpers it spawned do
+// not outlive it holding the pipe; and its frames go through strictConn.
+type commandTransport struct {
+	command string
+	args    []string
+	dir     string
+	env     []string
+	stderr  func(line string)
+	limits  wire.Limits
 }
 
-// StartStdio spawns the server.
-func StartStdio(ctx context.Context, opts StdioOptions) (*StdioTransport, error) {
-	if opts.Command == "" {
-		return nil, errors.New("mcp: stdio transport needs a command")
-	}
-	cmd := exec.Command(opts.Command, opts.Args...)
-	cmd.Dir = opts.Dir
+func (t *commandTransport) Connect(context.Context) (sdk.Connection, error) {
+	cmd := exec.Command(t.command, t.args...)
+	cmd.Dir = t.dir
 	// An explicit empty slice, never nil: exec treats a nil Env as "inherit
 	// the parent's", which is the one behaviour REQ-MCP-CLIENT-10 forbids.
-	cmd.Env = opts.Env
-	if cmd.Env == nil {
-		cmd.Env = []string{}
-	}
+	cmd.Env = append([]string{}, t.env...)
 	setProcessGroup(cmd)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
 	}
-	// stdout and stderr are OUR pipes, not cmd.StdoutPipe's. os/exec documents
-	// that Wait closes the pipes it created, and the reaper below calls Wait
-	// the moment the process exits — so a server that wrote its last response
-	// and exited immediately could have that frame discarded by Wait before
-	// the reader got to it. A pipe exec did not create, exec does not close:
-	// the read side stays open until the reader has drained it to EOF.
+	// stdout and stderr are OUR pipes, not cmd.StdoutPipe's: Wait closes the
+	// pipes exec created, and the reaper calls Wait the moment the process
+	// exits — so a server that wrote its last response and exited could have
+	// that frame discarded before the reader got to it.
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
 	stderrR, stderrW, err := os.Pipe()
 	if err != nil {
-		_ = stdoutR.Close()
-		_ = stdoutW.Close()
+		_, _ = stdoutR.Close(), stdoutW.Close()
 		return nil, err
 	}
 	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
-	if err := cmd.Start(); err != nil {
-		_ = stdoutR.Close()
-		_ = stdoutW.Close()
-		_ = stderrR.Close()
-		_ = stderrW.Close()
-		return nil, fmt.Errorf("mcp: starting %q: %w", opts.Command, err)
-	}
+	err = cmd.Start()
 	// The child holds the write ends now. Ours must go, or the reader never
 	// sees EOF — it would be waiting on a writer that is this very process.
-	_ = stdoutW.Close()
-	_ = stderrW.Close()
-
-	t := &StdioTransport{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: stdoutR,
-		frames: wire.NewNDJSON(stdoutR, opts.Limits),
-		closed: make(chan struct{}),
-		waitCh: make(chan error, 1),
+	_, _ = stdoutW.Close(), stderrW.Close()
+	if err != nil {
+		_, _ = stdoutR.Close(), stderrR.Close()
+		return nil, fmt.Errorf("mcp: starting %q: %w", t.command, err)
 	}
+	go pumpStderr(stderrR, t.stderr)
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
 
-	go func() {
-		defer stderrR.Close()
-		sc := bufio.NewScanner(stderrR)
-		sc.Buffer(make([]byte, 0, 4096), maxStderrLine)
-		for sc.Scan() {
-			if opts.Stderr != nil {
-				opts.Stderr(sc.Text())
-			}
-		}
-		// The scanner stops on a line it cannot buffer (bufio.ErrTooLong) as
-		// well as at EOF. Stopping READING then is not an option: the child
-		// still holds the write end, and once the pipe fills its next write
-		// to stderr blocks — a server that logs is a server that hangs, and
-		// its stdout frames stop with it. So the rest of the stream is
-		// drained and discarded, and the caller is told once why its
-		// diagnostics stopped.
-		if err := sc.Err(); err != nil {
-			if opts.Stderr != nil {
-				opts.Stderr(fmt.Sprintf("[agentkit] stderr line exceeded %d bytes (%v); "+
-					"the rest of this server's stderr is discarded", maxStderrLine, err))
-			}
-			_, _ = io.Copy(io.Discard, stderrR)
-		}
-	}()
-	go func() { t.waitCh <- cmd.Wait() }()
-
-	return t, nil
-}
-
-func (t *StdioTransport) Send(msg []byte) error {
-	select {
-	case <-t.closed:
-		return ErrTransportClosed
-	default:
-	}
-	// Serialized: two goroutines writing concurrently would interleave two
-	// JSON objects into one line, and NDJSON has no way to tell the peer that
-	// what it just read was two messages.
-	t.sendMu.Lock()
-	defer t.sendMu.Unlock()
-	if _, err := t.stdin.Write(append(msg, '\n')); err != nil {
-		// A write to the child's stdin fails only when the child is gone (or
-		// closed its end, which for an MCP server is the same thing). Naming
-		// it a closed transport is what lets the connection's reconnect path
-		// (NFR-REL-03) recognise a dead server at the first call after it
-		// died, rather than after a timeout.
-		return fmt.Errorf("%w: writing to the server's stdin: %v", ErrTransportClosed, err)
-	}
-	return nil
-}
-
-func (t *StdioTransport) Receive() ([]byte, error) { return t.frames.Next() }
-
-// Close terminates the server and reaps it.
-//
-// It kills the process GROUP, not the process: an MCP server that spawned
-// helpers of its own leaves them holding the pipe otherwise, and the read side
-// never sees EOF.
-func (t *StdioTransport) Close() error {
-	var err error
-	t.once.Do(func() {
-		close(t.closed)
-		_ = t.stdin.Close()
-
+	return newStrictConn(stdoutR, stdin, t.limits, func() error {
+		_ = stdin.Close()
 		select {
-		case werr := <-t.waitCh:
-			err = werr
+		case <-exited:
 		case <-time.After(2 * time.Second):
-			// A server that will not exit on a closed stdin gets killed. The
-			// wait that follows is what stops a zombie, and the timeout on it
-			// is what stops Close from being the thing that hangs.
-			killGroup(t.cmd)
+			// A server that will not exit on a closed stdin is killed, group
+			// and all; the bounded wait is what stops Close from hanging.
+			killGroup(cmd)
 			select {
-			case werr := <-t.waitCh:
-				err = werr
+			case <-exited:
 			case <-time.After(2 * time.Second):
-				err = errors.New("mcp: server did not exit after being killed")
 			}
 		}
 		// Only now, after the process is reaped: closing the read end earlier
-		// is the frame-losing race this transport exists to avoid, and a
-		// reader still blocked on it is unblocked by this close.
-		_ = t.stdout.Close()
-	})
-	if err != nil && isExpectedExit(err) {
-		return nil
-	}
-	return err
+		// is the frame-losing race the private pipe exists to avoid.
+		return stdoutR.Close()
+	}), nil
 }
 
-// isExpectedExit reports the shutdown outcomes that are not failures: a server
-// we killed, and one that exited because we closed its stdin.
-func isExpectedExit(err error) bool {
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return true
+// pumpStderr delivers the child's stderr line by line. A line too long to
+// buffer does not stop the READING: the child still holds the write end, and
+// once the pipe fills, a server that logs is a server that hangs. The rest is
+// drained and discarded, and the caller is told once why.
+func pumpStderr(r *os.File, deliver func(string)) {
+	defer r.Close()
+	if deliver == nil {
+		deliver = func(string) {}
 	}
-	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe)
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 4096), maxStderrLine)
+	for sc.Scan() {
+		deliver(sc.Text())
+	}
+	if err := sc.Err(); err != nil {
+		deliver(fmt.Sprintf("[agentkit] stderr line exceeded %d bytes (%v); the rest of "+
+			"this server's stderr is discarded", maxStderrLine, err))
+		_, _ = io.Copy(io.Discard, r)
+	}
 }
 
-// ---------------------------------------------------------------- pipe
-
-// PipeTransport speaks NDJSON over an arbitrary reader/writer pair.
-//
-// It is the transport a SERVER uses in stdio mode, and it is what makes the
-// client and server testable against each other in-process, with no
-// subprocess, no port and no timing.
-type PipeTransport struct {
-	w io.Writer
-	// Both ends are closed by Close. Closing only the writer leaves the PEER's
-	// reader blocked forever — and a Close that does not unblock the read side
-	// is a Close that deadlocks anything waiting for the read loop to finish.
-	wCloser io.Closer
-	rCloser io.Closer
-	frames  *wire.FrameReader
-	sendMu  sync.Mutex
-	once    sync.Once
-	closed  chan struct{}
+// strictRoundTripper is the client side of the HTTP boundary: it adds the
+// configured headers to every request and holds every response body — a JSON
+// answer or each SSE event's data — to wire's rules before the SDK reads it.
+type strictRoundTripper struct {
+	base    http.RoundTripper
+	headers map[string]string
+	limits  wire.Limits
 }
 
-func NewPipeTransport(r io.Reader, w io.Writer, limits wire.Limits) *PipeTransport {
-	t := &PipeTransport{w: w, frames: wire.NewNDJSON(r, limits), closed: make(chan struct{})}
-	if c, ok := w.(io.Closer); ok {
-		t.wCloser = c
+func (t *strictRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	for k, v := range t.headers {
+		r.Header.Set(k, v)
 	}
-	if c, ok := r.(io.Closer); ok {
-		t.rCloser = c
+	resp, err := t.base.RoundTrip(r)
+	if err != nil {
+		return nil, err
 	}
-	return t
+	max := t.limits.WithDefaults().MaxMessageBytes
+	switch ct := resp.Header.Get("Content-Type"); {
+	case strings.HasPrefix(ct, "application/json"):
+		body, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
+		_ = resp.Body.Close()
+		if err == nil && int64(len(body)) > max {
+			err = fmt.Errorf("response body exceeds %d bytes", max)
+		}
+		if err == nil {
+			err = wire.Guard(body, t.limits)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("mcp: response rejected: %w", err)
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+	case strings.HasPrefix(ct, "text/event-stream"):
+		resp.Body = &sseGuard{src: bufio.NewReader(resp.Body), body: resp.Body,
+			limits: t.limits, max: max + 64<<10}
+	}
+	return resp, nil
 }
 
-func (t *PipeTransport) Send(msg []byte) error {
-	select {
-	case <-t.closed:
-		return ErrTransportClosed
-	default:
+// sseGuard passes an event stream through unchanged, but releases each event
+// only once its joined data lines pass wire.Guard. An event longer than the
+// message bound is an error before it is buffered whole.
+type sseGuard struct {
+	src    *bufio.Reader
+	body   io.Closer
+	limits wire.Limits
+	max    int64
+
+	event, data, out []byte
+	err              error
+}
+
+func (g *sseGuard) Read(p []byte) (int, error) {
+	for len(g.out) == 0 && g.err == nil {
+		g.err = g.next()
 	}
-	t.sendMu.Lock()
-	defer t.sendMu.Unlock()
-	if _, err := t.w.Write(append(msg, '\n')); err != nil {
-		// As for stdio: a pipe that refuses a write has lost its peer.
-		return fmt.Errorf("%w: %v", ErrTransportClosed, err)
+	if len(g.out) == 0 {
+		return 0, g.err
 	}
+	n := copy(p, g.out)
+	g.out = g.out[n:]
+	return n, nil
+}
+
+func (g *sseGuard) Close() error { return g.body.Close() }
+
+// next consumes one line. A blank line, or the end of the stream, completes
+// the event.
+func (g *sseGuard) next() error {
+	var line []byte
+	for {
+		chunk, err := g.src.ReadSlice('\n')
+		line = append(line, chunk...)
+		if int64(len(g.event)+len(line)) > g.max {
+			return fmt.Errorf("mcp: server-sent event exceeds %d bytes", g.max)
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if err != nil {
+			g.event = append(g.event, line...)
+			g.addData(line)
+			if rerr := g.release(); rerr != nil {
+				return rerr
+			}
+			return err
+		}
+		break
+	}
+	g.event = append(g.event, line...)
+	if len(bytes.TrimRight(line, "\r\n")) == 0 {
+		return g.release()
+	}
+	g.addData(line)
 	return nil
 }
 
-func (t *PipeTransport) Receive() ([]byte, error) { return t.frames.Next() }
-
-func (t *PipeTransport) Close() error {
-	var err error
-	t.once.Do(func() {
-		close(t.closed)
-		if t.rCloser != nil {
-			// The reader first: this is what unblocks a read loop waiting on
-			// it, and the write close below can only report an error.
-			_ = t.rCloser.Close()
-		}
-		if t.wCloser != nil {
-			err = t.wCloser.Close()
-		}
-	})
-	return err
+func (g *sseGuard) addData(line []byte) {
+	v, ok := bytes.CutPrefix(bytes.TrimRight(line, "\r\n"), []byte("data:"))
+	if !ok {
+		return
+	}
+	if g.data != nil {
+		g.data = append(g.data, '\n')
+	}
+	g.data = append(g.data, bytes.TrimPrefix(v, []byte(" "))...)
 }
 
-// ---------------------------------------------------------------- helpers
+func (g *sseGuard) release() error {
+	if len(g.data) > 0 {
+		if err := wire.Guard(g.data, g.limits); err != nil {
+			return fmt.Errorf("mcp: server-sent event rejected: %w", err)
+		}
+	}
+	g.out, g.event, g.data = g.event, nil, nil
+	return nil
+}
+
+// isHeaderSafe reports whether s is safe to place in an HTTP header: no
+// control bytes. A control byte in a header is a request-splitting attempt,
+// and it can arrive through an interpolated secret.
+func isHeaderSafe(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c < 0x20 || c == 0x7f {
+			return false
+		}
+	}
+	return s != ""
+}
 
 // interpolate expands ${VAR} and $VAR against a lookup (REQ-MCP-CLIENT-07).
 //
@@ -319,8 +344,7 @@ func (t *PipeTransport) Close() error {
 // is returned as missing. A variable deliberately set to the empty string is
 // a value the operator chose, not a reference that failed to resolve — and
 // NFR-SEC-03 makes the latter a configuration error, so the two must not be
-// confused. The missing list is what Connect turns into that error; the
-// literal `${VAR}` is never handed to the child either way.
+// confused. The literal `${VAR}` is never handed to the child either way.
 func interpolate(s string, lookup func(string) (string, bool)) (string, []string) {
 	var missing []string
 	var b strings.Builder
@@ -349,7 +373,7 @@ func interpolate(s string, lookup func(string) (string, bool)) (string, []string
 			name, next = s[i+2:i+2+end], i+3+end
 		} else {
 			j := i + 1
-			for j < len(s) && (isWordByte(s[j])) {
+			for j < len(s) && isWordByte(s[j]) {
 				j++
 			}
 			if j == i+1 {

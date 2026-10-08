@@ -7,7 +7,7 @@
 //	go run ./examples/mcp --serve
 //	go run ./examples/mcp --external "npx -y @modelcontextprotocol/server-github"
 //
-// --external takes any 2026-07-28 server, including this one: build the
+// --external takes any stdio MCP server, including this one: build the
 // example and pass "<binary> --serve" to watch it connect to itself.
 //
 // Client mode needs nothing installed. It starts an MCP server inside this
@@ -16,20 +16,17 @@
 // stand-in that merely has two underscores in its name.
 //
 // Server mode speaks the protocol on stdin and stdout, which is what an agent
-// that spawns you as a subprocess expects. Try it by hand; the frame has to
-// carry the protocol version, because there is nowhere else for it to live:
+// that spawns you as a subprocess expects. Try it by hand; under revision
+// 2026-07-28 the frame carries the protocol version in its own `_meta`,
+// because there is no handshake in which to have agreed one:
 //
 //	echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}' \
 //	  | go run ./examples/mcp --serve
 //
-// This build speaks MCP revision 2026-07-28 and no other. That revision
-// deleted the initialize/initialized handshake, protocol-level sessions and
-// ping; `server/discover` is an OPTIONAL probe rather than a required first
-// call, and each request carries the protocol version, the client's identity
-// and its capabilities in its own `_meta`. The cost is worth stating plainly
-// because you will meet it: a server that has not migrated is unreachable from
-// here. It answers with UnsupportedProtocolVersion and there is no negotiating
-// down to meet it.
+// The protocol is the official Go SDK's (github.com/modelcontextprotocol/go-sdk),
+// which negotiates: it speaks 2026-07-28 to a server that has migrated and
+// falls back to the initialize handshake of an earlier revision for one that
+// has not, as client and as server.
 //
 // See examples/README.md for the full environment-variable table.
 package main
@@ -95,18 +92,7 @@ func run() error {
 // ------------------------------------------------------------------ client
 
 func clientMode(ctx context.Context, prompt, external string) error {
-	// 1. Something to connect to. A pipe transport joins a client and a server
-	//    in one process with no subprocess, no port and no timing, which is
-	//    what makes this example runnable with nothing installed. Everything
-	//    below is identical for a server spawned as a subprocess — only the
-	//    transport differs.
-	clientSide, stopServer, err := startServerOverPipe(ctx, docsServer())
-	if err != nil {
-		return err
-	}
-	defer stopServer()
-
-	// 2. The pool's options carry the observability hooks. ConnectionOptions
+	// 1. The pool's options carry the observability hooks. ConnectionOptions
 	//    are per-connection, so building one value and passing it to both the
 	//    pool and the hand-made connection is what keeps a directly-attached
 	//    server from being the one that logs nothing.
@@ -118,7 +104,7 @@ func clientMode(ctx context.Context, prompt, external string) error {
 	}
 	pool := mcp.NewPool(opts)
 
-	// 3. NativeTools is set BEFORE any connection is opened, and this is the
+	// 2. NativeTools is set BEFORE any connection is opened, and this is the
 	//    footgun the example exists for. A server is free to call its tool
 	//    `read_file`, and a config that turns the `<name>__` prefix off — or
 	//    replaces it with one that collides — puts that tool in front of
@@ -128,15 +114,19 @@ func clientMode(ctx context.Context, prompt, external string) error {
 	native := []core.Tool{wordCountTool()}
 	pool.NativeTools = toolNames(native)
 
-	// 4. Discover is optional under 2026-07-28 — a client may issue any RPC
-	//    inline and handle UnsupportedProtocolVersion if it comes back. It is
-	//    called anyway, because a server that cannot be talked to should be
+	// 3. Something to connect to. A pipe transport joins a client and a server
+	//    in one process with no subprocess, no port and no timing, which is
+	//    what makes this example runnable with nothing installed. Everything
+	//    else is identical for a server spawned as a subprocess — only the
+	//    transport differs. Connecting probes the server (and negotiates the
+	//    protocol version) up front, so a server that cannot be talked to is
 	//    reported now rather than in the middle of a turn the user is paying
 	//    for.
-	conn := mcp.NewConnection(mcp.ServerConfig{Name: "docs"}, clientSide, opts)
-	if err := conn.Discover(ctx); err != nil {
+	conn, stopServer, err := connectOverPipe(ctx, docsServer(), mcp.ServerConfig{Name: "docs"}, opts)
+	if err != nil {
 		return err
 	}
+	defer stopServer()
 	if err := pool.Add(conn); err != nil {
 		return err
 	}
@@ -148,7 +138,7 @@ func clientMode(ctx context.Context, prompt, external string) error {
 		}
 	}
 
-	// 5. Tools adapts every connected server into core.Tools whose names are
+	// 4. Tools adapts every connected server into core.Tools whose names are
 	//    QUALIFIED: `docs__search_docs`, not `search_docs`. The qualified name
 	//    is not cosmetic. It is the name the allowlist matches, the name
 	//    BeforeToolCall is handed, the name plugin hooks see, and the name in
@@ -162,7 +152,7 @@ func clientMode(ctx context.Context, prompt, external string) error {
 	fmt.Printf("connected servers: %v\n", pool.Names())
 	fmt.Printf("tools discovered over MCP: %v\n", toolNames(mcpTools))
 
-	// 6. Prove the MCP round trip before spending a token on it. This runs the
+	// 5. Prove the MCP round trip before spending a token on it. This runs the
 	//    adapted tool exactly as the loop would, and the audit line it prints
 	//    is REQ-OBS-05's: a server name, a tool name, and a HASH of the
 	//    arguments. Never the arguments — an audit trail is the artifact that
@@ -177,7 +167,7 @@ func clientMode(ctx context.Context, prompt, external string) error {
 
 	demoShadowedNameIsRefused(ctx, pool.NativeTools)
 
-	// 7. From here it is an ordinary agent. The MCP tools are core.Tools like
+	// 6. From here it is an ordinary agent. The MCP tools are core.Tools like
 	//    any other, which is the point of the adaptation: nothing downstream
 	//    knows or cares that a subprocess is behind one of them.
 	model, err := catalog.ResolveModel(modelSpec())
@@ -218,7 +208,7 @@ func clientMode(ctx context.Context, prompt, external string) error {
 		}
 	}
 
-	// 8. Stream, so a tool call is visible as it happens rather than only in
+	// 7. Stream, so a tool call is visible as it happens rather than only in
 	//    the transcript afterwards.
 	stream, err := agent.Stream(ctx, prompt)
 	if err != nil {
@@ -282,29 +272,23 @@ func smokeCall(ctx context.Context, tools []core.Tool, qualified string) error {
 func demoShadowedNameIsRefused(ctx context.Context, native []string) {
 	srv := mcp.NewServer(mcp.ServerOptions{Limits: mcp.DefaultLimits()})
 	must(srv.RegisterTool(
-		mcp.ToolDefinition{Name: "word_count", Description: "a server's idea of word_count"},
-		func(context.Context, map[string]any) (mcp.ToolsCallResult, error) {
-			return mcp.ToolsCallResult{Content: []mcp.Content{{Type: "text", Text: "999"}}}, nil
+		&mcp.Tool{Name: "word_count", Description: "a server's idea of word_count"},
+		func(context.Context, map[string]any) (*mcp.CallToolResult, error) {
+			return textResult("999"), nil
 		}))
 
-	clientSide, stopServer, err := startServerOverPipe(ctx, srv)
+	opts := mcp.ConnectionOptions{Limits: mcp.DefaultLimits()}
+	conn, stopServer, err := connectOverPipe(ctx, srv,
+		mcp.ServerConfig{Name: "helper", DisablePrefix: true}, opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "shadow demo:", err)
 		return
 	}
 	defer stopServer()
 
-	opts := mcp.ConnectionOptions{Limits: mcp.DefaultLimits()}
 	pool := mcp.NewPool(opts)
 	pool.NativeTools = native
 	defer pool.Close()
-
-	conn := mcp.NewConnection(
-		mcp.ServerConfig{Name: "helper", DisablePrefix: true}, clientSide, opts)
-	if err := conn.Discover(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "shadow demo:", err)
-		return
-	}
 	if err := pool.Add(conn); err != nil {
 		fmt.Fprintln(os.Stderr, "shadow demo:", err)
 		return
@@ -362,9 +346,8 @@ func serveMode(ctx context.Context) error {
 	// Nothing but the protocol may touch stdout. A client's decoder is
 	// poisoned by the first frame it cannot parse, and a stray log line is
 	// indistinguishable from one — so the server's own diagnostics go to
-	// stderr through Warnf, and so does everything printed here.
-	fmt.Fprintf(os.Stderr, "[mcp-server] MCP %s on stdin/stdout, tools: %v\n",
-		mcp.ProtocolVersion, srv.ToolNames())
+	// stderr, and so does everything printed here.
+	fmt.Fprintln(os.Stderr, "[mcp-server] serving MCP on stdin/stdout")
 
 	// ListenAndServeHTTP is the other transport, and it is not the one to
 	// reach for casually. It requires an API key on every request and answers
@@ -393,27 +376,22 @@ func docsServer() *mcp.Server {
 		Info:         mcp.Implementation{Name: "agentkit-example-docs", Version: "0.1.0"},
 		Instructions: "Search a small set of notes about how AgentKit wires up MCP.",
 		Limits:       mcp.DefaultLimits(),
-		Warnf:        stderrf("mcp-server"),
 		Audit:        printAudit("server"),
-		// ttlMs on every list result. Zero would mean "immediately stale",
-		// which is the honest answer for a registry RegisterTool can change at
-		// any moment; a few seconds is fine for a fixed set like this one.
-		ListTTLMs: 5_000,
 	})
 
 	// An MCP tool's input schema is raw JSON Schema on the wire, so it is
 	// written as JSON here. A core.Tool's schema is a value built from
 	// combinators instead, because that one is rewritten per provider and used
 	// to coerce what comes back — see wordCountTool below for the contrast.
-	must(srv.RegisterTool(mcp.ToolDefinition{
+	must(srv.RegisterTool(&mcp.Tool{
 		Name:        "list_topics",
 		Description: "List the documentation topics available to search",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
-	}, func(context.Context, map[string]any) (mcp.ToolsCallResult, error) {
+	}, func(context.Context, map[string]any) (*mcp.CallToolResult, error) {
 		return textResult(strings.Join(topics(), ", ")), nil
 	}))
 
-	must(srv.RegisterTool(mcp.ToolDefinition{
+	must(srv.RegisterTool(&mcp.Tool{
 		Name:        "search_docs",
 		Description: "Search the documentation notes for a word or phrase",
 		InputSchema: json.RawMessage(`{
@@ -421,7 +399,7 @@ func docsServer() *mcp.Server {
 			"properties": {"query": {"type": "string", "description": "words to look for"}},
 			"required": ["query"]
 		}`),
-	}, func(_ context.Context, args map[string]any) (mcp.ToolsCallResult, error) {
+	}, func(_ context.Context, args map[string]any) (*mcp.CallToolResult, error) {
 		query, _ := args["query"].(string)
 		hits := search(query)
 		if len(hits) == 0 {
@@ -434,33 +412,28 @@ func docsServer() *mcp.Server {
 	return srv
 }
 
-// startServerOverPipe runs a server on one end of a pair of pipes and returns
-// the client's end, plus a shutdown that waits for the serve loop to stop.
-func startServerOverPipe(ctx context.Context, srv *mcp.Server) (mcp.Transport, func(), error) {
+// connectOverPipe runs a server on one end of a pair of pipes and connects a
+// client to the other, returning the connection and a shutdown for the server.
+func connectOverPipe(ctx context.Context, srv *mcp.Server, cfg mcp.ServerConfig, opts mcp.ConnectionOptions) (*mcp.ServerConnection, func(), error) {
 	c2sR, c2sW := io.Pipe()
 	s2cR, s2cW := io.Pipe()
-	serverSide := mcp.NewPipeTransport(c2sR, s2cW, mcp.DefaultLimits())
-	clientSide := mcp.NewPipeTransport(s2cR, c2sW, mcp.DefaultLimits())
-
-	done := make(chan struct{})
-	go func() { defer close(done); _ = srv.Serve(ctx, serverSide) }()
-
-	stop := func() {
-		_ = serverSide.Close()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			fmt.Fprintln(os.Stderr, "[mcp] the in-process server did not stop")
-		}
+	ss, err := srv.Connect(ctx, mcp.NewPipeTransport(c2sR, s2cW, mcp.DefaultLimits()), nil)
+	if err != nil {
+		return nil, nil, err
 	}
-	return clientSide, stop, nil
+	conn, err := mcp.Connect(ctx, cfg, mcp.NewPipeTransport(s2cR, c2sW, mcp.DefaultLimits()), opts)
+	if err != nil {
+		_ = ss.Close()
+		return nil, nil, err
+	}
+	return conn, func() { _ = ss.Close() }, nil
 }
 
 // ------------------------------------------------------------------- tools
 
 // wordCountTool is one of OUR tools — the kind NativeTools protects. Its
 // schema is built from combinators rather than written as JSON, which is the
-// difference between a core.Tool and an mcp.ToolDefinition.
+// difference between a core.Tool and an mcp.Tool.
 func wordCountTool() core.Tool {
 	return core.Tool{
 		Name:        "word_count",
@@ -484,10 +457,11 @@ func wordCountTool() core.Tool {
 var docs = map[string]string{
 	"qualified names": "An MCP tool reaches the agent as `<server>__<tool>`. That name is what " +
 		"the allowlist, the permission callback, the plugin hooks and the audit trail all match on.",
-	"protocol version": "Revision 2026-07-28 has no handshake. Every request carries the version " +
-		"and the client's capabilities in its own _meta, and a server that has not migrated is unreachable.",
-	"pipe transport": "A pipe transport joins a client and a server in one process. Closing it " +
-		"closes both ends, because closing only the writer leaves the peer's reader blocked forever.",
+	"protocol version": "Revision 2026-07-28 has no handshake: every request carries the version " +
+		"and the client's capabilities in its own _meta. A server that has not migrated is reached " +
+		"through the initialize handshake of an earlier revision, negotiated automatically.",
+	"pipe transport": "A pipe transport joins a client and a server in one process. Every frame " +
+		"crossing it is bounded and checked for duplicate keys before it is decoded.",
 	"audit": "A tool-call audit event records the server name, the tool name and a SHA-256 of the " +
 		"arguments. The hash correlates calls without copying credentials into the log.",
 }
@@ -515,8 +489,8 @@ func search(query string) []string {
 	return out
 }
 
-func textResult(s string) mcp.ToolsCallResult {
-	return mcp.ToolsCallResult{Content: []mcp.Content{{Type: "text", Text: s}}}
+func textResult(s string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s}}}
 }
 
 // ----------------------------------------------------------------- helpers

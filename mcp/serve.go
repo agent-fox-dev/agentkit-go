@@ -19,18 +19,13 @@ import (
 // Nothing here writes to stdout other than the protocol. A stray log line on
 // stdout is indistinguishable from a frame, and the client's decoder is
 // poisoned by the first malformed one — so a host's own logging belongs on
-// stderr, and ServerOptions.Warnf is how it gets there.
+// stderr.
+//
+// When ctx ends the SDK closes the transport, which closes stdin and unblocks
+// the read loop; that shutdown is reported as ctx.Err().
 func (s *Server) ServeStdio(ctx context.Context) error {
-	tr := NewPipeTransport(os.Stdin, os.Stdout, s.opts.Limits)
-	// Closing stdin unblocks the read loop when ctx ends. Without it Serve
-	// stays parked in Receive until the parent process closes the pipe, which
-	// is precisely the shutdown that cancellation was supposed to trigger.
-	stop := context.AfterFunc(ctx, func() { _ = tr.Close() })
-	defer stop()
-
-	err := s.Serve(ctx, tr)
-	if err != nil && (errors.Is(err, ErrTransportClosed) || ctx.Err() != nil) {
-		// A close we asked for is not a failure to report.
+	err := s.Server.Run(ctx, NewPipeTransport(os.Stdin, os.Stdout, s.opts.Limits))
+	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	return err

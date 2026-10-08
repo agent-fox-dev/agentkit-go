@@ -163,23 +163,16 @@ func parseServer(path string, i int, t *toml.Table) (ServerConfig, []Diagnostic)
 				"and the url is ignored", where, sc.Name)})
 	}
 
-	if t := str("transport"); t != "" {
-		// 2026-07-28 leaves exactly one remote transport, so the field has
-		// nothing left to select. It is still PARSED rather than ignored: an
-		// operator who wrote `transport = "sse"` configured a transport this
-		// build removed, and silently serving them Streamable HTTP would hide
-		// that their server is probably unreachable.
-		sev := diag.SeverityWarning
-		msg := fmt.Sprintf("%s (%q): transport %q is obsolete; MCP %s defines only "+
-			"Streamable HTTP and this build implements only that",
-			where, sc.Name, t, ProtocolVersion)
-		if t != "streamable-http" {
-			sev = diag.SeverityError
-			msg = fmt.Sprintf("%s (%q): transport %q is not implemented; MCP %s removed "+
-				"it and this build is modern-only", where, sc.Name, t, ProtocolVersion)
-			sc.Name = "" // not usable
-		}
-		diags = append(diags, Diagnostic{Path: path, Severity: sev, Message: msg})
+	// An unknown transport is an error, not a fallback: silently serving
+	// Streamable HTTP to an operator who asked for something else would hide
+	// that their server is probably unreachable.
+	switch sc.Transport = str("transport"); sc.Transport {
+	case "", "streamable-http", "sse":
+	default:
+		diags = append(diags, Diagnostic{Path: path, Severity: diag.SeverityError,
+			Message: fmt.Sprintf("%s (%q): transport %q is not implemented; use "+
+				"\"streamable-http\" (the default) or \"sse\"", where, sc.Name, sc.Transport)})
+		sc.Name = "" // not usable
 	}
 	return sc, diags
 }

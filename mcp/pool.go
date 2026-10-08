@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -12,6 +14,7 @@ import (
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/schema"
 	"github.com/agentfox/agentkit-go/wire"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // UnresolvedVariableError is NFR-SEC-03's configuration error: a server's env
@@ -33,16 +36,12 @@ type UnresolvedVariableError struct {
 }
 
 func (e *UnresolvedVariableError) Error() string {
-	return fmt.Sprintf("mcp: server %q references unset variable(s) %s; unexpanded "+
-		"references are a configuration error (NFR-SEC-03)", e.Server, e.namesList())
-}
-
-func (e *UnresolvedVariableError) namesList() string {
 	names := make([]string, len(e.Variables))
 	for i, v := range e.Variables {
 		names[i] = "${" + v + "}"
 	}
-	return strings.Join(names, ", ")
+	return fmt.Sprintf("mcp: server %q references unset variable(s) %s; unexpanded "+
+		"references are a configuration error (NFR-SEC-03)", e.Server, strings.Join(names, ", "))
 }
 
 // Pool is REQ-MCP-CLIENT-04: server_name -> connection, built during session
@@ -53,11 +52,9 @@ type Pool struct {
 	// it is the only party that knows what its native tool set is called.
 	//
 	// It exists because the check in Tools is not enough on its own: a host
-	// that connects its servers and never calls Tools (it drives connections
-	// directly, or assembles its tool list some other way) would ship a server
-	// whose `read_file` silently stands in front of the SDK's, and find out
-	// when the model called it. With this set, the same misconfiguration is a
-	// refused connection at startup.
+	// that connects its servers and never calls Tools would ship a server
+	// whose `read_file` silently stands in front of the SDK's. With this set,
+	// the same misconfiguration is a refused connection at startup.
 	NativeTools []string
 
 	mu    sync.Mutex
@@ -85,59 +82,36 @@ func (p *Pool) Add(c *ServerConnection) error {
 // Connect opens a server and initializes it (REQ-MCP-CLIENT-02).
 //
 // A `command` server is spawned as a subprocess over stdio; a `url` server is
-// opened over Streamable HTTP. env is the reduced environment for a child
-// (REQ-MCP-CLIENT-10), and secrets resolves ${VAR} references at CONNECT time
-// — so a credential lives in the child's environment or in a request header,
-// and never in the config file, the process table, or a log of the command
-// line. A reference that resolves to nothing is an *UnresolvedVariableError
-// and nothing is spawned (NFR-SEC-03).
+// opened over Streamable HTTP (or HTTP+SSE, see ServerConfig.Transport), and
+// the protocol version is negotiated either way. env is the reduced
+// environment for a child (REQ-MCP-CLIENT-10), and secrets resolves ${VAR}
+// references at CONNECT time — so a credential lives in the child's
+// environment or in a request header, and never in the config file, the
+// process table, or a log of the command line. A reference that resolves to
+// nothing is an *UnresolvedVariableError and nothing is spawned (NFR-SEC-03).
 //
-// The connection it returns reconnects on its own (NFR-REL-03): a stdio server
-// that exits is re-spawned and an HTTP transport that died is re-opened, at
-// the next call and at most PerSessionReconnectLimit times. A stdio server is
-// also subscribed to tools/list_changed for the life of the connection
-// (REQ-CACHE-07); an HTTP server is not — see ServerConfig.URL.
+// The connection it returns reconnects on its own (NFR-REL-03): a server that
+// died is re-spawned or re-opened at the next call, at most
+// PerSessionReconnectLimit times.
 func (p *Pool) Connect(ctx context.Context, cfg ServerConfig, env []string, secrets func(string) string) (*ServerConnection, error) {
-	switch {
-	case cfg.Command != "":
-	case cfg.URL != "":
-		return p.connectHTTP(ctx, cfg, env, secrets)
-	default:
-		return nil, fmt.Errorf("mcp: server %q has neither a command nor a url", cfg.Name)
-	}
-	childEnv, missing := resolveEnv(cfg.Env, env, secrets)
-	if len(missing) > 0 {
-		return nil, &UnresolvedVariableError{Server: cfg.Name, Variables: missing}
-	}
-
-	stdioOpts := StdioOptions{
-		Command: cfg.Command, Args: cfg.Args, Dir: cfg.Dir, Env: childEnv,
-		Limits: p.opts.Limits,
-		Stderr: func(line string) {
-			if p.opts.Warnf != nil {
-				p.opts.Warnf("server %q: %s", cfg.Name, line)
-			}
-		},
-	}
-	tr, err := StartStdio(ctx, stdioOpts)
+	dial, err := p.dialer(cfg, env, secrets)
 	if err != nil {
 		return nil, err
 	}
-
-	c := NewConnection(cfg, tr, p.opts)
-	if err := c.Discover(ctx); err != nil {
-		_ = c.Close()
+	c := newConnection(cfg, p.opts)
+	if err := c.open(ctx, dial()); err != nil {
 		return nil, err
 	}
 	if err := p.refuseShadowedNames(ctx, c); err != nil {
 		_ = c.Close()
 		return nil, err
 	}
-	// Reconnection is armed only AFTER discovery succeeded. A server that
-	// dies while being discovered is misconfigured, and re-spawning it three
-	// more times would report the same failure three times later.
-	c.setDial(func(ctx context.Context) (Transport, error) { return StartStdio(ctx, stdioOpts) })
-	c.keepToolsSubscribed()
+	// Reconnection is armed only AFTER the first connect succeeded. A server
+	// that dies while being discovered is misconfigured, and re-spawning it
+	// three more times would report the same failure three times later.
+	c.mu.Lock()
+	c.dial = dial
+	c.mu.Unlock()
 	if err := p.Add(c); err != nil {
 		_ = c.Close()
 		return nil, err
@@ -145,51 +119,58 @@ func (p *Pool) Connect(ctx context.Context, cfg ServerConfig, env []string, secr
 	return c, nil
 }
 
-// connectHTTP opens a remote server.
+// dialer resolves a server's configuration into a function that makes a
+// fresh transport for it, once per connect.
 //
-// The headers are resolved through the SAME ${VAR} path as a subprocess's
-// environment, so `Authorization = "Bearer ${GH_TOKEN}"` in a config file
-// carries a reference and not a token.
-func (p *Pool) connectHTTP(ctx context.Context, cfg ServerConfig, env []string, secrets func(string) string) (*ServerConnection, error) {
+// Headers are resolved through the SAME ${VAR} path as a child's environment,
+// so `Authorization = "Bearer ${GH_TOKEN}"` in a config file carries a
+// reference and not a token.
+func (p *Pool) dialer(cfg ServerConfig, env []string, secrets func(string) string) (func() sdk.Transport, error) {
+	warnf := func(format string, args ...any) {
+		if p.opts.Warnf != nil {
+			p.opts.Warnf("server %q: "+format, append([]any{cfg.Name}, args...)...)
+		}
+	}
+	switch {
+	case cfg.Command != "":
+		childEnv, missing := resolveEnv(cfg.Env, env, secrets)
+		if len(missing) > 0 {
+			return nil, &UnresolvedVariableError{Server: cfg.Name, Variables: missing}
+		}
+		return func() sdk.Transport {
+			return &commandTransport{command: cfg.Command, args: cfg.Args, dir: cfg.Dir,
+				env: childEnv, limits: p.opts.Limits,
+				stderr: func(line string) { warnf("%s", line) }}
+		}, nil
+	case cfg.URL == "":
+		return nil, fmt.Errorf("mcp: server %q has neither a command nor a url", cfg.Name)
+	}
+	if u, err := url.Parse(cfg.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return nil, fmt.Errorf("mcp: server %q: url %q is not an http(s) endpoint", cfg.Name, cfg.URL)
+	}
 	headers, missing, dropped := resolveHeaders(cfg.Headers, env, secrets)
 	if len(missing) > 0 {
 		return nil, &UnresolvedVariableError{Server: cfg.Name, Variables: missing}
 	}
 	for _, name := range dropped {
-		if p.opts.Warnf != nil {
-			p.opts.Warnf("server %q: header %q resolved to a blank or unsafe value and was "+
-				"not sent", cfg.Name, name)
+		warnf("header %q resolved to a blank or unsafe value and was not sent", name)
+	}
+	client := &http.Client{
+		Transport: &strictRoundTripper{base: http.DefaultTransport, headers: headers,
+			limits: p.opts.Limits},
+		// The headers carry the server's credential, and net/http forwards
+		// them to wherever a redirect points. The response is used as-is
+		// instead, and the call fails where the operator can see it.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	maxEvent := int(p.opts.Limits.WithDefaults().MaxMessageBytes)
+	return func() sdk.Transport {
+		if cfg.Transport == "sse" {
+			return &sdk.SSEClientTransport{Endpoint: cfg.URL, HTTPClient: client, MaxEventSize: maxEvent}
 		}
-	}
-
-	httpOpts := HTTPTransportOptions{
-		URL: cfg.URL, Headers: headers,
-		Limits: p.opts.Limits, Warnf: func(format string, args ...any) {
-			if p.opts.Warnf != nil {
-				p.opts.Warnf("server %q: "+format, append([]any{cfg.Name}, args...)...)
-			}
-		},
-	}
-	tr, err := StartStreamableHTTP(ctx, httpOpts)
-	if err != nil {
-		return nil, err
-	}
-
-	c := NewConnection(cfg, tr, p.opts)
-	if err := c.Discover(ctx); err != nil {
-		_ = c.Close()
-		return nil, err
-	}
-	if err := p.refuseShadowedNames(ctx, c); err != nil {
-		_ = c.Close()
-		return nil, err
-	}
-	c.setDial(func(ctx context.Context) (Transport, error) { return StartStreamableHTTP(ctx, httpOpts) })
-	if err := p.Add(c); err != nil {
-		_ = c.Close()
-		return nil, err
-	}
-	return c, nil
+		return &sdk.StreamableClientTransport{Endpoint: cfg.URL, HTTPClient: client,
+			MaxEventSize: maxEvent, DisableStandaloneSSE: true}
+	}, nil
 }
 
 // Get returns a connection by server name.
@@ -236,14 +217,9 @@ func (p *Pool) Close() error {
 // refuseShadowedNames is REQ-MCP-CLIENT-06 raised at CONNECTION time.
 //
 // A shadowed native tool is a misconfiguration, and the cost of noticing it
-// late is not a confusing error — it is the WRONG TOOL having run, because the
-// model called `read_file` and a server answered. So the server's tool list is
-// pulled once, here, while the connection can still be torn down, rather than
-// at the first call.
-//
-// A server is listed only when there is something to shadow: with no native
-// names declared this costs nothing, and a host that has not told the pool
-// what its tools are called keeps the behaviour it had before.
+// late is the WRONG TOOL having run. So the server's tool list is pulled once,
+// here, while the connection can still be torn down. A server is listed only
+// when there is something to shadow.
 func (p *Pool) refuseShadowedNames(ctx context.Context, c *ServerConnection) error {
 	native := p.nativeNames()
 	if len(native) == 0 {
@@ -285,11 +261,9 @@ func (p *Pool) nativeNames() map[string]bool {
 //
 // existing is the native tool set. A qualified name that collides with one —
 // or with a name in NativeTools, or with another server's — is
-// ErrNameCollision (REQ-MCP-CLIENT-06). This is the BACKSTOP: the collision is
-// raised at connect (refuseShadowedNames) for everything the pool knew about
-// then, and again here for the native tools a host registers afterwards and
-// for the tools a server grows during the session, neither of which a
-// connect-time check can see.
+// ErrNameCollision (REQ-MCP-CLIENT-06). This is the BACKSTOP for the native
+// tools a host registers after connecting and the tools a server grows during
+// the session, neither of which a connect-time check can see.
 func (p *Pool) Tools(ctx context.Context, existing []core.Tool) ([]core.Tool, error) {
 	taken := make(map[string]string, len(existing))
 	for name := range p.nativeNames() {
@@ -325,7 +299,7 @@ func (p *Pool) Tools(ctx context.Context, existing []core.Tool) ([]core.Tool, er
 }
 
 // adapt turns one MCP tool definition into a core.Tool.
-func (p *Pool) adapt(c *ServerConnection, d ToolDefinition, qualified string) core.Tool {
+func (p *Pool) adapt(c *ServerConnection, d *Tool, qualified string) core.Tool {
 	unqualified := d.Name
 	return core.Tool{
 		Name:        qualified,
@@ -335,11 +309,8 @@ func (p *Pool) adapt(c *ServerConnection, d ToolDefinition, qualified string) co
 		MCPServer:   c.Name(),
 		InputSchema: schemaFrom(d.InputSchema),
 		Execute: func(ctx context.Context, in json.RawMessage) core.ToolResult {
-			// The model's bytes go through VERBATIM. Decoding them into a
-			// map[string]any here laundered every number through a float64:
-			// an id of 9007199254740993 reached the server as
-			// 9007199254740992, and 1.10 as 1.1. Validity is checked, the
-			// value is not decoded.
+			// The model's bytes go through VERBATIM; validity is checked, the
+			// value is not decoded (see CallRaw).
 			args := bytes.TrimSpace(in)
 			if len(args) > 0 && (args[0] != '{' || !json.Valid(args)) {
 				return core.ErrResult("invalid_arguments", "tool arguments must be a JSON object")
@@ -348,60 +319,39 @@ func (p *Pool) adapt(c *ServerConnection, d ToolDefinition, qualified string) co
 			if err != nil {
 				return core.ErrResult("mcp_call_failed", err.Error())
 			}
-			data := map[string]any{"content": contentToAny(res.Content)}
-			if len(res.StructuredContent) > 0 {
-				data["structured"] = json.RawMessage(res.StructuredContent)
+			content := make([]json.RawMessage, 0, len(res.Content))
+			var text strings.Builder
+			for _, it := range res.Content {
+				if b, err := it.MarshalJSON(); err == nil {
+					content = append(content, b)
+				}
+				if t, ok := it.(*TextContent); ok {
+					text.WriteString(t.Text)
+				}
+			}
+			data := map[string]any{"content": content}
+			if res.StructuredContent != nil {
+				data["structured"] = res.StructuredContent
 			}
 			if res.IsError {
 				// A tool that FAILED is a result the model should see and
 				// react to; only a call that never happened is an SDK error.
-				return core.ToolResult{OK: false, Data: data, Error: "tool_error",
-					Detail: contentText(res.Content)}
+				return core.ToolResult{OK: false, Data: data, Error: "tool_error", Detail: text.String()}
 			}
 			return core.OKResult(data)
 		},
 	}
 }
 
-func contentToAny(items []Content) []any {
-	out := make([]any, 0, len(items))
-	for _, it := range items {
-		m := map[string]any{"type": it.Type}
-		if it.Text != "" {
-			m["text"] = it.Text
-		}
-		if it.MimeType != "" {
-			m["mimeType"] = it.MimeType
-		}
-		if it.Data != "" {
-			m["data"] = it.Data
-		}
-		if it.URI != "" {
-			m["uri"] = it.URI
-		}
-		out = append(out, m)
-	}
-	return out
-}
-
-func contentText(items []Content) string {
-	var b strings.Builder
-	for _, it := range items {
-		if it.Type == "text" {
-			b.WriteString(it.Text)
-		}
-	}
-	return b.String()
-}
-
 // schemaFrom converts an MCP inputSchema into the typed combinator form.
 //
 // A schema this converter does not model becomes an OPEN object rather than a
-// rejection. The alternative is refusing to expose a tool because its schema
-// uses a keyword we have not implemented, which trades a tool the model could
-// have used for a validation guarantee the server is applying anyway.
-func schemaFrom(raw json.RawMessage) *schema.Schema {
-	if len(raw) == 0 {
+// rejection: refusing to expose a tool because its schema uses a keyword we
+// have not implemented trades a usable tool for a check the server applies
+// anyway.
+func schemaFrom(in any) *schema.Schema {
+	raw, err := json.Marshal(in)
+	if err != nil || in == nil {
 		return schema.Object()
 	}
 	v, err := wire.Parse(raw, wire.Limits{})

@@ -23,10 +23,12 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/agentfox/agentkit-go/mcp"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func main() {
@@ -61,15 +63,11 @@ func main() {
 		cfg.Enabled, cfg.Transport = true, "stdio"
 	}
 
-	// Warnings go to STDERR, always. In stdio mode stdout carries the protocol
-	// and a stray line there is a frame the client's decoder is poisoned by.
-	warnf := func(format string, args ...any) {
-		fmt.Fprintf(os.Stderr, "mcp-server: "+format+"\n", args...)
-	}
-
+	// Diagnostics go to STDERR, always. In stdio mode stdout carries the
+	// protocol and a stray line there is a frame the client's decoder is
+	// poisoned by.
 	srv := mcp.NewServer(mcp.ServerOptions{
 		Info:   mcp.Implementation{Name: "agentkit-mcp-server", Version: "0.1.0"},
-		Warnf:  warnf,
 		Limits: mcp.DefaultLimits(),
 		Instructions: "A reference AgentKit MCP server. Tools here are for " +
 			"demonstration; a host registers its own.",
@@ -108,49 +106,48 @@ func loadConfig(path string) (mcp.ServerModeConfig, error) {
 
 // registerDemo is the part a real host replaces.
 func registerDemo(s *mcp.Server) error {
-	if err := s.RegisterTool(mcp.ToolDefinition{
+	if err := s.RegisterTool(&mcp.Tool{
 		Name:        "echo",
 		Description: "Return the supplied message unchanged.",
 		InputSchema: json.RawMessage(
 			`{"type":"object","properties":{"message":{"type":"string","description":"text to return"}},"required":["message"]}`),
-	}, func(_ context.Context, args map[string]any) (mcp.ToolsCallResult, error) {
+	}, func(_ context.Context, args map[string]any) (*mcp.CallToolResult, error) {
 		msg, ok := args["message"].(string)
 		if !ok {
-			return mcp.ToolsCallResult{}, fmt.Errorf("message must be a string")
+			return nil, fmt.Errorf("message must be a string")
 		}
-		return mcp.ToolsCallResult{Content: []mcp.Content{{Type: "text", Text: msg}}}, nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: msg}}}, nil
 	}); err != nil {
 		return err
 	}
 
-	if err := s.RegisterResource(mcp.Resource{
-		URI: "agentkit://server/info", Name: "server info", MimeType: "application/json",
-	}, func(context.Context, string) (mcp.ResourcesReadResult, error) {
-		body, err := json.Marshal(map[string]any{
-			"protocol": mcp.ProtocolVersion,
-			"tools":    mcp.SortedToolNames(s),
-			"started":  time.Now().UTC().Format(time.RFC3339),
-		})
+	// Resources are registered through the SDK's own API, which *mcp.Server
+	// embeds.
+	started := time.Now().UTC().Format(time.RFC3339)
+	s.AddResource(&sdk.Resource{
+		URI: "agentkit://server/info", Name: "server info", MIMEType: "application/json",
+	}, func(context.Context, *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
+		body, err := json.Marshal(map[string]any{"started": started})
 		if err != nil {
-			return mcp.ResourcesReadResult{}, err
+			return nil, err
 		}
-		return mcp.ResourcesReadResult{Contents: []mcp.ResourceContents{{
-			URI: "agentkit://server/info", MimeType: "application/json", Text: string(body),
+		return &sdk.ReadResourceResult{Contents: []*sdk.ResourceContents{{
+			URI: "agentkit://server/info", MIMEType: "application/json", Text: string(body),
 		}}}, nil
-	}); err != nil {
-		return err
-	}
+	})
 
 	// A template, so the reference host exercises the parameterised path too.
-	return s.RegisterResourceTemplate(mcp.ResourceTemplate{
+	s.AddResourceTemplate(&sdk.ResourceTemplate{
 		URITemplate: "agentkit://echo/{message}",
 		Name:        "echoed message",
 		Description: "Reads back whatever is in the URI.",
-	}, func(_ context.Context, uri string, vars map[string]string) (mcp.ResourcesReadResult, error) {
-		return mcp.ResourcesReadResult{Contents: []mcp.ResourceContents{{
-			URI: uri, MimeType: "text/plain", Text: vars["message"],
+	}, func(_ context.Context, req *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
+		uri := req.Params.URI
+		return &sdk.ReadResourceResult{Contents: []*sdk.ResourceContents{{
+			URI: uri, MIMEType: "text/plain", Text: strings.TrimPrefix(uri, "agentkit://echo/"),
 		}}}, nil
 	})
+	return nil
 }
 
 func fail(err error) {

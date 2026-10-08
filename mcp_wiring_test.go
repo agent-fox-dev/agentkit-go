@@ -6,7 +6,6 @@ import (
 	"io"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/mcp"
@@ -25,25 +24,24 @@ func mcpTools(t *testing.T, serverName string) []core.Tool {
 	t.Helper()
 	srv := mcp.NewServer(mcp.ServerOptions{})
 	if err := srv.RegisterTool(
-		mcp.ToolDefinition{Name: "create_issue", Description: "open an issue"},
-		func(_ context.Context, args map[string]any) (mcp.ToolsCallResult, error) {
+		&mcp.Tool{Name: "create_issue", Description: "open an issue"},
+		func(_ context.Context, args map[string]any) (*mcp.CallToolResult, error) {
 			title, _ := args["title"].(string)
-			return mcp.ToolsCallResult{Content: []mcp.Content{
-				{Type: "text", Text: "created: " + title}}}, nil
+			return &mcp.CallToolResult{Content: []mcp.Content{
+				&mcp.TextContent{Text: "created: " + title}}}, nil
 		}); err != nil {
 		t.Fatal(err)
 	}
 
 	c2sR, c2sW := io.Pipe()
 	s2cR, s2cW := io.Pipe()
-	serverSide := mcp.NewPipeTransport(c2sR, s2cW, wire.Limits{})
-	clientSide := mcp.NewPipeTransport(s2cR, c2sW, wire.Limits{})
-
-	done := make(chan struct{})
-	go func() { defer close(done); _ = srv.Serve(context.Background(), serverSide) }()
-
-	conn := mcp.NewConnection(mcp.ServerConfig{Name: serverName}, clientSide, mcp.ConnectionOptions{})
-	if err := conn.Discover(context.Background()); err != nil {
+	ss, err := srv.Connect(context.Background(), mcp.NewPipeTransport(c2sR, s2cW, wire.Limits{}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := mcp.Connect(context.Background(), mcp.ServerConfig{Name: serverName},
+		mcp.NewPipeTransport(s2cR, c2sW, wire.Limits{}), mcp.ConnectionOptions{})
+	if err != nil {
 		t.Fatal(err)
 	}
 	pool := mcp.NewPool(mcp.ConnectionOptions{})
@@ -58,12 +56,7 @@ func mcpTools(t *testing.T, serverName string) []core.Tool {
 	}
 	t.Cleanup(func() {
 		_ = pool.Close()
-		_ = serverSide.Close()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Error("the MCP server loop did not stop")
-		}
+		_ = ss.Close()
 	})
 
 	tools, err := pool.Tools(context.Background(), nil)

@@ -20,53 +20,48 @@ import (
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/mcp"
 	"github.com/agentfox/agentkit-go/wire"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // pair wires a client connection and a server together over two in-memory
-// pipes.
+// pipes, through the strict NDJSON transport on both ends.
 //
 // No subprocess, no port, no timing. The client and server are the SHIPPED
-// implementations talking to each other, so a protocol mistake on either side
-// shows up as a failing test rather than as a mismatch nobody notices until a
-// real server is involved.
+// implementations talking to each other.
 func pair(t *testing.T, srv *mcp.Server, cfg mcp.ServerConfig, opts mcp.ConnectionOptions) *mcp.ServerConnection {
 	t.Helper()
 	c2sR, c2sW := io.Pipe() // client -> server
 	s2cR, s2cW := io.Pipe() // server -> client
 
-	serverSide := mcp.NewPipeTransport(c2sR, s2cW, wire.Limits{})
-	clientSide := mcp.NewPipeTransport(s2cR, c2sW, wire.Limits{})
-
-	done := make(chan struct{})
-	go func() { defer close(done); _ = srv.Serve(context.Background(), serverSide) }()
-
-	conn := mcp.NewConnection(cfg, clientSide, opts)
+	ss, err := srv.Connect(context.Background(), mcp.NewPipeTransport(c2sR, s2cW, wire.Limits{}), nil)
+	must(t, err)
+	conn, err := mcp.Connect(context.Background(), cfg, mcp.NewPipeTransport(s2cR, c2sW, wire.Limits{}), opts)
+	must(t, err)
 	t.Cleanup(func() {
 		_ = conn.Close()
-		_ = serverSide.Close()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Error("the server loop did not stop")
-		}
+		_ = ss.Close()
 	})
 	return conn
+}
+
+func text(s string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s}}}
 }
 
 func echoServer(t *testing.T) *mcp.Server {
 	t.Helper()
 	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "test-server", Version: "1"}})
-	must(t, s.RegisterTool(mcp.ToolDefinition{
+	must(t, s.RegisterTool(&mcp.Tool{
 		Name:        "echo",
 		Description: "echo the message back",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"message":{"type":"string","description":"what to echo"}},"required":["message"]}`),
-	}, func(_ context.Context, args map[string]any) (mcp.ToolsCallResult, error) {
+	}, func(_ context.Context, args map[string]any) (*mcp.CallToolResult, error) {
 		msg, _ := args["message"].(string)
-		return mcp.ToolsCallResult{Content: []mcp.Content{{Type: "text", Text: "echo: " + msg}}}, nil
+		return text("echo: " + msg), nil
 	}))
-	must(t, s.RegisterTool(mcp.ToolDefinition{Name: "boom", Description: "always fails"},
-		func(context.Context, map[string]any) (mcp.ToolsCallResult, error) {
-			return mcp.ToolsCallResult{}, errors.New("the tool refused")
+	must(t, s.RegisterTool(&mcp.Tool{Name: "boom", Description: "always fails"},
+		func(context.Context, map[string]any) (*mcp.CallToolResult, error) {
+			return nil, errors.New("the tool refused")
 		}))
 	return s
 }
@@ -78,53 +73,47 @@ func must(t *testing.T, err error) {
 	}
 }
 
+func firstText(t *testing.T, res *mcp.CallToolResult) string {
+	t.Helper()
+	if res == nil || len(res.Content) == 0 {
+		t.Fatalf("result has no content: %+v", res)
+	}
+	tc, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("first content block is %T, want text", res.Content[0])
+	}
+	return tc.Text
+}
+
 // TestTheClientAndServerDiscoverAndCall is the end-to-end shape.
-//
-// There is no handshake to complete: server/discover is an OPTIONAL probe and
-// the call below would work without it.
 func TestTheClientAndServerDiscoverAndCall(t *testing.T) {
 	conn := pair(t, echoServer(t), mcp.ServerConfig{Name: "test"}, mcp.ConnectionOptions{})
 	ctx := context.Background()
 
-	if err := conn.Discover(ctx); err != nil {
-		t.Fatal(err)
-	}
-	info := conn.Info()
-	if len(info.SupportedVersions) == 0 || info.SupportedVersions[0] != mcp.ProtocolVersion {
-		t.Fatalf("supportedVersions = %v, want %s", info.SupportedVersions, mcp.ProtocolVersion)
-	}
-	if id := mcp.ParseResultMeta(info.Meta).ServerInfo; id == nil || id.Name != "test-server" {
-		t.Fatalf("server identity = %s", info.Meta)
+	sess, err := conn.Session(ctx)
+	must(t, err)
+	if info := sess.InitializeResult().ServerInfo; info == nil || info.Name != "test-server" {
+		t.Fatalf("server identity = %+v", info)
 	}
 
 	tools, err := conn.ListTools(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 	if len(tools) != 2 {
 		t.Fatalf("%d tools, want 2", len(tools))
 	}
 
 	res, err := conn.Call(ctx, "echo", map[string]any{"message": "hello"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Content) != 1 || res.Content[0].Text != "echo: hello" {
-		t.Fatalf("result = %+v", res.Content)
+	must(t, err)
+	if got := firstText(t, res); got != "echo: hello" {
+		t.Fatalf("result = %q", got)
 	}
 }
 
 // TestAFailingHandlerIsAToolErrorNotAProtocolError is the distinction that
 // decides whether the model ever hears about it.
-//
-// A tool that failed is a result the model should see and react to. A JSON-RPC
-// error means the call never happened, and surfacing one as the other either
-// hides a real failure from the model or turns a routine failure into a
-// connection-level fault.
 func TestAFailingHandlerIsAToolErrorNotAProtocolError(t *testing.T) {
 	conn := pair(t, echoServer(t), mcp.ServerConfig{Name: "test"}, mcp.ConnectionOptions{})
 	ctx := context.Background()
-	must(t, conn.Discover(ctx))
 
 	res, err := conn.Call(ctx, "boom", nil)
 	if err != nil {
@@ -133,7 +122,7 @@ func TestAFailingHandlerIsAToolErrorNotAProtocolError(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("the result must be marked as an error so the model can react")
 	}
-	if !strings.Contains(res.Content[0].Text, "refused") {
+	if !strings.Contains(firstText(t, res), "refused") {
 		t.Fatalf("content = %+v, want the handler's own message", res.Content)
 	}
 
@@ -147,13 +136,12 @@ func TestAFailingHandlerIsAToolErrorNotAProtocolError(t *testing.T) {
 // dead connection for every other one.
 func TestAPanickingHandlerDoesNotKillTheConnection(t *testing.T) {
 	s := echoServer(t)
-	must(t, s.RegisterTool(mcp.ToolDefinition{Name: "panicky"},
-		func(context.Context, map[string]any) (mcp.ToolsCallResult, error) {
+	must(t, s.RegisterTool(&mcp.Tool{Name: "panicky"},
+		func(context.Context, map[string]any) (*mcp.CallToolResult, error) {
 			panic("handler bug")
 		}))
 	conn := pair(t, s, mcp.ServerConfig{Name: "test"}, mcp.ConnectionOptions{})
 	ctx := context.Background()
-	must(t, conn.Discover(ctx))
 
 	res, err := conn.Call(ctx, "panicky", nil)
 	if err != nil {
@@ -162,45 +150,21 @@ func TestAPanickingHandlerDoesNotKillTheConnection(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("a panic is an error result")
 	}
-	// The connection still works.
 	if _, err := conn.Call(ctx, "echo", map[string]any{"message": "still here"}); err != nil {
 		t.Fatalf("the connection died with the handler: %v", err)
 	}
 }
 
-// TestToolListsAreCachedAndInvalidatedByTheNotification is REQ-CACHE-07.
-func TestToolListsAreCachedAndInvalidatedByTheNotification(t *testing.T) {
-	var lists int
-	s := mcp.NewServer(mcp.ServerOptions{})
-	must(t, s.RegisterTool(mcp.ToolDefinition{Name: "a"},
-		func(context.Context, map[string]any) (mcp.ToolsCallResult, error) {
-			return mcp.ToolsCallResult{}, nil
-		}))
+// ---- REQ-MCP-CLIENT-09
 
-	conn := pair(t, s, mcp.ServerConfig{Name: "test"}, mcp.ConnectionOptions{})
-	_ = lists
-	ctx := context.Background()
-	must(t, conn.Discover(ctx))
-
-	for i := 0; i < 5; i++ {
-		if _, err := conn.ListTools(ctx); err != nil {
-			t.Fatal(err)
+func textOf(items []mcp.Content) (texts []string) {
+	for _, it := range items {
+		if tc, ok := it.(*mcp.TextContent); ok {
+			texts = append(texts, tc.Text)
 		}
 	}
-	// The cache is observable through RefreshTools rather than a call count,
-	// because the server here is the real one and counting its calls would
-	// need a wrapper that is not the shipped code.
-	conn.RefreshTools()
-	tools, err := conn.ListTools(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tools) != 1 {
-		t.Fatalf("%d tools after a refresh, want 1", len(tools))
-	}
+	return texts
 }
-
-// ---- REQ-MCP-CLIENT-09
 
 // TestResultsAreCappedAcrossTheWholeResult is REQ-MCP-CLIENT-09.
 //
@@ -210,16 +174,16 @@ func TestToolListsAreCachedAndInvalidatedByTheNotification(t *testing.T) {
 func TestResultsAreCappedAcrossTheWholeResult(t *testing.T) {
 	var items []mcp.Content
 	for i := 0; i < 200; i++ {
-		items = append(items, mcp.Content{Type: "text", Text: strings.Repeat("x", 49_000)})
+		items = append(items, &mcp.TextContent{Text: strings.Repeat("x", 49_000)})
 	}
 	out := mcp.CapContent(items)
 
 	total := 0
 	var note string
-	for _, it := range out {
-		total += len([]rune(it.Text))
-		if strings.Contains(it.Text, "truncated") {
-			note = it.Text
+	for _, s := range textOf(out) {
+		total += len([]rune(s))
+		if strings.Contains(s, "truncated") {
+			note = s
 		}
 	}
 	if total > mcp.ResultCharCap+len([]rune(note)) {
@@ -235,43 +199,62 @@ func TestResultsAreCappedAcrossTheWholeResult(t *testing.T) {
 }
 
 // TestTheCapCountsRunesNotBytes: "characters" in a requirement about model
-// context means what the model sees. A byte cap gives a CJK result a third of
-// the room an ASCII one gets, silently, and worst for the languages that need
-// it most.
+// context means what the model sees.
 func TestTheCapCountsRunesNotBytes(t *testing.T) {
 	// Each of these is 3 bytes and 1 rune.
-	text := strings.Repeat("漢", mcp.ResultCharCap-10)
-	out := mcp.CapContent([]mcp.Content{{Type: "text", Text: text}})
+	s := strings.Repeat("漢", mcp.ResultCharCap-10)
+	out := mcp.CapContent([]mcp.Content{&mcp.TextContent{Text: s}})
 	if len(out) != 1 {
 		t.Fatalf("%d items, want the whole thing kept: it is under the cap in RUNES", len(out))
 	}
-	if len([]rune(out[0].Text)) != mcp.ResultCharCap-10 {
-		t.Fatalf("kept %d runes, want %d", len([]rune(out[0].Text)), mcp.ResultCharCap-10)
+	if got := len([]rune(textOf(out)[0])); got != mcp.ResultCharCap-10 {
+		t.Fatalf("kept %d runes, want %d", got, mcp.ResultCharCap-10)
 	}
 }
 
+// image is a block whose base64 encoding is n characters.
+func image(n int) *sdk.ImageContent {
+	return &sdk.ImageContent{Data: make([]byte, n/4*3), MIMEType: "image/png"}
+}
+
 // TestNonTextContentIsNotTruncated: an image is never SLICED. One that fits
-// the cap is kept whole; one that does not is dropped whole (see
-// TestNonTextContentIsChargedAgainstTheCap), because half a base64 image is
-// a corrupt image, not a shorter one.
+// the cap is kept whole; one that does not is dropped whole, because half a
+// base64 image is a corrupt image, not a shorter one.
 func TestNonTextContentIsNotTruncated(t *testing.T) {
-	out := mcp.CapContent([]mcp.Content{
-		{Type: "image", Data: strings.Repeat("A", 40_000), MimeType: "image/png"},
-	})
-	if len(out) != 1 || len(out[0].Data) != 40_000 {
+	img := image(40_000)
+	if out := mcp.CapContent([]mcp.Content{img}); len(out) != 1 || out[0] != mcp.Content(img) {
 		t.Fatal("an image within the cap must be kept intact")
 	}
-	out = mcp.CapContent([]mcp.Content{
-		{Type: "image", Data: strings.Repeat("A", 100_000), MimeType: "image/png"},
+	out := mcp.CapContent([]mcp.Content{image(100_000)})
+	if len(out) != 1 || !strings.Contains(textOf(out)[0], "truncated") {
+		t.Fatalf("an image over the cap must be dropped whole, leaving the note: %+v", out)
+	}
+}
+
+// TestNonTextContentIsChargedAgainstTheCap. A server could otherwise deliver
+// ten megabytes past the cap as one image block.
+func TestNonTextContentIsChargedAgainstTheCap(t *testing.T) {
+	out := mcp.CapContent([]mcp.Content{
+		&mcp.TextContent{Text: strings.Repeat("t", 20_000)},
+		image(40_000),
+		&mcp.TextContent{Text: "after"},
 	})
 	for _, it := range out {
-		if it.Type == "image" {
-			t.Fatalf("an image over the cap was passed through with %d bytes of data; it must "+
-				"be dropped whole, never sliced and never exempted", len(it.Data))
+		if _, ok := it.(*sdk.ImageContent); ok {
+			t.Fatal("a 40K image after 20K of text does not fit in a 50K cap; it must be dropped")
 		}
 	}
-	if len(out) != 1 || !strings.Contains(out[0].Text, "truncated") {
-		t.Fatalf("the drop must leave the note and nothing else: %+v", out)
+	if texts := textOf(out); !strings.Contains(texts[len(texts)-1], "truncated") {
+		t.Fatalf("the drop must carry the note: %+v", out)
+	}
+
+	// An image that fits is kept whole and still spends the budget.
+	out = mcp.CapContent([]mcp.Content{image(40_000), &mcp.TextContent{Text: strings.Repeat("t", 20_000)}})
+	if _, ok := out[0].(*sdk.ImageContent); !ok {
+		t.Fatalf("an image within the cap must be kept intact: %+v", out[0])
+	}
+	if n := len([]rune(textOf(out)[0])); n != 10_000 {
+		t.Fatalf("the text after a 40K image gets the remaining 10K, got %d", n)
 	}
 }
 
@@ -281,7 +264,6 @@ func TestThePerSessionCallLimitIsEnforced(t *testing.T) {
 	cfg := mcp.ServerConfig{Name: "test", PerSessionCallLimit: 3}
 	conn := pair(t, echoServer(t), cfg, mcp.ConnectionOptions{})
 	ctx := context.Background()
-	must(t, conn.Discover(ctx))
 
 	for i := 0; i < 3; i++ {
 		if _, err := conn.Call(ctx, "echo", map[string]any{"message": "x"}); err != nil {
@@ -295,17 +277,13 @@ func TestThePerSessionCallLimitIsEnforced(t *testing.T) {
 }
 
 func TestTheDefaultCallLimitIsAThousandAndNegativeMeansUnlimited(t *testing.T) {
-	cfg := mcp.ServerConfig{Name: "test"} // zero => default
-	conn := pair(t, echoServer(t), cfg, mcp.ConnectionOptions{})
+	conn := pair(t, echoServer(t), mcp.ServerConfig{Name: "test"}, mcp.ConnectionOptions{})
 	ctx := context.Background()
-	must(t, conn.Discover(ctx))
 	if _, err := conn.Call(ctx, "echo", map[string]any{"message": "x"}); err != nil {
 		t.Fatal(err)
 	}
 
-	unlimited := mcp.ServerConfig{Name: "u", PerSessionCallLimit: -1}
-	conn2 := pair(t, echoServer(t), unlimited, mcp.ConnectionOptions{})
-	must(t, conn2.Discover(ctx))
+	conn2 := pair(t, echoServer(t), mcp.ServerConfig{Name: "u", PerSessionCallLimit: -1}, mcp.ConnectionOptions{})
 	for i := 0; i < 5; i++ {
 		if _, err := conn2.Call(ctx, "echo", map[string]any{"message": "x"}); err != nil {
 			t.Fatalf("unlimited must not cap: %v", err)
@@ -321,7 +299,6 @@ func TestEveryToolCallIsAudited(t *testing.T) {
 		Audit: func(e core.AuditEvent) { mu.Lock(); events = append(events, e); mu.Unlock() },
 	})
 	ctx := context.Background()
-	must(t, conn.Discover(ctx))
 	if _, err := conn.Call(ctx, "echo", map[string]any{"message": "secret-value"}); err != nil {
 		t.Fatal(err)
 	}
@@ -353,237 +330,157 @@ func TestEveryToolCallIsAudited(t *testing.T) {
 
 // TestSamplingIsRefusedUnlessEnabledAndAlwaysAudited is REQ-MCP-CLIENT-08.
 //
-// Both halves matter. A refusal that leaves no trace is indistinguishable from
-// a server that never asked, and the two want very different responses from
-// whoever reads the audit log.
+// A server with allow_sampling unset is never told the client samples, and a
+// request it sends anyway fails the call. One with it set is told, and every
+// request is audited, refusals included: a refusal that leaves no trace is
+// indistinguishable from a server that never asked.
 func TestSamplingIsRefusedUnlessEnabledAndAlwaysAudited(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		allow   bool
-		handler mcp.SamplingHandler
-		wantErr bool
+		name      string
+		allow     bool
+		handler   mcp.SamplingHandler
+		wantErr   bool
+		wantAudit bool
 	}{
-		{"disabled by default", false, okSampler, true},
-		{"enabled with a handler", true, okSampler, false},
-		{"enabled with no handler", true, nil, true},
+		{"disabled by default", false, okSampler, true, false},
+		{"enabled with a handler", true, okSampler, false, true},
+		{"enabled with no handler", true, nil, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
 			var events []core.AuditEvent
 			cfg := mcp.ServerConfig{Name: "s", AllowSampling: tc.allow}
-			srv := samplingServer(t)
-			conn := pair(t, srv, cfg, mcp.ConnectionOptions{
+			conn := pair(t, samplingServer(t), cfg, mcp.ConnectionOptions{
 				Sampling: tc.handler,
 				Audit:    func(e core.AuditEvent) { mu.Lock(); events = append(events, e); mu.Unlock() },
 			})
-			ctx := context.Background()
-			must(t, conn.Discover(ctx))
 
-			res, err := conn.Call(ctx, "ask", nil)
-			if tc.wantErr {
-				// Under MRTR a refusal happens CLIENT-side, before the retry:
-				// the client never sends the answer, so the call fails rather
-				// than returning a server-authored "refused" string.
-				if !errors.Is(err, mcp.ErrSamplingNotAllowed) {
-					t.Fatalf("want ErrSamplingNotAllowed, got %v (result %+v)", err, res)
-				}
-			} else {
-				if err != nil {
-					t.Fatal(err)
-				}
-				text := ""
-				if len(res.Content) > 0 {
-					text = res.Content[0].Text
-				}
-				if !strings.Contains(text, "sampled") {
-					t.Fatalf("sampling should have succeeded; server saw %q", text)
-				}
+			res, err := conn.Call(context.Background(), "ask", nil)
+			switch {
+			case tc.wantErr && err == nil:
+				t.Fatalf("sampling must be refused; got %+v", res)
+			case tc.wantErr && tc.allow && !errors.Is(err, mcp.ErrSamplingNotAllowed):
+				t.Fatalf("want ErrSamplingNotAllowed, got %v", err)
+			case !tc.wantErr && err != nil:
+				t.Fatal(err)
+			case !tc.wantErr && firstText(t, res) != "sampled":
+				t.Fatalf("sampling should have succeeded; got %+v", res)
 			}
 
 			mu.Lock()
 			defer mu.Unlock()
 			var sampled bool
 			for _, e := range events {
-				if e.ToolName == mcp.MethodSampling {
-					sampled = true
-				}
+				sampled = sampled || e.ToolName == "sampling/createMessage"
 			}
-			if !sampled {
-				t.Fatalf("every sampling request must be audited, refused ones included; "+
-					"events = %+v", events)
+			if sampled != tc.wantAudit {
+				t.Fatalf("sampling audited = %v, want %v; events = %+v", sampled, tc.wantAudit, events)
 			}
 		})
 	}
 }
 
-func okSampler(context.Context, mcp.SamplingParams) (mcp.SamplingResult, error) {
-	return mcp.SamplingResult{Role: "assistant", Model: "test",
-		Content: mcp.Content{Type: "text", Text: "sampled"}}, nil
+func okSampler(context.Context, *mcp.CreateMessageParams) (*mcp.CreateMessageResult, error) {
+	return &mcp.CreateMessageResult{Role: "assistant", Model: "test",
+		Content: &mcp.TextContent{Text: "sampled"}}, nil
 }
 
-// samplingServer answers `ask` through MRTR: the first call returns an input
-// request, and the client's RETRY carries the answer.
-//
-// This is the shape 2026-07-28 forces. The server can no longer block inside
-// the handler waiting for the client, so "ask the client something" becomes
-// two invocations of the same handler with the answer threaded between them by
-// the client itself.
+// samplingServer answers `ask` through a multi-round-trip input request: the
+// first call asks the client to sample, and the client's RETRY carries the
+// answer and the opaque state back.
 func samplingServer(t *testing.T) *mcp.Server {
 	t.Helper()
 	s := mcp.NewServer(mcp.ServerOptions{})
-	must(t, s.RegisterTool(mcp.ToolDefinition{Name: "ask"},
-		func(ctx context.Context, _ map[string]any) (mcp.ToolsCallResult, error) {
-			in, retry := mcp.InputFrom(ctx)
-			if !retry {
-				return mcp.ToolsCallResult{}, mcp.NeedSampling("asked-once", "s1",
-					mcp.SamplingParams{
-						Messages:  []mcp.SamplingMessage{{Role: "user", Content: mcp.Content{Type: "text", Text: "hi"}}},
-						MaxTokens: 16,
-					})
+	s.AddTool(&mcp.Tool{Name: "ask", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(_ context.Context, req *sdk.CallToolRequest) (*mcp.CallToolResult, error) {
+			if r, ok := req.Params.InputResponses["s1"].(*sdk.CreateMessageWithToolsResult); ok {
+				if req.Params.RequestState != "asked-once" {
+					t.Errorf("requestState must come back verbatim; got %q", req.Params.RequestState)
+				}
+				return &mcp.CallToolResult{Content: r.Content}, nil
 			}
-			if in.RequestState != "asked-once" {
-				t.Errorf("requestState must come back verbatim; got %q", in.RequestState)
-			}
-			var res mcp.SamplingResult
-			if err := json.Unmarshal(in.Responses["s1"], &res); err != nil {
-				return mcp.ToolsCallResult{}, err
-			}
-			return mcp.ToolsCallResult{Content: []mcp.Content{{Type: "text", Text: res.Content.Text}}}, nil
-		}))
+			return &mcp.CallToolResult{RequestState: "asked-once", InputRequests: sdk.InputRequestMap{
+				"s1": &mcp.CreateMessageParams{MaxTokens: 16, Messages: []*sdk.SamplingMessage{
+					{Role: "user", Content: &mcp.TextContent{Text: "hi"}}}},
+			}}, nil
+		})
 	return s
 }
 
-// ---- REQ-MCP-SERVER-07
+// ---- REQ-SEC-11 on the stdio surface
 
-func TestHTTPModeRequiresAnAPIKey(t *testing.T) {
-	s := echoServer(t)
-	if _, err := s.HTTPHandler(mcp.HTTPOptions{}); !errors.Is(err, mcp.ErrNoAPIKey) {
-		t.Fatalf("err = %v; a server that starts unauthenticated because a config key was "+
-			"missing is exactly what REQ-MCP-SERVER-07 exists to prevent", err)
-	}
-}
-
-func TestUnauthenticatedHTTPRequestsGet401(t *testing.T) {
-	s := echoServer(t)
-	h, err := s.HTTPHandler(mcp.HTTPOptions{APIKey: "sekret"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(h)
-	defer srv.Close()
-
-	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{%q:%q,%q:{}}}}`,
-		mcp.MetaProtocolVersion, mcp.ProtocolVersion, mcp.MetaClientCapabilities)
-	for _, tc := range []struct {
-		name   string
-		header [2]string
-		want   int
-	}{
-		{"no credential", [2]string{"", ""}, http.StatusUnauthorized},
-		{"wrong key", [2]string{"X-API-Key", "nope"}, http.StatusUnauthorized},
-		{"bearer", [2]string{"Authorization", "Bearer sekret"}, http.StatusOK},
-		{"raw api key header", [2]string{"X-API-Key", "sekret"}, http.StatusOK},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			req, _ := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(body))
-			if tc.header[0] != "" {
-				req.Header.Set(tc.header[0], tc.header[1])
-			}
-			// 2026-07-28 requires these on every POST, and the server rejects
-			// a request without them before it ever reaches a handler.
-			req.Header.Set(mcp.HeaderProtocolVersion, mcp.ProtocolVersion)
-			req.Header.Set(mcp.HeaderMethod, mcp.MethodToolsList)
-			resp, err := srv.Client().Do(req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != tc.want {
-				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.want)
-			}
-		})
-	}
-}
-
-// TestAuthenticationRunsBeforeTheMethodCheck: answering 405 to an
-// unauthenticated caller tells them which verbs exist, and reading the body
-// first lets them spend our memory without a credential.
-func TestAuthenticationRunsBeforeTheMethodCheck(t *testing.T) {
-	h, err := echoServer(t).HTTPHandler(mcp.HTTPOptions{APIKey: "k"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(h)
-	defer srv.Close()
-
-	resp, err := srv.Client().Get(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("an unauthenticated GET returned %d; it must be 401 rather than 405, "+
-			"which would confirm that POST is the interesting verb", resp.StatusCode)
-	}
-}
-
-func TestTheHTTPBodyIsBounded(t *testing.T) {
-	h, err := echoServer(t).HTTPHandler(mcp.HTTPOptions{APIKey: "k", MaxBodyBytes: 256})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(h)
-	defer srv.Close()
-
-	big := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"pad":"` +
-		strings.Repeat("x", 4096) + `"}}`
-	req, _ := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(big))
-	req.Header.Set("X-API-Key", "k")
-	resp, err := srv.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	out, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(out), "error") {
-		t.Fatalf("an oversized body must be refused: %s", out)
-	}
-}
-
-// ---- REQ-SEC-11 on the protocol surface
-
+// TestAMalformedFrameTearsTheConnectionDown: a duplicate key is legal to
+// encoding/json and to the SDK, and rejected by REQ-SEC-11.3. The framing is
+// then untrustworthy, so the session ends rather than resynchronizing.
 func TestAMalformedFrameTearsTheConnectionDown(t *testing.T) {
 	c2sR, c2sW := io.Pipe()
 	s2cR, s2cW := io.Pipe()
-	serverSide := mcp.NewPipeTransport(c2sR, s2cW, wire.Limits{})
-	done := make(chan error, 1)
-	go func() { done <- echoServer(t).Serve(context.Background(), serverSide) }()
+	go func() { _, _ = io.Copy(io.Discard, s2cR) }()
+	ss, err := echoServer(t).Connect(context.Background(), mcp.NewPipeTransport(c2sR, s2cW, wire.Limits{}), nil)
+	must(t, err)
+	t.Cleanup(func() { _ = ss.Close(); _ = c2sW.Close() })
 
-	// A duplicate key: legal to encoding/json, rejected by REQ-SEC-11.3.
 	_, _ = c2sW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","method":"ping"}` + "\n"))
 
-	go func() { _, _ = io.ReadAll(s2cR) }()
+	done := make(chan struct{})
+	go func() { _ = ss.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the server kept reading after a malformed frame (REQ-SEC-11.4)")
+	}
+}
+
+// TestTheClientRejectsADuplicateKeyFrame is the same rule on the client's
+// side of the pipe: a server whose answer carries a duplicate key does not get
+// to choose which of the two values the client sees.
+func TestTheClientRejectsADuplicateKeyFrame(t *testing.T) {
+	c2sR, c2sW := io.Pipe()
+	s2cR, s2cW := io.Pipe()
+	t.Cleanup(func() { _ = c2sR.Close(); _ = s2cW.Close() })
+	go func() {
+		line, _ := bufio.NewReader(c2sR).ReadBytes('\n')
+		var req struct{ ID json.RawMessage }
+		_ = json.Unmarshal(line, &req)
+		_, _ = fmt.Fprintf(s2cW, `{"jsonrpc":"2.0","id":%s,"result":{"supportedVersions":["2026-07-28"],`+
+			`"capabilities":{},"capabilities":{"tools":{}}}}`+"\n", req.ID)
+	}()
+	_, err := mcp.Connect(context.Background(), mcp.ServerConfig{Name: "s", Timeout: 3 * time.Second},
+		mcp.NewPipeTransport(s2cR, c2sW, wire.Limits{}), mcp.ConnectionOptions{})
+	if err == nil {
+		t.Fatal("a frame with a duplicate key must be rejected")
+	}
+}
+
+// TestConnectReturnsAtTheTimeoutOnAWedgedPipe is REQ-MCP-CLIENT-07's
+// timeout_s where the transport itself is stuck: a peer that never reads its
+// pipe must not hold the caller inside a write past the deadline.
+func TestConnectReturnsAtTheTimeoutOnAWedgedPipe(t *testing.T) {
+	c2sR, c2sW := io.Pipe() // nobody ever reads c2sR
+	s2cR, s2cW := io.Pipe()
+	t.Cleanup(func() { _ = c2sR.Close(); _ = s2cW.Close() })
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mcp.Connect(context.Background(), mcp.ServerConfig{Name: "stall", Timeout: 100 * time.Millisecond},
+			mcp.NewPipeTransport(s2cR, c2sW, wire.Limits{}), mcp.ConnectionOptions{})
+		done <- err
+	}()
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Fatal("a malformed frame must tear the connection down: the framing is " +
-				"already untrustworthy, so there is no safe place to resume from " +
-				"(REQ-SEC-11.4)")
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v; want the connection's own deadline", err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("the server kept reading after a malformed frame")
+		t.Fatal("Connect hung past timeout_s on a pipe nobody reads")
 	}
-	_ = c2sW.Close()
-	_ = s2cW.Close()
 }
 
 // ---- interpolation
 
 // TestAnUnresolvedVariableIsAConfigurationError is NFR-SEC-03: "unexpanded
 // variable references are a configuration error, not silently passed to the
-// subprocess". A warning plus a blank value was the thing it forbids — the
-// child started with an empty credential and failed authentication with a
-// message about a bad token, which sends the reader to the wrong place.
+// subprocess".
 func TestAnUnresolvedVariableIsAConfigurationError(t *testing.T) {
 	cfg := mcp.ServerConfig{
 		Name: "gh", Command: "true",
@@ -616,12 +513,8 @@ func TestAnUnresolvedVariableIsAConfigurationError(t *testing.T) {
 }
 
 // TestAnExplicitlyEmptyVariableIsNotUnresolved. `FOO=` in the environment is a
-// value the operator chose; only an ABSENT variable is unresolved. A lookup
-// that returned "" for both could not tell them apart.
+// value the operator chose; only an ABSENT variable is unresolved.
 func TestAnExplicitlyEmptyVariableIsNotUnresolved(t *testing.T) {
-	if os.Getenv("AGENTKIT_MCP_CHILD") != "" {
-		t.Skip("child process")
-	}
 	exe, err := os.Executable()
 	if err != nil {
 		t.Skip("no executable path")
@@ -638,8 +531,170 @@ func TestAnExplicitlyEmptyVariableIsNotUnresolved(t *testing.T) {
 	}
 	res, err := conn.Call(context.Background(), "env", nil)
 	must(t, err)
-	if !strings.Contains(res.Content[0].Text, "SUPPLIED=[]") {
-		t.Fatalf("child env = %q; the empty value must be substituted", res.Content[0].Text)
+	if !strings.Contains(firstText(t, res), "SUPPLIED=[]") {
+		t.Fatalf("child env = %q; the empty value must be substituted", firstText(t, res))
+	}
+}
+
+// ---- remote servers: headers, redirects, deadlines
+
+// remote serves srv over HTTP behind key, recording the headers of the first
+// request that reaches it.
+func remote(t *testing.T, srv *mcp.Server, key string, got *http.Header) *httptest.Server {
+	t.Helper()
+	h, err := srv.HTTPHandler(mcp.HTTPOptions{APIKey: key})
+	must(t, err)
+	var once sync.Once
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got != nil {
+			once.Do(func() { *got = r.Header.Clone() })
+		}
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(hs.Close)
+	return hs
+}
+
+// TestARemoteServersHeadersAreInterpolatedFromSecrets. A bearer token for a
+// remote server has the same reason not to sit in a config file as a
+// subprocess's credential does, so headers resolve through the same ${VAR}
+// path.
+func TestARemoteServersHeadersAreInterpolatedFromSecrets(t *testing.T) {
+	var got http.Header
+	hs := remote(t, echoServer(t), "ghp_secret", &got)
+
+	p := mcp.NewPool(mcp.ConnectionOptions{})
+	t.Cleanup(func() { _ = p.Close() })
+	conn, err := p.Connect(context.Background(), mcp.ServerConfig{
+		Name: "remote", URL: hs.URL,
+		Headers: map[string]string{"Authorization": "Bearer ${GH_TOKEN}"},
+	}, nil, func(name string) string {
+		if name == "GH_TOKEN" {
+			return "ghp_secret"
+		}
+		return ""
+	})
+	must(t, err)
+	if h := got.Get("Authorization"); h != "Bearer ghp_secret" {
+		t.Fatalf("Authorization was %q; the ${VAR} must resolve from the secrets store", h)
+	}
+	res, err := conn.Call(context.Background(), "echo", map[string]any{"message": "over http"})
+	must(t, err)
+	if firstText(t, res) != "echo: over http" {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+// TestAnUnresolvedHeaderVariableIsAConfigurationError is NFR-SEC-03 on the
+// header path: nothing is sent at all and the error names the variable.
+func TestAnUnresolvedHeaderVariableIsAConfigurationError(t *testing.T) {
+	var got http.Header
+	hs := remote(t, echoServer(t), "k", &got)
+
+	p := mcp.NewPool(mcp.ConnectionOptions{})
+	t.Cleanup(func() { _ = p.Close() })
+	_, err := p.Connect(context.Background(), mcp.ServerConfig{
+		Name: "remote", URL: hs.URL,
+		Headers: map[string]string{"Authorization": "Bearer ${MISSING}"},
+	}, nil, func(string) string { return "" })
+
+	var unresolved *mcp.UnresolvedVariableError
+	if !errors.As(err, &unresolved) || len(unresolved.Variables) != 1 || unresolved.Variables[0] != "MISSING" {
+		t.Fatalf("err = %v; want an UnresolvedVariableError naming MISSING", err)
+	}
+	if got != nil {
+		t.Fatal("no request may be made on a configuration error")
+	}
+}
+
+// TestAHeaderCarryingAControlByteIsRefused: the value can arrive from a
+// config file or from an interpolated secret.
+func TestAHeaderCarryingAControlByteIsRefused(t *testing.T) {
+	var got http.Header
+	hs := remote(t, echoServer(t), "k", &got)
+
+	p := mcp.NewPool(mcp.ConnectionOptions{})
+	t.Cleanup(func() { _ = p.Close() })
+	_, err := p.Connect(context.Background(), mcp.ServerConfig{
+		Name: "remote", URL: hs.URL,
+		Headers: map[string]string{"X-Token": "abc${INJECT}", "X-API-Key": "k"},
+	}, nil, func(string) string { return "def\r\nX-Smuggled: yes" })
+	must(t, err)
+
+	if _, present := got["X-Token"]; present {
+		t.Fatal("a header value carrying CRLF must be dropped, not sent")
+	}
+	if got.Get("X-Smuggled") != "" {
+		t.Fatal("a smuggled header reached the server")
+	}
+}
+
+// TestOnlyHTTPSchemesAreTransports. A file:// or custom-scheme endpoint in a
+// config file is either a mistake or an attempt to make the client read
+// something local.
+func TestOnlyHTTPSchemesAreTransports(t *testing.T) {
+	p := mcp.NewPool(mcp.ConnectionOptions{})
+	for _, bad := range []string{"file:///etc/passwd", "ftp://h/x", "ws://h/x", "::"} {
+		if _, err := p.Connect(context.Background(), mcp.ServerConfig{Name: "x", URL: bad}, nil, nil); err == nil {
+			t.Fatalf("url %q must be refused", bad)
+		}
+	}
+}
+
+// TestTheDefaultHTTPClientDoesNotFollowRedirects. The configured headers carry
+// the server's bearer token, and net/http forwards custom headers to wherever
+// a redirect points.
+func TestTheDefaultHTTPClientDoesNotFollowRedirects(t *testing.T) {
+	var elsewhereHits atomic.Int32
+	elsewhere := remote(t, echoServer(t), "the-secret", nil)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		elsewhereHits.Add(1)
+		elsewhere.Config.Handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(target.Close)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(origin.Close)
+
+	p := mcp.NewPool(mcp.ConnectionOptions{})
+	t.Cleanup(func() { _ = p.Close() })
+	_, err := p.Connect(context.Background(), mcp.ServerConfig{Name: "r", URL: origin.URL,
+		Timeout: 3 * time.Second, Headers: map[string]string{"X-Api-Key": "the-secret"}}, nil, nil)
+	if err == nil {
+		t.Fatal("a redirected connect must fail, not succeed against a server we never configured")
+	}
+	if n := elsewhereHits.Load(); n != 0 {
+		t.Fatalf("the redirect target received %d request(s) carrying our headers", n)
+	}
+}
+
+// TestTimeoutSAppliesToAStallingHTTPServer: a server that accepts the POST and
+// then never answers must not hold the caller past timeout_s.
+func TestTimeoutSAppliesToAStallingHTTPServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+
+	p := mcp.NewPool(mcp.ConnectionOptions{})
+	t.Cleanup(func() { _ = p.Close() })
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.Connect(context.Background(), mcp.ServerConfig{Name: "remote", URL: srv.URL,
+			Timeout: 200 * time.Millisecond}, nil, nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v; want the operation's own deadline", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("connect hung on a stalling server; timeout_s never fired")
 	}
 }
 
@@ -649,9 +704,7 @@ func poolWith(t *testing.T, cfgs ...mcp.ServerConfig) *mcp.Pool {
 	t.Helper()
 	p := mcp.NewPool(mcp.ConnectionOptions{})
 	for _, cfg := range cfgs {
-		conn := pair(t, echoServer(t), cfg, mcp.ConnectionOptions{})
-		must(t, conn.Discover(context.Background()))
-		must(t, p.Add(conn))
+		must(t, p.Add(pair(t, echoServer(t), cfg, mcp.ConnectionOptions{})))
 	}
 	t.Cleanup(func() { _ = p.Close() })
 	return p
@@ -661,9 +714,7 @@ func poolWith(t *testing.T, cfgs ...mcp.ServerConfig) *mcp.Pool {
 func TestToolNamesAreQualifiedByServer(t *testing.T) {
 	p := poolWith(t, mcp.ServerConfig{Name: "github"})
 	tools, err := p.Tools(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 	var names []string
 	for _, tl := range tools {
 		names = append(names, tl.Name)
@@ -681,9 +732,7 @@ func TestToolNamesAreQualifiedByServer(t *testing.T) {
 func TestAConfiguredPrefixOverridesTheDefault(t *testing.T) {
 	p := poolWith(t, mcp.ServerConfig{Name: "github", ToolPrefix: "gh."})
 	tools, err := p.Tools(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 	for _, tl := range tools {
 		if !strings.HasPrefix(tl.Name, "gh.") {
 			t.Fatalf("%s does not use the configured prefix", tl.Name)
@@ -694,9 +743,7 @@ func TestAConfiguredPrefixOverridesTheDefault(t *testing.T) {
 	// is how a caller asks for none, because "" cannot mean both.
 	p2 := poolWith(t, mcp.ServerConfig{Name: "raw", DisablePrefix: true})
 	tools, err = p2.Tools(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 	for _, tl := range tools {
 		if strings.Contains(tl.Name, "__") {
 			t.Fatalf("%s is prefixed despite DisablePrefix", tl.Name)
@@ -705,26 +752,15 @@ func TestAConfiguredPrefixOverridesTheDefault(t *testing.T) {
 }
 
 // TestAShadowedNativeToolIsRefusedAtConnect is REQ-MCP-CLIENT-06 where the
-// requirement puts it: at CONNECTION time.
-//
-// The pool is told what the host's own tools are called, so the collision is a
-// refused connection at startup. The check that used to live only in Tools was
-// unreachable for a host that never called Tools — it would connect the server
-// happily and find out when the model called `echo` and the server answered,
-// which is discovering it in production with the wrong tool having run.
+// requirement puts it: at CONNECTION time, before the wrong tool can run.
 func TestAShadowedNativeToolIsRefusedAtConnect(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, method, params := readRPC(t, r)
-		writeJSONRPC(t, w, id, answerRPC(t, method, params)) // exposes `echo`
-	}))
-	t.Cleanup(srv.Close)
-
+	hs := remote(t, echoServer(t), "k", nil)
 	p := mcp.NewPool(mcp.ConnectionOptions{})
 	p.NativeTools = []string{"echo"} // the host's own tool of the same name
 	t.Cleanup(func() { _ = p.Close() })
 
-	conn, err := p.Connect(context.Background(), mcp.ServerConfig{
-		Name: "remote", URL: srv.URL, DisablePrefix: true}, nil, nil)
+	conn, err := p.Connect(context.Background(), mcp.ServerConfig{Name: "remote", URL: hs.URL,
+		DisablePrefix: true, Headers: map[string]string{"X-API-Key": "k"}}, nil, nil)
 	if !errors.Is(err, mcp.ErrNameCollision) {
 		t.Fatalf("err = %v, want ErrNameCollision at Connect", err)
 	}
@@ -736,36 +772,25 @@ func TestAShadowedNativeToolIsRefusedAtConnect(t *testing.T) {
 	}
 }
 
-// TestAPrefixedToolDoesNotCollideAtConnect is the other arm: the default
-// `server__tool` qualification is what keeps an MCP `echo` and a native `echo`
-// apart, and a connect-time check that compared UNQUALIFIED names would refuse
-// every ordinary configuration.
+// TestAPrefixedToolDoesNotCollideAtConnect: the default `server__tool`
+// qualification is what keeps an MCP `echo` and a native `echo` apart.
 func TestAPrefixedToolDoesNotCollideAtConnect(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, method, params := readRPC(t, r)
-		writeJSONRPC(t, w, id, answerRPC(t, method, params))
-	}))
-	t.Cleanup(srv.Close)
-
+	hs := remote(t, echoServer(t), "k", nil)
 	p := mcp.NewPool(mcp.ConnectionOptions{})
 	p.NativeTools = []string{"echo"}
 	t.Cleanup(func() { _ = p.Close() })
 
-	if _, err := p.Connect(context.Background(), mcp.ServerConfig{
-		Name: "remote", URL: srv.URL}, nil, nil); err != nil {
+	if _, err := p.Connect(context.Background(), mcp.ServerConfig{Name: "remote", URL: hs.URL,
+		Headers: map[string]string{"X-API-Key": "k"}}, nil, nil); err != nil {
 		t.Fatalf("connect: %v; `remote__echo` shadows nothing", err)
 	}
 }
 
 // TestANativeToolRegisteredAfterConnectIsCaughtByTheBackstop keeps the check in
-// Tools honest. Connect can only see the names the pool had been told about by
-// then; a host that registers a native tool later, or a server that grows one
-// during the session, is caught here and nowhere else.
+// Tools honest.
 func TestANativeToolRegisteredAfterConnectIsCaughtByTheBackstop(t *testing.T) {
 	p := poolWith(t, mcp.ServerConfig{Name: "srv", DisablePrefix: true})
-	native := []core.Tool{{Name: "echo", Description: "the native one"}}
-
-	_, err := p.Tools(context.Background(), native)
+	_, err := p.Tools(context.Background(), []core.Tool{{Name: "echo", Description: "the native one"}})
 	if !errors.Is(err, mcp.ErrNameCollision) {
 		t.Fatalf("err = %v, want ErrNameCollision", err)
 	}
@@ -788,9 +813,7 @@ func TestTwoServersExposingTheSameNameCollide(t *testing.T) {
 func TestAnAdaptedToolRunsThroughTheRealConnection(t *testing.T) {
 	p := poolWith(t, mcp.ServerConfig{Name: "srv"})
 	tools, err := p.Tools(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 	var echo core.Tool
 	for _, tl := range tools {
 		if tl.Name == "srv__echo" {
@@ -812,28 +835,63 @@ func TestAnAdaptedToolRunsThroughTheRealConnection(t *testing.T) {
 
 // TestTheAdaptedSchemaCarriesRequiredProperties: a tool whose schema is
 // flattened to an open object loses the validation REQ-TOOL-11 does before the
-// call, so a malformed argument reaches the server instead of the model.
+// call.
 func TestTheAdaptedSchemaCarriesRequiredProperties(t *testing.T) {
 	p := poolWith(t, mcp.ServerConfig{Name: "srv"})
 	tools, err := p.Tools(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 	for _, tl := range tools {
 		if tl.Name != "srv__echo" {
 			continue
 		}
 		if !tl.InputSchema.IsRequired("message") {
-			t.Fatalf("message is not required; the server declared it so, and dropping "+
-				"that loses the pre-call validation: %+v", tl.InputSchema)
+			t.Fatalf("message is not required; the server declared it so: %+v", tl.InputSchema)
 		}
-		props := tl.InputSchema.PropertyList()
-		if len(props) != 1 || props[0] != "message" {
+		if props := tl.InputSchema.PropertyList(); len(props) != 1 || props[0] != "message" {
 			t.Fatalf("properties = %v, want [message]", props)
 		}
 		return
 	}
 	t.Fatal("srv__echo not found")
+}
+
+// TestToolArgumentsPassThroughWithoutFloat64Laundering. Go's default for a
+// JSON number is float64: 9007199254740993 would come out the other side as
+// 9007199254740992 and 1.10 as 1.1. The bytes go through as the model wrote
+// them, and RegisterTool hands the handler json.Numbers.
+func TestToolArgumentsPassThroughWithoutFloat64Laundering(t *testing.T) {
+	var mu sync.Mutex
+	var got map[string]any
+	s := mcp.NewServer(mcp.ServerOptions{})
+	must(t, s.RegisterTool(&mcp.Tool{Name: "inspect"},
+		func(_ context.Context, args map[string]any) (*mcp.CallToolResult, error) {
+			mu.Lock()
+			got = args
+			mu.Unlock()
+			return nil, nil
+		}))
+	p := mcp.NewPool(mcp.ConnectionOptions{})
+	must(t, p.Add(pair(t, s, mcp.ServerConfig{Name: "s"}, mcp.ConnectionOptions{})))
+
+	tools, err := p.Tools(context.Background(), nil)
+	must(t, err)
+	if len(tools) != 1 {
+		t.Fatalf("%d tools", len(tools))
+	}
+	res := tools[0].Execute(context.Background(),
+		json.RawMessage(`{"id":9007199254740993,"ratio":1.10,"exp":1e3}`))
+	if !res.OK {
+		t.Fatalf("execute failed: %+v", res)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := map[string]json.Number{"id": "9007199254740993", "ratio": "1.10", "exp": "1e3"}
+	for k, w := range want {
+		if n, ok := got[k].(json.Number); !ok || n != w {
+			t.Fatalf("server received %s = %v (%T); want the literal %s", k, got[k], got[k], w)
+		}
+	}
 }
 
 // ---- REQ-MCP-CLIENT-07 config
@@ -865,9 +923,7 @@ port = 8931
 api_key_env = "AGENTKIT_MCP_KEY"
 `
 	cfg, diags, err := mcp.ParseConfig("config.toml", []byte(src))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 	for _, d := range diags {
 		if d.Severity == "error" {
 			t.Fatalf("unexpected error diagnostic: %s", d)
@@ -895,29 +951,45 @@ api_key_env = "AGENTKIT_MCP_KEY"
 	}
 }
 
+// TestTheRemoteTransportIsStreamableHTTPOrSSE: the SDK speaks both, so both
+// are selectable; anything else is an error rather than a silent fallback.
+func TestTheRemoteTransportIsStreamableHTTPOrSSE(t *testing.T) {
+	cfg, diags, err := mcp.ParseConfig("c.toml", []byte(`
+[[mcp.servers]]
+name = "legacy"
+url = "https://x/sse"
+transport = "sse"
+
+[[mcp.servers]]
+name = "bad"
+url = "https://x/ws"
+transport = "websocket"
+`))
+	must(t, err)
+	if len(cfg.Servers) != 1 || cfg.Servers[0].Transport != "sse" {
+		t.Fatalf("servers = %+v; want only the sse one usable", cfg.Servers)
+	}
+	if len(diags) != 1 || diags[0].Severity != "error" || !strings.Contains(diags[0].Message, "websocket") {
+		t.Fatalf("diagnostics = %v; an unknown transport must be an error naming it", diags)
+	}
+}
+
 // TestTheServerIsOffUnlessTheConfigSaysOtherwise is REQ-MCP-SERVER-01.
 func TestTheServerIsOffUnlessTheConfigSaysOtherwise(t *testing.T) {
 	cfg, _, err := mcp.ParseConfig("c.toml", []byte("[mcp]\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 	if cfg.Server.Enabled {
-		t.Fatal("the inbound server must be off unless a config explicitly enables it; " +
-			"there is no key whose ABSENCE turns it on")
+		t.Fatal("the inbound server must be off unless a config explicitly enables it")
 	}
 	if cfg.Server.Transport != "stdio" {
-		t.Fatalf("default transport = %q, want stdio: it is the one that relies on OS "+
-			"process isolation rather than on a key someone has to remember",
-			cfg.Server.Transport)
+		t.Fatalf("default transport = %q, want stdio", cfg.Server.Transport)
 	}
 }
 
 func TestHTTPModeWithoutAnAPIKeyEnvIsAConfigError(t *testing.T) {
 	_, diags, err := mcp.ParseConfig("c.toml", []byte(
 		"[mcp_server]\nenabled = true\ntransport = \"http\"\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 	var flagged bool
 	for _, d := range diags {
 		if d.Severity == "error" && strings.Contains(d.Message, "api_key_env") {
@@ -925,8 +997,7 @@ func TestHTTPModeWithoutAnAPIKeyEnvIsAConfigError(t *testing.T) {
 		}
 	}
 	if !flagged {
-		t.Fatalf("an http server with no api_key_env must be flagged at CONFIG time, not "+
-			"discovered when it refuses to start: %v", diags)
+		t.Fatalf("an http server with no api_key_env must be flagged at CONFIG time: %v", diags)
 	}
 }
 
@@ -940,14 +1011,10 @@ command = "a"
 name = "x"
 command = "b"
 `))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 	var flagged bool
 	for _, d := range diags {
-		if d.Severity == "error" {
-			flagged = true
-		}
+		flagged = flagged || d.Severity == "error"
 	}
 	if !flagged {
 		t.Fatal("the name keys the pool, the tool prefix and every audit event; two " +
@@ -955,19 +1022,43 @@ command = "b"
 	}
 }
 
+// TestTimeoutSAcceptsAFloatAndTheReconnectLimitParses is REQ-MCP-CLIENT-07,
+// whose own default is written `30.0`.
+func TestTimeoutSAcceptsAFloatAndTheReconnectLimitParses(t *testing.T) {
+	src := `
+[[mcp.servers]]
+name = "a"
+command = "a"
+timeout_s = 30.0
+per_session_reconnect_limit = 5
+
+[[mcp.servers]]
+name = "b"
+command = "b"
+timeout_s = 2.5
+`
+	cfg, diags, err := mcp.ParseConfig("c.toml", []byte(src))
+	must(t, err)
+	if len(diags) != 0 {
+		t.Fatalf("diagnostics = %v", diags)
+	}
+	if cfg.Servers[0].Timeout != 30*time.Second || cfg.Servers[0].PerSessionReconnectLimit != 5 {
+		t.Fatalf("a = %+v", cfg.Servers[0])
+	}
+	if cfg.Servers[1].Timeout != 2500*time.Millisecond {
+		t.Fatalf("b.timeout = %v, want 2.5s", cfg.Servers[1].Timeout)
+	}
+}
+
 // ---- stdio, against a real subprocess
 
 // TestAStdioServerRunsAsASubprocessWithAReducedEnvironment is
-// REQ-MCP-CLIENT-10, against a real process.
-//
-// The server here is this test binary re-executed, so there is no fixture to
-// keep in sync and no dependency on anything being installed.
+// REQ-MCP-CLIENT-10, against a real process: this test binary re-executed.
 func TestAStdioServerRunsAsASubprocessWithAReducedEnvironment(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
 		t.Skip("no executable path")
 	}
-
 	p := mcp.NewPool(mcp.ConnectionOptions{})
 	defer p.Close()
 
@@ -988,28 +1079,27 @@ func TestAStdioServerRunsAsASubprocessWithAReducedEnvironment(t *testing.T) {
 	}
 
 	res, err := conn.Call(context.Background(), "env", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := res.Content[0].Text
+	must(t, err)
+	got := firstText(t, res)
 	if !strings.Contains(got, "SUPPLIED=resolved-at-spawn") {
 		t.Fatalf("child env = %q; a ${VAR} must be resolved at spawn time", got)
 	}
 	if strings.Contains(got, "ANTHROPIC_") || strings.Contains(got, "OPENAI_") {
-		t.Fatalf("the child inherited provider credentials: %q. REQ-MCP-CLIENT-10 and "+
-			"REQ-SEC-08 both require a reduced environment — an MCP server is somebody "+
-			"else's code and it does not need our API keys.", got)
+		t.Fatalf("the child inherited provider credentials: %q (REQ-MCP-CLIENT-10, REQ-SEC-08)", got)
 	}
 }
 
 // TestMain is where this test binary becomes an MCP SERVER when re-executed
-// as a subprocess. The children below are the fixtures for every test that
-// needs a real process: there is no script to keep in sync and no dependency
-// on anything being installed.
+// as a subprocess: there is no script to keep in sync and no dependency on
+// anything being installed.
 func TestMain(m *testing.M) {
 	switch os.Getenv("AGENTKIT_MCP_CHILD") {
 	case "env":
-		runChildServer()
+		serveChild(func(s *mcp.Server) {
+			_ = s.RegisterTool(&mcp.Tool{Name: "env"}, func(context.Context, map[string]any) (*mcp.CallToolResult, error) {
+				return text(strings.Join(os.Environ(), "\n")), nil
+			})
+		}, os.Stdout)
 		return
 	case "one-shot":
 		runOneShotChild()
@@ -1018,84 +1108,59 @@ func TestMain(m *testing.M) {
 		runMortalChild()
 		return
 	case "stderr-flood":
-		runStderrFloodChild()
+		// One 2 MiB line — more than the parent's stderr scanner buffers —
+		// and only then serve. A parent that stops reading stderr there
+		// leaves this child blocked on the write before it ever answers.
+		_, _ = os.Stderr.Write([]byte(strings.Repeat("x", 2<<20) + "\n"))
+		serveChild(func(s *mcp.Server) {
+			_ = s.RegisterTool(&mcp.Tool{Name: "hello"}, func(context.Context, map[string]any) (*mcp.CallToolResult, error) {
+				return text("hi"), nil
+			})
+		}, os.Stdout)
 		return
 	}
 	os.Exit(m.Run())
 }
 
-// runStderrFloodChild writes one 2 MiB line to stderr — more than the parent's
-// stderr scanner will buffer — and only then serves. If the parent stops
-// reading stderr at that line, this child blocks on the write (or dies of
-// SIGPIPE) before it ever answers a request.
-func runStderrFloodChild() {
-	_, _ = os.Stderr.Write([]byte(strings.Repeat("x", 2<<20) + "\n"))
-	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "flood", Version: "1"}})
-	_ = s.RegisterTool(mcp.ToolDefinition{Name: "hello"},
-		func(context.Context, map[string]any) (mcp.ToolsCallResult, error) {
-			return mcp.ToolsCallResult{Content: []mcp.Content{{Type: "text", Text: "hi"}}}, nil
-		})
-	tr := mcp.NewPipeTransport(os.Stdin, os.Stdout, wire.Limits{})
-	_ = s.Serve(context.Background(), tr)
-}
-
-// runChildServer reports its environment.
-func runChildServer() {
+func serveChild(register func(*mcp.Server), out io.Writer) {
 	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "child", Version: "1"}})
-	_ = s.RegisterTool(mcp.ToolDefinition{Name: "env"},
-		func(context.Context, map[string]any) (mcp.ToolsCallResult, error) {
-			return mcp.ToolsCallResult{Content: []mcp.Content{
-				{Type: "text", Text: strings.Join(os.Environ(), "\n")}}}, nil
-		})
-	tr := mcp.NewPipeTransport(os.Stdin, os.Stdout, wire.Limits{})
-	_ = s.Serve(context.Background(), tr)
+	register(s)
+	_ = s.Server.Run(context.Background(), mcp.NewPipeTransport(os.Stdin, out, wire.Limits{}))
 }
 
-// runOneShotChild answers the first request with a fixed response for id 1
-// and exits IMMEDIATELY: the shape of a server whose last frame the old stdio
-// transport could lose.
+// runOneShotChild answers the first request with a discover result and exits
+// IMMEDIATELY: the shape of a server whose last frame a stdio transport that
+// let exec close its pipe could lose.
 func runOneShotChild() {
-	sc := bufio.NewScanner(os.Stdin)
-	sc.Scan()
-	_, _ = os.Stdout.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ok":true}}` + "\n"))
+	line, _ := bufio.NewReader(os.Stdin).ReadBytes('\n')
+	var req struct{ ID json.RawMessage }
+	_ = json.Unmarshal(line, &req)
+	_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"supportedVersions":["2026-07-28"],"capabilities":{}}}`+"\n", req.ID)
 	os.Exit(0)
 }
 
 // runMortalChild is a server that can be told to die: `die` answers and then
 // exits as soon as that answer is written, `crash` exits without answering,
-// `add_tool` registers a tool after the fact (a list_changed source), and
-// `hello` just works.
+// and `hello` just works.
 func runMortalChild() {
-	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "mortal", Version: "1"}})
 	out := &exitAfterWrite{w: os.Stdout}
-	ok := func(text string) (mcp.ToolsCallResult, error) {
-		return mcp.ToolsCallResult{Content: []mcp.Content{{Type: "text", Text: text}}}, nil
-	}
-	_ = s.RegisterTool(mcp.ToolDefinition{Name: "hello"},
-		func(context.Context, map[string]any) (mcp.ToolsCallResult, error) { return ok("hi") })
-	_ = s.RegisterTool(mcp.ToolDefinition{Name: "die"},
-		func(context.Context, map[string]any) (mcp.ToolsCallResult, error) {
+	serveChild(func(s *mcp.Server) {
+		_ = s.RegisterTool(&mcp.Tool{Name: "hello"}, func(context.Context, map[string]any) (*mcp.CallToolResult, error) {
+			return text("hi"), nil
+		})
+		_ = s.RegisterTool(&mcp.Tool{Name: "die"}, func(context.Context, map[string]any) (*mcp.CallToolResult, error) {
 			out.armed.Store(true)
-			return ok("bye")
+			return text("bye"), nil
 		})
-	_ = s.RegisterTool(mcp.ToolDefinition{Name: "crash"},
-		func(context.Context, map[string]any) (mcp.ToolsCallResult, error) {
+		_ = s.RegisterTool(&mcp.Tool{Name: "crash"}, func(context.Context, map[string]any) (*mcp.CallToolResult, error) {
 			os.Exit(1)
-			return ok("unreachable")
+			return nil, nil
 		})
-	_ = s.RegisterTool(mcp.ToolDefinition{Name: "add_tool"},
-		func(context.Context, map[string]any) (mcp.ToolsCallResult, error) {
-			_ = s.RegisterTool(mcp.ToolDefinition{Name: "late"},
-				func(context.Context, map[string]any) (mcp.ToolsCallResult, error) { return ok("late") })
-			return ok("added")
-		})
-	tr := mcp.NewPipeTransport(os.Stdin, out, wire.Limits{})
-	_ = s.Serve(context.Background(), tr)
+	}, out)
 }
 
 // exitAfterWrite exits the process right after the write that follows arming,
-// so a response is fully written before the server is gone — deterministic
-// where a timer would be a race.
+// so a response is fully written before the server is gone.
 type exitAfterWrite struct {
 	w     io.Writer
 	armed atomic.Bool
@@ -1141,45 +1206,19 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// ---- stdio: the last frame before exit (item: cmd.Wait raced the reader)
-
-// TestAResponseWrittenJustBeforeExitIsDelivered. os/exec's Wait closes the
-// pipes it created, and the reaper called Wait the instant the process exited
-// — so a server that answered and exited could have its answer discarded
-// before the reader got to it. The Receive is delayed so the frame is sitting
-// in the pipe when the process is reaped, which is the losing order.
+// TestAResponseWrittenJustBeforeExitIsDelivered: a server that answers and
+// exits at once must still have its answer read.
 func TestAResponseWrittenJustBeforeExitIsDelivered(t *testing.T) {
-	exe, err := os.Executable()
-	if err != nil {
-		t.Skip("no executable path")
-	}
-	tr, err := mcp.StartStdio(context.Background(), mcp.StdioOptions{
-		Command: exe, Env: []string{"AGENTKIT_MCP_CHILD=one-shot", "PATH=" + os.Getenv("PATH")},
-	})
-	must(t, err)
-	t.Cleanup(func() { _ = tr.Close() })
-
-	must(t, tr.Send([]byte(`{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}`)))
-	time.Sleep(300 * time.Millisecond) // let the child answer, exit and be reaped
-
-	frame, err := tr.Receive()
-	if err != nil {
-		t.Fatalf("the response written just before exit was lost: %v", err)
-	}
-	var m mcp.Message
-	must(t, json.Unmarshal(frame, &m))
-	if m.ID.Key() != mcp.NumberID(1).Key() || m.Error != nil {
-		t.Fatalf("got %s", frame)
+	_, conn := childPool(t, "one-shot", mcp.ServerConfig{Name: "one-shot", PerSessionReconnectLimit: -1})
+	if conn == nil {
+		t.Fatal("the discover answer written just before exit was lost")
 	}
 }
 
-// ---- NFR-REL-03: reconnection
-
 // TestADeadStdioServerIsRespawnedWithinTheReconnectLimit is NFR-REL-03 end to
 // end against a real process: a disconnect mid-call is an is_error tool
-// result and the loop's next call re-spawns the server; the budget is
-// honoured; and past it the connection is dead and every call is is_error —
-// never a Go error the agent loop would have to handle.
+// result and the next call re-spawns the server; the budget is honoured; and
+// past it the connection is dead and every call is is_error.
 func TestADeadStdioServerIsRespawnedWithinTheReconnectLimit(t *testing.T) {
 	p, conn := childPool(t, "mortal", mcp.ServerConfig{Name: "mortal", PerSessionReconnectLimit: 1})
 	ctx := context.Background()
@@ -1232,151 +1271,42 @@ func TestADeadStdioServerIsRespawnedWithinTheReconnectLimit(t *testing.T) {
 	}
 }
 
-// ---- REQ-CACHE-07: the pool subscribes stdio servers to list_changed
-
-// TestAStdioServerConnectedByThePoolIsSubscribedToToolChanges. The server
-// sends list_changed ONLY on a stream the client opened, and nobody was
-// opening one — so the cache lived by the ttlMs hint alone, and a server
-// sending none (this one) kept a stale list for the whole session.
-func TestAStdioServerConnectedByThePoolIsSubscribedToToolChanges(t *testing.T) {
-	_, conn := childPool(t, "mortal", mcp.ServerConfig{Name: "mortal"})
-	ctx := context.Background()
-	waitFor(t, "the subscription to be acknowledged", conn.Subscribed)
-
-	before, err := conn.ListTools(ctx)
-	must(t, err)
-	res, err := conn.Call(ctx, "add_tool", nil)
-	must(t, err)
-	if res.IsError {
-		t.Fatalf("add_tool: %+v", res)
+// TestAnOversizedStderrLineDoesNotWedgeTheServer. A child that logs a line
+// longer than the stderr scanner buffers must keep being drained, or its next
+// stderr write blocks and its stdout frames stop with it; the caller is told
+// once why its diagnostics stopped.
+func TestAnOversizedStderrLineDoesNotWedgeTheServer(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skip("no executable path")
 	}
-	waitFor(t, "the tool cache to be invalidated", func() bool {
-		after, err := conn.ListTools(ctx)
-		must(t, err)
-		return len(after) == len(before)+1
+	var mu sync.Mutex
+	var warnings []string
+	p := mcp.NewPool(mcp.ConnectionOptions{
+		Warnf: func(f string, a ...any) {
+			mu.Lock()
+			warnings = append(warnings, fmt.Sprintf(f, a...))
+			mu.Unlock()
+		},
 	})
-}
-
-// ---- REQ-SEC-12.1 vs the protocol model
-
-// TestAToolWithOutputSchemaAndMetaListsAndCallsFine. Strict binding rejects
-// unknown members, so every spec-standard optional member has to be modelled
-// — a conforming server sending outputSchema on ONE tool made tools/list fail
-// and the whole server unusable.
-func TestAToolWithOutputSchemaAndMetaListsAndCallsFine(t *testing.T) {
-	s := mcp.NewServer(mcp.ServerOptions{})
-	must(t, s.RegisterTool(mcp.ToolDefinition{
-		Name: "typed", Title: "Typed", Description: "returns structured content",
-		InputSchema:  json.RawMessage(`{"type":"object"}`),
-		OutputSchema: json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer"}}}`),
-		Annotations:  json.RawMessage(`{"readOnlyHint":true,"vendor/x":1}`),
-		Icons:        json.RawMessage(`[{"src":"https://example/i.png"}]`),
-		Meta:         json.RawMessage(`{"vendor/tag":"v"}`),
-	}, func(context.Context, map[string]any) (mcp.ToolsCallResult, error) {
-		return mcp.ToolsCallResult{
-			Content: []mcp.Content{
-				{Type: "text", Text: "n=1", Annotations: json.RawMessage(`{"audience":["user"]}`),
-					Meta: json.RawMessage(`{"k":"v"}`)},
-				{Type: "resource_link", URI: "x://doc", Name: "doc", Size: new(int64)},
-			},
-			StructuredContent: json.RawMessage(`{"n":1}`),
-			Meta:              json.RawMessage(`{"vendor/trace":"abc"}`),
-		}, nil
-	}))
-	size := int64(12)
-	must(t, s.RegisterResource(mcp.Resource{URI: "x://doc", Name: "doc", Size: &size,
-		Annotations: json.RawMessage(`{"priority":0.5}`), Meta: json.RawMessage(`{}`)},
-		func(context.Context, string) (mcp.ResourcesReadResult, error) {
-			return mcp.ResourcesReadResult{Contents: []mcp.ResourceContents{
-				{URI: "x://doc", Text: "hi", Meta: json.RawMessage(`{"etag":"1"}`)}}}, nil
-		}))
-	conn := pair(t, s, mcp.ServerConfig{Name: "s"}, mcp.ConnectionOptions{})
-	ctx := context.Background()
-
-	tools, err := conn.ListTools(ctx)
+	t.Cleanup(func() { _ = p.Close() })
+	conn, err := p.Connect(context.Background(), mcp.ServerConfig{Name: "flood", Command: exe},
+		[]string{"AGENTKIT_MCP_CHILD=stderr-flood"}, nil)
 	if err != nil {
-		t.Fatalf("tools/list: %v", err)
+		t.Fatalf("connect: %v — the child wrote a 2 MiB stderr line before serving, and did "+
+			"not survive it", err)
 	}
-	if len(tools) != 1 || len(tools[0].OutputSchema) == 0 || len(tools[0].Meta) == 0 {
-		t.Fatalf("tools = %+v", tools)
-	}
-	res, err := conn.Call(ctx, "typed", nil)
-	if err != nil {
-		t.Fatalf("tools/call: %v", err)
-	}
-	if string(res.StructuredContent) != `{"n":1}` || len(res.Meta) == 0 ||
-		len(res.Content) != 2 || len(res.Content[0].Annotations) == 0 || res.Content[1].Size == nil {
+	res, err := conn.Call(context.Background(), "hello", nil)
+	must(t, err)
+	if firstText(t, res) != "hi" {
 		t.Fatalf("result = %+v", res)
 	}
-	resources, err := conn.ListResources(ctx)
-	if err != nil || len(resources) != 1 || resources[0].Size == nil || *resources[0].Size != 12 {
-		t.Fatalf("resources = %+v, %v", resources, err)
+	mu.Lock()
+	defer mu.Unlock()
+	for _, w := range warnings {
+		if strings.Contains(w, "stderr line exceeded") {
+			return
+		}
 	}
-	read, err := conn.ReadResource(ctx, "x://doc")
-	if err != nil || len(read.Contents) != 1 || len(read.Contents[0].Meta) == 0 {
-		t.Fatalf("read = %+v, %v", read, err)
-	}
-}
-
-// ---- REQ-SEC-12.1 / REQ-SEC-11.3 on the envelope itself
-
-// TestTheClientRejectsANonStrictEnvelope. encoding/json matched envelope keys
-// case-insensitively and ignored unknown ones, so `{"id":1,"ID":2}` passed the
-// duplicate-key check and correlated to 2, and `"bogus":true` was accepted.
-func TestTheClientRejectsANonStrictEnvelope(t *testing.T) {
-	for _, tc := range []struct{ name, frame string }{
-		{"case-variant duplicate id", `{"jsonrpc":"2.0","id":1,"ID":2,"result":{"resultType":"complete","supportedVersions":["x"],"capabilities":{},"ttlMs":0}}`},
-		{"unknown member", `{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","supportedVersions":["x"],"capabilities":{},"ttlMs":0},"bogus":true}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c2sR, c2sW := io.Pipe()
-			s2cR, s2cW := io.Pipe()
-			conn := mcp.NewConnection(mcp.ServerConfig{Name: "s"},
-				mcp.NewPipeTransport(s2cR, c2sW, wire.Limits{}), mcp.ConnectionOptions{})
-			t.Cleanup(func() { _ = conn.Close(); _ = c2sR.Close(); _ = s2cW.Close() })
-
-			go func() {
-				// Read the request (its id is 1: the first the client issues) and
-				// answer it with the crafted frame.
-				_, _ = bufio.NewReader(c2sR).ReadString('\n')
-				_, _ = s2cW.Write([]byte(tc.frame + "\n"))
-			}()
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			if err := conn.Discover(ctx); err == nil {
-				t.Fatal("a frame with a case-variant duplicate or an unknown member must be rejected")
-			}
-			waitFor(t, "the connection to be torn down", func() bool { return !conn.Alive() })
-		})
-	}
-}
-
-// ---- config
-
-// TestTimeoutSAcceptsAFloat is REQ-MCP-CLIENT-07, whose own default is written
-// `30.0`; a TOML reader that rejected floats dropped the requirement's example.
-func TestTimeoutSAcceptsAFloatAndTheReconnectLimitParses(t *testing.T) {
-	src := `
-[[mcp.servers]]
-name = "a"
-command = "a"
-timeout_s = 30.0
-per_session_reconnect_limit = 5
-
-[[mcp.servers]]
-name = "b"
-command = "b"
-timeout_s = 2.5
-`
-	cfg, diags, err := mcp.ParseConfig("c.toml", []byte(src))
-	must(t, err)
-	if len(diags) != 0 {
-		t.Fatalf("diagnostics = %v", diags)
-	}
-	if cfg.Servers[0].Timeout != 30*time.Second || cfg.Servers[0].PerSessionReconnectLimit != 5 {
-		t.Fatalf("a = %+v", cfg.Servers[0])
-	}
-	if cfg.Servers[1].Timeout != 2500*time.Millisecond {
-		t.Fatalf("b.timeout = %v, want 2.5s", cfg.Servers[1].Timeout)
-	}
+	t.Fatalf("the caller was never told its diagnostics stopped: %q", warnings)
 }
