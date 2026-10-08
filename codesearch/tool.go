@@ -447,7 +447,6 @@ func (idx *Index) rebuild(ctx context.Context, oldRunDir string, oldOverlay *ove
 	idx.built = true
 	idx.partial = result.partial
 	idx.partialReason = result.partialReason
-	idx.ctagsAvailable = result.ctagsAvailable
 	idx.overlay = nil
 	idx.buildCount.Add(1)
 	idx.mu.Unlock()
@@ -731,15 +730,14 @@ func (idx *Index) buildResult(files []searchResultFile, maxFiles, totalFiles int
 	}
 
 	data := map[string]any{
-		"files":           fileData,
-		"truncated":       moreThanMax || bytesTruncated,
-		"note":            note,
-		"partial":         info.partial,
-		"partial_reason":  info.partialReason,
-		"symbol_sources":  info.symbolSources,
-		"ctags_available": info.ctagsAvailable,
-		"files_indexed":   stats.FilesIndexed,
-		"dirty_files":     info.dirtyFiles,
+		"files":          fileData,
+		"truncated":      moreThanMax || bytesTruncated,
+		"note":           note,
+		"partial":        info.partial,
+		"partial_reason": info.partialReason,
+		"symbol_sources": info.symbolSources,
+		"files_indexed":  stats.FilesIndexed,
+		"dirty_files":    info.dirtyFiles,
 		"skipped": map[string]any{
 			"binary":            stats.BinarySkipped,
 			"oversized":         stats.OversizedSkipped,
@@ -773,7 +771,6 @@ func (idx *Index) gatherResultInfo(stats BuildStatsResult) resultInfo {
 	outlineFiles := idx.outlineFiles
 	partial := idx.partial
 	partialReason := idx.partialReason
-	ctagsAvailable := idx.ctagsAvailable
 	idx.mu.RUnlock()
 
 	// Count symbol sources.
@@ -819,7 +816,6 @@ func (idx *Index) gatherResultInfo(stats BuildStatsResult) resultInfo {
 		filesIndexed:   stats.FilesIndexed,
 		indexSizeBytes: indexSize,
 		symbolSources:  symbolSources,
-		ctagsAvailable: ctagsAvailable,
 		partial:        partial,
 		partialReason:  partialReason,
 		dirtyFiles:     dirtyCount,

@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/agentfox/agentkit-go/outline"
 )
@@ -97,52 +96,9 @@ func TestFileOutlineDoesNotReadAnOversizedFile(t *testing.T) {
 	if err != nil || f.Backend != outline.BackendNone {
 		t.Fatalf("outline.Outline(src=nil) = %+v, %v; want none without reading", f, err)
 	}
-	fs, _, err := outline.OutlineMany(context.Background(), []outline.Source{{Abs: p}}, outline.Options{})
+	fs, err := outline.OutlineMany(context.Background(), []outline.Source{{Abs: p}}, outline.Options{})
 	if err != nil || fs[0].Backend != outline.BackendNone {
 		t.Fatalf("OutlineMany = %+v, %v; want none without reading", fs, err)
-	}
-}
-
-// Issue #76 §3: the `ctags --version` probe has a deadline. A wedged ctags
-// is unavailable, not a hang under the symbol table's lock.
-func TestCtagsProbeHasADeadline(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("a shell-script ctags is not portable to Windows")
-	}
-	dir := t.TempDir()
-	script := "#!/bin/sh\nsleep 60\n"
-	if err := os.WriteFile(filepath.Join(dir, "ctags"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if p, err := exec.LookPath("ctags"); err != nil || filepath.Dir(p) != dir {
-		t.Skip("the fake ctags is not first on PATH")
-	}
-	old := ctagsProbeTimeout
-	ctagsProbeTimeout = 300 * time.Millisecond
-	t.Cleanup(func() { ctagsProbeTimeout = old })
-
-	run := CtagsRunner(nil)
-
-	// A caller whose own context ends first gets its context error, and the
-	// result is not cached as "unavailable".
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	start := time.Now()
-	if _, err := run(ctx, []string{"x"}); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("err = %v, want the caller's deadline", err)
-	}
-	if time.Since(start) > 5*time.Second {
-		t.Fatal("the probe outlived the caller's context")
-	}
-
-	start = time.Now()
-	_, err := run(context.Background(), []string{"x"})
-	if !errors.Is(err, ErrCtagsUnavailable) {
-		t.Fatalf("err = %v, want ErrCtagsUnavailable for a ctags that never answers --version", err)
-	}
-	if time.Since(start) > 5*time.Second {
-		t.Fatalf("the probe took %v; it must give up at its deadline", time.Since(start))
 	}
 }
 
@@ -184,7 +140,7 @@ func TestEditFileOnAMissingPathMarksNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	ft := newFileTools(Options{Workspace: ws, Ignore: NoGlobalExcludes(),
-		Symbols: SymbolOptions{DisableCtags: true}}.withDefaults())
+		Symbols: SymbolOptions{}}.withDefaults())
 	ft.table = &symbolTable{}
 	args, _ := json.Marshal(map[string]any{"path": "nope.go",
 		"edits": []map[string]string{{"old_string": "a", "new_string": "b"}}})
@@ -235,7 +191,7 @@ func TestWritesAreAtomicAndKeepModeAndLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	ft := newFileTools(Options{Workspace: ws, Ignore: NoGlobalExcludes(),
-		Symbols: SymbolOptions{DisableCtags: true}}.withDefaults())
+		Symbols: SymbolOptions{}}.withDefaults())
 
 	script := filepath.Join(ws.Root, "run.sh")
 	if err := os.WriteFile(script, []byte("echo old\n"), 0o755); err != nil {

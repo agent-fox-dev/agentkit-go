@@ -78,18 +78,14 @@ func (idx *Index) buildOverlayShard(ctx context.Context, dirtySet map[string]boo
 	}
 
 	// Outline the dirty files.
-	runner := idx.outlineRunner()
-	outlineOpts := outline.Options{
-		Root:   idx.ws.Root,
-		Runner: runner,
-	}
+	outlineOpts := outline.Options{Root: idx.ws.Root}
 
 	srcs := make([]outline.Source, len(files))
 	for i, fe := range files {
 		srcs[i] = outline.Source{Abs: fe.abs}
 	}
 
-	outFiles, _, err := outline.OutlineMany(ctx, srcs, outlineOpts)
+	outFiles, err := outline.OutlineMany(ctx, srcs, outlineOpts)
 	if err != nil {
 		// Non-fatal: continue without symbols.
 		outFiles = make([]outline.File, len(files))

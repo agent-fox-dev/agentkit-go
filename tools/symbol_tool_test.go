@@ -25,7 +25,7 @@ func TestFindSymbolNameValidation_TS02_14(t *testing.T) {
 	}
 	defer func() { walkFn = origWalkFn }()
 
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 
 	// Empty name.
 	walkCount = 0
@@ -91,7 +91,7 @@ func TestFindSymbolKindValidation_TS02_15(t *testing.T) {
 	}
 	defer func() { walkFn = origWalkFn }()
 
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 
 	// Unknown kind "function".
 	walkCount = 0
@@ -162,7 +162,7 @@ func TestFindSymbolPathOutsideWorkspace_TS02_16(t *testing.T) {
 	}
 	defer func() { walkFn = origWalkFn }()
 
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 
 	// Relative path outside workspace.
 	walkCount = 0
@@ -207,7 +207,7 @@ func TestFindSymbolPathNotExist_TS02_17(t *testing.T) {
 	}
 	defer func() { walkFn = origWalkFn }()
 
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 
 	walkCount = 0
 	args, _ := json.Marshal(map[string]any{"name": "Run", "path": "nope"})
@@ -228,7 +228,7 @@ func TestFindSymbolPathIsFile_TS02_18(t *testing.T) {
 	root := t.TempDir()
 	mkSymFile(t, root, "a.go", "package main\n\nfunc Hello() {}\n")
 
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 
 	args, _ := json.Marshal(map[string]any{"name": "Hello", "path": "a.go"})
 	r := exec(context.Background(), args)
@@ -260,7 +260,7 @@ func runner() {}
 func rUN() {}
 `)
 
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 
 	// "run" (all lowercase) → case-insensitive prefix match.
 	args, _ := json.Marshal(map[string]any{"name": "run"})
@@ -316,7 +316,7 @@ func RunAll() {}
 func run() {}
 `)
 
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 
 	// exact=true, name="Run" → only Run.
 	args, _ := json.Marshal(map[string]any{"name": "Run", "exact": true})
@@ -363,7 +363,7 @@ func (o *Other) Run() {}
 func Run() {}
 `)
 
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 
 	// "Runner.Run" (dotted, exact) → only Runner's Run method.
 	args, _ := json.Marshal(map[string]any{"name": "Runner.Run", "exact": true})

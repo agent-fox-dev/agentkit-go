@@ -229,8 +229,6 @@ func TopLevel() {}
 `
 	mkOutlineFile(t, root, "x.go", goSrc)
 
-	// For Python, we need a runner that produces declarations with Container set.
-	// Use a fake runner that returns ctags-like output.
 	ws, err := NewWorkspace(root)
 	if err != nil {
 		t.Fatal(err)
@@ -241,7 +239,7 @@ func TopLevel() {}
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 	goTool := goFS.fileOutlineTool()
 	goR := goTool.Execute(context.Background(), json.RawMessage(`{"path":"x.go"}`))
@@ -270,7 +268,7 @@ func TopLevel() {}
 	pyFile := outline.File{
 		Path:    "mod.py",
 		Lang:    "Python",
-		Backend: outline.BackendHeuristic,
+		Backend: outline.BackendTreeSitter,
 		Decls: []outline.Decl{
 			{Kind: outline.KindClass, Name: "MyClass", Signature: "class MyClass", Exported: true, StartLine: 1, EndLine: 6},
 			{Kind: outline.KindMethod, Name: "my_method", Container: "MyClass", Signature: "def my_method(self)", Exported: true, StartLine: 2, EndLine: 3},
@@ -505,8 +503,8 @@ func countDeclLines(lines []string) int {
 }
 
 // TestANoneOutlineSaysThereIsNoBackend (issue #89): a recognised, readable,
-// text file with no outline is a language with no backend here — PHP, Lua,
-// shell or Perl without universal-ctags — and the line says so rather than
+// text file with no outline is a language with no backend in this build —
+// any language but Go without cgo — and the line says so rather than
 // leaving the model to guess (spec 02 §1: the line "says why").
 func TestANoneOutlineSaysThereIsNoBackend(t *testing.T) {
 	root := t.TempDir()
@@ -517,7 +515,7 @@ func TestANoneOutlineSaysThereIsNoBackend(t *testing.T) {
 	src := []byte("<?php\nfunction hello() {}\n")
 	f := outline.File{Path: "a.php", Lang: outline.LangPHP, Backend: outline.BackendNone, Decls: []outline.Decl{}}
 	r := renderOutlineResult(ws, filepath.Join(root, "a.php"), f, false, src, int64(len(src)))
-	if !strings.Contains(r.Text, "no outline backend for PHP without universal-ctags") {
+	if !strings.Contains(r.Text, "no outline backend for PHP in this build") {
 		t.Fatalf("none line does not say why:\n%s", r.Text)
 	}
 }

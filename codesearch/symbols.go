@@ -107,7 +107,6 @@ func (idx *Index) Symbols(ctx context.Context, q tools.SymbolQuery) (tools.Symbo
 
 	// Re-outline dirty files in scope and search them.
 	if len(dirtySet) > 0 {
-		runner := idx.outlineRunner()
 		for rel := range dirtySet {
 			if idx.dirty.isGone(rel) {
 				continue
@@ -122,10 +121,7 @@ func (idx *Index) Symbols(ctx context.Context, q tools.SymbolQuery) (tools.Symbo
 				continue
 			}
 
-			of, err := outline.Outline(ctx, abs, nil, outline.Options{
-				Root:   idx.ws.Root,
-				Runner: runner,
-			})
+			of, err := outline.Outline(ctx, abs, nil, outline.Options{Root: idx.ws.Root})
 			if err != nil {
 				if ctx.Err() != nil {
 					return tools.SymbolAnswer{}, false, ctx.Err()

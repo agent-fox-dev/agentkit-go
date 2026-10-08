@@ -24,7 +24,7 @@ func TestFindSymbolRankingDeterministic_TS02_22(t *testing.T) {
 	mkSymFile(t, root, "a_test.go", "package main\n\nfunc RunTest() {}\n")
 	mkSymFile(t, root, "test/t.go", "package test\n\nfunc RunInTestDir() {}\n")
 
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 
 	// Call multiple times and verify identical order.
 	var prev []SymbolMatch
@@ -69,7 +69,7 @@ func TestFindSymbolRankingTiers_TS02_23(t *testing.T) {
 	t.Run("exact_before_prefix", func(t *testing.T) {
 		root := t.TempDir()
 		mkSymFile(t, root, "a.go", "package main\n\nfunc RunAll() {}\nfunc Run() {}\n")
-		exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+		exec := makeFindSymbolTool(t, root, SymbolOptions{})
 		r := exec(context.Background(), json.RawMessage(`{"name":"Run"}`))
 		if !r.OK {
 			t.Fatalf("error=%s detail=%s", r.Error, r.Detail)
@@ -88,7 +88,7 @@ func TestFindSymbolRankingTiers_TS02_23(t *testing.T) {
 	t.Run("smartcase_exact", func(t *testing.T) {
 		root := t.TempDir()
 		mkSymFile(t, root, "a.go", "package main\n\nfunc RunAll() {}\nfunc Run() {}\n")
-		exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+		exec := makeFindSymbolTool(t, root, SymbolOptions{})
 		// "run" (all lowercase) matches "Run" exactly under smart-case.
 		r := exec(context.Background(), json.RawMessage(`{"name":"run"}`))
 		if !r.OK {
@@ -111,7 +111,7 @@ func TestFindSymbolRankingTiers_TS02_23(t *testing.T) {
 		// Both Run (exported) and run (unexported) are exact matches under
 		// smart-case with the all-lowercase query "run".
 		mkSymFile(t, root, "a.go", "package main\n\nfunc run() {}\nfunc Run() {}\n")
-		exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+		exec := makeFindSymbolTool(t, root, SymbolOptions{})
 		// "run" (all lowercase) → smart-case exact matches both Run and run.
 		r := exec(context.Background(), json.RawMessage(`{"name":"run"}`))
 		if !r.OK {
@@ -135,7 +135,7 @@ func TestFindSymbolRankingTiers_TS02_23(t *testing.T) {
 		root := t.TempDir()
 		mkSymFile(t, root, "a_test.go", "package main\n\nfunc Foo() {}\n")
 		mkSymFile(t, root, "a.go", "package main\n\nfunc Foo() {}\n")
-		exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+		exec := makeFindSymbolTool(t, root, SymbolOptions{})
 		r := exec(context.Background(), json.RawMessage(`{"name":"Foo", "exact": true}`))
 		if !r.OK {
 			t.Fatalf("error=%s detail=%s", r.Error, r.Detail)
@@ -157,7 +157,7 @@ func TestFindSymbolRankingTiers_TS02_23(t *testing.T) {
 		root := t.TempDir()
 		mkSymFile(t, root, "pkg/deep/a.go", "package deep\n\nfunc Foo() {}\n")
 		mkSymFile(t, root, "a.go", "package main\n\nfunc Foo() {}\n")
-		exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+		exec := makeFindSymbolTool(t, root, SymbolOptions{})
 		r := exec(context.Background(), json.RawMessage(`{"name":"Foo", "exact": true}`))
 		if !r.OK {
 			t.Fatalf("error=%s detail=%s", r.Error, r.Detail)
@@ -176,7 +176,7 @@ func TestFindSymbolRankingTiers_TS02_23(t *testing.T) {
 		root := t.TempDir()
 		mkSymFile(t, root, "bbb.go", "package main\n\nfunc Foo() {}\n")
 		mkSymFile(t, root, "aaa.go", "package main\n\nfunc Foo() {}\n")
-		exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+		exec := makeFindSymbolTool(t, root, SymbolOptions{})
 		r := exec(context.Background(), json.RawMessage(`{"name":"Foo", "exact": true}`))
 		if !r.OK {
 			t.Fatalf("error=%s detail=%s", r.Error, r.Detail)
@@ -194,7 +194,7 @@ func TestFindSymbolRankingTiers_TS02_23(t *testing.T) {
 	t.Run("startline", func(t *testing.T) {
 		root := t.TempDir()
 		mkSymFile(t, root, "a.go", "package main\n\nfunc Foo() {}\n\nfunc Foo2() {}\n")
-		exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+		exec := makeFindSymbolTool(t, root, SymbolOptions{})
 		r := exec(context.Background(), json.RawMessage(`{"name":"Foo"}`))
 		if !r.OK {
 			t.Fatalf("error=%s detail=%s", r.Error, r.Detail)
@@ -217,7 +217,7 @@ func TestFindSymbolRankingTiers_TS02_23(t *testing.T) {
 		// Unexported exact match vs exported prefix match.
 		// Tier 1 (exact) should override tier 2 (exported).
 		mkSymFile(t, root, "a.go", "package main\n\nfunc RunAll() {}\nfunc run() {}\n")
-		exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+		exec := makeFindSymbolTool(t, root, SymbolOptions{})
 		r := exec(context.Background(), json.RawMessage(`{"name":"run"}`))
 		if !r.OK {
 			t.Fatalf("error=%s detail=%s", r.Error, r.Detail)
@@ -294,7 +294,7 @@ func TestFindSymbolMaxResultsClamping_TS02_25(t *testing.T) {
 		mkSymFile(t, root, name, content)
 	}
 
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 
 	// Omitted max_results → 20.
 	r := exec(context.Background(), json.RawMessage(`{"name":"Sym"}`))
@@ -344,7 +344,7 @@ func TestFindSymbolTruncation_TS02_26(t *testing.T) {
 		mkSymFile(t, root, name, content)
 	}
 
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 
 	// Default (20): below cap, marker names max_results=40.
 	t.Run("default_20", func(t *testing.T) {
@@ -464,7 +464,7 @@ func TestFindSymbolDataKeys_TS02_27(t *testing.T) {
 	mkSymFile(t, root, "a.go", "package main\n\nfunc Hello() {}\n")
 	mkSymFile(t, root, "b.py", "def world():\n    pass\n")
 
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 	r := exec(context.Background(), json.RawMessage(`{"name":"Hello", "exact": true}`))
 	if !r.OK {
 		t.Fatalf("error=%s detail=%s", r.Error, r.Detail)
@@ -550,7 +550,7 @@ func TestFindSymbolTextRendering_TS02_28(t *testing.T) {
 	// Create a normal file.
 	mkSymFile(t, root, "normal.go", "package main\n\nfunc HelloWorld() {}\n")
 
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 
 	// Search for both using a prefix that matches both.
 	r := exec(context.Background(), json.RawMessage(`{"name":"Hello"}`))
@@ -625,7 +625,7 @@ func TestFindSymbolNoMatch_TS02_29(t *testing.T) {
 	root := t.TempDir()
 	mkSymFile(t, root, "a.go", "package main\n\nfunc Hello() {}\n")
 
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 	r := exec(context.Background(), json.RawMessage(`{"name":"NonExistent"}`))
 
 	if !r.OK {
@@ -675,7 +675,7 @@ func (h *Handler) Handle() {}
 func AnotherFunc() {}
 `)
 
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 
 	// kind=method: only methods.
 	t.Run("kind_method", func(t *testing.T) {

@@ -35,10 +35,9 @@ func TestBoundsGivePartialNotRetried_TS03_39(t *testing.T) {
 
 	t.Run("files bound", func(t *testing.T) {
 		idx, err := newIndex(ws, Options{
-			TempDir:      t.TempDir(),
-			Ignore:       tools.NoGlobalExcludes(),
-			DisableCtags: true,
-			MaxFiles:     5, // only 5 files allowed
+			TempDir:  t.TempDir(),
+			Ignore:   tools.NoGlobalExcludes(),
+			MaxFiles: 5, // only 5 files allowed
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -73,10 +72,9 @@ func TestBoundsGivePartialNotRetried_TS03_39(t *testing.T) {
 
 	t.Run("bytes bound", func(t *testing.T) {
 		idx, err := newIndex(ws, Options{
-			TempDir:      t.TempDir(),
-			Ignore:       tools.NoGlobalExcludes(),
-			DisableCtags: true,
-			MaxBytes:     100, // very small byte limit
+			TempDir:  t.TempDir(),
+			Ignore:   tools.NoGlobalExcludes(),
+			MaxBytes: 100, // very small byte limit
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -116,7 +114,6 @@ func TestBoundsGivePartialNotRetried_TS03_39(t *testing.T) {
 		idx, err := newIndex(ws, Options{
 			TempDir:      t.TempDir(),
 			Ignore:       tools.NoGlobalExcludes(),
-			DisableCtags: true,
 			MaxBuildTime: 1 * time.Nanosecond, // extremely short
 		})
 		if err != nil {
@@ -176,9 +173,8 @@ func TestCancelledBuildAbortsAndRebuilds_TS03_40(t *testing.T) {
 	blockCh := make(chan struct{})
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +182,7 @@ func TestCancelledBuildAbortsAndRebuilds_TS03_40(t *testing.T) {
 	defer idx.Close()
 
 	// Install a hook that blocks during outline processing.
-	idx.testOutlineHook = func(_ string, _ int, _ bool) {
+	idx.testOutlineHook = func(_ string, _ int) {
 		<-blockCh
 	}
 
@@ -259,9 +255,8 @@ func TestConcurrentQueries_TS03_56(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -329,9 +324,8 @@ func TestCloseWaitsAndDeletesAndIdempotent_TS03_57(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -433,9 +427,8 @@ func TestAfterCloseToolsRefuse_TS03_58(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -493,7 +486,7 @@ func TestAllNoCloserAndSweepAbandoned_TS03_59(t *testing.T) {
 	tls, err = tools.All(tools.Options{
 		Workspace: ws,
 		Ignore:    tools.NoGlobalExcludes(),
-		Symbols:   tools.SymbolOptions{DisableCtags: true},
+		Symbols:   tools.SymbolOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -533,9 +526,8 @@ func TestAllNoCloserAndSweepAbandoned_TS03_59(t *testing.T) {
 
 	// Build a new index (which triggers the sweep).
 	idx, err := newIndex(ws, Options{
-		TempDir:      tmpDir,
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: tmpDir,
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)

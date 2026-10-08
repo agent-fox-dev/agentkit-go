@@ -13,9 +13,6 @@ import (
 // Options configures the codesearch index.
 type Options struct {
 	Ignore       tools.IgnoreOptions
-	Env          []string
-	DisableCtags bool
-	Runner       func(ctx context.Context, args []string) ([]byte, error)
 	MaxFiles     int
 	MaxBytes     int64
 	MaxBuildTime time.Duration

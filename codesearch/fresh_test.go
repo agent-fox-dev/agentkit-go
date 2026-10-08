@@ -33,16 +33,15 @@ func TestInvalidateNonBlockingAndSafeOnClosed_TS03_15(t *testing.T) {
 	// --- Part 1: Invalidate returns immediately while a build is blocked ---
 	blockCh := make(chan struct{})
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Install a hook that blocks during outline processing.
-	idx.testOutlineHook = func(_ string, _ int, _ bool) {
+	idx.testOutlineHook = func(_ string, _ int) {
 		<-blockCh
 	}
 
@@ -51,12 +50,12 @@ func TestInvalidateNonBlockingAndSafeOnClosed_TS03_15(t *testing.T) {
 	// Start a code_search that will block during the build.
 	buildStarted := make(chan struct{}, 1)
 	origHook := idx.testOutlineHook
-	idx.testOutlineHook = func(root string, batchSize int, runner bool) {
+	idx.testOutlineHook = func(root string, batchSize int) {
 		select {
 		case buildStarted <- struct{}{}:
 		default:
 		}
-		origHook(root, batchSize, runner)
+		origHook(root, batchSize)
 	}
 
 	searchDone := make(chan struct{})
@@ -104,9 +103,8 @@ func TestInvalidateNonBlockingAndSafeOnClosed_TS03_15(t *testing.T) {
 
 	// --- Part 2: Invalidate does not panic on a closed index ---
 	idx2, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -131,9 +129,8 @@ func TestFreshnessAfterWriteAndEdit_TS03_41(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -229,9 +226,8 @@ func TestRevalidationSeesSameSizeEdit_TS03_42(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -317,9 +313,8 @@ func TestDirtyPathForcesRevalidation_TS03_43(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -411,9 +406,8 @@ func TestDirtyMarkDuringBuildSurvives_TS03_47(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -518,9 +512,8 @@ func TestNoInvalidateNeverRebuilds_TS03_48(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)

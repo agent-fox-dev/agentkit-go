@@ -250,10 +250,6 @@ func (rc *referenceCache) refresh(ctx context.Context) error {
 	}
 
 	// 6. Re-outline dirty non-Go files
-	var runner func(ctx context.Context, args []string) ([]byte, error)
-	if rc.ft != nil {
-		runner = rc.ft.outlineRunner()
-	}
 	for rel := range rc.dirtyPaths {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -270,10 +266,7 @@ func (rc *referenceCache) refresh(ctx context.Context) error {
 			continue
 		}
 		rc.files[rel] = true
-		ofile, err := outline.Outline(ctx, abs, nil, outline.Options{
-			Root:   rc.ws.Root,
-			Runner: runner,
-		})
+		ofile, err := outline.Outline(ctx, abs, nil, outline.Options{Root: rc.ws.Root})
 		if err == nil {
 			rc.outlines[rel] = &ofile
 		}

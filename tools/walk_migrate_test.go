@@ -475,50 +475,8 @@ func TestToolDescriptionsAndSchemasUnchanged_TS0163(t *testing.T) {
 	}
 }
 
-// TS-01-68: No default Runner is installed and the default tool set is unchanged.
-func TestNoDefaultRunnerInstalled_TS0168(t *testing.T) {
-	// Verify that no non-test code outside tools.CtagsRunner constructs an
-	// outline.Options with a Runner by searching the source files.
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fset := token.NewFileSet()
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		data, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		content := string(data)
-		// Check for Runner: in non-test code (outside CtagsRunner definition
-		// and the outline/symbol tools and reference cache that legitimately
-		// pass the runner).
-		if name != "ctags.go" && name != "outline_tool.go" && name != "symbol_tool.go" && name != "symbols.go" && name != "ref_cache.go" && strings.Contains(content, "Runner:") {
-			// Parse to make sure it's not a comment
-			f, perr := parser.ParseFile(fset, name, data, parser.ParseComments)
-			if perr != nil {
-				continue
-			}
-			// Check if Runner appears in non-comment code
-			ast.Inspect(f, func(n ast.Node) bool {
-				kv, ok := n.(*ast.KeyValueExpr)
-				if !ok {
-					return true
-				}
-				if ident, ok := kv.Key.(*ast.Ident); ok && ident.Name == "Runner" {
-					t.Errorf("found Runner: in non-test file %s at line %d",
-						name, fset.Position(kv.Pos()).Line)
-				}
-				return true
-			})
-			_ = f
-		}
-	}
-
+// TS-01-68: The default tool set is unchanged.
+func TestDefaultToolSetUnchanged_TS0168(t *testing.T) {
 	// Verify FileNavigationTools() returns the expected names
 	navTools := FileNavigationTools()
 	wantNav := []string{"list_files", "find_files", "search_files", "file_outline", "find_symbol", "find_references"}

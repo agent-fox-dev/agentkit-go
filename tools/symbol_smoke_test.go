@@ -8,9 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/tools"
@@ -30,15 +28,12 @@ func mkSmokeFile(t *testing.T, root, rel, content string) {
 	}
 }
 
-// smokeTools builds All() tools with DisableCtags and returns a map by name.
+// smokeTools builds All() tools and returns a map by name.
 func smokeTools(t *testing.T, root string, symOpts tools.SymbolOptions) map[string]core.Tool {
 	t.Helper()
 	ws, err := tools.NewWorkspace(root)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !symOpts.DisableCtags && symOpts.Runner == nil {
-		symOpts.DisableCtags = true
 	}
 	all, err := tools.All(tools.Options{
 		Workspace: ws,
@@ -120,7 +115,7 @@ func TestSmoke_OutlineThenReadRange_TS02_61(t *testing.T) {
 
 	mkSmokeFile(t, root, "internal/agentrun/phase.go", b.String())
 
-	tls := smokeTools(t, root, tools.SymbolOptions{DisableCtags: true})
+	tls := smokeTools(t, root, tools.SymbolOptions{})
 	foTool := tls["file_outline"]
 	rfTool := tls["read_file"]
 
@@ -191,7 +186,7 @@ func TestSmoke_ColdFindSymbolBuild_TS02_62(t *testing.T) {
 	mkSmokeFile(t, root, "util.py", "def run_task():\n    pass\n")
 	mkSmokeFile(t, root, "ignored/skip.go", "package ignored\n\nfunc Run() {}\n")
 
-	tls := smokeTools(t, root, tools.SymbolOptions{DisableCtags: true})
+	tls := smokeTools(t, root, tools.SymbolOptions{})
 	fsTool := tls["find_symbol"]
 
 	// Cold call: builds the table.
@@ -259,7 +254,7 @@ func TestSmoke_EditVisibleToFindSymbol_TS02_63(t *testing.T) {
 
 	mkSmokeFile(t, root, "main.go", "package main\n\nfunc OldFunc() {}\n")
 
-	tls := smokeTools(t, root, tools.SymbolOptions{DisableCtags: true})
+	tls := smokeTools(t, root, tools.SymbolOptions{})
 	fsTool := tls["find_symbol"]
 	etTool := tls["edit_file"]
 
@@ -316,7 +311,7 @@ func TestSmoke_NewFileAndGitignoreEscalation_TS02_64(t *testing.T) {
 	mkSmokeFile(t, root, "main.go", "package main\n\nfunc Main() {}\n")
 	mkSmokeFile(t, root, "other.go", "package main\n\nfunc Other() {}\n")
 
-	tls := smokeTools(t, root, tools.SymbolOptions{DisableCtags: true})
+	tls := smokeTools(t, root, tools.SymbolOptions{})
 	fsTool := tls["find_symbol"]
 	wtTool := tls["write_file"]
 
@@ -384,7 +379,7 @@ func TestSmoke_ShellDeleteVisibleToFindSymbol_TS02_65(t *testing.T) {
 	mkSmokeFile(t, root, "main.go", "package main\n\nfunc Main() {}\n")
 	mkSmokeFile(t, root, "victim.go", "package main\n\nfunc Victim() {}\n")
 
-	tls := smokeTools(t, root, tools.SymbolOptions{DisableCtags: true})
+	tls := smokeTools(t, root, tools.SymbolOptions{})
 	fsTool := tls["find_symbol"]
 	execTool := tls["execute"]
 
@@ -451,8 +446,7 @@ func TestSmoke_BoundStopsBuildLaterCallsFinish_TS02_66(t *testing.T) {
 	}
 
 	tls := smokeTools(t, root, tools.SymbolOptions{
-		DisableCtags: true,
-		MaxFiles:     10,
+		MaxFiles: 10,
 	})
 	fsTool := tls["find_symbol"]
 
@@ -515,155 +509,5 @@ func TestSmoke_BoundStopsBuildLaterCallsFinish_TS02_66(t *testing.T) {
 	finalFiles, _ := finalResult.Data["files_indexed"].(int)
 	if finalFiles != 30 {
 		t.Fatalf("final files_indexed=%d, want 30", finalFiles)
-	}
-
-	// --- Time-bound variant ---
-	root2 := t.TempDir()
-	for i := 0; i < 10; i++ {
-		mkSmokeFile(t, root2, fmt.Sprintf("f%03d.py", i),
-			fmt.Sprintf("def func_%03d():\n    pass\n", i))
-	}
-
-	// Use a blocking runner that releases after a short delay.
-	var mu sync.Mutex
-	callCount := 0
-	blockingRunner := func(ctx context.Context, args []string) ([]byte, error) {
-		mu.Lock()
-		callCount++
-		c := callCount
-		mu.Unlock()
-		if c <= 2 {
-			// Block until context is cancelled (simulating slow ctags).
-			<-ctx.Done()
-			return nil, ctx.Err()
-		}
-		// After the first few calls, return quickly.
-		return []byte(""), nil
-	}
-
-	tls2 := smokeTools(t, root2, tools.SymbolOptions{
-		Runner:      blockingRunner,
-		MaxDuration: 200 * time.Millisecond,
-	})
-	fsTool2 := tls2["find_symbol"]
-
-	r := fsTool2.Execute(context.Background(), json.RawMessage(`{"name":"func"}`))
-	if !r.OK {
-		t.Fatalf("time-bound call failed: error=%q detail=%q", r.Error, r.Detail)
-	}
-	partialTime, _ := r.Data["partial"].(bool)
-	if !partialTime {
-		t.Fatal("time-bound call: expected partial=true")
-	}
-	reasonTime, _ := r.Data["partial_reason"].(string)
-	if reasonTime != "time" {
-		t.Fatalf("time-bound call: partial_reason=%q, want 'time'", reasonTime)
-	}
-}
-
-// ---------- TS-02-67 ----------
-
-// TestSmoke_AbandonedCallWhileBuildRuns_TS02_67 verifies 02-PATH-7:
-// A call blocked behind a long build is abandoned while the build continues.
-func TestSmoke_AbandonedCallWhileBuildRuns_TS02_67(t *testing.T) {
-	root := t.TempDir()
-
-	for i := 0; i < 5; i++ {
-		mkSmokeFile(t, root, fmt.Sprintf("f%d.py", i),
-			fmt.Sprintf("def func_%d():\n    pass\n", i))
-	}
-
-	// A blocking runner that holds the first build open.
-	blockCh := make(chan struct{})
-	buildStarted := make(chan struct{}, 1)
-
-	blockingRunner := func(ctx context.Context, args []string) ([]byte, error) {
-		select {
-		case buildStarted <- struct{}{}:
-		default:
-		}
-		select {
-		case <-blockCh:
-			return []byte(""), nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-
-	tls := smokeTools(t, root, tools.SymbolOptions{
-		Runner:      blockingRunner,
-		MaxDuration: 30 * time.Second,
-	})
-	fsTool := tls["find_symbol"]
-
-	// Start the first find_symbol call in a goroutine (it will block on the runner).
-	var firstResult core.ToolResult
-	firstDone := make(chan struct{})
-	go func() {
-		firstResult = fsTool.Execute(context.Background(), json.RawMessage(`{"name":"func"}`))
-		close(firstDone)
-	}()
-
-	// Wait for the build to start.
-	select {
-	case <-buildStarted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("build did not start within 5s")
-	}
-
-	// Start a second find_symbol call with a context that will be cancelled.
-	ctx2, cancel2 := context.WithCancel(context.Background())
-	var secondResult core.ToolResult
-	secondDone := make(chan struct{})
-	go func() {
-		secondResult = fsTool.Execute(ctx2, json.RawMessage(`{"name":"func"}`))
-		close(secondDone)
-	}()
-
-	// Give the second call time to reach the lock wait.
-	time.Sleep(50 * time.Millisecond)
-
-	// Cancel the second call's context.
-	cancel2()
-
-	// The second call should return before the build is released.
-	select {
-	case <-secondDone:
-		// Good — it returned before the build finished.
-	case <-time.After(2 * time.Second):
-		t.Fatal("second call did not return after cancel within 2s")
-	}
-
-	// Verify the second call returned aborted.
-	if secondResult.OK {
-		t.Fatal("second call: expected OK=false")
-	}
-	if secondResult.Error != "aborted" {
-		t.Fatalf("second call: error=%q, want aborted", secondResult.Error)
-	}
-	if secondResult.Detail != "Operation aborted" {
-		t.Fatalf("second call: detail=%q, want 'Operation aborted'", secondResult.Detail)
-	}
-
-	// The first build should still be blocked.
-	select {
-	case <-firstDone:
-		t.Fatal("first call should still be blocked")
-	default:
-		// Good.
-	}
-
-	// Release the build.
-	close(blockCh)
-
-	// The first build should complete successfully.
-	select {
-	case <-firstDone:
-	case <-time.After(10 * time.Second):
-		t.Fatal("first call did not complete within 10s")
-	}
-
-	if !firstResult.OK {
-		t.Fatalf("first call: expected OK=true, got error=%s detail=%s", firstResult.Error, firstResult.Detail)
 	}
 }

@@ -43,9 +43,8 @@ func TestResultsScoreOrderedAndCapsHold_TS03_24(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -188,9 +187,8 @@ func (Server) Pause() {}
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -284,8 +282,8 @@ func (Server) Pause() {}
 	}
 }
 
-// TS-03-26: The first line states files, index size, symbol sources, ctags
-// state, partial and dirty notes.
+// TS-03-26: The first line states files, index size, symbol sources,
+// partial and dirty notes.
 func TestFirstLineContent_TS03_26(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\nfunc main() {}\n")
@@ -296,11 +294,10 @@ func TestFirstLineContent_TS03_26(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Run("complete with ctags disabled", func(t *testing.T) {
+	t.Run("complete", func(t *testing.T) {
 		idx, err := newIndex(ws, Options{
-			TempDir:      t.TempDir(),
-			Ignore:       tools.NoGlobalExcludes(),
-			DisableCtags: true,
+			TempDir: t.TempDir(),
+			Ignore:  tools.NoGlobalExcludes(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -319,11 +316,6 @@ func TestFirstLineContent_TS03_26(t *testing.T) {
 		// Should state number of files.
 		if !regexp.MustCompile(`\d+ file`).MatchString(firstLine) {
 			t.Errorf("first line should state file count: %q", firstLine)
-		}
-
-		// Should mention ctags unavailable (since DisableCtags is set).
-		if !strings.Contains(strings.ToLower(firstLine), "ctags") {
-			t.Errorf("first line should mention ctags: %q", firstLine)
 		}
 
 		// Should NOT mention partial or dirty.
@@ -335,39 +327,6 @@ func TestFirstLineContent_TS03_26(t *testing.T) {
 		}
 	})
 
-	t.Run("with fake runner (ctags available)", func(t *testing.T) {
-		fakeRunner := func(_ context.Context, _ []string) ([]byte, error) {
-			return []byte(""), nil
-		}
-		idx, err := newIndex(ws, Options{
-			TempDir: t.TempDir(),
-			Ignore:  tools.NoGlobalExcludes(),
-			Runner:  fakeRunner,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer idx.Close()
-
-		tool := idx.Tools()[0]
-		in, _ := json.Marshal(map[string]any{"query": "main"})
-		r := tool.Execute(context.Background(), in)
-		if !r.OK {
-			t.Fatalf("expected OK, got: %s: %s", r.Error, r.Detail)
-		}
-
-		firstLine := strings.SplitN(r.Text, "\n", 2)[0]
-
-		// Should state number of files.
-		if !regexp.MustCompile(`\d+ file`).MatchString(firstLine) {
-			t.Errorf("first line should state file count: %q", firstLine)
-		}
-
-		// Should mention symbol sources (go/ast at minimum).
-		if !strings.Contains(firstLine, "go/ast") {
-			t.Logf("first line: %q (go/ast may not appear if no Go files matched)", firstLine)
-		}
-	})
 }
 
 // TS-03-27: A query with no match is a successful result that says so and
@@ -382,9 +341,8 @@ func TestNoMatchIsSuccessful_TS03_27(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -436,9 +394,8 @@ func TestCapMarkerAndTruncatedByLines_TS03_28(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -509,9 +466,8 @@ func TestByteLimitDropsFiles_TS03_29(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -566,9 +522,8 @@ func TestByteLimitDropsFiles_TS03_29(t *testing.T) {
 	}
 
 	idx2, err := newIndex(ws2, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -611,9 +566,8 @@ func TestDataCarriesAllFields_TS03_30(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -635,7 +589,7 @@ func TestDataCarriesAllFields_TS03_30(t *testing.T) {
 	// Check all required top-level keys.
 	requiredKeys := []string{
 		"files", "truncated", "note", "partial", "symbol_sources",
-		"ctags_available", "files_indexed", "dirty_files", "skipped",
+		"files_indexed", "dirty_files", "skipped",
 	}
 	for _, k := range requiredKeys {
 		if _, ok := d[k]; !ok {
@@ -698,9 +652,8 @@ func TestPropertyMarkersAndByteLimit_TS03_31(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -785,81 +738,6 @@ func checkMarkersValid(t *testing.T, text string, _ interface{}, _ context.Conte
 				}
 			}
 		}
-	}
-}
-
-// TS-03-36: Without ctags code_search works, says so in the first line, and
-// Go files keep symbols.
-func TestNoCtagsCodeSearchWorks_TS03_36(t *testing.T) {
-	root := t.TempDir()
-
-	// Go file declaring func Runner.
-	mkFile(t, root, "decl.go", "package main\n\nfunc Runner() {\n\t// body\n}\n")
-	// Python file with a column-0 def.
-	mkFile(t, root, "lib.py", "def helper():\n    pass\n")
-
-	ws, err := tools.NewWorkspace(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Use a runner that returns ErrCtagsUnavailable.
-	idx, err := newIndex(ws, Options{
-		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
-		Runner: func(_ context.Context, _ []string) ([]byte, error) {
-			return nil, tools.ErrCtagsUnavailable
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer idx.Close()
-
-	tool := idx.Tools()[0]
-	ctx := context.Background()
-
-	in, _ := json.Marshal(map[string]any{"query": "sym:Runner"})
-	r := tool.Execute(ctx, in)
-
-	// Should be successful.
-	if !r.OK {
-		t.Fatalf("expected OK result, got error: %s: %s", r.Error, r.Detail)
-	}
-
-	// First line should mention ctags unavailable.
-	firstLine := strings.SplitN(r.Text, "\n", 2)[0]
-	if !strings.Contains(strings.ToLower(firstLine), "ctags") {
-		t.Errorf("first line should mention ctags: %q", firstLine)
-	}
-
-	// First line should mention column-0 declarations.
-	if !strings.Contains(firstLine, "column-0") {
-		t.Errorf("first line should mention 'column-0': %q", firstLine)
-	}
-
-	// Data.ctags_available should be false.
-	if d := r.Data; d != nil {
-		if ca, ok := d["ctags_available"]; ok {
-			if ca != false {
-				t.Errorf("ctags_available = %v, want false", ca)
-			}
-		} else {
-			t.Error("Data missing ctags_available")
-		}
-	}
-
-	// The Go declaration should be found through its go/ast symbol section.
-	paths := getResultFilePaths(r)
-	found := false
-	for _, p := range paths {
-		if p == "decl.go" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("decl.go should be found through go/ast symbol section")
 	}
 }
 

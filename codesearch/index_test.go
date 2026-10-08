@@ -33,21 +33,12 @@ func TestNewReturnsIndexWithoutSideEffects_TS03_1(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
-	var runnerCalls int
-	fakeRunner := func(_ context.Context, _ []string) ([]byte, error) {
-		runnerCalls++
-		return nil, nil
-	}
-
 	// Settle goroutine count.
 	runtime.Gosched()
 	time.Sleep(10 * time.Millisecond)
 	g0 := runtime.NumGoroutine()
 
-	idx, err := newIndex(ws, Options{
-		TempDir: tmpDir,
-		Runner:  fakeRunner,
-	})
+	idx, err := newIndex(ws, Options{TempDir: tmpDir})
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
@@ -64,10 +55,6 @@ func TestNewReturnsIndexWithoutSideEffects_TS03_1(t *testing.T) {
 	// Allow a small margin for runtime fluctuations.
 	if g1 > g0+2 {
 		t.Errorf("goroutine count increased from %d to %d", g0, g1)
-	}
-
-	if runnerCalls != 0 {
-		t.Errorf("runner was called %d times, want 0", runnerCalls)
 	}
 
 	// TempDir should still be empty.
@@ -96,8 +83,7 @@ func TestNewNilWorkspaceReturnsError_TS03_2(t *testing.T) {
 	}
 }
 
-// TS-03-3: Zero or negative limits resolve to defaults and nil Env resolves
-// to the reduced environment.
+// TS-03-3: Zero or negative limits resolve to defaults.
 func TestOptionsDefaults_TS03_3(t *testing.T) {
 	// Zero values.
 	o := normalizeOptions(Options{})
@@ -112,10 +98,6 @@ func TestOptionsDefaults_TS03_3(t *testing.T) {
 	}
 	if o.TempDir != os.TempDir() {
 		t.Errorf("TempDir = %q, want %q", o.TempDir, os.TempDir())
-	}
-	wantEnv := tools.ReducedEnv(nil)
-	if len(o.Env) != len(wantEnv) {
-		t.Errorf("Env length = %d, want %d", len(o.Env), len(wantEnv))
 	}
 
 	// Negative values.
@@ -143,12 +125,6 @@ func TestOptionsDefaults_TS03_3(t *testing.T) {
 	}
 	if o.TempDir != "/custom" {
 		t.Errorf("positive TempDir = %q, want /custom", o.TempDir)
-	}
-
-	// Explicit Env is kept.
-	o = normalizeOptions(Options{Env: []string{"FOO=bar"}})
-	if len(o.Env) != 1 || o.Env[0] != "FOO=bar" {
-		t.Errorf("explicit Env = %v, want [FOO=bar]", o.Env)
 	}
 }
 
@@ -222,9 +198,8 @@ func TestIndexedFileSetEqualsWalkSet_TS03_33(t *testing.T) {
 	// Build the index.
 	tmpDir := t.TempDir()
 	idx, err := newIndex(ws, Options{
-		TempDir:      tmpDir,
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: tmpDir,
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -290,9 +265,8 @@ func TestSkippedFilesCountedAndNoCtagsProcess_TS03_34(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	idx, err := newIndex(ws, Options{
-		TempDir:      tmpDir,
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: tmpDir,
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -311,17 +285,10 @@ func TestSkippedFilesCountedAndNoCtagsProcess_TS03_34(t *testing.T) {
 	if stats.OversizedSkipped != 1 {
 		t.Errorf("OversizedSkipped = %d, want 1", stats.OversizedSkipped)
 	}
-
-	// Verify no gitindex package is imported (checked by policy_test.go).
-	// Here we just verify the builder was configured with empty CTagsPath
-	// by checking that no ctags process was spawned.
-	if stats.CtagsProcessSpawned {
-		t.Error("zoekt should not have spawned a ctags process")
-	}
 }
 
 // TS-03-35: Symbols come from OutlineMany in batches of at most 100 with the
-// right Root and Runner selection.
+// right Root.
 func TestOutlineSymbolBatching_TS03_35(t *testing.T) {
 	root := t.TempDir()
 
@@ -340,20 +307,13 @@ func TestOutlineSymbolBatching_TS03_35(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Test 1: With a recording fake Runner, verify batching and root.
 	var batchSizes []int
 	var batchRoots []string
-	var runnerUsedInBatch []bool
-
-	fakeRunner := func(_ context.Context, _ []string) ([]byte, error) {
-		return nil, fmt.Errorf("fake runner: not implemented")
-	}
 
 	tmpDir := t.TempDir()
 	idx, err := newIndex(ws, Options{
 		TempDir: tmpDir,
 		Ignore:  tools.NoGlobalExcludes(),
-		Runner:  fakeRunner,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -361,10 +321,9 @@ func TestOutlineSymbolBatching_TS03_35(t *testing.T) {
 	defer idx.Close()
 
 	// Record the outline options used.
-	idx.testOutlineHook = func(root string, batchSize int, runner bool) {
+	idx.testOutlineHook = func(root string, batchSize int) {
 		batchRoots = append(batchRoots, root)
 		batchSizes = append(batchSizes, batchSize)
-		runnerUsedInBatch = append(runnerUsedInBatch, runner)
 	}
 
 	err = idx.Build(context.Background())
@@ -398,40 +357,6 @@ func TestOutlineSymbolBatching_TS03_35(t *testing.T) {
 		}
 	}
 
-	// Verify runner was used (Options.Runner was set).
-	for i, used := range runnerUsedInBatch {
-		if !used {
-			t.Errorf("batch %d: runner should be non-nil when Options.Runner is set", i)
-		}
-	}
-
-	// Test 2: With DisableCtags, runner should be nil.
-	tmpDir2 := t.TempDir()
-	idx2, err := newIndex(ws, Options{
-		TempDir:      tmpDir2,
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer idx2.Close()
-
-	var disabledRunnerUsed bool
-	idx2.testOutlineHook = func(_ string, _ int, runner bool) {
-		if runner {
-			disabledRunnerUsed = true
-		}
-	}
-
-	err = idx2.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if disabledRunnerUsed {
-		t.Error("with DisableCtags, runner should be nil")
-	}
 }
 
 // TS-03-37: Shards live in <TempDir>/agentkit-codesearch-<hash>/<run id>/
@@ -448,13 +373,13 @@ func TestShardDirectoryStructure_TS03_37(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Build two indexes over the same root.
-	idx1, err := newIndex(ws, Options{TempDir: tmpDir, Ignore: tools.NoGlobalExcludes(), DisableCtags: true})
+	idx1, err := newIndex(ws, Options{TempDir: tmpDir, Ignore: tools.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer idx1.Close()
 
-	idx2, err := newIndex(ws, Options{TempDir: tmpDir, Ignore: tools.NoGlobalExcludes(), DisableCtags: true})
+	idx2, err := newIndex(ws, Options{TempDir: tmpDir, Ignore: tools.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -573,9 +498,8 @@ func TestBuildSweepsOldSiblings_TS03_38(t *testing.T) {
 
 	// Build the index.
 	idx, err := newIndex(ws, Options{
-		TempDir:      tmpDir,
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: tmpDir,
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)

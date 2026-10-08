@@ -19,9 +19,8 @@ func builtIndex(t *testing.T, tempDir string, ws *tools.Workspace) (*Index, func
 	t.Helper()
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      tempDir,
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: tempDir,
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)

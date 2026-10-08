@@ -22,25 +22,6 @@ func TestLangForExtIsTheTableLookup(t *testing.T) {
 	}
 }
 
-// Issue #73 §3: the table covers the programming languages universal ctags
-// has a parser for, so ctags is asked about them instead of every such file
-// being returned as `none` unread.
-func TestTheTableCoversCtagsLanguages(t *testing.T) {
-	for ext, want := range map[string]string{
-		".ex": LangElixir, ".exs": LangElixir, ".ml": LangOCaml, ".clj": LangClojure,
-		".mm": LangObjectiveC, ".proto": LangProtobuf, ".sql": LangSQL, ".tf": LangTerraform,
-		".erl": LangErlang, ".jl": LangJulia, ".elm": LangElm, ".ps1": LangPowerShell,
-		".thrift": LangThrift, ".f90": LangFortran, ".ads": LangAda, ".cu": LangCUDA,
-		".gd": LangGDScript, ".d": LangD, ".r": LangR,
-		// Left out on purpose: ambiguous, or markup.
-		".m": "", ".v": "", ".md": "", ".json": "",
-	} {
-		if got := LangForExt(ext); got != want {
-			t.Errorf("LangForExt(%q) = %q, want %q", ext, got, want)
-		}
-	}
-}
-
 // Issue #73 §5: a `.h` header is C unless its content is C++, so a C++
 // project's headers are not labelled C.
 func TestLangForTellsACppHeaderFromAC(t *testing.T) {

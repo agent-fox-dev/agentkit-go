@@ -49,7 +49,6 @@ go run ./search --dir ../.. --json 'sym:Build'
 | `--kind` | | With `--symbol`: only this kind (`func`, `method`, `type`, …) |
 | `--exact` | false | With `--symbol`: exact name rather than prefix |
 | `--json` | false | Print the result's structured `Data` rather than its `Text` |
-| `--no-ctags` | false | Never run universal-ctags; use the built-in outline backends |
 
 Positional arguments are queries in zoekt syntax. The tool description lists
 the forms a model is shown:

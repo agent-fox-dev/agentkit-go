@@ -37,9 +37,6 @@ func makeFindSymbolTool(t *testing.T, root string, symOpts SymbolOptions) func(c
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !symOpts.DisableCtags && symOpts.Runner == nil {
-		symOpts.DisableCtags = true
-	}
 	ft := newFileTools(Options{
 		Workspace: ws,
 		Env:       os.Environ(),
@@ -57,9 +54,6 @@ func makeFindSymbolToolWithFT(t *testing.T, root string, symOpts SymbolOptions) 
 	ws, err := NewWorkspace(root)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !symOpts.DisableCtags && symOpts.Runner == nil {
-		symOpts.DisableCtags = true
 	}
 	ft := newFileTools(Options{
 		Workspace: ws,
@@ -130,7 +124,7 @@ func TestIndexedFileSetEqualsSearchFiles_TS02_32(t *testing.T) {
 	sort.Strings(searchFiles)
 
 	// Build the symbol table via find_symbol.
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 	r := exec(ctx, json.RawMessage(`{"name":"anything"}`))
 	if !r.OK {
 		t.Fatalf("find_symbol failed: error=%s detail=%s", r.Error, r.Detail)
@@ -174,32 +168,8 @@ func TestOutlineManyBatching_TS02_33(t *testing.T) {
 		mkSymFile(t, root, name, content)
 	}
 
-	// Track batch sizes via a recording runner.
-	var mu sync.Mutex
-	var batchSizes []int
-
-	runner := func(ctx context.Context, args []string) ([]byte, error) {
-		// Count how many --input-encoding-... or file args there are.
-		// For Go files, outline uses go/ast, so the runner won't be called.
-		// We need non-Go files to exercise the runner batching.
-		mu.Lock()
-		// Count the number of file arguments (those that don't start with --)
-		fileCount := 0
-		for _, a := range args {
-			if !strings.HasPrefix(a, "-") {
-				fileCount++
-			}
-		}
-		batchSizes = append(batchSizes, fileCount)
-		mu.Unlock()
-		return nil, fmt.Errorf("fake runner")
-	}
-	_ = runner
-
-	// For Go files, outline uses go/ast directly, so we can't observe batching
-	// through the runner. Instead, we verify the symbol table's internal batching
-	// by checking that all 250 files are indexed.
-	exec := makeFindSymbolTool(t, root, SymbolOptions{DisableCtags: true})
+	// All 250 files are indexed across the batches.
+	exec := makeFindSymbolTool(t, root, SymbolOptions{})
 	r := exec(context.Background(), json.RawMessage(`{"name":"F"}`))
 	if !r.OK {
 		t.Fatalf("find_symbol failed: error=%s detail=%s", r.Error, r.Detail)
@@ -211,29 +181,20 @@ func TestOutlineManyBatching_TS02_33(t *testing.T) {
 	}
 }
 
-// TS-02-33 variant with non-Go files to verify runner batching
+// TS-02-33 variant: the symbol table outlines in batches of at most 100
 func TestOutlineManyBatchingNonGo_TS02_33_variant(t *testing.T) {
 	root := t.TempDir()
 
-	// Create 250 Python files to exercise the runner path.
+	// Create 250 Python files.
 	for i := 0; i < 250; i++ {
 		name := fmt.Sprintf("f%03d.py", i)
 		content := fmt.Sprintf("def func_%03d():\n    pass\n", i)
 		mkSymFile(t, root, name, content)
 	}
 
-	var mu sync.Mutex
-	var callCount int
-
-	runner := func(ctx context.Context, args []string) ([]byte, error) {
-		mu.Lock()
-		callCount++
-		mu.Unlock()
-		// Return empty output so outline falls back to heuristic.
-		return []byte(""), nil
-	}
-
-	exec := makeFindSymbolTool(t, root, SymbolOptions{Runner: runner})
+	exec, ft := makeFindSymbolToolWithFT(t, root, SymbolOptions{})
+	batches := 0
+	ft.testOutlineHook = func(context.Context) { batches++ }
 	r := exec(context.Background(), json.RawMessage(`{"name":"func"}`))
 	if !r.OK {
 		t.Fatalf("find_symbol failed: error=%s detail=%s", r.Error, r.Detail)
@@ -245,15 +206,8 @@ func TestOutlineManyBatchingNonGo_TS02_33_variant(t *testing.T) {
 	}
 
 	// The symbol table batches at 100 files per OutlineMany call.
-	// With 250 files, we expect at least 3 OutlineMany calls.
-	// The runner may be called multiple times per OutlineMany call
-	// (outline's internal batching), but the total should be >= 3.
-	mu.Lock()
-	cc := callCount
-	mu.Unlock()
-	// We just verify the runner was called (non-Go files go through it).
-	if cc == 0 {
-		t.Fatal("runner was never called for non-Go files")
+	if batches != 3 {
+		t.Fatalf("outline batches = %d, want 3 for 250 files", batches)
 	}
 }
 
@@ -270,8 +224,7 @@ func TestMaxFilesBound_TS02_34(t *testing.T) {
 
 	// Scaled-down variant: MaxFiles=25
 	exec := makeFindSymbolTool(t, root, SymbolOptions{
-		DisableCtags: true,
-		MaxFiles:     25,
+		MaxFiles: 25,
 	})
 	r := exec(context.Background(), json.RawMessage(`{"name":"F"}`))
 	if !r.OK {
@@ -309,8 +262,7 @@ func TestMaxFilesBound_TS02_34(t *testing.T) {
 		mkSymFile(t, root2, name, content)
 	}
 	exec2 := makeFindSymbolTool(t, root2, SymbolOptions{
-		DisableCtags: true,
-		MaxFiles:     25,
+		MaxFiles: 25,
 	})
 	r2 := exec2(context.Background(), json.RawMessage(`{"name":"G"}`))
 	if !r2.OK {
@@ -344,8 +296,7 @@ func TestMaxFilesBoundLarge_TS02_34_large(t *testing.T) {
 	}
 
 	exec := makeFindSymbolTool(t, root, SymbolOptions{
-		DisableCtags: true,
-		MaxFiles:     0, // should default to 50000
+		MaxFiles: 0, // should default to 50000
 	})
 
 	start := time.Now()
@@ -376,11 +327,10 @@ func TestMaxFilesBoundLarge_TS02_34_large(t *testing.T) {
 	}
 }
 
-// TS-02-35: The MaxDuration bound kills a stuck runner and returns partial with reason time
+// TS-02-35: The MaxDuration bound stops a stuck outline and returns partial with reason time
 func TestMaxDurationBound_TS02_35(t *testing.T) {
 	root := t.TempDir()
 
-	// Create some Python files so the runner is invoked.
 	for i := 0; i < 20; i++ {
 		name := fmt.Sprintf("f%03d.py", i)
 		content := fmt.Sprintf("def func_%03d():\n    pass\n", i)
@@ -389,17 +339,12 @@ func TestMaxDurationBound_TS02_35(t *testing.T) {
 
 	var cancelledCtx atomic.Bool
 
-	// A runner that blocks until its context is cancelled.
-	blockingRunner := func(ctx context.Context, args []string) ([]byte, error) {
+	exec, ft := makeFindSymbolToolWithFT(t, root, SymbolOptions{MaxDuration: 200 * time.Millisecond})
+	// An outline that blocks until its context is cancelled.
+	ft.testOutlineHook = func(ctx context.Context) {
 		<-ctx.Done()
 		cancelledCtx.Store(true)
-		return nil, ctx.Err()
 	}
-
-	exec := makeFindSymbolTool(t, root, SymbolOptions{
-		Runner:      blockingRunner,
-		MaxDuration: 200 * time.Millisecond,
-	})
 
 	start := time.Now()
 	r := exec(context.Background(), json.RawMessage(`{"name":"func"}`))
@@ -441,8 +386,7 @@ func TestMaxDurationZeroDefault_TS02_35_default(t *testing.T) {
 	mkSymFile(t, root, "a.go", "package main\n\nfunc A() {}\n")
 
 	exec := makeFindSymbolTool(t, root, SymbolOptions{
-		DisableCtags: true,
-		MaxDuration:  0, // should default to 2s
+		MaxDuration: 0, // should default to 2s
 	})
 
 	// This should complete quickly since there's only one file.
@@ -470,8 +414,7 @@ func TestPartialResultMarker_TS02_36(t *testing.T) {
 	}
 
 	exec := makeFindSymbolTool(t, root, SymbolOptions{
-		DisableCtags: true,
-		MaxFiles:     5,
+		MaxFiles: 5,
 	})
 	r := exec(context.Background(), json.RawMessage(`{"name":"F"}`))
 	if !r.OK {
@@ -528,7 +471,7 @@ func TestRepeatedCallsAfterPartial_TS02_37(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true, MaxFiles: 15},
+		Symbols:   SymbolOptions{MaxFiles: 15},
 	}.withDefaults())
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
@@ -620,7 +563,7 @@ func TestPathScopedPruning_TS02_38(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
@@ -660,125 +603,6 @@ func TestPathScopedPruning_TS02_38(t *testing.T) {
 	}
 }
 
-// TS-02-53: Options.Symbols has the documented fields and DisableCtags/Runner select the runner
-func TestSymbolOptionsFields_TS02_53(t *testing.T) {
-	root := t.TempDir()
-	mkSymFile(t, root, "mod.py", "def hello():\n    pass\n")
-	mkSymFile(t, root, "a.go", "package main\n\nfunc Hello() {}\n")
-
-	// Verify the type has the documented fields.
-	var opts SymbolOptions
-	opts.MaxFiles = 100
-	opts.MaxDuration = 5 * time.Second
-	opts.DisableCtags = true
-	opts.Runner = func(ctx context.Context, args []string) ([]byte, error) {
-		return nil, nil
-	}
-
-	// Test 1: DisableCtags=true, no Runner → runner is nil, CtagsRunner not constructed.
-	t.Run("disable_ctags", func(t *testing.T) {
-		ws, err := NewWorkspace(root)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ft := newFileTools(Options{
-			Workspace: ws,
-			Env:       os.Environ(),
-			Ignore:    NoGlobalExcludes(),
-			Symbols:   SymbolOptions{DisableCtags: true},
-		}.withDefaults())
-
-		r := ft.outlineRunner()
-		if r != nil {
-			t.Fatal("with DisableCtags, runner should be nil")
-		}
-
-		// file_outline should work (uses go/ast for Go files).
-		outlineTool := ft.fileOutlineTool()
-		res := outlineTool.Execute(context.Background(), json.RawMessage(`{"path":"a.go"}`))
-		if !res.OK {
-			t.Fatalf("file_outline failed: %s %s", res.Error, res.Detail)
-		}
-
-		// find_symbol should work.
-		findTool := ft.findSymbolTool()
-		res2 := findTool.Execute(context.Background(), json.RawMessage(`{"name":"Hello"}`))
-		if !res2.OK {
-			t.Fatalf("find_symbol failed: %s %s", res2.Error, res2.Detail)
-		}
-	})
-
-	// Test 2: Non-nil Runner is used by both tools.
-	t.Run("custom_runner", func(t *testing.T) {
-		var runnerCalled atomic.Int32
-		customRunner := func(ctx context.Context, args []string) ([]byte, error) {
-			runnerCalled.Add(1)
-			return []byte(""), nil
-		}
-
-		ws, err := NewWorkspace(root)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ft := newFileTools(Options{
-			Workspace: ws,
-			Env:       os.Environ(),
-			Ignore:    NoGlobalExcludes(),
-			Symbols:   SymbolOptions{Runner: customRunner},
-		}.withDefaults())
-
-		r := ft.outlineRunner()
-		if r == nil {
-			t.Fatal("with custom Runner, outlineRunner should be non-nil")
-		}
-
-		// file_outline on a Python file should use the custom runner.
-		outlineTool := ft.fileOutlineTool()
-		res := outlineTool.Execute(context.Background(), json.RawMessage(`{"path":"mod.py"}`))
-		if !res.OK {
-			t.Fatalf("file_outline failed: %s %s", res.Error, res.Detail)
-		}
-		if runnerCalled.Load() == 0 {
-			t.Fatal("custom runner should have been called by file_outline")
-		}
-
-		// find_symbol should also use the custom runner.
-		before := runnerCalled.Load()
-		findTool := ft.findSymbolTool()
-		res2 := findTool.Execute(context.Background(), json.RawMessage(`{"name":"hello"}`))
-		if !res2.OK {
-			t.Fatalf("find_symbol failed: %s %s", res2.Error, res2.Detail)
-		}
-		if runnerCalled.Load() <= before {
-			t.Fatal("custom runner should have been called by find_symbol")
-		}
-	})
-
-	// Test 3: Both DisableCtags and Runner set → runner is nil.
-	t.Run("both_set", func(t *testing.T) {
-		ws, err := NewWorkspace(root)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ft := newFileTools(Options{
-			Workspace: ws,
-			Env:       os.Environ(),
-			Ignore:    NoGlobalExcludes(),
-			Symbols: SymbolOptions{
-				DisableCtags: true,
-				Runner: func(ctx context.Context, args []string) ([]byte, error) {
-					return nil, nil
-				},
-			},
-		}.withDefaults())
-
-		r := ft.outlineRunner()
-		if r != nil {
-			t.Fatal("with both DisableCtags and Runner, runner should be nil (DisableCtags wins)")
-		}
-	})
-}
-
 // TS-02-57: Every table walk uses the memoized Options.Ignore from fileTools
 func TestTableWalkUsesMemoizedIgnore_TS02_57(t *testing.T) {
 	root := t.TempDir()
@@ -811,7 +635,7 @@ func TestTableWalkUsesMemoizedIgnore_TS02_57(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    igOpts,
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 
 	// Call find_symbol twice to trigger build and a second pass.
@@ -874,7 +698,7 @@ func TestRevalidationReoutlinesChangedNewRacyDropsUnseen_TS02_44(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
@@ -1046,7 +870,7 @@ func TestWholeTableMarkClearedOnlyByFullPass_TS02_45(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
@@ -1205,7 +1029,7 @@ func TestMarkDuringPassNeverLost_TS02_46(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true, MaxDuration: 10 * time.Second},
+		Symbols:   SymbolOptions{MaxDuration: 10 * time.Second},
 	}.withDefaults())
 	tl := ft.findSymbolTool()
 	exec := tl.Execute

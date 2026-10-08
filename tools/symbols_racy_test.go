@@ -23,7 +23,7 @@ func racyFixture(t *testing.T, content string) (ft *fileTools, root string, inde
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 	r := ft.findSymbolTool().Execute(context.Background(), json.RawMessage(`{"name":"func"}`))
 	if !r.OK {

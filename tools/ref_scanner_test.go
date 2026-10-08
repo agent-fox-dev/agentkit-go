@@ -147,6 +147,16 @@ func TestRefScanner_WholeWordBoundaries_TS_05_20(t *testing.T) {
 	}
 }
 
+// codeConfidence is the confidence of a hit outside comments and strings:
+// lexical where the language's grammar classifies the file, text in a build
+// without cgo.
+func codeConfidence(path string) string {
+	if _, ok := outline.CommentAndStringSpans(context.Background(), path, nil); ok {
+		return "lexical"
+	}
+	return "text"
+}
+
 // TS-05-21 (unit): Reference scanner classifies code matches outside comments and strings in outline files as lexical
 // Verifies: 05-REQ-4.3
 func TestRefScanner_LexicalConfidence_TS_05_21(t *testing.T) {
@@ -156,8 +166,8 @@ func TestRefScanner_LexicalConfidence_TS_05_21(t *testing.T) {
 	}
 
 	site := scanNonGoSite("app.ts", "service.execute()", targetDecl)
-	if site.Confidence != "lexical" {
-		t.Fatalf("expected confidence 'lexical', got %q", site.Confidence)
+	if want := codeConfidence("app.ts"); site.Confidence != want {
+		t.Fatalf("expected confidence %q, got %q", want, site.Confidence)
 	}
 	if site.Path != "app.ts" {
 		t.Fatalf("expected path 'app.ts', got %q", site.Path)
@@ -207,8 +217,8 @@ func TestRefScanner_CommentStringTextConfidence_TS_05_22(t *testing.T) {
 				t.Fatalf("site in %s:%d (%s) expected confidence 'text', got %q", s.Path, s.Line, s.Source, s.Confidence)
 			}
 		} else if strings.HasSuffix(s.Path, ".py") && strings.Contains(s.Source, "service.execute()") {
-			if s.Confidence != "lexical" {
-				t.Fatalf("code site in %s:%d expected confidence 'lexical', got %q", s.Path, s.Line, s.Confidence)
+			if want := codeConfidence(s.Path); s.Confidence != want {
+				t.Fatalf("code site in %s:%d expected confidence %q, got %q", s.Path, s.Line, want, s.Confidence)
 			}
 		}
 	}

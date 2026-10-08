@@ -39,9 +39,8 @@ func TestOverlayShardMergeByScore_TS03_44(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -152,9 +151,8 @@ func TestRebuildThreshold_TS03_45(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -248,9 +246,8 @@ func TestRebuildWaitAndAbort_TS03_46(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -278,7 +275,7 @@ func TestRebuildWaitAndAbort_TS03_46(t *testing.T) {
 	// Block the rebuild using the outline hook.
 	buildBlocked := make(chan struct{}, 1)
 	releaseBuild := make(chan struct{})
-	idx.testOutlineHook = func(_ string, _ int, _ bool) {
+	idx.testOutlineHook = func(_ string, _ int) {
 		select {
 		case buildBlocked <- struct{}{}:
 		default:
@@ -381,9 +378,8 @@ func TestFreshnessPropertySequence_TS03_49(t *testing.T) {
 			}
 
 			idx, err := newIndex(ws, Options{
-				TempDir:      t.TempDir(),
-				Ignore:       tools.NoGlobalExcludes(),
-				DisableCtags: true,
+				TempDir: t.TempDir(),
+				Ignore:  tools.NoGlobalExcludes(),
 			})
 			if err != nil {
 				t.Fatal(err)

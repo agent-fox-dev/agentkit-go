@@ -26,7 +26,7 @@ func refreshFixture(t *testing.T) (*fileTools, string) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 	r := ft.findSymbolTool().Execute(context.Background(), json.RawMessage(`{"name":"Func"}`))
 	if !r.OK {

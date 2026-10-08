@@ -164,7 +164,7 @@ func TestAllAppendsIndexTools_TS03_10(t *testing.T) {
 		Workspace: ws,
 		Index:     idx,
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -173,7 +173,7 @@ func TestAllAppendsIndexTools_TS03_10(t *testing.T) {
 	baseTools, err := All(Options{
 		Workspace: ws,
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -214,7 +214,7 @@ func TestAllNilIndexPinnedList_TS03_11(t *testing.T) {
 	all, err := All(Options{
 		Workspace: ws,
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -252,7 +252,7 @@ func TestAllDuplicateToolNameError_TS03_12(t *testing.T) {
 		Workspace: ws,
 		Index:     idx,
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	})
 	if ts != nil {
 		t.Fatal("expected nil tool list on duplicate")
@@ -282,7 +282,7 @@ func TestWriteAndEditCallInvalidate_TS03_13(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 		Index:     idx,
 	}.withDefaults())
 
@@ -378,7 +378,7 @@ func TestShellToolsCallInvalidate_TS03_14(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 		Index:     idx,
 	})
 	if err != nil {

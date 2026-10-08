@@ -94,18 +94,6 @@ type Options struct {
 	// embedder passes to tools.Options.
 	Ignore tools.IgnoreOptions
 
-	// Env replaces the subprocess environment for ctags. Nil means
-	// tools.ReducedEnv(nil).
-	Env []string
-
-	// DisableCtags forces the runner to nil, so every file falls back to
-	// the heuristic or go/ast backend.
-	DisableCtags bool
-
-	// Runner, when non-nil, replaces the default CtagsRunner. It is the
-	// seam tests use to inject a deterministic backend.
-	Runner func(ctx context.Context, args []string) ([]byte, error)
-
 	// MaxFiles is the file-count bound for a build. Zero or negative means
 	// 100 000.
 	MaxFiles int
@@ -137,9 +125,6 @@ func normalizeOptions(o Options) Options {
 	}
 	if o.TempDir == "" {
 		o.TempDir = defaultTempDir()
-	}
-	if o.Env == nil {
-		o.Env = tools.ReducedEnv(nil)
 	}
 	return o
 }
@@ -241,10 +226,6 @@ type Index struct {
 	// or "time").
 	partialReason string
 
-	// ctagsAvailable is whether the outline runner could run ctags when the
-	// index was last built.
-	ctagsAvailable bool
-
 	// runDir is the shard directory for this instance.
 	runDir string
 
@@ -290,18 +271,14 @@ type Index struct {
 	// fileInfos holds the (size, mtime, indexedAt) of each indexed file.
 	fileInfos map[string]indexedFileInfo
 
-	// runner is the lazily resolved outline runner.
-	runnerOnce sync.Once
-	runner     func(ctx context.Context, args []string) ([]byte, error)
-
 	// lastTouch is the last time the run directory's modification time was
 	// set: when a build or rebuild wrote it, or when touchRunDir refreshed
 	// it. Guarded by mu.
 	lastTouch time.Time
 
 	// testOutlineHook, when set, is called for each outline batch with
-	// (root, batchSize, runnerNonNil). Tests use it to verify batching.
-	testOutlineHook func(root string, batchSize int, runner bool)
+	// (root, batchSize). Tests use it to verify batching.
+	testOutlineHook func(root string, batchSize int)
 
 	// testSearchHook, when set, replaces the real zoekt search. Tests use
 	// it to inject errors or blocking behaviour.
@@ -483,22 +460,6 @@ func (idx *Index) retireOverlay(ov *overlayState) {
 	}
 }
 
-// outlineRunner returns the lazily resolved runner. It is nil when ctags is
-// disabled and no custom Runner was provided.
-func (idx *Index) outlineRunner() func(ctx context.Context, args []string) ([]byte, error) {
-	idx.runnerOnce.Do(func() {
-		switch {
-		case idx.opts.DisableCtags:
-			idx.runner = nil
-		case idx.opts.Runner != nil:
-			idx.runner = idx.opts.Runner
-		default:
-			idx.runner = tools.CtagsRunner(idx.opts.Env)
-		}
-	})
-	return idx.runner
-}
-
 // hashDir returns the hash directory name for the workspace root.
 func (idx *Index) hashDir() string {
 	h := sha256.Sum256([]byte(idx.ws.Root))
@@ -588,9 +549,6 @@ type buildOutput struct {
 	fileInfos     map[string]indexedFileInfo
 	partial       bool
 	partialReason string
-
-	// ctagsAvailable is whether the outline runner could run ctags.
-	ctagsAvailable bool
 }
 
 // Build triggers the index build. It walks the workspace, collects files,
@@ -687,7 +645,6 @@ func (idx *Index) build(ctx context.Context, onlyIfUnbuilt bool) error {
 	idx.built = true
 	idx.partial = result.partial
 	idx.partialReason = result.partialReason
-	idx.ctagsAvailable = result.ctagsAvailable
 	idx.buildCount.Add(1)
 	idx.mu.Unlock()
 
@@ -763,26 +720,8 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 		}
 	}
 
-	// Outline files in batches of at most outlineBatchSize. The runner is
-	// wrapped to see whether ctags answered, so the result can say whether
-	// it is available instead of guessing from which backends were used.
-	runner := idx.outlineRunner()
-	var ctagsCalled, ctagsMissing atomic.Bool
-	if inner := runner; inner != nil {
-		runner = func(ctx context.Context, args []string) ([]byte, error) {
-			out, err := inner(ctx, args)
-			ctagsCalled.Store(true)
-			if errors.Is(err, tools.ErrCtagsUnavailable) {
-				ctagsMissing.Store(true)
-			}
-			return out, err
-		}
-	}
-	outlineOpts := outline.Options{
-		Root:   idx.ws.Root,
-		Runner: runner,
-	}
-
+	// Outline files in batches of at most outlineBatchSize.
+	outlineOpts := outline.Options{Root: idx.ws.Root}
 	outlineResults := make(map[string]outline.File, len(files))
 	var totalBytes int64
 
@@ -816,7 +755,7 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 		batch := files[i:end]
 
 		if idx.testOutlineHook != nil {
-			idx.testOutlineHook(idx.ws.Root, len(batch), runner != nil)
+			idx.testOutlineHook(idx.ws.Root, len(batch))
 		}
 
 		srcs := make([]outline.Source, len(batch))
@@ -824,7 +763,7 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 			srcs[j] = outline.Source{Abs: fe.abs}
 		}
 
-		outFiles, _, err := outline.OutlineMany(buildCtx, srcs, outlineOpts)
+		outFiles, err := outline.OutlineMany(buildCtx, srcs, outlineOpts)
 		if err != nil {
 			if callerCtx.Err() != nil {
 				return nil, fmt.Errorf("aborted: %w", callerCtx.Err())
@@ -851,20 +790,6 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 				outlineResults[fe.rel] = outFiles[j]
 			}
 		}
-	}
-
-	// Whether ctags is available is a fact about the runner. Usually a batch
-	// has already shown it; a tree with no non-Go files never calls the
-	// runner, so ask it.
-	ctagsAvailable := false
-	switch {
-	case runner == nil: // disabled
-	case ctagsMissing.Load():
-	case ctagsCalled.Load():
-		ctagsAvailable = true
-	case buildCtx.Err() == nil:
-		_, err := runner(buildCtx, []string{"--version"})
-		ctagsAvailable = !errors.Is(err, tools.ErrCtagsUnavailable)
 	}
 
 	// Build the zoekt index.
@@ -972,13 +897,12 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 	}
 
 	return &buildOutput{
-		indexedFiles:   indexedFiles,
-		outlineFiles:   outlineResults,
-		stats:          stats,
-		fileInfos:      fileInfos,
-		partial:        partialReason != "",
-		partialReason:  partialReason,
-		ctagsAvailable: ctagsAvailable,
+		indexedFiles:  indexedFiles,
+		outlineFiles:  outlineResults,
+		stats:         stats,
+		fileInfos:     fileInfos,
+		partial:       partialReason != "",
+		partialReason: partialReason,
 	}, nil
 }
 

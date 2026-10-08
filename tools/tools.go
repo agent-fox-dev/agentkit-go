@@ -22,8 +22,7 @@ import (
 	"github.com/agentfox/agentkit-go/schema"
 )
 
-// SymbolOptions configures the symbol table behind find_symbol and the
-// runner shared by file_outline and find_symbol.
+// SymbolOptions configures the symbol table behind find_symbol.
 type SymbolOptions struct {
 	// MaxFiles is the file-count bound for a symbol-table build or refresh
 	// pass. Zero or negative means 50 000.
@@ -31,12 +30,6 @@ type SymbolOptions struct {
 	// MaxDuration is the wall-time bound for a symbol-table build or refresh
 	// pass. Zero or negative means 2 s.
 	MaxDuration time.Duration
-	// DisableCtags forces the runner to nil, so every file falls back to
-	// the heuristic or go/ast backend.
-	DisableCtags bool
-	// Runner, when non-nil, replaces the default CtagsRunner. It is the
-	// seam tests use to inject a deterministic backend.
-	Runner func(ctx context.Context, args []string) ([]byte, error)
 }
 
 // Options configures the built-in tool set.
@@ -64,7 +57,7 @@ type Options struct {
 	// reads the real one; NoGlobalExcludes() pins an empty global layer
 	// (NFR-TEST-04).
 	Ignore IgnoreOptions
-	// Symbols configures the symbol table and the outline runner.
+	// Symbols configures the symbol table.
 	Symbols SymbolOptions
 	// Index is the optional codesearch index. When set, All() appends
 	// Index.Tools() after the built-in tools, and write_file, edit_file
@@ -281,14 +274,6 @@ type fileTools struct {
 
 	// symOpts holds the symbol configuration from Options.Symbols.
 	symOpts SymbolOptions
-	// env is the subprocess environment, kept for lazy runner construction.
-	env []string
-	// runner is the lazily resolved outline runner shared by file_outline
-	// and find_symbol. It is nil when DisableCtags is set and no custom
-	// Runner was provided.
-	runnerOnce sync.Once
-	runner     func(ctx context.Context, args []string) ([]byte, error)
-
 	// table is the shared symbol table, created lazily on first find_symbol
 	// call and marked dirty by write_file, edit_file and the shell tool
 	// wrappers. It is nil until find_symbol is first called.
@@ -301,6 +286,10 @@ type fileTools struct {
 	refCacheOnce sync.Once
 	refCache     *referenceCache
 
+	// testOutlineHook, when set, runs before each outline batch of a
+	// symbol-table build. Tests use it to hold a build open.
+	testOutlineHook func(ctx context.Context)
+
 	// index is the optional codesearch index. When non-nil, write_file,
 	// edit_file and the shell tool wrappers call Invalidate on it.
 	index Index
@@ -312,25 +301,8 @@ func newFileTools(opts Options) *fileTools {
 		locks:   newPathLocks(),
 		ig:      opts.Ignore.cached(),
 		symOpts: opts.Symbols,
-		env:     opts.Env,
 		index:   opts.Index,
 	}
-}
-
-// outlineRunner returns the lazily resolved runner. It is nil when ctags is
-// disabled and no custom Runner was provided.
-func (f *fileTools) outlineRunner() func(ctx context.Context, args []string) ([]byte, error) {
-	f.runnerOnce.Do(func() {
-		switch {
-		case f.symOpts.DisableCtags:
-			f.runner = nil
-		case f.symOpts.Runner != nil:
-			f.runner = f.symOpts.Runner
-		default:
-			f.runner = CtagsRunner(f.env)
-		}
-	})
-	return f.runner
 }
 
 // getTable returns the shared symbol table, creating it on first call.

@@ -18,8 +18,7 @@ import (
 	"github.com/agentfox/agentkit-go/tools"
 )
 
-// devFixture builds an index over the files in the map (path to content),
-// with ctags disabled unless opts.Runner is set.
+// devFixture builds an index over the files in the map (path to content).
 func devFixture(t *testing.T, files map[string]string, opts Options) (*Index, func(q string, extra map[string]any) core.ToolResult) {
 	t.Helper()
 	root := t.TempDir()
@@ -32,9 +31,6 @@ func devFixture(t *testing.T, files map[string]string, opts Options) (*Index, fu
 	}
 	opts.TempDir = t.TempDir()
 	opts.Ignore = tools.NoGlobalExcludes()
-	if opts.Runner == nil {
-		opts.DisableCtags = true
-	}
 	idx, err := newIndex(ws, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -84,58 +80,6 @@ func TestFirstLineStatesTheMatchedFileCount(t *testing.T) {
 			t.Errorf("%s: first line %q lost the indexed count", tc.name, line)
 		}
 	}
-}
-
-// 03-REQ-5.4 (2): ctags_available is what the runner says, not whether some
-// indexed file happened to use the ctags backend.
-func TestCtagsAvailableIsWhatTheRunnerReports(t *testing.T) {
-	goOnly := map[string]string{"a.go": "package p\n// needle\nfunc A() {}\n"}
-
-	t.Run("a Go-only tree with ctags installed", func(t *testing.T) {
-		var calls atomic.Int32
-		_, search := devFixture(t, goOnly, Options{
-			Runner: func(_ context.Context, _ []string) ([]byte, error) {
-				calls.Add(1)
-				return nil, nil // ctags runs fine
-			},
-		})
-		r := search("needle", nil)
-		if !r.OK {
-			t.Fatalf("%s: %s", r.Error, r.Detail)
-		}
-		if got := r.Data["ctags_available"]; got != true {
-			t.Errorf("ctags_available = %v, want true: the runner works, no file needed it", got)
-		}
-		if line := firstLineOf(r); strings.Contains(line, "ctags unavailable") {
-			t.Errorf("first line %q claims ctags is unavailable", line)
-		}
-	})
-
-	t.Run("a Go-only tree without ctags", func(t *testing.T) {
-		_, search := devFixture(t, goOnly, Options{
-			Runner: func(_ context.Context, _ []string) ([]byte, error) {
-				return nil, tools.ErrCtagsUnavailable
-			},
-		})
-		r := search("needle", nil)
-		if !r.OK {
-			t.Fatalf("%s: %s", r.Error, r.Detail)
-		}
-		if got := r.Data["ctags_available"]; got != false {
-			t.Errorf("ctags_available = %v, want false", got)
-		}
-		if line := firstLineOf(r); !strings.Contains(line, "ctags unavailable") {
-			t.Errorf("first line %q should say ctags is unavailable", line)
-		}
-	})
-
-	t.Run("ctags disabled", func(t *testing.T) {
-		_, search := devFixture(t, goOnly, Options{})
-		r := search("needle", nil)
-		if got := r.Data["ctags_available"]; got != false {
-			t.Errorf("ctags_available = %v, want false when disabled", got)
-		}
-	})
 }
 
 // 03-REQ-5.7 (4): a partial index and a truncated result both put their note
@@ -268,7 +212,7 @@ func TestLangForExtAgreesWithOutline(t *testing.T) {
 		".kts": "Kotlin", ".pyw": "Python", ".mts": "TypeScript", ".zsh": "Shell",
 		".hxx": "C++", ".JSX": "JavaScript",
 		// Languages outline does not outline but zoekt can name.
-		".md": "Markdown", ".json": "JSON", ".yml": "YAML", ".html": "HTML", ".sql": "SQL",
+		".md": "Markdown", ".json": "JSON", ".yml": "YAML", ".html": "HTML",
 	} {
 		if got := langForExt(ext); got != want {
 			t.Errorf("langForExt(%q) = %q, want %q", ext, got, want)
@@ -397,8 +341,8 @@ func TestSymbolsCountsFilesWithinTheQueriedScope(t *testing.T) {
 	if ans.FilesIndexed != 3 {
 		t.Errorf("FilesIndexed for path b = %d, want 3", ans.FilesIndexed)
 	}
-	if got := ans.Backends; len(got) != 2 || got["go/ast"] != 2 || got["heuristic"] != 1 {
-		t.Errorf("Backends for path b = %v, want {go/ast:2 heuristic:1}", got)
+	if got, py := ans.Backends, string(nonGoBackend()); len(got) != 2 || got["go/ast"] != 2 || got[py] != 1 {
+		t.Errorf("Backends for path b = %v, want {go/ast:2 %s:1}", got, py)
 	}
 
 	ans, _, _ = idx.Symbols(context.Background(), tools.SymbolQuery{Name: "T"})

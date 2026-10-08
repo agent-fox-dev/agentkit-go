@@ -63,11 +63,9 @@ func run(ctx context.Context, w io.Writer) error {
 		return err
 	}
 	index, err := codesearch.New(ws, codesearch.Options{
-		// Both settings make the output identical on every machine: no
-		// user-global git excludes, and the built-in outline backends rather
-		// than whichever ctags happens to be installed.
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		// No user-global git excludes, so the output is identical on every
+		// machine.
+		Ignore: tools.NoGlobalExcludes(),
 		// Shards go here — outside the workspace, or the index would index
 		// itself. Close removes this run's directory, and a later New sweeps
 		// sibling directories older than a day left by a process that never

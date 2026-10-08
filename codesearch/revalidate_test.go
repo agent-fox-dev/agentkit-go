@@ -42,9 +42,8 @@ func revalFixture(t *testing.T, n int, oldFiles bool) (root string, idx *Index, 
 		t.Fatal(err)
 	}
 	idx, err = newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -242,7 +241,7 @@ func TestVerifiedRacyFileIsNotReadAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	idx, err := newIndex(ws, Options{TempDir: t.TempDir(), Ignore: tools.NoGlobalExcludes(), DisableCtags: true})
+	idx, err := newIndex(ws, Options{TempDir: t.TempDir(), Ignore: tools.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}

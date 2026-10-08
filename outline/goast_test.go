@@ -122,7 +122,7 @@ func TestOutline_MaxFileBytes_TS_01_10(t *testing.T) {
 	}
 }
 
-// TS-01-16: A .go file is parsed in-process with Backend go/ast and the Runner is never called.
+// TS-01-16: A .go file is parsed in-process with Backend go/ast.
 func TestOutline_GoBackendNoRunner_TS_01_16(t *testing.T) {
 	dir := t.TempDir()
 	goFile := filepath.Join(dir, "a.go")
@@ -130,15 +130,7 @@ func TestOutline_GoBackendNoRunner_TS_01_16(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runnerCalls := 0
-	ctx := context.Background()
-	f, err := Outline(ctx, goFile, nil, Options{
-		Runner: func(_ context.Context, _ []string) ([]byte, error) {
-			runnerCalls++
-			t.Fatal("Runner should not be called for .go files")
-			return nil, nil
-		},
-	})
+	f, err := Outline(context.Background(), goFile, nil, Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -147,9 +139,6 @@ func TestOutline_GoBackendNoRunner_TS_01_16(t *testing.T) {
 	}
 	if f.Lang != LangGo {
 		t.Fatalf("Lang = %q, want %q", f.Lang, LangGo)
-	}
-	if runnerCalls != 0 {
-		t.Fatalf("Runner was called %d times, want 0", runnerCalls)
 	}
 }
 

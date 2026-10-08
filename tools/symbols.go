@@ -219,7 +219,6 @@ func (st *symbolTable) refreshDirtyPaths(ctx context.Context, ft *fileTools, pat
 	}
 
 	// All dirty paths are known files. Re-outline or drop each one.
-	runner := ft.outlineRunner()
 	pending := make(map[string]bool, len(paths))
 	for rel := range paths {
 		pending[rel] = true
@@ -247,10 +246,7 @@ func (st *symbolTable) refreshDirtyPaths(ctx context.Context, ft *fileTools, pat
 		}
 
 		// Re-outline the file.
-		ofile, err := outline.Outline(ctx, abs, nil, outline.Options{
-			Root:   ft.ws.Root,
-			Runner: runner,
-		})
+		ofile, err := outline.Outline(ctx, abs, nil, outline.Options{Root: ft.ws.Root})
 		if err != nil {
 			if ctx.Err() != nil {
 				// The call ended, not the file: keep the entry and the mark.
@@ -326,7 +322,7 @@ var walkFn = Walk
 //
 // Parameters:
 //   - ctx: the call context; cancellation returns an error
-//   - ft: the fileTools providing workspace, ignore and runner
+//   - ft: the fileTools providing workspace and ignore
 //   - scopePath: when non-empty, only files under this directory are indexed
 //     (but the walk starts from the workspace root for ignore layers)
 //   - revalidating: true when the pass is a revalidation (whole-table mark
@@ -458,7 +454,6 @@ func (st *symbolTable) buildOrRefresh(ctx context.Context, ft *fileTools, scopeP
 	}
 
 	// Process files in batches of outlineBatchSize.
-	runner := ft.outlineRunner()
 	for i := 0; i < len(toIndex); i += outlineBatchSize {
 		if deadlineCtx.Err() != nil {
 			// Time bound hit during outlining.
@@ -479,11 +474,11 @@ func (st *symbolTable) buildOrRefresh(ctx context.Context, ft *fileTools, scopeP
 		for j, f := range batch {
 			srcs[j] = outline.Source{Abs: f.abs}
 		}
+		if ft.testOutlineHook != nil {
+			ft.testOutlineHook(deadlineCtx)
+		}
 
-		files, _, err := outline.OutlineMany(deadlineCtx, srcs, outline.Options{
-			Root:   ft.ws.Root,
-			Runner: runner,
-		})
+		files, err := outline.OutlineMany(deadlineCtx, srcs, outline.Options{Root: ft.ws.Root})
 		if err != nil {
 			// If the deadline caused the error, mark as partial.
 			if deadlineCtx.Err() != nil {

@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -180,18 +181,6 @@ func findCandidateFilesCtx(ctx context.Context, ws *Workspace, name string, idx 
 	return candidates, nil
 }
 
-// isOutlineSupported reports whether the language is supported by outline heuristics.
-func isOutlineSupported(lang string) bool {
-	switch lang {
-	case outline.LangPython, outline.LangTypeScript, outline.LangJavaScript,
-		outline.LangRust, outline.LangC, outline.LangCPP,
-		outline.LangCSharp, outline.LangJava, outline.LangKotlin, outline.LangRuby:
-		return true
-	default:
-		return false
-	}
-}
-
 // isIdentRune reports whether r is an identifier rune for the given language.
 func isIdentRune(r rune, lang string) bool {
 	if r == '_' {
@@ -203,192 +192,11 @@ func isIdentRune(r rune, lang string) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
-// parseState tracks multi-line comment and string literals across lines.
-type parseState struct {
-	inBlockComment   bool
-	blockCommentNest int
-	inTripleDouble   bool
-	inTripleSingle   bool
-	inRubyBlock      bool
-	inBacktick       bool
-}
-
-// buildCommentStringMask creates a boolean mask per line indicating positions inside comments or strings.
-func buildCommentStringMask(lang string, lines []string) [][]bool {
-	masks := make([][]bool, len(lines))
-	var st parseState
-
-	for lineIdx, line := range lines {
-		mask := make([]bool, len(line))
-		n := len(line)
-
-		if lang == outline.LangRuby {
-			if st.inRubyBlock {
-				for i := 0; i < n; i++ {
-					mask[i] = true
-				}
-				if strings.HasPrefix(line, "=end") {
-					st.inRubyBlock = false
-				}
-				masks[lineIdx] = mask
-				continue
-			} else if strings.HasPrefix(line, "=begin") {
-				st.inRubyBlock = true
-				for i := 0; i < n; i++ {
-					mask[i] = true
-				}
-				masks[lineIdx] = mask
-				continue
-			}
-		}
-
-		i := 0
-		for i < n {
-			if st.inBlockComment {
-				mask[i] = true
-				if lang == outline.LangRust && i+1 < n && line[i] == '/' && line[i+1] == '*' {
-					st.blockCommentNest++
-					mask[i+1] = true
-					i += 2
-					continue
-				}
-				if i+1 < n && line[i] == '*' && line[i+1] == '/' {
-					mask[i+1] = true
-					if lang == outline.LangRust && st.blockCommentNest > 1 {
-						st.blockCommentNest--
-					} else {
-						st.inBlockComment = false
-						st.blockCommentNest = 0
-					}
-					i += 2
-					continue
-				}
-				i++
-				continue
-			}
-
-			if st.inTripleDouble {
-				mask[i] = true
-				if i+2 < n && line[i] == '"' && line[i+1] == '"' && line[i+2] == '"' {
-					mask[i+1] = true
-					mask[i+2] = true
-					st.inTripleDouble = false
-					i += 3
-					continue
-				}
-				i++
-				continue
-			}
-
-			if st.inTripleSingle {
-				mask[i] = true
-				if i+2 < n && line[i] == '\'' && line[i+1] == '\'' && line[i+2] == '\'' {
-					mask[i+1] = true
-					mask[i+2] = true
-					st.inTripleSingle = false
-					i += 3
-					continue
-				}
-				i++
-				continue
-			}
-
-			if st.inBacktick {
-				mask[i] = true
-				if line[i] == '`' {
-					st.inBacktick = false
-					i++
-					continue
-				}
-				if line[i] == '\\' && i+1 < n {
-					mask[i+1] = true
-					i += 2
-					continue
-				}
-				i++
-				continue
-			}
-
-			// Openers
-			if lang == outline.LangPython {
-				if i+2 < n && line[i] == '"' && line[i+1] == '"' && line[i+2] == '"' {
-					mask[i] = true
-					mask[i+1] = true
-					mask[i+2] = true
-					st.inTripleDouble = true
-					i += 3
-					continue
-				}
-				if i+2 < n && line[i] == '\'' && line[i+1] == '\'' && line[i+2] == '\'' {
-					mask[i] = true
-					mask[i+1] = true
-					mask[i+2] = true
-					st.inTripleSingle = true
-					i += 3
-					continue
-				}
-				if line[i] == '#' {
-					for k := i; k < n; k++ {
-						mask[k] = true
-					}
-					break
-				}
-			} else if lang == outline.LangRuby {
-				if line[i] == '#' {
-					for k := i; k < n; k++ {
-						mask[k] = true
-					}
-					break
-				}
-			} else {
-				// C-family, Go, etc.
-				if i+1 < n && line[i] == '/' && line[i+1] == '/' {
-					for k := i; k < n; k++ {
-						mask[k] = true
-					}
-					break
-				}
-				if i+1 < n && line[i] == '/' && line[i+1] == '*' {
-					mask[i] = true
-					mask[i+1] = true
-					st.inBlockComment = true
-					st.blockCommentNest = 1
-					i += 2
-					continue
-				}
-				if (lang == outline.LangJavaScript || lang == outline.LangTypeScript || lang == outline.LangGo) && line[i] == '`' {
-					mask[i] = true
-					st.inBacktick = true
-					i++
-					continue
-				}
-			}
-
-			if line[i] == '"' || line[i] == '\'' {
-				q := line[i]
-				mask[i] = true
-				i++
-				for i < n {
-					mask[i] = true
-					if line[i] == '\\' && i+1 < n {
-						mask[i+1] = true
-						i += 2
-						continue
-					}
-					if line[i] == q {
-						i++
-						break
-					}
-					i++
-				}
-				continue
-			}
-
-			i++
-		}
-		masks[lineIdx] = mask
-	}
-	return masks
+// inSpans reports whether offset off lies in one of the sorted,
+// non-overlapping [start, end) spans.
+func inSpans(spans [][2]int, off int) bool {
+	i := sort.Search(len(spans), func(i int) bool { return spans[i][1] > off })
+	return i < len(spans) && spans[i][0] <= off
 }
 
 // sanitizeSourceLine strips control chars, replaces tabs/spaces, trims, and caps at 200 bytes.
@@ -426,19 +234,19 @@ func scanContentForMatches(path string, content []byte, name string, target outl
 	}
 
 	lang := outline.LangFor(path, content)
-	supported := isOutlineSupported(lang)
 	targetDeclared := target.Name != "" || target.Kind != ""
-
-	lines := strings.Split(string(content), "\n")
-	var masks [][]bool
-	if supported {
-		masks = buildCommentStringMask(lang, lines)
-	}
+	// A hit is lexical only when the language's grammar says it is outside
+	// any comment or string; without a grammar (Go, which is resolved by
+	// type, or any language in a build without cgo) every hit is text.
+	spans, classified := outline.CommentAndStringSpans(context.Background(), path, content)
 
 	var matches []scanMatch
 	nameLen := len(searchName)
 
-	for lineIdx, line := range lines {
+	lineOff := 0
+	for lineIdx, line := range strings.Split(string(content), "\n") {
+		off := lineOff
+		lineOff += len(line) + 1
 		if len(line) < nameLen {
 			continue
 		}
@@ -470,12 +278,8 @@ func scanContentForMatches(path string, content []byte, name string, target outl
 
 			if validBoundary {
 				confidence := "text"
-				if targetDeclared && supported {
-					if masks != nil && lineIdx < len(masks) && matchStart < len(masks[lineIdx]) && masks[lineIdx][matchStart] {
-						confidence = "text"
-					} else {
-						confidence = "lexical"
-					}
+				if targetDeclared && classified && !inSpans(spans, off+matchStart) {
+					confidence = "lexical"
 				}
 
 				matches = append(matches, scanMatch{

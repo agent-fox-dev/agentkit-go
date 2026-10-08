@@ -27,9 +27,8 @@ func TestCodeSearchToolDefinition_TS03_16(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -111,9 +110,8 @@ func TestInvalidArguments_TS03_17(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -176,9 +174,8 @@ func TestContextLinesAndMaxFilesDefaultAndClamp_TS03_18(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -229,9 +226,8 @@ func TestPathValidation_TS03_19(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -284,9 +280,8 @@ func TestPathConjunction_TS03_20(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -360,9 +355,8 @@ func TestCancelledContext_TS03_21(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -403,9 +397,8 @@ func TestBuildFailureReturnsIndexFailed_TS03_22(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      badTempFile,
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: badTempFile,
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -440,9 +433,8 @@ func TestSearchFailedAndTimeout_TS03_23(t *testing.T) {
 
 	t.Run("search error", func(t *testing.T) {
 		idx, err := newIndex(ws, Options{
-			TempDir:      t.TempDir(),
-			Ignore:       tools.NoGlobalExcludes(),
-			DisableCtags: true,
+			TempDir: t.TempDir(),
+			Ignore:  tools.NoGlobalExcludes(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -469,9 +461,8 @@ func TestSearchFailedAndTimeout_TS03_23(t *testing.T) {
 
 	t.Run("search timeout", func(t *testing.T) {
 		idx, err := newIndex(ws, Options{
-			TempDir:      t.TempDir(),
-			Ignore:       tools.NoGlobalExcludes(),
-			DisableCtags: true,
+			TempDir: t.TempDir(),
+			Ignore:  tools.NoGlobalExcludes(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -518,9 +509,8 @@ func TestLazyBuild_TS03_5_1(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)

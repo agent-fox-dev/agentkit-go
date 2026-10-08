@@ -34,7 +34,7 @@ func findSymbolWith(t *testing.T, idx Index, args map[string]any) core.ToolResul
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 		Index:     idx,
 	}.withDefaults())
 	in, _ := json.Marshal(args)
@@ -46,10 +46,10 @@ func findSymbolWith(t *testing.T, idx Index, args map[string]any) core.ToolResul
 // the matches returned and not the whole index.
 func TestFindSymbolThroughTheIndexReportsTheScopesBackends(t *testing.T) {
 	idx := &answerIndex{ans: SymbolAnswer{
-		// One match, from a heuristic file, in a scope of 3 files.
-		Matches:      []SymbolMatch{{Path: "a/x.py", Backend: "heuristic", Kind: "func", Name: "Run", Signature: "def Run()"}},
+		// One match, from a tree-sitter file, in a scope of 3 files.
+		Matches:      []SymbolMatch{{Path: "a/x.py", Backend: "tree-sitter", Kind: "func", Name: "Run", Signature: "def Run()"}},
 		FilesIndexed: 3,
-		Backends:     map[string]int{"go/ast": 2, "heuristic": 1},
+		Backends:     map[string]int{"go/ast": 2, "tree-sitter": 1},
 	}}
 	r := findSymbolWith(t, idx, map[string]any{"name": "Run", "path": "a"})
 	if !r.OK {
@@ -59,8 +59,8 @@ func TestFindSymbolThroughTheIndexReportsTheScopesBackends(t *testing.T) {
 		t.Errorf("files_indexed = %v, want 3 (the scope)", got)
 	}
 	got, _ := r.Data["backends"].(map[string]int)
-	if len(got) != 2 || got["go/ast"] != 2 || got["heuristic"] != 1 {
-		t.Errorf("backends = %v, want the scope's {go/ast:2 heuristic:1}, not the matches' backends", r.Data["backends"])
+	if len(got) != 2 || got["go/ast"] != 2 || got["tree-sitter"] != 1 {
+		t.Errorf("backends = %v, want the scope's {go/ast:2 tree-sitter:1}, not the matches' backends", r.Data["backends"])
 	}
 }
 

@@ -26,20 +26,18 @@ func TestWaitingCallAbandonedOnCancel_TS02_47(t *testing.T) {
 			fmt.Sprintf("def func_%d():\n    pass\n", i))
 	}
 
-	// A blocking runner that holds the first build open.
+	// A blocking hook that holds the first build open.
 	blockCh := make(chan struct{})
 	buildStarted := make(chan struct{}, 1)
 
-	blockingRunner := func(ctx context.Context, args []string) ([]byte, error) {
+	block := func(ctx context.Context) {
 		select {
 		case buildStarted <- struct{}{}:
 		default:
 		}
 		select {
 		case <-blockCh:
-			return []byte(""), nil
 		case <-ctx.Done():
-			return nil, ctx.Err()
 		}
 	}
 
@@ -51,11 +49,12 @@ func TestWaitingCallAbandonedOnCancel_TS02_47(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{Runner: blockingRunner, MaxDuration: 30 * time.Second},
+		Symbols:   SymbolOptions{MaxDuration: 30 * time.Second},
 	}.withDefaults())
+	ft.testOutlineHook = block
 	tl := ft.findSymbolTool()
 
-	// Start the first find_symbol call in a goroutine (it will block on the runner).
+	// Start the first find_symbol call in a goroutine (it will block on the hook).
 	var firstResult core.ToolResult
 	firstDone := make(chan struct{})
 	go func() {
@@ -144,7 +143,7 @@ func TestConcurrentCallsRaceFree_TS02_48(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 
 	findTool := ft.findSymbolTool()
@@ -223,20 +222,18 @@ func TestMarkingNeverBlocksOnBuild_TS02_49(t *testing.T) {
 			fmt.Sprintf("def func_%d():\n    pass\n", i))
 	}
 
-	// A blocking runner that holds the build open.
+	// A blocking hook that holds the build open.
 	blockCh := make(chan struct{})
 	buildStarted := make(chan struct{}, 1)
 
-	blockingRunner := func(ctx context.Context, args []string) ([]byte, error) {
+	block := func(ctx context.Context) {
 		select {
 		case buildStarted <- struct{}{}:
 		default:
 		}
 		select {
 		case <-blockCh:
-			return []byte(""), nil
 		case <-ctx.Done():
-			return nil, ctx.Err()
 		}
 	}
 
@@ -248,14 +245,15 @@ func TestMarkingNeverBlocksOnBuild_TS02_49(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{Runner: blockingRunner, MaxDuration: 30 * time.Second},
+		Symbols:   SymbolOptions{MaxDuration: 30 * time.Second},
 	}.withDefaults())
+	ft.testOutlineHook = block
 
 	findTool := ft.findSymbolTool()
 	writeTool := ft.writeFile()
 	editTool := ft.editFile()
 
-	// Start a find_symbol call that will block on the runner.
+	// Start a find_symbol call that will block on the hook.
 	buildDone := make(chan struct{})
 	go func() {
 		findTool.Execute(context.Background(), json.RawMessage(`{"name":"func"}`))
@@ -341,20 +339,18 @@ func TestCancellationDuringBuildReturnsAborted_TS02_50(t *testing.T) {
 			fmt.Sprintf("def func_%d():\n    pass\n", i))
 	}
 
-	// A blocking runner.
+	// A blocking hook.
 	blockCh := make(chan struct{})
 	buildStarted := make(chan struct{}, 1)
 
-	blockingRunner := func(ctx context.Context, args []string) ([]byte, error) {
+	block := func(ctx context.Context) {
 		select {
 		case buildStarted <- struct{}{}:
 		default:
 		}
 		select {
 		case <-blockCh:
-			return []byte(""), nil
 		case <-ctx.Done():
-			return nil, ctx.Err()
 		}
 	}
 
@@ -366,8 +362,9 @@ func TestCancellationDuringBuildReturnsAborted_TS02_50(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{Runner: blockingRunner, MaxDuration: 30 * time.Second},
+		Symbols:   SymbolOptions{MaxDuration: 30 * time.Second},
 	}.withDefaults())
+	ft.testOutlineHook = block
 	tl := ft.findSymbolTool()
 
 	// Start find_symbol with a cancellable context.
@@ -422,119 +419,8 @@ func TestCancellationDuringBuildReturnsAborted_TS02_50(t *testing.T) {
 		t.Fatal("table should not be marked complete after cancellation")
 	}
 
-	// Clean up: release the blocking runner.
+	// Clean up: release the blocking hook.
 	close(blockCh)
-}
-
-// TS-02-51: A ctags failure falls back to another backend and the backend field says so
-func TestCtagsFailureFallback_TS02_51(t *testing.T) {
-	root := t.TempDir()
-	mkSymFile(t, root, "main.go", "package main\n\nfunc Hello() {}\n")
-	mkSymFile(t, root, "mod.py", "def greet():\n    pass\n")
-
-	// Test 1: Runner returning an error.
-	t.Run("runner_error", func(t *testing.T) {
-		failingRunner := func(ctx context.Context, args []string) ([]byte, error) {
-			return nil, fmt.Errorf("ctags crashed")
-		}
-
-		ws, err := NewWorkspace(root)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ft := newFileTools(Options{
-			Workspace: ws,
-			Env:       os.Environ(),
-			Ignore:    NoGlobalExcludes(),
-			Symbols:   SymbolOptions{Runner: failingRunner},
-		}.withDefaults())
-
-		// file_outline on Go file: should use go/ast, not ctags.
-		outlineTool := ft.fileOutlineTool()
-		r := outlineTool.Execute(context.Background(), json.RawMessage(`{"path":"main.go"}`))
-		if !r.OK {
-			t.Fatalf("file_outline Go: error=%s detail=%s", r.Error, r.Detail)
-		}
-		backend, _ := r.Data["backend"].(string)
-		if backend != "go/ast" {
-			t.Fatalf("file_outline Go: backend=%q, want go/ast", backend)
-		}
-		if !strings.Contains(r.Text, "go/ast") {
-			t.Fatalf("file_outline Go: header should name go/ast: %s", r.Text)
-		}
-
-		// file_outline on Python file: runner fails, should fall back to heuristic.
-		r = outlineTool.Execute(context.Background(), json.RawMessage(`{"path":"mod.py"}`))
-		if !r.OK {
-			t.Fatalf("file_outline Python: error=%s detail=%s", r.Error, r.Detail)
-		}
-		backend, _ = r.Data["backend"].(string)
-		// Should be heuristic or none, not ctags.
-		if backend == "ctags" {
-			t.Fatalf("file_outline Python: backend should not be ctags when runner fails")
-		}
-
-		// find_symbol: should work and backends map should name the fallback.
-		findTool := ft.findSymbolTool()
-		r = findTool.Execute(context.Background(), json.RawMessage(`{"name":"Hello"}`))
-		if !r.OK {
-			t.Fatalf("find_symbol: error=%s detail=%s", r.Error, r.Detail)
-		}
-		backends, _ := r.Data["backends"].(map[string]int)
-		if _, hasCtags := backends["ctags"]; hasCtags {
-			t.Fatal("find_symbol: backends should not contain 'ctags' when runner fails")
-		}
-	})
-
-	// Test 2: Runner returning ErrCtagsUnavailable.
-	t.Run("ctags_unavailable", func(t *testing.T) {
-		unavailableRunner := func(ctx context.Context, args []string) ([]byte, error) {
-			return nil, ErrCtagsUnavailable
-		}
-
-		ws, err := NewWorkspace(root)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ft := newFileTools(Options{
-			Workspace: ws,
-			Env:       os.Environ(),
-			Ignore:    NoGlobalExcludes(),
-			Symbols:   SymbolOptions{Runner: unavailableRunner},
-		}.withDefaults())
-
-		// file_outline on Go file: should use go/ast.
-		outlineTool := ft.fileOutlineTool()
-		r := outlineTool.Execute(context.Background(), json.RawMessage(`{"path":"main.go"}`))
-		if !r.OK {
-			t.Fatalf("file_outline Go: error=%s detail=%s", r.Error, r.Detail)
-		}
-		backend, _ := r.Data["backend"].(string)
-		if backend != "go/ast" {
-			t.Fatalf("file_outline Go: backend=%q, want go/ast", backend)
-		}
-
-		// file_outline on Python file: should fall back to heuristic.
-		r = outlineTool.Execute(context.Background(), json.RawMessage(`{"path":"mod.py"}`))
-		if !r.OK {
-			t.Fatalf("file_outline Python: error=%s detail=%s", r.Error, r.Detail)
-		}
-		backend, _ = r.Data["backend"].(string)
-		if backend == "ctags" {
-			t.Fatalf("file_outline Python: backend should not be ctags when unavailable")
-		}
-
-		// find_symbol: should work.
-		findTool := ft.findSymbolTool()
-		r = findTool.Execute(context.Background(), json.RawMessage(`{"name":"greet"}`))
-		if !r.OK {
-			t.Fatalf("find_symbol: error=%s detail=%s", r.Error, r.Detail)
-		}
-		backends, _ := r.Data["backends"].(map[string]int)
-		if _, hasCtags := backends["ctags"]; hasCtags {
-			t.Fatal("find_symbol: backends should not contain 'ctags' when unavailable")
-		}
-	})
 }
 
 // TS-02-52: The tools run no shell and return errors instead of terminating the process
@@ -606,7 +492,7 @@ func TestNoShellAndNoTermination_TS02_52(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 
 	outlineTool := ft.fileOutlineTool()

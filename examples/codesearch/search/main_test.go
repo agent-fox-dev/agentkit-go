@@ -73,7 +73,7 @@ func TestSearch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			args := append([]string{"--dir", root, "--no-ctags"}, tc.args...)
+			args := append([]string{"--dir", root}, tc.args...)
 			if err := run(args, &stdout, &stderr); err != nil {
 				t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
 			}

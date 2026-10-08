@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"sort"
 )
@@ -12,10 +13,9 @@ import (
 type Backend string
 
 const (
-	BackendGoAST     Backend = "go/ast"
-	BackendCtags     Backend = "ctags"
-	BackendHeuristic Backend = "heuristic"
-	BackendNone      Backend = "none"
+	BackendGoAST      Backend = "go/ast"
+	BackendTreeSitter Backend = "tree-sitter"
+	BackendNone       Backend = "none"
 )
 
 // Kind is the closed set of declaration kinds.
@@ -60,17 +60,10 @@ type Source struct {
 	Src []byte // optional; when nil the file is read from disk
 }
 
-// Stats counts events across an OutlineMany call.
-type Stats struct {
-	MalformedLines int // ctags JSON lines skipped
-	Fallbacks      int // batches that fell back to another backend
-}
-
 // Options configures outlining.
 type Options struct {
 	Root         string // when non-empty, File.Path is relative to this
 	MaxFileBytes int64  // 0 means 1 MiB
-	Runner       func(ctx context.Context, args []string) ([]byte, error)
 }
 
 // defaultMaxFileBytes is the default file size limit (1 MiB).
@@ -79,298 +72,90 @@ const defaultMaxFileBytes = 1 << 20
 // binarySniffSize is how many bytes are checked for a NUL byte.
 const binarySniffSize = 8 * 1024
 
-// Outline returns the outline of a single file.
+// Outline returns the outline of a single file: Go files from go/ast, the
+// other languages in the extension table from their tree-sitter grammar
+// (when built with cgo), anything else as none. An unreadable file is an
+// error; a cancelled context returns ctx.Err().
 func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, error) {
 	if err := ctx.Err(); err != nil {
 		return File{}, err
 	}
-
-	ext := filepath.Ext(abs)
-	lang := langForExt(ext)
-
+	f := File{Path: filePath(abs, opts.Root), Lang: langForExt(filepath.Ext(abs)), Backend: BackendNone, Decls: []Decl{}}
 	// Unknown extension: return immediately without reading the file.
-	if lang == "" {
-		return File{
-			Path:    filePath(abs, opts.Root),
-			Lang:    "",
-			Backend: BackendNone,
-			Decls:   []Decl{},
-		}, nil
+	if f.Lang == "" {
+		return f, nil
 	}
-
 	maxBytes := opts.MaxFileBytes
 	if maxBytes == 0 {
 		maxBytes = defaultMaxFileBytes
 	}
-
 	// Read the file if no source was provided — after checking its size, so
 	// a 500 MB tracked bundle is skipped on the stat rather than read whole
 	// and then rejected.
 	if src == nil {
-		data, err := loadSourceIfNeeded(abs, nil, maxBytes)
+		data, err := loadSource(abs, maxBytes)
 		if errors.Is(err, errTooLarge) {
-			return File{
-				Path:    filePath(abs, opts.Root),
-				Lang:    lang,
-				Backend: BackendNone,
-				Decls:   []Decl{},
-			}, nil
+			return f, nil
 		}
 		if err != nil {
 			return File{}, err
 		}
 		src = data
 	}
-
-	// File too large.
-	if int64(len(src)) > maxBytes {
-		return File{
-			Path:    filePath(abs, opts.Root),
-			Lang:    lang,
-			Backend: BackendNone,
-			Decls:   []Decl{},
-		}, nil
-	}
-
-	// Binary check: NUL in first 8 KiB.
-	sniff := src
-	if len(sniff) > binarySniffSize {
-		sniff = sniff[:binarySniffSize]
-	}
-	if bytes.IndexByte(sniff, 0) >= 0 {
-		return File{
-			Path:    filePath(abs, opts.Root),
-			Lang:    lang,
-			Backend: BackendNone,
-			Decls:   []Decl{},
-		}, nil
-	}
-
-	// Dispatch to backends.
-	// Go files are always parsed in-process; the Runner is never called
-	// unless the parser returns no AST at all.
-	if lang == LangGo {
-		if f, ok := outlineGo(abs, src, opts); ok {
-			return f, nil
-		}
-		// Parser returned no AST at all — fall through to ctags or none.
-	}
-
-	// Try ctags if Runner is available.
-	if opts.Runner != nil {
-		entry := ctagsBatchEntry{srcIdx: 0, abs: abs, src: src}
-		batch := []ctagsBatchEntry{entry}
-		tagsByIdx, _, err := runCtagsBatch(ctx, opts.Runner, batch)
-		if err != nil {
-			if ctx.Err() != nil {
-				return File{}, ctx.Err()
-			}
-			// Runner error: fall through to heuristic/none.
-		} else {
-			return ctagsFile(abs, src, tagsByIdx[0], opts), nil
-		}
-	}
-
-	// Heuristic backend for languages that support it.
-	if f, ok := outlineHeuristic(abs, src, opts); ok {
+	// Too large, or binary (a NUL in the first 8 KiB).
+	if int64(len(src)) > maxBytes || bytes.IndexByte(src[:min(len(src), binarySniffSize)], 0) >= 0 {
 		return f, nil
 	}
 
-	// No heuristic available: return none.
-	return heuristicOrNone(abs, src, opts), nil
+	if f.Lang == LangGo {
+		if g, ok := outlineGo(abs, src, opts); ok {
+			return g, nil
+		}
+		return f, nil // the parser returned no AST at all
+	}
+	f.Lang = LangFor(abs, src)
+	decls, ok, err := outlineTreeSitter(ctx, f.Lang, filepath.Ext(abs), src)
+	if err != nil {
+		if ctx.Err() != nil {
+			return File{}, ctx.Err()
+		}
+		return f, nil
+	}
+	if ok {
+		f.Backend, f.Decls = BackendTreeSitter, decls
+	}
+	return finishFile(f), nil
 }
 
-// OutlineMany outlines many files, returning one File per input in order.
-func OutlineMany(ctx context.Context, srcs []Source, opts Options) ([]File, Stats, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, Stats{}, err
-	}
-
+// OutlineMany outlines many files, returning one File per input in order. A
+// file that cannot be read is returned as none; a cancelled context returns
+// ctx.Err().
+func OutlineMany(ctx context.Context, srcs []Source, opts Options) ([]File, error) {
 	files := make([]File, len(srcs))
-	var stats Stats
-
-	maxBytes := opts.MaxFileBytes
-	if maxBytes == 0 {
-		maxBytes = defaultMaxFileBytes
-	}
-
-	// Collect non-Go, in-table, eligible files for ctags batching.
-	var ctagsEntries []ctagsBatchEntry
-
 	for i, s := range srcs {
-		if err := ctx.Err(); err != nil {
-			return nil, Stats{}, err
-		}
-
-		ext := filepath.Ext(s.Abs)
-		lang := langForExt(ext)
-
-		// Unknown extension: return immediately without reading.
-		if lang == "" {
-			files[i] = File{
-				Path:    filePath(s.Abs, opts.Root),
-				Lang:    "",
-				Backend: BackendNone,
-				Decls:   []Decl{},
+		f, err := Outline(ctx, s.Abs, s.Src, opts)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
 			}
-			continue
+			f = File{Path: filePath(s.Abs, opts.Root), Lang: langForExt(filepath.Ext(s.Abs)), Backend: BackendNone, Decls: []Decl{}}
 		}
-
-		// Go files are always parsed in-process.
-		if lang == LangGo {
-			f, err := Outline(ctx, s.Abs, s.Src, opts)
-			if err != nil {
-				files[i] = File{
-					Path:    filePath(s.Abs, opts.Root),
-					Lang:    lang,
-					Backend: BackendNone,
-					Decls:   []Decl{},
-				}
-				continue
-			}
-			files[i] = f
-			continue
-		}
-
-		// Non-Go, in-table file: read source and check eligibility.
-		src := s.Src
-		if src == nil {
-			data, err := loadSourceIfNeeded(s.Abs, nil, maxBytes)
-			if errors.Is(err, errTooLarge) {
-				files[i] = File{
-					Path:    filePath(s.Abs, opts.Root),
-					Lang:    lang,
-					Backend: BackendNone,
-					Decls:   []Decl{},
-				}
-				continue
-			}
-			if err != nil {
-				// Unreadable: return as none and continue.
-				files[i] = File{
-					Path:    filePath(s.Abs, opts.Root),
-					Lang:    lang,
-					Backend: BackendNone,
-					Decls:   []Decl{},
-				}
-				continue
-			}
-			src = data
-		}
-
-		// Check size limit.
-		if int64(len(src)) > maxBytes {
-			files[i] = File{
-				Path:    filePath(s.Abs, opts.Root),
-				Lang:    lang,
-				Backend: BackendNone,
-				Decls:   []Decl{},
-			}
-			continue
-		}
-
-		// Binary check.
-		sniff := src
-		if len(sniff) > binarySniffSize {
-			sniff = sniff[:binarySniffSize]
-		}
-		if bytes.IndexByte(sniff, 0) >= 0 {
-			files[i] = File{
-				Path:    filePath(s.Abs, opts.Root),
-				Lang:    lang,
-				Backend: BackendNone,
-				Decls:   []Decl{},
-			}
-			continue
-		}
-
-		// Eligible for ctags or heuristic.
-		ctagsEntries = append(ctagsEntries, ctagsBatchEntry{
-			srcIdx: i,
-			abs:    s.Abs,
-			src:    src,
-		})
+		files[i] = f
 	}
-
-	// Run ctags batches if Runner is available.
-	if opts.Runner != nil && len(ctagsEntries) > 0 {
-		batches := makeBatches(ctagsEntries)
-		for _, batch := range batches {
-			if err := ctx.Err(); err != nil {
-				return nil, Stats{}, err
-			}
-
-			tagsByIdx, malformed, err := runCtagsBatch(ctx, opts.Runner, batch)
-			stats.MalformedLines += malformed
-
-			if err != nil {
-				// Check for context cancellation.
-				if ctx.Err() != nil {
-					return nil, Stats{}, ctx.Err()
-				}
-				// Runner error: fall back to heuristic/none for this batch.
-				stats.Fallbacks++
-				for _, e := range batch {
-					files[e.srcIdx] = heuristicOrNone(e.abs, e.src, opts)
-				}
-				continue
-			}
-
-			// Check if the output was usable: if there were malformed
-			// lines and no valid tags were produced, the batch is unusable.
-			if malformed > 0 && len(tagsByIdx) == 0 {
-				stats.Fallbacks++
-				for _, e := range batch {
-					files[e.srcIdx] = heuristicOrNone(e.abs, e.src, opts)
-				}
-				continue
-			}
-
-			// Assign ctags results to files.
-			for _, e := range batch {
-				files[e.srcIdx] = ctagsFile(e.abs, e.src, tagsByIdx[e.srcIdx], opts)
-			}
-		}
-	} else {
-		// No Runner: fall back to heuristic/none for all non-Go files.
-		for _, e := range ctagsEntries {
-			files[e.srcIdx] = heuristicOrNone(e.abs, e.src, opts)
-		}
-	}
-
-	return files, stats, nil
+	return files, nil
 }
 
-// ctagsFile is the File for the declarations ctags gave a file. A file ctags
-// gave nothing — no parser for it, or a parser that classifies everything
-// as something the closed set drops — is not "usable output" (spec 01 §3):
-// it goes to the heuristic, when that finds something, rather than becoming
-// an outline poorer than the one without ctags.
-func ctagsFile(abs string, src []byte, decls []Decl, opts Options) File {
-	if len(decls) == 0 {
-		if f, ok := outlineHeuristic(abs, src, opts); ok && len(f.Decls) > 0 {
-			return f
-		}
-	}
-	return finishFile(File{
-		Path:    filePath(abs, opts.Root),
-		Lang:    LangFor(abs, src),
-		Backend: BackendCtags,
-		Decls:   decls,
-	})
-}
+// errTooLarge is loadSource's report that the file is over the size limit
+// and was not read.
+var errTooLarge = errors.New("outline: file over the size limit")
 
-// heuristicOrNone tries the heuristic backend for a file and falls back to none.
-func heuristicOrNone(abs string, src []byte, opts Options) File {
-	if f, ok := outlineHeuristic(abs, src, opts); ok {
-		return f
+// loadSource reads the file. A file larger than maxBytes is not read at all:
+// its size is checked on a stat first, and errTooLarge returned.
+func loadSource(abs string, maxBytes int64) ([]byte, error) {
+	if fi, err := os.Stat(abs); err == nil && fi.Size() > maxBytes {
+		return nil, errTooLarge
 	}
-	return finishFile(File{
-		Path:    filePath(abs, opts.Root),
-		Lang:    LangFor(abs, src),
-		Backend: BackendNone,
-		Decls:   []Decl{},
-	})
+	return os.ReadFile(abs)
 }
 
 // filePath computes the File.Path value. When root is non-empty, the path is

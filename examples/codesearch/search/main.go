@@ -56,7 +56,6 @@ type config struct {
 	kind         string
 	exact        bool
 	asJSON       bool
-	noCtags      bool
 	queries      []string
 }
 
@@ -72,7 +71,6 @@ func run(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&c.kind, "kind", "", "with --symbol: only this kind (func, method, type, …)")
 	fs.BoolVar(&c.exact, "exact", false, "with --symbol: exact name instead of prefix")
 	fs.BoolVar(&c.asJSON, "json", false, "print the structured result instead of the rendered text")
-	fs.BoolVar(&c.noCtags, "no-ctags", false, "never run universal-ctags; use the built-in outline backends")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -111,7 +109,6 @@ func search(ctx context.Context, c config, stdout, stderr io.Writer) error {
 	//    .gitignore files are honoured either way; this only controls the
 	//    user-global excludes layer.
 	index, err := codesearch.New(ws, codesearch.Options{
-		DisableCtags: c.noCtags,
 		// The three bounds below are the defaults, spelled out. When one
 		// stops a build the index keeps what it has, marks itself partial,
 		// and says so on the first line of every result.

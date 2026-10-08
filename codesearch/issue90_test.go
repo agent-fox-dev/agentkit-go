@@ -40,26 +40,17 @@ func newTestIndex(t *testing.T, root string, o Options) *Index {
 	return idx
 }
 
+// nonGoBackend is the backend this build outlines a Python file with:
+// tree-sitter, or none in a build without cgo.
+func nonGoBackend() outline.Backend {
+	f, _ := outline.Outline(context.Background(), "/x/a.py", []byte("def f():\n    pass\n"), outline.Options{})
+	return f.Backend
+}
+
 func codeSearch(t *testing.T, idx *Index, args map[string]any) core.ToolResult {
 	t.Helper()
 	in, _ := json.Marshal(args)
 	return idx.Tools()[0].Execute(context.Background(), in)
-}
-
-// endTagRunner is a fake ctags that, like universal-ctags with
-// --fields=+neKS, reports an `end` for every tag: a class spanning lines 1-6
-// with a method on lines 2-3 inside it.
-func endTagRunner(_ context.Context, args []string) ([]byte, error) {
-	var out strings.Builder
-	for _, p := range args {
-		if !strings.HasSuffix(p, ".py") {
-			continue
-		}
-		fmt.Fprintf(&out, `{"_type":"tag","name":"Loader","path":%q,"line":1,"end":6,"kind":"class"}`+"\n", p)
-		fmt.Fprintf(&out, `{"_type":"tag","name":"load","path":%q,"line":2,"end":3,"kind":"member","scope":"Loader","scopeKind":"class"}`+"\n", p)
-		fmt.Fprintf(&out, `{"_type":"tag","name":"save","path":%q,"line":5,"end":6,"kind":"member","scope":"Loader","scopeKind":"class"}`+"\n", p)
-	}
-	return []byte(out.String()), nil
 }
 
 // TestNestedDeclarationsDoNotFailTheBuild: a class and the methods inside it,
@@ -72,7 +63,10 @@ func TestNestedDeclarationsDoNotFailTheBuild(t *testing.T) {
 		"class Loader:\n    def load(self):\n        return 1\n\n    def save(self):\n        return 2\n")
 	mkFile(t, root, "vars.go", "package p\n\nvar alpha, beta = 1, 2\n\nconst (\n\tX, Y = 3, 4\n)\n")
 
-	idx := newTestIndex(t, root, Options{Runner: endTagRunner})
+	if nonGoBackend() != outline.BackendTreeSitter {
+		t.Skip("the Python class needs the tree-sitter backend (cgo)")
+	}
+	idx := newTestIndex(t, root, Options{})
 	defer idx.Close()
 	if err := idx.Build(context.Background()); err != nil {
 		t.Fatalf("Build: %v", err)
@@ -135,7 +129,7 @@ func TestFilesZoektSkipsAreNotCountedAsIndexed(t *testing.T) {
 	mkFile(t, root, "late.bin", strings.Repeat("left-pad text\n", 1000)+"\x00\n")
 	mkFile(t, root, "index.js", "require('left-pad')\n")
 
-	idx := newTestIndex(t, root, Options{DisableCtags: true})
+	idx := newTestIndex(t, root, Options{})
 	defer idx.Close()
 	if err := idx.Build(context.Background()); err != nil {
 		t.Fatal(err)
@@ -164,14 +158,14 @@ func TestCloseWaitsForARebuild(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		mkFile(t, root, fmt.Sprintf("f%02d.go", i), fmt.Sprintf("package p\n// word %d\n", i))
 	}
-	idx := newTestIndex(t, root, Options{DisableCtags: true})
+	idx := newTestIndex(t, root, Options{})
 	if err := idx.Build(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
 	entered, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	idx.testOutlineHook = func(string, int, bool) {
+	idx.testOutlineHook = func(string, int) {
 		once.Do(func() {
 			close(entered)
 			<-release
@@ -209,7 +203,7 @@ func TestConcurrentDirtyQueriesBuildOneOverlay(t *testing.T) {
 	for i := 0; i < 40; i++ {
 		mkFile(t, root, fmt.Sprintf("f%02d.go", i), fmt.Sprintf("package p\n// word %d\n", i))
 	}
-	idx := newTestIndex(t, root, Options{DisableCtags: true})
+	idx := newTestIndex(t, root, Options{})
 	defer idx.Close()
 	if err := idx.Build(context.Background()); err != nil {
 		t.Fatal(err)
@@ -240,7 +234,7 @@ func TestADirtyTopResultKeepsThePageFull(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		mkFile(t, root, fmt.Sprintf("f%02d.go", i), "package p\n// needle\n")
 	}
-	idx := newTestIndex(t, root, Options{DisableCtags: true})
+	idx := newTestIndex(t, root, Options{})
 	defer idx.Close()
 	r := codeSearch(t, idx, map[string]any{"query": "needle", "max_files": 10})
 	paths := getResultFilePaths(r)
@@ -267,7 +261,7 @@ func TestAWalkDeadlineKeepsWhatItWalked(t *testing.T) {
 	for i := 0; i < 4000; i++ {
 		mkFile(t, root, fmt.Sprintf("d%02d/f%04d.txt", i%40, i), fmt.Sprintf("word %d\n", i))
 	}
-	idx := newTestIndex(t, root, Options{DisableCtags: true, MaxBuildTime: 15 * time.Millisecond})
+	idx := newTestIndex(t, root, Options{MaxBuildTime: 15 * time.Millisecond})
 	defer idx.Close()
 	if err := idx.Build(context.Background()); err != nil {
 		t.Fatal(err)

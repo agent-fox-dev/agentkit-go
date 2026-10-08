@@ -37,7 +37,7 @@ func TestCompleteUnmarkedTableNoWalkOrOutline_TS02_39(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
@@ -107,7 +107,7 @@ func TestWriteAndEditMarkDirty_TS02_40(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 
 	// Create the table so marking has something to mark.
@@ -249,7 +249,7 @@ func TestShellToolsMarkRevalidateAll_TS02_41(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}
 
 	// Build fileTools and the tools manually, mirroring All()'s wrapping.
@@ -367,7 +367,7 @@ func TestDirtyPathReoutlineOrDrop_TS02_42(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
@@ -491,7 +491,7 @@ func TestNewFileOrGitignoreEscalatesToRevalidation_TS02_43(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
@@ -602,9 +602,6 @@ func makeAllToolsWithFT(t *testing.T, root string, symOpts SymbolOptions) ([]cor
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !symOpts.DisableCtags && symOpts.Runner == nil {
-		symOpts.DisableCtags = true
-	}
 	ft := newFileTools(Options{
 		Workspace: ws,
 		Env:       os.Environ(),
@@ -660,7 +657,7 @@ func TestWriteFileMarkUnderLock_TS02_40_lock(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 
 	// Create the table.
@@ -737,7 +734,7 @@ func TestShellWrapperResultsPassThrough_TS02_41_passthrough(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -785,7 +782,7 @@ func TestDirtyPathOnlyReoutlinesDirty_TS02_42_selective(t *testing.T) {
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 	tl := ft.findSymbolTool()
 	exec := tl.Execute

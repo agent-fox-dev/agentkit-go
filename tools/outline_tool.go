@@ -66,10 +66,7 @@ func (f *fileTools) fileOutlineTool() core.Tool {
 				}
 			}
 
-			ofile, err := outline.Outline(ctx, abs, src, outline.Options{
-				Root:   f.ws.Root,
-				Runner: f.outlineRunner(),
-			})
+			ofile, err := outline.Outline(ctx, abs, src, outline.Options{Root: f.ws.Root})
 			if err != nil {
 				// A context cancellation during outline is aborted.
 				if ctx.Err() != nil {
@@ -191,10 +188,9 @@ func noneReason(f outline.File, src []byte, size int64) string {
 			}
 		}
 	}
-	// A recognised, readable text file with no outline: the language has no
-	// in-process backend (Go's parser, or a heuristic) and universal-ctags,
-	// which is the only one it has, did not run.
-	return "no outline backend for " + f.Lang + " without universal-ctags"
+	// A recognised, readable text file with no outline: only Go is outlined
+	// in a build without cgo, which the tree-sitter grammars need.
+	return "no outline backend for " + f.Lang + " in this build (built without cgo)"
 }
 
 // Constants mirrored from outline to avoid exporting them.

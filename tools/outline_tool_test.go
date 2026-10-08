@@ -24,7 +24,7 @@ func mkOutlineFile(t *testing.T, root, rel, content string) {
 	}
 }
 
-// makeOutlineTool builds a file_outline tool's Execute function from a workspace root with DisableCtags.
+// makeOutlineTool builds a file_outline tool's Execute function from a workspace root.
 func makeOutlineTool(t *testing.T, root string) func(ctx context.Context, in json.RawMessage) core.ToolResult {
 	t.Helper()
 	ws, err := NewWorkspace(root)
@@ -35,7 +35,7 @@ func makeOutlineTool(t *testing.T, root string) func(ctx context.Context, in jso
 		Workspace: ws,
 		Env:       os.Environ(),
 		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{DisableCtags: true},
+		Symbols:   SymbolOptions{},
 	}.withDefaults())
 	tl := fs.fileOutlineTool()
 	return tl.Execute

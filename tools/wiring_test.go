@@ -118,7 +118,7 @@ func TestToolMetadata_TS02_56(t *testing.T) {
 	}
 }
 
-// TS-02-31: All() and file_outline start no walk or subprocess and ctags runner is built lazily
+// TS-02-31: All() and file_outline start no walk or subprocess
 func TestAllAndFileOutlineNoWalkOrSubprocess_TS02_31(t *testing.T) {
 	root := t.TempDir()
 	// Write a Go file so file_outline has something to outline.
@@ -126,7 +126,6 @@ func TestAllAndFileOutlineNoWalkOrSubprocess_TS02_31(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Use DisableCtags to ensure no subprocess is spawned.
 	ws, err := tools.NewWorkspace(root)
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +133,7 @@ func TestAllAndFileOutlineNoWalkOrSubprocess_TS02_31(t *testing.T) {
 	// All() should not start any walk or subprocess.
 	all, err := tools.All(tools.Options{
 		Workspace: ws,
-		Symbols:   tools.SymbolOptions{DisableCtags: true},
+		Symbols:   tools.SymbolOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -178,37 +177,6 @@ func TestAllAndFileOutlineNoWalkOrSubprocess_TS02_31(t *testing.T) {
 	r = fsTool.Execute(context.Background(), json.RawMessage(`{"name":"Hello"}`))
 	if !r.OK {
 		t.Fatalf("find_symbol failed: error=%q detail=%q", r.Error, r.Detail)
-	}
-}
-
-// TS-02-31 (continued): CtagsRunner is constructed lazily, not at All() time.
-func TestCtagsRunnerLazy_TS02_31(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(root+"/main.go", []byte("package main\n\nfunc Hello() {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Use a custom Runner to verify it's only called when a tool is used.
-	var runnerCalled bool
-	customRunner := func(ctx context.Context, args []string) ([]byte, error) {
-		runnerCalled = true
-		return nil, nil
-	}
-
-	ws, err := tools.NewWorkspace(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// All() with a custom runner should not call it.
-	_, err = tools.All(tools.Options{
-		Workspace: ws,
-		Symbols:   tools.SymbolOptions{Runner: customRunner},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runnerCalled {
-		t.Fatal("Runner was called at All() time; it should be lazy")
 	}
 }
 

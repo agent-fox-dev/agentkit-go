@@ -124,9 +124,8 @@ func TestCodeSearchShowsTheBestChunksNotTheEarliest(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)

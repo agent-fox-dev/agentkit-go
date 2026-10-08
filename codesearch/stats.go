@@ -10,7 +10,6 @@ type BuildStatsResult struct {
 	// (minified bundles, lock files, source maps).
 	TooManyTrigramsSkipped int
 	// TooSmallSkipped counts files under three bytes, which hold no trigram.
-	TooSmallSkipped     int
-	CtagsProcessSpawned bool
-	FilesIndexed        int
+	TooSmallSkipped int
+	FilesIndexed    int
 }

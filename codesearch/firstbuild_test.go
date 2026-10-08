@@ -32,9 +32,8 @@ func blockedFirstBuild(t *testing.T) (idx *Index, tool core.Tool, first <-chan c
 		t.Fatal(err)
 	}
 	idx, err = newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -44,7 +43,7 @@ func blockedFirstBuild(t *testing.T) (idx *Index, tool core.Tool, first <-chan c
 	gate := make(chan struct{})
 	var once sync.Once
 	release = func() { once.Do(func() { close(gate) }) }
-	idx.testOutlineHook = func(_ string, _ int, _ bool) {
+	idx.testOutlineHook = func(_ string, _ int) {
 		select {
 		case started <- struct{}{}:
 		default:
@@ -198,9 +197,8 @@ func TestWaiterBuildsAgainAfterTheBuilderIsCancelled(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -209,7 +207,7 @@ func TestWaiterBuildsAgainAfterTheBuilderIsCancelled(t *testing.T) {
 
 	started := make(chan struct{}, 1)
 	gate := make(chan struct{})
-	idx.testOutlineHook = func(_ string, _ int, _ bool) {
+	idx.testOutlineHook = func(_ string, _ int) {
 		select {
 		case started <- struct{}{}:
 		default:

@@ -280,7 +280,7 @@ func renderResult(files []searchResultFile, info resultInfo) string {
 	var b strings.Builder
 
 	// First line: matched and indexed file counts, index size, symbol sources,
-	// ctags note, partial/dirty.
+	// partial/dirty.
 	b.WriteString(renderFirstLine(info, len(files)))
 	b.WriteByte('\n')
 
@@ -317,7 +317,6 @@ type resultInfo struct {
 	filesIndexed   int
 	indexSizeBytes int64
 	symbolSources  map[string]int // backend -> file count
-	ctagsAvailable bool
 	partial        bool
 	partialReason  string
 	dirtyFiles     int
@@ -349,10 +348,6 @@ func renderFirstLine(info resultInfo, matched int) string {
 			srcParts = append(srcParts, fmt.Sprintf("%s: %d", b, info.symbolSources[b]))
 		}
 		parts = append(parts, "symbols: "+strings.Join(srcParts, ", "))
-	}
-
-	if !info.ctagsAvailable {
-		parts = append(parts, "ctags unavailable (non-Go symbols are the heuristic's column-0 declarations only)")
 	}
 
 	if info.partial {

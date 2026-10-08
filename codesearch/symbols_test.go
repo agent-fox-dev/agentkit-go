@@ -30,9 +30,8 @@ func TestIndexBuiltLazilyOnCodeSearch_TS03_32(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -92,9 +91,8 @@ func TestSymbolsMatchingRules_TS03_50(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -227,9 +225,8 @@ func TestSymbolsOkTrueAfterBuild_TS03_51(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -273,9 +270,8 @@ func TestSymbolsOkFalseStates_TS03_52(t *testing.T) {
 			t.Fatal(err)
 		}
 		idx, err := newIndex(ws, Options{
-			TempDir:      t.TempDir(),
-			Ignore:       tools.NoGlobalExcludes(),
-			DisableCtags: true,
+			TempDir: t.TempDir(),
+			Ignore:  tools.NoGlobalExcludes(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -305,10 +301,9 @@ func TestSymbolsOkFalseStates_TS03_52(t *testing.T) {
 			t.Fatal(err)
 		}
 		idx, err := newIndex(ws, Options{
-			TempDir:      t.TempDir(),
-			Ignore:       tools.NoGlobalExcludes(),
-			DisableCtags: true,
-			MaxFiles:     5, // partial build
+			TempDir:  t.TempDir(),
+			Ignore:   tools.NoGlobalExcludes(),
+			MaxFiles: 5, // partial build
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -340,9 +335,8 @@ func TestSymbolsOkFalseStates_TS03_52(t *testing.T) {
 			t.Fatal(err)
 		}
 		idx, err := newIndex(ws, Options{
-			TempDir:      t.TempDir(),
-			Ignore:       tools.NoGlobalExcludes(),
-			DisableCtags: true,
+			TempDir: t.TempDir(),
+			Ignore:  tools.NoGlobalExcludes(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -378,9 +372,8 @@ func TestSymbolsOkFalseStates_TS03_52(t *testing.T) {
 			t.Fatal(err)
 		}
 		idx, err := newIndex(ws, Options{
-			TempDir:      t.TempDir(),
-			Ignore:       tools.NoGlobalExcludes(),
-			DisableCtags: true,
+			TempDir: t.TempDir(),
+			Ignore:  tools.NoGlobalExcludes(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -416,9 +409,8 @@ func TestSymbolsRevalidatesAndReoutlines_TS03_53(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -484,9 +476,8 @@ func TestSymbolsCancelledContext_TS03_54(t *testing.T) {
 	}
 
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -519,9 +510,8 @@ func TestSymbolsCancelledContext_TS03_54(t *testing.T) {
 	// Every ok=false state with a live context should return nil error.
 	// Unbuilt:
 	idx2, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -534,9 +524,8 @@ func TestSymbolsCancelledContext_TS03_54(t *testing.T) {
 
 	// Closed:
 	idx3, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -566,9 +555,8 @@ func TestFindSymbolSameMatchesThroughIndex_TS03_55(t *testing.T) {
 
 	// Build the codesearch index.
 	idx, err := newIndex(ws, Options{
-		TempDir:      t.TempDir(),
-		Ignore:       tools.NoGlobalExcludes(),
-		DisableCtags: true,
+		TempDir: t.TempDir(),
+		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -587,7 +575,7 @@ func TestFindSymbolSameMatchesThroughIndex_TS03_55(t *testing.T) {
 	withIdxAll, err := tools.All(tools.Options{
 		Workspace: ws,
 		Ignore:    tools.NoGlobalExcludes(),
-		Symbols:   tools.SymbolOptions{DisableCtags: true},
+		Symbols:   tools.SymbolOptions{},
 		Index:     idx,
 	})
 	if err != nil {
@@ -605,7 +593,7 @@ func TestFindSymbolSameMatchesThroughIndex_TS03_55(t *testing.T) {
 	noIdxAll, err := tools.All(tools.Options{
 		Workspace: ws,
 		Ignore:    tools.NoGlobalExcludes(),
-		Symbols:   tools.SymbolOptions{DisableCtags: true},
+		Symbols:   tools.SymbolOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)

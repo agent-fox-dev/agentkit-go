@@ -20,168 +20,48 @@ const (
 	LangC          = "C"
 	LangCPP        = "C++"
 	LangPHP        = "PHP"
-	// LangSwift and LangScala are not in the extension table: Universal
-	// Ctags has no parser for either and there is no heuristic, so a file
-	// in them has no outline backend. The names are kept for callers that
-	// spell them.
-	LangSwift = "Swift"
-	LangScala = "Scala"
-	LangLua   = "Lua"
-	LangShell = "Shell"
-	LangPerl  = "Perl"
-
-	// Languages with no heuristic, outlined by universal ctags alone.
-	LangAda           = "Ada"
-	LangClojure       = "Clojure"
-	LangCOBOL         = "COBOL"
-	LangCUDA          = "CUDA"
-	LangD             = "D"
-	LangElixir        = "Elixir"
-	LangElm           = "Elm"
-	LangEmacsLisp     = "Emacs Lisp"
-	LangErlang        = "Erlang"
-	LangFortran       = "Fortran"
-	LangGDScript      = "GDScript"
-	LangJulia         = "Julia"
-	LangLisp          = "Lisp"
-	LangOCaml         = "OCaml"
-	LangObjectiveC    = "Objective-C"
-	LangPascal        = "Pascal"
-	LangPowerShell    = "PowerShell"
-	LangProtobuf      = "Protocol Buffers"
-	LangR             = "R"
-	LangRaku          = "Raku"
-	LangScheme        = "Scheme"
-	LangSQL           = "SQL"
-	LangSystemVerilog = "SystemVerilog"
-	LangTcl           = "Tcl"
-	LangTerraform     = "Terraform"
-	LangThrift        = "Thrift"
-	LangVHDL          = "VHDL"
-	LangVim           = "Vim Script"
+	LangScala      = "Scala"
+	LangLua        = "Lua"
+	LangShell      = "Shell"
 )
 
 // extToLang maps file extensions (lower-cased, with leading dot) to language
-// names. The Go, Python, JS/TS, Rust, Java, Kotlin, C#, Ruby and C/C++
-// extensions get heuristic support. The rest are ctags-only: they appear in
-// the table so their files are read and passed to ctags, but have no
-// heuristic backend.
-//
-// The ctags-only list is the programming languages Universal Ctags 6.2 has a
-// parser for, by the extensions it maps to them, less those where the
-// extension is ambiguous (`.m` is MATLAB or Objective-C, `.v` Verilog or V,
-// `.s` assembly or R) or the parser's output is not worth having (Haskell's
-// reports type constructors as functions and misses ordinary functions).
-// Markup and data formats (Markdown, JSON, YAML, HTML) are left out: their
-// tags are headings and keys, not declarations. Swift and Scala are NOT
-// listed: no Universal Ctags build has a parser for either, and a listed
-// extension with no backend read as "0 declarations" whenever ctags was
-// installed, where "language not recognised" is the truth.
+// names: Go, and the languages with a tree-sitter grammar (see grammars).
+// Markup and data formats are left out: their "declarations" are headings
+// and keys.
 var extToLang = map[string]string{
-	// Go
-	".go": LangGo,
-
-	// Python
-	".py":  LangPython,
-	".pyw": LangPython,
-
-	// JavaScript
-	".js":  LangJavaScript,
-	".jsx": LangJavaScript,
-	".mjs": LangJavaScript,
-	".cjs": LangJavaScript,
-
-	// TypeScript
-	".ts":  LangTypeScript,
-	".tsx": LangTypeScript,
-	".mts": LangTypeScript,
-	".cts": LangTypeScript,
-
-	// Rust
-	".rs": LangRust,
-
-	// Java
-	".java": LangJava,
-
-	// Kotlin
-	".kt":  LangKotlin,
-	".kts": LangKotlin,
-
-	// C#
-	".cs": LangCSharp,
-
-	// Ruby
-	".rb": LangRuby,
-
-	// C. A `.h` header is C unless its content says C++; see LangFor.
-	".c": LangC,
-	".h": LangC,
-
-	// C++
-	".cpp": LangCPP,
-	".cxx": LangCPP,
-	".cc":  LangCPP,
-	".hpp": LangCPP,
-	".hxx": LangCPP,
-	".hh":  LangCPP,
-
-	// ctags-only languages
-	".php":     LangPHP,
-	".lua":     LangLua,
-	".sh":      LangShell,
-	".bash":    LangShell,
-	".zsh":     LangShell,
-	".pl":      LangPerl,
-	".pm":      LangPerl,
-	".ada":     LangAda,
-	".adb":     LangAda,
-	".ads":     LangAda,
-	".clj":     LangClojure,
-	".cljc":    LangClojure,
-	".cljs":    LangClojure,
-	".cbl":     LangCOBOL,
-	".cob":     LangCOBOL,
-	".cu":      LangCUDA,
-	".cuh":     LangCUDA,
-	".d":       LangD,
-	".di":      LangD,
-	".ex":      LangElixir,
-	".exs":     LangElixir,
-	".elm":     LangElm,
-	".el":      LangEmacsLisp,
-	".erl":     LangErlang,
-	".hrl":     LangErlang,
-	".f":       LangFortran,
-	".for":     LangFortran,
-	".f90":     LangFortran,
-	".f95":     LangFortran,
-	".f03":     LangFortran,
-	".f08":     LangFortran,
-	".gd":      LangGDScript,
-	".jl":      LangJulia,
-	".lisp":    LangLisp,
-	".lsp":     LangLisp,
-	".ml":      LangOCaml,
-	".mli":     LangOCaml,
-	".mm":      LangObjectiveC,
-	".pas":     LangPascal,
-	".ps1":     LangPowerShell,
-	".psm1":    LangPowerShell,
-	".proto":   LangProtobuf,
-	".r":       LangR,
-	".raku":    LangRaku,
-	".rakumod": LangRaku,
-	".scm":     LangScheme,
-	".rkt":     LangScheme,
-	".sql":     LangSQL,
-	".sv":      LangSystemVerilog,
-	".svh":     LangSystemVerilog,
-	".tcl":     LangTcl,
-	".tf":      LangTerraform,
-	".thrift":  LangThrift,
-	".vhd":     LangVHDL,
-	".vhdl":    LangVHDL,
-	".vim":     LangVim,
+	".go":    LangGo,
+	".py":    LangPython,
+	".pyw":   LangPython,
+	".js":    LangJavaScript,
+	".jsx":   LangJavaScript,
+	".mjs":   LangJavaScript,
+	".cjs":   LangJavaScript,
+	".ts":    LangTypeScript,
+	".tsx":   LangTypeScript,
+	".mts":   LangTypeScript,
+	".cts":   LangTypeScript,
+	".rs":    LangRust,
+	".java":  LangJava,
+	".kt":    LangKotlin,
+	".kts":   LangKotlin,
+	".cs":    LangCSharp,
+	".rb":    LangRuby,
+	".c":     LangC,
+	".h":     LangC, // C unless its content says C++; see LangFor
+	".cpp":   LangCPP,
+	".cxx":   LangCPP,
+	".cc":    LangCPP,
+	".hpp":   LangCPP,
+	".hxx":   LangCPP,
+	".hh":    LangCPP,
+	".php":   LangPHP,
+	".scala": LangScala,
+	".sc":    LangScala,
+	".lua":   LangLua,
+	".sh":    LangShell,
+	".bash":  LangShell,
+	".zsh":   LangShell,
 }
 
 // langForExt returns the language name for a file extension, or "" if the

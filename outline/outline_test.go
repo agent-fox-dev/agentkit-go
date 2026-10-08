@@ -157,12 +157,7 @@ func TestUnknownExtension_TS_01_9(t *testing.T) {
 	ctx := context.Background()
 
 	// The file does not exist, but no read should occur.
-	f, err := Outline(ctx, "/nonexistent/foo.xyz", nil, Options{
-		Runner: func(_ context.Context, _ []string) ([]byte, error) {
-			t.Fatal("Runner should not be called for unknown extension")
-			return nil, nil
-		},
-	})
+	f, err := Outline(ctx, "/nonexistent/foo.xyz", nil, Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -184,7 +179,7 @@ func TestUnknownExtension_TS_01_9(t *testing.T) {
 		".go", ".py", ".js", ".jsx", ".ts", ".tsx",
 		".rs", ".java", ".kt", ".kts", ".cs",
 		".rb", ".c", ".h", ".cpp", ".cxx", ".cc", ".hpp",
-		".php", ".lua", ".sh", ".bash", ".pl", ".pm",
+		".php", ".lua", ".sh", ".bash", ".scala", ".sc",
 	}
 	for _, ext := range knownExts {
 		lang := langForExt(ext)
@@ -223,8 +218,7 @@ func TestNulByte_TS_01_11(t *testing.T) {
 	// NUL only after offset 8192 — should be outlined normally (not
 	// rejected by the binary check). We verify by passing Src directly so
 	// the file is read, and checking that the Lang is set (proving the
-	// binary check did not fire). The backend may still be "none" because
-	// no heuristic backend is implemented yet in this task.
+	// binary check did not fire).
 	data2 := make([]byte, 9000)
 	for i := range data2 {
 		data2[i] = 'x'
@@ -311,16 +305,8 @@ func TestMaxFileBytes_TS_01_11_extra(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if f2.Backend == BackendNone {
-		// It should be outlined (not rejected for size). The backend will be
-		// heuristic or none depending on content, but not rejected for size.
-		// Actually for a file of all 'x' with .py extension, it will be
-		// heuristic with no matches, so Backend could be "heuristic" or "none"
-		// depending on implementation. The key point is it wasn't rejected
-		// for size.
-		// Since we haven't implemented heuristic yet, it will be "none" but
-		// that's because no backend matched, not because of size rejection.
-		_ = f2
+	if f2.Lang != LangPython {
+		t.Fatalf("Lang = %q: a file of exactly MaxFileBytes is outlined, not rejected", f2.Lang)
 	}
 }
 
