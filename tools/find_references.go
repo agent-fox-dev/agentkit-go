@@ -118,58 +118,43 @@ func (f *fileTools) findReferencesTool() core.Tool {
 				includeTests = *a.IncludeTests
 			}
 
-			maxResults := 30
+			var maxResults int // clamped by executeReferenceSearch
 			if a.MaxResults != nil {
-				maxResults = clampMaxResults(*a.MaxResults)
+				maxResults = *a.MaxResults
+			}
+
+			fail := func(err error) core.ToolResult {
+				if ctx.Err() != nil {
+					return errResult("aborted", "Operation aborted")
+				}
+				return errResult("internal_error", err.Error())
 			}
 
 			// Ensure reference cache and symbol table freshness
 			rc := f.getRefCache()
 			if err := rc.refresh(ctx); err != nil {
-				if ctx.Err() != nil {
-					return errResult("aborted", "Operation aborted")
-				}
-				return errResult("internal_error", err.Error())
+				return fail(err)
 			}
-
 			if err := f.ensureSymbolTable(ctx); err != nil {
-				if ctx.Err() != nil {
-					return errResult("aborted", "Operation aborted")
-				}
-				return errResult("internal_error", err.Error())
+				return fail(err)
 			}
 
-			st := f.getTable()
-			candidates := resolveSymbolCandidates(st, a.Name, kind, a.Path)
-
-			var target outline.Decl
+			target := outline.Decl{Name: a.Name}
 			backend := "text"
-			if len(candidates) > 0 {
+			if candidates := resolveSymbolCandidates(f.getTable(), a.Name, kind, a.Path); len(candidates) > 0 {
 				top := disambiguateSymbol(candidates, a.Name)
 				target = top.Decl()
+				backend = "lexical"
 				if strings.HasSuffix(top.Path, ".go") {
 					backend = "go/types"
-				} else {
-					backend = "lexical"
 				}
-			} else {
-				target = outline.Decl{Name: a.Name}
-				backend = "text"
 			}
 
-			opts := ReferenceOptions{
-				Path:         a.Path,
-				IncludeTests: includeTests,
-				MaxResults:   maxResults,
-			}
+			opts := ReferenceOptions{Path: a.Path, IncludeTests: includeTests, MaxResults: maxResults}
 			refRes, err := executeReferenceSearch(ctx, f.ws, target, backend, opts, rc)
 			if err != nil {
-				if ctx.Err() != nil {
-					return errResult("aborted", "Operation aborted")
-				}
-				return errResult("internal_error", err.Error())
+				return fail(err)
 			}
-
 			return renderReferencesResult(a.Name, refRes)
 		},
 	}

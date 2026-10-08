@@ -27,8 +27,8 @@ func TestRefRender_TS05_35(t *testing.T) {
 		},
 	}
 
-	// When: renderResultText is called
-	txt := renderResultText(res)
+	// When: the result is rendered
+	txt := renderReferencesResult(res.Target.Name, res).Text
 
 	// Then:
 	// - first line format matches 'find_references <name>  (go/types, 5 references in 2 files; 1 text matches) [partial]'
@@ -83,8 +83,8 @@ func TestRefRender_TS05_36(t *testing.T) {
 		},
 	}
 
-	// When: renderResultText is called
-	txt := renderResultText(res)
+	// When: the result is rendered
+	txt := renderReferencesResult(res.Target.Name, res).Text
 
 	// Then:
 	// - file path 'pkg/runner.go' appears as a header line
@@ -130,8 +130,8 @@ func TestRefRender_TS05_37(t *testing.T) {
 		},
 	}
 
-	// When: renderResultText produces final output
-	txt := renderResultText(truncatedPartialRes)
+	// When: the result is rendered
+	txt := renderReferencesResult("Run", truncatedPartialRes).Text
 
 	// Then:
 	// - truncation CapMarker appears on its own line after the file groups

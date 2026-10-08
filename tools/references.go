@@ -1,11 +1,9 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,79 +44,18 @@ func clampMaxResults(maxResults int) int {
 	if maxResults <= 0 {
 		return 30
 	}
-	if maxResults > 100 {
-		return 100
-	}
-	return maxResults
-}
-
-// normalizeWorkspaceMaxResults normalizes maxResults for Workspace.References.
-func normalizeWorkspaceMaxResults(maxResults int) int {
-	return clampMaxResults(maxResults)
+	return min(maxResults, 100)
 }
 
 // References finds usages and callers of target across the workspace.
 func (w *Workspace) References(ctx context.Context, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error) {
-	if err := ctx.Err(); err != nil {
-		return ReferenceResult{}, err
-	}
-	if w == nil {
-		return ReferenceResult{}, errors.New("tools: nil workspace")
-	}
-
-	if opts.Path != "" {
-		resolved, err := w.Resolve(opts.Path)
-		if err != nil {
-			return ReferenceResult{}, err
-		}
-		fi, err := os.Stat(resolved)
-		if err != nil {
-			return ReferenceResult{}, fmt.Errorf("references: path %q does not exist: %w", opts.Path, err)
-		}
-		if !fi.IsDir() {
-			return ReferenceResult{}, fmt.Errorf("references: path %q is not a directory", opts.Path)
-		}
-	}
-
-	opts.MaxResults = clampMaxResults(opts.MaxResults)
-
 	return executeReferenceSearch(ctx, w, target, "", opts, nil)
 }
 
-// isGoSymbol checks if a declaration exists in any Go package within the workspace.
-func isGoSymbol(target outline.Decl, ws *Workspace) bool {
-	if ws == nil || target.Name == "" {
-		return false
-	}
-	imp := newWorkspaceImporter(ws, "")
-	dirMap := make(map[string]bool)
-	_ = Walk(context.Background(), ws, ws.Root, WalkOptions{}, func(rel string, d fs.DirEntry) error {
-		if !d.IsDir() && strings.HasSuffix(d.Name(), ".go") {
-			dirMap[filepath.Dir(filepath.Join(ws.Root, filepath.FromSlash(rel)))] = true
-		}
-		return nil
-	})
-	for dir := range dirMap {
-		relDir, err := filepath.Rel(ws.Root, dir)
-		if err != nil {
-			relDir = dir
-		}
-		if relDir == "." {
-			relDir = ""
-		}
-		_, _ = checkPackage(imp, relDir)
-	}
-	for _, info := range imp.pkgInfos {
-		for _, obj := range info.Defs {
-			if obj != nil && obj.Name() == target.Name {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// executeReferenceSearch runs reference discovery and ranking across workspace files.
+// executeReferenceSearch runs reference discovery and ranking across
+// workspace files. An empty backend is chosen from the target: "go/types"
+// when a Go package declares it, "lexical" otherwise, "text" for an empty
+// name. rc, when non-nil, caches candidate files.
 func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.Decl, backend string, opts ReferenceOptions, rc *referenceCache) (ReferenceResult, error) {
 	if err := ctx.Err(); err != nil {
 		return ReferenceResult{}, err
@@ -146,31 +83,28 @@ func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.D
 		}
 	}
 
-	maxResults := clampMaxResults(opts.MaxResults)
-
 	var sites []ReferenceSite
-	if backend == "" {
-		goSites := resolveGoReferences(target, ws)
-		if len(goSites) > 0 {
+	switch backend {
+	case "":
+		imp := loadGoWorkspace(ws)
+		sites = resolveGoReferences(imp, target)
+		switch {
+		case len(sites) > 0 || (target.Name != "" && imp.definesName(target.Name)):
 			backend = "go/types"
-			sites = goSites
-		} else if isGoSymbol(target, ws) {
-			backend = "go/types"
-			sites = goSites
-		} else if target.Name != "" {
+		case target.Name != "":
 			backend = "lexical"
-		} else {
+		default:
 			backend = "text"
 		}
-	} else if backend == "go/types" {
-		sites = resolveGoReferences(target, ws)
+	case "go/types":
+		sites = resolveGoReferences(loadGoWorkspace(ws), target)
 	}
 
 	if backend == "go/types" {
 		if scopePrefix != "" {
 			var scoped []ReferenceSite
 			for _, s := range sites {
-				if strings.HasPrefix(filepath.ToSlash(s.Path), scopePrefix) {
+				if strings.HasPrefix(s.Path, scopePrefix) {
 					scoped = append(scoped, s)
 				}
 			}
@@ -182,65 +116,37 @@ func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.D
 		if rc != nil {
 			candFiles, err = rc.getCandidateFiles(ctx, target.Name)
 		} else {
-			candFiles, err = findCandidateFilesCtx(ctx, ws, target.Name, nil)
+			candFiles, err = findCandidateFiles(ctx, ws, target.Name, nil)
 		}
 		if err != nil {
 			return ReferenceResult{}, err
 		}
 		for _, rel := range candFiles {
-			if scopePrefix != "" && !strings.HasPrefix(rel, scopePrefix) {
+			if !strings.HasPrefix(rel, scopePrefix) {
 				continue
 			}
-			abs := filepath.Join(ws.Root, filepath.FromSlash(rel))
-			content, readErr := os.ReadFile(abs)
-			if readErr != nil {
+			content, err := os.ReadFile(filepath.Join(ws.Root, filepath.FromSlash(rel)))
+			if err != nil {
 				continue
 			}
-			matches := scanContentForMatches(rel, content, target.Name, target)
-			for _, m := range matches {
-				site := m.Site()
+			for _, site := range scanContentForMatches(rel, content, target) {
 				if backend == "text" {
 					site.Confidence = "text"
 				}
 				sites = append(sites, site)
 			}
 		}
-
-		if len(sites) == 0 && backend != "go/types" {
-			for _, rel := range candFiles {
-				if scopePrefix != "" && !strings.HasPrefix(rel, scopePrefix) {
-					continue
-				}
-				abs := filepath.Join(ws.Root, filepath.FromSlash(rel))
-				content, readErr := os.ReadFile(abs)
-				if readErr != nil {
-					continue
-				}
-				if bytes.Contains(content, []byte(target.Name)) {
-					matches := scanContentForMatches(rel, content, target.Name, target)
-					for _, m := range matches {
-						site := m.Site()
-						if backend == "text" {
-							site.Confidence = "text"
-						}
-						sites = append(sites, site)
-					}
-				}
-			}
-		}
 	}
 
 	sites = filterTestSites(sites, opts.IncludeTests)
 	sortReferenceSites(sites)
-	limited := applyResultLimits(sites, maxResults)
+	sites, truncated := applyResultLimits(sites, clampMaxResults(opts.MaxResults))
 
 	return ReferenceResult{
 		Target:          target,
-		Sites:           limited.Sites,
+		Sites:           sites,
 		Backend:         backend,
-		Partial:         false,
-		Truncated:       limited.Truncated,
+		Truncated:       truncated,
 		PackagesChecked: 1,
-		Errors:          0,
 	}, nil
 }

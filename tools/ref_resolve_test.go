@@ -143,7 +143,7 @@ func TestSymbolResolution_DisambiguationRanking_TS_05_10(t *testing.T) {
 		},
 	}
 
-	target := disambiguateSymbol(candidates)
+	target := disambiguateSymbol(candidates, "Handle")
 	if target.Path != "pkg/handle.go" || target.Name != "Handle" {
 		t.Fatalf("expected top-ranked target Path='pkg/handle.go' and Name='Handle', got Path=%q Name=%q", target.Path, target.Name)
 	}
@@ -158,24 +158,24 @@ func TestSymbolResolution_FallbackTextSearch_TS_05_11(t *testing.T) {
 		t.Fatalf("NewWorkspace: %v", err)
 	}
 
-	st := newSymbolTable()
-	fr := makeFindReferencesFallbackTool(ws, st)
-
-	ctx := context.Background()
-	res := fr.Execute(ctx, []byte(`{"name":"GOPHER_KEY"}`))
+	fr := newFileTools(Options{Workspace: ws}.withDefaults()).findReferencesTool()
+	res := fr.Execute(context.Background(), []byte(`{"name":"GOPHER_KEY"}`))
 	if !res.OK {
 		t.Fatalf("expected res.OK == true, got error: %s (%s)", res.Error, res.Text)
 	}
 
-	data := referenceResultFromData(res.Data)
-	if data.Target != (outline.Decl{}) {
-		t.Fatalf("expected zero outline.Decl target, got %+v", data.Target)
+	data, ok := res.Data["result"].(ReferenceResult)
+	if !ok {
+		t.Fatalf("res.Data[\"result\"] is %T, want ReferenceResult", res.Data["result"])
+	}
+	if data.Target.Kind != "" || data.Target.StartLine != 0 {
+		t.Fatalf("expected no declaration as target, got %+v", data.Target)
 	}
 	if data.Backend != "text" {
 		t.Fatalf("expected backend 'text', got %q", data.Backend)
 	}
-	if !strings.Contains(res.Text, "0 references") && !strings.Contains(res.Text, "text matches") {
-		t.Fatalf("expected header to contain '0 references' or 'text matches', got %q", res.Text)
+	if !strings.Contains(res.Text, "0 references") {
+		t.Fatalf("expected header to contain '0 references', got %q", res.Text)
 	}
 }
 
@@ -237,8 +237,7 @@ func TestSymbolResolution_SplitContainerMemberProperty_TS_05_12(t *testing.T) {
 			}
 		}
 
-		match := matchContainerSymbol(st, container, member)
-		if match != nil {
+		for _, match := range resolveSymbolCandidates(st, name, "", "") {
 			if match.Container != container || match.Name != member {
 				t.Fatalf("match mismatch: expected Container=%q Name=%q, got Container=%q Name=%q",
 					container, member, match.Container, match.Name)

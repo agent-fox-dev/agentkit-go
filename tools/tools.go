@@ -122,7 +122,6 @@ func All(opts Options) ([]core.Tool, error) {
 		t.Execute = func(ctx context.Context, in json.RawMessage) core.ToolResult {
 			r := orig(ctx, in)
 			fs.markTableRevalidateAll()
-			fs.markRefCacheRevalidateAll()
 			if fs.index != nil {
 				fs.index.Invalidate("")
 			}
@@ -321,20 +320,6 @@ func (f *fileTools) getRefCache() *referenceCache {
 		f.refCache = newReferenceCache(f.ws, f)
 	})
 	return f.refCache
-}
-
-// markRefCacheDirty marks a workspace-relative path dirty in the shared reference cache.
-func (f *fileTools) markRefCacheDirty(rel string) {
-	if f.refCache != nil {
-		f.refCache.markDirty(rel)
-	}
-}
-
-// markRefCacheRevalidateAll marks the whole reference cache for revalidation.
-func (f *fileTools) markRefCacheRevalidateAll() {
-	if f.refCache != nil {
-		f.refCache.markRevalidateAll()
-	}
 }
 
 // markTableDirty marks a workspace-relative path dirty in the shared symbol
@@ -729,14 +714,12 @@ func (f *fileTools) writeFile() core.Tool {
 			rel := filepath.ToSlash(f.ws.Rel(abs))
 			if err := writeFileAtomic(abs, []byte(a.Content)); err != nil {
 				f.markTableDirty(rel)
-				f.markRefCacheDirty(rel)
 				if f.index != nil {
 					f.index.Invalidate(rel)
 				}
 				return core.ErrResult("write_failed", err.Error())
 			}
 			f.markTableDirty(rel)
-			f.markRefCacheDirty(rel)
 			if f.index != nil {
 				f.index.Invalidate(rel)
 			}
@@ -801,7 +784,6 @@ func (f *fileTools) editFile() core.Tool {
 			// table and the code index a revalidation for nothing.
 			rel := filepath.ToSlash(f.ws.Rel(abs))
 			defer f.markTableDirty(rel)
-			defer f.markRefCacheDirty(rel)
 			defer func() {
 				if f.index != nil {
 					f.index.Invalidate(rel)

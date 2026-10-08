@@ -155,7 +155,6 @@ func TestRefCache_TS05_42(t *testing.T) {
 		tl.Execute = func(ctx context.Context, in json.RawMessage) core.ToolResult {
 			r := orig(ctx, in)
 			ft.markTableRevalidateAll()
-			ft.markRefCacheRevalidateAll()
 			return r
 		}
 		return tl

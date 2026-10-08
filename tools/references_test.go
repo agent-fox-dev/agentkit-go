@@ -152,30 +152,9 @@ func TestWorkspaceReferences_ContextCancelled_TS_05_49(t *testing.T) {
 	}
 }
 
-// TS-05-50 (property): Workspace.References clamps MaxResults between 1 and 100 with default 30
-// Verifies: 05-REQ-9.6
-func TestWorkspaceReferences_ClampsMaxResults_TS_05_50(t *testing.T) {
-	genInts := []int{-1000, -50, -1, 0, 1, 2, 10, 29, 30, 31, 50, 99, 100, 101, 150, 10000}
-	for _, val := range genInts {
-		norm := normalizeWorkspaceMaxResults(val)
-		if val <= 0 {
-			if norm != 30 {
-				t.Errorf("normalizeWorkspaceMaxResults(%d) = %d, expected 30", val, norm)
-			}
-		} else if val > 100 {
-			if norm != 100 {
-				t.Errorf("normalizeWorkspaceMaxResults(%d) = %d, expected 100", val, norm)
-			}
-		} else {
-			if norm != val {
-				t.Errorf("normalizeWorkspaceMaxResults(%d) = %d, expected %d", val, norm, val)
-			}
-		}
-	}
-}
-
 // TS-05-34 (property): find_references clamps max_results between 1 and 100 with default 30
-// Verifies: 05-REQ-6.5
+// TS-05-50 (property): Workspace.References clamps MaxResults the same way (it shares clampMaxResults)
+// Verifies: 05-REQ-6.5, 05-REQ-9.6
 func TestWorkspaceReferences_ClampMaxResults_TS_05_34(t *testing.T) {
 	genInts := []int{-500, -10, -1, 0, 1, 5, 25, 30, 35, 95, 100, 101, 500, 1000}
 	for _, val := range genInts {

@@ -3,7 +3,6 @@ package tools
 import (
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,20 +113,17 @@ func main() {
 	_ = assert.True
 }
 `
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	imp := newWorkspaceImporter(ws, "example.com/test")
-	cfg := makeTypesConfig(imp)
-	if !cfg.FakeImportC {
+	if !makeTypesConfig(imp).FakeImportC {
 		t.Fatal("expected cfg.FakeImportC to be true")
 	}
 
-	f, err := parser.ParseFile(imp.fset, "main.go", src, parser.ParseComments)
-	if err != nil {
-		t.Fatalf("ParseFile failed: %v", err)
-	}
-
-	pkg, errs := typeCheck(cfg, []*ast.File{f})
-	if pkg == nil {
-		t.Fatal("expected pkg to be non-nil despite errors")
+	pkg, err := checkPackage(imp, "")
+	if err != nil || pkg == nil {
+		t.Fatalf("expected a package despite errors, got %v, %v", pkg, err)
 	}
 
 	// Check synthetic empty packages
@@ -142,7 +138,7 @@ func main() {
 	}
 
 	// Type checking completed without panicking and collected type errors
-	if len(errs) == 0 {
+	if len(imp.errors) == 0 {
 		t.Fatal("expected collected type errors for undefined identifiers on synthetic packages")
 	}
 }
@@ -215,7 +211,7 @@ func Run() {
 		Name:      "Ping",
 		Container: "Base",
 	}
-	sitesPing := resolveGoReferences(targetPing, ws)
+	sitesPing := resolveGoReferences(loadGoWorkspace(ws), targetPing)
 	if len(sitesPing) == 0 {
 		t.Fatal("expected at least 1 reference site for Ping")
 	}
@@ -231,7 +227,7 @@ func Run() {
 		Name:      "Read",
 		Container: "Reader",
 	}
-	sitesRead := resolveGoReferences(targetRead, ws)
+	sitesRead := resolveGoReferences(loadGoWorkspace(ws), targetRead)
 	if len(sitesRead) == 0 {
 		t.Fatal("expected at least 1 reference site for Read")
 	}
@@ -246,7 +242,7 @@ func Run() {
 		Kind: outline.KindFunc,
 		Name: "Do",
 	}
-	sitesDo := resolveGoReferences(targetDo, ws)
+	sitesDo := resolveGoReferences(loadGoWorkspace(ws), targetDo)
 	if len(sitesDo) == 0 {
 		t.Fatal("expected at least 1 reference site for Do")
 	}
@@ -306,7 +302,7 @@ func Use() {
 		Name:      "Close",
 		Container: "Alpha",
 	}
-	sites := resolveGoReferences(alphaClose, ws)
+	sites := resolveGoReferences(loadGoWorkspace(ws), alphaClose)
 	if len(sites) == 0 {
 		t.Fatal("expected at least 1 reference for Alpha.Close")
 	}
@@ -358,8 +354,13 @@ func Call(client external.Client) {
 		Name:      "Do",
 		Container: "Handler",
 	}
-	sites := resolveGoReferences(targetDo, ws)
-	hit := findSite(sites, "client.Do()")
+	sites := resolveGoReferences(loadGoWorkspace(ws), targetDo)
+	var hit *ReferenceSite
+	for i := range sites {
+		if strings.Contains(sites[i].Source, "client.Do()") {
+			hit = &sites[i]
+		}
+	}
 	if hit == nil {
 		t.Fatal("expected call site 'client.Do()' to be found")
 	}
@@ -414,9 +415,15 @@ func Compute() {
 	}
 
 	for _, pkgDir := range genGoPackages() {
-		fset, files, err := parseGoPackageWithComments(pkgDir)
+		ws, err := NewWorkspace(pkgDir)
 		if err != nil {
-			t.Fatalf("parseGoPackageWithComments failed: %v", err)
+			t.Fatal(err)
+		}
+		imp := newWorkspaceImporter(ws, "")
+		fset := imp.fset
+		files, err := imp.parseDirFiles(pkgDir, false)
+		if err != nil || len(imp.errors) > 0 {
+			t.Fatalf("parseDirFiles failed: %v %v", err, imp.errors)
 		}
 		if len(files) == 0 {
 			t.Fatal("expected at least 1 parsed file")

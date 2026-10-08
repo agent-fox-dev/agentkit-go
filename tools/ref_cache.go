@@ -1,16 +1,13 @@
 package tools
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
-	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/outline"
 )
 
@@ -26,11 +23,9 @@ type referenceCache struct {
 	dirtyPackages        map[string]bool
 	revalidateAll        bool
 	revalidateCandidates bool
-	generation           uint64
 
 	files      map[string]bool
 	outlines   map[string]*outline.File
-	sources    map[string][]byte
 	candidates map[string][]string
 
 	importer *workspaceImporter
@@ -45,7 +40,6 @@ func newReferenceCache(ws *Workspace, ft *fileTools) *referenceCache {
 		dirtyPackages: make(map[string]bool),
 		files:         make(map[string]bool),
 		outlines:      make(map[string]*outline.File),
-		sources:       make(map[string][]byte),
 		candidates:    make(map[string][]string),
 	}
 }
@@ -56,22 +50,8 @@ func (rc *referenceCache) markDirty(rel string) {
 	defer rc.mu.Unlock()
 
 	rel = filepath.ToSlash(filepath.Clean(rel))
-	if rc.dirtyPaths == nil {
-		rc.dirtyPaths = make(map[string]bool)
-	}
-	if rc.dirtyPackages == nil {
-		rc.dirtyPackages = make(map[string]bool)
-	}
 	rc.dirtyPaths[rel] = true
-	rc.generation++
-
-	if strings.HasSuffix(rel, ".go") {
-		pkgDir := filepath.ToSlash(filepath.Dir(rel))
-		if pkgDir == "." {
-			pkgDir = ""
-		}
-		rc.dirtyPackages[pkgDir] = true
-	}
+	rc.markGoPackageDirty(rel)
 
 	base := filepath.Base(rel)
 	if base == ".gitignore" || base == ".ignore" {
@@ -86,7 +66,18 @@ func (rc *referenceCache) markRevalidateAll() {
 
 	rc.revalidateAll = true
 	rc.revalidateCandidates = true
-	rc.generation++
+}
+
+// markGoPackageDirty flags the package directory of rel when rel is a Go file.
+func (rc *referenceCache) markGoPackageDirty(rel string) {
+	if !strings.HasSuffix(rel, ".go") {
+		return
+	}
+	pkgDir := filepath.ToSlash(filepath.Dir(rel))
+	if pkgDir == "." {
+		pkgDir = ""
+	}
+	rc.dirtyPackages[pkgDir] = true
 }
 
 // isPathDirty returns true if the workspace-relative path is flagged dirty.
@@ -115,11 +106,6 @@ func (rc *referenceCache) isPackageDirty(pkg string) bool {
 	return rc.dirtyPackages[clean]
 }
 
-// isPkgDirty is an alias for isPackageDirty.
-func (rc *referenceCache) isPkgDirty(pkg string) bool {
-	return rc.isPackageDirty(pkg)
-}
-
 // needsRevalidateAll returns true if the reference cache is pending whole-table revalidation.
 func (rc *referenceCache) needsRevalidateAll() bool {
 	rc.mu.Lock()
@@ -137,13 +123,9 @@ func (rc *referenceCache) hasFile(rel string) bool {
 
 // populateInitial scans workspace files to populate the initial file set.
 func (rc *referenceCache) populateInitial(ctx context.Context) {
-	if rc.ws == nil {
-		return
-	}
-	_ = Walk(ctx, rc.ws, rc.ws.Root, WalkOptions{Ignore: IgnoreOptions{}, IncludeHidden: false}, func(rel string, d fs.DirEntry) error {
+	_ = Walk(ctx, rc.ws, rc.ws.Root, WalkOptions{}, func(rel string, d fs.DirEntry) error {
 		if !d.IsDir() {
-			relSlash := filepath.ToSlash(rel)
-			rc.files[relSlash] = true
+			rc.files[filepath.ToSlash(rel)] = true
 		}
 		return nil
 	})
@@ -179,18 +161,11 @@ func (rc *referenceCache) refresh(ctx context.Context) error {
 		if err != nil || fi.IsDir() {
 			delete(rc.files, f)
 			delete(rc.outlines, f)
-			delete(rc.sources, f)
 			if rc.importer != nil {
 				delete(rc.importer.parsedFiles, abs)
 				delete(rc.importer.fileSources, abs)
 			}
-			if strings.HasSuffix(f, ".go") {
-				pkgDir := filepath.ToSlash(filepath.Dir(f))
-				if pkgDir == "." {
-					pkgDir = ""
-				}
-				rc.dirtyPackages[pkgDir] = true
-			}
+			rc.markGoPackageDirty(f)
 		}
 	}
 
@@ -198,11 +173,7 @@ func (rc *referenceCache) refresh(ctx context.Context) error {
 	if rc.revalidateAll {
 		for f := range rc.files {
 			if strings.HasSuffix(f, ".go") {
-				pkgDir := filepath.ToSlash(filepath.Dir(f))
-				if pkgDir == "." {
-					pkgDir = ""
-				}
-				rc.dirtyPackages[pkgDir] = true
+				rc.markGoPackageDirty(f)
 			} else {
 				rc.dirtyPaths[f] = true
 			}
@@ -262,7 +233,6 @@ func (rc *referenceCache) refresh(ctx context.Context) error {
 		if err != nil || fi.IsDir() {
 			delete(rc.files, rel)
 			delete(rc.outlines, rel)
-			delete(rc.sources, rel)
 			continue
 		}
 		rc.files[rel] = true
@@ -290,11 +260,7 @@ func (rc *referenceCache) getCandidateFiles(ctx context.Context, name string) ([
 	}
 	rc.mu.Unlock()
 
-	var idx Index
-	if rc.ft != nil {
-		idx = rc.ft.index
-	}
-	cands, err := findCandidateFilesCtx(ctx, rc.ws, name, idx)
+	cands, err := findCandidateFiles(ctx, rc.ws, name, rc.ft.index)
 	if err != nil {
 		return nil, err
 	}
@@ -307,147 +273,4 @@ func (rc *referenceCache) getCandidateFiles(ctx context.Context, name string) ([
 	rc.mu.Unlock()
 
 	return cands, nil
-}
-
-// tool returns the core.Tool for find_references backed by referenceCache.
-func (rc *referenceCache) tool() core.Tool {
-	return core.Tool{
-		Name:        "find_references",
-		Description: "Find references and callers of a declaration across the workspace.",
-		Execute: func(ctx context.Context, in json.RawMessage) core.ToolResult {
-			if err := ctx.Err(); err != nil {
-				return core.ErrResult("aborted", "Operation aborted")
-			}
-
-			var args struct {
-				Name         string `json:"name"`
-				Path         string `json:"path"`
-				Kind         string `json:"kind"`
-				IncludeTests *bool  `json:"include_tests"`
-				MaxResults   *int   `json:"max_results"`
-			}
-			if err := json.Unmarshal(in, &args); err != nil {
-				return core.ErrResult("invalid_arguments", "Malformed input")
-			}
-			if args.Name == "" {
-				return core.ErrResult("invalid_arguments", "name is required")
-			}
-
-			var scopePrefix string
-			if args.Path != "" && rc.ws != nil {
-				resolved, err := rc.ws.Resolve(args.Path)
-				if err != nil {
-					return core.ErrResult("path_not_allowed", err.Error())
-				}
-				fi, err := os.Stat(resolved)
-				if err != nil || !fi.IsDir() {
-					return core.ErrResult("invalid_arguments", "Path must be an existing directory")
-				}
-				scopePrefix = filepath.ToSlash(rc.ws.Rel(resolved))
-				if scopePrefix != "" && !strings.HasSuffix(scopePrefix, "/") {
-					scopePrefix += "/"
-				}
-			}
-
-			includeTests := true
-			if args.IncludeTests != nil {
-				includeTests = *args.IncludeTests
-			}
-
-			maxResults := 30
-			if args.MaxResults != nil {
-				maxResults = clampMaxResults(*args.MaxResults)
-			}
-
-			// Ensure freshness before querying
-			if err := rc.refresh(ctx); err != nil {
-				if ctx.Err() != nil {
-					return core.ErrResult("aborted", "Operation aborted")
-				}
-				return core.ErrResult("internal_error", err.Error())
-			}
-
-			var st *symbolTable
-			if rc.ft != nil {
-				st = rc.ft.getTable()
-			}
-			candidates := resolveSymbolCandidates(st, args.Name, args.Kind, args.Path)
-
-			var target outline.Decl
-			backend := "text"
-			if len(candidates) > 0 {
-				top := disambiguateSymbol(candidates, args.Name)
-				target = top.Decl()
-				if strings.HasSuffix(top.Path, ".go") {
-					backend = "go/types"
-				} else {
-					backend = "lexical"
-				}
-			} else {
-				target = outline.Decl{Name: args.Name}
-				backend = "text"
-			}
-
-			candFiles, err := rc.getCandidateFiles(ctx, args.Name)
-			if err != nil {
-				return core.ErrResult("internal_error", err.Error())
-			}
-
-			var sites []ReferenceSite
-			if backend == "go/types" {
-				sites = resolveGoReferences(target, rc.ws)
-			} else {
-				for _, rel := range candFiles {
-					if scopePrefix != "" && !strings.HasPrefix(rel, scopePrefix) {
-						continue
-					}
-					abs := filepath.Join(rc.ws.Root, filepath.FromSlash(rel))
-					content, readErr := os.ReadFile(abs)
-					if readErr != nil {
-						continue
-					}
-					matches := scanContentForMatches(rel, content, args.Name, target)
-					for _, m := range matches {
-						sites = append(sites, m.Site())
-					}
-				}
-			}
-
-			// If Go resolution returned no sites or for text matches
-			if len(sites) == 0 && backend != "go/types" {
-				for _, rel := range candFiles {
-					if scopePrefix != "" && !strings.HasPrefix(rel, scopePrefix) {
-						continue
-					}
-					abs := filepath.Join(rc.ws.Root, filepath.FromSlash(rel))
-					content, readErr := os.ReadFile(abs)
-					if readErr != nil {
-						continue
-					}
-					if bytes.Contains(content, []byte(args.Name)) {
-						matches := scanContentForMatches(rel, content, args.Name, target)
-						for _, m := range matches {
-							sites = append(sites, m.Site())
-						}
-					}
-				}
-			}
-
-			sites = filterTestSites(sites, includeTests)
-			sortReferenceSites(sites)
-			limited := applyResultLimits(sites, maxResults)
-
-			refRes := ReferenceResult{
-				Target:          target,
-				Sites:           limited.Sites,
-				Backend:         backend,
-				Partial:         false,
-				Truncated:       limited.Truncated,
-				PackagesChecked: 1,
-				Errors:          0,
-			}
-
-			return renderReferencesResult(args.Name, refRes)
-		},
-	}
 }

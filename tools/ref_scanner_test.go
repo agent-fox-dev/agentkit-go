@@ -30,8 +30,18 @@ func (m *mockCandidateIndex) Close() error {
 	return nil
 }
 
-func (m *mockCandidateIndex) CandidateFiles(name string) []string {
-	return m.candidates
+func (m *mockCandidateIndex) CandidateFiles(ctx context.Context, name string) ([]string, error) {
+	return m.candidates, nil
+}
+
+// scanFile scans the file at path for whole-identifier occurrences of name.
+func scanFile(t *testing.T, path, name string) []ReferenceSite {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scanContentForMatches(path, content, outline.Decl{Name: name})
 }
 
 // TS-05-19 (unit): Reference scanner candidate traversal obeys .gitignore rules, hidden directory exclusions, and index filtering
@@ -83,7 +93,7 @@ func TestRefScanner_CandidatesTraversal_TS_05_19(t *testing.T) {
 	}
 
 	// Case 1: Traversal without index
-	candidates, err := findCandidateFiles(ws, "Run", nil)
+	candidates, err := findCandidateFiles(context.Background(), ws, "Run", nil)
 	if err != nil {
 		t.Fatalf("findCandidateFiles failed: %v", err)
 	}
@@ -117,7 +127,7 @@ func TestRefScanner_CandidatesTraversal_TS_05_19(t *testing.T) {
 			"src/util.ts",
 		},
 	}
-	candidatesIndexed, err := findCandidateFiles(ws, "Run", mockIndex)
+	candidatesIndexed, err := findCandidateFiles(context.Background(), ws, "Run", mockIndex)
 	if err != nil {
 		t.Fatalf("findCandidateFiles with index failed: %v", err)
 	}
@@ -138,12 +148,12 @@ func TestRefScanner_WholeWordBoundaries_TS_05_20(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	matches := scanFileForName(pyFile, "run")
+	matches := scanFile(t, pyFile, "run")
 	if len(matches) != 1 {
 		t.Fatalf("expected exactly 1 match, got %d: %+v", len(matches), matches)
 	}
-	if matches[0].LineText != "    runner.run()" {
-		t.Fatalf("expected LineText %q, got %q", "    runner.run()", matches[0].LineText)
+	if m := matches[0]; m.Line != 2 || m.Column != 12 || m.Source != "runner.run()" {
+		t.Fatalf("expected runner.run() at 2:12, got %d:%d %q", m.Line, m.Column, m.Source)
 	}
 }
 
@@ -165,7 +175,11 @@ func TestRefScanner_LexicalConfidence_TS_05_21(t *testing.T) {
 		Name: "execute",
 	}
 
-	site := scanNonGoSite("app.ts", "service.execute()", targetDecl)
+	sites := scanContentForMatches("app.ts", []byte("service.execute()"), targetDecl)
+	if len(sites) != 1 {
+		t.Fatalf("expected 1 site, got %d", len(sites))
+	}
+	site := sites[0]
 	if want := codeConfidence("app.ts"); site.Confidence != want {
 		t.Fatalf("expected confidence %q, got %q", want, site.Confidence)
 	}
@@ -199,20 +213,23 @@ func TestRefScanner_CommentStringTextConfidence_TS_05_22(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWorkspace failed: %v", err)
 	}
-	setScannerWorkspace(ws)
-
 	targetDecl := outline.Decl{
 		Kind: "func",
 		Name: "execute",
 	}
 
-	sites := scanAllSites(ws, "execute", targetDecl)
+	res, err := ws.References(context.Background(), targetDecl, ReferenceOptions{IncludeTests: true, MaxResults: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sites := res.Sites
 	if len(sites) < 3 {
 		t.Fatalf("expected at least 3 sites, got %d", len(sites))
 	}
 
 	for _, s := range sites {
-		if isCommentOrString(s) || isMarkdown(s) {
+		inCommentOrString := strings.ContainsAny(s.Source, "#\"'") || strings.Contains(s.Source, "//") || strings.Contains(s.Source, "/*")
+		if inCommentOrString || strings.HasSuffix(s.Path, ".md") {
 			if s.Confidence != "text" {
 				t.Fatalf("site in %s:%d (%s) expected confidence 'text', got %q", s.Path, s.Line, s.Source, s.Confidence)
 			}
@@ -243,10 +260,13 @@ func TestRefScanner_UndeclaredTargetTextConfidence_TS_05_23(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWorkspace failed: %v", err)
 	}
-	setScannerWorkspace(ws)
-
-	// Target declaration not found in symbol table (empty outline.Decl)
-	sites := scanAllSites(ws, "MY_GLOBAL_VAR", outline.Decl{})
+	// Target declaration not found in symbol table: find_references searches
+	// for the bare name with the text backend.
+	res, err := executeReferenceSearch(context.Background(), ws, outline.Decl{Name: "MY_GLOBAL_VAR"}, "text", ReferenceOptions{IncludeTests: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sites := res.Sites
 	if len(sites) == 0 {
 		t.Fatal("expected reference sites, got 0")
 	}
@@ -292,7 +312,7 @@ func TestRefScanner_LineColumnCoordinatesProperty_TS_05_24(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	matches := scanFileForName(filePath, targetName)
+	matches := scanFile(t, filePath, targetName)
 	if len(matches) != len(rawLines) {
 		t.Fatalf("expected %d matches, got %d", len(rawLines), len(matches))
 	}
