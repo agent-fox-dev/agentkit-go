@@ -3,7 +3,11 @@
 // cross-spec dependencies, no parallelism — a flat line through the plan.
 //
 //	export ANTHROPIC_API_KEY=sk-ant-...
-//	go run ./examples/flatline --dir ~/src/widgets .specs/03_widget_counter
+//	cd examples/flatline
+//	go run . --dir ~/src/widgets .specs/03_widget_counter
+//
+// It is a nested module that needs a sibling checkout of agent-fox-dev/spec;
+// see go.mod.
 //
 // For every task group in tasks.json, in order, it creates a branch, runs a
 // coder session (or a read-only gate session for a `checkpoint` group) with

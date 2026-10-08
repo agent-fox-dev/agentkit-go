@@ -189,7 +189,7 @@ cleaner [flags] https://github.com/{owner}/{repo}/issues/{number}
 | `--dir` | `.` | The repository to work in. The file tools cannot reach outside it. |
 | `--land` | `pr` | `pr` · `branch` (push, no PR) · `merge` (squash locally) · `none` (commit only). |
 | `--dry-run` | off | Make no *remote* changes: nothing is pushed, no pull request is opened, and comments are printed instead of posted. The branch and the commit are still made locally — the implementation phase edits real files, so containing them on a branch you can delete is safer than leaving them loose. |
-| `--model` | `$AGENTKIT_MODEL`, else `anthropic/claude-sonnet-5` | Any model in the catalog: `openai/gpt-5.6-terra`, `ollama/qwen3-coder`, … |
+| `--model` | `$AGENTKIT_MODEL`, else `anthropic/claude-sonnet-5` | Any model the catalog resolves: `openai/gpt-5.6-terra`, `google/gemini-3.8-flash`, … (the shipped catalog has rows for `anthropic`, `openai` and `google` only). |
 | `--max-turns` | `100` | Per-phase turn ceiling. |
 | `--budget` | `5.00` | Per-phase spend ceiling, in dollars. |
 | `--verify` | detected | The command that decides success. Detection order: `make check`, `make test`, `go test ./...`, `npm test`, `pytest`, `cargo test`. |

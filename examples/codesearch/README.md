@@ -14,9 +14,10 @@ go test ./...                                     # no key
 ```
 
 They are a **nested module**, unlike the single-file examples beside them.
-`codesearch` imports [zoekt](https://github.com/sourcegraph/zoekt), and the root
-module is held to the standard library (see [`docs/DEPS.md`](../../docs/DEPS.md));
-a nested module is the only way to keep zoekt out of the root's graph. Your own
+`codesearch` imports [zoekt](https://github.com/sourcegraph/zoekt), whose
+dependency graph is large, and the root module may not import it (see
+[PRD 05](../../docs/prd/05-add-an-indexed-code-search-module.md)); a nested
+module is the only way to keep zoekt out of the root's graph. Your own
 program that imports `codesearch` pays for zoekt the same way — and a program
 that does not import it pays nothing. The `go.mod` here points both
 agentkit-go modules at this checkout with `replace`.

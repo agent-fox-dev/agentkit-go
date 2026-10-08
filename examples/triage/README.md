@@ -83,7 +83,7 @@ Six files, one `main` package:
 | [`input.go`](input.go) | Classifying the argument; fetching an issue and its comments; bounded, visible truncation. |
 | [`triage.go`](triage.go) | The tool policy, the read-only invariant, the system prompt, and `file_issue`. |
 | [`issue.go`](issue.go) | The `Issue` type, its schema, and the markdown renderer. |
-| [`github.go`](github.go) | ~100 lines of `net/http`: read an issue, create an issue, parse a remote. |
+| [`github.go`](github.go) | A small `net/http` client: read, create and update an issue, parse a remote. |
 | [`triage_test.go`](triage_test.go) | The whole thing, offline. |
 
 Unlike the other examples this one is several files rather than a single
@@ -296,9 +296,8 @@ three files in it. Every claim this README makes is a test:
   different risk classes, and this is the one that is safe to run unattended.
 - **It reads one page of issue comments.** A 300-comment thread is truncated at
   the report cap, visibly.
-- **It has no dependencies.** No `gh`, no GitHub SDK, no YAML parser — the
-  whole example is the Go standard library plus AgentKit, which is itself the
-  standard library.
+- **It adds no dependencies.** No `gh`, no GitHub SDK, no YAML parser — the
+  example itself imports only the Go standard library and AgentKit.
 - **It does not deduplicate.** The skill suggests searching for an existing
   issue first; that would be a second `GitHub` method and a second run, and it
   is the obvious next thing to add.

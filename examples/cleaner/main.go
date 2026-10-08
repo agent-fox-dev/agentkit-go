@@ -9,11 +9,12 @@
 // It is the AgentKit implementation of a coding-CLI skill (`/af-fix`): the
 // same workflow, with the judgment left to a model and everything else —
 // argument parsing, git, verification, landing — kept in Go where it can be
-// tested. See examples/cleaner/README.md for the mapping, and for the four
+// tested. See examples/cleaner/README.md for the mapping, and for the five
 // places where the skill's own ordering had to be corrected.
 //
 // Nothing is written to GitHub or to the repository until it has something to
-// say, and --dry-run stops it writing at all:
+// say, and --dry-run stops every remote write (the branch and commit are still
+// made locally):
 //
 //	go run ./examples/cleaner --dry-run https://github.com/acme/widgets/issues/42
 //	go run ./examples/cleaner --land=branch --budget=2 https://github.com/acme/widgets/issues/42

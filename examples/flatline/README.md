@@ -216,7 +216,8 @@ unless `--assume-deps` is given.
   the spec library's published module path does not match its directory
   layout and `go get` cannot fetch it; see [`go.mod`](go.mod). This is also
   why `flatline` is a nested module: the library brings a YAML parser and a
-  JSON Schema validator, and the root module is standard-library-only by test.
+  JSON Schema validator, and it can only be consumed through a `replace`,
+  which a root-module dependency cannot use.
 
 ```bash
 git clone https://github.com/agent-fox-dev/spec ../spec     # from the coder checkout

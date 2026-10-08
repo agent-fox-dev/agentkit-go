@@ -79,8 +79,9 @@ func run() error {
 	}
 	fmt.Fprintf(os.Stderr, "workspace: %s\n", ws.Root)
 
-	// 2. All() is the default set: read, write, edit, list, find, search and
-	//    the three shell tools. `fetch_url` is NOT in it — a tool that makes
+	// 2. All() is the default set: read, write, edit, list, find, search, the
+	//    three navigation tools (file_outline, find_symbol, find_references)
+	//    and the three shell tools. `fetch_url` is NOT in it — a tool that makes
 	//    outbound requests on the model's behalf is a different risk class,
 	//    and reaching it takes a second affirmative act (tools.FetchTool).
 	built, err := tools.All(tools.Options{Workspace: ws})
