@@ -79,9 +79,9 @@ The shared plumbing is [`toolcli`](toolcli/toolcli.go); every `main.go` is
 4. **Execute** — the tool's own `Execute(ctx, json.RawMessage)`.
 5. **Render** — `core.ToolResult.LLMText()`, the function the loop's
    `toolResultMessage` uses for the tool_result text block: the tool's own
-   `Text` rendering when it has one (`read_file`, `search_files`, the shell
-   tools, …), otherwise the JSON envelope `{"ok":…,"data":…}` with metadata
-   stripped.
+   `Text` rendering, which every built-in tool sets on success, or the JSON
+   envelope `{"ok":false,"error":…,"detail":…}` for an error result. The
+   structured `Data` behind a success is what `-data` prints.
 
 On the Anthropic and Google wires the error flag travels beside the text; the
 OpenAI wires have no such flag, so `provider.ToolResultText` prefixes an error

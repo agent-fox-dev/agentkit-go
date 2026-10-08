@@ -146,9 +146,9 @@ type ToolResult struct {
 	// every newline, tab and quote twice (`\n`, `\t`, `\"`) — 9–13% more
 	// bytes and, because escape sequences tokenize badly, an estimated 15–30%
 	// more tokens on indented code — and the model reads code through a layer
-	// of escaping it then has to undo when it writes an edit. read_file,
-	// execute and search_files set Text; a tool that returns a small
-	// structured value leaves it empty and the envelope is used.
+	// of escaping it then has to undo when it writes an edit. Every built-in
+	// tool sets Text on success; an error result leaves it empty and the
+	// envelope is used.
 	//
 	// See docs/errata/tool_result_rendering.md for the divergence from
 	// REQ-TOOL-08's literal reading.

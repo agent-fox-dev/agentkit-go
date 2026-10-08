@@ -662,3 +662,52 @@ func TestAllowHTTPHoldsWithACustomGuard(t *testing.T) {
 		t.Fatalf("with neither opt-in, http:// must be refused; got ok=%v %s", res.OK, res.Error)
 	}
 }
+
+// TestFetchTextIsTheResponseNotAnEnvelope: the model reads a status line, the
+// curated headers and the body as it arrived, not a JSON string with every
+// newline and quote escaped. Data keeps the structured fields.
+func TestFetchTextIsTheResponseNotAnEnvelope(t *testing.T) {
+	body := "line one\n\t\"quoted\" <b>markup</b>\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Set-Cookie", "session=secret")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+	res := fetchThrough(t, srv, FetchOptions{AllowHTTP: true}, map[string]any{"url": "http://example.com/a"})
+	if !res.OK {
+		t.Fatalf("%+v", res)
+	}
+	want := "HTTP 200 http://example.com/a\ncontent-type: text/plain; charset=utf-8\n"
+	if !strings.HasPrefix(res.LLMText(), want) || !strings.HasSuffix(res.LLMText(), "\n\n"+body) {
+		t.Fatalf("model text = %q", res.LLMText())
+	}
+	if strings.Contains(res.LLMText(), "secret") {
+		t.Fatal("an uncurated header reached the model")
+	}
+	if res.Data["body"] != body || res.Data["status"] != 200 {
+		t.Fatalf("Data must stay populated: %v", res.Data)
+	}
+}
+
+// TestFetchTextNamesABinaryBodyAndATruncation.
+func TestFetchTextNamesABinaryBodyAndATruncation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/big" {
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = io.WriteString(w, strings.Repeat("a", FetchResponseCap+10))
+			return
+		}
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = io.WriteString(w, "%PDF-1.4")
+	}))
+	defer srv.Close()
+	res := fetchThrough(t, srv, FetchOptions{AllowHTTP: true}, map[string]any{"url": "http://example.com/doc"})
+	if !strings.HasSuffix(res.LLMText(), "\n\n[Binary body (8B) not shown.]") {
+		t.Fatalf("binary text = %q", res.LLMText())
+	}
+	res = fetchThrough(t, srv, FetchOptions{AllowHTTP: true}, map[string]any{"url": "http://example.com/big"})
+	if !strings.HasSuffix(res.LLMText(), "\n[Body truncated at 512.0KB.]") {
+		t.Fatalf("truncated text ends %q", res.LLMText()[len(res.LLMText())-60:])
+	}
+}

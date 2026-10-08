@@ -1721,6 +1721,32 @@ func TestReadFileTextIsTheContentWithoutAnEnvelope(t *testing.T) {
 	}
 }
 
+// TestWriteEditAndEmptyListsAreTextNotAnEnvelope: every success path of the
+// file tools gives the model a sentence, while Data keeps the structured
+// fields for programmatic consumers.
+func TestWriteEditAndEmptyListsAreTextNotAnEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ tool, args, text string }{
+		{"write_file", `{"path":"a/b.txt","content":"one two\n"}`, "Wrote 8 bytes to a/b.txt"},
+		{"edit_file", `{"path":"a/b.txt","edits":[{"old_string":"two","new_string":"2"}]}`, "Applied 1 edit to a/b.txt"},
+		{"edit_file", `{"path":"a/b.txt","edits":[{"old_string":"one","new_string":"1"},{"old_string":"2","new_string":"II"}]}`,
+			"Applied 2 edits to a/b.txt"},
+		{"find_files", `{"pattern":"*.zzz"}`, `No files match "*.zzz".`},
+		{"list_files", `{"path":"empty"}`, "No entries."},
+	} {
+		res := toolByName(t, dir, c.tool).Execute(context.Background(), json.RawMessage(c.args))
+		if !res.OK || res.LLMText() != c.text {
+			t.Fatalf("%s %s: model text = %q (%+v), want %q", c.tool, c.args, res.LLMText(), res, c.text)
+		}
+		if res.Data == nil {
+			t.Fatalf("%s: Data must stay populated", c.tool)
+		}
+	}
+}
+
 // TestExecuteTextIsTheOutputPlusAStatusLineOnlyWhenInformative.
 func TestExecuteTextIsTheOutputPlusAStatusLineOnlyWhenInformative(t *testing.T) {
 	ok := execResultToTool(ExecResult{Output: "hello\n", Outcome: OutcomeOK}, 0)

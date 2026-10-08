@@ -723,7 +723,9 @@ func (f *fileTools) writeFile() core.Tool {
 			if f.index != nil {
 				f.index.Invalidate(rel)
 			}
-			return core.OKResult(map[string]any{"written": true, "bytes": len(a.Content)})
+			r := core.OKResult(map[string]any{"written": true, "bytes": len(a.Content)})
+			r.Text = fmt.Sprintf("Wrote %d bytes to %s", len(a.Content), rel)
+			return r
 		},
 	}
 }
@@ -817,6 +819,7 @@ func (f *fileTools) editFile() core.Tool {
 			}
 			r := core.OKResult(map[string]any{"edits_applied": n})
 			r.Metadata = &core.ToolMetadata{LineEnding: string(ending)}
+			r.Text = fmt.Sprintf("Applied %d %s to %s", n, plural(n, "edit", "edits"), rel)
 			return r
 		},
 	}
@@ -1029,7 +1032,7 @@ func (f *fileTools) listFiles() core.Tool {
 				r.Data["note"] = note
 				r.Metadata = &core.ToolMetadata{Truncated: true, TruncatedBy: string(TruncatedByLines)}
 			}
-			r.Text = renderList(entries, note)
+			r.Text = renderList(entries, note, "No entries.")
 			return r
 		},
 	}
@@ -1115,7 +1118,7 @@ func (f *fileTools) findFiles() core.Tool {
 				data["marker"] = marker
 				r.Metadata = &core.ToolMetadata{Truncated: true, TruncatedBy: string(TruncatedByLines)}
 			}
-			r.Text = renderList(found, marker)
+			r.Text = renderList(found, marker, fmt.Sprintf("No files match %q.", a.Pattern))
 			return r
 		},
 	}
@@ -1135,11 +1138,10 @@ func clampLimit(n, def, cap int) int {
 
 // renderList is the model-facing text for list_files and find_files: one
 // entry per line, then the truncation marker when there is one. An empty
-// list renders nothing, so the envelope — which says `[]` explicitly — is
-// what the model sees.
-func renderList(entries []string, marker string) string {
+// list renders the empty sentence, never the JSON envelope.
+func renderList(entries []string, marker, empty string) string {
 	if len(entries) == 0 {
-		return ""
+		return empty
 	}
 	out := strings.Join(entries, "\n")
 	if marker != "" {
@@ -1338,4 +1340,11 @@ func runCommandTool(opts Options) core.Tool {
 			return execResultToTool(res, timeout)
 		},
 	}
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }

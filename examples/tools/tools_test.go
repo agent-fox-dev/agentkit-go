@@ -50,8 +50,8 @@ func TestToolsAgainstAWorkspace(t *testing.T) {
 		code  int
 		want  string // substring of stdout
 	}{
-		{"write_file", nil, `{"path":"greet/greet.go","content":"package greet\n\n// Greet says hello.\nfunc Greet(name string) string { return \"hello \" + name }\n\nfunc Twice() string { return Greet(\"a\") + Greet(\"b\") }\n"}`, 0, `"written":true`},
-		{"edit_file", nil, `{"path":"greet/greet.go","edits":[{"old_string":"\"hello \"","new_string":"\"hi \""}]}`, 0, `"edits_applied":1`},
+		{"write_file", nil, `{"path":"greet/greet.go","content":"package greet\n\n// Greet says hello.\nfunc Greet(name string) string { return \"hello \" + name }\n\nfunc Twice() string { return Greet(\"a\") + Greet(\"b\") }\n"}`, 0, "Wrote 150 bytes to greet/greet.go"},
+		{"edit_file", nil, `{"path":"greet/greet.go","edits":[{"old_string":"\"hello \"","new_string":"\"hi \""}]}`, 0, "Applied 1 edit to greet/greet.go"},
 		{"read_file", nil, `{"path":"greet/greet.go","limit":"4"}`, 0, `return "hi " + name`}, // "4" is coerced, as for a model
 		{"list_files", nil, `{}`, 0, "greet/"},
 		{"find_files", nil, `{"pattern":"**/*.go"}`, 0, "greet/greet.go"},

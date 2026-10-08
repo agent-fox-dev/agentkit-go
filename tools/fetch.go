@@ -245,6 +245,8 @@ func FetchTool(opts FetchOptions) core.Tool {
 			if !textualContentType(contentType) || !utf8.Valid(raw) {
 				data["binary"] = true
 				data["bytes"] = len(raw)
+				r.Text = renderFetch(resp, headers, fmt.Sprintf(
+					"[Binary body (%s) not shown.]", humanBytes(int64(len(raw)))), truncated)
 				return r
 			}
 			text := string(raw)
@@ -252,6 +254,7 @@ func FetchTool(opts FetchOptions) core.Tool {
 				text = HTMLToText(text)
 			}
 			data["body"] = text
+			r.Text = renderFetch(resp, headers, text, truncated)
 			return r
 		},
 	}
@@ -349,4 +352,25 @@ func HTMLToText(s string) string {
 			b.WriteByte(' ')
 		}
 	}
+}
+
+// renderFetch is the model-facing text for fetch_url, shaped like the HTTP
+// response it describes: a status line naming the final URL, the returned
+// headers, a blank line, then the body as it arrived. The body is not inside
+// a JSON string, so markup and code reach the model without a layer of
+// escaping.
+func renderFetch(resp *http.Response, headers map[string]any, body string, truncated bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "HTTP %d %s\n", resp.StatusCode, resp.Request.URL)
+	for _, k := range returnedHeaders {
+		if v, ok := headers[k]; ok {
+			fmt.Fprintf(&b, "%s: %v\n", k, v)
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(body)
+	if truncated {
+		fmt.Fprintf(&b, "\n[Body truncated at %s.]", humanBytes(FetchResponseCap))
+	}
+	return b.String()
 }
