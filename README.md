@@ -16,14 +16,19 @@ go test ./...          # everything, offline, no API key
 go run ./examples/agentdemo
 ```
 
-[`examples/`](examples/) has fifteen of them — chat, streaming, a coding agent,
-durable sessions, delegation, writing your own tools, plugins, MCP in both
-directions, a standalone MCP server, mid-run steering, skills and project context,
-a test file showing how to test the agent code *you* write, and three finished
+[`examples/`](examples/) has one standalone program, with its own README, per
+feature — chat, streaming, a coding agent, durable sessions and session
+branching, delegation, writing your own tools, plugins, MCP in both directions,
+a standalone MCP server, mid-run steering, skills and project context,
+compaction, middleware, images, observability, deferred submission, a test file
+showing how to test the agent code *you* write — and three finished
 applications: [`triage`](examples/triage), which triages a bug report into a
 structured GitHub issue, [`cleaner`](examples/cleaner), which takes that issue
 and lands the fix, and [`flatline`](examples/flatline), which implements a whole
-spec pack task group by task group. Six need no API key. The nested
+spec pack task group by task group. Most need no API key.
+[`examples/tools`](examples/tools) has one program per built-in tool that
+takes the tool's JSON arguments the way a model sends them and prints what the
+model would read back. The nested
 [`examples/codesearch`](examples/codesearch) module shows the optional
 code-search index on its own and wired into an agent. [`examples/README.md`](examples/README.md)
 is the configuration reference: which environment variable each vendor reads,

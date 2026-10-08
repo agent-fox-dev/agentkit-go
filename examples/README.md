@@ -1,19 +1,23 @@
 # AgentKit examples
 
-Fifteen examples, smallest first. The first twelve are small and
-self-contained — most are a single `main.go` you can read top to bottom and
-copy into your own project, and `testing` is a test file — and they
-deliberately repeat their setup rather than sharing a helper package, so
-nothing you need is in a file you have not opened. The last three,
-[`triage`](triage), [`cleaner`](cleaner) and [`flatline`](flatline), are the
-opposite on purpose: finished applications, which is what the others look like
-once they stop being examples. Beside them, [`codesearch`](codesearch) is a
-small nested module of three programs for the optional code-search index.
+Every example is a standalone program with its own `README.md`: what the
+feature is, how to run it, and the code an embedder copies. Most are a single
+`main.go` you can read top to bottom; they deliberately repeat their setup
+rather than sharing a helper package, so nothing you need is in a file you
+have not opened. [`triage`](triage), [`cleaner`](cleaner) and
+[`flatline`](flatline) are the opposite on purpose: finished applications.
+[`tools`](tools) has one program per built-in tool, and
+[`codesearch`](codesearch) is a small nested module for the optional
+code-search index.
 
-**Six of them need no API key at all**: `agentdemo`, `testing`, `plugins`,
-`mcp`, `mcpserver` and `skills` do their real work before any model call, so you can run
-them right now — and so do `codesearch/search` and `codesearch/freshness`, which
-never call a model at all.
+**Most of them need no API key at all.** `agentdemo`, `testing`, `plugins`,
+`mcp`, `mcpserver`, `skills`, `compaction`, `middleware`, `images`,
+`observability`, `branching`, `deferred` and every program under `tools` do
+their real work against a scripted provider or before any model call — and so
+do `codesearch/search`, `codesearch/freshness` and `codesearch/code_search`,
+which never call a model at all.
+
+Start with these:
 
 | Example | Run it | What it teaches |
 |---|---|---|
@@ -24,7 +28,8 @@ never call a model at all.
 | [`delegation`](delegation) | `go run ./examples/delegation "which files define the agent loop?"` | Named specialists, per-child tool scoping, budget propagation. |
 
 Then the ones that go deeper. `testing`, `plugins`, `mcp`, `mcpserver` and `skills` run
-fully without a key:
+without a key up to their one model call (`plugins` and `skills` skip it; `mcp`
+stops there with a credential error):
 
 | Example | Run it | What it teaches |
 |---|---|---|
@@ -35,6 +40,33 @@ fully without a key:
 | [`mcpserver`](mcpserver) | `go run ./examples/mcpserver` · `-transport http -port 8722 -api-key-env MCP_API_KEY` · `-config agentkit.toml` | Standalone reference MCP server host: stdio and HTTP transports, API key authentication, and TOML configuration. |
 | [`interactive`](interactive) | `go run ./examples/interactive` | Typing *while* the agent works: steering a running turn, queued follow-ups, out-of-band abort, phase and snapshot. |
 | [`skills`](skills) | `go run ./examples/skills` | Repository- and user-authored prompt material: the three discovery tiers, the project trust gate, progressive disclosure and its escaping, context files, the tool-merge and mid-session activation seams, the subagent step. |
+
+The features below run against the scripted `provider/faux` model, so they
+need no key; `middleware` and `images` also take `--real` to repeat the run
+against a real model:
+
+| Example | Run it | What it teaches |
+|---|---|---|
+| [`compaction`](compaction) | `go run ./examples/compaction` | Summarizing a growing transcript in place: `compaction.NewContextTransform`, the model summarizers, checkpoints that are re-applied rather than recomputed, and resuming a compacted session. |
+| [`middleware`](middleware) | `go run ./examples/middleware` · `--real` | The request pipeline: ordering (last registered is outermost), `Retry`, `RateLimit`, `Budget`, `Caching` with `CacheStats`, and `Tracing`. |
+| [`images`](images) | `go run ./examples/images` · `--real` | Images in a conversation: the three ways one reaches a model (prompt, `read_file`, a tool result), `imagex` normalization to provider limits, and the repair for a text-only model. |
+| [`observability`](observability) | `go run ./examples/observability` | Watching a run: `core.Hooks`, the audit trail (`AuditEvent`, argument hashes), a `Tracer` with model and tool spans, and `session.EventJSON` for logging events. |
+| [`branching`](branching) | `go run ./examples/branching` | The session tree: forking from an earlier entry, branch summaries, `session.Load` leaves, and resuming a chosen branch with `FoldLeaf`. |
+| [`deferred`](deferred) | `go run ./examples/deferred` | Deferred (batch) submission: `SupportsDeferred`, a run that ends `deferred` with a durable handle, and `RedeemDeferred` after a restart. No shipped wire supports it, so the example brings its own batch provider. |
+
+Every built-in tool also has its own program, which takes the tool's JSON
+arguments exactly as a model sends them and prints exactly what the model
+would read back (`-schema` shows the definition the model sees; `-data` the
+structured result). See [`tools/README.md`](tools/README.md):
+
+| Program | Run it |
+|---|---|
+| [`tools/read_file`](tools/read_file), [`write_file`](tools/write_file), [`edit_file`](tools/edit_file) | `go run ./examples/tools/read_file '{"path":"README.md","limit":5}'` |
+| [`tools/list_files`](tools/list_files), [`find_files`](tools/find_files), [`search_files`](tools/search_files) | `go run ./examples/tools/search_files '{"pattern":"func NewAgent"}'` |
+| [`tools/file_outline`](tools/file_outline), [`find_symbol`](tools/find_symbol), [`find_references`](tools/find_references) | `go run ./examples/tools/find_symbol '{"name":"Restricted","kind":"func"}'` |
+| [`tools/execute`](tools/execute), [`run_command`](tools/run_command), [`powershell`](tools/powershell) | `go run ./examples/tools/execute '{"command":"git log --oneline -3"}'` |
+| [`tools/fetch_url`](tools/fetch_url) | `go run ./examples/tools/fetch_url '{"url":"https://example.com","as_text":true}'` |
+| [`codesearch/code_search`](codesearch/code_search) | `cd examples/codesearch && go run ./code_search --dir ../.. '{"query":"sym:NewWorkspace"}'` |
 
 And three applications rather than demonstrations of a feature. The first two
 are the halves of one workflow — `triage` turns a bug report into an issue,
@@ -326,11 +358,12 @@ growing transcript in place. Once a summary checkpoint exists it is always
 re-applied; the threshold only decides whether to extend it. The naive
 "compact when over threshold" reading oscillates.
 
-The three applications install it — see `installCompaction` in
-[`triage/triage.go`](triage/triage.go), [`cleaner/phases.go`](cleaner/phases.go)
-and [`flatline/phases.go`](flatline/phases.go). The shape is the same in each:
-make the `core.ConversationHistory` first, bind it into `CompactionDeps`
-alongside `ModelSummarizer` and `ModelTurnSummarizer` over the registered
-provider, set `cfg.TransformContext`, and construct the agent with
+[`compaction`](compaction) shows it on its own, with no key. The shape: make
+the `core.ConversationHistory` first, bind it into `CompactionDeps` alongside
+`ModelSummarizer` and `ModelTurnSummarizer` over the registered provider, set
+`cfg.TransformContext`, and construct the agent with
 `agentkit.NewAgentWithHistory(cfg, history)` so the transform and the agent
-share one history. None of the small examples set it up.
+share one history. The three applications install it the same way — see
+`installCompaction` in [`triage/triage.go`](triage/triage.go),
+[`cleaner/phases.go`](cleaner/phases.go) and
+[`flatline/phases.go`](flatline/phases.go).
