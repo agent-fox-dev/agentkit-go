@@ -87,7 +87,7 @@ func TestSearchAndCountWithoutWorkspace_TS0157(t *testing.T) {
 	ctx := context.Background()
 
 	// Search
-	res, _, err := Search(ctx, root, SearchParams{Pattern: "needle"})
+	res, err := Search(ctx, root, SearchParams{Pattern: "needle"})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestSearchAndCountWithoutWorkspace_TS0157(t *testing.T) {
 	}
 
 	// SearchIn
-	res2, _, err := SearchIn(ctx, root, SearchParams{Pattern: "needle"}, NoGlobalExcludes())
+	res2, err := SearchIn(ctx, root, SearchParams{Pattern: "needle"}, NoGlobalExcludes())
 	if err != nil {
 		t.Fatalf("SearchIn: %v", err)
 	}
@@ -333,14 +333,10 @@ func TestNativeSearchExcludesHiddenAndAppliesGlob_TS0161(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	// Force native backend
-	restore := SetRipgrepLookup(func() (string, bool) { return "", false })
-	defer restore()
-
 	ctx := context.Background()
 
 	// Search with file_glob=*.go
-	res, _, err := SearchIn(ctx, dir, SearchParams{Pattern: "needle", FileGlob: "*.go"}, NoGlobalExcludes())
+	res, err := SearchIn(ctx, dir, SearchParams{Pattern: "needle", FileGlob: "*.go"}, NoGlobalExcludes())
 	if err != nil {
 		t.Fatalf("SearchIn: %v", err)
 	}
@@ -393,10 +389,6 @@ func TestWalkHiddenFalseMatchesSearchFiles_TS0162(t *testing.T) {
 	}
 	resolvedDir := ws.Root
 
-	// Force native backend
-	restore := SetRipgrepLookup(func() (string, bool) { return "", false })
-	defer restore()
-
 	ctx := context.Background()
 
 	// Walk with IncludeHidden=false, collecting regular files
@@ -412,7 +404,7 @@ func TestWalkHiddenFalseMatchesSearchFiles_TS0162(t *testing.T) {
 	}
 
 	// Search with a match-everything pattern to find all files searched
-	res, _, err := SearchIn(ctx, dir, SearchParams{Pattern: "."}, NoGlobalExcludes())
+	res, err := SearchIn(ctx, dir, SearchParams{Pattern: "."}, NoGlobalExcludes())
 	if err != nil {
 		t.Fatalf("SearchIn: %v", err)
 	}
@@ -441,7 +433,7 @@ func TestWalkHiddenFalseMatchesSearchFiles_TS0162(t *testing.T) {
 	}
 }
 
-// TS-01-63: Tool descriptions, schemas, markers and the ripgrep path are
+// TS-01-63: Tool descriptions, schemas and markers are
 // unchanged and the existing suites pass unedited.
 // This test verifies that tool descriptions and schemas are byte-identical
 // to their expected values.

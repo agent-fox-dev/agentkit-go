@@ -458,12 +458,8 @@ func TestWalkAndOutlineMatchesSearchFiles_TS_01_75(t *testing.T) {
 		t.Fatalf("Walk: %v", err)
 	}
 
-	// Force native backend for search_files.
-	restore := tools.SetRipgrepLookup(func() (string, bool) { return "", false })
-	defer restore()
-
 	// Search with a match-everything pattern.
-	res, _, err := tools.SearchIn(ctx, resolvedRoot, tools.SearchParams{Pattern: "."}, tools.NoGlobalExcludes())
+	res, err := tools.SearchIn(ctx, resolvedRoot, tools.SearchParams{Pattern: "."}, tools.NoGlobalExcludes())
 	if err != nil {
 		t.Fatalf("SearchIn: %v", err)
 	}

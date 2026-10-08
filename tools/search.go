@@ -10,10 +10,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"regexp/syntax"
 	"sort"
 	"strings"
 	"unicode"
@@ -59,16 +57,8 @@ type SearchResult struct {
 }
 
 // binarySniffBytes is how much of a file is examined for a NUL byte before a
-// line is searched: ripgrep's read buffer.
-//
-// ripgrep decides "binary" per buffer, not per prefix. A NUL in its first
-// buffer drops the whole file; a NUL in a later one stops the search there,
-// keeping the matches of the buffers before it. The native engine follows the
-// same rule with one fixed window: a NUL in the first 64 KiB makes the file
-// binary, and a NUL after that ends the search at the line holding it. The
-// one difference left is a match in the same ripgrep buffer as a late NUL,
-// which ripgrep drops and this keeps — buffers are line-aligned and grow
-// with long lines, so no fixed window reproduces them exactly.
+// line is searched. A NUL in the first 64 KiB makes the file binary; a NUL
+// after that ends the search at the line holding it.
 const binarySniffBytes = 64 << 10
 
 // MaxSearchContextLines bounds context_lines.
@@ -77,61 +67,43 @@ const binarySniffBytes = 64 << 10
 // 10,000 lines the model pays for and did not ask for.
 const MaxSearchContextLines = 20
 
-// SearchBackend names which implementation answered, for the parity test and
-// for anyone debugging a disagreement.
-type SearchBackend string
-
-const (
-	BackendRipgrep SearchBackend = "ripgrep"
-	BackendNative  SearchBackend = "native"
-)
-
 // searchFiles is REQ-TOOL-05.
 //
-// Declared semantics, since the two backends do not agree out of the box and
-// the requirement is that the fallback matches OURS:
+// Declared semantics. The search is native Go (a ripgrep backend was removed
+// by PRD 09 step 5; codesearch is the large-repository path):
 //
 //   - case_sensitive absent means SMART-CASE: an all-lowercase pattern matches
 //     insensitively, anything with an uppercase rune matches sensitively.
-//     ripgrep defaults to sensitive, so the accelerated path is asked for
-//     --smart-case explicitly.
 //   - Binary files are SKIPPED, decided by a NUL byte in the first 64 KiB; a
 //     later NUL ends the file's search (binarySniffBytes).
 //   - A file that starts with a byte-order mark is read as the text it marks:
-//     a UTF-8 BOM is not part of line 1, and UTF-16 is transcoded, as
-//     ripgrep's default --encoding auto does. A PowerShell script saved by
+//     a UTF-8 BOM is not part of line 1, and UTF-16 is transcoded. A PowerShell script saved by
 //     Windows PowerShell is UTF-16, and was otherwise skipped as binary.
 //   - Lines end at "\n", and a "\r" before it is not part of the line, so
-//     `$` matches at the end of a CRLF line on both (rg --crlf).
+//     `$` matches at the end of a CRLF line.
 //   - file_glob uses AgentKit's glob dialect (MatchGlob), applied to the path
 //     RELATIVE to the search root.
 //   - The pattern is Go's regexp (RE2), and that includes its ASCII \w, \d,
-//     \s and \b: `\w+` does not match `café` whole. ripgrep's are Unicode,
-//     so it is handed the pattern as Go's parser reads it (ripgrepPattern),
-//     never as typed, and a pattern that works on one works on the other.
+//     \s and \b: `\w+` does not match `café` whole.
 //   - Smart-case looks at the pattern's LITERAL characters only: `error\S`
 //     is lowercase, because \S is an escape and not an uppercase letter.
-//     The decision is made once (caseSensitive) and handed to ripgrep as an
-//     explicit flag rather than left to its own --smart-case.
+//     The decision is made once (caseSensitive).
 //   - files_searched counts the files SELECTED for search — everything left
 //     after the ignore rules, the hidden-entry rule and file_glob. A binary
 //     file is counted as selected and then skipped, because whether a file
 //     turns out to be binary is not something the caller can predict from the
-//     query. ripgrep cannot supply this number (its --stats "searches" counts
-//     files that MATCHED, and reports 0 for a query that scanned a hundred
-//     files), so both backends take it from the same walk. The count does not
+//     query. The count does not
 //     change when the result is truncated: a truncated native search stops
 //     READING files but finishes the walk, because a number that meant
 //     "selected" on one query and "examined before we gave up" on another
 //     would be a number nobody can use. The walk is readdir plus pattern
 //     matching; the file reads are what truncation exists to avoid.
 //   - HIDDEN entries — any path component beginning with "." — are skipped,
-//     which is ripgrep's default and also what keeps `.git/` internals and
+//     which keeps `.git/` internals and
 //     `.env` out of a result the model reads.
 //   - A git repository is NOT required. Ignore rules are applied wherever they
 //     are found; with no .gitignore anywhere, every non-hidden, non-binary
-//     file is searched. ripgrep only honours .gitignore inside a repository,
-//     so the accelerated path is asked for --no-require-git.
+//     file is searched.
 func (f *fileTools) searchFiles() core.Tool {
 	return core.Tool{
 		Name: "search_files",
@@ -203,7 +175,7 @@ func (f *fileTools) searchFiles() core.Tool {
 					MaxSearchContextLines, a.ContextLines, MaxSearchContextLines))
 			}
 
-			res, _, err := SearchIn(ctx, root, a, f.ig)
+			res, err := SearchIn(ctx, root, a, f.ig)
 			if err != nil {
 				if ctx.Err() != nil {
 					return core.ErrResult("aborted", "Operation aborted")
@@ -341,28 +313,27 @@ func effectiveMax(n int) int {
 	return n
 }
 
-// Search runs the search and reports which backend answered.
+// Search runs the search.
 //
-// It is exported so the parity test can drive both backends over one tree, and
-// so an embedder can search without going through the tool envelope. It reads
+// It is exported so an embedder can search without going through the tool
+// envelope. It reads
 // the real ignore environment; SearchIn takes an explicit one.
-func Search(ctx context.Context, root string, p SearchParams) (SearchResult, SearchBackend, error) {
+func Search(ctx context.Context, root string, p SearchParams) (SearchResult, error) {
 	return SearchIn(ctx, root, p, IgnoreOptions{})
 }
 
 // SearchIn is Search with an injected ignore environment (NFR-TEST-04), so a
 // test can pin an empty global excludes layer instead of inheriting the
 // developer's.
-func SearchIn(ctx context.Context, root string, p SearchParams, ig IgnoreOptions) (SearchResult, SearchBackend, error) {
-	res, backend, err := searchIn(ctx, root, p, ig)
+func SearchIn(ctx context.Context, root string, p SearchParams, ig IgnoreOptions) (SearchResult, error) {
+	res, err := searchNative(ctx, root, p, ig)
 	if err != nil {
-		return res, backend, err
+		return res, err
 	}
-	// REQ-TOOL-09: the 50 KB byte limit composes with the match cap on BOTH
-	// backends. 100 matches with 20 lines of context either side at 500
+	// REQ-TOOL-09: the 50 KB byte limit composes with the match cap. 100 matches with 20 lines of context either side at 500
 	// chars a line is two megabytes; without this the model paid for it.
 	capSearchBytes(&res, DefaultByteLimit)
-	return res, backend, nil
+	return res, nil
 }
 
 // capSearchBytes applies the head-mode byte budget over the assembled matches,
@@ -389,99 +360,6 @@ func capSearchBytes(res *SearchResult, budget int) {
 	}
 }
 
-func searchIn(ctx context.Context, root string, p SearchParams, ig IgnoreOptions) (SearchResult, SearchBackend, error) {
-	if _, err := compilePattern(p); err != nil {
-		// Compiled up front even on the ripgrep path, so an invalid pattern is
-		// one error message rather than two depending on what is installed.
-		return SearchResult{}, "", err
-	}
-	if path, ok := ripgrepPath(); ok {
-		res, err := searchRipgrep(ctx, path, root, p, ig)
-		if err == nil {
-			return res, BackendRipgrep, nil
-		}
-		if ctx.Err() != nil {
-			return SearchResult{}, BackendRipgrep, err
-		}
-		// A ripgrep that is present but fails — a version whose JSON shape
-		// moved, a sandbox that blocks exec — must not take the tool down with
-		// it. The native path is a complete implementation, not a stub, so
-		// falling through costs correctness nothing.
-		res, nerr := searchNative(ctx, root, p, ig)
-		if nerr != nil {
-			return SearchResult{}, BackendNative, nerr
-		}
-		return res, BackendNative, nil
-	}
-	res, err := searchNative(ctx, root, p, ig)
-	return res, BackendNative, err
-}
-
-// ripgrepPath locates rg.
-var ripgrepPath = func() (string, bool) {
-	path, err := exec.LookPath("rg")
-	if err != nil {
-		return "", false
-	}
-	return path, true
-}
-
-// SetRipgrepLookup overrides ripgrep discovery and returns a restore func.
-//
-// It exists so the parity test of REQ-TOOL-05 can drive BOTH backends over one
-// tree in one process. Without it the native path is only reachable on a
-// machine without ripgrep — which is to say, it would ship untested on every
-// machine that could compare it against the thing it has to agree with.
-func SetRipgrepLookup(f func() (string, bool)) func() {
-	prev := ripgrepPath
-	ripgrepPath = f
-	return func() { ripgrepPath = prev }
-}
-
-// Word-boundary placeholders for ripgrepPattern: private-use runes that
-// stand in for \b and \B while Go's printer renders the parsed pattern.
-const (
-	wordBoundaryMark    = '\U000F0000'
-	notWordBoundaryMark = '\U000F0001'
-)
-
-// ripgrepPattern renders a pattern for ripgrep with Go's meaning.
-//
-// Rust's \w, \d, \s and \b are Unicode where Go's are ASCII, so the pattern
-// is parsed with Go's own parser and printed back: the printer spells every
-// class as explicit ranges (\w is [0-9A-Z_a-z]), and the line anchors as
-// (?m:^) and (?m:$), which mean the same per line on both. \b and \B have no
-// range form, so they are carried through the printer as placeholder runes
-// and rendered as Rust's ASCII (?-u:\b) and (?-u:\B). A pattern that cannot
-// be parsed, or that contains a placeholder rune itself, is returned as
-// typed; the native backend reports the parse error.
-func ripgrepPattern(pat string) string {
-	if strings.ContainsRune(pat, wordBoundaryMark) || strings.ContainsRune(pat, notWordBoundaryMark) {
-		return pat
-	}
-	re, err := syntax.Parse(pat, syntax.Perl&^syntax.OneLine)
-	if err != nil {
-		return pat
-	}
-	var mark func(*syntax.Regexp)
-	mark = func(n *syntax.Regexp) {
-		switch n.Op {
-		case syntax.OpWordBoundary:
-			n.Op, n.Rune, n.Flags = syntax.OpLiteral, []rune{wordBoundaryMark}, 0
-		case syntax.OpNoWordBoundary:
-			n.Op, n.Rune, n.Flags = syntax.OpLiteral, []rune{notWordBoundaryMark}, 0
-		}
-		for _, sub := range n.Sub {
-			mark(sub)
-		}
-	}
-	mark(re)
-	return strings.NewReplacer(
-		`\x{f0000}`, `(?-u:\b)`,
-		`\x{f0001}`, `(?-u:\B)`,
-	).Replace(re.String())
-}
-
 // compilePattern applies the smart-case rule.
 func compilePattern(p SearchParams) (*regexp.Regexp, error) {
 	pat := p.Pattern
@@ -495,8 +373,7 @@ func compilePattern(p SearchParams) (*regexp.Regexp, error) {
 	return re, nil
 }
 
-// caseSensitive resolves the tri-state. It is the ONE decision both backends
-// use: ripgrep is told the answer, not asked for its own smart-case.
+// caseSensitive resolves the tri-state.
 func caseSensitive(p SearchParams) bool {
 	if p.CaseSensitive != nil {
 		return *p.CaseSensitive
@@ -842,301 +719,4 @@ func countCandidates(ctx context.Context, root string, p SearchParams, igOpts Ig
 		return nil
 	})
 	return n, err
-}
-
-// ---------------------------------------------------------------- ripgrep
-
-// searchRipgrep is the accelerated path.
-//
-// The rg invocation is INTERNAL to the tool and does not pass through any
-// command policy (REQ-TOOL-05). That is safe only because nothing the model
-// supplies reaches a shell: the argv is built here, exec.Command takes it as a
-// vector, and every model-supplied value is a separate argument. `--` before
-// the pattern is what stops a pattern beginning with `-` from becoming a flag.
-func searchRipgrep(ctx context.Context, rg, root string, p SearchParams, ig IgnoreOptions) (SearchResult, error) {
-	max := effectiveMax(p.MaxMatches)
-
-	args := []string{
-		"--json",
-		"--regex-size-limit", "10M",
-		// ripgrep only honours .gitignore inside a git repository; our declared
-		// semantics do not require one, and without this a search under a
-		// plain directory returns node_modules on the accelerated path and not
-		// on the native one.
-		"--no-require-git",
-		// Parity with the native engine's ignore SOURCES (REQ-TOOL-05.2): it
-		// reads the global excludes file, .git/info/exclude and the .gitignore
-		// files from the search root DOWN. rg additionally walks .gitignore
-		// files in the root's PARENT directories and honours .ignore files,
-		// neither of which the native path reads — so a search rooted in a
-		// subdirectory returned different files depending on which backend
-		// answered. The global layer is passed explicitly below, so rg's own
-		// lookup of it is turned off too.
-		"--no-ignore-parent", "--no-ignore-dot", "--no-ignore-global",
-		// Deterministic order, at the cost of ripgrep's parallelism. It is
-		// what makes truncation mean the same thing on both paths: "the first
-		// N by path then line" rather than "whichever N finished first".
-		"--sort", "path",
-		// The summary event carries the searched-file count, which cannot be
-		// derived from the match events — they only mention files that matched.
-		"--stats",
-		// RE2 semantics, so a pattern that compiles for the native backend
-		// behaves the same here. Without this, rg's default engine accepts
-		// constructs Go's regexp rejects and the two backends diverge on
-		// exactly the patterns a caller would notice.
-		"--engine", "default",
-	}
-	// Lines end at \n with an optional \r before it, as the native reader
-	// reads them: without this `Foo$` does not match `class Foo\r\n`.
-	args = append(args, "--crlf")
-	// The smart-case decision is ours (caseSensitive), and ripgrep is told
-	// the answer: its own --smart-case counts an escape's letter (\S) as
-	// lowercase where a naive check counted it as uppercase, and two
-	// readings of one rule is how the backends drifted apart.
-	if caseSensitive(p) {
-		args = append(args, "--case-sensitive")
-	} else {
-		args = append(args, "--ignore-case")
-	}
-	if p.ContextLines > 0 {
-		args = append(args, "--context", fmt.Sprint(p.ContextLines))
-	}
-	// The global excludes layer is handed to rg EXPLICITLY. rg runs with an
-	// empty environment (below), so it cannot locate core.excludesFile or
-	// ~/.config/git/ignore itself — which meant the accelerated path silently
-	// applied no global layer while the native path did, and an injected
-	// layer (NFR-TEST-04) reached one backend but not the other. --ignore-file
-	// has the lowest precedence in rg's ignore stack, matching ours.
-	if g := globalExcludesPath(ig); g != "" {
-		if _, err := os.Stat(g); err == nil {
-			args = append(args, "--ignore-file", g)
-		}
-	}
-	// file_glob is deliberately NOT passed to rg.
-	//
-	// It would be the cheaper thing to do — rg would skip the excluded files
-	// without reading them — but rg's glob dialect is not ours, and handing it
-	// the pattern lets it NARROW the file set. A post-filter can only remove
-	// matches, never recover a file rg was told not to open, so wherever our
-	// dialect is broader than rg's the accelerated path silently returns less
-	// than the native one. Ours is the declared dialect (smart-case globs,
-	// among other differences), so it is the only one that gets to decide.
-	args = append(args, "--", ripgrepPattern(p.Pattern), ".")
-
-	// rg's own context, so it can be stopped the moment the result is full.
-	// Without this a search for a common word over a large tree read every
-	// match rg could find, at max_matches=1.
-	rgCtx, stopRG := context.WithCancel(ctx)
-	defer stopRG()
-	cmd := exec.CommandContext(rgCtx, rg, args...)
-	cmd.Dir = root
-	// An empty environment, like every other subprocess here (REQ-SEC-08). rg
-	// reads RIPGREP_CONFIG_PATH, and a config file picked up from the ambient
-	// environment would change the tool's declared semantics invisibly.
-	cmd.Env = []string{}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return SearchResult{}, err
-	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return SearchResult{}, err
-	}
-
-	res, stopped, parseErr := parseRipgrepJSON(stdout, p, max)
-	if stopped || parseErr != nil {
-		// Done reading early: kill rg rather than let it finish a search
-		// nobody will read. Wait then closes the pipe; the rule that reads
-		// must finish before Wait is about not LOSING output, and here the
-		// rest of the output is unwanted by construction.
-		stopRG()
-	}
-	waitErr := cmd.Wait()
-
-	if parseErr != nil {
-		return SearchResult{}, parseErr
-	}
-	// One extra walk, with no file contents read: readdir plus ignore matching
-	// is cheap next to the content scan rg just did, and it is the only way the
-	// two backends report the same number.
-	n, cerr := countCandidates(ctx, root, p, ig)
-	if cerr != nil && ctx.Err() != nil {
-		return SearchResult{}, cerr
-	}
-	res.FilesSearched = n
-
-	if waitErr != nil {
-		if stopped {
-			return res, nil // killed by us, at max_matches: the result is complete
-		}
-		var ee *exec.ExitError
-		// Exit 1 is "no matches", which is a result and not a failure. Exit 2
-		// is an error and carries a reason on stderr — but rg reports 2 when
-		// ANY file could not be read even if others matched, and the native
-		// path skips an unreadable file rather than failing, so matches that
-		// arrived alongside the error are kept.
-		if errors.As(waitErr, &ee) && (ee.ExitCode() == 1 && len(res.Matches) == 0 ||
-			ee.ExitCode() == 2 && len(res.Matches) > 0) {
-			return res, nil
-		}
-		return SearchResult{}, fmt.Errorf("ripgrep: %w: %s", waitErr,
-			strings.TrimSpace(stderr.String()))
-	}
-	return res, nil
-}
-
-// rgEvent is the subset of rg's --json stream this needs.
-type rgEvent struct {
-	Type string `json:"type"`
-	Data struct {
-		Path struct {
-			Text string `json:"text"`
-		} `json:"path"`
-		Lines struct {
-			Text string `json:"text"`
-		} `json:"lines"`
-		LineNumber int `json:"line_number"`
-		Stats      struct {
-			Searches int `json:"searches"`
-		} `json:"stats"`
-	} `json:"data"`
-}
-
-// parseRipgrepJSON reads rg's event stream. It stops READING once max matches
-// are in hand and the file they came from has ended — the after-context for
-// the last match arrives before that file's "end" event — and reports that it
-// stopped, so the caller can kill rg rather than wait for it.
-func parseRipgrepJSON(r interface{ Read([]byte) (int, error) }, p SearchParams, max int) (res SearchResult, stopped bool, err error) {
-	out := SearchResult{Matches: []SearchMatch{}}
-
-	// Context lines arrive as their own events, before and after the match
-	// they belong to, so they are buffered per file and attached at the end.
-	type ctxLine struct {
-		n    int
-		text string
-	}
-	var (
-		pendingCtx []ctxLine
-		curFile    string
-	)
-	attach := func() {
-		if p.ContextLines == 0 {
-			pendingCtx = nil
-			return
-		}
-		for i := range out.Matches {
-			m := &out.Matches[i]
-			if m.File != curFile {
-				continue
-			}
-			for _, c := range pendingCtx {
-				switch {
-				case c.n < m.Line && c.n >= m.Line-p.ContextLines:
-					m.Before = append(m.Before, c.text)
-				case c.n > m.Line && c.n <= m.Line+p.ContextLines:
-					m.After = append(m.After, c.text)
-				}
-			}
-		}
-		pendingCtx = nil
-	}
-
-	// Events are read whole: a match on a line of several megabytes is one
-	// JSON event of that size, and a bounded scanner failed the whole search
-	// on it.
-	br := bufio.NewReaderSize(r, 64<<10)
-	var buf []byte
-	for !stopped {
-		raw, rerr := readWholeLine(br, buf[:0])
-		if errors.Is(rerr, io.EOF) {
-			break
-		}
-		if rerr != nil {
-			return SearchResult{}, false, rerr
-		}
-		buf = raw
-		if len(raw) == 0 {
-			continue
-		}
-		var ev rgEvent
-		if err := json.Unmarshal(raw, &ev); err != nil {
-			return SearchResult{}, false, fmt.Errorf("ripgrep json: %w", err)
-		}
-		switch ev.Type {
-		case "begin":
-			attach()
-			curFile = normalizeRGPath(ev.Data.Path.Text)
-			if out.Truncated {
-				stopped = true // the full result's last file has ended
-			}
-		case "end":
-			attach()
-			if out.Truncated {
-				stopped = true
-			}
-		case "summary":
-			// Deliberately ignored. rg's --stats "searches" counts files that
-			// matched, not files searched, so it disagrees with the native
-			// backend on every query — including reporting 0 for a search that
-			// scanned the whole tree. CountCandidates supplies the number.
-		case "match":
-			file := normalizeRGPath(ev.Data.Path.Text)
-			if p.FileGlob != "" && !MatchGlob(p.FileGlob, file) {
-				// rg's glob dialect is not ours; ours is the declared one.
-				continue
-			}
-			text := capLine(trimEOL(ev.Data.Lines.Text))
-			// A match line is also CONTEXT for any adjacent match. ripgrep
-			// emits each line once, as a match or as context but never both,
-			// so without this two matches a line apart each lose the other
-			// from their context — where reading the file directly, as the
-			// native backend does, shows it.
-			pendingCtx = append(pendingCtx, ctxLine{n: ev.Data.LineNumber, text: text})
-			if len(out.Matches) >= max {
-				out.Truncated = true
-				if p.ContextLines == 0 {
-					stopped = true // nothing further to attach
-				}
-				continue
-			}
-			out.Matches = append(out.Matches, SearchMatch{
-				File: file, Line: ev.Data.LineNumber, Text: text,
-			})
-		case "context":
-			file := normalizeRGPath(ev.Data.Path.Text)
-			if p.FileGlob != "" && !MatchGlob(p.FileGlob, file) {
-				continue
-			}
-			pendingCtx = append(pendingCtx, ctxLine{
-				n: ev.Data.LineNumber, text: capLine(trimEOL(ev.Data.Lines.Text))})
-		}
-	}
-	attach()
-	sortMatches(out.Matches)
-	return out, stopped, nil
-}
-
-// normalizeRGPath strips the leading "./" rg emits for a relative search.
-func normalizeRGPath(p string) string {
-	p = filepath.ToSlash(p)
-	return strings.TrimPrefix(p, "./")
-}
-
-func trimEOL(s string) string {
-	return strings.TrimRight(s, "\r\n")
-}
-
-// sortMatches puts results in a deterministic order.
-//
-// The two backends walk in different orders — rg parallelizes across files —
-// so without this the parity test compares two correct answers and fails, and
-// a caller diffing two runs sees noise.
-func sortMatches(m []SearchMatch) {
-	sort.SliceStable(m, func(i, j int) bool {
-		if m[i].File != m[j].File {
-			return m[i].File < m[j].File
-		}
-		return m[i].Line < m[j].Line
-	})
 }

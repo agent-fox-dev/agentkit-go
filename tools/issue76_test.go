@@ -196,10 +196,9 @@ func TestEditFileOnAMissingPathMarksNothing(t *testing.T) {
 	}
 }
 
-// Issue #76 §5: neither search backend gives up on a long line. Native
-// search stopped reading a file at its first line over 1 MiB; the ripgrep
-// backend failed the whole search on a match event over 4 MiB. Both must
-// find a match on the long line and one after it, as ripgrep itself does.
+// Issue #76 §5: search does not give up on a long line. It stopped reading a
+// file at its first line over 1 MiB; it must find a match on the long line and
+// one after it.
 func TestSearchReadsPastALongLine(t *testing.T) {
 	dir := t.TempDir()
 	long := "var x = \"" + strings.Repeat("a", 5<<20) + "\"; NEEDLE_ONE\n"
@@ -221,10 +220,6 @@ func TestSearchReadsPastALongLine(t *testing.T) {
 	}
 	res, err := searchNative(context.Background(), dir, p, NoGlobalExcludes())
 	check("native", res, err)
-	if rg, lerr := exec.LookPath("rg"); lerr == nil {
-		res, err = searchRipgrep(context.Background(), rg, dir, p, NoGlobalExcludes())
-		check("ripgrep", res, err)
-	}
 }
 
 // Issue #76 §5: write_file and edit_file replace a file atomically (a new
@@ -287,43 +282,5 @@ func TestWritesAreAtomicAndKeepModeAndLinks(t *testing.T) {
 		if strings.Contains(e.Name(), ".agentkit-") {
 			t.Errorf("temporary file %s left behind", e.Name())
 		}
-	}
-}
-
-// The ripgrep backend's reader, without a ripgrep install: a stand-in that
-// replays ripgrep's JSON event stream, whose first match event carries a
-// 5 MiB line.
-func TestRipgrepJSONReaderTakesALongEvent(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("a shell-script stand-in is not portable to Windows")
-	}
-	dir := t.TempDir()
-	long := "var x = \"" + strings.Repeat("a", 5<<20) + "\"; NEEDLE_ONE"
-	event := func(typ string, line int, text string) string {
-		b, _ := json.Marshal(map[string]any{"type": typ, "data": map[string]any{
-			"path": map[string]any{"text": "min.js"}, "lines": map[string]any{"text": text + "\n"},
-			"line_number": line}})
-		return string(b)
-	}
-	stream := strings.Join([]string{
-		`{"type":"begin","data":{"path":{"text":"min.js"}}}`,
-		event("match", 1, long),
-		event("match", 3, "NEEDLE_TWO"),
-		`{"type":"end","data":{"path":{"text":"min.js"}}}`,
-	}, "\n") + "\n"
-	events := filepath.Join(dir, "events.jsonl")
-	if err := os.WriteFile(events, []byte(stream), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	rg := filepath.Join(dir, "rg")
-	if err := os.WriteFile(rg, []byte("#!/bin/sh\ncat '"+events+"'\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	res, err := searchRipgrep(context.Background(), rg, dir, SearchParams{Pattern: "NEEDLE_", MaxMatches: 10}, NoGlobalExcludes())
-	if err != nil {
-		t.Fatalf("searchRipgrep: %v", err)
-	}
-	if len(res.Matches) != 2 || res.Matches[0].Line != 1 || res.Matches[1].Line != 3 {
-		t.Fatalf("matches %+v, want lines 1 and 3", res.Matches)
 	}
 }

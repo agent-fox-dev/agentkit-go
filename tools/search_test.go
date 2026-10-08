@@ -9,13 +9,10 @@ import (
 	"image"
 	"image/png"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/tools"
@@ -82,22 +79,18 @@ func names(res tools.SearchResult) []string {
 // files, the other returns node_modules.
 func TestSearchSkipsIgnoredAndBinaryFiles(t *testing.T) {
 	root := searchTree(t)
-	for _, backend := range bothBackends(t) {
-		t.Run(string(backend.name), func(t *testing.T) {
-			res, err := backend.run(t, root, tools.SearchParams{Pattern: "needle"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := strings.Join(names(res), " ")
-			for _, forbidden := range []string{"node_modules", "debug.log", "blob.bin"} {
-				if strings.Contains(got, forbidden) {
-					t.Fatalf("%s must not be searched; got %s", forbidden, got)
-				}
-			}
-			if !strings.Contains(got, "main.go") || !strings.Contains(got, "lib/helper.go") {
-				t.Fatalf("expected the project's own files; got %s", got)
-			}
-		})
+	res, err := runNative(t, root, tools.SearchParams{Pattern: "needle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(names(res), " ")
+	for _, forbidden := range []string{"node_modules", "debug.log", "blob.bin"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("%s must not be searched; got %s", forbidden, got)
+		}
+	}
+	if !strings.Contains(got, "main.go") || !strings.Contains(got, "lib/helper.go") {
+		t.Fatalf("expected the project's own files; got %s", got)
 	}
 }
 
@@ -106,20 +99,16 @@ func TestSearchSkipsIgnoredAndBinaryFiles(t *testing.T) {
 // say nothing about it either way.
 func TestANestedRepositorysRulesDoNotLeakOutward(t *testing.T) {
 	root := searchTree(t)
-	for _, backend := range bothBackends(t) {
-		t.Run(string(backend.name), func(t *testing.T) {
-			res, err := backend.run(t, root, tools.SearchParams{Pattern: "needle"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := strings.Join(names(res), " ")
-			if strings.Contains(got, "secret.txt") {
-				t.Fatalf("the nested repo ignores secret.txt; got %s", got)
-			}
-			if !strings.Contains(got, "vendor/sub/ok.go") {
-				t.Fatalf("the nested repo's other files are still searched; got %s", got)
-			}
-		})
+	res, err := runNative(t, root, tools.SearchParams{Pattern: "needle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(names(res), " ")
+	if strings.Contains(got, "secret.txt") {
+		t.Fatalf("the nested repo ignores secret.txt; got %s", got)
+	}
+	if !strings.Contains(got, "vendor/sub/ok.go") {
+		t.Fatalf("the nested repo's other files are still searched; got %s", got)
 	}
 }
 
@@ -129,69 +118,61 @@ func TestANestedRepositorysRulesDoNotLeakOutward(t *testing.T) {
 func TestSmartCaseIsTheDefault(t *testing.T) {
 	root := searchTree(t)
 	yes, no := true, false
-	for _, backend := range bothBackends(t) {
-		t.Run(string(backend.name), func(t *testing.T) {
-			lower, err := backend.run(t, root, tools.SearchParams{Pattern: "needle"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(strings.Join(names(lower), " "), "lib/helper.go:4") {
-				t.Fatalf("an all-lowercase pattern must match `var Needle`; got %v", names(lower))
-			}
+	lower, err := runNative(t, root, tools.SearchParams{Pattern: "needle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(names(lower), " "), "lib/helper.go:4") {
+		t.Fatalf("an all-lowercase pattern must match `var Needle`; got %v", names(lower))
+	}
 
-			upper, err := backend.run(t, root, tools.SearchParams{Pattern: "Needle"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, m := range upper.Matches {
-				if !strings.Contains(m.Text, "Needle") {
-					t.Fatalf("an uppercase rune makes the pattern sensitive; %q matched", m.Text)
-				}
-			}
+	upper, err := runNative(t, root, tools.SearchParams{Pattern: "Needle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range upper.Matches {
+		if !strings.Contains(m.Text, "Needle") {
+			t.Fatalf("an uppercase rune makes the pattern sensitive; %q matched", m.Text)
+		}
+	}
 
-			forced, err := backend.run(t, root, tools.SearchParams{
-				Pattern: "Needle", CaseSensitive: &no})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(forced.Matches) <= len(upper.Matches) {
-				t.Fatal("case_sensitive=false must widen the result beyond smart-case")
-			}
+	forced, err := runNative(t, root, tools.SearchParams{
+		Pattern: "Needle", CaseSensitive: &no})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(forced.Matches) <= len(upper.Matches) {
+		t.Fatal("case_sensitive=false must widen the result beyond smart-case")
+	}
 
-			strict, err := backend.run(t, root, tools.SearchParams{
-				Pattern: "needle", CaseSensitive: &yes})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(strict.Matches) >= len(lower.Matches) {
-				t.Fatal("case_sensitive=true must narrow the result below smart-case; " +
-					"absent and false are not the same answer")
-			}
-		})
+	strict, err := runNative(t, root, tools.SearchParams{
+		Pattern: "needle", CaseSensitive: &yes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(strict.Matches) >= len(lower.Matches) {
+		t.Fatal("case_sensitive=true must narrow the result below smart-case; " +
+			"absent and false are not the same answer")
 	}
 }
 
 // TestContextLinesSurroundTheMatch.
 func TestContextLinesSurroundTheMatch(t *testing.T) {
 	root := searchTree(t)
-	for _, backend := range bothBackends(t) {
-		t.Run(string(backend.name), func(t *testing.T) {
-			res, err := backend.run(t, root, tools.SearchParams{
-				Pattern: "func needle", ContextLines: 2, FileGlob: "main.go"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(res.Matches) != 1 {
-				t.Fatalf("want 1 match, got %v", names(res))
-			}
-			m := res.Matches[0]
-			if len(m.Before) != 2 || m.Before[1] != "" || m.Before[0] != "package main" {
-				t.Fatalf("before context wrong: %q", m.Before)
-			}
-			if len(m.After) != 2 || m.After[1] != "func other() {}" {
-				t.Fatalf("after context wrong: %q", m.After)
-			}
-		})
+	res, err := runNative(t, root, tools.SearchParams{
+		Pattern: "func needle", ContextLines: 2, FileGlob: "main.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Matches) != 1 {
+		t.Fatalf("want 1 match, got %v", names(res))
+	}
+	m := res.Matches[0]
+	if len(m.Before) != 2 || m.Before[1] != "" || m.Before[0] != "package main" {
+		t.Fatalf("before context wrong: %q", m.Before)
+	}
+	if len(m.After) != 2 || m.After[1] != "func other() {}" {
+		t.Fatalf("after context wrong: %q", m.After)
 	}
 }
 
@@ -199,51 +180,43 @@ func TestContextLinesSurroundTheMatch(t *testing.T) {
 // identical; ours is the declared one, so the accelerated path re-filters.
 func TestTheFileGlobUsesAgentKitsDialect(t *testing.T) {
 	root := searchTree(t)
-	for _, backend := range bothBackends(t) {
-		t.Run(string(backend.name), func(t *testing.T) {
-			res, err := backend.run(t, root, tools.SearchParams{
-				Pattern: "needle", FileGlob: "**/*.{go,md}"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(res.Matches) == 0 {
-				t.Fatal("brace expansion must select the .go and .md files")
-			}
-			var sawUpper bool
-			for _, m := range res.Matches {
-				ext := strings.ToLower(filepath.Ext(m.File))
-				if ext != ".go" && ext != ".md" {
-					t.Fatalf("%s does not match the glob", m.File)
-				}
-				if m.File == "UPPER.GO" {
-					sawUpper = true
-				}
-			}
-			// Smart-case globbing is AgentKit's declared dialect and ripgrep's
-			// is case-sensitive, so this is the assertion that the accelerated
-			// path did not inherit ripgrep's rules.
-			if !sawUpper {
-				t.Fatalf("an all-lowercase glob must match UPPER.GO; got %v", names(res))
-			}
-		})
+	res, err := runNative(t, root, tools.SearchParams{
+		Pattern: "needle", FileGlob: "**/*.{go,md}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Matches) == 0 {
+		t.Fatal("brace expansion must select the .go and .md files")
+	}
+	var sawUpper bool
+	for _, m := range res.Matches {
+		ext := strings.ToLower(filepath.Ext(m.File))
+		if ext != ".go" && ext != ".md" {
+			t.Fatalf("%s does not match the glob", m.File)
+		}
+		if m.File == "UPPER.GO" {
+			sawUpper = true
+		}
+	}
+	// Smart-case globbing is AgentKit's declared dialect and ripgrep's
+	// is case-sensitive, so this is the assertion that the accelerated
+	// path did not inherit ripgrep's rules.
+	if !sawUpper {
+		t.Fatalf("an all-lowercase glob must match UPPER.GO; got %v", names(res))
 	}
 }
 
 // TestSearchTruncatesAtMaxMatches.
 func TestSearchTruncatesAtMaxMatches(t *testing.T) {
 	root := searchTree(t)
-	for _, backend := range bothBackends(t) {
-		t.Run(string(backend.name), func(t *testing.T) {
-			res, err := backend.run(t, root, tools.SearchParams{
-				Pattern: "needle", MaxMatches: 2})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(res.Matches) != 2 || !res.Truncated {
-				t.Fatalf("want 2 matches and truncated=true; got %d, %v",
-					len(res.Matches), res.Truncated)
-			}
-		})
+	res, err := runNative(t, root, tools.SearchParams{
+		Pattern: "needle", MaxMatches: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Matches) != 2 || !res.Truncated {
+		t.Fatalf("want 2 matches and truncated=true; got %d, %v",
+			len(res.Matches), res.Truncated)
 	}
 }
 
@@ -251,7 +224,7 @@ func TestSearchTruncatesAtMaxMatches(t *testing.T) {
 // change the pattern, and a retry cannot help.
 func TestAnInvalidPatternIsAnArgumentError(t *testing.T) {
 	root := searchTree(t)
-	_, _, err := tools.Search(context.Background(), root, tools.SearchParams{Pattern: "a(b"})
+	_, err := tools.Search(context.Background(), root, tools.SearchParams{Pattern: "a(b"})
 	if err == nil {
 		t.Fatal("an unparseable pattern must be refused")
 	}
@@ -262,72 +235,6 @@ func TestAnInvalidPatternIsAnArgumentError(t *testing.T) {
 }
 
 // ---- the parity test REQ-TOOL-05 requires
-
-// TestTheTwoBackendsAgree is the requirement's own condition: the fallback
-// matches AgentKit's DECLARED semantics, pinned against whichever backend is
-// present.
-//
-// It runs the same queries through both and compares the results exactly. A
-// disagreement here is the thing the requirement exists to prevent — a tool
-// whose answers depend on whether ripgrep happens to be installed.
-func TestTheTwoBackendsAgree(t *testing.T) {
-	rg := requireRipgrep(t)
-	root := searchTree(t)
-	yes, no := true, false
-
-	queries := []tools.SearchParams{
-		{Pattern: "needle"},
-		{Pattern: "Needle"},
-		{Pattern: "needle", CaseSensitive: &yes},
-		{Pattern: "needle", CaseSensitive: &no},
-		{Pattern: "needle", FileGlob: "**/*.go"},
-		{Pattern: "needle", FileGlob: "*.go"},
-		{Pattern: "needle", FileGlob: "**/*.{go,md}"},
-		{Pattern: "func \\w+", FileGlob: "**/*.go"},
-		{Pattern: "needle", ContextLines: 1},
-		{Pattern: "needle", ContextLines: 2, FileGlob: "main.go"},
-		{Pattern: "needle", MaxMatches: 2},
-		{Pattern: "no-such-string-anywhere"},
-	}
-
-	for i, q := range queries {
-		t.Run(fmt.Sprintf("%d/%s", i, q.Pattern), func(t *testing.T) {
-			native, err := runNative(t, root, q)
-			if err != nil {
-				t.Fatalf("native: %v", err)
-			}
-			accel, err := runRipgrep(t, rg, root, q)
-			if err != nil {
-				t.Fatalf("ripgrep: %v", err)
-			}
-			if !reflect.DeepEqual(native.Matches, accel.Matches) {
-				t.Fatalf("the backends disagree.\nnative:  %s\nripgrep: %s",
-					dump(native), dump(accel))
-			}
-			if native.Truncated != accel.Truncated {
-				t.Fatalf("truncated: native %v, ripgrep %v", native.Truncated, accel.Truncated)
-			}
-			if native.FilesSearched != accel.FilesSearched {
-				t.Fatalf("files_searched: native %d, ripgrep %d",
-					native.FilesSearched, accel.FilesSearched)
-			}
-		})
-	}
-}
-
-// TestTheAcceleratedPathIsActuallyUsed. Without this the parity test could be
-// comparing the native backend against itself and passing forever.
-func TestTheAcceleratedPathIsActuallyUsed(t *testing.T) {
-	requireRipgrep(t)
-	root := searchTree(t)
-	_, backend, err := tools.Search(context.Background(), root, tools.SearchParams{Pattern: "needle"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if backend != tools.BackendRipgrep {
-		t.Fatalf("ripgrep is on PATH but %q answered", backend)
-	}
-}
 
 // ---- the tool envelope
 
@@ -363,33 +270,29 @@ func TestSearchAppliesTheByteCap(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "wide.txt"), []byte(b.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for _, backend := range bothBackends(t) {
-		t.Run(string(backend.name), func(t *testing.T) {
-			res, err := backend.run(t, root, tools.SearchParams{Pattern: "needle", ContextLines: 20})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !res.Truncated || res.TruncatedBy != tools.TruncatedByBytes {
-				t.Fatalf("want truncated_by=bytes, got truncated=%v by=%q with %d matches",
-					res.Truncated, res.TruncatedBy, len(res.Matches))
-			}
-			if len(res.Matches) >= tools.SearchMatchCap {
-				t.Fatal("the byte cap must fire BEFORE the match cap here")
-			}
-			payload, _ := json.Marshal(res.Matches)
-			if len(payload) > tools.DefaultByteLimit+1024 {
-				t.Fatalf("payload is %d bytes, over the 50 KB budget", len(payload))
-			}
-		})
+	res, err := runNative(t, root, tools.SearchParams{Pattern: "needle", ContextLines: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Truncated || res.TruncatedBy != tools.TruncatedByBytes {
+		t.Fatalf("want truncated_by=bytes, got truncated=%v by=%q with %d matches",
+			res.Truncated, res.TruncatedBy, len(res.Matches))
+	}
+	if len(res.Matches) >= tools.SearchMatchCap {
+		t.Fatal("the byte cap must fire BEFORE the match cap here")
+	}
+	payload, _ := json.Marshal(res.Matches)
+	if len(payload) > tools.DefaultByteLimit+1024 {
+		t.Fatalf("payload is %d bytes, over the 50 KB budget", len(payload))
 	}
 
 	// The envelope names the limit that fired and a call that narrows.
-	res := searchTool(t, root).Execute(context.Background(),
+	out := searchTool(t, root).Execute(context.Background(),
 		json.RawMessage(`{"pattern":"needle","context_lines":20}`))
-	if !res.OK || res.Metadata == nil || res.Metadata.TruncatedBy != "bytes" {
-		t.Fatalf("metadata.truncated_by must be \"bytes\": %+v", res.Metadata)
+	if !out.OK || out.Metadata == nil || out.Metadata.TruncatedBy != "bytes" {
+		t.Fatalf("metadata.truncated_by must be \"bytes\": %+v", out.Metadata)
 	}
-	note, _ := res.Data["note"].(string)
+	note, _ := out.Data["note"].(string)
 	if !strings.Contains(note, "50.0KB") || strings.Contains(note, "limit=") {
 		t.Fatalf("the marker must name the byte limit, not find_files' limit=: %q", note)
 	}
@@ -409,58 +312,11 @@ func TestSearchMarkerNamesMaxMatches(t *testing.T) {
 
 // ---- helpers
 
-type backend struct {
-	name tools.SearchBackend
-	run  func(*testing.T, string, tools.SearchParams) (tools.SearchResult, error)
-}
-
-// bothBackends runs a semantics test through each implementation, so a rule is
-// pinned on both rather than on whichever one happens to be installed.
-func bothBackends(t *testing.T) []backend {
-	t.Helper()
-	out := []backend{{name: tools.BackendNative, run: runNative}}
-	if path, err := exec.LookPath("rg"); err == nil {
-		out = append(out, backend{
-			name: tools.BackendRipgrep,
-			run: func(t *testing.T, root string, p tools.SearchParams) (tools.SearchResult, error) {
-				return runRipgrep(t, path, root, p)
-			},
-		})
-	}
-	return out
-}
-
-func requireRipgrep(t *testing.T) string {
-	t.Helper()
-	path, err := exec.LookPath("rg")
-	if err != nil {
-		t.Skip("ripgrep is not installed; the parity test has nothing to compare against")
-	}
-	return path
-}
-
 func runNative(t *testing.T, root string, p tools.SearchParams) (tools.SearchResult, error) {
 	t.Helper()
-	restore := tools.SetRipgrepLookup(func() (string, bool) { return "", false })
-	defer restore()
 	// The global excludes layer is pinned EMPTY (NFR-TEST-04): a developer's
 	// own ~/.config/git/ignore must not decide whether this test passes.
-	res, backendUsed, err := tools.SearchIn(context.Background(), root, p, tools.NoGlobalExcludes())
-	if err == nil && backendUsed != tools.BackendNative {
-		t.Fatalf("expected the native backend, got %q", backendUsed)
-	}
-	return res, err
-}
-
-func runRipgrep(t *testing.T, path, root string, p tools.SearchParams) (tools.SearchResult, error) {
-	t.Helper()
-	restore := tools.SetRipgrepLookup(func() (string, bool) { return path, true })
-	defer restore()
-	res, backendUsed, err := tools.SearchIn(context.Background(), root, p, tools.NoGlobalExcludes())
-	if err == nil && backendUsed != tools.BackendRipgrep {
-		t.Fatalf("expected the ripgrep backend, got %q", backendUsed)
-	}
-	return res, err
+	return tools.SearchIn(context.Background(), root, p, tools.NoGlobalExcludes())
 }
 
 func dump(r tools.SearchResult) string {
@@ -625,13 +481,10 @@ func insertPNGChunk(src []byte, typ string, payload []byte) []byte {
 
 // ---- review fixes
 
-// TestTheAcceleratedPathReadsTheSameIgnoreSourcesAsTheNativeOne is B3. The
-// native engine reads the global excludes, .git/info/exclude and .gitignore
-// files from the search ROOT down (REQ-TOOL-05.2). rg by default also walks
-// the root's PARENT directories for .gitignore and honours .ignore files, so a
-// search rooted in a subdirectory returned different files depending on which
-// backend answered. Both must return all three matches here.
-func TestTheAcceleratedPathReadsTheSameIgnoreSourcesAsTheNativeOne(t *testing.T) {
+// TestSearchReadsOnlyItsOwnIgnoreSources is B3. Search reads the global
+// excludes, .git/info/exclude and .gitignore files from the search ROOT down
+// (REQ-TOOL-05.2): not a parent directory's .gitignore, and not .ignore files.
+func TestSearchReadsOnlyItsOwnIgnoreSources(t *testing.T) {
 	top := t.TempDir()
 	write := func(rel, body string) {
 		t.Helper()
@@ -649,75 +502,19 @@ func TestTheAcceleratedPathReadsTheSameIgnoreSourcesAsTheNativeOne(t *testing.T)
 	write("sub/b.txt", "needle\n")
 	write("sub/c.md", "needle\n")
 	root := filepath.Join(top, "sub")
-	for _, backend := range bothBackends(t) {
-		t.Run(string(backend.name), func(t *testing.T) {
-			res, err := backend.run(t, root, tools.SearchParams{Pattern: "needle"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := strings.Join(names(res), " "); got != "a.log:1 b.txt:1 c.md:1" {
-				t.Fatalf("got %q; a parent .gitignore and an .ignore file are not ignore "+
-					"sources the native engine reads, so the accelerated path must not "+
-					"read them either", got)
-			}
-		})
-	}
-}
-
-// TestRipgrepIsStoppedOnceTheResultIsFull is B4. A fake rg emits five matches
-// and then hangs; with max_matches=2 the tool must return promptly rather than
-// wait for rg to finish a search whose remainder it will never read.
-func TestRipgrepIsStoppedOnceTheResultIsFull(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake rg is a shell script")
-	}
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no sh")
-	}
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("needle\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	fake := filepath.Join(t.TempDir(), "rg")
-	script := `#!/bin/sh
-printf '%s\n' '{"type":"begin","data":{"path":{"text":"./a.txt"}}}'
-for i in 1 2 3 4 5; do
-  printf '{"type":"match","data":{"path":{"text":"./a.txt"},"lines":{"text":"needle\\n"},"line_number":%d}}\n' $i
-done
-printf '%s\n' '{"type":"end","data":{"path":{"text":"./a.txt"}}}'
-exec sleep 15
-`
-	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	restore := tools.SetRipgrepLookup(func() (string, bool) { return fake, true })
-	defer restore()
-
-	start := time.Now()
-	res, backend, err := tools.SearchIn(context.Background(), root,
-		tools.SearchParams{Pattern: "needle", MaxMatches: 2}, tools.NoGlobalExcludes())
-	elapsed := time.Since(start)
+	res, err := runNative(t, root, tools.SearchParams{Pattern: "needle"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if backend != tools.BackendRipgrep {
-		t.Fatalf("backend = %q; the fake rg must have answered", backend)
-	}
-	if len(res.Matches) != 2 || !res.Truncated {
-		t.Fatalf("want 2 matches, truncated; got %d, %v", len(res.Matches), res.Truncated)
-	}
-	if elapsed > 5*time.Second {
-		t.Fatalf("the search took %v: rg must be killed once max_matches is reached, not "+
-			"waited for", elapsed)
+	if got := strings.Join(names(res), " "); got != "a.log:1 b.txt:1 c.md:1" {
+		t.Fatalf("got %q; a parent .gitignore and an .ignore file are not ignore sources", got)
 	}
 }
 
-// TestTheBackendsAgreeOutsideGo pins five places where ripgrep and the native
-// engine disagreed out of the box (issue #89), each on every backend
-// available: Unicode classes, CRLF line ends, a NUL past the binary sniff,
-// smart-case over escapes, and BOM-marked files. Most never bite on a Go
-// tree, which is why the main parity fixture never caught them.
-func TestTheBackendsAgreeOutsideGo(t *testing.T) {
+// TestSearchSemanticsOutsideGo pins five rules that never bite on a Go tree
+// (issue #89): Unicode classes, CRLF line ends, a NUL past the binary sniff,
+// smart-case over escapes, and BOM-marked files.
+func TestSearchSemanticsOutsideGo(t *testing.T) {
 	root := t.TempDir()
 	write := func(rel string, body []byte) {
 		t.Helper()
@@ -761,19 +558,14 @@ func TestTheBackendsAgreeOutsideGo(t *testing.T) {
 		{"a UTF-8 BOM is not part of line 1", tools.SearchParams{Pattern: `^first`}, []string{"bom.txt:1"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			for _, b := range bothBackends(t) {
-				res, err := b.run(t, root, c.q)
-				if err != nil {
-					t.Fatalf("%s: %v", b.name, err)
-				}
-				if got := names(res); !reflect.DeepEqual(got, c.want) {
-					t.Errorf("%s: %q matched %v, want %v", b.name, c.q.Pattern, got, c.want)
-				}
+			res, err := runNative(t, root, c.q)
+			if err != nil {
+				t.Fatalf("%v", err)
+			}
+			if got := names(res); !reflect.DeepEqual(got, c.want) {
+				t.Errorf("%q matched %v, want %v", c.q.Pattern, got, c.want)
 			}
 		})
-	}
-	if _, err := exec.LookPath("rg"); err != nil {
-		t.Log("ripgrep is not installed; only the native half of the parity was checked")
 	}
 }
 

@@ -195,22 +195,15 @@ func TestNativeSearchAndCountCandidates_TS_01_78(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	// Force native backend.
-	restore := tools.SetRipgrepLookup(func() (string, bool) { return "", false })
-	defer restore()
-
 	ctx := context.Background()
 
 	// Search with file_glob=*.go.
-	res, backend, err := tools.SearchIn(ctx, root, tools.SearchParams{
+	res, err := tools.SearchIn(ctx, root, tools.SearchParams{
 		Pattern:  "needle",
 		FileGlob: "*.go",
 	}, tools.NoGlobalExcludes())
 	if err != nil {
 		t.Fatalf("SearchIn: %v", err)
-	}
-	if backend != tools.BackendNative {
-		t.Fatalf("expected native backend, got %q", backend)
 	}
 
 	// Matches come only from non-ignored, non-hidden regular files matching file_glob.
