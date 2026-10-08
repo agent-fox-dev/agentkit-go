@@ -89,7 +89,7 @@ Rules that follow from it:
 | `wire` | Bounded strict decoder for untrusted bytes; frame readers. |
 | `jsonx` | Order-preserving JSON. |
 | `schema` | JSON Schema value and typed combinators. |
-| `imagex` | Image normalization to a provider's inline-image limits (resize, re-encode, base64 budget). WebP is forwarded untouched. |
+| `imagex` | Image normalization to a provider's inline-image limits (resize with `golang.org/x/image/draw` Catmull-Rom, quality ladder, base64 budget) for JPEG, PNG, GIF and WebP (decoded with `golang.org/x/image/webp`; a WebP that must shrink is re-encoded as JPEG). APNG, CMYK JPEG and non-IHDR PNG are refused. |
 | `internal/toml` | Lenient TOML reader for manifests and config: `github.com/pelletier/go-toml/v2/unstable` (pinned) parses; a small adapter folds it into an ordered `Table` with line numbers and "duplicate warns, last wins". |
 | `internal/diag` | The shared non-fatal `Diagnostic`. |
 | `internal/policy` | Tests only: the cross-target (cgo off) and host (cgo on) build gates. |

@@ -150,7 +150,7 @@ func TestNormalizationRunsAfterThePostToolHook(t *testing.T) {
 // work: the model asked for a screenshot and gets silence, with nothing in the
 // transcript to say why.
 func TestANormalizationFailureKeepsTheOriginalBlock(t *testing.T) {
-	// A WebP header. Sniffed correctly, and undecodable by this build.
+	// A WebP header with no image behind it: sniffed correctly, undecodable.
 	webp := base64.StdEncoding.EncodeToString(
 		append([]byte("RIFF\x00\x00\x00\x00WEBPVP8 "), make([]byte, 32)...))
 	tool := imageTool("shot", func() []core.ContentBlock {

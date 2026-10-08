@@ -83,7 +83,7 @@ TBD
 | `middleware` | Axis 1: `Retry`, `Budget`, `Caching`, `Tracing`, `RateLimit` (on `golang.org/x/time/rate`), and the `CacheMeter` behind `Agent.CacheStats`. |
 | `compaction` | The context transform, four strategies, two summarizers, the REQ-GO-16 summary taxonomy and the anchored token estimate. |
 | `prompt` | The assembled system prompt: base instructions, per-tool guidelines, skills and project-context blocks. |
-| `imagex` | Image normalization to a provider's inline-image limits; used at the history boundary. |
+| `imagex` | Image normalization to a provider's inline-image limits (JPEG, PNG, GIF, WebP; resampling via `golang.org/x/image/draw`); used at the history boundary. |
 | `guard` | The execute boundary: `Restricted` (a program allowlist plus operator rejection) and `AllowAll`. |
 | `subagent` | Delegation: `Tool` over an agent factory, named `Definition`s in a `Registry`, `RunParallel`. The one package above the root. |
 | `.` (root) | `Agent`, its constructors, the loop, the batch executor, provider registration. |

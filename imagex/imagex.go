@@ -1,5 +1,6 @@
 // Package imagex normalizes images for a provider's inline-image limits
-// (REQ-TOOL-14). It depends on the standard library only.
+// (REQ-TOOL-14). Resampling is golang.org/x/image/draw; WebP decoding is
+// golang.org/x/image/webp.
 //
 // Nothing here knows about ContentBlock or about tools. The rule the
 // requirement states — every image entering history is re-processed, whichever
@@ -7,11 +8,9 @@
 // part that actually resizes and re-encodes, so a tool that wants to validate
 // an image before returning it can use the same code.
 //
-// WebP is the visible gap: the standard library has no WebP decoder and
-// REQ-GO-11 forbids the module that does. A WebP image is reported as
-// unsupported, which under REQ-TOOL-14.5 means the original block is kept
-// rather than dropped — the same outcome as a decode failure, and better than
-// pulling in a dependency to shrink a format providers already accept.
+// WebP is measured and, when it fits, forwarded byte-for-byte like any other
+// format. There is no WebP encoder, so a WebP that must shrink is re-encoded
+// as JPEG, the same ladder a PNG takes.
 package imagex
 
 import (
@@ -21,11 +20,13 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"image/draw"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"strings"
+
+	"golang.org/x/image/draw"
+	"golang.org/x/image/webp"
 )
 
 // MaxDimension is REQ-TOOL-14.3's 2000×2000.
@@ -153,10 +154,8 @@ func Validate(data []byte, mime string) error {
 		return validatePNG(data)
 	case MIMEJPEG:
 		return validateJPEG(data)
-	case MIMEGIF:
+	case MIMEGIF, MIMEWebP:
 		return nil
-	case MIMEWebP:
-		return fmt.Errorf("%w: webp cannot be decoded by this build", ErrUnsupported)
 	}
 	return fmt.Errorf("%w: %s", ErrUnsupported, mime)
 }
@@ -327,6 +326,8 @@ func decode(data []byte, mime string) (image.Image, error) {
 		// The first frame. A multi-frame GIF is not rejected the way an APNG
 		// is — providers accept GIF — but only one frame can be sent.
 		return gif.Decode(bytes.NewReader(data))
+	case MIMEWebP:
+		return webp.Decode(bytes.NewReader(data))
 	}
 	return nil, fmt.Errorf("%w: %s", ErrUnsupported, mime)
 }
@@ -386,51 +387,14 @@ func fitWithin(img image.Image, limit int) image.Image {
 	return scaleTo(img, max(1, w*limit/h), limit)
 }
 
-// scaleTo resamples with a BOX FILTER: each destination pixel averages the
-// source pixels it covers.
+// scaleTo resamples with Catmull-Rom, whose kernel widens when shrinking so
+// every source pixel contributes.
 //
-// Nearest-neighbour is three lines shorter and produces aliasing that destroys
-// exactly what these images usually carry — a screenshot of text. Averaging is
-// the cheapest filter that keeps small type legible, which is the whole reason
-// the image is being sent.
+// Nearest-neighbour produces aliasing that destroys exactly what these images
+// usually carry — a screenshot of text. An area-aware filter keeps small type
+// legible, which is the whole reason the image is being sent.
 func scaleTo(src image.Image, dw, dh int) image.Image {
-	sb := src.Bounds()
-	sw, sh := sb.Dx(), sb.Dy()
-	if dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0 {
-		return src
-	}
 	dst := image.NewRGBA(image.Rect(0, 0, dw, dh))
-
-	for y := 0; y < dh; y++ {
-		y0 := sb.Min.Y + y*sh/dh
-		y1 := sb.Min.Y + (y+1)*sh/dh
-		if y1 <= y0 {
-			y1 = y0 + 1
-		}
-		for x := 0; x < dw; x++ {
-			x0 := sb.Min.X + x*sw/dw
-			x1 := sb.Min.X + (x+1)*sw/dw
-			if x1 <= x0 {
-				x1 = x0 + 1
-			}
-			var r, g, b, a, n uint64
-			for sy := y0; sy < y1; sy++ {
-				for sx := x0; sx < x1; sx++ {
-					pr, pg, pb, pa := src.At(sx, sy).RGBA()
-					r += uint64(pr)
-					g += uint64(pg)
-					b += uint64(pb)
-					a += uint64(pa)
-					n++
-				}
-			}
-			if n == 0 {
-				continue
-			}
-			dst.Set(x, y, color.RGBA64{
-				R: uint16(r / n), G: uint16(g / n), B: uint16(b / n), A: uint16(a / n),
-			})
-		}
-	}
+	draw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Src, nil)
 	return dst
 }

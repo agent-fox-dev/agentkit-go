@@ -122,16 +122,82 @@ func TestCMYKJPEGIsRefused(t *testing.T) {
 	}
 }
 
-// TestWebPIsReportedUnsupportedRatherThanMangled. The standard library cannot
-// decode it and REQ-GO-11 forbids the module that can; reporting it lets
-// REQ-TOOL-14.5 keep the original block, which providers accept anyway.
-func TestWebPIsReportedUnsupportedRatherThanMangled(t *testing.T) {
-	webp := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8 "), make([]byte, 16)...)
-	if mime, ok := imagex.Sniff(webp); !ok || mime != imagex.MIMEWebP {
+// solidWebP is a lossless WebP (VP8L) of w×h pixels of one opaque colour.
+// Every prefix code has a single symbol, so the pixels cost zero bits and a
+// 4000-pixel-wide image is a few dozen bytes — there is no WebP encoder to
+// produce one, and the real decoder reading it is the point.
+func solidWebP(w, h int, r, g, b byte) []byte {
+	out := []byte{0x2f} // VP8L signature
+	var acc uint64
+	var n uint
+	put := func(v uint64, k uint) {
+		acc |= v << n
+		for n += k; n >= 8; n -= 8 {
+			out = append(out, byte(acc))
+			acc >>= 8
+		}
+	}
+	put(uint64(w-1), 14)
+	put(uint64(h-1), 14)
+	put(0, 1+3+1+1+1)                              // alpha hint, version, transform, colour cache, meta codes
+	for _, sym := range []byte{g, r, b, 0xff, 0} { // green, red, blue, alpha, distance
+		put(1|0<<1|1<<2|uint64(sym)<<3, 11) // simple code, one symbol, 8 bits wide
+	}
+	if n > 0 {
+		out = append(out, byte(acc))
+	}
+	if len(out)%2 == 1 {
+		out = append(out, 0)
+	}
+	le := func(v int) []byte { return []byte{byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24)} }
+	riff := append([]byte("WEBPVP8L"), le(len(out))...)
+	riff = append(riff, out...)
+	return append(append([]byte("RIFF"), le(len(riff))...), riff...)
+}
+
+// TestAWebPThatFitsIsMeasuredAndKeptByteForByte: WebP decodes, so its
+// dimensions are known and a conforming one is forwarded verbatim.
+func TestAWebPThatFitsIsMeasuredAndKeptByteForByte(t *testing.T) {
+	data := solidWebP(30, 20, 10, 200, 30)
+	if mime, ok := imagex.Sniff(data); !ok || mime != imagex.MIMEWebP {
 		t.Fatalf("sniff returned %q, %v", mime, ok)
 	}
-	if err := imagex.Validate(webp, imagex.MIMEWebP); !errors.Is(err, imagex.ErrUnsupported) {
-		t.Fatalf("want ErrUnsupported, got %v", err)
+	res, err := imagex.Normalize(data, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Changed || !bytes.Equal(res.Data, data) || res.MIMEType != imagex.MIMEWebP ||
+		res.Width != 30 || res.Height != 20 {
+		t.Fatalf("got %s %dx%d changed=%v; want the WebP verbatim at 30x20",
+			res.MIMEType, res.Width, res.Height, res.Changed)
+	}
+}
+
+// TestAnOversizedWebPIsDownscaled: there is no WebP encoder, so a WebP that
+// must shrink leaves as JPEG, within the dimension limit, colour intact.
+func TestAnOversizedWebPIsDownscaled(t *testing.T) {
+	res, err := imagex.Normalize(solidWebP(4000, 100, 10, 200, 30), imagex.MIMEWebP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Changed || res.MIMEType != imagex.MIMEJPEG || res.Width != imagex.MaxDimension || res.Height != 50 {
+		t.Fatalf("got %s %dx%d changed=%v; want a 2000x50 JPEG", res.MIMEType, res.Width, res.Height, res.Changed)
+	}
+	img, err := jpeg.Decode(bytes.NewReader(res.Data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, g, _, _ := img.At(1000, 25).RGBA(); g>>8 < 180 {
+		t.Fatalf("green channel %d; the decoded colour was lost", g>>8)
+	}
+}
+
+// TestACorruptWebPIsAnErrorNotAPassThrough: a WebP header with no image
+// behind it fails like any other undecodable image.
+func TestACorruptWebPIsAnErrorNotAPassThrough(t *testing.T) {
+	webp := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8 "), make([]byte, 16)...)
+	if _, err := imagex.Normalize(webp, imagex.MIMEWebP); err == nil {
+		t.Fatal("a corrupt WebP normalized without error")
 	}
 }
 

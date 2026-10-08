@@ -3,7 +3,6 @@ package tools
 import (
 	"bufio"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -678,25 +677,6 @@ func readLineBounded(br *bufio.Reader, keep int) (line []byte, size int64, termi
 // appear with no statement of what was read, and cannot tell a screenshot it
 // asked for from one a previous turn left in history.
 func readImage(abs, shown string, data []byte, mime string) core.ToolResult {
-	// WebP is forwarded UNTOUCHED (REQ-TOOL-14). Providers accept it, but the
-	// standard library cannot decode it, so the normalizer reports it as
-	// unsupported — and refusing it here would turn "this build cannot
-	// downscale it" into "the model cannot see it". Dimensions are unknown;
-	// the note says so rather than inventing them. The one thing that can be
-	// checked is the byte budget, since an oversized WebP cannot be shrunk.
-	if mime == imagex.MIMEWebP {
-		if !imagex.FitsBudget(len(data)) {
-			return core.ErrResult("unsupported_image", fmt.Sprintf(
-				"%s: WebP image of %d bytes exceeds the provider's inline limit and "+
-					"cannot be downscaled by this build; re-encode it smaller", shown, len(data)))
-		}
-		note := fmt.Sprintf("[%s: %s image, dimensions unknown]", shown, mime)
-		out := core.OKResult(map[string]any{"note": note, "mime_type": mime})
-		out.Text = note
-		out.Blocks = []core.ContentBlock{core.ImageBlock{
-			Data: base64.StdEncoding.EncodeToString(data), MimeType: mime}}
-		return out
-	}
 	// Formats providers reject are refused HERE, with a message naming the
 	// problem, rather than forwarded. Forwarded, the failure lands on the next
 	// provider request — by which time the image is in history and every

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1179,11 +1180,13 @@ func TestExecuteSpillsByDefault(t *testing.T) {
 	}
 }
 
-// TestReadFileForwardsWebP is REQ-TOOL-14: providers accept WebP; this build
-// cannot decode it, which is a reason to forward it untouched, not to refuse.
+// TestReadFileForwardsWebP is REQ-TOOL-14: providers accept WebP, and it is
+// measured like any other format — a conforming one is forwarded verbatim
+// with its real dimensions.
 func TestReadFileForwardsWebP(t *testing.T) {
 	dir := t.TempDir()
-	webp := append([]byte("RIFF\x24\x00\x00\x00WEBPVP8 "), make([]byte, 24)...)
+	// A 3x2 lossless WebP.
+	webp := []byte("RIFF\x1a\x00\x00\x00WEBPVP8L\x0e\x00\x00\x00\x2f\x02\x40\x00\x00\x28\x72\x15\xea\xd1\xff\x02\x00\x00")
 	if err := os.WriteFile(filepath.Join(dir, "pic.webp"), webp, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1191,14 +1194,12 @@ func TestReadFileForwardsWebP(t *testing.T) {
 	if !res.OK {
 		t.Fatalf("WebP must be forwarded, not refused: %+v", res)
 	}
-	if len(res.Blocks) != 1 || res.Blocks[0].(core.ImageBlock).MimeType != "image/webp" {
-		t.Fatalf("want one image/webp block: %+v", res.Blocks)
+	if len(res.Blocks) != 1 || res.Blocks[0].(core.ImageBlock).MimeType != "image/webp" ||
+		res.Blocks[0].(core.ImageBlock).Data != base64.StdEncoding.EncodeToString(webp) {
+		t.Fatalf("want the WebP verbatim in one image/webp block: %+v", res.Blocks)
 	}
-	if note, _ := res.Data["note"].(string); !strings.Contains(note, "dimensions unknown") {
-		t.Fatalf("the note must not invent dimensions: %q", note)
-	}
-	if _, has := res.Data["width"]; has {
-		t.Fatal("width is unknown and must not be reported")
+	if res.Data["width"] != 3 || res.Data["height"] != 2 {
+		t.Fatalf("dimensions = %v x %v, want 3 x 2", res.Data["width"], res.Data["height"])
 	}
 }
 
