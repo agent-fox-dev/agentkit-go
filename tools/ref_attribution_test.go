@@ -176,10 +176,10 @@ func TestAttribution_SanitizeSnippet_TS_05_29(t *testing.T) {
 			strings.Repeat("c", 300),
 			strings.Repeat("   word   ", 50),
 			strings.Repeat("\x01\x02test\x03\x04", 40),
-			"prefix " + strings.Repeat("x", 190) + " 日本語 " + strings.Repeat("y", 50),
-			"prefix " + strings.Repeat("x", 192) + " 🚀 " + strings.Repeat("y", 50),
-			"prefix " + strings.Repeat("x", 195) + " Привет " + strings.Repeat("y", 50),
-			strings.Repeat(" ", 50) + "middle" + strings.Repeat(" ", 50),
+			"prefix "+strings.Repeat("x", 190)+" 日本語 "+strings.Repeat("y", 50),
+			"prefix "+strings.Repeat("x", 192)+" 🚀 "+strings.Repeat("y", 50),
+			"prefix "+strings.Repeat("x", 195)+" Привет "+strings.Repeat("y", 50),
+			strings.Repeat(" ", 50)+"middle"+strings.Repeat(" ", 50),
 		)
 
 		// Randomized lines

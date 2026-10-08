@@ -338,7 +338,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestRefCache' -count=1 passes"
       ],
-      "state": "in_progress",
+      "state": "done",
       "optional": false
     },
     {

@@ -286,7 +286,6 @@ func parseGoPackageWithComments(dir string) (*token.FileSet, []*ast.File, error)
 	return fset, files, nil
 }
 
-
 // findSite locates a ReferenceSite whose Source contains needle.
 func findSite(sites []ReferenceSite, needle string) *ReferenceSite {
 	for i := range sites {
