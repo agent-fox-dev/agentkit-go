@@ -365,15 +365,6 @@ func (f *fileTools) markRefCacheRevalidateAll() {
 	}
 }
 
-// findReferencesTool returns the find_references tool.
-func (f *fileTools) findReferencesTool() core.Tool {
-	rc := f.getRefCache()
-	if rc == nil {
-		return core.Tool{Name: "find_references"}
-	}
-	return rc.tool()
-}
-
 // markTableDirty marks a workspace-relative path dirty in the shared symbol
 // table and reference cache, if they exist. It is a no-op when find_symbol
 // or find_references has never been called.
