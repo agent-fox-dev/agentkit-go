@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/guard"
+	"github.com/agentfox/agentkit-go/prompt"
 	"github.com/agentfox/agentkit-go/tools"
 )
 
@@ -24,11 +28,11 @@ func TestAllAndFileNavigationToolsPinnedNames_TS02_54(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// All() must return exactly 11 tools in this order.
+	// All() must return exactly 12 tools in this order.
 	wantAll := []string{
 		"read_file", "write_file", "edit_file",
 		"list_files", "find_files", "search_files",
-		"file_outline", "find_symbol",
+		"file_outline", "find_symbol", "find_references",
 		"execute", "run_command", "powershell",
 	}
 	gotAll := make([]string, 0, len(all))
@@ -39,8 +43,8 @@ func TestAllAndFileNavigationToolsPinnedNames_TS02_54(t *testing.T) {
 		t.Fatalf("All() names:\ngot:  %v\nwant: %v", gotAll, wantAll)
 	}
 
-	// FileNavigationTools() must return exactly 5 names.
-	wantNav := []string{"list_files", "find_files", "search_files", "file_outline", "find_symbol"}
+	// FileNavigationTools() must return exactly 6 names.
+	wantNav := []string{"list_files", "find_files", "search_files", "file_outline", "find_symbol", "find_references"}
 	gotNav := tools.FileNavigationTools()
 	if strings.Join(gotNav, ",") != strings.Join(wantNav, ",") {
 		t.Fatalf("FileNavigationTools():\ngot:  %v\nwant: %v", gotNav, wantNav)
@@ -241,5 +245,166 @@ func TestRootModuleStdlibOnly_TS02_58(t *testing.T) {
 				t.Errorf("%s description changed:\ngot:  %q\nwant: %q", tl.Name, tl.Description, want)
 			}
 		}
+	}
+}
+
+// TS-05-51 (property): Root module maintains zero external dependencies and cgo purity across target platforms.
+// Verifies 05-REQ-10.1.
+func TestPolicyAndCrossTarget_TS05_51(t *testing.T) {
+	root := filepath.Clean("..")
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatalf("reading go.mod: %v", err)
+	}
+	content := string(data)
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "require") {
+			t.Fatalf("go.mod has a require line: %s", trimmed)
+		}
+	}
+
+	ws, err := tools.NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := tools.All(tools.Options{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundFR bool
+	for _, tl := range all {
+		if tl.Name == "find_references" {
+			foundFR = true
+			break
+		}
+	}
+	if !foundFR {
+		t.Fatalf("tools.All() must include find_references")
+	}
+
+	// Verify cross-target compilation for the matrix of NFR-COMPAT-06.
+	targets := []struct{ goos, goarch string }{
+		{"linux", "amd64"},
+		{"linux", "arm64"},
+		{"darwin", "arm64"},
+		{"windows", "amd64"},
+	}
+	for _, target := range targets {
+		cmd := exec.Command("go", "build", "./tools/...")
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(),
+			"GOOS="+target.goos,
+			"GOARCH="+target.goarch,
+			"CGO_ENABLED=0",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("go build ./tools/... failed for %s/%s: %v\n%s", target.goos, target.goarch, err, string(out))
+		}
+	}
+}
+
+// TS-05-52 (unit): System prompt generation includes find_references guideline matching golden outputs.
+// Verifies 05-REQ-10.2.
+func TestSystemPromptFindReferencesGuideline_TS05_52(t *testing.T) {
+	ws, err := tools.NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := tools.All(tools.Options{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := core.ToolPolicy{}.Resolve(all)
+	got := prompt.Build(prompt.Input{Tools: resolved})
+
+	wantGuideline := "Use find_symbol for where a name is declared, find_references for who uses it, and search_files for text."
+	if !strings.Contains(got, wantGuideline) {
+		t.Fatalf("assembled prompt does not contain find_references guideline %q\ngot:\n%s", wantGuideline, got)
+	}
+
+	root := filepath.Clean("..")
+	defGolden, err := os.ReadFile(filepath.Join(root, "prompt", "testdata", "golden", "system_prompt_default.txt"))
+	if err != nil {
+		t.Fatalf("reading default golden: %v", err)
+	}
+	if got != string(defGolden) {
+		t.Fatalf("assembled default prompt does not match golden\ngot:\n%s\nwant:\n%s", got, string(defGolden))
+	}
+
+	customGot := prompt.Build(prompt.Input{
+		Custom: "You are a release engineer. Answer only about this repository.",
+		Tools:  resolved,
+		ExtraBlocks: []string{
+			"<project_context>\n  <file path=\"/repo/AGENTS.md\">house style</file>\n</project_context>",
+		},
+	})
+	customGolden, err := os.ReadFile(filepath.Join(root, "prompt", "testdata", "golden", "system_prompt_custom.txt"))
+	if err != nil {
+		t.Fatalf("reading custom golden: %v", err)
+	}
+	if customGot != string(customGolden) {
+		t.Fatalf("assembled custom prompt does not match golden\ngot:\n%s\nwant:\n%s", customGot, string(customGolden))
+	}
+}
+
+// TS-05-53 (unit): FileNavigationTools returns exactly six tools in pinned order.
+// Verifies 05-REQ-10.3.
+func TestFileNavigationToolsSixTools_TS05_53(t *testing.T) {
+	want := []string{"list_files", "find_files", "search_files", "file_outline", "find_symbol", "find_references"}
+	got := tools.FileNavigationTools()
+	if !slices.Equal(got, want) {
+		t.Fatalf("FileNavigationTools():\ngot:  %v\nwant: %v", got, want)
+	}
+}
+
+// TS-05-54 (unit): Documentation accurately describes find_references and reference types and marks gaps as fixed.
+// Verifies 05-REQ-10.4.
+func TestDocumentation_TS05_54(t *testing.T) {
+	root := filepath.Clean("..")
+
+	arch, err := os.ReadFile(filepath.Join(root, "docs", "architecture.md"))
+	if err != nil {
+		t.Fatalf("reading docs/architecture.md: %v", err)
+	}
+	archStr := string(arch)
+	if !strings.Contains(archStr, "find_references") {
+		t.Errorf("docs/architecture.md does not contain find_references")
+	}
+	if !strings.Contains(archStr, "reference cache") && !strings.Contains(archStr, "refCache") {
+		t.Errorf("docs/architecture.md does not document reference cache")
+	}
+
+	api, err := os.ReadFile(filepath.Join(root, "docs", "api.md"))
+	if err != nil {
+		t.Fatalf("reading docs/api.md: %v", err)
+	}
+	apiStr := string(api)
+	for _, term := range []string{"Workspace.References", "ReferenceOptions", "ReferenceSite", "ReferenceResult"} {
+		if !strings.Contains(apiStr, term) {
+			t.Errorf("docs/api.md does not contain %s", term)
+		}
+	}
+
+	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatalf("reading README.md: %v", err)
+	}
+	readmeStr := string(readme)
+	if !strings.Contains(readmeStr, "find_references") {
+		t.Errorf("README.md does not list find_references")
+	}
+	if strings.Contains(readmeStr, "Symbol references and callers") || strings.Contains(readmeStr, "references and callers") {
+		t.Errorf("README.md still lists references in unbuilt features")
+	}
+
+	gaps, err := os.ReadFile(filepath.Join(root, "docs", "GAPS.md"))
+	if err != nil {
+		t.Fatalf("reading docs/GAPS.md: %v", err)
+	}
+	gapsStr := string(gaps)
+	if !strings.Contains(gapsStr, "find_references") && !strings.Contains(gapsStr, "Fixed — `find_references`") {
+		t.Errorf("docs/GAPS.md does not mark find_references as Fixed")
 	}
 }

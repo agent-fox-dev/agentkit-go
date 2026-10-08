@@ -75,6 +75,8 @@ func defaultToolSet(t *testing.T) []core.Tool {
 //	           from a hand-edited expectation".
 //	version:   the working tree
 //	command:   go test -run TestGoldenDefaultSystemPrompt -update .
+//
+// TS-05-52: Assembled default prompt includes find_references guideline matching golden.
 func TestGoldenDefaultSystemPrompt(t *testing.T) {
 	got := Build(Input{Tools: defaultToolSet(t)})
 	checkGolden(t, "system_prompt_default.txt", got)
@@ -141,7 +143,7 @@ func TestGoldenPromptWithoutFileNavigationTools(t *testing.T) {
 	var kept []core.Tool
 	for _, tl := range all {
 		switch tl.Name {
-		case "list_files", "find_files", "search_files", "file_outline", "find_symbol":
+		case "list_files", "find_files", "search_files", "file_outline", "find_symbol", "find_references":
 		default:
 			kept = append(kept, tl)
 		}

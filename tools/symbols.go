@@ -37,7 +37,9 @@ func (e *symbolEntry) racy() bool {
 }
 
 // symbolTable is the in-memory per-file store of outline.File, size,
-// modification time and index time behind find_symbol. It is created empty
+// modification time and index time behind find_symbol. Invalidation
+// hooks from fileTools (markTableDirty, markTableRevalidateAll) coordinate
+// dirty state across both symbolTable and referenceCache. It is created empty
 // with the tool set, built on the first find_symbol call and discarded with
 // the tool set.
 type symbolTable struct {

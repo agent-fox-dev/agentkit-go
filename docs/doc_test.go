@@ -95,16 +95,11 @@ func TestREADME_And_GAPS_TS_01_70(t *testing.T) {
 		t.Error("README.md packages table does not contain 'outline'")
 	}
 
-	// The 'What is not built' list should still mention references and callers.
+	// The 'What is not built' list must exist. It no longer lists references
+	// and callers: spec 05_find_references built them.
 	notBuiltSection := extractSection(readme, "## What is not built", "##")
 	if notBuiltSection == "" {
 		t.Fatal("README.md has no 'What is not built' section")
-	}
-	if !strings.Contains(strings.ToLower(notBuiltSection), "reference") {
-		t.Error("'What is not built' section does not mention references")
-	}
-	if !strings.Contains(strings.ToLower(notBuiltSection), "caller") {
-		t.Error("'What is not built' section does not mention callers")
 	}
 
 	// Check docs/GAPS.md
@@ -143,9 +138,11 @@ func TestAPImd_Unchanged_TS_01_71(t *testing.T) {
 		t.Error("api.md does not mention 'MCP server'")
 	}
 
-	// api.md should NOT mention outline (it's the network API doc, not the outline doc).
-	if strings.Contains(content, "outline") {
-		t.Error("api.md should not mention 'outline' — it is the network API document")
+	// api.md does not document the outline package itself. Spec
+	// 05_find_references documents Workspace.References there, whose
+	// signature names outline.Decl, so only the package's own API is excluded.
+	if strings.Contains(content, "outline.Outline(") || strings.Contains(content, "outline.Backend") {
+		t.Error("api.md should not document the outline package — it is the network API document")
 	}
 }
 

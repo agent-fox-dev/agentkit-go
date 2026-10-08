@@ -220,11 +220,11 @@ func TestAllNilIndexPinnedList_TS03_11(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The pinned order from spec 02.
+	// The pinned order from spec 02 / 05.
 	wantNames := []string{
 		"read_file", "write_file", "edit_file",
 		"list_files", "find_files", "search_files",
-		"file_outline", "find_symbol",
+		"file_outline", "find_symbol", "find_references",
 		"execute", "run_command", "powershell",
 	}
 	gotNames := make([]string, len(all))

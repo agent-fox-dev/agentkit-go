@@ -476,7 +476,7 @@ func TestToolDescriptionsAndSchemasUnchanged_TS0163(t *testing.T) {
 		got = append(got, tl.Name)
 	}
 	want := []string{"read_file", "write_file", "edit_file", "list_files",
-		"find_files", "search_files", "file_outline", "find_symbol",
+		"find_files", "search_files", "file_outline", "find_symbol", "find_references",
 		"execute", "run_command", "powershell"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("default tool set changed.\ngot:  %v\nwant: %v", got, want)
@@ -503,8 +503,9 @@ func TestNoDefaultRunnerInstalled_TS0168(t *testing.T) {
 		}
 		content := string(data)
 		// Check for Runner: in non-test code (outside CtagsRunner definition
-		// and the outline/symbol tools that legitimately pass the runner).
-		if name != "ctags.go" && name != "outline_tool.go" && name != "symbol_tool.go" && name != "symbols.go" && strings.Contains(content, "Runner:") {
+		// and the outline/symbol tools and reference cache that legitimately
+		// pass the runner).
+		if name != "ctags.go" && name != "outline_tool.go" && name != "symbol_tool.go" && name != "symbols.go" && name != "ref_cache.go" && strings.Contains(content, "Runner:") {
 			// Parse to make sure it's not a comment
 			f, perr := parser.ParseFile(fset, name, data, parser.ParseComments)
 			if perr != nil {
@@ -528,7 +529,7 @@ func TestNoDefaultRunnerInstalled_TS0168(t *testing.T) {
 
 	// Verify FileNavigationTools() returns the expected names
 	navTools := FileNavigationTools()
-	wantNav := []string{"list_files", "find_files", "search_files", "file_outline", "find_symbol"}
+	wantNav := []string{"list_files", "find_files", "search_files", "file_outline", "find_symbol", "find_references"}
 	if strings.Join(navTools, ",") != strings.Join(wantNav, ",") {
 		t.Fatalf("FileNavigationTools() changed.\ngot:  %v\nwant: %v", navTools, wantNav)
 	}
@@ -548,7 +549,7 @@ func TestNoDefaultRunnerInstalled_TS0168(t *testing.T) {
 		got = append(got, tl.Name)
 	}
 	want := []string{"read_file", "write_file", "edit_file", "list_files",
-		"find_files", "search_files", "file_outline", "find_symbol",
+		"find_files", "search_files", "file_outline", "find_symbol", "find_references",
 		"execute", "run_command", "powershell"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("All() tool set changed.\ngot:  %v\nwant: %v", got, want)

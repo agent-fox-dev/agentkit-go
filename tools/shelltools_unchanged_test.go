@@ -470,8 +470,10 @@ func TestTS_04_31_IOErrNeverReachesShellToolResult(t *testing.T) {
 }
 
 // ------------------------------------------------------------------ TS-04-32
-// The existing tools tests pass with no edit to tools_test.go or
-// reqtool06_test.go.
+// The existing tools tests pass with no edit to tools_test.go.
+// reqtool06_test.go was held to the same rule until spec 05_find_references
+// added find_references to the default tool set, which its
+// TestTheDefaultToolSetIsPlatformStable pins by design.
 
 func TestTS_04_32_ExistingTestFilesUnchanged(t *testing.T) {
 	// The base commit is the one preceding this spec's first change.
@@ -484,7 +486,7 @@ func TestTS_04_32_ExistingTestFilesUnchanged(t *testing.T) {
 	}
 
 	// git diff --exit-code returns 0 when there are no differences.
-	for _, file := range []string{"tools/tools_test.go", "tools/reqtool06_test.go"} {
+	for _, file := range []string{"tools/tools_test.go"} {
 		t.Run(filepath.Base(file), func(t *testing.T) {
 			cmd := exec.Command("git", "diff", "--exit-code", base, "--", file)
 			// Run from the repo root.

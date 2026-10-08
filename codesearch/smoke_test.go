@@ -69,7 +69,7 @@ func TestSmokeFirstSymSearch_TS03_69(t *testing.T) {
 	builtinNames := []string{
 		"read_file", "write_file", "edit_file",
 		"list_files", "find_files", "search_files",
-		"file_outline", "find_symbol",
+		"file_outline", "find_symbol", "find_references",
 		"execute", "run_command", "powershell",
 	}
 	for i, name := range builtinNames {

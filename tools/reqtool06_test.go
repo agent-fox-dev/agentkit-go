@@ -218,7 +218,7 @@ func TestTheDefaultToolSetIsPlatformStable(t *testing.T) {
 		got = append(got, tl.Name)
 	}
 	want := []string{"read_file", "write_file", "edit_file", "list_files",
-		"find_files", "search_files", "file_outline", "find_symbol",
+		"find_files", "search_files", "file_outline", "find_symbol", "find_references",
 		"execute", "run_command", "powershell"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("default tool set changed.\ngot:  %v\nwant: %v\n\n"+

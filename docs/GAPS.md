@@ -199,7 +199,7 @@ Every row here is a finding of this pass, not the 0.4.2 audit above.
 | Req | Finding | Status |
 |---|---|---|
 | — | `file_outline` and `find_symbol` tools, the in-memory symbol table, and the wiring into `All()` and `FileNavigationTools()`. | Fixed — `file_outline` reads from disk on every call; `find_symbol` is backed by a lazily built, bounded symbol table refreshed after `write_file`, `edit_file` and the shell tools. Spec `02_symbol_navigation_tools`. |
-| — | Symbol references and callers ("who calls X", "who implements Y"). | Deferred — a non-goal of spec `02_symbol_navigation_tools`; use `search_files` with `\bX\b`. A later spec (`05`) may add an indexed code-search module. |
+| — | Symbol references and callers ("who calls X", "who implements Y"). | Fixed — `find_references` tool and programmatic `(*Workspace).References` provide exact Go type resolution and outline attribution across the workspace. Spec `05_find_references`. |
 
 ### Deferred by decision
 

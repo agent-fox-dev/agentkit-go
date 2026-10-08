@@ -62,7 +62,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestWorkspaceReferences' -count=1 passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -100,7 +100,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestSymbolResolution' -count=1 passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -141,7 +141,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestGoTypeResolver' -count=1 passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -182,7 +182,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestRefScanner' -count=1 passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -220,7 +220,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestAttribution' -count=1 passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -258,7 +258,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestRefRanker' -count=1 passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -297,7 +297,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestRefRender' -count=1 passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -338,7 +338,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestRefCache' -count=1 passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -385,7 +385,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestFindReferencesTool' -count=1 passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -427,7 +427,7 @@
       "done_when": [
         "make check passes and doc updates are verified"
       ],
-      "state": "pending",
+      "state": "in_progress",
       "optional": false
     },
     {
