@@ -1,0 +1,1098 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "05",
+  "spec_name": "find_references",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-05-1",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-1.1"
+      ],
+      "title": "find_references is registered in tools.All() following find_symbol and in FileNavigationTools() with correct metadata",
+      "given": [
+        "a tool set created with default options and workspace"
+      ],
+      "when": "tools.All() and tools.FileNavigationTools() are inspected",
+      "then": [
+        "tools.All() contains find_references immediately following find_symbol and preceding shell tools",
+        "tools.FileNavigationTools() contains exactly six tools including find_references",
+        "find_references has Builtin set to true and ExecutionMode set to core.Parallel",
+        "find_references is not present in guard.ShellToolNames",
+        "find_references prompt guidelines contain 'Use find_symbol for where a name is declared, find_references for who uses it, and search_files for text.'"
+      ],
+      "pseudocode": "all, err := tools.All(opts); idxFS := indexOf(all, \"find_symbol\"); idxFR := indexOf(all, \"find_references\"); assert idxFR == idxFS + 1; nav := tools.FileNavigationTools(); assert len(nav) == 6 && contains(nav, \"find_references\"); fr := all[idxFR]; assert fr.Builtin && fr.ExecutionMode == core.Parallel && !guard.ShellToolNames[fr.Name]; assert contains(fr.PromptGuidelines, \"Use find_symbol for where a name is declared, find_references for who uses it, and search_files for text.\")"
+    },
+    {
+      "id": "TS-05-2",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-1.2"
+      ],
+      "title": "find_references input schema specifies required name and optional path, kind, include_tests, and max_results",
+      "given": [
+        "the find_references tool definition from tools.All()"
+      ],
+      "when": "InputSchema is inspected against schema rules",
+      "then": [
+        "InputSchema is an Object schema",
+        "property 'name' is required and of type string",
+        "properties 'path', 'kind', 'include_tests', and 'max_results' are optional",
+        "property 'include_tests' is of type boolean",
+        "property 'max_results' is of type integer"
+      ],
+      "pseudocode": "fr := getTool(\"find_references\"); schema := fr.InputSchema; assert schema.IsRequired(\"name\"); assert schema.PropertyList()[\"name\"].Type == schema.TypeString; assert schema.PropertyList()[\"include_tests\"].Type == schema.TypeBoolean; assert schema.PropertyList()[\"max_results\"].Type == schema.TypeInteger"
+    },
+    {
+      "id": "TS-05-3",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-1.3"
+      ],
+      "title": "find_references rejects malformed JSON, empty name, whitespace name, or name exceeding 256 bytes",
+      "given": [
+        "a workspace and initialized fileTools"
+      ],
+      "when": "find_references is executed with malformed JSON, missing name, empty string name, whitespace name, and a 257-byte name",
+      "then": [
+        "each invocation returns ToolResult with OK false",
+        "error code is 'invalid_arguments'",
+        "error message is non-empty explaining the validation failure",
+        "no filesystem reads or symbol table queries are performed"
+      ],
+      "pseudocode": "for in := range []string{\"{bad-json\", \"{}\", \"{\\\"name\\\":\\\"\\\"}\", \"{\\\"name\\\":\\\"   \\\"}\", \"{\\\"name\\\":\\\"\" + strings.Repeat(\"a\", 257) + \"\\\"}\"} { res := fr.Execute(ctx, []byte(in)); assert !res.OK && res.Error == \"invalid_arguments\" && res.Text != \"\" }"
+    },
+    {
+      "id": "TS-05-4",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-1.4"
+      ],
+      "title": "find_references rejects invalid kind parameters with a list of valid kinds",
+      "given": [
+        "a workspace and initialized fileTools"
+      ],
+      "when": "find_references is executed with kind 'struct', 'unknown', or 'class_method'",
+      "then": [
+        "each invocation returns ToolResult with OK false",
+        "error code is 'invalid_arguments'",
+        "error message lists valid kinds: func, method, type, class, interface, enum, trait, const, var, module, macro"
+      ],
+      "pseudocode": "res := fr.Execute(ctx, []byte(`{\"name\":\"Foo\",\"kind\":\"struct\"}`)); assert !res.OK && res.Error == \"invalid_arguments\"; for _, k := range validKinds { assert strings.Contains(res.Text, k) }"
+    },
+    {
+      "id": "TS-05-5",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-1.5"
+      ],
+      "title": "find_references refuses a path resolving outside workspace root",
+      "given": [
+        "a workspace with a temporary directory root"
+      ],
+      "when": "find_references is executed with path '../outside' or an absolute outside path",
+      "then": [
+        "each invocation returns ToolResult with OK false",
+        "error code is 'path_not_allowed'",
+        "workspace directory is not inspected"
+      ],
+      "pseudocode": "res := fr.Execute(ctx, []byte(`{\"name\":\"Foo\",\"path\":\"../outside\"}`)); assert !res.OK && res.Error == \"path_not_allowed\""
+    },
+    {
+      "id": "TS-05-6",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-1.6"
+      ],
+      "title": "find_references rejects non-existent paths or paths pointing to regular files",
+      "given": [
+        "a workspace containing a regular file 'main.go' and no directory named 'missing_dir'"
+      ],
+      "when": "find_references is executed with path 'missing_dir' and with path 'main.go'",
+      "then": [
+        "both invocations return ToolResult with OK false",
+        "error code is 'invalid_arguments'",
+        "error message indicates the directory was not found or is not a directory"
+      ],
+      "pseudocode": "res1 := fr.Execute(ctx, []byte(`{\"name\":\"Foo\",\"path\":\"missing_dir\"}`)); assert !res1.OK && res1.Error == \"invalid_arguments\" && strings.Contains(res1.Text, \"directory\"); res2 := fr.Execute(ctx, []byte(`{\"name\":\"Foo\",\"path\":\"main.go\"}`)); assert !res2.OK && res2.Error == \"invalid_arguments\""
+    },
+    {
+      "id": "TS-05-7",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-1.7"
+      ],
+      "title": "find_references terminates immediately with aborted error when context is cancelled",
+      "given": [
+        "a workspace with source files and an already cancelled context"
+      ],
+      "when": "find_references is executed with cancelled context",
+      "then": [
+        "ToolResult has OK false",
+        "error code is 'aborted'",
+        "error message equals 'Operation aborted'"
+      ],
+      "pseudocode": "ctx, cancel := context.WithCancel(context.Background()); cancel(); res := fr.Execute(ctx, []byte(`{\"name\":\"Foo\"}`)); assert !res.OK && res.Error == \"aborted\" && res.Text == \"Operation aborted\""
+    },
+    {
+      "id": "TS-05-8",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-2.1"
+      ],
+      "title": "Declaration resolver queries shared symbol table for unqualified and container-qualified names",
+      "given": [
+        "a workspace containing type Runner with method Run, and a standalone function Run"
+      ],
+      "when": "declaration resolver searches for unqualified 'Run' and container-qualified 'Runner.Run'",
+      "then": [
+        "query for 'Run' matches both declarations",
+        "query for 'Runner.Run' matches only the member Run on container Runner"
+      ],
+      "pseudocode": "matches := resolveSymbolCandidates(st, \"Run\", \"\", \"\"); assert len(matches) == 2; m2 := resolveSymbolCandidates(st, \"Runner.Run\", \"\", \"\"); assert len(m2) == 1 && m2[0].Container == \"Runner\" && m2[0].Name == \"Run\""
+    },
+    {
+      "id": "TS-05-9",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-2.2"
+      ],
+      "title": "Declaration resolver filters candidate declarations by kind and path constraints",
+      "given": [
+        "a workspace containing a type Config in 'pkg/config.go' and a function Config in 'pkg/setup.go' and a type Config in 'cmd/main.go'"
+      ],
+      "when": "declaration resolver queries name 'Config' with kind 'type' and path 'pkg'",
+      "then": [
+        "candidates in 'cmd/' are excluded by directory scope",
+        "candidates with kind 'func' are excluded by kind filter",
+        "only the type Config in 'pkg/config.go' remains"
+      ],
+      "pseudocode": "matches := resolveSymbolCandidates(st, \"Config\", \"type\", \"pkg\"); assert len(matches) == 1 && matches[0].Path == \"pkg/config.go\" && matches[0].Kind == \"type\""
+    },
+    {
+      "id": "TS-05-10",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-2.3"
+      ],
+      "title": "Declaration resolver selects the highest-ranked candidate applying find_symbol precedence",
+      "given": [
+        "a symbol table containing multiple candidates matching 'Handle': unexported 'handle' in test file, unexported 'handle' in 'a.go', exported 'Handle' in 'test/handle_test.go', and exported 'Handle' in 'pkg/handle.go'"
+      ],
+      "when": "declaration resolver disambiguates the candidate set",
+      "then": [
+        "exact name match 'Handle' is prioritized over prefix or case-variant matches",
+        "exported declaration is prioritized over unexported",
+        "non-test file declaration is prioritized over test file",
+        "shorter path and earlier line break ties deterministically",
+        "top-ranked candidate is exported 'Handle' in 'pkg/handle.go'"
+      ],
+      "pseudocode": "target := disambiguateSymbol(candidates); assert target.Path == \"pkg/handle.go\" && target.Name == \"Handle\""
+    },
+    {
+      "id": "TS-05-11",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-2.4"
+      ],
+      "title": "Declaration resolver falls back to text search with zero target declaration when name is not found",
+      "given": [
+        "a workspace containing files mentioning string 'GOPHER_KEY' but no declaration in symbol table"
+      ],
+      "when": "find_references is executed for 'GOPHER_KEY'",
+      "then": [
+        "ToolResult has OK true",
+        "target in structured Data is zero outline.Decl",
+        "backend is 'text'",
+        "text header indicates zero declarations matched and shows text references count"
+      ],
+      "pseudocode": "res := fr.Execute(ctx, []byte(`{\"name\":\"GOPHER_KEY\"}`)); assert res.OK; data := res.Data.(ReferenceResult); assert data.Target == outline.Decl{} && data.Backend == \"text\"; assert strings.Contains(res.Text, \"0 references\") || strings.Contains(res.Text, \"text matches\")"
+    },
+    {
+      "id": "TS-05-12",
+      "kind": "property",
+      "verifies": [
+        "05-REQ-2.5"
+      ],
+      "title": "Qualified declaration name splitting matches member and container across arbitrary dot-separated identifiers",
+      "given": [
+        "an in-memory symbol table populated with nested types and containers"
+      ],
+      "when": "for any qualified declaration name formatted as Container.Member, the name is split at the last dot",
+      "then": [
+        "the container prefix equals all characters before the last dot",
+        "the member name equals all characters after the last dot",
+        "matched symbol declarations have Container matching container prefix and Name matching member name"
+      ],
+      "pseudocode": "for name in genQualifiedNames() { container, member := splitContainerMember(name); match := matchContainerSymbol(st, container, member); if match != nil { assert match.Container == container && match.Name == member } }"
+    },
+    {
+      "id": "TS-05-13",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-3.1"
+      ],
+      "title": "Go type resolver parses workspace packages and type-checks with workspace-local importer without external processes",
+      "given": [
+        "a Go workspace with root go.mod defining module 'example.com/mod' and subpackages 'pkg/a' and 'pkg/b' importing 'pkg/a'"
+      ],
+      "when": "Go type resolver checks package 'pkg/b'",
+      "then": [
+        "import of 'example.com/mod/pkg/a' resolves to local sources in 'pkg/a'",
+        "types in 'pkg/a' are fully resolved in 'pkg/b'",
+        "no external shell commands or network connections are invoked"
+      ],
+      "pseudocode": "imp := newWorkspaceImporter(ws, \"example.com/mod\"); pkg, err := checkPackage(imp, \"pkg/b\"); assert err == nil && pkg != nil; assert pkg.Imports()[0].Path() == \"example.com/mod/pkg/a\""
+    },
+    {
+      "id": "TS-05-14",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-3.2"
+      ],
+      "title": "Go type resolver stubs external imports with empty synthetic packages and FakeImportC without aborting",
+      "given": [
+        "a Go source file importing standard library 'fmt', 'os' and external 'github.com/stretchr/testify/assert' and 'C'"
+      ],
+      "when": "Go type resolver type-checks the package",
+      "then": [
+        "types.Config.FakeImportC is true",
+        "importer returns synthetic empty *types.Package for 'fmt', 'os', and external dependencies",
+        "type checking completes without panicking or returning fatal process aborts",
+        "collected type errors are recorded in result error count"
+      ],
+      "pseudocode": "cfg := makeTypesConfig(importer); pkg, errs := typeCheck(cfg, parsedFiles); assert pkg != nil; assert importer.imported[\"fmt\"].Scope().Len() == 0; assert len(errs) > 0"
+    },
+    {
+      "id": "TS-05-15",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-3.3"
+      ],
+      "title": "Go type resolver attributes resolved confidence to receiver method calls, interfaces, renamed imports, and promoted fields",
+      "given": [
+        "a Go workspace with interface Reader, struct Buffer implementing Reader, renamed package import 'alias', and embedded struct Base with method Ping"
+      ],
+      "when": "reference resolution is performed for Ping, Read, and alias function calls",
+      "then": [
+        "receiver method calls 'buf.Ping()' through embedded Base resolve with confidence 'resolved'",
+        "interface method invocations 'r.Read()' resolve with confidence 'resolved'",
+        "calls through renamed package import 'alias.Do()' resolve with confidence 'resolved'"
+      ],
+      "pseudocode": "sites := resolveGoReferences(targetPing); assert len(sites) > 0; for _, s := range sites { assert s.Confidence == \"resolved\" }"
+    },
+    {
+      "id": "TS-05-16",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-3.4"
+      ],
+      "title": "Go type resolver excludes same-named methods on unrelated types or distinct packages",
+      "given": [
+        "a Go workspace with type Alpha defining method Close() and type Beta defining method Close() in another package"
+      ],
+      "when": "find_references resolves references for Alpha.Close",
+      "then": [
+        "calls to 'beta.Close()' are excluded from the reference results",
+        "only calls whose receiver resolves to Alpha's Close method are included"
+      ],
+      "pseudocode": "sites := resolveGoReferences(alphaClose); for _, s := range sites { assert s.Path == \"alpha_caller.go\" && !strings.Contains(s.Source, \"beta.Close\") }"
+    },
+    {
+      "id": "TS-05-17",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-3.5"
+      ],
+      "title": "Go type resolver demotes incompletely typed identifiers to lexical confidence instead of dropping them",
+      "given": [
+        "a Go function receiving an interface from stubbed external package 'external.Client' calling 'client.Do()' where 'Do' matches target declaration"
+      ],
+      "when": "find_references resolves references for target 'Do'",
+      "then": [
+        "the call site 'client.Do()' is not omitted",
+        "the reference site is assigned confidence 'lexical'"
+      ],
+      "pseudocode": "sites := resolveGoReferences(targetDo); hit := findSite(sites, \"client.Do()\"); assert hit != nil && hit.Confidence == \"lexical\""
+    },
+    {
+      "id": "TS-05-18",
+      "kind": "property",
+      "verifies": [
+        "05-REQ-3.6"
+      ],
+      "title": "Go source parsing preserves comments and records 1-based line and column offsets via token.FileSet",
+      "given": [
+        "a workspace containing arbitrary valid Go source files"
+      ],
+      "when": "for any Go package in the workspace, source files are parsed with comments enabled",
+      "then": [
+        "the parsed ast.File includes all comment groups",
+        "every identifier node maps to a 1-based line and 1-based column position via the token.FileSet",
+        "position line and column are strictly greater than zero"
+      ],
+      "pseudocode": "for pkg := range genGoPackages() { fset, files, err := parseGoPackageWithComments(pkg); assert err == nil; for _, f := range files { assert len(f.Comments) >= 0; ast.Inspect(f, func(n ast.Node) bool { if id, ok := n.(*ast.Ident); ok { p := fset.Position(id.Pos()); assert p.Line >= 1 && p.Column >= 1 }; return true }) } }"
+    },
+    {
+      "id": "TS-05-19",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-4.1"
+      ],
+      "title": "Reference scanner candidate traversal obeys .gitignore rules, hidden directory exclusions, and index filtering",
+      "given": [
+        "a workspace with .gitignore ignoring 'build/', a hidden directory '.git/', and active files in 'src/'"
+      ],
+      "when": "candidate files are traversed for reference scanning",
+      "then": [
+        "files inside 'build/' are ignored",
+        "files inside '.git/' and hidden files are ignored",
+        "only tracked and non-ignored files are inspected"
+      ],
+      "pseudocode": "candidates := findCandidateFiles(ws, \"Run\", mockIndex); for _, c := range candidates { assert !strings.HasPrefix(c, \".git/\") && !strings.HasPrefix(c, \"build/\") }"
+    },
+    {
+      "id": "TS-05-20",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-4.2"
+      ],
+      "title": "Reference scanner uses whole-word identifier boundaries for outline-supported languages",
+      "given": [
+        "a Python file containing 'def run_all():', 'runner.run()', and 'runaway = 1'"
+      ],
+      "when": "reference scanner searches for target name 'run'",
+      "then": [
+        "'runner.run()' is matched at identifier boundary",
+        "'run_all' and 'runaway' are rejected because they do not match word boundaries"
+      ],
+      "pseudocode": "matches := scanFileForName(\"test.py\", \"run\"); assert len(matches) == 1 && matches[0].LineText == \"runner.run()\""
+    },
+    {
+      "id": "TS-05-21",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-4.3"
+      ],
+      "title": "Reference scanner classifies code matches outside comments and strings in outline files as lexical",
+      "given": [
+        "a TypeScript file declaring a caller 'service.execute()' with a known symbol table target 'execute'"
+      ],
+      "when": "reference scanner inspects the code match outside strings and comments",
+      "then": [
+        "ReferenceSite is created with Confidence set to 'lexical'"
+      ],
+      "pseudocode": "site := scanNonGoSite(\"app.ts\", \"service.execute()\", targetDecl); assert site.Confidence == \"lexical\""
+    },
+    {
+      "id": "TS-05-22",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-4.4"
+      ],
+      "title": "Reference scanner classifies matches inside comments, strings, or unparseable files as text",
+      "given": [
+        "a Python file containing comment '# call execute here' and string '\\\"call execute\\\"' and an unsupported Markdown file with 'execute'"
+      ],
+      "when": "reference scanner checks matches for known target 'execute'",
+      "then": [
+        "the match inside the comment has Confidence set to 'text'",
+        "the match inside the string literal has Confidence set to 'text'",
+        "the match in the Markdown file has Confidence set to 'text'"
+      ],
+      "pseudocode": "sites := scanAllSites(\"execute\", targetDecl); for _, s := range sites { if isCommentOrString(s) || isMarkdown(s) { assert s.Confidence == \"text\" } }"
+    },
+    {
+      "id": "TS-05-23",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-4.5"
+      ],
+      "title": "Reference scanner classifies all sites as text when target declaration is not in the symbol table",
+      "given": [
+        "a workspace with Python, Go, and TypeScript files containing 'MY_GLOBAL_VAR' which is not in symbol table"
+      ],
+      "when": "reference scanner executes for 'MY_GLOBAL_VAR'",
+      "then": [
+        "every generated ReferenceSite across all files has Confidence set to 'text'"
+      ],
+      "pseudocode": "sites := scanAllSites(\"MY_GLOBAL_VAR\", outline.Decl{}); for _, s := range sites { assert s.Confidence == \"text\" }"
+    },
+    {
+      "id": "TS-05-24",
+      "kind": "property",
+      "verifies": [
+        "05-REQ-4.6"
+      ],
+      "title": "Reference match locator determines 1-based line number and 1-based byte column offset",
+      "given": [
+        "arbitrary text file lines with indentation and UTF-8 characters"
+      ],
+      "when": "for any reference match line, the match location is determined",
+      "then": [
+        "the line number is 1-based (line >= 1)",
+        "the column offset is 1-based byte index of the identifier start (col >= 1)",
+        "the byte slice at line[col-1 : col-1+len(name)] equals the target name"
+      ],
+      "pseudocode": "for match := range genMatchSites() { assert match.Line >= 1 && match.Column >= 1; line := getRawLine(match.Path, match.Line); assert line[match.Column-1:match.Column-1+len(targetName)] == targetName }"
+    },
+    {
+      "id": "TS-05-25",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-5.1"
+      ],
+      "title": "Attribution engine inspects outline declarations spanning the site line",
+      "given": [
+        "a file outline containing functions at lines 10-20, 25-35, and 40-50"
+      ],
+      "when": "attribution engine looks up enclosing declaration for reference site at line 30",
+      "then": [
+        "declarations at 10-20 and 40-50 are ignored",
+        "declaration at 25-35 spanning line 30 is identified as candidate enclosing declaration"
+      ],
+      "pseudocode": "decls := []outline.Decl{{StartLine: 10, EndLine: 20}, {StartLine: 25, EndLine: 35}, {StartLine: 40, EndLine: 50}}; enc := findEnclosing(decls, 30); assert enc.StartLine == 25 && enc.EndLine == 35"
+    },
+    {
+      "id": "TS-05-26",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-5.2"
+      ],
+      "title": "Attribution engine chooses innermost nested declaration with smallest line span",
+      "given": [
+        "a file outline with outer class 'Engine' at lines 10-60 and inner method 'Start' at lines 20-30"
+      ],
+      "when": "attribution engine resolves enclosing declaration for a reference site at line 25",
+      "then": [
+        "both Engine (span 50) and Start (span 10) contain line 25",
+        "innermost declaration Start with smallest span 10 is assigned to ReferenceSite.Enclosing"
+      ],
+      "pseudocode": "decls := []outline.Decl{{Name: \"Engine\", StartLine: 10, EndLine: 60}, {Name: \"Start\", StartLine: 20, EndLine: 30}}; enc := findEnclosing(decls, 25); assert enc.Name == \"Start\""
+    },
+    {
+      "id": "TS-05-27",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-5.3"
+      ],
+      "title": "Attribution engine assigns zero declaration with Kind 'file' for top-level reference sites",
+      "given": [
+        "a file outline with a declaration starting at line 15, and a reference site at line 5 (top-level import or var)"
+      ],
+      "when": "attribution engine resolves enclosing declaration for line 5",
+      "then": [
+        "ReferenceSite.Enclosing is a zero outline.Decl with Kind set to 'file'"
+      ],
+      "pseudocode": "decls := []outline.Decl{{Name: \"Foo\", StartLine: 15, EndLine: 25}}; enc := findEnclosing(decls, 5); assert enc.Kind == \"file\" && enc.Name == \"\""
+    },
+    {
+      "id": "TS-05-28",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-5.4"
+      ],
+      "title": "Attribution engine renders signature or '<Kind> <Name>' for declarations and '<file>' for top level",
+      "given": [
+        "a declaration with signature 'func (r *Runner) Run() error', a declaration without signature 'class Controller', and a top-level file declaration"
+      ],
+      "when": "enclosing declaration labels are rendered",
+      "then": [
+        "the first renders as 'func (r *Runner) Run() error'",
+        "the second renders as 'class Controller'",
+        "the top-level declaration renders as '<file>'"
+      ],
+      "pseudocode": "assert renderEnclosingLabel(declWithSig) == \"func (r *Runner) Run() error\"; assert renderEnclosingLabel(declWithoutSig) == \"class Controller\"; assert renderEnclosingLabel(fileDecl) == \"<file>\""
+    },
+    {
+      "id": "TS-05-29",
+      "kind": "property",
+      "verifies": [
+        "05-REQ-5.5"
+      ],
+      "title": "Source line snippet extraction trims whitespace, caps at 200 bytes, and sanitizes control characters",
+      "given": [
+        "arbitrary raw source lines containing whitespace, tabs, control characters (\\x00-\\x1F), and varying byte lengths"
+      ],
+      "when": "for any reference site, the source line snippet is extracted and sanitized",
+      "then": [
+        "leading and trailing whitespace is stripped",
+        "byte length of the resulting snippet does not exceed 200 bytes",
+        "no ASCII control characters (byte < 0x20, except space) exist in the output snippet"
+      ],
+      "pseudocode": "for raw := range genRawLines() { snip := sanitizeSnippet(raw); assert !strings.HasPrefix(snip, \" \") && !strings.HasSuffix(snip, \" \"); assert len([]byte(snip)) <= 200; for _, b := range []byte(snip) { assert b >= 0x20 || b >= 0x7F } }"
+    },
+    {
+      "id": "TS-05-30",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-6.1"
+      ],
+      "title": "Reference ranker sorts sites deterministically by confidence tier, test status, path, line, and column",
+      "given": [
+        "a list of unsorted ReferenceSite entries spanning resolved, lexical, and text confidences across test and non-test files"
+      ],
+      "when": "reference ranker sorts the site list",
+      "then": [
+        "all 'resolved' sites precede 'lexical' sites, which precede 'text' sites",
+        "within confidence tier, non-test files precede test files",
+        "within test status, files are sorted alphabetically by slash-separated path",
+        "within a file, sites are sorted by ascending line number, then ascending column"
+      ],
+      "pseudocode": "sortReferenceSites(sites); for i := 0; i < len(sites)-1; i++ { assert siteOrderLess(sites[i], sites[i+1]) }"
+    },
+    {
+      "id": "TS-05-31",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-6.2"
+      ],
+      "title": "Reference ranker excludes test files when include_tests is false",
+      "given": [
+        "collected reference sites located in 'pkg/client.go', 'pkg/client_test.go', and 'test/helper.go'"
+      ],
+      "when": "filterSites is invoked with includeTests = false",
+      "then": [
+        "sites in 'pkg/client_test.go' and 'test/helper.go' are removed",
+        "only sites in 'pkg/client.go' remain"
+      ],
+      "pseudocode": "filtered := filterTestSites(sites, false); for _, s := range filtered { assert !isTestFile(s.Path) }"
+    },
+    {
+      "id": "TS-05-32",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-6.3"
+      ],
+      "title": "Reference ranker truncates sites to max_results and appends CapMarker",
+      "given": [
+        "a result with 50 matching reference sites and max_results set to 20"
+      ],
+      "when": "reference ranker applies limits",
+      "then": [
+        "sites slice is truncated to length 20",
+        "Truncated field is set to true",
+        "CapMarker('references', 'max_results', 20, 100, 'narrow with path or kind') is appended to text output"
+      ],
+      "pseudocode": "res := applyResultLimits(sites, 20); assert len(res.Sites) == 20 && res.Truncated; wantMarker := CapMarker(\"references\", \"max_results\", 20, 100, \"narrow with path or kind\"); assert strings.Contains(res.MarkerText, wantMarker)"
+    },
+    {
+      "id": "TS-05-33",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-6.4"
+      ],
+      "title": "Reference ranker halts traversal gracefully upon MaxFiles or MaxDuration bound and appends SymbolPartialMarker",
+      "given": [
+        "a reference query configured with an expiring deadline or MaxFiles limit reached during traversal"
+      ],
+      "when": "bounds check triggers during candidate processing",
+      "then": [
+        "traversal halts gracefully without error",
+        "result returns sites collected before expiration",
+        "Partial field is set to true",
+        "SymbolPartialMarker is appended to text output"
+      ],
+      "pseudocode": "res := executeWithShortTimeout(ctx, fr, \"Run\"); assert res.OK && res.Data.(ReferenceResult).Partial; assert strings.Contains(res.Text, SymbolPartialMarker())"
+    },
+    {
+      "id": "TS-05-34",
+      "kind": "property",
+      "verifies": [
+        "05-REQ-6.5"
+      ],
+      "title": "find_references clamps max_results between 1 and 100 with default 30",
+      "given": [
+        "arbitrary integer input for max_results"
+      ],
+      "when": "for any call with max_results unsupplied or less than or equal to 0, or exceeding 100",
+      "then": [
+        "max_results <= 0 defaults to 30",
+        "max_results > 100 clamps to 100",
+        "max_results in 1..100 remains unchanged"
+      ],
+      "pseudocode": "for val in genInts() { clamped := clampMaxResults(val); if val <= 0 { assert clamped == 30 } else if val > 100 { assert clamped == 100 } else { assert clamped == val } }"
+    },
+    {
+      "id": "TS-05-35",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-7.1"
+      ],
+      "title": "Result renderer outputs header with declaration name, backend, counts, and partial advisory",
+      "given": [
+        "reference query results with backend 'go/types', 5 references across 2 files, 1 text match, and Partial true"
+      ],
+      "when": "renderResultText is called",
+      "then": [
+        "first line format matches 'find_references <name>  (go/types, 5 references in 2 files; 1 text matches) [partial]'",
+        "name and backend are accurately reflected in header"
+      ],
+      "pseudocode": "txt := renderResultText(res); firstLine := strings.Split(txt, \"\\n\")[0]; assert strings.HasPrefix(firstLine, \"find_references Run  (go/types, 5 references in 2 files; 1 text matches)\") && strings.Contains(firstLine, \"partial\")"
+    },
+    {
+      "id": "TS-05-36",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-7.2"
+      ],
+      "title": "Result renderer groups reference sites under relative file paths with padded indented lines",
+      "given": [
+        "two reference sites in 'pkg/runner.go' at lines 12 and 45"
+      ],
+      "when": "renderResultText is called",
+      "then": [
+        "file path 'pkg/runner.go' appears as a header line",
+        "sites appear indented with format '  L<line>  <confidence>  <enclosing>  <source_line>'",
+        "enclosing declaration column is padded for alignment across lines in the group"
+      ],
+      "pseudocode": "txt := renderResultText(res); assert strings.Contains(txt, \"pkg/runner.go\\n  L12  resolved  func Start() error      runner.Run()\"); assert strings.Contains(txt, \"  L45  resolved  func Stop()              runner.Run()\")"
+    },
+    {
+      "id": "TS-05-37",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-7.3"
+      ],
+      "title": "Result renderer appends truncation and partial markers on distinct lines at the conclusion of text",
+      "given": [
+        "a result with Truncated true and Partial true"
+      ],
+      "when": "renderResultText produces final output",
+      "then": [
+        "truncation CapMarker appears on its own line after the file groups",
+        "SymbolPartialMarker appears on its own line after the file groups",
+        "markers are separated from site listings"
+      ],
+      "pseudocode": "txt := renderResultText(truncatedPartialRes); lines := strings.Split(strings.TrimSpace(txt), \"\\n\"); assert strings.Contains(lines[len(lines)-2], \"cap=\") || strings.Contains(lines[len(lines)-1], \"cap=\"); assert strings.Contains(txt, SymbolPartialMarker())"
+    },
+    {
+      "id": "TS-05-38",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-7.4"
+      ],
+      "title": "Result renderer populates ToolResult.Data with complete ReferenceResult structure",
+      "given": [
+        "a completed reference resolution run"
+      ],
+      "when": "ToolResult.Data is inspected",
+      "then": [
+        "Data can be asserted as ReferenceResult",
+        "Target, Sites, Backend, Partial, Truncated, PackagesChecked, and Errors are populated with appropriate values"
+      ],
+      "pseudocode": "data, ok := res.Data.(ReferenceResult); assert ok; assert data.Backend != \"\"; assert data.PackagesChecked >= 0 && data.Errors >= 0"
+    },
+    {
+      "id": "TS-05-39",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-7.5"
+      ],
+      "title": "Result renderer returns successful ToolResult with zero references indicated when no matches exist",
+      "given": [
+        "a workspace where no file contains the queried identifier"
+      ],
+      "when": "find_references executes",
+      "then": [
+        "ToolResult has OK true",
+        "Text indicates zero references found",
+        "Data contains an empty Sites slice (len == 0)"
+      ],
+      "pseudocode": "res := fr.Execute(ctx, []byte(`{\"name\":\"NeverUsed\"}`)); assert res.OK; data := res.Data.(ReferenceResult); assert len(data.Sites) == 0; assert strings.Contains(res.Text, \"0 references\")"
+    },
+    {
+      "id": "TS-05-40",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-8.1"
+      ],
+      "title": "Reference cache initializes lazily on first query and persists across subsequent queries",
+      "given": [
+        "a newly created fileTools instance with no prior reference queries"
+      ],
+      "when": "reference cache accessor is called on first query and second query",
+      "then": [
+        "reference cache is nil before first query",
+        "reference cache is instantiated on first query",
+        "second query reuses the exact same reference cache instance in memory"
+      ],
+      "pseudocode": "assert ft.refCache == nil; ft.getRefCache(); c1 := ft.refCache; assert c1 != nil; ft.getRefCache(); c2 := ft.refCache; assert c1 == c2"
+    },
+    {
+      "id": "TS-05-41",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-8.2"
+      ],
+      "title": "write_file and edit_file mark the modified path dirty in reference cache upon lock release",
+      "given": [
+        "an initialized reference cache containing cached file entries"
+      ],
+      "when": "write_file or edit_file writes to 'pkg/service.go' and releases its path lock",
+      "then": [
+        "reference cache has 'pkg/service.go' marked in its dirty set",
+        "package enclosing 'pkg/service.go' is marked for re-checking"
+      ],
+      "pseudocode": "writeFileTool.Execute(ctx, writeArgs); assert refCache.isPathDirty(\"pkg/service.go\"); editFileTool.Execute(ctx, editArgs); assert refCache.isPathDirty(\"pkg/service.go\")"
+    },
+    {
+      "id": "TS-05-42",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-8.3"
+      ],
+      "title": "Shell tools mark all cached packages and files for revalidation",
+      "given": [
+        "an initialized reference cache with multiple cached packages"
+      ],
+      "when": "execute, run_command, or powershell tool completes execution",
+      "then": [
+        "reference cache has wholeTableRevalidate set to true"
+      ],
+      "pseudocode": "execTool.Execute(ctx, execArgs); assert refCache.needsRevalidateAll()"
+    },
+    {
+      "id": "TS-05-43",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-8.4"
+      ],
+      "title": "Reference query re-parses dirty Go packages, re-outlines dirty files, and purges deleted files",
+      "given": [
+        "a cached Go package and Python file, where Go file was modified, Python file was re-saved, and an extra file was deleted"
+      ],
+      "when": "a reference query runs with dirty flags pending",
+      "then": [
+        "modified Go package is re-parsed and re-typechecked",
+        "Python file is re-outlined",
+        "deleted file is purged from cache",
+        "dirty flags are cleared"
+      ],
+      "pseudocode": "refCache.markDirty(\"pkg/a.go\"); refCache.refresh(ctx); assert !refCache.isPathDirty(\"pkg/a.go\"); assert !refCache.hasFile(\"deleted.go\")"
+    },
+    {
+      "id": "TS-05-44",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-8.5"
+      ],
+      "title": "Modifying .gitignore causes candidate file cache to revalidate on subsequent query",
+      "given": [
+        "a workspace where 'ignored_dir/' is unignored, then .gitignore is updated to ignore 'ignored_dir/'"
+      ],
+      "when": "a reference query is executed after .gitignore update",
+      "then": [
+        "candidate file cache is revalidated",
+        "files inside 'ignored_dir/' are excluded from the candidate search"
+      ],
+      "pseudocode": "os.WriteFile(filepath.Join(ws.Root, \".gitignore\"), []byte(\"ignored_dir/\\n\"), 0644); refCache.markDirty(\".gitignore\"); res := fr.Execute(ctx, []byte(`{\"name\":\"Foo\"}`)); for _, s := range res.Data.(ReferenceResult).Sites { assert !strings.HasPrefix(s.Path, \"ignored_dir/\") }"
+    },
+    {
+      "id": "TS-05-45",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-9.1"
+      ],
+      "title": "Workspace exports ReferenceOptions, ReferenceSite, ReferenceResult types and References method",
+      "given": [
+        "the tools package"
+      ],
+      "when": "types and Workspace method signatures are inspected",
+      "then": [
+        "ReferenceOptions struct has Path, IncludeTests, MaxResults fields",
+        "ReferenceSite struct has Path, Line, Column, Confidence, Enclosing, Source fields",
+        "ReferenceResult struct has Target, Sites, Backend, Partial, PackagesChecked, Errors, Truncated fields",
+        "(*Workspace).References method accepts context.Context, outline.Decl, ReferenceOptions and returns (ReferenceResult, error)"
+      ],
+      "pseudocode": "var _ func(context.Context, outline.Decl, tools.ReferenceOptions) (tools.ReferenceResult, error) = (*tools.Workspace).References"
+    },
+    {
+      "id": "TS-05-46",
+      "kind": "integration",
+      "verifies": [
+        "05-REQ-9.2"
+      ],
+      "title": "Workspace.References returns ReferenceResult matching find_references tool output with deterministic ranking",
+      "given": [
+        "a workspace with Go and Python files and an identified target declaration"
+      ],
+      "when": "both Workspace.References and find_references tool are executed on the same target",
+      "then": [
+        "both return identical Sites slice elements in identical order",
+        "both have matching Backend, Truncated, and Partial values"
+      ],
+      "pseudocode": "toolRes := fr.Execute(ctx, []byte(`{\"name\":\"TargetFunc\"}`)); wsRes, err := ws.References(ctx, targetDecl, tools.ReferenceOptions{IncludeTests: true, MaxResults: 30}); assert err == nil; assert reflect.DeepEqual(toolRes.Data.(tools.ReferenceResult).Sites, wsRes.Sites)"
+    },
+    {
+      "id": "TS-05-47",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-9.3"
+      ],
+      "title": "Workspace.References returns ErrPathNotAllowed and empty ReferenceResult when path escapes workspace",
+      "given": [
+        "a Workspace instance and an escaping path '../escape'"
+      ],
+      "when": "ws.References is invoked with ReferenceOptions{Path: '../escape'}",
+      "then": [
+        "error returned is tools.ErrPathNotAllowed",
+        "ReferenceResult returned has empty Sites slice"
+      ],
+      "pseudocode": "res, err := ws.References(ctx, targetDecl, tools.ReferenceOptions{Path: \"../escape\"}); assert errors.Is(err, tools.ErrPathNotAllowed) && len(res.Sites) == 0"
+    },
+    {
+      "id": "TS-05-48",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-9.4"
+      ],
+      "title": "Workspace.References returns non-nil error when path does not exist or is not a directory",
+      "given": [
+        "a Workspace instance with non-existent path 'no_such_dir' and regular file 'main.go'"
+      ],
+      "when": "ws.References is invoked with Path 'no_such_dir' and with Path 'main.go'",
+      "then": [
+        "both invocations return a non-nil error indicating directory was not found",
+        "ReferenceResult returned has empty Sites slice"
+      ],
+      "pseudocode": "res1, err1 := ws.References(ctx, targetDecl, tools.ReferenceOptions{Path: \"no_such_dir\"}); assert err1 != nil && len(res1.Sites) == 0; res2, err2 := ws.References(ctx, targetDecl, tools.ReferenceOptions{Path: \"main.go\"}); assert err2 != nil && len(res2.Sites) == 0"
+    },
+    {
+      "id": "TS-05-49",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-9.5"
+      ],
+      "title": "Workspace.References returns ctx.Err() and empty ReferenceResult when context is cancelled",
+      "given": [
+        "a Workspace instance and a pre-cancelled context"
+      ],
+      "when": "ws.References is invoked with cancelled context",
+      "then": [
+        "error returned equals ctx.Err()",
+        "ReferenceResult returned is empty"
+      ],
+      "pseudocode": "ctx, cancel := context.WithCancel(context.Background()); cancel(); res, err := ws.References(ctx, targetDecl, tools.ReferenceOptions{}); assert errors.Is(err, context.Canceled) && len(res.Sites) == 0"
+    },
+    {
+      "id": "TS-05-50",
+      "kind": "property",
+      "verifies": [
+        "05-REQ-9.6"
+      ],
+      "title": "Workspace.References clamps MaxResults between 1 and 100 with default 30",
+      "given": [
+        "arbitrary integer values for opts.MaxResults"
+      ],
+      "when": "for any call with opts.MaxResults <= 0 or opts.MaxResults > 100",
+      "then": [
+        "opts.MaxResults <= 0 is normalized to 30",
+        "opts.MaxResults > 100 is clamped to 100",
+        "opts.MaxResults between 1 and 100 is retained without alteration"
+      ],
+      "pseudocode": "for val in genInts() { norm := normalizeWorkspaceMaxResults(val); if val <= 0 { assert norm == 30 } else if val > 100 { assert norm == 100 } else { assert norm == val } }"
+    },
+    {
+      "id": "TS-05-51",
+      "kind": "property",
+      "verifies": [
+        "05-REQ-10.1"
+      ],
+      "title": "Root module maintains zero external dependencies and cgo purity across target platforms",
+      "given": [
+        "the root module go.mod and codebase"
+      ],
+      "when": "for any build or test run, root dependencies and cgo policies are validated across linux/amd64, linux/arm64, darwin/arm64, and windows/amd64",
+      "then": [
+        "root go.mod contains zero require directives for third-party modules",
+        "internal/policy tests (TestNoCgoOutsideStdlib, TestCgoProbeIsArmed) pass without error",
+        "package builds cleanly across all four target architectures"
+      ],
+      "pseudocode": "assert len(rootGoMod.Requires) == 0; runPolicyTests(); for target in [\"linux/amd64\", \"linux/arm64\", \"darwin/arm64\", \"windows/amd64\"] { assert buildTarget(target) == nil }"
+    },
+    {
+      "id": "TS-05-52",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-10.2"
+      ],
+      "title": "System prompt generation includes find_references guideline matching golden outputs",
+      "given": [
+        "prompt input configured with default tool set including find_references"
+      ],
+      "when": "prompt.Build is called with default and custom configurations",
+      "then": [
+        "assembled prompt contains find_references guideline: 'Use find_symbol for where a name is declared, find_references for who uses it, and search_files for text.'",
+        "assembled prompt matches prompt/testdata/golden/system_prompt_default.txt and system_prompt_custom.txt"
+      ],
+      "pseudocode": "p := prompt.Build(prompt.Input{Tools: defaultTools}); assert strings.Contains(p, \"find_references for who uses it\"); checkGolden(t, \"system_prompt_default.txt\", p)"
+    },
+    {
+      "id": "TS-05-53",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-10.3"
+      ],
+      "title": "FileNavigationTools returns exactly six tools in pinned order",
+      "given": [
+        "the tools package"
+      ],
+      "when": "tools.FileNavigationTools() is invoked",
+      "then": [
+        "returned slice has length 6",
+        "order is exactly: 'list_files', 'find_files', 'search_files', 'file_outline', 'find_symbol', 'find_references'"
+      ],
+      "pseudocode": "want := []string{\"list_files\", \"find_files\", \"search_files\", \"file_outline\", \"find_symbol\", \"find_references\"}; got := tools.FileNavigationTools(); assert reflect.DeepEqual(got, want)"
+    },
+    {
+      "id": "TS-05-54",
+      "kind": "unit",
+      "verifies": [
+        "05-REQ-10.4"
+      ],
+      "title": "Documentation accurately describes find_references and reference types and marks gaps as fixed",
+      "given": [
+        "documentation files docs/architecture.md, docs/api.md, README.md, and docs/GAPS.md"
+      ],
+      "when": "documentation files are inspected",
+      "then": [
+        "docs/architecture.md documents find_references and reference caching",
+        "docs/api.md documents Workspace.References, ReferenceOptions, ReferenceSite, ReferenceResult",
+        "README.md lists find_references in navigation tools table and removes references from unbuilt features",
+        "docs/GAPS.md marks symbol references as Fixed"
+      ],
+      "pseudocode": "assert containsFile(\"docs/architecture.md\", \"find_references\"); assert containsFile(\"docs/api.md\", \"Workspace.References\"); assert containsFile(\"README.md\", \"find_references\"); assert containsFile(\"docs/GAPS.md\", \"Fixed\")"
+    },
+    {
+      "id": "TS-05-55",
+      "kind": "smoke",
+      "verifies": [
+        "05-PATH-1",
+        "05-REQ-3.3"
+      ],
+      "title": "End-to-end Go method caller resolution across packages with exact type analysis",
+      "given": [
+        "a real workspace containing Go packages with interface, receiver method, and cross-package calls"
+      ],
+      "when": "find_references tool is executed for 'Runner.Run'",
+      "then": [
+        "ToolResult has OK true",
+        "Target matches Runner.Run declaration",
+        "Backend is 'go/types'",
+        "Caller sites are attributed to enclosing functions with confidence 'resolved'"
+      ],
+      "real_components": [
+        "find_references tool",
+        "Go type resolver",
+        "symbolTable",
+        "attribution engine",
+        "Workspace"
+      ]
+    },
+    {
+      "id": "TS-05-56",
+      "kind": "smoke",
+      "verifies": [
+        "05-PATH-2",
+        "05-REQ-4.3"
+      ],
+      "title": "End-to-end lexical reference discovery in Python files attributed to enclosing functions",
+      "given": [
+        "a real workspace containing Python files with function declarations, caller sites, comments, and strings"
+      ],
+      "when": "find_references tool is executed for 'calculate_tax'",
+      "then": [
+        "ToolResult has OK true",
+        "Target matches calculate_tax in Python file",
+        "Backend is 'lexical'",
+        "Call sites outside comments/strings have confidence 'lexical' and are attributed to enclosing Python functions"
+      ],
+      "real_components": [
+        "find_references tool",
+        "reference scanner",
+        "symbolTable",
+        "attribution engine",
+        "Workspace"
+      ]
+    },
+    {
+      "id": "TS-05-57",
+      "kind": "smoke",
+      "verifies": [
+        "05-PATH-3",
+        "05-REQ-2.4",
+        "05-REQ-4.5"
+      ],
+      "title": "End-to-end fallback text search for an undeclared identifier across workspace files",
+      "given": [
+        "a real workspace containing files referencing an undeclared constant name 'NONEXISTENT_FLAG'"
+      ],
+      "when": "find_references tool is executed for 'NONEXISTENT_FLAG'",
+      "then": [
+        "ToolResult has OK true",
+        "Target is zero outline.Decl",
+        "Backend is 'text'",
+        "Header line explicitly states 0 declarations matched",
+        "Reference sites carry confidence 'text'"
+      ],
+      "real_components": [
+        "find_references tool",
+        "declaration resolver",
+        "reference scanner",
+        "Workspace"
+      ]
+    },
+    {
+      "id": "TS-05-58",
+      "kind": "smoke",
+      "verifies": [
+        "05-PATH-4",
+        "05-REQ-9.2"
+      ],
+      "title": "End-to-end programmatic caller analysis via Workspace.References embedder seam",
+      "given": [
+        "a real workspace with Go packages and a known target declaration"
+      ],
+      "when": "Workspace.References is called directly with target outline.Decl and default ReferenceOptions",
+      "then": [
+        "ReferenceResult returns nil error",
+        "Result Target, Sites, and Backend match find_references output",
+        "Sites are ranked deterministically by confidence, test status, path, and line"
+      ],
+      "real_components": [
+        "Workspace",
+        "Go type resolver",
+        "attribution engine",
+        "reference ranker"
+      ]
+    },
+    {
+      "id": "TS-05-59",
+      "kind": "smoke",
+      "verifies": [
+        "05-PATH-5",
+        "05-REQ-8.2",
+        "05-REQ-8.4"
+      ],
+      "title": "End-to-end cache invalidation and revalidation after file editing through tool set",
+      "given": [
+        "a tool set initialized on a workspace with Go packages and an initial find_references query"
+      ],
+      "when": "write_file adds a new caller function in a Go file, and find_references is called again",
+      "then": [
+        "write_file marks the package dirty in the reference cache",
+        "subsequent find_references re-checks the package and discovers the newly added caller site",
+        "the new site is attributed to the new caller function with confidence 'resolved'"
+      ],
+      "real_components": [
+        "write_file tool",
+        "find_references tool",
+        "reference cache",
+        "Go type resolver",
+        "Workspace"
+      ]
+    }
+  ]
+}

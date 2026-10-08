@@ -1,0 +1,620 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "05",
+  "spec_name": "find_references",
+  "schema_version": 2,
+  "introduction": "The find_references tool discovers usages and callers of declarations across a workspace, combining exact Go type resolution with lexical and outline-aware fallbacks for other languages while attributing every hit to its enclosing declaration.",
+  "glossary": {
+    "enclosing_declaration": "The innermost declaration (such as a function, method, or class) whose line range spans a reference site.",
+    "lexical_confidence": "A match outside comments and strings matching word boundaries, or an incompletely typed Go identifier.",
+    "partial_result": "A reference search result bounded by MaxFiles or MaxDuration rather than finding all workspace occurrences.",
+    "reference_site": "A source location consisting of file path, line number, column, and source snippet where an identifier is used or called.",
+    "resolved_confidence": "A match in Go code verified through go/types to refer to the target declaration's types.Object.",
+    "synthetic_package": "An empty in-memory *types.Package defining zero symbols returned by the workspace importer for external dependencies.",
+    "text_confidence": "A match occurring inside comments or string literals, within non-outline files, or for an undeclared symbol."
+  },
+  "requirements": [
+    {
+      "id": "05-REQ-1",
+      "title": "find_references tool registration and input validation",
+      "rationale": "A model or agent needs a discovery tool to find callers and reference sites across the workspace while rejecting invalid inputs early.",
+      "criteria": [
+        {
+          "id": "05-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "find_references tool",
+          "action": "register in tools.All() immediately following find_symbol and preceding shell tools, register in tools.FileNavigationTools() expanding the list to six tool names, configure with Builtin true, ExecutionMode Parallel, non-shell status outside guard.ShellToolNames, and prompt guideline 'Use find_symbol for where a name is declared, find_references for who uses it, and search_files for text.'"
+        },
+        {
+          "id": "05-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "find_references tool",
+          "action": "declare an input schema specifying required string parameter name (maximum 256 bytes), optional string parameter path, optional string parameter kind, optional boolean parameter include_tests (defaulting to true), and optional integer parameter max_results (default 30, cap 100)"
+        },
+        {
+          "id": "05-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "the tool input cannot be unmarshaled as valid JSON, or name is missing, consists solely of whitespace, or exceeds 256 bytes",
+          "system": "find_references tool",
+          "action": "reject the call without reading the workspace filesystem",
+          "contract": "ToolResult with OK false, error code invalid_arguments, and non-empty error message"
+        },
+        {
+          "id": "05-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "the kind parameter is provided and does not match func, method, type, class, interface, enum, trait, const, var, module, or macro",
+          "system": "find_references tool",
+          "action": "reject the call without searching the workspace",
+          "contract": "ToolResult with OK false, error code invalid_arguments, and message listing valid kinds"
+        },
+        {
+          "id": "05-REQ-1.5",
+          "pattern": "unwanted",
+          "condition": "the path parameter resolves outside the workspace root per Workspace.Resolve",
+          "system": "find_references tool",
+          "action": "refuse the call without inspecting filesystem entries",
+          "contract": "ToolResult with OK false and error code path_not_allowed"
+        },
+        {
+          "id": "05-REQ-1.6",
+          "pattern": "unwanted",
+          "condition": "the path parameter resolves inside the workspace root but does not exist on disk or does not refer to a directory",
+          "system": "find_references tool",
+          "action": "reject the call",
+          "contract": "ToolResult with OK false, error code invalid_arguments, and message stating the directory was not found"
+        },
+        {
+          "id": "05-REQ-1.7",
+          "pattern": "unwanted",
+          "condition": "the execution context is cancelled before or during reference search execution",
+          "system": "find_references tool",
+          "action": "terminate execution immediately and return an error result",
+          "contract": "ToolResult with OK false, error code aborted, and message 'Operation aborted'"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-2",
+      "title": "Declaration resolution and disambiguation from symbol table",
+      "rationale": "Resolving queried names against the in-memory symbol table provides semantic declaration targets while preserving fallback behavior for undeclared identifiers.",
+      "criteria": [
+        {
+          "id": "05-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "find_references receives a declaration name",
+          "system": "declaration resolver",
+          "action": "query the shared in-memory symbol table to locate matching declarations by unqualified name or container-qualified name",
+          "contract": "Candidate declaration list returned or empty set if no matching symbol exists"
+        },
+        {
+          "id": "05-REQ-2.2",
+          "pattern": "complex_event",
+          "condition": "candidate declarations are located in the symbol table",
+          "guard": "a path or kind parameter is specified in the tool call",
+          "system": "declaration resolver",
+          "action": "filter candidate declarations to entries matching the specified declaration kind and residing within the specified directory scope",
+          "contract": "Candidate set retains only declarations matching all active filter constraints"
+        },
+        {
+          "id": "05-REQ-2.3",
+          "pattern": "complex_event",
+          "condition": "multiple candidate declarations match the queried name and active filters",
+          "guard": "a target declaration must be selected",
+          "system": "declaration resolver",
+          "action": "select the highest-ranked declaration applying find_symbol ranking precedence: exact name match over prefix match, exported over unexported, non-test file over test file per isTestFile, shorter workspace-relative path length, then ascending 1-based start line",
+          "contract": "Exactly one top-ranked candidate selected as the target declaration"
+        },
+        {
+          "id": "05-REQ-2.4",
+          "pattern": "complex_event",
+          "condition": "no declaration in the symbol table matches the queried name",
+          "guard": "no active filters or active filters eliminated all candidates",
+          "system": "declaration resolver",
+          "action": "proceed with a workspace-wide text search without returning an error, setting the result target to a zero outline.Decl, backend to 'text', and recording zero declaration matches in the text header",
+          "contract": "ToolResult with OK true, target set to zero outline.Decl, backend 'text', and text header noting zero matched declarations"
+        },
+        {
+          "id": "05-REQ-2.5",
+          "pattern": "ubiquitous",
+          "system": "declaration resolver",
+          "action": "for any qualified declaration name formatted as Container.Member, split the identifier at the last dot and match member declarations whose container matches the container prefix in the symbol table"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-3",
+      "title": "Go type resolution engine and resolved confidence",
+      "rationale": "In-process Go type analysis provides exact caller resolution across packages without external tooling or language servers.",
+      "criteria": [
+        {
+          "id": "05-REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "Go source packages in the workspace are type-checked",
+          "system": "Go type resolver",
+          "action": "parse Go source files using go/parser and type-check packages using go/types with a workspace-local importer mapping module import paths to local directories",
+          "contract": "Workspace Go packages are checked in memory without external processes or network access"
+        },
+        {
+          "id": "05-REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "an import path refers to standard library or third-party packages outside the workspace",
+          "system": "Go type resolver",
+          "action": "answer the import with an empty synthetic types.Package defining zero symbols, configure types.Config with FakeImportC true, and collect type errors without aborting or panicking",
+          "contract": "Incomplete external packages complete type checking without fatal error or process termination"
+        },
+        {
+          "id": "05-REQ-3.3",
+          "pattern": "complex_event",
+          "condition": "an identifier occurrence in Go source matches the target declaration name",
+          "guard": "types.Info.Uses or types.Info.Defs associates the identifier with the target declaration's types.Object",
+          "system": "Go type resolver",
+          "action": "classify the reference site with resolved confidence, resolving receiver method calls, interface method invocations, renamed imports, and promoted embedded fields to the target declaration",
+          "contract": "ReferenceSite created with Confidence set to 'resolved'"
+        },
+        {
+          "id": "05-REQ-3.4",
+          "pattern": "complex_event",
+          "condition": "an identifier occurrence in Go source matches the target declaration name",
+          "guard": "its resolved types.Object belongs to an unrelated type or a distinct package",
+          "system": "Go type resolver",
+          "action": "exclude the identifier occurrence from reference matches",
+          "contract": "Zero reference sites generated for unrelated same-named symbols"
+        },
+        {
+          "id": "05-REQ-3.5",
+          "pattern": "complex_event",
+          "condition": "an identifier occurrence in Go source matches the target declaration name",
+          "guard": "its type cannot be resolved because its receiver or parameter originates from a stubbed external import",
+          "system": "Go type resolver",
+          "action": "classify the reference site with lexical confidence rather than dropping the match",
+          "contract": "ReferenceSite created with Confidence set to 'lexical'"
+        },
+        {
+          "id": "05-REQ-3.6",
+          "pattern": "ubiquitous",
+          "system": "Go type resolver",
+          "action": "for any Go package in the workspace, parse source files with comments preserved and record 1-based line and 1-based column offsets using token.FileSet"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-4",
+      "title": "Lexical and text reference scanning across workspace files",
+      "rationale": "Scanning non-Go files and fallback occurrences with word boundaries enables broad multi-language reference discovery.",
+      "criteria": [
+        {
+          "id": "05-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "candidate files are traversed for reference scanning",
+          "system": "reference scanner",
+          "action": "traverse workspace files using tools.Walk respecting .gitignore rules, hidden entry exclusion, and optional tools.Index candidate acceleration if configured",
+          "contract": "Candidate files exclude ignored or hidden paths"
+        },
+        {
+          "id": "05-REQ-4.2",
+          "pattern": "complex_event",
+          "condition": "a candidate file is covered by outline extractors for Python, TypeScript, JavaScript, Rust, C, C++, C#, Java, Kotlin, or Ruby",
+          "guard": "the target declaration was identified in the symbol table",
+          "system": "reference scanner",
+          "action": "scan the file content for whole-identifier word-boundary matches matching the target name",
+          "contract": "Matches isolated to identifier boundaries"
+        },
+        {
+          "id": "05-REQ-4.3",
+          "pattern": "complex_event",
+          "condition": "an identifier-boundary match occurs in an outline-supported file",
+          "guard": "the match line falls outside comment blocks and string literals and the target declaration exists in the symbol table",
+          "system": "reference scanner",
+          "action": "classify the reference site with lexical confidence",
+          "contract": "ReferenceSite created with Confidence set to 'lexical'"
+        },
+        {
+          "id": "05-REQ-4.4",
+          "pattern": "complex_event",
+          "condition": "an identifier match occurs inside a comment or string literal, or within a file unsupported by outline extractors",
+          "guard": "the target declaration exists in the symbol table",
+          "system": "reference scanner",
+          "action": "classify the reference site with text confidence",
+          "contract": "ReferenceSite created with Confidence set to 'text'"
+        },
+        {
+          "id": "05-REQ-4.5",
+          "pattern": "complex_event",
+          "condition": "a reference search executes",
+          "guard": "the target declaration was not located in the symbol table",
+          "system": "reference scanner",
+          "action": "classify all reference matches across all scanned files with text confidence",
+          "contract": "Every reported ReferenceSite carries Confidence 'text'"
+        },
+        {
+          "id": "05-REQ-4.6",
+          "pattern": "ubiquitous",
+          "system": "reference scanner",
+          "action": "for any reference match line, determine the 1-based line number and 1-based byte column offset of the match start"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-5",
+      "title": "Enclosing declaration attribution and line formatting",
+      "rationale": "Attributing each reference site to its surrounding function or class gives agents immediate structural context without extra outline calls.",
+      "criteria": [
+        {
+          "id": "05-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "a reference site is identified at a 1-based line number within a file",
+          "system": "attribution engine",
+          "action": "inspect the file's declaration outline from outline.File.Decls to identify all declarations whose StartLine is less than or equal to the site line and EndLine is greater than or equal to the site line",
+          "contract": "Enclosing candidate declaration list identified"
+        },
+        {
+          "id": "05-REQ-5.2",
+          "pattern": "complex_event",
+          "condition": "multiple nested declarations span the reference site line",
+          "guard": "at least one declaration encompasses another",
+          "system": "attribution engine",
+          "action": "assign the innermost declaration with the smallest line span to ReferenceSite.Enclosing",
+          "contract": "ReferenceSite.Enclosing set to the innermost outline.Decl"
+        },
+        {
+          "id": "05-REQ-5.3",
+          "pattern": "complex_event",
+          "condition": "a reference site line falls outside all declarations in outline.File.Decls",
+          "guard": "the site is located at file top level",
+          "system": "attribution engine",
+          "action": "set ReferenceSite.Enclosing to a zero outline.Decl with Kind set to 'file'",
+          "contract": "ReferenceSite.Enclosing.Kind equals 'file'"
+        },
+        {
+          "id": "05-REQ-5.4",
+          "pattern": "ubiquitous",
+          "system": "attribution engine",
+          "action": "render the enclosing declaration label as its signature or '<Kind> <Name>' when Enclosing.Kind is not 'file', and render '<file>' when Enclosing.Kind equals 'file'"
+        },
+        {
+          "id": "05-REQ-5.5",
+          "pattern": "ubiquitous",
+          "system": "attribution engine",
+          "action": "for any reference site, extract the source line containing the match, trim leading and trailing whitespace, cap the string length at 200 bytes, and replace ASCII control characters with spaces"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-6",
+      "title": "Result ranking, bounds, and truncation",
+      "rationale": "Strict sorting and safety bounds ensure prompt responses on large workspaces and deterministic output for agent reproducibility.",
+      "criteria": [
+        {
+          "id": "05-REQ-6.1",
+          "pattern": "ubiquitous",
+          "system": "reference ranker",
+          "action": "sort all reference sites deterministically using four-tier order: confidence tier (resolved before lexical before text), non-test files before test files per isTestFile, alphabetical workspace-relative path, then ascending 1-based line number and ascending 1-based column"
+        },
+        {
+          "id": "05-REQ-6.2",
+          "pattern": "complex_event",
+          "condition": "include_tests is specified as false",
+          "guard": "reference sites are collected",
+          "system": "reference ranker",
+          "action": "filter out and omit all reference sites located in test files or test directories identified by isTestFile",
+          "contract": "Result contains zero reference sites from test files"
+        },
+        {
+          "id": "05-REQ-6.3",
+          "pattern": "complex_event",
+          "condition": "the number of matching reference sites exceeds max_results",
+          "guard": "max_results is clamped between 1 and 100",
+          "system": "reference ranker",
+          "action": "truncate the sites slice to max_results entries, set Truncated to true, and append an advisory marker generated by CapMarker('references', 'max_results', limit, 100, 'narrow with path or kind')",
+          "contract": "Sites slice length equals clamped max_results and Truncated equals true"
+        },
+        {
+          "id": "05-REQ-6.4",
+          "pattern": "complex_event",
+          "condition": "file traversal reaches SymbolOptions.MaxFiles (50 000) or execution duration reaches SymbolOptions.MaxDuration (2 s)",
+          "guard": "the reference pass has not finished inspecting all candidate files",
+          "system": "reference ranker",
+          "action": "halt traversal without error, return reference sites collected prior to limit expiration, set Partial to true, and append SymbolPartialMarker to the text output",
+          "contract": "ToolResult returned with OK true, Partial true, and SymbolPartialMarker appended"
+        },
+        {
+          "id": "05-REQ-6.5",
+          "pattern": "ubiquitous",
+          "system": "reference ranker",
+          "action": "for any call with max_results unsupplied or less than or equal to 0, default max_results to 30, and for any max_results exceeding 100, clamp max_results to 100"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-7",
+      "title": "Result rendering and structured data output",
+      "rationale": "Compact hierarchical text minimizes model token consumption while structured data empowers programmatic analysis.",
+      "criteria": [
+        {
+          "id": "05-REQ-7.1",
+          "pattern": "ubiquitous",
+          "system": "result renderer",
+          "action": "render ToolResult.Text with an initial header line formatted as 'find_references <name>  (<backend>, <N> references in <M> files; <K> text matches)' where backend is 'go/types', 'lexical', or 'text', appending a partial note when Partial is true"
+        },
+        {
+          "id": "05-REQ-7.2",
+          "pattern": "ubiquitous",
+          "system": "result renderer",
+          "action": "render reference sites grouped by file with slash-separated relative path headers followed by indented site lines formatted as '  L<line>  <confidence>  <enclosing>  <source_line>' with padded enclosing declaration alignment"
+        },
+        {
+          "id": "05-REQ-7.3",
+          "pattern": "complex_event",
+          "condition": "a reference query result is truncated or partial",
+          "guard": "truncation or partial limits were triggered during execution",
+          "system": "result renderer",
+          "action": "append the truncation marker or partial marker text at the end of ToolResult.Text",
+          "contract": "Markers appear on distinct lines at the conclusion of Text"
+        },
+        {
+          "id": "05-REQ-7.4",
+          "pattern": "ubiquitous",
+          "system": "result renderer",
+          "action": "populate ToolResult.Data with a ReferenceResult struct containing Target (outline.Decl), Sites ([]ReferenceSite), Backend (string), Partial (bool), Truncated (bool), PackagesChecked (int), and Errors (int)"
+        },
+        {
+          "id": "05-REQ-7.5",
+          "pattern": "event_driven",
+          "condition": "a reference search yields zero matching sites across all candidate files",
+          "system": "result renderer",
+          "action": "return a successful ToolResult whose Text indicates zero references found and whose Sites slice is empty",
+          "contract": "ToolResult with OK true and empty Sites slice"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-8",
+      "title": "Reference cache lifecycle, freshness, and invalidation",
+      "rationale": "Caching package type checks and outlines provides low latency while invalidation hooks prevent stale results after tool mutations.",
+      "criteria": [
+        {
+          "id": "05-REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "the first reference query is executed on a fileTools instance",
+          "system": "reference cache",
+          "action": "initialize the in-memory reference cache lazily and maintain cached packages and outlines across subsequent queries for the lifetime of fileTools",
+          "contract": "Cache is retained in memory without persisting to disk"
+        },
+        {
+          "id": "05-REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "write_file or edit_file releases its per-path lock after completing a file modification",
+          "system": "reference cache",
+          "action": "mark the modified workspace-relative path dirty in the reference cache",
+          "contract": "Path flagged as dirty for subsequent queries"
+        },
+        {
+          "id": "05-REQ-8.3",
+          "pattern": "event_driven",
+          "condition": "a shell tool (execute, run_command, or powershell) finishes execution",
+          "system": "reference cache",
+          "action": "mark all cached packages and files for revalidation",
+          "contract": "Whole-table revalidation flag set"
+        },
+        {
+          "id": "05-REQ-8.4",
+          "pattern": "event_driven",
+          "condition": "a reference query is initiated while dirty paths or whole-table revalidation flags are pending",
+          "system": "reference cache",
+          "action": "re-parse dirty Go packages, re-outline dirty non-Go files, and remove entries for files deleted from disk before resolving references",
+          "contract": "Query executes against updated filesystem state"
+        },
+        {
+          "id": "05-REQ-8.5",
+          "pattern": "event_driven",
+          "condition": "a .gitignore or nested ignore file is modified",
+          "system": "reference cache",
+          "action": "revalidate the candidate file set on the subsequent reference search pass",
+          "contract": "Candidate traversal reflects updated ignore rules"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-9",
+      "title": "Exported embedder seam on Workspace",
+      "rationale": "Direct programmatic access to reference analysis enables static analysis and code intelligence without model prompt execution.",
+      "criteria": [
+        {
+          "id": "05-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "Workspace package",
+          "action": "export ReferenceOptions, ReferenceSite, ReferenceResult types and export method (*Workspace).References(ctx context.Context, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error) on *Workspace"
+        },
+        {
+          "id": "05-REQ-9.2",
+          "pattern": "event_driven",
+          "condition": "(*Workspace).References is invoked with a target declaration and options",
+          "system": "Workspace.References",
+          "action": "execute reference resolution and deterministic ranking within the workspace root, returning a ReferenceResult matching find_references tool output",
+          "contract": "ReferenceResult returned with sites sorted identically to find_references"
+        },
+        {
+          "id": "05-REQ-9.3",
+          "pattern": "unwanted",
+          "condition": "opts.Path is non-empty and resolves outside the workspace root per Workspace.Resolve",
+          "system": "Workspace.References",
+          "action": "refuse the request without inspecting the filesystem",
+          "contract": "Returns ErrPathNotAllowed and empty ReferenceResult"
+        },
+        {
+          "id": "05-REQ-9.4",
+          "pattern": "unwanted",
+          "condition": "opts.Path is non-empty and does not exist on disk or does not resolve to a directory",
+          "system": "Workspace.References",
+          "action": "reject the call and return an error",
+          "contract": "Returns non-nil error indicating invalid directory path"
+        },
+        {
+          "id": "05-REQ-9.5",
+          "pattern": "unwanted",
+          "condition": "ctx is cancelled before or during reference execution",
+          "system": "Workspace.References",
+          "action": "terminate processing and return the context error",
+          "contract": "Returns ctx.Err() and empty ReferenceResult"
+        },
+        {
+          "id": "05-REQ-9.6",
+          "pattern": "ubiquitous",
+          "system": "Workspace.References",
+          "action": "for any call with opts.MaxResults less than or equal to 0, default maximum results to 30, and for any opts.MaxResults exceeding 100, clamp maximum results to 100"
+        }
+      ]
+    },
+    {
+      "id": "05-REQ-10",
+      "title": "Policy compliance, prompt goldens, and documentation",
+      "rationale": "Strict architectural boundaries prevent external dependency drift and ensure developer and model interfaces remain documented.",
+      "criteria": [
+        {
+          "id": "05-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "policy verifier",
+          "action": "for any build or test run, ensure zero external module dependencies in root go.mod, zero cgo dependencies outside standard library passing internal/policy tests, and successful compilation across linux/amd64, linux/arm64, darwin/arm64, and windows/amd64"
+        },
+        {
+          "id": "05-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "prompt generator",
+          "action": "include the find_references prompt guideline in generated system prompts when navigation tools are active, matching updated golden test outputs in prompt/testdata/golden/system_prompt_default.txt and system_prompt_custom.txt"
+        },
+        {
+          "id": "05-REQ-10.3",
+          "pattern": "ubiquitous",
+          "system": "wiring suite",
+          "action": "assert that FileNavigationTools() returns exactly six tool names in pinned order across tools/wiring_test.go and prompt/golden_test.go"
+        },
+        {
+          "id": "05-REQ-10.4",
+          "pattern": "ubiquitous",
+          "system": "documentation suite",
+          "action": "document find_references and reference caching in docs/architecture.md, document Workspace.References and reference types in docs/api.md, list find_references in README.md, and mark symbol references as fixed in docs/GAPS.md"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "05-PATH-1",
+      "title": "Finding Go method callers across packages with exact type resolution",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "invokes find_references with name 'Runner.Run' in a Go workspace"
+        },
+        {
+          "actor": "declaration resolver",
+          "action": "queries the symbol table and selects the highest-ranked declaration for 'Runner.Run'"
+        },
+        {
+          "actor": "Go type resolver",
+          "action": "parses workspace Go packages and resolves identifier references using go/types with synthetic stub imports"
+        },
+        {
+          "actor": "attribution engine",
+          "action": "attributes each reference site to its enclosing function declaration from the outline"
+        },
+        {
+          "actor": "result renderer",
+          "action": "ranks resolved sites ahead of lexical hits and returns a structured ToolResult with confidence 'resolved'"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-2",
+      "title": "Lexical reference lookup in a non-Go file with outline attribution",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "invokes find_references with name 'calculate_tax' in a Python project"
+        },
+        {
+          "actor": "declaration resolver",
+          "action": "locates the Python function declaration in the symbol table"
+        },
+        {
+          "actor": "reference scanner",
+          "action": "scans Python source files for identifier-boundary matches outside comments and strings"
+        },
+        {
+          "actor": "attribution engine",
+          "action": "maps each match line to the enclosing Python function or class declaration"
+        },
+        {
+          "actor": "result renderer",
+          "action": "formats and returns a ToolResult with backend 'lexical' and enclosing signatures"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-3",
+      "title": "Fallback text reference search for an undeclared identifier",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "invokes find_references with name 'NONEXISTENT_FLAG'"
+        },
+        {
+          "actor": "declaration resolver",
+          "action": "queries the symbol table and finds zero matching declarations"
+        },
+        {
+          "actor": "reference scanner",
+          "action": "performs workspace-wide candidate file text search for the identifier"
+        },
+        {
+          "actor": "result renderer",
+          "action": "returns a successful ToolResult with backend 'text', zero target declaration, and labeled text matches"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-4",
+      "title": "Programmatic reference search via Workspace.References embedder seam",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls Workspace.References with a target outline.Decl and ReferenceOptions"
+        },
+        {
+          "actor": "Workspace.References",
+          "action": "validates path boundaries and resolves reference sites using the reference engine"
+        },
+        {
+          "actor": "Workspace.References",
+          "action": "returns a structured ReferenceResult with target, sites, backend, and error count"
+        }
+      ]
+    },
+    {
+      "id": "05-PATH-5",
+      "title": "Cache invalidation and revalidation following file modification",
+      "steps": [
+        {
+          "actor": "model",
+          "action": "invokes write_file to update a Go file introducing a new caller of an existing function"
+        },
+        {
+          "actor": "write_file",
+          "action": "writes content to disk and marks the file path dirty in the reference cache"
+        },
+        {
+          "actor": "model",
+          "action": "invokes find_references for the target function"
+        },
+        {
+          "actor": "reference cache",
+          "action": "re-parses and re-checks the modified Go package before computing references"
+        },
+        {
+          "actor": "result renderer",
+          "action": "returns updated references reflecting the newly introduced caller site"
+        }
+      ]
+    }
+  ]
+}

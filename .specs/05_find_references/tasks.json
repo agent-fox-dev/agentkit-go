@@ -1,0 +1,468 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "05",
+  "spec_name": "find_references",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./tools/... ./prompt/... ./internal/policy/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "01_outline_and_walk",
+      "reason": "Provides outline package (outline.Outline, outline.Decl, outline.File), tools.Walk, and tools.CtagsRunner."
+    },
+    {
+      "spec": "02_symbol_navigation_tools",
+      "reason": "Provides find_symbol, symbolTable, SymbolOptions, SymbolMatch, FileNavigationTools(), and dirty-marking hooks in write_file, edit_file, and shell tools."
+    },
+    {
+      "spec": "03_indexed_code_search",
+      "reason": "Provides optional tools.Index integration and candidate lookup acceleration."
+    },
+    {
+      "spec": "04_runner_and_tool_metadata",
+      "reason": "Defines tool metadata conventions and prompt guideline assembly."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Define exported Workspace.References types, boundaries, and validation seam",
+      "criteria": [
+        "05-REQ-9.1",
+        "05-REQ-9.3",
+        "05-REQ-9.4",
+        "05-REQ-9.5",
+        "05-REQ-9.6",
+        "05-REQ-6.5"
+      ],
+      "tests": [
+        "TS-05-34",
+        "TS-05-45",
+        "TS-05-47",
+        "TS-05-48",
+        "TS-05-49",
+        "TS-05-50"
+      ],
+      "steps": [
+        "Write unit and property tests TS-05-45, TS-05-47, TS-05-48, TS-05-49, TS-05-50, and TS-05-34 in tools/references_test.go asserting types, signatures, path validation, context cancellation, and MaxResults clamping, confirming they fail.",
+        "In tools/references.go (or tools/path.go), define public types ReferenceOptions (Path, IncludeTests, MaxResults), ReferenceSite (Path, Line, Column, Confidence, Enclosing, Source), and ReferenceResult (Target, Sites, Backend, Partial, PackagesChecked, Errors, Truncated).",
+        "Implement helper clampMaxResults(int) int normalizing <= 0 to 30 and capping > 100 to 100.",
+        "Define the exported method (*Workspace).References(ctx context.Context, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error) validating ctx.Err() and checking opts.Path via Workspace.Resolve and directory stat before delegating to the internal engine.",
+        "Verify that escaping paths return ErrPathNotAllowed, non-existent or non-directory paths return error, and pre-cancelled contexts return ctx.Err()."
+      ],
+      "touches": [
+        "tools/path.go",
+        "tools/references.go",
+        "tools/references_test.go"
+      ],
+      "done_when": [
+        "go test ./tools/... -run 'TestWorkspaceReferences' -count=1 passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Implement symbol table declaration resolution and disambiguation",
+      "criteria": [
+        "05-REQ-2.1",
+        "05-REQ-2.2",
+        "05-REQ-2.3",
+        "05-REQ-2.4",
+        "05-REQ-2.5"
+      ],
+      "tests": [
+        "TS-05-8",
+        "TS-05-9",
+        "TS-05-10",
+        "TS-05-11",
+        "TS-05-12"
+      ],
+      "steps": [
+        "Write tests TS-05-8, TS-05-9, TS-05-10, TS-05-11, and TS-05-12 in tools/ref_resolve_test.go covering unqualified and qualified target lookups, filtering by kind and path, find_symbol disambiguation ranking, and fallback on unknown symbols.",
+        "Implement helper splitContainerMember(name string) (container, member string) splitting qualified names at the final dot.",
+        "Implement resolveSymbolCandidates(st *symbolTable, name, kind, path string) ([]outline.Decl, error) querying the existing symbolTable for matching declarations, supporting container matching and applying kind and path scope filters.",
+        "Implement disambiguateSymbol(candidates []outline.Decl, queriedName string) outline.Decl applying exact name match over prefix match, exported over unexported, non-test file (via isTestFile) over test file, shorter path, and ascending start line.",
+        "Handle zero matches by returning a zero outline.Decl and signaling a fallback to text reference search with backend 'text'."
+      ],
+      "touches": [
+        "tools/ref_resolve.go",
+        "tools/ref_resolve_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "go test ./tools/... -run 'TestSymbolResolution' -count=1 passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Implement Go type resolution engine with synthetic stubs",
+      "criteria": [
+        "05-REQ-3.1",
+        "05-REQ-3.2",
+        "05-REQ-3.3",
+        "05-REQ-3.4",
+        "05-REQ-3.5",
+        "05-REQ-3.6"
+      ],
+      "tests": [
+        "TS-05-13",
+        "TS-05-14",
+        "TS-05-15",
+        "TS-05-16",
+        "TS-05-17",
+        "TS-05-18"
+      ],
+      "steps": [
+        "Write unit and property tests TS-05-13, TS-05-14, TS-05-15, TS-05-16, TS-05-17, and TS-05-18 in tools/ref_gotypes_test.go testing local workspace imports, synthetic external packages, resolved confidence, unrelated method exclusion, demotion of incompletely typed identifiers, and AST comment/position preservation.",
+        "Implement workspace-local Go importer in tools/ref_gotypes.go that maps workspace module paths (from go.mod or workspace root) to local package sources using go/parser and token.FileSet with comments preserved.",
+        "Ensure external imports (standard library or third-party) return an empty synthetic *types.Package defining zero symbols; configure types.Config with FakeImportC = true and collect type errors in an error slice without aborting.",
+        "Type-check workspace Go packages using go/types.Config with types.Info collecting Uses and Defs.",
+        "Implement identifier matching: if an AST identifier matches the target declaration name and resolves to target's types.Object, assign confidence 'resolved' (handling receiver methods, interface methods, renamed imports, promoted fields).",
+        "Exclude identifiers resolving to unrelated types or distinct packages; demote identifiers whose type originated from a stubbed synthetic import to confidence 'lexical'."
+      ],
+      "touches": [
+        "tools/ref_gotypes.go",
+        "tools/ref_gotypes_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "go test ./tools/... -run 'TestGoTypeResolver' -count=1 passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Implement multi-language lexical and text candidate reference scanner",
+      "criteria": [
+        "05-REQ-4.1",
+        "05-REQ-4.2",
+        "05-REQ-4.3",
+        "05-REQ-4.4",
+        "05-REQ-4.5",
+        "05-REQ-4.6"
+      ],
+      "tests": [
+        "TS-05-19",
+        "TS-05-20",
+        "TS-05-21",
+        "TS-05-22",
+        "TS-05-23",
+        "TS-05-24"
+      ],
+      "steps": [
+        "Write unit and property tests TS-05-19, TS-05-20, TS-05-21, TS-05-22, TS-05-23, and TS-05-24 in tools/ref_scanner_test.go covering ignore/hidden traversal, word boundary matching, comment/string discrimination, fallback for undeclared names, and 1-based line/column calculation.",
+        "Implement candidate file traversal using tools.Walk, respecting .gitignore, hidden entry exclusion, and checking opts.Index if available.",
+        "Implement lexical identifier scanner for outline-supported languages (Python, TypeScript, JavaScript, Rust, C, C++, C#, Java, Kotlin, Ruby) matching whole identifier boundaries (\\b<name>\\b).",
+        "Classify matches outside comments and string literals as 'lexical' when target declaration exists; classify matches inside comments/strings or unparseable files as 'text'.",
+        "If target declaration was not in symbol table (target == outline.Decl{}), classify all matches across all files as 'text'.",
+        "Record 1-based line and 1-based byte column for each match site."
+      ],
+      "touches": [
+        "tools/ref_scanner.go",
+        "tools/ref_scanner_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "go test ./tools/... -run 'TestRefScanner' -count=1 passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Implement enclosing declaration attribution and snippet sanitization",
+      "criteria": [
+        "05-REQ-5.1",
+        "05-REQ-5.2",
+        "05-REQ-5.3",
+        "05-REQ-5.4",
+        "05-REQ-5.5"
+      ],
+      "tests": [
+        "TS-05-25",
+        "TS-05-26",
+        "TS-05-27",
+        "TS-05-28",
+        "TS-05-29"
+      ],
+      "steps": [
+        "Write unit and property tests TS-05-25, TS-05-26, TS-05-27, TS-05-28, and TS-05-29 in tools/ref_attribution_test.go covering outline line span inspection, innermost nesting selection, top-level <file> attribution, label formatting, and source snippet sanitization.",
+        "Implement findEnclosingDecl(fileOutline *outline.File, line int) outline.Decl to find declarations where StartLine <= line <= EndLine, picking the innermost declaration with the smallest line span.",
+        "If line falls outside all declarations in fileOutline, set Enclosing to a zero outline.Decl with Kind: 'file'.",
+        "Implement renderEnclosingLabel(decl outline.Decl) string formatting Signature or '<Kind> <Name>' when Kind != 'file', and '<file>' when Kind == 'file'.",
+        "Implement sanitizeSnippet(rawLine string) string trimming leading/trailing whitespace, capping byte length at 200 bytes, and replacing ASCII control characters (< 0x20) with spaces."
+      ],
+      "touches": [
+        "tools/ref_attribution.go",
+        "tools/ref_attribution_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "go test ./tools/... -run 'TestAttribution' -count=1 passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Implement deterministic reference ranking, bounds, and truncation",
+      "criteria": [
+        "05-REQ-6.1",
+        "05-REQ-6.2",
+        "05-REQ-6.3",
+        "05-REQ-6.4"
+      ],
+      "tests": [
+        "TS-05-30",
+        "TS-05-31",
+        "TS-05-32",
+        "TS-05-33"
+      ],
+      "steps": [
+        "Write tests TS-05-30, TS-05-31, TS-05-32, and TS-05-33 in tools/ref_rank_test.go covering deterministic multi-tier sorting, test file exclusion via isTestFile, max_results truncation with CapMarker, and MaxFiles/MaxDuration partial bounds with SymbolPartialMarker.",
+        "Implement sortReferenceSites(sites []ReferenceSite) ordering by confidence tier ('resolved' < 'lexical' < 'text'), then non-test before test per isTestFile, then slash-separated path, then 1-based line number, then 1-based column.",
+        "Implement test filtering: if includeTests is false, filter out all sites located in test files or directories identified by isTestFile.",
+        "Implement bounds checking against SymbolOptions.MaxFiles (50 000) and SymbolOptions.MaxDuration (2 s); if limits trigger, halt gracefully, set Partial = true, and append SymbolPartialMarker().",
+        "Apply max_results truncation: clamp between 1 and 100, truncate sites slice if length > max_results, set Truncated = true, and generate advisory truncation marker using CapMarker('references', 'max_results', limit, 100, 'narrow with path or kind')."
+      ],
+      "touches": [
+        "tools/ref_rank.go",
+        "tools/ref_rank_test.go"
+      ],
+      "depends_on": [
+        3,
+        4,
+        5
+      ],
+      "done_when": [
+        "go test ./tools/... -run 'TestRefRanker' -count=1 passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Implement reference result text rendering and structured payload formatting",
+      "criteria": [
+        "05-REQ-7.1",
+        "05-REQ-7.2",
+        "05-REQ-7.3",
+        "05-REQ-7.4",
+        "05-REQ-7.5"
+      ],
+      "tests": [
+        "TS-05-35",
+        "TS-05-36",
+        "TS-05-37",
+        "TS-05-38",
+        "TS-05-39"
+      ],
+      "steps": [
+        "Write tests TS-05-35, TS-05-36, TS-05-37, TS-05-38, and TS-05-39 in tools/ref_render_test.go asserting text header format, file grouping and alignment, marker placement, ReferenceResult structured data payload, and zero-match responses.",
+        "Implement renderReferencesText(name string, res ReferenceResult) string generating the header 'find_references <name>  (<backend>, <N> references in <M> files; <K> text matches)' (appending '[partial]' when Partial is true).",
+        "Format file groups with slash-separated relative path followed by aligned indented lines '  L<line>  <confidence>  <enclosing>  <source_line>'.",
+        "Append truncation and partial markers on distinct lines at the conclusion of Text.",
+        "Assemble core.ToolResult with OK: true, Text: renderedText, and Data: ReferenceResult; when sites are empty, return OK: true with a zero references header."
+      ],
+      "touches": [
+        "tools/ref_render.go",
+        "tools/ref_render_test.go"
+      ],
+      "depends_on": [
+        5,
+        6
+      ],
+      "done_when": [
+        "go test ./tools/... -run 'TestRefRender' -count=1 passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Wire reference cache lifecycle, invalidation hooks, and freshness refresh",
+      "criteria": [
+        "05-REQ-8.1",
+        "05-REQ-8.2",
+        "05-REQ-8.3",
+        "05-REQ-8.4",
+        "05-REQ-8.5"
+      ],
+      "tests": [
+        "TS-05-40",
+        "TS-05-41",
+        "TS-05-42",
+        "TS-05-43",
+        "TS-05-44"
+      ],
+      "steps": [
+        "Write tests TS-05-40, TS-05-41, TS-05-42, TS-05-43, and TS-05-44 in tools/ref_cache_test.go testing lazy cache initialization, write_file/edit_file dirty marking, shell tool whole-table revalidation, dirty package/file re-checking, and .gitignore revalidation.",
+        "In tools/symbols.go and tools/tools.go, add referenceCache to fileTools, lazily initialized on first reference query and retained in memory for the lifetime of fileTools.",
+        "Wire markTableDirty hooks in write_file and edit_file to mark modified paths dirty in referenceCache upon path lock release.",
+        "Wire markTableRevalidateAll hooks in execute, run_command, and powershell to flag referenceCache for whole-table revalidation.",
+        "In referenceCache.refresh(ctx), re-parse and re-check dirty Go packages, re-outline dirty non-Go files, purge deleted files from cache, and revalidate candidate files if .gitignore changed."
+      ],
+      "touches": [
+        "tools/ref_cache.go",
+        "tools/ref_cache_test.go",
+        "tools/symbols.go",
+        "tools/tools.go"
+      ],
+      "depends_on": [
+        3,
+        4
+      ],
+      "done_when": [
+        "go test ./tools/... -run 'TestRefCache' -count=1 passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Implement find_references tool registration, input validation, and execution",
+      "criteria": [
+        "05-REQ-1.1",
+        "05-REQ-1.2",
+        "05-REQ-1.3",
+        "05-REQ-1.4",
+        "05-REQ-1.5",
+        "05-REQ-1.6",
+        "05-REQ-1.7",
+        "05-REQ-9.2"
+      ],
+      "tests": [
+        "TS-05-1",
+        "TS-05-2",
+        "TS-05-3",
+        "TS-05-4",
+        "TS-05-5",
+        "TS-05-6",
+        "TS-05-7",
+        "TS-05-46"
+      ],
+      "steps": [
+        "Write tests TS-05-1, TS-05-2, TS-05-3, TS-05-4, TS-05-5, TS-05-6, TS-05-7, and TS-05-46 in tools/find_references_test.go validating tool registration, argument schema, input error cases, context cancellation, and parity between Workspace.References and find_references.",
+        "Create tools/find_references.go defining findReferencesTool on fileTools with schema (name required, path, kind, include_tests, max_results optional), Builtin: true, ExecutionMode: Parallel, non-shell status, and prompt guideline 'Use find_symbol for where a name is declared, find_references for who uses it, and search_files for text.'.",
+        "Implement Execute handling JSON parsing, name validation (reject empty, whitespace, >256 bytes with invalid_arguments), kind validation (against allowed kinds with invalid_arguments), path validation (via Workspace.Resolve with path_not_allowed and directory check with invalid_arguments), and context cancellation (aborted).",
+        "Connect find_references execution to reference engine and wire Workspace.References to use the shared reference resolution logic, ensuring identical results."
+      ],
+      "touches": [
+        "tools/find_references.go",
+        "tools/find_references_test.go",
+        "tools/references.go"
+      ],
+      "depends_on": [
+        1,
+        6,
+        7,
+        8
+      ],
+      "done_when": [
+        "go test ./tools/... -run 'TestFindReferencesTool' -count=1 passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Register tool in wiring, update system prompt goldens, verify policies, and update documentation",
+      "criteria": [
+        "05-REQ-10.1",
+        "05-REQ-10.2",
+        "05-REQ-10.3",
+        "05-REQ-10.4"
+      ],
+      "tests": [
+        "TS-05-51",
+        "TS-05-52",
+        "TS-05-53",
+        "TS-05-54"
+      ],
+      "steps": [
+        "Write and run tests TS-05-51, TS-05-52, TS-05-53, and TS-05-54 checking policy compliance, prompt golden matching, 6 navigation tools in FileNavigationTools(), and documentation updates.",
+        "In tools/tools.go, register find_references in All() immediately after find_symbol and append 'find_references' to FileNavigationTools(), expanding it to 6 pinned tool names.",
+        "Update prompt/testdata/golden/system_prompt_default.txt and system_prompt_custom.txt (and prompt/golden_test.go, tools/wiring_test.go) to reflect 6 navigation tools and the find_references guideline.",
+        "Ensure zero external modules in root go.mod; verify internal/policy tests (TestNoCgoOutsideStdlib, TestCgoProbeIsArmed) pass and cross-compilation builds cleanly.",
+        "Update docs/architecture.md, docs/api.md, README.md, and docs/GAPS.md per REQ-10.4 and project steering."
+      ],
+      "touches": [
+        "README.md",
+        "docs/GAPS.md",
+        "docs/api.md",
+        "docs/architecture.md",
+        "prompt/testdata/golden/system_prompt_custom.txt",
+        "prompt/testdata/golden/system_prompt_default.txt",
+        "tools/tools.go",
+        "tools/wiring_test.go"
+      ],
+      "depends_on": [
+        9
+      ],
+      "done_when": [
+        "make check passes and doc updates are verified"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify end-to-end reference discovery, embedder seam, and cache invalidation",
+      "tests": [
+        "TS-05-55",
+        "TS-05-56",
+        "TS-05-57",
+        "TS-05-58",
+        "TS-05-59"
+      ],
+      "steps": [
+        "Write and execute TS-05-55, TS-05-56, TS-05-57, TS-05-58, and TS-05-59 in tools/references_smoke_test.go against real workspace fixtures.",
+        "Trace 05-PATH-1 through production code: verify Go method caller lookup resolves exact types with 'resolved' confidence and attributes callers to enclosing declarations.",
+        "Trace 05-PATH-2 through production code: verify multi-language lexical caller lookup outside comments/strings attributes to enclosing functions with 'lexical' confidence.",
+        "Trace 05-PATH-3 through production code: verify fallback text search for an undeclared identifier returns 0 matched declarations with 'text' confidence.",
+        "Trace 05-PATH-4 through production code: verify programmatic Workspace.References produces identical structured reference results without model turns.",
+        "Trace 05-PATH-5 through production code: verify write_file dirty marking causes reference cache re-parsing and exposes new callers on subsequent reference queries.",
+        "For every criterion with a contract (REQ-1.3, REQ-1.4, REQ-1.5, REQ-1.6, REQ-1.7, REQ-2.1, REQ-2.2, REQ-2.3, REQ-2.4, REQ-3.1, REQ-3.2, REQ-3.3, REQ-3.4, REQ-3.5, REQ-4.1, REQ-4.2, REQ-4.3, REQ-4.4, REQ-4.5, REQ-5.1, REQ-5.2, REQ-5.3, REQ-6.2, REQ-6.3, REQ-6.4, REQ-7.3, REQ-7.5, REQ-8.1, REQ-8.2, REQ-8.3, REQ-8.4, REQ-8.5, REQ-9.2, REQ-9.3, REQ-9.4, REQ-9.5), confirm the producer's result is consumed by a caller in production code.",
+        "Scan all touched files for TODO, NotImplementedError, panic(\\\"not implemented\\\"), and bare nil returns on non-trivial paths and verify none remain.",
+        "Run `make check` to ensure all tests pass, formatting is clean, and linters pass cleanly."
+      ],
+      "touches": [
+        "tools/references_smoke_test.go"
+      ],
+      "depends_on": [
+        10
+      ],
+      "done_when": [
+        "make check passes and all 5 smoke tests pass"
+      ],
+      "state": "pending",
+      "optional": false
+    }
+  ]
+}
