@@ -141,7 +141,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestGoTypeResolver' -count=1 passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
