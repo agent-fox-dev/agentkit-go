@@ -508,6 +508,20 @@ func TestGlobDialect(t *testing.T) {
 		{"{a,{b,c}}/x.go", "c/x.go", true}, // nested braces
 		{"[!x]*.go", "main.go", true},
 		{"src/*.go", "src/sub/x.go", false}, // * does not cross /
+		{"*.go", "Main.GO", true},           // smart-case: lowercase pattern folds case
+		{"*.Go", "main.go", false},          // ... an uppercase letter makes it exact
+		{"*.Go", "main.Go", true},
+		{"a/**", "a", true}, // trailing ** matches zero segments
+		{"a/**", "a/b/c", true},
+		{"a/**", "ab/c", false},
+		{"*", ".env", true}, // * matches dotfiles
+		{"**/*.go", "a/.hidden/x.go", true},
+		{"[!x]*.go", "xmain.go", false},
+		{"[!x]*.go", "!main.go", true},        // [!x] is a negated class, not a literal "!"
+		{"{*.go,src/*.md}", "sub/x.go", true}, // basename fallback per alternative
+		{"{*.go,src/*.md}", "sub/src/x.md", false},
+		{"?.go", "ab.go", false},
+		{"{a.go", "{a.go", true}, // an unbalanced brace is literal
 	}
 	for _, c := range cases {
 		if got := MatchGlob(c.pattern, c.path); got != c.want {

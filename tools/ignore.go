@@ -241,12 +241,12 @@ func (p ignorePattern) matches(rel string, isDir bool) bool {
 		return false
 	}
 	if p.anchored {
-		return matchSegments(p.glob, rel) || strings.HasPrefix(rel, p.glob+"/")
+		return globMatch(p.glob, rel) || strings.HasPrefix(rel, p.glob+"/")
 	}
 	// Unanchored: match any segment, so `node_modules` ignores it at any
 	// depth, and everything beneath a matched directory goes with it.
 	for _, seg := range strings.Split(rel, "/") {
-		if matchOne(p.glob, seg) {
+		if globMatch(p.glob, seg) {
 			return true
 		}
 	}
