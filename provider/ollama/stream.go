@@ -12,6 +12,7 @@ import (
 
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/provider"
+	"github.com/agentfox/agentkit-go/wire"
 )
 
 // DefaultBaseURL is the local Ollama server.
@@ -166,7 +167,7 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 	}
 
 	d.s.Push(core.MessageStartEvent{Message: d.partial})
-	if err := d.consume(provider.NewNDJSONReader(resp.Body, c.opts.MaxLineBytes)); err != nil {
+	if err := d.consume(wire.NewNDJSON(resp.Body, wire.Limits{MaxMessageBytes: int64(c.opts.MaxLineBytes)})); err != nil {
 		d.fail(provider.StreamErrorText("ollama", caller, ctx, err), err)
 		return
 	}
@@ -255,7 +256,7 @@ type decoder struct {
 // any other model.
 const ThinkingSignature = "ollama-chat/thinking"
 
-func (d *decoder) consume(r *provider.NDJSONReader) error {
+func (d *decoder) consume(r *wire.FrameReader) error {
 	for {
 		line, err := r.Next()
 		if err == io.EOF {

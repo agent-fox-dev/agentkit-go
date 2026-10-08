@@ -24,7 +24,8 @@ type FrameReader struct {
 	err    error
 }
 
-// NewNDJSON reads newline-delimited JSON: MCP stdio's framing.
+// NewNDJSON reads newline-delimited JSON: MCP stdio's framing and Ollama's
+// native streaming shape.
 func NewNDJSON(r io.Reader, l Limits) *FrameReader {
 	return &FrameReader{br: bufio.NewReaderSize(r, 64<<10), lim: l.withDefaults()}
 }
