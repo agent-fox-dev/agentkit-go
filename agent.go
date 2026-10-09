@@ -92,7 +92,7 @@ type Agent struct {
 // registration are the caller's; cfg.Model must already be resolved.
 func NewAgent(cfg core.AgentConfig) (*Agent, error) {
 	if cfg.Model == nil {
-		return nil, fmt.Errorf("agentkit: AgentConfig.Model is nil; resolve it with catalog.ResolveModel first")
+		return nil, fmt.Errorf("agentkit: AgentConfig.Model is nil; look it up with catalog.Lookup first")
 	}
 	if err := checkCustomTools(cfg); err != nil {
 		return nil, err
@@ -105,7 +105,7 @@ func NewAgent(cfg core.AgentConfig) (*Agent, error) {
 // post-hoc mutation.
 func NewAgentWithHistory(cfg core.AgentConfig, h *core.ConversationHistory) (*Agent, error) {
 	if cfg.Model == nil {
-		return nil, fmt.Errorf("agentkit: AgentConfig.Model is nil; resolve it with catalog.ResolveModel first")
+		return nil, fmt.Errorf("agentkit: AgentConfig.Model is nil; look it up with catalog.Lookup first")
 	}
 	if err := checkCustomTools(cfg); err != nil {
 		return nil, err

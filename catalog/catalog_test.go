@@ -3,6 +3,10 @@ package catalog
 import (
 	"encoding/json"
 	"errors"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -72,9 +76,9 @@ func strp(s string) *string { return &s }
 func TestEmbeddedCatalogPopulatesTheREQPROV10Descriptor(t *testing.T) {
 	c := Default()
 
-	haiku, err := c.ResolveModel("anthropic/claude-haiku-4-5")
-	if err != nil {
-		t.Fatalf("resolve haiku: %v", err)
+	haiku, ok := c.Lookup("anthropic/claude-haiku-4-5")
+	if !ok {
+		t.Fatal("claude-haiku-4-5 is not in the catalog")
 	}
 	if haiku.API != core.APIAnthropicMessages {
 		t.Errorf("API = %q, want %q", haiku.API, core.APIAnthropicMessages)
@@ -104,37 +108,11 @@ func TestEmbeddedCatalogPopulatesTheREQPROV10Descriptor(t *testing.T) {
 		t.Error("a catalog hit must not be marked Cloned")
 	}
 
-	astra, err := c.ResolveModel("gpt-6-astra")
-	if err != nil {
-		t.Fatalf("resolve gpt-6-astra: %v", err)
+	if haiku.Thinking != core.ThinkingKindBudget {
+		t.Errorf("Thinking = %q; a row whose levels are token counts takes a budget", haiku.Thinking)
 	}
-	if astra.API != core.APIOpenAICompletions {
-		t.Errorf("gpt-6-astra API = %q", astra.API)
-	}
-	var compat map[string]any
-	if err := json.Unmarshal(astra.Compat, &compat); err != nil {
-		t.Fatalf("gpt-6-astra compat is not an object: %v", err)
-	}
-	// The keys are provider/openai.Compat's own json names (REQ-PROV-12);
-	// that profile rejects any other key, so a row written in a vocabulary
-	// it does not read fails the request instead of silently doing nothing.
-	if compat["supports_temperature"] != false {
-		t.Errorf("gpt-6-astra compat.supports_temperature = %v, want false", compat["supports_temperature"])
-	}
-	// use_max_tokens is ABSENT rather than false: the api.openai.com profile
-	// already defaults it to false (max_completion_tokens), and a row that
-	// restates a default is a row that has to be re-diffed when the default
-	// moves. Its absence must not read as "true".
-	if _, ok := compat["use_max_tokens"]; ok {
-		t.Errorf("gpt-6-astra restates the profile default use_max_tokens: %v", compat)
-	}
-	// Present-and-null: REQ-PROV-15's "explicitly unsupported".
-	w, present := astra.ThinkingLevelMap[core.ThinkingOff]
-	if !present {
-		t.Error("gpt-6-astra thinking map has no entry for off; the snapshot recorded it as present-null on purpose")
-	}
-	if w != nil {
-		t.Errorf("gpt-6-astra thinking map off = %q, want null (this model cannot stop reasoning)", *w)
+	if opus, _ := c.Lookup("claude-opus-5-5"); opus.Thinking != core.ThinkingKindAdaptive {
+		t.Errorf("claude-opus-5-5 Thinking = %q; a row whose levels are efforts is adaptive", opus.Thinking)
 	}
 }
 
@@ -241,10 +219,7 @@ func TestUnknownAPIStringLoads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse rejected an unknown api string: %v", err)
 	}
-	m, err := c.ResolveModel("acme/m")
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
+	m := c.byCanonical["acme/m"].model
 	if m.API != core.API("acme-chat-v9") {
 		t.Errorf("API = %q, want the row's own value verbatim", m.API)
 	}
@@ -257,9 +232,9 @@ func TestUnknownAPIStringLoads(t *testing.T) {
 func TestResolvedModelIsADeepCopy(t *testing.T) {
 	c := testCatalog(t)
 
-	first, err := c.ResolveModel("anthropic/claude-sonnet-4-5")
-	if err != nil {
-		t.Fatal(err)
+	first, ok := c.Lookup("anthropic/claude-sonnet-4-5")
+	if !ok {
+		t.Fatal("claude-sonnet-4-5 is not in the test catalog")
 	}
 	first.MaxTokens = 1
 	first.Headers["anthropic-version"] = strp("tampered")
@@ -269,10 +244,7 @@ func TestResolvedModelIsADeepCopy(t *testing.T) {
 	first.ThinkingLevelMap[core.ThinkingHigh] = nil
 	first.Cost.Input = 999
 
-	second, err := c.ResolveModel("anthropic/claude-sonnet-4-5")
-	if err != nil {
-		t.Fatal(err)
-	}
+	second, _ := c.Lookup("anthropic/claude-sonnet-4-5")
 	if second.MaxTokens != 64000 {
 		t.Errorf("MaxTokens = %d, want 64000", second.MaxTokens)
 	}
@@ -288,7 +260,7 @@ func TestResolvedModelIsADeepCopy(t *testing.T) {
 	if !json.Valid(second.Compat) {
 		t.Errorf("Compat was mutated through the shared backing array: %s", second.Compat)
 	}
-	if !SupportsThinkingLevel(second, core.ThinkingHigh) {
+	if second.ThinkingLevelMap[core.ThinkingHigh] == nil {
 		t.Error("ThinkingLevelMap was mutated through the shared map")
 	}
 	if second.Cost.Input != 3 {
@@ -296,17 +268,13 @@ func TestResolvedModelIsADeepCopy(t *testing.T) {
 	}
 }
 
-// TestEmbeddedCatalogHasNoAmbiguousBareIDs: an ambiguous bare id is a correct
-// resolution outcome (an error) but a bad shipping decision — it makes a
-// plain, obvious spec unusable. This is the invariant that keeps the SHIPPED
-// catalog honest while TestAmbiguousBareIDIsAnErrorNotAGuess tests the rule.
-func TestEmbeddedCatalogHasNoAmbiguousBareIDs(t *testing.T) {
+// TestEveryShippedRowLooksUp: every row the catalog ships is found by its
+// bare id.
+func TestEveryShippedRowLooksUp(t *testing.T) {
 	c := Default()
-	for _, vendor := range c.Vendors() {
-		for _, id := range c.Models(vendor) {
-			if _, err := c.ResolveModel(id); err != nil {
-				t.Errorf("bare id %q (vendor %q) does not resolve: %v", id, vendor, err)
-			}
+	for _, id := range c.Models(Vendor) {
+		if m, ok := c.Lookup(id); !ok || m.ID != id {
+			t.Errorf("Lookup(%q) = %q, %v", id, m.ID, ok)
 		}
 	}
 }
@@ -319,11 +287,11 @@ func TestCatalogAccessors(t *testing.T) {
 	if !strings.Contains(c.Note(), "REQ-CAT-06") {
 		t.Error("Note() does not carry the regeneration ritual")
 	}
-	if got := c.Vendors(); len(got) != 3 || got[0] != "anthropic" || got[1] != "google" || got[2] != "openai" {
-		t.Errorf("Vendors() = %v, want sorted [anthropic google openai]", got)
+	if got := c.Vendors(); len(got) != 1 || got[0] != "anthropic" {
+		t.Errorf("Vendors() = %v, want [anthropic]", got)
 	}
-	if !c.KnownVendor("openai") || c.KnownVendor("deepseek-ai") {
-		t.Error("KnownVendor is the predicate REQ-CAT-02 rule 1 turns on")
+	if !c.KnownVendor("anthropic") || c.KnownVendor("openai") {
+		t.Error("KnownVendor must report anthropic and nothing else")
 	}
 	if c.DefaultModelID("anthropic") == "" {
 		t.Error("anthropic has no default_model; REQ-CAT-03 has nothing to clone")
@@ -336,5 +304,106 @@ func TestCatalogAccessors(t *testing.T) {
 	vs[0] = "tampered"
 	if c.Vendors()[0] != "anthropic" {
 		t.Error("Vendors() aliases internal state")
+	}
+}
+
+// TS-10-11: the catalog holds Claude rows only, and the multi-vendor
+// resolution and clamping files are gone.
+func TestCatalogIsClaudeOnly_TS10_11(t *testing.T) {
+	raw := string(embeddedCatalog)
+	if !strings.Contains(raw, "claude") {
+		t.Fatal("the catalog has no Claude rows")
+	}
+	for _, other := range []string{"gpt-", "gemini", `"openai"`, `"google"`} {
+		if strings.Contains(raw, other) {
+			t.Errorf("catalog.json still mentions %s", other)
+		}
+	}
+	for _, gone := range []string{"resolve.go", "clamp.go"} {
+		if _, err := os.Stat(gone); err == nil {
+			t.Errorf("catalog/%s still exists", gone)
+		}
+	}
+}
+
+// TS-10-12: a known Claude id resolves, with or without the anthropic/
+// prefix.
+func TestLookupKnownModel_TS10_12(t *testing.T) {
+	for _, id := range []string{"claude-sonnet-4-5", "anthropic/claude-sonnet-4-5"} {
+		m, ok := Lookup(id)
+		if !ok || m.ID != "claude-sonnet-4-5" {
+			t.Fatalf("Lookup(%q) = %q, %v", id, m.ID, ok)
+		}
+		if m.ContextWindow == 0 || m.MaxTokens == 0 || m.Cost.Input == 0 {
+			t.Fatalf("Lookup(%q) returned an empty row: %+v", id, m)
+		}
+	}
+}
+
+// TS-10-13: an uncataloged id gets a usable default and false.
+func TestLookupUnknownModel_TS10_13(t *testing.T) {
+	m, ok := Lookup("claude-next-gen-future")
+	if ok {
+		t.Fatal("an uncataloged model was reported as known")
+	}
+	if m.ID != "claude-next-gen-future" || m.ContextWindow != 1_000_000 || m.MaxTokens != 128_000 ||
+		m.Thinking != core.ThinkingKindAdaptive {
+		t.Fatalf("default = %+v", m)
+	}
+	if m.Cost.Input != 0 || m.Cost.Output != 0 || m.Cost.CacheRead != 0 || m.Cost.CacheWrite != 0 {
+		t.Fatalf("default cost = %+v, want zero", m.Cost)
+	}
+}
+
+// TS-10-14 (property): any id resolves to a usable descriptor and never
+// panics.
+func TestLookupAlwaysUsable_TS10_14(t *testing.T) {
+	r := rand.New(rand.NewSource(10))
+	alphabet := []rune("abcdefghijklmnopqrstuvwxyz0123456789-./@_ ÄΩ")
+	ids := []string{"anthropic/", "x", "claude-opus-5-5", "anthropic/claude-opus-5-5", "openai/gpt-5", "@@@"}
+	for i := 0; i < 500; i++ {
+		n := 1 + r.Intn(40)
+		var b strings.Builder
+		for j := 0; j < n; j++ {
+			b.WriteRune(alphabet[r.Intn(len(alphabet))])
+		}
+		ids = append(ids, b.String())
+	}
+	for _, id := range ids {
+		m, _ := Lookup(id)
+		if m.ID == "" || m.ContextWindow <= 0 || m.MaxTokens <= 0 {
+			t.Fatalf("Lookup(%q) = %+v, not usable", id, m)
+		}
+	}
+}
+
+// TS-10-15: no model id, price or token limit is written into the Anthropic
+// provider's sources; they come from the catalog.
+func TestNoModelMetadataInTheProvider_TS10_15(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("..", "provider", "anthropic", "*.go"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("provider/anthropic sources: %v", err)
+	}
+	modelID := regexp.MustCompile(`"claude-[a-z]+-[0-9]`)
+	limit := regexp.MustCompile(`\b(200000|200_000|1000000|1_000_000|128000|128_000|64000|64_000)\b`)
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loc := modelID.FindIndex(b); loc != nil {
+			t.Errorf("%s names a model id: %s", f, b[loc[0]:loc[1]])
+		}
+		if loc := limit.FindIndex(b); loc != nil {
+			t.Errorf("%s carries a model token limit: %s", f, b[loc[0]:loc[1]])
+		}
+		for _, price := range []string{"Cost{", "USDPer", "per1M", "Per1M"} {
+			if strings.Contains(string(b), price) {
+				t.Errorf("%s carries a price table (%s)", f, price)
+			}
+		}
 	}
 }

@@ -83,3 +83,26 @@ an embedder (or a test) supply credentials explicitly.
 - `provider/auth.go` (`VendorAuth`, `ResolveAuth`) and
   `provider/anthropic/vertex.go` are deleted; the examples' credential
   pre-flight calls `anthropic.Resolve(anthropic.OSEnv{})`.
+
+## 10-REQ-3: the catalog's field names and what an unlisted id loses
+
+- **Field names.** TS-10-13 reads `m.MaxOutput` and `m.Cost.InputUSDPer1M`;
+  `core.Model` has had `MaxTokens` (the output cap) and `Cost.Input` (USD per
+  million tokens) all along, and the catalog test asserts those.
+- **`core.ThinkingKind`.** 10-REQ-3.4 names `ThinkingKindAdaptive`. It is
+  defined in `core/provider.go` with `ThinkingKindNone` and
+  `ThinkingKindBudget`, on `core.Model.Thinking`, and the catalog derives it
+  from each row's level map (token counts mean budget, effort names mean
+  adaptive). It arrived with the catalog task rather than the Effort task,
+  because the catalog's tests need it.
+- **Unlisted ids lose their price.** The previous catalog cloned the
+  vendor's default row for an unknown id, price included. `Lookup` returns the
+  10-REQ-3.4 default instead, with zero cost — Vertex's dated ids
+  (`claude-sonnet-5@20260401`) among them.
+- **No clamping, from the catalog task on.** Deleting `catalog/clamp.go`
+  removed thinking-level clamping a task early: a level the row does not list
+  is omitted (10-REQ-4.4). Two thinking tests that pinned a clamp now pin the
+  omission. `max_tokens` is capped at the row's output cap in the encoder; the
+  context-window term was already zero (spec 09).
+- TS-10-15 passed before any change: the provider already carried no model
+  id, price or token limit.

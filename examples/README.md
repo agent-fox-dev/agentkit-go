@@ -78,49 +78,30 @@ An `ANTHROPIC_API_KEY` left over from a direct deployment is **dropped**, not
 forwarded: it is not a Vertex credential, and sending it would hand a
 first-party secret to a third party.
 
-Vertex names Claude models with a dated suffix (`claude-sonnet-5@20260401`).
-The catalog is not an allowlist, so such an id resolves by cloning the vendor's
-default row and reaches the URL verbatim:
-`AGENTKIT_MODEL=anthropic/claude-sonnet-5@20260401`.
-
-### 2. A model, resolved through the catalog
+### 2. A model, looked up in the catalog
 
 ```go
-model, err := catalog.ResolveModel("anthropic/claude-sonnet-5")
+model, known := catalog.Lookup("claude-opus-5-5") // the "anthropic/" prefix is optional
 ```
 
-`ResolveModel` is the single entry point, and it is what supplies the wire
-API, base URL, context window, pricing, reasoning support and compatibility
-profile. The model-ID string carries none of that, which is why a
-pass-through design cannot clamp `max_tokens`, cost a turn, or pick the right
-request shape.
+`catalog.Lookup` supplies what the model id does not carry: the context
+window, the output cap, the prices, and how the model takes extended thinking
+(`Model.Thinking`: `adaptive` with an effort, `budget` with `budget_tokens`,
+or `none`). The catalog lists Claude models only.
 
-The catalog is **not an allowlist**. An unknown id under a *known* vendor
-clones that vendor's default row with a warning, so a model released after
-this build works without an SDK release. An unknown *vendor* is a
-configuration error. A bare id that matches two vendors resolves to nothing
-and errors rather than guessing.
+The catalog is **not an allowlist**. An id it does not list — a model
+released after this build, or Vertex's dated ids such as
+`claude-sonnet-5@20260401` — still resolves, with `known` false: a
+1,000,000-token window, a 128,000-token output cap, adaptive thinking and
+**no price**, so a run's cost reads as zero. Resolving never means the model
+exists; the vendor decides that on the first request.
 
 Every example that calls a model takes `AGENTKIT_MODEL` to override its
 default:
 
 ```bash
-AGENTKIT_MODEL=anthropic/claude-opus-5-5 go run ./examples/codingagent "hello"
+AGENTKIT_MODEL=claude-opus-5-5 go run ./examples/codingagent "hello"
 ```
-
-`catalog.Default().Vendors()` lists what the shipped snapshot knows. **A
-vendor with catalog rows is not necessarily a vendor with a provider**: the
-snapshot still carries `google` and `openai` rows, but the only wire this
-module ships is Anthropic's, so a model under another vendor resolves and then
-has no registered provider to send it. An embedder that needs another vendor
-writes a `core.APIProvider` of its own; `provider/faux` is the template.
-
-One caution about sibling-cloning, because it costs real money to miss: an
-unknown id under a *known* vendor resolves, it does not validate. Ask for
-`anthropic/claude-sonnet-4-5` today and you get a working descriptor cloned
-from the current default row — and then the request fails at the vendor,
-because that model is gone. Resolution succeeding means "AgentKit knows how
-to build this request", never "this model exists".
 
 ### Other variables
 

@@ -57,16 +57,16 @@ provider-prefixed variables and anything ending in `_TOKEN`, `_SECRET`,
 
 | Field | Meaning / default |
 |---|---|
-| `Model` | `*core.Model`; obtain with `catalog.ResolveModel("vendor/id")`. |
+| `Model` | `*core.Model`; obtain with `catalog.Lookup("claude-…")`, which also serves an id the catalog does not list. |
 | `Provider` | Vendor id, used only for credential resolution and catalog lookup. |
-| `MaxTokens` | Upper bound, clamped to the model. Nil → `core.DefaultMaxTokens` (32768), not the model cap. |
+| `MaxTokens` | Upper bound, capped at the model's output cap. Nil → `core.DefaultMaxTokens` (32768), not the model cap. |
 | `Temperature`, `TopP` | Optional sampling parameters; dropped where the catalog row says the model does not accept them. |
 | `SystemPrompt`, `PromptBlocks` | Base prompt and extra sections appended after the built-in ones. A `SystemPrompt` replaces the built-in base instructions and universal guidelines; the active tools' own guidelines (`Tool.PromptGuidelines`, and the shell guidelines) still follow it. |
 | `StopPolicy` | `func(StopContext) bool`, written by the caller; a policy that stops calls `StopContext.SetReason` (`core.RunStopMaxTurns`, `core.RunStopBudgetExceeded`, …) so the run reports which limit fired. `StopContext.Usage`, like `RunResult.Usage`, is the current run's usage — a budget policy on a reused agent is a per-run budget; `Agent.Usage()` is the lifetime total. |
 | `ErrorOnLimit` | A limit stop also returns `ErrMaxTurns` / `ErrBudgetExceeded`. Default false. |
 | `ParallelTools` | Run a tool batch's calls concurrently. |
 | `ToolChoice` | `""` (auto), or a forced choice. |
-| `ThinkingLevel` | `""`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; clamped to the catalog row's ladder. |
+| `ThinkingLevel` | `""`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; sent only when the catalog row lists the level, never clamped to another. |
 | `ToolPolicy` | `Tools`, `NoTools` (`all` / `builtin`), `ToolNames`, `ExcludeTools`, `CustomTools`; resolved in that order. Non-nil empty `Tools` means no tools. A `CustomTools` entry must set exactly one of `Handler` and `Execute`; construction fails otherwise, as `RegisterTool` does. |
 | `BeforeToolCall`, `AfterToolCall` | The authorization boundary and post-processing. A shell tool in the set with a nil `BeforeToolCall` fails the run (`ErrUnguardedExecute`); use `guard.Restricted` or `guard.AllowAll`. `AfterToolCall` receives the handler's `ToolResult` by value and the mutable `Result *ToolResultMessage`. `ToolResultMessage.Metadata` carries the tool's structured metadata (in history and events, never sent to the model). |
 | `Hooks` | `OnTurnStart`, `OnTurnEnd`, `OnAgentDone`, `OnError`. Observation only. Tool calls, nested ones included, are on the event stream (`ToolExecutionStartEvent`/`ToolExecutionEndEvent`, with `ParentToolUseID` for a nested call). |

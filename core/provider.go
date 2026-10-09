@@ -152,7 +152,21 @@ type Model struct {
 	ThinkingLevelMap map[ThinkingLevel]*string `json:"thinking_level_map,omitzero"`
 	Cloned           bool                      `json:"-"` // REQ-CAT-03
 	ClonedFrom       string                    `json:"-"`
+	// Thinking is how the model takes extended thinking, from its catalog row.
+	Thinking ThinkingKind `json:"thinking,omitzero"`
 }
+
+// ThinkingKind is how a model takes extended thinking.
+type ThinkingKind string
+
+const (
+	// ThinkingKindNone is a model without extended thinking.
+	ThinkingKindNone ThinkingKind = "none"
+	// ThinkingKindAdaptive is thinking {"type":"adaptive"} with an effort.
+	ThinkingKindAdaptive ThinkingKind = "adaptive"
+	// ThinkingKindBudget is thinking {"type":"enabled"} with budget_tokens.
+	ThinkingKindBudget ThinkingKind = "budget"
+)
 
 func (m *Model) SupportsImages() bool {
 	for _, in := range m.Input {

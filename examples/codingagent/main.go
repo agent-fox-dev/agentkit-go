@@ -49,10 +49,10 @@ func run() error {
 		task = "List the Go files in this directory and summarise what the package does."
 	}
 
-	model, err := catalog.ResolveModel(modelSpec())
-	if err != nil {
-		return err
-	}
+	// An id the catalog does not list still works, with default limits and
+	// no price.
+	row, _ := catalog.Lookup(modelSpec())
+	model := &row
 
 	cfg := core.AgentConfig{Model: model}
 	agentkit.RegisterDefaults(&cfg,

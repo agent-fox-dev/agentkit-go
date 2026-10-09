@@ -747,12 +747,10 @@ func TestThinkingIsATriState(t *testing.T) {
 		t.Fatalf("thinking = %v, want the catalog row's own budget", on)
 	}
 
-	// A level the row does not price is CLAMPED, never passed through and
-	// never guessed: max on a row that tops out at high clamps DOWN to high,
-	// REQ-PROV-15's own worked example.
-	clamped := captureBody(t, m, core.ThinkingMax)["thinking"].(map[string]any)
-	if clamped["type"] != "enabled" || clamped["budget_tokens"] != float64(2048) {
-		t.Fatalf("thinking = %v for max on a row that tops out at high, want high's budget", clamped)
+	// A level the row does not price is OMITTED, never clamped and never
+	// guessed (10-REQ-4.4): max on a row that tops out at high sends nothing.
+	if got := captureBody(t, m, core.ThinkingMax)["thinking"]; got != nil {
+		t.Fatalf("thinking = %v for max on a row that tops out at high, want the key omitted", got)
 	}
 	// A model with NO map has no reachable level, and the key is omitted:
 	// sending a level the model does not know is a 400, and inventing a
@@ -904,16 +902,17 @@ func TestAShippedEffortRowReachesTheWireAsEffort(t *testing.T) {
 	}{
 		{"anthropic/claude-opus-5", "xhigh", "adaptive", core.ThinkingXHigh},
 		{"anthropic/claude-fable-5-1", "max", "adaptive", core.ThinkingMax},
-		{"anthropic/claude-sonnet-4-6", "max", "adaptive", core.ThinkingXHigh}, // no xhigh: clamps UP
-		{"anthropic/claude-fable-5-1", "", "", core.ThinkingOff},               // cannot stop thinking
+		{"anthropic/claude-sonnet-4-6", "", "", core.ThinkingXHigh}, // no xhigh: omitted, never clamped (10-REQ-4.4)
+		{"anthropic/claude-fable-5-1", "", "", core.ThinkingOff},    // cannot stop thinking
 		{"anthropic/claude-opus-5", "", "disabled", core.ThinkingOff},
 		{"anthropic/claude-sonnet-5-5", "", "between_tools", core.ThinkingOff}, // "disabled" is a 400 there
 		{"anthropic/claude-opus-5-5", "", "", core.ThinkingOff},                // cannot stop thinking
 	} {
-		m, err := catalog.ResolveModel(c.id)
-		if err != nil {
-			t.Fatal(err)
+		row, ok := catalog.Lookup(c.id)
+		if !ok {
+			t.Fatalf("%s is not in the catalog", c.id)
 		}
+		m := &row
 		body := captureRequest(t, m, core.Request{ThinkingLevel: c.level, Temperature: &temp})
 		th, _ := body["thinking"].(map[string]any)
 		if (c.thinking == "") != (th == nil) || (th != nil && th["type"] != c.thinking) {
@@ -930,10 +929,11 @@ func TestAShippedEffortRowReachesTheWireAsEffort(t *testing.T) {
 
 	// A budget row stays a budget row: Haiku takes budget_tokens and errors
 	// on output_config.effort.
-	haiku, err := catalog.ResolveModel("anthropic/claude-haiku-4-5")
-	if err != nil {
-		t.Fatal(err)
+	row, ok := catalog.Lookup("anthropic/claude-haiku-4-5")
+	if !ok {
+		t.Fatalf("%s is not in the catalog", "anthropic/claude-haiku-4-5")
 	}
+	haiku := &row
 	body := captureBody(t, haiku, core.ThinkingHigh)
 	th, _ := body["thinking"].(map[string]any)
 	if th == nil || th["type"] != "enabled" || th["budget_tokens"] != float64(32768) {
@@ -974,10 +974,11 @@ func TestARowThatRejectsSamplingDropsTemperatureAndTopP(t *testing.T) {
 	}
 	// And the shipped rows: Opus 5 rejects, Sonnet 4.6 accepts.
 	for id, want := range map[string]bool{"anthropic/claude-opus-5": false, "anthropic/claude-sonnet-4-6": true} {
-		m, err := catalog.ResolveModel(id)
-		if err != nil {
-			t.Fatal(err)
+		row, ok := catalog.Lookup(id)
+		if !ok {
+			t.Fatalf("%s is not in the catalog", id)
 		}
+		m := &row
 		_, sent := captureRequest(t, m, req)["temperature"]
 		if sent != want {
 			t.Errorf("%s: temperature sent = %v, want %v", id, sent, want)
@@ -1306,10 +1307,11 @@ func TestAnOAuthTokenCarriesTheOAuthBeta(t *testing.T) {
 // Stream sends — thinking included. Without it the goldens cannot regress the
 // effort logic at all.
 func TestBuildRequestCarriesTheThinkingConfig(t *testing.T) {
-	m, err := catalog.ResolveModel("anthropic/claude-opus-4-8")
-	if err != nil {
-		t.Fatal(err)
+	row, ok := catalog.Lookup("anthropic/claude-opus-4-8")
+	if !ok {
+		t.Fatalf("%s is not in the catalog", "anthropic/claude-opus-4-8")
 	}
+	m := &row
 	out, _, err := anthropic.BuildRequest(m, core.Request{
 		Messages:      core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}},
 		ThinkingLevel: core.ThinkingHigh,

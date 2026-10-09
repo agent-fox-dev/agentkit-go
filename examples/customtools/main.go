@@ -52,10 +52,10 @@ func run() error {
 	//    model-ID string carries, and one of which (the compat profile)
 	//    decides whether the constrained sampling declared below is emitted
 	//    at all.
-	model, err := catalog.ResolveModel(modelSpec())
-	if err != nil {
-		return err
-	}
+	// An id the catalog does not list still works, with default limits and
+	// no price.
+	row, _ := catalog.Lookup(modelSpec())
+	model := &row
 
 	// 2. Register the wire APIs. Nothing is registered by import side effect,
 	//    so a program that only wants the loop never drags net/http in.

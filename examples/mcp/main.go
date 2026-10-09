@@ -146,10 +146,10 @@ func clientMode(ctx context.Context, prompt, external string) error {
 	// 6. From here it is an ordinary agent. The MCP tools are core.Tools like
 	//    any other, which is the point of the adaptation: nothing downstream
 	//    knows or cares that a subprocess is behind one of them.
-	model, err := catalog.ResolveModel(modelSpec())
-	if err != nil {
-		return err
-	}
+	// An id the catalog does not list still works, with default limits and
+	// no price.
+	row, _ := catalog.Lookup(modelSpec())
+	model := &row
 	cfg := core.AgentConfig{Model: model}
 	agentkit.RegisterDefaults(&cfg,
 		anthropic.Provider(anthropic.Options{}),

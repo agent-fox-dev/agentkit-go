@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/provider"
 	"github.com/agent-fox-dev/agentkit-go/wire"
@@ -728,16 +727,16 @@ func applyThinking(r *request, m *core.Model, requested core.ThinkingLevel) {
 	case core.ThinkingUnset:
 		return
 	case core.ThinkingOff:
-		if wire, ok := catalog.ThinkingWire(m, core.ThinkingOff); ok {
-			r.Thinking = &thinking{Type: offType(wire)}
+		if w := m.ThinkingLevelMap[core.ThinkingOff]; w != nil {
+			r.Thinking = &thinking{Type: offType(*w)}
 		}
 		return
 	}
-	_, wire, ok := catalog.ClampThinkingLevel(m, requested)
-	if !ok {
-		return // no reachable level: omit rather than guess
+	w := m.ThinkingLevelMap[requested]
+	if w == nil {
+		return // the model does not take this level: omit rather than clamp
 	}
-	wire = strings.ToLower(strings.TrimSpace(wire))
+	wire := strings.ToLower(strings.TrimSpace(*w))
 
 	if n, err := strconv.Atoi(wire); err == nil {
 		applyBudget(r, n)

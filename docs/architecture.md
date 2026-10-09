@@ -55,7 +55,7 @@ Rules that follow from it:
 |---|---|
 | `.` | `Agent`, constructors (`NewAgent`, `NewAgentWithHistory`), the loop (`loop.go`), the tool batch executor (`batch.go`), nested tool calls (`nested.go`), `DefaultProviders` / `RegisterDefaults` (`providers.go`), the `execute` guard check (`execguard.go`). |
 | `core` | Messages, content blocks, events and their discriminated JSON form (`MarshalEvent`, with a caller-supplied `MessageEncoder`), `EventStream`, `AgentConfig`, `Tool`, `ToolPolicy`, argument preparation, `Model`, `Usage`, stop reasons, errors. |
-| `catalog` | Embedded model catalog (`catalog.json`), `ResolveModel`, sibling cloning, `max_tokens` and thinking-level clamping. |
+| `catalog` | Embedded Claude model catalog (`catalog.json`) and `Lookup`: context window, output cap, prices and thinking kind, with a usable default for an unlisted id. |
 | `provider` | What a wire API needs and does not own: cost arithmetic, the per-session tool-schema cache (`ToolPrefix`) and deferred-tool splitting. Transport, retries and SSE framing are the Anthropic SDK's. |
 | `provider/anthropic` | Anthropic Messages over the official SDK — direct, Claude on Vertex AI and on Bedrock, chosen by `Resolve` — including the send-time transcript repair (`RepairTranscript`) and partial-JSON salvage of streamed tool arguments (`SalvageJSON`). |
 | `provider/faux` | Scripted provider for offline tests and demos. |

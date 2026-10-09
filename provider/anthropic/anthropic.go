@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/provider"
 )
@@ -273,7 +272,10 @@ func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRet
 	if req.MaxTokens != nil {
 		requested = *req.MaxTokens
 	}
-	out.MaxTokens = catalog.ClampMaxTokens(m, requested, req.EstContextTokens)
+	out.MaxTokens = requested
+	if out.MaxTokens <= 0 || (m.MaxTokens > 0 && out.MaxTokens > m.MaxTokens) {
+		out.MaxTokens = m.MaxTokens
+	}
 	if out.MaxTokens <= 0 {
 		out.MaxTokens = DefaultMaxTokens
 	}
