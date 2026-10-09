@@ -16,14 +16,125 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	sdk "github.com/anthropics/anthropic-sdk-go"
+
+	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 )
+
+// Effort is how much thinking a model puts into a turn.
+type Effort = core.Effort
+
+// The efforts a Config can ask for.
+const (
+	EffortLow    = core.EffortLow
+	EffortMedium = core.EffortMedium
+	EffortHigh   = core.EffortHigh
+	EffortXHigh  = core.EffortXHigh
+	EffortMax    = core.EffortMax
+)
+
+// Config is everything an Agent is built from.
+type Config struct {
+	// Client is an Anthropic SDK client, built by anthropic.Resolve or by the
+	// caller.
+	Client *sdk.Client
+	// Provider, when set, is used instead of Client: a test double or a
+	// custom provider.
+	Provider core.ProviderClient
+	// Model is the catalog id; catalog.Lookup supplies its limits and prices.
+	Model  string
+	Effort Effort
+	System string
+	// Prefix is sent after the system prompt on every request, with a cache
+	// breakpoint on its last block.
+	Prefix []core.Message
+	Tools  []core.Tool
+	// Policy selects from Tools, and from what they reach through wrappers.
+	Policy core.ToolPolicy
+	// Guard authorizes every call. It is required when a shell tool is
+	// reachable.
+	Guard core.BeforeToolCall
+	After core.AfterToolCall
+	// MaxTurns, MaxCostUSD and Timeout bound a run; zero means unbounded.
+	MaxTurns   int
+	MaxCostUSD float64
+	Timeout    time.Duration
+	// Prune ages old tool results out of the request; the zero value is off.
+	Prune PruneOptions
+	// MaxTokens caps each response; zero means core.DefaultMaxTokens.
+	MaxTokens int
+}
+
+// PruneOptions controls how old tool results leave the request.
+type PruneOptions struct {
+	// Threshold is the fraction of the model's context window the estimated
+	// request must reach before pruning; zero or less disables it.
+	Threshold float64
+	// KeepTurns is how many recent turns keep their tool results whole.
+	KeepTurns int
+}
+
+// New builds an Agent from cfg. It refuses a config the agent could not run
+// safely: no way to reach a model, no model, an invalid tool hierarchy, or a
+// shell tool reachable with no Guard to authorize it — a returned error here,
+// rather than an unrestricted shell discovered on the first run.
+func New(cfg Config) (*Agent, error) {
+	if cfg.Client == nil && cfg.Provider == nil {
+		return nil, errors.New("agentkit: Config needs an Anthropic client or provider")
+	}
+	if cfg.Model == "" {
+		return nil, errors.New("agentkit: Config.Model is empty; a model identifier is required")
+	}
+	for _, t := range cfg.Tools {
+		if err := checkTool(t); err != nil {
+			return nil, err
+		}
+	}
+	resolved := cfg.Policy.Resolve(cfg.Tools)
+	for _, t := range resolved {
+		if err := checkTool(t); err != nil {
+			return nil, err
+		}
+	}
+	if err := checkShellGuard(cfg.Guard, resolved); err != nil {
+		return nil, err
+	}
+
+	// Provider, when set, is the dispatch path; the client is only the
+	// default for it.
+	client := cfg.Provider
+	if client == nil {
+		client = core.ClientFunc(anthropic.Provider(anthropic.Options{Client: cfg.Client}).Stream)
+	}
+	m, _ := catalog.Lookup(cfg.Model)
+	var maxTokens *int
+	if cfg.MaxTokens > 0 {
+		maxTokens = &cfg.MaxTokens
+	}
+	ac := core.AgentConfig{
+		Model:          &m,
+		MaxTokens:      maxTokens,
+		SystemPrompt:   cfg.System,
+		Effort:         cfg.Effort,
+		ParallelTools:  true,
+		ToolPolicy:     core.ToolPolicy{Tools: resolved},
+		BeforeToolCall: cfg.Guard,
+		AfterToolCall:  cfg.After,
+		Providers: core.ProviderRegistry{m.API: core.APIProvider{
+			API: m.API, Stream: client.Stream,
+		}},
+	}
+	return newAgent(ac, core.NewConversationHistory()), nil
+}
 
 // Agent holds its own config, tool registry and history. It has no global
 // state: creating a child agent for delegation is constructing a

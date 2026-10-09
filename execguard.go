@@ -15,10 +15,16 @@ import (
 func (a *Agent) checkExecuteGuard() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.cfg.BeforeToolCall != nil {
+	return checkShellGuard(a.cfg.BeforeToolCall, a.cfg.ToolPolicy.Resolve(a.tools))
+}
+
+// checkShellGuard refuses a resolved tool set that reaches a shell tool when
+// there is no guard to authorize it. New calls it, so the refusal comes at
+// construction, before any request or stream exists.
+func checkShellGuard(g core.BeforeToolCall, resolved []core.Tool) error {
+	if g != nil {
 		return nil
 	}
-	resolved := a.cfg.ToolPolicy.Resolve(a.tools)
 	for _, t := range resolved {
 		if guard.IsShellTool(t.Name) {
 			return fmt.Errorf("%w (tool %q)", core.ErrUnguardedExecute, t.Name)

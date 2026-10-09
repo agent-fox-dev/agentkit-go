@@ -3,12 +3,19 @@ package agentkit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	sdk "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/guard"
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 )
@@ -161,5 +168,141 @@ func TestSmokeAgentRunsWithRetainedProviders_TS09_22(t *testing.T) {
 	}
 	if _, ok := events[0].(core.AgentStartEvent); !ok {
 		t.Fatalf("first event = %T, want AgentStartEvent", events[0])
+	}
+}
+
+// driverModel is the spec's model id. The catalog does not list it, so it
+// takes the default row: a 1M-token window and no price.
+const driverModel = "claude-3-5-sonnet"
+
+func allowAll(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
+	return core.BeforeToolCallDecision{}
+}
+
+func noopAfter(context.Context, core.AfterToolCallContext) core.AfterToolCallDecision {
+	return core.AfterToolCallDecision{}
+}
+
+func userText(s string) core.UserMessage {
+	return core.UserMessage{Content: core.Content{core.TextBlock{Text: s}}}
+}
+
+// TS-11-1: Config carries the fifteen driver fields.
+func TestConfigDefinesTheDriverFields_TS11_1(t *testing.T) {
+	cfg := Config{
+		Client:     &sdk.Client{},
+		Provider:   faux.New(),
+		Model:      driverModel,
+		Effort:     EffortHigh,
+		System:     "system instruction",
+		Prefix:     []core.Message{userText("preamble")},
+		Tools:      []core.Tool{{Name: "toolA", Handler: noopHandler}},
+		Policy:     core.ToolPolicy{},
+		Guard:      allowAll,
+		After:      noopAfter,
+		MaxTurns:   10,
+		MaxCostUSD: 1.5,
+		Timeout:    30 * time.Second,
+		Prune:      PruneOptions{Threshold: 0.35, KeepTurns: 2},
+		MaxTokens:  4096,
+	}
+	if cfg.Model != driverModel || cfg.Effort != core.EffortHigh || cfg.MaxTurns != 10 ||
+		cfg.MaxCostUSD != 1.5 || cfg.Timeout != 30*time.Second || cfg.MaxTokens != 4096 ||
+		cfg.Prune.KeepTurns != 2 || len(cfg.Prefix) != 1 || len(cfg.Tools) != 1 {
+		t.Fatalf("config = %+v", cfg)
+	}
+}
+
+// TS-11-2: no client and no provider is refused.
+func TestNewRefusesNoClientOrProvider_TS11_2(t *testing.T) {
+	a, err := New(Config{Model: driverModel})
+	if a != nil || err == nil || !strings.Contains(err.Error(), "client or provider") {
+		t.Fatalf("New = %v, %v; want nil and an error naming client or provider", a, err)
+	}
+}
+
+// TS-11-3: an empty model is refused.
+func TestNewRefusesEmptyModel_TS11_3(t *testing.T) {
+	a, err := New(Config{Provider: faux.New()})
+	if a != nil || err == nil || !strings.Contains(err.Error(), "model") {
+		t.Fatalf("New = %v, %v; want nil and an error naming the model", a, err)
+	}
+}
+
+// TS-11-4: an invalid tool hierarchy is refused.
+func TestNewRefusesInvalidTools_TS11_4(t *testing.T) {
+	exec := func(context.Context, json.RawMessage) core.ToolResult { return core.OKResult(nil) }
+	done := core.Tool{Name: "done", Handler: noopHandler, Terminating: true}
+	cases := map[string][]core.Tool{
+		"both":    {{Name: "both", Handler: noopHandler, Execute: exec}},
+		"neither": {{Name: "neither"}},
+		"cycle":   {cyclicPair()},
+		"wrapper": {done, {Name: "wrap", Handler: noopHandler, ReachableTools: []core.Tool{done}}},
+	}
+	for name, tools := range cases {
+		a, err := New(Config{Provider: faux.New(), Model: "m", Tools: tools})
+		if a != nil || err == nil {
+			t.Errorf("%s: New = %v, %v; want nil and an error", name, a, err)
+		}
+	}
+}
+
+// TS-11-5: the policy resolves the tools, and Provider wins over Client.
+func TestNewResolvesToolsAndPrefersProvider_TS11_5(t *testing.T) {
+	clientUsed := false
+	client := sdk.NewClient(option.WithoutEnvironmentDefaults(), option.WithAPIKey("sk-ant-test"),
+		option.WithMiddleware(func(r *http.Request, _ option.MiddlewareNext) (*http.Response, error) {
+			clientUsed = true
+			return nil, errors.New("the client must not be used")
+		}))
+	fp := faux.New()
+	a, err := New(Config{
+		Client:   &client,
+		Provider: fp,
+		Model:    driverModel,
+		Tools:    []core.Tool{{Name: "toolA", Handler: noopHandler}, {Name: "toolB", Handler: noopHandler}},
+		Policy:   core.ToolPolicy{ToolNames: []string{"toolA"}},
+	})
+	if err != nil || a == nil {
+		t.Fatalf("New = %v, %v", a, err)
+	}
+	if got := a.ReachableTools(); len(got) != 1 || got[0].Name != "toolA" {
+		t.Fatalf("ReachableTools = %v, want [toolA]", got)
+	}
+	if _, err := a.Run(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if fp.Calls() == 0 || clientUsed {
+		t.Fatalf("provider calls = %d, client used = %v; want the provider only", fp.Calls(), clientUsed)
+	}
+}
+
+// TS-11-6: a resolved shell tool with no Guard is refused at construction.
+func TestNewRefusesUnguardedShellTool_TS11_6(t *testing.T) {
+	a, err := New(Config{Provider: faux.New(), Model: driverModel,
+		Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}})
+	if a != nil || !errors.Is(err, core.ErrUnguardedExecute) || !strings.Contains(err.Error(), `"execute"`) {
+		t.Fatalf("New = %v, %v; want ErrUnguardedExecute naming execute", a, err)
+	}
+}
+
+// TS-11-7: a shell tool behind a wrapper with no Guard is refused, naming
+// both. The spec's "bash" is not in guard.ShellToolNames; run_command is.
+func TestNewRefusesUnguardedShellBehindWrapper_TS11_7(t *testing.T) {
+	shell := core.Tool{Name: "run_command", Handler: noopHandler}
+	wrapper := core.Tool{Name: "codemode", Handler: noopHandler, ReachableTools: []core.Tool{shell}}
+	a, err := New(Config{Provider: faux.New(), Model: driverModel, Tools: []core.Tool{wrapper}})
+	if a != nil || !errors.Is(err, core.ErrUnguardedExecute) ||
+		!strings.Contains(err.Error(), `wrapper "codemode"`) || !strings.Contains(err.Error(), `shell tool "run_command"`) {
+		t.Fatalf("New = %v, %v; want ErrUnguardedExecute naming codemode and run_command", a, err)
+	}
+}
+
+// TS-11-8: a Guard admits a reachable shell tool.
+func TestNewAcceptsGuardedShellTool_TS11_8(t *testing.T) {
+	a, err := New(Config{Provider: faux.New(), Model: driverModel,
+		Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}, Guard: guard.AllowAll})
+	if err != nil || a == nil {
+		t.Fatalf("New = %v, %v; want an agent", a, err)
 	}
 }
