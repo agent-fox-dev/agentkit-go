@@ -90,7 +90,7 @@
       "done_when": [
         "`go test ./... -run 'Test(ReachableTools|ToolPolicyResolve|ExecuteGuard)'` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,

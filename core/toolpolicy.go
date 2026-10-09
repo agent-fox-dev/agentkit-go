@@ -71,15 +71,58 @@ func (p ToolPolicy) Resolve(registered []Tool) []Tool {
 
 	// ExcludeTools is a denylist applied AFTER the allowlist, and applies to
 	// custom tools too.
+	var deny map[string]bool
 	if len(p.ExcludeTools) > 0 {
-		deny := make(map[string]bool, len(p.ExcludeTools))
+		deny = make(map[string]bool, len(p.ExcludeTools))
 		for _, n := range p.ExcludeTools {
 			deny[n] = true
 		}
 		set = filterTools(set, func(t Tool) bool { return !deny[t.Name] })
 	}
 
-	return set
+	// The same selection applies to what each surviving tool reaches
+	// (07-REQ-2.3): a policy that excludes a tool excludes it behind a
+	// wrapper too, or the wrapper would be a way around the policy.
+	var allow map[string]bool
+	if p.ToolNames != nil {
+		allow = make(map[string]bool, len(p.ToolNames))
+		for _, n := range p.ToolNames {
+			allow[n] = true
+		}
+	}
+	admit := func(t Tool) bool {
+		if t.Builtin && p.NoTools == NoToolsBuiltin {
+			return false
+		}
+		return (allow == nil || allow[t.Name]) && !deny[t.Name]
+	}
+	return pruneReachable(set, admit)
+}
+
+// pruneReachable filters each tool's ReachableTools by admit, recursively,
+// into fresh slices so the registered tools are never modified. A wrapper
+// that reached something and is left reaching nothing is dropped
+// (07-REQ-2.4): it would be a dead tool in the model's prompt. A tool that
+// never reached anything is kept (07-REQ-2.5).
+func pruneReachable(ts []Tool, admit func(Tool) bool) []Tool {
+	out := ts[:0]
+	for _, t := range ts {
+		if len(t.ReachableTools) > 0 {
+			var kept []Tool
+			for _, r := range t.ReachableTools {
+				if admit(r) {
+					kept = append(kept, r)
+				}
+			}
+			kept = pruneReachable(kept, admit)
+			if len(kept) == 0 {
+				continue
+			}
+			t.ReachableTools = kept
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 func filterTools(ts []Tool, keep func(Tool) bool) []Tool {

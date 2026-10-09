@@ -342,3 +342,25 @@ func BatchTerminates(votes []bool) bool {
 	}
 	return true
 }
+
+// ReachableTools returns tools and everything they reach through
+// ReachableTools, transitively, each name once, in order of first appearance
+// (depth first). It is the one answer to "what can this tool set call",
+// however deeply wrappers nest (07-REQ-2.1).
+func ReachableTools(tools []Tool) []Tool {
+	var out []Tool
+	seen := map[string]bool{}
+	var walk func([]Tool)
+	walk = func(ts []Tool) {
+		for _, t := range ts {
+			if seen[t.Name] {
+				continue
+			}
+			seen[t.Name] = true
+			out = append(out, t)
+			walk(t.ReachableTools)
+		}
+	}
+	walk(tools)
+	return out
+}

@@ -614,3 +614,13 @@ func (a *Agent) SetStopPolicy(p core.StopPolicy) error {
 	a.cfg.StopPolicy = p
 	return nil
 }
+
+// ReachableTools returns every tool a run of this agent can call: the tools
+// its ToolPolicy resolves, and everything those reach through wrappers
+// (07-REQ-2.2). A check that a run is read-only, say, has to look at this set
+// rather than at the top-level tools.
+func (a *Agent) ReachableTools() []core.Tool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return core.ReachableTools(a.cfg.ToolPolicy.Resolve(a.tools))
+}

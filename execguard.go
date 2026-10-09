@@ -18,9 +18,20 @@ func (a *Agent) checkExecuteGuard() error {
 	if a.cfg.BeforeToolCall != nil {
 		return nil
 	}
-	for _, t := range a.cfg.ToolPolicy.Resolve(a.tools) {
+	resolved := a.cfg.ToolPolicy.Resolve(a.tools)
+	for _, t := range resolved {
 		if guard.IsShellTool(t.Name) {
 			return fmt.Errorf("%w (tool %q)", core.ErrUnguardedExecute, t.Name)
+		}
+	}
+	// A shell tool behind a wrapper is as unguarded as one the model calls
+	// directly (07-REQ-3): the wrapper calls it through the same pipeline,
+	// and with no interceptor nothing stands in its way.
+	for _, t := range resolved {
+		for _, r := range core.ReachableTools(t.ReachableTools) {
+			if guard.IsShellTool(r.Name) {
+				return fmt.Errorf("%w (wrapper %q reached shell tool %q)", core.ErrUnguardedExecute, t.Name, r.Name)
+			}
 		}
 	}
 	return nil
