@@ -5,13 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/prompt"
+	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
+	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
@@ -704,4 +709,125 @@ func assistantSaying(s string, tokens int64) core.Message {
 		m.Usage.SetField(core.UsageInputTokens, tokens)
 	}
 	return m
+}
+
+// ------------------------------------------------------------------- 11-REQ-4
+
+// TS-11-15: Config.Prefix is sent ahead of the prompt on every request.
+func TestPrefixPrecedesThePrompt_TS11_15(t *testing.T) {
+	prefix := []core.Message{
+		core.UserMessage{Content: core.Content{core.TextBlock{Text: "Preamble 1"}}},
+		core.AssistantMessage{Content: core.Content{core.TextBlock{Text: "Acknowledged"}}},
+	}
+	fp := faux.New(
+		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "echo", `{}`)),
+		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("done")),
+	)
+	a, err := New(Config{Provider: fp, Model: testModelID, Prefix: prefix, Tools: []core.Tool{echoTool("echo", nil)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), "user question"); err != nil {
+		t.Fatal(err)
+	}
+	reqs := fp.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("%d requests, want 2", len(reqs))
+	}
+	for i, req := range reqs {
+		if !reflect.DeepEqual(req.Prefix, core.Messages(prefix)) {
+			t.Fatalf("request %d prefix = %v, want Config.Prefix", i, req.Prefix)
+		}
+		first, ok := req.Messages[0].(core.UserMessage)
+		if !ok || first.Content.Text() != "user question" {
+			t.Fatalf("request %d: first message after the prefix = %v, want the prompt", i, req.Messages[0])
+		}
+	}
+	// The prefix is sent, never recorded.
+	if got := a.Messages()[0]; !reflect.DeepEqual(got.(core.UserMessage).Content.Text(), "user question") {
+		t.Fatalf("transcript starts with %v, want the prompt", got)
+	}
+}
+
+// TS-11-16: the wire request carries breakpoints on the last system block,
+// the last tool, the last prefix block and the last user block.
+func TestFourCacheBreakpoints_TS11_16(t *testing.T) {
+	fp := faux.New(faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("done")))
+	a, err := New(Config{
+		Provider: fp,
+		Model:    "claude-opus-5-5",
+		System:   "System instructions",
+		Tools:    []core.Tool{echoTool("toolA", nil), echoTool("toolB", nil)},
+		Prefix: []core.Message{
+			core.UserMessage{Content: core.Content{core.TextBlock{Text: "prefix text"}}},
+			core.AssistantMessage{Content: core.Content{core.TextBlock{Text: "noted"}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), "user prompt"); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := catalog.Lookup("claude-opus-5-5")
+	body, err := anthropic.BuildRequestJSON(fp.Requests()[0], m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		System []map[string]any `json:"system"`
+		Tools  []map[string]any `json:"tools"`
+		Msgs   []struct {
+			Role    string           `json:"role"`
+			Content []map[string]any `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatal(err)
+	}
+	ephemeral := func(b map[string]any) bool {
+		cc, _ := b["cache_control"].(map[string]any)
+		return cc["type"] == "ephemeral"
+	}
+	if len(wire.System) == 0 || !ephemeral(wire.System[len(wire.System)-1]) {
+		t.Errorf("last system block has no breakpoint: %s", body)
+	}
+	if len(wire.Tools) != 2 || !ephemeral(wire.Tools[1]) {
+		t.Errorf("last tool has no breakpoint: %s", body)
+	}
+	// messages: [user prefix, assistant prefix, user prompt]
+	if len(wire.Msgs) != 3 || wire.Msgs[1].Role != "assistant" || !ephemeral(wire.Msgs[1].Content[len(wire.Msgs[1].Content)-1]) {
+		t.Errorf("last prefix block has no breakpoint: %s", body)
+	}
+	last := wire.Msgs[len(wire.Msgs)-1]
+	if last.Role != "user" || !ephemeral(last.Content[len(last.Content)-1]) {
+		t.Errorf("last user block has no breakpoint: %s", body)
+	}
+}
+
+// TS-11-14: the system prompt is Config.System followed by the active
+// tools' guidelines, deduplicated in first-seen order.
+func TestSystemPromptDeduplicatesGuidelines_TS11_14(t *testing.T) {
+	t1 := core.Tool{Name: "t1", Handler: noopHandler, PromptGuidelines: []string{"Rule A", "Rule B"}}
+	t2 := core.Tool{Name: "t2", Handler: noopHandler, PromptGuidelines: []string{"Rule B", "Rule C"}}
+	sys := prompt.Build("Base instruction", []core.Tool{t1, t2})
+	if !strings.HasPrefix(sys, "Base instruction") {
+		t.Fatalf("prompt does not start with Config.System:\n%s", sys)
+	}
+	a, b, c := strings.Index(sys, "Rule A"), strings.Index(sys, "Rule B"), strings.Index(sys, "Rule C")
+	if a < 0 || !(a < b && b < c) || strings.Count(sys, "Rule B") != 1 {
+		t.Fatalf("guidelines not deduplicated in first-seen order:\n%s", sys)
+	}
+	// And it is what the provider is sent.
+	fp := faux.New()
+	ag, err := New(Config{Provider: fp, Model: testModelID, System: "Base instruction", Tools: []core.Tool{t1, t2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ag.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if got := fp.Requests()[0].System; len(got) != 1 || got[0].(core.TextBlock).Text != sys {
+		t.Fatalf("system sent = %v, want the assembled prompt", got)
+	}
 }

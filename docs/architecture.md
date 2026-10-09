@@ -63,7 +63,7 @@ Rules that follow from it:
 | `tools` | Built-in tools, workspace containment, output accumulator, process control, glob (`github.com/bmatcuk/doublestar/v4` plus smart-case and bare-pattern basename matching), layered gitignore. `read_file` reads text only: a file whose leading bytes are a PNG, JPEG, GIF or WebP signature is refused with `unsupported_file`. `RunArgv` is the embedder's process runner (no shell, argv-based, with stdin, head/tail truncation, log file, reduced environment and a pinned outcome contract). `Walk` exposes the single shared directory traversal behind workspace confinement. `file_outline` returns a file's declarations with line ranges; `find_symbol` searches the workspace by declaration name, backed by a lazily built, bounded in-memory symbol table that is refreshed after `write_file`, `edit_file` and the shell tools run; `find_references` searches for callers and usages of declarations across the workspace with exact Go type resolution and outline attribution, backed by a lazily built, bounded in-memory reference cache (`referenceCache`). |
 | `guard` | The `execute` authorization boundary: `Restricted`, `AllowAll`. |
 | `codemode` | The code-mode tool: a sandboxed Starlark script runner over bound tools, with typed declarations generated from their schemas, errors as values, `parallel`, four limits, truncated and spilled output, and a ledger of the calls a script made. |
-| `prompt` | Assembly of the system prompt: base instructions, per-tool guidelines, extra blocks. |
+| `prompt` | Assembly of the system prompt (`Build(system, tools)`): the base prompt, then the active tools' guidelines, deduplicated in first-seen order. |
 | `mcp` | AgentKit's MCP client over the official MCP Go SDK, which owns the protocol and version negotiation: the tool pool (qualified names, collision checks, schema conversion, `${VAR}` resolution), subprocess spawning with process-group kill and a reduced environment, respawn, result cap, call limit and sampling gate; and strict `wire` checks at the stdio and HTTP-response boundaries. There is no server. |
 | `wire` | Bounded strict parser for untrusted bytes, on `encoding/json/jsontext`: a token loop adds the size, depth, container-length and node bounds to jsontext's grammar and duplicate-name rejection. Frame readers. |
 | `jsonx` | Order-preserving JSON. |
@@ -82,7 +82,8 @@ agentkit.New  ── validates the tool hierarchy, resolves Config.Policy,
 Agent.Run / Stream
   └─ runLoop (loop.go)
        per turn:
-         1. build Request from the transcript + tools + system prompt
+         1. build Request: the assembled system prompt, the tools,
+            Config.Prefix, then the transcript
          2. ProviderClient.Stream (Config.Provider, or the Anthropic
             provider over Config.Client) ── provider/anthropic repairs the
             transcript, encodes the wire body itself (exact bytes), sends

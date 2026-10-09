@@ -54,7 +54,7 @@ func TestExecuteFallbackSuppression_TS02_55(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Build(Input{Tools: tt.tools})
+			got := Build("", tt.tools)
 			hasFallback := contains(got, tools.ExecuteFallbackGuideline)
 			if hasFallback != tt.wantFallback {
 				t.Errorf("ExecuteFallbackGuideline present=%v, want %v\nprompt:\n%s", hasFallback, tt.wantFallback, got)
@@ -114,7 +114,7 @@ func TestSearchOverExecuteGuidelineNeedsBothTools(t *testing.T) {
 		{"search_files alone", pick("search_files"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := Build(Input{Tools: tc.tools})
+			got := Build("", tc.tools)
 			if has := contains(got, "execute+grep"); has != tc.want {
 				t.Errorf("execute+grep guideline present=%v, want %v\nprompt:\n%s", has, tc.want, got)
 			}
@@ -126,12 +126,9 @@ func TestSearchOverExecuteGuidelineNeedsBothTools(t *testing.T) {
 // instructions and the universal guidelines — but a tool's own guidelines
 // travel with the tool (NFR-TEST-08a), so they still reach the model.
 func TestACustomPromptKeepsTheToolsGuidelines(t *testing.T) {
-	got := Build(Input{
-		Custom: "You are a release engineer.",
-		Tools: []core.Tool{
-			{Name: "search_files", PromptGuidelines: []string{"Search before reading whole files."}},
-			{Name: "execute"},
-		},
+	got := Build("You are a release engineer.", []core.Tool{
+		{Name: "search_files", PromptGuidelines: []string{"Search before reading whole files."}},
+		{Name: "execute"},
 	})
 	for _, want := range []string{"You are a release engineer.", "Search before reading whole files.", tools.SearchOverExecuteGuideline} {
 		if !strings.Contains(got, want) {
@@ -152,17 +149,17 @@ func TestACustomPromptKeepsTheToolsGuidelines(t *testing.T) {
 // active, not on the literal name "execute", and name that tool.
 func TestShellGuidelinesNameTheActiveShell(t *testing.T) {
 	for _, shell := range []string{"run_command", "powershell"} {
-		got := Build(Input{Tools: []core.Tool{{Name: shell}}})
+		got := Build("", []core.Tool{{Name: shell}})
 		if want := "Use " + shell + " for file operations like ls, rg, find."; !strings.Contains(got, want) {
 			t.Errorf("%s alone: prompt lacks %q:\n%s", shell, want, got)
 		}
-		got = Build(Input{Tools: []core.Tool{{Name: "search_files"}, {Name: shell}}})
+		got = Build("", []core.Tool{{Name: "search_files"}, {Name: shell}})
 		if want := "Prefer search_files over " + shell + "+grep"; !strings.Contains(got, want) {
 			t.Errorf("%s with search_files: prompt lacks %q:\n%s", shell, want, got)
 		}
 	}
 	// execute keeps its exact, pinned wording.
-	if got := Build(Input{Tools: []core.Tool{{Name: "execute"}}}); !strings.Contains(got, tools.ExecuteFallbackGuideline) {
+	if got := Build("", []core.Tool{{Name: "execute"}}); !strings.Contains(got, tools.ExecuteFallbackGuideline) {
 		t.Errorf("execute alone: prompt lacks the pinned %q", tools.ExecuteFallbackGuideline)
 	}
 }

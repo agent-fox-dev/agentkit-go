@@ -68,6 +68,7 @@ shell tool with no `Guard`.
 | `Model` | Catalog id. `catalog.Lookup` supplies the context window, output cap and prices; an id the catalog does not list gets the default row (no price). |
 | `Effort` | `agentkit.Effort` (`core.Effort`): `""` (no thinking parameter), `low`, `medium`, `high`, `xhigh`, `max`. On an adaptive model it is sent as `thinking: {"type":"adaptive"}` with `output_config.effort`; on a budget model as `thinking: {"type":"enabled","budget_tokens":N}`, N from the catalog row; on a model without thinking, or at a level the row does not list, neither is sent. Never clamped to another level. |
 | `System` | The base prompt. Empty means the built-in base instructions and universal guidelines; either way the active tools' own guidelines (`Tool.PromptGuidelines`, and the shell guidelines) follow it. |
+| `Prefix` | Messages sent after the system prompt and before the transcript on every request (`core.Request.Prefix`), with a cache breakpoint on their last block. Never recorded in the transcript. |
 | `Tools` | The tools the agent can run. Each sets exactly one of `Handler` and `Execute`. |
 | `Policy` | `core.ToolPolicy`: `Tools`, `NoTools` (`all` / `builtin`), `ToolNames`, `ExcludeTools`, `CustomTools`, resolved over `Config.Tools` once, in `New`, and applied to what wrappers reach too. Non-nil empty `Policy.Tools` means no tools. |
 | `Guard` | `core.BeforeToolCall`, the authorization boundary for every call, nested ones included. Required when a shell tool is reachable (`ErrUnguardedExecute` from `New` otherwise); use `guard.Restricted` or `guard.AllowAll`. |
@@ -95,7 +96,7 @@ because current models reject it.
 
 Prompt-cache breakpoints (`cache_control: {"type":"ephemeral"}`) go on the
 last system block, the last tool, the last block of `core.Request.Prefix`
-(messages sent ahead of the history on every request) and the last block of
+(`Config.Prefix`, sent ahead of the history on every request) and the last block of
 the final user message. A replayed `tool_use` input, and any block replayed
 verbatim, reaches the wire with the exact bytes it arrived with;
 `anthropic.BuildRequestJSON(req, model)` returns the body as sent.

@@ -8,7 +8,3 @@ Guidelines:
 - Use find_symbol for where a name is declared, find_references for who uses it, and search_files for text.
 - Use run_command when an argument contains spaces or shell metacharacters; nothing is re-parsed by a shell.
 - Prefer search_files over execute+grep: it respects .gitignore and returns structured matches.
-
-<project_context>
-  <file path="/repo/AGENTS.md">house style</file>
-</project_context>

@@ -62,3 +62,24 @@ follow-up, snapshots and holds, `SetModel`, stop policies (among them
 TS-07-34, a stop policy watching nested calls), context transforms,
 middleware, hooks and deferred responses. The tests of behaviour that
 survives were ported to `New`.
+
+## 11-REQ-4: the prefix travels beside the history, and `prompt.Build` changed
+
+- **`Config.Prefix` is `core.Request.Prefix`.** The loop sets the request's
+  `Prefix` (spec 10 added the field and its encoding) rather than splicing the
+  prefix into `Messages`, so TS-11-15 asserts `req.Prefix` and then that the
+  prompt is `req.Messages[0]`. The prefix is never recorded in the
+  transcript.
+- **Breakpoints are the wire's.** `core.Request` blocks carry no cache
+  control; `provider/anthropic` stamps the four breakpoints when it encodes
+  the request. TS-11-16 encodes the request the faux provider captured with
+  `anthropic.BuildRequestJSON` and inspects the body.
+- **`prompt.Build(system, tools)`** replaces `prompt.Build(prompt.Input)`.
+  `Input.ExtraBlocks` is gone with `AgentConfig.PromptBlocks`; an embedder's
+  extra text belongs in `Config.System`. The custom-prompt golden
+  (`prompt/testdata/golden/system_prompt_custom.txt`) lost its project-context
+  block, and the assertion that the block survives a custom prompt was
+  removed with it.
+- TS-11-14's deduplication, and the breakpoints on the system prompt, tools
+  and last user block, were in place before this task; only the prefix
+  assertions failed first.
