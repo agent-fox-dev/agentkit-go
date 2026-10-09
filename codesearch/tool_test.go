@@ -656,3 +656,27 @@ func TestOutputSchemaCodeSearch_TS06_20(t *testing.T) {
 		"line": {schema.TypeInteger, true}, "text": {schema.TypeString, true}, "match": {schema.TypeBoolean, true},
 	})
 }
+
+// TS-06-23 for code_search, which lives in this module rather than beside
+// the other built-in tools: malformed JSON and an empty query are
+// invalid_arguments.
+func TestErrorCodesInvalidArguments_TS06_23(t *testing.T) {
+	root := t.TempDir()
+	mkFile(t, root, "main.go", "package main\n")
+	ws, err := tools.NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, err := newIndex(ws, Options{TempDir: t.TempDir(), Ignore: tools.NoGlobalExcludes()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	cs := idx.Tools()[0]
+	for _, args := range []string{`{malformed`, `{"query":""}`} {
+		res := cs.Execute(context.Background(), json.RawMessage(args))
+		if res.OK || res.Error != "invalid_arguments" {
+			t.Errorf("code_search %s: OK %v error %q, want invalid_arguments", args, res.OK, res.Error)
+		}
+	}
+}

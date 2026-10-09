@@ -292,7 +292,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestErrorCodes' passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,

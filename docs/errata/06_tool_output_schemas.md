@@ -92,3 +92,30 @@ arrays of strings.
 declaration starts on a matched line. `symbol_sources` is a `map[string]int`
 of files per backend, and `dirty_files` is an `int`. `codeSearchOutputSchema`
 declares exactly that. Test: TS-06-20, `TestOutputSchemaCodeSearch_TS06_20`.
+
+## 06-REQ-9.8: `edit_file` reports `edit_<phase>`, and `edit_failed` cannot be induced
+
+**Spec.** `edit_file` documents `edit_precondition` and `edit_failed`.
+
+**Code.** No tool returns `edit_precondition`. When `ApplyEdits` rejects a
+batch, `edit_file` returns `"edit_" + ee.Phase` (`tools/tools.go`). The phases
+come from `tools/edit.go`: `edit_empty`, `edit_empty_old_string`,
+`edit_not_found`, `edit_not_unique`, `edit_overlap` and `edit_noop`.
+`edit_failed` is returned only for an error from `ApplyEdits` that is not an
+`*EditError`, and `ApplyEdits` returns no other kind. That branch is a
+backstop that no input can reach.
+
+**Delivered.** TS-06-29 (`tools/conformance_test.go`,
+`TestErrorCodesFailures_TS06_29`) asserts `edit_not_found` for an
+`old_string` the file does not contain. It does not induce `edit_failed`.
+
+## Test layout
+
+- **D-4.** `code_search` is in the nested `codesearch` module, which the root
+  module does not depend on. Its conformance tests (TS-06-20, and its share of
+  TS-06-22 and TS-06-23) are in `codesearch/tool_test.go`. Everything else is
+  in `tools/conformance_test.go`. That file is the external `tools_test`
+  package, so it can import `subagent` without an import cycle.
+- The test spec names constructors such as `tools.ReadFileTool(ws)` that do
+  not exist. The built-in tools are reached through `tools.All`,
+  `tools.FetchTool` and `subagent.Tool`.
