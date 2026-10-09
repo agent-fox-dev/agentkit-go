@@ -256,7 +256,7 @@
       "done_when": [
         "`make check` passes completely without errors or linter warnings"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

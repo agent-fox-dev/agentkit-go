@@ -117,7 +117,9 @@ Agent.Run / Stream / Continue
               └─ batch.go: prepare (sequential: policy, BeforeToolCall,
                  plugin hooks, argument repair) → execute (parallel or
                  sequential) → finalize (AfterToolCall, metadata copy,
-                 image normalization, one ToolResultMessage per call)
+                 image normalization, one ToolResultMessage per call);
+                 a tool with ReachableTools runs with a NestedCaller on its
+                 context (nested.go, below)
          7. StopPolicy evaluated at the turn boundary
   └─ terminal marker, OnSessionEnd hook, RunResult
 ```
@@ -143,7 +145,9 @@ Extension axes:
   transforms, argument preparation, tracers, hooks). A panicking `StopPolicy`
   stops the run.
 - **A shell tool with no `BeforeToolCall`** fails the run with
-  `ErrUnguardedExecute`; `guard.AllowAll` is the explicit opt-out.
+  `ErrUnguardedExecute`; `guard.AllowAll` is the explicit opt-out. A shell tool
+  reachable through a wrapper counts too:
+  `... (wrapper "code_mode" reached shell tool "execute")`.
 - **Untrusted bytes go through `wire`**: bounds before allocation, duplicate
   keys rejected, case-sensitive matching. Locally authored config decodes
   leniently and reports diagnostics. Where a library decodes untrusted bytes
@@ -158,6 +162,62 @@ Extension axes:
   live on the config.
 - **Session entries are appended, never rewritten**; a compaction is an entry
   and the checkpoint is applied as a view on each request.
+
+## Nested tool calls
+
+A tool can call other tools on the model's behalf, for example a script runner
+that turns tools into functions. It declares them up front in
+`core.Tool.ReachableTools`, and nothing else is reachable.
+
+- **Registration.** `NewAgent`, `NewAgentWithHistory` and `RegisterTool`
+  refuse a hierarchy in which a tool reaches itself:
+  `agentkit: reachable tools cycle detected: toolA -> toolB -> toolA`. They
+  also refuse one in which a wrapper reaches a `Terminating` tool:
+  `agentkit: terminating tool "finish" cannot be reached through wrapper "code_mode"`.
+  Cycles are found by name along the path, because tools are values.
+- **Policy.** `ToolPolicy.Resolve` applies `NoTools` (`builtin`), `ToolNames`
+  and `ExcludeTools` to reachable tools at every depth.
+  - A wrapper left reaching nothing is dropped, so an allowlist must name the
+    children as well as the wrapper.
+  - `ToolPolicy.Tools`, when set, is used verbatim, as before.
+- **Queries.** `core.ReachableTools(tools)` is the deduplicated transitive
+  closure in depth-first order. `Agent.ReachableTools()` is that closure over
+  the resolved set, which is what a check like "this run is read-only" must
+  inspect.
+- **Dispatch.** `executeBatch` attaches a `nestedCaller` (`nested.go`) to the
+  context of every tool that declares `ReachableTools`. The caller is bound to
+  that call's id and name and to the wrapper's resolved reachable tools. The
+  tool calls `core.CallNested(ctx, calls...)`; with no caller attached, it
+  gets `core.ErrNoNestedCaller`.
+- **Pipeline.** A nested call goes through the same steps as a direct one:
+  1. prepare and validate the arguments;
+  2. `BeforeToolCall`, whose context carries `ParentToolUseID` and
+     `ParentToolName`;
+  3. the plugin veto;
+  4. the handler, inside an `agentkit.tool_call` span with
+     `parent_tool_use_id`;
+  5. an audit record with `ParentToolUseID`;
+  6. `AfterToolCall`;
+  7. `ToolExecutionStart`/`End` events with `ParentToolUseID`.
+
+  Each nested call gets a fresh id. Preparation runs in call order. Handlers run
+  concurrently unless `ParallelTools` is off or a `Sequential` tool is among
+  the calls, and results come back in call order.
+- **Results, not errors.** A tool the wrapper does not reach is
+  `unknown_tool`. A block is `blocked_by_policy` with the reason, and a
+  cancelled call is `aborted` with `Operation aborted`. `CallNested` returns
+  an error only when an interceptor votes to end the run (`Block` with
+  `Terminate`, or `AfterToolCall`'s `Terminate`). In that case the error is
+  `core.ErrTerminated`, and the wrapper's result carries `Terminate` to the
+  batch.
+- **Terminate votes.** A nested handler's own terminate vote is dropped. The
+  nested result's detail says `terminate vote ignored`, the wrapper's says
+  `nested terminate vote ignored`, and the audit record sets
+  `TerminateIgnored`.
+- **Out of the transcript.** Nested calls emit no `ToolResultEvent`, never
+  enter the history or the session log, and are not seen by stop policies.
+  Usage a nested handler reports through `core.ReportUsage` still reaches the
+  agent at once.
 
 ## Symbol and reference navigation
 
