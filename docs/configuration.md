@@ -14,35 +14,33 @@ reference.
 
 ## Environment variables
 
-### Credentials
+### Credentials and deployments
 
-The one wire API is Anthropic's. The first non-empty variable in its list wins. `RequestOptions.Env` is
-consulted before the process environment, and an empty override value falls
-through rather than masking.
-
-| Vendor | Variables, in order | Sent as |
-|---|---|---|
-| `anthropic` | `ANTHROPIC_API_KEY` | `x-api-key` |
-| | `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_OAUTH_TOKEN` | `Authorization: Bearer` (the OAuth token also adds `anthropic-beta: oauth-2025-04-20`) |
-| | on Vertex: `ANTHROPIC_AUTH_TOKEN` only — the API key and the OAuth token are Anthropic-issued and never sent to Google | `Authorization: Bearer` |
-
-Resolution yields a three-valued state: `resolved`, `ambient` (a base URL, or
-a credential chain the transport holds) and `none`. Pre-flight checks must
-treat `ambient` as configured. Stringifying a `ModelAuth` redacts it (first 4
-and last 4 characters; shorter secrets entirely). There is no credential store:
-a credential comes from the environment (or `RequestOptions.Env`) on every
-request, so a long-running process that rotates a token updates the variable.
-
-### Base URLs and deployments
+`anthropic.Resolve(env)` chooses the deployment and builds the SDK client
+(`provider/anthropic/resolve.go`). The provider calls it on every request
+unless `anthropic.Options.Client` is set, reading `RequestOptions.Env` first,
+then `Options.Getenv` (or the process environment).
 
 | Variable | Effect |
 |---|---|
-| `ANTHROPIC_BASE_URL` | Proxy or gateway in front of Anthropic (both deployments). |
-| `ANTHROPIC_VERTEX_BASE_URL` | Proxy in front of Vertex; beats `ANTHROPIC_BASE_URL` when the Vertex deployment is on. |
-| `CLAUDE_CODE_USE_VERTEX` | Selects Claude on Vertex. Read for truth: `0`/false is an explicit off that vetoes the other signals. |
-| `ANTHROPIC_VERTEX_PROJECT_ID` | GCP project for Claude on Vertex. Selects the deployment alone only when no Anthropic-direct credential is set. |
-| `CLOUD_ML_REGION` | Vertex location for Claude (`GOOGLE_CLOUD_LOCATION`, `CLOUDSDK_COMPUTE_REGION` also work; default `global`). |
-| `GOOGLE_CLOUD_PROJECT`, `CLOUDSDK_CORE_PROJECT` | May *supply* a Vertex project once something else selected the deployment; they never select it. |
+| `CLAUDE_CODE_USE_VERTEX` | `1` or `true` selects Claude on Vertex AI. Any other value, `0` and `false` included, leaves it off whatever else is set. |
+| `ANTHROPIC_VERTEX_PROJECT_ID`, then `GOOGLE_CLOUD_PROJECT` | The Vertex project. Required once Vertex is selected; they never select it. |
+| `CLOUD_ML_REGION`, then `GOOGLE_CLOUD_LOCATION`, `CLOUDSDK_COMPUTE_REGION` | The Vertex location; default `global`. |
+| `ANTHROPIC_VERTEX_BASE_URL` | A proxy in front of Vertex. |
+| `CLAUDE_CODE_USE_BEDROCK` | `1` or `true` selects Claude on Amazon Bedrock (when Vertex is not selected). |
+| `AWS_REGION`, then `AWS_DEFAULT_REGION` | The Bedrock region; default `us-east-1`. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Static Bedrock credentials. Without them, `AWS_BEARER_TOKEN_BEDROCK`; without that, the AWS SDK's own credential chain. |
+| `ANTHROPIC_API_KEY` | The Anthropic API key (`x-api-key`), for the direct deployment. |
+| `ANTHROPIC_AUTH_TOKEN` | A bearer token for the direct deployment; on Vertex, a Google access token (anything but `sk-ant-…`). |
+| `ANTHROPIC_OAUTH_TOKEN` | An OAuth bearer (`sk-ant-oat…`) for the direct deployment; adds the `oauth-2025-04-20` beta. |
+| `ANTHROPIC_BASE_URL` | A proxy or gateway in front of the Anthropic API. |
+
+With no cloud flag and none of the three Anthropic credentials, `Resolve`
+fails with `anthropic.ErrNoCredentials` ("anthropic: missing credentials: …"),
+and the provider ends the turn with that message rather than sending a
+request. A Vertex selection with no project fails the same way, naming the
+variables. `anthropic.Options.VertexProject` / `VertexLocation` select Vertex
+and set its location in code, over the environment.
 
 ### SDK variables
 

@@ -20,6 +20,7 @@ module, when `go list -m` reports a direct dependency that is not on it:
 | `go.starlark.net` | code mode's Starlark runtime |
 | `github.com/anthropics/anthropic-sdk-go` | the Anthropic wire: transport, auth, retries, stream framing, Vertex |
 | `golang.org/x/oauth2` | Google credentials for the Vertex AI deployment |
+| `github.com/aws/aws-sdk-go-v2`, `github.com/aws/aws-sdk-go-v2/…` | AWS configuration and credentials for the Bedrock deployment |
 
 Adding a direct dependency means adding it there, with its reason, and a ruling
 here. The `codesearch` module is separate and not covered: its zoekt graph stays

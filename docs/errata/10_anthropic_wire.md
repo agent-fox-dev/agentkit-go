@@ -58,3 +58,28 @@ option the only sources were an environment token or Application Default
 Credentials — so a test of the Vertex path would reach the real ADC on the
 machine running it, and mint a real token over the network. The option lets
 an embedder (or a test) supply credentials explicitly.
+
+## 10-REQ-2: what `Resolve` reads beyond the spec
+
+- **Only the flag selects Vertex.** The previous wire also selected Vertex
+  from `ANTHROPIC_VERTEX_PROJECT_ID` alone (with no Anthropic credential) and
+  from a Vertex host in a base URL. 10-REQ-2.3 makes `CLAUDE_CODE_USE_VERTEX`
+  the switch, so those heuristics and their tests were removed.
+  `anthropic.Options.VertexProject` still selects Vertex in code.
+- **Region fallbacks.** After `CLOUD_ML_REGION`, the Vertex location is read
+  from `GOOGLE_CLOUD_LOCATION` and `CLOUDSDK_COMPUTE_REGION`, as before.
+- **Bedrock region.** TS-10-6 resolves Bedrock from the flag alone, so the
+  region defaults to `us-east-1` when neither `AWS_REGION` nor
+  `AWS_DEFAULT_REGION` is set (`provider/anthropic/resolve.go`,
+  `DefaultBedrockRegion`).
+- **Bedrock credentials.** Static keys or `AWS_BEARER_TOKEN_BEDROCK` come from
+  the `Env`. Without them, the AWS SDK's default chain is used, which reads the
+  process environment and shared files — AWS credential discovery is the AWS
+  SDK's, not this package's. The allowlist approves the AWS SDK modules.
+- **`ANTHROPIC_OAUTH_TOKEN`** is a direct credential too, with the OAuth beta.
+- **No credential is an error before any request.** The previous wire sent an
+  unauthenticated request; now the provider ends the turn with
+  `anthropic.ErrNoCredentials`'s text (10-REQ-2.6).
+- `provider/auth.go` (`VendorAuth`, `ResolveAuth`) and
+  `provider/anthropic/vertex.go` are deleted; the examples' credential
+  pre-flight calls `anthropic.Resolve(anthropic.OSEnv{})`.

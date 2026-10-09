@@ -31,6 +31,9 @@ var approvedDeps = []string{
 	"github.com/anthropics/anthropic-sdk-go",
 	// Google OAuth for the Vertex AI deployment's credentials.
 	"golang.org/x/oauth2",
+	// AWS configuration and credentials for the Bedrock deployment.
+	"github.com/aws/aws-sdk-go-v2",
+	"github.com/aws/aws-sdk-go-v2/",
 }
 
 // validateAllowlist returns an error naming every dependency in deps that no

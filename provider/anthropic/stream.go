@@ -19,81 +19,16 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// DefaultBaseURL is used when neither the catalog row nor ANTHROPIC_BASE_URL
-// names one.
-const DefaultBaseURL = "https://api.anthropic.com"
-
-// APIVersion is the required anthropic-version header.
+// APIVersion is the anthropic-version the SDK sends.
 const APIVersion = "2023-06-01"
+
+// VertexAPIVersion is the anthropic_version a Vertex request body carries.
+const VertexAPIVersion = "vertex-2023-10-16"
 
 // BetaCompaction opts into REQ-PROV-07's server-side compaction. Compaction
 // blocks in the response are retained as core.RawBlock and replayed verbatim
 // on later turns; nothing else in the SDK needs to model them.
 const BetaCompaction = "compact-2026-01-12"
-
-// BetaOAuth is the beta the Messages API requires alongside an OAuth bearer
-// (an ANTHROPIC_OAUTH_TOKEN, sk-ant-oat...). It is sent automatically with
-// such a token, after any Options.Betas.
-const BetaOAuth = "oauth-2025-04-20"
-
-// VendorAuth is REQ-AUTH-03's ORDERED table for the Anthropic vendor.
-//
-// The order is load-bearing and so is the per-row scheme. ANTHROPIC_AUTH_TOKEN
-// is sent as `Authorization: Bearer` and ANTHROPIC_API_KEY as `x-api-key`;
-// sending either under the other's header is a 401 whose body says nothing
-// about which variable was picked. This is precisely why REQ-AUTH-03 rejects a
-// single `<VENDOR>_API_KEY` convention.
-//
-// The API key comes FIRST, as it does in the official SDKs: a machine that
-// carries both must authenticate the way every first-party client on it does
-// (docs/errata/auth_anthropic_precedence.md records the divergence from the
-// PRD's order).
-//
-// The names are constants because the deployment switch reads the same three
-// (directCredential): a credential only the direct deployment can use is what
-// outranks a leftover ANTHROPIC_VERTEX_PROJECT_ID, and a second copy of the
-// list is a second place to forget a row.
-const (
-	AuthTokenVar  = "ANTHROPIC_AUTH_TOKEN"
-	OAuthTokenVar = "ANTHROPIC_OAUTH_TOKEN"
-	APIKeyVar     = "ANTHROPIC_API_KEY"
-)
-
-var VendorAuth = provider.VendorAuth{
-	Vars: []provider.EnvVar{
-		{Name: APIKeyVar, Scheme: provider.SchemeAPIKey},
-		{Name: AuthTokenVar, Scheme: provider.SchemeBearer},
-		{Name: OAuthTokenVar, Scheme: provider.SchemeBearer},
-		// A base URL is configuration, not a credential (REQ-AUTH-03's
-		// "discovery and retrieval are distinct operations"). Sending a proxy
-		// URL as a bearer token is nonsense; its presence still means the
-		// vendor is set up.
-		{Name: VertexBaseURLVar, DiscoveryOnly: true},
-	},
-	BaseURLVar: BaseURLVar,
-	// Ambient is REQ-AUTH-04 for the Vertex deployment, and it is the fix for
-	// the whole reported symptom: such a deployment authenticates with a
-	// Google OAuth token this process cannot read, so without this it resolves
-	// to CredentialNone and every pre-flight check refuses the run with a
-	// message saying the vendor is unconfigured. It is configured — for a
-	// deployment the table did not know existed.
-	Ambient: VertexSelected,
-}
-
-// vertexVendorAuth is the table the Vertex deployment resolves the
-// environment through. ANTHROPIC_AUTH_TOKEN is the one variable that can
-// carry a Google access token (`gcloud auth print-access-token`); the API key
-// and the OAuth token are Anthropic-issued, so on this deployment they are not
-// credentials at all, and reading them would let a leftover one outrank — and
-// then be dropped in place of — the token that works.
-var vertexVendorAuth = provider.VendorAuth{
-	Vars: []provider.EnvVar{
-		{Name: AuthTokenVar, Scheme: provider.SchemeBearer},
-		{Name: VertexBaseURLVar, DiscoveryOnly: true},
-	},
-	BaseURLVar: BaseURLVar,
-	Ambient:    VertexSelected,
-}
 
 // Options configures the provider. The zero value is usable.
 type Options struct {
@@ -110,11 +45,9 @@ type Options struct {
 	MaxRetries *int
 	// Betas are sent as anthropic-beta. BetaCompaction is REQ-PROV-07.
 	Betas []string
-	// VertexProject and VertexLocation select the Vertex AI deployment
-	// (NFR-COMPAT-05). Setting the project is the whole switch: it selects the
-	// Vertex path shape and, with no base URL configured, the regional Vertex
-	// host. Both fall back to the environment — see ResolveVertex — so a
-	// deployment can also flip with no code change at all.
+	// VertexProject selects the Vertex AI deployment whatever the
+	// environment says, and VertexLocation sets its region; both otherwise
+	// come from the environment (see Resolve).
 	VertexProject  string
 	VertexLocation string
 	// VertexTokenSource supplies the Google OAuth token a Vertex request is
@@ -178,12 +111,6 @@ func (c *client) Stream(ctx context.Context, m *core.Model, req core.Request, o 
 	// second provider implementation. It is decided HERE rather than in run
 	// because it changes the request BODY as well as the URL, and the body is
 	// serialized below.
-	env := provider.Env{Override: req.Options.Env, Getenv: c.opts.Getenv}
-	vx, err := ResolveVertex(deploymentBase(m, defaultBase(c.opts.BaseURL), env),
-		c.opts.VertexProject, c.opts.VertexLocation, env)
-	if err != nil {
-		return core.ErrorStream(nil, err)
-	}
 
 	retention := core.CacheRetentionShort
 	if o.CacheRetention != "" {
@@ -230,12 +157,12 @@ func (c *client) Stream(ctx context.Context, m *core.Model, req core.Request, o 
 	}
 
 	s := core.NewEventStream(core.StreamOptions{})
-	go c.run(ctx, s, m, req, raw, vx)
+	go c.run(ctx, s, m, req, raw)
 	return s
 }
 
 func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, req core.Request,
-	raw []byte, vx Vertex) {
+	raw []byte) {
 	d := &decodeState{
 		s: s, model: m, lookup: c.opts.BillingLookup,
 		partial: core.AssistantMessage{
@@ -259,8 +186,13 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 		defer cancel()
 	}
 
-	env := provider.Env{Override: req.Options.Env, Getenv: c.opts.Getenv}
-	sc := c.sdkClient(ctx, m, env, vx, req.Options.Transport)
+	sc, dep, env, err := c.sdkClient(req.Options.Env, req.Options.Transport)
+	if err != nil {
+		// A deployment that cannot be resolved — no credential, a Vertex
+		// selection with no project — fails the turn with the reason.
+		d.fail(err.Error(), err)
+		return
+	}
 
 	// The body is ours: SDK params would re-encode replayed tool_use input,
 	// and its bytes must reach the wire as the model wrote them.
@@ -315,7 +247,7 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 	if err := stream.Err(); err != nil {
 		var apiErr *sdk.Error
 		if errors.As(err, &apiErr) && caller.Err() == nil {
-			text := statusText(apiErr) + vertexAuthNote(apiErr.StatusCode, vx, env)
+			text := statusText(apiErr) + vertexAuthNote(apiErr.StatusCode, dep, env)
 			d.fail(text, &StatusError{Code: apiErr.StatusCode, Text: text})
 			return
 		}
@@ -345,16 +277,20 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 // package's "anthropic:" prefix it reads as an Anthropic outage on a machine
 // whose ANTHROPIC_API_KEY is perfectly good, and nothing in it suggests
 // looking at ANTHROPIC_VERTEX_PROJECT_ID.
-func vertexAuthNote(status int, vx Vertex, env provider.Env) string {
-	if !vx.On() || (status != http.StatusUnauthorized && status != http.StatusForbidden) {
+func vertexAuthNote(status int, dep deployment, env Env) string {
+	if dep.source != SourceVertex || (status != http.StatusUnauthorized && status != http.StatusForbidden) {
 		return ""
 	}
-	note := " [Claude on Vertex AI: project " + vx.Project + ", location " + vx.Location +
-		", selected by " + vx.SelectedBy + ". This deployment authenticates with " +
+	project := dep.project
+	if dep.projectVar != "" {
+		project += " (from " + dep.projectVar + ")"
+	}
+	note := " [Claude on Vertex AI: project " + project + ", location " + dep.region +
+		", selected by " + VertexEnableVar + " or Options.VertexProject. This deployment authenticates with " +
 		"Google Application Default Credentials, not " + APIKeyVar + " or " + OAuthTokenVar
 	var withheld []string
 	for _, v := range []string{APIKeyVar, OAuthTokenVar} {
-		if env.Has(v) {
+		if get(env, v) != "" {
 			withheld = append(withheld, v)
 		}
 	}
@@ -369,7 +305,7 @@ func vertexAuthNote(status int, vx Vertex, env provider.Env) string {
 		note += " — " + strings.Join(withheld, " and ") + verb + " never sent to a Google endpoint"
 	}
 	return note + ". To use the Anthropic API directly instead, unset " +
-		VertexProjectVar + " or set " + VertexEnableVar + "=0.]"
+		VertexEnableVar + " or set " + VertexEnableVar + "=0.]"
 }
 
 // AbortText is the one error string that means "the caller stopped this". It
@@ -428,15 +364,6 @@ func cancellationText(caller, req context.Context, err error) (string, bool) {
 		return "anthropic: request timeout (RequestOptions.TimeoutMs elapsed): " + err.Error(), true
 	}
 	return "", false
-}
-
-// defaultBase is the compiled-in fallback, kept as a function so the zero
-// Options value works without a constructor.
-func defaultBase(configured string) string {
-	if configured != "" {
-		return configured
-	}
-	return DefaultBaseURL
 }
 
 // ---------------------------------------------------------------- decode state

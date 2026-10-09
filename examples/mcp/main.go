@@ -39,7 +39,6 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/mcp"
-	"github.com/agent-fox-dev/agentkit-go/provider"
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/wire"
@@ -480,31 +479,11 @@ func modelSpec() string {
 	return "anthropic/claude-sonnet-5"
 }
 
-// checkCredentials fails BEFORE the request with a message naming the variable
-// to set, rather than after a 401 that names none of them.
-//
-// The three-state check matters: a deployment using an instance role or ADC
-// has no key this process can read and a transport that will nonetheless
-// authenticate, so "ambient" must pass a pre-flight that "none" fails.
-func checkCredentials(m *core.Model) error {
-	auth := provider.ResolveAuth(anthropic.VendorAuth, provider.Env{})
-	if auth.State != provider.CredentialNone {
-		return nil
-	}
-	return fmt.Errorf("no credential for vendor %q: set one of %s (see examples/README.md)",
-		m.Provider, strings.Join(varNames(anthropic.VendorAuth), ", "))
-}
-
-func varNames(v provider.VendorAuth) []string {
-	out := make([]string, 0, len(v.Vars)+1)
-	for _, e := range v.Vars {
-		out = append(out, e.Name)
-	}
-	if v.BaseURLVar != "" {
-		out = append(out, v.BaseURLVar+" (for a gateway or a local server)")
-	}
-	if len(out) == 0 {
-		out = append(out, "a vendor-specific API key")
-	}
-	return out
+// checkCredentials fails BEFORE the request with the reason a client cannot
+// be built — typically the variables to set — rather than after a 401 that
+// names none of them. Resolving reads the environment only; a cloud
+// deployment's own credentials (Google's, AWS's) are checked on first use.
+func checkCredentials(*core.Model) error {
+	_, _, err := anthropic.Resolve(anthropic.OSEnv{})
+	return err
 }

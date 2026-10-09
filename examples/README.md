@@ -24,81 +24,44 @@ AgentKit reads no configuration file and has no global state. Everything is
 either a field on `core.AgentConfig` or an environment variable consulted at
 request time. There are exactly three things to get right.
 
-### 1. A credential
+### 1. A deployment and its credential
 
-The one wire API is Anthropic's (`provider/anthropic`). It reads an
-**ordered** list of variables, not a single `<VENDOR>_API_KEY` convention. The
-first one set wins, and the scheme differs per variable — that is the whole
-reason the list is ordered rather than a lookup.
+`anthropic.Resolve(env)` chooses the deployment and builds the SDK client
+(`provider/anthropic/resolve.go`). The provider calls it on every request
+unless `anthropic.Options.Client` is set, reading `RequestOptions.Env` first,
+then `Options.Getenv` (or the process environment).
 
-| Vendor | Variables, in order | Sent as |
-|---|---|---|
-| `anthropic` | `ANTHROPIC_API_KEY` | `x-api-key` |
-| | `ANTHROPIC_AUTH_TOKEN` | `Authorization: Bearer` |
-| | `ANTHROPIC_OAUTH_TOKEN` | `Authorization: Bearer` + `anthropic-beta: oauth-2025-04-20` |
-| | on Vertex: a Google OAuth token in `ANTHROPIC_AUTH_TOKEN`, `ambient` when the transport holds it | `Authorization: Bearer` |
-
-**Credentials have three states, not two.** A deployment using a cloud
-instance role, Google ADC or a workload identity has *no key this process can
-read* and a transport that will nonetheless authenticate. That is `ambient`,
-and it must pass a pre-flight check that `none` fails — otherwise every
-service-account deployment fails a check a plain key would have passed. The
-examples' `checkCredentials` shows the correct test:
-
-```go
-auth := provider.ResolveAuth(anthropic.VendorAuth, provider.Env{})
-if auth.State == provider.CredentialNone {
-    // genuinely unconfigured
-}
-```
-
-Setting only a base URL also yields `ambient`: the vendor is *discovered* but
-not *authenticated*, which is exactly the state a gateway that authenticates
-by URL leaves you in.
-
-The credential is read on every request, so a long-running process whose
-token expires updates the variable (or `RequestOptions.Env`); there is no
-credential store.
-
-### 2. A base URL, when you are not talking to Anthropic directly
-
-| Variable | Points at |
+| Variable | Effect |
 |---|---|
-| `ANTHROPIC_BASE_URL` | a proxy or gateway in front of Anthropic |
-| `ANTHROPIC_VERTEX_BASE_URL` | a proxy in front of Vertex; beats `ANTHROPIC_BASE_URL` when the Vertex deployment is on |
+| `CLAUDE_CODE_USE_VERTEX` | `1` or `true` selects Claude on Vertex AI. Any other value, `0` and `false` included, leaves it off whatever else is set. |
+| `ANTHROPIC_VERTEX_PROJECT_ID`, then `GOOGLE_CLOUD_PROJECT` | The Vertex project. Required once Vertex is selected; they never select it. |
+| `CLOUD_ML_REGION`, then `GOOGLE_CLOUD_LOCATION`, `CLOUDSDK_COMPUTE_REGION` | The Vertex location; default `global`. |
+| `ANTHROPIC_VERTEX_BASE_URL` | A proxy in front of Vertex. |
+| `CLAUDE_CODE_USE_BEDROCK` | `1` or `true` selects Claude on Amazon Bedrock (when Vertex is not selected). |
+| `AWS_REGION`, then `AWS_DEFAULT_REGION` | The Bedrock region; default `us-east-1`. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Static Bedrock credentials. Without them, `AWS_BEARER_TOKEN_BEDROCK`; without that, the AWS SDK's own credential chain. |
+| `ANTHROPIC_API_KEY` | The Anthropic API key (`x-api-key`), for the direct deployment. |
+| `ANTHROPIC_AUTH_TOKEN` | A bearer token for the direct deployment; on Vertex, a Google access token (anything but `sk-ant-…`). |
+| `ANTHROPIC_OAUTH_TOKEN` | An OAuth bearer (`sk-ant-oat…`) for the direct deployment; adds the `oauth-2025-04-20` beta. |
+| `ANTHROPIC_BASE_URL` | A proxy or gateway in front of the Anthropic API. |
 
-**Claude on Vertex** is a config change rather than a provider swap, on the
-same wire implementation:
+With no cloud flag and none of the three Anthropic credentials, `Resolve`
+fails with `anthropic.ErrNoCredentials` ("anthropic: missing credentials: …"),
+and the provider ends the turn with that message rather than sending a
+request. A Vertex selection with no project fails the same way, naming the
+variables. `anthropic.Options.VertexProject` / `VertexLocation` select Vertex
+and set its location in code, over the environment.
 
 ```bash
-export CLAUDE_CODE_USE_VERTEX=1
+export ANTHROPIC_API_KEY=sk-ant-...        # the Anthropic API
+
+export CLAUDE_CODE_USE_VERTEX=1            # or Claude on Vertex AI
 export ANTHROPIC_VERTEX_PROJECT_ID=my-project
-export CLOUD_ML_REGION=us-east5            # optional; default `global`
+export CLOUD_ML_REGION=us-east5
+
+export CLAUDE_CODE_USE_BEDROCK=1           # or Claude on Amazon Bedrock
+export AWS_REGION=us-west-2
 ```
-
-| Variable | Does |
-|---|---|
-| `CLAUDE_CODE_USE_VERTEX` | selects the deployment. Read for *truth*, not presence: `=0` is an explicit **off** that vetoes every other environment signal |
-| `ANTHROPIC_VERTEX_PROJECT_ID` | the GCP project. It selects the deployment on its own **only when no `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_OAUTH_TOKEN` is set** |
-| `CLOUD_ML_REGION` | the location; `GOOGLE_CLOUD_LOCATION` and `CLOUDSDK_COMPUTE_REGION` also work |
-| `ANTHROPIC_VERTEX_BASE_URL` | a proxy in front of Vertex. Like the project variable, a Vertex host here selects the deployment only when no Anthropic-direct credential is set |
-
-`GOOGLE_CLOUD_PROJECT` and `CLOUDSDK_CORE_PROJECT` may *supply* the project
-once something else has selected the deployment; they are set on every GCE and
-Cloud Run box, so they never select it. `Options.VertexProject` / `Options.VertexLocation` are
-the in-code equivalents, and a Vertex base URL selects the deployment too. A
-selected deployment with no project anywhere is an error naming the project,
-not a request sent to `api.anthropic.com` with a Vertex path.
-
-**Going back to the direct API** is `unset CLAUDE_CODE_USE_VERTEX` *and*
-`unset ANTHROPIC_VERTEX_PROJECT_ID` — or, if the project variable is set by
-something you do not control, `export CLAUDE_CODE_USE_VERTEX=0`, which turns
-the deployment off outright. Exporting an `ANTHROPIC_API_KEY` is enough on its
-own when the project variable is the only thing left over: a key that only the
-direct deployment can use outranks a project that only names coordinates. If a
-request does reach Vertex without a credential, the 401 says so — it names the
-project, the setting that selected the deployment, and both ways out, because
-Google's own body names none of them.
 
 Vertex authenticates with a Google OAuth access token, through the SDK's
 Vertex option. The token comes from, in order:
@@ -120,7 +83,7 @@ The catalog is not an allowlist, so such an id resolves by cloning the vendor's
 default row and reaches the URL verbatim:
 `AGENTKIT_MODEL=anthropic/claude-sonnet-5@20260401`.
 
-### 3. A model, resolved through the catalog
+### 2. A model, resolved through the catalog
 
 ```go
 model, err := catalog.ResolveModel("anthropic/claude-sonnet-5")
@@ -189,11 +152,14 @@ deliberately *not* contained — that is what the interceptor above is for.
 
 ## Troubleshooting
 
-**`no credential for vendor "anthropic"`** — none of the variables above is
-set, and there is no ambient credential. The message names the variables.
+**`anthropic: missing credentials: …`** — no cloud deployment is selected and
+none of `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_OAUTH_TOKEN` is
+set. The message names what to set.
 
-**A 401 despite the pre-flight passing** — you have a base URL set but no key,
-which is the `ambient` state: discovered, not authenticated. Set the key too.
+**A 401 from Vertex or Bedrock despite the pre-flight passing** — the
+pre-flight only resolves the deployment; Google and AWS credentials are
+checked on the first request. A Vertex 401 names the project and how the
+deployment was selected.
 
 **`agent is busy` (`ErrBusy`)** — `Run` or `Stream` was called while a turn was
 in flight. Conflicting operations fail rather than queue, because a prompt
