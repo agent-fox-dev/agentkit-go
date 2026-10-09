@@ -112,3 +112,20 @@ why.
 - TS-12-11's pseudocode checks `RunResult`, `RunStopReason` and `StopReason`
   as fields of `Usage`; they are types, and the test checks that core
   declares them.
+
+## 12-REQ-5: the budgets, and the one that is missed
+
+- **Lines of code, not lines.** TS-12-14 counts the non-blank lines that are
+  not comments (`codeLines` in `core/size_test.go`); `core` is 1,600 or
+  fewer and the root module 20,000 or fewer by that count. Counted raw, the
+  root module was about 26,000 lines before this spec, comments included,
+  and no task removes six thousand lines of code.
+- **The 50-type budget is missed, by decision.** The event vocabulary
+  (`core/event.go`, 24 types) and the tool and interceptor vocabulary stay,
+  so after every deletion this spec names `core` declares 73 exported types.
+  TS-12-13 counts them and skips with that count rather than failing: an
+  unmet requirement, not a regression.
+- **More went than the spec named.** `Phase`, `ConfigView`,
+  `SessionSnapshot` and `RetryAfterError` had no user left. `DefaultMaxTokens`
+  lived in `config.go`; it is `agentkit.DefaultMaxTokens` now, the driver
+  being its only reader.

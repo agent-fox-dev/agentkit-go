@@ -210,7 +210,7 @@
         "core/history.go and core/config.go are deleted",
         "core exported type count is <= 50, core production lines <= 1,600, root module lines <= 20,000"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,

@@ -69,9 +69,17 @@ type Config struct {
 	Timeout    time.Duration
 	// Prune ages old tool results out of the request; the zero value is off.
 	Prune PruneOptions
-	// MaxTokens caps each response; zero means core.DefaultMaxTokens.
+	// MaxTokens caps each response; zero means DefaultMaxTokens.
 	MaxTokens int
 }
+
+// DefaultMaxTokens is the output bound sent when Config.MaxTokens is zero.
+// It is still capped at the model's own output cap; a caller who wants the
+// whole cap says so. Providers size rate-limit reservations from max_tokens
+// at request start, so defaulting to a 128K cap costs 128K of
+// output-per-minute budget per turn and removes the only bound on a runaway
+// turn. 32K is generous for tool-call-shaped output.
+const DefaultMaxTokens = 32768
 
 // PruneOptions controls how old tool results leave the request.
 type PruneOptions struct {

@@ -54,7 +54,7 @@ Rules that follow from it:
 | Package | Owns |
 |---|---|
 | `.` | The driver: `Config`, `New` and the `Agent` (`agent.go`, whose surface is `Run`, `Stream`, `Messages`, `Usage` and `ReachableTools`), the loop (`loop.go`), the tool batch executor (`batch.go`), nested tool calls (`nested.go`), the `execute` guard check (`execguard.go`). |
-| `core` | Messages, content blocks, events and their discriminated JSON form (`MarshalEvent`, with a caller-supplied `MessageEncoder`), `EventStream`, `AgentConfig`, `Tool`, `ToolPolicy`, argument preparation, `Model`, `Usage`, stop reasons, errors. |
+| `core` | Messages, content blocks, events and their discriminated JSON form (`MarshalEvent`, with a caller-supplied `MessageEncoder`), `EventStream`, `Tool`, `ToolPolicy`, argument preparation, `Model`, `Usage`, stop reasons, errors. |
 | `catalog` | Embedded Claude model catalog (`catalog.json`) and `Lookup`: context window, output cap, prices and thinking kind, with a usable default for an unlisted id. |
 | `provider` | What a wire API needs and does not own: cost arithmetic, the per-session tool-schema cache (`ToolPrefix`) and deferred-tool splitting. Transport, retries and SSE framing are the Anthropic SDK's. |
 | `provider/anthropic` | Anthropic Messages over the official SDK — direct, Claude on Vertex AI and on Bedrock, chosen by `Resolve` — including the send-time transcript repair (`RepairTranscript`) and partial-JSON salvage of streamed tool arguments (`SalvageJSON`). |

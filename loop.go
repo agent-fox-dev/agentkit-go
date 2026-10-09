@@ -432,7 +432,7 @@ func streamReporter(s *core.EventStream) func(error) {
 func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.Messages, report func(error)) core.AssistantMessage {
 	maxTokens := a.cfg.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = core.DefaultMaxTokens
+		maxTokens = DefaultMaxTokens
 	}
 	req := core.Request{
 		Prefix:    a.cfg.Prefix,
