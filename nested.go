@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // nestedEnv is what a nested call needs from the batch that runs its
@@ -21,7 +21,6 @@ type nestedEnv struct {
 	assistant *core.AssistantMessage
 	turnCount int
 	report    func(error)
-	tracer    core.Tracer
 }
 
 // nestedCaller is the core.NestedCaller executeBatch attaches to a wrapper's
@@ -101,14 +100,14 @@ func (n *nestedCaller) Call(ctx context.Context, calls ...core.ToolUseBlock) ([]
 		prepared, tool, call, res, ok := n.prepare(ctx, calls, i, c)
 		if !ok {
 			results[i] = res
-			n.closeInline(call, tool, prepared.Raw, res)
+			n.closeInline(call, res)
 		}
 		if n.terminated.Load() {
 			// An interceptor ended the wrapper. The calls already queued
 			// opened on the stream and never ran; they close as aborted,
 			// so every nested call that opened closes exactly once.
 			for _, q := range run {
-				n.closeInline(q.call, q.tool, q.prepared.Raw, nestedAborted())
+				n.closeInline(q.call, nestedAborted())
 			}
 			return nil, core.ErrTerminated
 		}
@@ -225,10 +224,6 @@ func (n *nestedCaller) prepare(ctx context.Context, batch []core.ToolUseBlock, i
 			prepared = next
 		}
 	}
-	if d, by := pluginVeto(ctx, cfg.Plugins, call.Name, prepared.Raw); d == core.PluginBlock {
-		return prepared, tool, call, core.ErrResult("blocked_by_plugin",
-			fmt.Sprintf("plugin %q blocked this call", by.PluginName())), false
-	}
 	return prepared, tool, call, core.ToolResult{}, true
 }
 
@@ -236,7 +231,7 @@ func (n *nestedCaller) prepare(ctx context.Context, batch []core.ToolUseBlock, i
 func (n *nestedCaller) execute(ctx context.Context, call core.ToolUseBlock, tool core.Tool, prepared core.PreparedArguments) core.ToolResult {
 	start := time.Now()
 	hctx, child := n.env.withCaller(ctx, call, tool)
-	out := tracedInvoke(hctx, n.env.tracer, n.env.report, call, tool, prepared, n.parentID, start)
+	out := invokeHandler(hctx, tool, prepared)
 	if child != nil {
 		if child.terminated.Load() {
 			// A wrapper nested in this one was terminated; so is this one.
@@ -254,14 +249,12 @@ func (n *nestedCaller) execute(ctx context.Context, call core.ToolUseBlock, tool
 	// A nested handler cannot end the run (07-REQ-6.1). No tool a wrapper
 	// reaches is Terminating — registration refuses that — so the vote is
 	// always dropped, and recorded where it was cast and on the wrapper.
-	ignored := out.Terminate
-	if ignored {
+	if out.Terminate {
 		out.Terminate = false
 		out.Detail = annotate(out.Detail, "terminate vote ignored: "+call.Name+" was called through "+n.parentName)
 		n.voteIgnored.Store(true)
 	}
 	elapsed := time.Since(start)
-	n.audit(call, tool, prepared.Raw, out, ignored, elapsed)
 
 	// Finalize under the caller's mutex, as a direct call finalizes under the
 	// batch mutex: AfterToolCall and the end event are serialized, with a
@@ -291,11 +284,9 @@ func (n *nestedCaller) execute(ctx context.Context, call core.ToolUseBlock, tool
 }
 
 // closeInline ends a nested call that never reached its handler: it closes
-// on the stream and is audited with the reason, as a direct call finalized
-// in prepare is.
-func (n *nestedCaller) closeInline(call core.ToolUseBlock, tool core.Tool, args json.RawMessage, res core.ToolResult) {
+// on the stream, as a direct call finalized in prepare is.
+func (n *nestedCaller) closeInline(call core.ToolUseBlock, res core.ToolResult) {
 	n.push(n.endEvent(call, res, 0))
-	n.audit(call, tool, args, res, false, 0)
 }
 
 // annotate appends note to a result's detail.
@@ -304,25 +295,6 @@ func annotate(detail, note string) string {
 		return note
 	}
 	return detail + "; " + note
-}
-
-// audit records one nested call like a direct one, linked to its wrapper's
-// call (07-REQ-8.4).
-func (n *nestedCaller) audit(call core.ToolUseBlock, tool core.Tool, args json.RawMessage, out core.ToolResult,
-	ignored bool, elapsed time.Duration) {
-	if len(args) == 0 {
-		args = call.Input
-	}
-	n.env.a.audit(core.AuditEvent{
-		Kind: core.AuditToolCall, SessionID: n.env.cfg.SessionID,
-		ToolName: call.Name, ToolUseID: call.ID, ParentToolUseID: n.parentID,
-		ServerName:       serverNameOf(tool, call.Name),
-		ArgumentsHash:    core.HashArguments(args),
-		IsError:          !out.OK,
-		ErrorCode:        errorCodeOf(out),
-		ElapsedMS:        elapsed.Milliseconds(),
-		TerminateIgnored: ignored,
-	})
 }
 
 // push emits a nested call's execution event. Pushes are serialized so a

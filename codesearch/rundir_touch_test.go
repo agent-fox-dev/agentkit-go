@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // builtIndex returns an index over a small workspace, already built by a first

@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/agentfox/agentkit-go/compaction"
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/prompt"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/prompt"
 )
 
 // maxTokensToolText is REQ-LOOP-10's fixed result text, pinned byte-for-byte
@@ -29,29 +28,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) (core.RunResult, error) 
 
 // RunMessage is Run with a caller-built message.
 func (a *Agent) RunMessage(ctx context.Context, m core.UserMessage) (core.RunResult, error) {
-	s, err := a.stream(ctx, &m, false)
-	if err != nil {
-		return core.RunResult{}, err
-	}
-	return s.RunResult()
-}
-
-// Continue resumes a transcript without supplying a new user message
-// (REQ-LOOP-16). It is a distinct operation from Run and is required for
-// resuming a session loaded from disk: Run cannot express it, because Run
-// would append a spurious user turn.
-//
-// Precondition by the role of the last message:
-//
-//	user, tool_result — resume with no new message; the model owes a reply.
-//	assistant         — drain the queues and run with those; if both are
-//	                    empty, ErrNotContinuable. A completed assistant turn
-//	                    is not continuable.
-//
-// Resuming a transcript that ends in a tool_result is the normal outcome of
-// REQ-LOOP-09 cancellation, so this is not an optional convenience.
-func (a *Agent) Continue(ctx context.Context) (core.RunResult, error) {
-	s, err := a.stream(ctx, nil, true)
+	s, err := a.stream(ctx, &m)
 	if err != nil {
 		return core.RunResult{}, err
 	}
@@ -68,10 +45,10 @@ func (a *Agent) Continue(ctx context.Context) (core.RunResult, error) {
 // that produced nothing (ruling C5).
 func (a *Agent) Stream(ctx context.Context, prompt string) (*core.EventStream, error) {
 	m := core.UserMessage{Content: core.Content{core.TextBlock{Text: prompt}}, Timestamp: time.Now()}
-	return a.stream(ctx, &m, false)
+	return a.stream(ctx, &m)
 }
 
-func (a *Agent) stream(ctx context.Context, initial *core.UserMessage, isContinue bool) (*core.EventStream, error) {
+func (a *Agent) stream(ctx context.Context, initial *core.UserMessage) (*core.EventStream, error) {
 	// OQ-8: a shell tool with no interceptor fails here, before anything is
 	// recorded, so the omission is a returned error on the first Run and not
 	// an unrestricted shell discovered from a bill.
@@ -83,31 +60,6 @@ func (a *Agent) stream(ctx context.Context, initial *core.UserMessage, isContinu
 		return nil, err
 	}
 
-	if isContinue {
-		// REQ-LOOP-16, assistant branch: "drain the steering AND follow-up
-		// queues and run with those". The slot claim drained steering; a
-		// follow-up is normally polled only once the inner loop is exhausted
-		// (REQ-LOOP-14), but here there is no inner loop to exhaust — the
-		// last turn already completed — so a follow-up alone would otherwise
-		// send the assistant-terminated transcript to the model first and be
-		// delivered a turn late.
-		if len(pending) == 0 && a.effectiveLastRole() == core.RoleAssistant {
-			a.mu.Lock()
-			pending = a.drainFollowUpLocked()
-			a.mu.Unlock()
-		}
-		if err := a.checkContinuable(pending); err != nil {
-			// Put the drained messages back: we claimed the slot and drained
-			// under one lock, so bailing out here must not eat them.
-			a.mu.Lock()
-			a.steering = append(pending, a.steering...)
-			a.mu.Unlock()
-			cancel()
-			a.releaseSlot()
-			return nil, err
-		}
-	}
-
 	a.mu.Lock()
 	opts := a.cfg.StreamOptions
 	a.mu.Unlock()
@@ -116,53 +68,10 @@ func (a *Agent) stream(ctx context.Context, initial *core.UserMessage, isContinu
 	go func() {
 		defer cancel()
 		defer a.releaseSlot()
-		res, err := a.runLoop(rctx, s, initial, pending, nil)
+		res, err := a.runLoop(rctx, s, initial, pending)
 		s.End(core.StreamResult{Message: lastAssistant(res.Messages), Result: &res, Err: err})
 	}()
 	return s, nil
-}
-
-// checkContinuable enforces REQ-LOOP-16's precondition table.
-func (a *Agent) checkContinuable(pending []core.Message) error {
-	if _, ok := a.history.LastRole(); !ok {
-		return fmt.Errorf("%w: history is empty", core.ErrNotContinuable)
-	}
-	role := a.effectiveLastRole()
-	if role == "" {
-		return fmt.Errorf("%w: history holds only a terminal marker", core.ErrNotContinuable)
-	}
-	switch role {
-	case core.RoleUser, core.RoleToolResult:
-		return nil
-	case core.RoleAssistant:
-		a.mu.Lock()
-		queued := len(pending) > 0 || len(a.steering) > 0 || len(a.followUp) > 0
-		a.mu.Unlock()
-		if queued {
-			return nil
-		}
-		return fmt.Errorf("%w: last message is a completed assistant turn and no message is queued; "+
-			"use Run to add one, or Steer/FollowUp first", core.ErrNotContinuable)
-	}
-	return fmt.Errorf("%w: unexpected last role %q", core.ErrNotContinuable, role)
-}
-
-// effectiveLastRole is the role of the last message THE MODEL WILL SEE. A
-// trailing aborted or errored assistant message is the REQ-LOOP-09 terminal
-// marker, not a completed turn: REQ-PROV-11 rule 2 drops it from every
-// outbound request, so the model still owes a reply to whatever preceded it.
-// The REQ-LOOP-16 precondition is therefore evaluated past those markers
-// (ruling: "a completed assistant turn" means one that completed). Empty
-// history, or history holding only markers, yields "".
-func (a *Agent) effectiveLastRole() core.Role {
-	msgs := a.history.Messages()
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if am, ok := msgs[i].(core.AssistantMessage); ok && am.StopReason.ShortCircuits() {
-			continue
-		}
-		return msgs[i].Role()
-	}
-	return ""
 }
 
 func lastAssistant(ms core.Messages) *core.AssistantMessage {
@@ -177,12 +86,7 @@ func lastAssistant(ms core.Messages) *core.AssistantMessage {
 // runLoop is the loop of §5. Read it top to bottom; the order of the phases is
 // the specification, and several of them are placed where they are because the
 // obvious placement is a bug.
-//
-// redeemed, when set, is an assistant turn that already exists — a redeemed
-// deferred answer (RedeemDeferred). The first iteration takes it in place of a
-// model call and runs from there exactly as from a live turn: its tool batch,
-// TurnEnd, the stop policy, and the turns after it.
-func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial *core.UserMessage, pending []core.Message, redeemed *core.AssistantMessage) (res core.RunResult, runErr error) {
+func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial *core.UserMessage, pending []core.Message) (res core.RunResult, runErr error) {
 	startedAt := time.Now()
 	var (
 		newMessages core.Messages
@@ -199,10 +103,9 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial *core.
 	a.mu.Unlock()
 
 	// finish is the ONE exit path: it builds the RunResult and fires the
-	// terminal events and the session-end audit. It exists as a closure so
-	// the panic recovery below reaches the same tail as a normal exit — a
-	// run that panicked still owes its AgentDoneEvent and its session-end
-	// audit, or an auditor cannot tell it from one still running.
+	// terminal events. It exists as a closure so the panic recovery below
+	// reaches the same tail as a normal exit — a run that panicked still owes
+	// its AgentDoneEvent, or a consumer cannot tell it from one still running.
 	finish := func() {
 		a.setPhase(core.PhaseIdle)
 		// A run that ended because the model refused is not a clean
@@ -234,18 +137,6 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial *core.
 		done := core.AgentDoneEvent{Result: res, Usage: a.Usage()}
 		s.Push(done)
 		a.fireAgentDone(done)
-
-		// REQ-OBS-03's session end fires on EVERY exit — clean, errored or
-		// aborted. A hook that fires only on the happy path is worse than
-		// none: an auditor cannot then tell a session that ended badly from
-		// one still running, which is the case they most need to see.
-		end := core.AuditEvent{
-			Kind: core.AuditSessionEnd, Usage: a.Usage(), StopReason: res.StopReason,
-		}
-		if runErr != nil {
-			end.Error = runErr.Error()
-		}
-		a.audit(end)
 
 		if runErr != nil {
 			a.fireError(runErr)
@@ -281,26 +172,17 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial *core.
 				API:          startCfg.Model.API,
 				Model:        startCfg.Model.ID,
 			}
-			if _, err := a.rec.RecordMessage(marker); err != nil {
-				a.fireError(fmt.Errorf("agentkit: persisting message: %w", err))
-			}
+			a.history.Record(core.EntryID(newID("entry")), marker)
 			newMessages = append(newMessages, marker)
 		}
 		finish()
 	}()
 
-	// record is the ONLY path a message enters the run by. It goes through the
-	// recorder, so history and the durable log advance together and cannot
-	// drift: a message in history that never reached the log is exactly the
-	// state that makes a resumed session lose the last turn (REQ-SESS-01).
+	// record is the ONLY path a message enters the run by, so history and
+	// the run's own message list cannot drift apart.
 	record := func(msgs ...core.Message) {
 		for _, m := range msgs {
-			if _, err := a.rec.RecordMessage(m); err != nil {
-				// Persistence failures are surfaced, never swallowed
-				// (REQ-SESS-08), but they do not abort the run: losing the
-				// log is bad, losing the turn in flight is worse.
-				a.fireError(fmt.Errorf("agentkit: persisting message: %w", err))
-			}
+			a.history.Record(core.EntryID(newID("entry")), m)
 			newMessages = append(newMessages, m)
 		}
 	}
@@ -315,7 +197,6 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial *core.
 	}
 
 	s.Push(core.AgentStartEvent{SessionID: startCfg.SessionID, Provider: startCfg.Model.Provider, API: startCfg.Model.API, Model: startCfg.Model.ID})
-	a.audit(core.AuditEvent{Kind: core.AuditSessionStart, Timestamp: startedAt})
 
 	// Outer loop: a pending follow-up restarts it within the SAME run — no
 	// second AgentStartEvent, one RunResult (REQ-LOOP-14).
@@ -323,64 +204,50 @@ outer:
 	for {
 	inner:
 		for {
-			var assistant core.AssistantMessage
-			if redeemed != nil {
-				// A turn that already exists. Steering and the context
-				// transform belong to the request it would have been, which
-				// was made long ago; a message steered in meanwhile is
-				// delivered at the next turn boundary, after this answer.
-				assistant, redeemed = *redeemed, nil
-				a.setPhase(core.PhaseCallingModel)
-				s.Push(core.TurnStartEvent{TurnIndex: turnCount})
-				a.fireTurnStart(core.TurnStartEvent{TurnIndex: turnCount})
-				s.Push(core.MessageStartEvent{Message: assistant})
-				s.Push(core.MessageEndEvent{Message: assistant})
-			} else {
-				// ---- Phase 1: drain steering, BEFORE the context transform.
-				//
-				// §5's pseudocode drains after PrepareNextTurn; REQ-LOOP-13 says
-				// before, and REQ-LOOP-13 wins (ruling P-18). Under §5's order a
-				// steering message is invisible to the compaction that just built
-				// the view it will be appended to.
+			// ---- Phase 1: drain steering, BEFORE the context transform.
+			//
+			// §5's pseudocode drains after PrepareNextTurn; REQ-LOOP-13 says
+			// before, and REQ-LOOP-13 wins (ruling P-18). Under §5's order a
+			// steering message is invisible to the compaction that just built
+			// the view it will be appended to.
+			a.mu.Lock()
+			drained := a.drainSteeringLocked()
+			a.mu.Unlock()
+			delivered := len(drained)
+			record(drained...)
+
+			// ---- Phase 2: PrepareNextTurn at the head of THIS iteration,
+			// immediately before the request it prepares (REQ-LOOP-04b,
+			// NFR-REL-05). Not after TurnEnd: there it would fire for a turn
+			// that will not happen, and would miss the request issued after a
+			// tool batch within the same user turn.
+			view := a.prepareNextTurn(ctx)
+
+			// ---- Phase 3: second poll. PrepareNextTurn may be long-running
+			// (a summarization round trip), so a message that arrived during
+			// it would otherwise wait a whole turn.
+			//
+			// The guard is "nothing already delivered into THIS turn", not
+			// REQ-LOOP-13's literal `len(pending)==0`, which read literally
+			// can never yield anything — pending is empty exactly when the
+			// first drain took everything (ruling P-17).
+			if delivered == 0 {
 				a.mu.Lock()
-				drained := a.drainSteeringLocked()
+				more := a.drainSteeringLocked()
 				a.mu.Unlock()
-				delivered := len(drained)
-				record(drained...)
-
-				// ---- Phase 2: PrepareNextTurn at the head of THIS iteration,
-				// immediately before the request it prepares (REQ-LOOP-04b,
-				// NFR-REL-05). Not after TurnEnd: there it would fire for a turn
-				// that will not happen, and would miss the request issued after a
-				// tool batch within the same user turn.
-				view := a.prepareNextTurn(ctx)
-
-				// ---- Phase 3: second poll. PrepareNextTurn may be long-running
-				// (a summarization round trip), so a message that arrived during
-				// it would otherwise wait a whole turn.
-				//
-				// The guard is "nothing already delivered into THIS turn", not
-				// REQ-LOOP-13's literal `len(pending)==0`, which read literally
-				// can never yield anything — pending is empty exactly when the
-				// first drain took everything (ruling P-17).
-				if delivered == 0 {
-					a.mu.Lock()
-					more := a.drainSteeringLocked()
-					a.mu.Unlock()
-					if len(more) > 0 {
-						record(more...)
-						view = append(view.Clone(), more...)
-					}
+				if len(more) > 0 {
+					record(more...)
+					view = append(view.Clone(), more...)
 				}
-
-				// ---- Phase 4: call the provider.
-				a.setPhase(core.PhaseCallingModel)
-				s.Push(core.TurnStartEvent{TurnIndex: turnCount})
-				a.fireTurnStart(core.TurnStartEvent{TurnIndex: turnCount})
-
-				assistant = a.callModel(ctx, s, view)
-				stampDeferred(&assistant)
 			}
+
+			// ---- Phase 4: call the provider.
+			a.setPhase(core.PhaseCallingModel)
+			s.Push(core.TurnStartEvent{TurnIndex: turnCount})
+			a.fireTurnStart(core.TurnStartEvent{TurnIndex: turnCount})
+
+			assistant := a.callModel(ctx, s, view)
+			stampDeferred(&assistant)
 			record(assistant)
 			a.addUsage(assistant.Usage)
 
@@ -407,9 +274,9 @@ outer:
 			// completion" — the exact failure OQ-11 warns about.
 			//
 			// With a handle it is a CLEAN end (REQ-PROV-19): the receipt is
-			// on the message and in the session log, and the embedder redeems
-			// it with Agent.RedeemDeferred whenever it chooses. OQ-11 ships
-			// the handle and no poller, so the run does not wait.
+			// on the message, and the embedder fetches the answer through the
+			// provider registry's FetchDeferred whenever it chooses. OQ-11
+			// ships the handle and no poller, so the run does not wait.
 			//
 			// WITHOUT a handle there is nothing to redeem, and that is the
 			// empty completion the requirement exists to foreclose — so it
@@ -494,9 +361,8 @@ outer:
 			// around again would issue a provider request on a dead context,
 			// which resolves instantly to a content-free aborted assistant
 			// message — a turn that never happened, recorded as though it
-			// did. The transcript this leaves ends in a tool_result, which
-			// REQ-LOOP-16 names as the normal outcome of REQ-LOOP-09
-			// cancellation and the reason Continue exists.
+			// did. The transcript this leaves ends in a tool_result, the
+			// normal outcome of REQ-LOOP-09 cancellation.
 			if ctx.Err() != nil {
 				runReason, runErr = core.RunStopAborted, a.abortError(ctx)
 				break outer
@@ -571,7 +437,7 @@ func (a *Agent) abortError(ctx context.Context) error {
 func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.Messages) core.AssistantMessage {
 	// A middleware that discards a billed attempt (Retry) reports its usage
 	// through the context; it joins Agent.Usage like a summary's does.
-	ctx = core.WithUsageReporter(ctx, a.addOffLoopUsage)
+	ctx = core.WithUsageReporter(ctx, a.addUsage)
 	a.mu.Lock()
 	cfg := a.cfg
 	tools := cfg.ToolPolicy.Resolve(a.tools)
@@ -590,15 +456,14 @@ func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.
 		maxTokens = &v
 	}
 	req := core.Request{
-		Messages:         view,
-		Tools:            core.ToolWires(tools),
-		ToolChoice:       cfg.ToolChoice,
-		MaxTokens:        maxTokens,
-		Temperature:      cfg.Temperature,
-		TopP:             cfg.TopP,
-		ThinkingLevel:    cfg.ThinkingLevel,
-		EstContextTokens: compaction.EstimateContextTokens(view, checkpointOf(a.history)),
-		Options:          cfg.RequestOptions,
+		Messages:      view,
+		Tools:         core.ToolWires(tools),
+		ToolChoice:    cfg.ToolChoice,
+		MaxTokens:     maxTokens,
+		Temperature:   cfg.Temperature,
+		TopP:          cfg.TopP,
+		ThinkingLevel: cfg.ThinkingLevel,
+		Options:       cfg.RequestOptions,
 		// REQ-PROV-19: carried from the options a caller can actually set
 		// onto the field a provider reads.
 		Deferred: cfg.RequestOptions.Deferred,
@@ -674,8 +539,8 @@ func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.
 	// The aborted message is returned AS THE PROVIDER PRODUCED IT. REQ-LOOP-09
 	// requires error_message set on an aborted turn and forbids rewriting the
 	// message at abort time; REQ-LOOP-09a's "error message cleared" applies
-	// only to a cancellation landing during a retry BACKOFF, which
-	// middleware.Retry normalizes itself. Clearing it here for every abort
+	// only to a cancellation landing during a retry BACKOFF, which the
+	// layer that retries normalizes itself. Clearing it here for every abort
 	// erased the diagnostic the transcript is supposed to carry — and did it
 	// by writing through the provider stream's own message.
 	return *msg
@@ -701,29 +566,9 @@ func (a *Agent) synthesizeTruncated(s *core.EventStream, calls []core.ToolUseBlo
 		}
 		s.Push(core.ToolExecutionEndEvent{ToolUseID: c.ID, Name: c.Name, IsError: true})
 		s.Push(core.ToolResultEvent{Message: m})
-		// Audited like any call (REQ-OBS-05), with the reason it did not run.
-		a.audit(core.AuditEvent{
-			Kind: core.AuditToolCall, ToolName: c.Name, ToolUseID: c.ID,
-			ServerName:    serverNameOf(a.toolNamed(c.Name), c.Name),
-			ArgumentsHash: core.HashArguments(c.Input),
-			IsError:       true,
-			ErrorCode:     "max_tokens",
-		})
 		out = append(out, m)
 	}
 	return out
-}
-
-// toolNamed is the registered tool called name, or the zero Tool.
-func (a *Agent) toolNamed(name string) core.Tool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for _, t := range a.tools {
-		if t.Name == name {
-			return t
-		}
-	}
-	return core.Tool{}
 }
 
 // prepareNextTurn applies the context transform (REQ-GO-12). It produces the
@@ -749,7 +594,7 @@ func (a *Agent) prepareNextTurn(ctx context.Context) core.Messages {
 	// A transform that calls a model — a compaction summary — spends on the
 	// agent's behalf off the loop, and reports it through core.ReportUsage
 	// so Agent.Usage and the StopPolicy budgets see it.
-	tctx := core.WithUsageReporter(ctx, a.addOffLoopUsage)
+	tctx := core.WithUsageReporter(ctx, a.addUsage)
 	// The transform gets its own deep copy: a block it edits in place must
 	// not rewrite stored history, which this function promises never to do.
 	msgs = msgs.Clone()
@@ -760,13 +605,6 @@ func (a *Agent) prepareNextTurn(ctx context.Context) core.Messages {
 		}
 	})
 	return view
-}
-
-func checkpointOf(h *core.ConversationHistory) *core.CompactionCheckpoint {
-	if cp, ok := h.Checkpoint(); ok {
-		return &cp
-	}
-	return nil
 }
 
 // consultStopPolicy runs the single post-turn predicate (REQ-LOOP-04).
@@ -817,12 +655,7 @@ func (a *Agent) addUsage(u core.Usage) {
 	a.mu.Lock()
 	a.usage = a.usage.Add(u)
 	a.runUsage = a.runUsage.Add(u)
-	model := a.cfg.Model
 	a.mu.Unlock()
-	// Level 1 accounting is folded from the SAME reported usage the turn was
-	// billed against (REQ-CACHE-08). Recomputing it from a token estimate here
-	// would make the savings figure disagree with the invoice.
-	a.meter.ObserveTurn(model, u)
 }
 
 // runUsageSnapshot is the current run's usage, for RunResult and StopContext
@@ -831,17 +664,6 @@ func (a *Agent) runUsageSnapshot() core.Usage {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.runUsage
-}
-
-// addOffLoopUsage counts a request made outside the loop, such as a
-// compaction summary. It is spend, so it joins the agent's usage; it is not a
-// turn of the conversation and is sent uncached, so it is not folded into the
-// cache meter's per-turn accounting.
-func (a *Agent) addOffLoopUsage(u core.Usage) {
-	a.mu.Lock()
-	a.usage = a.usage.Add(u)
-	a.runUsage = a.runUsage.Add(u)
-	a.mu.Unlock()
 }
 
 // ------------------------------------------------------------------- hooks

@@ -55,7 +55,7 @@
         "batch.go",
         "nested.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -98,7 +98,7 @@
       "depends_on": [
         1
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -138,7 +138,7 @@
       "depends_on": [
         2
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -166,7 +166,7 @@
       "depends_on": [
         3
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -196,7 +196,7 @@
       "depends_on": [
         4
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -228,7 +228,7 @@
       "depends_on": [
         5
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -259,7 +259,7 @@
       "done_when": [
         "make check exits 0 cleanly across root module and codesearch submodule with all tests passing and no wall-clock timing flakes."
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

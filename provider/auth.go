@@ -1,3 +1,9 @@
+// Package provider holds the machinery the wire API implementations share:
+// credential resolution, SSE reading, retry classification and cost.
+//
+// The concrete wire APIs live in subpackages (provider/anthropic,
+// provider/faux), one per API, because REQ-PROV-02 keys providers by wire
+// protocol rather than by vendor.
 package provider
 
 import (

@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/agentfox/agentkit-go/jsonx"
+	"github.com/agent-fox-dev/agentkit-go/jsonx"
 )
 
 type Type string

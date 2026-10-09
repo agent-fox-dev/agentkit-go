@@ -6,13 +6,11 @@ import (
 	"errors"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/compaction"
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/guard"
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/guard"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // blocking is a provider that honours ctx: it holds the stream open until the
@@ -147,74 +145,13 @@ func TestACancelledBatchEndsTheRunAtTheTurnBoundary(t *testing.T) {
 	if role, _ := a.History().LastRole(); role != core.RoleToolResult {
 		t.Fatalf("transcript ends in %q, want tool_result", role)
 	}
-	// And the resume path the requirement names actually works.
-	if _, err := a.Continue(context.Background()); err != nil {
-		t.Fatalf("Continue after a cancelled batch: %v", err)
-	}
-	if s.turnsRun() != 2 {
-		t.Fatalf("Continue did not resume the loop: %d provider calls", s.turnsRun())
-	}
-}
-
-// TestContinueAfterAnAbortedTurnIsAllowed: a trailing aborted assistant
-// message is the REQ-LOOP-09 terminal marker, not a completed turn. Rule 2 of
-// REQ-PROV-11 drops it from the outbound request, so the model still owes a
-// reply and Continue must accept the transcript.
-func TestContinueAfterAnAbortedTurnIsAllowed(t *testing.T) {
-	b := &blocking{started: make(chan struct{})}
-	a := newTestAgent(t, nil, nil)
-	a.cfg.Providers = core.ProviderRegistry{testAPI: b.provider()}
-	go func() { <-b.started; a.Abort() }()
-	_, _ = a.Run(context.Background(), "go")
-	if role, _ := a.History().LastRole(); role != core.RoleAssistant {
-		t.Fatalf("setup: last role %q", role)
-	}
-
-	// Swap in a provider that completes, then Continue.
-	s := &scripted{}
-	a.cfg.Providers = core.ProviderRegistry{testAPI: s.provider()}
-	if _, err := a.Continue(context.Background()); err != nil {
-		t.Fatalf("Continue after an aborted turn: %v (REQ-LOOP-16)", err)
-	}
-	if s.turnsRun() != 1 {
-		t.Fatal("Continue did not issue a request")
-	}
-}
-
-// TestContinueWithOnlyAFollowUpQueuedDeliversItFirst: REQ-LOOP-16's
-// assistant branch drains BOTH queues. A follow-up alone used to be delivered
-// a turn late, after a request carrying the assistant-terminated transcript.
-func TestContinueWithOnlyAFollowUpQueuedDeliversItFirst(t *testing.T) {
-	s := &scripted{}
-	a := newTestAgent(t, s, nil)
-	if _, err := a.Run(context.Background(), "first"); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.FollowUpText("second"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := a.Continue(context.Background()); err != nil {
-		t.Fatalf("Continue: %v", err)
-	}
-	sent := s.sentAt(1)
-	if sent == nil {
-		t.Fatal("no second request")
-	}
-	last := sent[len(sent)-1]
-	um, ok := last.(core.UserMessage)
-	if !ok || um.Content.Text() != "second" {
-		t.Fatalf("the first request after Continue ended in %v; want the follow-up %q", last, "second")
-	}
-	if s.turnsRun() != 2 {
-		t.Fatalf("%d provider calls; the follow-up must be delivered in ONE request, not after a spurious one", s.turnsRun())
-	}
 }
 
 // ------------------------------------------------------------------ NFR-REL-02
 
 // TestPanicsInThirdPartyCodeDoNotCrashTheProcess covers the call sites that
-// were bare: middleware, the context transform, the stop policy, a tool's
-// argument shim, and the tracer. Each was confirmed to crash the test binary
+// were bare: middleware, the context transform, the stop policy and a tool's
+// argument shim. Each was confirmed to crash the test binary
 // before the wrappers landed.
 func TestPanicsInThirdPartyCodeDoNotCrashTheProcess(t *testing.T) {
 	explode := func(what string) func(*core.AgentConfig) {
@@ -228,8 +165,6 @@ func TestPanicsInThirdPartyCodeDoNotCrashTheProcess(t *testing.T) {
 				c.TransformContext = func(context.Context, core.Messages) core.Messages { panic("tf exploded") }
 			case "stoppolicy":
 				c.StopPolicy = func(core.StopContext) bool { panic("policy exploded") }
-			case "tracer":
-				c.Tracer = panickingTracer{}
 			}
 		}
 	}
@@ -293,27 +228,7 @@ func TestPanicsInThirdPartyCodeDoNotCrashTheProcess(t *testing.T) {
 			t.Fatalf("a panicking PrepareArguments must become an error tool result (REQ-TOOL-11): %v", tr.Content.Text())
 		}
 	})
-	t.Run("tracer", func(t *testing.T) {
-		var ran atomic.Int32
-		s := oneToolTurn(t)
-		a := newTestAgent(t, s, explode("tracer"))
-		_ = a.RegisterTool(echoTool("echo", &ran))
-		res, err := a.Run(context.Background(), "go")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if ran.Load() != 1 {
-			t.Fatalf("handler ran %d times; a panicking tracer must not eat the tool call", ran.Load())
-		}
-		if tr := findToolResult(t, res.Messages, "c1"); tr.IsError {
-			t.Fatalf("tool result is an error under a broken tracer: %s", tr.Content.Text())
-		}
-	})
 }
-
-type panickingTracer struct{}
-
-func (panickingTracer) StartSpan(string, func(core.Span) error) error { panic("tracer exploded") }
 
 // ------------------------------------------------------------------ REQ-LOOP-11.3
 
@@ -485,31 +400,6 @@ func TestSetModelDuringARunDoesNotRace(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ REQ-OBS-03
-
-type sessionHook struct {
-	votingHook
-	starts, ends *atomic.Int32
-}
-
-func (h *sessionHook) OnSessionStart(core.AuditEvent) { h.starts.Add(1) }
-func (h *sessionHook) OnSessionEnd(core.AuditEvent)   { h.ends.Add(1) }
-
-// TestPluginSessionHooksFire: REQ-OBS-03 names EventHookPlugin explicitly,
-// and the registry's hooks never received session boundaries at all.
-func TestPluginSessionHooksFire(t *testing.T) {
-	var starts, ends atomic.Int32
-	h := &sessionHook{votingHook: votingHook{name: "obs"}, starts: &starts, ends: &ends}
-	s := &scripted{}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) { c.Plugins = registryWith(h) })
-	if _, err := a.Run(context.Background(), "go"); err != nil {
-		t.Fatal(err)
-	}
-	if starts.Load() != 1 || ends.Load() != 1 {
-		t.Fatalf("plugin saw %d session starts and %d ends, want 1/1 (REQ-OBS-03)", starts.Load(), ends.Load())
-	}
-}
-
 // ------------------------------------------------------------------ OQ-8
 
 // TestAShellToolWithNoInterceptorFailsTheRun: construction of a run fails
@@ -545,48 +435,3 @@ func TestAShellToolWithNoInterceptorFailsTheRun(t *testing.T) {
 		t.Fatalf("excluded shell tool: %v", err)
 	}
 }
-
-// ------------------------------------------------------------------ REQ-GO-14
-
-// TestACutInsideATurnSummarizesTheTurnSeparately pins the split: when the
-// boundary lands on an assistant message, the completed turns and the
-// interrupted turn are summarized separately and joined with the fixed
-// separator.
-func TestACutInsideATurnSummarizesTheTurnSeparately(t *testing.T) {
-	h := core.NewConversationHistory()
-	msgs := core.Messages{
-		user("q1"), assistantSaying("a1", 0),
-		user("q2"), assistantSaying("a2 "+strings.Repeat("x", 4000), 0),
-		user("q3"), assistantSaying("a3", 0),
-	}
-	var mainSeen, turnSeen core.Messages
-	tf := compaction.NewContextTransform(compaction.Deps{
-		Strategy: cutAt{3}, // lands on assistant a2: inside turn q2
-		Summarizer: func(_ context.Context, prefix core.Messages, _ string) (string, error) {
-			mainSeen = prefix
-			return "HEAD", nil
-		},
-		TurnSummarizer: func(_ context.Context, prefix core.Messages, _ string) (string, error) {
-			turnSeen = prefix
-			return "TURN", nil
-		},
-		History: h, Model: testModel(),
-	})
-	view := tf(context.Background(), msgs)
-	if len(mainSeen) != 2 || len(turnSeen) != 1 {
-		t.Fatalf("main summarizer saw %d messages, turn summarizer %d; want 2 (q1,a1) and 1 (q2)", len(mainSeen), len(turnSeen))
-	}
-	want := compaction.SummaryPrefix + "HEAD" + compaction.SplitSeparator + "TURN"
-	if got := view[0].(core.UserMessage).Content.Text(); got != want {
-		t.Fatalf("summary = %q, want %q", got, want)
-	}
-	if len(view) != 1+3 {
-		t.Fatalf("view has %d messages, want the summary plus the kept tail of 3", len(view))
-	}
-}
-
-type cutAt struct{ at int }
-
-func (cutAt) ShouldCompact(int, int) bool       { return true }
-func (c cutAt) CutIndex(core.Messages, int) int { return c.at }
-func (cutAt) CutPolicy() compaction.CutPolicy   { return compaction.CutNotToolResult }

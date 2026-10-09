@@ -5,8 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/provider"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // This file is the DECODE half of the Anthropic wire API.
@@ -222,7 +221,7 @@ func (a *blockAcc) block() core.ContentBlock {
 		return core.ThinkingBlock{Redacted: true, Signature: a.data}
 	case "tool_use":
 		raw := json.RawMessage(a.input)
-		if repaired, changed := provider.SalvageJSON(raw); changed {
+		if repaired, changed := SalvageJSON(raw); changed {
 			raw = repaired
 			a.salvaged = true
 		}

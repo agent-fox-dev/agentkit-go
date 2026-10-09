@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/outline"
 )
 
 // TS-05-13 (unit): Go type resolver parses workspace packages and type-checks with workspace-local importer without external processes

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // TS-01-76 (smoke): A walk root outside the workspace is refused before any

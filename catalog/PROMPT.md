@@ -314,7 +314,7 @@ Known consumers as of writing (re-check; this list can lag):
    ```
    go run - <<'GO'
    package main
-   import ("fmt"; "github.com/agentfox/agentkit-go/catalog")
+   import ("fmt"; "github.com/agent-fox-dev/agentkit-go/catalog")
    func main(){ c:=catalog.Default(); for _,v:=range c.Vendors(){ fmt.Println(v, c.DefaultModelID(v), c.Models(v)) } }
    GO
    ```

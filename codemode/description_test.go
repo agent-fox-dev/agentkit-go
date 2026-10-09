@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/codemode"
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/codemode"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // TS-08-7: an explicit description is used verbatim.

@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // This file is REQ-SEC-13.4's header precedence and REQ-AUTH-02's deletion

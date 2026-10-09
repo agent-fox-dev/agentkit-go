@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // TestAToolsOwnRenderingReachesTheModelVerbatim: a tool that supplies

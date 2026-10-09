@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agentfox/agentkit-go/wire"
+	"github.com/agent-fox-dev/agentkit-go/wire"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )

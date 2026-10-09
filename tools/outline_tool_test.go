@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // mkOutlineFile creates a file in root with the given relative path and content.

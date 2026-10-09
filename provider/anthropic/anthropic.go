@@ -8,9 +8,9 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/agentfox/agentkit-go/catalog"
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/provider"
+	"github.com/agent-fox-dev/agentkit-go/catalog"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider"
 )
 
 // API is the wire API id.
@@ -218,7 +218,7 @@ func NormalizeToolCallID(s string) string {
 // It runs the shared repair pass first (REQ-PROV-11) — that is part of the
 // provider contract, not the loop's, because the loop is not running when a
 // transcript is loaded from disk.
-func BuildRequest(m *core.Model, req core.Request, retention core.CacheRetention) (*request, provider.RepairReport, error) {
+func BuildRequest(m *core.Model, req core.Request, retention core.CacheRetention) (*request, RepairReport, error) {
 	out, rep, _, err := BuildRequestCached(m, req, retention, nil)
 	return out, rep, err
 }
@@ -233,9 +233,9 @@ func BuildRequest(m *core.Model, req core.Request, retention core.CacheRetention
 // ~0.9 ms of the ~1.5 ms it takes to build a request — the dominant term, paid
 // on every turn, for bytes that did not change.
 func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRetention,
-	prefix *provider.ToolPrefix) (*request, provider.RepairReport, provider.SyncReport, error) {
+	prefix *provider.ToolPrefix) (*request, RepairReport, provider.SyncReport, error) {
 	var sync provider.SyncReport
-	repaired, rep := provider.RepairTranscript(req.Messages, provider.TargetFor(m, NormalizeToolCallID))
+	repaired, rep := RepairTranscript(req.Messages, TargetFor(m, NormalizeToolCallID))
 
 	out := &request{
 		Model:         m.ID,
@@ -264,7 +264,9 @@ func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRet
 	// REQ-CAT-04: the caller's max_tokens is an UPPER BOUND, not the value
 	// sent. Input and output share one window here, so a request whose
 	// max_tokens no longer fits is rejected — first seen deep into a long
-	// session. The context estimate is the loop's anchored one (P-30). This
+	// session. The loop no longer sends a context estimate
+	// (docs/errata/09_repository_cut.md), so the clamp is to the model's cap
+	// alone. This
 	// wire requires the field, so an absent request value falls back to the
 	// model's own cap (clamped the same way) and never to 0.
 	requested := 0

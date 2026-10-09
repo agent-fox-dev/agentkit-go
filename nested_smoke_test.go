@@ -13,13 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // TS-07-35 (smoke, 07-PATH-1): a wrapper fans out to two children through
-// CallNested; they run concurrently, their events and spans name the
-// wrapper's call, the wrapper gets results in call order, and only the
+// CallNested; they run concurrently, their events name the wrapper's call, the wrapper gets results in call order, and only the
 // wrapper's call reaches the transcript.
 func TestSmokeNestedParallelThroughWrapper_TS07_35(t *testing.T) {
 	var active, maxActive atomic.Int32
@@ -50,13 +49,11 @@ func TestSmokeNestedParallelThroughWrapper_TS07_35(t *testing.T) {
 		return core.OKResult(map[string]any{"children": len(res)})
 	}, slowChild("child1"), slowChild("child2"))
 
-	rec := &namedSpanRecorder{}
 	s := &scripted{turns: []core.AssistantMessage{
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "parent_call_1", "wrapper", `{}`)),
 	}}
 	a := newTestAgent(t, s, func(c *core.AgentConfig) {
 		c.ParallelTools = true
-		c.Tracer = rec
 		c.ToolPolicy.CustomTools = []core.Tool{wrapper}
 	})
 	st, err := a.Stream(context.Background(), "run wrapper")
@@ -82,15 +79,6 @@ func TestSmokeNestedParallelThroughWrapper_TS07_35(t *testing.T) {
 	}
 	if nestedEvents != 2 {
 		t.Fatalf("%d nested end events, want 2", nestedEvents)
-	}
-	nestedSpans := 0
-	for _, attrs := range rec.spans {
-		if attrs["parent_tool_use_id"] == "parent_call_1" {
-			nestedSpans++
-		}
-	}
-	if nestedSpans != 2 {
-		t.Fatalf("%d nested spans, want 2", nestedSpans)
 	}
 	if r := resultFor(t, res, "parent_call_1"); r.IsError || !strings.Contains(resultText(r), `"children":2`) {
 		t.Fatalf("wrapper result = %+v", r)

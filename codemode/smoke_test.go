@@ -10,15 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
-	agentkit "github.com/agentfox/agentkit-go"
-	"github.com/agentfox/agentkit-go/codemode"
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/provider/faux"
-	"github.com/agentfox/agentkit-go/stop"
-	"github.com/agentfox/agentkit-go/tools"
+	agentkit "github.com/agent-fox-dev/agentkit-go"
+	"github.com/agent-fox-dev/agentkit-go/codemode"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider/faux"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // smokeWorkspace has two Go files and three text files.
@@ -63,23 +61,19 @@ func builtin(t *testing.T, ws *tools.Workspace, names ...string) []core.Tool {
 
 // runAgent has the model call cm once with script, through a real agent,
 // and returns the code-mode result as the handler returned it, the nested
-// calls the agent audited, and the transcript.
-func runAgent(t *testing.T, cm core.Tool, script string) (core.ToolResult, []core.AuditEvent, core.RunResult) {
+// calls the agent closed on its event stream, and the transcript.
+func runAgent(t *testing.T, cm core.Tool, script string) (core.ToolResult, []core.ToolExecutionEndEvent, core.RunResult) {
 	t.Helper()
 	args, _ := json.Marshal(map[string]string{"script": script})
 	model := faux.New(
 		faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall("cm_call", cm.Name, string(args))}, StopReason: core.StopReasonToolUse},
 		faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("done")}, StopReason: core.StopReasonStop},
 	)
-	var (
-		mu     sync.Mutex
-		out    core.ToolResult
-		audits []core.AuditEvent
-	)
+	var out core.ToolResult
 	agent, err := agentkit.NewAgent(core.AgentConfig{
 		Model:         faux.Model(),
 		Providers:     core.ProviderRegistry{faux.API: model.APIProvider()},
-		StopPolicy:    stop.AfterTurns(4),
+		StopPolicy:    func(sc core.StopContext) bool { return sc.TurnCount >= 4 },
 		ParallelTools: true,
 		ToolPolicy:    core.ToolPolicy{CustomTools: []core.Tool{cm}},
 		AfterToolCall: func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
@@ -88,33 +82,36 @@ func runAgent(t *testing.T, cm core.Tool, script string) (core.ToolResult, []cor
 			}
 			return core.AfterToolCallDecision{}
 		},
-		Hooks: core.Hooks{OnAudit: func(e core.AuditEvent) {
-			if e.ParentToolUseID != "" {
-				mu.Lock()
-				audits = append(audits, e)
-				mu.Unlock()
-			}
-		}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := agent.Run(context.Background(), "go")
+	st, err := agent.Stream(context.Background(), "go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return out, audits, res
+	var nested []core.ToolExecutionEndEvent
+	for e := range st.Events() {
+		if end, ok := e.(core.ToolExecutionEndEvent); ok && end.ParentToolUseID != "" {
+			nested = append(nested, end)
+		}
+	}
+	res, err := st.RunResult()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out, nested, res
 }
 
 // TS-08-45 (smoke, 08-PATH-1): a script calls the real list_files and
-// filters its entries; the agent audits one nested call.
+// filters its entries; the agent reports one nested call.
 func TestSmokeListAndFilter_TS08_45(t *testing.T) {
 	ws := smokeWorkspace(t)
 	cm, _, err := codemode.New(builtin(t, ws, "list_files"), codemode.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, audits, run := runAgent(t, cm, `entries = list_files(path=".")
+	res, nested, run := runAgent(t, cm, `entries = list_files(path=".")
 for e in entries["entries"]:
     if e.endswith(".go"):
         print(e)
@@ -125,8 +122,8 @@ for e in entries["entries"]:
 	if calls := res.Data["calls_completed"].([]any); len(calls) != 1 || calls[0].(map[string]any)["tool"] != "list_files" {
 		t.Fatalf("calls = %+v", calls)
 	}
-	if len(audits) != 1 || audits[0].ToolName != "list_files" || audits[0].ParentToolUseID != "cm_call" {
-		t.Fatalf("nested audits = %+v", audits)
+	if len(nested) != 1 || nested[0].Name != "list_files" || nested[0].ParentToolUseID != "cm_call" {
+		t.Fatalf("nested calls = %+v", nested)
 	}
 	for _, m := range run.Messages {
 		if r, ok := m.(core.ToolResultMessage); ok && r.ToolName != cm.Name {
@@ -136,14 +133,14 @@ for e in entries["entries"]:
 }
 
 // TS-08-46 (smoke, 08-PATH-2): parallel reads through the real read_file,
-// in order, each audited.
+// in order, each reported as a nested call.
 func TestSmokeParallelReads_TS08_46(t *testing.T) {
 	ws := smokeWorkspace(t)
 	cm, _, err := codemode.New(builtin(t, ws, "read_file"), codemode.Options{MaxConcurrentCalls: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, audits, _ := runAgent(t, cm, `paths = ["a.txt", "b.txt", "c.txt"]
+	res, nested, _ := runAgent(t, cm, `paths = ["a.txt", "b.txt", "c.txt"]
 results = parallel([call(read_file, path=p) for p in paths])
 for r in results:
     print(r["content"].strip())
@@ -154,8 +151,8 @@ for r in results:
 	if calls := res.Data["calls_completed"].([]any); len(calls) != 3 {
 		t.Fatalf("calls = %+v", calls)
 	}
-	if len(audits) != 3 {
-		t.Fatalf("%d nested audits, want 3", len(audits))
+	if len(nested) != 3 {
+		t.Fatalf("%d nested calls, want 3", len(nested))
 	}
 }
 
@@ -199,7 +196,7 @@ func TestSmokeToolErrorFallback_TS08_48(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, audits, _ := runAgent(t, cm, `res = read_file(path="missing.txt")
+	res, nested, _ := runAgent(t, cm, `res = read_file(path="missing.txt")
 if is_error(res):
     print("File not found, using fallback")
 else:
@@ -212,7 +209,7 @@ else:
 	if len(calls) != 1 || calls[0].(map[string]any)["ok"] != false || calls[0].(map[string]any)["error"] != "read_failed" {
 		t.Fatalf("calls = %+v", calls)
 	}
-	if len(audits) != 1 || !audits[0].IsError {
-		t.Fatalf("nested audits = %+v", audits)
+	if len(nested) != 1 || !nested[0].IsError {
+		t.Fatalf("nested calls = %+v", nested)
 	}
 }

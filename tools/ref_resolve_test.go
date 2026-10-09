@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/outline"
 )
 
 // TS-05-8 (unit): Declaration resolver queries shared symbol table for unqualified and container-qualified names

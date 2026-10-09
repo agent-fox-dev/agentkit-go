@@ -8,8 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/stop"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
+	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 )
 
 func noopHandler(context.Context, json.RawMessage) (json.RawMessage, error) { return nil, nil }
@@ -19,7 +20,7 @@ func agentCfg(tools ...core.Tool) core.AgentConfig {
 	s := &scripted{}
 	return core.AgentConfig{
 		Model:      testModel(),
-		StopPolicy: stop.AfterTurns(3),
+		StopPolicy: afterTurns(3),
 		Providers:  core.ProviderRegistry{testAPI: s.provider()},
 		ToolPolicy: core.ToolPolicy{CustomTools: tools},
 	}
@@ -116,5 +117,49 @@ func TestReachableDiamondIsNotACycle_TS07_5(t *testing.T) {
 		if err != nil || ag == nil {
 			t.Fatalf("iteration %d: diamond refused: %v", i, err)
 		}
+	}
+}
+
+// TS-09-22 (smoke, 09-PATH-3): an embedder registers the retained providers,
+// builds an Agent with no session store or middleware, and runs a turn; the
+// result carries the provider's usage and the conversation is in history.
+func TestSmokeAgentRunsWithRetainedProviders_TS09_22(t *testing.T) {
+	p := faux.New(faux.Turn{
+		Blocks:     []core.ContentBlock{faux.FauxText("hello back")},
+		StopReason: core.StopReasonStop,
+		Usage:      core.Usage{InputTokens: 12, OutputTokens: 3},
+	})
+	cfg := core.AgentConfig{Model: faux.Model()}
+	RegisterDefaults(&cfg, anthropic.Provider(anthropic.Options{}), p.APIProvider())
+	agent, err := NewAgent(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []core.Event
+	st, err := agent.Stream(context.Background(), "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e := range st.Events() {
+		events = append(events, e)
+	}
+	res, err := st.RunResult()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Usage.InputTokens <= 0 && res.Usage.OutputTokens <= 0 {
+		t.Fatalf("run usage = %+v, want the provider's tokens", res.Usage)
+	}
+	if res.FinalText() != "hello back" || res.StopReason != core.RunStopEndTurn {
+		t.Fatalf("result = %q / %q", res.FinalText(), res.StopReason)
+	}
+	if n := agent.History().Len(); n != 2 {
+		t.Fatalf("history holds %d messages, want the prompt and the reply", n)
+	}
+	if len(events) == 0 {
+		t.Fatal("the run emitted no events")
+	}
+	if _, ok := events[0].(core.AgentStartEvent); !ok {
+		t.Fatalf("first event = %T, want AgentStartEvent", events[0])
 	}
 }

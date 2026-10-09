@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // TS-02-47: A call waiting behind a running build is abandoned immediately on cancel
@@ -268,26 +268,22 @@ func TestMarkingNeverBlocksOnBuild_TS02_49(t *testing.T) {
 	}
 
 	// While the build is blocked, write_file, edit_file and a shell wrapper
-	// should all return promptly.
+	// must all return. The build holds the hook until the end of this test,
+	// so one that waited on it would deadlock here: that hang, not a
+	// stopwatch, is the assertion.
 
 	// write_file
-	writeStart := time.Now()
 	writeArgs, _ := json.Marshal(map[string]any{
 		"path":    "new_during_build.go",
 		"content": "package main\n\nfunc NewDuringBuild() {}\n",
 	})
 	wr := writeTool.Execute(context.Background(), writeArgs)
-	writeElapsed := time.Since(writeStart)
 	if !wr.OK {
 		t.Fatalf("write_file during build: error=%s detail=%s", wr.Error, wr.Detail)
-	}
-	if writeElapsed > 2*time.Second {
-		t.Fatalf("write_file took %v, should not block on build", writeElapsed)
 	}
 
 	// edit_file (create the file first)
 	mkSymFile(t, root, "edit_target.go", "package main\n\nfunc EditTarget() {}\n")
-	editStart := time.Now()
 	editArgs, _ := json.Marshal(map[string]any{
 		"path": "edit_target.go",
 		"edits": []map[string]string{
@@ -295,21 +291,12 @@ func TestMarkingNeverBlocksOnBuild_TS02_49(t *testing.T) {
 		},
 	})
 	er := editTool.Execute(context.Background(), editArgs)
-	editElapsed := time.Since(editStart)
 	if !er.OK {
 		t.Fatalf("edit_file during build: error=%s detail=%s", er.Error, er.Detail)
 	}
-	if editElapsed > 2*time.Second {
-		t.Fatalf("edit_file took %v, should not block on build", editElapsed)
-	}
 
 	// Simulate a shell tool wrapper marking revalidateAll.
-	markStart := time.Now()
 	ft.markTableRevalidateAll()
-	markElapsed := time.Since(markStart)
-	if markElapsed > 100*time.Millisecond {
-		t.Fatalf("markTableRevalidateAll took %v, should be instant", markElapsed)
-	}
 
 	// Verify the marks are set.
 	ft.table.markMu.Lock()

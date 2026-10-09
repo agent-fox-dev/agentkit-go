@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/outline"
 )
 
 // renderReferencesText formats the human-readable result text for find_references.

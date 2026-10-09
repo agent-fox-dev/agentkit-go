@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // API is the wire API id faux registers under.

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,9 +19,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/imagex"
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // SymbolOptions configures the symbol table behind find_symbol.
@@ -91,19 +91,15 @@ func defaultSpillDir(root string) string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("agentkit-spill-%08x", h.Sum32()))
 }
 
+// workspaceRoot is the root a shell tool runs in, or "" with no workspace.
+func workspaceRoot(opts Options) string {
+	if opts.Workspace == nil {
+		return ""
+	}
+	return opts.Workspace.Root
+}
+
 // All returns the default built-in tool set.
-//
-// `fetch_url` is deliberately NOT here (REQ-TOOL-07). Reaching it takes two
-// affirmative acts, not one:
-//
-//	cfg.ToolPolicy.CustomTools = append(cfg.ToolPolicy.CustomTools,
-//	    tools.FetchTool(tools.FetchOptions{}))
-//	// and, if an allowlist is in use, name it there too:
-//	cfg.ToolPolicy.ToolNames = append(cfg.ToolPolicy.ToolNames, "fetch_url")
-//
-// A tool that makes outbound requests on the model's behalf is a different
-// risk class from one that reads a file inside a workspace root, and an
-// embedder should have to say so.
 func All(opts Options) ([]core.Tool, error) {
 	if opts.Workspace == nil {
 		ws, err := NewWorkspace("")
@@ -143,7 +139,6 @@ func All(opts Options) ([]core.Tool, error) {
 		fs.findReferencesTool(),
 		wrapShell(executeTool(opts)),
 		wrapShell(runCommandTool(opts)),
-		wrapShell(PowerShell(opts)),
 	}
 
 	// Append index tools when an index is set. 03-REQ-2.3.
@@ -349,8 +344,8 @@ func (f *fileTools) markTableRevalidateAll() {
 func (f *fileTools) readFile() core.Tool {
 	return core.Tool{
 		Name: "read_file",
-		Description: "Read a file. Text is returned as at most 2000 lines or 50KB, " +
-			"whichever comes first; an image is returned as a note plus the image itself.",
+		Description: "Read a text file. At most 2000 lines or 50KB are returned, " +
+			"whichever comes first.",
 		Builtin: true,
 		InputSchema: schema.Object(
 			schema.Prop("path", schema.String("Path to the file (relative to the workspace, or absolute)")),
@@ -358,17 +353,7 @@ func (f *fileTools) readFile() core.Tool {
 			schema.Opt("limit", schema.Int("Maximum lines to return")),
 		),
 		PromptGuidelines: []string{"Read a file before editing it."},
-		// A text read and an image read return different Data; exactly one
-		// branch matches any result (06-REQ-4.1).
-		OutputSchema: schema.OneOf(
-			schema.Object(schema.Prop("content", schema.String()), schema.Prop("encoding", schema.String())),
-			schema.Object(
-				schema.Prop("note", schema.String()),
-				schema.Prop("mime_type", schema.String()),
-				schema.Prop("width", schema.Int()),
-				schema.Prop("height", schema.Int()),
-			),
-		),
+		OutputSchema:     schema.Object(schema.Prop("content", schema.String()), schema.Prop("encoding", schema.String())),
 		Execute: func(ctx context.Context, in json.RawMessage) core.ToolResult {
 			var a struct {
 				Path   string `json:"path"`
@@ -399,25 +384,14 @@ func (f *fileTools) readFile() core.Tool {
 			defer fh.Close()
 			br := bufio.NewReaderSize(fh, 64<<10)
 
-			// REQ-TOOL-14.6: images are detected by MAGIC BYTES, never by
-			// extension. `screenshot.txt` is still a PNG if its first eight
-			// bytes say so, and splitting one into "lines" hands the model
-			// several kilobytes of mojibake. Only the header is peeked; the
-			// whole file is loaded for an image alone — and only up to a
-			// ceiling, checked on the size BEFORE the load: the normalizer
-			// bounds what it decodes, but it cannot bound what it is handed.
+			// Images are detected by MAGIC BYTES, never by extension:
+			// `screenshot.txt` is still a PNG if its first eight bytes say so,
+			// and splitting one into "lines" hands the model kilobytes of
+			// mojibake. Only the head is peeked.
 			head, _ := br.Peek(imageSniffBytes)
-			if mime, isImage := imagex.Sniff(head); isImage {
-				if fi.Size() > ImageFileMaxBytes {
-					return core.ErrResult("image_too_large", fmt.Sprintf(
-						"%s is a %s image of %d bytes, over the %d byte limit for an image read; "+
-							"downscale it first", f.ws.Rel(abs), mime, fi.Size(), ImageFileMaxBytes))
-				}
-				data, err := io.ReadAll(br)
-				if err != nil {
-					return core.ErrResult("read_failed", err.Error())
-				}
-				return readImage(abs, a.Path, data, mime)
+			if format := imageFormat(head); format != "" {
+				return core.ErrResult("unsupported_file", fmt.Sprintf(
+					"%s is a %s image: reading images is not supported", f.ws.Rel(abs), format))
 			}
 
 			// 1-based, with 0 aliased to 1 (ruling P-21).
@@ -491,14 +465,25 @@ func (f *fileTools) readFile() core.Tool {
 	}
 }
 
-// imageSniffBytes is how much of a file's head imagex.Sniff needs. The longest
+// imageSniffBytes is how much of a file's head imageFormat needs. The longest
 // signature it knows (RIFF....WEBP) is twelve bytes.
 const imageSniffBytes = 16
 
-// ImageFileMaxBytes is the largest image file read_file will load. It is
-// checked against the file's size before the bytes are read, so the ceiling
-// is on memory as well as on what reaches the normalizer.
-const ImageFileMaxBytes = 32 << 20
+// imageFormat names the image format whose signature head begins with, or
+// returns "" for anything else.
+func imageFormat(head []byte) string {
+	switch {
+	case bytes.HasPrefix(head, []byte("\x89PNG\r\n\x1a\n")):
+		return "PNG"
+	case bytes.HasPrefix(head, []byte{0xff, 0xd8, 0xff}):
+		return "JPEG"
+	case bytes.HasPrefix(head, []byte("GIF87a")), bytes.HasPrefix(head, []byte("GIF89a")):
+		return "GIF"
+	case len(head) >= 12 && bytes.HasPrefix(head, []byte("RIFF")) && string(head[8:12]) == "WEBP":
+		return "WebP"
+	}
+	return ""
+}
 
 // EditFileMaxBytes is the largest file edit_file will load. The tool holds
 // the whole file plus its normalised copy plus the result; a 500 MB log is
@@ -638,41 +623,6 @@ func readLineBounded(br *bufio.Reader, keep int) (line []byte, size int64, termi
 			return nil, 0, false, rerr
 		}
 	}
-}
-
-// readImage returns REQ-TOOL-14.6's "text note plus an ImageBlock".
-//
-// The note matters as much as the block: without it the model sees an image
-// appear with no statement of what was read, and cannot tell a screenshot it
-// asked for from one a previous turn left in history.
-func readImage(abs, shown string, data []byte, mime string) core.ToolResult {
-	// Formats providers reject are refused HERE, with a message naming the
-	// problem, rather than forwarded. Forwarded, the failure lands on the next
-	// provider request — by which time the image is in history and every
-	// subsequent request fails the same way.
-	//
-	// Normalize validates before it does anything else, so there is no
-	// separate Validate call: a second one would be unreachable code that
-	// looks like a safety check.
-	res, err := imagex.Normalize(data, mime)
-	if err != nil {
-		return core.ErrResult("unsupported_image", err.Error())
-	}
-
-	note := fmt.Sprintf("[%s: %s image, %d×%d]", shown, res.MIMEType, res.Width, res.Height)
-	if res.Changed {
-		note = fmt.Sprintf("[%s: %s image, downscaled to %d×%d for the provider's inline limit]",
-			shown, res.MIMEType, res.Width, res.Height)
-	}
-	out := core.OKResult(map[string]any{
-		"note":      note,
-		"mime_type": res.MIMEType,
-		"width":     res.Width,
-		"height":    res.Height,
-	})
-	out.Text = note
-	out.Blocks = []core.ContentBlock{core.ImageBlock{Data: res.Base64(), MimeType: res.MIMEType}}
-	return out
 }
 
 func (f *fileTools) writeFile() core.Tool {
@@ -1243,7 +1193,7 @@ func timeoutArg(s *int) (time.Duration, error) {
 }
 
 // execOutputSchema is the one schema of execResultToTool's Data, shared by
-// execute, run_command and powershell so the three cannot drift apart. Data
+// execute and run_command so the two cannot drift apart. Data
 // carries it on a failed outcome as well as on success (06-REQ-7.2).
 var execOutputSchema = schema.Object(
 	schema.Prop("output", schema.String()),
@@ -1258,9 +1208,8 @@ func execResultOutputSchema() *schema.Schema { return execOutputSchema }
 
 // execResultToTool is the REQ-TOOL-08 envelope for a subprocess result.
 //
-// Shared by execute, run_command and powershell: the envelope is a property of
-// having run a subprocess, not of how the command was spelled, and three
-// copies would drift on the next field added to ToolMetadata.
+// Shared by execute and run_command: the envelope is a property of having run
+// a subprocess, not of how the command was spelled, and two copies would drift on the next field added to ToolMetadata.
 //
 // The model reads the output ITSELF (core.ToolResult.Text), followed by one
 // status line only when there is something to say: `[exit 1]`, `[timeout

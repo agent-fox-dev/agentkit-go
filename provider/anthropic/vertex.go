@@ -4,8 +4,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/provider"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider"
 )
 
 // This file is NFR-COMPAT-05 for the Anthropic Messages wire: the SAME

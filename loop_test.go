@@ -11,9 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/schema"
-	"github.com/agentfox/agentkit-go/stop"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // ---------------------------------------------------------------- scaffolding
@@ -96,11 +95,23 @@ func assistantWithTools(reason core.StopReason, blocks ...core.ContentBlock) cor
 	return core.AssistantMessage{Content: core.Content(blocks), StopReason: reason}
 }
 
+// afterTurns ends a run at the first turn boundary at or past n turns, with
+// StopReason max_turns.
+func afterTurns(n int) core.StopPolicy {
+	return func(sc core.StopContext) bool {
+		if sc.TurnCount >= n {
+			sc.SetReason(core.RunStopMaxTurns)
+			return true
+		}
+		return false
+	}
+}
+
 func newTestAgent(t *testing.T, s *scripted, mutate func(*core.AgentConfig)) *Agent {
 	t.Helper()
 	cfg := core.AgentConfig{
 		Model:      testModel(),
-		StopPolicy: stop.AfterTurns(10),
+		StopPolicy: afterTurns(10),
 		Providers:  core.ProviderRegistry{testAPI: s.provider()},
 	}
 	if mutate != nil {
@@ -111,6 +122,25 @@ func newTestAgent(t *testing.T, s *scripted, mutate func(*core.AgentConfig)) *Ag
 		t.Fatalf("NewAgent: %v", err)
 	}
 	return a
+}
+
+func oneToolTurn(t *testing.T) *scripted {
+	t.Helper()
+	return &scripted{turns: []core.AssistantMessage{
+		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "echo", `{"v":"x"}`)),
+		{Content: core.Content{core.TextBlock{Text: "done"}}, StopReason: core.StopReasonStop},
+	}}
+}
+
+func findToolResult(t *testing.T, msgs core.Messages, id string) core.ToolResultMessage {
+	t.Helper()
+	for _, m := range msgs {
+		if r, ok := m.(core.ToolResultMessage); ok && r.ToolUseID == id {
+			return r
+		}
+	}
+	t.Fatalf("no tool result for %q in %d messages", id, len(msgs))
+	return core.ToolResultMessage{}
 }
 
 func echoTool(name string, calls *atomic.Int32) core.Tool {
@@ -536,15 +566,23 @@ func TestStopPolicyRunsAfterResultsAreInHistory(t *testing.T) {
 	}
 }
 
-// TestStopPolicyReasonSurvivesStopAny: with a bare bool predicate the loop
-// cannot tell ErrMaxTurns from ErrBudgetExceeded, and StopAny erases it.
-func TestStopPolicyReasonSurvivesStopAny(t *testing.T) {
+// TestStopPolicyReasonSurvivesComposition: with a bare bool predicate the
+// loop cannot tell ErrMaxTurns from ErrBudgetExceeded once two limits are
+// composed into one policy; the reason the firing limit sets survives.
+func TestStopPolicyReasonSurvivesComposition(t *testing.T) {
 	s := &scripted{turns: []core.AssistantMessage{
 		{Content: core.Content{core.TextBlock{Text: "a"}}, StopReason: core.StopReasonStop},
 	}}
 	a := newTestAgent(t, s, func(c *core.AgentConfig) {
 		c.ErrorOnLimit = true
-		c.StopPolicy = stop.Any(stop.OverBudget(1e9), stop.AfterTurns(1))
+		turns := afterTurns(1)
+		c.StopPolicy = func(sc core.StopContext) bool {
+			if sc.Usage.CostUSD > 1e9 {
+				sc.SetReason(core.RunStopBudgetExceeded)
+				return true
+			}
+			return turns(sc)
+		}
 	})
 	res, err := a.Run(context.Background(), "go")
 	if !errors.Is(err, core.ErrMaxTurns) {
@@ -711,72 +749,6 @@ func TestSteerBeforeRunIsDeliveredIntoTheRun(t *testing.T) {
 		t.Fatal("a message steered before Run was silently dropped: the run slot must be " +
 			"claimed and the queue drained under one lock (REQ-LOOP-15)")
 	}
-}
-
-// ------------------------------------------------------------------- REQ-LOOP-16
-
-func TestContinuePreconditions(t *testing.T) {
-	t.Run("empty history is not continuable", func(t *testing.T) {
-		a := newTestAgent(t, &scripted{}, nil)
-		if _, err := a.Continue(context.Background()); !errors.Is(err, core.ErrNotContinuable) {
-			t.Fatalf("err = %v, want ErrNotContinuable", err)
-		}
-	})
-
-	t.Run("completed assistant turn is not continuable", func(t *testing.T) {
-		s := &scripted{turns: []core.AssistantMessage{
-			{Content: core.Content{core.TextBlock{Text: "done"}}, StopReason: core.StopReasonStop},
-		}}
-		a := newTestAgent(t, s, nil)
-		if _, err := a.Run(context.Background(), "go"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := a.Continue(context.Background()); !errors.Is(err, core.ErrNotContinuable) {
-			t.Fatalf("err = %v, want ErrNotContinuable", err)
-		}
-	})
-
-	t.Run("assistant turn with a queued message is continuable", func(t *testing.T) {
-		s := &scripted{turns: []core.AssistantMessage{
-			{Content: core.Content{core.TextBlock{Text: "done"}}, StopReason: core.StopReasonStop},
-			{Content: core.Content{core.TextBlock{Text: "more"}}, StopReason: core.StopReasonStop},
-		}}
-		a := newTestAgent(t, s, nil)
-		if _, err := a.Run(context.Background(), "go"); err != nil {
-			t.Fatal(err)
-		}
-		if err := a.SteerText("carry on"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := a.Continue(context.Background()); err != nil {
-			t.Fatalf("Continue: %v", err)
-		}
-	})
-
-	t.Run("history ending in a tool result is continuable without a new message", func(t *testing.T) {
-		// This is the normal outcome of REQ-LOOP-09 cancellation, so Continue
-		// is not an optional convenience.
-		h := core.NewConversationHistory()
-		h.Record(core.NullLeaf, core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}})
-		h.Record(core.NullLeaf, core.AssistantMessage{
-			Content:    core.Content{toolUse(t, "c1", "echo", `{}`)},
-			StopReason: core.StopReasonToolUse,
-		})
-		h.Record(core.NullLeaf, core.ToolResultMessage{ToolUseID: "c1", ToolName: "echo"})
-
-		s := &scripted{turns: []core.AssistantMessage{
-			{Content: core.Content{core.TextBlock{Text: "resumed"}}, StopReason: core.StopReasonStop},
-		}}
-		cfg := core.AgentConfig{Model: testModel(), StopPolicy: stop.AfterTurns(5),
-			Providers: core.ProviderRegistry{testAPI: s.provider()}}
-		a, err := NewAgentWithHistory(cfg, h)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := a.Continue(context.Background()); err != nil {
-			t.Fatalf("Continue on a transcript ending in a tool result: %v", err)
-		}
-	})
 }
 
 // ------------------------------------------------------------------- REQ-TOOL-13

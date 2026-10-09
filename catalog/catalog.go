@@ -32,7 +32,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // SchemaVersion is the catalog file format this build understands.

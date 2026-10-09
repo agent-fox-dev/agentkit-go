@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 func strictErr(t *testing.T, s *schema.Schema) *schema.StrictRewriteError {

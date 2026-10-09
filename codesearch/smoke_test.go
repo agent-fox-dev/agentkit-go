@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // TS-03-69 (smoke): An embedder opts in and the model's first sym: search
@@ -69,7 +69,7 @@ func TestSmokeFirstSymSearch_TS03_69(t *testing.T) {
 		"read_file", "write_file", "edit_file",
 		"list_files", "find_files", "search_files",
 		"file_outline", "find_symbol", "find_references",
-		"execute", "run_command", "powershell",
+		"execute", "run_command",
 	}
 	for i, name := range builtinNames {
 		if i >= len(allTools) || allTools[i].Name != name {

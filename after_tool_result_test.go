@@ -4,15 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/schema"
-	"github.com/agentfox/agentkit-go/session"
-	"github.com/agentfox/agentkit-go/stop"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // errBad is a sentinel error for the handler-error tool.
@@ -196,8 +193,6 @@ func ts0443Run(t *testing.T) (
 	toolResultEvents []core.ToolResultMessage,
 	stopResults []core.ToolResultMessage,
 	agent *Agent,
-	store core.SessionStore,
-	path string,
 ) {
 	t.Helper()
 	two := 2
@@ -213,14 +208,10 @@ func ts0443Run(t *testing.T) (
 		},
 	}
 
-	path = filepath.Join(t.TempDir(), "s.jsonl")
-	store, _ = openTestSession(t, path)
-
 	s := &scripted{turns: []core.AssistantMessage{
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "probe", `{}`)),
 	}}
 	agent = newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.SessionStore = store
 		c.AfterToolCall = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			in.Result.Metadata.Outcome = "edited"
 			*in.Result.Metadata.ExitCode = 99
@@ -249,14 +240,14 @@ func ts0443Run(t *testing.T) (
 	if _, err := st.RunResult(); err != nil {
 		t.Fatal(err)
 	}
-	return toolResultEvents, stopResults, agent, store, path
+	return toolResultEvents, stopResults, agent
 }
 
 // TestMetadataEditedThroughResultPropagates_TS04_43 verifies that metadata
-// edited through in.Result is what is emitted, persisted, seen by the stop
-// policy and kept in history.
+// edited through in.Result is what is emitted, seen by the stop policy and
+// kept in history.
 func TestMetadataEditedThroughResultPropagates_TS04_43(t *testing.T) {
-	toolResultEvents, stopResults, a, store, path := ts0443Run(t)
+	toolResultEvents, stopResults, a := ts0443Run(t)
 
 	t.Run("event_and_stop_and_history", func(t *testing.T) {
 		if len(toolResultEvents) == 0 {
@@ -273,29 +264,6 @@ func TestMetadataEditedThroughResultPropagates_TS04_43(t *testing.T) {
 			if tr, ok := m.(core.ToolResultMessage); ok && tr.ToolUseID == "c1" {
 				ts0443CheckEdited(t, "History", tr.Metadata)
 			}
-		}
-	})
-
-	t.Run("persisted", func(t *testing.T) {
-		if err := store.Close(); err != nil {
-			t.Fatal(err)
-		}
-		loaded, err := session.Load(path)
-		if err != nil {
-			t.Fatalf("session.Load: %v", err)
-		}
-		var found bool
-		for _, e := range loaded.Entries() {
-			if e.Type != core.EntryMessage || e.Message == nil {
-				continue
-			}
-			if tr, ok := e.Message.Message.(core.ToolResultMessage); ok && tr.ToolUseID == "c1" {
-				ts0443CheckEdited(t, "Persisted", tr.Metadata)
-				found = true
-			}
-		}
-		if !found {
-			t.Fatal("no persisted tool_result entry found")
 		}
 	})
 }
@@ -614,7 +582,7 @@ func TestBatchAndSemanticsWithMetadata_TS04_46(t *testing.T) {
 		{Content: core.Content{core.TextBlock{Text: "continued"}}, StopReason: core.StopReasonStop},
 	}}
 	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.StopPolicy = stop.AfterTurns(10)
+		c.StopPolicy = afterTurns(10)
 	})
 	if err := a.RegisterTool(terminatingTool); err != nil {
 		t.Fatal(err)

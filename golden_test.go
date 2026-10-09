@@ -8,13 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/agentfox/agentkit-go/compaction"
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/prompt"
-	"github.com/agentfox/agentkit-go/schema"
-	"github.com/agentfox/agentkit-go/session"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/prompt"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // NFR-TEST-08: byte-for-byte goldens for the artifacts assembled from many
@@ -54,197 +51,25 @@ func checkGolden(t *testing.T, name, got string) {
 
 // ---- (b) the per-provider request body
 
-// TestGoldenProviderRequestBodies pins the wire body each provider builds from
+// TestGoldenProviderRequestBodies pins the wire body the provider builds from
 // one canonical request (NFR-TEST-06/08b).
 //
-// The same input for all of them, so a diff shows what a provider does
-// DIFFERENTLY rather than what its fixture happened to contain.
+// PROVENANCE (NFR-TEST-08.1) — and the honest limit of this file
 //
-// PROVENANCE (NFR-TEST-08.1) — and the honest limit of these five files
-//
-//	goldens:   testdata/golden/request_{anthropic,openai,openai_responses,google,ollama}.json
+//	goldens:   testdata/golden/request_anthropic.json
 //	reference: AgentKit itself, captured through RequestOptions.OnPayload with
 //	           no network and no API key. THIS IS NOT A VENDOR CAPTURE. These
 //	           pin the request body against REGRESSION — they catch AgentKit
 //	           changing what it sends — and say nothing about whether what it
 //	           sends is what the vendor currently accepts.
-//	version:   the working tree; the pinned API versions are in docs/PROVIDERS.md
+//	version:   the working tree
 //	command:   go test -run TestGoldenProviderRequestBodies -update .
-//
-// Pinning these against TRUTH is NFR-TEST-06's differential harness
-// (difftest/), which reports DARK until a vendor SDK or a live capture
-// supplies an independent reference. NFR-TEST-08.2 forbids treating this
-// file's output as that reference, which is why the ledger's capture-date
-// column is empty rather than filled in with today.
 func TestGoldenProviderRequestBodies(t *testing.T) {
 	for _, tc := range goldenRequestCases(t) {
 		t.Run(tc.name, func(t *testing.T) {
 			checkGolden(t, "request_"+tc.name+".json", tc.body)
 		})
 	}
-}
-
-// ---- (c) the serialized session log
-
-// TestGoldenSessionLog pins the on-disk format (NFR-REL-04).
-//
-// Ids and timestamps are injected, which is what makes a whole-file golden
-// possible at all — session.Options documents both hooks as existing for this.
-//
-// PROVENANCE (NFR-TEST-08.1)
-//
-//	golden:    testdata/golden/session_log.jsonl
-//	reference: AgentKit itself — the real store writing through the real
-//	           codec. The format is ours to define, so there is no external
-//	           reference; what the golden buys is that a codec change shows
-//	           up as a diff in the durable format rather than as a resume
-//	           failure in someone's session six months from now.
-//	version:   the working tree
-//	command:   go test -run TestGoldenSessionLog -update .
-func TestGoldenSessionLog(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "session.jsonl")
-
-	n := 0
-	at := time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
-	opts := session.Options{
-		Durability: session.DurabilityPerEntry,
-		NewID: func() core.EntryID {
-			n++
-			return core.EntryID(strings.Repeat("0", 28) + padID(n))
-		},
-		Now: func() time.Time {
-			at = at.Add(time.Second)
-			return at
-		},
-	}
-	store, err := session.Create(path, core.SessionHeader{
-		Version: 1, ID: "golden-session", Timestamp: at, CWD: "/repo",
-	}, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec := session.NewRecorder(store, core.NewConversationHistory(), func(err error) { t.Fatal(err) })
-
-	if _, err := rec.RecordMessage(core.UserMessage{
-		Content: core.Content{core.TextBlock{Text: "list the go files"}}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rec.RecordModelChange("anthropic", core.API("anthropic-messages"), "claude-x"); err != nil {
-		t.Fatal(err)
-	}
-	call, err := core.NewToolUse("call_1", "find_files", json.RawMessage(`{"pattern":"**/*.go"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rec.RecordMessage(core.AssistantMessage{
-		Content:    core.Content{core.TextBlock{Text: "Looking."}, call},
-		StopReason: core.StopReasonToolUse,
-		Provider:   "anthropic", API: core.API("anthropic-messages"), Model: "claude-x",
-		Usage: core.Usage{InputTokens: 12, OutputTokens: 7},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rec.RecordMessage(core.ToolResultMessage{
-		ToolUseID: "call_1", ToolName: "find_files",
-		Content:  core.Content{core.TextBlock{Text: `{"ok":true,"data":{"entries":["main.go"]}}`}},
-		Metadata: &core.ToolMetadata{TotalLines: 1, DurationMS: 3},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rec.RecordBranchSummary("The earlier attempt used the wrong glob.",
-		core.EntryID("leaf"), core.EntryID("fork")); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkGolden(t, "session_log.jsonl", string(raw))
-}
-
-// TS-04-48: The session-log golden changes by exactly one metadata object on
-// its tool_result line.
-func TestGoldenSessionLogMetadataDiff_TS04_48(t *testing.T) {
-	// The pre-change tool_result line (no metadata key).
-	const preToolResultLine = `{"id":"00000000000000000000000000000004","parent_id":"00000000000000000000000000000003","type":"message","timestamp":"2024-03-01T12:00:04Z","message":{"role":"tool_result","tool_use_id":"call_1","tool_name":"find_files","content":[{"type":"text","text":"{\"ok\":true,\"data\":{\"entries\":[\"main.go\"]}}"}]}}`
-
-	golden, err := os.ReadFile(filepath.Join("testdata", "golden", "session_log.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	newLines := strings.Split(strings.TrimRight(string(golden), "\n"), "\n")
-	preLines := strings.Split(strings.TrimRight(string(golden), "\n"), "\n")
-
-	// The tool_result line is line index 3 (0-based: header, user, model_change, assistant, tool_result, branch_summary).
-	const toolResultIdx = 3 // 0-based: header=0, user=1, model_change=2, assistant=3, tool_result=4
-	// Actually: header(0), user(1), model_change(2), assistant(3), tool_result(4), branch_summary(5)
-	const trIdx = 4
-
-	if len(newLines) != 6 {
-		t.Fatalf("golden has %d lines, want 6", len(newLines))
-	}
-
-	// Verify the tool_result line is the only one that differs from the pre-change version.
-	preLines[trIdx] = preToolResultLine
-	for i, l := range preLines {
-		if i == trIdx {
-			continue
-		}
-		if l != newLines[i] {
-			t.Fatalf("line %d differs unexpectedly:\npre:  %s\nnew:  %s", i, l, newLines[i])
-		}
-	}
-
-	// Removing the metadata substring from the new line yields the pre-change line.
-	const mdSubstring = `,"metadata":{"total_lines":1,"duration_ms":3}`
-	stripped := strings.Replace(newLines[trIdx], mdSubstring, "", 1)
-	if stripped != preToolResultLine {
-		t.Fatalf("stripping metadata from new line does not yield pre-change line:\nstripped: %s\npre:      %s", stripped, preToolResultLine)
-	}
-}
-
-func padID(n int) string {
-	s := "0000"
-	d := []byte(s)
-	for i := len(d) - 1; i >= 0 && n > 0; i-- {
-		d[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(d)
-}
-
-// ---- (d) the model-visible wrapper strings of REQ-SESS-07
-
-// TestGoldenModelVisibleWrappers pins the wrapper strings as RENDERED.
-//
-// The constants are already asserted in their own packages; what this pins is
-// the composed result — prefix, body and suffix as the model reads them. A
-// change to either constant, or to how they are joined, shows up here.
-//
-// PROVENANCE (NFR-TEST-08.1)
-//
-//	golden:    testdata/golden/model_visible_wrappers.txt
-//	reference: AgentKit itself — REQ-SESS-07 makes these strings OUR format
-//	           contract with the model, so we are the reference by definition.
-//	version:   the working tree
-//	command:   go test -run TestGoldenModelVisibleWrappers -update .
-func TestGoldenModelVisibleWrappers(t *testing.T) {
-	var b strings.Builder
-	b.WriteString("### branch_summary\n")
-	b.WriteString(session.RenderBranchSummary("Tried the wrong glob; switched to **/*.go."))
-	b.WriteString("\n### compaction\n")
-	b.WriteString(compaction.SummaryPrefix + "The user asked for the Go files and got them.")
-	b.WriteString("\n### compaction, split turn (REQ-GO-14)\n")
-	b.WriteString(compaction.SummaryPrefix + "The user asked for the Go files and got them." +
-		compaction.SplitSeparator + "The user then asked for the tests; the assistant had listed the directory.")
-	b.WriteString("\n")
-	checkGolden(t, "model_visible_wrappers.txt", b.String())
 }
 
 // TestTheAssembledPromptReachesTheProvider. Everything above tests the

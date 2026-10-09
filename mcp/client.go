@@ -10,8 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/wire"
+	"github.com/agent-fox-dev/agentkit-go/wire"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -139,9 +138,6 @@ type SamplingHandler func(ctx context.Context, p *CreateMessageParams) (*CreateM
 
 // ConnectionOptions are the runtime hooks a connection needs.
 type ConnectionOptions struct {
-	// Audit receives an event for every tool call and every sampling request
-	// (REQ-MCP-CLIENT-03, REQ-MCP-CLIENT-08).
-	Audit func(core.AuditEvent)
 	// Sampling answers server-initiated sampling. Nil refuses.
 	Sampling SamplingHandler
 	// Warnf reports non-fatal trouble: reconnects, a child's stderr. Nil
@@ -150,7 +146,6 @@ type ConnectionOptions struct {
 	Limits wire.Limits
 	// ClientInfo identifies us to the server.
 	ClientInfo Implementation
-	Now        func() time.Time
 }
 
 // ServerConnection is REQ-MCP-CLIENT-03: one server, over an SDK session that
@@ -189,9 +184,6 @@ func Connect(ctx context.Context, cfg ServerConfig, t sdk.Transport, opts Connec
 func newConnection(cfg ServerConfig, opts ConnectionOptions) *ServerConnection {
 	if opts.ClientInfo.Name == "" {
 		opts.ClientInfo = Implementation{Name: "agentkit-go", Version: "0.1.0"}
-	}
-	if opts.Now == nil {
-		opts.Now = time.Now
 	}
 	c := &ServerConnection{cfg: cfg, opts: opts}
 	// An empty capability set: no roots. Sampling is advertised only when it
@@ -364,12 +356,10 @@ func (c *ServerConnection) Call(ctx context.Context, toolName string, args map[s
 // through map[string]any would launder every number through a float64:
 // 9007199254740993 arrives at the server as 9007199254740992.
 func (c *ServerConnection) CallRaw(ctx context.Context, toolName string, args json.RawMessage) (*CallToolResult, error) {
-	start := c.opts.Now()
 	c.mu.Lock()
 	limit := c.cfg.callLimit()
 	if limit >= 0 && c.calls >= limit {
 		c.mu.Unlock()
-		c.auditCall(toolName, args, true, 0, start)
 		return nil, fmt.Errorf("%w: %s allows %d calls per session", ErrCallLimit, c.cfg.Name, limit)
 	}
 	c.calls++
@@ -386,31 +376,17 @@ func (c *ServerConnection) CallRaw(ctx context.Context, toolName string, args js
 		res, err = sess.CallTool(cctx, params)
 		cancel()
 	}
-	elapsed := c.opts.Now().Sub(start).Milliseconds()
 	if err != nil {
-		c.auditCall(toolName, args, true, elapsed, start)
 		return nil, fmt.Errorf("mcp: %s: tools/call %q: %w", c.cfg.Name, toolName, err)
 	}
 	res.Content = CapContent(res.Content)
-	c.auditCall(toolName, args, res.IsError, elapsed, start)
 	return res, nil
 }
 
 // sample is the sampling gate (REQ-MCP-CLIENT-08). It is installed only for a
-// server with AllowSampling, and every request it sees is audited, refusals
-// included: a refusal that leaves no trace is indistinguishable from a server
-// that never asked.
+// server with AllowSampling, and refuses unless a handler is set.
 func (c *ServerConnection) sample(ctx context.Context, req *sdk.CreateMessageRequest) (*CreateMessageResult, error) {
-	allowed := c.opts.Sampling != nil
-	if c.opts.Audit != nil {
-		e := core.AuditEvent{Kind: core.AuditToolCall, Timestamp: c.opts.Now(),
-			ServerName: c.cfg.Name, ToolName: "sampling/createMessage", IsError: !allowed}
-		if !allowed {
-			e.Error = "sampling is not enabled for this server"
-		}
-		c.opts.Audit(e)
-	}
-	if !allowed {
+	if c.opts.Sampling == nil {
 		return nil, fmt.Errorf("%w: %s", ErrSamplingNotAllowed, c.cfg.Name)
 	}
 	return c.opts.Sampling(ctx, req.Params)
@@ -492,18 +468,6 @@ func (c *ServerConnection) warnf(format string, args ...any) {
 	if c.opts.Warnf != nil {
 		c.opts.Warnf(format, args...)
 	}
-}
-
-func (c *ServerConnection) auditCall(tool string, args json.RawMessage, isErr bool, elapsed int64, at time.Time) {
-	if c.opts.Audit == nil {
-		return
-	}
-	c.opts.Audit(core.AuditEvent{
-		Kind: core.AuditToolCall, Timestamp: at,
-		ServerName: c.cfg.Name, ToolName: tool,
-		ArgumentsHash: core.HashArguments(args),
-		IsError:       isErr, ElapsedMS: elapsed,
-	})
 }
 
 // QualifiedName is REQ-MCP-CLIENT-05's `server_name__tool_name`.

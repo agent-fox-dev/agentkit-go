@@ -15,8 +15,8 @@ package core
 // undifferentiated set.
 //
 // This is what REQ-MULTI-05's per-agent "tool allowlist" resolves to, and it
-// is what lets a subagent be scoped to read-and-search-only per delegation
-// without rebuilding the tool set by hand.
+// is what lets an agent be scoped to read-and-search-only without rebuilding
+// the tool set by hand.
 func (p ToolPolicy) Resolve(registered []Tool) []Tool {
 	// Tools, when non-nil INCLUDING EMPTY, is used verbatim and bypasses
 	// everything below. Non-nil-but-empty is deliberately distinct from nil:

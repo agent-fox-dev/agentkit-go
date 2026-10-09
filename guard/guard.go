@@ -22,7 +22,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // ShellToolNames are the tools the guard treats as a shell. A caller-supplied

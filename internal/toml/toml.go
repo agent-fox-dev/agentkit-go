@@ -8,7 +8,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2/unstable"
 
-	"github.com/agentfox/agentkit-go/internal/diag"
+	"github.com/agent-fox-dev/agentkit-go/internal/diag"
 )
 
 // Diagnostic and Severity are the shared report type (internal/diag), aliased

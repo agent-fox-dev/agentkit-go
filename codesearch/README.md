@@ -33,7 +33,7 @@ learns about writes, and may serve `find_symbol`.
 ## How to Opt In
 
 ```go
-import "github.com/agentfox/agentkit-go/codesearch"
+import "github.com/agent-fox-dev/agentkit-go/codesearch"
 
 opts := tools.Options{Workspace: ws /* ... */}
 idx, err := codesearch.New(ws, codesearch.Options{

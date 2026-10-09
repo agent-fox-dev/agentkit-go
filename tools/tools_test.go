@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,8 +16,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // ------------------------------------------------------------------ edit_file
@@ -1181,29 +1180,6 @@ func TestExecuteSpillsByDefault(t *testing.T) {
 	}
 }
 
-// TestReadFileForwardsWebP is REQ-TOOL-14: providers accept WebP, and it is
-// measured like any other format — a conforming one is forwarded verbatim
-// with its real dimensions.
-func TestReadFileForwardsWebP(t *testing.T) {
-	dir := t.TempDir()
-	// A 3x2 lossless WebP.
-	webp := []byte("RIFF\x1a\x00\x00\x00WEBPVP8L\x0e\x00\x00\x00\x2f\x02\x40\x00\x00\x28\x72\x15\xea\xd1\xff\x02\x00\x00")
-	if err := os.WriteFile(filepath.Join(dir, "pic.webp"), webp, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	res := toolByName(t, dir, "read_file").Execute(context.Background(), json.RawMessage(`{"path":"pic.webp"}`))
-	if !res.OK {
-		t.Fatalf("WebP must be forwarded, not refused: %+v", res)
-	}
-	if len(res.Blocks) != 1 || res.Blocks[0].(core.ImageBlock).MimeType != "image/webp" ||
-		res.Blocks[0].(core.ImageBlock).Data != base64.StdEncoding.EncodeToString(webp) {
-		t.Fatalf("want the WebP verbatim in one image/webp block: %+v", res.Blocks)
-	}
-	if res.Data["width"] != 3 || res.Data["height"] != 2 {
-		t.Fatalf("dimensions = %v x %v, want 3 x 2", res.Data["width"], res.Data["height"])
-	}
-}
-
 // TestSignalKilledProcessReportsExitCode128PlusSignum is NFR-COMPAT-06's
 // unix exit-code semantics.
 func TestSignalKilledProcessReportsExitCode128PlusSignum(t *testing.T) {
@@ -1369,42 +1345,6 @@ func TestIgnoreOptionsAreThreadedAndGitConfigIsCached(t *testing.T) {
 }
 
 // ------------------------------------------------------------------ review fixes
-
-// TestReadFileRefusesAnOversizedImageBeforeLoadingIt. The normalizer bounds
-// what it DECODES; nothing bounded what read_file handed it. The file is
-// sparse — a PNG signature and thirty-two megabytes of holes — so the test
-// costs nothing to set up and the assertion is on allocation, which is what
-// a size check placed after io.ReadAll would fail.
-func TestReadFileRefusesAnOversizedImageBeforeLoadingIt(t *testing.T) {
-	dir := t.TempDir()
-	f, err := os.Create(filepath.Join(dir, "huge.png"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.WriteString("\x89PNG\r\n\x1a\n"); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Truncate(ImageFileMaxBytes + 1); err != nil {
-		t.Fatal(err)
-	}
-	f.Close()
-	read := toolByName(t, dir, "read_file")
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-	res := read.Execute(context.Background(), json.RawMessage(`{"path":"huge.png"}`))
-	runtime.ReadMemStats(&after)
-	if res.OK || res.Error != "image_too_large" {
-		t.Fatalf("want image_too_large, got %+v", res)
-	}
-	if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 1<<20 {
-		t.Fatalf("refusing a %d byte image allocated %d bytes: the size must be checked "+
-			"BEFORE the file is read", ImageFileMaxBytes+1, alloc)
-	}
-	if res.Text != "" {
-		t.Fatal("an error result keeps the JSON envelope; Text must be empty")
-	}
-}
 
 // TestFileToolsRefuseWhatIsNotARegularFile. A directory is a list_files
 // question. A FIFO is worse: a read blocks until something writes, which is
@@ -2028,16 +1968,6 @@ func TestBuiltinLeniencySurvivesStrictValidation(t *testing.T) {
 		}
 		return core.PrepareArguments(byName[tool], c)
 	}
-	byName["fetch_url"] = FetchTool(FetchOptions{})
-	{
-		p, err := prep("fetch_url", `{"url":"https://example.com","method":"get"}`)
-		if err != nil {
-			t.Fatalf("method \"get\" refused: %v", err)
-		}
-		if p.Args["method"] != "GET" {
-			t.Fatalf("method = %v, want GET", p.Args["method"])
-		}
-	}
 	p, err := prep("search_files", fmt.Sprintf(`{"pattern":"x","max_matches":%d}`, SearchMatchCap*5))
 	if err != nil {
 		t.Fatalf("max_matches over the cap refused: %v", err)
@@ -2084,21 +2014,16 @@ func assertObject(t *testing.T, where string, s *schema.Schema, want map[string]
 	}
 }
 
-// TS-06-11: read_file's OutputSchema is oneOf a text read and an image read.
+// TS-06-11: read_file's OutputSchema is the text read. Spec 09 removed the
+// image branch (09-REQ-3.6); an image file is an unsupported_file error.
 func TestOutputSchemaReadFile_TS06_11(t *testing.T) {
 	s := toolByName(t, t.TempDir(), "read_file").OutputSchema
-	if s == nil || len(s.OneOf) != 2 {
-		t.Fatalf("OutputSchema = %+v, want oneOf with two branches", s)
+	if s == nil || len(s.OneOf) != 0 {
+		t.Fatalf("OutputSchema = %+v, want one object schema", s)
 	}
-	assertObject(t, "read_file text", s.OneOf[0], map[string]prop{
+	assertObject(t, "read_file", s, map[string]prop{
 		"content":  {schema.TypeString, true},
 		"encoding": {schema.TypeString, true},
-	})
-	assertObject(t, "read_file image", s.OneOf[1], map[string]prop{
-		"note":      {schema.TypeString, true},
-		"mime_type": {schema.TypeString, true},
-		"width":     {schema.TypeInteger, true},
-		"height":    {schema.TypeInteger, true},
 	})
 }
 
@@ -2143,4 +2068,37 @@ var declProps = map[string]prop{
 	"Container": {schema.TypeString, true}, "Signature": {schema.TypeString, true},
 	"Exported": {schema.TypeBoolean, true}, "StartLine": {schema.TypeInteger, true},
 	"EndLine": {schema.TypeInteger, true},
+}
+
+// TS-09-21 (smoke, 09-PATH-2): read_file from tools.All, over a real
+// workspace, refuses a PNG by its magic bytes and names the format.
+func TestSmokeReadFileRefusesPNG_TS09_21(t *testing.T) {
+	ws, err := NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	png := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00}
+	if err := os.WriteFile(filepath.Join(ws.Root, "test.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	all, err := All(Options{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var readFile core.Tool
+	for _, tl := range all {
+		if tl.Name == "read_file" {
+			readFile = tl
+		}
+	}
+	res := readFile.Execute(context.Background(), json.RawMessage(`{"path":"test.png"}`))
+	if res.OK || res.Error != "unsupported_file" {
+		t.Fatalf("OK %v Error %q, want unsupported_file", res.OK, res.Error)
+	}
+	if !strings.Contains(res.Detail, "reading images is not supported") || !strings.Contains(res.Detail, "PNG") {
+		t.Fatalf("Detail = %q", res.Detail)
+	}
+	if len(res.Blocks) != 0 {
+		t.Fatalf("a refused image carries %d blocks", len(res.Blocks))
+	}
 }

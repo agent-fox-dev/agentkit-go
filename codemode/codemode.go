@@ -6,7 +6,7 @@
 // The script is sandboxed: it has no file system, network, environment,
 // processes or clock, only the tools bound to it. Every call it makes goes
 // through the agent's own nested-call pipeline (core.CallNested), so
-// interceptors, plugins, audit and events see each one as they see a call the
+// interceptors and events see each one as they see a call the
 // model makes directly.
 package codemode
 
@@ -17,8 +17,8 @@ import (
 	"slices"
 	"unicode/utf8"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // outputSchema is the Data of every code-mode tool. It is one value shared by

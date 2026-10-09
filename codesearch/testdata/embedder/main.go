@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/agentfox/agentkit-go/codesearch"
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/codesearch"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 func main() {

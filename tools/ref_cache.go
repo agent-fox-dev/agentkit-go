@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/agentfox/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/outline"
 )
 
 // referenceCache maintains in-memory reference analysis, parsed Go packages,

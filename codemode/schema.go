@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // RenderSignature declares t as the Starlark function a script calls: its

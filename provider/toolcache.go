@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"sync"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // This file is §6.2a Level 3: REQ-CACHE-06 (serialize the tool list once per
@@ -36,8 +36,8 @@ type prefixEntry struct {
 // ToolPrefix is the per-session serialized tool list.
 //
 // It is a value on the session, never a package-level map: two agents in one
-// process routinely hold tools of the same NAME and different schemas — that
-// is what subagent.Tool is for — and a shared cache keyed by name would serve
+// process routinely hold tools of the same NAME and different schemas, and a
+// shared cache keyed by name would serve
 // one agent's schema to the other.
 type ToolPrefix struct {
 	mu sync.Mutex

@@ -3,15 +3,15 @@
 // that are part of the contract, and the EventStream.
 //
 // core imports only jsonx and schema. Nothing in AgentKit below the root
-// package may import the root package, which is what keeps subagent.Tool
-// (needs *Agent) and compaction (needs a model call) out of core.
+// package may import the root package, which is what keeps anything that
+// needs an *Agent out of core.
 package core
 
 import (
 	"encoding/json"
 	"time"
 
-	"github.com/agentfox/agentkit-go/jsonx"
+	"github.com/agent-fox-dev/agentkit-go/jsonx"
 )
 
 type Role string

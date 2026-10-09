@@ -8,9 +8,8 @@
 // AgentConfig and every interface seam — lives in the core package and is
 // used directly; this package adds nothing to it. What lives here is the
 // Agent: its constructors, the loop, the tool batch executor and provider
-// registration. Stop policies, middleware, compaction, the prompt assembler,
-// the execute guard and delegation are each their own package beneath this
-// one.
+// registration. The prompt assembler and the execute guard are each their
+// own package beneath this one.
 package agentkit
 
 import (
@@ -23,13 +22,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/middleware"
-	"github.com/agentfox/agentkit-go/session"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
-// Agent holds its own config, tool registry, history and middleware chain. It
-// has no global state: creating a child agent for delegation is constructing a
+// Agent holds its own config, tool registry and history. It has no global
+// state: creating a child agent for delegation is constructing a
 // new Agent value (§5, Agent as Value Object).
 //
 // Value semantics govern COMPOSITION, not immutability. The model and thinking
@@ -64,13 +61,6 @@ type Agent struct {
 	cfg     core.AgentConfig
 	tools   []core.Tool
 	history *core.ConversationHistory
-	// rec is the single write path for anything that must survive a restart
-	// (REQ-SESS-03). It is never nil: with no SessionStore configured it is a
-	// recorder over a nil store, which still updates history. That uniformity
-	// is what stops the persisted and non-persisted paths drifting apart —
-	// the bug where a session log is built, tested, and never actually
-	// written to during a run.
-	rec *session.Recorder
 
 	// running is the run slot (REQ-LOOP-15). It is claimed BEFORE the queues
 	// are drained, under this one lock: claiming after draining lets a
@@ -96,19 +86,10 @@ type Agent struct {
 	// and StopContext.Usage report. Reset when a run begins; usage is the
 	// lifetime aggregate Agent.Usage reports.
 	runUsage core.Usage
-
-	// meter is REQ-CACHE-08's session aggregate. It is never nil, so every
-	// call site is unconditional and the metered and unmetered paths cannot
-	// drift apart — the same reasoning that makes rec never nil.
-	meter *middleware.CacheMeter
 }
 
 // NewAgent constructs an Agent. Credentials, catalog lookup and provider
 // registration are the caller's; cfg.Model must already be resolved.
-//
-// A non-empty SessionStore is rejected with ErrSessionNotEmpty: resuming means
-// folding the log and passing the recovered configuration to construction
-// (REQ-SESS-02), not building an agent and patching a model onto it.
 func NewAgent(cfg core.AgentConfig) (*Agent, error) {
 	if cfg.Model == nil {
 		return nil, fmt.Errorf("agentkit: AgentConfig.Model is nil; resolve it with catalog.ResolveModel first")
@@ -116,17 +97,12 @@ func NewAgent(cfg core.AgentConfig) (*Agent, error) {
 	if err := checkCustomTools(cfg); err != nil {
 		return nil, err
 	}
-	if cfg.SessionStore != nil {
-		if len(cfg.SessionStore.Entries()) > 0 {
-			return nil, core.ErrSessionNotEmpty
-		}
-	}
 	return newAgent(cfg, core.NewConversationHistory()), nil
 }
 
-// NewAgentWithHistory is the resume constructor: the recovered model, thinking
-// level and messages are CONSTRUCTION INPUTS (REQ-SESS-02), not post-hoc
-// mutations.
+// NewAgentWithHistory constructs an Agent over an existing history: the
+// messages a later run continues from are a construction input, not a
+// post-hoc mutation.
 func NewAgentWithHistory(cfg core.AgentConfig, h *core.ConversationHistory) (*Agent, error) {
 	if cfg.Model == nil {
 		return nil, fmt.Errorf("agentkit: AgentConfig.Model is nil; resolve it with catalog.ResolveModel first")
@@ -141,8 +117,7 @@ func NewAgentWithHistory(cfg core.AgentConfig, h *core.ConversationHistory) (*Ag
 }
 
 func newAgent(cfg core.AgentConfig, h *core.ConversationHistory) *Agent {
-	a := &Agent{producerID: newID("prod"), cfg: cfg, history: h, meter: middleware.NewCacheMeter()}
-	a.rec = session.NewRecorder(cfg.SessionStore, h, cfg.OnPersistError)
+	a := &Agent{producerID: newID("prod"), cfg: cfg, history: h}
 	a.tools = append(a.tools, cfg.ToolPolicy.CustomTools...)
 	return a
 }
@@ -238,36 +213,16 @@ func (a *Agent) RegisterTool(t core.Tool) error {
 }
 
 // SetPromptBlocks replaces AgentConfig.PromptBlocks: the extra system-prompt
-// sections appended after the built-in ones, which is where the skills and
-// project-context block goes (prompt.SkillBlocks builds it).
+// sections appended after the built-in ones, such as a project-context block
+// the embedder assembles.
 //
-// It exists because the two halves of the skills wiring sat on opposite sides
-// of the constructor. The assembled block is a field on core.AgentConfig, so
-// it had to be set BEFORE NewAgent; the audit sink of REQ-SKILL-11 lives on
-// the agent, so LoadSkills could only be called AFTER it — and the selection
-// it audited then had no exported route into the prompt. An embedder had to
-// assemble the block from a second selection and emit the event by hand with
-// AuditSkills — which is the exact call LoadSkills exists to make
-// unforgettable. Now there is one order that does both:
-//
-//	cfg := skills.ConfigFor(agentCfg, workDir, skills.BuiltinDir())
-//	sel := agent.LoadSkills(skills.Discover(cfg), archetype, task, cfg)
-//	files, _ := skills.DiscoverContext(cfg)
-//	err := agent.SetPromptBlocks(prompt.SkillBlocks(sel, files, agent.Tools()))
-//
-// Like RegisterTool it returns ErrBusy while a run is in flight, for the same
-// reason: the assembled prompt is the provider's cached prefix (REQ-CACHE-06),
-// and changing it mid-turn would silently alter what the model was shown after
-// it was shown something else. A skill that activates DURING a turn takes the
-// other seam — skills.Activate and Activation.Mark — which declares its tools
-// at their transcript position instead of rewriting the prefix.
+// Like RegisterTool it returns ErrBusy while a run is in flight: the
+// assembled prompt is the provider's cached prefix (REQ-CACHE-06), and
+// changing it mid-turn would silently alter what the model was shown after it
+// was shown something else.
 //
 // The blocks are copied, so a caller that keeps and mutates its own slice
-// cannot change the prompt a later turn sends. Nothing is written to the
-// session log: the block is derived from discovery, and a resumed session
-// re-derives it from the config the embedder passes to
-// NewAgentFromSession — a logged copy could only disagree with the trust
-// decision that session was constructed with.
+// cannot change the prompt a later turn sends.
 func (a *Agent) SetPromptBlocks(blocks []string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -403,28 +358,8 @@ func (a *Agent) ResolvedModel() *core.Model {
 	return a.cfg.Model
 }
 
-// History exposes the in-memory active branch. It is a view; the durable
-// representation is the session log (NFR-REL-04).
+// History exposes the in-memory active branch.
 func (a *Agent) History() *core.ConversationHistory { return a.history }
-
-// CacheStats is REQ-CACHE-08's session aggregate across all three caching
-// levels, extended by REQ-CACHE-11's prefix diagnostics.
-//
-// Level 1 figures come from what the PROVIDER reported, never from a
-// re-estimate: REQ-GO-15 forbids treating an estimate as a measurement, and a
-// savings number computed from estimated tokens is a guess wearing a dollar
-// sign. Level 2 hit and miss counts require middleware.Caching to have been
-// registered with this agent's Meter — see AgentConfig.Middleware and
-// CacheOptions.Meter.
-func (a *Agent) CacheStats() middleware.CacheStats { return a.meter.Stats() }
-
-// Meter exposes the agent's cache meter so middleware.Caching can be wired to
-// it at construction:
-//
-//	a, _ := agentkit.NewAgent(cfg)
-//	cfg.Middleware = append(cfg.Middleware,
-//	    middleware.Caching(middleware.CacheOptions{Meter: a.Meter()}))
-func (a *Agent) Meter() *middleware.CacheMeter { return a.meter }
 
 // Usage returns cumulative usage for the agent's lifetime.
 func (a *Agent) Usage() core.Usage {
@@ -433,37 +368,23 @@ func (a *Agent) Usage() core.Usage {
 	return a.usage
 }
 
-// SetModel changes the model mid-session and appends the log entry that makes
-// the change recoverable (REQ-SESS-03). A change not written into the log at
-// the moment it happens is not recoverable by the fold.
-//
-// The entry carries the (provider, api, model) TRIPLE, not just provider and
-// model: REQ-PROV-11 rule 1 needs all three to decide same_model, and
-// two-of-three makes it false on the first post-resume request, silently
-// downgrading every signed thinking block to plain text (ruling P-4).
+// SetModel changes the model for the next request.
 func (a *Agent) SetModel(m *core.Model) error {
 	if m == nil {
 		return fmt.Errorf("agentkit: SetModel(nil)")
 	}
 	a.mu.Lock()
 	a.cfg.Model = m
-	rec := a.rec
 	a.mu.Unlock()
-
-	_, err := rec.RecordModelChange(m.Provider, m.API, m.ID)
-	return err
+	return nil
 }
 
-// SetThinkingLevel changes the reasoning level mid-session and logs it
-// (REQ-SESS-03).
+// SetThinkingLevel changes the reasoning level for the next request.
 func (a *Agent) SetThinkingLevel(l core.ThinkingLevel) error {
 	a.mu.Lock()
 	a.cfg.ThinkingLevel = l
-	rec := a.rec
 	a.mu.Unlock()
-
-	_, err := rec.RecordThinkingLevel(l)
-	return err
+	return nil
 }
 
 // ------------------------------------------------------------------- queues
@@ -473,8 +394,8 @@ func (a *Agent) SetThinkingLevel(l core.ThinkingLevel) error {
 // the provider request — never between an assistant response and its tool
 // results, which would violate REQ-LOOP-02.
 //
-// Calling Steer while idle is allowed: REQ-LOOP-16's assistant branch is
-// otherwise unreachable and Continue would always error (ruling P-34).
+// Calling Steer while idle is allowed: the message is delivered into the
+// next run's first turn.
 func (a *Agent) Steer(msgs ...core.Message) error {
 	if len(msgs) == 0 {
 		return nil
@@ -583,9 +504,8 @@ func (a *Agent) wasAborted() bool {
 }
 
 // Config returns a copy of the agent's current configuration, read under the
-// lock. It is what a caller building a DERIVED agent — a delegation child
-// that inherits the parent's providers, credentials, plugins and tracer —
-// reads from; Snapshot's ConfigView is the narrower, serializable form.
+// lock. It is what a caller building a DERIVED agent — one that inherits
+// this agent's providers and tools — reads from; Snapshot's ConfigView is the narrower, serializable form.
 //
 // It is a copy of the struct, not a deep copy: the registries and slices it
 // carries are shared with the agent. Mutating them through the copy is the

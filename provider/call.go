@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // Call is one provider HTTP request with the whole cross-cutting pipeline
@@ -122,8 +122,8 @@ func StatusError(prefix string, resp *http.Response, detail func([]byte) string)
 // HTTPStatusError is a non-2xx response as an error: StatusError's text, the
 // status code, and the server-dictated retry delay when the response named
 // one. It implements core.RetryAfterError, which is how a Retry-After reaches
-// the semantic retry layer (middleware.Retry) when the transport layer is not
-// retrying itself — its default (OQ-9).
+// a caller's own retry layer when the transport layer is not retrying itself
+// — its default (OQ-9).
 type HTTPStatusError struct {
 	Text       string
 	StatusCode int

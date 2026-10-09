@@ -1,9 +1,8 @@
-module github.com/agentfox/agentkit-go
+module github.com/agent-fox-dev/agentkit-go
 
 go 1.27
 
 require (
-	code.dny.dev/ssrf v0.3.0
 	github.com/bmatcuk/doublestar/v4 v4.10.2
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/pelletier/go-toml/v2 v2.4.3 // pinned: internal/toml uses the unstable package, outside semver
@@ -23,9 +22,6 @@ require (
 	github.com/tree-sitter/tree-sitter-scala v0.26.2
 	github.com/tree-sitter/tree-sitter-typescript v0.23.2
 	go.starlark.net v0.0.0-20261005163335-bcb1a1a55bf9
-	golang.org/x/image v0.44.0
-	golang.org/x/net v0.57.0
-	golang.org/x/time v0.16.0
 )
 
 require (
@@ -37,4 +33,5 @@ require (
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/time v0.16.0 // indirect
 )

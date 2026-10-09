@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/outline"
 )
 
 // TS-05-35 (unit): Result renderer outputs header with declaration name, backend, counts, and partial advisory

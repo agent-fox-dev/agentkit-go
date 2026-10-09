@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // mkSymFile creates a file in root with the given relative path and content.

@@ -8,7 +8,7 @@ the script prints and returns comes back.
 
 The script is sandboxed. It has no file system, network, environment,
 processes or clock, only the bound tools, and every call it makes goes through
-the agent's own interceptor, audit and event pipeline.
+the agent's own interceptor and event pipeline.
 
 ## Run it
 
@@ -23,8 +23,9 @@ go run ./examples/codemode
 
 - The size of the generated tool description (`BuildInfo`): it declares each
   bound tool as a typed Starlark function.
-- One audit line per nested call, each naming the `code_mode` call that made
-  it: `audit: call_2 called inventory__stock (ok=true)`.
+- One line per nested call, read from the agent's event stream, each naming
+  the `code_mode` call that made it:
+  `nested: call_2 called inventory__stock (ok=true)`.
 - The first script lists the workspace, keeps only the `.go` files, and reads
   a file that does not exist. That failure comes back as a value
   (`is_error(missing)`, `missing.error` is `read_failed`) and the script
@@ -35,8 +36,7 @@ go run ./examples/codemode
 - The run ends with `Code mode example completed successfully`.
 
 The transcript holds the two `code_mode` calls and their results, not the
-seven calls the scripts made. Those are in the audit trail and the event
-stream.
+seven calls the scripts made. Those are on the event stream.
 
 ## Where to look
 

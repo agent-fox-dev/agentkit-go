@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/wire"
+	"github.com/agent-fox-dev/agentkit-go/wire"
 )
 
 // The framed readers are the first thing untrusted bytes touch on an MCP

@@ -5,7 +5,7 @@ import (
 
 	"go.starlark.net/starlark"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // ToolError is what a bound tool returns to a script when the call failed:

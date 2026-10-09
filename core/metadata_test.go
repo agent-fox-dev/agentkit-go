@@ -3,7 +3,7 @@ package core_test
 import (
 	"testing"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // TS-04-39: ToolResultMessage.Clone deep-copies Metadata including the ExitCode pointer.

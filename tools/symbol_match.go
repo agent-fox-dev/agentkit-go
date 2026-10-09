@@ -4,7 +4,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/agentfox/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/outline"
 )
 
 // SymbolMatch is one match from find_symbol.

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // revalFixture builds an index over n small Go files, runs the first search to

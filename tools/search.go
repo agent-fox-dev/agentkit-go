@@ -18,8 +18,8 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // SearchMatch is one hit (REQ-TOOL-05).

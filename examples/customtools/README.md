@@ -55,7 +55,7 @@ error: no credential for vendor "anthropic": set one of ANTHROPIC_API_KEY, ...
 |---|---|---|
 | Schema as a value | `lookupPartTool` `InputSchema` | `schema.Object(schema.Prop(…), schema.Opt(…))`, `schema.Array(…).MinItemsN(1)`. AgentKit rewrites it per provider, coerces and validates arguments, and renders the expected shape into the error the model reads. A raw JSON blob can only be forwarded. Property order is preserved. |
 | `Handler` shape | `lookupPartTool` | `func(ctx, json.RawMessage) (json.RawMessage, error)`. For tools that only answer. A returned Go error becomes an error result (`handler_error`), not a crash. |
-| `Execute` shape | `convertUnitsTool` | `func(ctx, json.RawMessage) core.ToolResult` with `core.OKResult` / `core.ErrResult(code, msg)`. The only way to reach `Terminate`, `Metadata` and image blocks. Set exactly one of `Handler`/`Execute`; `RegisterTool` rejects both or neither. |
+| `Execute` shape | `convertUnitsTool` | `func(ctx, json.RawMessage) core.ToolResult` with `core.OKResult` / `core.ErrResult(code, msg)`. The only way to reach `Terminate`, `Metadata` and extra content blocks. Set exactly one of `Handler`/`Execute`; `RegisterTool` rejects both or neither. |
 | Error results | `convertUnitsTool`, `reserveStockTool` | An error result goes back to the model and the run continues. Its message is the whole repair instruction: say what was wrong and what would be right. |
 | Enums | `convertUnitsTool` | `schema.Enum(desc, values…)` pins vocabulary; cross-field rules still need a handler check. |
 | Argument repair | `lookupPartTool` `PrepareArguments` | Runs first in the argument pipeline. Turns `"ids": "A, B"` or `{"id": "A"}` into an array. Must return a copy, not mutate its input. |
@@ -70,9 +70,8 @@ error: no credential for vendor "anthropic": set one of ANTHROPIC_API_KEY, ...
 - **`Terminate` is a vote, combined with AND.** The run ends only when every
   result in the batch votes to terminate. If the model calls `submit_answer`
   next to other tools, it is just another result and the run continues.
-- **Constrained sampling is honoured on the OpenAI wires only**; Anthropic
-  ignores it. `StrictPrefer` falls back to unconstrained when the schema or
-  endpoint can't do strict mode; `StrictRequire` fails the *whole request*.
+- **Constrained sampling is declared, not enforced, here**: the Anthropic
+  wire, the only one this module ships, ignores it.
 - The inventory map is unsynchronised on purpose. That is safe only because
   `reserve_stock` is sequential and `lookup_part` only reads.
 - `ToolCallEndEvent.Block.Input` holds the model's original bytes, *before*
@@ -82,4 +81,5 @@ error: no credential for vendor "anthropic": set one of ANTHROPIC_API_KEY, ...
 
 Packages: `core` (`Tool`, `ToolResult`, `OKResult`, `ErrResult`,
 `ExecutionMode`, `ConstrainedSampling`, `RunStopToolTerminate`), `schema`.
-To test tools like these offline, see [`testing`](../testing).
+To test tools like these offline, script the model with `provider/faux`, as
+[`agentdemo`](../agentdemo) does.

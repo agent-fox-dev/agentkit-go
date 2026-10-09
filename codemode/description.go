@@ -5,7 +5,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // DefaultDescriptionTemplate is the instructions section of a code-mode

@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/guard"
-	"github.com/agentfox/agentkit-go/prompt"
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/guard"
+	"github.com/agent-fox-dev/agentkit-go/prompt"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // TS-02-54: All() and FileNavigationTools() return the pinned names in order
@@ -33,7 +33,7 @@ func TestAllAndFileNavigationToolsPinnedNames_TS02_54(t *testing.T) {
 		"read_file", "write_file", "edit_file",
 		"list_files", "find_files", "search_files",
 		"file_outline", "find_symbol", "find_references",
-		"execute", "run_command", "powershell",
+		"execute", "run_command",
 	}
 	gotAll := make([]string, 0, len(all))
 	for _, tl := range all {
@@ -200,8 +200,8 @@ func TestRootModuleStdlibOnly_TS02_58(t *testing.T) {
 
 	// Verify existing tools' descriptions are unchanged.
 	expectedDescs := map[string]string{
-		"read_file": "Read a file. Text is returned as at most 2000 lines or 50KB, " +
-			"whichever comes first; an image is returned as a note plus the image itself.",
+		"read_file": "Read a text file. At most 2000 lines or 50KB are returned, " +
+			"whichever comes first.",
 		"write_file": "Write a file, creating or replacing it.",
 		"list_files": "List the entries of a directory, directories with a trailing /. " +
 			"Does not apply .gitignore.",

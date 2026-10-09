@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/provider"
-	"github.com/agentfox/agentkit-go/provider/anthropic"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider"
+	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 )
 
 // sent drives one request through the provider and returns what the transport
@@ -573,19 +573,9 @@ func TestAnAnthropicBearerIsNeverSentToTheVertexEndpoint(t *testing.T) {
 		}
 	}
 
-	// The same rule holds for a token that arrives through a credential store.
-	creds := provider.NewCredentials(&provider.MemoryStore{})
-	_, _ = creds.Modify(context.Background(), "anthropic", func(provider.Credential) (provider.Credential, error) {
-		return provider.Credential{AccessToken: "sk-ant-oat01-SECRET", Scheme: provider.SchemeBearer}, nil
-	})
-	r := sent(t, anthropic.Options{VertexProject: "proj-1", Credentials: creds}, nil)
-	if got := r.Header.Get("Authorization"); got != "" {
-		t.Fatalf("Authorization = %q from a credential store; an sk-ant- token is Anthropic's", got)
-	}
-
 	// A Google access token in ANTHROPIC_AUTH_TOKEN survives a leftover API
 	// key, whichever the direct deployment would prefer.
-	r = sent(t, anthropic.Options{}, vertex(map[string]string{
+	r := sent(t, anthropic.Options{}, vertex(map[string]string{
 		"ANTHROPIC_AUTH_TOKEN": "ya29.access-token", "ANTHROPIC_API_KEY": "sk-ant-api03-SECRET"}))
 	if got := r.Header.Get("Authorization"); got != "Bearer ya29.access-token" {
 		t.Fatalf("Authorization = %q, want the Google token to survive the leftover API key", got)

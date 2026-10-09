@@ -9,13 +9,11 @@ import (
 	"sync"
 	"testing"
 
-	agentkit "github.com/agentfox/agentkit-go"
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/guard"
-	"github.com/agentfox/agentkit-go/plugins"
-	"github.com/agentfox/agentkit-go/provider"
-	"github.com/agentfox/agentkit-go/schema"
-	"github.com/agentfox/agentkit-go/stop"
+	agentkit "github.com/agent-fox-dev/agentkit-go"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/guard"
+	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // ---------------------------------------------------------------- helpers
@@ -77,7 +75,7 @@ func mdNewTestAgent(t *testing.T, s *mdScripted, mutate func(*core.AgentConfig))
 	t.Helper()
 	cfg := core.AgentConfig{
 		Model:      mdTestModel(),
-		StopPolicy: stop.AfterTurns(10),
+		StopPolicy: func(sc core.StopContext) bool { return sc.TurnCount >= 10 },
 		Providers:  core.ProviderRegistry{mdTestAPI: s.provider()},
 	}
 	if mutate != nil {
@@ -544,43 +542,6 @@ func TestBlockedNilMetadata_TS04_37(t *testing.T) {
 	}
 }
 
-// TestPluginVetoedNilMetadata_TS04_37 verifies that a plugin veto produces
-// a message with nil Metadata.
-func TestPluginVetoedNilMetadata_TS04_37(t *testing.T) {
-	var ran bool
-	metaTool := ts0437MetaTool(&ran)
-
-	s := &mdScripted{turns: []core.AssistantMessage{
-		mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
-	}}
-	reg := plugins.NewRegistry()
-	reg.Register(&blockingPlugin{name: "blocker"})
-	a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
-		c.BeforeToolCall = guard.AllowAll
-		c.Plugins = reg
-	})
-	if err := a.RegisterTool(metaTool); err != nil {
-		t.Fatal(err)
-	}
-	res, events := mdCollectToolResultEvents(t, a, s, "go")
-	if ran {
-		t.Fatal("handler should not have run")
-	}
-	if len(events) == 0 {
-		t.Fatal("no ToolResultEvent")
-	}
-	if events[0].Metadata != nil {
-		t.Fatalf("plugin-vetoed call Metadata = %+v, want nil", events[0].Metadata)
-	}
-	msg := mdFindToolResult(t, res.Messages, "c1")
-	if !msg.IsError {
-		t.Fatal("plugin-vetoed call should be an error")
-	}
-	if !strings.Contains(msg.Content.Text(), "blocked_by_plugin") {
-		t.Fatalf("plugin-vetoed content = %q, want blocked_by_plugin", msg.Content.Text())
-	}
-}
-
 // TestAbortedNilMetadata_TS04_37 verifies that a batch abort produces
 // a message with nil Metadata.
 func TestAbortedNilMetadata_TS04_37(t *testing.T) {
@@ -623,17 +584,6 @@ func TestAbortedNilMetadata_TS04_37(t *testing.T) {
 	if !strings.Contains(abortEvents[0].Content.Text(), "aborted") {
 		t.Fatalf("aborted content = %q, want aborted", abortEvents[0].Content.Text())
 	}
-}
-
-// blockingPlugin is a plugin event hook that blocks every tool call.
-type blockingPlugin struct {
-	plugins.BaseEventHook
-	name string
-}
-
-func (p *blockingPlugin) PluginName() string { return p.name }
-func (p *blockingPlugin) OnToolUse(_ context.Context, _ string, _ json.RawMessage) core.PluginDecision {
-	return core.PluginBlock
 }
 
 // ---------------------------------------------------------------- TS-04-38
@@ -691,8 +641,8 @@ func TestMaxTokensSynthesizedAndRepairSynthesizedNilMetadata_TS04_38(t *testing.
 		},
 		// No tool result for call_1.
 	}
-	target := provider.Target{Provider: "test", API: mdTestAPI, Model: "md-test-model"}
-	out, rep := provider.RepairTranscript(damaged, target)
+	target := anthropic.Target{Provider: "test", API: mdTestAPI, Model: "md-test-model"}
+	out, rep := anthropic.RepairTranscript(damaged, target)
 	if rep.SyntheticResults != 1 {
 		t.Fatalf("SyntheticResults = %d, want 1", rep.SyntheticResults)
 	}
@@ -702,8 +652,8 @@ func TestMaxTokensSynthesizedAndRepairSynthesizedNilMetadata_TS04_38(t *testing.
 			if tr.Metadata != nil {
 				t.Fatalf("RepairTranscript synthetic Metadata = %+v, want nil", tr.Metadata)
 			}
-			if tr.Content.Text() != provider.SyntheticResultText {
-				t.Fatalf("synthetic text = %q, want %q", tr.Content.Text(), provider.SyntheticResultText)
+			if tr.Content.Text() != anthropic.SyntheticResultText {
+				t.Fatalf("synthetic text = %q, want %q", tr.Content.Text(), anthropic.SyntheticResultText)
 			}
 			return
 		}

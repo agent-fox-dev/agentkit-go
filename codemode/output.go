@@ -7,8 +7,8 @@ import (
 
 	"go.starlark.net/starlark"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // newOutput is a script's output buffer: the same bounded accumulator the

@@ -12,7 +12,7 @@
 // not do in its head, reserve_stock mutates shared state, and submit_answer
 // ends the run.
 //
-//	AGENTKIT_MODEL=openai/gpt-5.6-terra go run ./examples/customtools
+//	AGENTKIT_MODEL=anthropic/claude-opus-5-5 go run ./examples/customtools
 //
 // See examples/README.md for the full environment-variable table.
 package main
@@ -27,17 +27,12 @@ import (
 	"strings"
 	"time"
 
-	agentkit "github.com/agentfox/agentkit-go"
-	"github.com/agentfox/agentkit-go/catalog"
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/provider"
-	"github.com/agentfox/agentkit-go/provider/anthropic"
-	"github.com/agentfox/agentkit-go/provider/google"
-	"github.com/agentfox/agentkit-go/provider/ollama"
-	"github.com/agentfox/agentkit-go/provider/openai"
-	"github.com/agentfox/agentkit-go/provider/openairesponses"
-	"github.com/agentfox/agentkit-go/schema"
-	"github.com/agentfox/agentkit-go/stop"
+	agentkit "github.com/agent-fox-dev/agentkit-go"
+	"github.com/agent-fox-dev/agentkit-go/catalog"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider"
+	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 func main() {
@@ -64,25 +59,26 @@ func run() error {
 	}
 
 	// 2. Register the wire APIs. Nothing is registered by import side effect,
-	//    so a program that only wants the loop never drags net/http in. All
-	//    five are registered here so any AGENTKIT_MODEL resolves; a real
-	//    application registers only the ones it uses.
+	//    so a program that only wants the loop never drags net/http in.
 	cfg := core.AgentConfig{Model: model}
 	agentkit.RegisterDefaults(&cfg,
 		anthropic.Provider(anthropic.Options{}),
-		openai.Provider(openai.Options{}),
-		openairesponses.Provider(openairesponses.Options{}),
-		google.Provider(google.Options{}),
-		ollama.Provider(ollama.Options{}),
 	)
 
 	// 3. A tool-using run needs an upper bound that does not depend on the
 	//    model choosing to stop. submit_answer below is the *intended* ending;
 	//    the stop policy is what happens when the model never gets there.
-	cfg.StopPolicy = stop.Any(
-		stop.AfterTurns(12),
-		stop.OverBudget(1.00), // dollars, cumulative for the run
-	)
+	cfg.StopPolicy = func(sc core.StopContext) bool {
+		switch {
+		case sc.TurnCount >= 12:
+			sc.SetReason(core.RunStopMaxTurns)
+			return true
+		case sc.Usage.CostUSD > 1.00: // dollars, cumulative for the run
+			sc.SetReason(core.RunStopBudgetExceeded)
+			return true
+		}
+		return false
+	}
 	cfg.SystemPrompt = "You are a parts-desk assistant. Use the tools rather than guessing part data."
 
 	if err := checkCredentials(model); err != nil {
@@ -546,27 +542,12 @@ func modelSpec() string {
 // has no key this process can read and a transport that will nonetheless
 // authenticate, so "ambient" must pass a pre-flight that "none" fails.
 func checkCredentials(m *core.Model) error {
-	auth := provider.ResolveAuth(authFor(m), provider.Env{})
+	auth := provider.ResolveAuth(anthropic.VendorAuth, provider.Env{})
 	if auth.State != provider.CredentialNone {
 		return nil
 	}
 	return fmt.Errorf("no credential for vendor %q: set one of %s (see examples/README.md)",
-		m.Provider, strings.Join(varNames(authFor(m)), ", "))
-}
-
-func authFor(m *core.Model) provider.VendorAuth {
-	switch m.API {
-	case anthropic.API:
-		return anthropic.VendorAuth
-	case google.API:
-		return google.VendorAuth
-	case ollama.API:
-		return ollama.VendorAuth
-	default:
-		// openai-completions and openai-responses share one per-vendor table,
-		// keyed on the VENDOR: "openai", "openrouter", "groq", "deepseek"…
-		return openai.AuthFor(m.Provider)
-	}
+		m.Provider, strings.Join(varNames(anthropic.VendorAuth), ", "))
 }
 
 func varNames(v provider.VendorAuth) []string {

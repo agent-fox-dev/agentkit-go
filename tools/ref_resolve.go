@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/agentfox/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/outline"
 )
 
 // Decl converts SymbolMatch to an outline.Decl.

@@ -12,14 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/provider/anthropic"
-	"github.com/agentfox/agentkit-go/provider/google"
-	"github.com/agentfox/agentkit-go/provider/ollama"
-	"github.com/agentfox/agentkit-go/provider/openai"
-	"github.com/agentfox/agentkit-go/provider/openairesponses"
-	"github.com/agentfox/agentkit-go/schema"
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
+	"github.com/agent-fox-dev/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // NFR-TEST-08(b): the per-provider request body.
@@ -152,7 +148,7 @@ func indentJSON(t *testing.T, raw []byte) string {
 }
 
 // TS-04-54: Populated Metadata on the canonical request's tool result leaves
-// all five request goldens byte-identical.
+// the request golden byte-identical.
 func TestMetadataNotInRequestBodies_TS04_54(t *testing.T) {
 	sentinels := []string{"agentkit-golden-sentinel", "spill_path", "exit_code", "duration_ms"}
 	for _, tc := range goldenRequestCases(t) {
@@ -169,7 +165,7 @@ func goldenRequestCases(t *testing.T) []goldenCase {
 	return goldenCasesFor(t, canonicalRequest(t))
 }
 
-// goldenCasesFor captures req's body from each of the five wire APIs.
+// goldenCasesFor captures req's body from the wire API.
 func goldenCasesFor(t *testing.T, req core.Request) []goldenCase {
 	t.Helper()
 	noenv := func(string) string { return "" }
@@ -177,18 +173,6 @@ func goldenCasesFor(t *testing.T, req core.Request) []goldenCase {
 		{"anthropic", capture(t,
 			anthropic.Provider(anthropic.Options{BaseURL: "https://example.invalid", Getenv: noenv}),
 			goldenModel("claude-test", anthropic.API, "anthropic"), req)},
-		{"openai", capture(t,
-			openai.Provider(openai.Options{BaseURL: "https://example.invalid", Getenv: noenv}),
-			goldenModel("gpt-test", openai.API, "openai"), req)},
-		{"google", capture(t,
-			google.Provider(google.Options{BaseURL: "https://example.invalid", Getenv: noenv}),
-			goldenModel("gemini-test", google.API, "google"), req)},
-		{"openai_responses", capture(t,
-			openairesponses.Provider(openairesponses.Options{BaseURL: "https://example.invalid", Getenv: noenv}),
-			goldenModel("gpt-resp-test", openairesponses.API, "openai"), req)},
-		{"ollama", capture(t,
-			ollama.Provider(ollama.Options{BaseURL: "https://example.invalid", Getenv: noenv}),
-			goldenModel("llama-test", ollama.API, "ollama"), req)},
 	}
 }
 
@@ -225,7 +209,7 @@ func randomOutputSchema(r *rand.Rand, depth int) *schema.Schema {
 }
 
 // TS-06-3: whatever OutputSchema a tool declares — none, or any shape — the
-// five request bodies stay byte-identical to the checked-in goldens. 06-REQ-1.4.
+// request body stays byte-identical to the checked-in golden. 06-REQ-1.4.
 func TestOutputSchemaNeverChangesRequestBodies_TS06_3(t *testing.T) {
 	r := rand.New(rand.NewSource(6))
 	for i := range 50 {
@@ -291,8 +275,8 @@ func TestSmokeOutputSchemaToolsKeepGoldens_TS06_32(t *testing.T) {
 		OutputSchema: out,
 	}})
 	cases := goldenCasesFor(t, req)
-	if len(cases) != 5 {
-		t.Fatalf("%d providers, want 5", len(cases))
+	if len(cases) != 1 {
+		t.Fatalf("%d providers, want 1", len(cases))
 	}
 	for _, tc := range cases {
 		want, err := os.ReadFile(filepath.Join("testdata", "golden", "request_"+tc.name+".json"))

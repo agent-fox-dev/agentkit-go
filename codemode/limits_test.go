@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/codemode"
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/codemode"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 func okTool(core.ToolUseBlock) (core.ToolResult, error) {

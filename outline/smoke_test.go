@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/outline"
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // TS-01-72 (smoke): An embedder outlines a Go file with no subprocess and gets
