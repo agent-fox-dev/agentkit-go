@@ -259,7 +259,7 @@
       "done_when": [
         "`go test ./codemode/... -run 'TestOutput'` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,

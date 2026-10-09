@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
 	"go.starlark.net/starlark"
 	"go.starlark.net/syntax"
@@ -52,9 +53,11 @@ func execute(ctx context.Context, opts Options, bound []core.Tool, in json.RawMe
 	}
 	runCtx, cancel := context.WithTimeout(ctx, opts.MaxTimeout)
 	defer cancel()
-	r := &runner{opts: opts, tools: bound, parent: ctx, ctx: runCtx,
-		out: tools.NewAccumulator(opts.MaxOutputBytes, tools.TruncateMiddle)}
-	return r.run(a.Script)
+	r := &runner{opts: opts, tools: bound, parent: ctx, ctx: runCtx, out: newOutput(opts)}
+	start := time.Now()
+	res := r.run(a.Script)
+	r.finishOutput(&res, time.Since(start))
+	return res
 }
 
 // run executes the script and renders its result.
@@ -95,24 +98,20 @@ func (r *runner) run(script string) core.ToolResult {
 	if err != nil {
 		return r.failure("script_failed", "the return value: "+err.Error(), false)
 	}
-	printed := r.printed()
-	text := printed
+	// The return value counts towards MaxOutputBytes like printed output.
 	if ret != starlark.None {
-		line := "Return value: " + ret.String()
-		r.write(line + "\n")
+		r.write(returnLine(ret) + "\n")
 		if h := r.halt(); h != nil {
 			return r.failure(h.code, h.detail, h.terminate)
 		}
-		if text != "" {
-			text += "\n"
-		}
-		text += line
 	}
-	if text == "" {
-		text = "[Script finished with no output]"
-	}
+	printed := r.printed()
 	res := core.OKResult(map[string]any{"output": printed, "return_value": retGo, "calls_completed": r.ledgerData()})
-	res.Text = text
+	// The output window already ends with the return value's line.
+	res.Text = printed
+	if res.Text == "" {
+		res.Text = FormatResultText("", nil)
+	}
 	return res
 }
 
