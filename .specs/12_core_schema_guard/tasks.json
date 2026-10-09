@@ -405,7 +405,7 @@
         "Base instructions/custom prompt override, tool guideline deduplication, and shell guideline injection work as specified",
         "prompt.Input, prompt.SkillBlocks, and skills package imports are removed"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,

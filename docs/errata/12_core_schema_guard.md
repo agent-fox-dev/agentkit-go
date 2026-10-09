@@ -185,3 +185,14 @@ boolean coercion each disabled in turn). The coercion tests sit in
   `Options.PowerShellFilter` and the policy's PowerShell case.
 - TS-12-33 passed against the stub (which allowed everything) and TS-12-34
   against the existing `Restricted`; TS-12-29..32 failed first.
+
+## 12-REQ-10: prompt.Build was already reshaped
+
+`prompt.Build(system, tools)` arrived with spec 11 (task 3), without
+`prompt.Input`; `SkillBlocks` and the `skills` import were gone with spec 09.
+TS-12-35..37 passed when written; TS-12-36 and TS-12-37 were seen to fail
+against a mutated `prompt/prompt.go` (the custom branch, deduplication and
+both shell guidelines each disabled). One detail follows the code: the
+execute fallback guideline is added when no file-navigation tool is
+present, not "when no search tool is" — `tools.FileNavigationTools()` is
+the set it checks.

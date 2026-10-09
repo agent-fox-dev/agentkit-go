@@ -1,6 +1,10 @@
 package prompt
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"strings"
 	"testing"
 
@@ -161,5 +165,71 @@ func TestShellGuidelinesNameTheActiveShell(t *testing.T) {
 	// execute keeps its exact, pinned wording.
 	if got := Build("", []core.Tool{{Name: "execute"}}); !strings.Contains(got, tools.ExecuteFallbackGuideline) {
 		t.Errorf("execute alone: prompt lacks the pinned %q", tools.ExecuteFallbackGuideline)
+	}
+}
+
+// TS-12-35: Build takes the base prompt and the tools; Input, SkillBlocks
+// and the skills package are gone.
+func TestBuildSignatureAndNoSkills_TS12_35(t *testing.T) {
+	var build func(string, []core.Tool) string = Build
+	if build == nil {
+		t.Fatal("Build is nil")
+	}
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pkg := range pkgs {
+		for name, f := range pkg.Files {
+			for _, imp := range f.Imports {
+				if strings.Contains(imp.Path.Value, "/skills") {
+					t.Errorf("%s imports %s", name, imp.Path.Value)
+				}
+			}
+			for _, d := range f.Decls {
+				if g, ok := d.(*ast.GenDecl); ok {
+					for _, sp := range g.Specs {
+						if ts, ok := sp.(*ast.TypeSpec); ok && (ts.Name.Name == "Input" || ts.Name.Name == "SkillBlocks") {
+							t.Errorf("prompt still declares %s", ts.Name.Name)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// TS-12-36: an empty system prompt opens with the built-in instructions and
+// universal guidelines; a non-empty one replaces both.
+func TestBuildBaseOrCustom_TS12_36(t *testing.T) {
+	def := Build("", nil)
+	if !strings.HasPrefix(def, BaseInstructions) || !strings.Contains(def, UniversalGuidelines[0]) {
+		t.Fatalf("default prompt:\n%s", def)
+	}
+	custom := Build("Custom system prompt instructions.", nil)
+	if !strings.HasPrefix(custom, "Custom system prompt instructions.") || strings.Contains(custom, BaseInstructions) ||
+		strings.Contains(custom, UniversalGuidelines[0]) {
+		t.Fatalf("custom prompt:\n%s", custom)
+	}
+}
+
+// TS-12-37: tool guidelines are deduplicated in first-seen order, and the
+// shell guidelines follow the tools present.
+func TestBuildGuidelines_TS12_37(t *testing.T) {
+	t1 := core.Tool{Name: "t1", PromptGuidelines: []string{"Guideline A", "Guideline B"}}
+	t2 := core.Tool{Name: "t2", PromptGuidelines: []string{"Guideline B", "Guideline C"}}
+	res := Build("", []core.Tool{t1, t2})
+	a, b, c := strings.Index(res, "Guideline A"), strings.Index(res, "Guideline B"), strings.Index(res, "Guideline C")
+	if !(a >= 0 && a < b && b < c) || strings.Count(res, "Guideline B") != 1 {
+		t.Fatalf("guidelines out of order or repeated:\n%s", res)
+	}
+	alone := Build("", []core.Tool{{Name: "execute"}})
+	if !strings.Contains(alone, tools.ExecuteFallbackGuideline) || strings.Contains(alone, tools.SearchOverExecuteGuideline) {
+		t.Fatalf("execute alone:\n%s", alone)
+	}
+	both := Build("", []core.Tool{{Name: "search_files"}, {Name: "execute"}})
+	if !strings.Contains(both, tools.SearchOverExecuteGuideline) {
+		t.Fatalf("execute with search_files:\n%s", both)
 	}
 }
