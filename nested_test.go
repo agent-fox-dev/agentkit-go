@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/guard"
+	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
@@ -809,5 +811,55 @@ func TestNestedTerminateVote_TS11_37(t *testing.T) {
 	}
 	if res.StopReason != core.RunStopToolTerminate || s.turnsRun() != 1 {
 		t.Fatalf("stop %q after %d turns; the wrapper's result must carry the vote", res.StopReason, s.turnsRun())
+	}
+}
+
+// TS-11-47 (smoke, 11-PATH-4): a wrapper calls a reachable tool through the
+// nested caller; the nested call is attributed to the wrapper on the stream
+// and its result reaches the wrapper's own.
+func TestSmokeNestedThroughWrapper_TS11_47(t *testing.T) {
+	child := core.Tool{Name: "childTool", InputSchema: schema.Object(),
+		Execute: func(context.Context, json.RawMessage) core.ToolResult {
+			return core.ToolResult{OK: true, Text: "child done"}
+		}}
+	wrapper := wrapperTool("wrapperTool", func(ctx context.Context) core.ToolResult {
+		res, err := core.CallNested(ctx, core.ToolUseBlock{Name: "childTool"})
+		if err != nil {
+			return core.ErrResult("nested", err.Error())
+		}
+		return core.ToolResult{OK: true, Text: "wrapper: " + res[0].Text}
+	}, child)
+	fp := faux.New(
+		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "wrapperTool", "{}")),
+		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("done")),
+	)
+	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{wrapper}, Guard: guard.AllowAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := a.Stream(context.Background(), "run wrapper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attributed := false
+	for e := range st.Events() {
+		if v, ok := e.(core.ToolExecutionEndEvent); ok && v.Name == "childTool" {
+			attributed = v.ParentToolUseID == "c1" && !v.IsError
+		}
+	}
+	res, err := st.RunResult()
+	if err != nil || res.StopReason != core.RunStopEndTurn {
+		t.Fatalf("run = %q, %v", res.StopReason, err)
+	}
+	if !attributed {
+		t.Fatal("the nested call was not attributed to the wrapper")
+	}
+	if tr := findToolResult(t, res.Messages, "c1"); tr.Content.Text() != "wrapper: child done" {
+		t.Fatalf("wrapper result = %q", tr.Content.Text())
+	}
+	for _, m := range res.Messages {
+		if tr, ok := m.(core.ToolResultMessage); ok && tr.ToolName == "childTool" {
+			t.Fatal("a nested result entered the transcript")
+		}
 	}
 }

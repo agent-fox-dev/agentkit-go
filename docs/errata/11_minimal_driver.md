@@ -164,3 +164,11 @@ as for a direct call (TS-11-37's interceptor blocks and votes).
   `panicked: unexpected explosion` rather than `panic: unexpected explosion`.
 - TS-11-43 passed before this task: `core.EventStream` never blocks its
   producer.
+
+## Integration: the smoke tests
+
+TS-11-44..49 drive `New`, `runLoop`, `executeBatch` and `nestedCaller`
+against `provider/faux`, nothing mocked. Where the pseudocode indexes
+`res.Messages[1]` for a tool result, the tests find the result by its call
+id: index 1 is the assistant message. TS-11-46 has the model re-issue the
+truncated call whole and checks the handler saw only that one.

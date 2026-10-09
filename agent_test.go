@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/guard"
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 func noopHandler(context.Context, json.RawMessage) (json.RawMessage, error) { return nil, nil }
@@ -408,4 +410,81 @@ func TestStateIsReadableDuringARun_TS11_13(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TS-11-44 (smoke, 11-PATH-1): a prompt, a parallel batch of two tools and a
+// final answer, through New, the loop and the batch executor.
+func TestSmokeMultiTurnWithParallelBatch_TS11_44(t *testing.T) {
+	var active, peak atomic.Int32
+	tool := func(name string) core.Tool {
+		return core.Tool{Name: name, InputSchema: schema.Object(),
+			Handler: func(ctx context.Context, in json.RawMessage) (json.RawMessage, error) {
+				_, _ = overlap(&active, &peak, 30*time.Millisecond)(ctx, in)
+				return json.RawMessage(`{"from":"` + name + `"}`), nil
+			}}
+	}
+	fp := faux.New(
+		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "toolA", "{}"), faux.FauxToolCall("c2", "toolB", "{}")),
+		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("finished")),
+	)
+	a, err := New(Config{Provider: fp, Model: driverModel, System: "be brief", Tools: []core.Tool{tool("toolA"), tool("toolB")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "run multi-turn batch")
+	if err != nil || res.StopReason != core.RunStopEndTurn || res.TurnCount != 2 {
+		t.Fatalf("run = %q after %d turns, %v", res.StopReason, res.TurnCount, err)
+	}
+	if peak.Load() != 2 {
+		t.Fatalf("peak concurrency %d, want both calls at once", peak.Load())
+	}
+	r1, r2 := res.Messages[2].(core.ToolResultMessage), res.Messages[3].(core.ToolResultMessage)
+	if r1.ToolUseID != "c1" || !strings.Contains(r1.Content.Text(), "toolA") || r2.ToolUseID != "c2" || res.FinalText() != "finished" {
+		t.Fatalf("transcript = %v", res.Messages)
+	}
+	if !reflect.DeepEqual(a.Messages(), res.Messages) {
+		t.Fatal("the transcript differs from the run's messages")
+	}
+	if sys := fp.Requests()[1].System; len(sys) != 1 || !strings.HasPrefix(sys[0].(core.TextBlock).Text, "be brief") {
+		t.Fatalf("second request's system prompt = %v", sys)
+	}
+}
+
+// TS-11-48 (smoke, 11-PATH-5): New refuses an unguarded shell tool before
+// any request or stream exists.
+func TestSmokeUnguardedShellRefused_TS11_48(t *testing.T) {
+	fp := faux.New()
+	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}})
+	if a != nil || !errors.Is(err, core.ErrUnguardedExecute) || !strings.Contains(err.Error(), `(tool "execute")`) {
+		t.Fatalf("New = %v, %v; want ErrUnguardedExecute naming execute", a, err)
+	}
+	if fp.Calls() != 0 {
+		t.Fatal("a request was sent")
+	}
+}
+
+// TS-11-49 (smoke, 11-PATH-6): a run whose first turn spends the budget
+// stops before the second request.
+func TestSmokeBudgetStopsTheRun_TS11_49(t *testing.T) {
+	var ran atomic.Int32
+	fp := faux.New(
+		faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall("c1", "toolA", "{}")}, StopReason: core.StopReasonToolUse,
+			Usage: core.Usage{InputTokens: 100_000, OutputTokens: 100_000}},
+		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("t2")),
+	)
+	a, err := New(Config{Provider: fp, Model: "claude-opus-5-5", MaxCostUSD: 0.05,
+		Tools: []core.Tool{{Name: "toolA", InputSchema: schema.Object(), Handler: func(context.Context, json.RawMessage) (json.RawMessage, error) {
+			ran.Add(1)
+			return json.RawMessage(`{}`), nil
+		}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "test budget smoke")
+	if res.StopReason != core.RunStopBudgetExceeded || !errors.Is(err, core.ErrBudgetExceeded) {
+		t.Fatalf("run = %q, %v; want budget_exceeded", res.StopReason, err)
+	}
+	if ran.Load() != 1 || fp.Calls() != 1 || res.Usage.CostUSD < 0.05 || a.Usage().CostUSD != res.Usage.CostUSD {
+		t.Fatalf("tool ran %d, requests %d, cost $%.4f (agent $%.4f)", ran.Load(), fp.Calls(), res.Usage.CostUSD, a.Usage().CostUSD)
+	}
 }

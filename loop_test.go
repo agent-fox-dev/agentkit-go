@@ -1239,3 +1239,72 @@ func TestUnreadStreamDoesNotBlockTheRun_TS11_43(t *testing.T) {
 		t.Fatal("the run blocked on a consumer that never read the stream")
 	}
 }
+
+// TS-11-45 (smoke, 11-PATH-2): a long run past the prune threshold sends
+// old results elided and keeps them whole in the transcript.
+func TestSmokePruningUnderPressure_TS11_45(t *testing.T) {
+	var turns []faux.Turn
+	for i := 1; i <= 4; i++ {
+		turns = append(turns, heavyTurn(int64(300_000+i*20_000), faux.FauxToolCall(fmt.Sprintf("c%d", i), "toolA", `{}`)))
+	}
+	turns = append(turns, faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("done")))
+	fp := faux.New(turns...)
+	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{bigResult("toolA", 3000)},
+		Prune: PruneOptions{Threshold: 0.35, KeepTurns: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "start multi-turn pruning")
+	if err != nil || res.StopReason != core.RunStopEndTurn {
+		t.Fatalf("run = %q, %v", res.StopReason, err)
+	}
+	reqs := fp.Requests()
+	last := reqs[len(reqs)-1].Messages
+	for _, id := range []string{"c1", "c2", "c3"} {
+		if tr, _ := toolResultIn(last, id); tr.Content.Text() != "[result of toolA (3000 bytes) elided; call again if needed]" {
+			t.Fatalf("%s sent as %.60q, want elided", id, tr.Content.Text())
+		}
+	}
+	if tr, _ := toolResultIn(last, "c4"); tr.Content.Text() != strings.Repeat("x", 3000) {
+		t.Fatal("the latest result was pruned")
+	}
+	for _, m := range a.Messages() {
+		if tr, ok := m.(core.ToolResultMessage); ok && strings.Contains(tr.Content.Text(), "elided") {
+			t.Fatalf("the transcript holds an elided result: %s", tr.ToolUseID)
+		}
+	}
+}
+
+// TS-11-46 (smoke, 11-PATH-3): a truncated tool call is answered with the
+// notice, the model re-issues it whole, and the run ends normally.
+func TestSmokeTruncationRecovery_TS11_46(t *testing.T) {
+	var args []string
+	tool := core.Tool{Name: "my_tool", InputSchema: schema.Object(schema.Opt("path", schema.String())),
+		Handler: func(_ context.Context, in json.RawMessage) (json.RawMessage, error) {
+			args = append(args, string(in))
+			return json.RawMessage(`{"ok":true}`), nil
+		}}
+	fp := faux.New(
+		faux.FauxAssistantMessage(core.StopReasonLength, faux.FauxToolCall("c1", "my_tool", `{"path":"/et"}`)),
+		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c2", "my_tool", `{"path":"/etc/hosts"}`)),
+		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("reissued and finished")),
+	)
+	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{tool}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "run recovery")
+	if err != nil || res.StopReason != core.RunStopEndTurn || res.TurnCount != 3 {
+		t.Fatalf("run = %q after %d turns, %v", res.StopReason, res.TurnCount, err)
+	}
+	if len(args) != 1 || args[0] != `{"path":"/etc/hosts"}` {
+		t.Fatalf("handler saw %v, want only the re-issued call", args)
+	}
+	if tr := findToolResult(t, res.Messages, "c1"); !strings.Contains(tr.Content.Text(), "was not executed: the response hit the output token limit") {
+		t.Fatalf("truncated call answered with %q", tr.Content.Text())
+	}
+	// The notice reached the model with the request that re-issued the call.
+	if tr, ok := toolResultIn(fp.Requests()[1].Messages, "c1"); !ok || !tr.IsError {
+		t.Fatal("the notice was not sent to the model")
+	}
+}
