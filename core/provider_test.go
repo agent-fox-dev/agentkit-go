@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"reflect"
+	"time"
 	"testing"
 )
 
@@ -47,5 +48,20 @@ func TestProviderRegistryIsGone_TS12_8(t *testing.T) {
 	}
 	if len(methods["Dispatch"]) > 0 {
 		t.Errorf("core still declares Dispatch on %v", methods["Dispatch"])
+	}
+}
+
+// A provider that returns neither a channel nor an error ends the stream
+// with an error instead of hanging it.
+func TestANilChannelIsAnError(t *testing.T) {
+	done := make(chan StreamResult, 1)
+	go func() { done <- EventStreamOf(nil, nil).Wait() }()
+	select {
+	case res := <-done:
+		if res.Err == nil {
+			t.Fatal("a nil channel ended without an error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a nil channel hung the stream")
 	}
 }

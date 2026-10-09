@@ -6,6 +6,7 @@ import (
 	"encoding/json/jsontext"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"regexp"
 	"sort"
@@ -639,35 +640,42 @@ func validateNumber(s *Schema, v any, add func(string)) {
 		add(msg)
 		return
 	}
-	f, err := strconv.ParseFloat(text, 64)
-	if err != nil {
+	// Exact arithmetic on the number's own text: float64 cannot say that 0.3
+	// is a multiple of 0.1, or tell 2^53+1 from 2^53. A non-finite value has
+	// no JSON form and is refused here.
+	n, ok := new(big.Rat).SetString(text)
+	if !ok {
 		add("expected " + string(s.Type) + ", got " + text)
 		return
 	}
-	if s.Type == TypeInteger && f != math.Trunc(f) {
+	if s.Type == TypeInteger && !n.IsInt() {
 		add("expected integer, got " + text)
 		return
 	}
-	bound := func(ok bool, rel string, b float64) {
-		if !ok {
-			add(fmt.Sprintf("must be %s %s, got %s", rel, strconv.FormatFloat(b, 'g', -1, 64), text))
+	bound := func(b float64, holds func(cmp int) bool, rel string) {
+		lit := strconv.FormatFloat(b, 'g', -1, 64)
+		r, ok := new(big.Rat).SetString(lit)
+		if ok && !holds(n.Cmp(r)) {
+			add(fmt.Sprintf("must be %s %s, got %s", rel, lit, text))
 		}
 	}
 	if s.Minimum != nil {
-		bound(f >= *s.Minimum, "at least", *s.Minimum)
+		bound(*s.Minimum, func(c int) bool { return c >= 0 }, "at least")
 	}
 	if s.Maximum != nil {
-		bound(f <= *s.Maximum, "at most", *s.Maximum)
+		bound(*s.Maximum, func(c int) bool { return c <= 0 }, "at most")
 	}
 	if s.ExclusiveMinimum != nil {
-		bound(f > *s.ExclusiveMinimum, "greater than", *s.ExclusiveMinimum)
+		bound(*s.ExclusiveMinimum, func(c int) bool { return c > 0 }, "greater than")
 	}
 	if s.ExclusiveMaximum != nil {
-		bound(f < *s.ExclusiveMaximum, "less than", *s.ExclusiveMaximum)
+		bound(*s.ExclusiveMaximum, func(c int) bool { return c < 0 }, "less than")
 	}
 	if s.MultipleOf != nil && *s.MultipleOf > 0 {
-		q := f / *s.MultipleOf
-		bound(q == math.Trunc(q), "a multiple of", *s.MultipleOf)
+		lit := strconv.FormatFloat(*s.MultipleOf, 'g', -1, 64)
+		if m, ok := new(big.Rat).SetString(lit); ok && !new(big.Rat).Quo(n, m).IsInt() {
+			add(fmt.Sprintf("must be a multiple of %s, got %s", lit, text))
+		}
 	}
 }
 

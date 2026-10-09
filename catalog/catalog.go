@@ -2,11 +2,11 @@
 // id into the core.Model descriptor of REQ-PROV-10 (Lookup).
 //
 // The catalog supplies exactly the metadata no provider API returns and no
-// pass-through can synthesize: wire API, base URL, context window, pricing,
-// reasoning support, modality support and compatibility profile. Every one of
-// those is load-bearing before the first byte is sent — the max_tokens cap,
-// the cost of a turn and how thinking is encoded all read it — which is why
-// "just pass the model string through" is not an option.
+// pass-through can synthesize: context window, output cap, pricing, how the
+// model takes thinking and its compatibility profile. Every one of those is
+// load-bearing before the first byte is sent — the max_tokens cap, the cost
+// of a turn and how thinking is encoded all read it — which is why "just
+// pass the model string through" is not an option.
 //
 // The catalog is NOT an allowlist. An id it does not list gets a usable
 // default descriptor (Lookup), so a model that ships after this snapshot works
@@ -17,7 +17,7 @@
 //
 // catalog imports core and nothing else in the module (plan §1.3). It holds no
 // mutable package-level state: Default is a sync.OnceValue over the embedded
-// bytes and every returned *core.Model is a deep copy, so a caller who edits a
+// bytes and every returned core.Model is a deep copy, so a caller who edits a
 // resolved descriptor cannot corrupt the process-wide catalog.
 package catalog
 

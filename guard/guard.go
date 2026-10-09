@@ -64,7 +64,7 @@ type Decision struct {
 //
 // A program with a path separator matches only a listed path, compared
 // after cleaning: `./go` names a file in the workspace, not the go on PATH.
-// A bare name matches a listed bare name, or the basename of a listed path.
+// A bare name matches a listed bare name only.
 // A block carries o.TerminateOnBlock.
 func Check(argv []string, o Options) Decision {
 	if len(argv) == 0 {
@@ -77,12 +77,13 @@ func Check(argv []string, o Options) Decision {
 	return Decision{}
 }
 
-// Options configures RestrictedPolicy.
+// Options configures Restricted.
 type Options struct {
 	// AllowedPrograms are the programs (argv[0], or the first word of an
 	// `execute` command after any assignments) that may run. A bare name
 	// ("go") admits only that bare name, resolved through PATH. A path
-	// ("/usr/bin/git") admits that exact path, and its bare basename too. A
+	// ("/usr/bin/git") admits that exact path only — not a bare git found
+	// through PATH, which may be another binary. A
 	// program word containing a path separator is refused unless that path
 	// itself is listed: `./go` names a file in the workspace, not the go on
 	// PATH. Empty means every shell call is blocked, which is the safe
@@ -236,8 +237,9 @@ func newAllowlist(programs []string) allowlist {
 		}
 		if hasPathSeparator(p) {
 			a.paths[path.Clean(p)] = true
+			continue
 		}
-		a.names[path.Base(p)] = true
+		a.names[p] = true
 	}
 	return a
 }

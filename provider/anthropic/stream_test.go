@@ -502,35 +502,16 @@ func TestOnPayloadErrorPropagatesUnmodified(t *testing.T) {
 }
 
 func TestBetaHeaderIsSentWhenRequested(t *testing.T) {
+	const beta = "some-feature-2026-01-01"
 	_, _, sent := run(t, testModel(), core.Request{},
-		anthropic.Options{Betas: []string{anthropic.BetaCompaction}}, 200, streamFixture())
-	if got := sent.Header.Get("anthropic-beta"); got != anthropic.BetaCompaction {
-		t.Fatalf("anthropic-beta = %q, want %q", got, anthropic.BetaCompaction)
+		anthropic.Options{Betas: []string{beta}}, 200, streamFixture())
+	if got := sent.Header.Get("anthropic-beta"); got != beta {
+		t.Fatalf("anthropic-beta = %q, want %q", got, beta)
 	}
-	// The header alone is a no-op: the server compacts only when the body
-	// also names the edit (REQ-PROV-07).
+	// A beta is a header only: the body names no feature of its own.
 	body, _ := io.ReadAll(sent.Body)
-	var got struct {
-		ContextManagement *struct {
-			Edits []struct {
-				Type string `json:"type"`
-			} `json:"edits"`
-		} `json:"context_management"`
-	}
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.ContextManagement == nil || len(got.ContextManagement.Edits) != 1 ||
-		got.ContextManagement.Edits[0].Type != "compact_20260112" {
-		t.Fatalf("body = %s, want context_management.edits = [{type: compact_20260112}] alongside the beta header", body)
-	}
-
-	// And without the beta, no body field either: a gateway that does not
-	// know the field rejects it.
-	_, _, sent = run(t, testModel(), core.Request{}, anthropic.Options{}, 200, streamFixture())
-	body, _ = io.ReadAll(sent.Body)
 	if strings.Contains(string(body), "context_management") {
-		t.Fatalf("body = %s carries context_management without the compaction beta", body)
+		t.Fatalf("body = %s carries context_management", body)
 	}
 }
 
@@ -1199,9 +1180,9 @@ func TestAnOAuthTokenCarriesTheOAuthBeta(t *testing.T) {
 	if got := r.Header.Get("anthropic-beta"); got != anthropic.BetaOAuth {
 		t.Fatalf("anthropic-beta = %q, want %q", got, anthropic.BetaOAuth)
 	}
-	r = sent(t, anthropic.Options{Betas: []string{anthropic.BetaCompaction}},
+	r = sent(t, anthropic.Options{Betas: []string{"some-feature-2026-01-01"}},
 		map[string]string{"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x"})
-	if got := r.Header.Get("anthropic-beta"); got != anthropic.BetaCompaction+","+anthropic.BetaOAuth {
+	if got := r.Header.Get("anthropic-beta"); got != "some-feature-2026-01-01,"+anthropic.BetaOAuth {
 		t.Fatalf("anthropic-beta = %q, want both betas", got)
 	}
 	r = sent(t, anthropic.Options{}, map[string]string{"ANTHROPIC_API_KEY": "key"})

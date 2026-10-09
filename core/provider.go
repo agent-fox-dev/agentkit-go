@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 )
 
 // Request is the canonical, provider-independent model call. Messages are the
@@ -85,6 +86,11 @@ func EventStreamOf(ch <-chan StreamEvent, err error) *EventStream {
 	if err != nil {
 		return ErrorStream(nil, err)
 	}
+	if ch == nil {
+		// Ranging over a nil channel blocks forever: a provider that
+		// returns neither a channel nor an error has failed.
+		return ErrorStream(nil, errors.New("core: the provider returned no stream and no error"))
+	}
 	s := NewEventStream(StreamOptions{})
 	go func() {
 		var msg *AssistantMessage
@@ -121,8 +127,9 @@ type Model struct {
 	// ThinkingKind is how the model takes extended thinking.
 	ThinkingKind ThinkingKind
 	// Efforts is the wire value of each effort the model takes: a token
-	// budget on a budget model, an effort name on an adaptive one. An effort
-	// absent (or nil) is not sent.
+	// budget on a budget model, an effort name on an adaptive one. With a map,
+	// an effort absent from it (or nil) is not sent; with no map at all, the
+	// effort is sent by its own name.
 	Efforts map[Effort]*string
 	// Compat is the catalog row's capability object, as JSON (for example
 	// {"supports_sampling": false}).

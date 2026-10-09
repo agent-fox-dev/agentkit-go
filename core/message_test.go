@@ -122,3 +122,16 @@ func TestMessageFieldsArePruned_TS12_2(t *testing.T) {
 		t.Error("ToolUseBlock still has InputOrder")
 	}
 }
+
+// A tool input with bytes after the object is refused: replayed verbatim, it
+// would make the next request body invalid JSON.
+func TestToolInputWithTrailingBytesIsRefused(t *testing.T) {
+	for _, in := range []string{`{"a":1}]`, `{"a":1}}`, `{"a":1} {}`} {
+		if _, err := NewToolUse("1", "t", []byte(in)); err == nil {
+			t.Errorf("NewToolUse(%s) accepted it", in)
+		}
+	}
+	if _, err := NewToolUse("1", "t", []byte(` {"a":1} `)); err != nil {
+		t.Errorf("surrounding space refused: %v", err)
+	}
+}

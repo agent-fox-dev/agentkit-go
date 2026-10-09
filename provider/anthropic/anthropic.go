@@ -61,11 +61,6 @@ type request struct {
 	// never alongside a budget: the two are different generations of the
 	// same control, and a model accepts one or the other.
 	OutputConfig *outputConfig `json:"output_config,omitzero"`
-	// ContextManagement is REQ-PROV-07's body half. The compact-2026-01-12
-	// beta header alone changes nothing; the server compacts only when the
-	// body also names the edit.
-	ContextManagement *contextManagement `json:"context_management,omitzero"`
-
 	// immediateTools is the count of leading non-deferred tools. It is
 	// unexported and therefore never marshalled; StampCacheControl reads it to
 	// find the last tool eligible for a breakpoint.
@@ -86,14 +81,6 @@ type thinking struct {
 
 type outputConfig struct {
 	Effort string `json:"effort,omitzero"` // low | medium | high | xhigh | max
-}
-
-type contextManagement struct {
-	Edits []contextEdit `json:"edits"`
-}
-
-type contextEdit struct {
-	Type string `json:"type"` // "compact_20260112"
 }
 
 type sysBlock struct {

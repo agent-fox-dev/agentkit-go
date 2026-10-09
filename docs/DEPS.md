@@ -199,7 +199,7 @@ name code that has since been deleted; they are kept as the record.
 | Provider transport retry | `cenkalti/backoff`, `go-retryablehttp` | The code was the header policy, not the curve; savings under 60 lines. (The transport is now the SDK's.) |
 | Provider SSE / NDJSON readers | `r3labs/sse`, `launchdarkly/eventsource` | They reconnect and replay `Last-Event-ID`, which the streaming contract forbids. |
 | Provider credentials | `oauth2.ReuseTokenSource`, `singleflight` | The store was a read-modify-write with a re-check under lock, not a token cache. (Deleted with the store.) |
-| `schema/` | `santhosh-tekuri/jsonschema`, `google/jsonschema-go`, `invopop/jsonschema` | Only about 300 lines of validation are replaceable; the ordered value type, `StrictSubset`, null deletion, coercion and model-facing error hints stay. Revisit only if `$ref`, `pattern` or `format` become requirements. |
+| `schema/` | `santhosh-tekuri/jsonschema`, `google/jsonschema-go`, `invopop/jsonschema` | Only about 300 lines of validation are replaceable; the ordered value type, `StrictSubset`, null deletion, coercion and model-facing error hints stay. Revisit only if `$ref` or `format` become requirements (`pattern` is now validated, with the standard library's `regexp`). |
 | `jsonx/` (now `schema.Parse`) | `wk8/go-ordered-map` | Replaces only the object case of a closed value tree. |
 | `session/` (deleted) | SQLite, bbolt | The JSONL format was the contract; a database adds locking and migrations. |
 | `tools/ref_gotypes.go` | `golang.org/x/tools/go/packages` | Needs the `go` tool on PATH and the network, inherits the environment, and type-checking dependencies blows the 2 s budget. |

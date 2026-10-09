@@ -12,7 +12,8 @@ import (
 // Parse decodes a JSON Schema document. It reads the document token by token
 // with encoding/json/jsontext, so the order the author declared properties
 // in becomes PropertyOrder, and a keyword Schema does not model is kept in
-// Extra, in its place among the others. Malformed JSON, trailing data, or a
+// Extra, in their authored order. Malformed JSON, trailing data, a duplicate
+// key, or a
 // modelled keyword holding the wrong kind of value is an error and no
 // schema.
 func Parse(data []byte) (*Schema, error) {
@@ -192,9 +193,8 @@ func parseProperties(dec *jsontext.Decoder, s *Schema, path string) error {
 		if err != nil {
 			return err
 		}
-		if _, dup := s.Properties[name]; !dup {
-			s.PropertyOrder = append(s.PropertyOrder, name)
-		}
+		// jsontext refuses a duplicate name, so each name arrives once.
+		s.PropertyOrder = append(s.PropertyOrder, name)
 		s.Properties[name] = sub
 	}
 	_, err := dec.ReadToken()

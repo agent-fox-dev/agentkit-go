@@ -3,6 +3,7 @@ package schema
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 )
@@ -219,6 +220,27 @@ func TestCoerceRefusesNonJSONNumbers_TS12_28(t *testing.T) {
 		out, coercions := Coerce(s, map[string]any{"count": bad})
 		if out["count"] != bad || len(coercions) != 0 {
 			t.Errorf("%q coerced to %v (%v)", bad, out["count"], coercions)
+		}
+	}
+}
+
+// Numbers are compared exactly: a decimal multiple is a multiple, an
+// integer past float64's precision is still compared as itself, and a
+// non-finite value is not a number.
+func TestNumericChecksAreExact(t *testing.T) {
+	step := 0.1
+	if err := Validate(&Schema{Type: TypeNumber, MultipleOf: &step}, 0.3); err != nil {
+		t.Errorf("0.3 is a multiple of 0.1: %v", err)
+	}
+	if err := Validate(&Schema{Type: TypeNumber, MultipleOf: &step}, json.Number("0.7")); err != nil {
+		t.Errorf("0.7 is a multiple of 0.1: %v", err)
+	}
+	if err := Validate(Int().Max(9007199254740992), int64(9007199254740993)); err == nil {
+		t.Error("2^53+1 passed a maximum of 2^53")
+	}
+	for _, v := range []float64{math.NaN(), math.Inf(1)} {
+		if Validate(Number(), v) == nil || Validate(Int(), v) == nil {
+			t.Errorf("%v passed as a number", v)
 		}
 	}
 }

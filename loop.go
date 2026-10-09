@@ -464,7 +464,7 @@ func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.
 	// Forward provider events onto the agent stream. The provider stream is
 	// unbounded and non-blocking, so this cannot stall the model call.
 	for e := range ps.Events() {
-		out.Push(e)
+		out.Push(a.stampModel(e))
 	}
 	msg := ps.Result()
 	if msg == nil {
@@ -484,6 +484,30 @@ func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.
 		return m
 	}
 	return *msg
+}
+
+// stampModel fills an unstamped message event's Model with this agent's,
+// as callModel does for the message it returns, so the stream and the
+// transcript name the same model.
+func (a *Agent) stampModel(e core.Event) core.Event {
+	switch v := e.(type) {
+	case core.MessageStartEvent:
+		if v.Message.Model == "" {
+			v.Message.Model = a.model.ID
+		}
+		return v
+	case core.MessageUpdateEvent:
+		if v.Message.Model == "" {
+			v.Message.Model = a.model.ID
+		}
+		return v
+	case core.MessageEndEvent:
+		if v.Message.Model == "" {
+			v.Message.Model = a.model.ID
+		}
+		return v
+	}
+	return e
 }
 
 // synthesizeTruncated answers each call of a truncated response without

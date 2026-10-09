@@ -8,10 +8,11 @@ why.
 - **Unknown block types are dropped.** `RawBlock` carried a block type core
   does not model, byte for byte, from a response to the next request. With it
   gone, `provider/anthropic`'s decoder drops such a block. The one that
-  mattered was server-side compaction (`BetaCompaction`): its blocks are no
-  longer replayed, so the beta header still turns compaction on, but the
-  compacted state does not carry into the next turn. The test that pinned the
-  replay (`TestServerCompactionBlocksAreReplayedVerbatim`) was deleted.
+  mattered was server-side compaction: with its blocks gone the compacted
+  state could not carry into the next turn, so the support is removed —
+  `BetaCompaction` and the body's `context_management` are gone, and a beta
+  in `Options.Betas` is only a header. The tests that pinned the replay and
+  the body edit were deleted or reduced to the header.
 - **No images.** `ImageBlock` and `ToolResultBlock` are gone, and with them the
   encoder's image path, transcript repair's rule 7 (images replaced for a
   text-only model, `RepairReport.ImagesReplaced`, `ImagePlaceholder`) and the
@@ -44,7 +45,9 @@ why.
   `{"v": 1,"injected":true}`; the spec asked only that the mutation appear.
   Inside a changed value, nested key order is not kept.
 - **Coerced numbers are values.** `Coerce` yields a `float64` for a number
-  and an `int64` for an integer (TS-12-27), so `"-1.5e3"` becomes `-1500`; it
+  and an `int64` for an integer that fits one (TS-12-27); an integral literal
+  that does not (`"2.0"`, `"1e3"`, out of range) stays a `json.Number`. So
+  `"-1.5e3"` becomes `-1500`; it
   used to write the literal verbatim. The issue 87 test now expects `-1500`.
 - TS-12-4 and TS-12-6 passed before the change: unmodified bytes and the
   validation error were already the pipeline's behaviour.
@@ -147,7 +150,14 @@ why.
   `maxLength`, `pattern`, `format`, `minItems`, `maxItems`, `uniqueItems`)
   and `additionalProperties` (a boolean or a schema), and it reads a type
   list of one type and `null` as `Nullable`, which is how `MarshalJSON`
-  writes it; what `Parse` reads, `MarshalJSON` writes back unchanged.
+  writes it. The round trip is not byte-exact: `MarshalJSON` writes keywords
+  in its own order with `Extra` last, an object type gains `"properties":{}`,
+  `nullable` without a type is not written back, and an empty `enum` is
+  dropped. A schema `MarshalJSON` wrote does read back and re-marshal
+  unchanged (TS-12-19).
+- **What Parse refuses**: boolean subschemas (`"x": true`), tuple `items`
+  (an array), a type list of two types other than `null`, and a duplicate
+  key (jsontext's own check). These have no `Schema` field to hold them.
 - Kept values are compacted, so a schema re-marshals the way it would have
   been written.
 - `Extra` is a list, not a map: TS-12-20 reads it with `Extra.Get` and checks
@@ -173,11 +183,11 @@ boolean coercion each disabled in turn). The coercion tests sit in
 
 ## 12-REQ-9: Check, and what Restricted kept
 
-- **A listed path still admits its bare basename.** `AllowedPrograms:
-  ["/usr/bin/git"]` lets `git` run, as before (`newAllowlist` in
-  `guard/guard.go`); the spec matches a bare name only against bare entries.
-  A program with a path separator still matches only a listed path, after
-  cleaning (TS-12-31).
+- **A listed path no longer admits its bare basename.** Until this spec,
+  `AllowedPrograms: ["/usr/bin/git"]` also let a bare `git` run, found
+  through PATH; following 12-REQ-9.4 it admits only that path
+  (`newAllowlist` in `guard/guard.go`), and a bare name only a listed bare
+  name.
 - **`run_command` checks every argv entry is a string** and refuses the call
   otherwise; an empty argv is `empty argv` (from `Check`), where it used to
   be `program "" is not on the allowlist`.
@@ -216,3 +226,24 @@ the set it checks.
 - **Issues 91 and 92 are not closed by this change.** Closing them is an
   action on GitHub, left to whoever lands it; the README cites no test names
   and the documentation describes the cut repository.
+
+## Conformance
+
+- **Trailing bytes.** `decodeObject` (`core/message.go`) now asks the decoder
+  for one more token after the object, so `{"a":1}]` is refused as a tool
+  input, as `jsonx` refused it; `json.Decoder.More` misses a stray `]`.
+- **A nil channel** from a provider is an error in `core.EventStreamOf`
+  rather than a run that never ends. A provider whose channel never closes
+  still hangs the run: the driver trusts a provider to honour its context.
+- **Numbers are exact.** Bounds and `multipleOf` compare the value's JSON
+  text against each bound's shortest decimal form as `big.Rat`s: `0.3` is a
+  multiple of `0.1`, `2^53+1` exceeds a maximum of `2^53`, and `NaN` and
+  `Inf` are not numbers.
+- **The model on events.** The driver fills an unstamped `Model` on the
+  message events it forwards as well as on the message it records.
+- **Kept as they are**: `AgentStartEvent` keeps `Provider` and `API` fields
+  nothing sets (the event vocabulary is kept); `StreamChannel` compares a
+  stream's result with its last `MessageEndEvent` by stop reason, error, block
+  count and usage, which no provider here can make disagree; a tool input
+  with a duplicate key decodes to its last value and, if a step changes the
+  arguments, is re-encoded whole in sorted key order.

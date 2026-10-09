@@ -24,11 +24,6 @@ const APIVersion = "2023-06-01"
 // VertexAPIVersion is the anthropic_version a Vertex request body carries.
 const VertexAPIVersion = "vertex-2023-10-16"
 
-// BetaCompaction opts into REQ-PROV-07's server-side compaction. core has no
-// block to carry a compaction block, so the decoder drops it and later turns
-// do not replay it.
-const BetaCompaction = "compact-2026-01-12"
-
 // Options configures the provider. The zero value is usable.
 type Options struct {
 	// Client is the official SDK client requests go through. Nil resolves one
@@ -42,7 +37,7 @@ type Options struct {
 	Getenv func(string) string
 	// MaxRetries overrides the SDK's retry count; nil keeps its default.
 	MaxRetries *int
-	// Betas are sent as anthropic-beta. BetaCompaction is REQ-PROV-07.
+	// Betas are sent as anthropic-beta, verbatim.
 	Betas []string
 	// VertexProject selects the Vertex AI deployment whatever the
 	// environment says, and VertexLocation sets its region; both otherwise
@@ -108,16 +103,6 @@ type client struct {
 	prefix *provider.ToolPrefix
 }
 
-// wantsCompaction reports whether Options.Betas opted into REQ-PROV-07.
-func (c *client) wantsCompaction() bool {
-	for _, b := range c.opts.Betas {
-		if strings.TrimSpace(b) == BetaCompaction {
-			return true
-		}
-	}
-	return false
-}
-
 func (c *client) now() time.Time {
 	if c.opts.Now != nil {
 		return c.opts.Now()
@@ -151,12 +136,6 @@ func (c *client) stream(ctx context.Context, m *core.Model, req core.Request) *c
 	}
 	if rep.Changed() && c.opts.Warnf != nil {
 		c.opts.Warnf("anthropic: %s", rep.String())
-	}
-	if c.wantsCompaction() {
-		// REQ-PROV-07: the beta header opts the REQUEST into the feature and
-		// the body names the edit; the server compacts only when both are
-		// present. A header alone was silently a no-op.
-		body.ContextManagement = &contextManagement{Edits: []contextEdit{{Type: "compact_20260112"}}}
 	}
 
 	// REQ-PROV-18: OnPayload runs after canonical->wire translation and before
@@ -395,7 +374,7 @@ func cancellationText(caller, req context.Context, err error) (string, bool) {
 		return AbortText, true
 	}
 	if req.Err() != nil && errors.Is(req.Err(), context.DeadlineExceeded) {
-		return "anthropic: request timeout (RequestOptions.TimeoutMs elapsed): " + err.Error(), true
+		return "anthropic: request timeout (Options.Timeout elapsed): " + err.Error(), true
 	}
 	return "", false
 }

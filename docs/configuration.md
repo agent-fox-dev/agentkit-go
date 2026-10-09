@@ -92,7 +92,7 @@ for unattended safety, not a sandbox.
 
 | Field | Meaning |
 |---|---|
-| `AllowedPrograms` | Programs that may run. A bare name admits only that bare name; a path admits that path and its basename. A program spelled with a path separator is refused unless that path is listed. Empty blocks every shell call. |
+| `AllowedPrograms` | Programs that may run. A bare name admits only that bare name; a path admits only that path, after cleaning. A program spelled with a path separator is refused unless that path is listed. Empty blocks every shell call. |
 | `AllowShellOperators` | Permit pipes, `;`, `&&`, `||`, redirection, subshells, substitution and expansion in `execute` commands (POSIX sh grammar). Off by default. |
 | `AllowEnvPrefixes` | Permit `NAME=value` in front of the program in `execute` commands. Off by default. Even when on, names that change which binary runs or what is loaded into it (`PATH`, `LD_*`, `DYLD_*`, `BASH_ENV`, …) are refused. |
 | `BlockedTools` | Tools refused by name, shell or not. |
@@ -164,7 +164,7 @@ channel as a `core.EventStream`.
 | `HTTPClient` | The HTTP client a resolved SDK client uses. |
 | `Getenv` | Injectable environment lookup; nil means the process environment. |
 | `MaxRetries` | `*int`; overrides the SDK's retry count (2 by default). |
-| `Betas` | Sent as `anthropic-beta`. `anthropic.BetaCompaction` (`compact-2026-01-12`) enables server-side compaction; the compaction blocks it returns are dropped, not replayed. |
+| `Betas` | Sent as `anthropic-beta`, verbatim. Server-side compaction is not supported: core has no block to carry what it returns. |
 | `VertexProject`, `VertexLocation` | Select the Vertex AI deployment, and its location, over the environment. |
 | `VertexTokenSource` | `oauth2.TokenSource` for Vertex. |
 | `BillingLookup` | Resolves a served model id to its catalog row for pricing. Nil bills at the requested model's rates. |

@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"time"
 )
 
@@ -227,7 +228,9 @@ func decodeObject(raw []byte) (map[string]any, error) {
 	if err := d.Decode(&v); err != nil {
 		return nil, err
 	}
-	if d.More() {
+	// More() reports false for a stray ] or }, so the decoder is asked for
+	// one more token: only the end of the input will do.
+	if _, err := d.Token(); err != io.EOF {
 		return nil, errors.New("core: trailing data after the tool input")
 	}
 	m, ok := v.(map[string]any)
