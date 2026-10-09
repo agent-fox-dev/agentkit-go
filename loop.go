@@ -79,39 +79,13 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial core.U
 	)
 	report := streamReporter(s)
 
-	// finish is the ONE exit path: it builds the RunResult and pushes the
-	// terminal event. It is a closure so the panic recovery below reaches the
-	// same tail as a normal exit — a run that panicked still owes its
-	// AgentDoneEvent, or a consumer cannot tell it from one still running.
+	// finish is the ONE exit path. It is a closure so the panic recovery
+	// below reaches the same tail as a normal exit — a run that panicked
+	// still owes its AgentDoneEvent, or a consumer cannot tell it from one
+	// still running.
 	finish := func() {
-		// A run that ended because the model refused is not a clean
-		// end_turn. Only the account of how the run ended changes: a refusal
-		// that carries tool calls carries on like any other turn.
-		if runReason == core.RunStopEndTurn && runErr == nil {
-			if am := lastAssistant(newMessages); am != nil && am.StopReason == core.StopReasonRefusal {
-				runReason = core.RunStopRefusal
-				runErr = core.ErrRefusal
-				if am.StopDetail != "" {
-					runErr = fmt.Errorf("%w: %s", core.ErrRefusal, am.StopDetail)
-				}
-			}
-		}
-		res = core.RunResult{
-			Messages:   newMessages,
-			StopReason: runReason,
-			Usage:      a.runUsageSnapshot(),
-			TurnCount:  turnCount,
-			Error:      runErr,
-		}
-		if am := lastAssistant(newMessages); am != nil {
-			res.LastReason = am.StopReason
-		}
-		// Result.Usage is this run's; the event's own Usage is the lifetime
-		// aggregate.
-		s.Push(core.AgentDoneEvent{Result: res, Usage: a.Usage()})
-		if runErr != nil {
-			s.Push(core.ErrorEvent{Message: runErr.Error(), Err: runErr, Terminal: true})
-		}
+		res = a.endRun(s, newMessages, runReason, runErr, turnCount)
+		runErr = res.Error
 	}
 
 	// A panic in code the loop calls must never crash the process. Tool
@@ -145,22 +119,9 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial core.U
 	s.Push(core.AgentStartEvent{Provider: a.model.Provider, API: a.model.API, Model: a.model.ID})
 
 	for {
-		// The cost bound is checked BEFORE the request, so a run never
-		// spends past it on a call it already knew it could not afford.
-		if limit := a.cfg.MaxCostUSD; limit > 0 {
-			if spent := a.runUsageSnapshot().CostUSD; spent >= limit {
-				runReason = core.RunStopBudgetExceeded
-				runErr = fmt.Errorf("%w: the run has cost $%.4f of its $%.4f budget", core.ErrBudgetExceeded, spent, limit)
-				break
-			}
-		}
-
-		// The request's view: the transcript, with old tool results elided
-		// when it is large, and refused outright when even that cannot fit.
-		// Sending a request the model cannot hold only buys an HTTP 400.
-		view, err := a.outboundView(a.Messages())
+		view, reason, err := a.beforeRequest()
 		if err != nil {
-			runReason, runErr = core.RunStopError, err
+			runReason, runErr = reason, err
 			break
 		}
 
@@ -188,66 +149,116 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial core.U
 		// stop_reason.
 		toolCalls := core.ExtractToolUse(&assistant)
 
-		var (
-			results   = []core.ToolResultMessage{}
-			terminate bool
-		)
-		if len(toolCalls) > 0 {
-			if assistant.StopReason == core.StopReasonLength {
-				// Reading stop_reason here is not the continuation
-				// predicate, which already ran above; this is a different
-				// decision.
-				//
-				// Execute NONE of them. Streamed arguments are finalized by a
-				// best-effort salvage parser, so a truncated {"path":"/et
-				// becomes a syntactically valid object that passes schema
-				// validation — and a truncated edit whose new_string was cut
-				// off applies cleanly and silently corrupts the file. Only
-				// the stop reason can catch this.
-				results = synthesizeTruncated(s, toolCalls)
-			} else {
-				results, terminate = a.executeBatch(ctx, s, &assistant, toolCalls, turnCount)
-			}
-			for _, r := range results {
-				record(r)
-				if r.Usage != nil {
-					a.addUsage(*r.Usage)
-				}
+		results, terminate := a.runTools(ctx, s, &assistant, toolCalls, turnCount)
+		for _, r := range results {
+			record(r)
+			if r.Usage != nil {
+				a.addUsage(*r.Usage)
 			}
 		}
 
 		turnCount++
 		s.Push(core.TurnEndEvent{TurnIndex: turnCount - 1, Message: assistant, ToolResults: results, Usage: assistant.Usage})
 
-		if terminate {
-			runReason = core.RunStopToolTerminate
-			break
-		}
-
-		// A cancellation that landed during the tool batch ends the run
-		// HERE, at the turn boundary, with the results in the transcript.
-		// Going around again would issue a request on a dead context.
-		if ctx.Err() != nil {
-			runReason, runErr = a.contextStop(ctx)
-			break
-		}
-
-		if len(toolCalls) == 0 {
-			break
-		}
-
-		// The turn bound is checked only when the run would go on, and after
-		// the turn's results are in the transcript, so it never leaves a
-		// tool_use unanswered.
-		if a.cfg.MaxTurns > 0 && turnCount >= a.cfg.MaxTurns {
-			runReason = core.RunStopMaxTurns
-			runErr = fmt.Errorf("%w: %d turns", core.ErrMaxTurns, turnCount)
+		if stop, reason, err := a.afterTurn(ctx, terminate, len(toolCalls) > 0, turnCount); stop {
+			runReason, runErr = reason, err
 			break
 		}
 	}
 
 	finish()
 	return res, runErr
+}
+
+// runTools answers one turn's tool calls: by running them, or, when the
+// response was truncated, with the fixed notice. The results are never nil:
+// a no-tool turn reports [].
+func (a *Agent) runTools(ctx context.Context, s *core.EventStream, assistant *core.AssistantMessage, calls []core.ToolUseBlock, turn int) ([]core.ToolResultMessage, bool) {
+	if len(calls) == 0 {
+		return []core.ToolResultMessage{}, false
+	}
+	if assistant.StopReason == core.StopReasonLength {
+		// Reading stop_reason here is not the continuation predicate, which
+		// already ran; this is a different decision.
+		//
+		// Execute NONE of them. Streamed arguments are finalized by a
+		// best-effort salvage parser, so a truncated {"path":"/et becomes a
+		// syntactically valid object that passes schema validation — and a
+		// truncated edit whose new_string was cut off applies cleanly and
+		// silently corrupts the file. Only the stop reason can catch this.
+		return synthesizeTruncated(s, calls), false
+	}
+	return a.executeBatch(ctx, s, assistant, calls, turn)
+}
+
+// endRun builds the run's result and pushes the terminal events. A run that
+// ended because the model refused is not a clean end_turn: only the account
+// of how the run ended changes, since a refusal that carries tool calls
+// carries on like any other turn.
+func (a *Agent) endRun(s *core.EventStream, msgs core.Messages, reason core.RunStopReason, err error, turns int) core.RunResult {
+	if reason == core.RunStopEndTurn && err == nil {
+		if am := lastAssistant(msgs); am != nil && am.StopReason == core.StopReasonRefusal {
+			reason, err = core.RunStopRefusal, core.ErrRefusal
+			if am.StopDetail != "" {
+				err = fmt.Errorf("%w: %s", core.ErrRefusal, am.StopDetail)
+			}
+		}
+	}
+	res := core.RunResult{Messages: msgs, StopReason: reason, Usage: a.runUsageSnapshot(), TurnCount: turns, Error: err}
+	if am := lastAssistant(msgs); am != nil {
+		res.LastReason = am.StopReason
+	}
+	// Result.Usage is this run's; the event's own Usage is the lifetime
+	// aggregate.
+	s.Push(core.AgentDoneEvent{Result: res, Usage: a.Usage()})
+	if err != nil {
+		s.Push(core.ErrorEvent{Message: err.Error(), Err: err, Terminal: true})
+	}
+	return res
+}
+
+// beforeRequest decides whether the next request is sent, and builds its
+// view. The cost bound is checked BEFORE the request, so a run never spends
+// past it on a call it already knew it could not afford. The view is the
+// transcript, with old tool results elided when it is large, and refused
+// outright when even that cannot fit: sending a request the model cannot
+// hold only buys an HTTP 400.
+func (a *Agent) beforeRequest() (core.Messages, core.RunStopReason, error) {
+	if limit := a.cfg.MaxCostUSD; limit > 0 {
+		if spent := a.runUsageSnapshot().CostUSD; spent >= limit {
+			return nil, core.RunStopBudgetExceeded,
+				fmt.Errorf("%w: the run has cost $%.4f of its $%.4f budget", core.ErrBudgetExceeded, spent, limit)
+		}
+	}
+	view, err := a.outboundView(a.Messages())
+	if err != nil {
+		return nil, core.RunStopError, err
+	}
+	return view, "", nil
+}
+
+// afterTurn decides whether the run ends at this turn boundary, and why.
+func (a *Agent) afterTurn(ctx context.Context, terminate, calledTools bool, turns int) (bool, core.RunStopReason, error) {
+	if terminate {
+		return true, core.RunStopToolTerminate, nil
+	}
+	// A cancellation that landed during the tool batch ends the run HERE,
+	// with the results in the transcript. Going around again would issue a
+	// request on a dead context.
+	if ctx.Err() != nil {
+		reason, err := a.contextStop(ctx)
+		return true, reason, err
+	}
+	if !calledTools {
+		return true, core.RunStopEndTurn, nil
+	}
+	// The turn bound is checked only when the run would go on, and after the
+	// turn's results are in the transcript, so it never leaves a tool_use
+	// unanswered.
+	if a.cfg.MaxTurns > 0 && turns >= a.cfg.MaxTurns {
+		return true, core.RunStopMaxTurns, fmt.Errorf("%w: %d turns", core.ErrMaxTurns, turns)
+	}
+	return false, "", nil
 }
 
 // record appends msgs to the transcript and to the run's own list. It is the

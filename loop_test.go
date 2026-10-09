@@ -25,10 +25,6 @@ import (
 
 const testAPI core.API = "test-api"
 
-func testModel() *core.Model {
-	return &core.Model{ID: "test-model", Name: "Test", API: testAPI, Provider: "test", ContextWindow: 100000, MaxTokens: 4096}
-}
-
 // scripted is a provider that replays a predetermined sequence of assistant
 // messages, one per turn. It is the executable double the loop is tested
 // against; provider/faux is the shipped, supported form of the same idea
@@ -44,10 +40,6 @@ type scripted struct {
 	// assert what the model was actually told rather than what a builder
 	// returns in isolation.
 	systems [][]core.ContentBlock
-}
-
-func (s *scripted) provider() core.APIProvider {
-	return core.APIProvider{API: testAPI, Stream: s.stream}
 }
 
 func (s *scripted) stream(ctx context.Context, m *core.Model, req core.Request, _ core.ProviderStreamOptions) *core.EventStream {
@@ -77,15 +69,6 @@ func (s *scripted) stream(ctx context.Context, m *core.Model, req core.Request, 
 	return st
 }
 
-func (s *scripted) sentAt(turn int) core.Messages {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if turn >= len(s.seen) {
-		return nil
-	}
-	return s.seen[turn]
-}
-
 func (s *scripted) turnsRun() int { s.mu.Lock(); defer s.mu.Unlock(); return s.calls }
 
 func toolUse(t *testing.T, id, name, args string) core.ToolUseBlock {
@@ -99,18 +82,6 @@ func toolUse(t *testing.T, id, name, args string) core.ToolUseBlock {
 
 func assistantWithTools(reason core.StopReason, blocks ...core.ContentBlock) core.AssistantMessage {
 	return core.AssistantMessage{Content: core.Content(blocks), StopReason: reason}
-}
-
-// afterTurns ends a run at the first turn boundary at or past n turns, with
-// StopReason max_turns.
-func afterTurns(n int) core.StopPolicy {
-	return func(sc core.StopContext) bool {
-		if sc.TurnCount >= n {
-			sc.SetReason(core.RunStopMaxTurns)
-			return true
-		}
-		return false
-	}
 }
 
 // testModelID is not in the catalog, so it takes the default row.
@@ -693,10 +664,6 @@ func TestUnknownToolYieldsAnErrorResultNotACrash(t *testing.T) {
 }
 
 var _ = fmt.Sprintf
-
-func user(s string) core.Message {
-	return core.UserMessage{Content: core.Content{core.TextBlock{Text: s}}}
-}
 
 func assistantSaying(s string, tokens int64) core.Message {
 	m := core.AssistantMessage{
