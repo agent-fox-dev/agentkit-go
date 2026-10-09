@@ -100,6 +100,31 @@ func TestCancelledBatchRunsNothing_TS11_27(t *testing.T) {
 	}
 }
 
+// TS-11-27, continued: a cancel landing after some calls were prepared but
+// before any handler starts still runs nothing — the decision is made once,
+// after prepare.
+func TestCancelDuringPrepareRunsNothing_TS11_27(t *testing.T) {
+	var ran atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	guard := func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		if in.ToolUseID == "c3" {
+			cancel() // c1 and c2 are prepared; c3 is the last
+		}
+		return core.BeforeToolCallDecision{}
+	}
+	results, _ := runBatch(t, ctx, Config{Tools: []core.Tool{echoTool("testTool", &ran)}, Guard: guard},
+		toolUse(t, "c1", "testTool", `{}`), toolUse(t, "c2", "testTool", `{}`), toolUse(t, "c3", "testTool", `{}`))
+	if ran.Load() != 0 {
+		t.Fatalf("%d handlers ran after the cancel", ran.Load())
+	}
+	for _, r := range results {
+		if !r.IsError || !strings.Contains(r.Content.Text(), "aborted") {
+			t.Fatalf("call %s = %q, want aborted", r.ToolUseID, r.Content.Text())
+		}
+	}
+}
+
 // TS-11-28: a live context runs every prepared call, concurrently.
 func TestBatchRunsHandlersConcurrently_TS11_28(t *testing.T) {
 	var active, peak atomic.Int32

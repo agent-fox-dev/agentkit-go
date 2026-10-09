@@ -1275,3 +1275,102 @@ func TestSmokeTruncationRecovery_TS11_46(t *testing.T) {
 		t.Fatal("the notice was not sent to the model")
 	}
 }
+
+// sizedProvider answers with one tool call per turn for turns turns, then
+// stops, and reports usage the way a real API does: the size of what it was
+// sent (at the estimator's own rate), or nothing when silent.
+func sizedProvider(turns int, silent bool, sent *[]core.Request) core.ProviderClient {
+	var mu sync.Mutex
+	return core.ClientFunc(func(_ context.Context, m *core.Model, req core.Request, _ core.ProviderStreamOptions) *core.EventStream {
+		mu.Lock()
+		i := len(*sent)
+		*sent = append(*sent, req)
+		mu.Unlock()
+		msg := core.AssistantMessage{StopReason: core.StopReasonStop, Content: core.Content{core.TextBlock{Text: "done"}},
+			Provider: m.Provider, API: m.API, Model: m.ID}
+		if i < turns {
+			msg.StopReason = core.StopReasonToolUse
+			msg.Content = core.Content{faux.FauxToolCall(fmt.Sprintf("c%d", i), "toolA", `{}`)}
+		}
+		if !silent {
+			msg.Usage = core.Usage{InputTokens: charTokens(req.Prefix) + charTokens(req.Messages)}
+		}
+		st := core.NewEventStream(core.StreamOptions{})
+		st.End(core.StreamResult{Message: &msg})
+		return st
+	})
+}
+
+func elidedIn(msgs core.Messages) int {
+	n := 0
+	for _, m := range msgs {
+		if tr, ok := m.(core.ToolResultMessage); ok && strings.Contains(tr.Content.Text(), "elided; call again") {
+			n++
+		}
+	}
+	return n
+}
+
+// Pruning stays on once the transcript is past the threshold: the usage of a
+// pruned request measures the pruned size, and deciding on it would send the
+// whole transcript every other turn.
+func TestPruningDoesNotOscillate(t *testing.T) {
+	var sent []core.Request
+	a, err := New(Config{Provider: sizedProvider(6, false, &sent), Model: "claude-opus-4-5",
+		Tools: []core.Tool{bigResult("toolA", 100_000)}, Prune: PruneOptions{Threshold: 0.35, KeepTurns: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "go")
+	if err != nil || res.StopReason != core.RunStopEndTurn {
+		t.Fatalf("run = %q, %v", res.StopReason, err)
+	}
+	first := -1
+	for i, req := range sent {
+		n := elidedIn(req.Messages)
+		if n > 0 && first < 0 {
+			first = i
+		}
+		if first >= 0 && n == 0 {
+			t.Fatalf("request %d was pruned and request %d sent the transcript whole", first, i)
+		}
+		if size := charTokens(req.Messages); size > 200_000 {
+			t.Fatalf("request %d is ~%d tokens, past the 200k window", i, size)
+		}
+	}
+	if first < 0 {
+		t.Fatal("nothing was pruned; the test proves nothing")
+	}
+}
+
+// With no usage reported, what pruning removes still counts: a transcript
+// over the window that fits once pruned is sent, not refused.
+func TestPruningWithoutUsageLowersTheEstimate(t *testing.T) {
+	var sent []core.Request
+	a, err := New(Config{Provider: sizedProvider(3, true, &sent), Model: "claude-opus-4-5",
+		Tools: []core.Tool{bigResult("toolA", 300_000)}, Prune: PruneOptions{Threshold: 0.35, KeepTurns: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "go")
+	if err != nil || res.StopReason != core.RunStopEndTurn {
+		t.Fatalf("run = %q, %v; a transcript that fits once pruned must be sent", res.StopReason, err)
+	}
+	if last := sent[len(sent)-1].Messages; elidedIn(last) != 2 {
+		t.Fatalf("last request elided %d results, want 2", elidedIn(last))
+	}
+}
+
+// The run slot is free by the time Run returns, so back-to-back runs never
+// see ErrBusy.
+func TestBackToBackRunsAreNotBusy(t *testing.T) {
+	a, err := New(Config{Provider: faux.New(), Model: driverModel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 500; i++ {
+		if _, err := a.Run(context.Background(), "go"); err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+	}
+}

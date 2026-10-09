@@ -393,19 +393,31 @@ func TestStateIsReadableDuringARun_TS11_13(t *testing.T) {
 			t.Error(err)
 		}
 	}()
+	// Each reader sees a consistent, growing state: the transcript only
+	// grows, usage only rises, the tools never change. The race detector
+	// (go test -race) checks the reads themselves.
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			msgs := a.Messages()
-			for _, m := range msgs {
-				if m == nil {
-					t.Error("nil message in the transcript")
+			var lastLen int
+			var lastTokens int64
+			for j := 0; j < 20; j++ {
+				msgs := a.Messages()
+				for _, m := range msgs {
+					if m == nil {
+						t.Error("nil message in the transcript")
+					}
 				}
-			}
-			_ = a.Usage()
-			if len(a.ReachableTools()) != 1 {
-				t.Error("ReachableTools changed during the run")
+				u := a.Usage()
+				if len(msgs) < lastLen || u.InputTokens < lastTokens {
+					t.Errorf("state went backwards: %d -> %d messages, %d -> %d tokens", lastLen, len(msgs), lastTokens, u.InputTokens)
+				}
+				lastLen, lastTokens = len(msgs), u.InputTokens
+				if len(a.ReachableTools()) != 1 {
+					t.Error("ReachableTools changed during the run")
+				}
+				time.Sleep(time.Millisecond)
 			}
 		}()
 	}

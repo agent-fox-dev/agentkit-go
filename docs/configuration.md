@@ -76,12 +76,15 @@ shell tool with no `Guard`.
 | `MaxTurns` | Ends a run that would go on past this many turns with `core.RunStopMaxTurns` and an error wrapping `core.ErrMaxTurns`, after the last turn's results are recorded. Zero is unbounded. |
 | `MaxCostUSD` | Checked before each request against the run's cost so far: at or past it, the request is not sent and the run ends with `core.RunStopBudgetExceeded` and an error wrapping `core.ErrBudgetExceeded`. Usage a provider did not price is priced at the model's catalog row, so an id the catalog does not list costs nothing and never trips it. Zero is unbounded. |
 | `Timeout` | The run's deadline. Past it the run ends with `core.RunStopTimeout` and an error wrapping `context.DeadlineExceeded`. A cancellation from outside — the caller's own cancel or deadline — ends it with `core.RunStopAborted` and an error wrapping `core.ErrAborted` and the context's error. Zero is unbounded. |
-| `Prune` | `agentkit.PruneOptions{Threshold, KeepTurns}`; the zero value is off. Before each request the driver estimates its size: the context the latest assistant message's usage reports, plus 4 characters per token for the messages after it (4 characters per token over the whole view when no usage has been reported). When the estimate reaches `Threshold` of the model's context window, the content of every tool result older than the last `KeepTurns` turns is replaced in the request by `[result of NAME (N bytes) elided; call again if needed]`. The result keeps its `ToolUseID`; `Agent.Messages()` and `RunResult.Messages` keep it whole. |
+| `Prune` | `agentkit.PruneOptions{Threshold, KeepTurns}`; the zero value is off. Before each request the driver estimates its size: the context the latest assistant message's usage reports, plus 4 characters per token for the messages after it, plus what pruning took off the request that usage measured — the decision is on the unpruned size, so pruning stays on once it starts. With no usage reported, it is 4 characters per token over the system prompt, the tools, the prefix and the messages. When the estimate reaches `Threshold` of the model's context window, the content of every tool result older than the last `KeepTurns` turns is replaced in the request by `[result of NAME (N bytes) elided; call again if needed]`. The result keeps its `ToolUseID`; `Agent.Messages()` and `RunResult.Messages` keep it whole. `KeepTurns: 0` elides even the results the model has just asked for. |
 | `MaxTokens` | Output cap per response, capped at the model's output cap. Zero → `core.DefaultMaxTokens` (32768), not the model cap. |
 
 Whether or not `Prune` is set, a request whose estimate is still larger than
 the model's context window after pruning is not sent: the run ends with
 `core.RunStopError` and an error naming the model and its window.
+
+The event stream is unbounded and never drops an event or blocks the run;
+`Config` has no stream options.
 
 A batch's calls run concurrently, one goroutine per call, unless a tool in the
 batch is `Sequential`. When any call that ran returns `Terminate: true` (or
@@ -89,7 +92,7 @@ batch is `Sequential`. When any call that ran returns `Terminate: true` (or
 call in the batch has finished. A call blocked by `Guard` or refused for its
 arguments casts no vote of its own; a `Guard` decision with both `Block` and
 `Terminate` ends the run (`guard.Options.TerminateOnBlock`). Observation is the event stream `Agent.Stream` returns
-(`Run` drains it): turn, message, tool execution (`ParentToolUseID` set for a
+(`Run` waits for the result and reads none of them): turn, message, tool execution (`ParentToolUseID` set for a
 nested call) and `core.ErrorEvent` for an error the run survives.
 
 Header precedence, lowest to highest: attribution defaults, provider/auth

@@ -52,9 +52,11 @@ func (a *Agent) Stream(ctx context.Context, prompt string) (*core.EventStream, e
 		ctx, cancel = context.WithTimeoutCause(ctx, a.cfg.Timeout, errRunTimeout)
 	}
 	go func() {
-		defer a.releaseSlot()
-		defer cancel()
 		res, err := a.runLoop(ctx, s, m)
+		// The slot is free before the stream ends: a caller whose Run has
+		// returned may start the next one at once.
+		cancel()
+		a.releaseSlot()
 		s.End(core.StreamResult{Message: lastAssistant(res.Messages), Result: &res, Err: err})
 	}()
 	return s, nil
@@ -119,7 +121,7 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial core.U
 	s.Push(core.AgentStartEvent{Provider: a.model.Provider, API: a.model.API, Model: a.model.ID})
 
 	for {
-		view, reason, err := a.beforeRequest()
+		view, elided, reason, err := a.beforeRequest()
 		if err != nil {
 			runReason, runErr = reason, err
 			break
@@ -128,6 +130,7 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial core.U
 		s.Push(core.TurnStartEvent{TurnIndex: turnCount})
 		assistant := a.callModel(ctx, s, view, report)
 		record(assistant)
+		a.noteElided(elided)
 		a.addUsage(a.priced(assistant.Usage))
 
 		// Only Error and Aborted short-circuit, and they do so BEFORE tool
@@ -211,9 +214,6 @@ func (a *Agent) endRun(s *core.EventStream, msgs core.Messages, reason core.RunS
 	// Result.Usage is this run's; the event's own Usage is the lifetime
 	// aggregate.
 	s.Push(core.AgentDoneEvent{Result: res, Usage: a.Usage()})
-	if err != nil {
-		s.Push(core.ErrorEvent{Message: err.Error(), Err: err, Terminal: true})
-	}
 	return res
 }
 
@@ -223,18 +223,18 @@ func (a *Agent) endRun(s *core.EventStream, msgs core.Messages, reason core.RunS
 // transcript, with old tool results elided when it is large, and refused
 // outright when even that cannot fit: sending a request the model cannot
 // hold only buys an HTTP 400.
-func (a *Agent) beforeRequest() (core.Messages, core.RunStopReason, error) {
+func (a *Agent) beforeRequest() (core.Messages, int64, core.RunStopReason, error) {
 	if limit := a.cfg.MaxCostUSD; limit > 0 {
 		if spent := a.runUsageSnapshot().CostUSD; spent >= limit {
-			return nil, core.RunStopBudgetExceeded,
+			return nil, 0, core.RunStopBudgetExceeded,
 				fmt.Errorf("%w: the run has cost $%.4f of its $%.4f budget", core.ErrBudgetExceeded, spent, limit)
 		}
 	}
-	view, err := a.outboundView(a.Messages())
+	view, elided, err := a.outboundView(a.Messages())
 	if err != nil {
-		return nil, core.RunStopError, err
+		return nil, 0, core.RunStopError, err
 	}
-	return view, "", nil
+	return view, elided, "", nil
 }
 
 // afterTurn decides whether the run ends at this turn boundary, and why.
@@ -281,33 +281,37 @@ const elisionNotice = "[result of %s (%d bytes) elided; call again if needed]"
 // Config.Prune says the estimate is past its threshold, and refused with an
 // error naming the model and its window when the estimate is still larger
 // than the window. msgs is never modified; the transcript keeps every result
-// whole.
-func (a *Agent) outboundView(msgs core.Messages) (core.Messages, error) {
+// whole. elided is the estimate the pruning took off, which the response's
+// usage will not count.
+func (a *Agent) outboundView(msgs core.Messages) (view core.Messages, elided int64, err error) {
 	window := int64(a.model.ContextWindow)
-	anchor, tokens := estimateTokens(a.cfg.Prefix, msgs)
+	tokens := a.estimateTokens(msgs)
 	if p := a.cfg.Prune; p.Threshold > 0 && window > 0 && float64(tokens)/float64(window) >= p.Threshold {
-		var saved int64
-		msgs, saved = pruneToolResults(msgs, p.KeepTurns, anchor)
-		tokens -= saved
+		msgs, elided = pruneToolResults(msgs, p.KeepTurns)
+		tokens -= elided
 	}
 	if window > 0 && tokens > window {
-		return nil, fmt.Errorf("agentkit: the request to model %q is about %d tokens, more than its %d-token context window",
+		return nil, 0, fmt.Errorf("agentkit: the request to model %q is about %d tokens, more than its %d-token context window",
 			a.model.ID, tokens, window)
 	}
-	return msgs, nil
+	return msgs, elided, nil
 }
 
-// estimateTokens is the anchored estimate of a request: the context the
-// latest assistant message's usage reports, plus charsPerToken for every
-// message after it. With no usage to anchor on, the prefix and messages are
-// estimated whole. anchor is the index of the anchoring message, or -1.
-func estimateTokens(prefix []core.Message, msgs core.Messages) (anchor int, tokens int64) {
+// estimateTokens is the anchored estimate of the request msgs would make
+// UNPRUNED: the context the latest assistant message's usage reports, plus
+// what pruning took off the request that produced it (its usage counted the
+// notices, not the results), plus charsPerToken for every message after it.
+// With no usage to anchor on, the system prompt, the tools, the prefix and
+// the messages are estimated whole. Deciding on the unpruned size is what
+// keeps pruning on once it has started: a pruned request's own usage is
+// below the threshold.
+func (a *Agent) estimateTokens(msgs core.Messages) int64 {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if am, ok := msgs[i].(core.AssistantMessage); ok && am.Usage.ContextTokens() > 0 {
-			return i, am.Usage.ContextTokens() + charTokens(msgs[i+1:])
+			return am.Usage.ContextTokens() + a.elidedAt(i) + charTokens(msgs[i+1:])
 		}
 	}
-	return -1, charTokens(prefix) + charTokens(msgs)
+	return a.fixedTokens + charTokens(a.cfg.Prefix) + charTokens(msgs)
 }
 
 // charTokens estimates msgs at charsPerToken of their JSON form.
@@ -327,10 +331,8 @@ func charTokens(msgs []core.Message) int64 {
 // than the last keep turns replaced by the elision notice. A turn is an
 // assistant message and the results that answer it. The results keep their
 // ToolUseID and name, so they still pair with their calls, and only the copy
-// changes. saved is the estimate the elisions take off the part of the view
-// an anchor's usage already counted (up to index anchor); results after the
-// anchor are re-estimated from the pruned view anyway.
-func pruneToolResults(msgs core.Messages, keep, anchor int) (out core.Messages, saved int64) {
+// changes. saved is what the elisions take off the estimate.
+func pruneToolResults(msgs core.Messages, keep int) (out core.Messages, saved int64) {
 	turns := 0
 	for _, m := range msgs {
 		if _, ok := m.(core.AssistantMessage); ok {
@@ -354,12 +356,30 @@ func pruneToolResults(msgs core.Messages, keep, anchor int) (out core.Messages, 
 			notice := fmt.Sprintf(elisionNotice, v.ToolName, size)
 			v.Content = core.Content{core.TextBlock{Text: notice}}
 			out[i] = v
-			if i <= anchor {
-				savedChars += int64(size - len(notice))
-			}
+			savedChars += int64(size - len(notice))
 		}
 	}
 	return out, savedChars / charsPerToken
+}
+
+// noteElided records, against the assistant message just recorded, what
+// pruning took off the request it answered.
+func (a *Agent) noteElided(tokens int64) {
+	if tokens <= 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.elided == nil {
+		a.elided = map[int]int64{}
+	}
+	a.elided[len(a.transcript)-1] = tokens
+}
+
+func (a *Agent) elidedAt(i int) int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.elided[i]
 }
 
 // errRunTimeout is the cause of a run context that outlived Config.Timeout.

@@ -37,7 +37,7 @@ Imports between first-party packages, taken from the source (tests excluded;
 | `mcp` | `core`, `schema`, `wire`; plus `github.com/modelcontextprotocol/go-sdk` |
 | `prompt` | `core`, `guard`, `tools` |
 | `codemode` | `core`, `schema`, `tools`; plus `go.starlark.net` (confined to this package; see [`DEPS.md`](DEPS.md)) |
-| `.` (root, `agentkit`) | `core`, `guard`, `prompt` |
+| `.` (root, `agentkit`) | `core`, `catalog`, `guard`, `prompt`, `provider`, `provider/anthropic`; plus `github.com/anthropics/anthropic-sdk-go` |
 
 Rules that follow from it:
 
@@ -45,9 +45,9 @@ Rules that follow from it:
   `ProviderClient`, `Middleware`). It imports no other part of the SDK except
   the two leaf encoders.
 - Nothing imports the root package except `examples/` and tests.
-- Provider packages are never imported by the root. A caller registers the wire
-  APIs it wants, so a program that only wants the loop does not pull in
-  `net/http`.
+- The root imports the Anthropic provider and the SDK: `Config.Client` is an
+  SDK client, and `New` builds the provider over it. A test or custom vendor
+  passes `Config.Provider` instead; the import, and `net/http` with it, stays.
 
 ## Packages
 
@@ -104,7 +104,8 @@ Agent.Run / Stream
   └─ terminal marker, AgentDoneEvent, RunResult
 ```
 
-Observation is the event stream: `Stream` returns it, and `Run` drains it.
+Observation is the event stream: `Stream` returns it; `Run` waits for its
+result without reading the events.
 Errors the run survives (a panicking interceptor or provider) are
 `core.ErrorEvent`s on it. The only interception is `Config.Guard` and
 `Config.After`, the authorization boundary.

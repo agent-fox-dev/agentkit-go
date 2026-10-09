@@ -68,9 +68,10 @@ error: anthropic: missing credentials: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_T
 
 ## Gotchas
 
-- **`Terminate` is a vote, combined with AND.** The run ends only when every
-  result in the batch votes to terminate. If the model calls `submit_answer`
-  next to other tools, it is just another result and the run continues.
+- **`Terminate` is a vote, and one is enough.** When any call that ran votes
+  to terminate, the run ends once the whole batch has finished. If the model
+  calls `submit_answer` next to other tools, their results are still
+  computed and recorded, but the model does not see them.
 - **Constrained sampling is declared, not enforced, here**: the Anthropic
   wire, the only one this module ships, ignores it.
 - The inventory map is unsynchronised on purpose. That is safe only because

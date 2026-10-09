@@ -46,8 +46,14 @@ context transforms, stop policies and deferred responses. `core.AgentConfig`
 itself stays in `core`: shrinking that vocabulary is deferred to scope 4.
 
 - **Observation is the event stream.** With no `Hooks`, an error the run
-  survives (a panicking interceptor or provider) is a `core.ErrorEvent` on
-  the run's stream; a run that ends in error also ends its stream with one.
+  survives (a panicking interceptor, handler or provider) is a
+  `core.ErrorEvent` on the run's stream. How a run ended is on
+  `AgentDoneEvent.Result`; the driver adds no terminal `ErrorEvent` of its
+  own (a provider's own failure event is forwarded as it came).
+- **No stream options.** `Config` has no `StreamOptions` (11-REQ-10.6 names
+  them), so the stream is `core.EventStream`'s default: unbounded, never
+  dropping an event, never blocking the run. `Run` reads none of the events;
+  they are held until the run returns.
 - **Parallel by default.** `Config` has no `ParallelTools`, so a batch runs
   concurrently unless a `Sequential` tool is in it; the spec's
   "`cfg.ParallelTools` is false" case has no field to set.
@@ -91,11 +97,14 @@ survives were ported to `New`.
   not (`outboundView` in `loop.go`), since a request larger than the window
   fails at the API either way.
 - **What the estimate counts.** The anchor is the latest assistant message
-  whose usage reports a context size (`Usage.ContextTokens`). The 4
-  characters per token are counted over each message's JSON form, and the
-  unanchored fallback counts `Config.Prefix` with the transcript. After
-  pruning, the anchored estimate is lowered by the elided bytes that the
-  anchor's usage had counted.
+  whose usage reports a context size (`Usage.ContextTokens`). That usage
+  measures the request as sent, which may have been pruned, so the driver
+  records what pruning took off each request and adds it back: the
+  threshold is applied to the unpruned size, and pruning stays on once it
+  starts. The 4 characters per token are counted over each message's JSON
+  form; the unanchored fallback also counts the system prompt, the tool
+  definitions and `Config.Prefix`. Pruning then lowers the estimate by what
+  it elided, wherever the result sits.
 - **Turns.** A turn is an assistant message and the results that answer it;
   with N assistant messages in the view, results of turns before
   `N - KeepTurns` are elided. "Original bytes" is the length of the result's
@@ -119,6 +128,10 @@ reason, truncation not detected, refusal not mapped).
   (`TestBatchTerminationIsAnAndNotAnOr`, TS-04-46's batch test) now pin
   this. `core.BatchTerminates` is no longer used by the driver and stays in
   `core` until scope 4 shrinks it.
+- **An aborted batch keeps the Guard's vote.** A batch cancelled before its
+  handlers start returns the Guard's Block+Terminate votes cast in prepare;
+  a tool's vote cannot exist, since none ran. Either way the run reports
+  `RunStopToolTerminate`, whether a tool or the Guard cast the vote.
 - **A blocked call has no vote of its own** (11-REQ-8.3, TS-11-32): its tool
   never ran. The Guard's own `Terminate`, set beside `Block`, still ends the
   run, as a nested interceptor's does (11-REQ-9.5) and as

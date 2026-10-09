@@ -66,6 +66,9 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	n := len(calls)
 	results := make([]core.ToolResultMessage, n)
 	votes := make([]bool, n)
+	// filled marks the slots that hold a result. A call's id cannot: a
+	// provider may send an empty one.
+	filled := make([]bool, n)
 	thunks := make([]func(), 0, n)
 
 	// env is what a wrapper's nested calls run with (07-REQ-4.3): the same
@@ -90,6 +93,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	// start event never waits for an end that will not come.
 	finalizeInline := func(i int, m core.ToolResultMessage) {
 		results[i] = m
+		filled[i] = true
 		s.Push(core.ToolExecutionEndEvent{ToolUseID: m.ToolUseID, Name: m.ToolName, IsError: m.IsError})
 		s.Push(core.ToolResultEvent{Message: m})
 	}
@@ -232,6 +236,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 					}
 				}
 				results[i] = msg
+				filled[i] = true
 				votes[i] = out.Terminate
 				s.Push(core.ToolExecutionEndEvent{
 					ToolUseID: c.ID, Name: c.Name, IsError: msg.IsError,
@@ -258,7 +263,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	// (ruling P-20).
 	if ctx.Err() != nil {
 		for i, c := range calls {
-			if results[i].ToolUseID != "" {
+			if filled[i] {
 				continue // already finalized in prepare (blocked/invalid)
 			}
 			// A call the prepare loop never reached still opens, so it can
@@ -269,9 +274,10 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 			}
 			finalizeInline(i, abortedResult(c))
 		}
-		// No handler ran, so nothing voted: an aborted batch did not finish,
-		// and it does not finish the run on a tool's say-so.
-		return results, false
+		// No handler ran, so no tool voted: an aborted batch does not end
+		// the run on a tool's say-so. A Guard's own vote, cast in prepare,
+		// stands.
+		return results, slices.Contains(votes, true)
 	}
 
 	sequential := len(thunks) <= 1
@@ -309,7 +315,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	// calls leaves dangling tool_use blocks and makes the next request
 	// invalid, so this is asserted rather than assumed.
 	for i, c := range calls {
-		if results[i].ToolUseID == "" {
+		if !filled[i] {
 			results[i] = errorResult(c, "no_result",
 				"internal: the tool batch produced no result for this call")
 		}

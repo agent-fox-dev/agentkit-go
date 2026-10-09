@@ -70,14 +70,14 @@ prints four behaviours the specification originally got wrong.
 
 | Package | What it owns |
 |---|---|
-| `.` (root) | `Agent`, its constructors, the loop, the batch executor, nested tool calls, provider registration. |
+| `.` (root) | The driver: `Config`, `New`, the `Agent`, the loop, the batch executor, nested tool calls. |
 | `core` | Canonical vocabulary and every interface seam: messages, content blocks, events, `EventStream`, `Tool`, `ProviderClient`. |
 | `tools` | Built-in tools (`read_file`, `write_file`, `edit_file`, `list_files`, `find_files`, `search_files`, `file_outline`, `find_symbol`, `find_references`, `execute`, `run_command`), path containment, bounded accumulator, process control, glob (`doublestar` plus smart-case and basename matching), a layered gitignore engine, `Walk` (the single shared directory traversal), the in-memory symbol table behind `find_symbol`, and the reference engine and cache behind `find_references`. |
 | `outline` | Source-file declaration listing: `go/ast` for Go, in-process tree-sitter grammars for fourteen other languages when built with cgo (none without), and a `none` fallback. |
 | `codemode` | The code-mode tool: `New(tools, opts)` runs a model-written, sandboxed Starlark script over the bound tools, with every call going through the agent's nested-call pipeline. On `go.starlark.net` ([ruling](docs/DEPS.md)). |
 | `mcp` | Model Context Protocol client on the official Go SDK (all revisions, negotiated): tool pool with qualified names, subprocess servers with a reduced environment and respawn, result cap, strict decoding at every trust boundary. |
 | `guard` | The execute boundary: `Restricted` (a program allowlist plus operator rejection) and `AllowAll`. |
-| `prompt` | The assembled system prompt: base instructions, per-tool guidelines, extra blocks. |
+| `prompt` | The assembled system prompt: the base prompt and the active tools' guidelines. |
 | `catalog` | Embedded Claude model catalog and `Lookup`. |
 | `provider` | Credential resolution, HTTP transport + retry, header precedence, cost arithmetic, SSE decoding, the per-session tool-schema cache. |
 | `provider/anthropic` | The Anthropic Messages wire (direct and Vertex), encode and decode, with send-time transcript repair. |

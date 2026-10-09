@@ -449,13 +449,10 @@ type answer struct {
 
 // submitAnswerTool ends the run.
 //
-// ToolResult.Terminate is json:"-" — it never reaches the model. It is a VOTE,
-// and the batch terminates only when EVERY finalized result votes to. The
-// obvious OR reading is wrong: the model emits N parallel calls, so a
-// unilateral finish would compute the other N-1 results and then never show
-// them to the model, which is both wasted work and a silently dropped answer.
-// AND means submit_answer ends the run when it is the last thing the model
-// asked for, and is just another result when it is not.
+// ToolResult.Terminate is json:"-" — it never reaches the model. It is a
+// VOTE: when any call in the batch that ran casts it, the run ends after the
+// whole batch has finished. Sibling calls still run and are recorded, but the
+// model never sees their results, so submit_answer is best asked for alone.
 func submitAnswerTool(out *answer) core.Tool {
 	return core.Tool{
 		Name:        "submit_answer",

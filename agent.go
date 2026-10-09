@@ -14,6 +14,7 @@ package agentkit
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/prompt"
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 )
 
@@ -97,6 +99,9 @@ type Agent struct {
 	// tools is the resolved set, fixed at construction: it is part of the
 	// cached prompt prefix, so it never changes under a run.
 	tools []core.Tool
+	// fixedTokens estimates what every request carries besides its
+	// messages: the system prompt and the tool definitions.
+	fixedTokens int64
 
 	// mu guards everything below. It is never held while user code runs —
 	// no tool handler, interceptor or provider — and never acquired while a
@@ -109,6 +114,9 @@ type Agent struct {
 	// RunResult.Usage reports and the cost bound reads.
 	usage    core.Usage
 	runUsage core.Usage
+	// elided maps a transcript index of an assistant message to the tokens
+	// pruning took off the request that message answered.
+	elided map[int]int64
 }
 
 // New builds an Agent from cfg. It refuses a config the agent could not run
@@ -146,7 +154,13 @@ func New(cfg Config) (*Agent, error) {
 	m, _ := catalog.Lookup(cfg.Model)
 	cfg.Tools = append([]core.Tool(nil), cfg.Tools...)
 	cfg.Prefix = append([]core.Message(nil), cfg.Prefix...)
-	return &Agent{cfg: cfg, model: m, client: client, tools: resolved}, nil
+	a := &Agent{cfg: cfg, model: m, client: client, tools: resolved}
+	fixed := len(prompt.Build(cfg.System, resolved))
+	if b, err := json.Marshal(core.ToolWires(resolved)); err == nil {
+		fixed += len(b)
+	}
+	a.fixedTokens = int64(fixed) / charsPerToken
+	return a, nil
 }
 
 // checkTool is REQ-TOOL-01's "exactly one of Handler and Execute", for every
