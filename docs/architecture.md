@@ -47,6 +47,7 @@ Imports between first-party packages, taken from the source (tests excluded;
 | `skills` | `core`, `plugins` |
 | `prompt` | `core`, `skills`, `tools` |
 | `subagent` | `core`, `schema`, `stop` |
+| `codemode` | `core`, `schema`, `tools`; plus `go.starlark.net` (confined to this package; see [`DEPS.md`](DEPS.md)) |
 | `.` (root, `agentkit`) | `core`, `compaction`, `guard`, `imagex`, `middleware`, `prompt`, `session`, `skills` |
 
 Rules that follow from it:
@@ -82,6 +83,7 @@ Rules that follow from it:
 | `guard` | The `execute` authorization boundary: `Restricted`, `AllowAll`. |
 | `stop` | Stop policies. |
 | `subagent` | Delegation as a tool, named definitions, parallel runs. |
+| `codemode` | The code-mode tool: a sandboxed Starlark script runner over bound tools, with typed declarations generated from their schemas, errors as values, `parallel`, four limits, truncated and spilled output, and a ledger of the calls a script made. |
 | `prompt` | Assembly of the system prompt. |
 | `skills` | Skill manifests, three-tier discovery, trust gate, project context files, prompt blocks, activation. |
 | `plugins` | Four plugin categories, registry, manifest discovery, import lint, conformance `Validate`. |
@@ -227,6 +229,52 @@ that turns tools into functions. It declares them up front in
   enter the history or the session log, and are not seen by stop policies.
   Usage a nested handler reports through `core.ReportUsage` still reaches the
   agent at once.
+
+## Code mode
+
+`codemode.New(tools, opts)` returns one tool, `code_mode` by default, that
+runs a model-written Starlark script. The tool declares `tools` as its
+`ReachableTools`, so the tool policy, the shell guard and the cycle checks
+treat it as the wrapper it is. Its description is generated from the bound
+tools' own input and output schemas (`RenderSignature`), and `BuildInfo`
+reports what it costs.
+
+A run:
+
+1. **Thread.** The tool's handler starts a fresh `starlark.Thread`. Its
+   globals are Starlark's own builtins, one function per bound tool, and
+   `parallel`, `call` and `is_error`. `load` is refused.
+2. **Calls.** A tool function takes keyword arguments only. It encodes them
+   as JSON and calls `core.CallNested`, so each call goes through the agent's
+   nested-call pipeline: interceptors, plugins, audit, spans and events, with
+   the `code_mode` call as parent. `parallel` sends at most
+   `MaxConcurrentCalls` calls per `CallNested`, and the dispatcher runs them
+   concurrently.
+3. **Results.** A success returns `Data`, converted to Starlark through JSON,
+   or `{"text": Text}` when there is no `Data`. A failure, including a block,
+   returns a `tool_error` value the script checks with `is_error`; nothing is
+   raised.
+4. **Limits.** Four limits stop a script, each with its own error:
+   - `MaxTimeout`, a context deadline that cancels the thread: `timeout`;
+   - `MaxSteps`, the thread's step limit: `step_limit_exceeded`;
+   - `MaxCalls`, checked before each dispatch: `call_limit_exceeded`;
+   - `MaxOutputBytes`: `output_limit_exceeded`.
+
+   A terminate vote from an interceptor stops the script and sets `Terminate`
+   on its result.
+5. **Output.** Printed lines and the return value (`main()`, else `result`)
+   go into a `tools.Accumulator` in middle-truncation mode, the shell tools'
+   buffer. Output past the limit keeps its head and tail and is spilled to
+   `SpillDir`.
+6. **Result.** The result is the output text, with `Data` holding `output`,
+   `return_value` and `calls_completed`. A failed or stopped script returns
+   its error code (`syntax_error`, `runtime_error`, `invalid_arguments`, a
+   limit, `aborted`) with the line, the partial output and the calls that
+   completed. Their side effects are not undone.
+
+Calling code mode outside an agent run fails the script's first tool call
+with `ErrNoNestedCaller`: code mode never runs a tool around the agent's
+pipeline.
 
 ## Symbol and reference navigation
 

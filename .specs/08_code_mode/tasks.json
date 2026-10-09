@@ -337,7 +337,7 @@
         "`go test ./codemode/... -run 'TestDeps'` passes",
         "`go run ./examples/codemode` runs without error"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,

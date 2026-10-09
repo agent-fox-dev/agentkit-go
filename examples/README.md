@@ -52,6 +52,7 @@ against a real model:
 | [`images`](images) | `go run ./examples/images` · `--real` | Images in a conversation: the three ways one reaches a model (prompt, `read_file`, a tool result), `imagex` normalization to provider limits, and the repair for a text-only model. |
 | [`observability`](observability) | `go run ./examples/observability` | Watching a run: `core.Hooks`, the audit trail (`AuditEvent`, argument hashes), a `Tracer` with model and tool spans, and `session.EventJSON` for logging events. |
 | [`branching`](branching) | `go run ./examples/branching` | The session tree: forking from an earlier entry, branch summaries, `session.Load` leaves, and resuming a chosen branch with `FoldLeaf`. |
+| [`codemode`](codemode) | `go run ./examples/codemode` | Code mode: one tool that runs a model-written Starlark script over other tools — chained and parallel calls, errors as values, filtering before anything reaches the conversation — through the agent's own nested-call pipeline. |
 | [`deferred`](deferred) | `go run ./examples/deferred` | Deferred (batch) submission: `SupportsDeferred`, a run that ends `deferred` with a durable handle, and `RedeemDeferred` after a restart. No shipped wire supports it, so the example brings its own batch provider. |
 
 Every built-in tool also has its own program, which takes the tool's JSON

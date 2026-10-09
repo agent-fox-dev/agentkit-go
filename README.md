@@ -26,6 +26,10 @@ applications: [`triage`](examples/triage), which triages a bug report into a
 structured GitHub issue, [`cleaner`](examples/cleaner), which takes that issue
 and lands the fix, and [`flatline`](examples/flatline), which implements a whole
 spec pack task group by task group. Most need no API key.
+[`examples/codemode`](examples/codemode) shows code mode: one tool that runs a
+model-written Starlark script over other tools, so the model can chain and
+parallelize calls and filter their results before anything reaches the
+conversation (`go run ./examples/codemode`, no key).
 [`examples/tools`](examples/tools) has one program per built-in tool that
 takes the tool's JSON arguments the way a model sends them and prints what the
 model would read back. The nested
@@ -62,6 +66,7 @@ TBD
 | [`docs/configuration.md`](docs/configuration.md) | Environment variables, `AgentConfig`, provider and tool options, TOML sections and manifests. |
 | [`docs/cli.md`](docs/cli.md) | `validate-plugins`, `difftest`, make targets, example program flags. |
 | [`docs/api.md`](docs/api.md) | The MCP server's HTTP and stdio surface. |
+| [`docs/DEPS.md`](docs/DEPS.md) | Why each deliberately adopted dependency is there (`go.starlark.net`). |
 | [`examples/README.md`](examples/README.md) | Overview of the examples |
 | [`docs/prd/`](docs/prd) | Requirements. |
 
@@ -91,6 +96,7 @@ TBD
 | `imagex` | Image normalization to a provider's inline-image limits (JPEG, PNG, GIF, WebP; resampling via `golang.org/x/image/draw`); used at the history boundary. |
 | `guard` | The execute boundary: `Restricted` (a program allowlist plus operator rejection) and `AllowAll`. |
 | `subagent` | Delegation: `Tool` over an agent factory, named `Definition`s in a `Registry`, `RunParallel`. The one package above the root. |
+| `codemode` | The code-mode tool: `New(tools, opts)` runs a model-written, sandboxed Starlark script over the bound tools, with every call going through the agent's nested-call pipeline. On `go.starlark.net` ([ruling](docs/DEPS.md)). |
 | `.` (root) | `Agent`, its constructors, the loop, the batch executor, provider registration. |
 
 ## License

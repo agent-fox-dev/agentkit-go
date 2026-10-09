@@ -180,6 +180,29 @@ and 500 characters per line, `find_files` 200 by default (cap 1000),
 | `MaxBuildTime` | 60 s | Wall-time bound for the index build. |
 | `TempDir` | `os.TempDir()` | Where shard files are written. |
 
+## Code mode (`codemode.Options`)
+
+`codemode.New(tools, opts)` builds the code-mode tool. `codemode.DefaultOptions()`
+returns these defaults; a zero field takes its default.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `Name` | `code_mode` | The tool's name. A bound tool may not have it. |
+| `Description` | generated | When set, used verbatim and nothing is generated. |
+| `DescriptionTemplate` | `codemode.DefaultDescriptionTemplate` | A `text/template` over `codemode.DescriptionData` for the instructions section. The bound tools' declarations always follow it. |
+| `Guidelines` | built-in code-mode guidance | The tool's `PromptGuidelines`. |
+| `MaxTimeout` | 30 s | Wall time per script. Past it: `timeout`. |
+| `MaxSteps` | 100 000 | Starlark execution steps per script. Past it: `step_limit_exceeded`. |
+| `MaxCalls` | 50 | Tool calls per script, direct and in `parallel` together. Past it: `call_limit_exceeded`, and the excess calls are not made. |
+| `MaxConcurrentCalls` | 8 | Calls one `parallel(...)` has in flight at once. |
+| `MaxOutputBytes` | 102 400 (100 KB) | Printed output plus the return value. Past it: `output_limit_exceeded`, with the head and tail kept. |
+| `SpillDir` | `agentkit-codemode` under `os.TempDir()` | Where the complete output of a truncated script is written. |
+| `DisableSpill` | `false` | When true, truncated output is not written to disk. |
+
+A bound tool's name must be a Starlark identifier, and must not be a Starlark
+builtin or one of `parallel`, `call`, `is_error`, `main` and `result`. Names
+must be unique, and no code-mode tool may be bound, at any depth.
+
 ## Subprocess runner (`tools.Run`, `tools.RunArgv`)
 
 `tools.Run` executes a shell command through the platform's shell ladder;
