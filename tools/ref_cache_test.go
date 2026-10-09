@@ -336,3 +336,100 @@ func TestRefCache_TS05_44(t *testing.T) {
 		}
 	}
 }
+
+// refSites runs find_references with args and returns its sites.
+func refSites(t *testing.T, ft *fileTools, args string) []ReferenceSite {
+	t.Helper()
+	res := ft.findReferencesTool().Execute(context.Background(), json.RawMessage(args))
+	if !res.OK {
+		t.Fatalf("find_references %s: %s", args, res.Text)
+	}
+	return res.Data["result"].(ReferenceResult).Sites
+}
+
+// runWriteFile writes content to rel through the write_file tool.
+func runWriteFile(t *testing.T, ft *fileTools, rel, content string) {
+	t.Helper()
+	args, _ := json.Marshal(map[string]string{"path": rel, "content": content})
+	if res := ft.writeFile().Execute(context.Background(), args); !res.OK {
+		t.Fatalf("write_file %s: %s", rel, res.Text)
+	}
+}
+
+// TS-05-40 (unit): queries read the cache: the first query leaves checked
+// Go packages and outlines in it, a second query with nothing dirty reuses
+// them, and a write_file makes the next query re-check.
+// Verifies: 05-REQ-8.1, 05-REQ-8.4
+func TestRefCache_TS05_40_QueriesReadCache(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "go.mod", "module example.com/m\n\ngo 1.22\n")
+	writeFile(t, root, "lib.go", "package m\n\nfunc Target() int { return 1 }\n\nfunc Caller() int {\n\treturn Target()\n}\n")
+	ws, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ft := newFileTools(Options{Workspace: ws}.withDefaults())
+
+	if got := refSites(t, ft, `{"name":"Target"}`); len(got) != 1 {
+		t.Fatalf("first query sites = %+v, want one", got)
+	}
+	rc := ft.refCache
+	rc.mu.Lock()
+	imp1, outlined := rc.importer, rc.outlines["lib.go"] != nil
+	rc.mu.Unlock()
+	if imp1 == nil || len(imp1.pkgInfos) == 0 {
+		t.Fatal("the first query left no checked Go packages in the reference cache")
+	}
+	if !outlined {
+		t.Fatal("the first query left no outline for lib.go in the reference cache")
+	}
+
+	refSites(t, ft, `{"name":"Target"}`)
+	rc.mu.Lock()
+	imp2 := rc.importer
+	rc.mu.Unlock()
+	if imp2 != imp1 {
+		t.Fatal("a query with nothing dirty re-checked the Go workspace instead of reusing the cache")
+	}
+
+	runWriteFile(t, ft, "more.go", "package m\n\nfunc Another() int {\n\treturn Target()\n}\n")
+	got := refSites(t, ft, `{"name":"Target"}`)
+	var fresh bool
+	for _, s := range got {
+		if s.Path == "more.go" && s.Enclosing.Name == "Another" && s.Confidence == "resolved" {
+			fresh = true
+		}
+	}
+	if !fresh {
+		t.Fatalf("the caller added by write_file is missing: %+v", got)
+	}
+}
+
+// TS-05-43 (unit): a non-Go file written by write_file is searched by the
+// next query; the candidate list cached for the name is not reused stale.
+// Verifies: 05-REQ-8.2, 05-REQ-8.4
+func TestRefCache_TS05_43_CandidatesFreshAfterWrite(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "calc.py", "def calc_total(x):\n    return x\n")
+	ws, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ft := newFileTools(Options{Workspace: ws}.withDefaults())
+
+	for _, s := range refSites(t, ft, `{"name":"calc_total"}`) {
+		if s.Path == "shop.py" {
+			t.Fatalf("shop.py does not exist yet: %+v", s)
+		}
+	}
+	runWriteFile(t, ft, "shop.py", "def checkout(x):\n    return calc_total(x)\n")
+	var found bool
+	for _, s := range refSites(t, ft, `{"name":"calc_total"}`) {
+		if s.Path == "shop.py" && s.Line == 2 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the call in shop.py written by write_file was not found")
+	}
+}

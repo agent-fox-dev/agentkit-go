@@ -23,7 +23,6 @@ type workspaceImporter struct {
 	imported    map[string]*types.Package
 	pkgInfos    map[string]*types.Info
 	parsedFiles map[string]*ast.File // by absolute path
-	fileSources map[string][]string
 	errors      []error
 }
 
@@ -54,7 +53,6 @@ func newWorkspaceImporter(ws *Workspace, modulePath string) *workspaceImporter {
 		imported:    make(map[string]*types.Package),
 		pkgInfos:    make(map[string]*types.Info),
 		parsedFiles: make(map[string]*ast.File),
-		fileSources: make(map[string][]string),
 	}
 }
 
@@ -192,10 +190,19 @@ func makeTypesConfig(imp *workspaceImporter) *types.Config {
 }
 
 // loadGoWorkspace parses and type-checks every directory of ws that holds
-// Go files, until budget refuses a file; then the directories already
-// seen are checked and the walk stops.
+// Go files, until budget refuses a file.
 func loadGoWorkspace(ws *Workspace, budget *refBudget) *workspaceImporter {
 	imp := newWorkspaceImporter(ws, "")
+	imp.load(budget)
+	return imp
+}
+
+// load parses and type-checks every directory of imp's workspace that
+// holds Go files, reusing files already in imp.parsedFiles. When budget
+// refuses a file the walk stops and the directories already seen are
+// checked.
+func (imp *workspaceImporter) load(budget *refBudget) {
+	ws := imp.ws
 	dirs := make(map[string]bool)
 	_ = Walk(context.Background(), ws, ws.Root, WalkOptions{}, func(rel string, d fs.DirEntry) error {
 		if !d.IsDir() && strings.HasSuffix(d.Name(), ".go") {
@@ -216,7 +223,6 @@ func loadGoWorkspace(ws *Workspace, budget *refBudget) *workspaceImporter {
 		}
 		_, _ = checkPackage(imp, relDir)
 	}
-	return imp
 }
 
 // definesName reports whether any type-checked package declares an object named name.
@@ -245,16 +251,17 @@ func typeNameFromType(t types.Type) string {
 	return ""
 }
 
-// getSourceLine returns the sanitized line from filePath at 1-based lineNum.
-func (imp *workspaceImporter) getSourceLine(filePath string, lineNum int) string {
-	lines, ok := imp.fileSources[filePath]
+// sourceLine returns the sanitized line from filePath at 1-based lineNum,
+// memoizing each file's lines in sources.
+func sourceLine(sources map[string][]string, filePath string, lineNum int) string {
+	lines, ok := sources[filePath]
 	if !ok {
 		content, err := os.ReadFile(filePath)
 		if err != nil {
 			return ""
 		}
 		lines = strings.Split(string(content), "\n")
-		imp.fileSources[filePath] = lines
+		sources[filePath] = lines
 	}
 	if lineNum >= 1 && lineNum <= len(lines) {
 		return sanitizeSnippet(lines[lineNum-1])
@@ -354,7 +361,9 @@ func classifyGoIdent(info *types.Info, id *ast.Ident, parent ast.Node, targetObj
 	return "lexical"
 }
 
-// resolveGoReferences finds reference sites for target in the Go sources imp has checked.
+// resolveGoReferences finds reference sites for target in the Go sources
+// imp has checked. It only reads imp, so a cached importer can serve
+// concurrent queries.
 func resolveGoReferences(imp *workspaceImporter, target outline.Decl) []ReferenceSite {
 	targetObj := imp.findTargetObject(target)
 
@@ -370,6 +379,7 @@ func resolveGoReferences(imp *workspaceImporter, target outline.Decl) []Referenc
 	}
 
 	var sites []ReferenceSite
+	sources := make(map[string][]string)
 	for filePath, f := range imp.parsedFiles {
 		relPath, err := filepath.Rel(imp.ws.Root, filePath)
 		if err != nil {
@@ -397,7 +407,7 @@ func resolveGoReferences(imp *workspaceImporter, target outline.Decl) []Referenc
 				Line:       pos.Line,
 				Column:     pos.Column,
 				Confidence: confidence,
-				Source:     imp.getSourceLine(filePath, pos.Line),
+				Source:     sourceLine(sources, filePath, pos.Line),
 			})
 			return true
 		})

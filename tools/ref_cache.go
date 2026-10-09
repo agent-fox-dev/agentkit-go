@@ -2,7 +2,10 @@ package tools
 
 import (
 	"context"
+	"go/ast"
+	"go/token"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +31,13 @@ type referenceCache struct {
 	outlines   map[string]*outline.File
 	candidates map[string][]string
 
+	// fset and parsed (Go ASTs by absolute path) outlive any one
+	// importer, so a re-check parses only the files that changed.
+	fset   *token.FileSet
+	parsed map[string]*ast.File
+	// importer is the last complete check of the workspace's Go
+	// packages; nil when it must be rebuilt. It is never mutated once
+	// stored, so queries read it without the lock.
 	importer *workspaceImporter
 }
 
@@ -41,6 +51,8 @@ func newReferenceCache(ws *Workspace, ft *fileTools) *referenceCache {
 		files:         make(map[string]bool),
 		outlines:      make(map[string]*outline.File),
 		candidates:    make(map[string][]string),
+		fset:          token.NewFileSet(),
+		parsed:        make(map[string]*ast.File),
 	}
 }
 
@@ -131,8 +143,11 @@ func (rc *referenceCache) populateInitial(ctx context.Context) {
 	})
 }
 
-// refresh re-parses dirty Go packages, re-outlines dirty non-Go files,
-// purges deleted files, and clears dirty flags.
+// refresh applies the pending marks before a query: files deleted from
+// disk are purged, dirty Go packages lose their parsed files and the
+// checked workspace (so goImporter re-parses and re-checks them before
+// references are resolved), dirty files already outlined are outlined
+// again, and candidate lists are dropped once anything changed.
 func (rc *referenceCache) refresh(ctx context.Context) error {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
@@ -144,111 +159,114 @@ func (rc *referenceCache) refresh(ctx context.Context) error {
 		return nil
 	}
 
-	// 1. Initial population if cache is empty
 	if len(rc.files) == 0 {
 		rc.populateInitial(ctx)
 	}
 
-	// 2. Candidate cache revalidation if .gitignore changed or whole table revalidated
-	if rc.revalidateCandidates || rc.revalidateAll {
+	// Any change can add or remove a mention of any name.
+	if rc.revalidateCandidates || rc.revalidateAll || len(rc.dirtyPaths) > 0 {
 		rc.candidates = make(map[string][]string)
 	}
+	// A changed ignore file changes which Go directories are walked.
+	if rc.revalidateCandidates {
+		rc.importer = nil
+	}
 
-	// 3. Purge deleted files from cache
 	for f := range rc.files {
 		abs := filepath.Join(rc.ws.Root, filepath.FromSlash(f))
-		fi, err := os.Stat(abs)
-		if err != nil || fi.IsDir() {
+		if fi, err := os.Stat(abs); err != nil || fi.IsDir() {
 			delete(rc.files, f)
 			delete(rc.outlines, f)
-			if rc.importer != nil {
-				delete(rc.importer.parsedFiles, abs)
-				delete(rc.importer.fileSources, abs)
-			}
+			delete(rc.parsed, abs)
 			rc.markGoPackageDirty(f)
 		}
 	}
 
-	// 4. If revalidateAll is set, mark all known Go packages and non-Go files dirty
+	// After a shell command any file may have changed.
 	if rc.revalidateAll {
-		for f := range rc.files {
-			if strings.HasSuffix(f, ".go") {
-				rc.markGoPackageDirty(f)
-			} else {
-				rc.dirtyPaths[f] = true
-			}
+		rc.importer = nil
+		rc.parsed = make(map[string]*ast.File)
+		for rel := range rc.outlines {
+			rc.dirtyPaths[rel] = true
 		}
 	}
 
-	// 5. Re-parse dirty Go packages
-	if rc.importer == nil {
-		rc.importer = newWorkspaceImporter(rc.ws, "")
-	}
 	for pkgDir := range rc.dirtyPackages {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		delete(rc.importer.imported, pkgDir)
-		delete(rc.importer.pkgInfos, pkgDir)
-		if rc.importer.modulePath != "" {
-			importPath := rc.importer.modulePath
-			if pkgDir != "" {
-				importPath += "/" + pkgDir
-			}
-			delete(rc.importer.imported, importPath)
-			delete(rc.importer.pkgInfos, importPath)
-		}
-
+		rc.importer = nil
 		absDir := filepath.Join(rc.ws.Root, filepath.FromSlash(pkgDir))
-		for path := range rc.importer.parsedFiles {
+		for path := range rc.parsed {
 			if filepath.Dir(path) == absDir {
-				delete(rc.importer.parsedFiles, path)
-				delete(rc.importer.fileSources, path)
-			}
-		}
-
-		if fi, err := os.Stat(absDir); err == nil && fi.IsDir() {
-			_, _ = checkPackage(rc.importer, pkgDir)
-			if entries, err := os.ReadDir(absDir); err == nil {
-				for _, entry := range entries {
-					if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") {
-						rel := filepath.ToSlash(filepath.Join(pkgDir, entry.Name()))
-						rc.files[rel] = true
-					}
-				}
+				delete(rc.parsed, path)
 			}
 		}
 	}
 
-	// 6. Re-outline dirty non-Go files
 	for rel := range rc.dirtyPaths {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if strings.HasSuffix(rel, ".go") {
-			continue
-		}
 		abs := filepath.Join(rc.ws.Root, filepath.FromSlash(rel))
-		fi, err := os.Stat(abs)
-		if err != nil || fi.IsDir() {
+		if fi, err := os.Stat(abs); err != nil || fi.IsDir() {
 			delete(rc.files, rel)
 			delete(rc.outlines, rel)
 			continue
 		}
 		rc.files[rel] = true
-		ofile, err := outline.Outline(ctx, abs, nil, outline.Options{Root: rc.ws.Root})
-		if err == nil {
+		if _, ok := rc.outlines[rel]; !ok {
+			continue // outlined on first use
+		}
+		delete(rc.outlines, rel)
+		if ofile, err := outline.Outline(ctx, abs, nil, outline.Options{Root: rc.ws.Root}); err == nil {
 			rc.outlines[rel] = &ofile
 		}
 	}
 
-	// 7. Clear dirty flags
 	rc.dirtyPaths = make(map[string]bool)
 	rc.dirtyPackages = make(map[string]bool)
 	rc.revalidateAll = false
 	rc.revalidateCandidates = false
 
 	return nil
+}
+
+// goImporter returns the cached check of the workspace's Go packages,
+// building it under budget when there is none. Files parsed by an earlier
+// build and not dirtied since are reused. A build cut short by budget is
+// returned but not cached.
+func (rc *referenceCache) goImporter(budget *refBudget) *workspaceImporter {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	if rc.importer != nil {
+		return rc.importer
+	}
+	imp := newWorkspaceImporter(rc.ws, "")
+	imp.fset = rc.fset
+	maps.Copy(imp.parsedFiles, rc.parsed)
+	imp.load(budget)
+	rc.parsed = maps.Clone(imp.parsedFiles)
+	if !budget.exhausted() {
+		rc.importer = imp
+	}
+	return imp
+}
+
+// outlineDecls returns the declarations of the workspace file rel from the
+// cache, outlining and caching it on first use.
+func (rc *referenceCache) outlineDecls(ctx context.Context, rel string) []outline.Decl {
+	rc.mu.Lock()
+	cached, ok := rc.outlines[rel]
+	rc.mu.Unlock()
+	if ok {
+		return cached.Decls
+	}
+	ofile, err := outline.Outline(ctx, filepath.Join(rc.ws.Root, filepath.FromSlash(rel)), nil, outline.Options{Root: rc.ws.Root})
+	if err != nil {
+		return nil
+	}
+	rc.mu.Lock()
+	rc.outlines[rel] = &ofile
+	rc.mu.Unlock()
+	return ofile.Decls
 }
 
 // getCandidateFiles returns candidate files matching name, checking

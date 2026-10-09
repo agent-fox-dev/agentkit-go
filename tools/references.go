@@ -59,7 +59,8 @@ func (w *Workspace) References(ctx context.Context, target outline.Decl, opts Re
 // workspace files. An empty backend is chosen from the target: "go/types"
 // when a Go package declares it, "lexical" otherwise, "text" for an empty
 // name. The pass is bounded by bounds (05-REQ-6.4). rc, when non-nil,
-// caches candidate files.
+// supplies the checked Go packages, outlines and candidate files it has
+// cached (05-REQ-8.1).
 func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.Decl, backend string, opts ReferenceOptions, bounds SymbolOptions, rc *referenceCache) (ReferenceResult, error) {
 	if err := ctx.Err(); err != nil {
 		return ReferenceResult{}, err
@@ -88,10 +89,21 @@ func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.D
 	}
 
 	budget := newRefBudget(bounds)
+	loadGo := func() *workspaceImporter {
+		if rc != nil {
+			return rc.goImporter(budget)
+		}
+		return loadGoWorkspace(ws, budget)
+	}
+	outlineOf := func(rel string) []outline.Decl { return outlineDecls(ctx, ws, rel) }
+	if rc != nil {
+		outlineOf = func(rel string) []outline.Decl { return rc.outlineDecls(ctx, rel) }
+	}
+
 	var sites []ReferenceSite
 	switch backend {
 	case "":
-		imp := loadGoWorkspace(ws, budget)
+		imp := loadGo()
 		sites = resolveGoReferences(imp, target)
 		switch {
 		case len(sites) > 0 || (target.Name != "" && imp.definesName(target.Name)):
@@ -102,7 +114,7 @@ func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.D
 			backend = "text"
 		}
 	case "go/types":
-		sites = resolveGoReferences(loadGoWorkspace(ws, budget), target)
+		sites = resolveGoReferences(loadGo(), target)
 	}
 
 	if backend == "go/types" {
@@ -149,7 +161,7 @@ func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.D
 	sites = filterTestSites(sites, opts.IncludeTests)
 	sortReferenceSites(sites)
 	sites, truncated := applyResultLimits(sites, clampMaxResults(opts.MaxResults))
-	attributeSites(sites, func(rel string) []outline.Decl { return outlineDecls(ctx, ws, rel) })
+	attributeSites(sites, outlineOf)
 
 	return ReferenceResult{
 		Target:          target,
