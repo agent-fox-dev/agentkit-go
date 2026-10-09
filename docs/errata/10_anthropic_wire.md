@@ -128,3 +128,16 @@ an embedder (or a test) supply credentials explicitly.
 - TS-10-16 (the constants) and TS-10-19 (omission on a model without
   thinking) passed before the encoder changed: the first checks declarations,
   and the second was already the behaviour.
+
+## 10-REQ-5: tool projection and tool choice
+
+- **The internal fields never could reach the wire.** `core.Request.Tools` is
+  `[]core.ToolWire`, which has no `OutputSchema`, `ReachableTools` or
+  `Terminating`, so TS-10-21 passed before any change; `strict: true` was the
+  only new field (TS-10-20).
+- **`tool_choice: "none"` is kept.** `core` has no forced choice to omit
+  (`ToolChoiceAuto`, `ToolChoiceNone`, unset), so TS-10-22 also passed at
+  once. `none` forbids tools rather than forcing one, and is still sent.
+- **The golden moved a task early.** `testdata/golden/request_anthropic.json`
+  gained `"strict": true` on its tool here, because the golden test would
+  otherwise fail; the golden task rewrites the fixture.

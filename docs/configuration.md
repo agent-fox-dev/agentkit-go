@@ -89,7 +89,11 @@ layer deletes the name.
 
 Requests go through the official SDK client
 (`github.com/anthropics/anthropic-sdk-go`), which owns the transport, retries
-and stream framing. `anthropic.Options`:
+and stream framing. Every tool is declared with `"strict": true`, so the API
+guarantees arguments that match its input schema; a tool's output schema,
+reachable tools and terminating flag are never sent. `tool_choice` is `auto`,
+`none` or absent: a forced choice (`any`, or a named tool) is never sent,
+because current models reject it. `anthropic.Options`:
 
 | Field | Meaning |
 |---|---|

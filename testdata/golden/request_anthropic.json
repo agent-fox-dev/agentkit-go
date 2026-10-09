@@ -84,6 +84,7 @@
           "pattern"
         ]
       },
+      "strict": true,
       "cache_control": {
         "type": "ephemeral"
       }

@@ -167,10 +167,15 @@ type imageSource struct {
 }
 
 type tool struct {
-	Name         string          `json:"name"`
-	Description  string          `json:"description,omitzero"`
-	InputSchema  json.RawMessage `json:"input_schema"`
-	CacheControl *cacheControl   `json:"cache_control,omitzero"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitzero"`
+	InputSchema json.RawMessage `json:"input_schema"`
+	// Strict is always true: the API then guarantees the model's arguments
+	// match the input schema (10-REQ-5.1). A tool's output schema, reachable
+	// tools and terminating flag are not on core.ToolWire, so they cannot
+	// reach this struct (10-REQ-5.2).
+	Strict       bool          `json:"strict"`
+	CacheControl *cacheControl `json:"cache_control,omitzero"`
 	// There is deliberately no defer_loading here. REQ-CACHE-10's Anthropic
 	// arm is ORDER alone: a tool that appeared mid-session is appended after
 	// the established ones so the cached prefix stays byte-identical, and it
@@ -311,16 +316,16 @@ func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRet
 	appendTools := func(ts []core.ToolWire) {
 		for _, tw := range ts {
 			out.Tools = append(out.Tools, tool{Name: tw.Name, Description: tw.Description,
-				InputSchema: byName[tw.Name]})
+				InputSchema: byName[tw.Name], Strict: true})
 		}
 	}
 	appendTools(split.Immediate)
 	appendTools(split.Deferred)
 
 	// ToolChoice absent is NOT auto: a provider must not invent a selection
-	// when the field is empty (REQ-TOOL-16). An explicit choice is forwarded
-	// even with no tools, which is what makes a tool-free summarization turn
-	// reliably forceable.
+	// when the field is empty (REQ-TOOL-16). A forced choice — any, or one
+	// named tool — is never sent: current models reject it with a 400
+	// (10-REQ-5.3), so only auto and none reach the wire.
 	switch req.ToolChoice {
 	case core.ToolChoiceAuto:
 		out.ToolChoice = &toolChoice{Type: "auto"}
