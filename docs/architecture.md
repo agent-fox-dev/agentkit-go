@@ -24,10 +24,10 @@ Imports between first-party packages, taken from the source (tests excluded;
 
 | Package | Imports |
 |---|---|
-| `core` | `jsonx`, `schema` |
-| `schema` | `jsonx` |
+| `core` | `schema` |
+| `schema` | nothing first-party |
 | `outline` | nothing first-party; `github.com/tree-sitter/go-tree-sitter` and grammar modules in `//go:build cgo` files |
-| `jsonx`, `wire` | nothing first-party |
+| `wire` | nothing first-party |
 | `catalog`, `guard` | `core` |
 | `provider` | `core`, `schema`, `wire` |
 | `provider/anthropic` | `core`, `provider`, `wire`; plus `github.com/anthropics/anthropic-sdk-go`, `golang.org/x/oauth2` (Vertex) and `github.com/aws/aws-sdk-go-v2` (Bedrock) |
@@ -66,7 +66,6 @@ Rules that follow from it:
 | `prompt` | Assembly of the system prompt (`Build(system, tools)`): the base prompt, then the active tools' guidelines, deduplicated in first-seen order. |
 | `mcp` | AgentKit's MCP client over the official MCP Go SDK, which owns the protocol and version negotiation: the tool pool (qualified names, collision checks, schema conversion, `${VAR}` resolution), subprocess spawning with process-group kill and a reduced environment, respawn, result cap, call limit and sampling gate; and strict `wire` checks at the stdio and HTTP-response boundaries. There is no server. |
 | `wire` | Bounded strict parser for untrusted bytes, on `encoding/json/jsontext`: a token loop adds the size, depth, container-length and node bounds to jsontext's grammar and duplicate-name rejection. Frame readers. |
-| `jsonx` | Order-preserving JSON. |
 | `schema` | JSON Schema value and typed combinators. |
 | `internal/toml` | Lenient TOML reader for config: `github.com/pelletier/go-toml/v2/unstable` (pinned) parses; a small adapter folds it into an ordered `Table` with line numbers and "duplicate warns, last wins". |
 | `internal/diag` | The shared non-fatal `Diagnostic`. |

@@ -246,7 +246,7 @@
       "done_when": [
         "jsonx package directory is deleted and no source files import jsonx"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,

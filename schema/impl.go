@@ -163,11 +163,7 @@ func marshalSchema(s *Schema) ([]byte, error) {
 	}
 	// Extra last, in authored order.
 	for _, m := range s.Extra {
-		raw, err := m.Value.MarshalJSON()
-		if err != nil {
-			return nil, err
-		}
-		kv(m.Key, raw)
+		kv(m.Key, m.Value)
 	}
 	b.WriteByte('}')
 	return b.Bytes(), nil

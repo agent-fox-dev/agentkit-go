@@ -129,3 +129,13 @@ why.
   `SessionSnapshot` and `RetryAfterError` had no user left. `DefaultMaxTokens`
   lived in `config.go`; it is `agentkit.DefaultMaxTokens` now, the driver
   being its only reader.
+
+## 12-REQ-6: what replaced jsonx
+
+- `schema.Schema.Extra` was a `jsonx.OrderedObject`. It is now `schema.Extra`,
+  a slice of `schema.Keyword{Key, Value json.RawMessage}` in authored order,
+  with `Get(key)`; `WithExtra` panics on a value JSON cannot carry.
+- The argument pipeline and the schema validator left `jsonx` in task 2.
+  `difftest/canon.go`, named in the task's `touches`, no longer exists.
+- TS-12-15..17 live in `core/size_test.go` beside the other repository
+  checks, and find the module root with `go list -m`.

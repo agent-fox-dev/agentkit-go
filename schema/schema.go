@@ -6,8 +6,7 @@ package schema
 import (
 	"encoding/json"
 	"errors"
-
-	"github.com/agent-fox-dev/agentkit-go/jsonx"
+	"fmt"
 )
 
 type Type string
@@ -77,7 +76,52 @@ type Schema struct {
 	// reflection cannot express. It is also how a forbidden keyword such as
 	// $ref sneaks past a strict rewrite that only inspects modelled fields,
 	// which is why StrictSubset scans it.
-	Extra jsonx.OrderedObject
+	Extra Extra
+}
+
+// Keyword is one passthrough keyword: its name and its value as JSON.
+type Keyword struct {
+	Key   string
+	Value json.RawMessage
+}
+
+// Extra is a schema's passthrough keywords, in authored order.
+type Extra []Keyword
+
+// Get returns the value of key, decoded, and whether it is present.
+func (e Extra) Get(key string) (any, bool) {
+	for _, k := range e {
+		if k.Key == key {
+			var v any
+			if err := json.Unmarshal(k.Value, &v); err != nil {
+				return nil, false
+			}
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+// set replaces key's value in place, or appends it.
+func (e Extra) set(key string, raw json.RawMessage) Extra {
+	for i := range e {
+		if e[i].Key == key {
+			e[i].Value = raw
+			return e
+		}
+	}
+	return append(e, Keyword{Key: key, Value: raw})
+}
+
+func (e Extra) clone() Extra {
+	if e == nil {
+		return nil
+	}
+	out := make(Extra, len(e))
+	for i, k := range e {
+		out[i] = Keyword{Key: k.Key, Value: append(json.RawMessage(nil), k.Value...)}
+	}
+	return out
 }
 
 type AdditionalProperties struct {
@@ -170,8 +214,15 @@ func (s *Schema) Closed() *Schema {
 	s.AdditionalProperties = &AdditionalProperties{Allowed: false}
 	return s
 }
+
+// WithExtra sets a passthrough keyword. It panics on a value JSON cannot
+// carry: a schema is the caller's own code, and NaN in it is a bug.
 func (s *Schema) WithExtra(key string, v any) *Schema {
-	s.Extra.Set(key, jsonx.OV(v))
+	raw, err := json.Marshal(v)
+	if err != nil {
+		panic(fmt.Sprintf("schema: WithExtra(%q): %v", key, err))
+	}
+	s.Extra = s.Extra.set(key, raw)
 	return s
 }
 
@@ -228,7 +279,7 @@ func (s *Schema) Clone() *Schema {
 	out.PropertyOrder = append([]string(nil), s.PropertyOrder...)
 	out.Required = append([]string(nil), s.Required...)
 	out.Items = s.Items.Clone()
-	out.Extra = s.Extra.Clone()
+	out.Extra = s.Extra.clone()
 	for _, alts := range []struct{ src, dst *[]*Schema }{
 		{&s.AnyOf, &out.AnyOf}, {&s.OneOf, &out.OneOf}, {&s.AllOf, &out.AllOf},
 	} {

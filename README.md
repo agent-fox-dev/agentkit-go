@@ -83,7 +83,6 @@ prints four behaviours the specification originally got wrong.
 | `provider/anthropic` | The Anthropic Messages wire (direct and Vertex), encode and decode, with send-time transcript repair. |
 | `provider/faux` | A scripted provider for offline tests and demos. |
 | `wire` | Bounded, strict parser for bytes AgentKit did not produce, on the standard library's `encoding/json/jsontext`: size, depth, container and node bounds, duplicate-key rejection; plus framed readers. |
-| `jsonx` | Order-preserving JSON. Decodes once, marshals in slice order at every depth. |
 | `schema` | Structured JSON Schema value + typed combinators. No reflection, no codegen. |
 | `codesearch` | Separate module: zoekt-backed `code_search` tool with ranked, file-grouped results, lazy index build, dirty-file overlay and `find_symbol` acceleration. Opt in with `tools.Options{Index: idx}`. |
 

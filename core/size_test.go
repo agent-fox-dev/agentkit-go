@@ -2,6 +2,8 @@ package core
 
 import (
 	"bufio"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -108,11 +110,92 @@ func TestLineBudgets_TS12_14(t *testing.T) {
 	if n := codeLines(t, ".", false); n > 1600 {
 		t.Errorf("core has %d lines of code, over 1,600", n)
 	}
-	root, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+	if n := codeLines(t, moduleRoot(t), true); n > 20000 {
+		t.Errorf("the root module has %d lines of code, over 20,000", n)
+	}
+}
+
+// moduleRoot is the root module's directory.
+func moduleRoot(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := codeLines(t, strings.TrimSpace(string(root)), true); n > 20000 {
-		t.Errorf("the root module has %d lines of code, over 20,000", n)
+	return strings.TrimSpace(string(out))
+}
+
+// importsOf returns the import paths of every Go file under dir (nested
+// modules included when nested is true).
+func importsOf(t *testing.T, dir string) map[string][]string {
+	t.Helper()
+	out := map[string][]string{}
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "testdata" || (strings.HasPrefix(d.Name(), ".") && path != dir) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		f, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			return err
+		}
+		for _, imp := range f.Imports {
+			out[path] = append(out[path], strings.Trim(imp.Path.Value, `"`))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func isJSONX(path string) bool {
+	// The legacy path is split so the repository's own legacy-path check
+	// does not match this file.
+	return path == "github.com/agent-fox-dev/agentkit-go/jsonx" || path == "github.com/"+"agentfox/agentkit-go/jsonx"
+}
+
+// TS-12-15: the jsonx package is gone from the repository.
+func TestJSONXIsDeleted_TS12_15(t *testing.T) {
+	root := moduleRoot(t)
+	for _, p := range []string{"jsonx", "jsonx/ordered.go", "jsonx/ordered_probe_test.go"} {
+		if _, err := os.Stat(filepath.Join(root, p)); err == nil {
+			t.Errorf("%s still exists", p)
+		}
+	}
+}
+
+// TS-12-16: no file in core, schema, tools or mcp imports jsonx.
+func TestNoJSONXImportsInTheCorePackages_TS12_16(t *testing.T) {
+	root := moduleRoot(t)
+	for _, pkg := range []string{"core", "schema", "tools", "mcp"} {
+		for file, imps := range importsOf(t, filepath.Join(root, pkg)) {
+			for _, imp := range imps {
+				if isJSONX(imp) {
+					t.Errorf("%s imports %s", file, imp)
+				}
+			}
+		}
+	}
+}
+
+// TS-12-17: no file anywhere in the repository imports jsonx.
+func TestNoJSONXImportsAnywhere_TS12_17(t *testing.T) {
+	for file, imps := range importsOf(t, moduleRoot(t)) {
+		for _, imp := range imps {
+			if isJSONX(imp) {
+				t.Errorf("%s imports %s", file, imp)
+			}
+		}
 	}
 }
