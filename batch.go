@@ -89,6 +89,10 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	votes := make([]bool, n)
 	thunks := make([]func(), 0, n)
 
+	// env is what a wrapper's nested calls run with (07-REQ-4.3): the same
+	// config copy, stream and reporter as this batch.
+	env := &nestedEnv{a: a, cfg: cfg, s: s, assistant: assistant, turnCount: turnCount, report: report}
+
 	// batchMu is BATCH-SCOPED: created here, acquired by nothing else, and
 	// a.mu is never acquired while it is held.
 	//
@@ -247,6 +251,9 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				out    core.ToolResult
 				traced bool
 			)
+			// A tool that reaches other tools runs with a NestedCaller bound
+			// to this call on its context.
+			hctx, nested := env.withCaller(ctx, c, tool)
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
@@ -256,7 +263,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				_ = tracer.StartSpan("agentkit.tool_call", func(sp core.Span) error {
 					defer sp.End()
 					traced = true
-					out = invokeHandler(ctx, tool, prepared)
+					out = invokeHandler(hctx, tool, prepared)
 					sp.SetAttributes(map[string]any{
 						"tool_name":   c.Name,
 						"tool_use_id": c.ID,
@@ -270,7 +277,13 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				})
 			}()
 			if !traced {
-				out = invokeHandler(ctx, tool, prepared)
+				out = invokeHandler(hctx, tool, prepared)
+			}
+			// An interceptor that voted to terminate during one of this
+			// wrapper's nested calls ends the run, whatever the wrapper
+			// returned (07-REQ-5.3). AfterToolCall below may still override.
+			if nested != nil && nested.terminated.Load() {
+				out.Terminate = true
 			}
 			a.audit(core.AuditEvent{
 				Kind: core.AuditToolCall, SessionID: auditSession,

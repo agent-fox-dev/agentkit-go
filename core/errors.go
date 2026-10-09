@@ -16,6 +16,16 @@ var (
 	ErrAborted       = errors.New("agentkit: run aborted")
 	ErrStreamOverrun = errors.New("agentkit: stream consumer overrun")
 
+	// ErrNoNestedCaller: CallNested was used where no NestedCaller is
+	// attached — a tool that declares no ReachableTools, or one called
+	// outside an agent run.
+	ErrNoNestedCaller = errors.New(
+		"agentkit: no nested caller on the context; only a tool that declares ReachableTools can call other tools")
+	// ErrTerminated: an interceptor voted to end the run during a nested
+	// call. The wrapper should stop and return; its result carries the vote
+	// to the batch whatever it returns.
+	ErrTerminated = errors.New("agentkit: run terminated by an interceptor during a nested call")
+
 	// Raised by the loop / session layer.
 	ErrNotContinuable = errors.New("agentkit: transcript is not continuable")
 	ErrSessionExists  = errors.New("agentkit: session log already exists at path")

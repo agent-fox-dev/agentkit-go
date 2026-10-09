@@ -132,7 +132,7 @@
       "done_when": [
         "`go test ./... -run 'TestNested(Caller|Dispatch|Interceptor)'` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,

@@ -283,8 +283,13 @@ type ToolPolicy struct {
 type BeforeToolCallContext struct {
 	ToolName  string
 	ToolUseID string
-	Tool      Tool
-	Arguments map[string]any
+	// ParentToolUseID and ParentToolName identify the wrapper call that made
+	// this call through CallNested. Both are empty for a call the model made
+	// directly (07-REQ-5.1).
+	ParentToolUseID string
+	ParentToolName  string
+	Tool            Tool
+	Arguments       map[string]any
 	// RawInput is the model's own bytes, key order intact (REQ-TOOL-12).
 	RawInput  json.RawMessage
 	Assistant *AssistantMessage
@@ -306,9 +311,12 @@ type BeforeToolCallDecision struct {
 type AfterToolCallContext struct {
 	ToolName  string
 	ToolUseID string
-	Arguments map[string]any
-	Result    *ToolResultMessage // mutable in place
-	Elapsed   time.Duration
+	// ParentToolUseID and ParentToolName are as in BeforeToolCallContext.
+	ParentToolUseID string
+	ParentToolName  string
+	Arguments       map[string]any
+	Result          *ToolResultMessage // mutable in place
+	Elapsed         time.Duration
 	// ToolResult is the handler's result as returned, after panic and
 	// Handler-error conversion, passed by value. It is read-only: changing
 	// it (or anything reached through its Metadata pointer) has no effect
@@ -363,4 +371,40 @@ func ReachableTools(tools []Tool) []Tool {
 	}
 	walk(tools)
 	return out
+}
+
+// ------------------------------------------------------------ nested calls
+
+// NestedCaller runs tool calls on behalf of a wrapper tool — one that
+// declares ReachableTools — through the same pipeline as a call the model
+// makes: argument preparation and validation, BeforeToolCall, plugin veto,
+// the handler, its span and audit record, AfterToolCall and the execution
+// events (07-REQ-4.1).
+//
+// Call returns one result per call, in the order of calls. A call that fails
+// — unknown to the wrapper, invalid, blocked, aborted, a handler error — is
+// a result with OK false, never a Go error. The error is for the wrapper as a
+// whole: ErrTerminated when an interceptor voted to end the run.
+type NestedCaller interface {
+	Call(ctx context.Context, calls ...ToolUseBlock) ([]ToolResult, error)
+}
+
+type nestedCallerKey struct{}
+
+// WithNestedCaller attaches c to ctx. The agent does this for every tool
+// that declares ReachableTools before calling it, so a tool implementation
+// never constructs a NestedCaller itself.
+func WithNestedCaller(ctx context.Context, c NestedCaller) context.Context {
+	return context.WithValue(ctx, nestedCallerKey{}, c)
+}
+
+// CallNested runs calls through the NestedCaller on ctx. With none attached
+// — the tool declares no ReachableTools, or runs outside an agent — it runs
+// nothing and returns ErrNoNestedCaller (07-REQ-4.2).
+func CallNested(ctx context.Context, calls ...ToolUseBlock) ([]ToolResult, error) {
+	c, ok := ctx.Value(nestedCallerKey{}).(NestedCaller)
+	if !ok || c == nil {
+		return nil, ErrNoNestedCaller
+	}
+	return c.Call(ctx, calls...)
 }
