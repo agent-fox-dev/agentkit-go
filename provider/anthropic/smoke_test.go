@@ -62,8 +62,8 @@ func TestSmokeStreamedToolInputReplaysVerbatim_TS10_36(t *testing.T) {
 				Body:   io.NopCloser(strings.NewReader(stream))}, nil
 		}))
 	model, _ := catalog.Lookup("claude-opus-5-5")
-	msg := anthropic.Provider(anthropic.Options{Client: &client}).Stream(context.Background(), &model,
-		core.Request{Messages: userTurn()}, core.ProviderStreamOptions{}).Result()
+	msg := core.EventStreamOf(anthropic.Provider(model, anthropic.Options{Client: &client}).Stream(
+		context.Background(), core.Request{Messages: userTurn()})).Result()
 	if msg == nil || msg.StopReason != core.StopReasonToolUse {
 		t.Fatalf("streamed message = %+v", msg)
 	}

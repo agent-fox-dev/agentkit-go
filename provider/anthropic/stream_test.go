@@ -64,7 +64,7 @@ func run(t *testing.T, m *core.Model, req core.Request, opts anthropic.Options,
 		return &http.Response{StatusCode: status, Header: http.Header{},
 			Body: io.NopCloser(strings.NewReader(body))}, nil
 	})
-	req.Options.Transport = rt
+	opts.Transport = rt
 	if opts.Getenv == nil {
 		opts.Getenv = func(k string) string {
 			if k == "ANTHROPIC_API_KEY" {
@@ -74,12 +74,17 @@ func run(t *testing.T, m *core.Model, req core.Request, opts anthropic.Options,
 		}
 	}
 
-	s := anthropic.Provider(opts).Stream(context.Background(), m, req, core.ProviderStreamOptions{})
+	s := stream(anthropic.Provider(*m, opts), context.Background(), req)
 	var events []core.Event
 	for e := range s.Events() {
 		events = append(events, e)
 	}
 	return s.Result(), events, seen
+}
+
+// stream sends req through p and adapts its channel to an EventStream.
+func stream(p core.ProviderClient, ctx context.Context, req core.Request) *core.EventStream {
+	return core.EventStreamOf(p.Stream(ctx, req))
 }
 
 func names(events []core.Event) []string {
@@ -145,7 +150,7 @@ func TestTheEventOrderMatchesFaux(t *testing.T) {
 	call := faux.FauxToolCall("toolu_1", "edit_file", toolArgs)
 	fp := faux.New(faux.FauxAssistantMessage(core.StopReasonToolUse,
 		faux.FauxText("Hello"), call))
-	fs := fp.Stream(context.Background(), faux.Model(), core.Request{}, core.ProviderStreamOptions{})
+	fs := stream(fp, context.Background(), core.Request{})
 	var fauxEvents []core.Event
 	for e := range fs.Events() {
 		fauxEvents = append(fauxEvents, e)
@@ -427,10 +432,9 @@ func TestRequestHeadersAndAuth(t *testing.T) {
 	m := testModel()
 	gwKey := "gw-secret"
 
-	req := core.Request{Options: core.RequestOptions{
+	_, _, sent := run(t, m, core.Request{}, anthropic.Options{
 		Headers: map[string]*string{"x-api-key": nil, "x-gateway-key": &gwKey},
-	}}
-	_, _, sent := run(t, m, req, anthropic.Options{}, 200, streamFixture())
+	}, 200, streamFixture())
 	if sent == nil {
 		t.Fatal("no request was made")
 	}
@@ -438,7 +442,7 @@ func TestRequestHeadersAndAuth(t *testing.T) {
 		t.Fatalf("anthropic-version = %q, want %q", got, anthropic.APIVersion)
 	}
 	if got := sent.Header.Get("x-api-key"); got != "" {
-		t.Fatalf("x-api-key = %q; a present-nil in RequestOptions.Headers must SUPPRESS "+
+		t.Fatalf("x-api-key = %q; a present-nil in Options.Headers must SUPPRESS "+
 			"the provider default (REQ-AUTH-02) — that is how a gateway turns off the "+
 			"upstream credential", got)
 	}
@@ -462,15 +466,14 @@ func TestAPIKeyIsSentWhenNotSuppressed(t *testing.T) {
 // canonical types.
 func TestOnPayloadCanRewriteTheEncodedRequest(t *testing.T) {
 	var captured map[string]any
-	req := core.Request{Options: core.RequestOptions{
+	_, _, sent := run(t, testModel(), core.Request{}, anthropic.Options{
 		OnPayload: func(p any, _ *core.Model) (any, error) {
 			b, _ := json.Marshal(p)
 			_ = json.Unmarshal(b, &captured)
 			captured["custom_vendor_field"] = true
 			return captured, nil
 		},
-	}}
-	_, _, sent := run(t, testModel(), req, anthropic.Options{}, 200, streamFixture())
+	}, 200, streamFixture())
 
 	body, _ := io.ReadAll(sent.Body)
 	if !strings.Contains(string(body), "custom_vendor_field") {
@@ -480,21 +483,20 @@ func TestOnPayloadCanRewriteTheEncodedRequest(t *testing.T) {
 
 func TestOnPayloadErrorPropagatesUnmodified(t *testing.T) {
 	sentinel := fmt.Errorf("policy says no")
-	req := core.Request{Options: core.RequestOptions{
+	s := stream(anthropic.Provider(*testModel(), anthropic.Options{
+		Getenv: func(k string) string {
+			if k == "ANTHROPIC_API_KEY" {
+				return "sk-ant-test-key-abcdefgh"
+			}
+			return ""
+		},
 		OnPayload: func(any, *core.Model) (any, error) { return nil, sentinel },
-	}}
-	req.Options.Transport = rtFunc(func(*http.Request) (*http.Response, error) {
-		t.Fatal("no request may be sent after OnPayload refuses")
-		return nil, nil
-	})
-	s := anthropic.Provider(anthropic.Options{Getenv: func(k string) string {
-		if k == "ANTHROPIC_API_KEY" {
-			return "sk-ant-test-key-abcdefgh"
-		}
-		return ""
-	}}).Stream(
-		context.Background(), testModel(), req, core.ProviderStreamOptions{})
-	if err := s.Err(); err != sentinel {
+		Transport: rtFunc(func(*http.Request) (*http.Response, error) {
+			t.Fatal("no request may be sent after OnPayload refuses")
+			return nil, nil
+		}),
+	}), context.Background(), core.Request{})
+	if err := s.Wait().Err; err != sentinel {
 		t.Fatalf("err = %v, want the caller's own error UNMODIFIED so errors.Is works "+
 			"on their sentinel (REQ-PROV-18)", err)
 	}
@@ -729,12 +731,11 @@ func captureBody(t *testing.T, m *core.Model, effort core.Effort) map[string]any
 func captureRequest(t *testing.T, m *core.Model, req core.Request) map[string]any {
 	t.Helper()
 	var got map[string]any
-	req.Options.OnPayload = func(p any, _ *core.Model) (any, error) {
+	run(t, m, req, anthropic.Options{OnPayload: func(p any, _ *core.Model) (any, error) {
 		b, _ := json.Marshal(p)
 		_ = json.Unmarshal(b, &got)
 		return nil, nil
-	}
-	run(t, m, req, anthropic.Options{}, 200, streamFixture())
+	}}, 200, streamFixture())
 	return got
 }
 
@@ -1121,15 +1122,15 @@ func TestASubMinimumBudgetOmitsThinking(t *testing.T) {
 // and is never retried (REQ-PROV-14), where an error may be.
 func TestCancellationProducesAnAbortedTurnNotAnError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	req := core.Request{Options: core.RequestOptions{
+	// Cancelled while the request is in flight: a context already done is
+	// refused by Stream itself.
+	s := stream(anthropic.Provider(*testModel(), anthropic.Options{
+		Getenv: func(string) string { return "k" },
 		Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+			cancel()
 			return nil, r.Context().Err()
 		}),
-	}}
-	s := anthropic.Provider(anthropic.Options{
-		Getenv: func(string) string { return "k" },
-	}).Stream(ctx, testModel(), req, core.ProviderStreamOptions{})
+	}), ctx, core.Request{})
 
 	msg := s.Result()
 	if msg.StopReason != core.StopReasonAborted {
@@ -1138,19 +1139,16 @@ func TestCancellationProducesAnAbortedTurnNotAnError(t *testing.T) {
 }
 
 func TestPerRequestTimeoutIsIndependentOfTheCallerContext(t *testing.T) {
-	one := 1
-	req := core.Request{Options: core.RequestOptions{
-		TimeoutMs: &one,
-		Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
-			<-r.Context().Done()
-			return nil, r.Context().Err()
-		}),
-	}}
 	done := make(chan *core.AssistantMessage, 1)
 	go func() {
-		done <- anthropic.Provider(anthropic.Options{
-			Getenv: func(string) string { return "k" },
-		}).Stream(context.Background(), testModel(), req, core.ProviderStreamOptions{}).Result()
+		done <- stream(anthropic.Provider(*testModel(), anthropic.Options{
+			Getenv:  func(string) string { return "k" },
+			Timeout: time.Millisecond,
+			Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+				<-r.Context().Done()
+				return nil, r.Context().Err()
+			}),
+		}), context.Background(), core.Request{}).Result()
 	}()
 
 	select {
@@ -1310,14 +1308,13 @@ func TestStreamingDoesNotWaitForTheConsumer_TS10_28(t *testing.T) {
 		return &http.Response{StatusCode: 200, Header: http.Header{},
 			Body: io.NopCloser(strings.NewReader(streamFixture()))}, nil
 	})
-	req := core.Request{Options: core.RequestOptions{Transport: rt}}
-	p := anthropic.Provider(anthropic.Options{Getenv: func(k string) string {
+	p := anthropic.Provider(*testModel(), anthropic.Options{Getenv: func(k string) string {
 		if k == "ANTHROPIC_API_KEY" {
 			return "sk-ant-test"
 		}
 		return ""
-	}})
-	s := p.Stream(context.Background(), testModel(), req, core.ProviderStreamOptions{})
+	}, Transport: rt})
+	s := stream(p, context.Background(), core.Request{})
 	done := make(chan *core.AssistantMessage, 1)
 	go func() { done <- s.Result() }()
 	select {

@@ -152,7 +152,7 @@ func TestSmokeNestedInterceptorTerminates_TS07_37(t *testing.T) {
 // refused at construction, before any request to the model.
 func TestSmokeNestedUnguardedShellRefused_TS07_38(t *testing.T) {
 	s := &scripted{}
-	_, err := New(Config{Provider: core.ClientFunc(s.stream), Model: testModelID, Tools: []core.Tool{shellWrapper()}})
+	_, err := New(Config{Provider: streamFunc(s.stream), Model: testModelID, Tools: []core.Tool{shellWrapper()}})
 	if !errors.Is(err, core.ErrUnguardedExecute) || !strings.Contains(err.Error(), `wrapper "code_mode" reached shell tool "execute"`) {
 		t.Fatalf("New err = %v", err)
 	}

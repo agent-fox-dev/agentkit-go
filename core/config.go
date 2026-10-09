@@ -111,13 +111,7 @@ type AgentConfig struct {
 	// switch disables every attribution header.
 	Attribution    *bool
 	CacheRetention CacheRetention
-	RequestOptions RequestOptions
 	StreamOptions  StreamOptions
-
-	// Providers is the registry (REQ-PROV-09). Nil means the first-party
-	// defaults, supplied by a pure function at construction — there is no
-	// package-level registry and no init() to populate one (NFR-SEC-05).
-	Providers ProviderRegistry
 }
 
 // Middleware is Axis 1: it wraps the entire model call and operates on

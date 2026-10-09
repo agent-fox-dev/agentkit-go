@@ -134,7 +134,7 @@
         "ProviderClient defines single Stream method returning (<-chan StreamEvent, error)",
         "StreamEvent and Request match simplified canonical structs without registry or middleware types"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,

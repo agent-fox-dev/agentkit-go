@@ -34,11 +34,6 @@ var (
 	// violation (REQ-SESS-02).
 	ErrSessionNotEmpty = errors.New(
 		"agentkit: session store is not empty; resume with LoadSession + NewAgentFromSession")
-	// ErrDeferredUnsupported closes OQ-11's gap: under REQ-LOOP-01 an
-	// unrecognized reason with no tool calls exits the inner loop normally, so
-	// a deferred response would become "an empty completion" — the exact
-	// failure reserving the constant is supposed to prevent.
-	ErrDeferredUnsupported = errors.New("agentkit: provider returned a deferred response; v1 has no poller")
 
 	// ErrUnguardedExecute is OQ-8's resolution: a run whose tool set carries a
 	// shell tool (execute, run_command, powershell) and whose config has no

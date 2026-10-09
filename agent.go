@@ -147,11 +147,11 @@ func New(cfg Config) (*Agent, error) {
 
 	// Provider, when set, is the dispatch path; the client is only the
 	// default for it.
+	m, _ := catalog.Lookup(cfg.Model)
 	client := cfg.Provider
 	if client == nil {
-		client = core.ClientFunc(anthropic.Provider(anthropic.Options{Client: cfg.Client}).Stream)
+		client = anthropic.Provider(m, anthropic.Options{Client: cfg.Client})
 	}
-	m, _ := catalog.Lookup(cfg.Model)
 	cfg.Tools = append([]core.Tool(nil), cfg.Tools...)
 	cfg.Prefix = append([]core.Message(nil), cfg.Prefix...)
 	a := &Agent{cfg: cfg, model: m, client: client, tools: resolved}

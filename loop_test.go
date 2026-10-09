@@ -42,7 +42,7 @@ type scripted struct {
 	systems [][]core.ContentBlock
 }
 
-func (s *scripted) stream(ctx context.Context, m *core.Model, req core.Request, _ core.ProviderStreamOptions) *core.EventStream {
+func (s *scripted) stream(ctx context.Context, req core.Request) *core.EventStream {
 	st := core.NewEventStream(core.StreamOptions{})
 	s.mu.Lock()
 	i := s.calls
@@ -60,13 +60,20 @@ func (s *scripted) stream(ctx context.Context, m *core.Model, req core.Request, 
 	}
 	s.mu.Unlock()
 
-	msg.Model = m.ID
 	go func() {
 		st.Push(core.MessageStartEvent{Message: msg})
 		st.Push(core.MessageEndEvent{Message: msg})
 		st.End(core.StreamResult{Message: &msg})
 	}()
 	return st
+}
+
+// streamFunc adapts a test double that produces an EventStream to
+// core.ProviderClient.
+type streamFunc func(ctx context.Context, req core.Request) *core.EventStream
+
+func (f streamFunc) Stream(ctx context.Context, req core.Request) (<-chan core.StreamEvent, error) {
+	return core.StreamChannel(f(ctx, req)), nil
 }
 
 func (s *scripted) turnsRun() int { s.mu.Lock(); defer s.mu.Unlock(); return s.calls }
@@ -90,7 +97,7 @@ const testModelID = "test-model"
 func newTestAgent(t *testing.T, s *scripted, mutate func(*Config), tools ...core.Tool) *Agent {
 	t.Helper()
 	cfg := Config{
-		Provider: core.ClientFunc(s.stream),
+		Provider: streamFunc(s.stream),
 		Model:    testModelID,
 		Tools:    tools,
 	}
@@ -1281,13 +1288,12 @@ func TestSmokeTruncationRecovery_TS11_46(t *testing.T) {
 // sent (at the estimator's own rate), or nothing when silent.
 func sizedProvider(turns int, silent bool, sent *[]core.Request) core.ProviderClient {
 	var mu sync.Mutex
-	return core.ClientFunc(func(_ context.Context, m *core.Model, req core.Request, _ core.ProviderStreamOptions) *core.EventStream {
+	return streamFunc(func(_ context.Context, req core.Request) *core.EventStream {
 		mu.Lock()
 		i := len(*sent)
 		*sent = append(*sent, req)
 		mu.Unlock()
-		msg := core.AssistantMessage{StopReason: core.StopReasonStop, Content: core.Content{core.TextBlock{Text: "done"}},
-			Model: m.ID}
+		msg := core.AssistantMessage{StopReason: core.StopReasonStop, Content: core.Content{core.TextBlock{Text: "done"}}}
 		if i < turns {
 			msg.StopReason = core.StopReasonToolUse
 			msg.Content = core.Content{faux.FauxToolCall(fmt.Sprintf("c%d", i), "toolA", `{}`)}

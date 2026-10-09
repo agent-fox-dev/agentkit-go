@@ -459,8 +459,7 @@ func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.
 				ps = core.ErrorStream(&msg, err)
 			}
 		}()
-		m := a.model
-		ps = a.client.Stream(ctx, &m, req, core.ProviderStreamOptions{})
+		ps = core.EventStreamOf(a.client.Stream(ctx, req))
 	}()
 	// Forward provider events onto the agent stream. The provider stream is
 	// unbounded and non-blocking, so this cannot stall the model call.
@@ -476,6 +475,13 @@ func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.
 			err = errors.New("provider ended the stream with no assistant message")
 		}
 		return a.errorMessage(err)
+	}
+	// A provider that did not say which model answered answered for this
+	// agent's.
+	if msg.Model == "" {
+		m := *msg
+		m.Model = a.model.ID
+		return m
 	}
 	return *msg
 }

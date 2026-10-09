@@ -17,12 +17,6 @@ const (
 	StopReasonRefusal      StopReason = "refusal"
 	StopReasonError        StopReason = "error"
 	StopReasonAborted      StopReason = "aborted"
-	// StopReasonDeferred is reserved by REQ-PROV-19/OQ-11. No v1 provider
-	// emits it. The loop carries an explicit branch that returns
-	// ErrDeferredUnsupported rather than treating it as an empty completion,
-	// because reserving the constant alone reproduces the exact failure OQ-11
-	// says reserving it prevents.
-	StopReasonDeferred StopReason = "deferred"
 )
 
 // ShortCircuits reports the two reasons that terminate a turn BEFORE tool
@@ -53,12 +47,6 @@ const (
 	// RunStopRefusal: the run ended on a model's refusal (StopReasonRefusal
 	// with no tool calls). Run also returns an error wrapping ErrRefusal.
 	RunStopRefusal RunStopReason = "refusal"
-	// RunStopDeferred: the provider accepted a background submission and the
-	// run ended holding a receipt rather than an answer (REQ-PROV-19). It is
-	// a CLEAN end, not an error — the handle is on the last assistant message
-	// and in the session log, and the embedder redeems it when it chooses
-	// (OQ-11 ships the handle and no poller).
-	RunStopDeferred RunStopReason = "deferred"
 )
 
 // ExtractToolUse is the continuation predicate of REQ-LOOP-01, by name. It

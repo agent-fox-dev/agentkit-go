@@ -24,7 +24,7 @@ type mdScripted struct {
 	calls int
 }
 
-func (s *mdScripted) stream(_ context.Context, m *core.Model, req core.Request, _ core.ProviderStreamOptions) *core.EventStream {
+func (s *mdScripted) stream(_ context.Context, req core.Request) *core.EventStream {
 	st := core.NewEventStream(core.StreamOptions{})
 	s.mu.Lock()
 	i := s.calls
@@ -39,7 +39,6 @@ func (s *mdScripted) stream(_ context.Context, m *core.Model, req core.Request, 
 		}
 	}
 	s.mu.Unlock()
-	msg.Model = m.ID
 	go func() {
 		st.Push(core.MessageStartEvent{Message: msg})
 		st.Push(core.MessageEndEvent{Message: msg})
@@ -64,7 +63,7 @@ func mdAssistantWithTools(reason core.StopReason, blocks ...core.ContentBlock) c
 func mdNewTestAgent(t *testing.T, s *mdScripted, mutate func(*agentkit.Config), tools ...core.Tool) *agentkit.Agent {
 	t.Helper()
 	cfg := agentkit.Config{
-		Provider: core.ClientFunc(s.stream),
+		Provider: streamFunc(s.stream),
 		Model:    "md-test-model",
 		MaxTurns: 10,
 		Tools:    tools,
@@ -712,4 +711,12 @@ func TestMetadataReachesEveryObserver_TS04_40(t *testing.T) {
 	// 4. RunResult.Messages
 	rmsg := mdFindToolResult(t, res.Messages, "c1")
 	checkMD("RunResult", rmsg.Metadata)
+}
+
+// streamFunc adapts a test double that produces an EventStream to
+// core.ProviderClient.
+type streamFunc func(ctx context.Context, req core.Request) *core.EventStream
+
+func (f streamFunc) Stream(ctx context.Context, req core.Request) (<-chan core.StreamEvent, error) {
+	return core.StreamChannel(f(ctx, req)), nil
 }

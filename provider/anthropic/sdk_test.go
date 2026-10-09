@@ -32,10 +32,10 @@ func TestTheProviderDelegatesToTheSDKClient_TS10_3(t *testing.T) {
 				Body:   io.NopCloser(strings.NewReader(streamFixture()))}, nil
 		}),
 	)
-	p := anthropic.Provider(anthropic.Options{Client: &client})
-	s := p.Stream(context.Background(), testModel(), core.Request{
+	p := anthropic.Provider(*testModel(), anthropic.Options{Client: &client})
+	s := stream(p, context.Background(), core.Request{
 		Messages: core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}},
-	}, core.ProviderStreamOptions{})
+	})
 	for range s.Events() {
 	}
 	msg := s.Result()

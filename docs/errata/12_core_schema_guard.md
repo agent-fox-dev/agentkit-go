@@ -48,3 +48,36 @@ why.
   used to write the literal verbatim. The issue 87 test now expects `-1500`.
 - TS-12-4 and TS-12-6 passed before the change: unmodified bytes and the
   validation error were already the pipeline's behaviour.
+
+## 12-REQ-3: the channel seam, and where the request options went
+
+- **The provider is built for its model.** `Request` carries no model, so
+  `anthropic.Provider(model, opts)` binds one; `faux.Provider` stamps
+  `ModelID` when set, and the driver fills an unstamped message's `Model`
+  with its own.
+- **`Request.Prefix` stays.** The spec's `Request` omits it, but spec 11's
+  `Config.Prefix` and its cache breakpoint travel on it.
+- **The per-request options moved to the provider.** `RequestOptions`
+  (headers, timeout, environment override, transport, `OnPayload`,
+  `OnResponse`, cache retention, max retries) is gone with
+  `ProviderStreamOptions` (`Warnf`, cache retention); the fields the
+  Anthropic provider reads are now on `anthropic.Options`. `SessionID`,
+  `StreamFn` and `MaxRetryDelayMs` were not read and are gone.
+- **Deferred submission is gone**: `DeferredRequest`, `DeferredHandle`,
+  `DeferredFunc`, `StopReasonDeferred`, `RunStopDeferred` and
+  `ErrDeferredUnsupported` had no producer.
+- **The stream contract.** The last `MessageEndEvent` on the channel carries
+  the turn's message; a failure sets `Err` on the last item. Two adapters in
+  `core` join the seam to `EventStream`: `StreamChannel` (an `EventStream` to
+  a channel, used by both providers) and `EventStreamOf` (a channel to an
+  `EventStream`, used by the driver). Both providers refuse a context already
+  done with its error (TS-12-9).
+- **A cancelled request, not a cancelled context.** The test that pinned an
+  aborted turn (`TestCancellationProducesAnAbortedTurnNotAnError`) now cancels
+  while the request is in flight, since a context done before `Stream` is
+  refused.
+- **TS-09-11** asked the registry to hold anthropic and faux; with no
+  registry it checks both are a `core.ProviderClient` and are the only
+  provider packages.
+- TS-12-7 did not compile against the previous commit (`StreamEvent` did not
+  exist); that was its first failure.

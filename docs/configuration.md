@@ -18,8 +18,8 @@ reference.
 
 `anthropic.Resolve(env)` chooses the deployment and builds the SDK client
 (`provider/anthropic/resolve.go`). The provider calls it on every request
-unless `anthropic.Options.Client` is set, reading `RequestOptions.Env` first,
-then `Options.Getenv` (or the process environment).
+unless `anthropic.Options.Client` is set, reading `anthropic.Options.Env`
+first, then `Options.Getenv` (or the process environment).
 
 | Variable | Effect |
 |---|---|
@@ -95,9 +95,9 @@ arguments casts no vote of its own; a `Guard` decision with both `Block` and
 (`Run` waits for the result and reads none of them): turn, message, tool execution (`ParentToolUseID` set for a
 nested call) and `core.ErrorEvent` for an error the run survives.
 
-Header precedence, lowest to highest: attribution defaults, provider/auth
-headers, `Model.Headers`, `RequestOptions.Headers`. A nil value at a higher
-layer deletes the name.
+Header precedence, lowest to highest: the SDK's own and the credential's
+headers, then `anthropic.Options.Headers`. A nil value there deletes the
+name.
 
 ## Provider options
 
@@ -120,7 +120,14 @@ Each response's `core.Usage` carries input, output, cache-read and
 cache-write tokens and `Requests: 1`; `Usage.Add` sums them, so a run's usage
 counts its model requests. `anthropic.TranslateMessage` and
 `anthropic.TranslateUsage` translate an SDK `Message` and an SDK usage pair
-the same way the stream does. `anthropic.Options`:
+the same way the stream does.
+
+`anthropic.Provider(model, opts)` is a `core.ProviderClient` for one model:
+`Stream(ctx, req)` returns a channel of `core.StreamEvent`, closed when the
+turn ends. The last `MessageEndEvent` carries the assistant message, a failed
+turn's included, and a failure sets `Err` on the last item; a context already
+done is refused with its error. `core.EventStreamOf(ch, err)` reads such a
+channel as a `core.EventStream`. `anthropic.Options`:
 
 | Field | Meaning |
 |---|---|
@@ -135,6 +142,14 @@ the same way the stream does. `anthropic.Options`:
 | `BillingLookup` | Resolves a served model id to its catalog row for pricing. |
 | `ToolPrefix`, `OnToolPrefixSync` | The per-session tool-schema cache and its reconciliation reports. |
 | `Now` | Injectable clock for timestamps. |
+| `CacheRetention` | Where the prompt-cache breakpoints go; empty is short. |
+| `Headers` | `map[string]*string` merged into every request; a nil value deletes a default header (how a gateway turns the upstream credential off). |
+| `Timeout` | Bounds each request, independently of the caller's context. |
+| `Env` | Consulted before `Getenv` when resolving the deployment. |
+| `Transport` | Replaces the HTTP transport. |
+| `OnPayload` | Sees, and may replace, the encoded request before it is sent; its error ends the turn unmodified. |
+| `OnResponse` | Sees each HTTP response before it is read; its error ends the turn. |
+| `Warnf` | Receives the transcript-repair report. |
 
 ## Built-in tool options (`tools.Options`)
 

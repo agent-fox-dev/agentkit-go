@@ -12,7 +12,8 @@ import (
 )
 
 // coreDecls parses the package's production files and returns the names of
-// its declared types and the receiver types of each method name.
+// its declared types (and its functions, as "func Name") and the receiver
+// types of each method name.
 func coreDecls(t *testing.T) (types map[string]bool, methods map[string][]string) {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -40,6 +41,7 @@ func coreDecls(t *testing.T) (types map[string]bool, methods map[string][]string
 				}
 			case *ast.FuncDecl:
 				if d.Recv == nil || len(d.Recv.List) == 0 {
+					types["func "+d.Name.Name] = true
 					continue
 				}
 				recv := d.Recv.List[0].Type

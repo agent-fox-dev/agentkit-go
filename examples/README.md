@@ -53,7 +53,8 @@ There are exactly two things to get right.
 environment. The examples that call a model resolve once, up front, and pass
 the result as `Config.Client`. When you need provider options instead —
 `VertexProject`, `Betas`, `MaxRetries` — build the provider yourself and pass
-`Config.Provider: core.ClientFunc(anthropic.Provider(anthropic.Options{…}).Stream)`;
+`Config.Provider: anthropic.Provider(model, anthropic.Options{…})` (`model` from
+`catalog.Lookup`);
 `Provider` is used instead of `Client` when it is set.
 
 | Variable | Effect |

@@ -67,18 +67,43 @@ type Options struct {
 	OnToolPrefixSync func(provider.SyncReport)
 	// Now is injectable for deterministic timestamps in tests.
 	Now func() time.Time
+
+	// CacheRetention places the prompt-cache breakpoints; empty is short.
+	CacheRetention core.CacheRetention
+	// Headers merge into every request. A present-nil value is a DELETION
+	// MARKER suppressing a default of that name (REQ-AUTH-02); no string
+	// value can express that.
+	Headers map[string]*string
+	// Timeout bounds each request, independently of the caller's context
+	// (REQ-PROV-18); zero is none.
+	Timeout time.Duration
+	// Env is consulted before Getenv when resolving the deployment
+	// (REQ-AUTH-03). An empty override falls through rather than masking.
+	Env map[string]string
+	// Transport replaces the HTTP transport.
+	Transport http.RoundTripper
+	// OnPayload runs after canonical->wire translation and before the first
+	// byte. Returning (nil, nil) leaves the payload unchanged; its error ends
+	// the turn unmodified.
+	OnPayload func(payload any, model *core.Model) (any, error)
+	// OnResponse sees each HTTP response before it is read; its error ends
+	// the turn.
+	OnResponse func(resp *http.Response, model *core.Model) error
+	// Warnf receives the transcript repair report; nil discards it.
+	Warnf func(format string, args ...any)
 }
 
-// Provider returns the registry entry (REQ-PROV-09).
-func Provider(opts Options) core.APIProvider {
-	c := &client{opts: opts, prefix: opts.ToolPrefix}
+// Provider returns a core.ProviderClient for the model m.
+func Provider(m core.Model, opts Options) core.ProviderClient {
+	c := &client{model: m, opts: opts, prefix: opts.ToolPrefix}
 	if c.prefix == nil {
 		c.prefix = &provider.ToolPrefix{}
 	}
-	return core.APIProvider{API: API, Stream: c.Stream}
+	return c
 }
 
 type client struct {
+	model  core.Model
 	opts   Options
 	prefix *provider.ToolPrefix
 }
@@ -100,23 +125,21 @@ func (c *client) now() time.Time {
 	return time.Now()
 }
 
-// Stream implements core.StreamFunc.
-//
-// Every failure below is encoded in the returned stream, never returned as a
-// Go error (REQ-PROV-04) — the signature has no error to return, which is the
-// enforcement rather than a convention.
-func (c *client) Stream(ctx context.Context, m *core.Model, req core.Request, o core.ProviderStreamOptions) *core.EventStream {
-	// NFR-COMPAT-05: the deployment is resolved from config, never from a
-	// second provider implementation. It is decided HERE rather than in run
-	// because it changes the request BODY as well as the URL, and the body is
-	// serialized below.
-
-	retention := core.CacheRetentionShort
-	if o.CacheRetention != "" {
-		retention = o.CacheRetention
+// Stream implements core.ProviderClient. A context already done is refused
+// with its error; every failure after that is encoded in the stream — the
+// failed turn's message and, on the last item, the error (REQ-PROV-04).
+func (c *client) Stream(ctx context.Context, req core.Request) (<-chan core.StreamEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	if r := req.Options.CacheRetention; r != nil {
-		retention = *r
+	m := c.model
+	return core.StreamChannel(c.stream(ctx, &m, req)), nil
+}
+
+func (c *client) stream(ctx context.Context, m *core.Model, req core.Request) *core.EventStream {
+	retention := core.CacheRetentionShort
+	if c.opts.CacheRetention != "" {
+		retention = c.opts.CacheRetention
 	}
 
 	body, rep, sync, err := BuildRequestCached(m, req, retention, c.prefix)
@@ -126,8 +149,8 @@ func (c *client) Stream(ctx context.Context, m *core.Model, req core.Request, o 
 	if fn := c.opts.OnToolPrefixSync; fn != nil {
 		fn(sync)
 	}
-	if rep.Changed() && o.Warnf != nil {
-		o.Warnf("anthropic: %s", rep.String())
+	if rep.Changed() && c.opts.Warnf != nil {
+		c.opts.Warnf("anthropic: %s", rep.String())
 	}
 	if c.wantsCompaction() {
 		// REQ-PROV-07: the beta header opts the REQUEST into the feature and
@@ -140,7 +163,7 @@ func (c *client) Stream(ctx context.Context, m *core.Model, req core.Request, o 
 	// the first byte. Its error propagates to the caller UNMODIFIED, which is
 	// why it is wrapped by ErrorStream rather than by fmt.Errorf.
 	var payload any = body
-	if fn := req.Options.OnPayload; fn != nil {
+	if fn := c.opts.OnPayload; fn != nil {
 		out, perr := fn(body, m)
 		if perr != nil {
 			return core.ErrorStream(nil, perr)
@@ -178,19 +201,19 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 	}
 
 	// caller is the ctx the caller handed to Stream; ctx below may be a
-	// TimeoutMs-derived child of it. The two are kept apart because their
+	// Timeout-derived child of it. The two are kept apart because their
 	// expiries mean different things: the caller's is an abort (REQ-LOOP-09),
 	// the derived one a retryable timeout (REQ-PROV-18).
 	caller := ctx
-	if to := req.Options.TimeoutMs; to != nil && *to > 0 {
+	if to := c.opts.Timeout; to > 0 {
 		// A per-request timeout INDEPENDENT of the caller's context deadline
 		// (REQ-PROV-18). It must not outlive this function, hence the defer.
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(*to)*time.Millisecond)
+		ctx, cancel = context.WithTimeout(ctx, to)
 		defer cancel()
 	}
 
-	sc, dep, env, err := c.sdkClient(req.Options.Env, req.Options.Transport)
+	sc, dep, env, err := c.sdkClient(c.opts.Env, c.opts.Transport)
 	if err != nil {
 		// A deployment that cannot be resolved — no credential, a Vertex
 		// selection with no project — fails the turn with the reason.
@@ -201,23 +224,24 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 	// The body is ours: SDK params would re-encode replayed tool_use input,
 	// and its bytes must reach the wire as the model wrote them.
 	opts := []option.RequestOption{option.WithRequestBody("application/json", raw)}
-	if rt := req.Options.Transport; rt != nil && c.opts.Client != nil {
+	if rt := c.opts.Transport; rt != nil && c.opts.Client != nil {
 		opts = append(opts, option.WithHTTPClient(&http.Client{Transport: rt}))
 	}
-	if n := req.Options.MaxRetries; n != nil {
+	// A resolved client already carries MaxRetries; a caller's own does not.
+	if n := c.opts.MaxRetries; n != nil && c.opts.Client != nil {
 		opts = append(opts, option.WithMaxRetries(*n))
 	}
 	// REQ-AUTH-02: a request's own headers win, and a present-nil value
 	// removes the header the provider would otherwise send — how a gateway
 	// turns the upstream credential off.
-	for k, v := range req.Options.Headers {
+	for k, v := range c.opts.Headers {
 		if v == nil {
 			opts = append(opts, option.WithHeaderDel(k))
 		} else {
 			opts = append(opts, option.WithHeader(k, *v))
 		}
 	}
-	if fn := req.Options.OnResponse; fn != nil {
+	if fn := c.opts.OnResponse; fn != nil {
 		opts = append(opts, option.WithMiddleware(func(r *http.Request, next option.MiddlewareNext) (*http.Response, error) {
 			resp, err := next(r)
 			if err != nil {
