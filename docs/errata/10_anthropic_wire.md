@@ -141,3 +141,21 @@ an embedder (or a test) supply credentials explicitly.
 - **The golden moved a task early.** `testdata/golden/request_anthropic.json`
   gained `"strict": true` on its tool here, because the golden test would
   otherwise fail; the golden task rewrites the fixture.
+
+## 10-REQ-6: exact bytes need an encoder of their own, and Request.Prefix
+
+- **`encoding/json` compacts raw bytes.** The encoder already put the
+  model's bytes into `input`, but `json.Marshal` compacts the output of any
+  `json.RawMessage`, so whitespace was lost on every replay. The body is now
+  produced by `encodeExact` (`provider/anthropic/anthropic.go`), which
+  marshals with placeholders and splices the raw bytes back, for `tool_use`
+  input and for blocks replayed verbatim alike. `BuildRequestJSON(req, model)`
+  returns it; `json.Marshal` of a `BuildRequest` result still compacts. An
+  `OnPayload` hook that replaces the payload gets plain `json.Marshal`.
+- **`core.Request.Prefix`** is new: messages sent after the system prompt and
+  before the history, with a breakpoint on their last block. The loop does not
+  set it yet; spec 11's `Config.Prefix` feeds it. When the prefix ends and the
+  history starts with the same role, the history's first message joins the
+  prefix's last.
+- TS-10-24 passed before any change: the last system block and the last tool
+  already carried the breakpoint.

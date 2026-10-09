@@ -5,7 +5,11 @@
 package anthropic
 
 import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
@@ -66,6 +70,10 @@ type request struct {
 	// unexported and therefore never marshalled; StampCacheControl reads it to
 	// find the last tool eligible for a breakpoint.
 	immediateTools int
+	// prefixEnd locates the last block of the encoded prefix (message and
+	// block index), or is {-1, -1} with no prefix. StampCacheControl puts a
+	// breakpoint there.
+	prefixEnd [2]int
 }
 
 type thinking struct {
@@ -222,6 +230,56 @@ func NormalizeToolCallID(s string) string {
 // It runs the shared repair pass first (REQ-PROV-11) — that is part of the
 // provider contract, not the loop's, because the loop is not running when a
 // transcript is loaded from disk.
+// BuildRequestJSON is the request body for req on m, byte for byte as it is
+// sent, with the short cache retention. Replayed tool_use input and replayed
+// raw blocks keep the exact bytes they arrived with; json.Marshal of a
+// BuildRequest result would compact them.
+func BuildRequestJSON(req core.Request, m core.Model) ([]byte, error) {
+	body, _, err := BuildRequest(&m, req, core.CacheRetentionShort)
+	if err != nil {
+		return nil, err
+	}
+	return encodeExact(body)
+}
+
+// encodeExact marshals r, splicing every raw byte run (a tool_use input, a
+// verbatim block) back in after marshalling: encoding/json compacts the
+// output of a json.RawMessage, and those bytes must reach the wire unchanged
+// (10-REQ-6.1). r is not modified.
+func encodeExact(r *request) ([]byte, error) {
+	var nonce [8]byte
+	_, _ = rand.Read(nonce[:])
+	tag := hex.EncodeToString(nonce[:])
+	var raws [][]byte
+	placeholder := func(raw []byte) json.RawMessage {
+		raws = append(raws, raw)
+		return json.RawMessage(fmt.Sprintf(`"agentkit-raw-%s-%d"`, tag, len(raws)-1))
+	}
+	cp := *r
+	cp.Messages = make([]message, len(r.Messages))
+	for i, msg := range r.Messages {
+		cp.Messages[i] = msg
+		cp.Messages[i].Content = make([]block, len(msg.Content))
+		for j, b := range msg.Content {
+			switch {
+			case len(b.Raw) > 0:
+				b.Raw = placeholder(b.Raw)
+			case b.Type == "tool_use" && len(b.Input) > 0:
+				b.Input = placeholder(b.Input)
+			}
+			cp.Messages[i].Content[j] = b
+		}
+	}
+	out, err := json.Marshal(&cp)
+	if err != nil {
+		return nil, err
+	}
+	for i, raw := range raws {
+		out = bytes.Replace(out, []byte(fmt.Sprintf(`"agentkit-raw-%s-%d"`, tag, i)), raw, 1)
+	}
+	return out, nil
+}
+
 func BuildRequest(m *core.Model, req core.Request, retention core.CacheRetention) (*request, RepairReport, error) {
 	out, rep, _, err := BuildRequestCached(m, req, retention, nil)
 	return out, rep, err
@@ -240,10 +298,12 @@ func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRet
 	prefix *provider.ToolPrefix) (*request, RepairReport, provider.SyncReport, error) {
 	var sync provider.SyncReport
 	repaired, rep := RepairTranscript(req.Messages, TargetFor(m, NormalizeToolCallID))
+	messages, prefixEnd := encodeWithPrefix(req.Prefix, repaired, m)
 
 	out := &request{
 		Model:         m.ID,
-		Messages:      encodeMessages(repaired),
+		Messages:      messages,
+		prefixEnd:     prefixEnd,
 		Temperature:   req.Temperature,
 		TopP:          req.TopP,
 		StopSequences: req.StopSequences,
@@ -343,6 +403,29 @@ func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRet
 	return out, rep, sync, nil
 }
 
+// encodeWithPrefix encodes the prefix ahead of the history and reports where
+// the prefix's last block landed. The two are encoded separately, so no block
+// moves between them; when the prefix ends and the history begins with the
+// same role, the history's first message is joined onto the prefix's last,
+// because consecutive turns of one role are one turn on the wire.
+func encodeWithPrefix(prefix, history core.Messages, m *core.Model) ([]message, [2]int) {
+	end := [2]int{-1, -1}
+	if len(prefix) == 0 {
+		return encodeMessages(history), end
+	}
+	repairedPrefix, _ := RepairTranscript(prefix, TargetFor(m, NormalizeToolCallID))
+	out := encodeMessages(repairedPrefix)
+	if n := len(out); n > 0 && len(out[n-1].Content) > 0 {
+		end = [2]int{n - 1, len(out[n-1].Content) - 1}
+	}
+	rest := encodeMessages(history)
+	if n := len(out); n > 0 && len(rest) > 0 && out[n-1].Role == rest[0].Role {
+		out[n-1].Content = append(out[n-1].Content, rest[0].Content...)
+		rest = rest[1:]
+	}
+	return append(out, rest...), end
+}
+
 // StampCacheControl places the §6.2a Level 1 breakpoints.
 //
 // Exactly three placements, recomputed on EVERY request:
@@ -389,6 +472,11 @@ func StampCacheControl(r *request, retention core.CacheRetention, m *core.Model)
 	// deferral exists to keep cached.
 	if n := r.immediateTools; n > 0 && n <= len(r.Tools) {
 		r.Tools[n-1].CacheControl = prefix
+	}
+	if i, j := r.prefixEnd[0], r.prefixEnd[1]; i >= 0 && i < len(r.Messages) && j < len(r.Messages[i].Content) {
+		// The prefix is the same on every request, so its end is a stable
+		// breakpoint the rolling one below moves away from.
+		r.Messages[i].Content[j].CacheControl = prefix
 	}
 	if n := len(r.Messages); n > 0 {
 		last := &r.Messages[n-1]

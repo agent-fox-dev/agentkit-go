@@ -150,7 +150,12 @@ func (c *client) Stream(ctx context.Context, m *core.Model, req core.Request, o 
 		}
 	}
 
-	raw, err := json.Marshal(payload)
+	var raw []byte
+	if payload == any(body) {
+		raw, err = encodeExact(body)
+	} else {
+		raw, err = json.Marshal(payload)
+	}
 	if err != nil {
 		return core.ErrorStream(nil, fmt.Errorf("anthropic: encoding request: %w", err))
 	}

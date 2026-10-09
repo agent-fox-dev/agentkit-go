@@ -16,7 +16,10 @@ import (
 // here, because the loop is not running when a transcript is loaded from disk
 // and no caller may be able to skip it.
 type Request struct {
-	System   []ContentBlock
+	System []ContentBlock
+	// Prefix is sent after the system prompt and before Messages on every
+	// request, with a cache breakpoint on its last block.
+	Prefix   Messages
 	Messages Messages
 	// Tools is []ToolWire, not []Tool. That is the enforcement of REQ-TOOL-01.
 	Tools         []ToolWire

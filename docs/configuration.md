@@ -93,7 +93,14 @@ and stream framing. Every tool is declared with `"strict": true`, so the API
 guarantees arguments that match its input schema; a tool's output schema,
 reachable tools and terminating flag are never sent. `tool_choice` is `auto`,
 `none` or absent: a forced choice (`any`, or a named tool) is never sent,
-because current models reject it. `anthropic.Options`:
+because current models reject it.
+
+Prompt-cache breakpoints (`cache_control: {"type":"ephemeral"}`) go on the
+last system block, the last tool, the last block of `core.Request.Prefix`
+(messages sent ahead of the history on every request) and the last block of
+the final user message. A replayed `tool_use` input, and any block replayed
+verbatim, reaches the wire with the exact bytes it arrived with;
+`anthropic.BuildRequestJSON(req, model)` returns the body as sent. `anthropic.Options`:
 
 | Field | Meaning |
 |---|---|
