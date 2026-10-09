@@ -365,7 +365,7 @@
         "make test passes",
         "make lint passes"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

@@ -151,6 +151,11 @@ func clientMode(ctx context.Context, prompt, external string) error {
 	}
 	fmt.Printf("connected servers: %v\n", pool.Names())
 	fmt.Printf("tools discovered over MCP: %v\n", toolNames(mcpTools))
+	// A server's malformed outputSchema does not cost the tool, only its
+	// output typing; the pool reports it rather than failing the connection.
+	for _, d := range pool.Diagnostics() {
+		fmt.Printf("  ! %s\n", d)
+	}
 
 	// 5. Prove the MCP round trip before spending a token on it. This runs the
 	//    adapted tool exactly as the loop would, and the audit line it prints

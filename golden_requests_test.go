@@ -19,6 +19,7 @@ import (
 	"github.com/agentfox/agentkit-go/provider/openai"
 	"github.com/agentfox/agentkit-go/provider/openairesponses"
 	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agentfox/agentkit-go/tools"
 )
 
 // NFR-TEST-08(b): the per-provider request body.
@@ -254,6 +255,55 @@ func TestOutputSchemaNeverChangesRequestBodies_TS06_3(t *testing.T) {
 			if strings.Contains(tc.body, "out_sentinel") || strings.Contains(tc.body, "out-sentinel") {
 				t.Fatalf("iteration %d: %s request body carries the output schema", i, tc.name)
 			}
+		}
+	}
+}
+
+// TS-06-32 (smoke, 06-PATH-3): the canonical request's tool carries the real
+// find_files OutputSchema from tools.All, is projected through
+// core.ToolWires, and every provider's body still equals its golden.
+func TestSmokeOutputSchemaToolsKeepGoldens_TS06_32(t *testing.T) {
+	ws, err := tools.NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := tools.All(tools.Options{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out *schema.Schema
+	for _, tl := range all {
+		if tl.Name == "find_files" {
+			out = tl.OutputSchema
+		}
+	}
+	if out == nil {
+		t.Fatal("find_files declares no OutputSchema")
+	}
+	req := canonicalRequest(t)
+	req.Tools = core.ToolWires([]core.Tool{{
+		Name:        "find_files",
+		Description: "Find files by glob pattern.",
+		InputSchema: schema.Object(
+			schema.Prop("pattern", schema.String("Glob pattern")),
+			schema.Opt("limit", schema.Int("Maximum results")),
+		),
+		OutputSchema: out,
+	}})
+	cases := goldenCasesFor(t, req)
+	if len(cases) != 5 {
+		t.Fatalf("%d providers, want 5", len(cases))
+	}
+	for _, tc := range cases {
+		want, err := os.ReadFile(filepath.Join("testdata", "golden", "request_"+tc.name+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(want, []byte(tc.body)) {
+			t.Errorf("%s request body differs from its golden with an OutputSchema on the tool", tc.name)
+		}
+		if strings.Contains(tc.body, `"marker"`) {
+			t.Errorf("%s request body carries the output schema", tc.name)
 		}
 	}
 }

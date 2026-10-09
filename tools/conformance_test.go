@@ -377,3 +377,60 @@ func TestConformanceSubprocessFailureData_TS06_27(t *testing.T) {
 		validateToolData(t, all["run_command"], res.Data)
 	}
 }
+
+// TS-06-30 (smoke, 06-PATH-1): a caller runs the real read_file and
+// list_files from tools.All on a real workspace, marshals Data, decodes it
+// ordered and validates it with schema.Validate.
+func TestSmokeBuiltinDataValidates_TS06_30(t *testing.T) {
+	root := conformanceWorkspace(t)
+	ws, err := tools.NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := tools.All(tools.Options{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := 0
+	for _, tl := range all {
+		var args string
+		switch tl.Name {
+		case "read_file":
+			args = `{"path":"main.go"}`
+		case "list_files":
+			args = `{"path":"."}`
+		default:
+			continue
+		}
+		res := tl.Execute(context.Background(), json.RawMessage(args))
+		if !res.OK || res.Data == nil {
+			t.Fatalf("%s: OK %v Data %v (%s: %s)", tl.Name, res.OK, res.Data, res.Error, res.Detail)
+		}
+		validateToolData(t, tl, res.Data)
+		ran++
+	}
+	if ran != 2 {
+		t.Fatalf("ran %d of read_file and list_files", ran)
+	}
+}
+
+// TS-06-33 (smoke, 06-PATH-4): the real execute and run_command, through
+// tools.Run, exit 2; Data carries output, exit_code 2 and outcome exit, and
+// conforms to the subprocess schema.
+func TestSmokeSubprocessFailureData_TS06_33(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell commands")
+	}
+	all := builtins(t, conformanceWorkspace(t), nil)
+	for name, args := range map[string]string{
+		"execute":     `{"command":"echo failing; exit 2"}`,
+		"run_command": `{"argv":["sh","-c","echo failing; exit 2"]}`,
+	} {
+		res := expectError(t, context.Background(), all[name], args, "command_exit")
+		if res.Data["exit_code"] != 2 || res.Data["outcome"] != "exit" ||
+			!strings.Contains(fmt.Sprint(res.Data["output"]), "failing") {
+			t.Fatalf("%s: Data = %+v, want output, exit_code 2, outcome exit", name, res.Data)
+		}
+		validateToolData(t, all[name], res.Data)
+	}
+}

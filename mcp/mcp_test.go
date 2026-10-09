@@ -21,6 +21,7 @@ import (
 
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/internal/diag"
+	"github.com/agentfox/agentkit-go/jsonx"
 	"github.com/agentfox/agentkit-go/mcp"
 	"github.com/agentfox/agentkit-go/schema"
 	"github.com/agentfox/agentkit-go/wire"
@@ -1534,6 +1535,81 @@ func TestTextIsTheJoinedTextBlocks_TS06_10(t *testing.T) {
 		res := tl.Execute(context.Background(), json.RawMessage(`{}`))
 		if !res.OK || res.Text != want.String() {
 			t.Fatalf("iteration %d: Text = %q (OK %v), want %q", i, res.Text, res.OK, want.String())
+		}
+	}
+}
+
+// TS-06-31 (smoke, 06-PATH-2): a pool connected to a real server imports a
+// tool's outputSchema, and a call returns the server's structuredContent as
+// Data, which validates against the imported schema.
+func TestSmokeMCPOutputSchemaAndStructuredContent_TS06_31(t *testing.T) {
+	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "weather", Version: "1"}})
+	must(t, s.RegisterTool(&mcp.Tool{
+		Name:        "forecast",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
+		OutputSchema: json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"},` +
+			`"temperature":{"type":"number"},"days":{"type":"array","items":{"type":"string"}}},` +
+			`"required":["city","temperature"]}`),
+	}, func(_ context.Context, args map[string]any) (*mcp.CallToolResult, error) {
+		city, _ := args["city"].(string)
+		return &mcp.CallToolResult{
+			Content:           []mcp.Content{&mcp.TextContent{Text: city + ": 21.5"}},
+			StructuredContent: map[string]any{"city": city, "temperature": 21.5, "days": []any{"mon", "tue"}},
+		}, nil
+	}))
+	_, tools := schemaPool(t, s)
+	tl, ok := tools["srv__forecast"]
+	if !ok || tl.OutputSchema == nil {
+		t.Fatalf("srv__forecast imported %v with OutputSchema %+v", ok, tl.OutputSchema)
+	}
+	if !tl.OutputSchema.IsRequired("temperature") || tl.OutputSchema.Properties["days"].Type != schema.TypeArray {
+		t.Fatalf("OutputSchema = %+v, want the server's declaration", tl.OutputSchema)
+	}
+	res := tl.Execute(context.Background(), json.RawMessage(`{"city":"Oslo"}`))
+	if !res.OK || res.Text != "Oslo: 21.5" {
+		t.Fatalf("call = %+v", res)
+	}
+	want := map[string]any{"city": "Oslo", "temperature": 21.5, "days": []any{"mon", "tue"}}
+	if !reflect.DeepEqual(res.Data, want) {
+		t.Fatalf("Data = %#v, want the structuredContent %#v", res.Data, want)
+	}
+	blob, err := json.Marshal(map[string]any{"data": res.Data})
+	must(t, err)
+	ordered, err := jsonx.DecodeOrderedObject(blob)
+	must(t, err)
+	if err := schema.Validate(schema.Object(schema.Prop("data", tl.OutputSchema)), ordered); err != nil {
+		t.Fatalf("Data does not conform to the imported OutputSchema: %v", err)
+	}
+}
+
+// TS-06-34 (smoke, 06-PATH-5): a server whose tool declares a malformed
+// outputSchema still connects; the tool is imported without a schema, the
+// pool reports a SeverityError naming server and tool, and the connection
+// keeps serving calls.
+func TestSmokeMCPMalformedOutputSchema_TS06_34(t *testing.T) {
+	p, tools := schemaPool(t, outputSchemaServer(t))
+	broken, ok := tools["srv__broken"]
+	if !ok || broken.OutputSchema != nil {
+		t.Fatalf("srv__broken imported %v with OutputSchema %+v, want imported with none", ok, broken.OutputSchema)
+	}
+	diags := p.Diagnostics()
+	if len(diags) != 1 || diags[0].Severity != diag.SeverityError ||
+		!strings.Contains(diags[0].Message, `server "srv"`) || !strings.Contains(diags[0].Message, `tool "broken"`) {
+		t.Fatalf("diagnostics = %+v, want one SeverityError naming srv and broken", diags)
+	}
+	// Listing again does not repeat the report.
+	if _, err := p.Tools(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(p.Diagnostics()); n != 1 {
+		t.Fatalf("%d diagnostics after a second listing, want 1", n)
+	}
+	if _, ok := p.Get("srv"); !ok {
+		t.Fatal("the connection was dropped")
+	}
+	for _, name := range []string{"srv__broken", "srv__calc", "srv__simple"} {
+		if res := tools[name].Execute(context.Background(), json.RawMessage(`{}`)); !res.OK {
+			t.Fatalf("%s call = %+v; the connection must keep serving", name, res)
 		}
 	}
 }
