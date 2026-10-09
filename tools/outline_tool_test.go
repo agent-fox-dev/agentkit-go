@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/agentfox/agentkit-go/core"
+	"github.com/agentfox/agentkit-go/schema"
 )
 
 // mkOutlineFile creates a file in root with the given relative path and content.
@@ -264,4 +265,20 @@ func TestOutlineIgnoredAndHiddenFiles_TS02_8(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TS-06-15: file_outline declares the outline it returns. outline.File and
+// outline.Decl carry no json tags, so their keys are the Go field names.
+func TestOutputSchemaFileOutline_TS06_15(t *testing.T) {
+	s := toolByName(t, t.TempDir(), "file_outline").OutputSchema
+	assertObject(t, "file_outline", s, map[string]prop{
+		"file": {schema.TypeObject, true}, "backend": {schema.TypeString, true},
+		"declarations": {schema.TypeInteger, true}, "listed": {schema.TypeInteger, true},
+	})
+	file := s.Properties["file"]
+	assertObject(t, "file_outline.file", file, map[string]prop{
+		"Path": {schema.TypeString, true}, "Lang": {schema.TypeString, true},
+		"Backend": {schema.TypeString, true}, "Decls": {schema.TypeArray, true},
+	})
+	assertObject(t, "file_outline.file.Decls[]", file.Properties["Decls"].Items, declProps)
 }

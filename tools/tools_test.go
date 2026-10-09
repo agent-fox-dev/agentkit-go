@@ -2136,3 +2136,11 @@ func TestOutputSchemaListAndFindFiles_TS06_13(t *testing.T) {
 		}
 	}
 }
+
+// declProps is outline.Decl as it marshals: Go field names, no json tags.
+var declProps = map[string]prop{
+	"Kind": {schema.TypeString, true}, "Name": {schema.TypeString, true},
+	"Container": {schema.TypeString, true}, "Signature": {schema.TypeString, true},
+	"Exported": {schema.TypeBoolean, true}, "StartLine": {schema.TypeInteger, true},
+	"EndLine": {schema.TypeInteger, true},
+}

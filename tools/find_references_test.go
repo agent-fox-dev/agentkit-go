@@ -375,3 +375,29 @@ func CallGo() int {
 		t.Errorf("Partial mismatch: tool=%v, ws=%v", toolResult.Partial, wsRes.Partial)
 	}
 }
+
+// TS-06-17: find_references declares its result. target is the resolved
+// declaration, errors a count, and the structs marshal with Go field names.
+func TestOutputSchemaFindReferences_TS06_17(t *testing.T) {
+	s := toolByName(t, t.TempDir(), "find_references").OutputSchema
+	assertObject(t, "find_references", s, map[string]prop{
+		"target": {schema.TypeObject, true}, "sites": {schema.TypeArray, true},
+		"backend": {schema.TypeString, true}, "partial": {schema.TypeBoolean, true},
+		"truncated": {schema.TypeBoolean, true}, "packages_checked": {schema.TypeInteger, true},
+		"errors": {schema.TypeInteger, true}, "result": {schema.TypeObject, true},
+	})
+	assertObject(t, "find_references.target", s.Properties["target"], declProps)
+	site := s.Properties["sites"].Items
+	assertObject(t, "find_references.sites[]", site, map[string]prop{
+		"Path": {schema.TypeString, true}, "Line": {schema.TypeInteger, true},
+		"Column": {schema.TypeInteger, true}, "Confidence": {schema.TypeString, true},
+		"Enclosing": {schema.TypeObject, true}, "Source": {schema.TypeString, true},
+	})
+	assertObject(t, "find_references.sites[].Enclosing", site.Properties["Enclosing"], declProps)
+	assertObject(t, "find_references.result", s.Properties["result"], map[string]prop{
+		"Target": {schema.TypeObject, true}, "Sites": {schema.TypeArray, true},
+		"Backend": {schema.TypeString, true}, "Partial": {schema.TypeBoolean, true},
+		"PackagesChecked": {schema.TypeInteger, true}, "Errors": {schema.TypeInteger, true},
+		"Truncated": {schema.TypeBoolean, true},
+	})
+}

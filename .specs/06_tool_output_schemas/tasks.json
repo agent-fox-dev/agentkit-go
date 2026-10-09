@@ -207,7 +207,7 @@
       "done_when": [
         "go test ./tools/... passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,

@@ -12,10 +12,36 @@ import (
 	"github.com/agentfox/agentkit-go/schema"
 )
 
+// declOutputSchema is outline.Decl as it marshals into a tool's Data.
+func declOutputSchema() *schema.Schema {
+	return schema.Object(
+		schema.Prop("Kind", schema.String()),
+		schema.Prop("Name", schema.String()),
+		schema.Prop("Container", schema.String()),
+		schema.Prop("Signature", schema.String()),
+		schema.Prop("Exported", schema.Bool()),
+		schema.Prop("StartLine", schema.Int()),
+		schema.Prop("EndLine", schema.Int()),
+	)
+}
+
 // fileOutlineTool returns the file_outline tool.
 func (f *fileTools) fileOutlineTool() core.Tool {
 	return core.Tool{
 		Name: "file_outline",
+		// outline.File and outline.Decl carry no json tags, so Data's file
+		// object uses their Go field names.
+		OutputSchema: schema.Object(
+			schema.Prop("file", schema.Object(
+				schema.Prop("Path", schema.String()),
+				schema.Prop("Lang", schema.String()),
+				schema.Prop("Backend", schema.String()),
+				schema.Prop("Decls", schema.Array(declOutputSchema())),
+			)),
+			schema.Prop("backend", schema.String()),
+			schema.Prop("declarations", schema.Int()),
+			schema.Prop("listed", schema.Int()),
+		),
 		Description: "Show the declarations in a file with line ranges. " +
 			"Use include_private to also list unexported declarations.",
 		Builtin: true,

@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/agentfox/agentkit-go/core"
+	"github.com/agentfox/agentkit-go/schema"
 	"github.com/agentfox/agentkit-go/tools"
 )
 
@@ -598,5 +599,41 @@ func TestReadFileSaysWhenAFileIsNotUTF8(t *testing.T) {
 	data = res.Data
 	if data["encoding"] != "utf-8" || strings.Contains(res.Text, "not valid UTF-8") {
 		t.Fatalf("a UTF-8 file is reported as %v:\n%s", data["encoding"], res.Text)
+	}
+}
+
+// TS-06-14: search_files declares its matches, flags and optional note. The
+// context keys are before/after, as SearchMatch marshals them.
+func TestOutputSchemaSearchFiles_TS06_14(t *testing.T) {
+	s := searchTool(t, t.TempDir()).OutputSchema
+	if s == nil || s.Type != schema.TypeObject {
+		t.Fatalf("OutputSchema = %+v, want an object", s)
+	}
+	want := map[string]schema.Type{"matches": schema.TypeArray, "truncated": schema.TypeBoolean,
+		"files_searched": schema.TypeInteger, "note": schema.TypeString}
+	if len(s.Properties) != len(want) {
+		t.Fatalf("properties = %v, want %d", s.PropertyList(), len(want))
+	}
+	for name, typ := range want {
+		if p := s.Properties[name]; p == nil || p.Type != typ {
+			t.Errorf("%s = %+v, want %s", name, p, typ)
+		}
+	}
+	if s.IsRequired("note") || !s.IsRequired("matches") || !s.IsRequired("truncated") || !s.IsRequired("files_searched") {
+		t.Errorf("required = %v, want matches, truncated, files_searched", s.Required)
+	}
+	item := s.Properties["matches"].Items
+	if item == nil || item.Type != schema.TypeObject {
+		t.Fatalf("matches items = %+v, want an object", item)
+	}
+	for name, typ := range map[string]schema.Type{"file": schema.TypeString, "line": schema.TypeInteger,
+		"text": schema.TypeString, "before": schema.TypeArray, "after": schema.TypeArray} {
+		if p := item.Properties[name]; p == nil || p.Type != typ {
+			t.Errorf("matches[].%s = %+v, want %s", name, p, typ)
+		}
+	}
+	if len(item.Properties) != 5 || item.IsRequired("before") || item.IsRequired("after") || !item.IsRequired("line") {
+		t.Errorf("matches[] = %v required %v, want file/line/text required, before/after optional",
+			item.PropertyList(), item.Required)
 	}
 }

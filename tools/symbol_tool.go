@@ -22,6 +22,27 @@ func (f *fileTools) findSymbolTool() core.Tool {
 
 	return core.Tool{
 		Name: "find_symbol",
+		OutputSchema: schema.Object(
+			schema.Prop("symbols", schema.Array(schema.Object(
+				schema.Prop("path", schema.String()),
+				schema.Prop("backend", schema.String()),
+				schema.Prop("kind", schema.String()),
+				schema.Prop("name", schema.String()),
+				schema.Prop("container", schema.String()),
+				schema.Prop("signature", schema.String()),
+				schema.Prop("exported", schema.Bool()),
+				schema.Prop("start_line", schema.Int()),
+				schema.Prop("end_line", schema.Int()),
+			))),
+			schema.Prop("truncated", schema.Bool()),
+			// The number of matches each backend produced, by backend name.
+			schema.Prop("backends", &schema.Schema{Type: schema.TypeObject,
+				AdditionalProperties: &schema.AdditionalProperties{Allowed: true, Schema: schema.Int()}}),
+			schema.Prop("files_indexed", schema.Int()),
+			schema.Opt("note", schema.String()),
+			schema.Opt("partial", schema.Bool()),
+			schema.Opt("partial_reason", schema.String()),
+		),
 		Description: "Find declarations by name across the workspace. " +
 			"Returns matching symbols with file paths and line ranges.",
 		Builtin: true,

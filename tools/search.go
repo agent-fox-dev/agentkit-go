@@ -107,6 +107,18 @@ const MaxSearchContextLines = 20
 func (f *fileTools) searchFiles() core.Tool {
 	return core.Tool{
 		Name: "search_files",
+		OutputSchema: schema.Object(
+			schema.Prop("matches", schema.Array(schema.Object(
+				schema.Prop("file", schema.String()),
+				schema.Prop("line", schema.Int()),
+				schema.Prop("text", schema.String()),
+				schema.Opt("before", schema.Array(schema.String())),
+				schema.Opt("after", schema.Array(schema.String())),
+			))),
+			schema.Prop("truncated", schema.Bool()),
+			schema.Prop("files_searched", schema.Int()),
+			schema.Opt("note", schema.String()),
+		),
 		Description: "Search file contents by regular expression, skipping .gitignored, " +
 			"hidden (dot-prefixed) and binary files. Returns at most max_matches (<= 100) " +
 			"matches with context_lines (<= 20) lines either side.",

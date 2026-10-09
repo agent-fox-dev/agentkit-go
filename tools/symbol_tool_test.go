@@ -10,6 +10,7 @@ import (
 
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/outline"
+	"github.com/agentfox/agentkit-go/schema"
 )
 
 // TS-02-14: find_symbol rejects empty, blank and 257-byte names but accepts a 256-byte name, before any walk
@@ -504,4 +505,27 @@ func extractSymbolContainers(t *testing.T, r core.ToolResult) []string {
 	}
 	t.Fatalf("symbols is neither []SymbolMatch nor []any: %T", syms)
 	return nil
+}
+
+// TS-06-16: find_symbol declares its symbols, counts and optional notes.
+// backends is a count per backend, an object of integers.
+func TestOutputSchemaFindSymbol_TS06_16(t *testing.T) {
+	s := toolByName(t, t.TempDir(), "find_symbol").OutputSchema
+	assertObject(t, "find_symbol", s, map[string]prop{
+		"symbols": {schema.TypeArray, true}, "truncated": {schema.TypeBoolean, true},
+		"backends": {schema.TypeObject, true}, "files_indexed": {schema.TypeInteger, true},
+		"note": {schema.TypeString, false}, "partial": {schema.TypeBoolean, false},
+		"partial_reason": {schema.TypeString, false},
+	})
+	ap := s.Properties["backends"].AdditionalProperties
+	if ap == nil || ap.Schema == nil || ap.Schema.Type != schema.TypeInteger {
+		t.Errorf("backends additionalProperties = %+v, want integer", ap)
+	}
+	assertObject(t, "find_symbol.symbols[]", s.Properties["symbols"].Items, map[string]prop{
+		"path": {schema.TypeString, true}, "backend": {schema.TypeString, true},
+		"kind": {schema.TypeString, true}, "name": {schema.TypeString, true},
+		"container": {schema.TypeString, true}, "signature": {schema.TypeString, true},
+		"exported": {schema.TypeBoolean, true}, "start_line": {schema.TypeInteger, true},
+		"end_line": {schema.TypeInteger, true},
+	})
 }

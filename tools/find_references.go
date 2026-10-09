@@ -68,10 +68,42 @@ func (f *fileTools) referenceTarget(ctx context.Context, name, kind, relPath str
 	return top.Decl(), top.Path, backend, true
 }
 
+// referenceSiteOutputSchema is ReferenceSite as it marshals into Data.
+func referenceSiteOutputSchema() *schema.Schema {
+	return schema.Object(
+		schema.Prop("Path", schema.String()),
+		schema.Prop("Line", schema.Int()),
+		schema.Prop("Column", schema.Int()),
+		schema.Prop("Confidence", schema.String()),
+		schema.Prop("Enclosing", declOutputSchema()),
+		schema.Prop("Source", schema.String()),
+	)
+}
+
 // findReferencesTool returns the find_references tool.
 func (f *fileTools) findReferencesTool() core.Tool {
 	return core.Tool{
 		Name: "find_references",
+		// ReferenceResult, ReferenceSite and outline.Decl carry no json
+		// tags, so their keys are the Go field names.
+		OutputSchema: schema.Object(
+			schema.Prop("target", declOutputSchema()),
+			schema.Prop("sites", schema.Array(referenceSiteOutputSchema())),
+			schema.Prop("backend", schema.String()),
+			schema.Prop("partial", schema.Bool()),
+			schema.Prop("truncated", schema.Bool()),
+			schema.Prop("packages_checked", schema.Int()),
+			schema.Prop("errors", schema.Int()),
+			schema.Prop("result", schema.Object(
+				schema.Prop("Target", declOutputSchema()),
+				schema.Prop("Sites", schema.Array(referenceSiteOutputSchema())),
+				schema.Prop("Backend", schema.String()),
+				schema.Prop("Partial", schema.Bool()),
+				schema.Prop("PackagesChecked", schema.Int()),
+				schema.Prop("Errors", schema.Int()),
+				schema.Prop("Truncated", schema.Bool()),
+			)),
+		),
 		Description: "Find references and callers of a declaration across the workspace. " +
 			"Returns matching reference sites with file paths, line numbers, and enclosing declarations.",
 		Builtin:       true,
