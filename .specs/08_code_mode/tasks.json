@@ -379,7 +379,7 @@
         "`make check` passes completely without errors or linter warnings",
         "`go test ./codemode/... ./examples/codemode/... -count=1` passes with all smoke tests green"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
