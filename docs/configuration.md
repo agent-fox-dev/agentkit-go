@@ -100,7 +100,13 @@ last system block, the last tool, the last block of `core.Request.Prefix`
 (messages sent ahead of the history on every request) and the last block of
 the final user message. A replayed `tool_use` input, and any block replayed
 verbatim, reaches the wire with the exact bytes it arrived with;
-`anthropic.BuildRequestJSON(req, model)` returns the body as sent. `anthropic.Options`:
+`anthropic.BuildRequestJSON(req, model)` returns the body as sent.
+
+Each response's `core.Usage` carries input, output, cache-read and
+cache-write tokens and `Requests: 1`; `Usage.Add` sums them, so a run's usage
+counts its model requests. `anthropic.TranslateMessage` and
+`anthropic.TranslateUsage` translate an SDK `Message` and an SDK usage pair
+the same way the stream does. `anthropic.Options`:
 
 | Field | Meaning |
 |---|---|

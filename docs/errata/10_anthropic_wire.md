@@ -159,3 +159,14 @@ an embedder (or a test) supply credentials explicitly.
   prefix's last.
 - TS-10-24 passed before any change: the last system block and the last tool
   already carried the breakpoint.
+
+## 10-REQ-7: translation helpers and the request count
+
+- **`core.Usage.Requests`** is new: one per response, summed by `Usage.Add`.
+  The spec's `CacheCreationTokens` is the existing `CacheWriteTokens`.
+- **`TranslateMessage(m, msg)`** takes the model as well as the SDK message,
+  because the usage is priced at the model's rates. It and
+  `TranslateUsage(start, delta)` decode the SDK values' own JSON through the
+  decoder the stream uses, so a `tool_use` input keeps its bytes.
+- TS-10-28 passed before any change: `core.EventStream` never blocks its
+  producer, and the provider already pushed through it.

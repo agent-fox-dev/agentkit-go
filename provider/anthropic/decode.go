@@ -3,6 +3,7 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+	sdk "github.com/anthropics/anthropic-sdk-go"
 	"strings"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
@@ -15,6 +16,33 @@ import (
 // Input to what its non-streaming path produces for the same tool call". Two
 // assemblers is two chances to disagree, and the disagreement is invisible
 // until a replayed transcript quietly misses the prompt cache.
+
+// TranslateMessage translates a whole (non-streamed) SDK Message for m into
+// an assistant message: thinking, text and tool_use blocks, the stop reason,
+// and the usage priced at m's rates. It decodes the message's own JSON, so a
+// tool_use input keeps the bytes the API sent.
+func TranslateMessage(m *core.Model, msg sdk.Message) (core.AssistantMessage, error) {
+	out, err := DecodeResponse(m, []byte(msg.RawJSON()), nil)
+	if err != nil {
+		return core.AssistantMessage{}, err
+	}
+	return *out, nil
+}
+
+// TranslateUsage folds the usage a stream reports in message_start and then
+// in message_delta into one usage for one request. A field the delta reports
+// supersedes the start's.
+func TranslateUsage(start sdk.Usage, delta sdk.MessageDeltaUsage) core.Usage {
+	var u core.Usage
+	for _, raw := range []string{start.RawJSON(), delta.RawJSON()} {
+		var w wireUsage
+		if raw != "" && json.Unmarshal([]byte(raw), &w) == nil {
+			w.Into(&u)
+		}
+	}
+	u.Requests = 1
+	return u
+}
 
 // ---------------------------------------------------------------- wire types
 

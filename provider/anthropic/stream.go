@@ -578,6 +578,7 @@ func (d *decodeState) finish(m *core.Model, lookup func(string) *core.Model) {
 	final.StopDetail = d.stopDetail
 	final.Usage = d.usage
 	final.Usage.BilledModel = ""
+	final.Usage.Requests = 1
 
 	// REQ-PROV-05.5: bill the model that SERVED the request. Cost is computed
 	// ONCE, here, from the final served name — never accumulated per event.
@@ -611,6 +612,7 @@ func (d *decodeState) fail(text string, err error) {
 	final.Content = d.partialContent()
 	final.Usage = d.usage
 	final.Usage.BilledModel = ""
+	final.Usage.Requests = 1
 	d.price(&final, d.model, d.lookup)
 	if text == AbortText {
 		final.StopReason = core.StopReasonAborted
@@ -677,6 +679,7 @@ func DecodeResponse(m *core.Model, data []byte, lookup func(string) *core.Model)
 		}
 	}
 	wr.Usage.Into(&msg.Usage)
+	msg.Usage.Requests = 1
 	billModel, billed := provider.BillingModel(m, wr.Model, lookup)
 	msg.Usage.BilledModel = billed
 	if msg.Usage.Reported() {

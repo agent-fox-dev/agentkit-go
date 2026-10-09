@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	sdk "github.com/anthropics/anthropic-sdk-go"
+
 	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
@@ -1280,5 +1282,98 @@ func TestBuildRequestCarriesTheThinkingConfig(t *testing.T) {
 	if body.Thinking == nil || body.Thinking.Type != "adaptive" ||
 		body.OutputConfig == nil || body.OutputConfig.Effort != "high" {
 		t.Fatalf("BuildRequest at high = %s, want thinking adaptive and output_config.effort high", raw)
+	}
+}
+
+// TS-10-26: an SDK Message translates into an assistant message with its
+// thinking, text and tool_use blocks.
+func TestTranslateMessage_TS10_26(t *testing.T) {
+	var msg sdk.Message
+	if err := json.Unmarshal([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-test",
+		"content":[
+			{"type":"thinking","thinking":"plan it","signature":"SIG"},
+			{"type":"text","text":"Looking."},
+			{"type":"tool_use","id":"toolu_1","name":"read_file","input":{"path": "a.go"}}],
+		"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":5}}`), &msg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := anthropic.TranslateMessage(testModel(), msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Content) != 3 {
+		t.Fatalf("%d blocks, want 3: %#v", len(got.Content), got.Content)
+	}
+	if th, ok := got.Content[0].(core.ThinkingBlock); !ok || th.Thinking != "plan it" || th.Signature != "SIG" {
+		t.Fatalf("block 0 = %#v, want the signed thinking block", got.Content[0])
+	}
+	if tx, ok := got.Content[1].(core.TextBlock); !ok || tx.Text != "Looking." {
+		t.Fatalf("block 1 = %#v, want the text", got.Content[1])
+	}
+	tu, ok := got.Content[2].(core.ToolUseBlock)
+	if !ok || tu.ID != "toolu_1" || tu.Name != "read_file" || string(tu.Input) != `{"path": "a.go"}` {
+		t.Fatalf("block 2 = %#v, want the tool_use with its input as sent", got.Content[2])
+	}
+	if got.StopReason != core.StopReasonToolUse || got.Usage.InputTokens != 10 || got.Usage.OutputTokens != 5 {
+		t.Fatalf("stop %q, usage %+v", got.StopReason, got.Usage)
+	}
+}
+
+// TS-10-27: message_start usage and message_delta usage fold into one usage
+// with input, output, cache read and cache write tokens and one request.
+func TestTranslateUsage_TS10_27(t *testing.T) {
+	var start sdk.Usage
+	if err := json.Unmarshal([]byte(`{"input_tokens":150,"output_tokens":1,
+		"cache_read_input_tokens":100,"cache_creation_input_tokens":50}`), &start); err != nil {
+		t.Fatal(err)
+	}
+	var delta sdk.MessageDeltaUsage
+	if err := json.Unmarshal([]byte(`{"output_tokens":42}`), &delta); err != nil {
+		t.Fatal(err)
+	}
+	u := anthropic.TranslateUsage(start, delta)
+	if u.InputTokens != 150 || u.OutputTokens != 42 || u.CacheReadTokens != 100 ||
+		u.CacheWriteTokens != 50 || u.Requests != 1 {
+		t.Fatalf("usage = %+v, want 150 in, 42 out, 100 read, 50 written, 1 request", u)
+	}
+
+	// A streamed turn reports the same through the provider, and one request.
+	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, streamFixture())
+	if msg.Usage.Requests != 1 {
+		t.Fatalf("streamed usage Requests = %d, want 1", msg.Usage.Requests)
+	}
+}
+
+// TS-10-28: the provider finishes its stream without waiting for a consumer
+// that has not read a single event.
+func TestStreamingDoesNotWaitForTheConsumer_TS10_28(t *testing.T) {
+	rt := rtFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: http.Header{},
+			Body: io.NopCloser(strings.NewReader(streamFixture()))}, nil
+	})
+	req := core.Request{Options: core.RequestOptions{Transport: rt}}
+	p := anthropic.Provider(anthropic.Options{Getenv: func(k string) string {
+		if k == "ANTHROPIC_API_KEY" {
+			return "sk-ant-test"
+		}
+		return ""
+	}})
+	s := p.Stream(context.Background(), testModel(), req, core.ProviderStreamOptions{})
+	done := make(chan *core.AssistantMessage, 1)
+	go func() { done <- s.Result() }()
+	select {
+	case msg := <-done:
+		if msg == nil || msg.StopReason == core.StopReasonError {
+			t.Fatalf("result = %+v", msg)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the provider stopped at an unread event; it must not block on its consumer")
+	}
+	n := 0
+	for range s.Events() {
+		n++
+	}
+	if n == 0 {
+		t.Fatal("the buffered events were lost")
 	}
 }
