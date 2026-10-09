@@ -101,3 +101,11 @@ survives were ported to `New`.
   `N - KeepTurns` are elided. "Original bytes" is the length of the result's
   text.
 - TS-11-17 checks declarations from task 1 and passed before this task.
+
+## 11-REQ-6: already the loop's behaviour
+
+Turn continuation on `tool_use` presence, the truncation notice, the refusal
+stop and the normal end were in place before spec 11 (`runLoop`,
+`synthesizeTruncated` in `loop.go`). TS-11-22..25 passed when written; each
+was then seen to fail against a mutated loop (continuation gated on the stop
+reason, truncation not detected, refusal not mapped).

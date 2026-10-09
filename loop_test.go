@@ -1006,3 +1006,83 @@ func TestContextOverflowEndsTheRun_TS11_21(t *testing.T) {
 		t.Fatalf("%d requests; the oversized one must not be sent", fp.Calls())
 	}
 }
+
+// ------------------------------------------------------------------- 11-REQ-6
+
+// TS-11-22: tool_use blocks, not the stop reason, decide whether the run
+// goes on.
+func TestContinuationIsToolUsePresence_TS11_22(t *testing.T) {
+	var ran atomic.Int32
+	fp := faux.New(
+		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxToolCall("c1", "toolA", "{}")),
+		faux.FauxAssistantMessage(core.StopReasonLength, faux.FauxText("truncated text")),
+		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("never requested")),
+	)
+	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{echoTool("toolA", &ran)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "test continuation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TurnCount != 2 || ran.Load() != 1 || fp.Calls() != 2 {
+		t.Fatalf("turns = %d, handler ran %d, requests %d; want 2, 1, 2", res.TurnCount, ran.Load(), fp.Calls())
+	}
+}
+
+// TS-11-23: a truncated response's calls are not run; each gets the fixed
+// notice and the run goes on.
+func TestTruncatedCallsGetTheNotice_TS11_23(t *testing.T) {
+	var ran atomic.Int32
+	fp := faux.New(
+		faux.FauxAssistantMessage(core.StopReasonLength, faux.FauxToolCall("call_1", "my_tool", `{"partial":1}`)),
+		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("finished")),
+	)
+	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{echoTool("my_tool", &ran)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "trigger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ran.Load() != 0 {
+		t.Fatal("a truncated call ran")
+	}
+	want := "Tool call \"my_tool\" was not executed: the response hit the output token limit,\n" +
+		"so its arguments may be truncated. Re-issue the tool call with complete arguments."
+	tr := findToolResult(t, res.Messages, "call_1")
+	if tr.Content.Text() != want || !tr.IsError {
+		t.Fatalf("notice = %q (error %v), want %q", tr.Content.Text(), tr.IsError, want)
+	}
+	if res.TurnCount != 2 || res.StopReason != core.RunStopEndTurn {
+		t.Fatalf("run = %q after %d turns, want end_turn after 2", res.StopReason, res.TurnCount)
+	}
+}
+
+// TS-11-24: a refusal with no tool calls ends the run as a refusal.
+func TestRefusalEndsTheRun_TS11_24(t *testing.T) {
+	fp := faux.New(faux.FauxAssistantMessage(core.StopReasonRefusal, faux.FauxText("I cannot fulfill this request")))
+	a, err := New(Config{Provider: fp, Model: driverModel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "unsafe prompt")
+	if res.StopReason != core.RunStopRefusal || !errors.Is(res.Error, core.ErrRefusal) || !errors.Is(err, core.ErrRefusal) {
+		t.Fatalf("run = %q, %v / %v; want refusal wrapping ErrRefusal", res.StopReason, res.Error, err)
+	}
+}
+
+// TS-11-25: an answer with no tool calls ends the run normally.
+func TestAnswerEndsTheRun_TS11_25(t *testing.T) {
+	fp := faux.New(faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("Answer completed.")))
+	a, err := New(Config{Provider: fp, Model: driverModel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "regular query")
+	if err != nil || res.StopReason != core.RunStopEndTurn || res.Error != nil {
+		t.Fatalf("run = %q, %v / %v; want end_turn and no error", res.StopReason, res.Error, err)
+	}
+}
