@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/agentfox/agentkit-go/core"
+	"github.com/agentfox/agentkit-go/internal/diag"
 	"github.com/agentfox/agentkit-go/schema"
 	"github.com/agentfox/agentkit-go/wire"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -61,10 +63,30 @@ type Pool struct {
 	conns map[string]*ServerConnection
 	order []string
 	opts  ConnectionOptions
+	diags []Diagnostic
 }
 
 func NewPool(opts ConnectionOptions) *Pool {
 	return &Pool{conns: map[string]*ServerConnection{}, opts: opts}
+}
+
+// Diagnostics returns the non-fatal reports collected so far across every
+// connection and tool import, such as an output schema a server declared that
+// could not be read (06-REQ-2.4). The slice is a copy.
+func (p *Pool) Diagnostics() []Diagnostic {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]Diagnostic(nil), p.diags...)
+}
+
+// report records a diagnostic once. Tools may be listed many times in a
+// session; the same bad declaration is one report, not one per listing.
+func (p *Pool) report(d Diagnostic) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !slices.Contains(p.diags, d) {
+		p.diags = append(p.diags, d)
+	}
 }
 
 // Add registers an already-connected server.
@@ -301,13 +323,24 @@ func (p *Pool) Tools(ctx context.Context, existing []core.Tool) ([]core.Tool, er
 // adapt turns one MCP tool definition into a core.Tool.
 func (p *Pool) adapt(c *ServerConnection, d *Tool, qualified string) core.Tool {
 	unqualified := d.Name
+	var output *schema.Schema
+	if d.OutputSchema != nil {
+		var err error
+		if output, err = outputSchemaFrom(d.OutputSchema); err != nil {
+			// The tool stays usable without output typing; only the schema
+			// is lost, and the embedder is told which one (06-REQ-2.2).
+			p.report(Diagnostic{Severity: diag.SeverityError, Message: fmt.Sprintf(
+				"mcp: server %q tool %q: output schema dropped: %v", c.Name(), d.Name, err)})
+		}
+	}
 	return core.Tool{
 		Name:        qualified,
 		Description: d.Description,
 		// MCPServer is set so REQ-OBS-05's audit does not have to guess the
 		// server from a name whose prefix is configurable.
-		MCPServer:   c.Name(),
-		InputSchema: schemaFrom(d.InputSchema),
+		MCPServer:    c.Name(),
+		InputSchema:  schemaFrom(d.InputSchema),
+		OutputSchema: output,
 		Execute: func(ctx context.Context, in json.RawMessage) core.ToolResult {
 			// The model's bytes go through VERBATIM; validity is checked, the
 			// value is not decoded (see CallRaw).
@@ -359,6 +392,35 @@ func schemaFrom(in any) *schema.Schema {
 		return schema.Object()
 	}
 	return convertSchema(v, 0)
+}
+
+// outputSchemaFrom converts an MCP outputSchema, which describes the tool's
+// structuredContent.
+//
+// Unlike schemaFrom it fails rather than falling back: an input schema that
+// cannot be read still has to accept arguments, but an output schema that
+// cannot be read is a promise nobody can hold the server to, and a guessed one
+// would mislead every caller that binds to it. A schema whose root is not an
+// object of the "object" type describes a non-object structuredContent, which
+// the adapted tool returns as Data {"value": ...}; the schema is wrapped the
+// same way so that it still describes Data.
+func outputSchemaFrom(in any) (*schema.Schema, error) {
+	raw, err := json.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	v, err := wire.Parse(raw, wire.Limits{})
+	if err != nil {
+		return nil, err
+	}
+	if v.Kind != wire.KindObject {
+		return nil, fmt.Errorf("a schema must be a JSON object, got %s", bytes.TrimSpace(raw))
+	}
+	s := convertSchema(v, 0)
+	if s.Type != schema.TypeObject {
+		return schema.Object(schema.Prop("value", s)), nil
+	}
+	return s, nil
 }
 
 func convertSchema(v wire.Value, depth int) *schema.Schema {

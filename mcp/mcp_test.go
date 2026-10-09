@@ -18,7 +18,9 @@ import (
 	"time"
 
 	"github.com/agentfox/agentkit-go/core"
+	"github.com/agentfox/agentkit-go/internal/diag"
 	"github.com/agentfox/agentkit-go/mcp"
+	"github.com/agentfox/agentkit-go/schema"
 	"github.com/agentfox/agentkit-go/wire"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -1309,4 +1311,118 @@ func TestAnOversizedStderrLineDoesNotWedgeTheServer(t *testing.T) {
 		}
 	}
 	t.Fatalf("the caller was never told its diagnostics stopped: %q", warnings)
+}
+
+// ---- 06-REQ-2: output schemas imported from a server
+
+// outputSchemaServer exposes three tools: calc declares a valid outputSchema,
+// broken declares one that is not a schema at all, simple declares none.
+// Every one of them answers a call, so a test can tell an adapted tool that
+// still works from one that was dropped.
+func outputSchemaServer(t *testing.T) *mcp.Server {
+	t.Helper()
+	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "schema-server", Version: "1"}})
+	ok := func(context.Context, map[string]any) (*mcp.CallToolResult, error) { return text("ok"), nil }
+	must(t, s.RegisterTool(&mcp.Tool{
+		Name: "calc",
+		OutputSchema: json.RawMessage(`{"type":"object","properties":{"value":{"type":"number"},` +
+			`"unit":{"type":"string"}},"required":["value"]}`),
+	}, ok))
+	must(t, s.RegisterTool(&mcp.Tool{Name: "broken", OutputSchema: "not a valid schema object"}, ok))
+	must(t, s.RegisterTool(&mcp.Tool{Name: "simple"}, ok))
+	return s
+}
+
+func schemaPool(t *testing.T, srv *mcp.Server) (*mcp.Pool, map[string]core.Tool) {
+	t.Helper()
+	p := mcp.NewPool(mcp.ConnectionOptions{})
+	must(t, p.Add(pair(t, srv, mcp.ServerConfig{Name: "srv"}, mcp.ConnectionOptions{})))
+	t.Cleanup(func() { _ = p.Close() })
+	tools, err := p.Tools(context.Background(), nil)
+	must(t, err)
+	byName := map[string]core.Tool{}
+	for _, tl := range tools {
+		byName[tl.Name] = tl
+	}
+	return p, byName
+}
+
+// TS-06-4: a valid outputSchema becomes the adapted tool's OutputSchema.
+func TestAServerOutputSchemaIsImported_TS06_4(t *testing.T) {
+	_, tools := schemaPool(t, outputSchemaServer(t))
+	out := tools["srv__calc"].OutputSchema
+	if out == nil {
+		t.Fatal("srv__calc has no OutputSchema; the server declared one")
+	}
+	if out.Type != schema.TypeObject {
+		t.Fatalf("OutputSchema.Type = %q, want object", out.Type)
+	}
+	if v := out.Properties["value"]; v == nil || v.Type != schema.TypeNumber {
+		t.Fatalf("value = %+v, want a number property", v)
+	}
+	if u := out.Properties["unit"]; u == nil || u.Type != schema.TypeString {
+		t.Fatalf("unit = %+v, want a string property", u)
+	}
+	if !out.IsRequired("value") || out.IsRequired("unit") {
+		t.Fatalf("required = %v, want [value]", out.Required)
+	}
+}
+
+// TS-06-5: a malformed outputSchema is dropped with a SeverityError diagnostic
+// naming the server and the tool; the tool is still imported and callable.
+func TestAMalformedOutputSchemaIsDroppedWithADiagnostic_TS06_5(t *testing.T) {
+	p, tools := schemaPool(t, outputSchemaServer(t))
+	broken, ok := tools["srv__broken"]
+	if !ok {
+		t.Fatal("srv__broken was not imported; a bad output schema must not cost the tool")
+	}
+	if broken.OutputSchema != nil {
+		t.Fatalf("OutputSchema = %+v, want nil for a malformed declaration", broken.OutputSchema)
+	}
+	var found bool
+	for _, d := range p.Diagnostics() {
+		if d.Severity == diag.SeverityError && strings.Contains(d.Message, `"srv"`) &&
+			strings.Contains(d.Message, `"broken"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("diagnostics = %+v, want a SeverityError naming server srv and tool broken", p.Diagnostics())
+	}
+	if res := broken.Execute(context.Background(), json.RawMessage(`{}`)); !res.OK {
+		t.Fatalf("srv__broken call = %+v; the connection must stay usable", res)
+	}
+}
+
+// TS-06-6: a tool with no outputSchema gets nil and adds no diagnostic.
+func TestAnOmittedOutputSchemaIsNilWithoutDiagnostics_TS06_6(t *testing.T) {
+	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "plain", Version: "1"}})
+	must(t, s.RegisterTool(&mcp.Tool{Name: "simple"},
+		func(context.Context, map[string]any) (*mcp.CallToolResult, error) { return text("ok"), nil }))
+	p, tools := schemaPool(t, s)
+	if tl, ok := tools["srv__simple"]; !ok || tl.OutputSchema != nil {
+		t.Fatalf("srv__simple = %+v (found %v), want an imported tool with nil OutputSchema", tl.OutputSchema, ok)
+	}
+	if d := p.Diagnostics(); len(d) != 0 {
+		t.Fatalf("diagnostics = %+v, want none", d)
+	}
+}
+
+// A non-object output schema describes a structuredContent the adapted tool
+// returns as Data {"value": ...}, so the imported schema is wrapped the same
+// way and still describes Data. A server's array or number schema is valid
+// JSON Schema and must not be reported as malformed.
+func TestANonObjectOutputSchemaDescribesTheWrappedValue(t *testing.T) {
+	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "n", Version: "1"}})
+	must(t, s.RegisterTool(&mcp.Tool{Name: "count", OutputSchema: json.RawMessage(`{"type":"integer"}`)},
+		func(context.Context, map[string]any) (*mcp.CallToolResult, error) { return text("1"), nil }))
+	p, tools := schemaPool(t, s)
+	out := tools["srv__count"].OutputSchema
+	if out == nil || out.Type != schema.TypeObject || !out.IsRequired("value") ||
+		out.Properties["value"].Type != schema.TypeInteger {
+		t.Fatalf("OutputSchema = %+v, want object{value: integer}", out)
+	}
+	if d := p.Diagnostics(); len(d) != 0 {
+		t.Fatalf("diagnostics = %+v, want none for a valid schema", d)
+	}
 }
