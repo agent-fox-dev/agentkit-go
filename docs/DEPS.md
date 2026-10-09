@@ -5,6 +5,24 @@ Why a third-party module is in AgentKit, and on what terms. The rule since
 maintained library replaces hand-rolled infrastructure when it carries the
 same guarantees. Each module here is one where that was decided on purpose.
 
+## The allowlist
+
+`internal/policy/deps_test.go` lists the root module's approved direct
+dependencies, and `TestDirectDependenciesAreApproved_TS09_16` fails, naming the
+module, when `go list -m` reports a direct dependency that is not on it:
+
+| Module | For |
+|---|---|
+| `github.com/bmatcuk/doublestar/v4` | glob matching in `find_files` and the ignore engine |
+| `github.com/modelcontextprotocol/go-sdk` | the MCP client and pool |
+| `github.com/pelletier/go-toml/v2` | TOML parsing for MCP configuration (`internal/toml`) |
+| `github.com/tree-sitter/…`, `github.com/tree-sitter-grammars/…` | tree-sitter outlines and their grammars |
+| `go.starlark.net` | code mode's Starlark runtime |
+
+Adding a direct dependency means adding it there, with its reason, and a ruling
+here. The `codesearch` module is separate and not covered: its zoekt graph stays
+out of the root module's.
+
 ## `go.starlark.net`
 
 **Used by.** `codemode`, the tool that runs model-written scripts. Nothing
