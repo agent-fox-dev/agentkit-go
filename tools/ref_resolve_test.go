@@ -2,7 +2,9 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -243,5 +245,27 @@ func TestSymbolResolution_SplitContainerMemberProperty_TS_05_12(t *testing.T) {
 					container, member, match.Container, match.Name)
 			}
 		}
+	}
+}
+
+// TS-05-9 (unit): a path given as an absolute path inside the workspace
+// scopes the declaration lookup as its relative form does.
+// Verifies: 05-REQ-2.2
+func TestSymbolResolution_AbsolutePathScope_TS05_9(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "go.mod", "module example.com/p\n\ngo 1.22\n")
+	writeFile(t, root, "svc/svc.go", "package svc\n\nfunc Handle() {}\n\nfunc call() { Handle() }\n")
+	ws, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ft := newFileTools(Options{Workspace: ws}.withDefaults())
+	args, _ := json.Marshal(map[string]string{"name": "Handle", "path": filepath.Join(ws.Root, "svc")})
+	res := ft.findReferencesTool().Execute(context.Background(), args)
+	if !res.OK {
+		t.Fatalf("find_references: %s", res.Text)
+	}
+	if data := res.Data["result"].(ReferenceResult); data.Backend != "go/types" || data.Target.Name != "Handle" {
+		t.Fatalf("Backend %q Target %+v, want go/types and Handle", data.Backend, data.Target)
 	}
 }

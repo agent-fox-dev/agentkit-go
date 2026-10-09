@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -243,5 +244,29 @@ func TestRefRender_TS05_39(t *testing.T) {
 	}
 	if !strings.Contains(res.Text, "0 references") {
 		t.Fatalf("expected res.Text to contain '0 references', got:\n%s", res.Text)
+	}
+}
+
+// TS-05-38 (unit): a real search reports how many package checks it used
+// and the type errors they collected.
+// Verifies: 05-REQ-7.4
+func TestRefRender_CountsFromSearch_TS05_38(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "go.mod", "module example.com/c\n\ngo 1.22\n")
+	writeFile(t, root, "a/a.go", "package a\n\nimport \"fmt\"\n\nfunc Hello() { fmt.Println(\"hi\") }\n")
+	writeFile(t, root, "b/b.go", "package b\n\nimport \"example.com/c/a\"\n\nfunc Use() { a.Hello() }\n")
+	ws, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := ws.References(context.Background(), outline.Decl{Kind: outline.KindFunc, Name: "Hello", StartLine: 5}, ReferenceOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PackagesChecked < 2 {
+		t.Fatalf("PackagesChecked = %d, want at least the two workspace packages", res.PackagesChecked)
+	}
+	if res.Errors == 0 {
+		t.Fatal("Errors = 0, want the error from fmt.Println on the stubbed fmt package")
 	}
 }

@@ -427,7 +427,7 @@
       "done_when": [
         "make check passes and doc updates are verified"
       ],
-      "state": "in_progress",
+      "state": "done",
       "optional": false
     },
     {
@@ -461,7 +461,7 @@
       "done_when": [
         "make check passes and all 5 smoke tests pass"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     }
   ]

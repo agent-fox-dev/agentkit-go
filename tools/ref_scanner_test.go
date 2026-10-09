@@ -93,7 +93,7 @@ func TestRefScanner_CandidatesTraversal_TS_05_19(t *testing.T) {
 	}
 
 	// Case 1: Traversal without index
-	candidates, err := findCandidateFiles(context.Background(), ws, "Run", nil)
+	candidates, err := findCandidateFiles(context.Background(), ws, "Run", nil, nil)
 	if err != nil {
 		t.Fatalf("findCandidateFiles failed: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestRefScanner_CandidatesTraversal_TS_05_19(t *testing.T) {
 			"src/util.ts",
 		},
 	}
-	candidatesIndexed, err := findCandidateFiles(context.Background(), ws, "Run", mockIndex)
+	candidatesIndexed, err := findCandidateFiles(context.Background(), ws, "Run", mockIndex, nil)
 	if err != nil {
 		t.Fatalf("findCandidateFiles with index failed: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestRefScanner_UndeclaredTargetTextConfidence_TS_05_23(t *testing.T) {
 	}
 	// Target declaration not found in symbol table: find_references searches
 	// for the bare name with the text backend.
-	res, err := executeReferenceSearch(context.Background(), ws, outline.Decl{Name: "MY_GLOBAL_VAR"}, "text", ReferenceOptions{IncludeTests: true}, nil)
+	res, err := executeReferenceSearch(context.Background(), ws, outline.Decl{Name: "MY_GLOBAL_VAR"}, "", "text", ReferenceOptions{IncludeTests: true}, SymbolOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

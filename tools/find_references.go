@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/agentfox/agentkit-go/core"
@@ -42,6 +43,29 @@ func (f *fileTools) ensureSymbolTable(ctx context.Context) error {
 		st.buildOrRefresh(ctx, f, "", revalAll, gen)
 	}
 	return nil
+}
+
+// referenceTarget picks the declaration name refers to from the symbol
+// table, read under its lock: the top-ranked match of kind under the
+// workspace-relative directory relPath, the file declaring it, and the
+// backend that searches for it. With no declaration the name is searched
+// as text (05-REQ-2.4). ok is false when ctx ends waiting for the table.
+func (f *fileTools) referenceTarget(ctx context.Context, name, kind, relPath string) (target outline.Decl, targetPath, backend string, ok bool) {
+	st := f.getTable()
+	if !st.lock(ctx) {
+		return outline.Decl{}, "", "", false
+	}
+	candidates := resolveSymbolCandidates(st, name, kind, relPath)
+	st.unlock()
+	if len(candidates) == 0 {
+		return outline.Decl{Name: name}, "", "text", true
+	}
+	top := disambiguateSymbol(candidates, name)
+	backend = "lexical"
+	if strings.HasSuffix(top.Path, ".go") {
+		backend = "go/types"
+	}
+	return top.Decl(), top.Path, backend, true
 }
 
 // findReferencesTool returns the find_references tool.
@@ -98,7 +122,8 @@ func (f *fileTools) findReferencesTool() core.Tool {
 				kind = k
 			}
 
-			// Validate path
+			// Validate path; relPath is its workspace-relative form.
+			var relPath string
 			if a.Path != "" {
 				abs, err := f.ws.Resolve(a.Path)
 				if err != nil {
@@ -110,6 +135,9 @@ func (f *fileTools) findReferencesTool() core.Tool {
 				}
 				if !fi.IsDir() {
 					return errResult("invalid_arguments", fmt.Sprintf("path is not a directory: %s", a.Path))
+				}
+				if relPath = filepath.ToSlash(f.ws.Rel(abs)); relPath == "." {
+					relPath = ""
 				}
 			}
 
@@ -139,21 +167,18 @@ func (f *fileTools) findReferencesTool() core.Tool {
 				return fail(err)
 			}
 
-			target := outline.Decl{Name: a.Name}
-			backend := "text"
-			if candidates := resolveSymbolCandidates(f.getTable(), a.Name, kind, a.Path); len(candidates) > 0 {
-				top := disambiguateSymbol(candidates, a.Name)
-				target = top.Decl()
-				backend = "lexical"
-				if strings.HasSuffix(top.Path, ".go") {
-					backend = "go/types"
-				}
+			target, targetPath, backend, ok := f.referenceTarget(ctx, a.Name, kind, relPath)
+			if !ok {
+				return errResult("aborted", "Operation aborted")
 			}
 
 			opts := ReferenceOptions{Path: a.Path, IncludeTests: includeTests, MaxResults: maxResults}
-			refRes, err := executeReferenceSearch(ctx, f.ws, target, backend, opts, rc)
+			refRes, err := executeReferenceSearch(ctx, f.ws, target, targetPath, backend, opts, f.symOpts, rc)
 			if err != nil {
 				return fail(err)
+			}
+			if backend == "text" {
+				refRes.Target = outline.Decl{} // no declaration matched
 			}
 			return renderReferencesResult(a.Name, refRes)
 		},
