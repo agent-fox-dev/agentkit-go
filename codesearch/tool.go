@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/schema"
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 
 	zoekt "github.com/sourcegraph/zoekt"
 	"github.com/sourcegraph/zoekt/query"

@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentfox/agentkit-go/catalog"
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/provider"
+	"github.com/agent-fox-dev/agentkit-go/catalog"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider"
 )
 
 // DefaultBaseURL is used when neither the catalog row nor ANTHROPIC_BASE_URL

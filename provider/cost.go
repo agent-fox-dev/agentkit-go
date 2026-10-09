@@ -3,7 +3,7 @@ package provider
 import (
 	"strings"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // This file is REQ-PROV-05's arithmetic, shared by every wire API.

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/codesearch"
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/codesearch"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // moduleRoot returns the absolute path of the codesearch module directory.
@@ -70,7 +70,7 @@ func TestForbiddenImports(t *testing.T) {
 		}
 		pkg, imports := parts[0], parts[1]
 		// Only check our own packages, not zoekt's.
-		if !strings.HasPrefix(pkg, "github.com/agentfox/agentkit-go/codesearch") {
+		if !strings.HasPrefix(pkg, "github.com/agent-fox-dev/agentkit-go/codesearch") {
 			continue
 		}
 		for _, imp := range strings.Split(imports, ",") {
@@ -97,8 +97,8 @@ func TestForbiddenImportsDetectsSynthetic(t *testing.T) {
 	}
 
 	synthetic := []string{
-		"github.com/agentfox/agentkit-go/codesearch google.golang.org/grpc,fmt",
-		"github.com/agentfox/agentkit-go/codesearch github.com/prometheus/client_golang/prometheus,fmt",
+		"github.com/agent-fox-dev/agentkit-go/codesearch google.golang.org/grpc,fmt",
+		"github.com/agent-fox-dev/agentkit-go/codesearch github.com/prometheus/client_golang/prometheus,fmt",
 	}
 
 	for _, line := range synthetic {
@@ -212,13 +212,13 @@ func TestModuleStructure_TS03_4(t *testing.T) {
 	content := string(gomod)
 
 	// Module path.
-	if !strings.Contains(content, "module github.com/agentfox/agentkit-go/codesearch") {
-		t.Error("go.mod must declare module github.com/agentfox/agentkit-go/codesearch")
+	if !strings.Contains(content, "module github.com/agent-fox-dev/agentkit-go/codesearch") {
+		t.Error("go.mod must declare module github.com/agent-fox-dev/agentkit-go/codesearch")
 	}
 
 	// Replace directive.
-	if !strings.Contains(content, "replace github.com/agentfox/agentkit-go => ..") {
-		t.Error("go.mod must have replace github.com/agentfox/agentkit-go => ..")
+	if !strings.Contains(content, "replace github.com/agent-fox-dev/agentkit-go => ..") {
+		t.Error("go.mod must have replace github.com/agent-fox-dev/agentkit-go => ..")
 	}
 
 	// Pinned zoekt at an exact version (pseudo-version or tag).

@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/mcp"
-	"github.com/agentfox/agentkit-go/tools"
-	"github.com/agentfox/agentkit-go/wire"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/mcp"
+	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/wire"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

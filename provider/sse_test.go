@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/provider"
+	"github.com/agent-fox-dev/agentkit-go/provider"
 )
 
 func readAllSSE(t *testing.T, body string) ([]provider.SSEEvent, error) {

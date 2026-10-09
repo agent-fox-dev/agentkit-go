@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"sync"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // This file is §6.2a Level 3: REQ-CACHE-06 (serialize the tool list once per

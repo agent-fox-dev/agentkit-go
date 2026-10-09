@@ -3,7 +3,7 @@ package catalog
 import (
 	"testing"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 func thinkingModel(entries map[core.ThinkingLevel]*string) *core.Model {

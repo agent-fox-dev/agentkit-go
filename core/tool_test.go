@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 func noopHandler(context.Context, json.RawMessage) (json.RawMessage, error) { return nil, nil }

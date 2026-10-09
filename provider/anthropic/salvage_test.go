@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/provider/anthropic"
+	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 )
 
 // TestValidJSONIsReturnedByteForByte is REQ-PROV-17 at the salvage boundary.

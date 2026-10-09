@@ -9,7 +9,7 @@ import (
 
 	"go.starlark.net/starlark"
 
-	"github.com/agentfox/agentkit-go/codemode"
+	"github.com/agent-fox-dev/agentkit-go/codemode"
 )
 
 // TS-08-33: printed lines are the result text.

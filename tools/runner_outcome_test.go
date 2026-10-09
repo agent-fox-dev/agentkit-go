@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/jsonx"
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/jsonx"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 type outcomeScenario struct {

@@ -1,18 +1,20 @@
 package agentkit
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/provider/anthropic"
-	"github.com/agentfox/agentkit-go/provider/faux"
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
+	"github.com/agent-fox-dev/agentkit-go/provider/faux"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // TS-09-10: the Agent carries no session recorder, middleware chain or cache
@@ -225,4 +227,99 @@ func TestObsoleteRootAndToolFilesAbsent_TS09_3(t *testing.T) {
 func TestDeletedCoreAndSubsystemTestsAbsent_TS09_4(t *testing.T) {
 	assertAbsent(t, "core/audit.go", "core/audit_test.go", "core/trace.go", "core/plugin.go",
 		"plugin_wiring_test.go", "middleware_wiring_test.go", "events_test.go", "compaction_usage_test.go")
+}
+
+// modDirectives reads a go.mod and returns its module path, its require
+// lines as "path version", and its replace lines as "old => new". It handles
+// both the single-line and the block forms, which is all a go.mod uses.
+func modDirectives(t *testing.T, path string) (module string, requires, replaces []string) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	block := ""
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = strings.TrimSpace(line[:i])
+		}
+		switch {
+		case line == "":
+		case line == ")":
+			block = ""
+		case strings.HasSuffix(line, "("):
+			block = strings.TrimSpace(strings.TrimSuffix(line, "("))
+		case block == "require":
+			requires = append(requires, strings.Join(strings.Fields(line), " "))
+		case block == "replace":
+			replaces = append(replaces, strings.Join(strings.Fields(line), " "))
+		case strings.HasPrefix(line, "module "):
+			module = strings.TrimSpace(strings.TrimPrefix(line, "module "))
+		case strings.HasPrefix(line, "require "):
+			requires = append(requires, strings.Join(strings.Fields(strings.TrimPrefix(line, "require ")), " "))
+		case strings.HasPrefix(line, "replace "):
+			replaces = append(replaces, strings.Join(strings.Fields(strings.TrimPrefix(line, "replace ")), " "))
+		}
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return module, requires, replaces
+}
+
+// TS-09-13: the root and codesearch go.mod files declare the canonical
+// module paths, and codesearch requires and replaces the root by it.
+func TestCanonicalModulePaths_TS09_13(t *testing.T) {
+	const root = "github.com/agent-fox-dev/agentkit-go"
+	if m, _, _ := modDirectives(t, "go.mod"); m != root {
+		t.Errorf("go.mod module = %q, want %q", m, root)
+	}
+	m, reqs, reps := modDirectives(t, filepath.Join("codesearch", "go.mod"))
+	if m != root+"/codesearch" {
+		t.Errorf("codesearch/go.mod module = %q, want %q", m, root+"/codesearch")
+	}
+	var foundReq, foundRep bool
+	for _, r := range reqs {
+		foundReq = foundReq || r == root+" v0.0.0"
+	}
+	for _, r := range reps {
+		foundRep = foundRep || r == root+" => .."
+	}
+	if !foundReq {
+		t.Errorf("codesearch/go.mod does not require %s v0.0.0: %v", root, reqs)
+	}
+	if !foundRep {
+		t.Errorf("codesearch/go.mod does not replace %s => ..: %v", root, reps)
+	}
+}
+
+// TS-09-14 (property): no Go file anywhere in the repository imports the
+// legacy module path.
+func TestNoLegacyImportPaths_TS09_14(t *testing.T) {
+	legacy := `"github.com/` + `agentfox/agentkit-go` // split so this file does not match itself
+	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && (d.Name() == ".git" || d.Name() == "testdata") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(b), legacy) {
+			t.Errorf("%s still references the legacy module path", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }

@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/outline"
 )
 
 // TS-05-45 (unit): Workspace exports ReferenceOptions, ReferenceSite, ReferenceResult types and References method

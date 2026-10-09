@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agentfox/agentkit-go/wire"
+	"github.com/agent-fox-dev/agentkit-go/wire"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

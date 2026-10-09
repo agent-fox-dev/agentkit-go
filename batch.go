@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // executeBatch runs one turn's tool calls (REQ-LOOP-05). It is three phases

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // TestSlashPrefixHonouredOnlyForAKnownVendor is REQ-CAT-02 rule 1, both ways.

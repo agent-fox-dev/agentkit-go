@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // REQ-TOOL-04d's whitespace-tolerant fallback.

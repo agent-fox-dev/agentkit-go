@@ -6,7 +6,7 @@ disagree, fix this file.
 
 ## Shape
 
-One Go module (`github.com/agentfox/agentkit-go`, `go 1.27`). Maintained
+One Go module (`github.com/agent-fox-dev/agentkit-go`, `go 1.27`). Maintained
 third-party modules are used where they replace hand-rolled infrastructure
 ([PRD 09](prd/09-replace-hand-rolled-code-with-libraries.md)). cgo is allowed
 only in `//go:build cgo` files, and every package keeps a pure-Go fallback:

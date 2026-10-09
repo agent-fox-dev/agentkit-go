@@ -20,12 +20,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/internal/diag"
-	"github.com/agentfox/agentkit-go/jsonx"
-	"github.com/agentfox/agentkit-go/mcp"
-	"github.com/agentfox/agentkit-go/schema"
-	"github.com/agentfox/agentkit-go/wire"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/internal/diag"
+	"github.com/agent-fox-dev/agentkit-go/jsonx"
+	"github.com/agent-fox-dev/agentkit-go/mcp"
+	"github.com/agent-fox-dev/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/wire"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

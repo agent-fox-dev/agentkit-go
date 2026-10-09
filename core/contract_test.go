@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // --- REQ-LOOP-01 / Appendix A correction #1 -------------------------------

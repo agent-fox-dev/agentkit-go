@@ -3,8 +3,8 @@ package agentkit
 import (
 	"fmt"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/guard"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/guard"
 )
 
 // checkExecuteGuard is OQ-8's loud failure: a shell tool in the resolved set

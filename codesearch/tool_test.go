@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/jsonx"
-	"github.com/agentfox/agentkit-go/schema"
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/jsonx"
+	"github.com/agent-fox-dev/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // TS-03-16: code_search is a Builtin parallel read-only tool with the pinned

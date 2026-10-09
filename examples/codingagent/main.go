@@ -21,13 +21,13 @@ import (
 	"sort"
 	"strings"
 
-	agentkit "github.com/agentfox/agentkit-go"
-	"github.com/agentfox/agentkit-go/catalog"
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/guard"
-	"github.com/agentfox/agentkit-go/provider"
-	"github.com/agentfox/agentkit-go/provider/anthropic"
-	"github.com/agentfox/agentkit-go/tools"
+	agentkit "github.com/agent-fox-dev/agentkit-go"
+	"github.com/agent-fox-dev/agentkit-go/catalog"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/guard"
+	"github.com/agent-fox-dev/agentkit-go/provider"
+	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 func main() {

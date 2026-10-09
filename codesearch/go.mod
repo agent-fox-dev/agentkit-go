@@ -5,12 +5,12 @@
 // only mechanism in Go that keeps a dependency out of the root's graph. No
 // embedder that does not import codesearch pays for it. See docs/DEPS.md R7 and
 // docs/errata/03_forbidden_imports_direct_only.md.
-module github.com/agentfox/agentkit-go/codesearch
+module github.com/agent-fox-dev/agentkit-go/codesearch
 
 go 1.27
 
 require (
-	github.com/agentfox/agentkit-go v0.0.0
+	github.com/agent-fox-dev/agentkit-go v0.0.0
 	github.com/sourcegraph/zoekt v0.0.0-20260911061844-153817f643cd
 )
 
@@ -83,4 +83,4 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/agentfox/agentkit-go => ..
+replace github.com/agent-fox-dev/agentkit-go => ..

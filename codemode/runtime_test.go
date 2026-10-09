@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/codemode"
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/codemode"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // fakeCaller stands in for the agent's nested dispatcher: it answers each

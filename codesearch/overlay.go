@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/agentfox/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/outline"
 
 	zoekt "github.com/sourcegraph/zoekt"
 	zoektindex "github.com/sourcegraph/zoekt/index"

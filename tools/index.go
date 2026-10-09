@@ -3,7 +3,7 @@ package tools
 import (
 	"context"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // SymbolQuery carries find_symbol's validated arguments for the Index.Symbols

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/wire"
+	"github.com/agent-fox-dev/agentkit-go/wire"
 )
 
 func rejects(t *testing.T, data string, l wire.Limits, want wire.Rule) {

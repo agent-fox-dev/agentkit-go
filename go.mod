@@ -1,4 +1,4 @@
-module github.com/agentfox/agentkit-go
+module github.com/agent-fox-dev/agentkit-go
 
 go 1.27
 

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/agentfox/agentkit-go/jsonx"
+	"github.com/agent-fox-dev/agentkit-go/jsonx"
 )
 
 // forbiddenStrict is REQ-TOOL-03's rejection list. It is checked against

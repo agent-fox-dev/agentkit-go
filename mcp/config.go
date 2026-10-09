@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentfox/agentkit-go/internal/diag"
-	"github.com/agentfox/agentkit-go/internal/toml"
+	"github.com/agent-fox-dev/agentkit-go/internal/diag"
+	"github.com/agent-fox-dev/agentkit-go/internal/toml"
 )
 
 // Diagnostic is the shared non-fatal report.

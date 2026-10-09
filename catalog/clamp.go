@@ -1,6 +1,6 @@
 package catalog
 
-import "github.com/agentfox/agentkit-go/core"
+import "github.com/agent-fox-dev/agentkit-go/core"
 
 // DefaultSafetyMargin is REQ-CAT-04's safety margin, in tokens. It absorbs the
 // difference between the loop's context estimate and the provider's own

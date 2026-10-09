@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/jsonx"
+	"github.com/agent-fox-dev/agentkit-go/jsonx"
 )
 
 func obj(t *testing.T, s string) jsonx.OrderedObject {

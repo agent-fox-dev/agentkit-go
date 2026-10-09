@@ -1,6 +1,6 @@
 package provider
 
-import "github.com/agentfox/agentkit-go/core"
+import "github.com/agent-fox-dev/agentkit-go/core"
 
 // ToolResultText renders a tool result as the single string a wire with no
 // is_error flag carries — the OpenAI Chat Completions and Responses wires.

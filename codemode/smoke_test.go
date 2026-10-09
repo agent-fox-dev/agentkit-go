@@ -12,11 +12,11 @@ import (
 	"strings"
 	"testing"
 
-	agentkit "github.com/agentfox/agentkit-go"
-	"github.com/agentfox/agentkit-go/codemode"
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/provider/faux"
-	"github.com/agentfox/agentkit-go/tools"
+	agentkit "github.com/agent-fox-dev/agentkit-go"
+	"github.com/agent-fox-dev/agentkit-go/codemode"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider/faux"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // smokeWorkspace has two Go files and three text files.

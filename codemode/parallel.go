@@ -5,7 +5,7 @@ import (
 
 	"go.starlark.net/starlark"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // callDescriptor is call(tool, **kwargs): a call to make later, in parallel.

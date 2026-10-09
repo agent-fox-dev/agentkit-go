@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // Call is one provider HTTP request with the whole cross-cutting pipeline

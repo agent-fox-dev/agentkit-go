@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/codemode"
+	"github.com/agent-fox-dev/agentkit-go/codemode"
 )
 
 // TS-08-44: the defaults are the documented ones, and the runtime's only new
@@ -17,7 +17,7 @@ func TestDepsDefaultsAndIsolation_TS08_44(t *testing.T) {
 		o.MaxConcurrentCalls != 8 || o.MaxOutputBytes != 102400 || o.SpillDir == "" || o.DisableSpill {
 		t.Fatalf("defaults = %+v", o)
 	}
-	out, err := exec.Command("go", "list", "-deps", "github.com/agentfox/agentkit-go/codemode").Output()
+	out, err := exec.Command("go", "list", "-deps", "github.com/agent-fox-dev/agentkit-go/codemode").Output()
 	if err != nil {
 		t.Fatalf("go list: %v", err)
 	}

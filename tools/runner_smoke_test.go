@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // TS-04-59 (smoke): An embedder runs a verifier with stdin, a relative named

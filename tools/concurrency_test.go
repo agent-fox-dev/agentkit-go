@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // TS-02-47: A call waiting behind a running build is abandoned immediately on cancel

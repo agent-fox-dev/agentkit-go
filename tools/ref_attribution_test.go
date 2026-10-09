@@ -8,7 +8,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/agentfox/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/outline"
 )
 
 // TS-05-28 (unit): Attribution engine renders signature or '<Kind> <Name>' for declarations and '<file>' for top level

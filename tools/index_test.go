@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // fakeIndex is a test double for tools.Index that records Invalidate calls.

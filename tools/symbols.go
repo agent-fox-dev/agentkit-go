@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agentfox/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/outline"
 )
 
 // symbolEntry is the per-file record in the symbol table.

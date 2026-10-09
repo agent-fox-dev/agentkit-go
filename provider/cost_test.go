@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/provider"
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider"
 )
 
 func near(t *testing.T, got, want float64, what string) {

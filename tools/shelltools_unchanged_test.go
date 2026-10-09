@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // ------------------------------------------------------------------ TS-04-30

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // TS-03-1: New with a workspace returns an index without goroutines, processes,

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // ledgerEntry is one nested call a script made and how it ended. Its side

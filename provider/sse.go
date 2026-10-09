@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/agentfox/agentkit-go/wire"
+	"github.com/agent-fox-dev/agentkit-go/wire"
 )
 
 // ErrSSETruncated is the mid-stream truncation of REQ-PROV-04.

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 func toolUse(t *testing.T, id, name, args string) ToolUseBlock {

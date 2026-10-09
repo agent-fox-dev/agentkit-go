@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentfox/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // TS-02-39: A complete unmarked table is answered from memory with no walk or outlining

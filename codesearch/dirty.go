@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 // dirtyTracker tracks files that have been modified since the index was built.

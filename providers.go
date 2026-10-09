@@ -1,6 +1,6 @@
 package agentkit
 
-import "github.com/agentfox/agentkit-go/core"
+import "github.com/agent-fox-dev/agentkit-go/core"
 
 // DefaultProviders returns a fresh registry holding the first-party wire API
 // implementations (REQ-PROV-09).

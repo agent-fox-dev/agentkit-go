@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/agentfox/agentkit-go/jsonx"
-	"github.com/agentfox/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/jsonx"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // PreparedArguments is the output of the argument pipeline (REQ-TOOL-11). It carries the value in
