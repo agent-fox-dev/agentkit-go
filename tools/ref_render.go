@@ -60,7 +60,7 @@ func renderReferencesText(name string, res ReferenceResult) string {
 	}
 	if res.Partial {
 		b.WriteString("\n")
-		b.WriteString(SymbolPartialMarker(""))
+		b.WriteString(SymbolPartialMarker(res.partialReason))
 	}
 	return b.String()
 }

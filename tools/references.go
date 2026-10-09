@@ -37,6 +37,8 @@ type ReferenceResult struct {
 	PackagesChecked int
 	Errors          int
 	Truncated       bool
+
+	partialReason string // SymbolPartialMarker reason when Partial
 }
 
 // clampMaxResults normalizes maxResults: <= 0 defaults to 30; > 100 clamps to 100.
@@ -47,16 +49,18 @@ func clampMaxResults(maxResults int) int {
 	return min(maxResults, 100)
 }
 
-// References finds usages and callers of target across the workspace.
+// References finds usages and callers of target across the workspace,
+// bounded by the default SymbolOptions.
 func (w *Workspace) References(ctx context.Context, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error) {
-	return executeReferenceSearch(ctx, w, target, "", opts, nil)
+	return executeReferenceSearch(ctx, w, target, "", opts, SymbolOptions{}, nil)
 }
 
 // executeReferenceSearch runs reference discovery and ranking across
 // workspace files. An empty backend is chosen from the target: "go/types"
 // when a Go package declares it, "lexical" otherwise, "text" for an empty
-// name. rc, when non-nil, caches candidate files.
-func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.Decl, backend string, opts ReferenceOptions, rc *referenceCache) (ReferenceResult, error) {
+// name. The pass is bounded by bounds (05-REQ-6.4). rc, when non-nil,
+// caches candidate files.
+func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.Decl, backend string, opts ReferenceOptions, bounds SymbolOptions, rc *referenceCache) (ReferenceResult, error) {
 	if err := ctx.Err(); err != nil {
 		return ReferenceResult{}, err
 	}
@@ -83,10 +87,11 @@ func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.D
 		}
 	}
 
+	budget := newRefBudget(bounds)
 	var sites []ReferenceSite
 	switch backend {
 	case "":
-		imp := loadGoWorkspace(ws)
+		imp := loadGoWorkspace(ws, budget)
 		sites = resolveGoReferences(imp, target)
 		switch {
 		case len(sites) > 0 || (target.Name != "" && imp.definesName(target.Name)):
@@ -97,7 +102,7 @@ func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.D
 			backend = "text"
 		}
 	case "go/types":
-		sites = resolveGoReferences(loadGoWorkspace(ws), target)
+		sites = resolveGoReferences(loadGoWorkspace(ws, budget), target)
 	}
 
 	if backend == "go/types" {
@@ -114,9 +119,9 @@ func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.D
 		var candFiles []string
 		var err error
 		if rc != nil {
-			candFiles, err = rc.getCandidateFiles(ctx, target.Name)
+			candFiles, err = rc.getCandidateFiles(ctx, target.Name, budget)
 		} else {
-			candFiles, err = findCandidateFiles(ctx, ws, target.Name, nil)
+			candFiles, err = findCandidateFiles(ctx, ws, target.Name, nil, budget)
 		}
 		if err != nil {
 			return ReferenceResult{}, err
@@ -124,6 +129,9 @@ func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.D
 		for _, rel := range candFiles {
 			if !strings.HasPrefix(rel, scopePrefix) {
 				continue
+			}
+			if budget.expired() {
+				break
 			}
 			content, err := os.ReadFile(filepath.Join(ws.Root, filepath.FromSlash(rel)))
 			if err != nil {
@@ -147,7 +155,9 @@ func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.D
 		Target:          target,
 		Sites:           sites,
 		Backend:         backend,
+		Partial:         budget.exhausted(),
 		Truncated:       truncated,
 		PackagesChecked: 1,
+		partialReason:   budget.partialReason(),
 	}, nil
 }

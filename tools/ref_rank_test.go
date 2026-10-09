@@ -1,9 +1,12 @@
 package tools
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TS-05-30: Reference ranker sorts sites deterministically by confidence tier, test status, path, line, and column.
@@ -160,5 +163,64 @@ func TestRefRanker_TS05_32(t *testing.T) {
 	limited, truncated = applyResultLimits(sites[:15], 20)
 	if len(limited) != 15 || truncated {
 		t.Fatalf("expected 15 sites, not truncated, got %d, %v", len(limited), truncated)
+	}
+}
+
+// TS-05-33: Reference ranker halts traversal gracefully upon MaxFiles or
+// MaxDuration bound and appends SymbolPartialMarker.
+// Verifies: 05-REQ-6.4
+func TestRefRanker_TS05_33(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "a.py", "def calc_total(x):\n    return x\n")
+	writeFile(t, root, "b.py", "calc_total(1)\n")
+	writeFile(t, root, "c.py", "calc_total(2)\n")
+	writeFile(t, root, "d.py", "calc_total(3)\n")
+	ws, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name   string
+		opts   SymbolOptions
+		reason string
+	}{
+		{"files", SymbolOptions{MaxFiles: 1}, "files"},
+		{"time", SymbolOptions{MaxDuration: time.Nanosecond}, "time"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Given: a find_references tool whose reference pass is bounded
+			ft := newFileTools(Options{Workspace: ws, Symbols: tc.opts}.withDefaults())
+
+			// When: the bound triggers during candidate processing
+			res := ft.findReferencesTool().Execute(context.Background(), json.RawMessage(`{"name":"calc_total"}`))
+
+			// Then: the pass halts without error, keeps what it collected,
+			// sets Partial and appends the partial marker.
+			if !res.OK {
+				t.Fatalf("OK = false: %s", res.Text)
+			}
+			data, ok := res.Data["result"].(ReferenceResult)
+			if !ok {
+				t.Fatalf("Data[result] is %T", res.Data["result"])
+			}
+			if !data.Partial || res.Data["partial"] != true {
+				t.Fatalf("Partial = %v / %v, want true", data.Partial, res.Data["partial"])
+			}
+			if len(data.Sites) >= 4 {
+				t.Fatalf("a bounded pass returned all %d sites", len(data.Sites))
+			}
+			if want := SymbolPartialMarker(tc.reason); !strings.HasSuffix(res.Text, "\n"+want) {
+				t.Fatalf("text does not end with %q:\n%s", want, res.Text)
+			}
+		})
+	}
+
+	// An unbounded pass over the same tree is complete.
+	ft := newFileTools(Options{Workspace: ws}.withDefaults())
+	res := ft.findReferencesTool().Execute(context.Background(), json.RawMessage(`{"name":"calc_total"}`))
+	if data := res.Data["result"].(ReferenceResult); data.Partial || len(data.Sites) < 4 {
+		t.Fatalf("unbounded pass: Partial=%v sites=%d, want false and at least 4", data.Partial, len(data.Sites))
 	}
 }

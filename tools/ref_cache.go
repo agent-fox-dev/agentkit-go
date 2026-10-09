@@ -251,8 +251,9 @@ func (rc *referenceCache) refresh(ctx context.Context) error {
 	return nil
 }
 
-// getCandidateFiles returns candidate files matching name, checking candidate cache first.
-func (rc *referenceCache) getCandidateFiles(ctx context.Context, name string) ([]string, error) {
+// getCandidateFiles returns candidate files matching name, checking
+// candidate cache first. A list cut short by budget is not cached.
+func (rc *referenceCache) getCandidateFiles(ctx context.Context, name string, budget *refBudget) ([]string, error) {
 	rc.mu.Lock()
 	if cands, ok := rc.candidates[name]; ok {
 		rc.mu.Unlock()
@@ -260,13 +261,15 @@ func (rc *referenceCache) getCandidateFiles(ctx context.Context, name string) ([
 	}
 	rc.mu.Unlock()
 
-	cands, err := findCandidateFiles(ctx, rc.ws, name, rc.ft.index)
+	cands, err := findCandidateFiles(ctx, rc.ws, name, rc.ft.index, budget)
 	if err != nil {
 		return nil, err
 	}
 
 	rc.mu.Lock()
-	rc.candidates[name] = cands
+	if !budget.exhausted() {
+		rc.candidates[name] = cands
+	}
 	for _, c := range cands {
 		rc.files[c] = true
 	}

@@ -211,7 +211,7 @@ func Run() {
 		Name:      "Ping",
 		Container: "Base",
 	}
-	sitesPing := resolveGoReferences(loadGoWorkspace(ws), targetPing)
+	sitesPing := resolveGoReferences(loadGoWorkspace(ws, nil), targetPing)
 	if len(sitesPing) == 0 {
 		t.Fatal("expected at least 1 reference site for Ping")
 	}
@@ -227,7 +227,7 @@ func Run() {
 		Name:      "Read",
 		Container: "Reader",
 	}
-	sitesRead := resolveGoReferences(loadGoWorkspace(ws), targetRead)
+	sitesRead := resolveGoReferences(loadGoWorkspace(ws, nil), targetRead)
 	if len(sitesRead) == 0 {
 		t.Fatal("expected at least 1 reference site for Read")
 	}
@@ -242,7 +242,7 @@ func Run() {
 		Kind: outline.KindFunc,
 		Name: "Do",
 	}
-	sitesDo := resolveGoReferences(loadGoWorkspace(ws), targetDo)
+	sitesDo := resolveGoReferences(loadGoWorkspace(ws, nil), targetDo)
 	if len(sitesDo) == 0 {
 		t.Fatal("expected at least 1 reference site for Do")
 	}
@@ -302,7 +302,7 @@ func Use() {
 		Name:      "Close",
 		Container: "Alpha",
 	}
-	sites := resolveGoReferences(loadGoWorkspace(ws), alphaClose)
+	sites := resolveGoReferences(loadGoWorkspace(ws, nil), alphaClose)
 	if len(sites) == 0 {
 		t.Fatal("expected at least 1 reference for Alpha.Close")
 	}
@@ -354,7 +354,7 @@ func Call(client external.Client) {
 		Name:      "Do",
 		Container: "Handler",
 	}
-	sites := resolveGoReferences(loadGoWorkspace(ws), targetDo)
+	sites := resolveGoReferences(loadGoWorkspace(ws, nil), targetDo)
 	var hit *ReferenceSite
 	for i := range sites {
 		if strings.Contains(sites[i].Source, "client.Do()") {

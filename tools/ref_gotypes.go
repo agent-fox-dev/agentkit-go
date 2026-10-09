@@ -191,12 +191,17 @@ func makeTypesConfig(imp *workspaceImporter) *types.Config {
 	}
 }
 
-// loadGoWorkspace parses and type-checks every directory of ws that holds Go files.
-func loadGoWorkspace(ws *Workspace) *workspaceImporter {
+// loadGoWorkspace parses and type-checks every directory of ws that holds
+// Go files, until budget refuses a file; then the directories already
+// seen are checked and the walk stops.
+func loadGoWorkspace(ws *Workspace, budget *refBudget) *workspaceImporter {
 	imp := newWorkspaceImporter(ws, "")
 	dirs := make(map[string]bool)
 	_ = Walk(context.Background(), ws, ws.Root, WalkOptions{}, func(rel string, d fs.DirEntry) error {
 		if !d.IsDir() && strings.HasSuffix(d.Name(), ".go") {
+			if !budget.take() {
+				return filepath.SkipAll
+			}
 			dirs[filepath.Dir(filepath.Join(ws.Root, filepath.FromSlash(rel)))] = true
 		}
 		return nil

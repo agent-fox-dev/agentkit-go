@@ -151,7 +151,7 @@ func (f *fileTools) findReferencesTool() core.Tool {
 			}
 
 			opts := ReferenceOptions{Path: a.Path, IncludeTests: includeTests, MaxResults: maxResults}
-			refRes, err := executeReferenceSearch(ctx, f.ws, target, backend, opts, rc)
+			refRes, err := executeReferenceSearch(ctx, f.ws, target, backend, opts, f.symOpts, rc)
 			if err != nil {
 				return fail(err)
 			}

@@ -48,8 +48,9 @@ func isPathIgnored(ig *ignoreEngine, rel string) bool {
 // findCandidateFiles finds workspace-relative file paths that mention name,
 // respecting .gitignore and hidden entry exclusion. An idx implementing
 // candidateIndex answers instead of a walk; its answer is filtered by the
-// same rules.
-func findCandidateFiles(ctx context.Context, ws *Workspace, name string, idx Index) ([]string, error) {
+// same rules. Each file inspected is taken from budget; when it refuses,
+// the files found so far are returned.
+func findCandidateFiles(ctx context.Context, ws *Workspace, name string, idx Index, budget *refBudget) ([]string, error) {
 	if ws == nil {
 		return nil, ErrPathNotAllowed
 	}
@@ -66,6 +67,9 @@ func findCandidateFiles(ctx context.Context, ws *Workspace, name string, idx Ind
 				if isAnyComponentHidden(rel) || isPathIgnored(ig, rel) {
 					continue
 				}
+				if !budget.take() {
+					break
+				}
 				fi, err := os.Stat(filepath.Join(ws.Root, filepath.FromSlash(rel)))
 				if err != nil || fi.IsDir() {
 					continue
@@ -81,6 +85,9 @@ func findCandidateFiles(ctx context.Context, ws *Workspace, name string, idx Ind
 	err := Walk(ctx, ws, ws.Root, WalkOptions{}, func(rel string, d fs.DirEntry) error {
 		if d.IsDir() {
 			return nil
+		}
+		if !budget.take() {
+			return filepath.SkipAll
 		}
 		content, err := os.ReadFile(filepath.Join(ws.Root, filepath.FromSlash(rel)))
 		if err != nil || isBinary(content) {
