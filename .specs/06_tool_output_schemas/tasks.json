@@ -130,7 +130,7 @@
       "done_when": [
         "go test ./mcp/... passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,

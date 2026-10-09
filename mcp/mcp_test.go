@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -1424,5 +1426,114 @@ func TestANonObjectOutputSchemaDescribesTheWrappedValue(t *testing.T) {
 	}
 	if d := p.Diagnostics(); len(d) != 0 {
 		t.Fatalf("diagnostics = %+v, want none for a valid schema", d)
+	}
+}
+
+// ---- 06-REQ-3: structuredContent becomes Data
+
+// resultTool imports one tool whose every call answers with res, and returns
+// it adapted.
+func resultTool(t *testing.T, res *mcp.CallToolResult) core.Tool {
+	t.Helper()
+	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "r", Version: "1"}})
+	must(t, s.RegisterTool(&mcp.Tool{Name: "r"},
+		func(context.Context, map[string]any) (*mcp.CallToolResult, error) { return res, nil }))
+	_, tools := schemaPool(t, s)
+	tl, ok := tools["srv__r"]
+	if !ok {
+		t.Fatal("srv__r was not imported")
+	}
+	return tl
+}
+
+// TS-06-7: an object structuredContent IS Data, not nested under a key.
+func TestObjectStructuredContentIsData_TS06_7(t *testing.T) {
+	tl := resultTool(t, &mcp.CallToolResult{
+		Content:           []mcp.Content{&mcp.TextContent{Text: "72.5 F"}},
+		StructuredContent: map[string]any{"temperature": 72.5, "units": "F"},
+	})
+	res := tl.Execute(context.Background(), json.RawMessage(`{}`))
+	if !res.OK {
+		t.Fatalf("call = %+v", res)
+	}
+	want := map[string]any{"temperature": 72.5, "units": "F"}
+	if !reflect.DeepEqual(res.Data, want) {
+		t.Fatalf("Data = %#v, want %#v", res.Data, want)
+	}
+}
+
+// TS-06-8: a non-object structuredContent is Data {"value": ...}.
+func TestNonObjectStructuredContentIsWrapped_TS06_8(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sent any
+		want any
+	}{
+		{"number", 42, float64(42)},
+		{"string", "done", "done"},
+		{"array", []any{"a", 1}, []any{"a", float64(1)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tl := resultTool(t, &mcp.CallToolResult{
+				Content:           []mcp.Content{&mcp.TextContent{Text: "x"}},
+				StructuredContent: tc.sent,
+			})
+			res := tl.Execute(context.Background(), json.RawMessage(`{}`))
+			want := map[string]any{"value": tc.want}
+			if !res.OK || !reflect.DeepEqual(res.Data, want) {
+				t.Fatalf("result = %+v, want OK with Data %#v", res, want)
+			}
+		})
+	}
+}
+
+// TS-06-9: without structuredContent, Data keeps the joined text and the raw
+// content blocks.
+func TestNoStructuredContentFallsBackToTextAndContent_TS06_9(t *testing.T) {
+	tl := resultTool(t, &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: "hello "}, &mcp.TextContent{Text: "world"}},
+	})
+	res := tl.Execute(context.Background(), json.RawMessage(`{}`))
+	if !res.OK {
+		t.Fatalf("call = %+v", res)
+	}
+	if res.Data["text"] != "hello world" {
+		t.Fatalf("Data[text] = %#v, want %q", res.Data["text"], "hello world")
+	}
+	content, ok := res.Data["content"].([]json.RawMessage)
+	if !ok || len(content) != 2 || !strings.Contains(string(content[0]), `"hello "`) {
+		t.Fatalf("Data[content] = %#v, want the two raw blocks", res.Data["content"])
+	}
+	if _, nested := res.Data["structured"]; nested {
+		t.Fatal("Data carries a structured key with no structuredContent")
+	}
+}
+
+// TS-06-10: for any mix of content blocks, Text is the text blocks joined in
+// order — what the model reads.
+func TestTextIsTheJoinedTextBlocks_TS06_10(t *testing.T) {
+	r := rand.New(rand.NewSource(10))
+	words := []string{"alpha", " ", "β\n", "{\"json\":1}", "line\nbreak", "tab\t"}
+	for i := range 30 {
+		var blocks []mcp.Content
+		var want strings.Builder
+		for range 1 + r.Intn(5) {
+			if r.Intn(3) == 0 {
+				blocks = append(blocks, &sdk.ImageContent{Data: []byte{0x89, 'P', 'N', 'G'}, MIMEType: "image/png"})
+				continue
+			}
+			w := words[r.Intn(len(words))]
+			blocks = append(blocks, &mcp.TextContent{Text: w})
+			want.WriteString(w)
+		}
+		var structured any
+		if r.Intn(2) == 0 {
+			structured = map[string]any{"i": float64(i)}
+		}
+		tl := resultTool(t, &mcp.CallToolResult{Content: blocks, StructuredContent: structured})
+		res := tl.Execute(context.Background(), json.RawMessage(`{}`))
+		if !res.OK || res.Text != want.String() {
+			t.Fatalf("iteration %d: Text = %q (OK %v), want %q", i, res.Text, res.OK, want.String())
+		}
 	}
 }

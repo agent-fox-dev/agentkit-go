@@ -362,17 +362,33 @@ func (p *Pool) adapt(c *ServerConnection, d *Tool, qualified string) core.Tool {
 					text.WriteString(t.Text)
 				}
 			}
-			data := map[string]any{"content": content}
-			if res.StructuredContent != nil {
-				data["structured"] = res.StructuredContent
-			}
+			data := resultData(res.StructuredContent, text.String(), content)
 			if res.IsError {
 				// A tool that FAILED is a result the model should see and
 				// react to; only a call that never happened is an SDK error.
 				return core.ToolResult{OK: false, Data: data, Error: "tool_error", Detail: text.String()}
 			}
-			return core.OKResult(data)
+			out := core.OKResult(data)
+			out.Text = text.String()
+			return out
 		},
+	}
+}
+
+// resultData is what an MCP result exposes as ToolResult.Data. The server's
+// outputSchema describes its structuredContent, so an object is Data itself
+// and Data then matches the imported OutputSchema (06-REQ-3.1); any other
+// JSON value sits under "value", as outputSchemaFrom wraps its schema
+// (06-REQ-3.2). With no structuredContent, Data is the joined text and the
+// raw content blocks (06-REQ-3.3).
+func resultData(structured any, text string, content []json.RawMessage) map[string]any {
+	switch v := structured.(type) {
+	case nil:
+		return map[string]any{"text": text, "content": content}
+	case map[string]any:
+		return v
+	default:
+		return map[string]any{"value": v}
 	}
 }
 

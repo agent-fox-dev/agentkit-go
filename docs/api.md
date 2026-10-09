@@ -142,7 +142,13 @@ What AgentKit adds on the client:
   schema is wrapped as `{"value": <schema>}`. One that is not a JSON object
   is dropped, the tool is still imported, and `Pool.Diagnostics()` gains a
   `SeverityError` entry, for example
-  `mcp: server "srv" tool "broken": output schema dropped: a schema must be a JSON object, got "not a valid schema object"`.
+  `mcp: server "srv" tool "broken": output schema dropped: a schema must be a JSON object, got "not a valid schema object"`;
+- a call's result `Data` is the server's `structuredContent` when it is a JSON
+  object, `{"value": <structuredContent>}` when it is any other JSON value, and
+  `{"text": <joined text>, "content": <raw content blocks>}` when there is
+  none. On success `ToolResult.Text` is the text blocks joined in order, so the
+  model reads the text rather than a JSON envelope. A result with `isError`
+  set is `Error: "tool_error"` with the joined text as `Detail`.
 
 Constants: call limit 1000 per session, reconnect limit 3, timeout 30 s per
 connect, list and call.
