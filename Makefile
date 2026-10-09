@@ -14,11 +14,6 @@ coverage:
 	go test ./... -coverprofile=coverage.txt -covermode=atomic
 	go tool cover -func=coverage.txt
 	
-.PHONY: build-examples
-build-examples: ## Install examples/triage, examples/cleaner and examples/flatline into ./bin
-	go install ./examples/triage
-	go install ./examples/cleaner
-
 .PHONY: fmt
 fmt: ## gofmt all source files in place
 	gofmt -l -w .
@@ -40,7 +35,6 @@ lint: ## Run golangci-lint if installed, otherwise skip
 tidy: ## go mod tidy the root module and submodules
 	go mod tidy
 	cd codesearch && go mod tidy
-	@if [ -d ../spec/golang ]; then cd examples/flatline && go mod tidy; fi
 
 .PHONY: check
 check: fmt vet lint test ## Run fmt, vet, lint and test - use before committing

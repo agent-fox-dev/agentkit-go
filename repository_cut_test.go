@@ -323,3 +323,32 @@ func TestNoLegacyImportPaths_TS09_14(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TS-09-18: the wall-clock budget file is gone, and the concurrency test no
+// longer compares elapsed durations against thresholds.
+func TestNoWallClockThresholds_TS09_18(t *testing.T) {
+	assertAbsent(t, "perf_budget_test.go")
+	src, err := os.ReadFile(filepath.Join("tools", "concurrency_test.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cmp := range []string{"writeElapsed >", "editElapsed >", "markElapsed >"} {
+		if strings.Contains(string(src), cmp) {
+			t.Errorf("tools/concurrency_test.go still compares %q against a threshold", cmp)
+		}
+	}
+}
+
+// TS-09-19: the Makefile names no deleted module and has no build-examples
+// target.
+func TestMakefileTargets_TS09_19(t *testing.T) {
+	src, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{"build-examples:", "difftest", "examples/codesearch"} {
+		if strings.Contains(string(src), gone) {
+			t.Errorf("Makefile still contains %q", gone)
+		}
+	}
+}
