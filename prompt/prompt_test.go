@@ -4,7 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -171,28 +171,31 @@ func TestShellGuidelinesNameTheActiveShell(t *testing.T) {
 // TS-12-35: Build takes the base prompt and the tools; Input, SkillBlocks
 // and the skills package are gone.
 func TestBuildSignatureAndNoSkills_TS12_35(t *testing.T) {
-	var build func(string, []core.Tool) string = Build
-	if build == nil {
-		t.Fatal("Build is nil")
-	}
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0)
+	// Compiles only if Build has exactly this signature.
+	var _ func(string, []core.Tool) string = Build
+	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, pkg := range pkgs {
-		for name, f := range pkg.Files {
-			for _, imp := range f.Imports {
-				if strings.Contains(imp.Path.Value, "/skills") {
-					t.Errorf("%s imports %s", name, imp.Path.Value)
-				}
+	fset := token.NewFileSet()
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, imp := range f.Imports {
+			if strings.Contains(imp.Path.Value, "/skills") {
+				t.Errorf("%s imports %s", name, imp.Path.Value)
 			}
-			for _, d := range f.Decls {
-				if g, ok := d.(*ast.GenDecl); ok {
-					for _, sp := range g.Specs {
-						if ts, ok := sp.(*ast.TypeSpec); ok && (ts.Name.Name == "Input" || ts.Name.Name == "SkillBlocks") {
-							t.Errorf("prompt still declares %s", ts.Name.Name)
-						}
+		}
+		for _, d := range f.Decls {
+			if g, ok := d.(*ast.GenDecl); ok {
+				for _, sp := range g.Specs {
+					if ts, ok := sp.(*ast.TypeSpec); ok && (ts.Name.Name == "Input" || ts.Name.Name == "SkillBlocks") {
+						t.Errorf("prompt still declares %s", ts.Name.Name)
 					}
 				}
 			}

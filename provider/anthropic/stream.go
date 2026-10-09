@@ -188,39 +188,9 @@ func (c *client) stream(ctx context.Context, m *core.Model, req core.Request) *c
 	return s
 }
 
-func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, req core.Request,
-	raw []byte) {
-	d := &decodeState{
-		s: s, model: m, lookup: c.opts.BillingLookup,
-		partial: core.AssistantMessage{
-			Model:     m.ID,
-			Effort:    req.Effort,
-			Timestamp: c.now(),
-		},
-		accs: map[int]*blockAcc{},
-	}
-
-	// caller is the ctx the caller handed to Stream; ctx below may be a
-	// Timeout-derived child of it. The two are kept apart because their
-	// expiries mean different things: the caller's is an abort (REQ-LOOP-09),
-	// the derived one a retryable timeout (REQ-PROV-18).
-	caller := ctx
-	if to := c.opts.Timeout; to > 0 {
-		// A per-request timeout INDEPENDENT of the caller's context deadline
-		// (REQ-PROV-18). It must not outlive this function, hence the defer.
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, to)
-		defer cancel()
-	}
-
-	sc, dep, env, err := c.sdkClient(c.opts.Env, c.opts.Transport)
-	if err != nil {
-		// A deployment that cannot be resolved — no credential, a Vertex
-		// selection with no project — fails the turn with the reason.
-		d.fail(err.Error(), err)
-		return
-	}
-
+// requestOptions are the per-request SDK options: the body, then the
+// caller's transport, retry count, headers and response hook.
+func (c *client) requestOptions(m *core.Model, raw []byte) []option.RequestOption {
 	// The body is ours: SDK params would re-encode replayed tool_use input,
 	// and its bytes must reach the wire as the model wrote them.
 	opts := []option.RequestOption{option.WithRequestBody("application/json", raw)}
@@ -254,6 +224,43 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 			return resp, nil
 		}))
 	}
+	return opts
+}
+
+func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, req core.Request,
+	raw []byte) {
+	d := &decodeState{
+		s: s, model: m, lookup: c.opts.BillingLookup,
+		partial: core.AssistantMessage{
+			Model:     m.ID,
+			Effort:    req.Effort,
+			Timestamp: c.now(),
+		},
+		accs: map[int]*blockAcc{},
+	}
+
+	// caller is the ctx the caller handed to Stream; ctx below may be a
+	// Timeout-derived child of it. The two are kept apart because their
+	// expiries mean different things: the caller's is an abort (REQ-LOOP-09),
+	// the derived one a retryable timeout (REQ-PROV-18).
+	caller := ctx
+	if to := c.opts.Timeout; to > 0 {
+		// A per-request timeout INDEPENDENT of the caller's context deadline
+		// (REQ-PROV-18). It must not outlive this function, hence the defer.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, to)
+		defer cancel()
+	}
+
+	sc, dep, env, err := c.sdkClient(c.opts.Env, c.opts.Transport)
+	if err != nil {
+		// A deployment that cannot be resolved — no credential, a Vertex
+		// selection with no project — fails the turn with the reason.
+		d.fail(err.Error(), err)
+		return
+	}
+
+	opts := c.requestOptions(m, raw)
 
 	stream := sc.Messages.NewStreaming(ctx, sdk.MessageNewParams{}, opts...)
 	defer stream.Close()

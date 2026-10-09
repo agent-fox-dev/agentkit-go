@@ -71,8 +71,6 @@ func testCatalog(t *testing.T) *Catalog {
 	return c
 }
 
-func strp(s string) *string { return &s }
-
 func TestEmbeddedCatalogPopulatesTheREQPROV10Descriptor(t *testing.T) {
 	c := Default()
 

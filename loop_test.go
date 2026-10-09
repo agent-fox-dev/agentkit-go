@@ -23,8 +23,6 @@ import (
 
 // ---------------------------------------------------------------- scaffolding
 
-const testAPI core.API = "test-api"
-
 // scripted is a provider that replays a predetermined sequence of assistant
 // messages, one per turn. It is the executable double the loop is tested
 // against; provider/faux is the shipped, supported form of the same idea
