@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"go.starlark.net/starlark"
 	"go.starlark.net/syntax"
@@ -114,7 +113,9 @@ func (r *runner) dispatch(blocks ...core.ToolUseBlock) ([]core.ToolResult, error
 // {"text": Text} when it has none.
 func (r *runner) value(res core.ToolResult) (starlark.Value, error) {
 	if !res.OK {
-		return nil, fmt.Errorf("%s: %s", res.Error, res.Detail)
+		// A failure is a value the script inspects, never an exception
+		// it cannot catch (08-REQ-5.1). Starlark has no try.
+		return NewToolError(res), nil
 	}
 	if res.Data == nil {
 		d := starlark.NewDict(1)
@@ -134,11 +135,4 @@ func (r *runner) stop(h *halt) error {
 	r.mu.Unlock()
 	r.thread.Cancel(h.code)
 	return h
-}
-
-// placeholder registers a helper by name until it is built.
-func placeholder(name string) *starlark.Builtin {
-	return starlark.NewBuiltin(name, func(*starlark.Thread, *starlark.Builtin, starlark.Tuple, []starlark.Tuple) (starlark.Value, error) {
-		return nil, fmt.Errorf("%s is not available yet", strings.TrimSpace(name))
-	})
 }

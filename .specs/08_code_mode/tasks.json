@@ -183,7 +183,7 @@
       "done_when": [
         "`go test ./codemode/... -run 'Test(ToolError|Parallel|Call)'` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,

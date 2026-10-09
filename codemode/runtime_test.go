@@ -18,24 +18,49 @@ type fakeCaller struct {
 	mu    sync.Mutex
 	fn    map[string]func(core.ToolUseBlock) (core.ToolResult, error)
 	calls []core.ToolUseBlock
+	// concurrent runs one Call's blocks on goroutines, as the agent's
+	// dispatcher does with ParallelTools on.
+	concurrent bool
+	// maxBatch is the most blocks one Call received.
+	maxBatch int
 }
 
 func (f *fakeCaller) Call(_ context.Context, blocks ...core.ToolUseBlock) ([]core.ToolResult, error) {
+	f.mu.Lock()
+	f.maxBatch = max(f.maxBatch, len(blocks))
+	f.mu.Unlock()
 	out := make([]core.ToolResult, len(blocks))
-	for i, b := range blocks {
+	errs := make([]error, len(blocks))
+	one := func(i int, b core.ToolUseBlock) {
 		f.mu.Lock()
 		f.calls = append(f.calls, b)
 		fn := f.fn[b.Name]
 		f.mu.Unlock()
 		if fn == nil {
 			out[i] = core.ErrResult("unknown_tool", b.Name)
-			continue
+			return
 		}
-		r, err := fn(b)
+		out[i], errs[i] = fn(b)
+	}
+	if f.concurrent {
+		var wg sync.WaitGroup
+		for i, b := range blocks {
+			wg.Add(1)
+			go func() { defer wg.Done(); one(i, b) }()
+		}
+		wg.Wait()
+	} else {
+		for i, b := range blocks {
+			one(i, b)
+			if errs[i] != nil {
+				break
+			}
+		}
+	}
+	for _, err := range errs {
 		if err != nil {
 			return nil, err
 		}
-		out[i] = r
 	}
 	return out, nil
 }

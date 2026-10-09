@@ -27,6 +27,8 @@ type runner struct {
 	thread *starlark.Thread
 	out    *tools.Accumulator
 	seq    int
+	// funcs are the bound tools' functions by name, for parallel and call.
+	funcs map[string]*starlark.Builtin
 
 	mu     sync.Mutex
 	halted *halt
@@ -104,12 +106,15 @@ func (r *runner) run(script string) core.ToolResult {
 // builtins: the bound tools and the helpers.
 func (r *runner) predeclared() starlark.StringDict {
 	env := starlark.StringDict{
-		"parallel": placeholder("parallel"),
-		"call":     placeholder("call"),
-		"is_error": placeholder("is_error"),
+		"parallel": starlark.NewBuiltin("parallel", r.parallel),
+		"call":     starlark.NewBuiltin("call", r.call),
+		"is_error": starlark.NewBuiltin("is_error", isError),
 	}
+	r.funcs = make(map[string]*starlark.Builtin, len(r.tools))
 	for _, t := range r.tools {
-		env[t.Name] = r.toolFunc(t)
+		fn := r.toolFunc(t)
+		r.funcs[t.Name] = fn
+		env[t.Name] = fn
 	}
 	return env
 }
