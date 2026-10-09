@@ -37,6 +37,10 @@ type nestedCaller struct {
 	// mu serializes finalization (AfterToolCall), as the batch mutex does
 	// for direct calls.
 	mu sync.Mutex
+	// eventMu serializes this caller's stream pushes. It is separate from mu
+	// so an AfterToolCall that calls CallNested itself does not deadlock on
+	// the start event of its own call.
+	eventMu sync.Mutex
 	// terminated is set when an interceptor votes to end the run during one
 	// of this wrapper's nested calls. Every later Call returns
 	// ErrTerminated, and the wrapper's own result carries the vote.
@@ -78,35 +82,51 @@ func (n *nestedCaller) Call(ctx context.Context, calls ...core.ToolUseBlock) ([]
 		return nil, core.ErrTerminated
 	}
 	results := make([]core.ToolResult, len(calls))
-	var run []func()
+	// A single Sequential tool among the calls demotes the whole group, as
+	// in a direct batch, whether or not that call survives preparation.
 	sequential := !n.env.cfg.ParallelTools
-	for i, c := range calls {
-		prepared, tool, call, res, ok := n.prepare(ctx, calls, i, c)
-		if n.terminated.Load() {
-			return nil, core.ErrTerminated
-		}
-		if !ok {
-			results[i] = res
-			n.push(n.endEvent(call, res, 0))
-			n.audit(call, tool, prepared.Raw, res, false, 0)
-			continue
-		}
-		if tool.ExecutionMode == core.Sequential {
+	for _, c := range calls {
+		if t, ok := n.tools[c.Name]; ok && t.ExecutionMode == core.Sequential {
 			sequential = true
 		}
-		run = append(run, func() { results[i] = n.execute(ctx, call, tool, prepared) })
+	}
+	type queued struct {
+		i        int
+		call     core.ToolUseBlock
+		tool     core.Tool
+		prepared core.PreparedArguments
+	}
+	var run []queued
+	for i, c := range calls {
+		prepared, tool, call, res, ok := n.prepare(ctx, calls, i, c)
+		if !ok {
+			results[i] = res
+			n.closeInline(call, tool, prepared.Raw, res)
+		}
+		if n.terminated.Load() {
+			// An interceptor ended the wrapper. The calls already queued
+			// opened on the stream and never ran; they close as aborted,
+			// so every nested call that opened closes exactly once.
+			for _, q := range run {
+				n.closeInline(q.call, q.tool, q.prepared.Raw, nestedAborted())
+			}
+			return nil, core.ErrTerminated
+		}
+		if ok {
+			run = append(run, queued{i, call, tool, prepared})
+		}
 	}
 	if sequential || len(run) <= 1 {
-		for _, f := range run {
-			f()
+		for _, q := range run {
+			results[q.i] = n.execute(ctx, q.call, q.tool, q.prepared)
 		}
 	} else {
 		var wg sync.WaitGroup
-		for _, f := range run {
+		for _, q := range run {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				f()
+				results[q.i] = n.execute(ctx, q.call, q.tool, q.prepared)
 			}()
 		}
 		wg.Wait()
@@ -266,8 +286,16 @@ func (n *nestedCaller) execute(ctx context.Context, call core.ToolUseBlock, tool
 			n.terminated.Store(true)
 		}
 	}
-	n.env.s.Push(n.endEvent(call, out, elapsed))
+	n.push(n.endEvent(call, out, elapsed))
 	return out
+}
+
+// closeInline ends a nested call that never reached its handler: it closes
+// on the stream and is audited with the reason, as a direct call finalized
+// in prepare is.
+func (n *nestedCaller) closeInline(call core.ToolUseBlock, tool core.Tool, args json.RawMessage, res core.ToolResult) {
+	n.push(n.endEvent(call, res, 0))
+	n.audit(call, tool, args, res, false, 0)
 }
 
 // annotate appends note to a result's detail.
@@ -300,8 +328,8 @@ func (n *nestedCaller) audit(call core.ToolUseBlock, tool core.Tool, args json.R
 // push emits a nested call's execution event. Pushes are serialized so a
 // nested call's events are ordered as a direct call's are.
 func (n *nestedCaller) push(e core.Event) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	n.eventMu.Lock()
+	defer n.eventMu.Unlock()
 	n.env.s.Push(e)
 }
 

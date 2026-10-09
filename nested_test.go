@@ -735,3 +735,93 @@ func TestNestedStopPolicy_TS07_34(t *testing.T) {
 		t.Fatalf("stop %q after %d turns, want the policy to stop after 1", res.StopReason, s.turnsRun())
 	}
 }
+
+// A block-and-terminate still closes the blocked call on the stream and
+// audits it, and closes the calls already queued behind it: every nested
+// call that opened closes exactly once, as a direct one does.
+func TestNestedTerminateClosesEveryOpenedCall(t *testing.T) {
+	var mu sync.Mutex
+	var audits []core.AuditEvent
+	s := &scripted{turns: []core.AssistantMessage{
+		assistantWithTools(core.StopReasonToolUse, toolUse(t, "parent_call_1", "parent", `{}`)),
+	}}
+	wrap := wrapperTool("parent", func(ctx context.Context) core.ToolResult {
+		_, err := core.CallNested(ctx, core.ToolUseBlock{Name: "ok"}, core.ToolUseBlock{Name: "deny"}, core.ToolUseBlock{Name: "ok"})
+		return core.ErrResult("terminated", fmt.Sprint(err))
+	}, childTool("ok"), childTool("deny"))
+	a := newTestAgent(t, s, func(c *core.AgentConfig) {
+		c.ToolPolicy.CustomTools = []core.Tool{wrap}
+		c.Hooks.OnAudit = func(e core.AuditEvent) { mu.Lock(); audits = append(audits, e); mu.Unlock() }
+		c.BeforeToolCall = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+			if in.ToolName == "deny" {
+				return core.BeforeToolCallDecision{Block: true, Terminate: true, Reason: "no"}
+			}
+			return core.BeforeToolCallDecision{}
+		}
+	})
+	st, err := a.Stream(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := map[string]int{}
+	for e := range st.Events() {
+		switch ev := e.(type) {
+		case core.ToolExecutionStartEvent:
+			if ev.ParentToolUseID != "" {
+				open[ev.ToolUseID]++
+			}
+		case core.ToolExecutionEndEvent:
+			if ev.ParentToolUseID != "" {
+				open[ev.ToolUseID]--
+			}
+		}
+	}
+	if len(open) != 2 {
+		t.Fatalf("%d nested calls opened, want 2 (the queued ok and the blocked deny)", len(open))
+	}
+	for id, n := range open {
+		if n != 0 {
+			t.Fatalf("nested call %s opened and closed unevenly (%d)", id, n)
+		}
+	}
+	var blocked bool
+	nested := 0
+	for _, e := range audits {
+		if e.ParentToolUseID == "" {
+			continue
+		}
+		nested++
+		if e.ToolName == "deny" && e.ErrorCode == "blocked_by_policy" {
+			blocked = true
+		}
+	}
+	if !blocked || nested != 2 {
+		t.Fatalf("nested audits = %d (blocked deny recorded %v): %+v", nested, blocked, audits)
+	}
+}
+
+// An AfterToolCall that itself calls CallNested on the context it is given
+// must not deadlock the dispatcher.
+func TestNestedAfterToolCallMayCallNested(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		wrap := wrapperTool("parent", func(ctx context.Context) core.ToolResult {
+			_, _ = core.CallNested(ctx, core.ToolUseBlock{Name: "child"})
+			return core.OKResult(nil)
+		}, childTool("child"))
+		runWrapper(t, "parent", func(c *core.AgentConfig) {
+			c.AfterToolCall = func(ctx context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+				if in.ParentToolUseID != "" {
+					_, _ = core.CallNested(ctx, core.ToolUseBlock{Name: "nothing"})
+				}
+				return core.AfterToolCallDecision{}
+			}
+		}, wrap)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadlocked")
+	}
+}

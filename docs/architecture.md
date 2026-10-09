@@ -202,7 +202,16 @@ that turns tools into functions. It declares them up front in
 
   Each nested call gets a fresh id. Preparation runs in call order. Handlers run
   concurrently unless `ParallelTools` is off or a `Sequential` tool is among
-  the calls, and results come back in call order.
+  the calls, and results come back in call order. Every nested call that
+  opens on the stream closes there and is audited, including one blocked or
+  cut short by a terminate vote.
+- **Interceptors run concurrently.** Within one `CallNested`, preparation is
+  ordered and `AfterToolCall` is serialized, as in a direct batch. But
+  `BeforeToolCall` for different wrappers' nested calls, and nested
+  `AfterToolCall` alongside a direct call's finalization, can run at the same
+  time. Interceptors must be safe for concurrent use. An `AfterToolCall` must
+  not run a tool through `CallNested` on the context it is handed: that call
+  would wait on the finalization its own call holds.
 - **Results, not errors.** A tool the wrapper does not reach is
   `unknown_tool`. A block is `blocked_by_policy` with the reason, and a
   cancelled call is `aborted` with `Operation aborted`. `CallNested` returns
