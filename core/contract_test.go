@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/agentfox/agentkit-go/schema"
 )
 
 // --- REQ-LOOP-01 / Appendix A correction #1 -------------------------------
@@ -261,4 +263,42 @@ func TestWireDropsLoopOnlyFields(t *testing.T) {
 	}
 	// Label, PromptGuidelines, ExecutionMode and Handler are structurally
 	// unreachable from w — that is the point, and it is a compile-time fact.
+}
+
+// --- 06-REQ-1: OutputSchema on Tool, never on the wire ----------------------
+
+// TS-06-1: Tool carries OutputSchema; ToolWire has no such field, and Wire()
+// still projects the four fields a provider may see.
+func TestOutputSchemaIsOnToolNotOnWire_TS06_1(t *testing.T) {
+	in := schema.Object(schema.Prop("q", schema.String()))
+	out := schema.Object(schema.Prop("key", schema.String()))
+	cs := &ConstrainedSampling{Type: ConstrainJSONSchema, Strict: StrictPrefer}
+	tl := Tool{Name: "test", Description: "d", InputSchema: in, OutputSchema: out, ConstrainedSampling: cs}
+
+	if tl.OutputSchema != out {
+		t.Fatal("Tool.OutputSchema does not hold the declared schema")
+	}
+	w := tl.Wire()
+	if w.Name != "test" || w.Description != "d" || w.InputSchema != in || w.ConstrainedSampling != cs {
+		t.Fatalf("Wire() = %+v, want the tool's four provider-facing fields", w)
+	}
+	if _, ok := reflect.TypeOf(w).FieldByName("OutputSchema"); ok {
+		t.Fatal("ToolWire has an OutputSchema field; provider request bodies would change")
+	}
+}
+
+// TS-06-2: a tool that leaves OutputSchema nil runs exactly as before.
+func TestNilOutputSchemaToolExecutes_TS06_2(t *testing.T) {
+	tl := Tool{Name: "echo", Execute: func(context.Context, json.RawMessage) ToolResult {
+		return OKResult(map[string]any{"ok": true})
+	}}
+	if tl.OutputSchema != nil {
+		t.Fatal("OutputSchema must default to nil")
+	}
+	if got := ToolWires([]Tool{tl}); len(got) != 1 || got[0].Name != "echo" {
+		t.Fatalf("ToolWires = %+v", got)
+	}
+	if res := tl.Execute(context.Background(), nil); !res.OK || res.Data["ok"] != true {
+		t.Fatalf("Execute = %+v, want OK with data", res)
+	}
 }

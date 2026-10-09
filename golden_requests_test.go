@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math/rand"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -162,7 +165,12 @@ func TestMetadataNotInRequestBodies_TS04_54(t *testing.T) {
 
 func goldenRequestCases(t *testing.T) []goldenCase {
 	t.Helper()
-	req := canonicalRequest(t)
+	return goldenCasesFor(t, canonicalRequest(t))
+}
+
+// goldenCasesFor captures req's body from each of the five wire APIs.
+func goldenCasesFor(t *testing.T, req core.Request) []goldenCase {
+	t.Helper()
 	noenv := func(string) string { return "" }
 	return []goldenCase{
 		{"anthropic", capture(t,
@@ -180,5 +188,72 @@ func goldenRequestCases(t *testing.T) []goldenCase {
 		{"ollama", capture(t,
 			ollama.Provider(ollama.Options{BaseURL: "https://example.invalid", Getenv: noenv}),
 			goldenModel("llama-test", ollama.API, "ollama"), req)},
+	}
+}
+
+// randomOutputSchema builds an arbitrary output schema: nested objects,
+// arrays, enums, unions and optional fields, so a provider that reached for
+// OutputSchema by any route would put some of it into the body.
+func randomOutputSchema(r *rand.Rand, depth int) *schema.Schema {
+	leaf := []func() *schema.Schema{
+		func() *schema.Schema { return schema.String("out-sentinel string") },
+		func() *schema.Schema { return schema.Int() },
+		func() *schema.Schema { return schema.Number() },
+		func() *schema.Schema { return schema.Bool() },
+		func() *schema.Schema { return schema.Enum("out-sentinel enum", "ok", "exit") },
+	}
+	if depth <= 0 || r.Intn(3) == 0 {
+		return leaf[r.Intn(len(leaf))]()
+	}
+	switch r.Intn(3) {
+	case 0:
+		return schema.Array(randomOutputSchema(r, depth-1))
+	case 1:
+		return schema.OneOf(randomOutputSchema(r, depth-1), randomOutputSchema(r, depth-1))
+	}
+	var fields []schema.Field
+	for i := range 1 + r.Intn(4) {
+		name := "out_sentinel_" + string(rune('a'+i))
+		if r.Intn(2) == 0 {
+			fields = append(fields, schema.Prop(name, randomOutputSchema(r, depth-1)))
+		} else {
+			fields = append(fields, schema.Opt(name, randomOutputSchema(r, depth-1)))
+		}
+	}
+	return schema.Object(fields...)
+}
+
+// TS-06-3: whatever OutputSchema a tool declares — none, or any shape — the
+// five request bodies stay byte-identical to the checked-in goldens. 06-REQ-1.4.
+func TestOutputSchemaNeverChangesRequestBodies_TS06_3(t *testing.T) {
+	r := rand.New(rand.NewSource(6))
+	for i := range 50 {
+		var out *schema.Schema
+		if i%5 != 0 {
+			out = randomOutputSchema(r, 3)
+		}
+		req := canonicalRequest(t)
+		req.Tools = core.ToolWires([]core.Tool{{
+			Name:        "find_files",
+			Description: "Find files by glob pattern.",
+			InputSchema: schema.Object(
+				schema.Prop("pattern", schema.String("Glob pattern")),
+				schema.Opt("limit", schema.Int("Maximum results")),
+			),
+			OutputSchema: out,
+		}})
+		for _, tc := range goldenCasesFor(t, req) {
+			want, err := os.ReadFile(filepath.Join("testdata", "golden", "request_"+tc.name+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(want, []byte(tc.body)) {
+				t.Fatalf("iteration %d: %s request body differs from its golden with OutputSchema %v",
+					i, tc.name, out != nil)
+			}
+			if strings.Contains(tc.body, "out_sentinel") || strings.Contains(tc.body, "out-sentinel") {
+				t.Fatalf("iteration %d: %s request body carries the output schema", i, tc.name)
+			}
+		}
 	}
 }

@@ -34,6 +34,12 @@ type Tool struct {
 	Name        string
 	Description string
 	InputSchema *schema.Schema
+	// OutputSchema describes ToolResult.Data on success, for programmatic
+	// callers (a script runner binding results, a wrapper tool, generated
+	// documentation). It is optional and never enforced at runtime: a nil
+	// schema means the tool makes no promise. It is NOT part of ToolWire, so
+	// no provider request body carries it (06-REQ-1.3).
+	OutputSchema *schema.Schema
 
 	Handler ToolHandler
 	Execute ResultHandler

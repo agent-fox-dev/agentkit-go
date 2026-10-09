@@ -148,6 +148,10 @@ Extension axes:
   keys rejected, case-sensitive matching. Locally authored config decodes
   leniently and reports diagnostics. Where a library decodes untrusted bytes
   (the MCP SDK), `wire.Guard` checks them first at the transport boundary.
+- **`core.Tool.OutputSchema` never reaches a provider.** It documents the shape
+  of `ToolResult.Data` for programmatic callers; `core.ToolWire` has no such
+  field, so request bodies are the same with or without it. It is not checked
+  at runtime.
 - **No global state, no `init()` registration.** Providers, plugins and tracers
   live on the config.
 - **Session entries are appended, never rewritten**; a compaction is an entry

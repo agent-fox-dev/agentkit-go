@@ -60,7 +60,7 @@
       "done_when": [
         "go test ./core/... ./... -run 'TestOutputSchema|TestWire|TestGolden' passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
