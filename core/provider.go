@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -14,19 +16,22 @@ import (
 // here, because the loop is not running when a transcript is loaded from disk
 // and no caller may be able to skip it.
 type Request struct {
-	System   []ContentBlock
+	System []ContentBlock
+	// Prefix is sent after the system prompt and before Messages on every
+	// request, with a cache breakpoint on its last block.
+	Prefix   Messages
 	Messages Messages
 	// Tools is []ToolWire, not []Tool. That is the enforcement of REQ-TOOL-01.
 	Tools         []ToolWire
 	ToolChoice    ToolChoice
-	MaxTokens     *int     // upper bound; clamped by REQ-CAT-04
+	MaxTokens     *int     // upper bound; capped at the model's output cap
 	Temperature   *float64 // REQ-PROV-16 presence
 	TopP          *float64
 	StopSequences []string
-	ThinkingLevel ThinkingLevel
-	// EstContextTokens is the REQ-GO-15 anchored estimate, supplied by the
-	// loop. Providers never re-walk the transcript to estimate; without this
-	// field the REQ-CAT-04 clamp is either wrong or duplicated per provider.
+	// Effort is the thinking effort; empty sends none.
+	Effort Effort
+	// EstContextTokens is no longer supplied by the loop or read by the
+	// Anthropic provider (docs/errata/09_repository_cut.md).
 	EstContextTokens int
 	Options          RequestOptions
 	// Deferred opts this call into background submission (REQ-PROV-19). It is
@@ -105,10 +110,13 @@ type RequestOptions struct {
 	// Headers merges into every request. A present-nil value is a DELETION
 	// MARKER suppressing a provider default of that name (REQ-AUTH-02); no
 	// string value can express that.
-	Headers         map[string]*string
-	TimeoutMs       *int
-	MaxRetries      *int // nil => 0 (OQ-9)
-	MaxRetryDelayMs *int // nil => 60000
+	Headers   map[string]*string
+	TimeoutMs *int
+	// MaxRetries overrides the SDK client's retry count for this request; nil
+	// keeps the client's own (the SDK's default is 2).
+	MaxRetries *int
+	// MaxRetryDelayMs is no longer read: the SDK schedules its own retries.
+	MaxRetryDelayMs *int
 	SessionID       string
 	CacheRetention  *CacheRetention
 	// Deferred opts into background submission (REQ-PROV-19). It lives here
@@ -142,14 +150,54 @@ type Model struct {
 	Cost          Cost               `json:"cost"`
 	Input         []string           `json:"input"` // modalities: "text","image"
 	Reasoning     bool               `json:"reasoning"`
-	// ThinkingLevelMap distinguishes present-null ("explicitly unsupported")
-	// from absent. Both mean unsupported for clamping; the distinction is
-	// catalog-authoring metadata for the REQ-CAT-06 diff, not a runtime
-	// semantic, and REQ-PROV-15 should say so.
+	// ThinkingLevelMap is the catalog row's wire value per level: a token
+	// budget or an effort name. Present-null ("explicitly unsupported") and
+	// absent both mean the level is not sent; the distinction is
+	// catalog-authoring metadata for the REQ-CAT-06 diff.
 	ThinkingLevelMap map[ThinkingLevel]*string `json:"thinking_level_map,omitzero"`
 	Cloned           bool                      `json:"-"` // REQ-CAT-03
 	ClonedFrom       string                    `json:"-"`
+	// Thinking is how the model takes extended thinking, from its catalog row.
+	Thinking ThinkingKind `json:"thinking,omitzero"`
 }
+
+// ThinkingMode is how m takes thinking: Thinking when the catalog set it,
+// else what its level map implies.
+func (m *Model) ThinkingMode() ThinkingKind {
+	if m.Thinking != "" {
+		return m.Thinking
+	}
+	return ThinkingKindOf(m.ThinkingLevelMap)
+}
+
+// ThinkingKindOf reads how a model takes thinking from its level map: token
+// counts mean budget, effort names mean adaptive, and nothing above off means
+// none.
+func ThinkingKindOf(levels map[ThinkingLevel]*string) ThinkingKind {
+	kind := ThinkingKindNone
+	for lvl, wire := range levels {
+		if wire == nil || lvl == ThinkingOff {
+			continue
+		}
+		if _, err := strconv.Atoi(strings.TrimSpace(*wire)); err == nil {
+			return ThinkingKindBudget
+		}
+		kind = ThinkingKindAdaptive
+	}
+	return kind
+}
+
+// ThinkingKind is how a model takes extended thinking.
+type ThinkingKind string
+
+const (
+	// ThinkingKindNone is a model without extended thinking.
+	ThinkingKindNone ThinkingKind = "none"
+	// ThinkingKindAdaptive is thinking {"type":"adaptive"} with an effort.
+	ThinkingKindAdaptive ThinkingKind = "adaptive"
+	// ThinkingKindBudget is thinking {"type":"enabled"} with budget_tokens.
+	ThinkingKindBudget ThinkingKind = "budget"
+)
 
 func (m *Model) SupportsImages() bool {
 	for _, in := range m.Input {

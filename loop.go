@@ -456,14 +456,14 @@ func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.
 		maxTokens = &v
 	}
 	req := core.Request{
-		Messages:      view,
-		Tools:         core.ToolWires(tools),
-		ToolChoice:    cfg.ToolChoice,
-		MaxTokens:     maxTokens,
-		Temperature:   cfg.Temperature,
-		TopP:          cfg.TopP,
-		ThinkingLevel: cfg.ThinkingLevel,
-		Options:       cfg.RequestOptions,
+		Messages:    view,
+		Tools:       core.ToolWires(tools),
+		ToolChoice:  cfg.ToolChoice,
+		MaxTokens:   maxTokens,
+		Temperature: cfg.Temperature,
+		TopP:        cfg.TopP,
+		Effort:      cfg.Effort,
+		Options:     cfg.RequestOptions,
 		// REQ-PROV-19: carried from the options a caller can actually set
 		// onto the field a provider reads.
 		Deferred: cfg.RequestOptions.Deferred,

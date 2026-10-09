@@ -14,41 +14,38 @@ reference.
 
 ## Environment variables
 
-### Credentials
+### Credentials and deployments
 
-The one wire API is Anthropic's. The first non-empty variable in its list wins. `RequestOptions.Env` is
-consulted before the process environment, and an empty override value falls
-through rather than masking.
-
-| Vendor | Variables, in order | Sent as |
-|---|---|---|
-| `anthropic` | `ANTHROPIC_API_KEY` | `x-api-key` |
-| | `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_OAUTH_TOKEN` | `Authorization: Bearer` (the OAuth token also adds `anthropic-beta: oauth-2025-04-20`) |
-| | on Vertex: `ANTHROPIC_AUTH_TOKEN` only — the API key and the OAuth token are Anthropic-issued and never sent to Google | `Authorization: Bearer` |
-
-Resolution yields a three-valued state: `resolved`, `ambient` (a base URL, or
-a credential chain the transport holds) and `none`. Pre-flight checks must
-treat `ambient` as configured. Stringifying a `ModelAuth` redacts it (first 4
-and last 4 characters; shorter secrets entirely). There is no credential store:
-a credential comes from the environment (or `RequestOptions.Env`) on every
-request, so a long-running process that rotates a token updates the variable.
-
-### Base URLs and deployments
+`anthropic.Resolve(env)` chooses the deployment and builds the SDK client
+(`provider/anthropic/resolve.go`). The provider calls it on every request
+unless `anthropic.Options.Client` is set, reading `RequestOptions.Env` first,
+then `Options.Getenv` (or the process environment).
 
 | Variable | Effect |
 |---|---|
-| `ANTHROPIC_BASE_URL` | Proxy or gateway in front of Anthropic (both deployments). |
-| `ANTHROPIC_VERTEX_BASE_URL` | Proxy in front of Vertex; beats `ANTHROPIC_BASE_URL` when the Vertex deployment is on. |
-| `CLAUDE_CODE_USE_VERTEX` | Selects Claude on Vertex. Read for truth: `0`/false is an explicit off that vetoes the other signals. |
-| `ANTHROPIC_VERTEX_PROJECT_ID` | GCP project for Claude on Vertex. Selects the deployment alone only when no Anthropic-direct credential is set. |
-| `CLOUD_ML_REGION` | Vertex location for Claude (`GOOGLE_CLOUD_LOCATION`, `CLOUDSDK_COMPUTE_REGION` also work; default `global`). |
-| `GOOGLE_CLOUD_PROJECT`, `CLOUDSDK_CORE_PROJECT` | May *supply* a Vertex project once something else selected the deployment; they never select it. |
+| `CLAUDE_CODE_USE_VERTEX` | `1` or `true` selects Claude on Vertex AI. Any other value, `0` and `false` included, leaves it off whatever else is set. |
+| `ANTHROPIC_VERTEX_PROJECT_ID`, then `GOOGLE_CLOUD_PROJECT` | The Vertex project. Required once Vertex is selected; they never select it. |
+| `CLOUD_ML_REGION`, then `GOOGLE_CLOUD_LOCATION`, `CLOUDSDK_COMPUTE_REGION` | The Vertex location; default `global`. |
+| `ANTHROPIC_VERTEX_BASE_URL` | A proxy in front of Vertex. |
+| `CLAUDE_CODE_USE_BEDROCK` | `1` or `true` selects Claude on Amazon Bedrock (when Vertex is not selected). |
+| `AWS_REGION`, then `AWS_DEFAULT_REGION` | The Bedrock region; default `us-east-1`. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Static Bedrock credentials. Without them, `AWS_BEARER_TOKEN_BEDROCK`; without that, the AWS SDK's own credential chain. |
+| `ANTHROPIC_API_KEY` | The Anthropic API key (`x-api-key`), for the direct deployment. |
+| `ANTHROPIC_AUTH_TOKEN` | A bearer token for the direct deployment; on Vertex, a Google access token (anything but `sk-ant-…`). |
+| `ANTHROPIC_OAUTH_TOKEN` | An OAuth bearer (`sk-ant-oat…`) for the direct deployment; adds the `oauth-2025-04-20` beta. |
+| `ANTHROPIC_BASE_URL` | A proxy or gateway in front of the Anthropic API. |
+
+With no cloud flag and none of the three Anthropic credentials, `Resolve`
+fails with `anthropic.ErrNoCredentials` ("anthropic: missing credentials: …"),
+and the provider ends the turn with that message rather than sending a
+request. A Vertex selection with no project fails the same way, naming the
+variables. `anthropic.Options.VertexProject` / `VertexLocation` select Vertex
+and set its location in code, over the environment.
 
 ### SDK variables
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `AGENTKIT_TELEMETRY` | `provider` | `0` or `false` disables every attribution header (`x-agentkit-version`, `user-agent`). `AgentConfig.Attribution = false` does the same in code. |
 | `AGENTKIT_MODEL` | `examples/*` only | Model spec (`vendor/id`, or a bare unambiguous id) overriding an example's default. The library never reads it. |
 
 Subprocess tools run with a reduced environment (`tools.ReducedEnv`): `PATH`,
@@ -60,16 +57,16 @@ provider-prefixed variables and anything ending in `_TOKEN`, `_SECRET`,
 
 | Field | Meaning / default |
 |---|---|
-| `Model` | `*core.Model`; obtain with `catalog.ResolveModel("vendor/id")`. |
+| `Model` | `*core.Model`; obtain with `catalog.Lookup("claude-…")`, which also serves an id the catalog does not list. |
 | `Provider` | Vendor id, used only for credential resolution and catalog lookup. |
-| `MaxTokens` | Upper bound, clamped to the model. Nil → `core.DefaultMaxTokens` (32768), not the model cap. |
+| `MaxTokens` | Upper bound, capped at the model's output cap. Nil → `core.DefaultMaxTokens` (32768), not the model cap. |
 | `Temperature`, `TopP` | Optional sampling parameters; dropped where the catalog row says the model does not accept them. |
 | `SystemPrompt`, `PromptBlocks` | Base prompt and extra sections appended after the built-in ones. A `SystemPrompt` replaces the built-in base instructions and universal guidelines; the active tools' own guidelines (`Tool.PromptGuidelines`, and the shell guidelines) still follow it. |
 | `StopPolicy` | `func(StopContext) bool`, written by the caller; a policy that stops calls `StopContext.SetReason` (`core.RunStopMaxTurns`, `core.RunStopBudgetExceeded`, …) so the run reports which limit fired. `StopContext.Usage`, like `RunResult.Usage`, is the current run's usage — a budget policy on a reused agent is a per-run budget; `Agent.Usage()` is the lifetime total. |
 | `ErrorOnLimit` | A limit stop also returns `ErrMaxTurns` / `ErrBudgetExceeded`. Default false. |
 | `ParallelTools` | Run a tool batch's calls concurrently. |
 | `ToolChoice` | `""` (auto), or a forced choice. |
-| `ThinkingLevel` | `""`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; clamped to the catalog row's ladder. |
+| `Effort` | `core.Effort`: `""` (no thinking parameter), `low`, `medium`, `high`, `xhigh`, `max`. On an adaptive model it is sent as `thinking: {"type":"adaptive"}` with `output_config.effort`; on a budget model as `thinking: {"type":"enabled","budget_tokens":N}`, N from the catalog row; on a model without thinking, or at a level the row does not list, neither is sent. Never clamped to another level. `Agent.SetEffort` changes it between runs. |
 | `ToolPolicy` | `Tools`, `NoTools` (`all` / `builtin`), `ToolNames`, `ExcludeTools`, `CustomTools`; resolved in that order. Non-nil empty `Tools` means no tools. A `CustomTools` entry must set exactly one of `Handler` and `Execute`; construction fails otherwise, as `RegisterTool` does. |
 | `BeforeToolCall`, `AfterToolCall` | The authorization boundary and post-processing. A shell tool in the set with a nil `BeforeToolCall` fails the run (`ErrUnguardedExecute`); use `guard.Restricted` or `guard.AllowAll`. `AfterToolCall` receives the handler's `ToolResult` by value and the mutable `Result *ToolResultMessage`. `ToolResultMessage.Metadata` carries the tool's structured metadata (in history and events, never sent to the model). |
 | `Hooks` | `OnTurnStart`, `OnTurnEnd`, `OnAgentDone`, `OnError`. Observation only. Tool calls, nested ones included, are on the event stream (`ToolExecutionStartEvent`/`ToolExecutionEndEvent`, with `ParentToolUseID` for a nested call). |
@@ -78,9 +75,9 @@ provider-prefixed variables and anything ending in `_TOKEN`, `_SECRET`,
 | `SteeringQueueMode`, `FollowUpQueueMode` | `QueueOneAtATime` (default) or `QueueDrainAll`. |
 | `SessionID` | Identifier carried on `AgentStartEvent` and requests. |
 | `TrustProject` | Nothing in the SDK reads it. |
-| `Attribution` | `*bool`; nil means on. |
+| `Attribution` | `*bool`. No longer read: the SDK sends its own `user-agent`, and AgentKit adds no attribution header. |
 | `CacheRetention` | `none`, `short`, `long`. |
-| `RequestOptions` | Per-request `Headers` (nil value deletes a default), `TimeoutMs`, `MaxRetries` (nil → 0), `MaxRetryDelayMs` (nil → 60000), `SessionID`, `CacheRetention`, `Deferred`, `Env`, `Transport`, `StreamFn`, `OnPayload`, `OnResponse`. |
+| `RequestOptions` | Per-request `Headers` (nil value deletes a default), `TimeoutMs`, `MaxRetries` (nil keeps the SDK client's count, 2 by default), `MaxRetryDelayMs` (no longer read), `SessionID`, `CacheRetention`, `Deferred`, `Env`, `Transport`, `StreamFn`, `OnPayload`, `OnResponse`. |
 | `StreamOptions` | Streaming behaviour. |
 | `Providers` | `core.ProviderRegistry`. Nil means `agentkit.DefaultProviders()`, which is **empty**: register the wire APIs you use (`agentkit.RegisterDefaults(&cfg, anthropic.Provider(anthropic.Options{}), …)`). |
 
@@ -90,14 +87,40 @@ layer deletes the name.
 
 ## Provider options
 
-`anthropic.Options` has `BaseURL`, `HTTPClient`, `Getenv` (injectable
-environment), `Retry` (`provider.RetryPolicy`: `MaxRetries`, base / max delay,
-`MaxRetryDelay` default 60 s, base delay default 500 ms, max delay default 8 s),
-`Attribution` and `BillingLookup`.
+Requests go through the official SDK client
+(`github.com/anthropics/anthropic-sdk-go`), which owns the transport, retries
+and stream framing. Every tool is declared with `"strict": true`, so the API
+guarantees arguments that match its input schema; a tool's output schema,
+reachable tools and terminating flag are never sent. `tool_choice` is `auto`,
+`none` or absent: a forced choice (`any`, or a named tool) is never sent,
+because current models reject it.
 
-| Package | Extra options |
+Prompt-cache breakpoints (`cache_control: {"type":"ephemeral"}`) go on the
+last system block, the last tool, the last block of `core.Request.Prefix`
+(messages sent ahead of the history on every request) and the last block of
+the final user message. A replayed `tool_use` input, and any block replayed
+verbatim, reaches the wire with the exact bytes it arrived with;
+`anthropic.BuildRequestJSON(req, model)` returns the body as sent.
+
+Each response's `core.Usage` carries input, output, cache-read and
+cache-write tokens and `Requests: 1`; `Usage.Add` sums them, so a run's usage
+counts its model requests. `anthropic.TranslateMessage` and
+`anthropic.TranslateUsage` translate an SDK `Message` and an SDK usage pair
+the same way the stream does. `anthropic.Options`:
+
+| Field | Meaning |
 |---|---|
-| `anthropic` | `Betas` (dated beta headers, opt-in; `compact-2026-01-12` enables server-side compaction), `VertexProject`, `VertexLocation`, `ToolPrefix`, `OnToolPrefixSync`, `Now`, `MaxSSEEventBytes`. |
+| `Client` | `*anthropic.Client` (the SDK's). Requests go through it as configured; nil builds one from the environment per request. |
+| `BaseURL` | Overrides `ANTHROPIC_BASE_URL` and the catalog row. |
+| `HTTPClient` | The HTTP client the built SDK client uses. |
+| `Getenv` | Injectable environment; nil means `os.Getenv`. |
+| `MaxRetries` | `*int`; overrides the SDK's retry count (default 2). |
+| `Betas` | Dated beta headers, opt-in; `compact-2026-01-12` enables server-side compaction. |
+| `VertexProject`, `VertexLocation` | Select the Vertex AI deployment. |
+| `VertexTokenSource` | `oauth2.TokenSource` for Vertex. Nil uses a Google access token in `ANTHROPIC_AUTH_TOKEN`, then Application Default Credentials, found on the first request. |
+| `BillingLookup` | Resolves a served model id to its catalog row for pricing. |
+| `ToolPrefix`, `OnToolPrefixSync` | The per-session tool-schema cache and its reconciliation reports. |
+| `Now` | Injectable clock for timestamps. |
 
 ## Built-in tool options (`tools.Options`)
 

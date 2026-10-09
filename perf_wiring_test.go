@@ -181,11 +181,11 @@ func TestFirstTokenIsEmittedBeforeTheStreamEnds(t *testing.T) {
 
 	go func() {
 		fmt.Fprint(pw, "event: message_start\ndata: "+
-			`{"message":{"id":"m","model":"claude-x","usage":{"input_tokens":1}}}`+"\n\n")
+			`{"type":"message_start","message":{"id":"m","model":"claude-x","usage":{"input_tokens":1}}}`+"\n\n")
 		fmt.Fprint(pw, "event: content_block_start\ndata: "+
-			`{"index":0,"content_block":{"type":"text","text":""}}`+"\n\n")
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`+"\n\n")
 		fmt.Fprint(pw, "event: content_block_delta\ndata: "+
-			`{"index":0,"delta":{"type":"text_delta","text":"first"}}`+"\n\n")
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"first"}}`+"\n\n")
 
 		// Nothing more until the consumer has seen that delta.
 		select {
@@ -196,11 +196,11 @@ func TestFirstTokenIsEmittedBeforeTheStreamEnds(t *testing.T) {
 		}
 
 		fmt.Fprint(pw, "event: content_block_delta\ndata: "+
-			`{"index":0,"delta":{"type":"text_delta","text":" and rest"}}`+"\n\n")
-		fmt.Fprint(pw, "event: content_block_stop\ndata: "+`{"index":0}`+"\n\n")
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" and rest"}}`+"\n\n")
+		fmt.Fprint(pw, "event: content_block_stop\ndata: "+`{"type":"content_block_stop","index":0}`+"\n\n")
 		fmt.Fprint(pw, "event: message_delta\ndata: "+
-			`{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`+"\n\n")
-		fmt.Fprint(pw, "event: message_stop\ndata: {}\n\n")
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`+"\n\n")
+		fmt.Fprint(pw, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 		_ = pw.Close()
 	}()
 

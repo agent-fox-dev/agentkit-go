@@ -33,7 +33,9 @@ type Usage struct {
 	// CacheWrite1hTokens is a SUBSET of CacheWriteTokens (REQ-PROV-05.3).
 	CacheWrite1hTokens int64
 	TotalTokens        int64
-	CostUSD            float64
+	// Requests is how many model requests the usage covers.
+	Requests int64
+	CostUSD  float64
 	// BilledModel is the model that actually served the request (REQ-PROV-05.5).
 	BilledModel string
 
@@ -76,6 +78,7 @@ func (u Usage) Add(o Usage) Usage {
 	u.CacheWriteTokens += o.CacheWriteTokens
 	u.CacheWrite1hTokens += o.CacheWrite1hTokens
 	u.TotalTokens += o.TotalTokens
+	u.Requests += o.Requests
 	u.CostUSD += o.CostUSD
 	u.Set |= o.Set
 	if o.BilledModel != "" {

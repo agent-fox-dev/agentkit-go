@@ -30,7 +30,7 @@ Imports between first-party packages, taken from the source (tests excluded;
 | `jsonx`, `wire` | nothing first-party |
 | `catalog`, `guard` | `core` |
 | `provider` | `core`, `schema`, `wire` |
-| `provider/anthropic` | `core`, `catalog`, `provider` |
+| `provider/anthropic` | `core`, `provider`, `wire`; plus `github.com/anthropics/anthropic-sdk-go`, `golang.org/x/oauth2` (Vertex) and `github.com/aws/aws-sdk-go-v2` (Bedrock) |
 | `provider/faux` | `core` |
 | `tools` | `core`, `outline`, `schema`; plus `github.com/bmatcuk/doublestar/v4` |
 | `codesearch` (nested module) | `tools`, `core`, `schema`, `outline`; plus `github.com/sourcegraph/zoekt` (confined to this module) |
@@ -55,9 +55,9 @@ Rules that follow from it:
 |---|---|
 | `.` | `Agent`, constructors (`NewAgent`, `NewAgentWithHistory`), the loop (`loop.go`), the tool batch executor (`batch.go`), nested tool calls (`nested.go`), `DefaultProviders` / `RegisterDefaults` (`providers.go`), the `execute` guard check (`execguard.go`). |
 | `core` | Messages, content blocks, events and their discriminated JSON form (`MarshalEvent`, with a caller-supplied `MessageEncoder`), `EventStream`, `AgentConfig`, `Tool`, `ToolPolicy`, argument preparation, `Model`, `Usage`, stop reasons, errors. |
-| `catalog` | Embedded model catalog (`catalog.json`), `ResolveModel`, sibling cloning, `max_tokens` and thinking-level clamping. |
-| `provider` | What a wire API needs and does not own: credential resolution (`VendorAuth`, `ModelAuth`, `ResolveAuth`), the HTTP pipeline and retrying transport (`Call`, `Do`, `RetryPolicy`), header precedence, cost arithmetic, SSE decoding, the per-session tool-schema cache (`ToolPrefix`) and deferred-tool splitting. |
-| `provider/anthropic` | Anthropic Messages, direct and Claude-on-Vertex, including the send-time transcript repair (`RepairTranscript`) and partial-JSON salvage of streamed tool arguments (`SalvageJSON`). |
+| `catalog` | Embedded Claude model catalog (`catalog.json`) and `Lookup`: context window, output cap, prices and thinking kind, with a usable default for an unlisted id. |
+| `provider` | What a wire API needs and does not own: cost arithmetic, the per-session tool-schema cache (`ToolPrefix`) and deferred-tool splitting. Transport, retries and SSE framing are the Anthropic SDK's. |
+| `provider/anthropic` | Anthropic Messages over the official SDK — direct, Claude on Vertex AI and on Bedrock, chosen by `Resolve` — including the send-time transcript repair (`RepairTranscript`) and partial-JSON salvage of streamed tool arguments (`SalvageJSON`). |
 | `provider/faux` | Scripted provider for offline tests and demos. |
 | `outline` | Source-file declaration listing with real line ranges. Go files use `go/ast` in every build. With cgo, Python, JavaScript, TypeScript/TSX, Java, Kotlin, C#, Scala, Rust, C, C++, PHP, Ruby, Lua and shell are parsed in-process by tree-sitter grammars driven by tags queries (`outline/treesitter*.go`, `//go:build cgo`); without cgo those files are `none`. Anything outside the extension table is `none` and is not read; `LangFor` also reads a `.h` header's content to tell C++ from C. `CommentAndStringSpans` gives `find_references` the comment and string ranges of a file from the same grammars. No first-party imports. |
 | `tools` | Built-in tools, workspace containment, output accumulator, process control, glob (`github.com/bmatcuk/doublestar/v4` plus smart-case and bare-pattern basename matching), layered gitignore. `read_file` reads text only: a file whose leading bytes are a PNG, JPEG, GIF or WebP signature is refused with `unsupported_file`. `RunArgv` is the embedder's process runner (no shell, argv-based, with stdin, head/tail truncation, log file, reduced environment and a pinned outcome contract). `Walk` exposes the single shared directory traversal behind workspace confinement. `file_outline` returns a file's declarations with line ranges; `find_symbol` searches the workspace by declaration name, backed by a lazily built, bounded in-memory symbol table that is refreshed after `write_file`, `edit_file` and the shell tools run; `find_references` searches for callers and usages of declarations across the workspace with exact Go type resolution and outline attribution, backed by a lazily built, bounded in-memory reference cache (`referenceCache`). |
@@ -84,8 +84,9 @@ Agent.Run / RunMessage / Stream
          2. build Request from history + tools + system prompt
          3. Middleware chain (last registered is outermost) ── Axis 1
          4. ProviderClient.Stream  ── provider/anthropic repairs the
-            transcript, encodes the wire body, resolves auth + headers,
-            sends via the retrying transport, decodes SSE into core events
+            transcript, encodes the wire body itself (exact bytes), resolves
+            the deployment and SDK client (anthropic.Resolve), sends through
+            the SDK, and decodes the SDK's stream events into core events
          5. assistant message recorded in history, events emitted
          6. tool_use blocks present? (never the stop reason decides)
               └─ batch.go: prepare (sequential: policy, BeforeToolCall,
@@ -304,10 +305,10 @@ The `tools` package provides in-memory, workspace-confined symbol lookup and ref
 ## Testing layout
 
 - Unit and property tests sit beside their package.
-- `testdata/golden/` holds the Anthropic request-body golden. It pins
-  regression, not vendor truth.
+- `testdata/golden/` holds the Anthropic request-body golden: the exact bytes
+  sent, unindented. It pins regression, not vendor truth.
 - `internal/policy` holds the cross-target (cgo off) and host (cgo on) build
-  gates.
+  gates and the direct-dependency allowlist.
 - `provider/faux` scripts a model offline; the root tests and the examples run
   against it.
 

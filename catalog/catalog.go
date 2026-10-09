@@ -1,19 +1,17 @@
-// Package catalog embeds AgentKit's model catalog and turns a model spec
-// string into the core.Model descriptor of REQ-PROV-10.
+// Package catalog embeds AgentKit's Claude model catalog and turns a model
+// id into the core.Model descriptor of REQ-PROV-10 (Lookup).
 //
 // The catalog supplies exactly the metadata no provider API returns and no
 // pass-through can synthesize: wire API, base URL, context window, pricing,
 // reasoning support, modality support and compatibility profile. Every one of
-// those is load-bearing before the first byte is sent — the max_tokens clamp
-// (REQ-CAT-04), the budget gate (REQ-PROV-05) and the thinking clamp
-// (REQ-PROV-15) all read it — which is why "just pass the model string
-// through" is not an option (NFR-COMPAT-03, PRD Appendix A #11).
+// those is load-bearing before the first byte is sent — the max_tokens cap,
+// the cost of a turn and how thinking is encoded all read it — which is why
+// "just pass the model string through" is not an option.
 //
-// The catalog is NOT an allowlist. An unknown model id under a known vendor
-// clones that vendor's default row (REQ-CAT-03), so a model that ships after
-// this snapshot works the day it ships. Nothing in the resolution path rejects
-// a model id merely for being absent from the catalog; the only rejections are
-// "which vendor?" (unresolvable) and "which of these two?" (ambiguous).
+// The catalog is NOT an allowlist. An id it does not list gets a usable
+// default descriptor (Lookup), so a model that ships after this snapshot works
+// the day it ships. All model metadata — prices, token limits, how a model
+// takes thinking — lives here and nowhere else.
 //
 // # Layering
 //
@@ -316,6 +314,7 @@ func (m *modelRow) toModel(vendorID, modelID string, v *vendorRow, path string) 
 			supported++
 		}
 	}
+	out.Thinking = core.ThinkingKindOf(out.ThinkingLevelMap)
 	if supported > 0 && !out.Reasoning {
 		return core.Model{}, badf(path+".reasoning",
 			"false, but thinking_level_map supports %d level(s) above off; a clamp would\n"+
@@ -461,4 +460,47 @@ func cloneModel(m core.Model) core.Model {
 		out.Cost.Tiers = append([]core.CostTier(nil), m.Cost.Tiers...)
 	}
 	return out
+}
+
+// Default context window, output cap and thinking for a Claude model the
+// catalog does not list (10-REQ-3.4).
+const (
+	DefaultContextWindow = 1_000_000
+	DefaultMaxTokens     = 128_000
+)
+
+// Vendor is the one vendor the catalog lists.
+const Vendor = "anthropic"
+
+// Lookup returns the descriptor for a Claude model id, with or without the
+// "anthropic/" prefix, and whether the catalog lists it.
+//
+// An id the catalog does not list is not refused: it gets a usable default
+// with the requested id, a 1,000,000-token window, a 128,000-token output
+// cap, adaptive thinking and no price, so a model released after this
+// snapshot works the day it ships.
+func Lookup(id string) (core.Model, bool) { return Default().Lookup(id) }
+
+// Lookup is the package-level Lookup against this catalog.
+func (c *Catalog) Lookup(id string) (core.Model, bool) {
+	bare := strings.TrimPrefix(strings.TrimSpace(id), Vendor+"/")
+	if e, ok := c.byCanonical[Vendor+"/"+bare]; ok && bare != "" {
+		return cloneModel(e.model), true
+	}
+	if bare == "" {
+		bare = id
+	}
+	m := core.Model{
+		ID: bare, Name: bare, Provider: Vendor,
+		ContextWindow: DefaultContextWindow, MaxTokens: DefaultMaxTokens,
+		Input: []string{"text", "image"}, Reasoning: true,
+		Thinking: core.ThinkingKindAdaptive,
+	}
+	if v, ok := c.vendors[Vendor]; ok {
+		m.API, m.BaseURL = v.API, v.BaseURL
+	}
+	if m.ID == "" {
+		m.ID, m.Name = "unknown", "unknown"
+	}
+	return m, false
 }

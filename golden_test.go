@@ -57,11 +57,12 @@ func checkGolden(t *testing.T, name, got string) {
 // PROVENANCE (NFR-TEST-08.1) — and the honest limit of this file
 //
 //	goldens:   testdata/golden/request_anthropic.json
-//	reference: AgentKit itself, captured through RequestOptions.OnPayload with
-//	           no network and no API key. THIS IS NOT A VENDOR CAPTURE. These
-//	           pin the request body against REGRESSION — they catch AgentKit
-//	           changing what it sends — and say nothing about whether what it
-//	           sends is what the vendor currently accepts.
+//	reference: AgentKit itself — the bytes the SDK client handed its
+//	           transport, with no network and no API key, stored exactly
+//	           (unindented, so the replayed tool input keeps its spacing).
+//	           THIS IS NOT A VENDOR CAPTURE. It pins the request body against
+//	           REGRESSION — AgentKit, or an SDK update, changing what is sent
+//	           — and says nothing about whether the vendor accepts it.
 //	version:   the working tree
 //	command:   go test -run TestGoldenProviderRequestBodies -update .
 func TestGoldenProviderRequestBodies(t *testing.T) {

@@ -92,7 +92,21 @@ const (
 	APIFaux              API = "faux" // NFR-TEST-05, shipped and supported
 )
 
-// ThinkingLevel is REQ-PROV-15's request parameter and assistant provenance.
+// Effort is how much thinking a model puts into a turn: on an adaptive model
+// it is sent as output_config.effort, on a budget model it picks the row's
+// budget_tokens.
+type Effort string
+
+const (
+	EffortLow    Effort = "low"
+	EffortMedium Effort = "medium"
+	EffortHigh   Effort = "high"
+	EffortXHigh  Effort = "xhigh"
+	EffortMax    Effort = "max"
+)
+
+// ThinkingLevel keys a catalog row's thinking level map. Requests carry an
+// Effort instead.
 type ThinkingLevel string
 
 const (
@@ -106,11 +120,8 @@ const (
 	ThinkingMax     ThinkingLevel = "max"
 )
 
-// ThinkingLevelOrder is the total order ClampThinkingLevel searches (upward
-// first, then downward). Exported so the catalog does not re-derive it.
-// `off` is excluded from a DOWNWARD clamp target unless it was explicitly
-// requested: clamping a request for some thinking down to no thinking is a
-// behaviour change, not a clamp.
+// ThinkingLevelOrder lists every level a catalog row may key, in order; the
+// catalog rejects a row naming any other.
 var ThinkingLevelOrder = []ThinkingLevel{
 	ThinkingOff, ThinkingMinimal, ThinkingLow, ThinkingMedium,
 	ThinkingHigh, ThinkingXHigh, ThinkingMax,

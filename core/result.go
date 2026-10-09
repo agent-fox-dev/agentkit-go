@@ -73,12 +73,12 @@ func (p Phase) String() string {
 }
 
 type ConfigView struct {
-	ModelID       string        `json:"model_id"`
-	Provider      string        `json:"provider"`
-	API           API           `json:"api"`
-	MaxTokens     *int          `json:"max_tokens"`
-	ThinkingLevel ThinkingLevel `json:"thinking_level"`
-	ToolNames     []string      `json:"tool_names"`
+	ModelID   string   `json:"model_id"`
+	Provider  string   `json:"provider"`
+	API       API      `json:"api"`
+	MaxTokens *int     `json:"max_tokens"`
+	Effort    Effort   `json:"effort"`
+	ToolNames []string `json:"tool_names"`
 }
 
 // SessionSnapshot is REQ-LIFE-02's resync target.

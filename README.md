@@ -68,7 +68,7 @@ prints four behaviours the specification originally got wrong.
 | `mcp` | Model Context Protocol client on the official Go SDK (all revisions, negotiated): tool pool with qualified names, subprocess servers with a reduced environment and respawn, result cap, strict decoding at every trust boundary. |
 | `guard` | The execute boundary: `Restricted` (a program allowlist plus operator rejection) and `AllowAll`. |
 | `prompt` | The assembled system prompt: base instructions, per-tool guidelines, extra blocks. |
-| `catalog` | Embedded model catalog, resolution, sibling-cloning, `max_tokens` and thinking-level clamping. |
+| `catalog` | Embedded Claude model catalog and `Lookup`. |
 | `provider` | Credential resolution, HTTP transport + retry, header precedence, cost arithmetic, SSE decoding, the per-session tool-schema cache. |
 | `provider/anthropic` | The Anthropic Messages wire (direct and Vertex), encode and decode, with send-time transcript repair. |
 | `provider/faux` | A scripted provider for offline tests and demos. |

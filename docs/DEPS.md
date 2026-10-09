@@ -18,10 +18,30 @@ module, when `go list -m` reports a direct dependency that is not on it:
 | `github.com/pelletier/go-toml/v2` | TOML parsing for MCP configuration (`internal/toml`) |
 | `github.com/tree-sitter/…`, `github.com/tree-sitter-grammars/…` | tree-sitter outlines and their grammars |
 | `go.starlark.net` | code mode's Starlark runtime |
+| `github.com/anthropics/anthropic-sdk-go` | the Anthropic wire: transport, auth, retries, stream framing, Vertex |
+| `golang.org/x/oauth2` | Google credentials for the Vertex AI deployment |
+| `github.com/aws/aws-sdk-go-v2`, `github.com/aws/aws-sdk-go-v2/…` | AWS configuration and credentials for the Bedrock deployment |
 
 Adding a direct dependency means adding it there, with its reason, and a ruling
 here. The `codesearch` module is separate and not covered: its zoekt graph stays
 out of the root module's.
+
+## `github.com/anthropics/anthropic-sdk-go`
+
+**Used by.** `provider/anthropic`, for every request.
+
+**Version.** `v1.79.1`, pinned and moved deliberately.
+
+**Why this module.** It owns what a hand-rolled wire had to: the HTTP
+transport, retries with `Retry-After`, SSE framing, and the Vertex AI request
+rewriting and OAuth. AgentKit still writes the request body itself and sends
+it through the client (`option.WithRequestBody`), because the SDK's request
+types re-encode a replayed `tool_use` input and its bytes must reach the wire
+as the model wrote them.
+
+**What is pulled in.** The Vertex option brings `golang.org/x/oauth2` and
+Google's API transport; the module also requires the AWS SDK for its Bedrock
+option.
 
 ## `go.starlark.net`
 

@@ -5,114 +5,54 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	sdk "github.com/anthropics/anthropic-sdk-go"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/provider"
+	"github.com/agent-fox-dev/agentkit-go/wire"
+	"github.com/anthropics/anthropic-sdk-go/option"
+	"golang.org/x/oauth2"
 )
 
-// DefaultBaseURL is used when neither the catalog row nor ANTHROPIC_BASE_URL
-// names one.
-const DefaultBaseURL = "https://api.anthropic.com"
-
-// APIVersion is the required anthropic-version header.
+// APIVersion is the anthropic-version the SDK sends.
 const APIVersion = "2023-06-01"
+
+// VertexAPIVersion is the anthropic_version a Vertex request body carries.
+const VertexAPIVersion = "vertex-2023-10-16"
 
 // BetaCompaction opts into REQ-PROV-07's server-side compaction. Compaction
 // blocks in the response are retained as core.RawBlock and replayed verbatim
 // on later turns; nothing else in the SDK needs to model them.
 const BetaCompaction = "compact-2026-01-12"
 
-// BetaOAuth is the beta the Messages API requires alongside an OAuth bearer
-// (an ANTHROPIC_OAUTH_TOKEN, sk-ant-oat...). It is sent automatically with
-// such a token, after any Options.Betas.
-const BetaOAuth = "oauth-2025-04-20"
-
-// VendorAuth is REQ-AUTH-03's ORDERED table for the Anthropic vendor.
-//
-// The order is load-bearing and so is the per-row scheme. ANTHROPIC_AUTH_TOKEN
-// is sent as `Authorization: Bearer` and ANTHROPIC_API_KEY as `x-api-key`;
-// sending either under the other's header is a 401 whose body says nothing
-// about which variable was picked. This is precisely why REQ-AUTH-03 rejects a
-// single `<VENDOR>_API_KEY` convention.
-//
-// The API key comes FIRST, as it does in the official SDKs: a machine that
-// carries both must authenticate the way every first-party client on it does
-// (docs/errata/auth_anthropic_precedence.md records the divergence from the
-// PRD's order).
-//
-// The names are constants because the deployment switch reads the same three
-// (directCredential): a credential only the direct deployment can use is what
-// outranks a leftover ANTHROPIC_VERTEX_PROJECT_ID, and a second copy of the
-// list is a second place to forget a row.
-const (
-	AuthTokenVar  = "ANTHROPIC_AUTH_TOKEN"
-	OAuthTokenVar = "ANTHROPIC_OAUTH_TOKEN"
-	APIKeyVar     = "ANTHROPIC_API_KEY"
-)
-
-var VendorAuth = provider.VendorAuth{
-	Vars: []provider.EnvVar{
-		{Name: APIKeyVar, Scheme: provider.SchemeAPIKey},
-		{Name: AuthTokenVar, Scheme: provider.SchemeBearer},
-		{Name: OAuthTokenVar, Scheme: provider.SchemeBearer},
-		// A base URL is configuration, not a credential (REQ-AUTH-03's
-		// "discovery and retrieval are distinct operations"). Sending a proxy
-		// URL as a bearer token is nonsense; its presence still means the
-		// vendor is set up.
-		{Name: VertexBaseURLVar, DiscoveryOnly: true},
-	},
-	BaseURLVar: BaseURLVar,
-	// Ambient is REQ-AUTH-04 for the Vertex deployment, and it is the fix for
-	// the whole reported symptom: such a deployment authenticates with a
-	// Google OAuth token this process cannot read, so without this it resolves
-	// to CredentialNone and every pre-flight check refuses the run with a
-	// message saying the vendor is unconfigured. It is configured — for a
-	// deployment the table did not know existed.
-	Ambient: VertexSelected,
-}
-
-// vertexVendorAuth is the table the Vertex deployment resolves the
-// environment through. ANTHROPIC_AUTH_TOKEN is the one variable that can
-// carry a Google access token (`gcloud auth print-access-token`); the API key
-// and the OAuth token are Anthropic-issued, so on this deployment they are not
-// credentials at all, and reading them would let a leftover one outrank — and
-// then be dropped in place of — the token that works.
-var vertexVendorAuth = provider.VendorAuth{
-	Vars: []provider.EnvVar{
-		{Name: AuthTokenVar, Scheme: provider.SchemeBearer},
-		{Name: VertexBaseURLVar, DiscoveryOnly: true},
-	},
-	BaseURLVar: BaseURLVar,
-	Ambient:    VertexSelected,
-}
-
 // Options configures the provider. The zero value is usable.
 type Options struct {
+	// Client is the official SDK client requests go through. Nil resolves one
+	// from the environment.
+	Client *sdk.Client
+
 	BaseURL    string
 	HTTPClient *http.Client
 	// Getenv is injectable so a test never mutates process environment
 	// (NFR-TEST-04). Nil means os.Getenv.
 	Getenv func(string) string
-	Retry  provider.RetryPolicy
+	// MaxRetries overrides the SDK's retry count; nil keeps its default.
+	MaxRetries *int
 	// Betas are sent as anthropic-beta. BetaCompaction is REQ-PROV-07.
 	Betas []string
-	// VertexProject and VertexLocation select the Vertex AI deployment
-	// (NFR-COMPAT-05). Setting the project is the whole switch: it selects the
-	// Vertex path shape and, with no base URL configured, the regional Vertex
-	// host. Both fall back to the environment — see ResolveVertex — so a
-	// deployment can also flip with no code change at all.
+	// VertexProject selects the Vertex AI deployment whatever the
+	// environment says, and VertexLocation sets its region; both otherwise
+	// come from the environment (see Resolve).
 	VertexProject  string
 	VertexLocation string
-	// Attribution overrides AgentConfig.Attribution for this provider
-	// (REQ-SEC-13.2). Nil means on unless AGENTKIT_TELEMETRY=0.
-	Attribution *bool
+	// VertexTokenSource supplies the Google OAuth token a Vertex request is
+	// authorized with. Nil uses a Google access token in ANTHROPIC_AUTH_TOKEN
+	// when there is one, and Application Default Credentials otherwise.
+	VertexTokenSource oauth2.TokenSource
 	// BillingLookup resolves a SERVED model id to its catalog row
 	// (REQ-PROV-05.5). Nil bills a fallback-served response at the requested
 	// model's rates and still records the served name.
@@ -127,8 +67,6 @@ type Options struct {
 	OnToolPrefixSync func(provider.SyncReport)
 	// Now is injectable for deterministic timestamps in tests.
 	Now func() time.Time
-	// MaxSSEEventBytes bounds one accumulated SSE event; zero is the default.
-	MaxSSEEventBytes int
 }
 
 // Provider returns the registry entry (REQ-PROV-09).
@@ -172,12 +110,6 @@ func (c *client) Stream(ctx context.Context, m *core.Model, req core.Request, o 
 	// second provider implementation. It is decided HERE rather than in run
 	// because it changes the request BODY as well as the URL, and the body is
 	// serialized below.
-	env := provider.Env{Override: req.Options.Env, Getenv: c.opts.Getenv}
-	vx, err := ResolveVertex(deploymentBase(m, defaultBase(c.opts.BaseURL), env),
-		c.opts.VertexProject, c.opts.VertexLocation, env)
-	if err != nil {
-		return core.ErrorStream(nil, err)
-	}
 
 	retention := core.CacheRetentionShort
 	if o.CacheRetention != "" {
@@ -196,13 +128,6 @@ func (c *client) Stream(ctx context.Context, m *core.Model, req core.Request, o 
 	}
 	if rep.Changed() && o.Warnf != nil {
 		o.Warnf("anthropic: %s", rep.String())
-	}
-	if vx.On() {
-		// The body half of NFR-COMPAT-05's second deployment. The model id is
-		// a URL segment here and the body field is rejected; the version moves
-		// out of the header and into the body.
-		body.Model = ""
-		body.AnthropicVersion = VertexAPIVersion
 	}
 	if c.wantsCompaction() {
 		// REQ-PROV-07: the beta header opts the REQUEST into the feature and
@@ -225,24 +150,29 @@ func (c *client) Stream(ctx context.Context, m *core.Model, req core.Request, o 
 		}
 	}
 
-	raw, err := json.Marshal(payload)
+	var raw []byte
+	if payload == any(body) {
+		raw, err = encodeExact(body)
+	} else {
+		raw, err = json.Marshal(payload)
+	}
 	if err != nil {
 		return core.ErrorStream(nil, fmt.Errorf("anthropic: encoding request: %w", err))
 	}
 
 	s := core.NewEventStream(core.StreamOptions{})
-	go c.run(ctx, s, m, req, raw, vx)
+	go c.run(ctx, s, m, req, raw)
 	return s
 }
 
 func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, req core.Request,
-	raw []byte, vx Vertex) {
+	raw []byte) {
 	d := &decodeState{
 		s: s, model: m, lookup: c.opts.BillingLookup,
 		partial: core.AssistantMessage{
 			Provider: m.Provider, API: m.API, Model: m.ID,
-			ThinkingLevel: req.ThinkingLevel,
-			Timestamp:     c.now(),
+			Effort:    req.Effort,
+			Timestamp: c.now(),
 		},
 		accs: map[int]*blockAcc{},
 	}
@@ -260,114 +190,88 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 		defer cancel()
 	}
 
-	env := provider.Env{Override: req.Options.Env, Getenv: c.opts.Getenv}
-	table := VendorAuth
-	if vx.On() {
-		table = vertexVendorAuth
-	}
-	auth := provider.ResolveAuth(table, env)
-
-	base := provider.ResolveBaseURL(m, auth, defaultBase(c.opts.BaseURL))
-	if vx.On() {
-		// A Vertex proxy beats a general one: the two name different
-		// upstreams and a machine can carry both.
-		if u := env.Get(VertexBaseURLVar); u != "" {
-			base = strings.TrimRight(u, "/")
-		} else if base == strings.TrimRight(DefaultBaseURL, "/") {
-			// A project configured with no base URL anywhere: follow it to the
-			// Vertex host rather than sending a Vertex path to api.anthropic.com.
-			// An explicitly configured base URL is left exactly as it is.
-			base = vx.BaseURL()
-		}
-		auth = vertexAuth(auth)
-	}
-	url := base + vx.Path(m, true)
-
-	headers := map[string]string{
-		"content-type": "application/json",
-		"accept":       "text/event-stream",
-	}
-	if !vx.On() {
-		// Vertex carries the version in the body instead, and rejects a
-		// request that names it in both places.
-		headers["anthropic-version"] = APIVersion
-	}
-	betas := c.opts.Betas
-	if !vx.On() && isOAuthBearer(auth) {
-		betas = append(slices.Clip(betas), BetaOAuth)
-	}
-	if len(betas) > 0 {
-		headers["anthropic-beta"] = strings.Join(betas, ",")
-	}
-
-	call := provider.Call{
-		Method: http.MethodPost, URL: url, Body: raw, Headers: headers,
-		Auth: auth, Model: m, Options: req.Options,
-		Attribution: c.opts.Attribution, Env: env,
-		Client: c.opts.HTTPClient, Retry: c.opts.Retry,
-	}
-
-	resp, err := call.Do(ctx)
+	sc, dep, env, err := c.sdkClient(req.Options.Env, req.Options.Transport)
 	if err != nil {
-		d.fail(transportError(caller, ctx, err), err)
+		// A deployment that cannot be resolved — no credential, a Vertex
+		// selection with no project — fails the turn with the reason.
+		d.fail(err.Error(), err)
 		return
 	}
-	defer resp.Body.Close()
 
+	// The body is ours: SDK params would re-encode replayed tool_use input,
+	// and its bytes must reach the wire as the model wrote them.
+	opts := []option.RequestOption{option.WithRequestBody("application/json", raw)}
+	if rt := req.Options.Transport; rt != nil && c.opts.Client != nil {
+		opts = append(opts, option.WithHTTPClient(&http.Client{Transport: rt}))
+	}
+	if n := req.Options.MaxRetries; n != nil {
+		opts = append(opts, option.WithMaxRetries(*n))
+	}
+	// REQ-AUTH-02: a request's own headers win, and a present-nil value
+	// removes the header the provider would otherwise send — how a gateway
+	// turns the upstream credential off.
+	for k, v := range req.Options.Headers {
+		if v == nil {
+			opts = append(opts, option.WithHeaderDel(k))
+		} else {
+			opts = append(opts, option.WithHeader(k, *v))
+		}
+	}
 	if fn := req.Options.OnResponse; fn != nil {
-		if err := fn(resp, m); err != nil {
-			d.fail(err.Error(), err)
+		opts = append(opts, option.WithMiddleware(func(r *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+			resp, err := next(r)
+			if err != nil {
+				return resp, err
+			}
+			if herr := fn(resp, m); herr != nil {
+				resp.Body.Close()
+				return nil, herr
+			}
+			return resp, nil
+		}))
+	}
+
+	stream := sc.Messages.NewStreaming(ctx, sdk.MessageNewParams{}, opts...)
+	defer stream.Close()
+	started := false
+	for stream.Next() {
+		ev := stream.Current()
+		if !started {
+			d.emitStart()
+			started = true
+		}
+		if err := d.event(ev.Type, []byte(ev.RawJSON())); err != nil {
+			d.fail(streamErrorText(caller, ctx, err), err)
 			return
 		}
+		if d.sawStop {
+			break
+		}
 	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		err := statusErr(resp)
-		err.Text += vertexAuthNote(resp.StatusCode, vx, env)
-		d.fail(err.Text, err)
+	if err := stream.Err(); err != nil {
+		var apiErr *sdk.Error
+		if errors.As(err, &apiErr) && caller.Err() == nil {
+			text := statusText(apiErr) + vertexAuthNote(apiErr.StatusCode, dep, env)
+			d.fail(text, &StatusError{Code: apiErr.StatusCode, Text: text})
+			return
+		}
+		// A cancellation lands here as whatever the transport or the body
+		// reader reported, and only the contexts say which of REQ-LOOP-09's
+		// abort or REQ-PROV-18's timeout it was.
+		d.fail(transportErrorText(caller, ctx, err), err)
 		return
 	}
-
-	d.emitStart()
-	if err := d.consume(provider.NewSSEReader(resp.Body, c.opts.MaxSSEEventBytes)); err != nil {
-		// A cancellation lands here as whatever the body reader reported —
-		// an EOF, a "context canceled" — and only the contexts say which of
-		// REQ-LOOP-09's abort or REQ-PROV-18's timeout it was.
-		d.fail(provider.StreamErrorText("anthropic", caller, ctx, err), err)
+	if !d.sawStop {
+		// A 200 whose body simply stops is the single commonest streaming
+		// failure, and only this check turns it into an error.
+		d.fail(streamErrorText(caller, ctx, ErrStreamTruncated), ErrStreamTruncated)
 		return
 	}
 	d.finish(m, c.opts.BillingLookup)
 }
 
-// defaultBase is the compiled-in fallback, kept as a function so the zero
-// Options value works without a constructor.
-func defaultBase(configured string) string {
-	if configured != "" {
-		return configured
-	}
-	return DefaultBaseURL
-}
-
-// transportError renders a transport failure as text the SEMANTIC retry layer
-// can classify (REQ-PROV-14). A cancellation is normalized separately by the
-// caller; everything else keeps the underlying text, because that text is
-// where "getaddrinfo", "connection reset" and "EOF" live.
-func transportError(caller, req context.Context, err error) string {
-	if errors.Is(err, provider.ErrRetryDelayTooLong) {
-		return err.Error()
-	}
-	return provider.TransportErrorText("anthropic", caller, req, err)
-}
-
-// statusError builds the error text for a non-2xx response.
-//
-// The status CODE is included in the text on purpose: REQ-PROV-14's allowlist
-// matches bare "429"/"500"/"503" strings, so a message that renders only the
-// provider's prose loses the retry for a gateway that returns a 503 with an
-// empty body.
 // vertexAuthNote explains an authentication failure from the Vertex
-// deployment, and it is the second half of the same defect the ranked
-// selection in VertexSelectedBy fixes.
+// deployment.
 //
 // Vertex answers a missing credential with a Google JSON blob — "Request is
 // missing required authentication credential", CREDENTIALS_MISSING, a link to
@@ -375,17 +279,21 @@ func transportError(caller, req context.Context, err error) string {
 // nor the setting that routed the request to Google. Rendered under this
 // package's "anthropic:" prefix it reads as an Anthropic outage on a machine
 // whose ANTHROPIC_API_KEY is perfectly good, and nothing in it suggests
-// looking at ANTHROPIC_VERTEX_PROJECT_ID.
-func vertexAuthNote(status int, vx Vertex, env provider.Env) string {
-	if !vx.On() || (status != http.StatusUnauthorized && status != http.StatusForbidden) {
+// looking at CLAUDE_CODE_USE_VERTEX.
+func vertexAuthNote(status int, dep deployment, env Env) string {
+	if dep.source != SourceVertex || (status != http.StatusUnauthorized && status != http.StatusForbidden) {
 		return ""
 	}
-	note := " [Claude on Vertex AI: project " + vx.Project + ", location " + vx.Location +
-		", selected by " + vx.SelectedBy + ". This deployment authenticates with " +
+	project := dep.project
+	if dep.projectVar != "" {
+		project += " (from " + dep.projectVar + ")"
+	}
+	note := " [Claude on Vertex AI: project " + project + ", location " + dep.region +
+		", selected by " + VertexEnableVar + " or Options.VertexProject. This deployment authenticates with " +
 		"Google Application Default Credentials, not " + APIKeyVar + " or " + OAuthTokenVar
 	var withheld []string
 	for _, v := range []string{APIKeyVar, OAuthTokenVar} {
-		if env.Has(v) {
+		if get(env, v) != "" {
 			withheld = append(withheld, v)
 		}
 	}
@@ -400,17 +308,65 @@ func vertexAuthNote(status int, vx Vertex, env provider.Env) string {
 		note += " — " + strings.Join(withheld, " and ") + verb + " never sent to a Google endpoint"
 	}
 	return note + ". To use the Anthropic API directly instead, unset " +
-		VertexProjectVar + " or set " + VertexEnableVar + "=0.]"
+		VertexEnableVar + " or set " + VertexEnableVar + "=0.]"
 }
 
-func statusErr(resp *http.Response) *provider.HTTPStatusError {
-	return provider.StatusErr("anthropic", resp, func(body []byte) string {
-		var we wireError
-		if json.Unmarshal(body, &we) == nil {
-			return we.String()
+// AbortText is the one error string that means "the caller stopped this". It
+// is matched by text because it has to survive a round trip through an
+// AssistantMessage's ErrorMessage.
+const AbortText = "Request was aborted"
+
+// ErrStreamTruncated is a stream that ended before message_stop.
+var ErrStreamTruncated = errors.New("agentkit: stream ended before message_stop")
+
+// StatusError is a non-2xx response: the status code and the error text.
+type StatusError struct {
+	Code int
+	Text string
+}
+
+func (e *StatusError) Error() string { return e.Text }
+
+// statusText renders a non-2xx response with its status code, so a caller's
+// retry policy that matches "429" or "503" sees them even when the body says
+// nothing.
+func statusText(e *sdk.Error) string {
+	text := fmt.Sprintf("anthropic: HTTP %d", e.StatusCode)
+	var we wireError
+	if raw := e.RawJSON(); raw != "" && json.Unmarshal([]byte(raw), &we) == nil {
+		if s := we.String(); s != "" {
+			text += ": " + s
 		}
-		return ""
-	}).(*provider.HTTPStatusError)
+	}
+	return text
+}
+
+// transportErrorText renders a transport failure, classifying the two
+// cancellation channels: the caller's (an abort) and the per-request timeout.
+func transportErrorText(caller, req context.Context, err error) string {
+	if text, ok := cancellationText(caller, req, err); ok {
+		return text
+	}
+	return "anthropic: " + err.Error()
+}
+
+// streamErrorText is transportErrorText for a failure while the stream was
+// being decoded, whose text already carries its prefix.
+func streamErrorText(caller, req context.Context, err error) string {
+	if text, ok := cancellationText(caller, req, err); ok {
+		return text
+	}
+	return err.Error()
+}
+
+func cancellationText(caller, req context.Context, err error) (string, bool) {
+	if caller.Err() != nil {
+		return AbortText, true
+	}
+	if req.Err() != nil && errors.Is(req.Err(), context.DeadlineExceeded) {
+		return "anthropic: request timeout (RequestOptions.TimeoutMs elapsed): " + err.Error(), true
+	}
+	return "", false
 }
 
 // ---------------------------------------------------------------- decode state
@@ -438,33 +394,11 @@ type decodeState struct {
 
 func (d *decodeState) emitStart() { d.s.Push(core.MessageStartEvent{Message: d.partial}) }
 
-// consume drives the SSE reader to completion.
-func (d *decodeState) consume(r *provider.SSEReader) error {
-	for {
-		ev, err := r.Next()
-		if err == io.EOF {
-			if !d.sawStop {
-				// A 200 whose body simply stops is the single commonest
-				// streaming failure and it is invisible to the transport
-				// layer. Only this check turns it into something a retry
-				// layer can classify.
-				return provider.ErrSSETruncated
-			}
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if err := d.event(ev); err != nil {
-			return err
-		}
-		if d.sawStop {
-			return nil
-		}
-	}
-}
-
-func (d *decodeState) event(ev provider.SSEEvent) error {
+func (d *decodeState) event(typ string, data []byte) error {
+	ev := struct {
+		Type string
+		Data []byte
+	}{typ, data}
 	if ev.Type == "ping" || (ev.Type == "" && len(ev.Data) == 0) {
 		return nil
 	}
@@ -472,7 +406,7 @@ func (d *decodeState) event(ev provider.SSEEvent) error {
 	// linear scan enforces the size, depth and container bounds and rejects
 	// duplicate keys, which is what stops a gateway sending two stop_reasons
 	// and letting last-wins choose which one we act on.
-	if err := provider.GuardUntrusted(ev.Data); err != nil {
+	if err := wire.Guard(ev.Data, wire.Limits{}); err != nil {
 		return fmt.Errorf("anthropic: %s event: %w", ev.Type, err)
 	}
 	if ev.Type == "" {
@@ -643,6 +577,7 @@ func (d *decodeState) finish(m *core.Model, lookup func(string) *core.Model) {
 	final.StopDetail = d.stopDetail
 	final.Usage = d.usage
 	final.Usage.BilledModel = ""
+	final.Usage.Requests = 1
 
 	// REQ-PROV-05.5: bill the model that SERVED the request. Cost is computed
 	// ONCE, here, from the final served name — never accumulated per event.
@@ -676,8 +611,9 @@ func (d *decodeState) fail(text string, err error) {
 	final.Content = d.partialContent()
 	final.Usage = d.usage
 	final.Usage.BilledModel = ""
+	final.Usage.Requests = 1
 	d.price(&final, d.model, d.lookup)
-	if text == provider.AbortText {
+	if text == AbortText {
 		final.StopReason = core.StopReasonAborted
 		final.ErrorMessage = text
 		d.s.Push(core.MessageEndEvent{Message: final})
@@ -720,7 +656,7 @@ func (d *decodeState) partialContent() core.Content {
 // call. Sharing the assembler is what makes that true by construction rather
 // than by coincidence, and DecodeResponse is how the test can say so.
 func DecodeResponse(m *core.Model, data []byte, lookup func(string) *core.Model) (*core.AssistantMessage, error) {
-	if err := provider.GuardUntrusted(data); err != nil {
+	if err := wire.Guard(data, wire.Limits{}); err != nil {
 		return nil, fmt.Errorf("anthropic: decoding response: %w", err)
 	}
 	var wr wireResponse
@@ -742,6 +678,7 @@ func DecodeResponse(m *core.Model, data []byte, lookup func(string) *core.Model)
 		}
 	}
 	wr.Usage.Into(&msg.Usage)
+	msg.Usage.Requests = 1
 	billModel, billed := provider.BillingModel(m, wr.Model, lookup)
 	msg.Usage.BilledModel = billed
 	if msg.Usage.Reported() {
@@ -767,86 +704,56 @@ var effortTokens = map[string]string{
 // is a 400.
 const minThinkingBudget = 1024
 
-// applyThinking is REQ-PROV-15's Anthropic arm: a TRI-state where undefined
-// omits the key entirely and an explicit "off" sends {"type":"disabled"} —
-// when the row says the model accepts it.
+// applyThinking encodes the requested effort for m (10-REQ-4):
 //
-// The catalog row's wire value for a level decides which generation of the
-// control is sent:
+//   - an adaptive model gets {"type":"adaptive"} and output_config.effort;
+//   - a budget model gets {"type":"enabled","budget_tokens":N}, N being its
+//     catalog row's budget for that effort;
+//   - no effort, a model without thinking, or a level the row does not list
+//     sends neither key. Nothing is clamped to another level.
 //
-//   - an INTEGER is a thinking budget: {"type":"enabled","budget_tokens":N},
-//     held below max_tokens and never below the vendor minimum;
-//   - an EFFORT token (low … max) is the current control:
-//     {"type":"adaptive"} plus output_config.effort, which is what every
-//     model since Claude 4.6 takes and what budget_tokens is a 400 on.
-//
-// The requested level is CLAMPED here — upward first, then downward — and the
-// RETURNED wire value is what is priced; an unclamped level never reaches the
-// wire (REQ-PROV-15: "passing an unclamped level through is prohibited").
-//
-// `off` skips the clamp (ruling P-27: a request for some thinking is never
-// clamped down to none, and a request for none is never clamped up to some)
-// but NOT the catalog. A row that maps off to a wire value sends
-// {"type":"disabled"}; a row that records off as present-and-null, or whose
-// ladder has no off entry, omits the key — on the models that cannot stop
-// thinking, disabled is a 400, and omission is the least thinking they offer.
-// A descriptor with no ladder at all also omits: the adapter sends disabled
-// only where something says the model accepts it.
-func applyThinking(r *request, m *core.Model, requested core.ThinkingLevel) {
-	switch requested {
-	case core.ThinkingUnset:
+// The row's level map may name a different wire effort for a level (an older
+// row maps minimal to low); its value is what is sent.
+func applyThinking(r *request, m *core.Model, effort core.Effort) {
+	if effort == "" {
 		return
-	case core.ThinkingOff:
-		if wire, ok := catalog.ThinkingWire(m, core.ThinkingOff); ok {
-			r.Thinking = &thinking{Type: offType(wire)}
+	}
+	wire, listed := string(effort), true
+	if m.ThinkingLevelMap != nil {
+		w := m.ThinkingLevelMap[core.ThinkingLevel(effort)]
+		listed = w != nil
+		if listed {
+			wire = strings.ToLower(strings.TrimSpace(*w))
 		}
+	}
+	if !listed {
 		return
 	}
-	_, wire, ok := catalog.ClampThinkingLevel(m, requested)
-	if !ok {
-		return // no reachable level: omit rather than guess
+	switch m.ThinkingMode() {
+	case core.ThinkingKindBudget:
+		if n, err := strconv.Atoi(wire); err == nil {
+			applyBudget(r, n)
+		}
+	case core.ThinkingKindAdaptive:
+		e, known := effortTokens[wire]
+		if !known {
+			// An effort the model has never heard of is a 400.
+			return
+		}
+		r.Thinking = &thinking{Type: "adaptive"}
+		r.OutputConfig = &outputConfig{Effort: e}
+		// Thinking rejects any explicit temperature or top_p. Dropping them
+		// is the only option that keeps the request valid.
+		r.Temperature, r.TopP = nil, nil
 	}
-	wire = strings.ToLower(strings.TrimSpace(wire))
-
-	if n, err := strconv.Atoi(wire); err == nil {
-		applyBudget(r, n)
-		return
-	}
-	effort, known := effortTokens[wire]
-	if !known {
-		// Neither a budget nor an effort token. Omitting is the only request
-		// that is not a 400: `enabled` without budget_tokens is, and so is an
-		// effort the model has never heard of.
-		return
-	}
-	r.Thinking = &thinking{Type: "adaptive"}
-	r.OutputConfig = &outputConfig{Effort: effort}
-	// Thinking rejects any explicit temperature or top_p. Dropping them is the
-	// only option that keeps the request valid; the alternative is a 400 that
-	// names sampling and not thinking, sending the reader to the wrong knob.
-	r.Temperature, r.TopP = nil, nil
-}
-
-// offType is the thinking type sent for a request of `off`, taken from the
-// row's wire value for that level. "between_tools" is the newer way to turn
-// thinking off (Claude Sonnet 5.5): the model skips up-front thinking and only
-// the short updates between tool calls come back as thinking blocks, and
-// {"type":"disabled"} is a 400 there. Anything else that is present and
-// non-null keeps the long-standing meaning, "disabled", so a row that writes
-// any other token for off behaves as it always did.
-func offType(wire string) string {
-	if strings.ToLower(strings.TrimSpace(wire)) == "between_tools" {
-		return "between_tools"
-	}
-	return "disabled"
 }
 
 // applyBudget is the budget_tokens arm of applyThinking.
 func applyBudget(r *request, n int) {
 	// Anthropic rejects a thinking budget that is not strictly below
-	// max_tokens. The budget is the value we may lower; max_tokens has
-	// already been clamped against the context window (REQ-CAT-04) and
-	// lowering it again would silently truncate the answer instead.
+	// max_tokens. The budget is the value we may lower; max_tokens is the
+	// caller's bound and lowering it would silently truncate the answer
+	// instead.
 	if n >= r.MaxTokens {
 		n = r.MaxTokens - 1
 	}
