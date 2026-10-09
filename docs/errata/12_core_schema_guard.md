@@ -139,3 +139,20 @@ why.
   `difftest/canon.go`, named in the task's `touches`, no longer exists.
 - TS-12-15..17 live in `core/size_test.go` beside the other repository
   checks, and find the module root with `go list -m`.
+
+## 12-REQ-7: Parse
+
+- `schema.Parse` lives in `schema/parse.go`. Beyond the keywords the spec
+  lists it reads the bounds (`minimum` … `multipleOf`, `minLength`,
+  `maxLength`, `pattern`, `format`, `minItems`, `maxItems`, `uniqueItems`)
+  and `additionalProperties` (a boolean or a schema), and it reads a type
+  list of one type and `null` as `Nullable`, which is how `MarshalJSON`
+  writes it; what `Parse` reads, `MarshalJSON` writes back unchanged.
+- Kept values are compacted, so a schema re-marshals the way it would have
+  been written.
+- `Extra` is a list, not a map: TS-12-20 reads it with `Extra.Get` and checks
+  the order.
+- TS-12-21 passed against the stub, which refused every input.
+- No production code calls `Parse` yet: the MCP client converts the schemas
+  its SDK has already decoded (`mcp/pool.go`, `schemaFrom`), whose key order
+  is already gone, with fallbacks of its own.

@@ -283,7 +283,7 @@
       "done_when": [
         "schema.Parse decodes JSON Schema bytes using jsontext, preserving PropertyOrder and populating standard keywords and Extra"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,

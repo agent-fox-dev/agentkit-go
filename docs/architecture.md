@@ -66,7 +66,7 @@ Rules that follow from it:
 | `prompt` | Assembly of the system prompt (`Build(system, tools)`): the base prompt, then the active tools' guidelines, deduplicated in first-seen order. |
 | `mcp` | AgentKit's MCP client over the official MCP Go SDK, which owns the protocol and version negotiation: the tool pool (qualified names, collision checks, schema conversion, `${VAR}` resolution), subprocess spawning with process-group kill and a reduced environment, respawn, result cap, call limit and sampling gate; and strict `wire` checks at the stdio and HTTP-response boundaries. There is no server. |
 | `wire` | Bounded strict parser for untrusted bytes, on `encoding/json/jsontext`: a token loop adds the size, depth, container-length and node bounds to jsontext's grammar and duplicate-name rejection. Frame readers. |
-| `schema` | JSON Schema value and typed combinators. |
+| `schema` | JSON Schema value and typed combinators; `Parse` decodes a schema document, keeping property order; `Validate` and `Coerce` check and repair tool arguments. |
 | `internal/toml` | Lenient TOML reader for config: `github.com/pelletier/go-toml/v2/unstable` (pinned) parses; a small adapter folds it into an ordered `Table` with line numbers and "duplicate warns, last wins". |
 | `internal/diag` | The shared non-fatal `Diagnostic`. |
 | `internal/policy` | Tests only: the cross-target (cgo off) and host (cgo on) build gates. |
