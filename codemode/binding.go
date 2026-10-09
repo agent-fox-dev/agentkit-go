@@ -96,6 +96,9 @@ func (r *runner) block(name string, kwargs []starlark.Tuple) (core.ToolUseBlock,
 // results in order. A terminate vote or a cancelled context stops the script:
 // the error returned is a *halt the runner reports.
 func (r *runner) dispatch(blocks ...core.ToolUseBlock) ([]core.ToolResult, error) {
+	if err := r.takeCalls(len(blocks)); err != nil {
+		return nil, err
+	}
 	res, err := core.CallNested(r.ctx, blocks...)
 	switch {
 	case errors.Is(err, core.ErrTerminated):
@@ -106,6 +109,7 @@ func (r *runner) dispatch(blocks ...core.ToolUseBlock) ([]core.ToolResult, error
 	case err != nil:
 		return nil, err
 	}
+	r.record(blocks, res)
 	return res, nil
 }
 

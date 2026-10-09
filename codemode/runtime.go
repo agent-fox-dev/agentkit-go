@@ -21,14 +21,19 @@ var fileOptions = &syntax.FileOptions{While: true, TopLevelControl: true, Global
 
 // runner is one script run: a fresh thread and the state its builtins share.
 type runner struct {
-	opts   Options
-	tools  []core.Tool
+	opts  Options
+	tools []core.Tool
+	// parent is the caller's context; ctx is it with MaxTimeout applied.
+	parent context.Context
 	ctx    context.Context
 	thread *starlark.Thread
 	out    *tools.Accumulator
 	seq    int
 	// funcs are the bound tools' functions by name, for parallel and call.
 	funcs map[string]*starlark.Builtin
+	// ledger is every nested call made, in order, with its outcome. Only
+	// the script's thread touches it.
+	ledger []ledgerEntry
 
 	mu     sync.Mutex
 	halted *halt
@@ -45,22 +50,26 @@ func execute(ctx context.Context, opts Options, bound []core.Tool, in json.RawMe
 	if strings.TrimSpace(a.Script) == "" {
 		return core.ErrResult("invalid_arguments", "script is required")
 	}
-	r := &runner{opts: opts, tools: bound, ctx: ctx, out: tools.NewAccumulator(opts.MaxOutputBytes, tools.TruncateMiddle)}
+	runCtx, cancel := context.WithTimeout(ctx, opts.MaxTimeout)
+	defer cancel()
+	r := &runner{opts: opts, tools: bound, parent: ctx, ctx: runCtx,
+		out: tools.NewAccumulator(opts.MaxOutputBytes, tools.TruncateMiddle)}
 	return r.run(a.Script)
 }
 
 // run executes the script and renders its result.
 func (r *runner) run(script string) core.ToolResult {
 	r.thread = &starlark.Thread{
-		Name: r.opts.Name,
-		Print: func(_ *starlark.Thread, msg string) {
-			_, _ = r.out.Write([]byte(msg + "\n"))
-		},
+		Name:  r.opts.Name,
+		Print: func(_ *starlark.Thread, msg string) { r.print(msg) },
 		Load: func(*starlark.Thread, string) (starlark.StringDict, error) {
 			return nil, errors.New("load is not permitted in code_mode scripts")
 		},
+		OnMaxSteps: func(*starlark.Thread) { _ = r.stop(r.stepHalt()) },
 	}
-	// The script stops when the caller's context ends.
+	r.thread.SetMaxExecutionSteps(r.opts.MaxSteps)
+
+	// The script stops when the caller's context ends or MaxTimeout passes.
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -86,21 +95,41 @@ func (r *runner) run(script string) core.ToolResult {
 	if err != nil {
 		return r.failure("script_failed", "the return value: "+err.Error(), false)
 	}
-	printed := strings.TrimSuffix(r.out.String(), "\n")
+	printed := r.printed()
 	text := printed
 	if ret != starlark.None {
+		line := "Return value: " + ret.String()
+		r.write(line + "\n")
+		if h := r.halt(); h != nil {
+			return r.failure(h.code, h.detail, h.terminate)
+		}
 		if text != "" {
 			text += "\n"
 		}
-		text += "Return value: " + ret.String()
+		text += line
 	}
 	if text == "" {
 		text = "[Script finished with no output]"
 	}
-	res := core.OKResult(map[string]any{"output": printed, "return_value": retGo, "calls_completed": []any{}})
+	res := core.OKResult(map[string]any{"output": printed, "return_value": retGo, "calls_completed": r.ledgerData()})
 	res.Text = text
 	return res
 }
+
+// print is the script's print: one line into the output.
+func (r *runner) print(msg string) { r.write(msg + "\n") }
+
+// write adds to the output, and stops the script once it is past
+// MaxOutputBytes (08-REQ-7.4).
+func (r *runner) write(s string) {
+	_, _ = r.out.Write([]byte(s))
+	if r.out.Total() > int64(r.opts.MaxOutputBytes) {
+		_ = r.stop(r.outputHalt())
+	}
+}
+
+// printed is the output so far, without its final newline.
+func (r *runner) printed() string { return strings.TrimSuffix(r.out.String(), "\n") }
 
 // predeclared is everything a script can name besides Starlark's own
 // builtins: the bound tools and the helpers.
@@ -135,18 +164,4 @@ func (r *runner) halt() *halt {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.halted
-}
-
-// ctxHalt is the halt for a context that ended.
-func (r *runner) ctxHalt() *halt {
-	return &halt{code: "aborted", detail: "Operation aborted"}
-}
-
-// failure is an error result for the script.
-func (r *runner) failure(code, detail string, terminate bool) core.ToolResult {
-	res := core.ErrResult(code, detail)
-	res.Terminate = terminate
-	printed := strings.TrimSuffix(r.out.String(), "\n")
-	res.Data = map[string]any{"error": code, "message": detail, "partial_output": printed, "calls_completed": []any{}}
-	return res
 }

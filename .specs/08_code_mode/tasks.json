@@ -222,7 +222,7 @@
       "done_when": [
         "`go test ./codemode/... -run 'TestLimits'` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
