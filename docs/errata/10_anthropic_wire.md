@@ -186,3 +186,17 @@ an embedder (or a test) supply credentials explicitly.
   `strict` since the tool task.
 - Not verified against the live API: whether every schema the tools declare
   is accepted under `strict: true`. The golden is AgentKit's own output.
+
+## Integration: the smoke tests drive the real components
+
+- TS-10-36 names `anthropic.TranslateAssistantEvent`, which does not exist.
+  The test streams a `tool_use` through a real SDK client and the provider's
+  own translator instead, then replays the result through
+  `BuildRequestJSON`: the same path (10-PATH-3) without an API added only for
+  the test.
+- TS-10-35 lives in `golden_requests_test.go`, beside the canonical request
+  it encodes, rather than in `provider/anthropic/smoke_test.go`: a second copy
+  of the request there would drift from the first.
+- `core.Request.Prefix` is encoded and cached, but the loop does not fill it
+  yet; spec 11's `Config.Prefix` does. 10-REQ-6.4 is conditional on a prefix
+  being provided, and no execution path of this spec provides one.

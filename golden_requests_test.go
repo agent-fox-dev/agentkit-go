@@ -418,3 +418,24 @@ func TestGoldenToolInputIsVerbatim_TS10_33(t *testing.T) {
 		t.Fatalf("the golden does not carry the tool input %s verbatim", canonicalToolInput)
 	}
 }
+
+// TS-10-35 (smoke, 10-PATH-2): the catalog row and the encoder together
+// produce the golden request, byte for byte. It lives beside the canonical
+// request it encodes.
+func TestSmokeGoldenRequestFromTheCatalog_TS10_35(t *testing.T) {
+	req := canonicalRequest(t)
+	model, ok := catalog.Lookup(canonicalModelID)
+	if !ok {
+		t.Fatal("model not found")
+	}
+	if model.Thinking != core.ThinkingKindAdaptive {
+		t.Fatalf("%s thinking = %q, want adaptive", canonicalModelID, model.Thinking)
+	}
+	body, err := anthropic.BuildRequestJSON(req, model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, goldenBytes(t)) {
+		t.Fatalf("golden mismatch:\n got: %s\nwant: %s", body, goldenBytes(t))
+	}
+}
