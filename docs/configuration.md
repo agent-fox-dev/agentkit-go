@@ -81,7 +81,11 @@ the model's context window after pruning is not sent: the run ends with
 `core.RunStopError` and an error naming the model and its window.
 
 A batch's calls run concurrently, one goroutine per call, unless a tool in the
-batch is `Sequential`. Observation is the event stream `Agent.Stream` returns
+batch is `Sequential`. When any call that ran returns `Terminate: true` (or
+`After` sets it), the run ends with `core.RunStopToolTerminate` once every
+call in the batch has finished. A call blocked by `Guard` or refused for its
+arguments casts no vote of its own; a `Guard` decision with both `Block` and
+`Terminate` ends the run (`guard.Options.TerminateOnBlock`). Observation is the event stream `Agent.Stream` returns
 (`Run` drains it): turn, message, tool execution (`ParentToolUseID` set for a
 nested call) and `core.ErrorEvent` for an error the run survives.
 

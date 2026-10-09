@@ -109,3 +109,22 @@ stop and the normal end were in place before spec 11 (`runLoop`,
 `synthesizeTruncated` in `loop.go`). TS-11-22..25 passed when written; each
 was then seen to fail against a mutated loop (continuation gated on the stop
 reason, truncation not detected, refusal not mapped).
+
+## 11-REQ-8: termination is any executed vote, and the Guard keeps its own
+
+- **Any, not all.** The batch used to end the run only when every call voted
+  `Terminate` (`core.BatchTerminates`, an AND). 11-REQ-8.1 ends it when any
+  executed call votes, after the whole batch finishes (`executeBatch` in
+  `batch.go`; TS-11-31). The tests that pinned the AND
+  (`TestBatchTerminationIsAnAndNotAnOr`, TS-04-46's batch test) now pin
+  this. `core.BatchTerminates` is no longer used by the driver and stays in
+  `core` until scope 4 shrinks it.
+- **A blocked call has no vote of its own** (11-REQ-8.3, TS-11-32): its tool
+  never ran. The Guard's own `Terminate`, set beside `Block`, still ends the
+  run, as a nested interceptor's does (11-REQ-9.5) and as
+  `guard.Options.TerminateOnBlock` documents. Reading 11-REQ-8.3 as dropping
+  that vote too would make `TerminateOnBlock` a no-op for direct calls while
+  it still worked for nested ones.
+- TS-11-26..30 and TS-11-32 passed before this task: the four phases, the
+  single abort decision and slot order were already the batch's behaviour.
+  Only TS-11-31 failed first.

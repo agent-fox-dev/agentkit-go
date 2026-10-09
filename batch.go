@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -35,7 +36,10 @@ import (
 // slot order after the join, so transcript order is independent of completion
 // order (REQ-LOOP-05).
 //
-// Returns the results and the REQ-TOOL-13 termination vote.
+// Returns the results and the termination vote: true when any call that ran
+// voted Terminate (11-REQ-8.1), or the Guard blocked a call and voted to
+// terminate. The vote is read only after every call in the
+// batch has finished, so a terminating call never cuts its siblings short.
 func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant *core.AssistantMessage, calls []core.ToolUseBlock, turnCount int) ([]core.ToolResultMessage, bool) {
 	// A tool that spends on model calls of its own reports it through core.ReportUsage the moment it is spent, so the
 	// agent's usage (and a budget computed from it, by the next delegation
@@ -161,10 +165,11 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				if reason == "" {
 					reason = "blocked by policy"
 				}
-				// A blocked call casts the same termination vote, which is
-				// what lets a permission denial end the run instead of looping
-				// the model into retrying (REQ-TOOL-13.2). Honoured only when
-				// Block is set.
+				// A blocked call casts no vote of its own (11-REQ-8.3): its
+				// tool never ran. The Guard may vote instead, with Terminate
+				// beside Block — what lets a permission denial end the run
+				// rather than loop the model into retrying, as it does for a
+				// nested call (11-REQ-9.5).
 				votes[i] = dec.Terminate
 				finalizeInline(i, errorResult(c, core.BlockErrorCode, reason))
 				continue
@@ -264,11 +269,8 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 			}
 			finalizeInline(i, abortedResult(c))
 		}
-		// The calls that were blocked in prepare keep their termination vote;
-		// an aborted call abstains. The AND over the batch is therefore false
-		// whenever any call was aborted, which is the correct reading of
-		// REQ-TOOL-13.1: an aborted batch did not finish, so it does not
-		// finish the run on a tool's say-so.
+		// No handler ran, so nothing voted: an aborted batch did not finish,
+		// and it does not finish the run on a tool's say-so.
 		return results, false
 	}
 
@@ -312,7 +314,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				"internal: the tool batch produced no result for this call")
 		}
 	}
-	return results, core.BatchTerminates(votes)
+	return results, slices.Contains(votes, true)
 }
 
 // invokeHandler calls the tool, converting every failure mode into a result.

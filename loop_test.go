@@ -547,7 +547,9 @@ func TestConcurrentRunReturnsErrBusy(t *testing.T) {
 
 // ------------------------------------------------------------------- REQ-TOOL-13
 
-func TestBatchTerminationIsAnAndNotAnOr(t *testing.T) {
+// TestBatchTerminationIsAnyExecutedVote: one executed call voting
+// Terminate ends the run once the batch is done (11-REQ-8.1).
+func TestBatchTerminationIsAnyExecutedVote(t *testing.T) {
 	finish := func(name string, terminate bool) core.Tool {
 		return core.Tool{
 			Name: name, Description: name, InputSchema: schema.Object(),
@@ -558,7 +560,7 @@ func TestBatchTerminationIsAnAndNotAnOr(t *testing.T) {
 			},
 		}
 	}
-	t.Run("one terminating tool does not end a mixed batch", func(t *testing.T) {
+	t.Run("one terminating tool ends a mixed batch", func(t *testing.T) {
 		s := &scripted{turns: []core.AssistantMessage{
 			assistantWithTools(core.StopReasonToolUse,
 				toolUse(t, "c1", "finish", `{}`), toolUse(t, "c2", "keep", `{}`)),
@@ -569,10 +571,11 @@ func TestBatchTerminationIsAnAndNotAnOr(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if res.StopReason == core.RunStopToolTerminate {
-			t.Fatal("a single terminating tool ended a mixed batch: the vote is an AND, " +
-				"not an OR (REQ-TOOL-13.1). Under OR the other results are computed, " +
-				"written to history, and never shown to the model.")
+		if res.StopReason != core.RunStopToolTerminate || s.turnsRun() != 1 {
+			t.Fatalf("stop %q after %d turns; one executed terminate vote ends the run", res.StopReason, s.turnsRun())
+		}
+		if len(res.Messages) != 4 {
+			t.Fatalf("%d messages; both results belong in the transcript", len(res.Messages))
 		}
 	})
 
@@ -588,12 +591,6 @@ func TestBatchTerminationIsAnAndNotAnOr(t *testing.T) {
 		}
 		if res.StopReason != core.RunStopToolTerminate {
 			t.Fatalf("StopReason = %q, want %q", res.StopReason, core.RunStopToolTerminate)
-		}
-	})
-
-	t.Run("an empty batch never terminates", func(t *testing.T) {
-		if core.BatchTerminates(nil) {
-			t.Fatal("an empty batch must not terminate")
 		}
 	})
 }

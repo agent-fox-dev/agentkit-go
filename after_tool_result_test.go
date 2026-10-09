@@ -527,9 +527,10 @@ func TestImageNormalizationPreservesMetadata_TS04_46(t *testing.T) {
 	t.Fatal("no tool result found in RunResult")
 }
 
-// TestBatchAndSemanticsWithMetadata_TS04_46 verifies AND semantics with
-// metadata-carrying tools.
-func TestBatchAndSemanticsWithMetadata_TS04_46(t *testing.T) {
+// TestBatchTerminationWithMetadata_TS04_46 verifies that one terminating
+// call ends the run after a mixed batch of metadata-carrying tools (spec 11
+// replaced the AND over the batch with any executed vote).
+func TestBatchTerminationWithMetadata_TS04_46(t *testing.T) {
 	terminatingTool, md := ts0446Tools()
 
 	nonTermTool := core.Tool{
@@ -554,10 +555,14 @@ func TestBatchAndSemanticsWithMetadata_TS04_46(t *testing.T) {
 	a := newTestAgent(t, s, func(c *Config) {
 		c.MaxTurns = 10
 	}, terminatingTool, nonTermTool)
-	if _, err := a.Run(context.Background(), "go"); err != nil {
+	res, err := a.Run(context.Background(), "go")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if s.turnsRun() != 2 {
-		t.Fatalf("turnsRun = %d, want 2 (AND semantics)", s.turnsRun())
+	if s.turnsRun() != 1 || res.StopReason != core.RunStopToolTerminate {
+		t.Fatalf("turnsRun = %d, stop %q; want 1 and tool_terminate", s.turnsRun(), res.StopReason)
+	}
+	if tr := findToolResult(t, res.Messages, "c2"); tr.Metadata == nil {
+		t.Fatal("the sibling's metadata is missing")
 	}
 }
