@@ -51,3 +51,10 @@ tidy: ## go mod tidy the root module and submodules
 .PHONY: check
 check: fmt vet lint test ## Run fmt, vet, lint and test - use before committing
 
+.PHONY: clean-branches
+clean-branches:
+	@git branch --list 'feature/*' | xargs -r git branch -D
+	@git branch --list 'fix/*' | xargs -r git branch -D
+	@git branch --list 'impl/*' | xargs -r git branch -D
+	@git branch --list 'docs/*' | xargs -r git branch -D
+	@git branch --list 'worktree-agent-*' | xargs -r git branch -D
