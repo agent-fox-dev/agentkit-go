@@ -129,12 +129,11 @@ func TestParallelToolsUseTrueConcurrency(t *testing.T) {
 	s := &scripted{turns: []core.AssistantMessage{
 		assistantWithTools(core.StopReasonToolUse, blocks...)}}
 
-	a := newTestAgent(t, s, func(c *core.AgentConfig) { c.ParallelTools = true })
+	var tools []core.Tool
 	for i := 0; i < n; i++ {
-		if err := a.RegisterTool(blocking(nameOf(i))); err != nil {
-			t.Fatal(err)
-		}
+		tools = append(tools, blocking(nameOf(i)))
 	}
+	a := newTestAgent(t, s, nil, tools...)
 
 	go func() {
 		// Release only once ALL handlers have entered. If the executor were

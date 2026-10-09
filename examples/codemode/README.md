@@ -40,6 +40,10 @@ seven calls the scripts made. Those are on the event stream.
 
 ## Where to look
 
+- `agentkit.New(agentkit.Config{Provider: model, Model: faux.Model().ID,
+  Tools: []core.Tool{cm}, MaxTurns: 5})` gives the agent `code_mode` alone;
+  the tools it binds are its `ReachableTools`, which the model never sees
+  directly. None is a shell tool, so no `Guard` is required.
 - `codemode.New(tools, opts)` builds the tool. See `docs/configuration.md`
   for `codemode.Options` and its limits.
 - `docs/architecture.md` ("Code mode") explains how a script's calls reach the

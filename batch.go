@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -35,32 +36,22 @@ import (
 // slot order after the join, so transcript order is independent of completion
 // order (REQ-LOOP-05).
 //
-// Returns the results and the REQ-TOOL-13 termination vote.
+// Returns the results and the termination vote: true when any call that ran
+// voted Terminate (11-REQ-8.1), or the Guard blocked a call and voted to
+// terminate. The vote is read only after every call in the
+// batch has finished, so a terminating call never cuts its siblings short.
 func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant *core.AssistantMessage, calls []core.ToolUseBlock, turnCount int) ([]core.ToolResultMessage, bool) {
 	// A tool that spends on model calls of its own reports it through core.ReportUsage the moment it is spent, so the
 	// agent's usage (and a budget computed from it, by the next delegation
 	// in the same parallel batch) sees it at once rather than when the batch
 	// finalizes.
 	ctx = core.WithUsageReporter(ctx, a.addUsage)
-	a.mu.Lock()
-	cfg := a.cfg
-	tools := cfg.ToolPolicy.Resolve(a.tools)
-	a.mu.Unlock()
+	cfg, tools := a.cfg, a.tools
 
-	// report surfaces an error from INSIDE the batch-scoped critical section
-	// without touching a.mu. The hooks are taken from the cfg copy above, so
-	// the documented lock order (a.mu is never acquired under batchMu) is a
-	// fact rather than a comment: fireError re-reads the hooks under a.mu,
-	// and calling it from the finalize block took the agent lock inside the
-	// batch lock on every tool result.
-	hooks := cfg.Hooks
-	report := func(err error) {
-		safely(nil, "OnError", func() {
-			if hooks.OnError != nil {
-				hooks.OnError(err)
-			}
-		})
-	}
+	// report surfaces an error — a panicking interceptor — as an event on
+	// the run's stream. It never touches a.mu, so it is safe inside the
+	// batch-scoped critical section, where the agent lock is never taken.
+	report := streamReporter(s)
 
 	// started marks calls whose ToolExecutionStartEvent has been pushed, so
 	// the abort path can open the calls the prepare loop never reached and
@@ -75,11 +66,14 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	n := len(calls)
 	results := make([]core.ToolResultMessage, n)
 	votes := make([]bool, n)
+	// filled marks the slots that hold a result. A call's id cannot: a
+	// provider may send an empty one.
+	filled := make([]bool, n)
 	thunks := make([]func(), 0, n)
 
 	// env is what a wrapper's nested calls run with (07-REQ-4.3): the same
 	// config copy, stream and reporter as this batch.
-	env := &nestedEnv{a: a, cfg: cfg, s: s, assistant: assistant, turnCount: turnCount, report: report}
+	env := &nestedEnv{cfg: cfg, s: s, assistant: assistant, turnCount: turnCount, report: report}
 
 	// batchMu is BATCH-SCOPED: created here, acquired by nothing else, and
 	// a.mu is never acquired while it is held.
@@ -99,6 +93,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	// start event never waits for an end that will not come.
 	finalizeInline := func(i int, m core.ToolResultMessage) {
 		results[i] = m
+		filled[i] = true
 		s.Push(core.ToolExecutionEndEvent{ToolUseID: m.ToolUseID, Name: m.ToolName, IsError: m.IsError})
 		s.Push(core.ToolResultEvent{Message: m})
 	}
@@ -157,8 +152,8 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 			continue
 		}
 
-		if cfg.BeforeToolCall != nil {
-			dec := a.callBefore(ctx, cfg.BeforeToolCall, core.BeforeToolCallContext{
+		if cfg.Guard != nil {
+			dec := callBefore(ctx, report, cfg.Guard, core.BeforeToolCallContext{
 				ToolName:  c.Name,
 				ToolUseID: c.ID,
 				Tool:      tool,
@@ -174,10 +169,11 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				if reason == "" {
 					reason = "blocked by policy"
 				}
-				// A blocked call casts the same termination vote, which is
-				// what lets a permission denial end the run instead of looping
-				// the model into retrying (REQ-TOOL-13.2). Honoured only when
-				// Block is set.
+				// A blocked call casts no vote of its own (11-REQ-8.3): its
+				// tool never ran. The Guard may vote instead, with Terminate
+				// beside Block — what lets a permission denial end the run
+				// rather than loop the model into retrying, as it does for a
+				// nested call (11-REQ-9.5).
 				votes[i] = dec.Terminate
 				finalizeInline(i, errorResult(c, core.BlockErrorCode, reason))
 				continue
@@ -202,7 +198,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 			// A tool that reaches other tools runs with a NestedCaller bound
 			// to this call on its context.
 			hctx, nested := env.withCaller(ctx, c, tool)
-			out := invokeHandler(hctx, tool, prepared)
+			out := invokeHandler(hctx, report, tool, prepared)
 			// An interceptor that voted to terminate during one of this
 			// wrapper's nested calls ends the run, whatever the wrapper
 			// returned (07-REQ-5.3). AfterToolCall below may still override.
@@ -223,8 +219,8 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				defer batchMu.Unlock()
 
 				msg := toolResultMessage(c, out)
-				if cfg.AfterToolCall != nil {
-					dec := callAfter(ctx, report, cfg.AfterToolCall, core.AfterToolCallContext{
+				if cfg.After != nil {
+					dec := callAfter(ctx, report, cfg.After, core.AfterToolCallContext{
 						ToolName:   c.Name,
 						ToolUseID:  c.ID,
 						Arguments:  prepared.Args,
@@ -240,6 +236,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 					}
 				}
 				results[i] = msg
+				filled[i] = true
 				votes[i] = out.Terminate
 				s.Push(core.ToolExecutionEndEvent{
 					ToolUseID: c.ID, Name: c.Name, IsError: msg.IsError,
@@ -266,7 +263,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	// (ruling P-20).
 	if ctx.Err() != nil {
 		for i, c := range calls {
-			if results[i].ToolUseID != "" {
+			if filled[i] {
 				continue // already finalized in prepare (blocked/invalid)
 			}
 			// A call the prepare loop never reached still opens, so it can
@@ -277,15 +274,13 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 			}
 			finalizeInline(i, abortedResult(c))
 		}
-		// The calls that were blocked in prepare keep their termination vote;
-		// an aborted call abstains. The AND over the batch is therefore false
-		// whenever any call was aborted, which is the correct reading of
-		// REQ-TOOL-13.1: an aborted batch did not finish, so it does not
-		// finish the run on a tool's say-so.
-		return results, false
+		// No handler ran, so no tool voted: an aborted batch does not end
+		// the run on a tool's say-so. A Guard's own vote, cast in prepare,
+		// stands.
+		return results, slices.Contains(votes, true)
 	}
 
-	sequential := !cfg.ParallelTools || len(thunks) <= 1
+	sequential := len(thunks) <= 1
 	if !sequential {
 		// A single Sequential tool anywhere in the batch demotes the WHOLE
 		// batch (REQ-LOOP-05a). Tools with process-wide or workspace-wide
@@ -320,22 +315,24 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	// calls leaves dangling tool_use blocks and makes the next request
 	// invalid, so this is asserted rather than assumed.
 	for i, c := range calls {
-		if results[i].ToolUseID == "" {
+		if !filled[i] {
 			results[i] = errorResult(c, "no_result",
 				"internal: the tool batch produced no result for this call")
 		}
 	}
-	return results, core.BatchTerminates(votes)
+	return results, slices.Contains(votes, true)
 }
 
 // invokeHandler calls the tool, converting every failure mode into a result.
 // No tool outcome is ever propagated to the caller as a Go error (REQ-GO-04).
-func invokeHandler(ctx context.Context, t core.Tool, p core.PreparedArguments) (res core.ToolResult) {
+func invokeHandler(ctx context.Context, report func(error), t core.Tool, p core.PreparedArguments) (res core.ToolResult) {
 	defer func() {
 		if r := recover(); r != nil {
 			// A handler panic becomes a tool result and the loop continues
-			// (NFR-REL-02.2). It must never crash the agent process.
+			// (NFR-REL-02.2). It must never crash the agent process, and it
+			// is reported, so it is not mistaken for an ordinary failure.
 			res = core.ErrResult("panic", fmt.Sprintf("tool %q panicked: %v", t.Name, r))
+			report(fmt.Errorf("agentkit: panic in tool %q: %v", t.Name, r))
 		}
 	}()
 
@@ -361,14 +358,14 @@ func invokeHandler(ctx context.Context, t core.Tool, p core.PreparedArguments) (
 // wrapper, with NO agent lock held (NFR-REL-02). A panicking interceptor fails
 // CLOSED — it blocks the call — because a security boundary that opens on
 // panic is not a boundary.
-func (a *Agent) callBefore(ctx context.Context, f core.BeforeToolCall, in core.BeforeToolCallContext) (dec core.BeforeToolCallDecision) {
+func callBefore(ctx context.Context, report func(error), f core.BeforeToolCall, in core.BeforeToolCallContext) (dec core.BeforeToolCallDecision) {
 	defer func() {
 		if r := recover(); r != nil {
 			dec = core.BeforeToolCallDecision{
 				Block:  true,
 				Reason: fmt.Sprintf("interceptor panicked: %v", r),
 			}
-			a.fireError(fmt.Errorf("agentkit: panic in BeforeToolCall for %q: %v", in.ToolName, r))
+			report(fmt.Errorf("agentkit: panic in BeforeToolCall for %q: %v", in.ToolName, r))
 		}
 	}()
 	return f(ctx, in)
@@ -379,9 +376,8 @@ func (a *Agent) callBefore(ctx context.Context, f core.BeforeToolCall, in core.B
 // this is not a security boundary, and inventing a termination vote from a
 // crash would end the run for the wrong reason.
 //
-// It reports through the batch's lock-free reporter, never a.fireError: it
-// runs inside the batch-scoped critical section, and the agent lock is never
-// taken there.
+// It reports through the batch's lock-free reporter: it runs inside the
+// batch-scoped critical section, and the agent lock is never taken there.
 func callAfter(ctx context.Context, report func(error), f core.AfterToolCall, in core.AfterToolCallContext) (dec core.AfterToolCallDecision) {
 	defer func() {
 		if r := recover(); r != nil {

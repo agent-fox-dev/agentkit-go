@@ -78,7 +78,7 @@ func defaultToolSet(t *testing.T) []core.Tool {
 //
 // TS-05-52: Assembled default prompt includes find_references guideline matching golden.
 func TestGoldenDefaultSystemPrompt(t *testing.T) {
-	got := Build(Input{Tools: defaultToolSet(t)})
+	got := Build("", defaultToolSet(t))
 	checkGolden(t, "system_prompt_default.txt", got)
 }
 
@@ -96,13 +96,7 @@ func TestGoldenDefaultSystemPrompt(t *testing.T) {
 //	version:   the working tree
 //	command:   go test -run TestGoldenCustomSystemPrompt -update .
 func TestGoldenCustomSystemPrompt(t *testing.T) {
-	got := Build(Input{
-		Custom: "You are a release engineer. Answer only about this repository.",
-		Tools:  defaultToolSet(t),
-		ExtraBlocks: []string{
-			"<project_context>\n  <file path=\"/repo/AGENTS.md\">house style</file>\n</project_context>",
-		},
-	})
+	got := Build("You are a release engineer. Answer only about this repository.", defaultToolSet(t))
 	checkGolden(t, "system_prompt_custom.txt", got)
 
 	// Stated as assertions too, not left to a reader of the golden: a diff
@@ -119,11 +113,6 @@ func TestGoldenCustomSystemPrompt(t *testing.T) {
 	if !strings.Contains(got, tools.SearchOverExecuteGuideline) {
 		t.Fatal("the tools' own guidelines must follow a custom system prompt: they " +
 			"describe the tools the model has, not the built-in persona")
-	}
-	if !strings.Contains(got, "project_context") {
-		t.Fatal("discovered content must survive a custom prompt: an embedder enabled " +
-			"it by a separate affirmative act (REQ-SEC-10), and a custom prompt is " +
-			"not a decision to revoke that")
 	}
 }
 
@@ -148,7 +137,7 @@ func TestGoldenPromptWithoutFileNavigationTools(t *testing.T) {
 			kept = append(kept, tl)
 		}
 	}
-	got := Build(Input{Tools: kept})
+	got := Build("", kept)
 	checkGolden(t, "system_prompt_no_navigation.txt", got)
 
 	if !strings.Contains(got, tools.ExecuteFallbackGuideline) {
@@ -170,7 +159,7 @@ func TestGuidelinesAreDeduplicatedPreservingFirstSeenOrder(t *testing.T) {
 		{Name: "zeta", PromptGuidelines: []string{"Zeta first.", "Shared advice."}},
 		{Name: "alpha", PromptGuidelines: []string{"Shared advice.", "Alpha second."}},
 	}
-	got := Build(Input{Tools: set})
+	got := Build("", set)
 
 	want := "Guidelines:\n" +
 		"- Zeta first.\n" +

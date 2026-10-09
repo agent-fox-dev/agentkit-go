@@ -47,7 +47,7 @@ var (
 	// shell by omission. Supply an interceptor — RestrictedPolicy is the
 	// shipped starting point — or pass AllowAllToolCalls to say so explicitly.
 	ErrUnguardedExecute = errors.New(
-		"agentkit: a shell tool is registered but AgentConfig.BeforeToolCall is nil; " +
+		"agentkit: a shell tool is reachable but Config.Guard is nil; " +
 			"supply an interceptor (guard.Restricted is the shipped starting point) " +
 			"or guard.AllowAll to opt out explicitly (OQ-8)")
 )

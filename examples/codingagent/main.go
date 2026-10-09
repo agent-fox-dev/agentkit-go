@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/guard"
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	sdk "github.com/anthropics/anthropic-sdk-go"
 )
 
 func main() {
@@ -50,14 +52,9 @@ func run() error {
 	}
 
 	// An id the catalog does not list still works, with default limits and
-	// no price.
-	row, _ := catalog.Lookup(modelSpec())
-	model := &row
-
-	cfg := core.AgentConfig{Model: model}
-	agentkit.RegisterDefaults(&cfg,
-		anthropic.Provider(anthropic.Options{}),
-	)
+	// no price. The lookup here is only for the summary line; New does its
+	// own from Config.Model.
+	model, _ := catalog.Lookup(modelSpec())
 
 	// 1. The workspace is the containment boundary, not a convenience. Every
 	//    path a file tool is handed is resolved against this root — symlinks
@@ -77,14 +74,14 @@ func run() error {
 		return err
 	}
 
-	// 3. The OQ-8 guard. `execute` and `run_command` are in the
-	//    set above, so a nil cfg.BeforeToolCall fails the run on its first
-	//    line with core.ErrUnguardedExecute — before a request is sent, and
-	//    long before an unrestricted shell shows up on a bill. There are
-	//    exactly two ways past it: an interceptor, or guard.AllowAll,
-	//    which is the explicit "yes, this agent runs an unrestricted shell".
+	// 3. The OQ-8 guard. `execute` and `run_command` are in the set above, so
+	//    a nil Config.Guard makes agentkit.New return an error wrapping
+	//    core.ErrUnguardedExecute — the agent is never built, so no request is
+	//    sent, and an unrestricted shell never shows up on a bill. There are
+	//    exactly two ways past it: an interceptor, or guard.AllowAll, which is
+	//    the explicit "yes, this agent runs an unrestricted shell".
 	//
-	//    RestrictedPolicy is the shipped starting point: an allowlist of
+	//    guard.Restricted is the shipped starting point: an allowlist of
 	//    program names plus rejection of shell operators (pipes, `;`, `&&`,
 	//    redirection, substitution) whose grammar is POSIX sh. It is a FLOOR,
 	//    not a sandbox — `go` alone can run arbitrary code through a test
@@ -104,7 +101,7 @@ func run() error {
 	//    terminal shows what the agent is doing to the filesystem. The
 	//    decision itself still comes from the policy: the wrapper reports,
 	//    it does not judge.
-	cfg.BeforeToolCall = func(ctx context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+	logged := func(ctx context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 		d := policy(ctx, in)
 		if d.Block {
 			fmt.Fprintf(os.Stderr, "  blocked %s: %s\n", in.ToolName, d.Reason)
@@ -114,36 +111,28 @@ func run() error {
 		return d
 	}
 
-	// 5. Turns and budget are separate bounds because they fail differently.
-	//    A tool-using agent can loop cheaply for a long time (turns catch
-	//    that) or spend a lot in three turns over a large file (budget
-	//    catches that). The policy fires on whichever comes first.
-	cfg.StopPolicy = func(sc core.StopContext) bool {
-		switch {
-		case sc.TurnCount >= 20:
-			sc.SetReason(core.RunStopMaxTurns)
-			return true
-		case sc.Usage.CostUSD > 2.00: // dollars, cumulative for the run
-			sc.SetReason(core.RunStopBudgetExceeded)
-			return true
-		}
-		return false
-	}
-	cfg.SystemPrompt = "You are a careful coding assistant. Read before you write. " +
-		"Prefer the search and read tools over shell commands. Be concise."
-
-	if err := checkCredentials(model); err != nil {
-		return err
-	}
-
-	agent, err := agentkit.NewAgent(cfg)
+	client, err := resolveClient()
 	if err != nil {
 		return err
 	}
-	for _, t := range built {
-		if err := agent.RegisterTool(t); err != nil {
-			return err
-		}
+
+	// 5. Turns and budget are separate bounds because they fail differently.
+	//    A tool-using agent can loop cheaply for a long time (MaxTurns catches
+	//    that) or spend a lot in three turns over a large file (MaxCostUSD
+	//    catches that). The run stops on whichever comes first, with
+	//    RunStopMaxTurns or RunStopBudgetExceeded as its stop reason.
+	agent, err := agentkit.New(agentkit.Config{
+		Client: client,
+		Model:  model.ID,
+		System: "You are a careful coding assistant. Read before you write. " +
+			"Prefer the search and read tools over shell commands. Be concise.",
+		Tools:      built,
+		Guard:      logged,
+		MaxTurns:   20,
+		MaxCostUSD: 2.00, // dollars, cumulative for the run
+	})
+	if err != nil {
+		return err
 	}
 
 	// 6. Streaming, not Run, because a coding agent is slow and silent
@@ -173,9 +162,12 @@ func run() error {
 
 	// 7. RunResult is available whether or not the stream was drained, and it
 	//    carries the error the loop ended with. A stream that ended on an
-	//    error still yielded every event produced before it.
+	//    error still yielded every event produced before it. Hitting MaxTurns
+	//    or MaxCostUSD is an error too (core.ErrMaxTurns,
+	//    core.ErrBudgetExceeded), but an expected one: the summary below
+	//    reports it as the stop reason instead of failing.
 	res, err := stream.RunResult()
-	if err != nil {
+	if err != nil && !errors.Is(err, core.ErrMaxTurns) && !errors.Is(err, core.ErrBudgetExceeded) {
 		return err
 	}
 
@@ -230,11 +222,11 @@ func modelSpec() string {
 	return "anthropic/claude-sonnet-5"
 }
 
-// checkCredentials fails BEFORE the request with the reason a client cannot
-// be built — typically the variables to set — rather than after a 401 that
-// names none of them. Resolving reads the environment only; a cloud
-// deployment's own credentials (Google's, AWS's) are checked on first use.
-func checkCredentials(*core.Model) error {
-	_, _, err := anthropic.Resolve(anthropic.OSEnv{})
-	return err
+// resolveClient fails BEFORE the request with the reason a client cannot be
+// built — typically the variables to set — rather than after a 401 that names
+// none of them. Resolving reads the environment only; a cloud deployment's own
+// credentials (Google's, AWS's) are checked on first use.
+func resolveClient() (*sdk.Client, error) {
+	client, _, err := anthropic.Resolve(anthropic.OSEnv{})
+	return client, err
 }

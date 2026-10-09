@@ -2,7 +2,7 @@
 // REQ-TOOL-04e).
 //
 // Until this existed, core.Tool.PromptGuidelines was a field nothing read and
-// the loop sent AgentConfig.SystemPrompt verbatim — so a tool could declare
+// the loop sent the system prompt verbatim — so a tool could declare
 // guidance the model never saw. NFR-TEST-08(a) asks for a golden of the
 // assembled prompt "built through the real tool resolver", which needs a real
 // assembler to build it. Build is that assembler.
@@ -49,48 +49,27 @@ var UniversalGuidelines = []string{
 	"Report what you actually did, including what failed.",
 }
 
-// Input is everything the assembler needs.
-type Input struct {
-	// Custom replaces the BUILT-IN sections when non-empty
-	// (AgentConfig.SystemPrompt): the base instructions and the universal
-	// guidelines. The active tools' own guidelines still follow it.
-	Custom string
-	// Tools is the set actually active after the REQ-TOOL-10 policy resolved,
-	// never the registry. The guidelines the model sees must describe the
-	// tools it has.
-	Tools []core.Tool
-	// ExtraBlocks are appended after the built-in sections, in order: project
-	// context, or anything else an embedder assembles itself.
-	ExtraBlocks []string
-}
-
-// Build assembles the prompt.
+// Build assembles the prompt from the base prompt and the tools that are
+// active — after the policy resolved them, never the registry: the
+// guidelines the model sees must describe the tools it has.
 //
-// A CUSTOM prompt replaces the built-in base and the built-in UNIVERSAL
-// guidelines, and nothing else. The tools' guidelines are not built-in text:
-// they travel with the tool (NFR-TEST-08a) and describe how to use what the
-// model has been given, so they follow a custom prompt as they follow the
-// built-in one — otherwise every embedder with its own prompt has to re-render
-// them by hand. Extra blocks still append too: they are the embedder's own
-// text, and a custom prompt silently dropping them would be a surprise.
-func Build(in Input) string {
+// A non-empty system prompt replaces the built-in base and the built-in
+// UNIVERSAL guidelines, and nothing else. The tools' guidelines are not
+// built-in text: they travel with the tool (NFR-TEST-08a) and describe how to
+// use what the model has been given, so they follow a custom prompt as they
+// follow the built-in one — otherwise every embedder with its own prompt has
+// to re-render them by hand.
+func Build(system string, active []core.Tool) string {
 	var blocks []string
-
-	if in.Custom != "" {
-		blocks = append(blocks, strings.TrimRight(in.Custom, "\n"))
-		if g := guidelinesBlock(in.Tools, false); g != "" {
+	if system != "" {
+		blocks = append(blocks, strings.TrimRight(system, "\n"))
+		if g := guidelinesBlock(active, false); g != "" {
 			blocks = append(blocks, g)
 		}
 	} else {
 		blocks = append(blocks, BaseInstructions)
-		if g := guidelinesBlock(in.Tools, true); g != "" {
+		if g := guidelinesBlock(active, true); g != "" {
 			blocks = append(blocks, g)
-		}
-	}
-
-	for _, b := range in.ExtraBlocks {
-		if b = strings.TrimRight(b, "\n"); b != "" {
-			blocks = append(blocks, b)
 		}
 	}
 	return strings.Join(blocks, "\n\n")

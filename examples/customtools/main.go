@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -32,6 +33,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/schema"
+	sdk "github.com/anthropics/anthropic-sdk-go"
 )
 
 func main() {
@@ -47,67 +49,52 @@ func run() error {
 		prompt = "Reserve three BOLT-M6 and one BRKT-90, then tell me the total mass of that reservation in ounces."
 	}
 
-	// 1. Resolve the model. This supplies the wire API, base URL, context
-	//    window, pricing and compatibility profile — none of which the
-	//    model-ID string carries, and one of which (the compat profile)
-	//    decides whether the constrained sampling declared below is emitted
-	//    at all.
+	// 1. Resolve the model. This supplies the context window, output cap,
+	//    pricing and how the model takes extended thinking — none of which
+	//    the model-ID string carries. New does the same lookup from
+	//    Config.Model; this one is only for the summary line.
 	// An id the catalog does not list still works, with default limits and
 	// no price.
-	row, _ := catalog.Lookup(modelSpec())
-	model := &row
+	model, _ := catalog.Lookup(modelSpec())
 
-	// 2. Register the wire APIs. Nothing is registered by import side effect,
-	//    so a program that only wants the loop never drags net/http in.
-	cfg := core.AgentConfig{Model: model}
-	agentkit.RegisterDefaults(&cfg,
-		anthropic.Provider(anthropic.Options{}),
-	)
-
-	// 3. A tool-using run needs an upper bound that does not depend on the
-	//    model choosing to stop. submit_answer below is the *intended* ending;
-	//    the stop policy is what happens when the model never gets there.
-	cfg.StopPolicy = func(sc core.StopContext) bool {
-		switch {
-		case sc.TurnCount >= 12:
-			sc.SetReason(core.RunStopMaxTurns)
-			return true
-		case sc.Usage.CostUSD > 1.00: // dollars, cumulative for the run
-			sc.SetReason(core.RunStopBudgetExceeded)
-			return true
-		}
-		return false
-	}
-	cfg.SystemPrompt = "You are a parts-desk assistant. Use the tools rather than guessing part data."
-
-	if err := checkCredentials(model); err != nil {
-		return err
-	}
-
-	agent, err := agentkit.NewAgent(cfg)
+	// 2. Resolve the client. Nothing is registered by import side effect:
+	//    the agent reaches a model through the client it is handed, and this
+	//    one is built from the environment.
+	client, err := resolveClient()
 	if err != nil {
 		return err
 	}
 
-	// 4. Register the tools. RegisterTool rejects a tool that sets both
-	//    Handler and Execute, or neither: the two shapes are alternatives, not
-	//    layers, and catching that here beats discovering it when the model
-	//    first calls the tool.
+	// 3. The tools. New rejects a tool that sets both Handler and Execute, or
+	//    neither: the two shapes are alternatives, not layers, and catching
+	//    that at construction beats discovering it when the model first
+	//    calls the tool.
 	//
 	//    submit_answer writes the finished answer into a variable this
 	//    function owns. That is the reason to have a terminating tool at all
 	//    rather than scraping res.FinalText(): the answer arrives as
 	//    structured arguments the schema already validated.
 	var submitted answer
-	for _, t := range []core.Tool{
-		lookupPartTool(),
-		convertUnitsTool(),
-		reserveStockTool(),
-		submitAnswerTool(&submitted),
-	} {
-		if err := agent.RegisterTool(t); err != nil {
-			return err
-		}
+
+	// 4. A tool-using run needs an upper bound that does not depend on the
+	//    model choosing to stop. submit_answer is the *intended* ending;
+	//    MaxTurns and MaxCostUSD are what happens when the model never gets
+	//    there.
+	agent, err := agentkit.New(agentkit.Config{
+		Client: client,
+		Model:  model.ID,
+		System: "You are a parts-desk assistant. Use the tools rather than guessing part data.",
+		Tools: []core.Tool{
+			lookupPartTool(),
+			convertUnitsTool(),
+			reserveStockTool(),
+			submitAnswerTool(&submitted),
+		},
+		MaxTurns:   12,
+		MaxCostUSD: 1.00, // dollars, cumulative for the run
+	})
+	if err != nil {
+		return err
 	}
 
 	// 5. Stream, so the tool calls are visible as they happen. The tool
@@ -141,8 +128,11 @@ func run() error {
 		}
 	}
 
+	// A run that hit MaxTurns or MaxCostUSD ends with core.ErrMaxTurns or
+	// core.ErrBudgetExceeded. That is an outcome to report, not a crash, so
+	// it falls through to the "ended without submit_answer" line below.
 	res, err := stream.RunResult()
-	if err != nil {
+	if err != nil && !errors.Is(err, core.ErrMaxTurns) && !errors.Is(err, core.ErrBudgetExceeded) {
 		return err
 	}
 
@@ -459,13 +449,10 @@ type answer struct {
 
 // submitAnswerTool ends the run.
 //
-// ToolResult.Terminate is json:"-" — it never reaches the model. It is a VOTE,
-// and the batch terminates only when EVERY finalized result votes to. The
-// obvious OR reading is wrong: the model emits N parallel calls, so a
-// unilateral finish would compute the other N-1 results and then never show
-// them to the model, which is both wasted work and a silently dropped answer.
-// AND means submit_answer ends the run when it is the last thing the model
-// asked for, and is just another result when it is not.
+// ToolResult.Terminate is json:"-" — it never reaches the model. It is a
+// VOTE: when any call in the batch that ran casts it, the run ends after the
+// whole batch has finished. Sibling calls still run and are recorded, but the
+// model never sees their results, so submit_answer is best asked for alone.
 func submitAnswerTool(out *answer) core.Tool {
 	return core.Tool{
 		Name:        "submit_answer",
@@ -534,11 +521,11 @@ func modelSpec() string {
 	return "anthropic/claude-sonnet-5"
 }
 
-// checkCredentials fails BEFORE the request with the reason a client cannot
-// be built — typically the variables to set — rather than after a 401 that
-// names none of them. Resolving reads the environment only; a cloud
-// deployment's own credentials (Google's, AWS's) are checked on first use.
-func checkCredentials(*core.Model) error {
-	_, _, err := anthropic.Resolve(anthropic.OSEnv{})
-	return err
+// resolveClient fails BEFORE the request with the reason a client cannot be
+// built — typically the variables to set — rather than after a 401 that names
+// none of them. Resolving reads the environment only; a cloud deployment's own
+// credentials (Google's, AWS's) are checked on first use.
+func resolveClient() (*sdk.Client, error) {
+	client, _, err := anthropic.Resolve(anthropic.OSEnv{})
+	return client, err
 }

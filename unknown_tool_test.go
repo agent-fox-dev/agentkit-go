@@ -18,12 +18,11 @@ func unknownToolResult(t *testing.T, registered []string, called string) string 
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", called, `{}`)),
 		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
 	}}
-	a := newTestAgent(t, s, nil)
+	var tools []core.Tool
 	for _, name := range registered {
-		if err := a.RegisterTool(echoTool(name, nil)); err != nil {
-			t.Fatal(err)
-		}
+		tools = append(tools, echoTool(name, nil))
 	}
+	a := newTestAgent(t, s, nil, tools...)
 	res, err := a.Run(context.Background(), "go")
 	if err != nil {
 		t.Fatal(err)

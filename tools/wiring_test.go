@@ -274,7 +274,7 @@ func TestSystemPromptFindReferencesGuideline_TS05_52(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolved := core.ToolPolicy{}.Resolve(all)
-	got := prompt.Build(prompt.Input{Tools: resolved})
+	got := prompt.Build("", resolved)
 
 	wantGuideline := "Use find_symbol for where a name is declared, find_references for who uses it, and search_files for text."
 	if !strings.Contains(got, wantGuideline) {
@@ -290,13 +290,7 @@ func TestSystemPromptFindReferencesGuideline_TS05_52(t *testing.T) {
 		t.Fatalf("assembled default prompt does not match golden\ngot:\n%s\nwant:\n%s", got, string(defGolden))
 	}
 
-	customGot := prompt.Build(prompt.Input{
-		Custom: "You are a release engineer. Answer only about this repository.",
-		Tools:  resolved,
-		ExtraBlocks: []string{
-			"<project_context>\n  <file path=\"/repo/AGENTS.md\">house style</file>\n</project_context>",
-		},
-	})
+	customGot := prompt.Build("You are a release engineer. Answer only about this repository.", resolved)
 	customGolden, err := os.ReadFile(filepath.Join(root, "prompt", "testdata", "golden", "system_prompt_custom.txt"))
 	if err != nil {
 		t.Fatalf("reading custom golden: %v", err)

@@ -16,8 +16,8 @@ func toolTurns(t *testing.T) []core.AssistantMessage {
 	}
 }
 
-// Issue #79 §3: RunResult.Usage and StopContext.Usage are THIS run's usage;
-// Agent.Usage is the lifetime aggregate.
+// Issue #79 §3: RunResult.Usage is THIS run's usage; Agent.Usage is the
+// lifetime aggregate.
 func TestRunUsageIsPerRun(t *testing.T) {
 	turn := func() core.AssistantMessage {
 		m := core.AssistantMessage{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop}
@@ -25,10 +25,7 @@ func TestRunUsageIsPerRun(t *testing.T) {
 		return m
 	}
 	s := &scripted{turns: []core.AssistantMessage{turn(), turn()}}
-	var seen []int64
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.StopPolicy = func(sc core.StopContext) bool { seen = append(seen, sc.Usage.InputTokens); return false }
-	})
+	a := newTestAgent(t, s, nil)
 	for i := 0; i < 2; i++ {
 		res, err := a.Run(context.Background(), "go")
 		if err != nil {
@@ -38,35 +35,8 @@ func TestRunUsageIsPerRun(t *testing.T) {
 			t.Fatalf("run %d: RunResult.Usage.InputTokens = %d, want 100 (this run only)", i+1, res.Usage.InputTokens)
 		}
 	}
-	if len(seen) != 2 || seen[0] != 100 || seen[1] != 100 {
-		t.Fatalf("StopContext.Usage per run = %v, want [100 100]", seen)
-	}
 	if got := a.Usage().InputTokens; got != 200 {
 		t.Fatalf("Agent.Usage().InputTokens = %d, want the lifetime 200", got)
-	}
-}
-
-// Issue #79: a context transform that mutates a block in place does not
-// rewrite stored history.
-func TestATransformCannotRewriteStoredHistory(t *testing.T) {
-	s := &scripted{}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.TransformContext = func(_ context.Context, msgs core.Messages) core.Messages {
-			for _, m := range msgs {
-				if um, ok := m.(core.UserMessage); ok && len(um.Content) > 0 {
-					um.Content[0] = core.TextBlock{Text: "REWRITTEN"}
-				}
-			}
-			return msgs
-		}
-	})
-	if _, err := a.Run(context.Background(), "go"); err != nil {
-		t.Fatal(err)
-	}
-	for _, m := range a.history.Messages() {
-		if um, ok := m.(core.UserMessage); ok && um.Content.Text() == "REWRITTEN" {
-			t.Fatal("the transform's in-place edit reached stored history")
-		}
 	}
 }
 
@@ -74,9 +44,9 @@ func TestATransformCannotRewriteStoredHistory(t *testing.T) {
 // one invalid_arguments result, not a panic that ends the whole run.
 func TestNonJSONInterceptorArgumentsFailOneCall(t *testing.T) {
 	s := &scripted{turns: toolTurns(t)}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.ToolPolicy.CustomTools = []core.Tool{echoTool("echo", nil)}
-		c.BeforeToolCall = func(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
+	a := newTestAgent(t, s, func(c *Config) {
+		c.Tools = []core.Tool{echoTool("echo", nil)}
+		c.Guard = func(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			return core.BeforeToolCallDecision{Arguments: map[string]any{"v": math.NaN()}}
 		}
 	})
@@ -95,21 +65,16 @@ func TestNonJSONInterceptorArgumentsFailOneCall(t *testing.T) {
 	}
 }
 
-// Issue #79: a CustomTools entry with neither Handler nor Execute is refused
-// at construction, as RegisterTool refuses it.
+// Issue #79: a tool with neither Handler nor Execute, or both, is refused at
+// construction.
 func TestACustomToolWithNoHandlerIsRefusedAtConstruction(t *testing.T) {
 	for _, tl := range []core.Tool{
 		{Name: "nothing"},
 		{Name: "both", Handler: echoTool("x", nil).Handler,
 			Execute: func(context.Context, json.RawMessage) core.ToolResult { return core.ToolResult{} }},
 	} {
-		cfg := core.AgentConfig{Model: testModel()}
-		cfg.ToolPolicy.CustomTools = []core.Tool{tl}
-		if _, err := NewAgent(cfg); err == nil {
-			t.Errorf("tool %q: NewAgent accepted it", tl.Name)
-		}
-		if _, err := NewAgentWithHistory(cfg, nil); err == nil {
-			t.Errorf("tool %q: NewAgentWithHistory accepted it", tl.Name)
+		if _, err := New(agentCfg(tl)); err == nil {
+			t.Errorf("tool %q: New accepted it", tl.Name)
 		}
 	}
 }

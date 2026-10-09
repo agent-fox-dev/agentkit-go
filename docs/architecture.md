@@ -37,7 +37,7 @@ Imports between first-party packages, taken from the source (tests excluded;
 | `mcp` | `core`, `schema`, `wire`; plus `github.com/modelcontextprotocol/go-sdk` |
 | `prompt` | `core`, `guard`, `tools` |
 | `codemode` | `core`, `schema`, `tools`; plus `go.starlark.net` (confined to this package; see [`DEPS.md`](DEPS.md)) |
-| `.` (root, `agentkit`) | `core`, `guard`, `prompt` |
+| `.` (root, `agentkit`) | `core`, `catalog`, `guard`, `prompt`, `provider`, `provider/anthropic`; plus `github.com/anthropics/anthropic-sdk-go` |
 
 Rules that follow from it:
 
@@ -45,15 +45,15 @@ Rules that follow from it:
   `ProviderClient`, `Middleware`). It imports no other part of the SDK except
   the two leaf encoders.
 - Nothing imports the root package except `examples/` and tests.
-- Provider packages are never imported by the root. A caller registers the wire
-  APIs it wants, so a program that only wants the loop does not pull in
-  `net/http`.
+- The root imports the Anthropic provider and the SDK: `Config.Client` is an
+  SDK client, and `New` builds the provider over it. A test or custom vendor
+  passes `Config.Provider` instead; the import, and `net/http` with it, stays.
 
 ## Packages
 
 | Package | Owns |
 |---|---|
-| `.` | `Agent`, constructors (`NewAgent`, `NewAgentWithHistory`), the loop (`loop.go`), the tool batch executor (`batch.go`), nested tool calls (`nested.go`), `DefaultProviders` / `RegisterDefaults` (`providers.go`), the `execute` guard check (`execguard.go`). |
+| `.` | The driver: `Config`, `New` and the `Agent` (`agent.go`, whose surface is `Run`, `Stream`, `Messages`, `Usage` and `ReachableTools`), the loop (`loop.go`), the tool batch executor (`batch.go`), nested tool calls (`nested.go`), the `execute` guard check (`execguard.go`). |
 | `core` | Messages, content blocks, events and their discriminated JSON form (`MarshalEvent`, with a caller-supplied `MessageEncoder`), `EventStream`, `AgentConfig`, `Tool`, `ToolPolicy`, argument preparation, `Model`, `Usage`, stop reasons, errors. |
 | `catalog` | Embedded Claude model catalog (`catalog.json`) and `Lookup`: context window, output cap, prices and thinking kind, with a usable default for an unlisted id. |
 | `provider` | What a wire API needs and does not own: cost arithmetic, the per-session tool-schema cache (`ToolPrefix`) and deferred-tool splitting. Transport, retries and SSE framing are the Anthropic SDK's. |
@@ -63,7 +63,7 @@ Rules that follow from it:
 | `tools` | Built-in tools, workspace containment, output accumulator, process control, glob (`github.com/bmatcuk/doublestar/v4` plus smart-case and bare-pattern basename matching), layered gitignore. `read_file` reads text only: a file whose leading bytes are a PNG, JPEG, GIF or WebP signature is refused with `unsupported_file`. `RunArgv` is the embedder's process runner (no shell, argv-based, with stdin, head/tail truncation, log file, reduced environment and a pinned outcome contract). `Walk` exposes the single shared directory traversal behind workspace confinement. `file_outline` returns a file's declarations with line ranges; `find_symbol` searches the workspace by declaration name, backed by a lazily built, bounded in-memory symbol table that is refreshed after `write_file`, `edit_file` and the shell tools run; `find_references` searches for callers and usages of declarations across the workspace with exact Go type resolution and outline attribution, backed by a lazily built, bounded in-memory reference cache (`referenceCache`). |
 | `guard` | The `execute` authorization boundary: `Restricted`, `AllowAll`. |
 | `codemode` | The code-mode tool: a sandboxed Starlark script runner over bound tools, with typed declarations generated from their schemas, errors as values, `parallel`, four limits, truncated and spilled output, and a ledger of the calls a script made. |
-| `prompt` | Assembly of the system prompt: base instructions, per-tool guidelines, extra blocks. |
+| `prompt` | Assembly of the system prompt (`Build(system, tools)`): the base prompt, then the active tools' guidelines, deduplicated in first-seen order. |
 | `mcp` | AgentKit's MCP client over the official MCP Go SDK, which owns the protocol and version negotiation: the tool pool (qualified names, collision checks, schema conversion, `${VAR}` resolution), subprocess spawning with process-group kill and a reduced environment, respawn, result cap, call limit and sampling gate; and strict `wire` checks at the stdio and HTTP-response boundaries. There is no server. |
 | `wire` | Bounded strict parser for untrusted bytes, on `encoding/json/jsontext`: a token loop adds the size, depth, container-length and node bounds to jsontext's grammar and duplicate-name rejection. Frame readers. |
 | `jsonx` | Order-preserving JSON. |
@@ -77,35 +77,38 @@ Rules that follow from it:
 ## Data flow of one run
 
 ```
-Agent.Run / RunMessage / Stream
+agentkit.New  ── validates the tool hierarchy, resolves Config.Policy,
+                 refuses an unguarded shell tool, looks up the model
+Agent.Run / Stream
   └─ runLoop (loop.go)
        per turn:
-         1. drain steering, then TransformContext builds the request view
-         2. build Request from history + tools + system prompt
-         3. Middleware chain (last registered is outermost) ── Axis 1
-         4. ProviderClient.Stream  ── provider/anthropic repairs the
-            transcript, encodes the wire body itself (exact bytes), resolves
-            the deployment and SDK client (anthropic.Resolve), sends through
-            the SDK, and decodes the SDK's stream events into core events
-         5. assistant message recorded in history, events emitted
-         6. tool_use blocks present? (never the stop reason decides)
-              └─ batch.go: prepare (sequential: policy, BeforeToolCall,
-                 argument repair) → execute (parallel or sequential) →
-                 finalize (AfterToolCall, metadata copy, one
-                 ToolResultMessage per call); a tool with ReachableTools runs
-                 with a NestedCaller on its context (nested.go, below)
-         7. StopPolicy evaluated at the turn boundary
-  └─ terminal marker, OnAgentDone hook, RunResult
+         0. stop before the request if Config.MaxCostUSD is spent
+         1. build Request: the assembled system prompt, the tools,
+            Config.Prefix, then the transcript — with old tool results
+            elided past Config.Prune's threshold, and refused when the
+            estimate exceeds the model's context window
+         2. ProviderClient.Stream (Config.Provider, or the Anthropic
+            provider over Config.Client) ── provider/anthropic repairs the
+            transcript, encodes the wire body itself (exact bytes), sends
+            through the SDK, and decodes the SDK's stream events into core
+            events
+         3. assistant message recorded in the transcript, events emitted
+         4. tool_use blocks present? (never the stop reason decides)
+              └─ batch.go: prepare (sequential: arguments, Guard) → execute
+                 (parallel unless a Sequential tool is in the batch) →
+                 finalize (After, metadata copy, one ToolResultMessage per
+                 call); a tool with ReachableTools runs with a NestedCaller
+                 on its context (nested.go, below)
+         5. stop on a terminate vote, a cancelled or expired context, no
+            tool calls, or Config.MaxTurns
+  └─ terminal marker, AgentDoneEvent, RunResult
 ```
 
-Extension axes:
-
-1. **Middleware** wraps the whole model call on canonical types.
-2. **Hooks** observe (`OnTurnStart`, `OnTurnEnd`, `OnAgentDone`, `OnError`).
-   They never intercept.
-3. **Interceptors** — `BeforeToolCall` / `AfterToolCall` — are the
-   authorization boundary.
-4. **`RequestOptions.OnPayload`** is the post-serialization seam.
+Observation is the event stream: `Stream` returns it; `Run` waits for its
+result without reading the events.
+Errors the run survives (a panicking interceptor or provider) are
+`core.ErrorEvent`s on it. The only interception is `Config.Guard` and
+`Config.After`, the authorization boundary.
 
 ## Invariants worth knowing before editing
 
@@ -114,10 +117,10 @@ Extension axes:
 - **The abort decision for a tool batch is made once**, before any handler
   starts.
 - **The batch finalize mutex is batch-scoped**, never the agent mutex.
-- **Panics in third-party code are contained** (middleware, stop policies,
-  transforms, argument preparation, hooks). A panicking `StopPolicy` stops the
-  run.
-- **A shell tool with no `BeforeToolCall`** fails the run with
+- **Panics in third-party code are contained** (tool handlers, interceptors,
+  argument preparation, the provider) and reported as `core.ErrorEvent`s. A
+  handler's panic is also its call's error result.
+- **A shell tool with no `Guard`** is refused by `New` with
   `ErrUnguardedExecute`; `guard.AllowAll` is the explicit opt-out. A shell tool
   reachable through a wrapper counts too:
   `... (wrapper "code_mode" reached shell tool "execute")`.
@@ -131,9 +134,12 @@ Extension axes:
   at runtime. `schema.Validate` does not evaluate a root combinator, so to
   check Data against a schema with a root `oneOf`, validate it as
   a property's value.
-- **No global state, no `init()` registration.** Providers live on the config.
-- **History is append-only**; a context transform changes the view sent on a
-  request, never the stored messages.
+- **No global state, no `init()` registration.** The provider lives on the
+  config.
+- **The transcript is append-only.** `Agent.Messages()` returns a copy of it.
+- **One run at a time.** A `Run` or `Stream` that overlaps another fails with
+  `core.ErrBusy`; `Messages`, `Usage` and `ReachableTools` are safe during a
+  run.
 
 ## Nested tool calls
 
@@ -141,10 +147,9 @@ A tool can call other tools on the model's behalf, for example a script runner
 that turns tools into functions. It declares them up front in
 `core.Tool.ReachableTools`, and nothing else is reachable.
 
-- **Registration.** `NewAgent`, `NewAgentWithHistory` and `RegisterTool`
-  refuse a hierarchy in which a tool reaches itself:
-  `agentkit: reachable tools cycle detected: toolA -> toolB -> toolA`. They
-  also refuse one in which a wrapper reaches a `Terminating` tool:
+- **Registration.** `New` refuses a hierarchy in which a tool reaches itself:
+  `agentkit: reachable tools cycle detected: toolA -> toolB -> toolA`. It
+  also refuses one in which a wrapper reaches a `Terminating` tool:
   `agentkit: terminating tool "finish" cannot be reached through wrapper "code_mode"`.
   Cycles are found by name along the path, because tools are values.
 - **Policy.** `ToolPolicy.Resolve` applies `NoTools` (`builtin`), `ToolNames`
@@ -170,8 +175,7 @@ that turns tools into functions. It declares them up front in
   5. `ToolExecutionStart`/`End` events with `ParentToolUseID`.
 
   Each nested call gets a fresh id. Preparation runs in call order. Handlers run
-  concurrently unless `ParallelTools` is off or a `Sequential` tool is among
-  the calls, and results come back in call order. Every nested call that
+  concurrently unless a `Sequential` tool is among the calls, and results come back in call order. Every nested call that
   opens on the stream closes there, including one blocked or cut short by a
   terminate vote.
 - **Interceptors run concurrently.** Within one `CallNested`, preparation is
@@ -191,8 +195,8 @@ that turns tools into functions. It declares them up front in
 - **Terminate votes.** A nested handler's own terminate vote is dropped. The
   nested result's detail says `terminate vote ignored`, and the wrapper's says
   `nested terminate vote ignored`.
-- **Out of the transcript.** Nested calls emit no `ToolResultEvent`, never
-  enter the history, and are not seen by stop policies.
+- **Out of the transcript.** Nested calls emit no `ToolResultEvent` and never
+  enter the transcript.
   Usage a nested handler reports through `core.ReportUsage` still reaches the
   agent at once.
 

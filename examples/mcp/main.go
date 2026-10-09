@@ -42,6 +42,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/wire"
+	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -119,8 +120,8 @@ func clientMode(ctx context.Context, prompt, external string) error {
 
 	// 4. Tools adapts every connected server into core.Tools whose names are
 	//    QUALIFIED: `docs__search_docs`, not `search_docs`. The qualified name
-	//    is not cosmetic. It is the name the allowlist matches and the name
-	//    BeforeToolCall is handed. A gate written against the unqualified name
+	//    is not cosmetic. It is the name the allowlist matches and the name a
+	//    Config.Guard is handed. A gate written against the unqualified name
 	//    does not merely fail to match — it fails OPEN: the policy never fires
 	//    and the call goes through.
 	mcpTools, err := pool.Tools(ctx, native)
@@ -148,42 +149,27 @@ func clientMode(ctx context.Context, prompt, external string) error {
 	//    knows or cares that a subprocess is behind one of them.
 	// An id the catalog does not list still works, with default limits and
 	// no price.
-	row, _ := catalog.Lookup(modelSpec())
-	model := &row
-	cfg := core.AgentConfig{Model: model}
-	agentkit.RegisterDefaults(&cfg,
-		anthropic.Provider(anthropic.Options{}),
-	)
-	cfg.StopPolicy = func(sc core.StopContext) bool {
-		switch {
-		case sc.TurnCount >= 8:
-			sc.SetReason(core.RunStopMaxTurns)
-			return true
-		case sc.Usage.CostUSD > 1.00: // dollars, cumulative for the run
-			sc.SetReason(core.RunStopBudgetExceeded)
-			return true
-		}
-		return false
+	model, _ := catalog.Lookup(modelSpec())
+	client, err := resolveClient()
+	if err != nil {
+		return err
 	}
-	cfg.SystemPrompt = "You are concise. Use the tools rather than guessing, and answer in plain prose."
 
 	// The allowlist is written in QUALIFIED names, and the native tool has to
 	// be named too: a non-nil ToolNames is an allowlist over the whole set,
 	// custom and built-in alike, not a filter over MCP tools only.
 	all := append(append([]core.Tool{}, native...), mcpTools...)
-	cfg.ToolPolicy.ToolNames = toolNames(all)
-
-	if err := checkCredentials(model); err != nil {
-		return err
-	}
-	agent, err := agentkit.NewAgent(cfg)
+	agent, err := agentkit.New(agentkit.Config{
+		Client:     client,
+		Model:      model.ID,
+		System:     "You are concise. Use the tools rather than guessing, and answer in plain prose.",
+		Tools:      all,
+		Policy:     core.ToolPolicy{ToolNames: toolNames(all)},
+		MaxTurns:   8,
+		MaxCostUSD: 1.00, // dollars, cumulative for the run
+	})
 	if err != nil {
 		return err
-	}
-	for _, t := range all {
-		if err := agent.RegisterTool(t); err != nil {
-			return err
-		}
 	}
 
 	// 7. Stream, so a tool call is visible as it happens rather than only in
@@ -213,10 +199,12 @@ func clientMode(ctx context.Context, prompt, external string) error {
 		fmt.Fprintln(os.Stderr, "\n[aborted]")
 		return nil
 	}
-	if err != nil {
+	// Hitting MaxTurns or MaxCostUSD is a stop, not a failure: the summary
+	// line names it.
+	if err != nil && !errors.Is(err, core.ErrMaxTurns) && !errors.Is(err, core.ErrBudgetExceeded) {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "\n[%s · %d turns · $%.5f]\n", model.ID, res.TurnCount, res.Usage.CostUSD)
+	fmt.Fprintf(os.Stderr, "\n[%s · %d turns · stop %s · $%.5f]\n", model.ID, res.TurnCount, res.StopReason, res.Usage.CostUSD)
 	return nil
 }
 
@@ -479,11 +467,11 @@ func modelSpec() string {
 	return "anthropic/claude-sonnet-5"
 }
 
-// checkCredentials fails BEFORE the request with the reason a client cannot
-// be built — typically the variables to set — rather than after a 401 that
-// names none of them. Resolving reads the environment only; a cloud
-// deployment's own credentials (Google's, AWS's) are checked on first use.
-func checkCredentials(*core.Model) error {
-	_, _, err := anthropic.Resolve(anthropic.OSEnv{})
-	return err
+// resolveClient fails BEFORE the request with the reason a client cannot be
+// built — typically the variables to set — rather than after a 401 that names
+// none of them. Resolving reads the environment only; a cloud deployment's own
+// credentials (Google's, AWS's) are checked on first use.
+func resolveClient() (*anthropicsdk.Client, error) {
+	client, _, err := anthropic.Resolve(anthropic.OSEnv{})
+	return client, err
 }

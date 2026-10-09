@@ -95,10 +95,7 @@ func demoStreamingLoop() {
 	)
 	p.ChunkSize = 8 // split text into deltas, so streaming is visible
 
-	agent := newAgent(p)
-	if err := agent.RegisterTool(wordCount()); err != nil {
-		fail(err)
-	}
+	agent := newAgent(p, wordCount())
 
 	stream, err := agent.Stream(context.Background(), "How many words in that sentence?")
 	if err != nil {
@@ -144,8 +141,7 @@ func demoStopReasonTrap() {
 			},
 			faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("done")}, StopReason: core.StopReasonStop},
 		)
-		agent := newAgent(p)
-		_ = agent.RegisterTool(wordCount())
+		agent := newAgent(p, wordCount())
 		res, err := agent.Run(context.Background(), "count")
 		if err != nil {
 			fail(err)
@@ -183,8 +179,7 @@ func demoTruncatedToolCalls() {
 		faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("Re-issued and done.")},
 			StopReason: core.StopReasonStop},
 	)
-	agent := newAgent(p)
-	_ = agent.RegisterTool(wordCount())
+	agent := newAgent(p, wordCount())
 	res, err := agent.Run(context.Background(), "count")
 	if err != nil {
 		fail(err)
@@ -281,17 +276,21 @@ func demoTranscriptRepair() {
 
 // ---------------------------------------------------------------------------
 
-func newAgent(p *faux.Provider) *agentkit.Agent {
-	cfg := core.AgentConfig{
-		Model:        faux.Model(),
-		SystemPrompt: "You are a helpful assistant.",
-		StopPolicy: func(sc core.StopContext) bool {
-			return sc.TurnCount >= 8 || sc.Usage.CostUSD > 0.50
-		},
-		ParallelTools: true,
-		Providers:     core.ProviderRegistry{faux.API: p.APIProvider()},
-	}
-	a, err := agentkit.NewAgent(cfg)
+// newAgent is the minimum config. The faux provider is a core.ProviderClient
+// in its own right, so it goes in Provider; a real program sets Client
+// instead (see examples/codingagent). The model id is not in the catalog, so
+// it resolves with default limits and no price. MaxTurns and MaxCostUSD bound
+// the run whatever the model does: the first is checked after every turn, the
+// second before every request.
+func newAgent(p *faux.Provider, tools ...core.Tool) *agentkit.Agent {
+	a, err := agentkit.New(agentkit.Config{
+		Provider:   p,
+		Model:      faux.Model().ID,
+		System:     "You are a helpful assistant.",
+		Tools:      tools,
+		MaxTurns:   8,
+		MaxCostUSD: 0.50,
+	})
 	if err != nil {
 		fail(err)
 	}

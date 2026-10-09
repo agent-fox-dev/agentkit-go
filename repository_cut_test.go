@@ -48,32 +48,30 @@ func TestAgentDecoupled_TS09_10(t *testing.T) {
 	}
 }
 
-// TS-09-11: the registry holds exactly the providers registered into it, and
+// TS-09-11: a registry holds exactly the providers registered into it, and
 // the only first-party ones left are anthropic and faux.
 func TestProviderDefaults_TS09_11(t *testing.T) {
-	cfg := core.AgentConfig{}
-	RegisterDefaults(&cfg, anthropic.Provider(anthropic.Options{}), faux.New().APIProvider())
-	if _, ok := cfg.Providers.Get(anthropic.API); !ok {
+	reg := core.ProviderRegistry{}
+	reg.Register(anthropic.Provider(anthropic.Options{}))
+	reg.Register(faux.New().APIProvider())
+	if _, ok := reg.Get(anthropic.API); !ok {
 		t.Error("anthropic is not registered")
 	}
-	if _, ok := cfg.Providers.Get(faux.API); !ok {
+	if _, ok := reg.Get(faux.API); !ok {
 		t.Error("faux is not registered")
 	}
 	for _, api := range []core.API{"openai", "openai-completions", "openai-responses", "google", "google-generative-ai", "ollama"} {
-		if _, ok := cfg.Providers.Get(api); ok {
+		if _, ok := reg.Get(api); ok {
 			t.Errorf("legacy provider %q is registered", api)
 		}
 	}
-	if len(DefaultProviders()) != 0 {
-		t.Errorf("DefaultProviders registers %d providers, want none", len(DefaultProviders()))
-	}
-	src, err := os.ReadFile("providers.go")
+	src, err := os.ReadFile("agent.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"openai", "google", "ollama"} {
 		if strings.Contains(strings.ToLower(string(src)), name) {
-			t.Errorf("providers.go mentions %s", name)
+			t.Errorf("agent.go mentions %s", name)
 		}
 	}
 }
@@ -118,8 +116,8 @@ func TestBatchAndNestedWithoutHooks_TS09_12(t *testing.T) {
 			toolUse(t, "c1", "read_file", `{"path":"a.txt"}`),
 			toolUse(t, "c2", "read_file", `{"path":"b.txt"}`)),
 	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.ToolPolicy.CustomTools = []core.Tool{parent, readFile}
+	a := newTestAgent(t, s, func(c *Config) {
+		c.Tools = []core.Tool{parent, readFile}
 	})
 	st, err := a.Stream(context.Background(), "go")
 	if err != nil {

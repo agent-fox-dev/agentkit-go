@@ -47,6 +47,9 @@ const (
 	RunStopToolTerminate  RunStopReason = "tool_terminate"
 	RunStopError          RunStopReason = "error"
 	RunStopAborted        RunStopReason = "aborted"
+	// RunStopTimeout: the run outlived its configured timeout
+	// (agentkit.Config.Timeout).
+	RunStopTimeout RunStopReason = "timeout"
 	// RunStopRefusal: the run ended on a model's refusal (StopReasonRefusal
 	// with no tool calls). Run also returns an error wrapping ErrRefusal.
 	RunStopRefusal RunStopReason = "refusal"

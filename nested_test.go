@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/guard"
+	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
@@ -41,13 +43,13 @@ func wrapperTool(name string, body func(ctx context.Context) core.ToolResult, ch
 // runWrapper runs one turn in which the model calls the tool named call
 // (with id "parent_call_1"), then a final turn. It returns the run's result
 // and the scripted provider.
-func runWrapper(t *testing.T, call string, mutate func(*core.AgentConfig), tools ...core.Tool) (core.RunResult, *scripted) {
+func runWrapper(t *testing.T, call string, mutate func(*Config), tools ...core.Tool) (core.RunResult, *scripted) {
 	t.Helper()
 	s := &scripted{turns: []core.AssistantMessage{
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "parent_call_1", call, `{}`)),
 	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.ToolPolicy.CustomTools = tools
+	a := newTestAgent(t, s, func(c *Config) {
+		c.Tools = tools
 		if mutate != nil {
 			mutate(c)
 		}
@@ -141,14 +143,14 @@ func TestNestedInterceptorParentContext_TS07_18(t *testing.T) {
 		_, _ = core.CallNested(ctx, core.ToolUseBlock{ID: "n1", Name: "child"})
 		return core.OKResult(nil)
 	}, childTool("child"))
-	runWrapper(t, "parent", func(c *core.AgentConfig) {
-		c.BeforeToolCall = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+	runWrapper(t, "parent", func(c *Config) {
+		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			mu.Lock()
 			before[in.ToolName] = in
 			mu.Unlock()
 			return core.BeforeToolCallDecision{}
 		}
-		c.AfterToolCall = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+		c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			mu.Lock()
 			after[in.ToolName] = in
 			mu.Unlock()
@@ -183,8 +185,8 @@ func TestNestedInterceptorBlock_TS07_19(t *testing.T) {
 		got, gotErr = core.CallNested(ctx, core.ToolUseBlock{ID: "n1", Name: "child"})
 		return core.OKResult(map[string]any{"recovered": true})
 	}, child)
-	res, _ := runWrapper(t, "wrap", func(c *core.AgentConfig) {
-		c.BeforeToolCall = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+	res, _ := runWrapper(t, "wrap", func(c *Config) {
+		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			if in.ParentToolUseID != "" {
 				return core.BeforeToolCallDecision{Block: true, Reason: "permission denied"}
 			}
@@ -215,8 +217,8 @@ func TestNestedInterceptorTerminate_TS07_20(t *testing.T) {
 		after = true
 		return core.OKResult(nil)
 	}, childTool("child"))
-	res, s := runWrapper(t, "wrap", func(c *core.AgentConfig) {
-		c.BeforeToolCall = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+	res, s := runWrapper(t, "wrap", func(c *Config) {
+		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			if in.ParentToolUseID != "" {
 				return core.BeforeToolCallDecision{Block: true, Terminate: true, Reason: "critical violation"}
 			}
@@ -238,8 +240,8 @@ func TestNestedInterceptorRewritesArguments_TS07_21(t *testing.T) {
 		got, _ = core.CallNested(ctx, core.ToolUseBlock{ID: "n1", Name: "child", Input: json.RawMessage(`{"v":"original"}`)})
 		return core.OKResult(nil)
 	}, childTool("child"))
-	runWrapper(t, "wrap", func(c *core.AgentConfig) {
-		c.BeforeToolCall = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+	runWrapper(t, "wrap", func(c *Config) {
+		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			if in.ParentToolUseID != "" {
 				return core.BeforeToolCallDecision{Arguments: map[string]any{"v": "rewritten"}}
 			}
@@ -268,8 +270,8 @@ func TestNestedTerminateVoteIgnored_TS07_22(t *testing.T) {
 		return r
 	}, child)
 	var wrapperOut core.ToolResult
-	res, s := runWrapper(t, "wrap", func(c *core.AgentConfig) {
-		c.AfterToolCall = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+	res, s := runWrapper(t, "wrap", func(c *Config) {
+		c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			if in.ToolName == "wrap" {
 				wrapperOut = in.ToolResult
 			}
@@ -321,22 +323,19 @@ func TestNestedConcurrency_TS07_23(t *testing.T) {
 		_, _ = core.CallNested(ctx, callN("child", 3)...)
 		return core.OKResult(nil)
 	}, overlapTool("child", core.Parallel, &active, &maxActive))
-	runWrapper(t, "wrap", func(c *core.AgentConfig) { c.ParallelTools = true }, wrap)
+	runWrapper(t, "wrap", nil, wrap)
 	if maxActive.Load() < 2 {
 		t.Fatalf("max concurrent nested calls = %d, want more than 1", maxActive.Load())
 	}
 }
 
-// TS-07-24: ParallelTools off, or a Sequential tool among the calls, runs
-// them one at a time.
+// TS-07-24: a Sequential tool among the calls runs them one at a time.
 func TestNestedSequential_TS07_24(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		parallel bool
-		mode     core.ExecutionMode
+		name string
+		mode core.ExecutionMode
 	}{
-		{"parallel tools off", false, core.Parallel},
-		{"sequential tool", true, core.Sequential},
+		{"sequential tool", core.Sequential},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var active, maxActive atomic.Int32
@@ -347,7 +346,7 @@ func TestNestedSequential_TS07_24(t *testing.T) {
 				got, _ = core.CallNested(ctx, calls...)
 				return core.OKResult(nil)
 			}, overlapTool("seq", tc.mode, &active, &maxActive), other)
-			runWrapper(t, "wrap", func(c *core.AgentConfig) { c.ParallelTools = tc.parallel }, wrap)
+			runWrapper(t, "wrap", nil, wrap)
 			if maxActive.Load() != 1 || len(got) != 3 || got[0].Data["args"] != `{"v":"0"}` {
 				t.Fatalf("max concurrent = %d, results %+v", maxActive.Load(), got)
 			}
@@ -377,7 +376,7 @@ func TestNestedConcurrencyPreservesOrder_TS07_25(t *testing.T) {
 			got, gotErr = core.CallNested(ctx, calls...)
 			return core.OKResult(nil)
 		}, child)
-		runWrapper(t, "wrap", func(c *core.AgentConfig) { c.ParallelTools = true }, wrap)
+		runWrapper(t, "wrap", nil, wrap)
 		if gotErr != nil || len(got) != n {
 			t.Fatalf("iteration %d: %d results, %v", iter, len(got), gotErr)
 		}
@@ -413,7 +412,7 @@ func TestNestedIsolation_TS07_26(t *testing.T) {
 			core.ToolUseBlock{Name: "strict", Input: json.RawMessage(`{"n":"x"}`)}, core.ToolUseBlock{Name: "ok"})
 		return core.OKResult(nil)
 	}, fail, boom, strict, ok)
-	runWrapper(t, "wrap", func(c *core.AgentConfig) { c.ParallelTools = true }, wrap)
+	runWrapper(t, "wrap", nil, wrap)
 	if gotErr != nil || len(got) != 4 {
 		t.Fatalf("CallNested = %+v, %v", got, gotErr)
 	}
@@ -467,9 +466,8 @@ func TestNestedEventsUniqueToolUseIDs_TS07_28(t *testing.T) {
 	var mu sync.Mutex
 	seen := map[string]bool{}
 	for range 5 {
-		runWrapper(t, "parent", func(c *core.AgentConfig) {
-			c.ParallelTools = true
-			c.BeforeToolCall = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		runWrapper(t, "parent", func(c *Config) {
+			c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 				if in.ParentToolUseID == "" {
 					return core.BeforeToolCallDecision{}
 				}
@@ -500,8 +498,8 @@ func TestNestedEvents_TS07_29(t *testing.T) {
 	s := &scripted{turns: []core.AssistantMessage{
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "parent_call_1", "parent", `{}`)),
 	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.ToolPolicy.CustomTools = []core.Tool{fanOut(childTool("child"))}
+	a := newTestAgent(t, s, func(c *Config) {
+		c.Tools = []core.Tool{fanOut(childTool("child"))}
 	})
 	st, err := a.Stream(context.Background(), "go")
 	if err != nil {
@@ -566,8 +564,8 @@ func TestNestedUsage_TS07_32(t *testing.T) {
 	s := &scripted{turns: []core.AssistantMessage{
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "parent_call_1", "parent", `{}`)),
 	}}
-	a = newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.ToolPolicy.CustomTools = []core.Tool{wrapperTool("parent", func(ctx context.Context) core.ToolResult {
+	a = newTestAgent(t, s, func(c *Config) {
+		c.Tools = []core.Tool{wrapperTool("parent", func(ctx context.Context) core.ToolResult {
 			_, _ = core.CallNested(ctx, core.ToolUseBlock{Name: "child"})
 			return core.OKResult(nil)
 		}, spender)}
@@ -611,35 +609,6 @@ func TestNestedHistory_TS07_33(t *testing.T) {
 	}
 }
 
-// whenToolCalled ends a run once a top-level call to name has a result.
-func whenToolCalled(name string) core.StopPolicy {
-	return func(sc core.StopContext) bool {
-		for _, r := range sc.ToolResults {
-			if r.ToolName == name {
-				return true
-			}
-		}
-		return false
-	}
-}
-
-// TS-07-34: a stop policy watching for a tool sees top-level calls only.
-func TestNestedStopPolicy_TS07_34(t *testing.T) {
-	res, s := runWrapper(t, "parent", func(c *core.AgentConfig) {
-		c.StopPolicy = whenToolCalled("child_tool")
-	}, fanOut(childTool("child_tool")))
-	if res.StopReason == core.RunStopPolicy || s.turnsRun() != 2 {
-		t.Fatalf("stop %q after %d turns: a nested call tripped the stop policy", res.StopReason, s.turnsRun())
-	}
-	// The policy itself works on the top-level call.
-	res, s = runWrapper(t, "parent", func(c *core.AgentConfig) {
-		c.StopPolicy = whenToolCalled("parent")
-	}, fanOut(childTool("child_tool")))
-	if res.StopReason != core.RunStopPolicy || s.turnsRun() != 1 {
-		t.Fatalf("stop %q after %d turns, want the policy to stop after 1", res.StopReason, s.turnsRun())
-	}
-}
-
 // A block-and-terminate still closes the blocked call on the stream as an
 // error, and closes the calls already queued behind it: every nested call
 // that opened closes exactly once, as a direct one does.
@@ -651,9 +620,9 @@ func TestNestedTerminateClosesEveryOpenedCall(t *testing.T) {
 		_, err := core.CallNested(ctx, core.ToolUseBlock{Name: "ok"}, core.ToolUseBlock{Name: "deny"}, core.ToolUseBlock{Name: "ok"})
 		return core.ErrResult("terminated", fmt.Sprint(err))
 	}, childTool("ok"), childTool("deny"))
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.ToolPolicy.CustomTools = []core.Tool{wrap}
-		c.BeforeToolCall = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+	a := newTestAgent(t, s, func(c *Config) {
+		c.Tools = []core.Tool{wrap}
+		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			if in.ToolName == "deny" {
 				return core.BeforeToolCallDecision{Block: true, Terminate: true, Reason: "no"}
 			}
@@ -704,8 +673,8 @@ func TestNestedAfterToolCallMayCallNested(t *testing.T) {
 			_, _ = core.CallNested(ctx, core.ToolUseBlock{Name: "child"})
 			return core.OKResult(nil)
 		}, childTool("child"))
-		runWrapper(t, "parent", func(c *core.AgentConfig) {
-			c.AfterToolCall = func(ctx context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+		runWrapper(t, "parent", func(c *Config) {
+			c.After = func(ctx context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 				if in.ParentToolUseID != "" {
 					_, _ = core.CallNested(ctx, core.ToolUseBlock{Name: "nothing"})
 				}
@@ -717,5 +686,180 @@ func TestNestedAfterToolCallMayCallNested(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("deadlocked")
+	}
+}
+
+// ------------------------------------------------------------------ 11-REQ-9
+
+// TS-11-33: a tool with ReachableTools runs with a NestedCaller bound to
+// its resolved reachable set; a tool without runs with none.
+func TestNestedCallerIsAttached_TS11_33(t *testing.T) {
+	var got []core.ToolResult
+	var callErr, plainErr error
+	wrapper := wrapperTool("wrapper", func(ctx context.Context) core.ToolResult {
+		got, callErr = core.CallNested(ctx, core.ToolUseBlock{Name: "childA"}, core.ToolUseBlock{Name: "childB"})
+		return core.OKResult(nil)
+	}, childTool("childA"), childTool("childB"))
+	plain := wrapperTool("plain", func(ctx context.Context) core.ToolResult {
+		_, plainErr = core.CallNested(ctx, core.ToolUseBlock{Name: "childA"})
+		return core.OKResult(nil)
+	})
+	s := &scripted{turns: []core.AssistantMessage{assistantWithTools(core.StopReasonToolUse,
+		toolUse(t, "c1", "wrapper", `{}`), toolUse(t, "c2", "plain", `{}`))}}
+	a := newTestAgent(t, s, nil, wrapper, plain)
+	if _, err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if callErr != nil || len(got) != 2 || !got[0].OK || !got[1].OK || got[0].Data["tool"] != "childA" || got[1].Data["tool"] != "childB" {
+		t.Fatalf("CallNested from the wrapper = %+v, %v; want both children run", got, callErr)
+	}
+	if !errors.Is(plainErr, core.ErrNoNestedCaller) {
+		t.Fatalf("CallNested from a tool reaching nothing = %v, want ErrNoNestedCaller", plainErr)
+	}
+}
+
+// TS-11-34: a nested call to a tool outside the reachable set is an error
+// result, not a Go error.
+func TestNestedUnreachableToolIsAnErrorResult_TS11_34(t *testing.T) {
+	var got []core.ToolResult
+	var callErr error
+	wrapper := wrapperTool("wrapper", func(ctx context.Context) core.ToolResult {
+		got, callErr = core.CallNested(ctx, core.ToolUseBlock{Name: "forbiddenTool"})
+		return core.OKResult(nil)
+	}, childTool("childA"))
+	runWrapper(t, "wrapper", nil, wrapper, childTool("forbiddenTool"))
+	if callErr != nil || len(got) != 1 || got[0].OK || got[0].Error != "unknown_tool" ||
+		!strings.Contains(got[0].Detail, `wrapper cannot call "forbiddenTool"`) {
+		t.Fatalf("CallNested = %+v, %v; want an unknown_tool result naming the tool", got, callErr)
+	}
+}
+
+// TS-11-35: a nested call's execution events carry the parent call's id.
+func TestNestedEventsCarryTheParent_TS11_35(t *testing.T) {
+	wrapper := wrapperTool("wrapper", func(ctx context.Context) core.ToolResult {
+		_, _ = core.CallNested(ctx, core.ToolUseBlock{Name: "childA"})
+		return core.OKResult(nil)
+	}, childTool("childA"))
+	s := &scripted{turns: []core.AssistantMessage{assistantWithTools(core.StopReasonToolUse, toolUse(t, "parent_call_1", "wrapper", `{}`))}}
+	a := newTestAgent(t, s, nil, wrapper)
+	st, err := a.Stream(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts, ends := 0, 0
+	for e := range st.Events() {
+		switch v := e.(type) {
+		case core.ToolExecutionStartEvent:
+			if v.Name == "childA" {
+				starts++
+				if v.ParentToolUseID != "parent_call_1" {
+					t.Fatalf("nested start parent = %q", v.ParentToolUseID)
+				}
+			}
+		case core.ToolExecutionEndEvent:
+			if v.Name == "childA" {
+				ends++
+				if v.ParentToolUseID != "parent_call_1" {
+					t.Fatalf("nested end parent = %q", v.ParentToolUseID)
+				}
+			}
+		}
+	}
+	if starts != 1 || ends != 1 {
+		t.Fatalf("nested events: %d start / %d end, want 1/1", starts, ends)
+	}
+}
+
+// TS-11-36: a nested call the Guard blocks is an error result and a nil Go
+// error, so the wrapper carries on.
+func TestNestedBlockIsAValue_TS11_36(t *testing.T) {
+	var got []core.ToolResult
+	var callErr error
+	wrapper := wrapperTool("wrapper", func(ctx context.Context) core.ToolResult {
+		got, callErr = core.CallNested(ctx, core.ToolUseBlock{Name: "childA"})
+		return core.OKResult(map[string]any{"handled": true})
+	}, childTool("childA"))
+	res, _ := runWrapper(t, "wrapper", func(c *Config) {
+		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+			return core.BeforeToolCallDecision{Block: in.ParentToolUseID != "", Reason: "permission denied"}
+		}
+	}, wrapper)
+	if callErr != nil || len(got) != 1 || got[0].OK || got[0].Error != core.BlockErrorCode || got[0].Detail != "permission denied" {
+		t.Fatalf("CallNested = %+v, %v; want a blocked result and no error", got, callErr)
+	}
+	if tr := resultFor(t, res, "parent_call_1"); tr.IsError || !strings.Contains(resultText(tr), "handled") {
+		t.Fatalf("the wrapper did not complete: %q", resultText(tr))
+	}
+}
+
+// TS-11-37: an interceptor's terminate vote in a nested call fails every
+// later call with ErrTerminated and ends the run through the wrapper.
+func TestNestedTerminateVote_TS11_37(t *testing.T) {
+	var second error
+	wrapper := wrapperTool("wrapper", func(ctx context.Context) core.ToolResult {
+		_, _ = core.CallNested(ctx, core.ToolUseBlock{Name: "childA"})
+		_, second = core.CallNested(ctx, core.ToolUseBlock{Name: "childA"})
+		return core.OKResult(map[string]any{"wrapper": "done"})
+	}, childTool("childA"))
+	res, s := runWrapper(t, "wrapper", func(c *Config) {
+		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+			return core.BeforeToolCallDecision{Block: in.ParentToolUseID != "", Terminate: in.ParentToolUseID != "", Reason: "stop"}
+		}
+	}, wrapper)
+	if !errors.Is(second, core.ErrTerminated) {
+		t.Fatalf("second CallNested = %v, want ErrTerminated", second)
+	}
+	if res.StopReason != core.RunStopToolTerminate || s.turnsRun() != 1 {
+		t.Fatalf("stop %q after %d turns; the wrapper's result must carry the vote", res.StopReason, s.turnsRun())
+	}
+}
+
+// TS-11-47 (smoke, 11-PATH-4): a wrapper calls a reachable tool through the
+// nested caller; the nested call is attributed to the wrapper on the stream
+// and its result reaches the wrapper's own.
+func TestSmokeNestedThroughWrapper_TS11_47(t *testing.T) {
+	child := core.Tool{Name: "childTool", InputSchema: schema.Object(),
+		Execute: func(context.Context, json.RawMessage) core.ToolResult {
+			return core.ToolResult{OK: true, Text: "child done"}
+		}}
+	wrapper := wrapperTool("wrapperTool", func(ctx context.Context) core.ToolResult {
+		res, err := core.CallNested(ctx, core.ToolUseBlock{Name: "childTool"})
+		if err != nil {
+			return core.ErrResult("nested", err.Error())
+		}
+		return core.ToolResult{OK: true, Text: "wrapper: " + res[0].Text}
+	}, child)
+	fp := faux.New(
+		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "wrapperTool", "{}")),
+		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("done")),
+	)
+	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{wrapper}, Guard: guard.AllowAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := a.Stream(context.Background(), "run wrapper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attributed := false
+	for e := range st.Events() {
+		if v, ok := e.(core.ToolExecutionEndEvent); ok && v.Name == "childTool" {
+			attributed = v.ParentToolUseID == "c1" && !v.IsError
+		}
+	}
+	res, err := st.RunResult()
+	if err != nil || res.StopReason != core.RunStopEndTurn {
+		t.Fatalf("run = %q, %v", res.StopReason, err)
+	}
+	if !attributed {
+		t.Fatal("the nested call was not attributed to the wrapper")
+	}
+	if tr := findToolResult(t, res.Messages, "c1"); tr.Content.Text() != "wrapper: child done" {
+		t.Fatalf("wrapper result = %q", tr.Content.Text())
+	}
+	for _, m := range res.Messages {
+		if tr, ok := m.(core.ToolResultMessage); ok && tr.ToolName == "childTool" {
+			t.Fatal("a nested result entered the transcript")
+		}
 	}
 }

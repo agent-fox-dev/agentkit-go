@@ -18,20 +18,10 @@ import (
 
 // ---------------------------------------------------------------- helpers
 
-const mdTestAPI core.API = "md-test-api"
-
-func mdTestModel() *core.Model {
-	return &core.Model{ID: "md-test-model", Name: "Test", API: mdTestAPI, Provider: "test", ContextWindow: 100000, MaxTokens: 4096}
-}
-
 type mdScripted struct {
 	mu    sync.Mutex
 	turns []core.AssistantMessage
 	calls int
-}
-
-func (s *mdScripted) provider() core.APIProvider {
-	return core.APIProvider{API: mdTestAPI, Stream: s.stream}
 }
 
 func (s *mdScripted) stream(_ context.Context, m *core.Model, req core.Request, _ core.ProviderStreamOptions) *core.EventStream {
@@ -71,19 +61,20 @@ func mdAssistantWithTools(reason core.StopReason, blocks ...core.ContentBlock) c
 	return core.AssistantMessage{Content: core.Content(blocks), StopReason: reason}
 }
 
-func mdNewTestAgent(t *testing.T, s *mdScripted, mutate func(*core.AgentConfig)) *agentkit.Agent {
+func mdNewTestAgent(t *testing.T, s *mdScripted, mutate func(*agentkit.Config), tools ...core.Tool) *agentkit.Agent {
 	t.Helper()
-	cfg := core.AgentConfig{
-		Model:      mdTestModel(),
-		StopPolicy: func(sc core.StopContext) bool { return sc.TurnCount >= 10 },
-		Providers:  core.ProviderRegistry{mdTestAPI: s.provider()},
+	cfg := agentkit.Config{
+		Provider: core.ClientFunc(s.stream),
+		Model:    "md-test-model",
+		MaxTurns: 10,
+		Tools:    tools,
 	}
 	if mutate != nil {
 		mutate(&cfg)
 	}
-	a, err := agentkit.NewAgent(cfg)
+	a, err := agentkit.New(cfg)
 	if err != nil {
-		t.Fatalf("NewAgent: %v", err)
+		t.Fatalf("New: %v", err)
 	}
 	return a
 }
@@ -142,12 +133,9 @@ func TestNonEmptyHandlerMetadataCopiedOntoMessage_TS04_33(t *testing.T) {
 	s := &mdScripted{turns: []core.AssistantMessage{
 		mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
 	}}
-	a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
-		c.BeforeToolCall = guard.AllowAll
-	})
-	if err := a.RegisterTool(probeTool); err != nil {
-		t.Fatal(err)
-	}
+	a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
+		c.Guard = guard.AllowAll
+	}, probeTool)
 
 	res, events := mdCollectToolResultEvents(t, a, s, "go")
 
@@ -194,12 +182,9 @@ func TestNonEmptyHandlerMetadataCopiedOntoMessage_TS04_33(t *testing.T) {
 	s2 := &mdScripted{turns: []core.AssistantMessage{
 		mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
 	}}
-	a2 := mdNewTestAgent(t, s2, func(c *core.AgentConfig) {
-		c.BeforeToolCall = guard.AllowAll
-	})
-	if err := a2.RegisterTool(probeTool2); err != nil {
-		t.Fatal(err)
-	}
+	a2 := mdNewTestAgent(t, s2, func(c *agentkit.Config) {
+		c.Guard = guard.AllowAll
+	}, probeTool2)
 	_, events2 := mdCollectToolResultEvents(t, a2, s2, "go")
 	if len(events2) == 0 {
 		t.Fatal("no ToolResultEvent for ExitCode-0 variant")
@@ -261,13 +246,9 @@ func TestMetadataReuseDoesNotAlias_TS04_34(t *testing.T) {
 			mdToolUse(t, "c4", "probe", `{}`),
 		),
 	}}
-	a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
-		c.ParallelTools = true
-		c.BeforeToolCall = guard.AllowAll
-	})
-	if err := a.RegisterTool(reusingTool); err != nil {
-		t.Fatal(err)
-	}
+	a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
+		c.Guard = guard.AllowAll
+	}, reusingTool)
 
 	res, events := mdCollectToolResultEvents(t, a, s, "go")
 
@@ -304,7 +285,7 @@ func TestMetadataReuseDoesNotAlias_TS04_34(t *testing.T) {
 			checkMsg("RunResult/"+tr.ToolUseID, tr)
 		}
 	}
-	for _, m := range a.History().Messages() {
+	for _, m := range a.Messages() {
 		if tr, ok := m.(core.ToolResultMessage); ok {
 			checkMsg("History/"+tr.ToolUseID, tr)
 		}
@@ -341,12 +322,9 @@ func TestNilOrZeroMetadataLeavesMessageNil_TS04_35(t *testing.T) {
 			s := &mdScripted{turns: []core.AssistantMessage{
 				mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
 			}}
-			a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
-				c.BeforeToolCall = guard.AllowAll
-			})
-			if err := a.RegisterTool(probeTool); err != nil {
-				t.Fatal(err)
-			}
+			a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
+				c.Guard = guard.AllowAll
+			}, probeTool)
 
 			_, events := mdCollectToolResultEvents(t, a, s, "go")
 			if len(events) == 0 {
@@ -357,7 +335,7 @@ func TestNilOrZeroMetadataLeavesMessageNil_TS04_35(t *testing.T) {
 			}
 
 			// Also check history.
-			for _, m := range a.History().Messages() {
+			for _, m := range a.Messages() {
 				if tr, ok := m.(core.ToolResultMessage); ok && tr.ToolUseID == "c1" {
 					if tr.Metadata != nil {
 						t.Fatalf("history Metadata = %+v, want nil", tr.Metadata)
@@ -409,14 +387,9 @@ func runTS0436(t *testing.T) (core.RunResult, []core.ToolResultMessage) {
 			mdToolUse(t, "c_e", "strict", `{}`),
 		),
 	}}
-	a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
-		c.BeforeToolCall = guard.AllowAll
-	})
-	for _, tl := range []core.Tool{handlerOK, handlerErr, panicTool, strictTool} {
-		if err := a.RegisterTool(tl); err != nil {
-			t.Fatal(err)
-		}
-	}
+	a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
+		c.Guard = guard.AllowAll
+	}, handlerOK, handlerErr, panicTool, strictTool)
 	return mdCollectToolResultEvents(t, a, s, "go")
 }
 
@@ -515,14 +488,11 @@ func TestBlockedNilMetadata_TS04_37(t *testing.T) {
 	s := &mdScripted{turns: []core.AssistantMessage{
 		mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
 	}}
-	a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
-		c.BeforeToolCall = func(_ context.Context, _ core.BeforeToolCallContext) core.BeforeToolCallDecision {
+	a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
+		c.Guard = func(_ context.Context, _ core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			return core.BeforeToolCallDecision{Block: true, Reason: "no"}
 		}
-	})
-	if err := a.RegisterTool(metaTool); err != nil {
-		t.Fatal(err)
-	}
+	}, metaTool)
 	res, events := mdCollectToolResultEvents(t, a, s, "go")
 	if ran {
 		t.Fatal("handler should not have run")
@@ -552,13 +522,12 @@ func TestAbortedNilMetadata_TS04_37(t *testing.T) {
 		mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
 	}}
 	ctx, cancel := context.WithCancel(context.Background())
-	a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
-		c.BeforeToolCall = guard.AllowAll
-		c.Hooks.OnTurnStart = func(core.TurnStartEvent) { cancel() }
-	})
-	if err := a.RegisterTool(metaTool); err != nil {
-		t.Fatal(err)
-	}
+	a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
+		c.Guard = guard.AllowAll
+	}, metaTool)
+	// Cancelled before the run: the scripted provider ignores ctx, so the
+	// batch is reached and aborted.
+	cancel()
 	st, err := a.Stream(ctx, "go")
 	if err != nil {
 		t.Fatal(err)
@@ -606,12 +575,9 @@ func TestMaxTokensSynthesizedAndRepairSynthesizedNilMetadata_TS04_38(t *testing.
 	s := &mdScripted{turns: []core.AssistantMessage{
 		mdAssistantWithTools(core.StopReasonLength, mdToolUse(t, "c1", "probe", `{}`)),
 	}}
-	a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
-		c.BeforeToolCall = guard.AllowAll
-	})
-	if err := a.RegisterTool(probeTool); err != nil {
-		t.Fatal(err)
-	}
+	a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
+		c.Guard = guard.AllowAll
+	}, probeTool)
 
 	_, events := mdCollectToolResultEvents(t, a, s, "go")
 	if probeRan {
@@ -637,11 +603,11 @@ func TestMaxTokensSynthesizedAndRepairSynthesizedNilMetadata_TS04_38(t *testing.
 		core.AssistantMessage{
 			Content:    core.Content{tu},
 			StopReason: core.StopReasonToolUse,
-			Provider:   "test", API: mdTestAPI, Model: "md-test-model",
+			Provider:   "test", API: "md-test-api", Model: "md-test-model",
 		},
 		// No tool result for call_1.
 	}
-	target := anthropic.Target{Provider: "test", API: mdTestAPI, Model: "md-test-model"}
+	target := anthropic.Target{Provider: "test", API: "md-test-api", Model: "md-test-model"}
 	out, rep := anthropic.RepairTranscript(damaged, target)
 	if rep.SyntheticResults != 1 {
 		t.Fatalf("SyntheticResults = %d, want 1", rep.SyntheticResults)
@@ -663,10 +629,10 @@ func TestMaxTokensSynthesizedAndRepairSynthesizedNilMetadata_TS04_38(t *testing.
 
 // ---------------------------------------------------------------- TS-04-40
 
-// TestMetadataReachesAllFiveObservers_TS04_40 verifies that a failing execute
-// call's metadata reaches ToolResultEvent, TurnEndEvent, StopContext, History
-// and RunResult.
-func TestMetadataReachesAllFiveObservers_TS04_40(t *testing.T) {
+// TestMetadataReachesEveryObserver_TS04_40 verifies that a failing execute
+// call's metadata reaches ToolResultEvent, TurnEndEvent, the transcript and
+// RunResult.
+func TestMetadataReachesEveryObserver_TS04_40(t *testing.T) {
 	ec := 2
 	md := &core.ToolMetadata{ExitCode: &ec, Outcome: "exit", TotalBytes: 5, DurationMS: 12}
 
@@ -685,29 +651,14 @@ func TestMetadataReachesAllFiveObservers_TS04_40(t *testing.T) {
 	var (
 		toolResultEvt  *core.ToolResultMessage
 		turnEndResults []core.ToolResultMessage
-		stopResults    []core.ToolResultMessage
 	)
 
 	s := &mdScripted{turns: []core.AssistantMessage{
 		mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
 	}}
-	a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
-		c.BeforeToolCall = guard.AllowAll
-		c.Hooks.OnTurnEnd = func(e core.TurnEndEvent) {
-			if len(e.ToolResults) > 0 {
-				turnEndResults = e.ToolResults
-			}
-		}
-		c.StopPolicy = func(sc core.StopContext) bool {
-			if len(sc.ToolResults) > 0 {
-				stopResults = sc.ToolResults
-			}
-			return false
-		}
-	})
-	if err := a.RegisterTool(probeTool); err != nil {
-		t.Fatal(err)
-	}
+	a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
+		c.Guard = guard.AllowAll
+	}, probeTool)
 
 	st, err := a.Stream(context.Background(), "go")
 	if err != nil {
@@ -717,6 +668,9 @@ func TestMetadataReachesAllFiveObservers_TS04_40(t *testing.T) {
 		if tre, ok := e.(core.ToolResultEvent); ok {
 			msg := tre.Message
 			toolResultEvt = &msg
+		}
+		if te, ok := e.(core.TurnEndEvent); ok && len(te.ToolResults) > 0 {
+			turnEndResults = te.ToolResults
 		}
 	}
 	res, err := st.RunResult()
@@ -748,20 +702,14 @@ func TestMetadataReachesAllFiveObservers_TS04_40(t *testing.T) {
 	}
 	checkMD("TurnEndEvent", turnEndResults[0].Metadata)
 
-	// 3. StopContext
-	if len(stopResults) == 0 {
-		t.Fatal("no StopContext results")
-	}
-	checkMD("StopContext", stopResults[0].Metadata)
-
-	// 4. History
-	for _, m := range a.History().Messages() {
+	// 3. The transcript
+	for _, m := range a.Messages() {
 		if tr, ok := m.(core.ToolResultMessage); ok && tr.ToolUseID == "c1" {
 			checkMD("History", tr.Metadata)
 		}
 	}
 
-	// 5. RunResult.Messages
+	// 4. RunResult.Messages
 	rmsg := mdFindToolResult(t, res.Messages, "c1")
 	checkMD("RunResult", rmsg.Metadata)
 }

@@ -70,13 +70,12 @@ func runAgent(t *testing.T, cm core.Tool, script string) (core.ToolResult, []cor
 		faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("done")}, StopReason: core.StopReasonStop},
 	)
 	var out core.ToolResult
-	agent, err := agentkit.NewAgent(core.AgentConfig{
-		Model:         faux.Model(),
-		Providers:     core.ProviderRegistry{faux.API: model.APIProvider()},
-		StopPolicy:    func(sc core.StopContext) bool { return sc.TurnCount >= 4 },
-		ParallelTools: true,
-		ToolPolicy:    core.ToolPolicy{CustomTools: []core.Tool{cm}},
-		AfterToolCall: func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+	agent, err := agentkit.New(agentkit.Config{
+		Provider: model,
+		Model:    faux.Model().ID,
+		MaxTurns: 4,
+		Tools:    []core.Tool{cm},
+		After: func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			if in.ToolName == cm.Name {
 				out = in.ToolResult
 			}

@@ -109,12 +109,15 @@ func run(ctx context.Context, w io.Writer) error {
 			"The workspace has two Go files, no CHANGELOG.md, and 12 apples and 0 pears in stock.")},
 			StopReason: core.StopReasonStop},
 	)
-	agent, err := agentkit.NewAgent(core.AgentConfig{
-		Model:         faux.Model(),
-		Providers:     core.ProviderRegistry{faux.API: model.APIProvider()},
-		StopPolicy:    func(sc core.StopContext) bool { return sc.TurnCount >= 5 },
-		ParallelTools: true,
-		ToolPolicy:    core.ToolPolicy{CustomTools: []core.Tool{cm}},
+	// The agent is given code_mode alone. The four tools it binds are its
+	// ReachableTools: the model never sees them, and a script reaches them
+	// only through code_mode. None of them is a shell tool, so no Guard is
+	// required.
+	agent, err := agentkit.New(agentkit.Config{
+		Provider: model,
+		Model:    faux.Model().ID,
+		Tools:    []core.Tool{cm},
+		MaxTurns: 5,
 	})
 	if err != nil {
 		return err
