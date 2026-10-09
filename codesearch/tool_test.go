@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/agentfox/agentkit-go/core"
+	"github.com/agentfox/agentkit-go/jsonx"
 	"github.com/agentfox/agentkit-go/schema"
 	"github.com/agentfox/agentkit-go/tools"
 )
@@ -677,6 +678,44 @@ func TestErrorCodesInvalidArguments_TS06_23(t *testing.T) {
 		res := cs.Execute(context.Background(), json.RawMessage(args))
 		if res.OK || res.Error != "invalid_arguments" {
 			t.Errorf("code_search %s: OK %v error %q, want invalid_arguments", args, res.OK, res.Error)
+		}
+	}
+}
+
+// TS-06-22 for code_search: successful Data conforms to its OutputSchema —
+// with matches and symbols, with matches on lines no declaration starts on,
+// and with no match at all. Validated as the value of a property, so the
+// whole schema is walked.
+func TestConformanceCodeSearchDataMatchesOutputSchema_TS06_22(t *testing.T) {
+	root := t.TempDir()
+	mkFile(t, root, "main.go", "package main\n\n// Greet says hello.\nfunc Greet() string { return \"hi\" }\n\nfunc main() { _ = Greet() }\n")
+	mkFile(t, root, "notes.txt", "greeting notes\nanother line\n")
+	ws, err := tools.NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, err := newIndex(ws, Options{TempDir: t.TempDir(), Ignore: tools.NoGlobalExcludes()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	cs := idx.Tools()[0]
+	wrapped := schema.Object(schema.Prop("data", cs.OutputSchema))
+	for _, q := range []string{`{"query":"Greet"}`, `{"query":"notes"}`, `{"query":"no_such_token_xyz"}`} {
+		res := cs.Execute(context.Background(), json.RawMessage(q))
+		if !res.OK {
+			t.Fatalf("%s: %s: %s", q, res.Error, res.Detail)
+		}
+		blob, err := json.Marshal(map[string]any{"data": res.Data})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ordered, err := jsonx.DecodeOrderedObject(blob)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := schema.Validate(wrapped, ordered); err != nil {
+			t.Errorf("%s: Data does not conform: %v\nData: %s", q, err, blob)
 		}
 	}
 }

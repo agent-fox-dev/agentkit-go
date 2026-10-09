@@ -7,15 +7,24 @@ package tools_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	agentkit "github.com/agentfox/agentkit-go"
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/internal/testkit"
+	"github.com/agentfox/agentkit-go/jsonx"
+	"github.com/agentfox/agentkit-go/schema"
 	"github.com/agentfox/agentkit-go/stop"
 	"github.com/agentfox/agentkit-go/subagent"
 	"github.com/agentfox/agentkit-go/tools"
@@ -216,4 +225,155 @@ func TestErrorCodesFailures_TS06_29(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o644) })
 	// The stat succeeds and the read does not: outline_failed.
 	expectError(t, bg, all["file_outline"], `{"path":"locked.go"}`, "outline_failed")
+}
+
+// validateToolData asserts that data conforms to tool.OutputSchema, through
+// the same JSON a programmatic caller would decode.
+//
+// The schema is checked as the value of a property rather than as the root:
+// schema.Validate walks a root schema's properties only, so a root oneOf such
+// as read_file's would never be evaluated.
+func validateToolData(t *testing.T, tool core.Tool, data map[string]any) {
+	t.Helper()
+	if tool.OutputSchema == nil {
+		t.Fatalf("%s declares no OutputSchema", tool.Name)
+	}
+	if data == nil {
+		t.Fatalf("%s returned no Data", tool.Name)
+	}
+	blob, err := json.Marshal(map[string]any{"data": data})
+	if err != nil {
+		t.Fatalf("%s: Data does not marshal: %v", tool.Name, err)
+	}
+	ordered, err := jsonx.DecodeOrderedObject(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.Validate(schema.Object(schema.Prop("data", tool.OutputSchema)), ordered); err != nil {
+		t.Errorf("%s: Data does not conform to OutputSchema: %v\nData: %s", tool.Name, err, blob)
+	}
+}
+
+// onePixelPNG is a 1x1 transparent PNG.
+const onePixelPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk" +
+	"YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
+// publicFetch is fetch_url with its guard resolving every name to a public
+// address and landing the connection on srv: the address check runs for
+// real, and the response comes from the test server.
+func publicFetch(srv *httptest.Server) core.Tool {
+	return tools.FetchTool(tools.FetchOptions{AllowHTTP: true, Guard: &tools.SSRFGuard{
+		AllowHTTP: true,
+		Resolve: func(context.Context, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
+		},
+		DialAddr: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, strings.TrimPrefix(srv.URL, "http://"))
+		},
+	}})
+}
+
+// TS-06-22: every built-in tool's successful Data conforms to its declared
+// OutputSchema, across the result shapes each one has: empty results,
+// truncation notes, both read_file variants, text and binary fetches.
+// 06-REQ-9.1.
+func TestConformanceSuccessDataMatchesOutputSchema_TS06_22(t *testing.T) {
+	root := conformanceWorkspace(t)
+	png, err := base64.StdEncoding.DecodeString(onePixelPNG)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "pixel.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	all := builtins(t, root, nil)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bin" {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write([]byte{0, 1, 2, 0xff})
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, "hello")
+	}))
+	defer srv.Close()
+	all["fetch_url"] = publicFetch(srv)
+
+	type call struct{ tool, args string }
+	calls := []call{
+		{"read_file", `{"path":"main.go"}`},
+		{"read_file", `{"path":"pixel.png"}`},
+		{"write_file", `{"path":"new.txt","content":"hello\n"}`},
+		{"edit_file", `{"path":"new.txt","edits":[{"old_string":"hello","new_string":"bye"}]}`},
+		{"list_files", `{}`},
+		{"list_files", `{"path":"empty"}`},
+		{"list_files", `{"limit":1}`},
+		{"find_files", `{"pattern":"**/*.go"}`},
+		{"find_files", `{"pattern":"**/*.none"}`},
+		{"find_files", `{"pattern":"**/*","limit":1}`},
+		{"search_files", `{"pattern":"Greet","context_lines":1}`},
+		{"search_files", `{"pattern":"no_such_text_anywhere"}`},
+		{"search_files", `{"pattern":"e","max_matches":1}`},
+		{"file_outline", `{"path":"main.go","include_private":true}`},
+		{"find_symbol", `{"name":"Greet"}`},
+		{"find_symbol", `{"name":"NoSuchSymbol"}`},
+		{"find_references", `{"name":"Greet"}`},
+		{"fetch_url", `{"url":"http://example.com/text"}`},
+		{"fetch_url", `{"url":"http://example.com/bin"}`},
+		{"subagent", `{"prompt":"say done"}`},
+	}
+	if runtime.GOOS != "windows" {
+		calls = append(calls,
+			call{"execute", `{"command":"echo hi"}`},
+			call{"run_command", `{"argv":["echo","hi"]}`})
+	}
+	covered := map[string]bool{}
+	for _, c := range calls {
+		tl := all[c.tool]
+		res := tl.Execute(context.Background(), json.RawMessage(c.args))
+		if !res.OK {
+			t.Errorf("%s %s: OK false, %s: %s", c.tool, c.args, res.Error, res.Detail)
+			continue
+		}
+		covered[c.tool] = true
+		validateToolData(t, tl, res.Data)
+	}
+
+	// powershell runs only on Windows; elsewhere it reports
+	// unsupported_platform and has no success Data to check.
+	want := []string{"read_file", "write_file", "edit_file", "list_files", "find_files", "search_files",
+		"file_outline", "find_symbol", "find_references", "fetch_url", "subagent"}
+	if runtime.GOOS != "windows" {
+		want = append(want, "execute", "run_command")
+	}
+	for _, name := range want {
+		if !covered[name] {
+			t.Errorf("%s produced no successful result to validate", name)
+		}
+	}
+}
+
+// TS-06-27: a failed subprocess still returns Data that conforms to the
+// shared subprocess schema: a non-zero exit is command_exit, a binary that
+// cannot start is exec_failed. 06-REQ-9.6.
+func TestConformanceSubprocessFailureData_TS06_27(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell commands")
+	}
+	all := builtins(t, conformanceWorkspace(t), nil)
+	for name, args := range map[string]string{
+		"execute":     `{"command":"echo partial; exit 1"}`,
+		"run_command": `{"argv":["sh","-c","echo partial; exit 1"]}`,
+	} {
+		res := expectError(t, context.Background(), all[name], args, "command_exit")
+		validateToolData(t, all[name], res.Data)
+	}
+	res := expectError(t, context.Background(), all["run_command"], `{"argv":["/nonexistent_bin_xyz"]}`, "exec_failed")
+	if res.Data != nil {
+		validateToolData(t, all["run_command"], res.Data)
+	}
 }

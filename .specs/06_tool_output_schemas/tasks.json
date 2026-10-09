@@ -323,7 +323,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestConformance' passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,

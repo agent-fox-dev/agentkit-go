@@ -1106,7 +1106,8 @@ func (f *fileTools) findFiles() core.Tool {
 				return core.ErrResult("path_not_allowed", err.Error())
 			}
 			limit := clampLimit(a.Limit, FindResultDefault, FindResultCap)
-			var found []string
+			// Never nil: no match is "files": [], not null (06-REQ-4.5).
+			found := []string{}
 			truncated := false
 			err = Walk(ctx, f.ws, root, WalkOptions{Ignore: f.ig, IncludeHidden: true}, func(rel string, d fs.DirEntry) error {
 				if d.IsDir() {
