@@ -4,10 +4,9 @@
 // The catalog supplies exactly the metadata no provider API returns and no
 // pass-through can synthesize: wire API, base URL, context window, pricing,
 // reasoning support, modality support and compatibility profile. Every one of
-// those is load-bearing before the first byte is sent — the max_tokens clamp
-// (REQ-CAT-04), the budget gate (REQ-PROV-05) and the thinking clamp
-// (REQ-PROV-15) all read it — which is why "just pass the model string
-// through" is not an option (NFR-COMPAT-03, PRD Appendix A #11).
+// those is load-bearing before the first byte is sent — the max_tokens cap,
+// the cost of a turn and how thinking is encoded all read it — which is why
+// "just pass the model string through" is not an option.
 //
 // The catalog is NOT an allowlist. An id it does not list gets a usable
 // default descriptor (Lookup), so a model that ships after this snapshot works

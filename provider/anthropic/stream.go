@@ -271,8 +271,7 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 }
 
 // vertexAuthNote explains an authentication failure from the Vertex
-// deployment, and it is the second half of the same defect the ranked
-// selection in VertexSelectedBy fixes.
+// deployment.
 //
 // Vertex answers a missing credential with a Google JSON blob — "Request is
 // missing required authentication credential", CREDENTIALS_MISSING, a link to
@@ -280,7 +279,7 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 // nor the setting that routed the request to Google. Rendered under this
 // package's "anthropic:" prefix it reads as an Anthropic outage on a machine
 // whose ANTHROPIC_API_KEY is perfectly good, and nothing in it suggests
-// looking at ANTHROPIC_VERTEX_PROJECT_ID.
+// looking at CLAUDE_CODE_USE_VERTEX.
 func vertexAuthNote(status int, dep deployment, env Env) string {
 	if dep.source != SourceVertex || (status != http.StatusUnauthorized && status != http.StatusForbidden) {
 		return ""
@@ -752,9 +751,9 @@ func applyThinking(r *request, m *core.Model, effort core.Effort) {
 // applyBudget is the budget_tokens arm of applyThinking.
 func applyBudget(r *request, n int) {
 	// Anthropic rejects a thinking budget that is not strictly below
-	// max_tokens. The budget is the value we may lower; max_tokens has
-	// already been clamped against the context window (REQ-CAT-04) and
-	// lowering it again would silently truncate the answer instead.
+	// max_tokens. The budget is the value we may lower; max_tokens is the
+	// caller's bound and lowering it would silently truncate the answer
+	// instead.
 	if n >= r.MaxTokens {
 		n = r.MaxTokens - 1
 	}

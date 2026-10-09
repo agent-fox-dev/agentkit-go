@@ -224,8 +224,8 @@ func NormalizeToolCallID(s string) string {
 // ------------------------------------------------------------ request building
 
 // BuildRequest converts a canonical request into the Anthropic wire body. It
-// is exported so the differential harness and the golden tests can capture the
-// exact bytes without a network call or an API key (NFR-TEST-06.2).
+// is exported so the golden tests can capture the exact bytes without a
+// network call or an API key; BuildRequestJSON returns them as sent.
 //
 // It runs the shared repair pass first (REQ-PROV-11) — that is part of the
 // provider contract, not the loop's, because the loop is not running when a
@@ -325,14 +325,9 @@ func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRet
 		out.Messages = []message{}
 	}
 
-	// REQ-CAT-04: the caller's max_tokens is an UPPER BOUND, not the value
-	// sent. Input and output share one window here, so a request whose
-	// max_tokens no longer fits is rejected — first seen deep into a long
-	// session. The loop no longer sends a context estimate
-	// (docs/errata/09_repository_cut.md), so the clamp is to the model's cap
-	// alone. This
-	// wire requires the field, so an absent request value falls back to the
-	// model's own cap (clamped the same way) and never to 0.
+	// The caller's max_tokens is an UPPER BOUND, capped at the model's output
+	// cap from its catalog row. The wire requires the field, so an absent
+	// request value falls back to that cap and never to 0.
 	requested := 0
 	if req.MaxTokens != nil {
 		requested = *req.MaxTokens

@@ -777,8 +777,6 @@ func captureRequest(t *testing.T, m *core.Model, req core.Request) map[string]an
 	return got
 }
 
-func strp(s string) *string { return &s }
-
 // TestAnEffortStyleRowSendsAdaptiveThinkingAndEffort pins the current
 // generation of the control. A catalog row whose wire values are effort
 // tokens ("high") describes a model that takes output_config.effort with

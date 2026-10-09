@@ -239,7 +239,8 @@ func TestASelectedVertexDeploymentWithNoProjectFailsSayingSo(t *testing.T) {
 			return nil, io.EOF
 		}),
 	}}
-	msg := anthropic.Provider(anthropic.Options{Getenv: none}).
+	msg := anthropic.Provider(anthropic.Options{Getenv: none,
+		VertexTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken})}).
 		Stream(context.Background(), testModel(), req, core.ProviderStreamOptions{}).Result()
 	if reached {
 		t.Fatal("a misconfigured deployment must not send a request")
@@ -331,7 +332,8 @@ func TestAVertexAuthFailureNamesTheDeploymentAndWhatSelectedIt(t *testing.T) {
 			}),
 		},
 	}
-	msg := anthropic.Provider(anthropic.Options{Getenv: func(string) string { return "" }}).
+	msg := anthropic.Provider(anthropic.Options{Getenv: func(string) string { return "" },
+		VertexTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken})}).
 		Stream(context.Background(), testModel(), req, core.ProviderStreamOptions{}).Result()
 	if msg == nil || msg.ErrorMessage == "" {
 		t.Fatalf("result = %+v, want an error message", msg)
@@ -361,7 +363,8 @@ func TestTheDirectDeploymentAddsNoVertexNoteToItsOwnFailures(t *testing.T) {
 			}),
 		},
 	}
-	msg := anthropic.Provider(anthropic.Options{Getenv: func(string) string { return "" }}).
+	msg := anthropic.Provider(anthropic.Options{Getenv: func(string) string { return "" },
+		VertexTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken})}).
 		Stream(context.Background(), testModel(), req, core.ProviderStreamOptions{}).Result()
 	if msg == nil {
 		t.Fatal("want a result")
@@ -452,7 +455,8 @@ func TestAVertex401NamesTheCredentialsItWithheld(t *testing.T) {
 	env := map[string]string{"CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "proj-1",
 		"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x"}
 	msg, _, _ := run(t, testModel(), core.Request{Options: core.RequestOptions{Env: env}},
-		anthropic.Options{Getenv: func(string) string { return "" }}, 401, `{}`)
+		anthropic.Options{Getenv: func(string) string { return "" },
+			VertexTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken})}, 401, `{}`)
 	if !strings.Contains(msg.ErrorMessage, "ANTHROPIC_OAUTH_TOKEN") ||
 		!strings.Contains(msg.ErrorMessage, "never sent to a Google endpoint") {
 		t.Fatalf("error = %q, want it to name ANTHROPIC_OAUTH_TOKEN as withheld", msg.ErrorMessage)

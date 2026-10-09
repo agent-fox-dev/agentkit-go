@@ -24,15 +24,14 @@ type Request struct {
 	// Tools is []ToolWire, not []Tool. That is the enforcement of REQ-TOOL-01.
 	Tools         []ToolWire
 	ToolChoice    ToolChoice
-	MaxTokens     *int     // upper bound; clamped by REQ-CAT-04
+	MaxTokens     *int     // upper bound; capped at the model's output cap
 	Temperature   *float64 // REQ-PROV-16 presence
 	TopP          *float64
 	StopSequences []string
 	// Effort is the thinking effort; empty sends none.
 	Effort Effort
-	// EstContextTokens is the REQ-GO-15 anchored estimate, supplied by the
-	// loop. Providers never re-walk the transcript to estimate; without this
-	// field the REQ-CAT-04 clamp is either wrong or duplicated per provider.
+	// EstContextTokens is no longer supplied by the loop or read by the
+	// Anthropic provider (docs/errata/09_repository_cut.md).
 	EstContextTokens int
 	Options          RequestOptions
 	// Deferred opts this call into background submission (REQ-PROV-19). It is
@@ -151,10 +150,10 @@ type Model struct {
 	Cost          Cost               `json:"cost"`
 	Input         []string           `json:"input"` // modalities: "text","image"
 	Reasoning     bool               `json:"reasoning"`
-	// ThinkingLevelMap distinguishes present-null ("explicitly unsupported")
-	// from absent. Both mean unsupported for clamping; the distinction is
-	// catalog-authoring metadata for the REQ-CAT-06 diff, not a runtime
-	// semantic, and REQ-PROV-15 should say so.
+	// ThinkingLevelMap is the catalog row's wire value per level: a token
+	// budget or an effort name. Present-null ("explicitly unsupported") and
+	// absent both mean the level is not sent; the distinction is
+	// catalog-authoring metadata for the REQ-CAT-06 diff.
 	ThinkingLevelMap map[ThinkingLevel]*string `json:"thinking_level_map,omitzero"`
 	Cloned           bool                      `json:"-"` // REQ-CAT-03
 	ClonedFrom       string                    `json:"-"`

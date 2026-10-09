@@ -30,7 +30,7 @@ Imports between first-party packages, taken from the source (tests excluded;
 | `jsonx`, `wire` | nothing first-party |
 | `catalog`, `guard` | `core` |
 | `provider` | `core`, `schema`, `wire` |
-| `provider/anthropic` | `core`, `catalog`, `provider` |
+| `provider/anthropic` | `core`, `provider`, `wire`; plus `github.com/anthropics/anthropic-sdk-go`, `golang.org/x/oauth2` (Vertex) and `github.com/aws/aws-sdk-go-v2` (Bedrock) |
 | `provider/faux` | `core` |
 | `tools` | `core`, `outline`, `schema`; plus `github.com/bmatcuk/doublestar/v4` |
 | `codesearch` (nested module) | `tools`, `core`, `schema`, `outline`; plus `github.com/sourcegraph/zoekt` (confined to this module) |
@@ -84,8 +84,9 @@ Agent.Run / RunMessage / Stream
          2. build Request from history + tools + system prompt
          3. Middleware chain (last registered is outermost) ── Axis 1
          4. ProviderClient.Stream  ── provider/anthropic repairs the
-            transcript, encodes the wire body, resolves auth + headers,
-            sends via the retrying transport, decodes SSE into core events
+            transcript, encodes the wire body itself (exact bytes), resolves
+            the deployment and SDK client (anthropic.Resolve), sends through
+            the SDK, and decodes the SDK's stream events into core events
          5. assistant message recorded in history, events emitted
          6. tool_use blocks present? (never the stop reason decides)
               └─ batch.go: prepare (sequential: policy, BeforeToolCall,
@@ -304,10 +305,10 @@ The `tools` package provides in-memory, workspace-confined symbol lookup and ref
 ## Testing layout
 
 - Unit and property tests sit beside their package.
-- `testdata/golden/` holds the Anthropic request-body golden. It pins
-  regression, not vendor truth.
+- `testdata/golden/` holds the Anthropic request-body golden: the exact bytes
+  sent, unindented. It pins regression, not vendor truth.
 - `internal/policy` holds the cross-target (cgo off) and host (cgo on) build
-  gates.
+  gates and the direct-dependency allowlist.
 - `provider/faux` scripts a model offline; the root tests and the examples run
   against it.
 

@@ -105,7 +105,8 @@ const (
 	EffortMax    Effort = "max"
 )
 
-// ThinkingLevel is REQ-PROV-15's request parameter and assistant provenance.
+// ThinkingLevel keys a catalog row's thinking level map. Requests carry an
+// Effort instead.
 type ThinkingLevel string
 
 const (
@@ -119,11 +120,8 @@ const (
 	ThinkingMax     ThinkingLevel = "max"
 )
 
-// ThinkingLevelOrder is the total order ClampThinkingLevel searches (upward
-// first, then downward). Exported so the catalog does not re-derive it.
-// `off` is excluded from a DOWNWARD clamp target unless it was explicitly
-// requested: clamping a request for some thinking down to no thinking is a
-// behaviour change, not a clamp.
+// ThinkingLevelOrder lists every level a catalog row may key, in order; the
+// catalog rejects a row naming any other.
 var ThinkingLevelOrder = []ThinkingLevel{
 	ThinkingOff, ThinkingMinimal, ThinkingLow, ThinkingMedium,
 	ThinkingHigh, ThinkingXHigh, ThinkingMax,
