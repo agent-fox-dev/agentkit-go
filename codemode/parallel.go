@@ -94,6 +94,10 @@ func (r *runner) parallel(_ *starlark.Thread, b *starlark.Builtin, args starlark
 			return nil, argErrorf("parallel: call %d: %v", i, err)
 		}
 	}
+	// The whole list is checked against the budget before any batch runs.
+	if err := r.takeCalls(len(blocks)); err != nil {
+		return nil, err
+	}
 	out := make([]starlark.Value, 0, len(blocks))
 	for start := 0; start < len(blocks); start += r.opts.MaxConcurrentCalls {
 		end := min(start+r.opts.MaxConcurrentCalls, len(blocks))

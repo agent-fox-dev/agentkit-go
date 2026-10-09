@@ -193,7 +193,7 @@ returns these defaults; a zero field takes its default.
 | `Guidelines` | built-in code-mode guidance | The tool's `PromptGuidelines`. |
 | `MaxTimeout` | 30 s | Wall time per script. Past it: `timeout`. |
 | `MaxSteps` | 100 000 | Starlark execution steps per script. Past it: `step_limit_exceeded`. |
-| `MaxCalls` | 50 | Tool calls per script, direct and in `parallel` together. Past it: `call_limit_exceeded`, and the excess calls are not made. |
+| `MaxCalls` | 50 | Tool calls per script, direct and in `parallel` together. A call, or a whole `parallel(...)`, that would go past it is not made, and the script stops with `call_limit_exceeded`. |
 | `MaxConcurrentCalls` | 8 | Calls one `parallel(...)` has in flight at once. |
 | `MaxOutputBytes` | 102 400 (100 KB) | Printed output plus the return value. Past it: `output_limit_exceeded`, with the head and tail kept. |
 | `SpillDir` | `agentkit-codemode` under `os.TempDir()` | Where the complete output of a truncated script is written. |

@@ -60,3 +60,25 @@ failure, `fail("now")`, instead.
   exercises the timeout.
 - Return values are JSON numbers: `Data["return_value"]` holds `int64` for an
   int, not `int`.
+
+## Rules and limits the spec does not state
+
+- **Bindable names.** A bound tool's name must be an ASCII Starlark
+  identifier, and must not be a Starlark builtin or one of `parallel`,
+  `call`, `is_error`, `main` and `result`. A script could not call it
+  otherwise. An MCP tool whose name contains `-` cannot be bound
+  (`checkBindable`, `codemode/binding.go`; test:
+  `TestNewRefusesUnbindableNames`). A parameter name that is not an
+  identifier is still declared as written, so its signature is not valid
+  Starlark.
+- **Values that contain themselves.** A list or dict that contains itself is
+  refused as a tool argument or return value
+  (`TestCyclicValuesAreRefused`). Converting one would recurse in Go,
+  outside the step budget.
+- **A terminate vote drops its batch from the ledger.** When an interceptor
+  votes to terminate, `core.CallNested` returns `ErrTerminated` and no
+  results. Calls in that batch that ran before the vote are therefore not
+  in `calls_completed`. They are in the agent's audit trail.
+- **A script that finishes as its deadline passes** can be reported as
+  `timeout` or `aborted`: the context watcher may stop the run between the
+  script's last step and its result.

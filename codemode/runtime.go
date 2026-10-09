@@ -104,19 +104,15 @@ func (r *runner) run(script string) core.ToolResult {
 		return r.failure("script_failed", "the return value: "+err.Error(), false)
 	}
 	// The return value counts towards MaxOutputBytes like printed output.
-	if ret != starlark.None {
-		r.write(returnLine(ret) + "\n")
+	printed := r.printed()
+	if line := returnLine(ret); line != "" {
+		r.write(line + "\n")
 		if h := r.halt(); h != nil {
 			return r.failure(h.code, h.detail, h.terminate)
 		}
 	}
-	printed := r.printed()
 	res := core.OKResult(map[string]any{"output": printed, "return_value": retGo, "calls_completed": r.ledgerData()})
-	// The output window already ends with the return value's line.
-	res.Text = printed
-	if res.Text == "" {
-		res.Text = FormatResultText("", nil)
-	}
+	res.Text = FormatResultText(printed, ret)
 	return res
 }
 

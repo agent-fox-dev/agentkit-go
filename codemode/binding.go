@@ -100,6 +100,12 @@ func (r *runner) dispatch(blocks ...core.ToolUseBlock) ([]core.ToolResult, error
 		return nil, err
 	}
 	res, err := core.CallNested(r.ctx, blocks...)
+	// Calls that ran are recorded whatever ends the script next: their side
+	// effects stand. The dispatcher reports a cancellation as results, so a
+	// batch cut short still has a result for every call.
+	if len(res) == len(blocks) {
+		r.record(blocks, res)
+	}
 	switch {
 	case errors.Is(err, core.ErrTerminated):
 		return nil, r.stop(&halt{code: "terminated", terminate: true,
@@ -109,7 +115,6 @@ func (r *runner) dispatch(blocks ...core.ToolUseBlock) ([]core.ToolResult, error
 	case err != nil:
 		return nil, err
 	}
-	r.record(blocks, res)
 	return res, nil
 }
 

@@ -3,7 +3,6 @@ package codemode_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
@@ -107,7 +106,6 @@ func TestBindingWithoutDispatcherFails(t *testing.T) {
 	if res.OK || !strings.Contains(res.Detail, core.ErrNoNestedCaller.Error()) {
 		t.Fatalf("result = %+v", res)
 	}
-	_ = errors.Is
 }
 
 // Names a script cannot call — not an identifier, a keyword, or a name the

@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"unicode/utf8"
 
 	"github.com/agentfox/agentkit-go/core"
@@ -61,11 +62,9 @@ func New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error) {
 		}
 		seen[t.Name] = true
 	}
-	for _, t := range core.ReachableTools(tools) {
-		if t.Name == opts.Name || t.OutputSchema == outputSchema {
-			return core.Tool{}, BuildInfo{}, fmt.Errorf(
-				"codemode: cannot bind code_mode tool inside code_mode (%q is a code-mode tool)", t.Name)
-		}
+	if t, found := findCodeMode(tools, opts.Name, nil); found {
+		return core.Tool{}, BuildInfo{}, fmt.Errorf(
+			"codemode: cannot bind code_mode tool inside code_mode (%q is a code-mode tool)", t.Name)
 	}
 
 	desc := opts.Description
@@ -97,4 +96,24 @@ func New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error) {
 		DescriptionChars: utf8.RuneCountInString(tool.Description),
 		BoundToolsCount:  len(tools),
 	}, nil
+}
+
+// findCodeMode looks for a code-mode tool — named name, or built by New
+// under any name — anywhere in tools' reachable hierarchy. It walks every
+// path rather than core.ReachableTools' closure, which keeps one tool per
+// name and could hide a code-mode tool behind a same-named plain one. path
+// stops a cycle, which the agent refuses later anyway.
+func findCodeMode(tools []core.Tool, name string, path []string) (core.Tool, bool) {
+	for _, t := range tools {
+		if t.Name == name || t.OutputSchema == outputSchema {
+			return t, true
+		}
+		if slices.Contains(path, t.Name) {
+			continue
+		}
+		if found, ok := findCodeMode(t.ReachableTools, name, append(path[:len(path):len(path)], t.Name)); ok {
+			return found, true
+		}
+	}
+	return core.Tool{}, false
 }

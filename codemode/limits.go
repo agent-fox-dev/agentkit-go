@@ -37,8 +37,9 @@ func (r *runner) ctxHalt() *halt {
 	return &halt{code: "aborted", detail: "Operation aborted"}
 }
 
-// takeCalls reserves n nested calls from MaxCalls, or stops the script
-// before any of them is made.
+// takeCalls checks that n more nested calls fit in MaxCalls, counting the
+// calls already made, and stops the script before any of them is made if
+// they do not.
 func (r *runner) takeCalls(n int) error {
 	if len(r.ledger)+n > r.opts.MaxCalls {
 		return r.stop(r.callHalt())

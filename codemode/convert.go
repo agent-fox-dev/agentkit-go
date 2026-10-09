@@ -82,8 +82,20 @@ func fromJSON(v any) (starlark.Value, error) {
 
 // toGo converts a Starlark value into the Go value JSON encodes it as: the
 // arguments a script passes to a tool, and the value it returns. A value JSON
-// cannot carry — a function, a set — is an error naming its type.
-func toGo(v starlark.Value) (any, error) {
+// cannot carry — a function, a set, a list or dict that contains itself — is
+// an error. The cycle check matters: the conversion recurses in Go, outside
+// the script's step budget, and a Go stack overflow cannot be recovered.
+func toGo(v starlark.Value) (any, error) { return toGoIn(v, map[starlark.Value]bool{}) }
+
+func toGoIn(v starlark.Value, open map[starlark.Value]bool) (any, error) {
+	switch v.(type) {
+	case *starlark.List, *starlark.Dict:
+		if open[v] {
+			return nil, fmt.Errorf("cannot pass a %s that contains itself", v.Type())
+		}
+		open[v] = true
+		defer delete(open, v)
+	}
 	switch x := v.(type) {
 	case starlark.NoneType:
 		return nil, nil
@@ -103,9 +115,9 @@ func toGo(v starlark.Value) (any, error) {
 		}
 		return f, nil
 	case *starlark.List:
-		return seqToGo(x)
+		return seqToGo(x, open)
 	case starlark.Tuple:
-		return seqToGo(x)
+		return seqToGo(x, open)
 	case *starlark.Dict:
 		out := make(map[string]any, x.Len())
 		for _, item := range x.Items() {
@@ -113,7 +125,7 @@ func toGo(v starlark.Value) (any, error) {
 			if !ok {
 				return nil, fmt.Errorf("dict keys must be strings, got %s", item[0].Type())
 			}
-			gv, err := toGo(item[1])
+			gv, err := toGoIn(item[1], open)
 			if err != nil {
 				return nil, err
 			}
@@ -129,10 +141,10 @@ func toGo(v starlark.Value) (any, error) {
 // goValuer is a codemode value that knows its own Go form (ToolError).
 type goValuer interface{ goValue() any }
 
-func seqToGo(it starlark.Indexable) ([]any, error) {
+func seqToGo(it starlark.Indexable, open map[starlark.Value]bool) ([]any, error) {
 	out := make([]any, it.Len())
 	for i := range out {
-		gv, err := toGo(it.Index(i))
+		gv, err := toGoIn(it.Index(i), open)
 		if err != nil {
 			return nil, err
 		}

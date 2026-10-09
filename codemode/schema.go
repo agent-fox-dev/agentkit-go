@@ -130,5 +130,8 @@ func shape(s *schema.Schema, depth int) string {
 	return starlarkType(s)
 }
 
-// oneLine folds a description onto one line for a signature's docstring.
-func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+// oneLine folds a description onto one line for a signature's docstring,
+// escaping a triple quote that would end the docstring early.
+func oneLine(s string) string {
+	return strings.ReplaceAll(strings.Join(strings.Fields(s), " "), `"""`, `\"\"\"`)
+}

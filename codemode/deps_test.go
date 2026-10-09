@@ -19,7 +19,7 @@ func TestDepsDefaultsAndIsolation_TS08_44(t *testing.T) {
 	}
 	out, err := exec.Command("go", "list", "-deps", "github.com/agentfox/agentkit-go/codemode").Output()
 	if err != nil {
-		t.Skipf("go list: %v", err)
+		t.Fatalf("go list: %v", err)
 	}
 	for _, pkg := range strings.Fields(string(out)) {
 		if strings.HasPrefix(pkg, "go.starlark.net/") {
