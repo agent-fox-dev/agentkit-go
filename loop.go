@@ -9,6 +9,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/prompt"
+	"github.com/agent-fox-dev/agentkit-go/provider"
 )
 
 // maxTokensToolText is REQ-LOOP-10's fixed result text, pinned byte-for-byte
@@ -44,8 +45,15 @@ func (a *Agent) Stream(ctx context.Context, prompt string) (*core.EventStream, e
 	}
 	m := core.UserMessage{Content: core.Content{core.TextBlock{Text: prompt}}, Timestamp: time.Now()}
 	s := core.NewEventStream(core.StreamOptions{})
+	// The timeout's cause is how the run tells its own deadline from the
+	// caller's cancellation.
+	cancel := context.CancelFunc(func() {})
+	if a.cfg.Timeout > 0 {
+		ctx, cancel = context.WithTimeoutCause(ctx, a.cfg.Timeout, errRunTimeout)
+	}
 	go func() {
 		defer a.releaseSlot()
+		defer cancel()
 		res, err := a.runLoop(ctx, s, m)
 		s.End(core.StreamResult{Message: lastAssistant(res.Messages), Result: &res, Err: err})
 	}()
@@ -137,6 +145,16 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial core.U
 	s.Push(core.AgentStartEvent{Provider: a.model.Provider, API: a.model.API, Model: a.model.ID})
 
 	for {
+		// The cost bound is checked BEFORE the request, so a run never
+		// spends past it on a call it already knew it could not afford.
+		if limit := a.cfg.MaxCostUSD; limit > 0 {
+			if spent := a.runUsageSnapshot().CostUSD; spent >= limit {
+				runReason = core.RunStopBudgetExceeded
+				runErr = fmt.Errorf("%w: the run has cost $%.4f of its $%.4f budget", core.ErrBudgetExceeded, spent, limit)
+				break
+			}
+		}
+
 		// The request's view: the transcript, with old tool results elided
 		// when it is large, and refused outright when even that cannot fit.
 		// Sending a request the model cannot hold only buys an HTTP 400.
@@ -149,7 +167,7 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial core.U
 		s.Push(core.TurnStartEvent{TurnIndex: turnCount})
 		assistant := a.callModel(ctx, s, view, report)
 		record(assistant)
-		a.addUsage(assistant.Usage)
+		a.addUsage(a.priced(assistant.Usage))
 
 		// Only Error and Aborted short-circuit, and they do so BEFORE tool
 		// extraction. Every other reason is treated identically for control
@@ -158,7 +176,7 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial core.U
 			turnCount++
 			s.Push(core.TurnEndEvent{TurnIndex: turnCount - 1, Message: assistant, ToolResults: []core.ToolResultMessage{}, Usage: assistant.Usage})
 			if assistant.StopReason == core.StopReasonAborted {
-				runReason, runErr = core.RunStopAborted, abortError(ctx)
+				runReason, runErr = a.contextStop(ctx)
 			} else {
 				runReason = core.RunStopError
 				runErr = errors.New(assistant.ErrorMessage)
@@ -210,11 +228,20 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial core.U
 		// HERE, at the turn boundary, with the results in the transcript.
 		// Going around again would issue a request on a dead context.
 		if ctx.Err() != nil {
-			runReason, runErr = core.RunStopAborted, abortError(ctx)
+			runReason, runErr = a.contextStop(ctx)
 			break
 		}
 
 		if len(toolCalls) == 0 {
+			break
+		}
+
+		// The turn bound is checked only when the run would go on, and after
+		// the turn's results are in the transcript, so it never leaves a
+		// tool_use unanswered.
+		if a.cfg.MaxTurns > 0 && turnCount >= a.cfg.MaxTurns {
+			runReason = core.RunStopMaxTurns
+			runErr = fmt.Errorf("%w: %d turns", core.ErrMaxTurns, turnCount)
 			break
 		}
 	}
@@ -324,12 +351,30 @@ func pruneToolResults(msgs core.Messages, keep, anchor int) (out core.Messages, 
 	return out, savedChars / charsPerToken
 }
 
-// abortError says why a run stopped on its context.
-func abortError(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
+// errRunTimeout is the cause of a run context that outlived Config.Timeout.
+var errRunTimeout = errors.New("agentkit: run timeout")
+
+// contextStop says why a run stopped on its context: its own Timeout, or a
+// cancellation from outside — the caller's cancel or deadline, which the
+// error wraps beside ErrAborted. With the context still live (a provider
+// that ended a stream as aborted on its own), it is ErrAborted alone.
+func (a *Agent) contextStop(ctx context.Context) (core.RunStopReason, error) {
+	if context.Cause(ctx) == errRunTimeout {
+		return core.RunStopTimeout, fmt.Errorf("agentkit: the run exceeded its %s timeout: %w", a.cfg.Timeout, context.DeadlineExceeded)
 	}
-	return core.ErrAborted
+	if err := ctx.Err(); err != nil {
+		return core.RunStopAborted, fmt.Errorf("%w: %w", core.ErrAborted, err)
+	}
+	return core.RunStopAborted, core.ErrAborted
+}
+
+// priced returns u with its cost, priced at the model's catalog row when the
+// provider did not price it (a test double, or a custom provider).
+func (a *Agent) priced(u core.Usage) core.Usage {
+	if !u.Has(core.UsageCostUSD) {
+		u.SetCost(provider.ComputeCost(&a.model, u))
+	}
+	return u
 }
 
 // errorMessage is the terminal assistant message of a turn that failed

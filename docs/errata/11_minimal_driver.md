@@ -141,3 +141,26 @@ calls the reachable tools through `core.CallNested`; and an unreachable
 tool is the `unknown_tool` result (`wrapper cannot call "forbiddenTool"`),
 not a result saying "unreachable". A terminate vote counts beside `Block`,
 as for a direct call (TS-11-37's interceptor blocks and votes).
+
+## 11-REQ-10: bounds, and what the driver adds to `core`
+
+- **`core.RunStopTimeout`** is new (`core/stopreason.go`): `core` had no
+  reason for a run that outlived its deadline. The run context carries
+  `errRunTimeout` as its cause (`context.WithTimeoutCause`), which is how
+  the driver tells its own `Timeout` from a caller's deadline; the error
+  wraps `context.DeadlineExceeded`.
+- **An aborted run's error wraps both** `core.ErrAborted` and the context's
+  error (`context.Canceled` or `context.DeadlineExceeded`), so a caller can
+  test either.
+- **Pricing.** `MaxCostUSD` reads the run's `Usage.CostUSD`. A provider that
+  does not price its usage (`provider/faux`, a custom one) is priced by the
+  driver at the catalog row (`provider.ComputeCost`); the Anthropic
+  provider already prices its own. An id the catalog does not list has no
+  price, so the budget never trips for it — TS-11-40 and TS-11-49 use the
+  listed `claude-opus-5-5` rather than the spec's `claude-3-5-sonnet`.
+- **Panics are reported.** A panicking handler was already an error result;
+  it is now also a `core.ErrorEvent`. The result's text is
+  `tool "NAME" panicked: …`, so TS-11-42 checks for
+  `panicked: unexpected explosion` rather than `panic: unexpected explosion`.
+- TS-11-43 passed before this task: `core.EventStream` never blocks its
+  producer.

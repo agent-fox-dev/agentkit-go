@@ -194,7 +194,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 			// A tool that reaches other tools runs with a NestedCaller bound
 			// to this call on its context.
 			hctx, nested := env.withCaller(ctx, c, tool)
-			out := invokeHandler(hctx, tool, prepared)
+			out := invokeHandler(hctx, report, tool, prepared)
 			// An interceptor that voted to terminate during one of this
 			// wrapper's nested calls ends the run, whatever the wrapper
 			// returned (07-REQ-5.3). AfterToolCall below may still override.
@@ -319,12 +319,14 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 
 // invokeHandler calls the tool, converting every failure mode into a result.
 // No tool outcome is ever propagated to the caller as a Go error (REQ-GO-04).
-func invokeHandler(ctx context.Context, t core.Tool, p core.PreparedArguments) (res core.ToolResult) {
+func invokeHandler(ctx context.Context, report func(error), t core.Tool, p core.PreparedArguments) (res core.ToolResult) {
 	defer func() {
 		if r := recover(); r != nil {
 			// A handler panic becomes a tool result and the loop continues
-			// (NFR-REL-02.2). It must never crash the agent process.
+			// (NFR-REL-02.2). It must never crash the agent process, and it
+			// is reported, so it is not mistaken for an ordinary failure.
 			res = core.ErrResult("panic", fmt.Sprintf("tool %q panicked: %v", t.Name, r))
+			report(fmt.Errorf("agentkit: panic in tool %q: %v", t.Name, r))
 		}
 	}()
 

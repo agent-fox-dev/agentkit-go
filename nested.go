@@ -229,7 +229,7 @@ func (n *nestedCaller) prepare(ctx context.Context, batch []core.ToolUseBlock, i
 func (n *nestedCaller) execute(ctx context.Context, call core.ToolUseBlock, tool core.Tool, prepared core.PreparedArguments) core.ToolResult {
 	start := time.Now()
 	hctx, child := n.env.withCaller(ctx, call, tool)
-	out := invokeHandler(hctx, tool, prepared)
+	out := invokeHandler(hctx, n.env.report, tool, prepared)
 	if child != nil {
 		if child.terminated.Load() {
 			// A wrapper nested in this one was terminated; so is this one.

@@ -1083,3 +1083,159 @@ func TestAnswerEndsTheRun_TS11_25(t *testing.T) {
 		t.Fatalf("run = %q, %v / %v; want end_turn and no error", res.StopReason, res.Error, err)
 	}
 }
+
+// ------------------------------------------------------------------ 11-REQ-10
+
+// TS-11-38: Config.Timeout ends the run with RunStopTimeout.
+func TestTimeoutEndsTheRun_TS11_38(t *testing.T) {
+	fp := faux.New(faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("slow turn")}, StopReason: core.StopReasonStop, Delay: 2 * time.Second})
+	a, err := New(Config{Provider: fp, Model: driverModel, Timeout: 20 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	res, err := a.Run(context.Background(), "test timeout")
+	if res.StopReason != core.RunStopTimeout || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("run = %q, %v; want timeout wrapping DeadlineExceeded", res.StopReason, err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("the run outlived its timeout")
+	}
+}
+
+// TS-11-39: MaxTurns ends a run that would go on, with its results in the
+// transcript.
+func TestMaxTurnsEndsTheRun_TS11_39(t *testing.T) {
+	fp := faux.New(
+		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "toolA", "{}")),
+		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c2", "toolA", "{}")),
+		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c3", "toolA", "{}")),
+	)
+	a, err := New(Config{Provider: fp, Model: driverModel, MaxTurns: 2, Tools: []core.Tool{echoTool("toolA", nil)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "test max turns")
+	if res.StopReason != core.RunStopMaxTurns || !errors.Is(res.Error, core.ErrMaxTurns) || !errors.Is(err, core.ErrMaxTurns) {
+		t.Fatalf("run = %q, %v; want max_turns wrapping ErrMaxTurns", res.StopReason, res.Error)
+	}
+	if res.TurnCount != 2 || fp.Calls() != 2 {
+		t.Fatalf("%d turns, %d requests; want 2 and 2", res.TurnCount, fp.Calls())
+	}
+	if _, ok := res.Messages[len(res.Messages)-1].(core.ToolResultMessage); !ok {
+		t.Fatal("the run stopped before the last turn's results were recorded")
+	}
+}
+
+// TS-11-40: MaxCostUSD stops the run before a request once the run's cost
+// reaches it.
+func TestBudgetStopsBeforeTheRequest_TS11_40(t *testing.T) {
+	fp := faux.New(
+		faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall("c1", "toolA", "{}")}, StopReason: core.StopReasonToolUse,
+			Usage: core.Usage{InputTokens: 100_000, OutputTokens: 100_000}},
+		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("t2")),
+	)
+	a, err := New(Config{Provider: fp, Model: "claude-opus-5-5", MaxCostUSD: 0.05, Tools: []core.Tool{echoTool("toolA", nil)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "test budget")
+	if res.StopReason != core.RunStopBudgetExceeded || !errors.Is(res.Error, core.ErrBudgetExceeded) || !errors.Is(err, core.ErrBudgetExceeded) {
+		t.Fatalf("run = %q, %v; want budget_exceeded wrapping ErrBudgetExceeded", res.StopReason, res.Error)
+	}
+	if fp.Calls() != 1 || res.Usage.CostUSD < 0.05 {
+		t.Fatalf("%d requests at $%.4f; want the second request not sent", fp.Calls(), res.Usage.CostUSD)
+	}
+}
+
+// TS-11-41: a caller cancelling between turns aborts the run with
+// ErrAborted.
+func TestExternalCancelAbortsTheRun_TS11_41(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	tool := core.Tool{Name: "cancelTool", InputSchema: schema.Object(),
+		Handler: func(context.Context, json.RawMessage) (json.RawMessage, error) {
+			cancel()
+			return json.RawMessage(`{}`), nil
+		}}
+	fp := faux.New(
+		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "cancelTool", "{}")),
+		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("should not reach")),
+	)
+	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{tool}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(ctx, "test abort")
+	if res.StopReason != core.RunStopAborted || !errors.Is(res.Error, core.ErrAborted) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("run = %q, %v; want aborted wrapping ErrAborted and the context's error", res.StopReason, res.Error)
+	}
+	if fp.Calls() != 1 {
+		t.Fatalf("%d requests after the cancel, want 1", fp.Calls())
+	}
+}
+
+// TS-11-42: a panicking handler becomes an error result, the run goes on,
+// and the panic is reported on the stream.
+func TestHandlerPanicIsContained_TS11_42(t *testing.T) {
+	tool := core.Tool{Name: "panickyTool", InputSchema: schema.Object(),
+		Handler: func(context.Context, json.RawMessage) (json.RawMessage, error) { panic("unexpected explosion") }}
+	fp := faux.New(
+		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "panickyTool", "{}")),
+		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("recovered")),
+	)
+	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{tool}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := a.Stream(context.Background(), "trigger panic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reported []string
+	for e := range st.Events() {
+		if ev, ok := e.(core.ErrorEvent); ok {
+			reported = append(reported, ev.Message)
+		}
+	}
+	res, err := st.RunResult()
+	if err != nil || res.StopReason != core.RunStopEndTurn {
+		t.Fatalf("run = %q, %v; a panicking handler must not end the run", res.StopReason, err)
+	}
+	tr := findToolResult(t, res.Messages, "c1")
+	if !tr.IsError || !strings.Contains(tr.Content.Text(), "panicked: unexpected explosion") {
+		t.Fatalf("result = %q, want an error describing the panic", tr.Content.Text())
+	}
+	if len(reported) != 1 || !strings.Contains(reported[0], "unexpected explosion") {
+		t.Fatalf("error events = %v, want the panic reported once", reported)
+	}
+}
+
+// TS-11-43: a consumer that never reads the stream does not hold up the
+// run.
+func TestUnreadStreamDoesNotBlockTheRun_TS11_43(t *testing.T) {
+	var turns []faux.Turn
+	for i := 0; i < 20; i++ {
+		turns = append(turns, faux.FauxAssistantMessage(core.StopReasonToolUse,
+			faux.FauxText(strings.Repeat("streamed text ", 200)), faux.FauxToolCall(fmt.Sprintf("c%d", i), "toolA", "{}")))
+	}
+	fp := faux.New(turns...)
+	fp.ChunkSize = 8
+	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{echoTool("toolA", nil)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := a.Stream(context.Background(), "test non-blocking")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan core.RunResult, 1)
+	go func() { res, _ := st.RunResult(); done <- res }() // never reads Events
+	select {
+	case res := <-done:
+		if res.TurnCount != 21 {
+			t.Fatalf("run ended after %d turns, want 21", res.TurnCount)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run blocked on a consumer that never read the stream")
+	}
+}

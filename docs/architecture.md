@@ -82,6 +82,7 @@ agentkit.New  ── validates the tool hierarchy, resolves Config.Policy,
 Agent.Run / Stream
   └─ runLoop (loop.go)
        per turn:
+         0. stop before the request if Config.MaxCostUSD is spent
          1. build Request: the assembled system prompt, the tools,
             Config.Prefix, then the transcript — with old tool results
             elided past Config.Prune's threshold, and refused when the
@@ -98,6 +99,8 @@ Agent.Run / Stream
                  finalize (After, metadata copy, one ToolResultMessage per
                  call); a tool with ReachableTools runs with a NestedCaller
                  on its context (nested.go, below)
+         5. stop on a terminate vote, a cancelled or expired context, no
+            tool calls, or Config.MaxTurns
   └─ terminal marker, AgentDoneEvent, RunResult
 ```
 
@@ -114,7 +117,8 @@ Errors the run survives (a panicking interceptor or provider) are
   starts.
 - **The batch finalize mutex is batch-scoped**, never the agent mutex.
 - **Panics in third-party code are contained** (tool handlers, interceptors,
-  argument preparation, the provider) and reported as `core.ErrorEvent`s.
+  argument preparation, the provider) and reported as `core.ErrorEvent`s. A
+  handler's panic is also its call's error result.
 - **A shell tool with no `Guard`** is refused by `New` with
   `ErrUnguardedExecute`; `guard.AllowAll` is the explicit opt-out. A shell tool
   reachable through a wrapper counts too:
