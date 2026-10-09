@@ -461,7 +461,7 @@
       "done_when": [
         "make check passes and all 5 smoke tests pass"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     }
   ]

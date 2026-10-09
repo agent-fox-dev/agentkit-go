@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/agentfox/agentkit-go/core"
+	"github.com/agentfox/agentkit-go/outline"
 )
 
 // renderReferencesText formats the human-readable result text for find_references.
@@ -22,6 +23,10 @@ func renderReferencesText(name string, res ReferenceResult) string {
 	var b strings.Builder
 	// 05-REQ-7.1: 'find_references <name>  (<backend>, <N> references in <M> files; <K> text matches)'
 	fmt.Fprintf(&b, "find_references %s  (%s, %d references in %d files; %d text matches)", name, res.Backend, len(res.Sites), len(files), textMatches)
+	// 05-REQ-2.4: a zero Target means no declaration matched the name.
+	if res.Target == (outline.Decl{}) {
+		b.WriteString(" [0 declarations matched]")
+	}
 	if res.Partial {
 		b.WriteString(" [partial]")
 	}

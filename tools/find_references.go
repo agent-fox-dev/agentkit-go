@@ -139,6 +139,8 @@ func (f *fileTools) findReferencesTool() core.Tool {
 				return fail(err)
 			}
 
+			// With no declaration the name is searched as text and the
+			// result's Target is the zero Decl (05-REQ-2.4).
 			target := outline.Decl{Name: a.Name}
 			backend := "text"
 			if candidates := resolveSymbolCandidates(f.getTable(), a.Name, kind, a.Path); len(candidates) > 0 {
@@ -154,6 +156,9 @@ func (f *fileTools) findReferencesTool() core.Tool {
 			refRes, err := executeReferenceSearch(ctx, f.ws, target, backend, opts, f.symOpts, rc)
 			if err != nil {
 				return fail(err)
+			}
+			if backend == "text" {
+				refRes.Target = outline.Decl{}
 			}
 			return renderReferencesResult(a.Name, refRes)
 		},
