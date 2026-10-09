@@ -264,7 +264,9 @@ func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRet
 	// REQ-CAT-04: the caller's max_tokens is an UPPER BOUND, not the value
 	// sent. Input and output share one window here, so a request whose
 	// max_tokens no longer fits is rejected — first seen deep into a long
-	// session. The context estimate is the loop's anchored one (P-30). This
+	// session. The loop no longer sends a context estimate
+	// (docs/errata/09_repository_cut.md), so the clamp is to the model's cap
+	// alone. This
 	// wire requires the field, so an absent request value falls back to the
 	// model's own cap (clamped the same way) and never to 0.
 	requested := 0

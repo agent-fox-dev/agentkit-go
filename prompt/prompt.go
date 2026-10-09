@@ -124,8 +124,8 @@ func guidelinesBlock(active []core.Tool, universal bool) string {
 	// REQ-TOOL-04e: emitted when the file-navigation tools are ABSENT and a
 	// shell is present. It cannot be a PromptGuidelines entry on any tool,
 	// because a per-tool field can only fire when its tool is there — which is
-	// the opposite of the condition. The shell is whichever of execute,
-	// run_command and powershell is active, and the guideline names it: a
+	// the opposite of the condition. The shell is whichever of execute and
+	// run_command is active, and the guideline names it: a
 	// guideline about `execute` given to a model that has `run_command` points
 	// at a tool it cannot call.
 	if shell := activeShell(active); shell != "" {

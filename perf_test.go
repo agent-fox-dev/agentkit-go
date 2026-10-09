@@ -12,20 +12,11 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
-// This file is NFR-PERF-09's acceptance mechanism.
-//
-// The requirement is unusually direct about why it exists: "a number with no
-// benchmark behind it cannot fail, and therefore does not constrain anything",
-// and "if the benchmarks are not going to be written, the honest move is to
-// delete the numbers rather than ship unenforceable ones."
-//
-// So each benchmark here is paired with a THRESHOLD assertion in
-// perf_budget_test.go. A Benchmark function alone does not fail CI — it prints
-// a number nobody reads — and a budget that cannot fail is decoration.
-//
-// The budget assertions live in a separate file behind `//go:build !race`,
-// because the race detector inflates every measurement by roughly an order of
-// magnitude and a threshold that survives it is too loose to catch anything.
+// These benchmarks are REPORTED, not budgeted. Wall-clock thresholds failed
+// under machine load (issue 92), so spec 09 removed the threshold tests that
+// once paired with them. A budget that has to hold is pinned as a count or a
+// structure instead: perf_wiring_test.go asserts that a steady-state request
+// serializes zero schemas.
 
 // benchAgent builds an agent whose provider returns instantly, so what is
 // measured is the LOOP and nothing else (NFR-PERF-01 excludes model latency

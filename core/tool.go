@@ -377,9 +377,8 @@ func ReachableTools(tools []Tool) []Tool {
 
 // NestedCaller runs tool calls on behalf of a wrapper tool — one that
 // declares ReachableTools — through the same pipeline as a call the model
-// makes: argument preparation and validation, BeforeToolCall, plugin veto,
-// the handler, its span and audit record, AfterToolCall and the execution
-// events (07-REQ-4.1).
+// makes: argument preparation and validation, BeforeToolCall, the handler,
+// AfterToolCall and the execution events (07-REQ-4.1).
 //
 // Call returns one result per call, in the order of calls. A call that fails
 // — unknown to the wrapper, invalid, blocked, aborted, a handler error — is

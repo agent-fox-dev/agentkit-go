@@ -1,6 +1,6 @@
 // Package testkit holds the Agent-free test doubles the root package's tests
-// use, exported so a test in a package ABOVE the root (subagent) can script a
-// provider the same way. It imports core and schema only; a helper that
+// use, exported so a test in a package ABOVE the root (such as
+// tools_test) can script a provider the same way. It imports core and schema only; a helper that
 // constructed an Agent would import the root, and the root's own internal
 // tests could not then import it.
 package testkit

@@ -37,8 +37,7 @@ import (
 //
 // Returns the results and the REQ-TOOL-13 termination vote.
 func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant *core.AssistantMessage, calls []core.ToolUseBlock, turnCount int) ([]core.ToolResultMessage, bool) {
-	// A tool that spends on model calls of its own — a delegated subagent —
-	// reports it through core.ReportUsage the moment it is spent, so the
+	// A tool that spends on model calls of its own reports it through core.ReportUsage the moment it is spent, so the
 	// agent's usage (and a budget computed from it, by the next delegation
 	// in the same parallel batch) sees it at once rather than when the batch
 	// finalizes.

@@ -1193,7 +1193,7 @@ func timeoutArg(s *int) (time.Duration, error) {
 }
 
 // execOutputSchema is the one schema of execResultToTool's Data, shared by
-// execute, run_command and powershell so the three cannot drift apart. Data
+// execute and run_command so the two cannot drift apart. Data
 // carries it on a failed outcome as well as on success (06-REQ-7.2).
 var execOutputSchema = schema.Object(
 	schema.Prop("output", schema.String()),
@@ -1208,9 +1208,8 @@ func execResultOutputSchema() *schema.Schema { return execOutputSchema }
 
 // execResultToTool is the REQ-TOOL-08 envelope for a subprocess result.
 //
-// Shared by execute, run_command and powershell: the envelope is a property of
-// having run a subprocess, not of how the command was spelled, and three
-// copies would drift on the next field added to ToolMetadata.
+// Shared by execute and run_command: the envelope is a property of having run
+// a subprocess, not of how the command was spelled, and two copies would drift on the next field added to ToolMetadata.
 //
 // The model reads the output ITSELF (core.ToolResult.Text), followed by one
 // status line only when there is something to say: `[exit 1]`, `[timeout

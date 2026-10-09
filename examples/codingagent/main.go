@@ -72,15 +72,13 @@ func run() error {
 
 	// 2. All() is the default set: read, write, edit, list, find, search, the
 	//    three navigation tools (file_outline, find_symbol, find_references)
-	//    and the three shell tools. `fetch_url` is NOT in it — a tool that makes
-	//    outbound requests on the model's behalf is a different risk class,
-	//    and reaching it takes a second affirmative act (tools.FetchTool).
+	//    and the two shell tools.
 	built, err := tools.All(tools.Options{Workspace: ws})
 	if err != nil {
 		return err
 	}
 
-	// 3. The OQ-8 guard. `execute`, `run_command` and `powershell` are in the
+	// 3. The OQ-8 guard. `execute` and `run_command` are in the
 	//    set above, so a nil cfg.BeforeToolCall fails the run on its first
 	//    line with core.ErrUnguardedExecute — before a request is sent, and
 	//    long before an unrestricted shell shows up on a bill. There are

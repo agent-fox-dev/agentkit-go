@@ -504,9 +504,8 @@ func (a *Agent) wasAborted() bool {
 }
 
 // Config returns a copy of the agent's current configuration, read under the
-// lock. It is what a caller building a DERIVED agent — a delegation child
-// that inherits the parent's providers, credentials, plugins and tracer —
-// reads from; Snapshot's ConfigView is the narrower, serializable form.
+// lock. It is what a caller building a DERIVED agent — one that inherits
+// this agent's providers and tools — reads from; Snapshot's ConfigView is the narrower, serializable form.
 //
 // It is a copy of the struct, not a deep copy: the registries and slices it
 // carries are shared with the agent. Mutating them through the copy is the

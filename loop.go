@@ -539,8 +539,8 @@ func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.
 	// The aborted message is returned AS THE PROVIDER PRODUCED IT. REQ-LOOP-09
 	// requires error_message set on an aborted turn and forbids rewriting the
 	// message at abort time; REQ-LOOP-09a's "error message cleared" applies
-	// only to a cancellation landing during a retry BACKOFF, which
-	// middleware.Retry normalizes itself. Clearing it here for every abort
+	// only to a cancellation landing during a retry BACKOFF, which the
+	// layer that retries normalizes itself. Clearing it here for every abort
 	// erased the diagnostic the transcript is supposed to carry — and did it
 	// by writing through the provider stream's own message.
 	return *msg
