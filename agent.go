@@ -18,6 +18,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -149,13 +150,49 @@ func newAgent(cfg core.AgentConfig, h *core.ConversationHistory) *Agent {
 // checkTool is REQ-TOOL-01's "exactly one of Handler and Execute", for every
 // way a tool enters the registry. A tool with neither otherwise registers and
 // fails only when the model first calls it, as a nil-func panic.
+//
+// It also validates the tool's ReachableTools hierarchy (07-REQ-1): every
+// reachable tool passes the same handler check, no tool reaches itself
+// directly or transitively, and no wrapper reaches a Terminating tool.
+// Failing here, at construction or registration, keeps a cycle from becoming
+// unbounded recursion and a wrapper from ending the run mid-run.
 func checkTool(t core.Tool) error {
+	return checkToolTree(t, nil, map[string]bool{})
+}
+
+// checkToolTree checks t and what it reaches. path is the chain of names
+// that led to t; a name already on it is a cycle. Tools are values, so a
+// cycle can only exist through shared slice storage, and it is detected by
+// name — the same name a nested call is dispatched by. done holds names
+// whose subtree has been checked: a diamond reaches the same tool along two
+// paths, and checking it once keeps a wide hierarchy from being walked once
+// per path.
+func checkToolTree(t core.Tool, path []string, done map[string]bool) error {
+	for i, name := range path {
+		if name == t.Name {
+			cycle := append(append([]string(nil), path[i:]...), t.Name)
+			return fmt.Errorf("agentkit: reachable tools cycle detected: %s", strings.Join(cycle, " -> "))
+		}
+	}
+	if done[t.Name] {
+		return nil
+	}
 	if t.Handler == nil && t.Execute == nil {
 		return fmt.Errorf("agentkit: tool %q has neither Handler nor Execute", t.Name)
 	}
 	if t.Handler != nil && t.Execute != nil {
 		return fmt.Errorf("agentkit: tool %q sets both Handler and Execute; exactly one", t.Name)
 	}
+	path = append(path[:len(path):len(path)], t.Name)
+	for _, r := range t.ReachableTools {
+		if r.Terminating {
+			return fmt.Errorf("agentkit: terminating tool %q cannot be reached through wrapper %q", r.Name, t.Name)
+		}
+		if err := checkToolTree(r, path, done); err != nil {
+			return err
+		}
+	}
+	done[t.Name] = true
 	return nil
 }
 

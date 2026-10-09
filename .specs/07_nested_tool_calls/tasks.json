@@ -49,7 +49,7 @@
       "done_when": [
         "`go test ./... -run 'Test(Reachable|Cycle|Terminating)'` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,

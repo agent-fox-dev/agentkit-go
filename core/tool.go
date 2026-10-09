@@ -41,6 +41,18 @@ type Tool struct {
 	// no provider request body carries it (06-REQ-1.3).
 	OutputSchema *schema.Schema
 
+	// ReachableTools are the tools this tool can call on the model's behalf
+	// through CallNested — a wrapper such as a script runner. A tool that
+	// declares none reaches none. Every call it makes goes through the same
+	// interceptor, audit and event pipeline as a direct call, and only to a
+	// tool listed here (after ToolPolicy filtering). Not part of ToolWire.
+	ReachableTools []Tool
+	// Terminating marks a tool whose purpose is to end the run (finish,
+	// submit_answer). No wrapper may reach one: a run ends on a decision the
+	// model or the embedder made, never on one a wrapper made for it. Not
+	// part of ToolWire.
+	Terminating bool
+
 	Handler ToolHandler
 	Execute ResultHandler
 
