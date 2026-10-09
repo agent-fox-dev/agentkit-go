@@ -89,7 +89,10 @@ func (p PreparedArguments) TryWithArgs(args map[string]any) (PreparedArguments, 
 // every declared property, so optional fields arrive as explicit nulls.
 // Treating them as present is a validation failure on well-formed output.
 func PrepareArguments(t Tool, c ToolUseBlock) (PreparedArguments, error) {
-	order := c.InputOrder.Clone()
+	order, err := jsonx.DecodeOrderedObject(c.Input)
+	if err != nil {
+		return PreparedArguments{}, err
+	}
 	modified := false
 
 	// ---- 1. Per-tool repair shim. It takes and returns a map because that is

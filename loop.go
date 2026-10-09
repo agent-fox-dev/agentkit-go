@@ -415,8 +415,6 @@ func (a *Agent) errorMessage(err error) core.AssistantMessage {
 		StopReason:   core.StopReasonError,
 		ErrorMessage: err.Error(),
 		Timestamp:    time.Now(),
-		Provider:     a.model.Provider,
-		API:          a.model.API,
 		Model:        a.model.ID,
 	}
 }

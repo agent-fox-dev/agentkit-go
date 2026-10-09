@@ -21,7 +21,7 @@ func TestContentIdenticalWithAndWithoutMetadata_TS04_41(t *testing.T) {
 		OK:     false,
 		Error:  "command_exit",
 		Text:   "boom\n[exit 2]",
-		Blocks: core.Content{core.ImageBlock{Data: "abc", MimeType: "image/png"}},
+		Blocks: core.Content{core.TextBlock{Text: "extra"}},
 	}
 	rm := r
 	rm.Metadata = &core.ToolMetadata{ExitCode: &ec, Outcome: "exit", TotalBytes: 5, DurationMS: 12}

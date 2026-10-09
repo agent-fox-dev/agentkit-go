@@ -307,12 +307,6 @@ func contentSize(c Content) int {
 			n += len(v.Thinking) + len(v.Signature)
 		case ToolUseBlock:
 			n += len(v.Input) + len(v.Name)
-		case ToolResultBlock:
-			n += contentSize(v.Content)
-		case ImageBlock:
-			n += len(v.Data)
-		case RawBlock:
-			n += len(v.Raw)
 		}
 		n += 32
 	}

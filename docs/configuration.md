@@ -129,7 +129,7 @@ the same way the stream does. `anthropic.Options`:
 | `HTTPClient` | The HTTP client the built SDK client uses. |
 | `Getenv` | Injectable environment; nil means `os.Getenv`. |
 | `MaxRetries` | `*int`; overrides the SDK's retry count (default 2). |
-| `Betas` | Dated beta headers, opt-in; `compact-2026-01-12` enables server-side compaction. |
+| `Betas` | Dated beta headers, opt-in; `compact-2026-01-12` enables server-side compaction; the compaction blocks it returns are dropped, not replayed (core has no block for them). |
 | `VertexProject`, `VertexLocation` | Select the Vertex AI deployment. |
 | `VertexTokenSource` | `oauth2.TokenSource` for Vertex. Nil uses a Google access token in `ANTHROPIC_AUTH_TOKEN`, then Application Default Credentials, found on the first request. |
 | `BillingLookup` | Resolves a served model id to its catalog row for pricing. |

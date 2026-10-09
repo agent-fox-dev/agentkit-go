@@ -62,7 +62,7 @@ func (s *Scripted) stream(ctx context.Context, m *core.Model, req core.Request, 
 	}
 	s.mu.Unlock()
 
-	msg.Provider, msg.API, msg.Model = m.Provider, m.API, m.ID
+	msg.Model = m.ID
 	go func() {
 		st.Push(core.MessageStartEvent{Message: msg})
 		st.Push(core.MessageEndEvent{Message: msg})

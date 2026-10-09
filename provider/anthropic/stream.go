@@ -24,9 +24,9 @@ const APIVersion = "2023-06-01"
 // VertexAPIVersion is the anthropic_version a Vertex request body carries.
 const VertexAPIVersion = "vertex-2023-10-16"
 
-// BetaCompaction opts into REQ-PROV-07's server-side compaction. Compaction
-// blocks in the response are retained as core.RawBlock and replayed verbatim
-// on later turns; nothing else in the SDK needs to model them.
+// BetaCompaction opts into REQ-PROV-07's server-side compaction. core has no
+// block to carry a compaction block, so the decoder drops it and later turns
+// do not replay it.
 const BetaCompaction = "compact-2026-01-12"
 
 // Options configures the provider. The zero value is usable.
@@ -170,7 +170,7 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 	d := &decodeState{
 		s: s, model: m, lookup: c.opts.BillingLookup,
 		partial: core.AssistantMessage{
-			Provider: m.Provider, API: m.API, Model: m.ID,
+			Model:     m.ID,
 			Effort:    req.Effort,
 			Timestamp: c.now(),
 		},
@@ -664,7 +664,7 @@ func DecodeResponse(m *core.Model, data []byte, lookup func(string) *core.Model)
 		return nil, fmt.Errorf("anthropic: decoding response: %w", err)
 	}
 	msg := &core.AssistantMessage{
-		Provider: m.Provider, API: m.API, Model: m.ID,
+		Model:      m.ID,
 		ResponseID: wr.ID, ResponseModel: wr.Model,
 		StopReason: MapStopReason(wr.StopReason), RawStopReason: wr.StopReason, StopDetail: wr.StopDetails.String(),
 	}

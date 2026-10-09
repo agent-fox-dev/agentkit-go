@@ -62,7 +62,7 @@
         "core.Message and core.ContentBlock are sealed interfaces with specified implementors only",
         "ImageBlock, RawBlock, ToolResultBlock, jsonx references, and ThinkingLevel are removed from core/message.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,

@@ -162,7 +162,7 @@ func (p *Provider) Stream(ctx context.Context, m *core.Model, req core.Request, 
 // authoritative event never double-applies.
 func (p *Provider) produce(ctx context.Context, s *core.EventStream, m *core.Model, turn Turn, chunk int) {
 	partial := core.AssistantMessage{
-		Provider: m.Provider, API: m.API, Model: m.ID,
+		Model:     m.ID,
 		Timestamp: time.Now(),
 	}
 

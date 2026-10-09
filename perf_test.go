@@ -135,8 +135,8 @@ func stampFixture(b testingTB) (*core.Model, core.Request) {
 		req.Messages = append(req.Messages,
 			core.UserMessage{Content: core.Content{core.TextBlock{Text: fmt.Sprintf("question %d", i)}}},
 			core.AssistantMessage{
-				Content:  core.Content{core.TextBlock{Text: fmt.Sprintf("answer %d", i)}},
-				Provider: "anthropic", API: anthropic.API, Model: "claude-x",
+				Content:    core.Content{core.TextBlock{Text: fmt.Sprintf("answer %d", i)}},
+				Model:      "claude-x",
 				StopReason: core.StopReasonStop})
 	}
 	_ = b
@@ -266,7 +266,7 @@ func deepHistory(n int) core.Messages {
 			core.AssistantMessage{
 				Content: core.Content{core.TextBlock{
 					Text: fmt.Sprintf("answer number %d, likewise of a realistic length", i)}},
-				Provider: "test", API: testAPI, Model: "test-model",
+				Model:      "test-model",
 				StopReason: core.StopReasonStop})
 	}
 	return msgs

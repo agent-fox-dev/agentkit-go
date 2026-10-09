@@ -500,45 +500,6 @@ func TestOnPayloadErrorPropagatesUnmodified(t *testing.T) {
 	}
 }
 
-// TestServerCompactionBlocksAreReplayedVerbatim is REQ-PROV-07.
-//
-// A compaction block is opaque, beta, and load-bearing: it is the state the
-// server keeps in place of the history it removed. Dropping it looks safe and
-// re-sends the history the compaction was paid to compact.
-func TestServerCompactionBlocksAreReplayedVerbatim(t *testing.T) {
-	const raw = `{"type":"compaction","id":"cmp_1","payload":{"opaque":"bytes"}}`
-	body := sseBody(
-		[2]string{"message_start", `{"message":{"id":"m","model":"claude-test","usage":{"input_tokens":5}}}`},
-		[2]string{"content_block_start", `{"index":0,"content_block":` + raw + `}`},
-		[2]string{"content_block_stop", `{"index":0}`},
-		[2]string{"message_delta", `{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`},
-		[2]string{"message_stop", `{}`},
-	)
-	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{
-		Betas: []string{anthropic.BetaCompaction}}, 200, body)
-
-	rb, ok := msg.Content[0].(core.RawBlock)
-	if !ok {
-		t.Fatalf("block 0 = %#v, want a RawBlock retaining the unmodelled type", msg.Content[0])
-	}
-
-	// And it must survive the trip back out.
-	out, _, err := anthropic.BuildRequest(testModel(), core.Request{
-		Messages: core.Messages{core.AssistantMessage{
-			Content:  core.Content{rb},
-			Provider: "anthropic", API: anthropic.API, Model: "claude-test",
-			StopReason: core.StopReasonStop,
-		}},
-	}, core.CacheRetentionNone)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, _ := json.Marshal(out)
-	if !strings.Contains(string(encoded), `"opaque":"bytes"`) {
-		t.Fatalf("re-encoded request lost the compaction block: %s", encoded)
-	}
-}
-
 func TestBetaHeaderIsSentWhenRequested(t *testing.T) {
 	_, _, sent := run(t, testModel(), core.Request{},
 		anthropic.Options{Betas: []string{anthropic.BetaCompaction}}, 200, streamFixture())
@@ -668,7 +629,7 @@ func TestEmptyTextInsideAToolResultIsDropped(t *testing.T) {
 	req := core.Request{Messages: core.Messages{
 		core.UserMessage{Content: core.Content{core.TextBlock{Text: "list"}}},
 		core.AssistantMessage{Content: core.Content{call}, StopReason: core.StopReasonToolUse,
-			Provider: "anthropic", API: anthropic.API, Model: "claude-test"},
+			Model: "claude-test"},
 		core.ToolResultMessage{ToolUseID: "toolu_1", ToolName: "ls",
 			Content: core.Content{core.TextBlock{Text: ""}, core.TextBlock{Text: "a.go"}}},
 	}}
@@ -693,10 +654,10 @@ func TestAUserMessageWithNothingLeftIsSkipped(t *testing.T) {
 	req := core.Request{Messages: core.Messages{
 		core.UserMessage{Content: core.Content{core.TextBlock{Text: "first"}}},
 		core.AssistantMessage{Content: core.Content{core.TextBlock{Text: "reply"}}, StopReason: core.StopReasonStop,
-			Provider: "anthropic", API: anthropic.API, Model: "claude-test"},
+			Model: "claude-test"},
 		core.UserMessage{Content: core.Content{core.TextBlock{Text: ""}}},
 		core.AssistantMessage{Content: core.Content{core.TextBlock{Text: "again"}}, StopReason: core.StopReasonStop,
-			Provider: "anthropic", API: anthropic.API, Model: "claude-test"},
+			Model: "claude-test"},
 		core.UserMessage{Content: core.Content{core.TextBlock{Text: "last"}}},
 	}}
 	body, _, err := anthropic.BuildRequest(testModel(), req, core.CacheRetentionNone)
@@ -945,7 +906,7 @@ func TestAnEmptyToolResultOmitsContent(t *testing.T) {
 	req := core.Request{Messages: core.Messages{
 		core.UserMessage{Content: core.Content{core.TextBlock{Text: "delete x"}}},
 		core.AssistantMessage{Content: core.Content{call}, StopReason: core.StopReasonToolUse,
-			Provider: "anthropic", API: anthropic.API, Model: "claude-test"},
+			Model: "claude-test"},
 		core.ToolResultMessage{ToolUseID: "toolu_1", ToolName: "rm"},
 	}}
 	body, _, err := anthropic.BuildRequest(testModel(), req, core.CacheRetentionNone)
@@ -1048,7 +1009,7 @@ func TestARedactedThinkingBlockAlwaysCarriesItsDataKey(t *testing.T) {
 	req := core.Request{Messages: core.Messages{
 		core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}},
 		core.AssistantMessage{
-			Provider: "anthropic", API: anthropic.API, Model: "claude-test",
+			Model: "claude-test",
 			Content: core.Content{
 				core.ThinkingBlock{Redacted: true, Signature: "OPAQUE"},
 				core.TextBlock{Text: "done"},

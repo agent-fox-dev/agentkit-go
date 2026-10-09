@@ -254,7 +254,7 @@ func demoTranscriptRepair() {
 		core.AssistantMessage{
 			Content:    core.Content{core.TextBlock{Text: "I'll co"}, b},
 			StopReason: core.StopReasonAborted,
-			Provider:   "anthropic", API: anthropic.API, Model: "claude-x",
+			Model:      "claude-x",
 		},
 		// ...and the result that DID land before the abort. Rule 2 drops
 		// the turn above; without rule 2b this result is orphaned and the

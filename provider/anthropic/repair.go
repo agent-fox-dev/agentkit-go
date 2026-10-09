@@ -23,13 +23,12 @@ type RepairReport struct {
 	DroppedRedacted      int
 	StrippedSignatures   int
 	RewrittenIDs         int
-	ImagesReplaced       int
 }
 
 func (r RepairReport) Changed() bool {
 	return r.DroppedFailedTurns+r.DroppedOrphanResults+r.SyntheticResults+
 		r.DowngradedThinking+r.DroppedRedacted+r.StrippedSignatures+
-		r.RewrittenIDs+r.ImagesReplaced > 0
+		r.RewrittenIDs > 0
 }
 
 func (r RepairReport) String() string {
@@ -49,23 +48,18 @@ func (r RepairReport) String() string {
 	add(r.DroppedRedacted, "redacted thinking blocks dropped")
 	add(r.StrippedSignatures, "signatures stripped")
 	add(r.RewrittenIDs, "tool-call ids rewritten")
-	add(r.ImagesReplaced, "images replaced")
 	if b.Len() == 0 {
 		return "no repairs"
 	}
 	return b.String()
 }
 
-// Target describes the model a transcript is being repaired FOR. same_model is
-// the (provider, api, model) TRIPLE: two of three is not enough, and getting
-// it wrong silently downgrades every signed thinking block to plain text on
-// the first post-resume request (ruling P-4).
+// Target describes the model a transcript is being repaired FOR. same_model
+// compares model ids: every turn is Claude over the Messages API, so the
+// model is the whole of a turn's provenance, and getting it wrong silently
+// downgrades every signed thinking block to plain text on the next request.
 type Target struct {
-	Provider string
-	API      core.API
-	Model    string
-	// SupportsImages gates rule 7 (REQ-CAT-05).
-	SupportsImages bool
+	Model string
 	// NormalizeToolCallID rewrites an id into this API's accepted shape. Nil
 	// means ids pass through unchanged.
 	NormalizeToolCallID func(string) string
@@ -73,13 +67,7 @@ type Target struct {
 
 // TargetFor builds a Target from a resolved model.
 func TargetFor(m *core.Model, normalize func(string) string) Target {
-	return Target{
-		Provider:            m.Provider,
-		API:                 m.API,
-		Model:               m.ID,
-		SupportsImages:      m.SupportsImages(),
-		NormalizeToolCallID: normalize,
-	}
+	return Target{Model: m.ID, NormalizeToolCallID: normalize}
 }
 
 // RepairTranscript is REQ-PROV-11: the shared, unconditional pass every
@@ -94,14 +82,13 @@ func TargetFor(m *core.Model, normalize func(string) string) Target {
 // The rules, in order. Order matters twice: rule 2b depends on rule 2 having
 // run, and rule 6's synthetic results must carry the ids rule 5 rewrote.
 //
-//	1  compute same_model as the (provider, api, model) triple
+//	1  compute same_model from the model id
 //	2  drop assistant messages whose stop reason is Error or Aborted
 //	2b drop tool results orphaned BY rule 2                       <-- see below
 //	3  cross-model: downgrade signed thinking, drop redacted, strip signatures
 //	4  demote thinking blocks with no signature to plain text
 //	5  cross-model: rewrite tool-call ids, remembering the mapping
 //	6  insert a synthetic result for any tool_use still unanswered
-//	7  replace images when the target has no image modality
 //
 // # Rule 2b, which the PRD does not have
 //
@@ -140,7 +127,7 @@ func RepairTranscript(in core.Messages, t Target) (core.Messages, RepairReport) 
 				continue
 			}
 			// Rule 1.
-			same := v.Provider == t.Provider && v.API == t.API && v.Model == t.Model
+			same := v.Model == t.Model
 			c := repairAssistantContent(v.Content, same, t, &rep)
 			v.Content = c
 			for _, b := range c {
@@ -183,11 +170,6 @@ func RepairTranscript(in core.Messages, t Target) (core.Messages, RepairReport) 
 	// stated rule order gives that, but only by accident, so it is stated
 	// explicitly here (ruling P-26).
 	out = insertSyntheticResults(out, &rep)
-
-	// ---- Rule 7.
-	if !t.SupportsImages {
-		out = replaceImages(out, &rep)
-	}
 
 	return out, rep
 }
@@ -394,65 +376,6 @@ func insertSyntheticResults(in core.Messages, rep *RepairReport) core.Messages {
 			}
 		}
 		i = j - 1
-	}
-	return out
-}
-
-// ImagePlaceholder is REQ-CAT-05's replacement text.
-const ImagePlaceholder = "(image omitted: model does not support images)"
-
-func replaceImages(in core.Messages, rep *RepairReport) core.Messages {
-	swap := func(c core.Content) core.Content {
-		var changed bool
-		out := make(core.Content, 0, len(c))
-		for _, b := range c {
-			switch v := b.(type) {
-			case core.ImageBlock:
-				changed = true
-				rep.ImagesReplaced++
-				out = append(out, core.TextBlock{Text: ImagePlaceholder})
-			case core.ToolResultBlock:
-				v.Content = swapContent(v.Content, rep, &changed)
-				out = append(out, v)
-			default:
-				out = append(out, b)
-			}
-		}
-		if !changed {
-			return c
-		}
-		return out
-	}
-
-	out := make(core.Messages, 0, len(in))
-	for _, m := range in {
-		switch v := m.(type) {
-		case core.UserMessage:
-			v.Content = swap(v.Content)
-			out = append(out, v)
-		case core.AssistantMessage:
-			v.Content = swap(v.Content)
-			out = append(out, v)
-		case core.ToolResultMessage:
-			v.Content = swap(v.Content)
-			out = append(out, v)
-		default:
-			out = append(out, m)
-		}
-	}
-	return out
-}
-
-func swapContent(c core.Content, rep *RepairReport, changed *bool) core.Content {
-	out := make(core.Content, 0, len(c))
-	for _, b := range c {
-		if _, ok := b.(core.ImageBlock); ok {
-			*changed = true
-			rep.ImagesReplaced++
-			out = append(out, core.TextBlock{Text: ImagePlaceholder})
-			continue
-		}
-		out = append(out, b)
 	}
 	return out
 }

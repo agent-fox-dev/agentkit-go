@@ -39,7 +39,7 @@ func (s *mdScripted) stream(_ context.Context, m *core.Model, req core.Request, 
 		}
 	}
 	s.mu.Unlock()
-	msg.Provider, msg.API, msg.Model = m.Provider, m.API, m.ID
+	msg.Model = m.ID
 	go func() {
 		st.Push(core.MessageStartEvent{Message: msg})
 		st.Push(core.MessageEndEvent{Message: msg})
@@ -603,11 +603,11 @@ func TestMaxTokensSynthesizedAndRepairSynthesizedNilMetadata_TS04_38(t *testing.
 		core.AssistantMessage{
 			Content:    core.Content{tu},
 			StopReason: core.StopReasonToolUse,
-			Provider:   "test", API: "md-test-api", Model: "md-test-model",
+			Model:      "md-test-model",
 		},
 		// No tool result for call_1.
 	}
-	target := anthropic.Target{Provider: "test", API: "md-test-api", Model: "md-test-model"}
+	target := anthropic.Target{Model: "md-test-model"}
 	out, rep := anthropic.RepairTranscript(damaged, target)
 	if rep.SyntheticResults != 1 {
 		t.Fatalf("SyntheticResults = %d, want 1", rep.SyntheticResults)

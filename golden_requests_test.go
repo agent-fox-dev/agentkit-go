@@ -48,7 +48,7 @@ func canonicalRequest(t *testing.T) core.Request {
 	m, _ := catalog.Lookup(canonicalModelID)
 	maxTok := 1024
 	stamp := func(msg core.AssistantMessage) core.AssistantMessage {
-		msg.Provider, msg.API, msg.Model = m.Provider, m.API, m.ID
+		msg.Model = m.ID
 		return msg
 	}
 	return core.Request{
@@ -64,8 +64,6 @@ func canonicalRequest(t *testing.T) core.Request {
 		Messages: core.Messages{
 			core.UserMessage{Content: core.Content{
 				core.TextBlock{Text: "Which Go files changed?"},
-				// A 1x1 PNG: small enough to read in a golden.
-				core.ImageBlock{MimeType: "image/png", Data: onePixelPNG},
 			}},
 			stamp(core.AssistantMessage{
 				Content: core.Content{core.TextBlock{Text: "Let me look."},
@@ -124,10 +122,6 @@ func canonicalTools(out *schema.Schema) []core.Tool {
 		},
 	}
 }
-
-// onePixelPNG is a 1x1 transparent PNG.
-const onePixelPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk" +
-	"YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 
 // canonicalModel is the catalog row for canonicalModelID.
 func canonicalModel(t *testing.T) *core.Model {

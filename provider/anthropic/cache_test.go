@@ -48,7 +48,7 @@ func TestReplayedToolInputKeepsItsBytes_TS10_23(t *testing.T) {
 	body := rawBody(t, m, core.Request{Messages: core.Messages{
 		core.UserMessage{Content: core.Content{core.TextBlock{Text: "go"}}},
 		core.AssistantMessage{Content: core.Content{core.ToolUseBlock{ID: "call_1", Name: "tool", Input: raw}},
-			StopReason: core.StopReasonToolUse, Provider: m.Provider, API: m.API, Model: m.ID},
+			StopReason: core.StopReasonToolUse, Model: m.ID},
 		core.ToolResultMessage{ToolUseID: "call_1", ToolName: "tool", Content: core.Content{core.TextBlock{Text: "ok"}}},
 	}})
 	if !strings.Contains(string(body), `"input":`+string(raw)) {
@@ -83,7 +83,7 @@ func TestPrefixAndUserBreakpoints_TS10_25(t *testing.T) {
 		Prefix: core.Messages{
 			core.UserMessage{Content: core.Content{core.TextBlock{Text: "project brief"}, core.TextBlock{Text: "spec"}}},
 			core.AssistantMessage{Content: core.Content{core.TextBlock{Text: "understood"}},
-				StopReason: core.StopReasonStop, Provider: m.Provider, API: m.API, Model: m.ID},
+				StopReason: core.StopReasonStop, Model: m.ID},
 		},
 		Messages: core.Messages{core.UserMessage{Content: core.Content{
 			core.TextBlock{Text: "first"}, core.TextBlock{Text: "last"}}}},

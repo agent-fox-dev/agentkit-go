@@ -48,7 +48,7 @@ func (b *blocking) stream(ctx context.Context, m *core.Model, _ core.Request, _ 
 			Content:      core.Content{core.TextBlock{Text: "partial"}},
 			StopReason:   core.StopReasonAborted,
 			ErrorMessage: ctx.Err().Error(),
-			Provider:     m.Provider, API: m.API, Model: m.ID,
+			Model:        m.ID,
 		}
 		st.Push(core.MessageEndEvent{Message: msg})
 		st.End(core.StreamResult{Message: &msg})

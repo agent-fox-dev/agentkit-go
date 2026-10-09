@@ -60,7 +60,7 @@ func (s *scripted) stream(ctx context.Context, m *core.Model, req core.Request, 
 	}
 	s.mu.Unlock()
 
-	msg.Provider, msg.API, msg.Model = m.Provider, m.API, m.ID
+	msg.Model = m.ID
 	go func() {
 		st.Push(core.MessageStartEvent{Message: msg})
 		st.Push(core.MessageEndEvent{Message: msg})
@@ -1287,7 +1287,7 @@ func sizedProvider(turns int, silent bool, sent *[]core.Request) core.ProviderCl
 		*sent = append(*sent, req)
 		mu.Unlock()
 		msg := core.AssistantMessage{StopReason: core.StopReasonStop, Content: core.Content{core.TextBlock{Text: "done"}},
-			Provider: m.Provider, API: m.API, Model: m.ID}
+			Model: m.ID}
 		if i < turns {
 			msg.StopReason = core.StopReasonToolUse
 			msg.Content = core.Content{faux.FauxToolCall(fmt.Sprintf("c%d", i), "toolA", `{}`)}
