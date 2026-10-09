@@ -148,7 +148,7 @@ func TestACustomPromptKeepsTheToolsGuidelines(t *testing.T) {
 // Issue #75 §4: the shell guidelines are keyed on whichever shell tool is
 // active, not on the literal name "execute", and name that tool.
 func TestShellGuidelinesNameTheActiveShell(t *testing.T) {
-	for _, shell := range []string{"run_command", "powershell"} {
+	for _, shell := range []string{"run_command"} {
 		got := Build("", []core.Tool{{Name: shell}})
 		if want := "Use " + shell + " for file operations like ls, rg, find."; !strings.Contains(got, want) {
 			t.Errorf("%s alone: prompt lacks %q:\n%s", shell, want, got)

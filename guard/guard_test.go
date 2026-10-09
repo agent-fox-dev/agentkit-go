@@ -2,6 +2,7 @@ package guard
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
@@ -38,7 +39,6 @@ func TestRestrictedPolicy(t *testing.T) {
 		{"execute", map[string]any{"command": ""}, true, "empty"},
 		{"run_command", map[string]any{"argv": []any{"go", "vet", "a;b"}}, false, "argv is not re-parsed"},
 		{"run_command", map[string]any{"argv": []any{"curl", "x"}}, true, "argv program not allowed"},
-		{"powershell", map[string]any{"command": "Get-ChildItem"}, true, "no PowerShell grammar: refused outright"},
 		{"read_file", map[string]any{"path": "x"}, false, "non-shell tools pass"},
 	}
 	for _, c := range cases {
@@ -110,5 +110,84 @@ func TestRestrictedPolicy(t *testing.T) {
 	if d := term(context.Background(), core.BeforeToolCallContext{ToolName: "execute",
 		Arguments: map[string]any{"command": "ls"}}); !d.Block || !d.Terminate {
 		t.Fatal("TerminateOnBlock must cast the REQ-TOOL-13.2 vote")
+	}
+}
+
+// TS-12-29: Decision carries Block, Reason and Terminate, and the shell tools
+// are execute and run_command.
+func TestDecisionAndShellToolNames_TS12_29(t *testing.T) {
+	d := Decision{Block: true, Reason: "test", Terminate: true}
+	if !d.Block || d.Reason != "test" || !d.Terminate {
+		t.Fatalf("Decision = %+v", d)
+	}
+	if strings.Join(ShellToolNames, ",") != "execute,run_command" {
+		t.Fatalf("ShellToolNames = %v, want [execute run_command]", ShellToolNames)
+	}
+}
+
+// TS-12-30: an empty argv is blocked.
+func TestCheckBlocksEmptyArgv_TS12_30(t *testing.T) {
+	if d := Check([]string{}, Options{TerminateOnBlock: true}); d != (Decision{Block: true, Reason: "empty argv", Terminate: true}) {
+		t.Fatalf("Check(empty) = %+v", d)
+	}
+}
+
+// TS-12-31: a path is allowed only as that exact, cleaned path.
+func TestCheckMatchesPathsExactly_TS12_31(t *testing.T) {
+	o := Options{AllowedPrograms: []string{"/usr/bin/git"}, TerminateOnBlock: true}
+	want := Decision{Block: true, Reason: `program "/usr/bin/curl" is not on the allowlist`, Terminate: true}
+	if d := Check([]string{"/usr/bin/curl", "url"}, o); d != want {
+		t.Fatalf("Check(/usr/bin/curl) = %+v, want %+v", d, want)
+	}
+	if d := Check([]string{"/usr/bin/../bin/git"}, o); d.Block {
+		t.Fatalf("a path that cleans to an allowed one was blocked: %+v", d)
+	}
+	if d := Check([]string{"./git"}, o); !d.Block {
+		t.Fatal("./git is the workspace's git, not the allowed path")
+	}
+}
+
+// TS-12-32: a bare name not on the allowlist is blocked.
+func TestCheckBlocksUnlistedNames_TS12_32(t *testing.T) {
+	o := Options{AllowedPrograms: []string{"git", "go"}}
+	want := Decision{Block: true, Reason: `program "rm" is not on the allowlist`}
+	if d := Check([]string{"rm", "-rf", "dir"}, o); d != want {
+		t.Fatalf("Check(rm) = %+v, want %+v", d, want)
+	}
+}
+
+// TS-12-33: an allowed bare name or exact path runs.
+func TestCheckAllowsListedPrograms_TS12_33(t *testing.T) {
+	o := Options{AllowedPrograms: []string{"git", "/usr/local/bin/deploy"}}
+	if d := Check([]string{"git", "status"}, o); d.Block {
+		t.Fatalf("git was blocked: %+v", d)
+	}
+	if d := Check([]string{"/usr/local/bin/deploy"}, o); d.Block {
+		t.Fatalf("the listed path was blocked: %+v", d)
+	}
+}
+
+// TS-12-34: Restricted refuses blocked tools, shell operators and
+// environment prefixes before asking Check about the program.
+func TestRestrictedChecksBeforeCheck_TS12_34(t *testing.T) {
+	hook := Restricted(Options{BlockedTools: []string{"danger_tool"}, AllowedPrograms: []string{"git"}})
+	ctx := context.Background()
+	cases := []struct {
+		name  string
+		in    core.BeforeToolCallContext
+		block bool
+		why   string
+	}{
+		{"blocked tool", core.BeforeToolCallContext{ToolName: "danger_tool"}, true, `tool "danger_tool" is not permitted`},
+		{"pipe", core.BeforeToolCallContext{ToolName: "execute", Arguments: map[string]any{"command": "git status | cat"}}, true, "shell operator"},
+		{"env prefix", core.BeforeToolCallContext{ToolName: "execute", Arguments: map[string]any{"command": "PATH=/tmp git status"}}, true, "environment assignment"},
+		{"unlisted", core.BeforeToolCallContext{ToolName: "execute", Arguments: map[string]any{"command": "rm -rf ."}}, true, `guard.Restricted: program "rm" is not on the allowlist`},
+		{"allowed", core.BeforeToolCallContext{ToolName: "execute", Arguments: map[string]any{"command": "git commit"}}, false, ""},
+	}
+	for _, c := range cases {
+		d := hook(ctx, c.in)
+		if d.Block != c.block || !strings.Contains(d.Reason, c.why) {
+			t.Errorf("%s: %+v, want block=%v mentioning %q", c.name, d, c.block, c.why)
+		}
 	}
 }

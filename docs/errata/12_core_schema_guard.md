@@ -170,3 +170,18 @@ objects, enum, minimum, pattern, uniqueness, the JSON-number check and
 boolean coercion each disabled in turn). The coercion tests sit in
 `schema/issue87_test.go` beside the issue 87 tests rather than in a
 `coerce_test.go` of their own.
+
+## 12-REQ-9: Check, and what Restricted kept
+
+- **A listed path still admits its bare basename.** `AllowedPrograms:
+  ["/usr/bin/git"]` lets `git` run, as before (`newAllowlist` in
+  `guard/guard.go`); the spec matches a bare name only against bare entries.
+  A program with a path separator still matches only a listed path, after
+  cleaning (TS-12-31).
+- **`run_command` checks every argv entry is a string** and refuses the call
+  otherwise; an empty argv is `empty argv` (from `Check`), where it used to
+  be `program "" is not on the allowlist`.
+- **`powershell` is gone** from `ShellToolNames`, and with it
+  `Options.PowerShellFilter` and the policy's PowerShell case.
+- TS-12-33 passed against the stub (which allowed everything) and TS-12-34
+  against the existing `Restricted`; TS-12-29..32 failed first.

@@ -142,8 +142,8 @@ AGENTKIT_MODEL=claude-opus-5-5 go run ./examples/codingagent "hello"
 
 These are not defaults you can ignore — the library will stop you.
 
-**A shell tool needs an authorization boundary.** Passing `execute`,
-`run_command` or `powershell` in `Config.Tools` — directly or reachable
+**A shell tool needs an authorization boundary.** Passing `execute` or
+`run_command` in `Config.Tools` — directly or reachable
 through a wrapper tool — with a nil `Config.Guard` makes `agentkit.New`
 return an error wrapping `core.ErrUnguardedExecute`; no agent is built. A
 headless service would otherwise hand the model an unrestricted shell by

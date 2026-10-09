@@ -366,7 +366,7 @@
         "guard.Check evaluates argv against allowlists as a pure function returning Decision",
         "guard.ShellToolNames is [execute, run_command] and Restricted delegates program evaluation to Check"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
