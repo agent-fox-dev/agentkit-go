@@ -21,8 +21,8 @@ func TestAgentReachableToolsResolvesPolicy_TS07_7(t *testing.T) {
 	wrap := core.Tool{Name: "wrap", ReachableTools: []core.Tool{sub1, sub2}, Handler: noopHandler}
 	leaf := core.Tool{Name: "leaf", Handler: noopHandler}
 	cfg := agentCfg(wrap, leaf)
-	cfg.ToolPolicy.ExcludeTools = []string{"sub2"}
-	ag, err := NewAgent(cfg)
+	cfg.Policy.ExcludeTools = []string{"sub2"}
+	ag, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,23 +35,15 @@ func TestAgentReachableToolsResolvesPolicy_TS07_7(t *testing.T) {
 	}
 }
 
-// TS-07-11: with no BeforeToolCall, the guard looks through wrappers.
+// TS-07-11: with no Guard, New looks through wrappers.
 func TestExecuteGuardInspectsReachableTools_TS07_11(t *testing.T) {
-	ag, err := NewAgent(agentCfg(shellWrapper()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ag.checkExecuteGuard(); err == nil {
+	if _, err := New(agentCfg(shellWrapper())); err == nil {
 		t.Fatal("a shell tool behind a wrapper passed the guard")
 	}
 	// Deeper: the shell tool two wrappers down is still found, and the
 	// top-level wrapper is the one named.
 	outer := core.Tool{Name: "outer", ReachableTools: []core.Tool{shellWrapper()}, Handler: noopHandler}
-	ag, err = NewAgent(agentCfg(outer))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ag.checkExecuteGuard(); err == nil ||
+	if _, err := New(agentCfg(outer)); err == nil ||
 		!strings.Contains(err.Error(), `wrapper "outer" reached shell tool "execute"`) {
 		t.Fatalf("err = %v", err)
 	}
@@ -59,11 +51,7 @@ func TestExecuteGuardInspectsReachableTools_TS07_11(t *testing.T) {
 
 // TS-07-12: the error wraps ErrUnguardedExecute and names wrapper and shell.
 func TestExecuteGuardNamesWrapperAndShell_TS07_12(t *testing.T) {
-	ag, err := NewAgent(agentCfg(shellWrapper()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = ag.checkExecuteGuard()
+	_, err := New(agentCfg(shellWrapper()))
 	if !errors.Is(err, core.ErrUnguardedExecute) {
 		t.Fatalf("err = %v, want ErrUnguardedExecute", err)
 	}
@@ -72,27 +60,19 @@ func TestExecuteGuardNamesWrapperAndShell_TS07_12(t *testing.T) {
 	}
 	// A wrapper the policy reduces to nothing reaches no shell tool.
 	cfg := agentCfg(shellWrapper())
-	cfg.ToolPolicy.ExcludeTools = []string{"execute"}
-	ag, err = NewAgent(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ag.checkExecuteGuard(); err != nil {
+	cfg.Policy.ExcludeTools = []string{"execute"}
+	if _, err := New(cfg); err != nil {
 		t.Fatalf("an excluded shell tool still tripped the guard: %v", err)
 	}
 }
 
-// TS-07-13: with a BeforeToolCall, a reachable shell tool is allowed.
+// TS-07-13: with a Guard, a reachable shell tool is allowed.
 func TestExecuteGuardAllowsInterceptedShell_TS07_13(t *testing.T) {
 	cfg := agentCfg(shellWrapper())
-	cfg.BeforeToolCall = func(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
+	cfg.Guard = func(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
 		return core.BeforeToolCallDecision{}
 	}
-	ag, err := NewAgent(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ag.checkExecuteGuard(); err != nil {
+	if _, err := New(cfg); err != nil {
 		t.Fatalf("err = %v, want nil with an interceptor", err)
 	}
 }

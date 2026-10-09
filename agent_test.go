@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,21 +18,14 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/guard"
-	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 )
 
 func noopHandler(context.Context, json.RawMessage) (json.RawMessage, error) { return nil, nil }
 
-// agentCfg is a minimal valid config carrying tools as custom tools.
-func agentCfg(tools ...core.Tool) core.AgentConfig {
-	s := &scripted{}
-	return core.AgentConfig{
-		Model:      testModel(),
-		StopPolicy: afterTurns(3),
-		Providers:  core.ProviderRegistry{testAPI: s.provider()},
-		ToolPolicy: core.ToolPolicy{CustomTools: tools},
-	}
+// agentCfg is a minimal valid config carrying tools.
+func agentCfg(tools ...core.Tool) Config {
+	return Config{Provider: faux.New(), Model: testModelID, Tools: tools}
 }
 
 // cyclicPair builds toolA -> toolB -> toolA. Tools are values, so the cycle
@@ -43,29 +38,18 @@ func cyclicPair() core.Tool {
 	return toolA
 }
 
-// TS-07-3: a reachability cycle is refused by NewAgent, NewAgentWithHistory
-// and RegisterTool, naming the path.
+// TS-07-3: a reachability cycle is refused by New, naming the path.
 func TestCycleInReachableToolsIsRefused_TS07_3(t *testing.T) {
 	const want = "agentkit: reachable tools cycle detected: toolA -> toolB -> toolA"
-	if _, err := NewAgent(agentCfg(cyclicPair())); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("NewAgent err = %v, want %q", err, want)
-	}
-	if _, err := NewAgentWithHistory(agentCfg(cyclicPair()), nil); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("NewAgentWithHistory err = %v, want %q", err, want)
-	}
-	ag, err := NewAgent(agentCfg())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ag.RegisterTool(cyclicPair()); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("RegisterTool err = %v, want %q", err, want)
+	if _, err := New(agentCfg(cyclicPair())); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("New err = %v, want %q", err, want)
 	}
 	// A tool that reaches itself directly is the shortest cycle.
 	self := core.Tool{Name: "self", Handler: noopHandler, ReachableTools: make([]core.Tool, 1)}
 	self.ReachableTools[0] = self
-	if err := ag.RegisterTool(self); err == nil ||
+	if _, err := New(agentCfg(self)); err == nil ||
 		!strings.Contains(err.Error(), "agentkit: reachable tools cycle detected: self -> self") {
-		t.Fatalf("RegisterTool(self) err = %v", err)
+		t.Fatalf("New(self) err = %v", err)
 	}
 }
 
@@ -74,26 +58,16 @@ func TestTerminatingToolReachedThroughWrapperIsRefused_TS07_4(t *testing.T) {
 	term := core.Tool{Name: "finish", Terminating: true, Handler: noopHandler}
 	wrap := core.Tool{Name: "code_mode", ReachableTools: []core.Tool{term}, Handler: noopHandler}
 	const want = `agentkit: terminating tool "finish" cannot be reached through wrapper "code_mode"`
-	if _, err := NewAgent(agentCfg(wrap)); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("NewAgent err = %v, want %q", err, want)
-	}
-	if _, err := NewAgentWithHistory(agentCfg(wrap), nil); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("NewAgentWithHistory err = %v, want %q", err, want)
-	}
-	ag, err := NewAgent(agentCfg())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ag.RegisterTool(wrap); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("RegisterTool err = %v, want %q", err, want)
+	if _, err := New(agentCfg(wrap)); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("New err = %v, want %q", err, want)
 	}
 	// Transitively: the wrapper that declares the terminating tool is named.
 	outer := core.Tool{Name: "outer", ReachableTools: []core.Tool{wrap}, Handler: noopHandler}
-	if _, err := NewAgent(agentCfg(outer)); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("NewAgent(outer) err = %v, want %q", err, want)
+	if _, err := New(agentCfg(outer)); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("New(outer) err = %v, want %q", err, want)
 	}
 	// A terminating tool registered directly is fine.
-	if _, err := NewAgent(agentCfg(term)); err != nil {
+	if _, err := New(agentCfg(term)); err != nil {
 		t.Fatalf("a top-level terminating tool was refused: %v", err)
 	}
 }
@@ -120,25 +94,23 @@ func TestReachableDiamondIsNotACycle_TS07_5(t *testing.T) {
 			below = level
 		}
 		root := core.Tool{Name: "root", Handler: noopHandler, ReachableTools: below}
-		ag, err := NewAgent(agentCfg(root))
+		ag, err := New(agentCfg(root))
 		if err != nil || ag == nil {
 			t.Fatalf("iteration %d: diamond refused: %v", i, err)
 		}
 	}
 }
 
-// TS-09-22 (smoke, 09-PATH-3): an embedder registers the retained providers,
-// builds an Agent with no session store or middleware, and runs a turn; the
-// result carries the provider's usage and the conversation is in history.
+// TS-09-22 (smoke, 09-PATH-3): an embedder builds an Agent with no session
+// store or middleware and runs a turn; the result carries the provider's
+// usage and the conversation is in the transcript.
 func TestSmokeAgentRunsWithRetainedProviders_TS09_22(t *testing.T) {
 	p := faux.New(faux.Turn{
 		Blocks:     []core.ContentBlock{faux.FauxText("hello back")},
 		StopReason: core.StopReasonStop,
 		Usage:      core.Usage{InputTokens: 12, OutputTokens: 3},
 	})
-	cfg := core.AgentConfig{Model: faux.Model()}
-	RegisterDefaults(&cfg, anthropic.Provider(anthropic.Options{}), p.APIProvider())
-	agent, err := NewAgent(cfg)
+	agent, err := New(Config{Provider: p, Model: testModelID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,8 +132,8 @@ func TestSmokeAgentRunsWithRetainedProviders_TS09_22(t *testing.T) {
 	if res.FinalText() != "hello back" || res.StopReason != core.RunStopEndTurn {
 		t.Fatalf("result = %q / %q", res.FinalText(), res.StopReason)
 	}
-	if n := agent.History().Len(); n != 2 {
-		t.Fatalf("history holds %d messages, want the prompt and the reply", n)
+	if n := len(agent.Messages()); n != 2 {
+		t.Fatalf("the transcript holds %d messages, want the prompt and the reply", n)
 	}
 	if len(events) == 0 {
 		t.Fatal("the run emitted no events")
@@ -305,4 +277,135 @@ func TestNewAcceptsGuardedShellTool_TS11_8(t *testing.T) {
 	if err != nil || a == nil {
 		t.Fatalf("New = %v, %v; want an agent", a, err)
 	}
+}
+
+// TS-11-9: the Agent's exported methods are exactly the five.
+func TestAgentSurfaceIsFiveMethods_TS11_9(t *testing.T) {
+	typ := reflect.TypeOf(&Agent{})
+	got := map[string]bool{}
+	for i := 0; i < typ.NumMethod(); i++ {
+		if m := typ.Method(i); m.PkgPath == "" {
+			got[m.Name] = true
+		}
+	}
+	want := map[string]bool{"Run": true, "Stream": true, "Messages": true, "Usage": true, "ReachableTools": true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("exported methods = %v, want %v", got, want)
+	}
+}
+
+// fauxTurnUsage is a turn's usage, so a run has some to report.
+var fauxTurnUsage = core.Usage{InputTokens: 10, OutputTokens: 5}
+
+// TS-11-10: Run executes to a stop condition and reports the transcript,
+// usage, turns and stop reason.
+func TestRunReturnsAComprehensiveResult_TS11_10(t *testing.T) {
+	fp := faux.New(
+		faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall("c1", "toolA", "{}")}, StopReason: core.StopReasonToolUse, Usage: fauxTurnUsage},
+		faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("all done")}, StopReason: core.StopReasonStop, Usage: fauxTurnUsage},
+	)
+	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{{Name: "toolA", Handler: noopHandler}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "do work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StopReason != core.RunStopEndTurn || res.TurnCount != 2 || len(res.Messages) != 4 {
+		t.Fatalf("result = %q after %d turns with %d messages", res.StopReason, res.TurnCount, len(res.Messages))
+	}
+	if !reflect.DeepEqual(a.Messages(), res.Messages) {
+		t.Fatal("Messages() differs from RunResult.Messages after one run")
+	}
+	if res.Usage.InputTokens != 20 || res.Usage.OutputTokens != 10 {
+		t.Fatalf("usage = %+v, want both turns' tokens", res.Usage)
+	}
+}
+
+// TS-11-11: Stream returns at once and the events arrive on it.
+func TestStreamDeliversEvents_TS11_11(t *testing.T) {
+	fp := faux.New(faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("streamed response")))
+	a, err := New(Config{Provider: fp, Model: driverModel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := a.Stream(context.Background(), "stream prompt")
+	if err != nil || st == nil {
+		t.Fatalf("Stream = %v, %v", st, err)
+	}
+	var kinds []string
+	for e := range st.Events() {
+		kinds = append(kinds, fmt.Sprintf("%T", e))
+	}
+	if len(kinds) == 0 || kinds[0] != "core.AgentStartEvent" || kinds[len(kinds)-1] != "core.AgentDoneEvent" {
+		t.Fatalf("events = %v", kinds)
+	}
+}
+
+// TS-11-12: a Run or Stream while another is in flight fails with ErrBusy.
+func TestOverlappingRunsAreBusy_TS11_12(t *testing.T) {
+	fp := faux.New(faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("waiting")}, StopReason: core.StopReasonStop, Delay: 200 * time.Millisecond})
+	a, err := New(Config{Provider: fp, Model: driverModel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Stream claims the slot before it returns, so the overlap is certain.
+	first, err := a.Stream(context.Background(), "run 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), "run 2"); !errors.Is(err, core.ErrBusy) {
+		t.Fatalf("Run during a run = %v, want ErrBusy", err)
+	}
+	if _, err := a.Stream(context.Background(), "run 3"); !errors.Is(err, core.ErrBusy) {
+		t.Fatalf("Stream during a run = %v, want ErrBusy", err)
+	}
+	if _, err := first.RunResult(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), "run 4"); err != nil {
+		t.Fatalf("Run after the first finished = %v", err)
+	}
+}
+
+// TS-11-13: Messages, Usage and ReachableTools are safe to read while a run
+// is in flight (run under -race).
+func TestStateIsReadableDuringARun_TS11_13(t *testing.T) {
+	var turns []faux.Turn
+	for i := 0; i < 5; i++ {
+		turns = append(turns, faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall(fmt.Sprintf("c%d", i), "toolA", "{}")},
+			StopReason: core.StopReasonToolUse, Usage: fauxTurnUsage, Delay: time.Millisecond})
+	}
+	a, err := New(Config{Provider: faux.New(turns...), Model: driverModel, Tools: []core.Tool{{Name: "toolA", Handler: noopHandler}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if _, err := a.Run(ctx, "start multi-turn"); err != nil {
+			t.Error(err)
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			msgs := a.Messages()
+			for _, m := range msgs {
+				if m == nil {
+					t.Error("nil message in the transcript")
+				}
+			}
+			_ = a.Usage()
+			if len(a.ReachableTools()) != 1 {
+				t.Error("ReachableTools changed during the run")
+			}
+		}()
+	}
+	wg.Wait()
 }

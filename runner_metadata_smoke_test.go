@@ -112,7 +112,6 @@ func ts0461RunAgent(t *testing.T, srv *httptest.Server, requestBodies *[][]byte,
 	afterRecs []ts0461AfterRecord,
 	toolResultEvents []core.ToolResultMessage,
 	turnEndResults []core.ToolResultMessage,
-	stopResults []core.ToolResultMessage,
 	model *core.Model,
 ) {
 	t.Helper()
@@ -122,11 +121,6 @@ func ts0461RunAgent(t *testing.T, srv *httptest.Server, requestBodies *[][]byte,
 		ContextWindow: 200000, MaxTokens: 4096,
 	}
 
-	var (
-		afterMu sync.Mutex
-		eventMu sync.Mutex
-	)
-
 	getenv := func(k string) string {
 		if k == "ANTHROPIC_API_KEY" {
 			return "sk-ant-test-key-smoke"
@@ -134,24 +128,16 @@ func ts0461RunAgent(t *testing.T, srv *httptest.Server, requestBodies *[][]byte,
 		return ""
 	}
 
-	cfg := core.AgentConfig{
-		Model: model,
-		Providers: core.ProviderRegistry{
-			anthropic.API: anthropic.Provider(anthropic.Options{
-				BaseURL: srv.URL,
-				Getenv:  getenv,
-			}),
-		},
-		StopPolicy: func(sc core.StopContext) bool {
-			if len(sc.ToolResults) > 0 {
-				eventMu.Lock()
-				stopResults = append(stopResults, sc.ToolResults...)
-				eventMu.Unlock()
-			}
-			return false
-		},
-		BeforeToolCall: guard.AllowAll,
-		AfterToolCall: func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+	var afterMu sync.Mutex
+	cfg := Config{
+		Provider: core.ClientFunc(anthropic.Provider(anthropic.Options{
+			BaseURL: srv.URL,
+			Getenv:  getenv,
+		}).Stream),
+		Model: model.ID,
+		Tools: ts0461Tools(t),
+		Guard: guard.AllowAll,
+		After: func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			afterMu.Lock()
 			afterRecs = append(afterRecs, ts0461AfterRecord{
 				ToolResult: in.ToolResult,
@@ -162,19 +148,14 @@ func ts0461RunAgent(t *testing.T, srv *httptest.Server, requestBodies *[][]byte,
 		},
 	}
 
-	a, err := NewAgent(cfg)
+	a, err := New(cfg)
 	if err != nil {
-		t.Fatalf("NewAgent: %v", err)
-	}
-	for _, tool := range ts0461Tools(t) {
-		if err := a.RegisterTool(tool); err != nil {
-			t.Fatalf("RegisterTool(%s): %v", tool.Name, err)
-		}
+		t.Fatalf("New: %v", err)
 	}
 
 	toolResultEvents, turnEndResults = ts0461Drain(t, a)
 
-	return afterRecs, toolResultEvents, turnEndResults, stopResults, model
+	return afterRecs, toolResultEvents, turnEndResults, model
 }
 
 // TS-04-61 (smoke): A failing execute call's metadata reaches observers and
@@ -184,7 +165,6 @@ type ts0461Data struct {
 	afterRecs        []ts0461AfterRecord
 	toolResultEvents []core.ToolResultMessage
 	turnEndResults   []core.ToolResultMessage
-	stopResults      []core.ToolResultMessage
 	model            *core.Model
 	srv              *httptest.Server
 	requestBodies    *[][]byte
@@ -200,13 +180,13 @@ func ts0461Setup(t *testing.T) ts0461Data {
 		t.Skip("no shell available")
 	}
 	srv, requestBodies, requestMu := ts0461Server(t)
-	afterRecs, toolResultEvents, turnEndResults, stopResults, model :=
+	afterRecs, toolResultEvents, turnEndResults, model :=
 		ts0461RunAgent(t, srv, requestBodies, requestMu)
 	return ts0461Data{
 		afterRecs: afterRecs, toolResultEvents: toolResultEvents,
-		turnEndResults: turnEndResults, stopResults: stopResults,
-		model: model,
-		srv:   srv, requestBodies: requestBodies, requestMu: requestMu,
+		turnEndResults: turnEndResults,
+		model:          model,
+		srv:            srv, requestBodies: requestBodies, requestMu: requestMu,
 	}
 }
 
@@ -244,9 +224,6 @@ func TestTS_04_61_Events(t *testing.T) {
 	}
 	if len(d.turnEndResults) == 0 || d.turnEndResults[0].Metadata == nil || *d.turnEndResults[0].Metadata.ExitCode != 2 {
 		t.Fatal("TurnEndEvent: ExitCode mismatch")
-	}
-	if len(d.stopResults) == 0 || d.stopResults[0].Metadata == nil || *d.stopResults[0].Metadata.ExitCode != 2 {
-		t.Fatal("StopContext: ExitCode mismatch")
 	}
 }
 

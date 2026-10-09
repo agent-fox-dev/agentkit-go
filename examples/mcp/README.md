@@ -35,7 +35,7 @@ connected servers: [docs]
 tools discovered over MCP: [docs__list_topics docs__search_docs]
 direct call to docs__list_topics: ok=true {"content":[{"type":"text","text":"environment, pipe transport, protocol version, qualified names"}],"text":"environment, pipe transport, protocol version, qual…
 shadowing refused: mcp: tool name collides with an existing tool: server "helper" exposes "word_count" as "word_count", which is already a native tool
-error: no credential for vendor "anthropic": set one of ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_OAUTH_TOKEN, ANTHROPIC_VERTEX_BASE_URL, ANTHROPIC_BASE_URL (for a gateway or a local server) (see examples/README.md)
+error: anthropic: missing credentials: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, or select Vertex AI (CLAUDE_CODE_USE_VERTEX=1) or Bedrock (CLAUDE_CODE_USE_BEDROCK=1)
 ```
 
 With a credential the last line is replaced by the streamed answer, one
@@ -57,12 +57,14 @@ In `clientMode`:
    `pool.Connect(ctx, mcp.ServerConfig{Name, Command, Args, Env, Timeout}, env, secrets)`
    (`connectExternal`).
 4. **`pool.Tools(ctx, native)`** returns `core.Tool`s with **qualified names**,
-   `<server>__<tool>`. Write allowlists and `BeforeToolCall` checks against
+   `<server>__<tool>`. Write allowlists and `Config.Guard` checks against
    the qualified name.
 5. **`smokeCall`** executes one adapted tool directly — a cheap way to prove
    the MCP side works before paying for a model turn.
-6. From there it is an ordinary agent: `cfg.ToolPolicy.ToolNames` lists native
-   *and* MCP tools (a non-nil allowlist covers the whole set).
+6. From there it is an ordinary agent: `agentkit.New(agentkit.Config{…})`
+   with `Tools` holding the native *and* MCP tools, and
+   `Policy: core.ToolPolicy{ToolNames: …}` listing both (a non-nil allowlist
+   covers the whole set). `MaxTurns: 8` and `MaxCostUSD: 1.00` bound the run.
 
 The in-process server: `docsServer()` builds an `sdk.NewServer(…)` and
 `addTool` registers each tool with a raw JSON Schema and a handler that gets
@@ -80,5 +82,6 @@ its arguments decoded.
 ## Related
 
 Package `mcp` (`Pool`, `Connect`, `ServerConfig`, `ConnectionOptions`,
-`NewPipeTransport`), `wire` (`Defaults`), `core` (`ToolPolicy`). The client is
+`NewPipeTransport`), `wire` (`Defaults`), `agentkit` (`Config`, `New`),
+`core` (`ToolPolicy`). The client is
 described in [`docs/architecture.md`](../../docs/architecture.md#mcp-client).

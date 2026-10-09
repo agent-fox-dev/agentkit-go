@@ -21,15 +21,40 @@ need an Anthropic credential (below).
 ## Configuring an application
 
 AgentKit reads no configuration file and has no global state. Everything is
-either a field on `core.AgentConfig` or an environment variable consulted at
-request time. There are exactly three things to get right.
+either a field on `agentkit.Config` or an environment variable read when the
+client is resolved. The smallest real agent is:
+
+```go
+client, _, err := anthropic.Resolve(anthropic.OSEnv{})
+if err != nil {
+	return err // names the variables to set
+}
+agent, err := agentkit.New(agentkit.Config{
+	Client:     client,
+	Model:      "claude-sonnet-5",
+	System:     "You are concise.",
+	Tools:      myTools,
+	MaxTurns:   12,
+	MaxCostUSD: 1.00,
+})
+```
+
+`New` validates the whole config before returning an agent, so a bad tool,
+a missing model or an unguarded shell is an error here rather than on the
+first run. The agent then has five methods: `Run` and `Stream` execute a
+prompt, and `Messages`, `Usage` and `ReachableTools` read its state.
+
+There are exactly two things to get right.
 
 ### 1. A deployment and its credential
 
 `anthropic.Resolve(env)` chooses the deployment and builds the SDK client
-(`provider/anthropic/resolve.go`). The provider calls it on every request
-unless `anthropic.Options.Client` is set, reading `RequestOptions.Env` first,
-then `Options.Getenv` (or the process environment).
+(`provider/anthropic/resolve.go`); `anthropic.OSEnv{}` reads the process
+environment. The examples that call a model resolve once, up front, and pass
+the result as `Config.Client`. When you need provider options instead —
+`VertexProject`, `Betas`, `MaxRetries` — build the provider yourself and pass
+`Config.Provider: core.ClientFunc(anthropic.Provider(anthropic.Options{…}).Stream)`;
+`Provider` is used instead of `Client` when it is set.
 
 | Variable | Effect |
 |---|---|
@@ -47,8 +72,7 @@ then `Options.Getenv` (or the process environment).
 
 With no cloud flag and none of the three Anthropic credentials, `Resolve`
 fails with `anthropic.ErrNoCredentials` ("anthropic: missing credentials: …"),
-and the provider ends the turn with that message rather than sending a
-request. A Vertex selection with no project fails the same way, naming the
+which the examples report before building the agent. A Vertex selection with no project fails the same way, naming the
 variables. `anthropic.Options.VertexProject` / `VertexLocation` select Vertex
 and set its location in code, over the environment.
 
@@ -87,13 +111,17 @@ model, known := catalog.Lookup("claude-opus-5-5") // the "anthropic/" prefix is 
 `catalog.Lookup` supplies what the model id does not carry: the context
 window, the output cap, the prices, and how the model takes extended thinking
 (`Model.Thinking`: `adaptive` with an effort, `budget` with `budget_tokens`,
-or `none`). The catalog lists Claude models only.
+or `none`). The catalog lists Claude models only. `Config.Model` takes the
+id and `agentkit.New` does this lookup itself; `Config.Effort`
+(`agentkit.EffortLow` … `agentkit.EffortMax`) sets the effort. The examples
+call `catalog.Lookup` only to print the bare id in their summary line.
 
 The catalog is **not an allowlist**. An id it does not list — a model
 released after this build, or Vertex's dated ids such as
 `claude-sonnet-5@20260401` — still resolves, with `known` false: a
 1,000,000-token window, a 128,000-token output cap, adaptive thinking and
-**no price**, so a run's cost reads as zero. Resolving never means the model
+**no price**, so a run's cost reads as zero — and `Config.MaxCostUSD` never
+fires for it. Resolving never means the model
 exists; the vendor decides that on the first request.
 
 Every example that calls a model takes `AGENTKIT_MODEL` to override its
@@ -107,25 +135,29 @@ AGENTKIT_MODEL=claude-opus-5-5 go run ./examples/codingagent "hello"
 
 | Variable | Effect |
 |---|---|
+| `AGENTKIT_MODEL` | Overrides the model of every example that calls one (default `anthropic/claude-sonnet-5`). |
 
 ## Things every application has to decide
 
 These are not defaults you can ignore — the library will stop you.
 
-**A shell tool needs an authorization boundary.** Registering `execute` or
-`run_command` with a nil `AgentConfig.BeforeToolCall` fails the
-run with `core.ErrUnguardedExecute`, before any request is built. A headless
-service would otherwise hand the model an unrestricted shell by omission.
-Supply an interceptor — `guard.Restricted` is a replaceable starting
-point — or pass `guard.AllowAll` to say in code that you meant it.
+**A shell tool needs an authorization boundary.** Passing `execute`,
+`run_command` or `powershell` in `Config.Tools` — directly or reachable
+through a wrapper tool — with a nil `Config.Guard` makes `agentkit.New`
+return an error wrapping `core.ErrUnguardedExecute`; no agent is built. A
+headless service would otherwise hand the model an unrestricted shell by
+omission. Supply an interceptor — `guard.Restricted` is a replaceable
+starting point — or pass `guard.AllowAll` to say in code that you meant it.
 See [`codingagent`](codingagent).
 
-**A stop policy is how a run ends.** `AgentConfig.StopPolicy` is a
-`func(core.StopContext) bool` you write; the examples bound turns and spend
-in one function, calling `sc.SetReason(core.RunStopMaxTurns)` or
-`sc.SetReason(core.RunStopBudgetExceeded)` so the run says which limit fired.
-Without one, a tool-using agent has no upper bound. The check runs after each
-turn, so a run can overshoot a budget by at most one turn plus its tool batch.
+**Bounds are how a runaway run ends.** `Config.MaxTurns` stops the run once
+that many turns have completed (`core.RunStopMaxTurns`, error
+`core.ErrMaxTurns`); `Config.MaxCostUSD` stops it before the next request
+once the run has spent that much (`core.RunStopBudgetExceeded`, error
+`core.ErrBudgetExceeded`); `Config.Timeout` bounds wall-clock time. Zero
+means unbounded, so without them a tool-using agent has no upper bound. The
+cost check runs before each request, so a run can overshoot a budget by at
+most one turn plus its tool batch.
 
 **File tools are contained to a workspace root**, resolved through symlinks
 before every read and re-checked immediately before every write. `execute` is
@@ -142,11 +174,15 @@ pre-flight only resolves the deployment; Google and AWS credentials are
 checked on the first request. A Vertex 401 names the project and how the
 deployment was selected.
 
-**`agent is busy` (`ErrBusy`)** — `Run` or `Stream` was called while a turn was
-in flight. Conflicting operations fail rather than queue, because a prompt
-queued behind a running turn was written against a transcript that has since
-changed. Retry, queue it yourself, or use `Steer`/`FollowUp` to deliver a
-message into the *running* turn.
+**`agent is busy` (`ErrBusy`)** — `Run` or `Stream` was called while a run was
+in flight. A second run fails rather than queues, because a prompt queued
+behind a running one was written against a transcript that has since
+changed. Wait for the first run to finish, then retry, or queue it yourself.
+
+**Watching a run** — there are no hooks. `Stream` returns the run's events
+(`TurnEndEvent`, `ToolExecutionStartEvent`, `ToolResultEvent`, text deltas,
+`ErrorEvent`, …; see `core/event.go`), and a panic in a tool or the guard
+arrives as an `ErrorEvent` rather than crashing the process.
 
 **Nothing streams** — a non-streaming provider emits no delta events at all.
 Deltas are an optimization; the authoritative events always arrive.

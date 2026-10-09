@@ -52,9 +52,8 @@ func TestSmokeNestedParallelThroughWrapper_TS07_35(t *testing.T) {
 	s := &scripted{turns: []core.AssistantMessage{
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "parent_call_1", "wrapper", `{}`)),
 	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.ParallelTools = true
-		c.ToolPolicy.CustomTools = []core.Tool{wrapper}
+	a := newTestAgent(t, s, func(c *Config) {
+		c.Tools = []core.Tool{wrapper}
 	})
 	st, err := a.Stream(context.Background(), "run wrapper")
 	if err != nil {
@@ -83,7 +82,7 @@ func TestSmokeNestedParallelThroughWrapper_TS07_35(t *testing.T) {
 	if r := resultFor(t, res, "parent_call_1"); r.IsError || !strings.Contains(resultText(r), `"children":2`) {
 		t.Fatalf("wrapper result = %+v", r)
 	}
-	for _, m := range a.History().Messages() {
+	for _, m := range a.Messages() {
 		switch v := m.(type) {
 		case core.AssistantMessage:
 			for _, b := range v.Content {
@@ -102,12 +101,12 @@ func TestSmokeNestedParallelThroughWrapper_TS07_35(t *testing.T) {
 	}
 }
 
-// TS-07-36 (smoke, 07-PATH-2): NewAgent refuses mutually reachable tools,
+// TS-07-36 (smoke, 07-PATH-2): New refuses mutually reachable tools,
 // naming the cycle.
 func TestSmokeNestedCycleRefused_TS07_36(t *testing.T) {
-	_, err := NewAgent(agentCfg(cyclicPair()))
+	_, err := New(agentCfg(cyclicPair()))
 	if err == nil || !strings.Contains(err.Error(), "agentkit: reachable tools cycle detected: toolA -> toolB -> toolA") {
-		t.Fatalf("NewAgent err = %v", err)
+		t.Fatalf("New err = %v", err)
 	}
 }
 
@@ -127,8 +126,8 @@ func TestSmokeNestedInterceptorTerminates_TS07_37(t *testing.T) {
 		continued = true
 		return core.OKResult(nil)
 	}, childTool("child"))
-	res, s := runWrapper(t, "wrapper", func(c *core.AgentConfig) {
-		c.BeforeToolCall = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+	res, s := runWrapper(t, "wrapper", func(c *Config) {
+		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			mu.Lock()
 			seen = append(seen, in)
 			mu.Unlock()
@@ -149,16 +148,13 @@ func TestSmokeNestedInterceptorTerminates_TS07_37(t *testing.T) {
 	}
 }
 
-// TS-07-38 (smoke, 07-PATH-4): a wrapper reaching execute with no
-// BeforeToolCall fails the run before any request to the model.
+// TS-07-38 (smoke, 07-PATH-4): a wrapper reaching execute with no Guard is
+// refused at construction, before any request to the model.
 func TestSmokeNestedUnguardedShellRefused_TS07_38(t *testing.T) {
 	s := &scripted{}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.ToolPolicy.CustomTools = []core.Tool{shellWrapper()}
-	})
-	_, err := a.RunMessage(context.Background(), core.UserMessage{Content: core.Content{core.TextBlock{Text: "run script"}}})
+	_, err := New(Config{Provider: core.ClientFunc(s.stream), Model: testModelID, Tools: []core.Tool{shellWrapper()}})
 	if !errors.Is(err, core.ErrUnguardedExecute) || !strings.Contains(err.Error(), `wrapper "code_mode" reached shell tool "execute"`) {
-		t.Fatalf("RunMessage err = %v", err)
+		t.Fatalf("New err = %v", err)
 	}
 	if s.turnsRun() != 0 {
 		t.Fatalf("%d requests reached the model", s.turnsRun())

@@ -42,25 +42,12 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	// in the same parallel batch) sees it at once rather than when the batch
 	// finalizes.
 	ctx = core.WithUsageReporter(ctx, a.addUsage)
-	a.mu.Lock()
-	cfg := a.cfg
-	tools := cfg.ToolPolicy.Resolve(a.tools)
-	a.mu.Unlock()
+	cfg, tools := a.cfg, a.tools
 
-	// report surfaces an error from INSIDE the batch-scoped critical section
-	// without touching a.mu. The hooks are taken from the cfg copy above, so
-	// the documented lock order (a.mu is never acquired under batchMu) is a
-	// fact rather than a comment: fireError re-reads the hooks under a.mu,
-	// and calling it from the finalize block took the agent lock inside the
-	// batch lock on every tool result.
-	hooks := cfg.Hooks
-	report := func(err error) {
-		safely(nil, "OnError", func() {
-			if hooks.OnError != nil {
-				hooks.OnError(err)
-			}
-		})
-	}
+	// report surfaces an error — a panicking interceptor — as an event on
+	// the run's stream. It never touches a.mu, so it is safe inside the
+	// batch-scoped critical section, where the agent lock is never taken.
+	report := streamReporter(s)
 
 	// started marks calls whose ToolExecutionStartEvent has been pushed, so
 	// the abort path can open the calls the prepare loop never reached and
@@ -79,7 +66,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 
 	// env is what a wrapper's nested calls run with (07-REQ-4.3): the same
 	// config copy, stream and reporter as this batch.
-	env := &nestedEnv{a: a, cfg: cfg, s: s, assistant: assistant, turnCount: turnCount, report: report}
+	env := &nestedEnv{cfg: cfg, s: s, assistant: assistant, turnCount: turnCount, report: report}
 
 	// batchMu is BATCH-SCOPED: created here, acquired by nothing else, and
 	// a.mu is never acquired while it is held.
@@ -157,8 +144,8 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 			continue
 		}
 
-		if cfg.BeforeToolCall != nil {
-			dec := a.callBefore(ctx, cfg.BeforeToolCall, core.BeforeToolCallContext{
+		if cfg.Guard != nil {
+			dec := callBefore(ctx, report, cfg.Guard, core.BeforeToolCallContext{
 				ToolName:  c.Name,
 				ToolUseID: c.ID,
 				Tool:      tool,
@@ -223,8 +210,8 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				defer batchMu.Unlock()
 
 				msg := toolResultMessage(c, out)
-				if cfg.AfterToolCall != nil {
-					dec := callAfter(ctx, report, cfg.AfterToolCall, core.AfterToolCallContext{
+				if cfg.After != nil {
+					dec := callAfter(ctx, report, cfg.After, core.AfterToolCallContext{
 						ToolName:   c.Name,
 						ToolUseID:  c.ID,
 						Arguments:  prepared.Args,
@@ -285,7 +272,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 		return results, false
 	}
 
-	sequential := !cfg.ParallelTools || len(thunks) <= 1
+	sequential := len(thunks) <= 1
 	if !sequential {
 		// A single Sequential tool anywhere in the batch demotes the WHOLE
 		// batch (REQ-LOOP-05a). Tools with process-wide or workspace-wide
@@ -361,14 +348,14 @@ func invokeHandler(ctx context.Context, t core.Tool, p core.PreparedArguments) (
 // wrapper, with NO agent lock held (NFR-REL-02). A panicking interceptor fails
 // CLOSED — it blocks the call — because a security boundary that opens on
 // panic is not a boundary.
-func (a *Agent) callBefore(ctx context.Context, f core.BeforeToolCall, in core.BeforeToolCallContext) (dec core.BeforeToolCallDecision) {
+func callBefore(ctx context.Context, report func(error), f core.BeforeToolCall, in core.BeforeToolCallContext) (dec core.BeforeToolCallDecision) {
 	defer func() {
 		if r := recover(); r != nil {
 			dec = core.BeforeToolCallDecision{
 				Block:  true,
 				Reason: fmt.Sprintf("interceptor panicked: %v", r),
 			}
-			a.fireError(fmt.Errorf("agentkit: panic in BeforeToolCall for %q: %v", in.ToolName, r))
+			report(fmt.Errorf("agentkit: panic in BeforeToolCall for %q: %v", in.ToolName, r))
 		}
 	}()
 	return f(ctx, in)
@@ -379,9 +366,8 @@ func (a *Agent) callBefore(ctx context.Context, f core.BeforeToolCall, in core.B
 // this is not a security boundary, and inventing a termination vote from a
 // crash would end the run for the wrong reason.
 //
-// It reports through the batch's lock-free reporter, never a.fireError: it
-// runs inside the batch-scoped critical section, and the agent lock is never
-// taken there.
+// It reports through the batch's lock-free reporter: it runs inside the
+// batch-scoped critical section, and the agent lock is never taken there.
 func callAfter(ctx context.Context, report func(error), f core.AfterToolCall, in core.AfterToolCallContext) (dec core.AfterToolCallDecision) {
 	defer func() {
 		if r := recover(); r != nil {

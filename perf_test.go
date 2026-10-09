@@ -24,19 +24,13 @@ import (
 func benchAgent(b *testing.B, tools int) *Agent {
 	b.Helper()
 	s := &scripted{}
-	cfg := core.AgentConfig{
-		Model:      testModel(),
-		StopPolicy: afterTurns(1),
-		Providers:  core.ProviderRegistry{testAPI: s.provider()},
+	cfg := Config{Provider: core.ClientFunc(s.stream), Model: testModelID}
+	for i := 0; i < tools; i++ {
+		cfg.Tools = append(cfg.Tools, echoTool(fmt.Sprintf("tool_%d", i), nil))
 	}
-	a, err := NewAgent(cfg)
+	a, err := New(cfg)
 	if err != nil {
 		b.Fatal(err)
-	}
-	for i := 0; i < tools; i++ {
-		if err := a.RegisterTool(echoTool(fmt.Sprintf("tool_%d", i), nil)); err != nil {
-			b.Fatal(err)
-		}
 	}
 	return a
 }
@@ -100,17 +94,13 @@ func BenchmarkLoopTurnWithToolBatch(b *testing.B) {
 				mustUse("c2", "tool_1", `{"v":"y"}`),
 				mustUse("c3", "tool_2", `{"v":"z"}`)),
 		}}
-		a, err := NewAgent(core.AgentConfig{
-			Model: testModel(), StopPolicy: afterTurns(2), ParallelTools: true,
-			Providers: core.ProviderRegistry{testAPI: s.provider()},
-		})
+		cfg := Config{Provider: core.ClientFunc(s.stream), Model: testModelID}
+		for i := 0; i < 3; i++ {
+			cfg.Tools = append(cfg.Tools, echoTool(fmt.Sprintf("tool_%d", i), nil))
+		}
+		a, err := New(cfg)
 		if err != nil {
 			b.Fatal(err)
-		}
-		for i := 0; i < 3; i++ {
-			if err := a.RegisterTool(echoTool(fmt.Sprintf("tool_%d", i), nil)); err != nil {
-				b.Fatal(err)
-			}
 		}
 		return a
 	}
@@ -285,16 +275,10 @@ func deepHistory(n int) core.Messages {
 func benchAgentAtDepth(b *testing.B, turns int) *Agent {
 	b.Helper()
 	s := &scripted{}
-	h := core.NewConversationHistory()
-	for _, m := range deepHistory(turns) {
-		h.Record(core.NullLeaf, m)
-	}
-	a, err := NewAgentWithHistory(core.AgentConfig{
-		Model: testModel(), StopPolicy: afterTurns(1),
-		Providers: core.ProviderRegistry{testAPI: s.provider()},
-	}, h)
+	a, err := New(Config{Provider: core.ClientFunc(s.stream), Model: testModelID})
 	if err != nil {
 		b.Fatal(err)
 	}
+	a.transcript = deepHistory(turns)
 	return a
 }

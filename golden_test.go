@@ -80,16 +80,13 @@ func TestTheAssembledPromptReachesTheProvider(t *testing.T) {
 	s := &scripted{turns: []core.AssistantMessage{
 		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
 	}}
-	a := newTestAgent(t, s, nil)
-	if err := a.RegisterTool(core.Tool{
+	a := newTestAgent(t, s, nil, core.Tool{
 		Name: "widget", Description: "does a thing", InputSchema: schema.Object(),
 		PromptGuidelines: []string{"Use widget for widget-shaped problems."},
 		Execute: func(context.Context, json.RawMessage) core.ToolResult {
 			return core.OKResult(nil)
 		},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if _, err := a.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)
 	}
@@ -112,8 +109,8 @@ func TestACustomPromptReachesTheProviderWithoutBuiltins(t *testing.T) {
 	s := &scripted{turns: []core.AssistantMessage{
 		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
 	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.SystemPrompt = "Only answer in haiku."
+	a := newTestAgent(t, s, func(c *Config) {
+		c.System = "Only answer in haiku."
 	})
 	if _, err := a.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)

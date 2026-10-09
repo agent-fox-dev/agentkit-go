@@ -99,7 +99,7 @@ func (r ProviderRegistry) Dispatch(ctx context.Context, m *Model, req Request, o
 	if !ok {
 		return ErrorStream(nil, fmt.Errorf(
 			"agentkit: no provider registered for api %q (model %q, vendor %q); "+
-				"set AgentConfig.Providers or call agentkit.RegisterDefaults(&cfg)",
+				"register one with ProviderRegistry.Register",
 			m.API, m.ID, m.Provider))
 	}
 	return p.Stream(ctx, m, req, o)

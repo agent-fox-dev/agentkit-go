@@ -107,19 +107,22 @@ func afterTurns(n int) core.StopPolicy {
 	}
 }
 
-func newTestAgent(t *testing.T, s *scripted, mutate func(*core.AgentConfig)) *Agent {
+// testModelID is not in the catalog, so it takes the default row.
+const testModelID = "test-model"
+
+func newTestAgent(t *testing.T, s *scripted, mutate func(*Config), tools ...core.Tool) *Agent {
 	t.Helper()
-	cfg := core.AgentConfig{
-		Model:      testModel(),
-		StopPolicy: afterTurns(10),
-		Providers:  core.ProviderRegistry{testAPI: s.provider()},
+	cfg := Config{
+		Provider: core.ClientFunc(s.stream),
+		Model:    testModelID,
+		Tools:    tools,
 	}
 	if mutate != nil {
 		mutate(&cfg)
 	}
-	a, err := NewAgent(cfg)
+	a, err := New(cfg)
 	if err != nil {
-		t.Fatalf("NewAgent: %v", err)
+		t.Fatalf("New: %v", err)
 	}
 	return a
 }
@@ -180,10 +183,7 @@ func TestIterationOnToolUsePresenceNotStopReason(t *testing.T) {
 				assistantWithTools(reason, toolUse(t, "c1", "echo", `{"v":"x"}`)),
 				{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
 			}}
-			a := newTestAgent(t, s, nil)
-			if err := a.RegisterTool(echoTool("echo", &handlerCalls)); err != nil {
-				t.Fatal(err)
-			}
+			a := newTestAgent(t, s, nil, echoTool("echo", &handlerCalls))
 			if _, err := a.Run(context.Background(), "go"); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
@@ -206,8 +206,7 @@ func TestErrorAndAbortedShortCircuitBeforeToolExtraction(t *testing.T) {
 			s := &scripted{turns: []core.AssistantMessage{
 				assistantWithTools(reason, toolUse(t, "c1", "echo", `{}`)),
 			}}
-			a := newTestAgent(t, s, nil)
-			_ = a.RegisterTool(echoTool("echo", &handlerCalls))
+			a := newTestAgent(t, s, nil, echoTool("echo", &handlerCalls))
 			_, err := a.Run(context.Background(), "go")
 			if err == nil {
 				t.Fatal("want an error for a short-circuiting stop reason")
@@ -246,10 +245,7 @@ func TestOneToolResultMessagePerCallInSlotOrder(t *testing.T) {
 		),
 		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
 	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) { c.ParallelTools = true })
-	_ = a.RegisterTool(slow("slow", 60*time.Millisecond))
-	_ = a.RegisterTool(slow("mid", 30*time.Millisecond))
-	_ = a.RegisterTool(slow("fast", time.Millisecond))
+	a := newTestAgent(t, s, nil, slow("slow", 60*time.Millisecond), slow("mid", 30*time.Millisecond), slow("fast", time.Millisecond))
 
 	res, err := a.Run(context.Background(), "go")
 	if err != nil {
@@ -287,8 +283,7 @@ func TestMaxTokensWithToolCallsExecutesZeroHandlers(t *testing.T) {
 		),
 		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
 	}}
-	a := newTestAgent(t, s, nil)
-	_ = a.RegisterTool(echoTool("echo", &handlerCalls))
+	a := newTestAgent(t, s, nil, echoTool("echo", &handlerCalls))
 
 	res, err := a.Run(context.Background(), "go")
 	if err != nil {
@@ -342,8 +337,7 @@ func TestBatchAbortIsAllOrNothing(t *testing.T) {
 			),
 		}}
 		ctx, cancel := context.WithCancel(context.Background())
-		a := newTestAgent(t, s, func(c *core.AgentConfig) { c.ParallelTools = true })
-		_ = a.RegisterTool(echoTool("echo", &ran))
+		a := newTestAgent(t, s, nil, echoTool("echo", &ran))
 		cancel() // already cancelled when the batch is reached
 		_, _ = a.Run(ctx, "go")
 
@@ -381,16 +375,15 @@ func TestAbortDuringBatchDoesNotSplitIt(t *testing.T) {
 	}}
 	// Sequential execution makes the ordering deterministic: thunk 1 runs to
 	// completion (cancelling as it goes) before thunk 2 is reached.
-	a := newTestAgent(t, s, func(c *core.AgentConfig) { c.ParallelTools = false })
-	_ = a.RegisterTool(core.Tool{
+	a := newTestAgent(t, s, nil, core.Tool{
 		Name: "cancels", Description: "cancels the run", InputSchema: schema.Object(),
+		ExecutionMode: core.Sequential,
 		Handler: func(context.Context, json.RawMessage) (json.RawMessage, error) {
 			ran.Add(1)
 			cancel()
 			return json.RawMessage(`{}`), nil
 		},
-	})
-	_ = a.RegisterTool(echoTool("echo", &ran))
+	}, echoTool("echo", &ran))
 
 	_, _ = a.Run(ctx, "go")
 
@@ -410,8 +403,7 @@ func TestAbortedBatchStillProducesAResultPerCall(t *testing.T) {
 			toolUse(t, "c1", "echo", `{}`), toolUse(t, "c2", "echo", `{}`)),
 	}}
 	ctx, cancel := context.WithCancel(context.Background())
-	a := newTestAgent(t, s, nil)
-	_ = a.RegisterTool(echoTool("echo", nil))
+	a := newTestAgent(t, s, nil, echoTool("echo", nil))
 	cancel()
 	res, _ := a.Run(ctx, "go")
 
@@ -460,10 +452,7 @@ func TestOneSequentialToolDemotesTheWholeBatch(t *testing.T) {
 		),
 		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
 	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) { c.ParallelTools = true })
-	_ = a.RegisterTool(mk("par1", core.Parallel))
-	_ = a.RegisterTool(mk("seq", core.Sequential))
-	_ = a.RegisterTool(mk("par2", core.Parallel))
+	a := newTestAgent(t, s, nil, mk("par1", core.Parallel), mk("seq", core.Sequential), mk("par2", core.Parallel))
 
 	if _, err := a.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)
@@ -486,13 +475,11 @@ func TestPanickingAfterToolCallDoesNotDeadlockPeers(t *testing.T) {
 			toolUse(t, "c3", "echo", `{}`), toolUse(t, "c4", "echo", `{}`)),
 		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
 	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.ParallelTools = true
-		c.AfterToolCall = func(ctx context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+	a := newTestAgent(t, s, func(c *Config) {
+		c.After = func(ctx context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			panic("interceptor exploded")
 		}
-	})
-	_ = a.RegisterTool(echoTool("echo", nil))
+	}, echoTool("echo", nil))
 
 	done := make(chan struct{})
 	go func() { defer close(done); _, _ = a.Run(context.Background(), "go") }()
@@ -510,8 +497,7 @@ func TestPanickingHandlerBecomesErrorResult(t *testing.T) {
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "boom", `{}`)),
 		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
 	}}
-	a := newTestAgent(t, s, nil)
-	_ = a.RegisterTool(core.Tool{
+	a := newTestAgent(t, s, nil, core.Tool{
 		Name: "boom", Description: "panics", InputSchema: schema.Object(),
 		Handler: func(ctx context.Context, in json.RawMessage) (json.RawMessage, error) {
 			panic("handler exploded")
@@ -532,222 +518,24 @@ func TestPanickingHandlerBecomesErrorResult(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------- REQ-LOOP-04
-
-// TestStopPolicyRunsAfterResultsAreInHistory pins REQ-LOOP-04a. A limit
-// checked between tool extraction and execution ends the transcript with
-// dangling tool_use blocks that no provider accepts on resume.
-func TestStopPolicyRunsAfterResultsAreInHistory(t *testing.T) {
-	var sawResults int
-	s := &scripted{turns: []core.AssistantMessage{
-		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "echo", `{}`)),
-	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.StopPolicy = func(sc core.StopContext) bool {
-			sawResults = len(sc.ToolResults)
-			return true // stop after the first turn
-		}
-	})
-	_ = a.RegisterTool(echoTool("echo", nil))
-
-	res, err := a.Run(context.Background(), "go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sawResults != 1 {
-		t.Fatalf("StopContext.ToolResults had %d entries, want 1: the stop check must run "+
-			"AFTER the turn's tools executed and their results are in history (REQ-LOOP-04a)", sawResults)
-	}
-	// And the transcript must not end on an unanswered tool_use.
-	last := res.Messages[len(res.Messages)-1]
-	if _, isAssistant := last.(core.AssistantMessage); isAssistant {
-		t.Fatal("run ended on an assistant message carrying tool_use with no results: " +
-			"that transcript is unresumable")
-	}
-}
-
-// TestStopPolicyReasonSurvivesComposition: with a bare bool predicate the
-// loop cannot tell ErrMaxTurns from ErrBudgetExceeded once two limits are
-// composed into one policy; the reason the firing limit sets survives.
-func TestStopPolicyReasonSurvivesComposition(t *testing.T) {
-	s := &scripted{turns: []core.AssistantMessage{
-		{Content: core.Content{core.TextBlock{Text: "a"}}, StopReason: core.StopReasonStop},
-	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.ErrorOnLimit = true
-		turns := afterTurns(1)
-		c.StopPolicy = func(sc core.StopContext) bool {
-			if sc.Usage.CostUSD > 1e9 {
-				sc.SetReason(core.RunStopBudgetExceeded)
-				return true
-			}
-			return turns(sc)
-		}
-	})
-	res, err := a.Run(context.Background(), "go")
-	if !errors.Is(err, core.ErrMaxTurns) {
-		t.Fatalf("err = %v, want ErrMaxTurns", err)
-	}
-	if res.StopReason != core.RunStopMaxTurns {
-		t.Fatalf("StopReason = %q, want %q", res.StopReason, core.RunStopMaxTurns)
-	}
-}
-
-// ------------------------------------------------------------------- REQ-LOOP-13/15
-
-// TestSteeringIsDeliveredBeforeTheNextRequest pins REQ-LOOP-13's drain point:
-// a steered message must be visible to the NEXT provider request, and must
-// never land between an assistant response and its tool results.
-func TestSteeringIsDeliveredBeforeTheNextRequest(t *testing.T) {
-	s := &scripted{turns: []core.AssistantMessage{
-		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "echo", `{}`)),
-		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
-	}}
-	var a *Agent
-	a = newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.Hooks.OnTurnEnd = func(e core.TurnEndEvent) {
-			if e.TurnIndex == 0 {
-				_ = a.SteerText("steered")
-			}
-		}
-	})
-	_ = a.RegisterTool(echoTool("echo", nil))
-	if _, err := a.Run(context.Background(), "go"); err != nil {
-		t.Fatal(err)
-	}
-
-	sent := s.sentAt(1)
-	if len(sent) == 0 {
-		t.Fatal("no second request was made")
-	}
-	// The steered message must be present, and must come after the tool result.
-	var sawToolResult bool
-	var steerIdx = -1
-	for i, m := range sent {
-		switch v := m.(type) {
-		case core.ToolResultMessage:
-			sawToolResult = true
-		case core.UserMessage:
-			if v.Content.Text() == "steered" {
-				steerIdx = i
-			}
-		}
-	}
-	if steerIdx < 0 {
-		t.Fatal("the steered message was not delivered into the next request (REQ-LOOP-13)")
-	}
-	if !sawToolResult {
-		t.Fatal("the tool result vanished from the request")
-	}
-	if _, isTR := sent[steerIdx-1].(core.AssistantMessage); isTR {
-		t.Fatal("the steered message landed between an assistant response and its tool " +
-			"results, violating REQ-LOOP-02")
-	}
-}
-
-// TestSteeringKeepsInnerLoopAlive: pending steering keeps the loop alive even
-// when the assistant produced NO tool calls (REQ-LOOP-13).
-func TestSteeringKeepsInnerLoopAlive(t *testing.T) {
-	s := &scripted{turns: []core.AssistantMessage{
-		{Content: core.Content{core.TextBlock{Text: "one"}}, StopReason: core.StopReasonStop},
-		{Content: core.Content{core.TextBlock{Text: "two"}}, StopReason: core.StopReasonStop},
-	}}
-	var a *Agent
-	a = newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.Hooks.OnTurnEnd = func(e core.TurnEndEvent) {
-			if e.TurnIndex == 0 {
-				_ = a.SteerText("keep going")
-			}
-		}
-	})
-	if _, err := a.Run(context.Background(), "go"); err != nil {
-		t.Fatal(err)
-	}
-	if s.turnsRun() != 2 {
-		t.Fatalf("ran %d turns, want 2: a pending steering message must keep the inner "+
-			"loop alive even with no tool calls (REQ-LOOP-13)", s.turnsRun())
-	}
-}
-
-// TestFollowUpRestartsWithinTheSameRun: one RunResult, no second AgentStart.
-func TestFollowUpRestartsWithinTheSameRun(t *testing.T) {
-	s := &scripted{turns: []core.AssistantMessage{
-		{Content: core.Content{core.TextBlock{Text: "one"}}, StopReason: core.StopReasonStop},
-		{Content: core.Content{core.TextBlock{Text: "two"}}, StopReason: core.StopReasonStop},
-	}}
-	var a *Agent
-	var starts int
-	a = newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.Hooks.OnTurnEnd = func(e core.TurnEndEvent) {
-			if e.TurnIndex == 0 {
-				_ = a.FollowUpText("and now this")
-			}
-		}
-	})
-	st, err := a.Stream(context.Background(), "go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for e := range st.Events() {
-		if _, ok := e.(core.AgentStartEvent); ok {
-			starts++
-		}
-	}
-	if starts != 1 {
-		t.Fatalf("saw %d AgentStartEvents, want exactly 1: a follow-up restarts the outer "+
-			"loop WITHIN the same run (REQ-LOOP-14)", starts)
-	}
-	if s.turnsRun() != 2 {
-		t.Fatalf("ran %d turns, want 2", s.turnsRun())
-	}
-}
+// ------------------------------------------------------------------- REQ-LOOP-15
 
 // TestConcurrentRunReturnsErrBusy pins REQ-LOOP-15: conflicting operations
 // fail rather than queue, and never block.
 func TestConcurrentRunReturnsErrBusy(t *testing.T) {
-	release := make(chan struct{})
-	s := &scripted{}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.Hooks.OnTurnStart = func(core.TurnStartEvent) { <-release }
-	})
-	go func() { _, _ = a.Run(context.Background(), "first") }()
+	b := &blocking{started: make(chan struct{})}
+	a := b.agent(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = a.Run(ctx, "first") }()
 
-	// Wait until the first run has the slot.
-	deadline := time.Now().Add(2 * time.Second)
-	for a.Phase() == core.PhaseIdle && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
+	// The first run holds the slot until its provider call is cancelled.
+	<-b.started
 	_, err := a.Run(context.Background(), "second")
-	close(release)
+	cancel()
+	<-done
 	if !errors.Is(err, core.ErrBusy) {
 		t.Fatalf("second Run returned %v, want ErrBusy", err)
-	}
-}
-
-// TestSteerBeforeRunIsDeliveredIntoTheRun pins the claim-before-drain ordering
-// of REQ-LOOP-15: the slot is claimed and the queue drained under ONE lock, so
-// a message queued before the run starts cannot be lost.
-func TestSteerBeforeRunIsDeliveredIntoTheRun(t *testing.T) {
-	s := &scripted{turns: []core.AssistantMessage{
-		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
-	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) { c.SteeringQueueMode = core.QueueDrainAll })
-	if err := a.SteerText("queued first"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := a.Run(context.Background(), "prompt"); err != nil {
-		t.Fatal(err)
-	}
-	sent := s.sentAt(0)
-	found := false
-	for _, m := range sent {
-		if u, ok := m.(core.UserMessage); ok && u.Content.Text() == "queued first" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("a message steered before Run was silently dropped: the run slot must be " +
-			"claimed and the queue drained under one lock (REQ-LOOP-15)")
 	}
 }
 
@@ -770,9 +558,7 @@ func TestBatchTerminationIsAnAndNotAnOr(t *testing.T) {
 				toolUse(t, "c1", "finish", `{}`), toolUse(t, "c2", "keep", `{}`)),
 			{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
 		}}
-		a := newTestAgent(t, s, nil)
-		_ = a.RegisterTool(finish("finish", true))
-		_ = a.RegisterTool(finish("keep", false))
+		a := newTestAgent(t, s, nil, finish("finish", true), finish("keep", false))
 		res, err := a.Run(context.Background(), "go")
 		if err != nil {
 			t.Fatal(err)
@@ -789,8 +575,7 @@ func TestBatchTerminationIsAnAndNotAnOr(t *testing.T) {
 			assistantWithTools(core.StopReasonToolUse,
 				toolUse(t, "c1", "finish", `{}`), toolUse(t, "c2", "finish", `{}`)),
 		}}
-		a := newTestAgent(t, s, nil)
-		_ = a.RegisterTool(finish("finish", true))
+		a := newTestAgent(t, s, nil, finish("finish", true))
 		res, err := a.Run(context.Background(), "go")
 		if err != nil {
 			t.Fatal(err)
@@ -815,12 +600,11 @@ func TestBlockedCallProducesAnErrorResultAndTheLoopContinues(t *testing.T) {
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "echo", `{}`)),
 		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
 	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.BeforeToolCall = func(ctx context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+	a := newTestAgent(t, s, func(c *Config) {
+		c.Guard = func(ctx context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			return core.BeforeToolCallDecision{Block: true, Reason: "not allowed here"}
 		}
-	})
-	_ = a.RegisterTool(echoTool("echo", &ran))
+	}, echoTool("echo", &ran))
 	res, err := a.Run(context.Background(), "go")
 	if err != nil {
 		t.Fatal(err)
@@ -848,12 +632,11 @@ func TestPanickingInterceptorFailsClosed(t *testing.T) {
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "echo", `{}`)),
 		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
 	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.BeforeToolCall = func(ctx context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+	a := newTestAgent(t, s, func(c *Config) {
+		c.Guard = func(ctx context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			panic("policy exploded")
 		}
-	})
-	_ = a.RegisterTool(echoTool("echo", &ran))
+	}, echoTool("echo", &ran))
 	if _, err := a.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)
 	}
@@ -862,71 +645,7 @@ func TestPanickingInterceptorFailsClosed(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------- lifecycle
-
-func TestAbortFromAnotherGoroutine(t *testing.T) {
-	started := make(chan struct{})
-	s := &scripted{}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.Hooks.OnTurnStart = func(core.TurnStartEvent) {
-			select {
-			case <-started:
-			default:
-				close(started)
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-	})
-	go func() { <-started; a.Abort() }()
-	_, err := a.Run(context.Background(), "go")
-	if err == nil {
-		t.Skip("provider completed before the abort landed; timing-dependent")
-	}
-	if !a.Idle() {
-		t.Fatal("agent must be Idle after an aborted run")
-	}
-}
-
-func TestSnapshotCarriesProducerIDAndRevision(t *testing.T) {
-	s := &scripted{turns: []core.AssistantMessage{
-		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
-	}}
-	a := newTestAgent(t, s, nil)
-	before, err := a.Snapshot(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := a.Run(context.Background(), "go"); err != nil {
-		t.Fatal(err)
-	}
-	after, _ := a.Snapshot(context.Background())
-
-	if before.ProducerID != after.ProducerID {
-		t.Fatal("ProducerID must be stable for the lifetime of one Agent value")
-	}
-	if after.Revision <= before.Revision {
-		t.Fatalf("Revision did not advance: %d -> %d", before.Revision, after.Revision)
-	}
-	if !after.Idle {
-		t.Fatal("snapshot taken after the run should report Idle")
-	}
-}
-
-func TestHoldKeepsAgentNonIdle(t *testing.T) {
-	a := newTestAgent(t, &scripted{}, nil)
-	if !a.Idle() {
-		t.Fatal("a fresh agent should be idle")
-	}
-	release := a.Hold()
-	if a.Idle() {
-		t.Fatal("Idle must be false while a hold is outstanding (REQ-LIFE-06)")
-	}
-	release()
-	release() // idempotent
-	if !a.Idle() {
-		t.Fatal("Idle must return true once the hold is released")
-	}
-}
+// ------------------------------------------------------------------- REQ-GO-08
 
 func TestStreamResultAvailableWithoutReadingAnyEvent(t *testing.T) {
 	// REQ-GO-08: the result is fed by the terminal event, not by consumption,

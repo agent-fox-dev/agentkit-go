@@ -61,20 +61,14 @@ func runTS0442(t *testing.T) (map[string]ts0442Recorded, []core.ToolResultMessag
 			toolUse(t, "c_herr", "herr", `{}`),
 		),
 	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.AfterToolCall = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+	a := newTestAgent(t, s, func(c *Config) {
+		c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			mu.Lock()
 			recs[in.ToolName] = ts0442Recorded{ToolResult: in.ToolResult, Result: in.Result}
 			mu.Unlock()
 			return core.AfterToolCallDecision{}
 		}
-	})
-	if err := a.RegisterTool(probeTool); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.RegisterTool(handlerErrTool); err != nil {
-		t.Fatal(err)
-	}
+	}, probeTool, handlerErrTool)
 
 	st, err := a.Stream(context.Background(), "go")
 	if err != nil {
@@ -211,22 +205,13 @@ func ts0443Run(t *testing.T) (
 	s := &scripted{turns: []core.AssistantMessage{
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "probe", `{}`)),
 	}}
-	agent = newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.AfterToolCall = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+	agent = newTestAgent(t, s, func(c *Config) {
+		c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			in.Result.Metadata.Outcome = "edited"
 			*in.Result.Metadata.ExitCode = 99
 			return core.AfterToolCallDecision{}
 		}
-		c.StopPolicy = func(sc core.StopContext) bool {
-			if len(sc.ToolResults) > 0 {
-				stopResults = sc.ToolResults
-			}
-			return false
-		}
-	})
-	if err := agent.RegisterTool(probeTool); err != nil {
-		t.Fatal(err)
-	}
+	}, probeTool)
 
 	st, err := agent.Stream(context.Background(), "go")
 	if err != nil {
@@ -236,6 +221,9 @@ func ts0443Run(t *testing.T) (
 		if tre, ok := e.(core.ToolResultEvent); ok {
 			toolResultEvents = append(toolResultEvents, tre.Message)
 		}
+		if te, ok := e.(core.TurnEndEvent); ok && len(te.ToolResults) > 0 {
+			stopResults = te.ToolResults
+		}
 	}
 	if _, err := st.RunResult(); err != nil {
 		t.Fatal(err)
@@ -244,8 +232,8 @@ func ts0443Run(t *testing.T) (
 }
 
 // TestMetadataEditedThroughResultPropagates_TS04_43 verifies that metadata
-// edited through in.Result is what is emitted, seen by the stop policy and
-// kept in history.
+// edited through in.Result is what is emitted, reported at the turn's end and
+// kept in the transcript.
 func TestMetadataEditedThroughResultPropagates_TS04_43(t *testing.T) {
 	toolResultEvents, stopResults, a := ts0443Run(t)
 
@@ -256,11 +244,11 @@ func TestMetadataEditedThroughResultPropagates_TS04_43(t *testing.T) {
 		ts0443CheckEdited(t, "ToolResultEvent", toolResultEvents[0].Metadata)
 
 		if len(stopResults) == 0 {
-			t.Fatal("no StopContext results")
+			t.Fatal("no TurnEndEvent results")
 		}
-		ts0443CheckEdited(t, "StopContext", stopResults[0].Metadata)
+		ts0443CheckEdited(t, "TurnEndEvent", stopResults[0].Metadata)
 
-		for _, m := range a.History().Messages() {
+		for _, m := range a.Messages() {
 			if tr, ok := m.(core.ToolResultMessage); ok && tr.ToolUseID == "c1" {
 				ts0443CheckEdited(t, "History", tr.Metadata)
 			}
@@ -295,8 +283,8 @@ func TestToolResultCopyChangesDoNotAffectMessage_TS04_44(t *testing.T) {
 	s := &scripted{turns: []core.AssistantMessage{
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "probe", `{}`)),
 	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.AfterToolCall = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+	a := newTestAgent(t, s, func(c *Config) {
+		c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			snapshot = in.Result.Clone().(core.ToolResultMessage)
 			in.ToolResult.Text = "y"
 			in.ToolResult.Data["k"] = float64(2)
@@ -304,16 +292,7 @@ func TestToolResultCopyChangesDoNotAffectMessage_TS04_44(t *testing.T) {
 			*in.ToolResult.Metadata.ExitCode = 7
 			return core.AfterToolCallDecision{}
 		}
-		c.StopPolicy = func(sc core.StopContext) bool {
-			if len(sc.ToolResults) > 0 {
-				stopResults = sc.ToolResults
-			}
-			return false
-		}
-	})
-	if err := a.RegisterTool(probeTool); err != nil {
-		t.Fatal(err)
-	}
+	}, probeTool)
 
 	st, err := a.Stream(context.Background(), "go")
 	if err != nil {
@@ -322,6 +301,9 @@ func TestToolResultCopyChangesDoNotAffectMessage_TS04_44(t *testing.T) {
 	for e := range st.Events() {
 		if tre, ok := e.(core.ToolResultEvent); ok {
 			toolResultEvents = append(toolResultEvents, tre.Message)
+		}
+		if te, ok := e.(core.TurnEndEvent); ok && len(te.ToolResults) > 0 {
+			stopResults = te.ToolResults
 		}
 	}
 	if _, err := st.RunResult(); err != nil {
@@ -350,16 +332,16 @@ func TestToolResultCopyChangesDoNotAffectMessage_TS04_44(t *testing.T) {
 		}
 		checkUnchanged("ToolResultEvent", toolResultEvents[0])
 
-		for _, m := range a.History().Messages() {
+		for _, m := range a.Messages() {
 			if tr, ok := m.(core.ToolResultMessage); ok && tr.ToolUseID == "c1" {
 				checkUnchanged("History", tr)
 			}
 		}
 
 		if len(stopResults) == 0 {
-			t.Fatal("no StopContext results")
+			t.Fatal("no TurnEndEvent results")
 		}
-		checkUnchanged("StopContext", stopResults[0])
+		checkUnchanged("TurnEndEvent", stopResults[0])
 
 		if snapshot.Metadata.Outcome != "exit" {
 			t.Fatalf("snapshot Outcome = %q, want %q", snapshot.Metadata.Outcome, "exit")
@@ -392,15 +374,12 @@ func TestPanicHandlerAfterToolCallNilMetadata_TS04_45(t *testing.T) {
 	s := &scripted{turns: []core.AssistantMessage{
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "panicker", `{}`)),
 	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.AfterToolCall = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+	a := newTestAgent(t, s, func(c *Config) {
+		c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			rec = recorded{ToolResult: in.ToolResult, Result: in.Result}
 			return core.AfterToolCallDecision{}
 		}
-	})
-	if err := a.RegisterTool(panicTool); err != nil {
-		t.Fatal(err)
-	}
+	}, panicTool)
 
 	if _, err := a.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)
@@ -456,14 +435,11 @@ func TestTerminationVotesWithMetadata_TS04_46_NilAndFalseVote(t *testing.T) {
 			assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "term", `{}`)),
 			{Content: core.Content{core.TextBlock{Text: "should not reach"}}, StopReason: core.StopReasonStop},
 		}}
-		a := newTestAgent(t, s, func(c *core.AgentConfig) {
-			c.AfterToolCall = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+		a := newTestAgent(t, s, func(c *Config) {
+			c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 				return core.AfterToolCallDecision{Terminate: nil}
 			}
-		})
-		if err := a.RegisterTool(terminatingTool); err != nil {
-			t.Fatal(err)
-		}
+		}, terminatingTool)
 		res, err := a.Run(context.Background(), "go")
 		if err != nil {
 			t.Fatal(err)
@@ -486,14 +462,11 @@ func TestTerminationVotesWithMetadata_TS04_46_NilAndFalseVote(t *testing.T) {
 			{Content: core.Content{core.TextBlock{Text: "continued"}}, StopReason: core.StopReasonStop},
 		}}
 		f := false
-		a := newTestAgent(t, s, func(c *core.AgentConfig) {
-			c.AfterToolCall = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+		a := newTestAgent(t, s, func(c *Config) {
+			c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 				return core.AfterToolCallDecision{Terminate: &f}
 			}
-		})
-		if err := a.RegisterTool(terminatingTool); err != nil {
-			t.Fatal(err)
-		}
+		}, terminatingTool)
 		if _, err := a.Run(context.Background(), "go"); err != nil {
 			t.Fatal(err)
 		}
@@ -522,18 +495,15 @@ func TestImageNormalizationPreservesMetadata_TS04_46(t *testing.T) {
 	s := &scripted{turns: []core.AssistantMessage{
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "probe", `{}`)),
 	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.AfterToolCall = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+	a := newTestAgent(t, s, func(c *Config) {
+		c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			in.Result.Content = append(in.Result.Content, core.ImageBlock{
 				Data:     "aGVsbG8=",
 				MimeType: "image/png",
 			})
 			return core.AfterToolCallDecision{}
 		}
-	})
-	if err := a.RegisterTool(probeTool); err != nil {
-		t.Fatal(err)
-	}
+	}, probeTool)
 
 	res, err := a.Run(context.Background(), "go")
 	if err != nil {
@@ -581,15 +551,9 @@ func TestBatchAndSemanticsWithMetadata_TS04_46(t *testing.T) {
 		),
 		{Content: core.Content{core.TextBlock{Text: "continued"}}, StopReason: core.StopReasonStop},
 	}}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.StopPolicy = afterTurns(10)
-	})
-	if err := a.RegisterTool(terminatingTool); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.RegisterTool(nonTermTool); err != nil {
-		t.Fatal(err)
-	}
+	a := newTestAgent(t, s, func(c *Config) {
+		c.MaxTurns = 10
+	}, terminatingTool, nonTermTool)
 	if _, err := a.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)
 	}

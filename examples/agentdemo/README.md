@@ -62,11 +62,12 @@ turns: 2, stop: end_turn
 - **A scripted provider** — `faux.New(faux.Turn{Blocks: …, StopReason: …})`
   with `faux.FauxText` and `faux.FauxToolCall`. `p.ChunkSize` splits text into
   deltas so streaming is visible; `p.Requests()` returns what the loop sent.
-- **The minimum config** — `newAgent`: a `Model` (`faux.Model()`), a
-  `StopPolicy` (a function bounding turns and spend), and a `Providers`
-  registry mapping `faux.API` to `p.APIProvider()`. With a real model you
-  register `anthropic.Provider(anthropic.Options{})` instead (see
-  [`codingagent`](../codingagent)).
+- **The minimum config** — `newAgent`: `agentkit.New(agentkit.Config{…})`
+  with `Provider: p` (the faux provider is a `core.ProviderClient` itself),
+  `Model: faux.Model().ID`, a `System` prompt, the `Tools`, and `MaxTurns` /
+  `MaxCostUSD` bounding turns and spend. With a real model you set
+  `Client` to the client `anthropic.Resolve(anthropic.OSEnv{})` returns
+  instead of `Provider` (see [`codingagent`](../codingagent)).
 
 ## Gotchas
 

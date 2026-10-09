@@ -9,10 +9,11 @@ around them, and this example wires up both:
   before every write — so `../../etc/passwd` is refused by the tool, not by a
   prompt asking nicely.
 - **The execute guard.** `tools.All` includes `execute` and `run_command`.
-  Registering either of them with a nil `cfg.BeforeToolCall` fails
-  the run with `core.ErrUnguardedExecute` before a request is sent. You must
-  supply an interceptor — here `guard.Restricted` — or pass `guard.AllowAll`
-  to say in code that an unrestricted shell is intended. Shell tools are *not*
+  Passing either of them in `Config.Tools` with a nil `Config.Guard` makes
+  `agentkit.New` return an error wrapping `core.ErrUnguardedExecute`, so the
+  agent is never built and no request is sent. You must supply an
+  interceptor — here `guard.Restricted` — or pass `guard.AllowAll` to say in
+  code that an unrestricted shell is intended. Shell tools are *not*
   contained to the workspace; the guard is what stands in front of them.
 
 ## Run it
@@ -50,7 +51,7 @@ Without a credential it prints the workspace and stops:
 
 ```
 workspace: /path/to/agentkit-go
-error: no credential for vendor "anthropic": set one of ANTHROPIC_API_KEY, ...
+error: anthropic: missing credentials: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, ...
 ```
 
 ## Walkthrough
@@ -67,29 +68,35 @@ The numbered comments in `run()` are the walkthrough:
    of shell operators (pipes, `;`, `&&`, redirection, substitution). A refusal
    goes back to the model as a blocked tool result; `TerminateOnBlock: true`
    ends the run instead.
-4. `cfg.BeforeToolCall` *wraps* the policy to log each decision. The wrapper
-   reports; the policy still decides. This is the pattern for adding side
-   effects (logging, metrics) to any interceptor.
-5. `cfg.StopPolicy` — one function that stops at 20 turns
-   (`core.RunStopMaxTurns`) or past $2.00 of spend
+4. `logged` *wraps* the policy to log each decision, and is passed as
+   `Config.Guard`. The wrapper reports; the policy still decides. This is the
+   pattern for adding side effects (logging, metrics) to any interceptor.
+5. `agentkit.New(agentkit.Config{Client, Model, System, Tools, Guard,
+   MaxTurns: 20, MaxCostUSD: 2.00})` — `Client` comes from
+   `anthropic.Resolve(anthropic.OSEnv{})`. The run stops at 20 turns
+   (`core.RunStopMaxTurns`) or once $2.00 has been spent
    (`core.RunStopBudgetExceeded`): turns catch cheap loops, budget catches
    expensive turns.
 6. `agent.Stream` and the event loop: `ToolExecutionStartEvent` fires after
-   the interceptor allowed the call and before the handler runs.
-7. `stream.RunResult()` carries the error the loop ended with.
+   the guard allowed the call and before the handler runs.
+7. `stream.RunResult()` carries the error the loop ended with. A limit stop
+   (`core.ErrMaxTurns`, `core.ErrBudgetExceeded`) is reported in the summary
+   line rather than as a failure.
 
 ## Gotchas
 
 - `guard.Restricted` is a **floor, not a sandbox**: `go` alone can run
   arbitrary code through a test file or a generator. Replace it with a policy
   that knows your workload rather than widening the allowlist.
-- The tools are registered after `NewAgent`, one by one, with
-  `agent.RegisterTool`; the guard check happens when the run starts.
+- The tools are fixed at construction: they all go in `Config.Tools`, and
+  the guard check happens in `agentkit.New`, before any run. There is no way
+  to add a tool to an agent afterwards.
 - `summarize` sorts argument keys because JSON object order is not stable.
 
 ## Related
 
-Packages: `tools` (`NewWorkspace`, `All`), `guard` (`Restricted`,
-`AllowAll`), `core` (`BeforeToolCallContext`, `BeforeToolCallDecision`,
-`ErrUnguardedExecute`, `StopContext`). The optional `code_search` index is the
+Packages: `agentkit` (`Config`, `New`), `tools` (`NewWorkspace`, `All`),
+`guard` (`Restricted`, `AllowAll`), `core` (`BeforeToolCallContext`,
+`BeforeToolCallDecision`, `ErrUnguardedExecute`, `ErrMaxTurns`,
+`ErrBudgetExceeded`), `provider/anthropic` (`Resolve`). The optional `code_search` index is the
 nested `codesearch` module (`tools.Options.Index`).

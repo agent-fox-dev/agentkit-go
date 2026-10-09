@@ -3,7 +3,7 @@
 AgentKit is a library. It has no config file of its own and no global state.
 Configuration is one of:
 
-1. fields on `core.AgentConfig` and the per-provider `Options` structs,
+1. fields on `agentkit.Config` and the per-provider `Options` structs,
 2. environment variables, read at request time,
 3. one optional TOML section, `[mcp]`, that an *embedding application* may
    load with the parser the SDK ships.
@@ -53,33 +53,31 @@ Subprocess tools run with a reduced environment (`tools.ReducedEnv`): `PATH`,
 provider-prefixed variables and anything ending in `_TOKEN`, `_SECRET`,
 `_API_KEY`, `_PASSWORD` or `_CREDENTIALS` are stripped.
 
-## `core.AgentConfig`
+## `agentkit.Config`
+
+`agentkit.New(cfg)` builds an `Agent` from it, and refuses a config it could
+not run: no `Client` and no `Provider`, an empty `Model`, an invalid tool
+hierarchy (a tool with both or neither of `Handler` and `Execute`, a
+reachability cycle, a wrapper reaching a `Terminating` tool), or a reachable
+shell tool with no `Guard`.
 
 | Field | Meaning / default |
 |---|---|
-| `Model` | `*core.Model`; obtain with `catalog.Lookup("claude-…")`, which also serves an id the catalog does not list. |
-| `Provider` | Vendor id, used only for credential resolution and catalog lookup. |
-| `MaxTokens` | Upper bound, capped at the model's output cap. Nil → `core.DefaultMaxTokens` (32768), not the model cap. |
-| `Temperature`, `TopP` | Optional sampling parameters; dropped where the catalog row says the model does not accept them. |
-| `SystemPrompt`, `PromptBlocks` | Base prompt and extra sections appended after the built-in ones. A `SystemPrompt` replaces the built-in base instructions and universal guidelines; the active tools' own guidelines (`Tool.PromptGuidelines`, and the shell guidelines) still follow it. |
-| `StopPolicy` | `func(StopContext) bool`, written by the caller; a policy that stops calls `StopContext.SetReason` (`core.RunStopMaxTurns`, `core.RunStopBudgetExceeded`, …) so the run reports which limit fired. `StopContext.Usage`, like `RunResult.Usage`, is the current run's usage — a budget policy on a reused agent is a per-run budget; `Agent.Usage()` is the lifetime total. |
-| `ErrorOnLimit` | A limit stop also returns `ErrMaxTurns` / `ErrBudgetExceeded`. Default false. |
-| `ParallelTools` | Run a tool batch's calls concurrently. |
-| `ToolChoice` | `""` (auto), or a forced choice. |
-| `Effort` | `core.Effort`: `""` (no thinking parameter), `low`, `medium`, `high`, `xhigh`, `max`. On an adaptive model it is sent as `thinking: {"type":"adaptive"}` with `output_config.effort`; on a budget model as `thinking: {"type":"enabled","budget_tokens":N}`, N from the catalog row; on a model without thinking, or at a level the row does not list, neither is sent. Never clamped to another level. `Agent.SetEffort` changes it between runs. |
-| `ToolPolicy` | `Tools`, `NoTools` (`all` / `builtin`), `ToolNames`, `ExcludeTools`, `CustomTools`; resolved in that order. Non-nil empty `Tools` means no tools. A `CustomTools` entry must set exactly one of `Handler` and `Execute`; construction fails otherwise, as `RegisterTool` does. |
-| `BeforeToolCall`, `AfterToolCall` | The authorization boundary and post-processing. A shell tool in the set with a nil `BeforeToolCall` fails the run (`ErrUnguardedExecute`); use `guard.Restricted` or `guard.AllowAll`. `AfterToolCall` receives the handler's `ToolResult` by value and the mutable `Result *ToolResultMessage`. `ToolResultMessage.Metadata` carries the tool's structured metadata (in history and events, never sent to the model). |
-| `Hooks` | `OnTurnStart`, `OnTurnEnd`, `OnAgentDone`, `OnError`. Observation only. Tool calls, nested ones included, are on the event stream (`ToolExecutionStartEvent`/`ToolExecutionEndEvent`, with `ParentToolUseID` for a nested call). |
-| `Middleware` | Axis 1; last registered is outermost. |
-| `TransformContext` | Bound closure run before every model call; it builds the view sent on that request and never rewrites stored history. Its context carries a usage reporter: a model call made inside it reports its usage with `core.ReportUsage`, and the agent adds it to `Agent.Usage`. |
-| `SteeringQueueMode`, `FollowUpQueueMode` | `QueueOneAtATime` (default) or `QueueDrainAll`. |
-| `SessionID` | Identifier carried on `AgentStartEvent` and requests. |
-| `TrustProject` | Nothing in the SDK reads it. |
-| `Attribution` | `*bool`. No longer read: the SDK sends its own `user-agent`, and AgentKit adds no attribution header. |
-| `CacheRetention` | `none`, `short`, `long`. |
-| `RequestOptions` | Per-request `Headers` (nil value deletes a default), `TimeoutMs`, `MaxRetries` (nil keeps the SDK client's count, 2 by default), `MaxRetryDelayMs` (no longer read), `SessionID`, `CacheRetention`, `Deferred`, `Env`, `Transport`, `StreamFn`, `OnPayload`, `OnResponse`. |
-| `StreamOptions` | Streaming behaviour. |
-| `Providers` | `core.ProviderRegistry`. Nil means `agentkit.DefaultProviders()`, which is **empty**: register the wire APIs you use (`agentkit.RegisterDefaults(&cfg, anthropic.Provider(anthropic.Options{}), …)`). |
+| `Client` | `*anthropic.Client` from the official SDK, built by `anthropic.Resolve` or by the caller. Requests go through `provider/anthropic` over it. |
+| `Provider` | A `core.ProviderClient` (a test double such as `provider/faux`, or a custom provider). When set it is used instead of `Client`. |
+| `Model` | Catalog id. `catalog.Lookup` supplies the context window, output cap and prices; an id the catalog does not list gets the default row (no price). |
+| `Effort` | `agentkit.Effort` (`core.Effort`): `""` (no thinking parameter), `low`, `medium`, `high`, `xhigh`, `max`. On an adaptive model it is sent as `thinking: {"type":"adaptive"}` with `output_config.effort`; on a budget model as `thinking: {"type":"enabled","budget_tokens":N}`, N from the catalog row; on a model without thinking, or at a level the row does not list, neither is sent. Never clamped to another level. |
+| `System` | The base prompt. Empty means the built-in base instructions and universal guidelines; either way the active tools' own guidelines (`Tool.PromptGuidelines`, and the shell guidelines) follow it. |
+| `Tools` | The tools the agent can run. Each sets exactly one of `Handler` and `Execute`. |
+| `Policy` | `core.ToolPolicy`: `Tools`, `NoTools` (`all` / `builtin`), `ToolNames`, `ExcludeTools`, `CustomTools`, resolved over `Config.Tools` once, in `New`, and applied to what wrappers reach too. Non-nil empty `Policy.Tools` means no tools. |
+| `Guard` | `core.BeforeToolCall`, the authorization boundary for every call, nested ones included. Required when a shell tool is reachable (`ErrUnguardedExecute` from `New` otherwise); use `guard.Restricted` or `guard.AllowAll`. |
+| `After` | `core.AfterToolCall`. Receives the handler's `ToolResult` by value and the mutable `Result *ToolResultMessage`. `ToolResultMessage.Metadata` carries the tool's structured metadata (in the transcript and events, never sent to the model). |
+| `MaxTokens` | Output cap per response, capped at the model's output cap. Zero → `core.DefaultMaxTokens` (32768), not the model cap. |
+
+A batch's calls run concurrently, one goroutine per call, unless a tool in the
+batch is `Sequential`. Observation is the event stream `Agent.Stream` returns
+(`Run` drains it): turn, message, tool execution (`ParentToolUseID` set for a
+nested call) and `core.ErrorEvent` for an error the run survives.
 
 Header precedence, lowest to highest: attribution defaults, provider/auth
 headers, `Model.Headers`, `RequestOptions.Headers`. A nil value at a higher

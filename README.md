@@ -30,15 +30,25 @@ configuration reference: which environment variables the Anthropic provider
 reads, what a base URL does and does not buy you, and the decisions every
 embedding application has to make.
 
-To talk to a real model, register a wire API on the config. Nothing is
-registered by import side effect, so the root package never drags `net/http`
-into a consumer that only wants the loop:
+To talk to a real model, build an Anthropic client from the environment and
+hand it to `agentkit.New` with a catalog model id. A test or a custom vendor
+sets `Config.Provider` instead, which takes precedence over the client:
 
 ```go
-reg := agentkit.DefaultProviders()
-reg.Register(anthropic.Provider(anthropic.Options{}))
-
-cfg := core.AgentConfig{Model: model, Providers: reg}   // credential per REQ-AUTH-03
+client, _, err := anthropic.Resolve(anthropic.OSEnv{})
+if err != nil {
+	return err
+}
+agent, err := agentkit.New(agentkit.Config{
+	Client: client,
+	Model:  "claude-opus-5-5",
+	Tools:  tools,
+	Guard:  guard.Restricted(guard.Options{AllowedPrograms: []string{"go", "git"}}),
+})
+if err != nil {
+	return err
+}
+res, err := agent.Run(ctx, "Summarise this package.")
 ```
 
 The demo drives the real loop against a scripted provider with no network, and
@@ -49,7 +59,7 @@ prints four behaviours the specification originally got wrong.
 | Document | Covers |
 |---|---|
 | [`docs/architecture.md`](docs/architecture.md) | Package graph, data flow of a run, invariants, the MCP client. |
-| [`docs/configuration.md`](docs/configuration.md) | Environment variables, `AgentConfig`, provider and tool options, the `[mcp]` TOML section. |
+| [`docs/configuration.md`](docs/configuration.md) | Environment variables, `agentkit.Config`, provider and tool options, the `[mcp]` TOML section. |
 | [`docs/cli.md`](docs/cli.md) | Make targets and example program flags. |
 | [`docs/api.md`](docs/api.md) | Why there is no network API; `Workspace.References`. |
 | [`docs/DEPS.md`](docs/DEPS.md) | Why each deliberately adopted dependency is there (`go.starlark.net`). |

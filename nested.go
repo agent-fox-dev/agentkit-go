@@ -15,8 +15,7 @@ import (
 // wrapper. It is built once per batch from the same cfg copy executeBatch
 // uses, so a nested call never reaches back through a.mu for configuration.
 type nestedEnv struct {
-	a         *Agent
-	cfg       core.AgentConfig
+	cfg       Config
 	s         *core.EventStream
 	assistant *core.AssistantMessage
 	turnCount int
@@ -71,9 +70,8 @@ func (env *nestedEnv) withCaller(ctx context.Context, c core.ToolUseBlock, t cor
 // Call runs calls for the wrapper. Preparation and authorization run in
 // order, as for a direct batch, so the interceptor sees a deterministic
 // sequence. Then the handlers run: concurrently, one goroutine per call
-// joined by a WaitGroup (07-REQ-7.1), unless ParallelTools is off or one of
-// the calls is to a Sequential tool, which runs them in call order
-// (07-REQ-7.2). Results are written by index, so they come back in call
+// joined by a WaitGroup (07-REQ-7.1), unless one of the calls is to a
+// Sequential tool, which runs them in call order (07-REQ-7.2). Results are written by index, so they come back in call
 // order whatever order the handlers finish in (07-REQ-7.3), and a call that
 // fails is a result of its own that stops no sibling (07-REQ-7.4).
 func (n *nestedCaller) Call(ctx context.Context, calls ...core.ToolUseBlock) ([]core.ToolResult, error) {
@@ -83,7 +81,7 @@ func (n *nestedCaller) Call(ctx context.Context, calls ...core.ToolUseBlock) ([]
 	results := make([]core.ToolResult, len(calls))
 	// A single Sequential tool among the calls demotes the whole group, as
 	// in a direct batch, whether or not that call survives preparation.
-	sequential := !n.env.cfg.ParallelTools
+	sequential := false
 	for _, c := range calls {
 		if t, ok := n.tools[c.Name]; ok && t.ExecutionMode == core.Sequential {
 			sequential = true
@@ -187,8 +185,8 @@ func (n *nestedCaller) prepare(ctx context.Context, batch []core.ToolUseBlock, i
 	}
 
 	cfg := n.env.cfg
-	if cfg.BeforeToolCall != nil {
-		dec := n.env.a.callBefore(ctx, cfg.BeforeToolCall, core.BeforeToolCallContext{
+	if cfg.Guard != nil {
+		dec := callBefore(ctx, n.env.report, cfg.Guard, core.BeforeToolCallContext{
 			ToolName:        call.Name,
 			ToolUseID:       call.ID,
 			ParentToolUseID: n.parentID,
@@ -261,7 +259,7 @@ func (n *nestedCaller) execute(ctx context.Context, call core.ToolUseBlock, tool
 	// deferred unlock so a panicking listener cannot leave it held.
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if after := n.env.cfg.AfterToolCall; after != nil {
+	if after := n.env.cfg.After; after != nil {
 		msg := toolResultMessage(call, out)
 		dec := callAfter(ctx, n.env.report, after, core.AfterToolCallContext{
 			ToolName:        call.Name,
