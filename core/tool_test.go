@@ -3,7 +3,9 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/schema"
@@ -52,6 +54,73 @@ func TestReachableToolsAndTerminatingNotOnWire_TS07_2(t *testing.T) {
 			if _, ok := m[k]; ok {
 				t.Fatalf("wire JSON carries %q: %s", k, b)
 			}
+		}
+	}
+}
+
+// TS-12-10: Tool keeps its execution fields; the MCP server name, the
+// MCPServerOf helper and constrained sampling are gone.
+func TestToolAndToolWireFields_TS12_10(t *testing.T) {
+	for _, kept := range []string{"Name", "Description", "InputSchema", "OutputSchema", "ReachableTools", "Terminating",
+		"ExecutionMode", "PromptGuidelines", "Handler", "Execute", "PrepareArguments"} {
+		if !hasField(Tool{}, kept) {
+			t.Errorf("Tool lost %s", kept)
+		}
+	}
+	if hasField(Tool{}, "MCPServer") || hasField(Tool{}, "ConstrainedSampling") {
+		t.Error("Tool still has MCPServer or ConstrainedSampling")
+	}
+	for _, kept := range []string{"Name", "Description", "InputSchema"} {
+		if !hasField(ToolWire{}, kept) {
+			t.Errorf("ToolWire lost %s", kept)
+		}
+	}
+	if hasField(ToolWire{}, "ConstrainedSampling") {
+		t.Error("ToolWire still has ConstrainedSampling")
+	}
+	types, _ := coreDecls(t)
+	for _, gone := range []string{"func MCPServerOf", "ConstrainedSampling", "ConstrainedSamplingType", "StrictMode"} {
+		if types[gone] {
+			t.Errorf("core still declares %s", gone)
+		}
+	}
+}
+
+// TS-12-11: Usage keeps its counters, the result types remain, ThinkingLevel
+// is gone, and Model is the catalog's figures without vendor wire metadata.
+func TestUsageAndModelFields_TS12_11(t *testing.T) {
+	for _, kept := range []string{"InputTokens", "OutputTokens", "CacheReadTokens", "CacheWriteTokens", "Requests", "CostUSD"} {
+		if !hasField(Usage{}, kept) {
+			t.Errorf("Usage lost %s", kept)
+		}
+	}
+	types, _ := coreDecls(t)
+	for _, kept := range []string{"RunResult", "RunStopReason", "StopReason"} {
+		if !types[kept] {
+			t.Errorf("core lost %s", kept)
+		}
+	}
+	for _, gone := range []string{"ThinkingLevel", "func ClampThinkingLevel"} {
+		if types[gone] {
+			t.Errorf("core still declares %s", gone)
+		}
+	}
+	src, err := os.ReadFile("stopreason.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "ThinkingLevelOrder") {
+		t.Error("core still declares ThinkingLevelOrder")
+	}
+	for _, kept := range []string{"ID", "ContextWindow", "MaxOutputTokens", "InputCostPerMillion", "OutputCostPerMillion",
+		"CacheReadCostPerMillion", "CacheWriteCostPerMillion", "ThinkingKind"} {
+		if !hasField(Model{}, kept) {
+			t.Errorf("Model lacks %s", kept)
+		}
+	}
+	for _, gone := range []string{"API", "Provider"} {
+		if hasField(Model{}, gone) {
+			t.Errorf("Model still has %s", gone)
 		}
 	}
 }

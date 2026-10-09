@@ -48,7 +48,7 @@ func canonicalRequest(t *testing.T) core.Request {
 	m, _ := catalog.Lookup(canonicalModelID)
 	maxTok := 1024
 	stamp := func(msg core.AssistantMessage) core.AssistantMessage {
-		msg.Provider, msg.API, msg.Model = m.Provider, m.API, m.ID
+		msg.Model = m.ID
 		return msg
 	}
 	return core.Request{
@@ -64,8 +64,6 @@ func canonicalRequest(t *testing.T) core.Request {
 		Messages: core.Messages{
 			core.UserMessage{Content: core.Content{
 				core.TextBlock{Text: "Which Go files changed?"},
-				// A 1x1 PNG: small enough to read in a golden.
-				core.ImageBlock{MimeType: "image/png", Data: onePixelPNG},
 			}},
 			stamp(core.AssistantMessage{
 				Content: core.Content{core.TextBlock{Text: "Let me look."},
@@ -125,10 +123,6 @@ func canonicalTools(out *schema.Schema) []core.Tool {
 	}
 }
 
-// onePixelPNG is a 1x1 transparent PNG.
-const onePixelPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk" +
-	"YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
-
 // canonicalModel is the catalog row for canonicalModelID.
 func canonicalModel(t *testing.T) *core.Model {
 	t.Helper()
@@ -143,11 +137,12 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// capture drives one provider and returns the request body it sent.
-func capture(t *testing.T, p core.APIProvider, m *core.Model, req core.Request) string {
+// capture drives the Anthropic provider built from opts and returns the
+// request body it sent.
+func capture(t *testing.T, opts anthropic.Options, m *core.Model, req core.Request) string {
 	t.Helper()
 	var body []byte
-	req.Options.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	opts.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		body, _ = io.ReadAll(r.Body)
 		// A minimal well-formed response: the stream's outcome is irrelevant,
 		// only the request matters, but a malformed one would make the
@@ -156,11 +151,8 @@ func capture(t *testing.T, p core.APIProvider, m *core.Model, req core.Request) 
 			Header: http.Header{"Content-Type": []string{"application/json"}},
 			Body:   io.NopCloser(strings.NewReader("{}"))}, nil
 	})
-	req.Options.Env = map[string]string{
-		"ANTHROPIC_API_KEY": "test-key", "OPENAI_API_KEY": "test-key",
-		"GEMINI_API_KEY": "test-key", "GOOGLE_API_KEY": "test-key",
-	}
-	p.Stream(context.Background(), m, req, core.ProviderStreamOptions{}).Result()
+	opts.Env = map[string]string{"ANTHROPIC_API_KEY": "test-key"}
+	core.EventStreamOf(anthropic.Provider(*m, opts).Stream(context.Background(), req)).Result()
 	if len(body) == 0 {
 		t.Fatal("no request body was captured")
 	}
@@ -194,7 +186,7 @@ func goldenCasesFor(t *testing.T, req core.Request) []goldenCase {
 	noenv := func(string) string { return "" }
 	return []goldenCase{
 		{"anthropic", capture(t,
-			anthropic.Provider(anthropic.Options{BaseURL: "https://example.invalid", Getenv: noenv}),
+			anthropic.Options{BaseURL: "https://example.invalid", Getenv: noenv},
 			canonicalModel(t), req)},
 	}
 }
@@ -428,8 +420,8 @@ func TestSmokeGoldenRequestFromTheCatalog_TS10_35(t *testing.T) {
 	if !ok {
 		t.Fatal("model not found")
 	}
-	if model.Thinking != core.ThinkingKindAdaptive {
-		t.Fatalf("%s thinking = %q, want adaptive", canonicalModelID, model.Thinking)
+	if model.ThinkingKind != core.ThinkingKindAdaptive {
+		t.Fatalf("%s thinking = %q, want adaptive", canonicalModelID, model.ThinkingKind)
 	}
 	body, err := anthropic.BuildRequestJSON(req, model)
 	if err != nil {

@@ -61,11 +61,6 @@ type request struct {
 	// never alongside a budget: the two are different generations of the
 	// same control, and a model accepts one or the other.
 	OutputConfig *outputConfig `json:"output_config,omitzero"`
-	// ContextManagement is REQ-PROV-07's body half. The compact-2026-01-12
-	// beta header alone changes nothing; the server compacts only when the
-	// body also names the edit.
-	ContextManagement *contextManagement `json:"context_management,omitzero"`
-
 	// immediateTools is the count of leading non-deferred tools. It is
 	// unexported and therefore never marshalled; StampCacheControl reads it to
 	// find the last tool eligible for a breakpoint.
@@ -86,14 +81,6 @@ type thinking struct {
 
 type outputConfig struct {
 	Effort string `json:"effort,omitzero"` // low | medium | high | xhigh | max
-}
-
-type contextManagement struct {
-	Edits []contextEdit `json:"edits"`
-}
-
-type contextEdit struct {
-	Type string `json:"type"` // "compact_20260112"
 }
 
 type sysBlock struct {
@@ -143,35 +130,7 @@ type block struct {
 	Signature string  `json:"signature,omitzero"`
 	Data      *string `json:"data,omitzero"` // redacted_thinking
 
-	// image
-	Source *imageSource `json:"source,omitzero"`
-
 	CacheControl *cacheControl `json:"cache_control,omitzero"`
-
-	// Raw carries a block this build does not model, verbatim. It is how
-	// REQ-PROV-07's server-side compaction blocks are "passed back unchanged
-	// in subsequent turns" without the SDK having to model a beta wire shape
-	// that is expected to change: a compaction block decodes to core.RawBlock
-	// and re-encodes to exactly the bytes that arrived.
-	Raw json.RawMessage `json:"-"`
-}
-
-// MarshalJSON emits Raw verbatim when present, and the modelled fields
-// otherwise. The alias type is required: a defined struct type does not
-// inherit its source type's methods, so json.Marshal(alias(b)) recurses no
-// further.
-func (b block) MarshalJSON() ([]byte, error) {
-	if len(b.Raw) > 0 {
-		return b.Raw, nil
-	}
-	type alias block
-	return json.Marshal(alias(b))
-}
-
-type imageSource struct {
-	Type      string `json:"type"` // "base64"
-	MediaType string `json:"media_type"`
-	Data      string `json:"data"`
 }
 
 type tool struct {
@@ -242,8 +201,8 @@ func BuildRequestJSON(req core.Request, m core.Model) ([]byte, error) {
 	return encodeExact(body)
 }
 
-// encodeExact marshals r, splicing every raw byte run (a tool_use input, a
-// verbatim block) back in after marshalling: encoding/json compacts the
+// encodeExact marshals r, splicing every tool_use input's raw bytes back in
+// after marshalling: encoding/json compacts the
 // output of a json.RawMessage, and those bytes must reach the wire unchanged
 // (10-REQ-6.1). r is not modified.
 func encodeExact(r *request) ([]byte, error) {
@@ -261,10 +220,7 @@ func encodeExact(r *request) ([]byte, error) {
 		cp.Messages[i] = msg
 		cp.Messages[i].Content = make([]block, len(msg.Content))
 		for j, b := range msg.Content {
-			switch {
-			case len(b.Raw) > 0:
-				b.Raw = placeholder(b.Raw)
-			case b.Type == "tool_use" && len(b.Input) > 0:
+			if b.Type == "tool_use" && len(b.Input) > 0 {
 				b.Input = placeholder(b.Input)
 			}
 			cp.Messages[i].Content[j] = b
@@ -333,8 +289,8 @@ func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRet
 		requested = *req.MaxTokens
 	}
 	out.MaxTokens = requested
-	if out.MaxTokens <= 0 || (m.MaxTokens > 0 && out.MaxTokens > m.MaxTokens) {
-		out.MaxTokens = m.MaxTokens
+	if out.MaxTokens <= 0 || (m.MaxOutputTokens > 0 && out.MaxTokens > m.MaxOutputTokens) {
+		out.MaxTokens = m.MaxOutputTokens
 	}
 	if out.MaxTokens <= 0 {
 		out.MaxTokens = DefaultMaxTokens
@@ -604,9 +560,6 @@ func splitResultContent(c core.Content) (inner []block, displaced []block) {
 				continue
 			}
 			inner = append(inner, block{Type: "text", Text: v.Text})
-		case core.ImageBlock:
-			inner = append(inner, block{Type: "image", Source: &imageSource{
-				Type: "base64", MediaType: v.MimeType, Data: v.Data}})
 		default:
 			displaced = append(displaced, encodeBlock(b))
 		}
@@ -663,22 +616,6 @@ func encodeBlock(b core.ContentBlock) block {
 		// UNCHANGED — no decode-and-re-encode round trip, which would sort the
 		// keys and shift the prompt-cache prefix (REQ-PROV-17, REQ-TOOL-12).
 		return block{Type: "tool_use", ID: v.ID, Name: v.Name, Input: v.Input}
-	case core.ImageBlock:
-		return block{Type: "image", Source: &imageSource{
-			Type: "base64", MediaType: v.MimeType, Data: v.Data}}
-	case core.ToolResultBlock:
-		inner, _ := splitResultContent(v.Content)
-		return block{Type: "tool_result", ToolUseID: v.ToolUseID, Content: inner, IsError: v.IsError}
-	case core.RawBlock:
-		// Replayed verbatim (REQ-PROV-07). Dropping it would be the safe-
-		// looking choice and it is wrong here: a server-side compaction block
-		// the model expects to see again is load-bearing state, and a
-		// transcript that silently loses it re-sends the history the
-		// compaction was paid to remove.
-		if len(v.Raw) == 0 || v.Type == "" {
-			return block{}
-		}
-		return block{Type: v.Type, Raw: v.Raw}
 	}
 	return block{}
 }

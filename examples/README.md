@@ -53,7 +53,8 @@ There are exactly two things to get right.
 environment. The examples that call a model resolve once, up front, and pass
 the result as `Config.Client`. When you need provider options instead —
 `VertexProject`, `Betas`, `MaxRetries` — build the provider yourself and pass
-`Config.Provider: core.ClientFunc(anthropic.Provider(anthropic.Options{…}).Stream)`;
+`Config.Provider: anthropic.Provider(model, anthropic.Options{…})` (`model` from
+`catalog.Lookup`);
 `Provider` is used instead of `Client` when it is set.
 
 | Variable | Effect |
@@ -110,7 +111,7 @@ model, known := catalog.Lookup("claude-opus-5-5") // the "anthropic/" prefix is 
 
 `catalog.Lookup` supplies what the model id does not carry: the context
 window, the output cap, the prices, and how the model takes extended thinking
-(`Model.Thinking`: `adaptive` with an effort, `budget` with `budget_tokens`,
+(`Model.ThinkingKind`: `adaptive` with an effort, `budget` with `budget_tokens`,
 or `none`). The catalog lists Claude models only. `Config.Model` takes the
 id and `agentkit.New` does this lookup itself; `Config.Effort`
 (`agentkit.EffortLow` … `agentkit.EffortMax`) sets the effort. The examples
@@ -141,8 +142,8 @@ AGENTKIT_MODEL=claude-opus-5-5 go run ./examples/codingagent "hello"
 
 These are not defaults you can ignore — the library will stop you.
 
-**A shell tool needs an authorization boundary.** Passing `execute`,
-`run_command` or `powershell` in `Config.Tools` — directly or reachable
+**A shell tool needs an authorization boundary.** Passing `execute` or
+`run_command` in `Config.Tools` — directly or reachable
 through a wrapper tool — with a nil `Config.Guard` makes `agentkit.New`
 return an error wrapping `core.ErrUnguardedExecute`; no agent is built. A
 headless service would otherwise hand the model an unrestricted shell by

@@ -60,26 +60,14 @@ type Tool struct {
 	// Builtin marks a first-party tool. It exists so ToolPolicy.NoTools can
 	// mean "builtin" without the resolver keeping a hardcoded name list that
 	// silently stops matching when a tool is renamed (REQ-TOOL-10).
-	Builtin             bool
-	ExecutionMode       ExecutionMode
-	PrepareArguments    func(map[string]any) map[string]any
-	PromptGuidelines    []string
-	ConstrainedSampling *ConstrainedSampling
-
-	// MCPServer names the MCP server a tool came from, empty for a local one.
-	//
-	// It is a FIELD rather than something derived from the qualified name, and
-	// that is a correction. REQ-MCP-CLIENT-05's convention is
-	// `server_name__tool_name` with a configurable prefix, so a local tool
-	// called `a__b` and an MCP tool from server `a` are indistinguishable by
-	// name — and a configurable prefix means the name may carry no server at
-	// all. REQ-OBS-05 wants server_name on every MCP tool call; the layer that
-	// connected to the server is the only one that actually knows it.
-	MCPServer string
+	Builtin          bool
+	ExecutionMode    ExecutionMode
+	PrepareArguments func(map[string]any) map[string]any
+	PromptGuidelines []string
 }
 
-// ToolWire is the projection a provider is allowed to see — the four fields of
-// REQ-TOOL-01 and no others.
+// ToolWire is the projection a provider is allowed to see — the name,
+// description and input schema, and nothing else.
 //
 // The PRD sketches `func (t Tool) wire() wireTool`, unexported. That is
 // unimplementable once providers live in their own packages, which REQ-PROV-02
@@ -91,19 +79,13 @@ type Tool struct {
 // ToolWire carries no json tags on purpose: each provider encodes it into its
 // own dialect (Anthropic input_schema, OpenAI parameters).
 type ToolWire struct {
-	Name                string
-	Description         string
-	InputSchema         *schema.Schema
-	ConstrainedSampling *ConstrainedSampling
+	Name        string
+	Description string
+	InputSchema *schema.Schema
 }
 
 func (t Tool) Wire() ToolWire {
-	return ToolWire{
-		Name:                t.Name,
-		Description:         t.Description,
-		InputSchema:         t.InputSchema,
-		ConstrainedSampling: t.ConstrainedSampling,
-	}
+	return ToolWire{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema}
 }
 
 func ToolWires(ts []Tool) []ToolWire {
@@ -112,26 +94,6 @@ func ToolWires(ts []Tool) []ToolWire {
 		out[i] = t.Wire()
 	}
 	return out
-}
-
-type ConstrainedSamplingType string
-
-const (
-	ConstrainJSONSchema ConstrainedSamplingType = "json_schema"
-	ConstrainGrammar    ConstrainedSamplingType = "grammar"
-)
-
-type StrictMode string
-
-const (
-	StrictPrefer  StrictMode = "prefer"
-	StrictRequire StrictMode = "require"
-)
-
-// ConstrainedSampling is a struct, not a bool (REQ-TOOL-03, A.2#15).
-type ConstrainedSampling struct {
-	Type   ConstrainedSamplingType
-	Strict StrictMode
 }
 
 // ToolResult is REQ-TOOL-08's output envelope.
@@ -143,14 +105,8 @@ type ToolResult struct {
 	// Terminate never reaches the model; it is the REQ-TOOL-13 batch vote.
 	Terminate bool          `json:"-"`
 	Metadata  *ToolMetadata `json:"metadata,omitzero"`
-	// Blocks are extra content blocks appended after the JSON payload —
-	// the channel by which a tool returns an image (REQ-TOOL-14.6's
-	// "a text note plus an ImageBlock").
-	//
-	// It is separate from Data because Data is marshalled into one text block
-	// for the model, and an image is not text: a provider needs it as its own
-	// typed block, and base64 inside a JSON string would be both unreadable
-	// and counted as text tokens.
+	// Blocks are extra content blocks appended after the text the model
+	// reads, each its own block in the result.
 	Blocks []ContentBlock `json:"-"`
 
 	// Text is the MODEL-FACING rendering of the result. When non-empty it is

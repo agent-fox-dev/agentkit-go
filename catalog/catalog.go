@@ -2,11 +2,11 @@
 // id into the core.Model descriptor of REQ-PROV-10 (Lookup).
 //
 // The catalog supplies exactly the metadata no provider API returns and no
-// pass-through can synthesize: wire API, base URL, context window, pricing,
-// reasoning support, modality support and compatibility profile. Every one of
-// those is load-bearing before the first byte is sent — the max_tokens cap,
-// the cost of a turn and how thinking is encoded all read it — which is why
-// "just pass the model string through" is not an option.
+// pass-through can synthesize: context window, output cap, pricing, how the
+// model takes thinking and its compatibility profile. Every one of those is
+// load-bearing before the first byte is sent — the max_tokens cap, the cost
+// of a turn and how thinking is encoded all read it — which is why "just
+// pass the model string through" is not an option.
 //
 // The catalog is NOT an allowlist. An id it does not list gets a usable
 // default descriptor (Lookup), so a model that ships after this snapshot works
@@ -17,7 +17,7 @@
 //
 // catalog imports core and nothing else in the module (plan §1.3). It holds no
 // mutable package-level state: Default is a sync.OnceValue over the embedded
-// bytes and every returned *core.Model is a deep copy, so a caller who edits a
+// bytes and every returned core.Model is a deep copy, so a caller who edits a
 // resolved descriptor cannot corrupt the process-wide catalog.
 package catalog
 
@@ -26,7 +26,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -102,20 +104,33 @@ type vendorRow struct {
 }
 
 type modelRow struct {
-	ID               string                         `json:"id"` // optional; must equal the key when present
-	Name             string                         `json:"name"`
-	API              core.API                       `json:"api"`      // inherited from the vendor when empty
-	BaseURL          string                         `json:"base_url"` // inherited from the vendor when empty
-	Headers          map[string]*string             `json:"headers"`  // inherited from the vendor when nil
-	Compat           json.RawMessage                `json:"compat"`
-	ContextWindow    int                            `json:"context_window"`
-	MaxTokens        int                            `json:"max_tokens"`
-	Cost             core.Cost                      `json:"cost"`
-	Input            []string                       `json:"input"`
-	Reasoning        bool                           `json:"reasoning"`
-	ThinkingLevelMap map[core.ThinkingLevel]*string `json:"thinking_level_map"`
-	Note             string                         `json:"note"`
+	ID               string             `json:"id"` // optional; must equal the key when present
+	Name             string             `json:"name"`
+	API              core.API           `json:"api"`      // inherited from the vendor when empty
+	BaseURL          string             `json:"base_url"` // inherited from the vendor when empty
+	Headers          map[string]*string `json:"headers"`  // inherited from the vendor when nil
+	Compat           json.RawMessage    `json:"compat"`
+	ContextWindow    int                `json:"context_window"`
+	MaxTokens        int                `json:"max_tokens"`
+	Cost             costRow            `json:"cost"`
+	Input            []string           `json:"input"`
+	Reasoning        bool               `json:"reasoning"`
+	ThinkingLevelMap map[string]*string `json:"thinking_level_map"`
+	Note             string             `json:"note"`
 }
+
+// costRow is a row's prices, USD per million tokens.
+type costRow struct {
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheRead  float64 `json:"cache_read"`
+	CacheWrite float64 `json:"cache_write"`
+}
+
+// thinkingLevels are the keys a row's thinking_level_map may use, in order.
+// Requests carry a core.Effort, which names the five from low up; off and
+// minimal are catalog-authoring metadata and never sent.
+var thinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 // --- parsing ---------------------------------------------------------------
 
@@ -229,53 +244,31 @@ func Parse(data []byte) (*Catalog, error) {
 	return c, nil
 }
 
-// toModel projects one file row onto the REQ-PROV-10 descriptor, inheriting
-// vendor-level defaults, and validates it.
+// toModel projects one file row onto core.Model, inheriting vendor-level
+// defaults, and validates it.
 func (m *modelRow) toModel(vendorID, modelID string, v *vendorRow, path string) (core.Model, error) {
-	out := core.Model{
-		ID:               modelID,
-		Name:             m.Name,
-		API:              m.API,
-		Provider:         vendorID,
-		BaseURL:          m.BaseURL,
-		Headers:          m.Headers,
-		Compat:           m.Compat,
-		ContextWindow:    m.ContextWindow,
-		MaxTokens:        m.MaxTokens,
-		Cost:             m.Cost,
-		Input:            m.Input,
-		Reasoning:        m.Reasoning,
-		ThinkingLevelMap: m.ThinkingLevelMap,
+	api, baseURL := m.API, m.BaseURL
+	if api == "" {
+		api = v.API
 	}
-	if out.Name == "" {
-		out.Name = modelID
+	if baseURL == "" {
+		baseURL = v.BaseURL
 	}
-	if out.API == "" {
-		out.API = v.API
-	}
-	if out.BaseURL == "" {
-		out.BaseURL = v.BaseURL
-	}
-	if out.Headers == nil {
-		out.Headers = v.Headers
-	}
-
 	// The API string is checked for emptiness ONLY, never against the known
-	// core.API constants. REQ-PROV-09 lets a third party register a new API
-	// value via a BackendPlugin, and a catalog row naming that API must load
-	// in a build that has never heard of it. An empty API, by contrast, can
-	// only ever dispatch to nothing.
-	if out.API == "" {
+	// core.API constants: a row naming an API this build has never heard of
+	// still loads. An empty API, by contrast, can only ever dispatch to
+	// nothing.
+	if api == "" {
 		return core.Model{}, badf(path+".api", "missing, and vendor %q declares no default api", vendorID)
 	}
-	if out.BaseURL == "" {
+	if baseURL == "" {
 		return core.Model{}, badf(path+".base_url", "missing, and vendor %q declares no default base_url", vendorID)
 	}
-	if out.ContextWindow < 0 {
-		return core.Model{}, badf(path+".context_window", "negative (%d)", out.ContextWindow)
+	if m.ContextWindow < 0 {
+		return core.Model{}, badf(path+".context_window", "negative (%d)", m.ContextWindow)
 	}
-	if out.MaxTokens < 0 {
-		return core.Model{}, badf(path+".max_tokens", "negative (%d)", out.MaxTokens)
+	if m.MaxTokens < 0 {
+		return core.Model{}, badf(path+".max_tokens", "negative (%d)", m.MaxTokens)
 	}
 	if len(m.Compat) > 0 && !json.Valid(m.Compat) {
 		return core.Model{}, badf(path+".compat", "not valid JSON")
@@ -284,52 +277,66 @@ func (m *modelRow) toModel(vendorID, modelID string, v *vendorRow, path string) 
 		name string
 		v    float64
 	}{
-		{"input", out.Cost.Input}, {"output", out.Cost.Output},
-		{"cache_read", out.Cost.CacheRead}, {"cache_write", out.Cost.CacheWrite},
+		{"input", m.Cost.Input}, {"output", m.Cost.Output},
+		{"cache_read", m.Cost.CacheRead}, {"cache_write", m.Cost.CacheWrite},
 	} {
 		if f.v < 0 {
 			return core.Model{}, badf(path+".cost."+f.name, "negative (%v)", f.v)
 		}
 	}
-	prev := 0
-	for i, t := range out.Cost.Tiers {
-		if t.Threshold <= prev {
-			return core.Model{}, badf(fmt.Sprintf("%s.cost.tiers[%d].threshold", path, i),
-				"must be positive and strictly ascending (got %d after %d)", t.Threshold, prev)
-		}
-		prev = t.Threshold
-	}
 
 	// A typo'd thinking level ("higth") is the single most expensive thing a
-	// hand-edited catalog can contain: it reads as "unsupported", so the clamp
-	// silently picks a different level and nothing ever errors. Reject unknown
-	// keys at load time — this is the REQ-CAT-06 diff's other half.
+	// hand-edited catalog can contain: it reads as "unsupported", so the
+	// effort is silently not sent and nothing ever errors. Reject unknown
+	// keys at load time.
 	supported := 0
-	for lvl, wire := range out.ThinkingLevelMap {
-		if !knownThinkingLevel(lvl) {
+	efforts := map[core.Effort]*string{}
+	for lvl, wire := range m.ThinkingLevelMap {
+		if !slices.Contains(thinkingLevels, lvl) {
 			return core.Model{}, badf(path+".thinking_level_map",
-				"unknown thinking level %q (known: off, minimal, low, medium, high, xhigh, max)", string(lvl))
+				"unknown thinking level %q (known: %s)", lvl, strings.Join(thinkingLevels, ", "))
 		}
-		if wire != nil && lvl != core.ThinkingOff {
+		if wire != nil && lvl != "off" {
 			supported++
 		}
-	}
-	out.Thinking = core.ThinkingKindOf(out.ThinkingLevelMap)
-	if supported > 0 && !out.Reasoning {
-		return core.Model{}, badf(path+".reasoning",
-			"false, but thinking_level_map supports %d level(s) above off; a clamp would\n"+
-				"select a level the budget and provenance paths believe cannot exist", supported)
-	}
-	return out, nil
-}
-
-func knownThinkingLevel(l core.ThinkingLevel) bool {
-	for _, k := range core.ThinkingLevelOrder {
-		if k == l {
-			return true
+		if lvl != "off" && lvl != "minimal" {
+			efforts[core.Effort(lvl)] = wire
 		}
 	}
-	return false
+	if supported > 0 && !m.Reasoning {
+		return core.Model{}, badf(path+".reasoning",
+			"false, but thinking_level_map supports %d level(s) above off; the model\n"+
+				"would be sent an effort the row says it cannot take", supported)
+	}
+	return core.Model{
+		ID:                       modelID,
+		ContextWindow:            m.ContextWindow,
+		MaxOutputTokens:          m.MaxTokens,
+		InputCostPerMillion:      m.Cost.Input,
+		OutputCostPerMillion:     m.Cost.Output,
+		CacheReadCostPerMillion:  m.Cost.CacheRead,
+		CacheWriteCostPerMillion: m.Cost.CacheWrite,
+		ThinkingKind:             thinkingKindOf(m.ThinkingLevelMap),
+		Efforts:                  efforts,
+		Compat:                   m.Compat,
+	}, nil
+}
+
+// thinkingKindOf reads how a model takes thinking from its level map: token
+// counts mean budget, effort names mean adaptive, and nothing above off means
+// none.
+func thinkingKindOf(levels map[string]*string) core.ThinkingKind {
+	kind := core.ThinkingKindNone
+	for lvl, wire := range levels {
+		if wire == nil || lvl == "off" {
+			continue
+		}
+		if _, err := strconv.Atoi(strings.TrimSpace(*wire)); err == nil {
+			return core.ThinkingKindBudget
+		}
+		kind = core.ThinkingKindAdaptive
+	}
+	return kind
 }
 
 // --- the default (embedded) catalog ----------------------------------------
@@ -421,43 +428,23 @@ func (c *Catalog) DefaultModelID(vendor string) string {
 // deleting a header would change every later resolution in the process.
 func cloneModel(m core.Model) core.Model {
 	out := m
-	if m.Headers != nil {
-		h := make(map[string]*string, len(m.Headers))
-		for k, v := range m.Headers {
-			if v == nil {
-				// Present-nil is REQ-AUTH-02's deletion marker, not "absent";
-				// it must survive the copy as a present key.
-				h[k] = nil
-				continue
-			}
-			s := *v
-			h[k] = &s
-		}
-		out.Headers = h
-	}
 	if m.Compat != nil {
 		out.Compat = append(json.RawMessage(nil), m.Compat...)
 	}
-	if m.Input != nil {
-		out.Input = append([]string(nil), m.Input...)
-	}
-	if m.ThinkingLevelMap != nil {
-		tm := make(map[core.ThinkingLevel]*string, len(m.ThinkingLevelMap))
-		for k, v := range m.ThinkingLevelMap {
+	if m.Efforts != nil {
+		efforts := make(map[core.Effort]*string, len(m.Efforts))
+		for k, v := range m.Efforts {
 			if v == nil {
-				// Present-null: "explicitly unsupported" (REQ-PROV-15). It is
-				// runtime-identical to absent (ruling P-28) but must survive
-				// the copy so the REQ-CAT-06 diff can still see it.
-				tm[k] = nil
+				// Present-null: "explicitly unsupported". It is
+				// runtime-identical to absent but survives the copy so a
+				// catalog diff can still see it.
+				efforts[k] = nil
 				continue
 			}
-			s := *v
-			tm[k] = &s
+			w := *v
+			efforts[k] = &w
 		}
-		out.ThinkingLevelMap = tm
-	}
-	if m.Cost.Tiers != nil {
-		out.Cost.Tiers = append([]core.CostTier(nil), m.Cost.Tiers...)
+		out.Efforts = efforts
 	}
 	return out
 }
@@ -491,16 +478,12 @@ func (c *Catalog) Lookup(id string) (core.Model, bool) {
 		bare = id
 	}
 	m := core.Model{
-		ID: bare, Name: bare, Provider: Vendor,
-		ContextWindow: DefaultContextWindow, MaxTokens: DefaultMaxTokens,
-		Input: []string{"text", "image"}, Reasoning: true,
-		Thinking: core.ThinkingKindAdaptive,
-	}
-	if v, ok := c.vendors[Vendor]; ok {
-		m.API, m.BaseURL = v.API, v.BaseURL
+		ID:            bare,
+		ContextWindow: DefaultContextWindow, MaxOutputTokens: DefaultMaxTokens,
+		ThinkingKind: core.ThinkingKindAdaptive,
 	}
 	if m.ID == "" {
-		m.ID, m.Name = "unknown", "unknown"
+		m.ID = "unknown"
 	}
 	return m, false
 }

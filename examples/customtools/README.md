@@ -64,7 +64,7 @@ error: anthropic: missing credentials: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_T
 | Metadata | `reserveStockTool` `res.Metadata` | `core.ToolMetadata` reaches your instrumentation, never the model. |
 | Terminating tool | `submitAnswerTool` | `res.Terminate = true`. Check `res.StopReason == core.RunStopToolTerminate` in `run()`. |
 | Run bounds | `run()` `agentkit.Config` | `MaxTurns: 12` and `MaxCostUSD: 1.00` end the run if the model never calls `submit_answer`; the run then reports `core.RunStopMaxTurns` or `core.RunStopBudgetExceeded`. |
-| Constrained sampling | `submitAnswerTool` | `core.ConstrainedSampling{Type: core.ConstrainJSONSchema, Strict: core.StrictPrefer}`. |
+| Strict arguments | every tool | The Anthropic wire declares every tool `"strict": true`, so the model's arguments match the input schema. |
 
 ## Gotchas
 
@@ -72,8 +72,6 @@ error: anthropic: missing credentials: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_T
   to terminate, the run ends once the whole batch has finished. If the model
   calls `submit_answer` next to other tools, their results are still
   computed and recorded, but the model does not see them.
-- **Constrained sampling is declared, not enforced, here**: the Anthropic
-  wire, the only one this module ships, ignores it.
 - The inventory map is unsynchronised on purpose. That is safe only because
   `reserve_stock` is sequential and `lookup_part` only reads.
 - `ToolCallEndEvent.Block.Input` holds the model's original bytes, *before*
@@ -82,7 +80,7 @@ error: anthropic: missing credentials: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_T
 ## Related
 
 Packages: `agentkit` (`Config`, `New`), `core` (`Tool`, `ToolResult`,
-`OKResult`, `ErrResult`, `ExecutionMode`, `ConstrainedSampling`,
+`OKResult`, `ErrResult`, `ExecutionMode`,
 `RunStopToolTerminate`), `schema`, `provider/anthropic` (`Resolve`).
 To test tools like these offline, script the model with `provider/faux`, as
 [`agentdemo`](../agentdemo) does.

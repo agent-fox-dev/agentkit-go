@@ -24,11 +24,6 @@ const APIVersion = "2023-06-01"
 // VertexAPIVersion is the anthropic_version a Vertex request body carries.
 const VertexAPIVersion = "vertex-2023-10-16"
 
-// BetaCompaction opts into REQ-PROV-07's server-side compaction. Compaction
-// blocks in the response are retained as core.RawBlock and replayed verbatim
-// on later turns; nothing else in the SDK needs to model them.
-const BetaCompaction = "compact-2026-01-12"
-
 // Options configures the provider. The zero value is usable.
 type Options struct {
 	// Client is the official SDK client requests go through. Nil resolves one
@@ -42,7 +37,7 @@ type Options struct {
 	Getenv func(string) string
 	// MaxRetries overrides the SDK's retry count; nil keeps its default.
 	MaxRetries *int
-	// Betas are sent as anthropic-beta. BetaCompaction is REQ-PROV-07.
+	// Betas are sent as anthropic-beta, verbatim.
 	Betas []string
 	// VertexProject selects the Vertex AI deployment whatever the
 	// environment says, and VertexLocation sets its region; both otherwise
@@ -67,30 +62,45 @@ type Options struct {
 	OnToolPrefixSync func(provider.SyncReport)
 	// Now is injectable for deterministic timestamps in tests.
 	Now func() time.Time
+
+	// CacheRetention places the prompt-cache breakpoints; empty is short.
+	CacheRetention core.CacheRetention
+	// Headers merge into every request. A present-nil value is a DELETION
+	// MARKER suppressing a default of that name (REQ-AUTH-02); no string
+	// value can express that.
+	Headers map[string]*string
+	// Timeout bounds each request, independently of the caller's context
+	// (REQ-PROV-18); zero is none.
+	Timeout time.Duration
+	// Env is consulted before Getenv when resolving the deployment
+	// (REQ-AUTH-03). An empty override falls through rather than masking.
+	Env map[string]string
+	// Transport replaces the HTTP transport.
+	Transport http.RoundTripper
+	// OnPayload runs after canonical->wire translation and before the first
+	// byte. Returning (nil, nil) leaves the payload unchanged; its error ends
+	// the turn unmodified.
+	OnPayload func(payload any, model *core.Model) (any, error)
+	// OnResponse sees each HTTP response before it is read; its error ends
+	// the turn.
+	OnResponse func(resp *http.Response, model *core.Model) error
+	// Warnf receives the transcript repair report; nil discards it.
+	Warnf func(format string, args ...any)
 }
 
-// Provider returns the registry entry (REQ-PROV-09).
-func Provider(opts Options) core.APIProvider {
-	c := &client{opts: opts, prefix: opts.ToolPrefix}
+// Provider returns a core.ProviderClient for the model m.
+func Provider(m core.Model, opts Options) core.ProviderClient {
+	c := &client{model: m, opts: opts, prefix: opts.ToolPrefix}
 	if c.prefix == nil {
 		c.prefix = &provider.ToolPrefix{}
 	}
-	return core.APIProvider{API: API, Stream: c.Stream}
+	return c
 }
 
 type client struct {
+	model  core.Model
 	opts   Options
 	prefix *provider.ToolPrefix
-}
-
-// wantsCompaction reports whether Options.Betas opted into REQ-PROV-07.
-func (c *client) wantsCompaction() bool {
-	for _, b := range c.opts.Betas {
-		if strings.TrimSpace(b) == BetaCompaction {
-			return true
-		}
-	}
-	return false
 }
 
 func (c *client) now() time.Time {
@@ -100,23 +110,21 @@ func (c *client) now() time.Time {
 	return time.Now()
 }
 
-// Stream implements core.StreamFunc.
-//
-// Every failure below is encoded in the returned stream, never returned as a
-// Go error (REQ-PROV-04) — the signature has no error to return, which is the
-// enforcement rather than a convention.
-func (c *client) Stream(ctx context.Context, m *core.Model, req core.Request, o core.ProviderStreamOptions) *core.EventStream {
-	// NFR-COMPAT-05: the deployment is resolved from config, never from a
-	// second provider implementation. It is decided HERE rather than in run
-	// because it changes the request BODY as well as the URL, and the body is
-	// serialized below.
-
-	retention := core.CacheRetentionShort
-	if o.CacheRetention != "" {
-		retention = o.CacheRetention
+// Stream implements core.ProviderClient. A context already done is refused
+// with its error; every failure after that is encoded in the stream — the
+// failed turn's message and, on the last item, the error (REQ-PROV-04).
+func (c *client) Stream(ctx context.Context, req core.Request) (<-chan core.StreamEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	if r := req.Options.CacheRetention; r != nil {
-		retention = *r
+	m := c.model
+	return core.StreamChannel(c.stream(ctx, &m, req)), nil
+}
+
+func (c *client) stream(ctx context.Context, m *core.Model, req core.Request) *core.EventStream {
+	retention := core.CacheRetentionShort
+	if c.opts.CacheRetention != "" {
+		retention = c.opts.CacheRetention
 	}
 
 	body, rep, sync, err := BuildRequestCached(m, req, retention, c.prefix)
@@ -126,21 +134,15 @@ func (c *client) Stream(ctx context.Context, m *core.Model, req core.Request, o 
 	if fn := c.opts.OnToolPrefixSync; fn != nil {
 		fn(sync)
 	}
-	if rep.Changed() && o.Warnf != nil {
-		o.Warnf("anthropic: %s", rep.String())
-	}
-	if c.wantsCompaction() {
-		// REQ-PROV-07: the beta header opts the REQUEST into the feature and
-		// the body names the edit; the server compacts only when both are
-		// present. A header alone was silently a no-op.
-		body.ContextManagement = &contextManagement{Edits: []contextEdit{{Type: "compact_20260112"}}}
+	if rep.Changed() && c.opts.Warnf != nil {
+		c.opts.Warnf("anthropic: %s", rep.String())
 	}
 
 	// REQ-PROV-18: OnPayload runs after canonical->wire translation and before
 	// the first byte. Its error propagates to the caller UNMODIFIED, which is
 	// why it is wrapped by ErrorStream rather than by fmt.Errorf.
 	var payload any = body
-	if fn := req.Options.OnPayload; fn != nil {
+	if fn := c.opts.OnPayload; fn != nil {
 		out, perr := fn(body, m)
 		if perr != nil {
 			return core.ErrorStream(nil, perr)
@@ -165,59 +167,30 @@ func (c *client) Stream(ctx context.Context, m *core.Model, req core.Request, o 
 	return s
 }
 
-func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, req core.Request,
-	raw []byte) {
-	d := &decodeState{
-		s: s, model: m, lookup: c.opts.BillingLookup,
-		partial: core.AssistantMessage{
-			Provider: m.Provider, API: m.API, Model: m.ID,
-			Effort:    req.Effort,
-			Timestamp: c.now(),
-		},
-		accs: map[int]*blockAcc{},
-	}
-
-	// caller is the ctx the caller handed to Stream; ctx below may be a
-	// TimeoutMs-derived child of it. The two are kept apart because their
-	// expiries mean different things: the caller's is an abort (REQ-LOOP-09),
-	// the derived one a retryable timeout (REQ-PROV-18).
-	caller := ctx
-	if to := req.Options.TimeoutMs; to != nil && *to > 0 {
-		// A per-request timeout INDEPENDENT of the caller's context deadline
-		// (REQ-PROV-18). It must not outlive this function, hence the defer.
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(*to)*time.Millisecond)
-		defer cancel()
-	}
-
-	sc, dep, env, err := c.sdkClient(req.Options.Env, req.Options.Transport)
-	if err != nil {
-		// A deployment that cannot be resolved — no credential, a Vertex
-		// selection with no project — fails the turn with the reason.
-		d.fail(err.Error(), err)
-		return
-	}
-
+// requestOptions are the per-request SDK options: the body, then the
+// caller's transport, retry count, headers and response hook.
+func (c *client) requestOptions(m *core.Model, raw []byte) []option.RequestOption {
 	// The body is ours: SDK params would re-encode replayed tool_use input,
 	// and its bytes must reach the wire as the model wrote them.
 	opts := []option.RequestOption{option.WithRequestBody("application/json", raw)}
-	if rt := req.Options.Transport; rt != nil && c.opts.Client != nil {
+	if rt := c.opts.Transport; rt != nil && c.opts.Client != nil {
 		opts = append(opts, option.WithHTTPClient(&http.Client{Transport: rt}))
 	}
-	if n := req.Options.MaxRetries; n != nil {
+	// A resolved client already carries MaxRetries; a caller's own does not.
+	if n := c.opts.MaxRetries; n != nil && c.opts.Client != nil {
 		opts = append(opts, option.WithMaxRetries(*n))
 	}
 	// REQ-AUTH-02: a request's own headers win, and a present-nil value
 	// removes the header the provider would otherwise send — how a gateway
 	// turns the upstream credential off.
-	for k, v := range req.Options.Headers {
+	for k, v := range c.opts.Headers {
 		if v == nil {
 			opts = append(opts, option.WithHeaderDel(k))
 		} else {
 			opts = append(opts, option.WithHeader(k, *v))
 		}
 	}
-	if fn := req.Options.OnResponse; fn != nil {
+	if fn := c.opts.OnResponse; fn != nil {
 		opts = append(opts, option.WithMiddleware(func(r *http.Request, next option.MiddlewareNext) (*http.Response, error) {
 			resp, err := next(r)
 			if err != nil {
@@ -230,6 +203,43 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 			return resp, nil
 		}))
 	}
+	return opts
+}
+
+func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, req core.Request,
+	raw []byte) {
+	d := &decodeState{
+		s: s, model: m, lookup: c.opts.BillingLookup,
+		partial: core.AssistantMessage{
+			Model:     m.ID,
+			Effort:    req.Effort,
+			Timestamp: c.now(),
+		},
+		accs: map[int]*blockAcc{},
+	}
+
+	// caller is the ctx the caller handed to Stream; ctx below may be a
+	// Timeout-derived child of it. The two are kept apart because their
+	// expiries mean different things: the caller's is an abort (REQ-LOOP-09),
+	// the derived one a retryable timeout (REQ-PROV-18).
+	caller := ctx
+	if to := c.opts.Timeout; to > 0 {
+		// A per-request timeout INDEPENDENT of the caller's context deadline
+		// (REQ-PROV-18). It must not outlive this function, hence the defer.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, to)
+		defer cancel()
+	}
+
+	sc, dep, env, err := c.sdkClient(c.opts.Env, c.opts.Transport)
+	if err != nil {
+		// A deployment that cannot be resolved — no credential, a Vertex
+		// selection with no project — fails the turn with the reason.
+		d.fail(err.Error(), err)
+		return
+	}
+
+	opts := c.requestOptions(m, raw)
 
 	stream := sc.Messages.NewStreaming(ctx, sdk.MessageNewParams{}, opts...)
 	defer stream.Close()
@@ -364,7 +374,7 @@ func cancellationText(caller, req context.Context, err error) (string, bool) {
 		return AbortText, true
 	}
 	if req.Err() != nil && errors.Is(req.Err(), context.DeadlineExceeded) {
-		return "anthropic: request timeout (RequestOptions.TimeoutMs elapsed): " + err.Error(), true
+		return "anthropic: request timeout (Options.Timeout elapsed): " + err.Error(), true
 	}
 	return "", false
 }
@@ -664,7 +674,7 @@ func DecodeResponse(m *core.Model, data []byte, lookup func(string) *core.Model)
 		return nil, fmt.Errorf("anthropic: decoding response: %w", err)
 	}
 	msg := &core.AssistantMessage{
-		Provider: m.Provider, API: m.API, Model: m.ID,
+		Model:      m.ID,
 		ResponseID: wr.ID, ResponseModel: wr.Model,
 		StopReason: MapStopReason(wr.StopReason), RawStopReason: wr.StopReason, StopDetail: wr.StopDetails.String(),
 	}
@@ -719,8 +729,8 @@ func applyThinking(r *request, m *core.Model, effort core.Effort) {
 		return
 	}
 	wire, listed := string(effort), true
-	if m.ThinkingLevelMap != nil {
-		w := m.ThinkingLevelMap[core.ThinkingLevel(effort)]
+	if m.Efforts != nil {
+		w := m.Efforts[effort]
 		listed = w != nil
 		if listed {
 			wire = strings.ToLower(strings.TrimSpace(*w))
@@ -729,7 +739,7 @@ func applyThinking(r *request, m *core.Model, effort core.Effort) {
 	if !listed {
 		return
 	}
-	switch m.ThinkingMode() {
+	switch thinkingKind(m) {
 	case core.ThinkingKindBudget:
 		if n, err := strconv.Atoi(wire); err == nil {
 			applyBudget(r, n)
@@ -746,6 +756,26 @@ func applyThinking(r *request, m *core.Model, effort core.Effort) {
 		// is the only option that keeps the request valid.
 		r.Temperature, r.TopP = nil, nil
 	}
+}
+
+// thinkingKind is how m takes thinking: its ThinkingKind when set, else what
+// its efforts' wire values imply (token counts mean a budget, names an
+// adaptive effort).
+func thinkingKind(m *core.Model) core.ThinkingKind {
+	if m.ThinkingKind != "" {
+		return m.ThinkingKind
+	}
+	kind := core.ThinkingKindNone
+	for _, w := range m.Efforts {
+		if w == nil {
+			continue
+		}
+		if _, err := strconv.Atoi(strings.TrimSpace(*w)); err == nil {
+			return core.ThinkingKindBudget
+		}
+		kind = core.ThinkingKindAdaptive
+	}
+	return kind
 }
 
 // applyBudget is the budget_tokens arm of applyThinking.

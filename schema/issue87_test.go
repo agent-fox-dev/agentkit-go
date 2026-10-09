@@ -1,20 +1,23 @@
 package schema
 
 import (
+	"bytes"
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
-
-	"github.com/agent-fox-dev/agentkit-go/jsonx"
 )
 
-func obj(t *testing.T, s string) jsonx.OrderedObject {
+// obj decodes s the way core.PrepareArguments does: numbers as json.Number.
+func obj(t *testing.T, s string) map[string]any {
 	t.Helper()
-	v, err := jsonx.DecodeOrdered([]byte(s))
-	if err != nil {
+	d := json.NewDecoder(bytes.NewReader([]byte(s)))
+	d.UseNumber()
+	var m map[string]any
+	if err := d.Decode(&m); err != nil {
 		t.Fatal(err)
 	}
-	return v.Object
+	return m
 }
 
 // Issue #87 §1: coercion writes a number only when the string IS a JSON
@@ -25,7 +28,7 @@ func TestCoerceWritesOnlyJSONNumbers(t *testing.T) {
 	for _, bad := range []string{"NaN", "Inf", "-Inf", "+5", ".5", "5.", "1_0", "0x10"} {
 		in := obj(t, `{"n":`+mustJSON(bad)+`}`)
 		out, _ := Coerce(s, in)
-		raw, err := out.MarshalJSON()
+		raw, err := json.Marshal(out)
 		if err != nil || !json.Valid(raw) {
 			t.Errorf("%q: coerced arguments are not valid JSON: %s (%v)", bad, raw, err)
 		}
@@ -33,9 +36,10 @@ func TestCoerceWritesOnlyJSONNumbers(t *testing.T) {
 			t.Errorf("%q passed validation as a number", bad)
 		}
 	}
-	for good, want := range map[string]string{"5": "5", "-1.5e3": "-1.5e3", " 7 ": "7", "1, ": "1"} {
+	// A coerced number is the value, as a float64: -1.5e3 is -1500.
+	for good, want := range map[string]string{"5": "5", "-1.5e3": "-1500", " 7 ": "7", "1, ": "1"} {
 		out, _ := Coerce(s, obj(t, `{"n":`+mustJSON(good)+`}`))
-		if raw, _ := out.MarshalJSON(); string(raw) != `{"n":`+want+`}` {
+		if raw, _ := json.Marshal(out); string(raw) != `{"n":`+want+`}` {
 			t.Errorf("%q coerced to %s, want %s", good, raw, want)
 		}
 	}
@@ -105,10 +109,138 @@ func TestValidateEnforcesTheDeclaredConstraints(t *testing.T) {
 func TestCoerceThroughASingleNonNullAnyOfBranch(t *testing.T) {
 	s := Object(Prop("n", AnyOf(Int(), &Schema{Type: TypeNull})))
 	out, _ := Coerce(s, obj(t, `{"n":"5"}`))
-	if raw, _ := out.MarshalJSON(); string(raw) != `{"n":5}` {
+	if raw, _ := json.Marshal(out); string(raw) != `{"n":5}` {
 		t.Fatalf("coerced to %s, want {\"n\":5}", raw)
 	}
 	if err := Validate(s, out); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func intp(n int) *int { return &n }
+
+// TS-12-22: a closed object refuses an undeclared property.
+func TestClosedObjectRefusesExtraProperties_TS12_22(t *testing.T) {
+	s := Object(Prop("name", String())).Closed()
+	err := Validate(s, map[string]any{"name": "test", "extra": 123})
+	if err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("Validate = %v, want a property-not-allowed error", err)
+	}
+	if err := Validate(s, map[string]any{"name": "test"}); err != nil {
+		t.Fatalf("a declared property was refused: %v", err)
+	}
+}
+
+// TS-12-23: an enum takes only its literals, by value and type.
+func TestEnumTakesOnlyItsLiterals_TS12_23(t *testing.T) {
+	s := Object(Prop("method", Enum("m", "GET", "POST", "PUT")))
+	err := Validate(s, map[string]any{"method": "get"})
+	if err == nil || !strings.Contains(err.Error(), "one of") {
+		t.Fatalf("Validate = %v, want a one-of error", err)
+	}
+	n := &Schema{Enum: []json.RawMessage{json.RawMessage(`1`), json.RawMessage(`"1"`)}}
+	if Validate(n, 1) != nil || Validate(n, "1") != nil || Validate(n, true) == nil {
+		t.Fatal("an enum must match by value and type: 1 and \"1\" in, true out")
+	}
+}
+
+// TS-12-24: numeric bounds and multipleOf are enforced.
+func TestNumericBounds_TS12_24(t *testing.T) {
+	s := Object(Prop("num", Int().Min(10).Max(50)))
+	if err := Validate(s, map[string]any{"num": 5}); err == nil || !strings.Contains(err.Error(), "at least") {
+		t.Fatalf("5 = %v, want an at-least error", err)
+	}
+	if err := Validate(s, map[string]any{"num": 60}); err == nil || !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("60 = %v, want an at-most error", err)
+	}
+	if err := Validate(s, map[string]any{"num": 10}); err != nil {
+		t.Fatalf("10 refused: %v", err)
+	}
+	lo, hi, step := 0.0, 1.0, 0.25
+	x := &Schema{Type: TypeNumber, ExclusiveMinimum: &lo, ExclusiveMaximum: &hi, MultipleOf: &step}
+	for v, want := range map[float64]string{0: "greater than", 1: "less than", 0.3: "multiple of"} {
+		if err := Validate(x, v); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%v = %v, want %q", v, err, want)
+		}
+	}
+	if err := Validate(x, 0.5); err != nil {
+		t.Errorf("0.5 refused: %v", err)
+	}
+}
+
+// TS-12-25: string length and pattern are enforced.
+func TestStringBounds_TS12_25(t *testing.T) {
+	s := &Schema{Type: TypeString, MinLength: intp(5), MaxLength: intp(10), Pattern: "^[a-z]+$"}
+	if err := Validate(s, "abc"); err == nil || !strings.Contains(err.Error(), "at least 5 characters") {
+		t.Fatalf("abc = %v, want a length error", err)
+	}
+	if err := Validate(s, "abcdefghijk"); err == nil || !strings.Contains(err.Error(), "at most 10 characters") {
+		t.Fatalf("too long = %v, want a length error", err)
+	}
+	if err := Validate(s, "abc123"); err == nil || !strings.Contains(err.Error(), "pattern") {
+		t.Fatalf("abc123 = %v, want a pattern error", err)
+	}
+	if err := Validate(s, "abcdef"); err != nil {
+		t.Fatalf("abcdef refused: %v", err)
+	}
+}
+
+// TS-12-26: array item counts and uniqueness are enforced.
+func TestArrayBounds_TS12_26(t *testing.T) {
+	s := Array(Int())
+	unique := true
+	s.MinItems, s.MaxItems, s.UniqueItems = intp(2), intp(4), &unique
+	if err := Validate(s, []any{1, 1}); err == nil || !strings.Contains(err.Error(), "unique") {
+		t.Fatalf("[1,1] = %v, want a uniqueness error", err)
+	}
+	if err := Validate(s, []any{1}); err == nil || !strings.Contains(err.Error(), "at least 2 items") {
+		t.Fatalf("[1] = %v, want a count error", err)
+	}
+	if err := Validate(s, []any{1, 2, 3, 4, 5}); err == nil || !strings.Contains(err.Error(), "at most 4 items") {
+		t.Fatalf("five items = %v, want a count error", err)
+	}
+	if err := Validate(s, []any{1, 2}); err != nil {
+		t.Fatalf("[1,2] refused: %v", err)
+	}
+}
+
+// TS-12-27: a valid numeric or boolean string is coerced, and recorded.
+func TestCoerceConvertsAndRecords_TS12_27(t *testing.T) {
+	s := Object(Prop("n", Number()), Prop("b", Bool()))
+	out, coercions := Coerce(s, map[string]any{"n": "42.5", "b": "true"})
+	if out["n"] != 42.5 || out["b"] != true || len(coercions) != 2 {
+		t.Fatalf("Coerce = %v, %v", out, coercions)
+	}
+}
+
+// TS-12-28: a numeric string that is not a JSON number is left alone.
+func TestCoerceRefusesNonJSONNumbers_TS12_28(t *testing.T) {
+	s := Object(Prop("count", Int()))
+	for _, bad := range []string{"NaN", "Inf", "+5", ".5", "5.", "1_0"} {
+		out, coercions := Coerce(s, map[string]any{"count": bad})
+		if out["count"] != bad || len(coercions) != 0 {
+			t.Errorf("%q coerced to %v (%v)", bad, out["count"], coercions)
+		}
+	}
+}
+
+// Numbers are compared exactly: a decimal multiple is a multiple, an
+// integer past float64's precision is still compared as itself, and a
+// non-finite value is not a number.
+func TestNumericChecksAreExact(t *testing.T) {
+	step := 0.1
+	if err := Validate(&Schema{Type: TypeNumber, MultipleOf: &step}, 0.3); err != nil {
+		t.Errorf("0.3 is a multiple of 0.1: %v", err)
+	}
+	if err := Validate(&Schema{Type: TypeNumber, MultipleOf: &step}, json.Number("0.7")); err != nil {
+		t.Errorf("0.7 is a multiple of 0.1: %v", err)
+	}
+	if err := Validate(Int().Max(9007199254740992), int64(9007199254740993)); err == nil {
+		t.Error("2^53+1 passed a maximum of 2^53")
+	}
+	for _, v := range []float64{math.NaN(), math.Inf(1)} {
+		if Validate(Number(), v) == nil || Validate(Int(), v) == nil {
+			t.Errorf("%v passed as a number", v)
+		}
 	}
 }

@@ -6,8 +6,7 @@ package schema
 import (
 	"encoding/json"
 	"errors"
-
-	"github.com/agent-fox-dev/agentkit-go/jsonx"
+	"fmt"
 )
 
 type Type string
@@ -77,7 +76,52 @@ type Schema struct {
 	// reflection cannot express. It is also how a forbidden keyword such as
 	// $ref sneaks past a strict rewrite that only inspects modelled fields,
 	// which is why StrictSubset scans it.
-	Extra jsonx.OrderedObject
+	Extra Extra
+}
+
+// Keyword is one passthrough keyword: its name and its value as JSON.
+type Keyword struct {
+	Key   string
+	Value json.RawMessage
+}
+
+// Extra is a schema's passthrough keywords, in authored order.
+type Extra []Keyword
+
+// Get returns the value of key, decoded, and whether it is present.
+func (e Extra) Get(key string) (any, bool) {
+	for _, k := range e {
+		if k.Key == key {
+			var v any
+			if err := json.Unmarshal(k.Value, &v); err != nil {
+				return nil, false
+			}
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+// set replaces key's value in place, or appends it.
+func (e Extra) set(key string, raw json.RawMessage) Extra {
+	for i := range e {
+		if e[i].Key == key {
+			e[i].Value = raw
+			return e
+		}
+	}
+	return append(e, Keyword{Key: key, Value: raw})
+}
+
+func (e Extra) clone() Extra {
+	if e == nil {
+		return nil
+	}
+	out := make(Extra, len(e))
+	for i, k := range e {
+		out[i] = Keyword{Key: k.Key, Value: append(json.RawMessage(nil), k.Value...)}
+	}
+	return out
 }
 
 type AdditionalProperties struct {
@@ -170,8 +214,15 @@ func (s *Schema) Closed() *Schema {
 	s.AdditionalProperties = &AdditionalProperties{Allowed: false}
 	return s
 }
+
+// WithExtra sets a passthrough keyword. It panics on a value JSON cannot
+// carry: a schema is the caller's own code, and NaN in it is a bug.
 func (s *Schema) WithExtra(key string, v any) *Schema {
-	s.Extra.Set(key, jsonx.OV(v))
+	raw, err := json.Marshal(v)
+	if err != nil {
+		panic(fmt.Sprintf("schema: WithExtra(%q): %v", key, err))
+	}
+	s.Extra = s.Extra.set(key, raw)
 	return s
 }
 
@@ -228,7 +279,7 @@ func (s *Schema) Clone() *Schema {
 	out.PropertyOrder = append([]string(nil), s.PropertyOrder...)
 	out.Required = append([]string(nil), s.Required...)
 	out.Items = s.Items.Clone()
-	out.Extra = s.Extra.Clone()
+	out.Extra = s.Extra.clone()
 	for _, alts := range []struct{ src, dst *[]*Schema }{
 		{&s.AnyOf, &out.AnyOf}, {&s.OneOf, &out.OneOf}, {&s.AllOf, &out.AllOf},
 	} {
@@ -295,12 +346,13 @@ type Coercion struct {
 	To   Type
 }
 
-// ValidationError carries the model's OWN arguments in the order it wrote
-// them so Error() can re-serialize them and the message is self-correcting
-// (REQ-TOOL-11.4, REQ-TOOL-12.3).
+// ValidationError carries the arguments as JSON so Error() can echo them and
+// the message is self-correcting (REQ-TOOL-11.4). Validate fills Args from
+// the value; a caller holding the model's own bytes (core.PrepareArguments)
+// replaces them, so the echo is in the order the model wrote.
 type ValidationError struct {
 	Issues []Issue
-	Args   jsonx.OrderedObject
+	Args   json.RawMessage
 }
 
 func (e *ValidationError) Error() string        { return renderValidationError(e) }
@@ -310,16 +362,21 @@ func (e *ValidationError) Is(target error) bool { return target == ErrArgumentVa
 // model to emit every declared property, so optional fields arrive as explicit
 // nulls; treating them as present is a validation failure on well-formed
 // output. Returns a copy.
-func DeleteOptionalNulls(s *Schema, in jsonx.OrderedObject) jsonx.OrderedObject {
+func DeleteOptionalNulls(s *Schema, in map[string]any) map[string]any {
 	return deleteOptionalNulls(s, in)
 }
 
 // Coerce is REQ-TOOL-11 step 3: string->number, string->bool, number->string,
-// against the declared schema only. Never guesses without a declared type.
-func Coerce(s *Schema, in jsonx.OrderedObject) (jsonx.OrderedObject, []Coercion) {
+// against the declared schema only. Never guesses without a declared type. A
+// string becomes a number only when it is a JSON number literal ("NaN",
+// "+5", ".5", "5." and "1_0" stay strings for Validate to refuse); a number
+// coerced to integer is an int64, to number a float64.
+func Coerce(s *Schema, in map[string]any) (map[string]any, []Coercion) {
 	return coerce(s, in)
 }
 
 // Validate is REQ-TOOL-11 step 4. It reports ALL issues, not the first, so one
-// round trip fixes the whole call.
-func Validate(s *Schema, in jsonx.OrderedObject) error { return validate(s, in) }
+// round trip fixes the whole call. v is a value as encoding/json decodes it
+// (an object is a map[string]any); numbers may be json.Number or any Go
+// number.
+func Validate(s *Schema, v any) error { return validate(s, v) }

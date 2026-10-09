@@ -8,12 +8,15 @@
 // is strictly worse than the allowlist it replaced. So, per OQ-8's
 // recommendation (b) plus (a):
 //
-//   - a run fails LOUDLY when a shell tool is in the resolved set and no
-//     interceptor is configured (core.ErrUnguardedExecute, checked by the
-//     Agent at the head of every run), and
-//   - Restricted ships as an importable, REPLACEABLE starting point — kept
-//     out of the SDK's enforcement path so it can be swapped rather than
-//     only narrowed.
+//   - agentkit.New refuses LOUDLY an agent whose tool set reaches a shell
+//     tool with no Guard configured (core.ErrUnguardedExecute), and
+//   - Check is the pure decision — may this argv run? — and Restricted ships
+//     as an importable, REPLACEABLE interceptor over it, kept out of the
+//     SDK's enforcement path so it can be swapped rather than only narrowed.
+//
+// Restricted is a floor for unattended safety, not a sandbox: an allowlist
+// wide enough to run a build is escapable through the allowed programs' own
+// configuration and subprocess surfaces.
 package guard
 
 import (
@@ -28,7 +31,7 @@ import (
 // ShellToolNames are the tools the guard treats as a shell. A caller-supplied
 // tool of the same name counts: the name is what the model calls, and a
 // custom `execute` is no less a shell for being custom.
-var ShellToolNames = []string{"execute", "run_command", "powershell"}
+var ShellToolNames = []string{"execute", "run_command"}
 
 // AllowAll is the explicit opt-out from the guard: an interceptor
 // that never blocks. Passing it is the affirmative act OQ-8 asks for — the
@@ -47,12 +50,40 @@ func IsShellTool(name string) bool {
 	return false
 }
 
-// Options configures RestrictedPolicy.
+// Decision is Check's verdict on one command.
+type Decision struct {
+	Block     bool
+	Reason    string
+	Terminate bool
+}
+
+// Check decides whether the command argv may run under o: whether argv[0]
+// is on o.AllowedPrograms. It is a pure function — no environment, no
+// filesystem, no PATH lookup — so a host can ask it about a command before
+// running it as well as through Restricted.
+//
+// A program with a path separator matches only a listed path, compared
+// after cleaning: `./go` names a file in the workspace, not the go on PATH.
+// A bare name matches a listed bare name only.
+// A block carries o.TerminateOnBlock.
+func Check(argv []string, o Options) Decision {
+	if len(argv) == 0 {
+		return Decision{Block: true, Reason: "empty argv", Terminate: o.TerminateOnBlock}
+	}
+	if !newAllowlist(o.AllowedPrograms).permits(argv[0]) {
+		return Decision{Block: true, Reason: fmt.Sprintf("program %q is not on the allowlist", argv[0]),
+			Terminate: o.TerminateOnBlock}
+	}
+	return Decision{}
+}
+
+// Options configures Restricted.
 type Options struct {
 	// AllowedPrograms are the programs (argv[0], or the first word of an
 	// `execute` command after any assignments) that may run. A bare name
 	// ("go") admits only that bare name, resolved through PATH. A path
-	// ("/usr/bin/git") admits that exact path, and its bare basename too. A
+	// ("/usr/bin/git") admits that exact path only — not a bare git found
+	// through PATH, which may be another binary. A
 	// program word containing a path separator is refused unless that path
 	// itself is listed: `./go` names a file in the workspace, not the go on
 	// PATH. Empty means every shell call is blocked, which is the safe
@@ -73,11 +104,6 @@ type Options struct {
 	// what is loaded into it — PATH, LD_*, DYLD_*, BASH_ENV, interpreter
 	// injection variables, see envDenied — is refused.
 	AllowEnvPrefixes bool
-	// PowerShellFilter decides `powershell` calls. There is no PowerShell
-	// grammar filter in this file, so per REQ-SEC-04 the tool is REFUSED
-	// OUTRIGHT unless the embedder supplies one: a control that silently does
-	// not hold on one of the supported shells is worse than no shell.
-	PowerShellFilter func(command string) (block bool, reason string)
 	// BlockedTools are refused by name, shell or not.
 	BlockedTools []string
 	// TerminateOnBlock casts the REQ-TOOL-13.2 vote so that a refusal ends
@@ -100,13 +126,20 @@ type Options struct {
 // would change which binary a listed name resolves to, or load code into
 // it, is refused.
 func Restricted(o Options) core.BeforeToolCall {
-	allowed := newAllowlist(o.AllowedPrograms)
 	blocked := make(map[string]bool, len(o.BlockedTools))
 	for _, t := range o.BlockedTools {
 		blocked[t] = true
 	}
 	block := func(reason string) core.BeforeToolCallDecision {
 		return core.BeforeToolCallDecision{Block: true, Terminate: o.TerminateOnBlock, Reason: reason}
+	}
+	// check asks Check about the program and adapts its verdict.
+	check := func(argv []string) core.BeforeToolCallDecision {
+		d := Check(argv, o)
+		if !d.Block {
+			return core.BeforeToolCallDecision{}
+		}
+		return core.BeforeToolCallDecision{Block: true, Terminate: d.Terminate, Reason: "guard.Restricted: " + d.Reason}
 	}
 
 	return func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
@@ -133,27 +166,18 @@ func Restricted(o Options) core.BeforeToolCall {
 						"it changes which program runs or what is loaded into it", n))
 				}
 			}
-			if !allowed.permits(prog) {
-				return block(fmt.Sprintf("guard.Restricted: program %q is not on the allowlist", prog))
-			}
+			return check([]string{prog})
 		case "run_command":
-			argv, _ := in.Arguments["argv"].([]any)
-			prog := ""
-			if len(argv) > 0 {
-				prog, _ = argv[0].(string)
+			raw, _ := in.Arguments["argv"].([]any)
+			argv := make([]string, len(raw))
+			for i, a := range raw {
+				s, ok := a.(string)
+				if !ok {
+					return block(fmt.Sprintf("guard.Restricted: argv[%d] is not a string", i))
+				}
+				argv[i] = s
 			}
-			if !allowed.permits(prog) {
-				return block(fmt.Sprintf("guard.Restricted: program %q is not on the allowlist", prog))
-			}
-		case "powershell":
-			if o.PowerShellFilter == nil {
-				return block("guard.Restricted: powershell is refused outright; this policy filters " +
-					"POSIX sh only and has no PowerShell grammar (REQ-SEC-04)")
-			}
-			cmd, _ := in.Arguments["command"].(string)
-			if b, reason := o.PowerShellFilter(cmd); b {
-				return block("guard.Restricted: " + reason)
-			}
+			return check(argv)
 		}
 		return core.BeforeToolCallDecision{}
 	}
@@ -213,8 +237,9 @@ func newAllowlist(programs []string) allowlist {
 		}
 		if hasPathSeparator(p) {
 			a.paths[path.Clean(p)] = true
+			continue
 		}
-		a.names[path.Base(p)] = true
+		a.names[p] = true
 	}
 	return a
 }

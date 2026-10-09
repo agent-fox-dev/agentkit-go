@@ -29,7 +29,7 @@ import (
 // every schema. That is the same shape of defect as a session log that is
 // built, tested, and never written to.
 func TestASteadyStateRequestSerializesNoSchemas(t *testing.T) {
-	m := &core.Model{ID: "claude-x", API: anthropic.API, Provider: "anthropic", MaxTokens: 4096}
+	m := &core.Model{ID: "claude-x", MaxOutputTokens: 4096}
 	req := core.Request{Tools: prefixTools(16)}
 	prefix := &provider.ToolPrefix{}
 
@@ -59,17 +59,16 @@ func TestASteadyStateRequestSerializesNoSchemas(t *testing.T) {
 // to opt in, or the default configuration is the slow one.
 func TestTheProviderOwnsAPrefixByDefault(t *testing.T) {
 	var reports []provider.SyncReport
-	p := anthropic.Provider(anthropic.Options{
+	m := core.Model{ID: "claude-x", MaxOutputTokens: 4096}
+	p := anthropic.Provider(m, anthropic.Options{
 		Getenv:           func(string) string { return "k" },
 		OnToolPrefixSync: func(r provider.SyncReport) { reports = append(reports, r) },
+		Transport:        refusingTransport{},
 	})
 
-	m := &core.Model{ID: "claude-x", API: anthropic.API, Provider: "anthropic", MaxTokens: 4096}
-	req := core.Request{Tools: prefixTools(8), Options: core.RequestOptions{
-		Transport: refusingTransport{},
-	}}
+	req := core.Request{Tools: prefixTools(8)}
 	for i := 0; i < 2; i++ {
-		p.Stream(context.Background(), m, req, core.ProviderStreamOptions{}).Result()
+		core.EventStreamOf(p.Stream(context.Background(), req)).Result()
 	}
 
 	if len(reports) != 2 {
@@ -203,13 +202,11 @@ func TestFirstTokenIsEmittedBeforeTheStreamEnds(t *testing.T) {
 		_ = pw.Close()
 	}()
 
-	p := anthropic.Provider(anthropic.Options{Getenv: func(string) string { return "k" }})
-	m := &core.Model{ID: "claude-x", API: anthropic.API, Provider: "anthropic", MaxTokens: 64}
-	req := core.Request{Options: core.RequestOptions{
-		Transport: pipeTransport{body: pr},
-	}}
+	m := core.Model{ID: "claude-x", MaxOutputTokens: 64}
+	p := anthropic.Provider(m, anthropic.Options{Getenv: func(string) string { return "k" },
+		Transport: pipeTransport{body: pr}})
 
-	s := p.Stream(context.Background(), m, req, core.ProviderStreamOptions{})
+	s := core.EventStreamOf(p.Stream(context.Background(), core.Request{}))
 
 	deadline := time.After(5 * time.Second)
 	var text string

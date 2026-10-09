@@ -21,7 +21,7 @@ const TestAPI core.API = "test-api"
 
 // TestModel is a resolved model on TestAPI.
 func TestModel() *core.Model {
-	return &core.Model{ID: "test-model", Name: "Test", API: TestAPI, Provider: "test", ContextWindow: 100000, MaxTokens: 4096}
+	return &core.Model{ID: "test-model", ContextWindow: 100000, MaxOutputTokens: 4096}
 }
 
 // Scripted is a provider that replays a predetermined sequence of assistant
@@ -39,12 +39,8 @@ type Scripted struct {
 	Systems [][]core.ContentBlock
 }
 
-// Provider registers the double under TestAPI.
-func (s *Scripted) Provider() core.APIProvider {
-	return core.APIProvider{API: TestAPI, Stream: s.stream}
-}
-
-func (s *Scripted) stream(ctx context.Context, m *core.Model, req core.Request, _ core.ProviderStreamOptions) *core.EventStream {
+// Stream implements core.ProviderClient.
+func (s *Scripted) Stream(ctx context.Context, req core.Request) (<-chan core.StreamEvent, error) {
 	st := core.NewEventStream(core.StreamOptions{})
 	s.mu.Lock()
 	i := s.calls
@@ -62,13 +58,12 @@ func (s *Scripted) stream(ctx context.Context, m *core.Model, req core.Request, 
 	}
 	s.mu.Unlock()
 
-	msg.Provider, msg.API, msg.Model = m.Provider, m.API, m.ID
 	go func() {
 		st.Push(core.MessageStartEvent{Message: msg})
 		st.Push(core.MessageEndEvent{Message: msg})
 		st.End(core.StreamResult{Message: &msg})
 	}()
-	return st
+	return core.StreamChannel(st), nil
 }
 
 // SentAt returns the messages the provider was asked to complete on turn.

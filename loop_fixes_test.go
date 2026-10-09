@@ -26,14 +26,14 @@ type blocking struct {
 
 func (b *blocking) agent(t *testing.T) *Agent {
 	t.Helper()
-	a, err := New(Config{Provider: core.ClientFunc(b.stream), Model: testModelID})
+	a, err := New(Config{Provider: streamFunc(b.stream), Model: testModelID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return a
 }
 
-func (b *blocking) stream(ctx context.Context, m *core.Model, _ core.Request, _ core.ProviderStreamOptions) *core.EventStream {
+func (b *blocking) stream(ctx context.Context, _ core.Request) *core.EventStream {
 	st := core.NewEventStream(core.StreamOptions{})
 	b.mu.Lock()
 	b.calls++
@@ -48,7 +48,6 @@ func (b *blocking) stream(ctx context.Context, m *core.Model, _ core.Request, _ 
 			Content:      core.Content{core.TextBlock{Text: "partial"}},
 			StopReason:   core.StopReasonAborted,
 			ErrorMessage: ctx.Err().Error(),
-			Provider:     m.Provider, API: m.API, Model: m.ID,
 		}
 		st.Push(core.MessageEndEvent{Message: msg})
 		st.End(core.StreamResult{Message: &msg})
@@ -135,8 +134,8 @@ func TestACancelledBatchEndsTheRunAtTheTurnBoundary(t *testing.T) {
 // outside a tool handler: the provider and a tool's argument shim.
 func TestPanicsInThirdPartyCodeDoNotCrashTheProcess(t *testing.T) {
 	t.Run("provider", func(t *testing.T) {
-		a, err := New(Config{Model: testModelID, Provider: core.ClientFunc(
-			func(context.Context, *core.Model, core.Request, core.ProviderStreamOptions) *core.EventStream {
+		a, err := New(Config{Model: testModelID, Provider: streamFunc(
+			func(context.Context, core.Request) *core.EventStream {
 				panic("provider exploded")
 			})})
 		if err != nil {

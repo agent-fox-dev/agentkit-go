@@ -178,10 +178,6 @@ type blockAcc struct {
 	// VERBATIM. It is never decoded and re-encoded on the way to
 	// core.NewToolUse (REQ-PROV-17).
 	input []byte
-	// raw retains a block type this build does not model, so it can be
-	// replayed unchanged. This is what makes REQ-PROV-07's server-side
-	// compaction blocks work without modelling them.
-	raw json.RawMessage
 
 	// salvaged records that the argument bytes had to be repaired, so the
 	// caller can distinguish a truncated call from a complete one.
@@ -219,20 +215,8 @@ func startFrom(raw json.RawMessage, seedInput bool) (*blockAcc, error) {
 			acc.input = append(acc.input, wb.Input...)
 		}
 	case "text_delta", "": // defensive; not a real start type
-	default:
-		if !knownBlockType(wb.Type) {
-			acc.raw = append(json.RawMessage(nil), raw...)
-		}
 	}
 	return acc, nil
-}
-
-func knownBlockType(t string) bool {
-	switch t {
-	case "text", "thinking", "redacted_thinking", "tool_use":
-		return true
-	}
-	return false
 }
 
 // block finalizes the accumulator into a canonical content block.
@@ -263,9 +247,8 @@ func (a *blockAcc) block() core.ContentBlock {
 		}
 		return b
 	}
-	if len(a.raw) > 0 {
-		return core.RawBlock{Type: a.typ, Raw: a.raw}
-	}
+	// A block type core does not model (a server tool use, say) is dropped:
+	// core has no variant to carry it.
 	return nil
 }
 

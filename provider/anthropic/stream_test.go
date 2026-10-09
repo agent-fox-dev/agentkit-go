@@ -42,10 +42,9 @@ func sseBody(pairs ...[2]string) string {
 
 func testModel() *core.Model {
 	return &core.Model{
-		ID: "claude-test", Name: "Claude Test", API: anthropic.API, Provider: "anthropic",
-		ContextWindow: 200000, MaxTokens: 4096,
-		Input: []string{"text"}, Reasoning: true,
-		Cost: core.Cost{Input: 3, Output: 15, CacheRead: 0.3, CacheWrite: 3.75},
+		ID: "claude-test", ContextWindow: 200000, MaxOutputTokens: 4096,
+		InputCostPerMillion: 3, OutputCostPerMillion: 15,
+		CacheReadCostPerMillion: 0.3, CacheWriteCostPerMillion: 3.75,
 	}
 }
 
@@ -64,7 +63,7 @@ func run(t *testing.T, m *core.Model, req core.Request, opts anthropic.Options,
 		return &http.Response{StatusCode: status, Header: http.Header{},
 			Body: io.NopCloser(strings.NewReader(body))}, nil
 	})
-	req.Options.Transport = rt
+	opts.Transport = rt
 	if opts.Getenv == nil {
 		opts.Getenv = func(k string) string {
 			if k == "ANTHROPIC_API_KEY" {
@@ -74,12 +73,17 @@ func run(t *testing.T, m *core.Model, req core.Request, opts anthropic.Options,
 		}
 	}
 
-	s := anthropic.Provider(opts).Stream(context.Background(), m, req, core.ProviderStreamOptions{})
+	s := stream(anthropic.Provider(*m, opts), context.Background(), req)
 	var events []core.Event
 	for e := range s.Events() {
 		events = append(events, e)
 	}
 	return s.Result(), events, seen
+}
+
+// stream sends req through p and adapts its channel to an EventStream.
+func stream(p core.ProviderClient, ctx context.Context, req core.Request) *core.EventStream {
+	return core.EventStreamOf(p.Stream(ctx, req))
 }
 
 func names(events []core.Event) []string {
@@ -145,7 +149,7 @@ func TestTheEventOrderMatchesFaux(t *testing.T) {
 	call := faux.FauxToolCall("toolu_1", "edit_file", toolArgs)
 	fp := faux.New(faux.FauxAssistantMessage(core.StopReasonToolUse,
 		faux.FauxText("Hello"), call))
-	fs := fp.Stream(context.Background(), faux.Model(), core.Request{}, core.ProviderStreamOptions{})
+	fs := stream(fp, context.Background(), core.Request{})
 	var fauxEvents []core.Event
 	for e := range fs.Events() {
 		fauxEvents = append(fauxEvents, e)
@@ -263,7 +267,7 @@ func TestAnthropicInputTokensAreNotNettedAgain(t *testing.T) {
 
 // TestAFallbackServedModelIsBilledAtItsOwnRates is REQ-PROV-05.5 end to end.
 func TestAFallbackServedModelIsBilledAtItsOwnRates(t *testing.T) {
-	served := &core.Model{ID: "claude-cheap", Cost: core.Cost{Input: 0.25, Output: 1.25}}
+	served := &core.Model{ID: "claude-cheap", InputCostPerMillion: 0.25, OutputCostPerMillion: 1.25}
 	body := strings.Replace(streamFixture(), `"model":"claude-test"`, `"model":"claude-cheap"`, 1)
 
 	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{
@@ -427,10 +431,9 @@ func TestRequestHeadersAndAuth(t *testing.T) {
 	m := testModel()
 	gwKey := "gw-secret"
 
-	req := core.Request{Options: core.RequestOptions{
+	_, _, sent := run(t, m, core.Request{}, anthropic.Options{
 		Headers: map[string]*string{"x-api-key": nil, "x-gateway-key": &gwKey},
-	}}
-	_, _, sent := run(t, m, req, anthropic.Options{}, 200, streamFixture())
+	}, 200, streamFixture())
 	if sent == nil {
 		t.Fatal("no request was made")
 	}
@@ -438,7 +441,7 @@ func TestRequestHeadersAndAuth(t *testing.T) {
 		t.Fatalf("anthropic-version = %q, want %q", got, anthropic.APIVersion)
 	}
 	if got := sent.Header.Get("x-api-key"); got != "" {
-		t.Fatalf("x-api-key = %q; a present-nil in RequestOptions.Headers must SUPPRESS "+
+		t.Fatalf("x-api-key = %q; a present-nil in Options.Headers must SUPPRESS "+
 			"the provider default (REQ-AUTH-02) — that is how a gateway turns off the "+
 			"upstream credential", got)
 	}
@@ -462,15 +465,14 @@ func TestAPIKeyIsSentWhenNotSuppressed(t *testing.T) {
 // canonical types.
 func TestOnPayloadCanRewriteTheEncodedRequest(t *testing.T) {
 	var captured map[string]any
-	req := core.Request{Options: core.RequestOptions{
+	_, _, sent := run(t, testModel(), core.Request{}, anthropic.Options{
 		OnPayload: func(p any, _ *core.Model) (any, error) {
 			b, _ := json.Marshal(p)
 			_ = json.Unmarshal(b, &captured)
 			captured["custom_vendor_field"] = true
 			return captured, nil
 		},
-	}}
-	_, _, sent := run(t, testModel(), req, anthropic.Options{}, 200, streamFixture())
+	}, 200, streamFixture())
 
 	body, _ := io.ReadAll(sent.Body)
 	if !strings.Contains(string(body), "custom_vendor_field") {
@@ -480,95 +482,36 @@ func TestOnPayloadCanRewriteTheEncodedRequest(t *testing.T) {
 
 func TestOnPayloadErrorPropagatesUnmodified(t *testing.T) {
 	sentinel := fmt.Errorf("policy says no")
-	req := core.Request{Options: core.RequestOptions{
+	s := stream(anthropic.Provider(*testModel(), anthropic.Options{
+		Getenv: func(k string) string {
+			if k == "ANTHROPIC_API_KEY" {
+				return "sk-ant-test-key-abcdefgh"
+			}
+			return ""
+		},
 		OnPayload: func(any, *core.Model) (any, error) { return nil, sentinel },
-	}}
-	req.Options.Transport = rtFunc(func(*http.Request) (*http.Response, error) {
-		t.Fatal("no request may be sent after OnPayload refuses")
-		return nil, nil
-	})
-	s := anthropic.Provider(anthropic.Options{Getenv: func(k string) string {
-		if k == "ANTHROPIC_API_KEY" {
-			return "sk-ant-test-key-abcdefgh"
-		}
-		return ""
-	}}).Stream(
-		context.Background(), testModel(), req, core.ProviderStreamOptions{})
-	if err := s.Err(); err != sentinel {
+		Transport: rtFunc(func(*http.Request) (*http.Response, error) {
+			t.Fatal("no request may be sent after OnPayload refuses")
+			return nil, nil
+		}),
+	}), context.Background(), core.Request{})
+	if err := s.Wait().Err; err != sentinel {
 		t.Fatalf("err = %v, want the caller's own error UNMODIFIED so errors.Is works "+
 			"on their sentinel (REQ-PROV-18)", err)
 	}
 }
 
-// TestServerCompactionBlocksAreReplayedVerbatim is REQ-PROV-07.
-//
-// A compaction block is opaque, beta, and load-bearing: it is the state the
-// server keeps in place of the history it removed. Dropping it looks safe and
-// re-sends the history the compaction was paid to compact.
-func TestServerCompactionBlocksAreReplayedVerbatim(t *testing.T) {
-	const raw = `{"type":"compaction","id":"cmp_1","payload":{"opaque":"bytes"}}`
-	body := sseBody(
-		[2]string{"message_start", `{"message":{"id":"m","model":"claude-test","usage":{"input_tokens":5}}}`},
-		[2]string{"content_block_start", `{"index":0,"content_block":` + raw + `}`},
-		[2]string{"content_block_stop", `{"index":0}`},
-		[2]string{"message_delta", `{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`},
-		[2]string{"message_stop", `{}`},
-	)
-	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{
-		Betas: []string{anthropic.BetaCompaction}}, 200, body)
-
-	rb, ok := msg.Content[0].(core.RawBlock)
-	if !ok {
-		t.Fatalf("block 0 = %#v, want a RawBlock retaining the unmodelled type", msg.Content[0])
-	}
-
-	// And it must survive the trip back out.
-	out, _, err := anthropic.BuildRequest(testModel(), core.Request{
-		Messages: core.Messages{core.AssistantMessage{
-			Content:  core.Content{rb},
-			Provider: "anthropic", API: anthropic.API, Model: "claude-test",
-			StopReason: core.StopReasonStop,
-		}},
-	}, core.CacheRetentionNone)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, _ := json.Marshal(out)
-	if !strings.Contains(string(encoded), `"opaque":"bytes"`) {
-		t.Fatalf("re-encoded request lost the compaction block: %s", encoded)
-	}
-}
-
 func TestBetaHeaderIsSentWhenRequested(t *testing.T) {
+	const beta = "some-feature-2026-01-01"
 	_, _, sent := run(t, testModel(), core.Request{},
-		anthropic.Options{Betas: []string{anthropic.BetaCompaction}}, 200, streamFixture())
-	if got := sent.Header.Get("anthropic-beta"); got != anthropic.BetaCompaction {
-		t.Fatalf("anthropic-beta = %q, want %q", got, anthropic.BetaCompaction)
+		anthropic.Options{Betas: []string{beta}}, 200, streamFixture())
+	if got := sent.Header.Get("anthropic-beta"); got != beta {
+		t.Fatalf("anthropic-beta = %q, want %q", got, beta)
 	}
-	// The header alone is a no-op: the server compacts only when the body
-	// also names the edit (REQ-PROV-07).
+	// A beta is a header only: the body names no feature of its own.
 	body, _ := io.ReadAll(sent.Body)
-	var got struct {
-		ContextManagement *struct {
-			Edits []struct {
-				Type string `json:"type"`
-			} `json:"edits"`
-		} `json:"context_management"`
-	}
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.ContextManagement == nil || len(got.ContextManagement.Edits) != 1 ||
-		got.ContextManagement.Edits[0].Type != "compact_20260112" {
-		t.Fatalf("body = %s, want context_management.edits = [{type: compact_20260112}] alongside the beta header", body)
-	}
-
-	// And without the beta, no body field either: a gateway that does not
-	// know the field rejects it.
-	_, _, sent = run(t, testModel(), core.Request{}, anthropic.Options{}, 200, streamFixture())
-	body, _ = io.ReadAll(sent.Body)
 	if strings.Contains(string(body), "context_management") {
-		t.Fatalf("body = %s carries context_management without the compaction beta", body)
+		t.Fatalf("body = %s carries context_management", body)
 	}
 }
 
@@ -668,7 +611,7 @@ func TestEmptyTextInsideAToolResultIsDropped(t *testing.T) {
 	req := core.Request{Messages: core.Messages{
 		core.UserMessage{Content: core.Content{core.TextBlock{Text: "list"}}},
 		core.AssistantMessage{Content: core.Content{call}, StopReason: core.StopReasonToolUse,
-			Provider: "anthropic", API: anthropic.API, Model: "claude-test"},
+			Model: "claude-test"},
 		core.ToolResultMessage{ToolUseID: "toolu_1", ToolName: "ls",
 			Content: core.Content{core.TextBlock{Text: ""}, core.TextBlock{Text: "a.go"}}},
 	}}
@@ -693,10 +636,10 @@ func TestAUserMessageWithNothingLeftIsSkipped(t *testing.T) {
 	req := core.Request{Messages: core.Messages{
 		core.UserMessage{Content: core.Content{core.TextBlock{Text: "first"}}},
 		core.AssistantMessage{Content: core.Content{core.TextBlock{Text: "reply"}}, StopReason: core.StopReasonStop,
-			Provider: "anthropic", API: anthropic.API, Model: "claude-test"},
+			Model: "claude-test"},
 		core.UserMessage{Content: core.Content{core.TextBlock{Text: ""}}},
 		core.AssistantMessage{Content: core.Content{core.TextBlock{Text: "again"}}, StopReason: core.StopReasonStop,
-			Provider: "anthropic", API: anthropic.API, Model: "claude-test"},
+			Model: "claude-test"},
 		core.UserMessage{Content: core.Content{core.TextBlock{Text: "last"}}},
 	}}
 	body, _, err := anthropic.BuildRequest(testModel(), req, core.CacheRetentionNone)
@@ -733,9 +676,9 @@ func TestAUserMessageWithNothingLeftIsSkipped(t *testing.T) {
 // sends the row's own budget.
 func TestThinkingIsATriState(t *testing.T) {
 	m := testModel()
-	budget, disabled := "2048", "disabled"
-	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{
-		core.ThinkingOff: &disabled, core.ThinkingHigh: &budget}
+	budget := "2048"
+	m.Efforts = map[core.Effort]*string{
+		core.EffortHigh: &budget}
 
 	if got := captureBody(t, m, ""); got["thinking"] != nil {
 		t.Fatalf("thinking = %v with no effort, want the key OMITTED", got["thinking"])
@@ -753,7 +696,7 @@ func TestThinkingIsATriState(t *testing.T) {
 	// A model with NO map has no reachable level, and the key is omitted:
 	// sending a level the model does not know is a 400, and inventing a
 	// budget is worse than not thinking.
-	m.ThinkingLevelMap = nil
+	m.Efforts = nil
 	if got := captureBody(t, m, core.EffortHigh)["thinking"]; got != nil {
 		t.Fatalf("thinking = %v for a model with no map, want the key omitted", got)
 	}
@@ -768,12 +711,11 @@ func captureBody(t *testing.T, m *core.Model, effort core.Effort) map[string]any
 func captureRequest(t *testing.T, m *core.Model, req core.Request) map[string]any {
 	t.Helper()
 	var got map[string]any
-	req.Options.OnPayload = func(p any, _ *core.Model) (any, error) {
+	run(t, m, req, anthropic.Options{OnPayload: func(p any, _ *core.Model) (any, error) {
 		b, _ := json.Marshal(p)
 		_ = json.Unmarshal(b, &got)
 		return nil, nil
-	}
-	run(t, m, req, anthropic.Options{}, 200, streamFixture())
+	}}, 200, streamFixture())
 	return got
 }
 
@@ -802,9 +744,9 @@ func TestAnEffortStyleRowSendsAdaptiveThinkingAndEffort(t *testing.T) {
 	}
 
 	m := testModel()
-	m.MaxTokens = 64000
+	m.MaxOutputTokens = 64000
 	high := "high"
-	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingHigh: &high}
+	m.Efforts = map[core.Effort]*string{core.EffortHigh: &high}
 	body := withSampling(m, core.EffortHigh)
 	assertNeverBudgetless(body)
 	th, _ := body["thinking"].(map[string]any)
@@ -824,14 +766,14 @@ func TestAnEffortStyleRowSendsAdaptiveThinkingAndEffort(t *testing.T) {
 	// minimal has no Anthropic counterpart and is sent as low; a row that
 	// writes it as "minimal" gets the same treatment as one that writes "low".
 	minimal := "minimal"
-	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingLow: &minimal}
+	m.Efforts = map[core.Effort]*string{core.EffortLow: &minimal}
 	body = withSampling(m, core.EffortLow)
 	if oc, _ := body["output_config"].(map[string]any); oc == nil || oc["effort"] != "low" {
 		t.Fatalf("output_config = %v for a \"minimal\" wire value, want effort low", body["output_config"])
 	}
 
 	unknown := "turbo"
-	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingHigh: &unknown}
+	m.Efforts = map[core.Effort]*string{core.EffortHigh: &unknown}
 	body = withSampling(m, core.EffortHigh)
 	assertNeverBudgetless(body)
 	if body["thinking"] != nil || body["output_config"] != nil {
@@ -945,7 +887,7 @@ func TestAnEmptyToolResultOmitsContent(t *testing.T) {
 	req := core.Request{Messages: core.Messages{
 		core.UserMessage{Content: core.Content{core.TextBlock{Text: "delete x"}}},
 		core.AssistantMessage{Content: core.Content{call}, StopReason: core.StopReasonToolUse,
-			Provider: "anthropic", API: anthropic.API, Model: "claude-test"},
+			Model: "claude-test"},
 		core.ToolResultMessage{ToolUseID: "toolu_1", ToolName: "rm"},
 	}}
 	body, _, err := anthropic.BuildRequest(testModel(), req, core.CacheRetentionNone)
@@ -1048,7 +990,7 @@ func TestARedactedThinkingBlockAlwaysCarriesItsDataKey(t *testing.T) {
 	req := core.Request{Messages: core.Messages{
 		core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}},
 		core.AssistantMessage{
-			Provider: "anthropic", API: anthropic.API, Model: "claude-test",
+			Model: "claude-test",
 			Content: core.Content{
 				core.ThinkingBlock{Redacted: true, Signature: "OPAQUE"},
 				core.TextBlock{Text: "done"},
@@ -1070,7 +1012,7 @@ func TestARedactedThinkingBlockAlwaysCarriesItsDataKey(t *testing.T) {
 // and no window, messages from a request with no history.
 func TestMaxTokensIsNeverZeroAndMessagesNeverNull(t *testing.T) {
 	m := testModel()
-	m.MaxTokens, m.ContextWindow = 0, 0
+	m.MaxOutputTokens, m.ContextWindow = 0, 0
 	body, _, err := anthropic.BuildRequest(m, core.Request{}, core.CacheRetentionNone)
 	if err != nil {
 		t.Fatal(err)
@@ -1110,9 +1052,9 @@ func TestAMalformedContentBlockStartFailsTheStream(t *testing.T) {
 
 func TestThinkingBudgetIsHeldBelowMaxTokens(t *testing.T) {
 	m := testModel()
-	m.MaxTokens = 2048
+	m.MaxOutputTokens = 2048
 	budget := "4096" // larger than max_tokens: Anthropic rejects this outright
-	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingHigh: &budget}
+	m.Efforts = map[core.Effort]*string{core.EffortHigh: &budget}
 
 	got := captureBody(t, m, core.EffortHigh)
 	th, _ := got["thinking"].(map[string]any)
@@ -1133,9 +1075,9 @@ func TestThinkingBudgetIsHeldBelowMaxTokens(t *testing.T) {
 // is. No thinking is the request that still returns.
 func TestASubMinimumBudgetOmitsThinking(t *testing.T) {
 	m := testModel()
-	m.MaxTokens = 1024 // leaves 1023, under the minimum
+	m.MaxOutputTokens = 1024 // leaves 1023, under the minimum
 	budget := "4096"
-	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingHigh: &budget}
+	m.Efforts = map[core.Effort]*string{core.EffortHigh: &budget}
 	temp := 0.4
 
 	got := captureRequest(t, m, core.Request{Effort: core.EffortHigh, Temperature: &temp})
@@ -1147,7 +1089,7 @@ func TestASubMinimumBudgetOmitsThinking(t *testing.T) {
 	}
 
 	// The minimum itself is legal.
-	m.MaxTokens = 1025
+	m.MaxOutputTokens = 1025
 	got = captureBody(t, m, core.EffortHigh)
 	th, _ := got["thinking"].(map[string]any)
 	if th == nil || th["budget_tokens"] != float64(1024) {
@@ -1160,15 +1102,15 @@ func TestASubMinimumBudgetOmitsThinking(t *testing.T) {
 // and is never retried (REQ-PROV-14), where an error may be.
 func TestCancellationProducesAnAbortedTurnNotAnError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	req := core.Request{Options: core.RequestOptions{
+	// Cancelled while the request is in flight: a context already done is
+	// refused by Stream itself.
+	s := stream(anthropic.Provider(*testModel(), anthropic.Options{
+		Getenv: func(string) string { return "k" },
 		Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+			cancel()
 			return nil, r.Context().Err()
 		}),
-	}}
-	s := anthropic.Provider(anthropic.Options{
-		Getenv: func(string) string { return "k" },
-	}).Stream(ctx, testModel(), req, core.ProviderStreamOptions{})
+	}), ctx, core.Request{})
 
 	msg := s.Result()
 	if msg.StopReason != core.StopReasonAborted {
@@ -1177,19 +1119,16 @@ func TestCancellationProducesAnAbortedTurnNotAnError(t *testing.T) {
 }
 
 func TestPerRequestTimeoutIsIndependentOfTheCallerContext(t *testing.T) {
-	one := 1
-	req := core.Request{Options: core.RequestOptions{
-		TimeoutMs: &one,
-		Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
-			<-r.Context().Done()
-			return nil, r.Context().Err()
-		}),
-	}}
 	done := make(chan *core.AssistantMessage, 1)
 	go func() {
-		done <- anthropic.Provider(anthropic.Options{
-			Getenv: func(string) string { return "k" },
-		}).Stream(context.Background(), testModel(), req, core.ProviderStreamOptions{}).Result()
+		done <- stream(anthropic.Provider(*testModel(), anthropic.Options{
+			Getenv:  func(string) string { return "k" },
+			Timeout: time.Millisecond,
+			Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+				<-r.Context().Done()
+				return nil, r.Context().Err()
+			}),
+		}), context.Background(), core.Request{}).Result()
 	}()
 
 	select {
@@ -1241,9 +1180,9 @@ func TestAnOAuthTokenCarriesTheOAuthBeta(t *testing.T) {
 	if got := r.Header.Get("anthropic-beta"); got != anthropic.BetaOAuth {
 		t.Fatalf("anthropic-beta = %q, want %q", got, anthropic.BetaOAuth)
 	}
-	r = sent(t, anthropic.Options{Betas: []string{anthropic.BetaCompaction}},
+	r = sent(t, anthropic.Options{Betas: []string{"some-feature-2026-01-01"}},
 		map[string]string{"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x"})
-	if got := r.Header.Get("anthropic-beta"); got != anthropic.BetaCompaction+","+anthropic.BetaOAuth {
+	if got := r.Header.Get("anthropic-beta"); got != "some-feature-2026-01-01,"+anthropic.BetaOAuth {
 		t.Fatalf("anthropic-beta = %q, want both betas", got)
 	}
 	r = sent(t, anthropic.Options{}, map[string]string{"ANTHROPIC_API_KEY": "key"})
@@ -1349,14 +1288,13 @@ func TestStreamingDoesNotWaitForTheConsumer_TS10_28(t *testing.T) {
 		return &http.Response{StatusCode: 200, Header: http.Header{},
 			Body: io.NopCloser(strings.NewReader(streamFixture()))}, nil
 	})
-	req := core.Request{Options: core.RequestOptions{Transport: rt}}
-	p := anthropic.Provider(anthropic.Options{Getenv: func(k string) string {
+	p := anthropic.Provider(*testModel(), anthropic.Options{Getenv: func(k string) string {
 		if k == "ANTHROPIC_API_KEY" {
 			return "sk-ant-test"
 		}
 		return ""
-	}})
-	s := p.Stream(context.Background(), testModel(), req, core.ProviderStreamOptions{})
+	}, Transport: rt})
+	s := stream(p, context.Background(), core.Request{})
 	done := make(chan *core.AssistantMessage, 1)
 	go func() { done <- s.Result() }()
 	select {

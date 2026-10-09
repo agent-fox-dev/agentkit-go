@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,7 +15,6 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/jsonx"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
@@ -518,7 +518,7 @@ func TestOutputSchemaSubprocessTools_TS06_18(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ord, err := jsonx.DecodeOrderedObject(blob)
+		ord, err := jsonObject(blob)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -526,4 +526,14 @@ func TestOutputSchemaSubprocessTools_TS06_18(t *testing.T) {
 			t.Fatalf("%s: Data does not conform: %v", name, err)
 		}
 	}
+}
+
+// jsonObject decodes a JSON object as schema.Validate takes it: numbers as
+// json.Number.
+func jsonObject(b []byte) (map[string]any, error) {
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.UseNumber()
+	var m map[string]any
+	err := d.Decode(&m)
+	return m, err
 }

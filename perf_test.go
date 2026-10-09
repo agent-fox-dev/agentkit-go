@@ -24,7 +24,7 @@ import (
 func benchAgent(b *testing.B, tools int) *Agent {
 	b.Helper()
 	s := &scripted{}
-	cfg := Config{Provider: core.ClientFunc(s.stream), Model: testModelID}
+	cfg := Config{Provider: streamFunc(s.stream), Model: testModelID}
 	for i := 0; i < tools; i++ {
 		cfg.Tools = append(cfg.Tools, echoTool(fmt.Sprintf("tool_%d", i), nil))
 	}
@@ -94,7 +94,7 @@ func BenchmarkLoopTurnWithToolBatch(b *testing.B) {
 				mustUse("c2", "tool_1", `{"v":"y"}`),
 				mustUse("c3", "tool_2", `{"v":"z"}`)),
 		}}
-		cfg := Config{Provider: core.ClientFunc(s.stream), Model: testModelID}
+		cfg := Config{Provider: streamFunc(s.stream), Model: testModelID}
 		for i := 0; i < 3; i++ {
 			cfg.Tools = append(cfg.Tools, echoTool(fmt.Sprintf("tool_%d", i), nil))
 		}
@@ -122,7 +122,7 @@ func BenchmarkLoopTurnWithToolBatch(b *testing.B) {
 // stampFixture is NFR-PERF-07's stated worst case: 128 tools and 1000
 // messages.
 func stampFixture(b testingTB) (*core.Model, core.Request) {
-	m := &core.Model{ID: "claude-x", API: anthropic.API, Provider: "anthropic", MaxTokens: 4096}
+	m := &core.Model{ID: "claude-x", MaxOutputTokens: 4096}
 	req := core.Request{
 		System: []core.ContentBlock{core.TextBlock{Text: "a system prompt"}},
 	}
@@ -135,8 +135,8 @@ func stampFixture(b testingTB) (*core.Model, core.Request) {
 		req.Messages = append(req.Messages,
 			core.UserMessage{Content: core.Content{core.TextBlock{Text: fmt.Sprintf("question %d", i)}}},
 			core.AssistantMessage{
-				Content:  core.Content{core.TextBlock{Text: fmt.Sprintf("answer %d", i)}},
-				Provider: "anthropic", API: anthropic.API, Model: "claude-x",
+				Content:    core.Content{core.TextBlock{Text: fmt.Sprintf("answer %d", i)}},
+				Model:      "claude-x",
 				StopReason: core.StopReasonStop})
 	}
 	_ = b
@@ -266,7 +266,7 @@ func deepHistory(n int) core.Messages {
 			core.AssistantMessage{
 				Content: core.Content{core.TextBlock{
 					Text: fmt.Sprintf("answer number %d, likewise of a realistic length", i)}},
-				Provider: "test", API: testAPI, Model: "test-model",
+				Model:      "test-model",
 				StopReason: core.StopReasonStop})
 	}
 	return msgs
@@ -275,7 +275,7 @@ func deepHistory(n int) core.Messages {
 func benchAgentAtDepth(b *testing.B, turns int) *Agent {
 	b.Helper()
 	s := &scripted{}
-	a, err := New(Config{Provider: core.ClientFunc(s.stream), Model: testModelID})
+	a, err := New(Config{Provider: streamFunc(s.stream), Model: testModelID})
 	if err != nil {
 		b.Fatal(err)
 	}

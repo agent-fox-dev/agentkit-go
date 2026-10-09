@@ -25,19 +25,17 @@ func sent(t *testing.T, opts anthropic.Options, env map[string]string) *http.Req
 	var got *http.Request
 	req := core.Request{
 		Messages: core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}},
-		Options: core.RequestOptions{
-			Env: env,
-			Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
-				got = r.Clone(r.Context())
-				if r.Body != nil {
-					b, _ := io.ReadAll(r.Body)
-					got.Body = io.NopCloser(strings.NewReader(string(b)))
-				}
-				return &http.Response{StatusCode: 200, Header: http.Header{},
-					Body: io.NopCloser(strings.NewReader(streamFixture()))}, nil
-			}),
-		},
 	}
+	opts.Env = env
+	opts.Transport = rtFunc(func(r *http.Request) (*http.Response, error) {
+		got = r.Clone(r.Context())
+		if r.Body != nil {
+			b, _ := io.ReadAll(r.Body)
+			got.Body = io.NopCloser(strings.NewReader(string(b)))
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{},
+			Body: io.NopCloser(strings.NewReader(streamFixture()))}, nil
+	})
 	if opts.Getenv == nil {
 		opts.Getenv = func(string) string { return "" }
 	}
@@ -45,8 +43,7 @@ func sent(t *testing.T, opts anthropic.Options, env map[string]string) *http.Req
 		// Never this machine's Application Default Credentials.
 		opts.VertexTokenSource = oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken})
 	}
-	anthropic.Provider(opts).Stream(context.Background(), testModel(), req,
-		core.ProviderStreamOptions{}).Result()
+	stream(anthropic.Provider(*testModel(), opts), context.Background(), req).Result()
 	return got
 }
 
@@ -232,16 +229,14 @@ func TestASelectedVertexDeploymentWithNoProjectFailsSayingSo(t *testing.T) {
 	// And the failure reaches the caller through the stream, not as a silent
 	// fallback to api.anthropic.com (REQ-PROV-04).
 	var reached bool
-	req := core.Request{Options: core.RequestOptions{
-		Env: map[string]string{"CLAUDE_CODE_USE_VERTEX": "1"},
+	msg := stream(anthropic.Provider(*testModel(), anthropic.Options{Getenv: none,
+		VertexTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken}),
+		Env:               map[string]string{"CLAUDE_CODE_USE_VERTEX": "1"},
 		Transport: rtFunc(func(*http.Request) (*http.Response, error) {
 			reached = true
 			return nil, io.EOF
 		}),
-	}}
-	msg := anthropic.Provider(anthropic.Options{Getenv: none,
-		VertexTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken})}).
-		Stream(context.Background(), testModel(), req, core.ProviderStreamOptions{}).Result()
+	}), context.Background(), core.Request{}).Result()
 	if reached {
 		t.Fatal("a misconfigured deployment must not send a request")
 	}
@@ -324,17 +319,15 @@ func TestAVertexAuthFailureNamesTheDeploymentAndWhatSelectedIt(t *testing.T) {
 		`authentication credential.","status":"UNAUTHENTICATED"}}`
 	req := core.Request{
 		Messages: core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}},
-		Options: core.RequestOptions{
-			Env: map[string]string{"CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "proj-1"},
-			Transport: rtFunc(func(*http.Request) (*http.Response, error) {
-				return &http.Response{StatusCode: 401, Header: http.Header{},
-					Body: io.NopCloser(strings.NewReader(body))}, nil
-			}),
-		},
 	}
-	msg := anthropic.Provider(anthropic.Options{Getenv: func(string) string { return "" },
-		VertexTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken})}).
-		Stream(context.Background(), testModel(), req, core.ProviderStreamOptions{}).Result()
+	msg := stream(anthropic.Provider(*testModel(), anthropic.Options{Getenv: func(string) string { return "" },
+		VertexTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken}),
+		Env:               map[string]string{"CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "proj-1"},
+		Transport: rtFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 401, Header: http.Header{},
+				Body: io.NopCloser(strings.NewReader(body))}, nil
+		}),
+	}), context.Background(), req).Result()
 	if msg == nil || msg.ErrorMessage == "" {
 		t.Fatalf("result = %+v, want an error message", msg)
 	}
@@ -355,17 +348,15 @@ func TestAVertexAuthFailureNamesTheDeploymentAndWhatSelectedIt(t *testing.T) {
 func TestTheDirectDeploymentAddsNoVertexNoteToItsOwnFailures(t *testing.T) {
 	req := core.Request{
 		Messages: core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}},
-		Options: core.RequestOptions{
-			Env: map[string]string{"ANTHROPIC_API_KEY": "sk-ant-wrong"},
-			Transport: rtFunc(func(*http.Request) (*http.Response, error) {
-				return &http.Response{StatusCode: 401, Header: http.Header{},
-					Body: io.NopCloser(strings.NewReader(`{"error":{"message":"invalid x-api-key"}}`))}, nil
-			}),
-		},
 	}
-	msg := anthropic.Provider(anthropic.Options{Getenv: func(string) string { return "" },
-		VertexTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken})}).
-		Stream(context.Background(), testModel(), req, core.ProviderStreamOptions{}).Result()
+	msg := stream(anthropic.Provider(*testModel(), anthropic.Options{Getenv: func(string) string { return "" },
+		VertexTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken}),
+		Env:               map[string]string{"ANTHROPIC_API_KEY": "sk-ant-wrong"},
+		Transport: rtFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 401, Header: http.Header{},
+				Body: io.NopCloser(strings.NewReader(`{"error":{"message":"invalid x-api-key"}}`))}, nil
+		}),
+	}), context.Background(), req).Result()
 	if msg == nil {
 		t.Fatal("want a result")
 	}
@@ -454,8 +445,8 @@ func TestAnAnthropicBearerIsNeverSentToTheVertexEndpoint(t *testing.T) {
 func TestAVertex401NamesTheCredentialsItWithheld(t *testing.T) {
 	env := map[string]string{"CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "proj-1",
 		"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x"}
-	msg, _, _ := run(t, testModel(), core.Request{Options: core.RequestOptions{Env: env}},
-		anthropic.Options{Getenv: func(string) string { return "" },
+	msg, _, _ := run(t, testModel(), core.Request{},
+		anthropic.Options{Getenv: func(string) string { return "" }, Env: env,
 			VertexTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken})}, 401, `{}`)
 	if !strings.Contains(msg.ErrorMessage, "ANTHROPIC_OAUTH_TOKEN") ||
 		!strings.Contains(msg.ErrorMessage, "never sent to a Google endpoint") {

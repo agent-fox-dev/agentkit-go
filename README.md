@@ -1,92 +1,156 @@
-# A agentkit-go
+# agentkit-go
 
-A Go agent SDK. The loop, the tool system and the provider abstraction are
-ordinary Go you can read and step through — nothing is hidden inside a
-subprocess or a graph engine.
+AgentKit is two things. **The hands**: workspace mechanics any agent can use —
+the file, search, navigation and shell tools (`tools`), source outlines
+(`outline`), indexed code search (`codesearch`, a separate module), code mode
+(`codemode`), the MCP client pool (`mcp`) and the shell guard (`guard`).
+**One driver**: `agentkit.Config` and `agentkit.New`, a minimal agent loop over
+the Anthropic Messages API (`provider/anthropic`, on the official Go SDK),
+with a scripted provider (`provider/faux`) for offline tests. It serves no
+network API and listens on no socket.
 
-**Dependencies.** Maintained third-party modules replace hand-rolled
-infrastructure where they carry the same guarantees
-([PRD 09](docs/prd/09-replace-hand-rolled-code-with-libraries.md)). cgo is
-allowed only behind `//go:build cgo` with a pure-Go fallback;
-[`internal/policy`](internal/policy/crosstarget_test.go) builds the four
-supported targets with cgo off and the host with cgo on.
+## Quickstart
 
 ```bash
 go test ./...          # everything, offline, no API key
+make check             # fmt, vet, lint and test, root and codesearch modules
 go run ./examples/agentdemo
 ```
 
-[`examples/`](examples/) has five programs, each with its own README:
-[`agentdemo`](examples/agentdemo) drives the real loop against a scripted
-provider with no key and no network; [`codingagent`](examples/codingagent) is a
-coding agent over the built-in file and shell tools;
-[`customtools`](examples/customtools) shows how to write your own tools;
-[`mcp`](examples/mcp) borrows an MCP server's tools; and
-[`codemode`](examples/codemode) shows code mode: one tool that runs a
-model-written Starlark script over other tools, so the model can chain and
-parallelize calls and filter their results before anything reaches the
-conversation (no key). [`examples/README.md`](examples/README.md) is the
-configuration reference: which environment variables the Anthropic provider
-reads, what a base URL does and does not buy you, and the decisions every
-embedding application has to make.
-
-To talk to a real model, build an Anthropic client from the environment and
-hand it to `agentkit.New` with a catalog model id. A test or a custom vendor
-sets `Config.Provider` instead, which takes precedence over the client:
+Run a prompt to completion with the built-in tools:
 
 ```go
-client, _, err := anthropic.Resolve(anthropic.OSEnv{})
+ws, err := tools.NewWorkspace(".")
 if err != nil {
 	return err
+}
+ts, err := tools.All(tools.Options{Workspace: ws})
+if err != nil {
+	return err
+}
+client, _, err := anthropic.Resolve(anthropic.OSEnv{})
+if err != nil {
+	return err // names the environment variables to set
 }
 agent, err := agentkit.New(agentkit.Config{
 	Client: client,
 	Model:  "claude-opus-5-5",
-	Tools:  tools,
+	Tools:  ts,
 	Guard:  guard.Restricted(guard.Options{AllowedPrograms: []string{"go", "git"}}),
 })
 if err != nil {
 	return err
 }
 res, err := agent.Run(ctx, "Summarise this package.")
+fmt.Println(res.FinalText())
 ```
 
-The demo drives the real loop against a scripted provider with no network, and
-prints four behaviours the specification originally got wrong.
+`New` refuses a config it could not run safely: no `Client` or `Provider`, no
+`Model`, an invalid tool hierarchy, or a reachable shell tool (`execute`,
+`run_command`) with no `Guard`. A test sets `Config.Provider` (for example
+`faux.New(...)`) instead of `Client`.
 
-## Documentation
+### Code mode
 
-| Document | Covers |
+`codemode.New` turns a set of tools into one tool that runs a model-written
+Starlark script over them. The bound tools become its `ReachableTools`: the
+model sees only `code_mode`, and every call a script makes goes through the
+driver's guard and event pipeline as a nested call.
+
+```go
+var bound []core.Tool
+for _, t := range ts {
+	switch t.Name {
+	case "list_files", "find_files", "read_file", "search_files":
+		bound = append(bound, t)
+	}
+}
+cm, info, err := codemode.New(bound, codemode.Options{})
+if err != nil {
+	return err
+}
+fmt.Printf("code_mode binds %d tools\n", info.BoundToolsCount)
+agent, err := agentkit.New(agentkit.Config{
+	Client: client,
+	Model:  "claude-opus-5-5",
+	Tools:  []core.Tool{cm},
+})
+```
+
+No shell tool is bound, so no `Guard` is needed. Bind `execute` or
+`run_command` and `New` requires one, because a shell reached through a wrapper
+is as unguarded as one called directly. [`examples/codemode`](examples/codemode)
+runs this offline, with an MCP tool bound beside the built-ins.
+
+## Consumer contract
+
+The identifiers an embedder such as agent-fox builds on.
+
+| Identifier | Shape |
 |---|---|
-| [`docs/architecture.md`](docs/architecture.md) | Package graph, data flow of a run, invariants, the MCP client. |
-| [`docs/configuration.md`](docs/configuration.md) | Environment variables, `agentkit.Config`, provider and tool options, the `[mcp]` TOML section. |
-| [`docs/cli.md`](docs/cli.md) | Make targets and example program flags. |
-| [`docs/api.md`](docs/api.md) | Why there is no network API; `Workspace.References`. |
-| [`docs/DEPS.md`](docs/DEPS.md) | Why each deliberately adopted dependency is there (`go.starlark.net`). |
-| [`examples/README.md`](examples/README.md) | Overview of the examples |
-| [`docs/prd/`](docs/prd) | Requirements. |
+| `agentkit.Config` | `Client`, `Provider`, `Model`, `Effort`, `System`, `Prefix`, `Tools`, `Policy`, `Guard`, `After`, `MaxTurns`, `MaxCostUSD`, `Timeout`, `Prune`, `MaxTokens` |
+| `agentkit.New` | `New(cfg Config) (*Agent, error)` |
+| `Agent.Run` | `Run(ctx, prompt string) (core.RunResult, error)` |
+| `Agent.Stream` | `Stream(ctx, prompt string) (*core.EventStream, error)` |
+| `Agent.Messages`, `Agent.Usage`, `Agent.ReachableTools` | `core.Messages`, `core.Usage`, `[]core.Tool`; safe during a run |
+| `agentkit.PruneOptions` | `Threshold float64`, `KeepTurns int` |
+| `core.RunResult` | `Messages`, `StopReason`, `LastReason`, `Usage`, `TurnCount`, `Error`; `FinalText()` |
+| `core.RunStopReason` | `RunStopEndTurn`, `RunStopMaxTurns`, `RunStopBudgetExceeded`, `RunStopToolTerminate`, `RunStopError`, `RunStopAborted`, `RunStopTimeout`, `RunStopRefusal` (`RunStopPolicy` is declared but the driver never sets it) |
+| `core.Tool` | `Name`, `Description`, `InputSchema`, `OutputSchema`, `ReachableTools`, `Terminating`, `Handler` or `Execute`, `Builtin`, `ExecutionMode`, `PrepareArguments`, `PromptGuidelines` |
+| `core.ToolResult` | `OK`, `Data`, `Error`, `Detail`, `Terminate`, `Metadata`, `Blocks`, `Text`; `core.OKResult`, `core.ErrResult` |
+| `core.ProviderClient` | `Stream(ctx, Request) (<-chan StreamEvent, error)` |
+| `core.BeforeToolCall` | `func(ctx, BeforeToolCallContext) BeforeToolCallDecision` |
+| `schema.Parse`, `schema.Validate` | `Parse(data []byte) (*Schema, error)`, `Validate(s *Schema, v any) error` |
+| `guard.Check`, `guard.Restricted` | `Check(argv []string, o Options) Decision`, `Restricted(o Options) core.BeforeToolCall` |
+| `catalog.Lookup` | `Lookup(id string) (core.Model, bool)` |
+| `anthropic.Resolve` | `Resolve(env Env) (*sdk.Client, Source, error)` |
+| `codemode.New` | `New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error)` |
+| `mcp` | `ParseConfig`, `NewPool`, `Pool.Connect`, `Pool.Tools`, `Pool.Close`, `Connect` |
+| `tools.All` | `All(opts Options) ([]core.Tool, error)` |
 
 ## Packages
 
 | Package | What it owns |
 |---|---|
-| `.` (root) | The driver: `Config`, `New`, the `Agent`, the loop, the batch executor, nested tool calls. |
-| `core` | Canonical vocabulary and every interface seam: messages, content blocks, events, `EventStream`, `Tool`, `ProviderClient`. |
-| `tools` | Built-in tools (`read_file`, `write_file`, `edit_file`, `list_files`, `find_files`, `search_files`, `file_outline`, `find_symbol`, `find_references`, `execute`, `run_command`), path containment, bounded accumulator, process control, glob (`doublestar` plus smart-case and basename matching), a layered gitignore engine, `Walk` (the single shared directory traversal), the in-memory symbol table behind `find_symbol`, and the reference engine and cache behind `find_references`. |
-| `outline` | Source-file declaration listing: `go/ast` for Go, in-process tree-sitter grammars for fourteen other languages when built with cgo (none without), and a `none` fallback. |
-| `codemode` | The code-mode tool: `New(tools, opts)` runs a model-written, sandboxed Starlark script over the bound tools, with every call going through the agent's nested-call pipeline. On `go.starlark.net` ([ruling](docs/DEPS.md)). |
-| `mcp` | Model Context Protocol client on the official Go SDK (all revisions, negotiated): tool pool with qualified names, subprocess servers with a reduced environment and respawn, result cap, strict decoding at every trust boundary. |
-| `guard` | The execute boundary: `Restricted` (a program allowlist plus operator rejection) and `AllowAll`. |
-| `prompt` | The assembled system prompt: the base prompt and the active tools' guidelines. |
-| `catalog` | Embedded Claude model catalog and `Lookup`. |
-| `provider` | Credential resolution, HTTP transport + retry, header precedence, cost arithmetic, SSE decoding, the per-session tool-schema cache. |
-| `provider/anthropic` | The Anthropic Messages wire (direct and Vertex), encode and decode, with send-time transcript repair. |
+| `.` (root) | The driver: `Config`, `New`, the `Agent`, the loop, the tool batch executor, nested tool calls. |
+| `core` | The vocabulary and the seams: messages, content blocks, events, `EventStream`, `Tool`, `ToolPolicy`, interceptors, `ProviderClient`, `Model`, `Usage`, stop reasons, errors. |
+| `schema` | JSON Schema values, typed combinators, `Parse`, `Validate`, `Coerce`. |
+| `tools` | The built-in tools, workspace containment, `Walk`, the ignore engine, the subprocess runner, the symbol table and the reference engine. |
+| `outline` | Declarations of a source file: `go/ast` for Go, tree-sitter for fourteen more languages with cgo. |
+| `codemode` | The code-mode tool, on `go.starlark.net`. |
+| `mcp` | MCP client and tool pool on the official MCP Go SDK. |
+| `guard` | The shell boundary: `Check`, `Restricted`, `AllowAll`. |
+| `prompt` | The assembled system prompt: base prompt plus the active tools' guidelines. |
+| `catalog` | The embedded Claude model catalog and `Lookup`. |
+| `provider` | Cost arithmetic, the per-session tool-schema cache, deferred-tool splitting. |
+| `provider/anthropic` | The Anthropic wire (direct, Vertex AI, Bedrock) over the official SDK. |
 | `provider/faux` | A scripted provider for offline tests and demos. |
-| `wire` | Bounded, strict parser for bytes AgentKit did not produce, on the standard library's `encoding/json/jsontext`: size, depth, container and node bounds, duplicate-key rejection; plus framed readers. |
-| `jsonx` | Order-preserving JSON. Decodes once, marshals in slice order at every depth. |
-| `schema` | Structured JSON Schema value + typed combinators. No reflection, no codegen. |
-| `codesearch` | Separate module: zoekt-backed `code_search` tool with ranked, file-grouped results, lazy index build, dirty-file overlay and `find_symbol` acceleration. Opt in with `tools.Options{Index: idx}`. |
+| `wire` | Bounded, strict parsing of untrusted JSON, and frame readers. |
+| `codesearch` | Separate module: zoekt-backed `code_search`, opted in with `tools.Options{Index: idx}`. |
+
+## Make targets
+
+| Target | Does |
+|---|---|
+| `make check` | `fmt`, `vet`, `lint`, `test`; run before committing |
+| `make test` | `go test ./...` in the root and `codesearch` modules |
+| `make vet` | `go vet` in the root and `codesearch` modules |
+| `make lint` | `golangci-lint` in both modules; skipped when not installed |
+| `make fmt` | `gofmt -l -w .` |
+| `make tidy` | `go mod tidy` in both modules |
+
+## Documentation
+
+| Document | Covers |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | Package graph, the data flow of a run, invariants, nested calls, code mode, the MCP client, `Workspace.References`. |
+| [`docs/configuration.md`](docs/configuration.md) | `agentkit.Config`, environment variables, provider, tool, code-mode and MCP options, the model catalog. |
+| [`docs/DEPS.md`](docs/DEPS.md) | Why each direct dependency is allowed, and the libraries considered and rejected. |
+| [`examples/README.md`](examples/README.md) | The five example programs and how to configure an application. |
+| [`docs/prd/`](docs/prd) | Product requirements. |
+| [`docs/errata/`](docs/errata) | Where the code diverges from a spec, and why. |
+| [`docs/archive/`](docs/archive) | The superseded 0.4.2 PRD and findings from the deleted provider wires. |
 
 ## License
 
-MIT.
+Apache License 2.0. See [`LICENSE`](LICENSE).

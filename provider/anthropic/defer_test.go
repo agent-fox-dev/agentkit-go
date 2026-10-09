@@ -59,7 +59,7 @@ func TestADeferredToolIsDeclaredAfterThePrefixAndCarriesNoBreakpoint(t *testing.
 		Messages: core.Messages{
 			core.UserMessage{Content: core.Content{core.TextBlock{Text: "go"}}},
 			core.AssistantMessage{Content: core.Content{mustToolUse(t, "c1", "read_file")},
-				Provider: "anthropic", API: anthropic.API, Model: "claude-test",
+				Model:      "claude-test",
 				StopReason: core.StopReasonToolUse},
 			core.ToolResultMessage{ToolUseID: "c1", ToolName: "read_file",
 				Content:        core.Content{core.TextBlock{Text: "ok"}},

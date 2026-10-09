@@ -62,7 +62,7 @@
         "core.Message and core.ContentBlock are sealed interfaces with specified implementors only",
         "ImageBlock, RawBlock, ToolResultBlock, jsonx references, and ThinkingLevel are removed from core/message.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -98,7 +98,7 @@
         "PreparedArguments contains Raw, Args, and Coercions without jsonx",
         "PrepareArguments preserves verbatim Raw bytes unless mutated by tool hook, and rejects schema violations"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -134,7 +134,7 @@
         "ProviderClient defines single Stream method returning (<-chan StreamEvent, error)",
         "StreamEvent and Request match simplified canonical structs without registry or middleware types"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -170,7 +170,7 @@
       "done_when": [
         "Tool, ToolWire, Usage, and Model omit legacy MCP, ConstrainedSampling, ThinkingLevel, API, and Provider fields"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -210,7 +210,7 @@
         "core/history.go and core/config.go are deleted",
         "core exported type count is <= 50, core production lines <= 1,600, root module lines <= 20,000"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -246,7 +246,7 @@
       "done_when": [
         "jsonx package directory is deleted and no source files import jsonx"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -283,7 +283,7 @@
       "done_when": [
         "schema.Parse decodes JSON Schema bytes using jsontext, preserving PropertyOrder and populating standard keywords and Extra"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -328,7 +328,7 @@
       "done_when": [
         "schema.Validate enforces issue 87 constraints and schema.Coerce safely converts primitives rejecting invalid literals"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -366,7 +366,7 @@
         "guard.Check evaluates argv against allowlists as a pure function returning Decision",
         "guard.ShellToolNames is [execute, run_command] and Restricted delegates program evaluation to Check"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -405,7 +405,7 @@
         "Base instructions/custom prompt override, tool guideline deduplication, and shell guideline injection work as specified",
         "prompt.Input, prompt.SkillBlocks, and skills package imports are removed"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,
@@ -506,7 +506,7 @@
         "README.md, docs/architecture.md, docs/configuration.md, docs/DEPS.md, and docs/archive are updated per PRD goals 8, 9, 10",
         "All stub markers are removed and make check passes cleanly"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

@@ -2,16 +2,17 @@
 // Machinery lives elsewhere; core holds declarations, the small pure functions
 // that are part of the contract, and the EventStream.
 //
-// core imports only jsonx and schema. Nothing in AgentKit below the root
+// core imports only schema. Nothing in AgentKit below the root
 // package may import the root package, which is what keeps anything that
 // needs an *Agent out of core.
 package core
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"time"
-
-	"github.com/agent-fox-dev/agentkit-go/jsonx"
 )
 
 type Role string
@@ -52,9 +53,6 @@ func (ms Messages) Clone() Messages {
 type UserMessage struct {
 	Content   Content
 	Timestamp time.Time
-	// Unknown holds top-level keys this build does not model, in source order,
-	// so a re-encode is lossless (NFR-TEST-03).
-	Unknown jsonx.OrderedObject
 }
 
 type AssistantMessage struct {
@@ -73,24 +71,15 @@ type AssistantMessage struct {
 	Usage        Usage
 	Timestamp    time.Time
 
-	// Provenance (§5, "Provenance is not optional"). REQ-PROV-11 rule 1
-	// computes same_model from exactly (Provider, API, Model). Model is the
-	// REQUESTED model, never ResponseModel: a fallback-served turn judged
-	// against ResponseModel would have its own valid signatures stripped.
-	Provider      string
-	API           API
+	// Model is the REQUESTED model, never ResponseModel: transcript repair
+	// replays a turn's thinking signatures only to the model that issued
+	// them, and a fallback-served turn judged against ResponseModel would
+	// have its own valid signatures stripped.
 	Model         string
 	ResponseModel string
 	ResponseID    string
 	// Effort is the thinking effort the turn was requested with.
 	Effort Effort
-
-	// Deferred is the REQ-PROV-19 receipt, present INSTEAD OF CONTENT when
-	// StopReason is deferred. It is persisted with the message so a
-	// submission survives the process that made it.
-	Deferred *DeferredHandle
-
-	Unknown jsonx.OrderedObject
 }
 
 type ToolResultMessage struct {
@@ -109,7 +98,6 @@ type ToolResultMessage struct {
 	// handler-less results (unknown tool, invalid arguments, blocked,
 	// aborted, max_tokens synthesis, repair synthesis).
 	Metadata *ToolMetadata
-	Unknown  jsonx.OrderedObject
 }
 
 func (UserMessage) Role() Role       { return RoleUser }
@@ -122,24 +110,16 @@ func (ToolResultMessage) isMessage() {}
 
 func (m UserMessage) Clone() Message {
 	m.Content = m.Content.Clone()
-	m.Unknown = m.Unknown.Clone()
 	return m
 }
 
 func (m AssistantMessage) Clone() Message {
 	m.Content = m.Content.Clone()
-	m.Unknown = m.Unknown.Clone()
-	if m.Deferred != nil {
-		h := *m.Deferred
-		h.Data = append(json.RawMessage(nil), h.Data...)
-		m.Deferred = &h
-	}
 	return m
 }
 
 func (m ToolResultMessage) Clone() Message {
 	m.Content = m.Content.Clone()
-	m.Unknown = m.Unknown.Clone()
 	m.AddedToolNames = append([]string(nil), m.AddedToolNames...)
 	if m.Usage != nil {
 		u := *m.Usage
@@ -154,16 +134,15 @@ func (m ToolResultMessage) Clone() Message {
 type BlockType string
 
 const (
-	BlockText       BlockType = "text"
-	BlockThinking   BlockType = "thinking"
-	BlockToolUse    BlockType = "tool_use"
-	BlockToolResult BlockType = "tool_result"
-	BlockImage      BlockType = "image"
+	BlockText     BlockType = "text"
+	BlockThinking BlockType = "thinking"
+	BlockToolUse  BlockType = "tool_use"
 )
 
-// ContentBlock is a sealed union. Sealed because every provider adapter
-// switches exhaustively over it (REQ-PROV-03) and a third-party variant would
-// make that switch silently incomplete. RawBlock covers forward compatibility.
+// ContentBlock is a sealed union: TextBlock | ThinkingBlock | ToolUseBlock.
+// Sealed because every provider adapter switches exhaustively over it
+// (REQ-PROV-03) and a third-party variant would make that switch silently
+// incomplete.
 type ContentBlock interface {
 	BlockType() BlockType
 	CloneBlock() ContentBlock
@@ -216,39 +195,49 @@ type ToolUseBlock struct {
 	// Invariant: always syntactically valid JSON object bytes; NewToolUse
 	// normalizes nil/empty to {}.
 	Input json.RawMessage
-	// InputOrder is the same value in order-preserving form, from the SAME
-	// decode pass (REQ-TOOL-12).
-	//
-	// PRECEDENCE, because REQ-TOOL-12.1 and REQ-PROV-17 name different replay
-	// sources and can differ: Input bytes WIN whenever present and unmodified.
-	// InputOrder is the regeneration path, used only when the bytes must be
-	// rebuilt — after PrepareArguments changed the value, after salvage repair
-	// of a truncated stream, or by a wire format that re-encodes arguments as
-	// a JSON string. A provider must never re-encode InputOrder when Input is
-	// usable.
-	InputOrder jsonx.OrderedObject
 	// ThoughtSignature is opaque and provider-issued; stripped on cross-model
 	// replay by REQ-PROV-11 rule 3. Never inspected.
 	ThoughtSignature string
 }
 
-// NewToolUse decodes raw once, producing both authoritative forms. A nil,
-// empty or whitespace-only raw yields {} and an empty InputOrder.
+// NewToolUse checks raw is a JSON object and keeps its bytes. A nil, empty
+// or whitespace-only raw yields {}.
 func NewToolUse(id, name string, raw json.RawMessage) (ToolUseBlock, error) {
 	b := ToolUseBlock{ID: id, Name: name}
 	trimmed := trimSpace(raw)
 	if len(trimmed) == 0 {
 		b.Input = json.RawMessage("{}")
-		b.InputOrder = jsonx.OrderedObject{}
 		return b, nil
 	}
-	ord, err := jsonx.DecodeOrderedObject(trimmed)
-	if err != nil {
+	if _, err := decodeObject(trimmed); err != nil {
 		return b, err
 	}
 	b.Input = append(json.RawMessage(nil), trimmed...)
-	b.InputOrder = ord
 	return b, nil
+}
+
+// errNotObject is a tool input that is valid JSON but not an object.
+var errNotObject = errors.New("core: tool input is not a JSON object")
+
+// decodeObject decodes a JSON object with numbers kept as json.Number, so a
+// numeric literal survives verbatim.
+func decodeObject(raw []byte) (map[string]any, error) {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	var v any
+	if err := d.Decode(&v); err != nil {
+		return nil, err
+	}
+	// More() reports false for a stray ] or }, so the decoder is asked for
+	// one more token: only the end of the input will do.
+	if _, err := d.Token(); err != io.EOF {
+		return nil, errors.New("core: trailing data after the tool input")
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, errNotObject
+	}
+	return m, nil
 }
 
 func trimSpace(b []byte) []byte {
@@ -270,59 +259,26 @@ func isSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\
 // Numbers come back as json.Number, not float64, because NFR-TEST-03(d)
 // requires numeric literals to survive verbatim. Handlers doing
 // args["limit"].(float64) will fail their type assertion; use ArgInt/ArgFloat.
-func (b ToolUseBlock) InputMap() map[string]any { return b.InputOrder.Map() }
-
-type ToolResultBlock struct {
-	ToolUseID string
-	// Content is a content list, not a string: a tool may return interleaved
-	// text and image blocks (§5).
-	Content Content
-	IsError bool
+func (b ToolUseBlock) InputMap() map[string]any {
+	m, err := decodeObject(b.Input)
+	if err != nil {
+		return nil
+	}
+	return m
 }
 
-type ImageBlock struct {
-	Data     string // base64
-	MimeType string // image/jpeg | image/png | image/gif | image/webp
-}
+func (TextBlock) BlockType() BlockType     { return BlockText }
+func (ThinkingBlock) BlockType() BlockType { return BlockThinking }
+func (ToolUseBlock) BlockType() BlockType  { return BlockToolUse }
 
-// RawBlock retains a block type this build does not model, verbatim, so a log
-// written by a newer version survives a read/write cycle by an older one — the
-// same argument REQ-SESS-05.2 makes for unknown entry types. Providers drop it.
-type RawBlock struct {
-	Type string
-	Raw  json.RawMessage
-}
-
-func (TextBlock) BlockType() BlockType       { return BlockText }
-func (ThinkingBlock) BlockType() BlockType   { return BlockThinking }
-func (ToolUseBlock) BlockType() BlockType    { return BlockToolUse }
-func (ToolResultBlock) BlockType() BlockType { return BlockToolResult }
-func (ImageBlock) BlockType() BlockType      { return BlockImage }
-func (b RawBlock) BlockType() BlockType      { return BlockType(b.Type) }
-
-func (TextBlock) isContentBlock()       {}
-func (ThinkingBlock) isContentBlock()   {}
-func (ToolUseBlock) isContentBlock()    {}
-func (ToolResultBlock) isContentBlock() {}
-func (ImageBlock) isContentBlock()      {}
-func (RawBlock) isContentBlock()        {}
+func (TextBlock) isContentBlock()     {}
+func (ThinkingBlock) isContentBlock() {}
+func (ToolUseBlock) isContentBlock()  {}
 
 func (b TextBlock) CloneBlock() ContentBlock     { return b }
 func (b ThinkingBlock) CloneBlock() ContentBlock { return b }
-func (b ImageBlock) CloneBlock() ContentBlock    { return b }
 
 func (b ToolUseBlock) CloneBlock() ContentBlock {
 	b.Input = append(json.RawMessage(nil), b.Input...)
-	b.InputOrder = b.InputOrder.Clone()
-	return b
-}
-
-func (b ToolResultBlock) CloneBlock() ContentBlock {
-	b.Content = b.Content.Clone()
-	return b
-}
-
-func (b RawBlock) CloneBlock() ContentBlock {
-	b.Raw = append(json.RawMessage(nil), b.Raw...)
 	return b
 }

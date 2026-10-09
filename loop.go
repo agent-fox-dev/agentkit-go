@@ -118,7 +118,7 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial core.U
 	record := func(msgs ...core.Message) { a.record(&newMessages, msgs...) }
 	record(initial)
 
-	s.Push(core.AgentStartEvent{Provider: a.model.Provider, API: a.model.API, Model: a.model.ID})
+	s.Push(core.AgentStartEvent{Model: a.model.ID})
 
 	for {
 		view, elided, reason, err := a.beforeRequest()
@@ -415,8 +415,6 @@ func (a *Agent) errorMessage(err error) core.AssistantMessage {
 		StopReason:   core.StopReasonError,
 		ErrorMessage: err.Error(),
 		Timestamp:    time.Now(),
-		Provider:     a.model.Provider,
-		API:          a.model.API,
 		Model:        a.model.ID,
 	}
 }
@@ -434,7 +432,7 @@ func streamReporter(s *core.EventStream) func(error) {
 func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.Messages, report func(error)) core.AssistantMessage {
 	maxTokens := a.cfg.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = core.DefaultMaxTokens
+		maxTokens = DefaultMaxTokens
 	}
 	req := core.Request{
 		Prefix:    a.cfg.Prefix,
@@ -461,13 +459,12 @@ func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.
 				ps = core.ErrorStream(&msg, err)
 			}
 		}()
-		m := a.model
-		ps = a.client.Stream(ctx, &m, req, core.ProviderStreamOptions{})
+		ps = core.EventStreamOf(a.client.Stream(ctx, req))
 	}()
 	// Forward provider events onto the agent stream. The provider stream is
 	// unbounded and non-blocking, so this cannot stall the model call.
 	for e := range ps.Events() {
-		out.Push(e)
+		out.Push(a.stampModel(e))
 	}
 	msg := ps.Result()
 	if msg == nil {
@@ -479,7 +476,38 @@ func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.
 		}
 		return a.errorMessage(err)
 	}
+	// A provider that did not say which model answered answered for this
+	// agent's.
+	if msg.Model == "" {
+		m := *msg
+		m.Model = a.model.ID
+		return m
+	}
 	return *msg
+}
+
+// stampModel fills an unstamped message event's Model with this agent's,
+// as callModel does for the message it returns, so the stream and the
+// transcript name the same model.
+func (a *Agent) stampModel(e core.Event) core.Event {
+	switch v := e.(type) {
+	case core.MessageStartEvent:
+		if v.Message.Model == "" {
+			v.Message.Model = a.model.ID
+		}
+		return v
+	case core.MessageUpdateEvent:
+		if v.Message.Model == "" {
+			v.Message.Model = a.model.ID
+		}
+		return v
+	case core.MessageEndEvent:
+		if v.Message.Model == "" {
+			v.Message.Model = a.model.ID
+		}
+		return v
+	}
+	return e
 }
 
 // synthesizeTruncated answers each call of a truncated response without

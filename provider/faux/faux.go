@@ -86,6 +86,9 @@ type Provider struct {
 	// Zero means one delta per block. Setting it small is how a test exercises
 	// a consumer's delta accumulator.
 	ChunkSize int
+	// ModelID is stamped on every message as the model that answered. Empty
+	// leaves it to the consumer, which knows what it asked for.
+	ModelID string
 }
 
 // New returns a provider that replays turns in order. Once the script is
@@ -93,17 +96,10 @@ type Provider struct {
 // that under-scripts fails on its assertion rather than by deadlocking.
 func New(turns ...Turn) *Provider { return &Provider{turns: turns} }
 
-// APIProvider is the registry entry.
-func (p *Provider) APIProvider() core.APIProvider {
-	return core.APIProvider{API: API, Stream: p.Stream}
-}
-
 // Model returns a model descriptor pointing at this provider.
 func Model() *core.Model {
 	return &core.Model{
-		ID: "faux-1", Name: "Faux", API: API, Provider: "faux",
-		ContextWindow: 200000, MaxTokens: 8192,
-		Input: []string{"text"},
+		ID: "faux-1", ContextWindow: 200000, MaxOutputTokens: 8192,
 	}
 }
 
@@ -122,8 +118,12 @@ func (p *Provider) Calls() int {
 	return p.calls
 }
 
-// Stream implements core.StreamFunc.
-func (p *Provider) Stream(ctx context.Context, m *core.Model, req core.Request, _ core.ProviderStreamOptions) *core.EventStream {
+// Stream implements core.ProviderClient. A context already done is refused
+// before the request counts as made.
+func (p *Provider) Stream(ctx context.Context, req core.Request) (<-chan core.StreamEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
 	i := p.calls
 	p.calls++
@@ -134,12 +134,12 @@ func (p *Provider) Stream(ctx context.Context, m *core.Model, req core.Request, 
 	} else {
 		turn = Turn{Blocks: []core.ContentBlock{core.TextBlock{Text: ""}}, StopReason: core.StopReasonStop}
 	}
-	chunk := p.ChunkSize
+	chunk, model := p.ChunkSize, p.ModelID
 	p.mu.Unlock()
 
 	s := core.NewEventStream(core.StreamOptions{})
-	go p.produce(ctx, s, m, turn, chunk)
-	return s
+	go p.produce(ctx, s, model, turn, chunk)
+	return core.StreamChannel(s), nil
 }
 
 // produce emits the normative event sequence. Read it as the specification:
@@ -160,9 +160,9 @@ func (p *Provider) Stream(ctx context.Context, m *core.Model, req core.Request, 
 // Every incremental event for an item precedes that item's authoritative event
 // (REQ-OBS-08.1), so a consumer that discards accumulated deltas on the
 // authoritative event never double-applies.
-func (p *Provider) produce(ctx context.Context, s *core.EventStream, m *core.Model, turn Turn, chunk int) {
+func (p *Provider) produce(ctx context.Context, s *core.EventStream, model string, turn Turn, chunk int) {
 	partial := core.AssistantMessage{
-		Provider: m.Provider, API: m.API, Model: m.ID,
+		Model:     model,
 		Timestamp: time.Now(),
 	}
 

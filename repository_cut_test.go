@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
@@ -48,22 +49,24 @@ func TestAgentDecoupled_TS09_10(t *testing.T) {
 	}
 }
 
-// TS-09-11: a registry holds exactly the providers registered into it, and
-// the only first-party ones left are anthropic and faux.
+// TS-09-11: the only first-party providers left are anthropic and faux,
+// and both are a core.ProviderClient.
 func TestProviderDefaults_TS09_11(t *testing.T) {
-	reg := core.ProviderRegistry{}
-	reg.Register(anthropic.Provider(anthropic.Options{}))
-	reg.Register(faux.New().APIProvider())
-	if _, ok := reg.Get(anthropic.API); !ok {
-		t.Error("anthropic is not registered")
+	m, _ := catalog.Lookup("claude-opus-5-5")
+	var _ core.ProviderClient = anthropic.Provider(m, anthropic.Options{})
+	var _ core.ProviderClient = faux.New()
+	entries, err := os.ReadDir("provider")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := reg.Get(faux.API); !ok {
-		t.Error("faux is not registered")
-	}
-	for _, api := range []core.API{"openai", "openai-completions", "openai-responses", "google", "google-generative-ai", "ollama"} {
-		if _, ok := reg.Get(api); ok {
-			t.Errorf("legacy provider %q is registered", api)
+	var dirs []string
+	for _, e := range entries {
+		if e.IsDir() {
+			dirs = append(dirs, e.Name())
 		}
+	}
+	if strings.Join(dirs, ",") != "anthropic,faux" {
+		t.Errorf("provider packages = %v, want [anthropic faux]", dirs)
 	}
 	src, err := os.ReadFile("agent.go")
 	if err != nil {

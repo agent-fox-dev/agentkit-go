@@ -8,10 +8,8 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
-const targetAPI core.API = "target-api"
-
 func target() Target {
-	return Target{Provider: "acme", API: targetAPI, Model: "m1", SupportsImages: true}
+	return Target{Model: "m1"}
 }
 
 func tu(t *testing.T, id, name string) core.ToolUseBlock {
@@ -26,7 +24,7 @@ func tu(t *testing.T, id, name string) core.ToolUseBlock {
 func sameModelAssistant(blocks ...core.ContentBlock) core.AssistantMessage {
 	return core.AssistantMessage{
 		Content: core.Content(blocks), StopReason: core.StopReasonToolUse,
-		Provider: "acme", API: targetAPI, Model: "m1",
+		Model: "m1",
 	}
 }
 
@@ -55,7 +53,7 @@ func TestRepairRule2bDropsResultOrphanedByRule2(t *testing.T) {
 		core.AssistantMessage{
 			Content:    core.Content{tu(t, "call_1", "read")},
 			StopReason: core.StopReasonAborted,
-			Provider:   "acme", API: targetAPI, Model: "m1",
+			Model:      "m1",
 		},
 		core.ToolResultMessage{ToolUseID: "call_1", ToolName: "read",
 			Content: core.Content{core.TextBlock{Text: "file contents"}}},
@@ -153,7 +151,7 @@ func TestCrossModelReplayStripsOpaqueMaterial(t *testing.T) {
 			func() core.ToolUseBlock { b := tu(t, "call_1", "read"); b.ThoughtSignature = "ts"; return b }(),
 		},
 		StopReason: core.StopReasonToolUse,
-		Provider:   "other", API: "other-api", Model: "other-model",
+		Model:      "other-model",
 	}
 	in := core.Messages{other, core.ToolResultMessage{ToolUseID: "call_1", ToolName: "read"}}
 
@@ -201,7 +199,7 @@ func TestSameModelReplayKeepsSignedThinking(t *testing.T) {
 // matching results, or the rewrite orphans every one of them.
 func TestToolCallIDRewriteAppliesToResultsToo(t *testing.T) {
 	tgt := target()
-	tgt.Provider, tgt.Model = "other", "other" // force cross-model
+	tgt.Model = "other" // force cross-model
 	tgt.NormalizeToolCallID = func(s string) string {
 		return strings.Map(func(r rune) rune {
 			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
@@ -238,7 +236,7 @@ func TestToolCallIDRewriteAppliesToResultsToo(t *testing.T) {
 // onto one id, which would make their results ambiguous.
 func TestIDRewriteCollisionsGetDistinctIDs(t *testing.T) {
 	tgt := target()
-	tgt.Provider = "other"
+	tgt.Model = "other"
 	tgt.NormalizeToolCallID = func(string) string { return "same" } // pathological
 	in := core.Messages{sameModelAssistant(tu(t, "a", "read"), tu(t, "b", "read"))}
 	out, _ := RepairTranscript(in, tgt)
@@ -250,30 +248,6 @@ func TestIDRewriteCollisionsGetDistinctIDs(t *testing.T) {
 	}
 }
 
-// TestImagesReplacedWhenTargetLacksModality: rule 7 / REQ-CAT-05. Sending an
-// image to a text-only model is a 400.
-func TestImagesReplacedWhenTargetLacksModality(t *testing.T) {
-	tgt := target()
-	tgt.SupportsImages = false
-	in := core.Messages{
-		core.UserMessage{Content: core.Content{
-			core.TextBlock{Text: "look"},
-			core.ImageBlock{Data: "AAAA", MimeType: "image/png"},
-		}},
-	}
-	out, rep := RepairTranscript(in, tgt)
-	if rep.ImagesReplaced != 1 {
-		t.Fatalf("ImagesReplaced = %d, want 1", rep.ImagesReplaced)
-	}
-	um := out[0].(core.UserMessage)
-	if um.Content[1].BlockType() != core.BlockText {
-		t.Fatal("the image block was not replaced")
-	}
-	if got := um.Content[1].(core.TextBlock).Text; got != ImagePlaceholder {
-		t.Fatalf("placeholder = %q, want %q", got, ImagePlaceholder)
-	}
-}
-
 // TestRepairIsIdempotent: running the pass on its own output must change
 // nothing further. A pass that keeps finding work has a rule that fights
 // another one.
@@ -282,7 +256,7 @@ func TestRepairIsIdempotent(t *testing.T) {
 		core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}},
 		core.AssistantMessage{
 			Content:    core.Content{tu(t, "call_1", "read"), core.ThinkingBlock{Thinking: "x"}},
-			StopReason: core.StopReasonToolUse, Provider: "acme", API: targetAPI, Model: "m1",
+			StopReason: core.StopReasonToolUse, Model: "m1",
 		},
 	}
 	once, rep1 := RepairTranscript(in, target())
@@ -309,12 +283,12 @@ func TestEveryToolUseIsAnsweredAfterRepair(t *testing.T) {
 		},
 		"aborted turn with a surviving result": {
 			core.AssistantMessage{Content: core.Content{tu(t, "a", "x")},
-				StopReason: core.StopReasonAborted, Provider: "acme", API: targetAPI, Model: "m1"},
+				StopReason: core.StopReasonAborted, Model: "m1"},
 			core.ToolResultMessage{ToolUseID: "a", ToolName: "x"},
 		},
 		"error turn followed by a fresh user message": {
 			core.AssistantMessage{Content: core.Content{tu(t, "a", "x")},
-				StopReason: core.StopReasonError, Provider: "acme", API: targetAPI, Model: "m1"},
+				StopReason: core.StopReasonError, Model: "m1"},
 			core.UserMessage{Content: core.Content{core.TextBlock{Text: "try again"}}},
 		},
 		"result with no call at all": {
@@ -370,12 +344,12 @@ func FuzzRepairAlwaysSendable(f *testing.F) {
 			case 1:
 				b, _ := core.NewToolUse("id"+string(rune('a'+i)), "tool", json.RawMessage(`{}`))
 				in = append(in, core.AssistantMessage{Content: core.Content{b},
-					StopReason: core.StopReasonToolUse, Provider: "acme", API: targetAPI, Model: "m1"})
+					StopReason: core.StopReasonToolUse, Model: "m1"})
 			case 2:
 				in = append(in, core.ToolResultMessage{ToolUseID: "id" + string(rune('a'+i)), ToolName: "tool"})
 			case 3:
 				in = append(in, core.AssistantMessage{Content: core.Content{core.TextBlock{Text: "partial"}},
-					StopReason: core.StopReasonAborted, Provider: "acme", API: targetAPI, Model: "m1"})
+					StopReason: core.StopReasonAborted, Model: "m1"})
 			}
 		}
 		out, _ := RepairTranscript(in, target())
@@ -433,7 +407,7 @@ func TestSameModelToolCallIDsAreNotRewritten(t *testing.T) {
 	// cannot collide with an id the target issued itself.
 	foreign := core.AssistantMessage{
 		Content: core.Content{tu(t, "call:1", "read")}, StopReason: core.StopReasonToolUse,
-		Provider: "other", API: targetAPI, Model: "m1",
+		Model: "other",
 	}
 	mixed := core.Messages{
 		sameModelAssistant(tu(t, "call_1", "read")),

@@ -476,57 +476,6 @@ func TestTerminationVotesWithMetadata_TS04_46_NilAndFalseVote(t *testing.T) {
 	})
 }
 
-// TestImageNormalizationPreservesMetadata_TS04_46 verifies that metadata
-// survives image normalization.
-func TestImageNormalizationPreservesMetadata_TS04_46(t *testing.T) {
-	_, md := ts0446Tools()
-
-	probeTool := core.Tool{
-		Name: "probe", Description: "probe", InputSchema: schema.Object(),
-		Execute: func(ctx context.Context, in json.RawMessage) core.ToolResult {
-			return core.ToolResult{
-				OK:       true,
-				Data:     map[string]any{"ok": true},
-				Metadata: md,
-			}
-		},
-	}
-
-	s := &scripted{turns: []core.AssistantMessage{
-		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "probe", `{}`)),
-	}}
-	a := newTestAgent(t, s, func(c *Config) {
-		c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
-			in.Result.Content = append(in.Result.Content, core.ImageBlock{
-				Data:     "aGVsbG8=",
-				MimeType: "image/png",
-			})
-			return core.AfterToolCallDecision{}
-		}
-	}, probeTool)
-
-	res, err := a.Run(context.Background(), "go")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, m := range res.Messages {
-		if tr, ok := m.(core.ToolResultMessage); ok && tr.ToolUseID == "c1" {
-			if tr.Metadata == nil {
-				t.Fatal("Metadata is nil after image normalization")
-			}
-			if tr.Metadata.Outcome != "ok" {
-				t.Fatalf("Metadata.Outcome = %q, want %q", tr.Metadata.Outcome, "ok")
-			}
-			if tr.Metadata.ExitCode == nil || *tr.Metadata.ExitCode != 0 {
-				t.Fatalf("Metadata.ExitCode = %v, want 0", tr.Metadata.ExitCode)
-			}
-			return
-		}
-	}
-	t.Fatal("no tool result found in RunResult")
-}
-
 // TestBatchTerminationWithMetadata_TS04_46 verifies that one terminating
 // call ends the run after a mixed batch of metadata-carrying tools (spec 11
 // replaced the AND over the batch with any executed vote).
