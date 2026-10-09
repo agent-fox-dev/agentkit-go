@@ -218,7 +218,7 @@ func NormalizeToolCallID(s string) string {
 // It runs the shared repair pass first (REQ-PROV-11) — that is part of the
 // provider contract, not the loop's, because the loop is not running when a
 // transcript is loaded from disk.
-func BuildRequest(m *core.Model, req core.Request, retention core.CacheRetention) (*request, provider.RepairReport, error) {
+func BuildRequest(m *core.Model, req core.Request, retention core.CacheRetention) (*request, RepairReport, error) {
 	out, rep, _, err := BuildRequestCached(m, req, retention, nil)
 	return out, rep, err
 }
@@ -233,9 +233,9 @@ func BuildRequest(m *core.Model, req core.Request, retention core.CacheRetention
 // ~0.9 ms of the ~1.5 ms it takes to build a request — the dominant term, paid
 // on every turn, for bytes that did not change.
 func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRetention,
-	prefix *provider.ToolPrefix) (*request, provider.RepairReport, provider.SyncReport, error) {
+	prefix *provider.ToolPrefix) (*request, RepairReport, provider.SyncReport, error) {
 	var sync provider.SyncReport
-	repaired, rep := provider.RepairTranscript(req.Messages, provider.TargetFor(m, NormalizeToolCallID))
+	repaired, rep := RepairTranscript(req.Messages, TargetFor(m, NormalizeToolCallID))
 
 	out := &request{
 		Model:         m.ID,

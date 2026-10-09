@@ -1,12 +1,11 @@
 // Package prompt assembles the system prompt the loop sends (NFR-TEST-08a,
-// REQ-TOOL-04e, REQ-SKILL-06).
+// REQ-TOOL-04e).
 //
 // Until this existed, core.Tool.PromptGuidelines was a field nothing read and
 // the loop sent AgentConfig.SystemPrompt verbatim — so a tool could declare
 // guidance the model never saw. NFR-TEST-08(a) asks for a golden of the
 // assembled prompt "built through the real tool resolver", which needs a real
-// assembler to build it. Build is that assembler; SkillBlocks renders the
-// skills and project-context block that goes into Input.ExtraBlocks.
+// assembler to build it. Build is that assembler.
 package prompt
 
 import (
@@ -14,7 +13,6 @@ import (
 
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/guard"
-	"github.com/agentfox/agentkit-go/skills"
 	"github.com/agentfox/agentkit-go/tools"
 )
 
@@ -26,7 +24,6 @@ const (
 	SectionBase       Section = "base"
 	SectionTools      Section = "tools"
 	SectionGuidelines Section = "guidelines"
-	SectionSkills     Section = "skills"
 )
 
 // BaseInstructions is the built-in opening section.
@@ -62,14 +59,8 @@ type Input struct {
 	// never the registry. The guidelines the model sees must describe the
 	// tools it has.
 	Tools []core.Tool
-	// ExtraBlocks are appended after the built-in sections, in order. This is
-	// where the skills and project-context block goes (SkillBlocks builds it).
-	//
-	// It is an opaque []string rather than typed skill values because
-	// AgentConfig lives in core, and core cannot import skills without
-	// inverting the package graph. Handing the assembler finished text also
-	// keeps discovery where REQ-SKILL-04 puts it: an affirmative act by the
-	// embedder, not something the loop does on its own.
+	// ExtraBlocks are appended after the built-in sections, in order: project
+	// context, or anything else an embedder assembles itself.
 	ExtraBlocks []string
 }
 
@@ -80,10 +71,8 @@ type Input struct {
 // they travel with the tool (NFR-TEST-08a) and describe how to use what the
 // model has been given, so they follow a custom prompt as they follow the
 // built-in one — otherwise every embedder with its own prompt has to re-render
-// them by hand. Skills and project context still append too: an embedder
-// enables those by a separate affirmative act — discovery, and REQ-SEC-10's
-// project trust — and having a custom prompt silently switch them off would
-// mean the trust decision quietly stopped applying.
+// them by hand. Extra blocks still append too: they are the embedder's own
+// text, and a custom prompt silently dropping them would be a surprise.
 func Build(in Input) string {
 	var blocks []string
 
@@ -105,20 +94,6 @@ func Build(in Input) string {
 		}
 	}
 	return strings.Join(blocks, "\n\n")
-}
-
-// SkillBlocks renders the REQ-SKILL-06 skills block and the REQ-CTX project
-// context block, ready for Input.ExtraBlocks.
-//
-// tools must be the ACTIVE set: the block names the tool the model should read
-// a skill with, and naming one the model does not have produces a hallucinated
-// call and a wasted turn (REQ-SKILL-06.2).
-func SkillBlocks(sk []skills.Skill, ctxFiles []skills.ContextFile, active []core.Tool) []string {
-	s := skills.Assemble(skills.Input{Skills: sk, ContextFiles: ctxFiles, Tools: active})
-	if s == "" {
-		return nil
-	}
-	return []string{s}
 }
 
 // guidelinesBlock is NFR-TEST-08a's collection. universal adds the built-in

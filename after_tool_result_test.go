@@ -10,7 +10,6 @@ import (
 
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/schema"
-	"github.com/agentfox/agentkit-go/stop"
 )
 
 // errBad is a sentinel error for the handler-error tool.
@@ -583,7 +582,7 @@ func TestBatchAndSemanticsWithMetadata_TS04_46(t *testing.T) {
 		{Content: core.Content{core.TextBlock{Text: "continued"}}, StopReason: core.StopReasonStop},
 	}}
 	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.StopPolicy = stop.AfterTurns(10)
+		c.StopPolicy = afterTurns(10)
 	})
 	if err := a.RegisterTool(terminatingTool); err != nil {
 		t.Fatal(err)

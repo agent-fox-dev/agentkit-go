@@ -6,13 +6,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/compaction"
 	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/middleware"
 	"github.com/agentfox/agentkit-go/provider"
 	"github.com/agentfox/agentkit-go/provider/anthropic"
 	"github.com/agentfox/agentkit-go/schema"
-	"github.com/agentfox/agentkit-go/stop"
 )
 
 // This file is NFR-PERF-09's acceptance mechanism.
@@ -38,7 +35,7 @@ func benchAgent(b *testing.B, tools int) *Agent {
 	s := &scripted{}
 	cfg := core.AgentConfig{
 		Model:      testModel(),
-		StopPolicy: stop.AfterTurns(1),
+		StopPolicy: afterTurns(1),
 		Providers:  core.ProviderRegistry{testAPI: s.provider()},
 	}
 	a, err := NewAgent(cfg)
@@ -100,17 +97,6 @@ func BenchmarkLoopTurnAtDepth(b *testing.B) {
 	}
 }
 
-// BenchmarkContextEstimate isolates the O(history) term of REQ-GO-15, so a
-// regression in the walk is attributable without re-reading a loop profile.
-func BenchmarkContextEstimate(b *testing.B) {
-	msgs := deepHistory(1000)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		compaction.EstimateContextTokens(msgs, nil)
-	}
-}
-
 // BenchmarkLoopTurnWithToolBatch measures a turn that also dispatches a
 // parallel tool batch, so the batch executor's own overhead is visible
 // separately from the bare turn. A fresh agent per iteration, for the same
@@ -124,7 +110,7 @@ func BenchmarkLoopTurnWithToolBatch(b *testing.B) {
 				mustUse("c3", "tool_2", `{"v":"z"}`)),
 		}}
 		a, err := NewAgent(core.AgentConfig{
-			Model: testModel(), StopPolicy: stop.AfterTurns(2), ParallelTools: true,
+			Model: testModel(), StopPolicy: afterTurns(2), ParallelTools: true,
 			Providers: core.ProviderRegistry{testAPI: s.provider()},
 		})
 		if err != nil {
@@ -147,53 +133,6 @@ func BenchmarkLoopTurnWithToolBatch(b *testing.B) {
 		if _, err := a.Run(ctx, "go"); err != nil {
 			b.Fatal(err)
 		}
-	}
-}
-
-// ---------------------------------------------------------------- NFR-PERF-06
-
-func cachedHandler() (core.Handler, core.Handler, core.Request) {
-	msg := core.AssistantMessage{
-		Content:    core.Content{core.TextBlock{Text: "a cached answer of some length"}},
-		StopReason: core.StopReasonStop,
-	}
-	direct := func(context.Context, core.Request) *core.EventStream {
-		s := core.NewEventStream(core.StreamOptions{})
-		cp := msg
-		s.Push(core.MessageEndEvent{Message: cp})
-		s.End(core.StreamResult{Message: &cp})
-		return s
-	}
-	req := core.Request{Messages: core.Messages{
-		core.UserMessage{Content: core.Content{core.TextBlock{Text: "a question"}}}}}
-	cached := middleware.Caching(middleware.CacheOptions{})(direct)
-	// Warm it, so the benchmark measures HITS.
-	cached(context.Background(), req).Result()
-	return direct, cached, req
-}
-
-// BenchmarkDirectResponse is NFR-PERF-06's baseline.
-func BenchmarkDirectResponse(b *testing.B) {
-	direct, _, req := cachedHandler()
-	ctx := context.Background()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		direct(ctx, req).Result()
-	}
-}
-
-// BenchmarkCacheHit is NFR-PERF-06: a Level 2 hit must add less than 0.5 ms
-// over a direct response return.
-//
-// The fingerprint is a SHA-256 over the whole serialized request, so the
-// overhead scales with transcript size rather than being constant — which is
-// exactly why the budget needs measuring rather than asserting.
-func BenchmarkCacheHit(b *testing.B) {
-	_, cached, req := cachedHandler()
-	ctx := context.Background()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		cached(ctx, req).Result()
 	}
 }
 
@@ -328,19 +267,6 @@ func BenchmarkToolSchemaSerializationCached(b *testing.B) {
 	}
 }
 
-// BenchmarkFingerprint measures the REQ-CACHE-01 hash over a large transcript,
-// since it is the dominant term in a Level 2 hit.
-func BenchmarkFingerprint(b *testing.B) {
-	_, req := stampFixture(b)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := middleware.Fingerprint(req); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 func mustUse(id, name, args string) core.ToolUseBlock {
 	b, err := core.NewToolUse(id, name, json.RawMessage(args))
 	if err != nil {
@@ -373,7 +299,7 @@ func benchAgentAtDepth(b *testing.B, turns int) *Agent {
 		h.Record(core.NullLeaf, m)
 	}
 	a, err := NewAgentWithHistory(core.AgentConfig{
-		Model: testModel(), StopPolicy: stop.AfterTurns(1),
+		Model: testModel(), StopPolicy: afterTurns(1),
 		Providers: core.ProviderRegistry{testAPI: s.provider()},
 	}, h)
 	if err != nil {

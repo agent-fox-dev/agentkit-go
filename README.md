@@ -16,27 +16,18 @@ go test ./...          # everything, offline, no API key
 go run ./examples/agentdemo
 ```
 
-[`examples/`](examples/) has one standalone program, with its own README, per
-feature — chat, streaming, a coding agent, durable sessions and session
-branching, delegation, writing your own tools, plugins, MCP in both directions,
-a standalone MCP server, mid-run steering, skills and project context,
-compaction, middleware, images, observability, deferred submission, a test file
-showing how to test the agent code *you* write — and three finished
-applications: [`triage`](examples/triage), which triages a bug report into a
-structured GitHub issue, [`cleaner`](examples/cleaner), which takes that issue
-and lands the fix, and [`flatline`](examples/flatline), which implements a whole
-spec pack task group by task group. Most need no API key.
-[`examples/codemode`](examples/codemode) shows code mode: one tool that runs a
+[`examples/`](examples/) has five programs, each with its own README:
+[`agentdemo`](examples/agentdemo) drives the real loop against a scripted
+provider with no key and no network; [`codingagent`](examples/codingagent) is a
+coding agent over the built-in file and shell tools;
+[`customtools`](examples/customtools) shows how to write your own tools;
+[`mcp`](examples/mcp) borrows an MCP server's tools; and
+[`codemode`](examples/codemode) shows code mode: one tool that runs a
 model-written Starlark script over other tools, so the model can chain and
 parallelize calls and filter their results before anything reaches the
-conversation (`go run ./examples/codemode`, no key).
-[`examples/tools`](examples/tools) has one program per built-in tool that
-takes the tool's JSON arguments the way a model sends them and prints what the
-model would read back. The nested
-[`examples/codesearch`](examples/codesearch) module shows the optional
-code-search index on its own and wired into an agent. [`examples/README.md`](examples/README.md)
-is the configuration reference: which environment variable each vendor reads,
-what a base URL does and does not buy you, and the three decisions every
+conversation (no key). [`examples/README.md`](examples/README.md) is the
+configuration reference: which environment variables the Anthropic provider
+reads, what a base URL does and does not buy you, and the decisions every
 embedding application has to make.
 
 To talk to a real model, register a wire API on the config. Nothing is
@@ -51,21 +42,16 @@ cfg := core.AgentConfig{Model: model, Providers: reg}   // credential per REQ-AU
 ```
 
 The demo drives the real loop against a scripted provider with no network, and
-prints seven behaviours — five the specification originally got wrong, plus a
-kill-and-resume across two "processes" and three concurrent delegations.
-
-## Status
-
-TBD
+prints four behaviours the specification originally got wrong.
 
 ## Documentation
 
 | Document | Covers |
 |---|---|
-| [`docs/architecture.md`](docs/architecture.md) | Package graph, data flow of a run, invariants. |
-| [`docs/configuration.md`](docs/configuration.md) | Environment variables, `AgentConfig`, provider and tool options, TOML sections and manifests. |
-| [`docs/cli.md`](docs/cli.md) | `validate-plugins`, `difftest`, make targets, example program flags. |
-| [`docs/api.md`](docs/api.md) | The MCP server's HTTP and stdio surface. |
+| [`docs/architecture.md`](docs/architecture.md) | Package graph, data flow of a run, invariants, the MCP client. |
+| [`docs/configuration.md`](docs/configuration.md) | Environment variables, `AgentConfig`, provider and tool options, the `[mcp]` TOML section. |
+| [`docs/cli.md`](docs/cli.md) | Make targets and example program flags. |
+| [`docs/api.md`](docs/api.md) | Why there is no network API; `Workspace.References`. |
 | [`docs/DEPS.md`](docs/DEPS.md) | Why each deliberately adopted dependency is there (`go.starlark.net`). |
 | [`examples/README.md`](examples/README.md) | Overview of the examples |
 | [`docs/prd/`](docs/prd) | Requirements. |
@@ -74,30 +60,22 @@ TBD
 
 | Package | What it owns |
 |---|---|
-| `mcp` | Model Context Protocol, client and server, on the official Go SDK (all revisions, negotiated): tool pool with qualified names, subprocess servers with a reduced environment and respawn, result cap, audit, HTTP serving with API-key auth, strict decoding at every trust boundary. |
-| `plugins` | Four plugin categories, registry, manifest discovery, import lint, conformance report. |
-| `wire` | Bounded, strict decoder for bytes AgentKit did not produce, on the standard library's `encoding/json/v2` and `jsontext`: size, depth, container and node bounds, duplicate-key and unknown-member rejection, safe-integer binding; plus framed readers. |
+| `.` (root) | `Agent`, its constructors, the loop, the batch executor, nested tool calls, provider registration. |
+| `core` | Canonical vocabulary and every interface seam: messages, content blocks, events, `EventStream`, `Tool`, `ProviderClient`. |
+| `tools` | Built-in tools (`read_file`, `write_file`, `edit_file`, `list_files`, `find_files`, `search_files`, `file_outline`, `find_symbol`, `find_references`, `execute`, `run_command`), path containment, bounded accumulator, process control, glob (`doublestar` plus smart-case and basename matching), a layered gitignore engine, `Walk` (the single shared directory traversal), the in-memory symbol table behind `find_symbol`, and the reference engine and cache behind `find_references`. |
+| `outline` | Source-file declaration listing: `go/ast` for Go, in-process tree-sitter grammars for fourteen other languages when built with cgo (none without), and a `none` fallback. |
+| `codemode` | The code-mode tool: `New(tools, opts)` runs a model-written, sandboxed Starlark script over the bound tools, with every call going through the agent's nested-call pipeline. On `go.starlark.net` ([ruling](docs/DEPS.md)). |
+| `mcp` | Model Context Protocol client on the official Go SDK (all revisions, negotiated): tool pool with qualified names, subprocess servers with a reduced environment and respawn, result cap, strict decoding at every trust boundary. |
+| `guard` | The execute boundary: `Restricted` (a program allowlist plus operator rejection) and `AllowAll`. |
+| `prompt` | The assembled system prompt: base instructions, per-tool guidelines, extra blocks. |
+| `catalog` | Embedded model catalog, resolution, sibling-cloning, `max_tokens` and thinking-level clamping. |
+| `provider` | Credential resolution, HTTP transport + retry, header precedence, cost arithmetic, SSE decoding, the per-session tool-schema cache. |
+| `provider/anthropic` | The Anthropic Messages wire (direct and Vertex), encode and decode, with send-time transcript repair. |
+| `provider/faux` | A scripted provider for offline tests and demos. |
+| `wire` | Bounded, strict parser for bytes AgentKit did not produce, on the standard library's `encoding/json/jsontext`: size, depth, container and node bounds, duplicate-key rejection; plus framed readers. |
 | `jsonx` | Order-preserving JSON. Decodes once, marshals in slice order at every depth. |
 | `schema` | Structured JSON Schema value + typed combinators. No reflection, no codegen. |
-| `core` | Canonical vocabulary and every interface seam: messages, content blocks, events, `EventStream`, `Tool`, `ProviderClient`. |
-| `catalog` | Embedded model catalog, resolution, sibling-cloning, `max_tokens` and thinking-level clamping. |
-| `session` | Append-only JSONL log, damage-tolerant loader, branch tree, resume fold. |
-| `skills` | Skill manifests (TOML via `go-toml/v2/unstable`, read leniently with line-numbered diagnostics), progressive disclosure, project context files, and the default-off trust gate. |
-| `outline` | Source-file declaration listing: `go/ast` for Go, in-process tree-sitter grammars for fourteen other languages when built with cgo (none without), and a `none` fallback. |
-| `tools` | Built-in tools (`file_outline`, `find_symbol`, `find_references` and the nine others), path containment, bounded accumulator, process control, glob (`doublestar` plus smart-case and basename matching), a layered gitignore engine, `fetch_url` behind an SSRF guard (resolve-then-check plus a connect-time re-check against `code.dny.dev/ssrf`'s address table), `Walk` (the single shared directory traversal), the in-memory symbol table behind `find_symbol`, and the reference engine and cache behind `find_references`. |
-| `provider` | Send-time transcript repair, HTTP transport + retry, credential resolution, header precedence, cost arithmetic, SSE decoding — everything shared by every wire API. |
-| `provider/{anthropic,openai,google,ollama,faux}` | One wire API each, encode and decode. |
 | `codesearch` | Separate module: zoekt-backed `code_search` tool with ranked, file-grouped results, lazy index build, dirty-file overlay and `find_symbol` acceleration. Opt in with `tools.Options{Index: idx}`. |
-| `difftest` | Separate module: the NFR-TEST-06/07 differential harness — canonicalizing comparator, key-order side channel, divergence ledger, exit machine. |
-| `stop` | The built-in stop policies: `AfterTurns`, `OverBudget`, `AfterDuration`, `WhenToolCalled`, `Any`, `Never`. |
-| `middleware` | Axis 1: `Retry`, `Budget`, `Caching`, `Tracing`, `RateLimit` (on `golang.org/x/time/rate`), and the `CacheMeter` behind `Agent.CacheStats`. |
-| `compaction` | The context transform, four strategies, two summarizers, the REQ-GO-16 summary taxonomy and the anchored token estimate. |
-| `prompt` | The assembled system prompt: base instructions, per-tool guidelines, skills and project-context blocks. |
-| `imagex` | Image normalization to a provider's inline-image limits (JPEG, PNG, GIF, WebP; resampling via `golang.org/x/image/draw`); used at the history boundary. |
-| `guard` | The execute boundary: `Restricted` (a program allowlist plus operator rejection) and `AllowAll`. |
-| `subagent` | Delegation: `Tool` over an agent factory, named `Definition`s in a `Registry`, `RunParallel`. The one package above the root. |
-| `codemode` | The code-mode tool: `New(tools, opts)` runs a model-written, sandboxed Starlark script over the bound tools, with every call going through the agent's nested-call pipeline. On `go.starlark.net` ([ruling](docs/DEPS.md)). |
-| `.` (root) | `Agent`, its constructors, the loop, the batch executor, provider registration. |
 
 ## License
 

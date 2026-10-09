@@ -2,6 +2,7 @@ package agentkit
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -10,26 +11,28 @@ import (
 	"github.com/agentfox/agentkit-go/mcp"
 	"github.com/agentfox/agentkit-go/tools"
 	"github.com/agentfox/agentkit-go/wire"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // mcpTools spins up an in-process MCP server, connects a pool to it, and
 // returns the adapted core.Tools.
 //
-// The client and server here are the SHIPPED implementations talking over a
+// The client is the SHIPPED implementation talking to the SDK's server over a
 // pipe, so what this exercises is the real qualified-name path rather than a
 // hand-built tool that merely has a name with two underscores in it.
 func mcpTools(t *testing.T, serverName string) []core.Tool {
 	t.Helper()
-	srv := mcp.NewServer(mcp.ServerOptions{})
-	if err := srv.RegisterTool(
-		&mcp.Tool{Name: "create_issue", Description: "open an issue"},
-		func(_ context.Context, args map[string]any) (*mcp.CallToolResult, error) {
-			title, _ := args["title"].(string)
+	srv := sdk.NewServer(&sdk.Implementation{Name: "github", Version: "1"}, nil)
+	srv.AddTool(&mcp.Tool{Name: "create_issue", Description: "open an issue",
+		InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(_ context.Context, req *sdk.CallToolRequest) (*mcp.CallToolResult, error) {
+			var args struct {
+				Title string `json:"title"`
+			}
+			_ = json.Unmarshal(req.Params.Arguments, &args)
 			return &mcp.CallToolResult{Content: []mcp.Content{
-				&mcp.TextContent{Text: "created: " + title}}}, nil
-		}); err != nil {
-		t.Fatal(err)
-	}
+				&mcp.TextContent{Text: "created: " + args.Title}}}, nil
+		})
 
 	c2sR, c2sW := io.Pipe()
 	s2cR, s2cW := io.Pipe()

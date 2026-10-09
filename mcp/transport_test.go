@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/agentfox/agentkit-go/wire"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // fakeRoundTripper answers every request with one canned response.
@@ -131,19 +133,18 @@ func (l *lockedBuffer) String() string {
 // answer. The SDK closes the connection when Read reports EOF, so the reply of
 // a call still running was dropped.
 func TestStdioAnswersACallMadeJustBeforeEOF(t *testing.T) {
-	s := NewServer(ServerOptions{})
-	if err := s.RegisterTool(&Tool{Name: "slow"}, func(context.Context, map[string]any) (*CallToolResult, error) {
-		time.Sleep(100 * time.Millisecond)
-		return &CallToolResult{Content: []Content{&TextContent{Text: "done"}}}, nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	s := sdk.NewServer(&sdk.Implementation{Name: "eof", Version: "1"}, nil)
+	s.AddTool(&Tool{Name: "slow", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(context.Context, *sdk.CallToolRequest) (*CallToolResult, error) {
+			time.Sleep(100 * time.Millisecond)
+			return &CallToolResult{Content: []Content{&TextContent{Text: "done"}}}, nil
+		})
 	meta := `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}`
 	in := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"slow","arguments":{},` + meta + `}}` + "\n"
 	var out lockedBuffer
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = s.Server.Run(ctx, NewPipeTransport(strings.NewReader(in), &out, wire.Limits{}))
+	_ = s.Run(ctx, NewPipeTransport(strings.NewReader(in), &out, wire.Limits{}))
 	if got := out.String(); !strings.Contains(got, `"id":7`) || !strings.Contains(got, "done") {
 		t.Fatalf("the call's reply was dropped at EOF; wrote %q", got)
 	}

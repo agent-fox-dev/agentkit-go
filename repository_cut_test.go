@@ -170,3 +170,59 @@ func TestBatchAndNestedWithoutHooks_TS09_12(t *testing.T) {
 		}
 	}
 }
+
+// assertAbsent fails for every path that exists, relative to the repository
+// root (the root package's own directory).
+func assertAbsent(t *testing.T, paths ...string) {
+	t.Helper()
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s still exists", p)
+		} else if !os.IsNotExist(err) {
+			t.Errorf("stat %s: %v", p, err)
+		}
+	}
+}
+
+// TS-09-1: the provider backends, the multi-wire support files and the
+// auxiliary packages are gone.
+func TestDeletedPackagesAbsent_TS09_1(t *testing.T) {
+	assertAbsent(t, "provider/openai", "provider/openairesponses", "provider/google", "provider/ollama",
+		"plugins", "skills", "_skills/code-review", "cmd/validate-plugins", "session", "subagent",
+		"difftest", "imagex", "compaction", "middleware", "stop")
+	assertAbsent(t, "provider/credentials.go", "provider/credentials_test.go", "provider/salvage.go",
+		"provider/salvage_test.go", "provider/repair.go", "provider/repair_test.go",
+		"provider/asymmetry_test.go", "provider/conformance_test.go", "provider/fuzz_test.go")
+}
+
+// TS-09-2: the two kept providers and the five kept examples are still
+// there; every other example is gone.
+func TestRetainedProvidersAndExamples_TS09_2(t *testing.T) {
+	for _, p := range []string{"provider/anthropic/anthropic.go", "provider/faux/faux.go",
+		"examples/agentdemo", "examples/codingagent", "examples/customtools", "examples/codemode", "examples/mcp"} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s: %v", p, err)
+		}
+	}
+	assertAbsent(t, "examples/branching", "examples/chat", "examples/cleaner", "examples/codesearch",
+		"examples/compaction", "examples/deferred", "examples/delegation", "examples/flatline",
+		"examples/images", "examples/interactive", "examples/mcpserver", "examples/middleware",
+		"examples/observability", "examples/plugins", "examples/session", "examples/skills",
+		"examples/streaming", "examples/testing", "examples/tools", "examples/triage")
+}
+
+// TS-09-3: the deleted tool, MCP server and root agent files are gone.
+func TestObsoleteRootAndToolFilesAbsent_TS09_3(t *testing.T) {
+	assertAbsent(t, "tools/fetch.go", "tools/ssrf.go", "tools/ssrf_test.go", "tools/powershell.go",
+		"mcp/server.go", "mcp/serve.go", "mcp/server_test.go", "wire/bind.go",
+		"images.go", "images_test.go", "skillsconfig.go", "skillsconfig_test.go", "audit.go",
+		"audit_test.go", "deferred.go", "deferred_test.go", "resume.go", "resume_test.go",
+		"resume_metadata_test.go")
+}
+
+// TS-09-4: the deleted core declarations and the root tests of deleted
+// subsystems are gone.
+func TestDeletedCoreAndSubsystemTestsAbsent_TS09_4(t *testing.T) {
+	assertAbsent(t, "core/audit.go", "core/audit_test.go", "core/trace.go", "core/plugin.go",
+		"plugin_wiring_test.go", "middleware_wiring_test.go", "events_test.go", "compaction_usage_test.go")
+}

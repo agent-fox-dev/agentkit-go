@@ -12,28 +12,12 @@ import (
 // Diagnostic is the shared non-fatal report.
 type Diagnostic = diag.Diagnostic
 
-// Config is the `[mcp]` section (REQ-MCP-CLIENT-07) and `[mcp_server]`
-// (REQ-MCP-SERVER-01).
+// Config is the `[mcp]` section (REQ-MCP-CLIENT-07).
 type Config struct {
 	Servers []ServerConfig
-	// Server is the inbound half. Enabled defaults to FALSE and there is no
-	// way for a missing key to turn it on (REQ-MCP-SERVER-01).
-	Server ServerModeConfig
 }
 
-// ServerModeConfig is `[mcp_server]`.
-type ServerModeConfig struct {
-	Enabled bool
-	// Transport is "stdio" or "http" (REQ-MCP-SERVER-02).
-	Transport string
-	Port      int
-	// APIKeyEnv names the environment variable holding the HTTP API key. The
-	// KEY itself is deliberately not a config field: a credential in a config
-	// file is a credential in version control.
-	APIKeyEnv string
-}
-
-// ParseConfig reads the `[mcp]` and `[mcp_server]` sections.
+// ParseConfig reads the `[mcp]` section.
 //
 // Config is LOCALLY AUTHORED, so it decodes leniently (REQ-SEC-12.5): an
 // unknown key is a diagnostic. The opposite of the wire package's rule, and
@@ -57,7 +41,7 @@ func ParseConfig(path string, src []byte) (Config, []Diagnostic, error) {
 			if seen[sc.Name] {
 				diags = append(diags, Diagnostic{Path: path, Severity: diag.SeverityError,
 					Message: fmt.Sprintf("two [[mcp.servers]] entries are named %q; the "+
-						"name keys the pool, the tool prefix and every audit event", sc.Name)})
+						"name keys the pool and the tool prefix", sc.Name)})
 				continue
 			}
 			seen[sc.Name] = true
@@ -65,28 +49,6 @@ func ParseConfig(path string, src []byte) (Config, []Diagnostic, error) {
 		}
 	}
 
-	if srvTbl, ok := root.Sub("mcp_server"); ok {
-		if v, ok := srvTbl.Get("enabled"); ok && v.Kind == toml.KindBool {
-			cfg.Server.Enabled = v.Bool
-		}
-		if v, ok := srvTbl.Get("transport"); ok && v.Kind == toml.KindString {
-			cfg.Server.Transport = v.Str
-		}
-		if v, ok := srvTbl.Get("port"); ok && v.Kind == toml.KindInt {
-			cfg.Server.Port = int(v.Int)
-		}
-		if v, ok := srvTbl.Get("api_key_env"); ok && v.Kind == toml.KindString {
-			cfg.Server.APIKeyEnv = v.Str
-		}
-	}
-	if cfg.Server.Transport == "" {
-		cfg.Server.Transport = "stdio"
-	}
-	if cfg.Server.Enabled && cfg.Server.Transport == "http" && cfg.Server.APIKeyEnv == "" {
-		diags = append(diags, Diagnostic{Path: path, Severity: diag.SeverityError,
-			Message: "[mcp_server] transport is http with no api_key_env; HTTP mode " +
-				"requires authentication and will refuse to start (REQ-MCP-SERVER-07)"})
-	}
 	return cfg, diags, nil
 }
 

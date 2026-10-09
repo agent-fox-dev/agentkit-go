@@ -2,10 +2,9 @@
 // bytes AgentKit did not produce.
 //
 // Every other decoder in this module reads data we or the model authored — a
-// session log, a tool's arguments, a catalog file — and can afford to be
-// lenient. This one reads what a peer sent: an MCP server we spawned, a
-// gateway in front of a provider, a client connecting to the AgentKit MCP
-// server. The difference is not tone. A lenient decoder on that surface turns
+// tool's arguments, a catalog file — and can afford to be lenient. This one
+// reads what a peer sent: an MCP server we spawned, or a gateway in front of a
+// provider. The difference is not tone. A lenient decoder on that surface turns
 // a malformed message into an allocation the peer chose, a duplicate key into
 // a value the peer chose, and a deep nest into a stack the peer chose.
 //
@@ -13,9 +12,7 @@
 // satisfies none of rules 1-4 and silently accepts duplicate keys, and it
 // matches field names case-insensitively. jsontext rejects duplicate names
 // itself and exposes a token stream, so the bounds are a loop over it, each
-// checked before the token that would exceed it is read; json/v2 binds with
-// unknown members rejected and names matched exactly, and a hook adds the
-// number rules and the Validator.
+// checked before the token that would exceed it is read.
 package wire
 
 import (
@@ -83,10 +80,7 @@ const (
 	RuleNodes        Rule = "nodes"
 	RuleDuplicateKey Rule = "duplicate_key"
 	RuleSyntax       Rule = "syntax"
-	RuleUnknownField Rule = "unknown_field"
 	RuleType         Rule = "type"
-	RuleRange        Rule = "range"
-	RuleValidator    Rule = "validator"
 )
 
 // Error is a rejection. It names the rule and the path, because "invalid

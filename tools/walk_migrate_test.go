@@ -469,7 +469,7 @@ func TestToolDescriptionsAndSchemasUnchanged_TS0163(t *testing.T) {
 	}
 	want := []string{"read_file", "write_file", "edit_file", "list_files",
 		"find_files", "search_files", "file_outline", "find_symbol", "find_references",
-		"execute", "run_command", "powershell"}
+		"execute", "run_command"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("default tool set changed.\ngot:  %v\nwant: %v", got, want)
 	}
@@ -500,7 +500,7 @@ func TestDefaultToolSetUnchanged_TS0168(t *testing.T) {
 	}
 	want := []string{"read_file", "write_file", "edit_file", "list_files",
 		"find_files", "search_files", "file_outline", "find_symbol", "find_references",
-		"execute", "run_command", "powershell"}
+		"execute", "run_command"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("All() tool set changed.\ngot:  %v\nwant: %v", got, want)
 	}

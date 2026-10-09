@@ -6,10 +6,8 @@ import (
 	"errors"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
-	"github.com/agentfox/agentkit-go/compaction"
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/guard"
 	"github.com/agentfox/agentkit-go/schema"
@@ -152,8 +150,8 @@ func TestACancelledBatchEndsTheRunAtTheTurnBoundary(t *testing.T) {
 // ------------------------------------------------------------------ NFR-REL-02
 
 // TestPanicsInThirdPartyCodeDoNotCrashTheProcess covers the call sites that
-// were bare: middleware, the context transform, the stop policy, a tool's
-// argument shim, and the tracer. Each was confirmed to crash the test binary
+// were bare: middleware, the context transform, the stop policy and a tool's
+// argument shim. Each was confirmed to crash the test binary
 // before the wrappers landed.
 func TestPanicsInThirdPartyCodeDoNotCrashTheProcess(t *testing.T) {
 	explode := func(what string) func(*core.AgentConfig) {
@@ -167,8 +165,6 @@ func TestPanicsInThirdPartyCodeDoNotCrashTheProcess(t *testing.T) {
 				c.TransformContext = func(context.Context, core.Messages) core.Messages { panic("tf exploded") }
 			case "stoppolicy":
 				c.StopPolicy = func(core.StopContext) bool { panic("policy exploded") }
-			case "tracer":
-				c.Tracer = panickingTracer{}
 			}
 		}
 	}
@@ -232,27 +228,7 @@ func TestPanicsInThirdPartyCodeDoNotCrashTheProcess(t *testing.T) {
 			t.Fatalf("a panicking PrepareArguments must become an error tool result (REQ-TOOL-11): %v", tr.Content.Text())
 		}
 	})
-	t.Run("tracer", func(t *testing.T) {
-		var ran atomic.Int32
-		s := oneToolTurn(t)
-		a := newTestAgent(t, s, explode("tracer"))
-		_ = a.RegisterTool(echoTool("echo", &ran))
-		res, err := a.Run(context.Background(), "go")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if ran.Load() != 1 {
-			t.Fatalf("handler ran %d times; a panicking tracer must not eat the tool call", ran.Load())
-		}
-		if tr := findToolResult(t, res.Messages, "c1"); tr.IsError {
-			t.Fatalf("tool result is an error under a broken tracer: %s", tr.Content.Text())
-		}
-	})
 }
-
-type panickingTracer struct{}
-
-func (panickingTracer) StartSpan(string, func(core.Span) error) error { panic("tracer exploded") }
 
 // ------------------------------------------------------------------ REQ-LOOP-11.3
 
@@ -459,48 +435,3 @@ func TestAShellToolWithNoInterceptorFailsTheRun(t *testing.T) {
 		t.Fatalf("excluded shell tool: %v", err)
 	}
 }
-
-// ------------------------------------------------------------------ REQ-GO-14
-
-// TestACutInsideATurnSummarizesTheTurnSeparately pins the split: when the
-// boundary lands on an assistant message, the completed turns and the
-// interrupted turn are summarized separately and joined with the fixed
-// separator.
-func TestACutInsideATurnSummarizesTheTurnSeparately(t *testing.T) {
-	h := core.NewConversationHistory()
-	msgs := core.Messages{
-		user("q1"), assistantSaying("a1", 0),
-		user("q2"), assistantSaying("a2 "+strings.Repeat("x", 4000), 0),
-		user("q3"), assistantSaying("a3", 0),
-	}
-	var mainSeen, turnSeen core.Messages
-	tf := compaction.NewContextTransform(compaction.Deps{
-		Strategy: cutAt{3}, // lands on assistant a2: inside turn q2
-		Summarizer: func(_ context.Context, prefix core.Messages, _ string) (string, error) {
-			mainSeen = prefix
-			return "HEAD", nil
-		},
-		TurnSummarizer: func(_ context.Context, prefix core.Messages, _ string) (string, error) {
-			turnSeen = prefix
-			return "TURN", nil
-		},
-		History: h, Model: testModel(),
-	})
-	view := tf(context.Background(), msgs)
-	if len(mainSeen) != 2 || len(turnSeen) != 1 {
-		t.Fatalf("main summarizer saw %d messages, turn summarizer %d; want 2 (q1,a1) and 1 (q2)", len(mainSeen), len(turnSeen))
-	}
-	want := compaction.SummaryPrefix + "HEAD" + compaction.SplitSeparator + "TURN"
-	if got := view[0].(core.UserMessage).Content.Text(); got != want {
-		t.Fatalf("summary = %q, want %q", got, want)
-	}
-	if len(view) != 1+3 {
-		t.Fatalf("view has %d messages, want the summary plus the kept tail of 3", len(view))
-	}
-}
-
-type cutAt struct{ at int }
-
-func (cutAt) ShouldCompact(int, int) bool       { return true }
-func (c cutAt) CutIndex(core.Messages, int) int { return c.at }
-func (cutAt) CutPolicy() compaction.CutPolicy   { return compaction.CutNotToolResult }

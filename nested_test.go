@@ -14,8 +14,6 @@ import (
 
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/schema"
-	"github.com/agentfox/agentkit-go/session"
-	"github.com/agentfox/agentkit-go/stop"
 )
 
 // childTool echoes its arguments back as Data, so a test can see what the
@@ -490,6 +488,12 @@ func TestNestedEventsUniqueToolUseIDs_TS07_28(t *testing.T) {
 	}
 }
 
+// eventJSON encodes a message-free event; none of the events below carry a
+// message, so the encoder is never reached.
+func eventJSON(e core.Event) ([]byte, error) {
+	return core.MarshalEvent(e, func(m core.Message) (json.RawMessage, error) { return json.Marshal(m) })
+}
+
 // TS-07-29: nested calls open and close with execution events carrying
 // their parent; they emit no ToolResultEvent; the JSON omits an empty parent.
 func TestNestedEvents_TS07_29(t *testing.T) {
@@ -510,7 +514,7 @@ func TestNestedEvents_TS07_29(t *testing.T) {
 		case core.ToolExecutionStartEvent:
 			if ev.ParentToolUseID == "parent_call_1" && ev.Name == "child" {
 				starts++
-				b, err := session.EventJSON(ev)
+				b, err := eventJSON(ev)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -535,7 +539,7 @@ func TestNestedEvents_TS07_29(t *testing.T) {
 	}
 	for _, e := range []core.Event{core.ToolExecutionStartEvent{ToolUseID: "p1"},
 		core.ToolExecutionUpdateEvent{ToolUseID: "p1"}, core.ToolExecutionEndEvent{ToolUseID: "p1"}} {
-		b, err := session.EventJSON(e)
+		b, err := eventJSON(e)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -543,7 +547,7 @@ func TestNestedEvents_TS07_29(t *testing.T) {
 			t.Fatalf("an empty parent is serialized: %s", b)
 		}
 	}
-	b, err := session.EventJSON(core.ToolExecutionUpdateEvent{ToolUseID: "c", ParentToolUseID: "p"})
+	b, err := eventJSON(core.ToolExecutionUpdateEvent{ToolUseID: "c", ParentToolUseID: "p"})
 	if err != nil || !strings.Contains(string(b), `"parent_tool_use_id":"p"`) {
 		t.Fatalf("update event JSON = %s, %v", b, err)
 	}
@@ -607,17 +611,29 @@ func TestNestedHistory_TS07_33(t *testing.T) {
 	}
 }
 
-// TS-07-34: stop.WhenToolCalled sees top-level calls only.
+// whenToolCalled ends a run once a top-level call to name has a result.
+func whenToolCalled(name string) core.StopPolicy {
+	return func(sc core.StopContext) bool {
+		for _, r := range sc.ToolResults {
+			if r.ToolName == name {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// TS-07-34: a stop policy watching for a tool sees top-level calls only.
 func TestNestedStopPolicy_TS07_34(t *testing.T) {
 	res, s := runWrapper(t, "parent", func(c *core.AgentConfig) {
-		c.StopPolicy = stop.Any(stop.WhenToolCalled("child_tool"), stop.AfterTurns(10))
+		c.StopPolicy = whenToolCalled("child_tool")
 	}, fanOut(childTool("child_tool")))
 	if res.StopReason == core.RunStopPolicy || s.turnsRun() != 2 {
 		t.Fatalf("stop %q after %d turns: a nested call tripped the stop policy", res.StopReason, s.turnsRun())
 	}
 	// The policy itself works on the top-level call.
 	res, s = runWrapper(t, "parent", func(c *core.AgentConfig) {
-		c.StopPolicy = stop.Any(stop.WhenToolCalled("parent"), stop.AfterTurns(10))
+		c.StopPolicy = whenToolCalled("parent")
 	}, fanOut(childTool("child_tool")))
 	if res.StopReason != core.RunStopPolicy || s.turnsRun() != 1 {
 		t.Fatalf("stop %q after %d turns, want the policy to stop after 1", res.StopReason, s.turnsRun())

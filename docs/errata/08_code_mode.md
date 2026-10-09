@@ -78,7 +78,7 @@ failure, `fail("now")`, instead.
 - **A terminate vote drops its batch from the ledger.** When an interceptor
   votes to terminate, `core.CallNested` returns `ErrTerminated` and no
   results. Calls in that batch that ran before the vote are therefore not
-  in `calls_completed`. They are in the agent's audit trail.
+  in `calls_completed`. They are on the agent's event stream.
 - **A script that finishes as its deadline passes** can be reported as
   `timeout` or `aborted`: the context watcher may stop the run between the
   script's last step and its result.

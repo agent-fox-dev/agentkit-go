@@ -8,7 +8,7 @@
 // defaults to the current one:
 //
 //	go run ./examples/codingagent --dir ./tools "Summarise this package."
-//	AGENTKIT_MODEL=openai/gpt-5.6-terra go run ./examples/codingagent --dir /tmp/scratch
+//	AGENTKIT_MODEL=anthropic/claude-opus-5-5 go run ./examples/codingagent --dir /tmp/scratch
 //
 // See examples/README.md for the full environment-variable table.
 package main
@@ -27,11 +27,6 @@ import (
 	"github.com/agentfox/agentkit-go/guard"
 	"github.com/agentfox/agentkit-go/provider"
 	"github.com/agentfox/agentkit-go/provider/anthropic"
-	"github.com/agentfox/agentkit-go/provider/google"
-	"github.com/agentfox/agentkit-go/provider/ollama"
-	"github.com/agentfox/agentkit-go/provider/openai"
-	"github.com/agentfox/agentkit-go/provider/openairesponses"
-	"github.com/agentfox/agentkit-go/stop"
 	"github.com/agentfox/agentkit-go/tools"
 )
 
@@ -63,10 +58,6 @@ func run() error {
 	cfg := core.AgentConfig{Model: model}
 	agentkit.RegisterDefaults(&cfg,
 		anthropic.Provider(anthropic.Options{}),
-		openai.Provider(openai.Options{}),
-		openairesponses.Provider(openairesponses.Options{}),
-		google.Provider(google.Options{}),
-		ollama.Provider(ollama.Options{}),
 	)
 
 	// 1. The workspace is the containment boundary, not a convenience. Every
@@ -129,11 +120,18 @@ func run() error {
 	// 5. Turns and budget are separate bounds because they fail differently.
 	//    A tool-using agent can loop cheaply for a long time (turns catch
 	//    that) or spend a lot in three turns over a large file (budget
-	//    catches that). stop.Any fires on whichever comes first.
-	cfg.StopPolicy = stop.Any(
-		stop.AfterTurns(20),
-		stop.OverBudget(2.00), // dollars, cumulative for the run
-	)
+	//    catches that). The policy fires on whichever comes first.
+	cfg.StopPolicy = func(sc core.StopContext) bool {
+		switch {
+		case sc.TurnCount >= 20:
+			sc.SetReason(core.RunStopMaxTurns)
+			return true
+		case sc.Usage.CostUSD > 2.00: // dollars, cumulative for the run
+			sc.SetReason(core.RunStopBudgetExceeded)
+			return true
+		}
+		return false
+	}
 	cfg.SystemPrompt = "You are a careful coding assistant. Read before you write. " +
 		"Prefer the search and read tools over shell commands. Be concise."
 
@@ -242,27 +240,12 @@ func modelSpec() string {
 // has no key this process can read and a transport that will nonetheless
 // authenticate, so "ambient" must pass a pre-flight that "none" fails.
 func checkCredentials(m *core.Model) error {
-	auth := provider.ResolveAuth(authFor(m), provider.Env{})
+	auth := provider.ResolveAuth(anthropic.VendorAuth, provider.Env{})
 	if auth.State != provider.CredentialNone {
 		return nil
 	}
 	return fmt.Errorf("no credential for vendor %q: set one of %s (see examples/README.md)",
-		m.Provider, strings.Join(varNames(authFor(m)), ", "))
-}
-
-func authFor(m *core.Model) provider.VendorAuth {
-	switch m.API {
-	case anthropic.API:
-		return anthropic.VendorAuth
-	case google.API:
-		return google.VendorAuth
-	case ollama.API:
-		return ollama.VendorAuth
-	default:
-		// openai-completions and openai-responses share one per-vendor table,
-		// keyed on the VENDOR: "openai", "openrouter", "groq", "deepseek"…
-		return openai.AuthFor(m.Provider)
-	}
+		m.Provider, strings.Join(varNames(anthropic.VendorAuth), ", "))
 }
 
 func varNames(v provider.VendorAuth) []string {

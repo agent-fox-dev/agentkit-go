@@ -225,7 +225,7 @@ func TestAllNilIndexPinnedList_TS03_11(t *testing.T) {
 		"read_file", "write_file", "edit_file",
 		"list_files", "find_files", "search_files",
 		"file_outline", "find_symbol", "find_references",
-		"execute", "run_command", "powershell",
+		"execute", "run_command",
 	}
 	gotNames := make([]string, len(all))
 	for i, tl := range all {

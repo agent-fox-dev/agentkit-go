@@ -19,7 +19,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/imagex"
 	"github.com/agentfox/agentkit-go/schema"
 )
 
@@ -91,19 +90,15 @@ func defaultSpillDir(root string) string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("agentkit-spill-%08x", h.Sum32()))
 }
 
+// workspaceRoot is the root a shell tool runs in, or "" with no workspace.
+func workspaceRoot(opts Options) string {
+	if opts.Workspace == nil {
+		return ""
+	}
+	return opts.Workspace.Root
+}
+
 // All returns the default built-in tool set.
-//
-// `fetch_url` is deliberately NOT here (REQ-TOOL-07). Reaching it takes two
-// affirmative acts, not one:
-//
-//	cfg.ToolPolicy.CustomTools = append(cfg.ToolPolicy.CustomTools,
-//	    tools.FetchTool(tools.FetchOptions{}))
-//	// and, if an allowlist is in use, name it there too:
-//	cfg.ToolPolicy.ToolNames = append(cfg.ToolPolicy.ToolNames, "fetch_url")
-//
-// A tool that makes outbound requests on the model's behalf is a different
-// risk class from one that reads a file inside a workspace root, and an
-// embedder should have to say so.
 func All(opts Options) ([]core.Tool, error) {
 	if opts.Workspace == nil {
 		ws, err := NewWorkspace("")
@@ -143,7 +138,6 @@ func All(opts Options) ([]core.Tool, error) {
 		fs.findReferencesTool(),
 		wrapShell(executeTool(opts)),
 		wrapShell(runCommandTool(opts)),
-		wrapShell(PowerShell(opts)),
 	}
 
 	// Append index tools when an index is set. 03-REQ-2.3.
@@ -399,27 +393,6 @@ func (f *fileTools) readFile() core.Tool {
 			defer fh.Close()
 			br := bufio.NewReaderSize(fh, 64<<10)
 
-			// REQ-TOOL-14.6: images are detected by MAGIC BYTES, never by
-			// extension. `screenshot.txt` is still a PNG if its first eight
-			// bytes say so, and splitting one into "lines" hands the model
-			// several kilobytes of mojibake. Only the header is peeked; the
-			// whole file is loaded for an image alone — and only up to a
-			// ceiling, checked on the size BEFORE the load: the normalizer
-			// bounds what it decodes, but it cannot bound what it is handed.
-			head, _ := br.Peek(imageSniffBytes)
-			if mime, isImage := imagex.Sniff(head); isImage {
-				if fi.Size() > ImageFileMaxBytes {
-					return core.ErrResult("image_too_large", fmt.Sprintf(
-						"%s is a %s image of %d bytes, over the %d byte limit for an image read; "+
-							"downscale it first", f.ws.Rel(abs), mime, fi.Size(), ImageFileMaxBytes))
-				}
-				data, err := io.ReadAll(br)
-				if err != nil {
-					return core.ErrResult("read_failed", err.Error())
-				}
-				return readImage(abs, a.Path, data, mime)
-			}
-
 			// 1-based, with 0 aliased to 1 (ruling P-21).
 			from := a.Offset
 			if from <= 0 {
@@ -490,15 +463,6 @@ func (f *fileTools) readFile() core.Tool {
 		},
 	}
 }
-
-// imageSniffBytes is how much of a file's head imagex.Sniff needs. The longest
-// signature it knows (RIFF....WEBP) is twelve bytes.
-const imageSniffBytes = 16
-
-// ImageFileMaxBytes is the largest image file read_file will load. It is
-// checked against the file's size before the bytes are read, so the ceiling
-// is on memory as well as on what reaches the normalizer.
-const ImageFileMaxBytes = 32 << 20
 
 // EditFileMaxBytes is the largest file edit_file will load. The tool holds
 // the whole file plus its normalised copy plus the result; a 500 MB log is
@@ -638,41 +602,6 @@ func readLineBounded(br *bufio.Reader, keep int) (line []byte, size int64, termi
 			return nil, 0, false, rerr
 		}
 	}
-}
-
-// readImage returns REQ-TOOL-14.6's "text note plus an ImageBlock".
-//
-// The note matters as much as the block: without it the model sees an image
-// appear with no statement of what was read, and cannot tell a screenshot it
-// asked for from one a previous turn left in history.
-func readImage(abs, shown string, data []byte, mime string) core.ToolResult {
-	// Formats providers reject are refused HERE, with a message naming the
-	// problem, rather than forwarded. Forwarded, the failure lands on the next
-	// provider request — by which time the image is in history and every
-	// subsequent request fails the same way.
-	//
-	// Normalize validates before it does anything else, so there is no
-	// separate Validate call: a second one would be unreachable code that
-	// looks like a safety check.
-	res, err := imagex.Normalize(data, mime)
-	if err != nil {
-		return core.ErrResult("unsupported_image", err.Error())
-	}
-
-	note := fmt.Sprintf("[%s: %s image, %d×%d]", shown, res.MIMEType, res.Width, res.Height)
-	if res.Changed {
-		note = fmt.Sprintf("[%s: %s image, downscaled to %d×%d for the provider's inline limit]",
-			shown, res.MIMEType, res.Width, res.Height)
-	}
-	out := core.OKResult(map[string]any{
-		"note":      note,
-		"mime_type": res.MIMEType,
-		"width":     res.Width,
-		"height":    res.Height,
-	})
-	out.Text = note
-	out.Blocks = []core.ContentBlock{core.ImageBlock{Data: res.Base64(), MimeType: res.MIMEType}}
-	return out
 }
 
 func (f *fileTools) writeFile() core.Tool {

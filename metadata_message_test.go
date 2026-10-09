@@ -12,9 +12,8 @@ import (
 	agentkit "github.com/agentfox/agentkit-go"
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/guard"
-	"github.com/agentfox/agentkit-go/provider"
+	"github.com/agentfox/agentkit-go/provider/anthropic"
 	"github.com/agentfox/agentkit-go/schema"
-	"github.com/agentfox/agentkit-go/stop"
 )
 
 // ---------------------------------------------------------------- helpers
@@ -76,7 +75,7 @@ func mdNewTestAgent(t *testing.T, s *mdScripted, mutate func(*core.AgentConfig))
 	t.Helper()
 	cfg := core.AgentConfig{
 		Model:      mdTestModel(),
-		StopPolicy: stop.AfterTurns(10),
+		StopPolicy: func(sc core.StopContext) bool { return sc.TurnCount >= 10 },
 		Providers:  core.ProviderRegistry{mdTestAPI: s.provider()},
 	}
 	if mutate != nil {
@@ -642,8 +641,8 @@ func TestMaxTokensSynthesizedAndRepairSynthesizedNilMetadata_TS04_38(t *testing.
 		},
 		// No tool result for call_1.
 	}
-	target := provider.Target{Provider: "test", API: mdTestAPI, Model: "md-test-model"}
-	out, rep := provider.RepairTranscript(damaged, target)
+	target := anthropic.Target{Provider: "test", API: mdTestAPI, Model: "md-test-model"}
+	out, rep := anthropic.RepairTranscript(damaged, target)
 	if rep.SyntheticResults != 1 {
 		t.Fatalf("SyntheticResults = %d, want 1", rep.SyntheticResults)
 	}
@@ -653,8 +652,8 @@ func TestMaxTokensSynthesizedAndRepairSynthesizedNilMetadata_TS04_38(t *testing.
 			if tr.Metadata != nil {
 				t.Fatalf("RepairTranscript synthetic Metadata = %+v, want nil", tr.Metadata)
 			}
-			if tr.Content.Text() != provider.SyntheticResultText {
-				t.Fatalf("synthetic text = %q, want %q", tr.Content.Text(), provider.SyntheticResultText)
+			if tr.Content.Text() != anthropic.SyntheticResultText {
+				t.Fatalf("synthetic text = %q, want %q", tr.Content.Text(), anthropic.SyntheticResultText)
 			}
 			return
 		}

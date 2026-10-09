@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1181,29 +1180,6 @@ func TestExecuteSpillsByDefault(t *testing.T) {
 	}
 }
 
-// TestReadFileForwardsWebP is REQ-TOOL-14: providers accept WebP, and it is
-// measured like any other format — a conforming one is forwarded verbatim
-// with its real dimensions.
-func TestReadFileForwardsWebP(t *testing.T) {
-	dir := t.TempDir()
-	// A 3x2 lossless WebP.
-	webp := []byte("RIFF\x1a\x00\x00\x00WEBPVP8L\x0e\x00\x00\x00\x2f\x02\x40\x00\x00\x28\x72\x15\xea\xd1\xff\x02\x00\x00")
-	if err := os.WriteFile(filepath.Join(dir, "pic.webp"), webp, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	res := toolByName(t, dir, "read_file").Execute(context.Background(), json.RawMessage(`{"path":"pic.webp"}`))
-	if !res.OK {
-		t.Fatalf("WebP must be forwarded, not refused: %+v", res)
-	}
-	if len(res.Blocks) != 1 || res.Blocks[0].(core.ImageBlock).MimeType != "image/webp" ||
-		res.Blocks[0].(core.ImageBlock).Data != base64.StdEncoding.EncodeToString(webp) {
-		t.Fatalf("want the WebP verbatim in one image/webp block: %+v", res.Blocks)
-	}
-	if res.Data["width"] != 3 || res.Data["height"] != 2 {
-		t.Fatalf("dimensions = %v x %v, want 3 x 2", res.Data["width"], res.Data["height"])
-	}
-}
-
 // TestSignalKilledProcessReportsExitCode128PlusSignum is NFR-COMPAT-06's
 // unix exit-code semantics.
 func TestSignalKilledProcessReportsExitCode128PlusSignum(t *testing.T) {
@@ -1369,42 +1345,6 @@ func TestIgnoreOptionsAreThreadedAndGitConfigIsCached(t *testing.T) {
 }
 
 // ------------------------------------------------------------------ review fixes
-
-// TestReadFileRefusesAnOversizedImageBeforeLoadingIt. The normalizer bounds
-// what it DECODES; nothing bounded what read_file handed it. The file is
-// sparse — a PNG signature and thirty-two megabytes of holes — so the test
-// costs nothing to set up and the assertion is on allocation, which is what
-// a size check placed after io.ReadAll would fail.
-func TestReadFileRefusesAnOversizedImageBeforeLoadingIt(t *testing.T) {
-	dir := t.TempDir()
-	f, err := os.Create(filepath.Join(dir, "huge.png"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.WriteString("\x89PNG\r\n\x1a\n"); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Truncate(ImageFileMaxBytes + 1); err != nil {
-		t.Fatal(err)
-	}
-	f.Close()
-	read := toolByName(t, dir, "read_file")
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-	res := read.Execute(context.Background(), json.RawMessage(`{"path":"huge.png"}`))
-	runtime.ReadMemStats(&after)
-	if res.OK || res.Error != "image_too_large" {
-		t.Fatalf("want image_too_large, got %+v", res)
-	}
-	if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 1<<20 {
-		t.Fatalf("refusing a %d byte image allocated %d bytes: the size must be checked "+
-			"BEFORE the file is read", ImageFileMaxBytes+1, alloc)
-	}
-	if res.Text != "" {
-		t.Fatal("an error result keeps the JSON envelope; Text must be empty")
-	}
-}
 
 // TestFileToolsRefuseWhatIsNotARegularFile. A directory is a list_files
 // question. A FIFO is worse: a read blocks until something writes, which is
@@ -2027,16 +1967,6 @@ func TestBuiltinLeniencySurvivesStrictValidation(t *testing.T) {
 			t.Fatal(err)
 		}
 		return core.PrepareArguments(byName[tool], c)
-	}
-	byName["fetch_url"] = FetchTool(FetchOptions{})
-	{
-		p, err := prep("fetch_url", `{"url":"https://example.com","method":"get"}`)
-		if err != nil {
-			t.Fatalf("method \"get\" refused: %v", err)
-		}
-		if p.Args["method"] != "GET" {
-			t.Fatalf("method = %v, want GET", p.Args["method"])
-		}
 	}
 	p, err := prep("search_files", fmt.Sprintf(`{"pattern":"x","max_matches":%d}`, SearchMatchCap*5))
 	if err != nil {

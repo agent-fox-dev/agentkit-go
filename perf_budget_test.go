@@ -55,22 +55,6 @@ func TestLoopOverheadBudget(t *testing.T) {
 	}
 }
 
-// TestCacheHitBudget is NFR-PERF-06: a Level 2 hit adds under 0.5 ms over a
-// direct response return.
-//
-// It is measured as a DIFFERENCE, which is what the requirement says. An
-// absolute threshold on the hit alone would pass or fail on how expensive the
-// direct return happens to be, which is not what is being budgeted.
-func TestCacheHitBudget(t *testing.T) {
-	direct := budget(t, "direct return", BenchmarkDirectResponse)
-	hit := budget(t, "cache hit", BenchmarkCacheHit)
-	if over := hit - direct; over > 500*time.Microsecond {
-		t.Fatalf("a cache hit adds %v over a direct return, past the NFR-PERF-06 budget "+
-			"of 0.5ms. The fingerprint is a SHA-256 over the whole serialized request, so "+
-			"this cost grows with the transcript rather than staying constant.", over)
-	}
-}
-
 // TestCacheControlStampingBudget is NFR-PERF-07: under 1 ms for 128 tools and
 // 1000 messages, on EVERY request, with no breakpoint cache and no
 // structural-hash recomputation path.

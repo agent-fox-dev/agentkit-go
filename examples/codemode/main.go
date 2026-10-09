@@ -25,8 +25,9 @@ import (
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/mcp"
 	"github.com/agentfox/agentkit-go/provider/faux"
-	"github.com/agentfox/agentkit-go/stop"
 	"github.com/agentfox/agentkit-go/tools"
+	"github.com/agentfox/agentkit-go/wire"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func main() {
@@ -111,7 +112,7 @@ func run(ctx context.Context, w io.Writer) error {
 	agent, err := agentkit.NewAgent(core.AgentConfig{
 		Model:         faux.Model(),
 		Providers:     core.ProviderRegistry{faux.API: model.APIProvider()},
-		StopPolicy:    stop.AfterTurns(5),
+		StopPolicy:    func(sc core.StopContext) bool { return sc.TurnCount >= 5 },
 		ParallelTools: true,
 		ToolPolicy:    core.ToolPolicy{CustomTools: []core.Tool{cm}},
 	})
@@ -175,35 +176,37 @@ func workspace() (*tools.Workspace, error) {
 	return tools.NewWorkspace(dir)
 }
 
-// inventoryPool serves one MCP tool, stock, over in-memory pipes and returns
-// a pool connected to it. The tool declares an output schema and returns
-// structured content, which a script reads as a dict.
+// inventoryPool serves one MCP tool, stock, from the official SDK's server
+// over in-memory pipes and returns a pool connected to it. The tool declares
+// an output schema and returns structured content, which a script reads as a
+// dict.
 func inventoryPool(ctx context.Context) (*mcp.Pool, func(), error) {
-	srv := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "inventory", Version: "1"}})
+	srv := sdk.NewServer(&sdk.Implementation{Name: "inventory", Version: "1"}, nil)
 	counts := map[string]int{"apples": 12, "pears": 0}
-	if err := srv.RegisterTool(&mcp.Tool{
+	srv.AddTool(&mcp.Tool{
 		Name:         "stock",
 		Description:  "How many of an item are in stock",
 		InputSchema:  json.RawMessage(`{"type":"object","properties":{"item":{"type":"string","description":"the item"}},"required":["item"]}`),
 		OutputSchema: json.RawMessage(`{"type":"object","properties":{"item":{"type":"string"},"count":{"type":"integer"}},"required":["item","count"]}`),
-	}, func(_ context.Context, args map[string]any) (*mcp.CallToolResult, error) {
-		item, _ := args["item"].(string)
+	}, func(_ context.Context, req *sdk.CallToolRequest) (*mcp.CallToolResult, error) {
+		var args struct {
+			Item string `json:"item"`
+		}
+		_ = json.Unmarshal(req.Params.Arguments, &args)
 		return &mcp.CallToolResult{
-			Content:           []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("%s: %d", item, counts[item])}},
-			StructuredContent: map[string]any{"item": item, "count": counts[item]},
+			Content:           []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("%s: %d", args.Item, counts[args.Item])}},
+			StructuredContent: map[string]any{"item": args.Item, "count": counts[args.Item]},
 		}, nil
-	}); err != nil {
-		return nil, nil, err
-	}
+	})
 
 	c2sR, c2sW := io.Pipe()
 	s2cR, s2cW := io.Pipe()
-	ss, err := srv.Connect(ctx, mcp.NewPipeTransport(c2sR, s2cW, mcp.DefaultLimits()), nil)
+	ss, err := srv.Connect(ctx, mcp.NewPipeTransport(c2sR, s2cW, wire.Defaults()), nil)
 	if err != nil {
 		return nil, nil, err
 	}
 	conn, err := mcp.Connect(ctx, mcp.ServerConfig{Name: "inventory"},
-		mcp.NewPipeTransport(s2cR, c2sW, mcp.DefaultLimits()), mcp.ConnectionOptions{})
+		mcp.NewPipeTransport(s2cR, c2sW, wire.Defaults()), mcp.ConnectionOptions{})
 	if err != nil {
 		_ = ss.Close()
 		return nil, nil, err

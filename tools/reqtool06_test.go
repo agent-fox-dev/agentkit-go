@@ -113,96 +113,8 @@ func TestRunCommandCarriesTheSameEnvelopeAsExecute(t *testing.T) {
 	}
 }
 
-// ---- REQ-TOOL-06: powershell
-
-// TestPowerShellIsRegisteredOnEveryPlatform.
-//
-// The requirement is about the tool LIST, not about PowerShell. The list is
-// the head of the cached prompt prefix, so a set that differed between a Linux
-// runner and a Windows box would give each a different prefix hash and neither
-// would ever hit the other's provider-side cache. The symptom is a bill, not
-// an error.
-func TestPowerShellIsRegisteredOnEveryPlatform(t *testing.T) {
-	root := t.TempDir()
-	ws, err := tools.NewWorkspace(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	all, err := tools.All(tools.Options{Workspace: ws})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var found bool
-	for _, tl := range all {
-		if tl.Name == "powershell" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("powershell must be in the default set on %s too, or the tool list "+
-			"is platform-dependent and so is the cached prompt prefix", runtime.GOOS)
-	}
-}
-
-// TestPowerShellDefersItsPlatformCheckToExecution.
-//
-// Registration must not probe the platform — that is what would make the list
-// vary. The check belongs on the call, where it produces an actionable error.
-func TestPowerShellDefersItsPlatformCheckToExecution(t *testing.T) {
-	if _, err := tools.ResolvePowerShell(); err == nil {
-		t.Skip("PowerShell is installed here, so the unavailable path cannot be exercised")
-	}
-	root := t.TempDir()
-	tl := toolNamed(t, root, "powershell")
-
-	res := tl.Execute(context.Background(), json.RawMessage(`{"command":"Get-Date"}`))
-	if res.OK {
-		t.Fatal("powershell cannot have succeeded without PowerShell installed")
-	}
-	if res.Error != "unsupported_platform" {
-		t.Fatalf("error = %q, want unsupported_platform", res.Error)
-	}
-	if !strings.Contains(res.Detail, "pwsh") {
-		t.Fatalf("the error must name what was searched; got %q", res.Detail)
-	}
-}
-
-// TestPowerShellValidatesArgumentsBeforeProbingThePlatform.
-//
-// A bad argument is the caller's mistake either way, and reporting
-// "unsupported platform" for a missing `command` sends them somewhere useless.
-func TestPowerShellValidatesArgumentsBeforeProbingThePlatform(t *testing.T) {
-	root := t.TempDir()
-	tl := toolNamed(t, root, "powershell")
-	for _, in := range []string{`{}`, `{"command":""}`, `{"command":"x","timeout_s":-1}`} {
-		res := tl.Execute(context.Background(), json.RawMessage(in))
-		if res.Error != "invalid_arguments" {
-			t.Fatalf("%s: want invalid_arguments, got %q (%s)", in, res.Error, res.Detail)
-		}
-	}
-}
-
-// TestPowerShellRunsWhereItIsInstalled. Skipped where it is not, rather than
-// asserting only the failure path — a tool whose success path is never
-// exercised anywhere is a tool nobody has run.
-func TestPowerShellRunsWhereItIsInstalled(t *testing.T) {
-	if _, err := tools.ResolvePowerShell(); err != nil {
-		t.Skipf("PowerShell is not installed: %v", err)
-	}
-	root := t.TempDir()
-	tl := toolNamed(t, root, "powershell")
-	res := tl.Execute(context.Background(),
-		json.RawMessage(`{"command":"Write-Output 'from-powershell'"}`))
-	if !res.OK {
-		t.Fatalf("powershell failed: %+v", res)
-	}
-	if out, _ := res.Data["output"].(string); !strings.Contains(out, "from-powershell") {
-		t.Fatalf("output = %q", out)
-	}
-}
-
-// TestTheDefaultToolSetIsPlatformStable is the property all of the above
-// serve: the same names, in the same order, everywhere.
+// TestTheDefaultToolSetIsPlatformStable: the same names, in the same order,
+// everywhere.
 func TestTheDefaultToolSetIsPlatformStable(t *testing.T) {
 	root := t.TempDir()
 	ws, err := tools.NewWorkspace(root)
@@ -219,7 +131,7 @@ func TestTheDefaultToolSetIsPlatformStable(t *testing.T) {
 	}
 	want := []string{"read_file", "write_file", "edit_file", "list_files",
 		"find_files", "search_files", "file_outline", "find_symbol", "find_references",
-		"execute", "run_command", "powershell"}
+		"execute", "run_command"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("default tool set changed.\ngot:  %v\nwant: %v\n\n"+
 			"This list is the head of the cached prompt prefix; changing it is a "+

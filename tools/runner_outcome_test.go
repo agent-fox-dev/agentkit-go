@@ -470,16 +470,15 @@ func TestTS_04_26_StartFailuresReturnZeroResultAndError(t *testing.T) {
 	})
 }
 
-// TS-06-18: execute, run_command and powershell share one output schema, and
+// TS-06-18: execute and run_command share one output schema, and
 // a non-zero exit still fills Data with output, exit_code and outcome that
 // conform to it.
 func TestOutputSchemaSubprocessTools_TS06_18(t *testing.T) {
 	dir := t.TempDir()
 	ex := toolByName(t, dir, "execute")
 	rc := toolByName(t, dir, "run_command")
-	ps := toolByName(t, dir, "powershell")
-	if ex.OutputSchema == nil || ex.OutputSchema != rc.OutputSchema || rc.OutputSchema != ps.OutputSchema {
-		t.Fatalf("schemas %p %p %p, want one shared non-nil schema", ex.OutputSchema, rc.OutputSchema, ps.OutputSchema)
+	if ex.OutputSchema == nil || ex.OutputSchema != rc.OutputSchema {
+		t.Fatalf("schemas %p %p, want one shared non-nil schema", ex.OutputSchema, rc.OutputSchema)
 	}
 	assertObject(t, "subprocess", ex.OutputSchema, map[string]prop{
 		"output":    {schema.TypeString, true},
@@ -526,25 +525,5 @@ func TestOutputSchemaSubprocessTools_TS06_18(t *testing.T) {
 		if err := schema.Validate(tc.tool.OutputSchema, ord); err != nil {
 			t.Fatalf("%s: Data does not conform: %v", name, err)
 		}
-	}
-}
-
-// TS-06-19: fetch_url declares its response metadata and, beyond the spec's
-// list, the body it returns for a text response.
-func TestOutputSchemaFetchURL_TS06_19(t *testing.T) {
-	s := FetchTool(FetchOptions{}).OutputSchema
-	assertObject(t, "fetch_url", s, map[string]prop{
-		"status":       {schema.TypeInteger, true},
-		"url":          {schema.TypeString, true},
-		"content_type": {schema.TypeString, true},
-		"headers":      {schema.TypeObject, true},
-		"truncated":    {schema.TypeBoolean, true},
-		"binary":       {schema.TypeBoolean, false},
-		"bytes":        {schema.TypeInteger, false},
-		"body":         {schema.TypeString, false},
-	})
-	ap := s.Properties["headers"].AdditionalProperties
-	if ap == nil || ap.Schema == nil || ap.Schema.Type != schema.TypeString {
-		t.Errorf("headers additionalProperties = %+v, want string", ap)
 	}
 }

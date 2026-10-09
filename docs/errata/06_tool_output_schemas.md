@@ -70,16 +70,6 @@ has no `score`, and it has a `backend` field. `signature`, `container` and
 The schema in `tools/find_references.go` declares these keys. Test:
 TS-06-17, `TestOutputSchemaFindReferences_TS06_17`.
 
-### 06-REQ-8.1: `fetch_url` also declares `body`
-
-**Spec.** `status`, `url`, `content_type`, `headers`, `truncated`, and optional
-`binary` and `bytes`.
-
-**Code.** A text response sets `data["body"]` (`tools/fetch.go`), and a binary
-one sets `binary` and `bytes` instead. The schema adds an optional `body`
-string. `headers` is declared as an object of strings. Test: TS-06-19,
-`TestOutputSchemaFetchURL_TS06_19`.
-
 ### 06-REQ-8.2: `code_search` files carry a match count and context chunks
 
 **Spec.** Each file has `path` and `matches`, an array of line objects with
@@ -114,11 +104,11 @@ backstop that no input can reach.
 - **D-4.** `code_search` is in the nested `codesearch` module, which the root
   module does not depend on. Its conformance tests (TS-06-20, and its share of
   TS-06-22 and TS-06-23) are in `codesearch/tool_test.go`. Everything else is
-  in `tools/conformance_test.go`. That file is the external `tools_test`
-  package, so it can import `subagent` without an import cycle.
+  in `tools/conformance_test.go`.
 - The test spec names constructors such as `tools.ReadFileTool(ws)` that do
-  not exist. The built-in tools are reached through `tools.All`,
-  `tools.FetchTool` and `subagent.Tool`.
+  not exist. The built-in tools are reached through `tools.All`.
+  (`fetch_url` and `subagent` were deleted by spec 09; see
+  `09_repository_cut.md`.)
 
 ## 06-REQ-2.1, 06-REQ-2.2: output schemas are converted by `outputSchemaFrom`, not `schemaFrom`
 
@@ -145,8 +135,7 @@ Tests: TS-06-4, TS-06-5, TS-06-6 and TS-06-34, plus
 **Spec.** The 06-REQ-9.6 contract validates `Data` for `exec_failed` as well as
 `command_exit`.
 
-**Code.** `exec_failed` means the process never started (`tools/tools.go`,
-`tools/powershell.go`), so there is no output, exit code or outcome to report.
+**Code.** `exec_failed` means the process never started (`tools/tools.go`), so there is no output, exit code or outcome to report.
 The result is `core.ErrResult("exec_failed", ...)` with nil `Data`. The PRD's
 Design Decision 7 validates `Data` on error paths only when it is populated.
 TS-06-27 (`TestConformanceSubprocessFailureData_TS06_27`) validates

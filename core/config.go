@@ -18,8 +18,8 @@ type StopContext struct {
 	// REQ-LOOP-07 requires RunResult.StopReason = "max_turns" and, under
 	// ErrorOnLimit, ErrMaxTurns specifically — versus ErrBudgetExceeded for
 	// REQ-LOOP-08. With a bare bool the loop cannot tell which policy fired,
-	// and stop.Any erases it entirely. A policy sets *Reason before returning
-	// true; the loop defaults it to RunStopPolicy.
+	// and a composed policy erases it entirely. A policy sets *Reason before
+	// returning true; the loop defaults it to RunStopPolicy.
 	Reason *RunStopReason
 
 	// StartedAt is an ADDITION. §5 names wall-clock deadlines as a default
@@ -37,7 +37,7 @@ func (sc StopContext) SetReason(r RunStopReason) {
 	}
 }
 
-// StopPolicy is REQ-LOOP-04's pinned signature. Policies compose via stop.Any.
+// StopPolicy is REQ-LOOP-04's pinned signature.
 type StopPolicy func(StopContext) bool
 
 // ContextTransform is AgentConfig.TransformContext (REQ-GO-12): invoked
@@ -45,9 +45,8 @@ type StopPolicy func(StopContext) bool
 // head of each loop iteration (REQ-LOOP-04b, NFR-REL-05).
 //
 // The field holds a BOUND CLOSURE, not a free function: the pinned signature
-// cannot return an error, cannot see the current model (which changes
-// mid-session under REQ-SESS-03) and cannot reach the SessionStore to write
-// the REQ-SESS-04 entry. Those inputs are supplied by binding.
+// cannot return an error and cannot see the current model (which changes
+// mid-session). Those inputs are supplied by binding.
 type ContextTransform func(ctx context.Context, msgs Messages) Messages
 
 // Hooks are Axis 2 (REQ-OBS-07): observation, never interception.
@@ -56,21 +55,6 @@ type Hooks struct {
 	OnTurnEnd   func(TurnEndEvent)
 	OnAgentDone func(AgentDoneEvent)
 	OnError     func(error)
-
-	// OnSessionStart and OnSessionEnd are REQ-OBS-03.
-	//
-	// The requirement names EventHookPlugin. The hook POINTS are not a plugin
-	// feature — a plugin is one more registrant — so they live here, and the
-	// plugins package registers against them rather than replacing them.
-	//
-	// OnSessionEnd fires exactly once per run, including on an error or an
-	// abort. A hook that fires only on the happy path is worse than none: an
-	// auditor cannot tell a session that ended badly from one still running.
-	OnSessionStart func(AuditEvent)
-	OnSessionEnd   func(AuditEvent)
-	// OnAudit receives every AuditEvent, session start and end included, so a
-	// single sink needs one registration rather than four.
-	OnAudit func(AuditEvent)
 }
 
 // QueueMode is REQ-LOOP-15's per-queue delivery mode.
@@ -97,12 +81,8 @@ type AgentConfig struct {
 	TopP         *float64
 	SystemPrompt string
 	// PromptBlocks are extra system-prompt sections appended after the
-	// built-in ones, in order — the skills and project-context block, or
-	// anything an embedder assembles itself.
-	//
-	// Untyped text because core cannot import skills without inverting the
-	// package graph, and because discovery is the embedder's affirmative act
-	// (REQ-SKILL-04, REQ-SEC-10) rather than something the loop performs.
+	// built-in ones, in order — project context, or anything an embedder
+	// assembles itself.
 	PromptBlocks []string
 
 	StopPolicy StopPolicy
@@ -126,18 +106,6 @@ type AgentConfig struct {
 
 	SessionID    string
 	TrustProject bool
-	// Plugins is REQ-PLUGIN-11's registry, held HERE and not in a
-	// package-level global — so two agents in one process can carry different
-	// plugin sets, and a test can inject a mock without patching global state
-	// or freezing a registry against late registration.
-	Plugins PluginRegistry
-	// Tracer receives the REQ-OBS-02 tool spans. Nil means NoopTracer.
-	//
-	// It is separate from middleware.Tracing's tracer, which wraps the MODEL
-	// call: middleware cannot see a tool execution at all, so a tracer that
-	// reached the SDK only through Axis 1 would leave REQ-OBS-02
-	// unimplementable. Pass the same value to both to get one trace.
-	Tracer Tracer
 	// Attribution defaults on and is disclosed (REQ-SEC-13). A single kill
 	// switch disables every attribution header.
 	Attribution    *bool
@@ -149,12 +117,6 @@ type AgentConfig struct {
 	// defaults, supplied by a pure function at construction — there is no
 	// package-level registry and no init() to populate one (NFR-SEC-05).
 	Providers ProviderRegistry
-	// SessionStore is optional. A non-empty store passed to NewAgent is
-	// ErrSessionNotEmpty: a non-empty log must be folded first (REQ-SESS-02).
-	SessionStore SessionStore
-	// OnPersistError is REQ-SESS-08's mandatory seam for an internally
-	// subscribed store. Silent failure is prohibited.
-	OnPersistError func(error)
 }
 
 // Middleware is Axis 1: it wraps the entire model call and operates on

@@ -13,7 +13,6 @@ import (
 
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/schema"
-	"github.com/agentfox/agentkit-go/stop"
 )
 
 // ---------------------------------------------------------------- scaffolding
@@ -96,11 +95,23 @@ func assistantWithTools(reason core.StopReason, blocks ...core.ContentBlock) cor
 	return core.AssistantMessage{Content: core.Content(blocks), StopReason: reason}
 }
 
+// afterTurns ends a run at the first turn boundary at or past n turns, with
+// StopReason max_turns.
+func afterTurns(n int) core.StopPolicy {
+	return func(sc core.StopContext) bool {
+		if sc.TurnCount >= n {
+			sc.SetReason(core.RunStopMaxTurns)
+			return true
+		}
+		return false
+	}
+}
+
 func newTestAgent(t *testing.T, s *scripted, mutate func(*core.AgentConfig)) *Agent {
 	t.Helper()
 	cfg := core.AgentConfig{
 		Model:      testModel(),
-		StopPolicy: stop.AfterTurns(10),
+		StopPolicy: afterTurns(10),
 		Providers:  core.ProviderRegistry{testAPI: s.provider()},
 	}
 	if mutate != nil {
@@ -555,15 +566,23 @@ func TestStopPolicyRunsAfterResultsAreInHistory(t *testing.T) {
 	}
 }
 
-// TestStopPolicyReasonSurvivesStopAny: with a bare bool predicate the loop
-// cannot tell ErrMaxTurns from ErrBudgetExceeded, and StopAny erases it.
-func TestStopPolicyReasonSurvivesStopAny(t *testing.T) {
+// TestStopPolicyReasonSurvivesComposition: with a bare bool predicate the
+// loop cannot tell ErrMaxTurns from ErrBudgetExceeded once two limits are
+// composed into one policy; the reason the firing limit sets survives.
+func TestStopPolicyReasonSurvivesComposition(t *testing.T) {
 	s := &scripted{turns: []core.AssistantMessage{
 		{Content: core.Content{core.TextBlock{Text: "a"}}, StopReason: core.StopReasonStop},
 	}}
 	a := newTestAgent(t, s, func(c *core.AgentConfig) {
 		c.ErrorOnLimit = true
-		c.StopPolicy = stop.Any(stop.OverBudget(1e9), stop.AfterTurns(1))
+		turns := afterTurns(1)
+		c.StopPolicy = func(sc core.StopContext) bool {
+			if sc.Usage.CostUSD > 1e9 {
+				sc.SetReason(core.RunStopBudgetExceeded)
+				return true
+			}
+			return turns(sc)
+		}
 	})
 	res, err := a.Run(context.Background(), "go")
 	if !errors.Is(err, core.ErrMaxTurns) {

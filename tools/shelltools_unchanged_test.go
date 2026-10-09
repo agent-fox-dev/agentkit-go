@@ -296,27 +296,6 @@ func TestTS_04_29_ShellToolStdinSeesEOFAtOnce(t *testing.T) {
 			t.Fatalf("run_command: unexpected status line in Text: %q", res.Text)
 		}
 	})
-
-	// powershell: skip if not installed
-	t.Run("powershell", func(t *testing.T) {
-		if _, err := ResolvePowerShell(); err != nil {
-			t.Skipf("PowerShell not installed: %v", err)
-		}
-		res := toolByName("powershell").Execute(context.Background(),
-			json.RawMessage(`{"command":"$input | Out-Null; \"after\"","timeout_s":5}`))
-		if !res.OK {
-			t.Fatalf("powershell failed: %+v", res)
-		}
-		if !strings.Contains(strings.TrimSpace(res.Text), "after") {
-			t.Fatalf("powershell: Text = %q, want to contain 'after'", res.Text)
-		}
-		if res.Metadata == nil || res.Metadata.Outcome != "ok" {
-			t.Fatalf("powershell: Metadata.Outcome = %v, want ok", res.Metadata)
-		}
-		if res.Metadata.DurationMS >= 2000 {
-			t.Fatalf("powershell: DurationMS = %d, command blocked on stdin", res.Metadata.DurationMS)
-		}
-	})
 }
 
 // ------------------------------------------------------------------ TS-04-30

@@ -8,19 +8,14 @@ disagree, fix this file.
 
 One Go module (`github.com/agentfox/agentkit-go`, `go 1.27`). Maintained
 third-party modules are used where they replace hand-rolled infrastructure
-([PRD 09](prd/09-replace-hand-rolled-code-with-libraries.md)). cgo is allowed only in `//go:build cgo` files, and every package keeps a
-pure-Go fallback: `internal/policy` builds the four supported targets with cgo
-off and the host with cgo on. Four nested
-modules carry their own `go.mod` and are not in the root build graph:
-[`codesearch/`](../codesearch),
-[`difftest/`](../difftest),
-[`examples/codesearch/`](../examples/codesearch) and
-[`examples/flatline/`](../examples/flatline).
+([PRD 09](prd/09-replace-hand-rolled-code-with-libraries.md)). cgo is allowed
+only in `//go:build cgo` files, and every package keeps a pure-Go fallback:
+`internal/policy` builds the four supported targets with cgo off and the host
+with cgo on. One nested module carries its own `go.mod` and is not in the root
+build graph: [`codesearch/`](../codesearch).
 
-The root package holds the `Agent` and nothing else
-([ADR 01](adr/01-keep-the-root-package-to-the-agent.md)). Everything else is a
-sub-package. [`errata/package_layout.md`](errata/package_layout.md) maps the
-PRD's unqualified names to where they live now.
+The root package holds the `Agent` and nothing else. Everything else is a
+sub-package.
 
 ## Package graph
 
@@ -32,31 +27,24 @@ Imports between first-party packages, taken from the source (tests excluded;
 | `core` | `jsonx`, `schema` |
 | `schema` | `jsonx` |
 | `outline` | nothing first-party; `github.com/tree-sitter/go-tree-sitter` and grammar modules in `//go:build cgo` files |
-| `jsonx`, `wire`, `imagex` | nothing first-party |
-| `catalog` | `core` |
-| `stop`, `guard`, `compaction` | `core` |
-| `middleware` | `core`, `provider` |
+| `jsonx`, `wire` | nothing first-party |
+| `catalog`, `guard` | `core` |
 | `provider` | `core`, `schema`, `wire` |
-| `provider/{anthropic,openai,openairesponses,google,ollama}` | `core`, `catalog`, `provider`, `schema`; a few reuse a sibling wire package's helpers (`openairesponses` → `openai` and `wire`; `google` → `anthropic`, `openai`) |
+| `provider/anthropic` | `core`, `catalog`, `provider` |
 | `provider/faux` | `core` |
-| `session` | `core`, `jsonx` |
-| `tools` | `core`, `imagex`, `outline`, `schema` (exports `Walk`, `file_outline`, `find_symbol`, `find_references`) |
+| `tools` | `core`, `outline`, `schema`; plus `github.com/bmatcuk/doublestar/v4` |
 | `codesearch` (nested module) | `tools`, `core`, `schema`, `outline`; plus `github.com/sourcegraph/zoekt` (confined to this module) |
 | `mcp` | `core`, `schema`, `wire`; plus `github.com/modelcontextprotocol/go-sdk` |
-| `plugins` | `core`, `provider`, `session` |
-| `skills` | `core`, `plugins` |
-| `prompt` | `core`, `skills`, `tools` |
-| `subagent` | `core`, `schema`, `stop` |
+| `prompt` | `core`, `guard`, `tools` |
 | `codemode` | `core`, `schema`, `tools`; plus `go.starlark.net` (confined to this package; see [`DEPS.md`](DEPS.md)) |
-| `.` (root, `agentkit`) | `core`, `compaction`, `guard`, `imagex`, `middleware`, `prompt`, `session`, `skills` |
+| `.` (root, `agentkit`) | `core`, `guard`, `prompt` |
 
 Rules that follow from it:
 
 - `core` is the vocabulary and owns every interface seam (`Tool`,
-  `ProviderClient`, `SessionStore`, `PluginRegistry`, `Middleware`). It imports
-  no other part of the SDK except the two leaf encoders.
-- Nothing imports the root package except `examples/` and tests. `session`
-  says so explicitly: the log format has no opinion about the loop.
+  `ProviderClient`, `Middleware`). It imports no other part of the SDK except
+  the two leaf encoders.
+- Nothing imports the root package except `examples/` and tests.
 - Provider packages are never imported by the root. A caller registers the wire
   APIs it wants, so a program that only wants the loop does not pull in
   `net/http`.
@@ -65,75 +53,57 @@ Rules that follow from it:
 
 | Package | Owns |
 |---|---|
-| `.` | `Agent`, constructors (`NewAgent`, `NewAgentWithHistory`, `NewAgentFromSession`), the loop (`loop.go`), the tool batch executor (`batch.go`), image normalization at the history boundary (`images.go`), audit emission (`audit.go`), deferred responses (`deferred.go`), `DefaultProviders` / `RegisterDefaults`, skill loading and audit (`Agent.LoadSkills`, `Agent.AuditSkills`; `skillsconfig.go`), the `execute` guard check (`execguard.go`). |
-| `core` | Messages, content blocks, events and their discriminated JSON form, `EventStream`, `AgentConfig`, `Tool`, `ToolPolicy`, argument preparation, `Model`, `Usage`, stop reasons, errors, audit events, the plugin and tracer interfaces. |
+| `.` | `Agent`, constructors (`NewAgent`, `NewAgentWithHistory`), the loop (`loop.go`), the tool batch executor (`batch.go`), nested tool calls (`nested.go`), `DefaultProviders` / `RegisterDefaults` (`providers.go`), the `execute` guard check (`execguard.go`). |
+| `core` | Messages, content blocks, events and their discriminated JSON form (`MarshalEvent`, with a caller-supplied `MessageEncoder`), `EventStream`, `AgentConfig`, `Tool`, `ToolPolicy`, argument preparation, `Model`, `Usage`, stop reasons, errors. |
 | `catalog` | Embedded model catalog (`catalog.json`), `ResolveModel`, sibling cloning, `max_tokens` and thinking-level clamping. |
-| `provider` | What every wire API shares: send-time transcript repair, HTTP transport and retry, credential resolution (`VendorAuth`, `ModelAuth`, `Credentials`), header precedence, cost arithmetic, SSE/NDJSON decoding, partial-JSON salvage, deferred-tool splitting. |
-| `provider/anthropic` | Anthropic Messages, direct and Claude-on-Vertex. |
-| `provider/openai` | OpenAI Chat Completions and every compatible host (OpenRouter, DeepSeek, xAI, Groq, Together, Moonshot, anything else by `<VENDOR>_*`). |
-| `provider/openairesponses` | OpenAI Responses. |
-| `provider/google` | Gemini, AI Studio and Vertex, with opt-in `CachedContent`. |
-| `provider/ollama` | Ollama native chat. |
+| `provider` | What a wire API needs and does not own: credential resolution (`VendorAuth`, `ModelAuth`, `ResolveAuth`), the HTTP pipeline and retrying transport (`Call`, `Do`, `RetryPolicy`), header precedence, cost arithmetic, SSE decoding, the per-session tool-schema cache (`ToolPrefix`) and deferred-tool splitting. |
+| `provider/anthropic` | Anthropic Messages, direct and Claude-on-Vertex, including the send-time transcript repair (`RepairTranscript`) and partial-JSON salvage of streamed tool arguments (`SalvageJSON`). |
 | `provider/faux` | Scripted provider for offline tests and demos. |
-| `middleware` | Axis 1 wrappers over the model call: `Retry`, `Budget`, `Caching`, `Tracing`, `RateLimit` (a `golang.org/x/time/rate` limiter), and `CacheMeter`. |
-| `compaction` | The context transform, four strategies, summarizers, summary validation, token estimate. |
-| `session` | Append-only JSONL log, damage-tolerant loader, branch tree, fold into construction inputs, recorder, `OpenOrCreate`. |
-| `outline` | Source-file declaration listing with real line ranges. Go files use `go/ast` in every build. With cgo, Python, JavaScript, TypeScript/TSX, Java, Kotlin, C#, Scala, Rust, C, C++, PHP, Ruby, Lua and shell are parsed in-process by tree-sitter grammars driven by tags queries (`outline/treesitter*.go`, `//go:build cgo`); without cgo those files are `none`. Anything outside the extension table is `none` and is not read; `LangFor` also reads a `.h` header's content to tell C++ from C. `CommentAndStringSpans` gives `find_references` the comment and string ranges of a file from the same grammars. Languages universal-ctags used to cover with no maintained Go-binding grammar (Swift, Perl, Elixir, Erlang, OCaml, Clojure, Lisp/Scheme, Julia, R, SQL, Terraform, Protobuf, Thrift, Fortran, COBOL, Ada, Pascal, VHDL, SystemVerilog, Raku, Tcl, D, Elm, GDScript, PowerShell, Vim script, Objective-C, CUDA) are not outlined. No first-party imports. |
-| `tools` | Built-in tools, workspace containment, output accumulator, process control, glob (`github.com/bmatcuk/doublestar/v4` plus smart-case and bare-pattern basename matching), layered gitignore, `fetch_url` behind the SSRF guard (every resolved address and the connect-time address are checked against `code.dny.dev/ssrf`'s IANA special-purpose table; IPv6 outside 2000::/3 is refused). `RunArgv` is the embedder's process runner (no shell, argv-based, with stdin, head/tail truncation, log file, reduced environment and a pinned outcome contract). `Walk` exposes the single shared directory traversal behind workspace confinement. `file_outline` returns a file's declarations with line ranges; `find_symbol` searches the workspace by declaration name, backed by a lazily built, bounded in-memory symbol table that is refreshed after `write_file`, `edit_file` and the shell tools run; `find_references` searches for callers and usages of declarations across the workspace with exact Go type resolution and outline attribution, backed by a lazily built, bounded in-memory reference cache (`referenceCache`). |
+| `outline` | Source-file declaration listing with real line ranges. Go files use `go/ast` in every build. With cgo, Python, JavaScript, TypeScript/TSX, Java, Kotlin, C#, Scala, Rust, C, C++, PHP, Ruby, Lua and shell are parsed in-process by tree-sitter grammars driven by tags queries (`outline/treesitter*.go`, `//go:build cgo`); without cgo those files are `none`. Anything outside the extension table is `none` and is not read; `LangFor` also reads a `.h` header's content to tell C++ from C. `CommentAndStringSpans` gives `find_references` the comment and string ranges of a file from the same grammars. No first-party imports. |
+| `tools` | Built-in tools, workspace containment, output accumulator, process control, glob (`github.com/bmatcuk/doublestar/v4` plus smart-case and bare-pattern basename matching), layered gitignore. `read_file` reads text only: a file whose leading bytes are a PNG, JPEG, GIF or WebP signature is refused with `unsupported_file`. `RunArgv` is the embedder's process runner (no shell, argv-based, with stdin, head/tail truncation, log file, reduced environment and a pinned outcome contract). `Walk` exposes the single shared directory traversal behind workspace confinement. `file_outline` returns a file's declarations with line ranges; `find_symbol` searches the workspace by declaration name, backed by a lazily built, bounded in-memory symbol table that is refreshed after `write_file`, `edit_file` and the shell tools run; `find_references` searches for callers and usages of declarations across the workspace with exact Go type resolution and outline attribution, backed by a lazily built, bounded in-memory reference cache (`referenceCache`). |
 | `guard` | The `execute` authorization boundary: `Restricted`, `AllowAll`. |
-| `stop` | Stop policies. |
-| `subagent` | Delegation as a tool, named definitions, parallel runs. |
 | `codemode` | The code-mode tool: a sandboxed Starlark script runner over bound tools, with typed declarations generated from their schemas, errors as values, `parallel`, four limits, truncated and spilled output, and a ledger of the calls a script made. |
-| `prompt` | Assembly of the system prompt. |
-| `skills` | Skill manifests, three-tier discovery, trust gate, project context files, prompt blocks, activation. |
-| `plugins` | Four plugin categories, registry, manifest discovery, import lint, conformance `Validate`. |
-| `mcp` | AgentKit's layer over the official MCP Go SDK, which owns the protocol and version negotiation: the tool pool (qualified names, collision checks, schema conversion, `${VAR}` resolution), subprocess spawning with process-group kill and a reduced environment, respawn, result cap, call limit, audit and sampling gate on the client; the handler adapter, concurrency bound, audit and API-key/Origin HTTP middleware and `Run` on the server; and strict `wire` checks at the stdio, inbound-HTTP and HTTP-response boundaries. |
-| `wire` | Bounded strict decoder for untrusted bytes, on `encoding/json/v2` and `encoding/json/jsontext`: a token loop adds the size, depth, container-length and node bounds to jsontext's grammar and duplicate-name rejection; `Bind` is v2 with unknown members rejected, exact-case names, REQ-SEC-12.2 integer rules and the `Validator` hook. Frame readers. |
+| `prompt` | Assembly of the system prompt: base instructions, per-tool guidelines, extra blocks. |
+| `mcp` | AgentKit's MCP client over the official MCP Go SDK, which owns the protocol and version negotiation: the tool pool (qualified names, collision checks, schema conversion, `${VAR}` resolution), subprocess spawning with process-group kill and a reduced environment, respawn, result cap, call limit and sampling gate; and strict `wire` checks at the stdio and HTTP-response boundaries. There is no server. |
+| `wire` | Bounded strict parser for untrusted bytes, on `encoding/json/jsontext`: a token loop adds the size, depth, container-length and node bounds to jsontext's grammar and duplicate-name rejection. Frame readers. |
 | `jsonx` | Order-preserving JSON. |
 | `schema` | JSON Schema value and typed combinators. |
-| `imagex` | Image normalization to a provider's inline-image limits (resize with `golang.org/x/image/draw` Catmull-Rom, quality ladder, base64 budget) for JPEG, PNG, GIF and WebP (decoded with `golang.org/x/image/webp`; a WebP that must shrink is re-encoded as JPEG). APNG, CMYK JPEG and non-IHDR PNG are refused. |
-| `internal/toml` | Lenient TOML reader for manifests and config: `github.com/pelletier/go-toml/v2/unstable` (pinned) parses; a small adapter folds it into an ordered `Table` with line numbers and "duplicate warns, last wins". |
+| `internal/toml` | Lenient TOML reader for config: `github.com/pelletier/go-toml/v2/unstable` (pinned) parses; a small adapter folds it into an ordered `Table` with line numbers and "duplicate warns, last wins". |
 | `internal/diag` | The shared non-fatal `Diagnostic`. |
 | `internal/policy` | Tests only: the cross-target (cgo off) and host (cgo on) build gates. |
 | `internal/testkit` | Shared test helpers. |
-| `cmd/validate-plugins` | Reference driver for `plugins.Validate` ([CLI](cli.md)). |
 | `codesearch` | Nested module: zoekt-backed `code_search` tool, lazy index build, dirty-file overlay, `find_symbol` acceleration. Imports `tools`, `core`, `schema`, `outline` from the root and `github.com/sourcegraph/zoekt` (pinned). |
-| `difftest` | Nested module: wire-level differential harness. |
-| `_skills/` | Built-in skills shipped as data (`code-review`). |
 
 ## Data flow of one run
 
 ```
-Agent.Run / Stream / Continue
+Agent.Run / RunMessage / Stream
   └─ runLoop (loop.go)
        per turn:
-         1. TransformContext (compaction checkpoint applied, then estimate)
+         1. drain steering, then TransformContext builds the request view
          2. build Request from history + tools + system prompt
          3. Middleware chain (last registered is outermost) ── Axis 1
-         4. ProviderClient.Stream  ── provider.* repairs the transcript,
-            encodes the wire body, resolves auth + headers, sends via the
-            retrying transport, decodes SSE/NDJSON into core events
-         5. assistant message folded into history, events emitted,
-            session store appended
+         4. ProviderClient.Stream  ── provider/anthropic repairs the
+            transcript, encodes the wire body, resolves auth + headers,
+            sends via the retrying transport, decodes SSE into core events
+         5. assistant message recorded in history, events emitted
          6. tool_use blocks present? (never the stop reason decides)
               └─ batch.go: prepare (sequential: policy, BeforeToolCall,
-                 plugin hooks, argument repair) → execute (parallel or
-                 sequential) → finalize (AfterToolCall, metadata copy,
-                 image normalization, one ToolResultMessage per call);
-                 a tool with ReachableTools runs with a NestedCaller on its
-                 context (nested.go, below)
+                 argument repair) → execute (parallel or sequential) →
+                 finalize (AfterToolCall, metadata copy, one
+                 ToolResultMessage per call); a tool with ReachableTools runs
+                 with a NestedCaller on its context (nested.go, below)
          7. StopPolicy evaluated at the turn boundary
-  └─ terminal marker, OnSessionEnd hook, RunResult
+  └─ terminal marker, OnAgentDone hook, RunResult
 ```
 
 Extension axes:
 
 1. **Middleware** wraps the whole model call on canonical types.
-2. **Hooks** observe (`OnTurnStart`, `OnTurnEnd`, `OnAgentDone`, `OnError`,
-   session and audit hooks). They never intercept.
+2. **Hooks** observe (`OnTurnStart`, `OnTurnEnd`, `OnAgentDone`, `OnError`).
+   They never intercept.
 3. **Interceptors** — `BeforeToolCall` / `AfterToolCall` — are the
-   authorization boundary. Plugin hooks run after `BeforeToolCall` and can only
-   narrow.
+   authorization boundary.
 4. **`RequestOptions.OnPayload`** is the post-serialization seam.
 
 ## Invariants worth knowing before editing
@@ -144,26 +114,25 @@ Extension axes:
   starts.
 - **The batch finalize mutex is batch-scoped**, never the agent mutex.
 - **Panics in third-party code are contained** (middleware, stop policies,
-  transforms, argument preparation, tracers, hooks). A panicking `StopPolicy`
-  stops the run.
+  transforms, argument preparation, hooks). A panicking `StopPolicy` stops the
+  run.
 - **A shell tool with no `BeforeToolCall`** fails the run with
   `ErrUnguardedExecute`; `guard.AllowAll` is the explicit opt-out. A shell tool
   reachable through a wrapper counts too:
   `... (wrapper "code_mode" reached shell tool "execute")`.
 - **Untrusted bytes go through `wire`**: bounds before allocation, duplicate
-  keys rejected, case-sensitive matching. Locally authored config decodes
-  leniently and reports diagnostics. Where a library decodes untrusted bytes
-  (the MCP SDK), `wire.Guard` checks them first at the transport boundary.
+  keys rejected. Locally authored config decodes leniently and reports
+  diagnostics. Where a library decodes untrusted bytes (the MCP SDK),
+  `wire.Guard` checks them first at the transport boundary.
 - **`core.Tool.OutputSchema` never reaches a provider.** It documents the shape
   of `ToolResult.Data` for programmatic callers; `core.ToolWire` has no such
   field, so request bodies are the same with or without it. It is not checked
   at runtime. `schema.Validate` does not evaluate a root combinator, so to
-  check Data against a schema like `read_file`'s root `oneOf`, validate it as
+  check Data against a schema with a root `oneOf`, validate it as
   a property's value.
-- **No global state, no `init()` registration.** Providers, plugins and tracers
-  live on the config.
-- **Session entries are appended, never rewritten**; a compaction is an entry
-  and the checkpoint is applied as a view on each request.
+- **No global state, no `init()` registration.** Providers live on the config.
+- **History is append-only**; a context transform changes the view sent on a
+  request, never the stored messages.
 
 ## Nested tool calls
 
@@ -195,18 +164,15 @@ that turns tools into functions. It declares them up front in
   1. prepare and validate the arguments;
   2. `BeforeToolCall`, whose context carries `ParentToolUseID` and
      `ParentToolName`;
-  3. the plugin veto;
-  4. the handler, inside an `agentkit.tool_call` span with
-     `parent_tool_use_id`;
-  5. an audit record with `ParentToolUseID`;
-  6. `AfterToolCall`;
-  7. `ToolExecutionStart`/`End` events with `ParentToolUseID`.
+  3. the handler;
+  4. `AfterToolCall`;
+  5. `ToolExecutionStart`/`End` events with `ParentToolUseID`.
 
   Each nested call gets a fresh id. Preparation runs in call order. Handlers run
   concurrently unless `ParallelTools` is off or a `Sequential` tool is among
   the calls, and results come back in call order. Every nested call that
-  opens on the stream closes there and is audited, including one blocked or
-  cut short by a terminate vote.
+  opens on the stream closes there, including one blocked or cut short by a
+  terminate vote.
 - **Interceptors run concurrently.** Within one `CallNested`, preparation is
   ordered and `AfterToolCall` is serialized, as in a direct batch. But
   `BeforeToolCall` for different wrappers' nested calls, and nested
@@ -222,11 +188,10 @@ that turns tools into functions. It declares them up front in
   `core.ErrTerminated`, and the wrapper's result carries `Terminate` to the
   batch.
 - **Terminate votes.** A nested handler's own terminate vote is dropped. The
-  nested result's detail says `terminate vote ignored`, the wrapper's says
-  `nested terminate vote ignored`, and the audit record sets
-  `TerminateIgnored`.
+  nested result's detail says `terminate vote ignored`, and the wrapper's says
+  `nested terminate vote ignored`.
 - **Out of the transcript.** Nested calls emit no `ToolResultEvent`, never
-  enter the history or the session log, and are not seen by stop policies.
+  enter the history, and are not seen by stop policies.
   Usage a nested handler reports through `core.ReportUsage` still reaches the
   agent at once.
 
@@ -246,8 +211,8 @@ A run:
    `parallel`, `call` and `is_error`. `load` is refused.
 2. **Calls.** A tool function takes keyword arguments only. It encodes them
    as JSON and calls `core.CallNested`, so each call goes through the agent's
-   nested-call pipeline: interceptors, plugins, audit, spans and events, with
-   the `code_mode` call as parent. `parallel` sends at most
+   nested-call pipeline: interceptors and events, with the `code_mode` call as
+   parent. `parallel` sends at most
    `MaxConcurrentCalls` calls per `CallNested`, and the dispatcher runs them
    concurrently.
 3. **Results.** A success returns `Data`, converted to Starlark through JSON,
@@ -276,26 +241,75 @@ Calling code mode outside an agent run fails the script's first tool call
 with `ErrNoNestedCaller`: code mode never runs a tool around the agent's
 pipeline.
 
+## MCP client
+
+The protocol is implemented by the official Go SDK,
+[`github.com/modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk).
+It speaks revision `2026-07-28` (no handshake; version and capabilities in
+every request's `params._meta`) and negotiates down to the `initialize`
+handshake of an earlier revision for a server that has not migrated.
+
+`mcp.Pool.Connect` consumes servers over stdio (`command`), Streamable HTTP
+(`url`) or the 2024-11-05 HTTP+SSE transport (`url` with `transport = "sse"`);
+tool names are qualified as `<server name>__<tool>` unless `tool_prefix` says
+otherwise. `mcp.Connect` opens a connection over any SDK transport
+(`mcp.NewPipeTransport` joins a client to an in-process server), and
+`ServerConnection.Session` returns the live SDK session for anything the pool
+does not wrap (resources, prompts). Configuration keys and limits:
+[`configuration.md`](configuration.md).
+
+What AgentKit adds on the client:
+
+- a stdio server runs in its own process group with exactly the configured
+  environment, and is killed as a group on close; its stderr is forwarded line
+  by line to `ConnectionOptions.Warnf`;
+- a dead server is re-spawned (or re-opened) at the next call, at most
+  `per_session_reconnect_limit` times, and never by re-sending a call that was
+  cut off;
+- every inbound frame (stdio), JSON response body and SSE event (HTTP) is
+  checked strictly before the SDK decodes it;
+- the HTTP client sends the configured headers and does not follow redirects,
+  because those headers may carry a bearer token;
+- results are capped at 50,000 characters, calls are counted against
+  `per_session_call_limit`, and sampling is advertised only for a server with
+  `allow_sampling` and answered only when `ConnectionOptions.Sampling` is set;
+- a tool's `outputSchema` becomes `core.Tool.OutputSchema`. A schema whose
+  root declares a type other than `object` is wrapped as
+  `{"value": <schema>}`, matching how such a result's `Data` is shaped.
+  A keyword the converter does not model, such as a type array, `anyOf`, or
+  an `enum` with no type, becomes an unconstrained schema, so it never
+  rejects valid `structuredContent`. A schema that is not a JSON object is
+  dropped, the tool is still imported, and `Pool.Diagnostics()` gains a
+  `SeverityError` entry, for example
+  `mcp: server "srv" tool "broken": output schema dropped: a schema must be a JSON object, got "not a valid schema object"`;
+- a call's result `Data` is the server's `structuredContent` when it is a JSON
+  object, `{"value": <structuredContent>}` when it is any other JSON value, and
+  `{"text": <joined text>, "content": <raw content blocks>}` when there is
+  none. On success `ToolResult.Text` is the text blocks joined in order. A
+  result with `isError` set is `Error: "tool_error"` with the joined text as
+  `Detail`.
+
+Constants: call limit 1000 per session, reconnect limit 3, timeout 30 s per
+connect, list and call.
+
 ## Symbol and reference navigation
 
 The `tools` package provides in-memory, workspace-confined symbol lookup and reference finding:
 
 - `find_symbol` searches workspace declarations by name, backed by a lazily built, bounded in-memory symbol table (`symbolTable`).
 - `find_references` finds usages and callers of declarations across the workspace. It combines exact Go type resolution (`go/parser`, `go/types` with workspace-local imports and synthetic external stubs; a use is `resolved` only when it resolves to the object declared at the target's position, and a use go/types cannot resolve because its type comes from a stubbed import is `lexical`) with outline-attributed lexical matching for other languages (a hit is `lexical` outside the comments and strings tree-sitter finds, and `text` in a build without cgo), attributing each site to its enclosing declaration from the outline (or `<file>` at top level).
-- **Reference caching**: A thread-safe in-memory cache (`refCache`, of type `referenceCache`), created on the first `find_references` call and kept for the life of the tool set, holds the last complete type-check of the workspace's Go packages, their parsed files, file outlines and per-name candidate file lists. `write_file` and `edit_file` mark the written file and its Go package dirty; the shell tools (`execute`, `run_command`, `powershell`) mark everything for revalidation; a changed `.gitignore` or `.ignore` drops the Go check and the candidate lists. Before each query, deleted files are purged, the Go check is rebuilt if any Go package is dirty (re-parsing only the dirty packages' files), dirty files already outlined are outlined again, and candidate lists are dropped once anything changed. Nothing is written to disk.
+- **Reference caching**: A thread-safe in-memory cache (`refCache`, of type `referenceCache`), created on the first `find_references` call and kept for the life of the tool set, holds the last complete type-check of the workspace's Go packages, their parsed files, file outlines and per-name candidate file lists. `write_file` and `edit_file` mark the written file and its Go package dirty; the shell tools (`execute`, `run_command`) mark everything for revalidation; a changed `.gitignore` or `.ignore` drops the Go check and the candidate lists. Before each query, deleted files are purged, the Go check is rebuilt if any Go package is dirty (re-parsing only the dirty packages' files), dirty files already outlined are outlined again, and candidate lists are dropped once anything changed. Nothing is written to disk.
 - **Bounds**: each reference pass takes one file per Go file walked and per file read while looking for candidates from a budget of `SymbolOptions.MaxFiles` files and `SymbolOptions.MaxDuration` (50 000 and 2 s by default; `Workspace.References` always uses the defaults). The clock is also checked between Go package checks and between scanned candidate files; resolving uses in packages already checked is not interrupted. When the budget runs out the pass stops, keeps the sites found so far and sets `Partial`, and `find_references` appends `SymbolPartialMarker`. A Go check or candidate list cut short is not cached.
 
 ## Testing layout
 
 - Unit and property tests sit beside their package.
-- `testdata/golden/` holds request-body and session-log goldens. They pin
+- `testdata/golden/` holds the Anthropic request-body golden. It pins
   regression, not vendor truth.
 - `internal/policy` holds the cross-target (cgo off) and host (cgo on) build
   gates.
-- `difftest/` is the differential harness; it reports DARK until a vendor
-  capture exists.
-- `examples/testing` shows how an embedder tests its own agent code offline with
-  `provider/faux`.
+- `provider/faux` scripts a model offline; the root tests and the examples run
+  against it.
 
-Run everything with `make check` (fmt, vet, lint, test for the root,
-`codesearch` and `difftest` modules).
+Run everything with `make check` (fmt, vet, lint, test for the root and
+`codesearch` modules).

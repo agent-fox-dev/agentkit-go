@@ -2,6 +2,7 @@ package mcp_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,12 +29,57 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// testServer is the in-process MCP server the client tests connect to: the
+// SDK's server plus RegisterTool, which hands a handler its arguments decoded
+// with json.Number and turns a returned error into a tool error. The client
+// is what these tests exercise; this module ships no server.
+type testServer struct{ *sdk.Server }
+
+func newTestServer(name string) *testServer {
+	if name == "" {
+		name = "test-server"
+	}
+	return &testServer{sdk.NewServer(&sdk.Implementation{Name: name, Version: "1"}, &sdk.ServerOptions{
+		Capabilities: &sdk.ServerCapabilities{Tools: &sdk.ToolCapabilities{ListChanged: true}},
+	})}
+}
+
+func (s *testServer) RegisterTool(t *mcp.Tool, h func(context.Context, map[string]any) (*mcp.CallToolResult, error)) error {
+	def := *t
+	if def.InputSchema == nil {
+		def.InputSchema = json.RawMessage(`{"type":"object"}`)
+	}
+	s.AddTool(&def, func(ctx context.Context, req *sdk.CallToolRequest) (*mcp.CallToolResult, error) {
+		var args map[string]any
+		if raw := req.Params.Arguments; len(raw) > 0 {
+			dec := json.NewDecoder(bytes.NewReader(raw))
+			dec.UseNumber()
+			if err := dec.Decode(&args); err != nil {
+				return toolError(fmt.Errorf("arguments: %w", err)), nil
+			}
+		}
+		res, err := h(ctx, args)
+		if err != nil {
+			return toolError(err), nil
+		}
+		if res == nil {
+			res = &mcp.CallToolResult{}
+		}
+		return res, nil
+	})
+	return nil
+}
+
+func toolError(err error) *mcp.CallToolResult {
+	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}
+}
+
 // pair wires a client connection and a server together over two in-memory
 // pipes, through the strict NDJSON transport on both ends.
 //
-// No subprocess, no port, no timing. The client and server are the SHIPPED
-// implementations talking to each other.
-func pair(t *testing.T, srv *mcp.Server, cfg mcp.ServerConfig, opts mcp.ConnectionOptions) *mcp.ServerConnection {
+// No subprocess, no port, no timing. The client is the SHIPPED
+// implementation, talking to the SDK's server.
+func pair(t *testing.T, srv *testServer, cfg mcp.ServerConfig, opts mcp.ConnectionOptions) *mcp.ServerConnection {
 	t.Helper()
 	c2sR, c2sW := io.Pipe() // client -> server
 	s2cR, s2cW := io.Pipe() // server -> client
@@ -53,9 +99,9 @@ func text(s string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s}}}
 }
 
-func echoServer(t *testing.T) *mcp.Server {
+func echoServer(t *testing.T) *testServer {
 	t.Helper()
-	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "test-server", Version: "1"}})
+	s := newTestServer("test-server")
 	must(t, s.RegisterTool(&mcp.Tool{
 		Name:        "echo",
 		Description: "echo the message back",
@@ -134,29 +180,6 @@ func TestAFailingHandlerIsAToolErrorNotAProtocolError(t *testing.T) {
 	// An unknown tool IS a protocol error: that call genuinely never happened.
 	if _, err := conn.Call(ctx, "nonexistent", nil); err == nil {
 		t.Fatal("calling a tool the server does not have must be an error")
-	}
-}
-
-// TestAPanickingHandlerDoesNotKillTheConnection: one broken tool must not be a
-// dead connection for every other one.
-func TestAPanickingHandlerDoesNotKillTheConnection(t *testing.T) {
-	s := echoServer(t)
-	must(t, s.RegisterTool(&mcp.Tool{Name: "panicky"},
-		func(context.Context, map[string]any) (*mcp.CallToolResult, error) {
-			panic("handler bug")
-		}))
-	conn := pair(t, s, mcp.ServerConfig{Name: "test"}, mcp.ConnectionOptions{})
-	ctx := context.Background()
-
-	res, err := conn.Call(ctx, "panicky", nil)
-	if err != nil {
-		t.Fatalf("a panicking handler must come back as a result: %v", err)
-	}
-	if !res.IsError {
-		t.Fatal("a panic is an error result")
-	}
-	if _, err := conn.Call(ctx, "echo", map[string]any{"message": "still here"}); err != nil {
-		t.Fatalf("the connection died with the handler: %v", err)
 	}
 }
 
@@ -296,69 +319,25 @@ func TestTheDefaultCallLimitIsAThousandAndNegativeMeansUnlimited(t *testing.T) {
 	}
 }
 
-// TestEveryToolCallIsAudited is REQ-MCP-CLIENT-03 and REQ-OBS-05.
-func TestEveryToolCallIsAudited(t *testing.T) {
-	var mu sync.Mutex
-	var events []core.AuditEvent
-	conn := pair(t, echoServer(t), mcp.ServerConfig{Name: "gh"}, mcp.ConnectionOptions{
-		Audit: func(e core.AuditEvent) { mu.Lock(); events = append(events, e); mu.Unlock() },
-	})
-	ctx := context.Background()
-	if _, err := conn.Call(ctx, "echo", map[string]any{"message": "secret-value"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := conn.Call(ctx, "boom", nil); err != nil {
-		t.Fatal(err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(events) != 2 {
-		t.Fatalf("%d audit events, want one per call", len(events))
-	}
-	for _, e := range events {
-		if e.ServerName != "gh" {
-			t.Fatalf("server_name = %q, want gh (REQ-OBS-05)", e.ServerName)
-		}
-		blob, _ := json.Marshal(e)
-		if strings.Contains(string(blob), "secret-value") {
-			t.Fatalf("the audit event carries the argument VALUE: %s", blob)
-		}
-	}
-	if events[0].ArgumentsHash == "" {
-		t.Fatal("REQ-OBS-05 requires an arguments hash")
-	}
-	if !events[1].IsError {
-		t.Fatal("a failed tool call must be audited as an error")
-	}
-}
-
-// TestSamplingIsRefusedUnlessEnabledAndAlwaysAudited is REQ-MCP-CLIENT-08.
+// TestSamplingIsRefusedUnlessEnabled is REQ-MCP-CLIENT-08.
 //
 // A server with allow_sampling unset is never told the client samples, and a
-// request it sends anyway fails the call. One with it set is told, and every
-// request is audited, refusals included: a refusal that leaves no trace is
-// indistinguishable from a server that never asked.
-func TestSamplingIsRefusedUnlessEnabledAndAlwaysAudited(t *testing.T) {
+// request it sends anyway fails the call. One with it set is told, and a
+// request with no handler to answer it is refused.
+func TestSamplingIsRefusedUnlessEnabled(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		allow     bool
-		handler   mcp.SamplingHandler
-		wantErr   bool
-		wantAudit bool
+		name    string
+		allow   bool
+		handler mcp.SamplingHandler
+		wantErr bool
 	}{
-		{"disabled by default", false, okSampler, true, false},
-		{"enabled with a handler", true, okSampler, false, true},
-		{"enabled with no handler", true, nil, true, true},
+		{"disabled by default", false, okSampler, true},
+		{"enabled with a handler", true, okSampler, false},
+		{"enabled with no handler", true, nil, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var mu sync.Mutex
-			var events []core.AuditEvent
 			cfg := mcp.ServerConfig{Name: "s", AllowSampling: tc.allow}
-			conn := pair(t, samplingServer(t), cfg, mcp.ConnectionOptions{
-				Sampling: tc.handler,
-				Audit:    func(e core.AuditEvent) { mu.Lock(); events = append(events, e); mu.Unlock() },
-			})
+			conn := pair(t, samplingServer(t), cfg, mcp.ConnectionOptions{Sampling: tc.handler})
 
 			res, err := conn.Call(context.Background(), "ask", nil)
 			switch {
@@ -370,16 +349,6 @@ func TestSamplingIsRefusedUnlessEnabledAndAlwaysAudited(t *testing.T) {
 				t.Fatal(err)
 			case !tc.wantErr && firstText(t, res) != "sampled":
 				t.Fatalf("sampling should have succeeded; got %+v", res)
-			}
-
-			mu.Lock()
-			defer mu.Unlock()
-			var sampled bool
-			for _, e := range events {
-				sampled = sampled || e.ToolName == "sampling/createMessage"
-			}
-			if sampled != tc.wantAudit {
-				t.Fatalf("sampling audited = %v, want %v; events = %+v", sampled, tc.wantAudit, events)
 			}
 		})
 	}
@@ -393,9 +362,9 @@ func okSampler(context.Context, *mcp.CreateMessageParams) (*mcp.CreateMessageRes
 // samplingServer answers `ask` through a multi-round-trip input request: the
 // first call asks the client to sample, and the client's RETRY carries the
 // answer and the opaque state back.
-func samplingServer(t *testing.T) *mcp.Server {
+func samplingServer(t *testing.T) *testServer {
 	t.Helper()
-	s := mcp.NewServer(mcp.ServerOptions{})
+	s := newTestServer("")
 	s.AddTool(&mcp.Tool{Name: "ask", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		func(_ context.Context, req *sdk.CallToolRequest) (*mcp.CallToolResult, error) {
 			if r, ok := req.Params.InputResponses["s1"].(*sdk.CreateMessageWithToolsResult); ok {
@@ -544,15 +513,20 @@ func TestAnExplicitlyEmptyVariableIsNotUnresolved(t *testing.T) {
 // ---- remote servers: headers, redirects, deadlines
 
 // remote serves srv over HTTP behind key, recording the headers of the first
-// request that reaches it.
-func remote(t *testing.T, srv *mcp.Server, key string, got *http.Header) *httptest.Server {
+// request that reaches it. A request without the key, as a bearer token or an
+// X-API-Key header, is refused with 401.
+func remote(t *testing.T, srv *testServer, key string, got *http.Header) *httptest.Server {
 	t.Helper()
-	h, err := srv.HTTPHandler(mcp.HTTPOptions{APIKey: key})
-	must(t, err)
+	h := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv.Server },
+		&sdk.StreamableHTTPOptions{Stateless: true})
 	var once sync.Once
 	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got != nil {
 			once.Do(func() { *got = r.Header.Clone() })
+		}
+		if r.Header.Get("Authorization") != "Bearer "+key && r.Header.Get("X-API-Key") != key {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
 		}
 		h.ServeHTTP(w, r)
 	}))
@@ -867,7 +841,7 @@ func TestTheAdaptedSchemaCarriesRequiredProperties(t *testing.T) {
 func TestToolArgumentsPassThroughWithoutFloat64Laundering(t *testing.T) {
 	var mu sync.Mutex
 	var got map[string]any
-	s := mcp.NewServer(mcp.ServerOptions{})
+	s := newTestServer("")
 	must(t, s.RegisterTool(&mcp.Tool{Name: "inspect"},
 		func(_ context.Context, args map[string]any) (*mcp.CallToolResult, error) {
 			mu.Lock()
@@ -920,12 +894,6 @@ GITHUB_TOKEN = "${GH_PAT}"
 [[mcp.servers]]
 name = "db"
 url = "https://db.example/mcp"
-
-[mcp_server]
-enabled = true
-transport = "http"
-port = 8931
-api_key_env = "AGENTKIT_MCP_KEY"
 `
 	cfg, diags, err := mcp.ParseConfig("config.toml", []byte(src))
 	must(t, err)
@@ -950,9 +918,6 @@ api_key_env = "AGENTKIT_MCP_KEY"
 	}
 	if cfg.Servers[1].URL == "" {
 		t.Fatal("the url server did not parse")
-	}
-	if !cfg.Server.Enabled || cfg.Server.Transport != "http" || cfg.Server.Port != 8931 {
-		t.Fatalf("mcp_server = %+v", cfg.Server)
 	}
 }
 
@@ -979,33 +944,6 @@ transport = "websocket"
 	}
 }
 
-// TestTheServerIsOffUnlessTheConfigSaysOtherwise is REQ-MCP-SERVER-01.
-func TestTheServerIsOffUnlessTheConfigSaysOtherwise(t *testing.T) {
-	cfg, _, err := mcp.ParseConfig("c.toml", []byte("[mcp]\n"))
-	must(t, err)
-	if cfg.Server.Enabled {
-		t.Fatal("the inbound server must be off unless a config explicitly enables it")
-	}
-	if cfg.Server.Transport != "stdio" {
-		t.Fatalf("default transport = %q, want stdio", cfg.Server.Transport)
-	}
-}
-
-func TestHTTPModeWithoutAnAPIKeyEnvIsAConfigError(t *testing.T) {
-	_, diags, err := mcp.ParseConfig("c.toml", []byte(
-		"[mcp_server]\nenabled = true\ntransport = \"http\"\n"))
-	must(t, err)
-	var flagged bool
-	for _, d := range diags {
-		if d.Severity == "error" && strings.Contains(d.Message, "api_key_env") {
-			flagged = true
-		}
-	}
-	if !flagged {
-		t.Fatalf("an http server with no api_key_env must be flagged at CONFIG time: %v", diags)
-	}
-}
-
 func TestDuplicateServerNamesAreAConfigError(t *testing.T) {
 	_, diags, err := mcp.ParseConfig("c.toml", []byte(`
 [[mcp.servers]]
@@ -1022,7 +960,7 @@ command = "b"
 		flagged = flagged || d.Severity == "error"
 	}
 	if !flagged {
-		t.Fatal("the name keys the pool, the tool prefix and every audit event; two " +
+		t.Fatal("the name keys the pool and the tool prefix; two " +
 			"servers cannot share one")
 	}
 }
@@ -1100,7 +1038,7 @@ func TestAStdioServerRunsAsASubprocessWithAReducedEnvironment(t *testing.T) {
 func TestMain(m *testing.M) {
 	switch os.Getenv("AGENTKIT_MCP_CHILD") {
 	case "env":
-		serveChild(func(s *mcp.Server) {
+		serveChild(func(s *testServer) {
 			_ = s.RegisterTool(&mcp.Tool{Name: "env"}, func(context.Context, map[string]any) (*mcp.CallToolResult, error) {
 				return text(strings.Join(os.Environ(), "\n")), nil
 			})
@@ -1117,7 +1055,7 @@ func TestMain(m *testing.M) {
 		// and only then serve. A parent that stops reading stderr there
 		// leaves this child blocked on the write before it ever answers.
 		_, _ = os.Stderr.Write([]byte(strings.Repeat("x", 2<<20) + "\n"))
-		serveChild(func(s *mcp.Server) {
+		serveChild(func(s *testServer) {
 			_ = s.RegisterTool(&mcp.Tool{Name: "hello"}, func(context.Context, map[string]any) (*mcp.CallToolResult, error) {
 				return text("hi"), nil
 			})
@@ -1127,10 +1065,10 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func serveChild(register func(*mcp.Server), out io.Writer) {
-	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "child", Version: "1"}})
+func serveChild(register func(*testServer), out io.Writer) {
+	s := newTestServer("child")
 	register(s)
-	_ = s.Server.Run(context.Background(), mcp.NewPipeTransport(os.Stdin, out, wire.Limits{}))
+	_ = s.Run(context.Background(), mcp.NewPipeTransport(os.Stdin, out, wire.Limits{}))
 }
 
 // runOneShotChild answers the first request with a discover result and exits
@@ -1149,7 +1087,7 @@ func runOneShotChild() {
 // and `hello` just works.
 func runMortalChild() {
 	out := &exitAfterWrite{w: os.Stdout}
-	serveChild(func(s *mcp.Server) {
+	serveChild(func(s *testServer) {
 		_ = s.RegisterTool(&mcp.Tool{Name: "hello"}, func(context.Context, map[string]any) (*mcp.CallToolResult, error) {
 			return text("hi"), nil
 		})
@@ -1322,9 +1260,9 @@ func TestAnOversizedStderrLineDoesNotWedgeTheServer(t *testing.T) {
 // broken declares one that is not a schema at all, simple declares none.
 // Every one of them answers a call, so a test can tell an adapted tool that
 // still works from one that was dropped.
-func outputSchemaServer(t *testing.T) *mcp.Server {
+func outputSchemaServer(t *testing.T) *testServer {
 	t.Helper()
-	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "schema-server", Version: "1"}})
+	s := newTestServer("schema-server")
 	ok := func(context.Context, map[string]any) (*mcp.CallToolResult, error) { return text("ok"), nil }
 	must(t, s.RegisterTool(&mcp.Tool{
 		Name: "calc",
@@ -1336,7 +1274,7 @@ func outputSchemaServer(t *testing.T) *mcp.Server {
 	return s
 }
 
-func schemaPool(t *testing.T, srv *mcp.Server) (*mcp.Pool, map[string]core.Tool) {
+func schemaPool(t *testing.T, srv *testServer) (*mcp.Pool, map[string]core.Tool) {
 	t.Helper()
 	p := mcp.NewPool(mcp.ConnectionOptions{})
 	must(t, p.Add(pair(t, srv, mcp.ServerConfig{Name: "srv"}, mcp.ConnectionOptions{})))
@@ -1399,7 +1337,7 @@ func TestAMalformedOutputSchemaIsDroppedWithADiagnostic_TS06_5(t *testing.T) {
 
 // TS-06-6: a tool with no outputSchema gets nil and adds no diagnostic.
 func TestAnOmittedOutputSchemaIsNilWithoutDiagnostics_TS06_6(t *testing.T) {
-	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "plain", Version: "1"}})
+	s := newTestServer("plain")
 	must(t, s.RegisterTool(&mcp.Tool{Name: "simple"},
 		func(context.Context, map[string]any) (*mcp.CallToolResult, error) { return text("ok"), nil }))
 	p, tools := schemaPool(t, s)
@@ -1416,7 +1354,7 @@ func TestAnOmittedOutputSchemaIsNilWithoutDiagnostics_TS06_6(t *testing.T) {
 // way and still describes Data. A server's array or number schema is valid
 // JSON Schema and must not be reported as malformed.
 func TestANonObjectOutputSchemaDescribesTheWrappedValue(t *testing.T) {
-	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "n", Version: "1"}})
+	s := newTestServer("n")
 	must(t, s.RegisterTool(&mcp.Tool{Name: "count", OutputSchema: json.RawMessage(`{"type":"integer"}`)},
 		func(context.Context, map[string]any) (*mcp.CallToolResult, error) { return text("1"), nil }))
 	p, tools := schemaPool(t, s)
@@ -1436,7 +1374,7 @@ func TestANonObjectOutputSchemaDescribesTheWrappedValue(t *testing.T) {
 // it adapted.
 func resultTool(t *testing.T, res *mcp.CallToolResult) core.Tool {
 	t.Helper()
-	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "r", Version: "1"}})
+	s := newTestServer("r")
 	must(t, s.RegisterTool(&mcp.Tool{Name: "r"},
 		func(context.Context, map[string]any) (*mcp.CallToolResult, error) { return res, nil }))
 	_, tools := schemaPool(t, s)
@@ -1543,7 +1481,7 @@ func TestTextIsTheJoinedTextBlocks_TS06_10(t *testing.T) {
 // tool's outputSchema, and a call returns the server's structuredContent as
 // Data, which validates against the imported schema.
 func TestSmokeMCPOutputSchemaAndStructuredContent_TS06_31(t *testing.T) {
-	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "weather", Version: "1"}})
+	s := newTestServer("weather")
 	must(t, s.RegisterTool(&mcp.Tool{
 		Name:        "forecast",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
@@ -1619,7 +1557,7 @@ func TestSmokeMCPMalformedOutputSchema_TS06_34(t *testing.T) {
 // other type: valid structuredContent would then fail the imported schema.
 // What cannot be modelled is left unconstrained.
 func TestUnmodelledOutputSchemaKeywordsDoNotRejectValidData(t *testing.T) {
-	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "k", Version: "1"}})
+	s := newTestServer("k")
 	must(t, s.RegisterTool(&mcp.Tool{
 		Name: "kw",
 		OutputSchema: json.RawMessage(`{"type":"object","properties":{` +

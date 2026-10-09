@@ -16,7 +16,6 @@ import (
 	"github.com/agentfox/agentkit-go/codemode"
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/provider/faux"
-	"github.com/agentfox/agentkit-go/stop"
 	"github.com/agentfox/agentkit-go/tools"
 )
 
@@ -74,7 +73,7 @@ func runAgent(t *testing.T, cm core.Tool, script string) (core.ToolResult, []cor
 	agent, err := agentkit.NewAgent(core.AgentConfig{
 		Model:         faux.Model(),
 		Providers:     core.ProviderRegistry{faux.API: model.APIProvider()},
-		StopPolicy:    stop.AfterTurns(4),
+		StopPolicy:    func(sc core.StopContext) bool { return sc.TurnCount >= 4 },
 		ParallelTools: true,
 		ToolPolicy:    core.ToolPolicy{CustomTools: []core.Tool{cm}},
 		AfterToolCall: func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {

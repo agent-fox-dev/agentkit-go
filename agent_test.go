@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/agentfox/agentkit-go/core"
-	"github.com/agentfox/agentkit-go/stop"
 )
 
 func noopHandler(context.Context, json.RawMessage) (json.RawMessage, error) { return nil, nil }
@@ -19,7 +18,7 @@ func agentCfg(tools ...core.Tool) core.AgentConfig {
 	s := &scripted{}
 	return core.AgentConfig{
 		Model:      testModel(),
-		StopPolicy: stop.AfterTurns(3),
+		StopPolicy: afterTurns(3),
 		Providers:  core.ProviderRegistry{testAPI: s.provider()},
 		ToolPolicy: core.ToolPolicy{CustomTools: tools},
 	}
