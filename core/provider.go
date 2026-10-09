@@ -3,8 +3,6 @@ package core
 import (
 	"context"
 	"encoding/json"
-	"strconv"
-	"strings"
 )
 
 // Request is the canonical, provider-independent model call. Messages are the
@@ -108,56 +106,27 @@ func EventStreamOf(ch <-chan StreamEvent, err error) *EventStream {
 	return s
 }
 
-// Model is REQ-PROV-10's descriptor. Provider is a VENDOR id used only for
-// credential resolution and catalog lookup; API selects the implementation.
+// Model is a catalog row: what a request to the model may ask for and what
+// it costs. Prices are USD per million tokens.
 type Model struct {
-	ID            string             `json:"id"`
-	Name          string             `json:"name"`
-	API           API                `json:"api"`
-	Provider      string             `json:"provider"`
-	BaseURL       string             `json:"base_url"`
-	Headers       map[string]*string `json:"headers,omitzero"`
-	Compat        json.RawMessage    `json:"compat,omitzero"`
-	ContextWindow int                `json:"context_window"`
-	MaxTokens     int                `json:"max_tokens"`
-	Cost          Cost               `json:"cost"`
-	Input         []string           `json:"input"` // modalities: "text","image"
-	Reasoning     bool               `json:"reasoning"`
-	// ThinkingLevelMap is the catalog row's wire value per level: a token
-	// budget or an effort name. Present-null ("explicitly unsupported") and
-	// absent both mean the level is not sent; the distinction is
-	// catalog-authoring metadata for the REQ-CAT-06 diff.
-	ThinkingLevelMap map[ThinkingLevel]*string `json:"thinking_level_map,omitzero"`
-	Cloned           bool                      `json:"-"` // REQ-CAT-03
-	ClonedFrom       string                    `json:"-"`
-	// Thinking is how the model takes extended thinking, from its catalog row.
-	Thinking ThinkingKind `json:"thinking,omitzero"`
-}
+	ID              string
+	ContextWindow   int
+	MaxOutputTokens int
 
-// ThinkingMode is how m takes thinking: Thinking when the catalog set it,
-// else what its level map implies.
-func (m *Model) ThinkingMode() ThinkingKind {
-	if m.Thinking != "" {
-		return m.Thinking
-	}
-	return ThinkingKindOf(m.ThinkingLevelMap)
-}
+	InputCostPerMillion      float64
+	OutputCostPerMillion     float64
+	CacheReadCostPerMillion  float64
+	CacheWriteCostPerMillion float64
 
-// ThinkingKindOf reads how a model takes thinking from its level map: token
-// counts mean budget, effort names mean adaptive, and nothing above off means
-// none.
-func ThinkingKindOf(levels map[ThinkingLevel]*string) ThinkingKind {
-	kind := ThinkingKindNone
-	for lvl, wire := range levels {
-		if wire == nil || lvl == ThinkingOff {
-			continue
-		}
-		if _, err := strconv.Atoi(strings.TrimSpace(*wire)); err == nil {
-			return ThinkingKindBudget
-		}
-		kind = ThinkingKindAdaptive
-	}
-	return kind
+	// ThinkingKind is how the model takes extended thinking.
+	ThinkingKind ThinkingKind
+	// Efforts is the wire value of each effort the model takes: a token
+	// budget on a budget model, an effort name on an adaptive one. An effort
+	// absent (or nil) is not sent.
+	Efforts map[Effort]*string
+	// Compat is the catalog row's capability object, as JSON (for example
+	// {"supports_sampling": false}).
+	Compat json.RawMessage
 }
 
 // ThinkingKind is how a model takes extended thinking.
@@ -171,28 +140,3 @@ const (
 	// ThinkingKindBudget is thinking {"type":"enabled"} with budget_tokens.
 	ThinkingKindBudget ThinkingKind = "budget"
 )
-
-func (m *Model) SupportsImages() bool {
-	for _, in := range m.Input {
-		if in == "image" {
-			return true
-		}
-	}
-	return false
-}
-
-type Cost struct {
-	Input      float64    `json:"input"` // USD per 1M tokens
-	Output     float64    `json:"output"`
-	CacheRead  float64    `json:"cache_read"`
-	CacheWrite float64    `json:"cache_write"`
-	Tiers      []CostTier `json:"tiers,omitzero"` // REQ-PROV-05.4
-}
-
-type CostTier struct {
-	Threshold  int     `json:"threshold"` // strictly exceeded
-	Input      float64 `json:"input"`
-	Output     float64 `json:"output"`
-	CacheRead  float64 `json:"cache_read"`
-	CacheWrite float64 `json:"cache_write"`
-}

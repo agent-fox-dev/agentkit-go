@@ -743,8 +743,8 @@ func applyThinking(r *request, m *core.Model, effort core.Effort) {
 		return
 	}
 	wire, listed := string(effort), true
-	if m.ThinkingLevelMap != nil {
-		w := m.ThinkingLevelMap[core.ThinkingLevel(effort)]
+	if m.Efforts != nil {
+		w := m.Efforts[effort]
 		listed = w != nil
 		if listed {
 			wire = strings.ToLower(strings.TrimSpace(*w))
@@ -753,7 +753,7 @@ func applyThinking(r *request, m *core.Model, effort core.Effort) {
 	if !listed {
 		return
 	}
-	switch m.ThinkingMode() {
+	switch thinkingKind(m) {
 	case core.ThinkingKindBudget:
 		if n, err := strconv.Atoi(wire); err == nil {
 			applyBudget(r, n)
@@ -770,6 +770,26 @@ func applyThinking(r *request, m *core.Model, effort core.Effort) {
 		// is the only option that keeps the request valid.
 		r.Temperature, r.TopP = nil, nil
 	}
+}
+
+// thinkingKind is how m takes thinking: its ThinkingKind when set, else what
+// its efforts' wire values imply (token counts mean a budget, names an
+// adaptive effort).
+func thinkingKind(m *core.Model) core.ThinkingKind {
+	if m.ThinkingKind != "" {
+		return m.ThinkingKind
+	}
+	kind := core.ThinkingKindNone
+	for _, w := range m.Efforts {
+		if w == nil {
+			continue
+		}
+		if _, err := strconv.Atoi(strings.TrimSpace(*w)); err == nil {
+			return core.ThinkingKindBudget
+		}
+		kind = core.ThinkingKindAdaptive
+	}
+	return kind
 }
 
 // applyBudget is the budget_tokens arm of applyThinking.

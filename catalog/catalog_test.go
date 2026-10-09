@@ -80,39 +80,20 @@ func TestEmbeddedCatalogPopulatesTheREQPROV10Descriptor(t *testing.T) {
 	if !ok {
 		t.Fatal("claude-haiku-4-5 is not in the catalog")
 	}
-	if haiku.API != core.APIAnthropicMessages {
-		t.Errorf("API = %q, want %q", haiku.API, core.APIAnthropicMessages)
+	if haiku.ContextWindow != 200000 || haiku.MaxOutputTokens != 64000 {
+		t.Errorf("window/max = %d/%d, want 200000/64000", haiku.ContextWindow, haiku.MaxOutputTokens)
 	}
-	if haiku.Provider != "anthropic" {
-		t.Errorf("Provider = %q, want anthropic", haiku.Provider)
+	if haiku.InputCostPerMillion != 1 || haiku.OutputCostPerMillion != 5 {
+		t.Errorf("cost = %v/%v per 1M, want 1/5", haiku.InputCostPerMillion, haiku.OutputCostPerMillion)
 	}
-	if haiku.BaseURL == "" {
-		t.Error("BaseURL is empty; it is inherited from the vendor and no request can be built without it")
+	if haiku.ThinkingKind != core.ThinkingKindBudget {
+		t.Errorf("ThinkingKind = %q; a row whose levels are token counts takes a budget", haiku.ThinkingKind)
 	}
-	if got := haiku.Headers["anthropic-version"]; got == nil || *got == "" {
-		t.Errorf("Headers[anthropic-version] = %v, want the vendor-inherited version header", got)
+	if w := haiku.Efforts[core.EffortLow]; w == nil || *w == "" {
+		t.Errorf("Efforts[low] = %v, want the row's budget", w)
 	}
-	if haiku.ContextWindow != 200000 || haiku.MaxTokens != 64000 {
-		t.Errorf("window/max = %d/%d, want 200000/64000", haiku.ContextWindow, haiku.MaxTokens)
-	}
-	if haiku.Cost.Input != 1 || haiku.Cost.Output != 5 {
-		t.Errorf("cost = %v/%v per 1M, want 1/5", haiku.Cost.Input, haiku.Cost.Output)
-	}
-	if !haiku.SupportsImages() {
-		t.Error("SupportsImages() = false; REQ-CAT-05 would replace every image block")
-	}
-	if !haiku.Reasoning {
-		t.Error("Reasoning = false")
-	}
-	if haiku.Cloned {
-		t.Error("a catalog hit must not be marked Cloned")
-	}
-
-	if haiku.Thinking != core.ThinkingKindBudget {
-		t.Errorf("Thinking = %q; a row whose levels are token counts takes a budget", haiku.Thinking)
-	}
-	if opus, _ := c.Lookup("claude-opus-5-5"); opus.Thinking != core.ThinkingKindAdaptive {
-		t.Errorf("claude-opus-5-5 Thinking = %q; a row whose levels are efforts is adaptive", opus.Thinking)
+	if opus, _ := c.Lookup("claude-opus-5-5"); opus.ThinkingKind != core.ThinkingKindAdaptive {
+		t.Errorf("claude-opus-5-5 ThinkingKind = %q; a row whose levels are efforts is adaptive", opus.ThinkingKind)
 	}
 }
 
@@ -192,7 +173,6 @@ func TestParseRejectsCorruptCatalogs(t *testing.T) {
 		{"negative window", `{"schema_version":1,"vendors":{"v":{"api":"faux","base_url":"x","default_model":"m","models":{"m":{"context_window":-1}}}}}`, "context_window"},
 		{"misspelled thinking level", `{"schema_version":1,"vendors":{"v":{"api":"faux","base_url":"x","default_model":"m","models":{"m":{"reasoning":true,"thinking_level_map":{"higth":"high"}}}}}}`, "unknown thinking level"},
 		{"thinking without reasoning", `{"schema_version":1,"vendors":{"v":{"api":"faux","base_url":"x","default_model":"m","models":{"m":{"thinking_level_map":{"high":"high"}}}}}}`, "reasoning"},
-		{"unsorted cost tiers", `{"schema_version":1,"vendors":{"v":{"api":"faux","base_url":"x","default_model":"m","models":{"m":{"cost":{"input":1,"tiers":[{"threshold":200000},{"threshold":100000}]}}}}}}`, "ascending"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -210,18 +190,16 @@ func TestParseRejectsCorruptCatalogs(t *testing.T) {
 	}
 }
 
-// TestUnknownAPIStringLoads: REQ-PROV-09 lets a third party register a new API
-// value via a BackendPlugin, so a catalog row naming an API this build has
-// never heard of must LOAD. Only an empty API is corrupt.
+// TestUnknownAPIStringLoads: a catalog row naming an API this build has never
+// heard of must LOAD. Only an empty API is corrupt.
 func TestUnknownAPIStringLoads(t *testing.T) {
 	c, err := Parse([]byte(`{"schema_version":1,"vendors":{"acme":{"api":"acme-chat-v9",
 		"base_url":"https://acme.example","default_model":"m","models":{"m":{}}}}}`))
 	if err != nil {
 		t.Fatalf("Parse rejected an unknown api string: %v", err)
 	}
-	m := c.byCanonical["acme/m"].model
-	if m.API != core.API("acme-chat-v9") {
-		t.Errorf("API = %q, want the row's own value verbatim", m.API)
+	if _, ok := c.byCanonical["acme/m"]; !ok {
+		t.Error("the row did not load")
 	}
 }
 
@@ -236,35 +214,23 @@ func TestResolvedModelIsADeepCopy(t *testing.T) {
 	if !ok {
 		t.Fatal("claude-sonnet-4-5 is not in the test catalog")
 	}
-	first.MaxTokens = 1
-	first.Headers["anthropic-version"] = strp("tampered")
-	first.Headers["x-added"] = strp("1")
-	first.Input[0] = "tampered"
+	first.MaxOutputTokens = 1
 	first.Compat[0] = ' '
-	first.ThinkingLevelMap[core.ThinkingHigh] = nil
-	first.Cost.Input = 999
+	first.Efforts[core.EffortHigh] = nil
+	first.InputCostPerMillion = 999
 
 	second, _ := c.Lookup("anthropic/claude-sonnet-4-5")
-	if second.MaxTokens != 64000 {
-		t.Errorf("MaxTokens = %d, want 64000", second.MaxTokens)
-	}
-	if got := second.Headers["anthropic-version"]; got == nil || *got != "2023-06-01" {
-		t.Errorf("Headers[anthropic-version] = %v, want 2023-06-01", got)
-	}
-	if _, added := second.Headers["x-added"]; added {
-		t.Error("a header added to a resolved model leaked back into the catalog")
-	}
-	if second.Input[0] != "text" {
-		t.Errorf("Input[0] = %q, want text", second.Input[0])
+	if second.MaxOutputTokens != 64000 {
+		t.Errorf("MaxOutputTokens = %d, want 64000", second.MaxOutputTokens)
 	}
 	if !json.Valid(second.Compat) {
 		t.Errorf("Compat was mutated through the shared backing array: %s", second.Compat)
 	}
-	if second.ThinkingLevelMap[core.ThinkingHigh] == nil {
-		t.Error("ThinkingLevelMap was mutated through the shared map")
+	if second.Efforts[core.EffortHigh] == nil {
+		t.Error("Efforts was mutated through the shared map")
 	}
-	if second.Cost.Input != 3 {
-		t.Errorf("Cost.Input = %v, want 3", second.Cost.Input)
+	if second.InputCostPerMillion != 3 {
+		t.Errorf("InputCostPerMillion = %v, want 3", second.InputCostPerMillion)
 	}
 }
 
@@ -334,7 +300,7 @@ func TestLookupKnownModel_TS10_12(t *testing.T) {
 		if !ok || m.ID != "claude-sonnet-4-5" {
 			t.Fatalf("Lookup(%q) = %q, %v", id, m.ID, ok)
 		}
-		if m.ContextWindow == 0 || m.MaxTokens == 0 || m.Cost.Input == 0 {
+		if m.ContextWindow == 0 || m.MaxOutputTokens == 0 || m.InputCostPerMillion == 0 {
 			t.Fatalf("Lookup(%q) returned an empty row: %+v", id, m)
 		}
 	}
@@ -346,12 +312,12 @@ func TestLookupUnknownModel_TS10_13(t *testing.T) {
 	if ok {
 		t.Fatal("an uncataloged model was reported as known")
 	}
-	if m.ID != "claude-next-gen-future" || m.ContextWindow != 1_000_000 || m.MaxTokens != 128_000 ||
-		m.Thinking != core.ThinkingKindAdaptive {
+	if m.ID != "claude-next-gen-future" || m.ContextWindow != 1_000_000 || m.MaxOutputTokens != 128_000 ||
+		m.ThinkingKind != core.ThinkingKindAdaptive {
 		t.Fatalf("default = %+v", m)
 	}
-	if m.Cost.Input != 0 || m.Cost.Output != 0 || m.Cost.CacheRead != 0 || m.Cost.CacheWrite != 0 {
-		t.Fatalf("default cost = %+v, want zero", m.Cost)
+	if m.InputCostPerMillion != 0 || m.OutputCostPerMillion != 0 || m.CacheReadCostPerMillion != 0 || m.CacheWriteCostPerMillion != 0 {
+		t.Fatalf("default = %+v, want no price", m)
 	}
 }
 
@@ -371,7 +337,7 @@ func TestLookupAlwaysUsable_TS10_14(t *testing.T) {
 	}
 	for _, id := range ids {
 		m, _ := Lookup(id)
-		if m.ID == "" || m.ContextWindow <= 0 || m.MaxTokens <= 0 {
+		if m.ID == "" || m.ContextWindow <= 0 || m.MaxOutputTokens <= 0 {
 			t.Fatalf("Lookup(%q) = %+v, not usable", id, m)
 		}
 	}

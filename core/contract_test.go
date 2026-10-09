@@ -234,8 +234,7 @@ func TestBatchTerminatesIsAnAnd(t *testing.T) {
 // Request.Tools being []ToolWire means no provider can name a Handler at all.
 func TestWireProjectionFieldSet(t *testing.T) {
 	want := map[string]bool{
-		"Name": true, "Description": true,
-		"InputSchema": true, "ConstrainedSampling": true,
+		"Name": true, "Description": true, "InputSchema": true,
 	}
 	ty := reflect.TypeOf(ToolWire{})
 	if ty.NumField() != len(want) {
@@ -268,19 +267,18 @@ func TestWireDropsLoopOnlyFields(t *testing.T) {
 // --- 06-REQ-1: OutputSchema on Tool, never on the wire ----------------------
 
 // TS-06-1: Tool carries OutputSchema; ToolWire has no such field, and Wire()
-// still projects the four fields a provider may see.
+// still projects the three fields a provider may see.
 func TestOutputSchemaIsOnToolNotOnWire_TS06_1(t *testing.T) {
 	in := schema.Object(schema.Prop("q", schema.String()))
 	out := schema.Object(schema.Prop("key", schema.String()))
-	cs := &ConstrainedSampling{Type: ConstrainJSONSchema, Strict: StrictPrefer}
-	tl := Tool{Name: "test", Description: "d", InputSchema: in, OutputSchema: out, ConstrainedSampling: cs}
+	tl := Tool{Name: "test", Description: "d", InputSchema: in, OutputSchema: out}
 
 	if tl.OutputSchema != out {
 		t.Fatal("Tool.OutputSchema does not hold the declared schema")
 	}
 	w := tl.Wire()
-	if w.Name != "test" || w.Description != "d" || w.InputSchema != in || w.ConstrainedSampling != cs {
-		t.Fatalf("Wire() = %+v, want the tool's four provider-facing fields", w)
+	if w.Name != "test" || w.Description != "d" || w.InputSchema != in {
+		t.Fatalf("Wire() = %+v, want the tool's three provider-facing fields", w)
 	}
 	if _, ok := reflect.TypeOf(w).FieldByName("OutputSchema"); ok {
 		t.Fatal("ToolWire has an OutputSchema field; provider request bodies would change")

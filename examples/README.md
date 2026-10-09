@@ -111,7 +111,7 @@ model, known := catalog.Lookup("claude-opus-5-5") // the "anthropic/" prefix is 
 
 `catalog.Lookup` supplies what the model id does not carry: the context
 window, the output cap, the prices, and how the model takes extended thinking
-(`Model.Thinking`: `adaptive` with an effort, `budget` with `budget_tokens`,
+(`Model.ThinkingKind`: `adaptive` with an effort, `budget` with `budget_tokens`,
 or `none`). The catalog lists Claude models only. `Config.Model` takes the
 id and `agentkit.New` does this lookup itself; `Config.Effort`
 (`agentkit.EffortLow` … `agentkit.EffortMax`) sets the effort. The examples

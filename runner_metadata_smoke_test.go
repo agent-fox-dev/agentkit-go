@@ -117,8 +117,7 @@ func ts0461RunAgent(t *testing.T, srv *httptest.Server, requestBodies *[][]byte,
 	t.Helper()
 
 	model = &core.Model{
-		ID: "claude-test", Name: "Claude Test", API: anthropic.API, Provider: "anthropic",
-		ContextWindow: 200000, MaxTokens: 4096,
+		ID: "claude-test", ContextWindow: 200000, MaxOutputTokens: 4096,
 	}
 
 	getenv := func(k string) string {

@@ -21,7 +21,7 @@ const TestAPI core.API = "test-api"
 
 // TestModel is a resolved model on TestAPI.
 func TestModel() *core.Model {
-	return &core.Model{ID: "test-model", Name: "Test", API: TestAPI, Provider: "test", ContextWindow: 100000, MaxTokens: 4096}
+	return &core.Model{ID: "test-model", ContextWindow: 100000, MaxOutputTokens: 4096}
 }
 
 // Scripted is a provider that replays a predetermined sequence of assistant

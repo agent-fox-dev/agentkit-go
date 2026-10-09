@@ -96,28 +96,6 @@ const (
 	EffortMax    Effort = "max"
 )
 
-// ThinkingLevel keys a catalog row's thinking level map. Requests carry an
-// Effort instead.
-type ThinkingLevel string
-
-const (
-	ThinkingUnset   ThinkingLevel = ""
-	ThinkingOff     ThinkingLevel = "off"
-	ThinkingMinimal ThinkingLevel = "minimal"
-	ThinkingLow     ThinkingLevel = "low"
-	ThinkingMedium  ThinkingLevel = "medium"
-	ThinkingHigh    ThinkingLevel = "high"
-	ThinkingXHigh   ThinkingLevel = "xhigh"
-	ThinkingMax     ThinkingLevel = "max"
-)
-
-// ThinkingLevelOrder lists every level a catalog row may key, in order; the
-// catalog rejects a row naming any other.
-var ThinkingLevelOrder = []ThinkingLevel{
-	ThinkingOff, ThinkingMinimal, ThinkingLow, ThinkingMedium,
-	ThinkingHigh, ThinkingXHigh, ThinkingMax,
-}
-
 // ToolChoice is REQ-TOOL-16's provider-neutral tri-state. The zero value is
 // Unset, so absent cannot be confused with auto and needs no pointer.
 type ToolChoice string

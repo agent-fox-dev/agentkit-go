@@ -263,7 +263,7 @@ func demoTranscriptRepair() {
 			Content: core.Content{core.TextBlock{Text: `{"count":1}`}}},
 	}
 
-	am := &core.Model{ID: "claude-x", API: anthropic.API, Provider: "anthropic", MaxTokens: 1024}
+	am := &core.Model{ID: "claude-x", MaxOutputTokens: 1024}
 	body, rep, err := anthropic.BuildRequest(am, core.Request{Messages: damaged}, core.CacheRetentionNone)
 	if err != nil {
 		fail(err)

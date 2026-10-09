@@ -170,7 +170,7 @@
       "done_when": [
         "Tool, ToolWire, Usage, and Model omit legacy MCP, ConstrainedSampling, ThinkingLevel, API, and Provider fields"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,

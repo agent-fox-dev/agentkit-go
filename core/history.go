@@ -86,7 +86,7 @@ type ModelChangeEntry struct {
 }
 
 type ThinkingLevelChangeEntry struct {
-	Level ThinkingLevel `json:"thinking_level"`
+	Level Effort `json:"thinking_level"`
 }
 
 // CompactionEntry is the durable form of a checkpoint (REQ-SESS-04). The

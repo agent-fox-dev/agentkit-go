@@ -99,9 +99,7 @@ func New(turns ...Turn) *Provider { return &Provider{turns: turns} }
 // Model returns a model descriptor pointing at this provider.
 func Model() *core.Model {
 	return &core.Model{
-		ID: "faux-1", Name: "Faux", API: API, Provider: "faux",
-		ContextWindow: 200000, MaxTokens: 8192,
-		Input: []string{"text"},
+		ID: "faux-1", ContextWindow: 200000, MaxOutputTokens: 8192,
 	}
 }
 

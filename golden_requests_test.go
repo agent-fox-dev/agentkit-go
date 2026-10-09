@@ -420,8 +420,8 @@ func TestSmokeGoldenRequestFromTheCatalog_TS10_35(t *testing.T) {
 	if !ok {
 		t.Fatal("model not found")
 	}
-	if model.Thinking != core.ThinkingKindAdaptive {
-		t.Fatalf("%s thinking = %q, want adaptive", canonicalModelID, model.Thinking)
+	if model.ThinkingKind != core.ThinkingKindAdaptive {
+		t.Fatalf("%s thinking = %q, want adaptive", canonicalModelID, model.ThinkingKind)
 	}
 	body, err := anthropic.BuildRequestJSON(req, model)
 	if err != nil {

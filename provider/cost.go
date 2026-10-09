@@ -21,30 +21,6 @@ type ServiceTier struct {
 	Multiplier float64 // 1 for standard, 0.5 flex, 2 priority
 }
 
-// RatesFor implements REQ-PROV-05.4: tier selection is REQUEST-WIDE.
-//
-// Selection uses input + cache_read + cache_write — NOT output, and NOT the
-// total including output — and picks the highest tier whose threshold is
-// STRICTLY exceeded. The selected tier's rates then apply to the WHOLE
-// request, output included. Applying the tier only to the field that crossed
-// the threshold is the intuitive reading and it is wrong in both directions.
-func RatesFor(m *core.Model, u core.Usage) core.Cost {
-	rates := m.Cost
-	sizing := u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens
-	best := -1
-	for _, t := range m.Cost.Tiers {
-		if sizing > int64(t.Threshold) && t.Threshold > best {
-			best = t.Threshold
-			rates = core.Cost{
-				Input: t.Input, Output: t.Output,
-				CacheRead: t.CacheRead, CacheWrite: t.CacheWrite,
-				Tiers: m.Cost.Tiers,
-			}
-		}
-	}
-	return rates
-}
-
 // ComputeCost prices a usage against a model's catalog row. Rates are USD per
 // 1M tokens.
 //
@@ -66,7 +42,6 @@ func ComputeCost(m *core.Model, u core.Usage) float64 {
 	if m == nil {
 		return 0
 	}
-	r := RatesFor(m, u)
 	const perM = 1_000_000.0
 
 	cw5m := u.CacheWriteTokens - u.CacheWrite1hTokens
@@ -77,11 +52,11 @@ func ComputeCost(m *core.Model, u core.Usage) float64 {
 		cw5m = 0
 	}
 
-	cost := r.Input*float64(u.InputTokens) +
-		r.Output*float64(u.OutputTokens) +
-		r.CacheRead*float64(u.CacheReadTokens) +
-		r.CacheWrite*float64(cw5m) +
-		r.Input*2*float64(u.CacheWrite1hTokens)
+	cost := m.InputCostPerMillion*float64(u.InputTokens) +
+		m.OutputCostPerMillion*float64(u.OutputTokens) +
+		m.CacheReadCostPerMillion*float64(u.CacheReadTokens) +
+		m.CacheWriteCostPerMillion*float64(cw5m) +
+		m.InputCostPerMillion*2*float64(u.CacheWrite1hTokens)
 
 	return cost / perM
 }

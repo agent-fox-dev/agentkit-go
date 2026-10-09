@@ -29,7 +29,7 @@ import (
 // every schema. That is the same shape of defect as a session log that is
 // built, tested, and never written to.
 func TestASteadyStateRequestSerializesNoSchemas(t *testing.T) {
-	m := &core.Model{ID: "claude-x", API: anthropic.API, Provider: "anthropic", MaxTokens: 4096}
+	m := &core.Model{ID: "claude-x", MaxOutputTokens: 4096}
 	req := core.Request{Tools: prefixTools(16)}
 	prefix := &provider.ToolPrefix{}
 
@@ -59,7 +59,7 @@ func TestASteadyStateRequestSerializesNoSchemas(t *testing.T) {
 // to opt in, or the default configuration is the slow one.
 func TestTheProviderOwnsAPrefixByDefault(t *testing.T) {
 	var reports []provider.SyncReport
-	m := core.Model{ID: "claude-x", API: anthropic.API, Provider: "anthropic", MaxTokens: 4096}
+	m := core.Model{ID: "claude-x", MaxOutputTokens: 4096}
 	p := anthropic.Provider(m, anthropic.Options{
 		Getenv:           func(string) string { return "k" },
 		OnToolPrefixSync: func(r provider.SyncReport) { reports = append(reports, r) },
@@ -202,7 +202,7 @@ func TestFirstTokenIsEmittedBeforeTheStreamEnds(t *testing.T) {
 		_ = pw.Close()
 	}()
 
-	m := core.Model{ID: "claude-x", API: anthropic.API, Provider: "anthropic", MaxTokens: 64}
+	m := core.Model{ID: "claude-x", MaxOutputTokens: 64}
 	p := anthropic.Provider(m, anthropic.Options{Getenv: func(string) string { return "k" },
 		Transport: pipeTransport{body: pr}})
 

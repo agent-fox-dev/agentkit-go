@@ -465,24 +465,6 @@ func submitAnswerTool(out *answer) core.Tool {
 			"Finish by calling submit_answer with the complete answer; do not just write it as text.",
 		},
 
-		// ConstrainedSampling asks the provider to force the model's arguments
-		// to match this schema rather than merely describing it. It is honoured
-		// on the OpenAI wires, which have a strict flag; the Anthropic wire has
-		// no such field and ignores it, so this must not be the only thing
-		// keeping the arguments well formed.
-		//
-		// StrictPrefer is the safe setting: the schema is probed through the
-		// strict-subset rewrite before anything is sent, and if it does not
-		// fit — or the endpoint's compatibility profile cannot emit strict
-		// schemas — the tool ships unconstrained and the run proceeds.
-		// StrictRequire fails the whole request instead, naming the keyword
-		// that made the schema unconvertible. That failure is loud on purpose,
-		// and it takes down every tool in the request, not just this one:
-		// choose it only when a malformed argument is worse than no answer.
-		ConstrainedSampling: &core.ConstrainedSampling{
-			Type: core.ConstrainJSONSchema, Strict: core.StrictPrefer,
-		},
-
 		Execute: func(_ context.Context, in json.RawMessage) core.ToolResult {
 			var args struct {
 				Answer string   `json:"answer"`

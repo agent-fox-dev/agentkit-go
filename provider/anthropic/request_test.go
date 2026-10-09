@@ -48,8 +48,8 @@ func TestEffortLevels_TS10_16(t *testing.T) {
 // effort, and no budget.
 func TestAdaptiveThinkingCarriesTheEffort_TS10_17(t *testing.T) {
 	m, ok := catalog.Lookup("claude-sonnet-5-5")
-	if !ok || m.Thinking != core.ThinkingKindAdaptive {
-		t.Fatalf("claude-sonnet-5-5 = %v, %q; want an adaptive row", ok, m.Thinking)
+	if !ok || m.ThinkingKind != core.ThinkingKindAdaptive {
+		t.Fatalf("claude-sonnet-5-5 = %v, %q; want an adaptive row", ok, m.ThinkingKind)
 	}
 	w := wireOf(t, m, core.Request{Messages: userTurn(), Effort: core.EffortHigh})
 	th, _ := w["thinking"].(map[string]any)
@@ -75,8 +75,8 @@ func TestAdaptiveThinkingCarriesTheEffort_TS10_17(t *testing.T) {
 // TS-10-18: a budget model gets budget_tokens from its row and no effort.
 func TestBudgetThinkingCarriesTheRowsBudget_TS10_18(t *testing.T) {
 	m, ok := catalog.Lookup("claude-sonnet-4-5")
-	if !ok || m.Thinking != core.ThinkingKindBudget {
-		t.Fatalf("claude-sonnet-4-5 = %v, %q; want a budget row", ok, m.Thinking)
+	if !ok || m.ThinkingKind != core.ThinkingKindBudget {
+		t.Fatalf("claude-sonnet-4-5 = %v, %q; want a budget row", ok, m.ThinkingKind)
 	}
 	w := wireOf(t, m, core.Request{Messages: userTurn(), Effort: core.EffortLow})
 	th, _ := w["thinking"].(map[string]any)
@@ -91,8 +91,8 @@ func TestBudgetThinkingCarriesTheRowsBudget_TS10_18(t *testing.T) {
 // TS-10-19: a model that takes no thinking gets neither key, and the request
 // is not modified.
 func TestNoThinkingModelOmitsBoth_TS10_19(t *testing.T) {
-	m := core.Model{ID: "claude-no-thinking", API: anthropic.API, Provider: "anthropic",
-		ContextWindow: 200000, MaxTokens: 4096, Thinking: core.ThinkingKindNone}
+	m := core.Model{ID: "claude-no-thinking", ContextWindow: 200000, MaxOutputTokens: 4096,
+		ThinkingKind: core.ThinkingKindNone}
 	temp := 0.3
 	req := core.Request{Messages: userTurn(), Effort: core.EffortHigh, Temperature: &temp}
 	before := req

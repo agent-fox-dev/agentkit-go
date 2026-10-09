@@ -696,10 +696,6 @@ func TestToolNamesAreQualifiedByServer(t *testing.T) {
 	var names []string
 	for _, tl := range tools {
 		names = append(names, tl.Name)
-		if tl.MCPServer != "github" {
-			t.Fatalf("%s carries MCPServer %q; the audit trail must not have to guess "+
-				"the server from a name whose prefix is configurable", tl.Name, tl.MCPServer)
-		}
 	}
 	sort.Strings(names)
 	if strings.Join(names, ",") != "github__boom,github__echo" {

@@ -122,7 +122,7 @@ func BenchmarkLoopTurnWithToolBatch(b *testing.B) {
 // stampFixture is NFR-PERF-07's stated worst case: 128 tools and 1000
 // messages.
 func stampFixture(b testingTB) (*core.Model, core.Request) {
-	m := &core.Model{ID: "claude-x", API: anthropic.API, Provider: "anthropic", MaxTokens: 4096}
+	m := &core.Model{ID: "claude-x", MaxOutputTokens: 4096}
 	req := core.Request{
 		System: []core.ContentBlock{core.TextBlock{Text: "a system prompt"}},
 	}

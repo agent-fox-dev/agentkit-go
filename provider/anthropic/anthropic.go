@@ -302,8 +302,8 @@ func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRet
 		requested = *req.MaxTokens
 	}
 	out.MaxTokens = requested
-	if out.MaxTokens <= 0 || (m.MaxTokens > 0 && out.MaxTokens > m.MaxTokens) {
-		out.MaxTokens = m.MaxTokens
+	if out.MaxTokens <= 0 || (m.MaxOutputTokens > 0 && out.MaxTokens > m.MaxOutputTokens) {
+		out.MaxTokens = m.MaxOutputTokens
 	}
 	if out.MaxTokens <= 0 {
 		out.MaxTokens = DefaultMaxTokens

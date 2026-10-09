@@ -42,10 +42,9 @@ func sseBody(pairs ...[2]string) string {
 
 func testModel() *core.Model {
 	return &core.Model{
-		ID: "claude-test", Name: "Claude Test", API: anthropic.API, Provider: "anthropic",
-		ContextWindow: 200000, MaxTokens: 4096,
-		Input: []string{"text"}, Reasoning: true,
-		Cost: core.Cost{Input: 3, Output: 15, CacheRead: 0.3, CacheWrite: 3.75},
+		ID: "claude-test", ContextWindow: 200000, MaxOutputTokens: 4096,
+		InputCostPerMillion: 3, OutputCostPerMillion: 15,
+		CacheReadCostPerMillion: 0.3, CacheWriteCostPerMillion: 3.75,
 	}
 }
 
@@ -268,7 +267,7 @@ func TestAnthropicInputTokensAreNotNettedAgain(t *testing.T) {
 
 // TestAFallbackServedModelIsBilledAtItsOwnRates is REQ-PROV-05.5 end to end.
 func TestAFallbackServedModelIsBilledAtItsOwnRates(t *testing.T) {
-	served := &core.Model{ID: "claude-cheap", Cost: core.Cost{Input: 0.25, Output: 1.25}}
+	served := &core.Model{ID: "claude-cheap", InputCostPerMillion: 0.25, OutputCostPerMillion: 1.25}
 	body := strings.Replace(streamFixture(), `"model":"claude-test"`, `"model":"claude-cheap"`, 1)
 
 	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{
@@ -696,9 +695,9 @@ func TestAUserMessageWithNothingLeftIsSkipped(t *testing.T) {
 // sends the row's own budget.
 func TestThinkingIsATriState(t *testing.T) {
 	m := testModel()
-	budget, disabled := "2048", "disabled"
-	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{
-		core.ThinkingOff: &disabled, core.ThinkingHigh: &budget}
+	budget := "2048"
+	m.Efforts = map[core.Effort]*string{
+		core.EffortHigh: &budget}
 
 	if got := captureBody(t, m, ""); got["thinking"] != nil {
 		t.Fatalf("thinking = %v with no effort, want the key OMITTED", got["thinking"])
@@ -716,7 +715,7 @@ func TestThinkingIsATriState(t *testing.T) {
 	// A model with NO map has no reachable level, and the key is omitted:
 	// sending a level the model does not know is a 400, and inventing a
 	// budget is worse than not thinking.
-	m.ThinkingLevelMap = nil
+	m.Efforts = nil
 	if got := captureBody(t, m, core.EffortHigh)["thinking"]; got != nil {
 		t.Fatalf("thinking = %v for a model with no map, want the key omitted", got)
 	}
@@ -764,9 +763,9 @@ func TestAnEffortStyleRowSendsAdaptiveThinkingAndEffort(t *testing.T) {
 	}
 
 	m := testModel()
-	m.MaxTokens = 64000
+	m.MaxOutputTokens = 64000
 	high := "high"
-	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingHigh: &high}
+	m.Efforts = map[core.Effort]*string{core.EffortHigh: &high}
 	body := withSampling(m, core.EffortHigh)
 	assertNeverBudgetless(body)
 	th, _ := body["thinking"].(map[string]any)
@@ -786,14 +785,14 @@ func TestAnEffortStyleRowSendsAdaptiveThinkingAndEffort(t *testing.T) {
 	// minimal has no Anthropic counterpart and is sent as low; a row that
 	// writes it as "minimal" gets the same treatment as one that writes "low".
 	minimal := "minimal"
-	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingLow: &minimal}
+	m.Efforts = map[core.Effort]*string{core.EffortLow: &minimal}
 	body = withSampling(m, core.EffortLow)
 	if oc, _ := body["output_config"].(map[string]any); oc == nil || oc["effort"] != "low" {
 		t.Fatalf("output_config = %v for a \"minimal\" wire value, want effort low", body["output_config"])
 	}
 
 	unknown := "turbo"
-	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingHigh: &unknown}
+	m.Efforts = map[core.Effort]*string{core.EffortHigh: &unknown}
 	body = withSampling(m, core.EffortHigh)
 	assertNeverBudgetless(body)
 	if body["thinking"] != nil || body["output_config"] != nil {
@@ -1032,7 +1031,7 @@ func TestARedactedThinkingBlockAlwaysCarriesItsDataKey(t *testing.T) {
 // and no window, messages from a request with no history.
 func TestMaxTokensIsNeverZeroAndMessagesNeverNull(t *testing.T) {
 	m := testModel()
-	m.MaxTokens, m.ContextWindow = 0, 0
+	m.MaxOutputTokens, m.ContextWindow = 0, 0
 	body, _, err := anthropic.BuildRequest(m, core.Request{}, core.CacheRetentionNone)
 	if err != nil {
 		t.Fatal(err)
@@ -1072,9 +1071,9 @@ func TestAMalformedContentBlockStartFailsTheStream(t *testing.T) {
 
 func TestThinkingBudgetIsHeldBelowMaxTokens(t *testing.T) {
 	m := testModel()
-	m.MaxTokens = 2048
+	m.MaxOutputTokens = 2048
 	budget := "4096" // larger than max_tokens: Anthropic rejects this outright
-	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingHigh: &budget}
+	m.Efforts = map[core.Effort]*string{core.EffortHigh: &budget}
 
 	got := captureBody(t, m, core.EffortHigh)
 	th, _ := got["thinking"].(map[string]any)
@@ -1095,9 +1094,9 @@ func TestThinkingBudgetIsHeldBelowMaxTokens(t *testing.T) {
 // is. No thinking is the request that still returns.
 func TestASubMinimumBudgetOmitsThinking(t *testing.T) {
 	m := testModel()
-	m.MaxTokens = 1024 // leaves 1023, under the minimum
+	m.MaxOutputTokens = 1024 // leaves 1023, under the minimum
 	budget := "4096"
-	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingHigh: &budget}
+	m.Efforts = map[core.Effort]*string{core.EffortHigh: &budget}
 	temp := 0.4
 
 	got := captureRequest(t, m, core.Request{Effort: core.EffortHigh, Temperature: &temp})
@@ -1109,7 +1108,7 @@ func TestASubMinimumBudgetOmitsThinking(t *testing.T) {
 	}
 
 	// The minimum itself is legal.
-	m.MaxTokens = 1025
+	m.MaxOutputTokens = 1025
 	got = captureBody(t, m, core.EffortHigh)
 	th, _ := got["thinking"].(map[string]any)
 	if th == nil || th["budget_tokens"] != float64(1024) {

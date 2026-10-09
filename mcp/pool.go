@@ -334,11 +334,8 @@ func (p *Pool) adapt(c *ServerConnection, d *Tool, qualified string) core.Tool {
 		}
 	}
 	return core.Tool{
-		Name:        qualified,
-		Description: d.Description,
-		// MCPServer is set so REQ-OBS-05's audit does not have to guess the
-		// server from a name whose prefix is configurable.
-		MCPServer:    c.Name(),
+		Name:         qualified,
+		Description:  d.Description,
 		InputSchema:  schemaFrom(d.InputSchema),
 		OutputSchema: output,
 		Execute: func(ctx context.Context, in json.RawMessage) core.ToolResult {

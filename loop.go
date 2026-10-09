@@ -118,7 +118,7 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial core.U
 	record := func(msgs ...core.Message) { a.record(&newMessages, msgs...) }
 	record(initial)
 
-	s.Push(core.AgentStartEvent{Provider: a.model.Provider, API: a.model.API, Model: a.model.ID})
+	s.Push(core.AgentStartEvent{Model: a.model.ID})
 
 	for {
 		view, elided, reason, err := a.beforeRequest()

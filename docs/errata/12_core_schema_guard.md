@@ -81,3 +81,34 @@ why.
   provider packages.
 - TS-12-7 did not compile against the previous commit (`StreamEvent` did not
   exist); that was its first failure.
+
+## 12-REQ-4: what Model, Tool and ToolWire keep
+
+- **`Model` keeps two fields beyond the spec's list.** `Efforts`
+  (`map[Effort]*string`, the wire value per effort) replaces the catalog's
+  `ThinkingLevelMap`: the encoder needs a row's budget or effort name to send
+  thinking. `Compat` stays because the encoder reads `supports_sampling`
+  from it to drop temperature and top_p. `Name`, `API`, `Provider`,
+  `BaseURL`, `Headers`, `Input`, `Reasoning`, `Cloned` and the price tiers
+  are gone; the catalog still reads and validates `api`, `base_url` and
+  `reasoning` in its file, but does not copy them onto `Model`.
+- **No price tiers.** `core.Cost` and `CostTier` are gone and the four prices
+  are flat fields; `provider.RatesFor` and the tier tests went with them. No
+  catalog row had tiers.
+- **`ThinkingLevel` is gone.** The catalog keys its file's
+  `thinking_level_map` by string (`off`, `minimal`, then the five efforts)
+  and copies the five efforts to `Model.Efforts`; `off` and `minimal` are
+  validated but never sent. `ThinkingKindOf` moved into the catalog, and the
+  Anthropic encoder infers the kind from `Efforts` when a hand-built `Model`
+  leaves `ThinkingKind` empty.
+- **`ToolResult.Blocks` stays** (the survey's D-8 said it would go): without
+  images it still carries extra text blocks after the result's text, which
+  the batch appends and tests use.
+- **`Tool.MCPServer` is gone**, so an MCP tool's server is known only from
+  its qualified name; the assertion on it was removed from
+  `TestToolNamesAreQualifiedByServer`. **`ConstrainedSampling`** is gone
+  from `Tool` and `ToolWire`; the customtools example now points at the wire's
+  `strict: true` instead. `MCPServerOf` never existed.
+- TS-12-11's pseudocode checks `RunResult`, `RunStopReason` and `StopReason`
+  as fields of `Usage`; they are types, and the test checks that core
+  declares them.
