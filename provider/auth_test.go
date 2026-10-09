@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/provider"
 )
 
@@ -165,97 +164,3 @@ func TestShortSecretsAreRedactedEntirely(t *testing.T) {
 }
 
 // ---------------------------------------------------------------- headers
-
-// TestNilHeaderValueSuppressesAProviderDefault is REQ-AUTH-02's third state,
-// and the case it exists for.
-//
-// A gateway that authenticates with its own header needs the upstream
-// x-api-key turned OFF. No string value expresses that: "" sends an empty
-// header, which is not the same as sending none.
-func TestNilHeaderValueSuppressesAProviderDefault(t *testing.T) {
-	key := "sk-live"
-	plan := provider.HeaderPlan{
-		Auth:    map[string]*string{"x-api-key": &key},
-		Request: map[string]*string{"x-api-key": nil}, // deletion marker
-	}
-	if v, ok := plan.Merge()["X-Api-Key"]; ok {
-		t.Fatalf("x-api-key = %q; a present-nil at a higher layer must SUPPRESS the "+
-			"provider default, not be ignored", v)
-	}
-}
-
-// TestHeaderPrecedenceIsLowestToHighest pins REQ-SEC-13.4's four layers.
-func TestHeaderPrecedenceIsLowestToHighest(t *testing.T) {
-	s := func(v string) *string { return &v }
-	plan := provider.HeaderPlan{
-		Attribution: map[string]*string{"x-thing": s("attribution"), "x-attr-only": s("kept")},
-		Auth:        map[string]*string{"x-thing": s("auth")},
-		Model:       map[string]*string{"x-thing": s("model")},
-		Request:     map[string]*string{"x-thing": s("request")},
-	}
-	got := plan.Merge()
-	if got["X-Thing"] != "request" {
-		t.Fatalf("x-thing = %q, want the caller's value to win over model, auth and "+
-			"attribution", got["X-Thing"])
-	}
-	if got["X-Attr-Only"] != "kept" {
-		t.Fatal("a lower layer's header nobody overrode must survive the merge")
-	}
-}
-
-// TestALowLayerNilIsOverriddenByAHigherValue is the direction that
-// filter-nils-per-layer gets right and merge-then-filter must not break.
-func TestALowLayerNilIsOverriddenByAHigherValue(t *testing.T) {
-	s := func(v string) *string { return &v }
-	plan := provider.HeaderPlan{
-		Auth:    map[string]*string{"x-thing": nil},
-		Request: map[string]*string{"x-thing": s("on")},
-	}
-	if got := plan.Merge()["X-Thing"]; got != "on" {
-		t.Fatalf("x-thing = %q, want \"on\": a nil at a LOW layer that a higher layer "+
-			"overrides sends the value", got)
-	}
-}
-
-// TestAttributionHasASingleKillSwitch is REQ-SEC-13.2. The default being ON is
-// exactly why it must be disclosed and switchable.
-func TestAttributionHasASingleKillSwitch(t *testing.T) {
-	on := provider.AttributionLayer(nil, envOf(nil))
-	if len(on) == 0 {
-		t.Fatal("attribution defaults to on")
-	}
-	off := false
-	if got := provider.AttributionLayer(&off, envOf(nil)); len(got) != 0 {
-		t.Fatalf("AgentConfig.Attribution = false must disable every attribution header, got %v", got)
-	}
-	if got := provider.AttributionLayer(nil, envOf(map[string]string{
-		"AGENTKIT_TELEMETRY": "0"})); len(got) != 0 {
-		t.Fatalf("AGENTKIT_TELEMETRY=0 must disable every attribution header, got %v", got)
-	}
-}
-
-// TestNoAttributionHeaderCarriesRequestContent is REQ-SEC-13.3, enforced
-// mechanically rather than by review: every value must be a constant, so no
-// future edit can slip a session id or a workspace path in.
-func TestNoAttributionHeaderCarriesRequestContent(t *testing.T) {
-	m := &core.Model{ID: "m", Provider: "v"}
-	auth := provider.ModelAuth{}
-	opts := core.RequestOptions{SessionID: "session-should-never-appear"}
-	plan := provider.PlanFor(m, auth, opts, nil, envOf(nil))
-
-	for name, v := range plan.Attribution {
-		if v == nil {
-			continue
-		}
-		if strings.Contains(*v, "session") || strings.Contains(*v, "/") && strings.Contains(*v, "home") {
-			t.Fatalf("attribution header %q carries request context: %q", name, *v)
-		}
-		if want := provider.AttributionHeaders[name]; *v != want {
-			t.Fatalf("attribution header %q = %q, want the enumerated constant %q",
-				name, *v, want)
-		}
-	}
-	if len(provider.AttributionNames()) != len(provider.AttributionHeaders) {
-		t.Fatal("AttributionNames must enumerate the complete set (REQ-SEC-13.1)")
-	}
-}

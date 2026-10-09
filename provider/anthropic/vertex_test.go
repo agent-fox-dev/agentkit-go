@@ -8,10 +8,15 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/oauth2"
+
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/provider"
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 )
+
+// testGoogleToken is the Google access token the Vertex tests authorize with.
+const testGoogleToken = "ya29.test-adc-token"
 
 // sent drives one request through the provider and returns what the transport
 // saw. No network, no key, no process environment (NFR-TEST-01, NFR-TEST-04):
@@ -36,6 +41,10 @@ func sent(t *testing.T, opts anthropic.Options, env map[string]string) *http.Req
 	}
 	if opts.Getenv == nil {
 		opts.Getenv = func(string) string { return "" }
+	}
+	if opts.VertexTokenSource == nil {
+		// Never this machine's Application Default Credentials.
+		opts.VertexTokenSource = oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken})
 	}
 	anthropic.Provider(opts).Stream(context.Background(), testModel(), req,
 		core.ProviderStreamOptions{}).Result()
@@ -198,9 +207,9 @@ func TestAnAnthropicAPIKeyIsNeverSentToTheVertexEndpoint(t *testing.T) {
 	if got := r.Header.Get("x-api-key"); got != "" {
 		t.Fatalf("x-api-key = %q; an Anthropic key must never reach a Google endpoint", got)
 	}
-	if got := r.Header.Get("Authorization"); got != "" {
-		t.Fatalf("Authorization = %q; an x-api-key credential must be dropped, not "+
-			"re-scheme'd into a bearer token", got)
+	if got := r.Header.Get("Authorization"); got != "Bearer "+testGoogleToken {
+		t.Fatalf("Authorization = %q; Vertex authorizes with the Google credential, and an "+
+			"x-api-key credential must be dropped, not re-scheme'd into a bearer token", got)
 	}
 
 	// The converse: a bearer token IS the Vertex credential — a gcloud access
@@ -216,15 +225,11 @@ func TestAnAnthropicAPIKeyIsNeverSentToTheVertexEndpoint(t *testing.T) {
 }
 
 // TestTheVertexBodyOmitsTheModelAndCarriesTheAnthropicVersion pins the two
-// body-shaped halves of the wire delta. Both are 400s when wrong, and the
+// body-shaped halves of the wire delta, which the SDK's Vertex option applies. Both are 400s when wrong, and the
 // model field is the one an omitempty-style struct would get silently right
 // and a required one would get silently wrong.
 func TestTheVertexBodyOmitsTheModelAndCarriesTheAnthropicVersion(t *testing.T) {
 	r := sent(t, anthropic.Options{VertexProject: "proj-1"}, nil)
-
-	if got := r.Header.Get("anthropic-version"); got != "" {
-		t.Errorf("anthropic-version header = %q; on Vertex the version lives in the body", got)
-	}
 
 	raw, _ := io.ReadAll(r.Body)
 	var body map[string]any

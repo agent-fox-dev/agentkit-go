@@ -48,7 +48,6 @@ request, so a long-running process that rotates a token updates the variable.
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `AGENTKIT_TELEMETRY` | `provider` | `0` or `false` disables every attribution header (`x-agentkit-version`, `user-agent`). `AgentConfig.Attribution = false` does the same in code. |
 | `AGENTKIT_MODEL` | `examples/*` only | Model spec (`vendor/id`, or a bare unambiguous id) overriding an example's default. The library never reads it. |
 
 Subprocess tools run with a reduced environment (`tools.ReducedEnv`): `PATH`,
@@ -78,9 +77,9 @@ provider-prefixed variables and anything ending in `_TOKEN`, `_SECRET`,
 | `SteeringQueueMode`, `FollowUpQueueMode` | `QueueOneAtATime` (default) or `QueueDrainAll`. |
 | `SessionID` | Identifier carried on `AgentStartEvent` and requests. |
 | `TrustProject` | Nothing in the SDK reads it. |
-| `Attribution` | `*bool`; nil means on. |
+| `Attribution` | `*bool`. No longer read: the SDK sends its own `user-agent`, and AgentKit adds no attribution header. |
 | `CacheRetention` | `none`, `short`, `long`. |
-| `RequestOptions` | Per-request `Headers` (nil value deletes a default), `TimeoutMs`, `MaxRetries` (nil → 0), `MaxRetryDelayMs` (nil → 60000), `SessionID`, `CacheRetention`, `Deferred`, `Env`, `Transport`, `StreamFn`, `OnPayload`, `OnResponse`. |
+| `RequestOptions` | Per-request `Headers` (nil value deletes a default), `TimeoutMs`, `MaxRetries` (nil keeps the SDK client's count, 2 by default), `MaxRetryDelayMs` (no longer read), `SessionID`, `CacheRetention`, `Deferred`, `Env`, `Transport`, `StreamFn`, `OnPayload`, `OnResponse`. |
 | `StreamOptions` | Streaming behaviour. |
 | `Providers` | `core.ProviderRegistry`. Nil means `agentkit.DefaultProviders()`, which is **empty**: register the wire APIs you use (`agentkit.RegisterDefaults(&cfg, anthropic.Provider(anthropic.Options{}), …)`). |
 
@@ -90,14 +89,23 @@ layer deletes the name.
 
 ## Provider options
 
-`anthropic.Options` has `BaseURL`, `HTTPClient`, `Getenv` (injectable
-environment), `Retry` (`provider.RetryPolicy`: `MaxRetries`, base / max delay,
-`MaxRetryDelay` default 60 s, base delay default 500 ms, max delay default 8 s),
-`Attribution` and `BillingLookup`.
+Requests go through the official SDK client
+(`github.com/anthropics/anthropic-sdk-go`), which owns the transport, retries
+and stream framing. `anthropic.Options`:
 
-| Package | Extra options |
+| Field | Meaning |
 |---|---|
-| `anthropic` | `Betas` (dated beta headers, opt-in; `compact-2026-01-12` enables server-side compaction), `VertexProject`, `VertexLocation`, `ToolPrefix`, `OnToolPrefixSync`, `Now`, `MaxSSEEventBytes`. |
+| `Client` | `*anthropic.Client` (the SDK's). Requests go through it as configured; nil builds one from the environment per request. |
+| `BaseURL` | Overrides `ANTHROPIC_BASE_URL` and the catalog row. |
+| `HTTPClient` | The HTTP client the built SDK client uses. |
+| `Getenv` | Injectable environment; nil means `os.Getenv`. |
+| `MaxRetries` | `*int`; overrides the SDK's retry count (default 2). |
+| `Betas` | Dated beta headers, opt-in; `compact-2026-01-12` enables server-side compaction. |
+| `VertexProject`, `VertexLocation` | Select the Vertex AI deployment. |
+| `VertexTokenSource` | `oauth2.TokenSource` for Vertex. Nil uses a Google access token in `ANTHROPIC_AUTH_TOKEN`, then Application Default Credentials, found on the first request. |
+| `BillingLookup` | Resolves a served model id to its catalog row for pricing. |
+| `ToolPrefix`, `OnToolPrefixSync` | The per-session tool-schema cache and its reconciliation reports. |
+| `Now` | Injectable clock for timestamps. |
 
 ## Built-in tool options (`tools.Options`)
 

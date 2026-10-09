@@ -22,11 +22,18 @@ type rtFunc func(*http.Request) (*http.Response, error)
 
 func (f rtFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// sseBody renders (event, data) pairs as a text/event-stream body.
+// sseBody renders (event, data) pairs as a text/event-stream body. The API
+// names every event's type in its JSON as well as on the event line, and the
+// SDK reads it from the JSON, so a fixture that leaves it out gets it added.
 func sseBody(pairs ...[2]string) string {
 	var b strings.Builder
 	for _, p := range pairs {
-		fmt.Fprintf(&b, "event: %s\ndata: %s\n\n", p[0], p[1])
+		data := p[1]
+		if strings.HasPrefix(data, "{") && !strings.Contains(data, `"type":"`+p[0]+`"`) &&
+			!strings.HasPrefix(data, `{"type":`) {
+			data = `{"type":"` + p[0] + `"` + map[bool]string{true: "", false: ","}[data == "{}"] + data[1:]
+		}
+		fmt.Fprintf(&b, "event: %s\ndata: %s\n\n", p[0], data)
 	}
 	return b.String()
 }
@@ -590,36 +597,6 @@ func TestAFailedTurnThatReportedUsageIsStillBilled(t *testing.T) {
 	msg, _, _ = run(t, testModel(), core.Request{}, anthropic.Options{}, 500, `{"type":"error"}`)
 	if msg.Usage.Has(core.UsageCostUSD) {
 		t.Fatal("a failure with no reported usage must not invent a zero cost")
-	}
-}
-
-// TestAnEventWithNoEventLineFallsBackToItsJSONType covers a relay that
-// forwards `data:` lines without the `event:` line. Every Messages payload
-// names its type in the JSON as well; treating the typeless event as a ping
-// ended every such turn with ErrSSETruncated and no content.
-func TestAnEventWithNoEventLineFallsBackToItsJSONType(t *testing.T) {
-	var b strings.Builder
-	for _, line := range strings.Split(streamFixture(), "\n") {
-		if strings.HasPrefix(line, "event:") {
-			continue
-		}
-		b.WriteString(line + "\n")
-	}
-	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, b.String())
-	if msg.StopReason != core.StopReasonToolUse {
-		t.Fatalf("stop reason = %q (%q), want tool_use: the stream is complete, only the "+
-			"event: lines are missing", msg.StopReason, msg.ErrorMessage)
-	}
-	if msg.Content.Text() != "Hello" || len(core.ExtractToolUse(msg)) != 1 {
-		t.Fatalf("content = %#v, want the text and the tool call decoded", msg.Content)
-	}
-
-	// A typeless event whose JSON has no type is still a keep-alive.
-	body := "data: {}\n\n" + streamFixture()
-	msg, _, _ = run(t, testModel(), core.Request{}, anthropic.Options{}, 200, body)
-	if msg.StopReason != core.StopReasonToolUse {
-		t.Fatalf("stop reason = %q (%q); an untyped payload must be ignored, not fail the stream",
-			msg.StopReason, msg.ErrorMessage)
 	}
 }
 

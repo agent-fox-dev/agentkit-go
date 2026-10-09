@@ -5,9 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	sdk "github.com/anthropics/anthropic-sdk-go"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +14,9 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/provider"
+	"github.com/agent-fox-dev/agentkit-go/wire"
+	"github.com/anthropics/anthropic-sdk-go/option"
+	"golang.org/x/oauth2"
 )
 
 // DefaultBaseURL is used when neither the catalog row nor ANTHROPIC_BASE_URL
@@ -95,12 +97,17 @@ var vertexVendorAuth = provider.VendorAuth{
 
 // Options configures the provider. The zero value is usable.
 type Options struct {
+	// Client is the official SDK client requests go through. Nil resolves one
+	// from the environment.
+	Client *sdk.Client
+
 	BaseURL    string
 	HTTPClient *http.Client
 	// Getenv is injectable so a test never mutates process environment
 	// (NFR-TEST-04). Nil means os.Getenv.
 	Getenv func(string) string
-	Retry  provider.RetryPolicy
+	// MaxRetries overrides the SDK's retry count; nil keeps its default.
+	MaxRetries *int
 	// Betas are sent as anthropic-beta. BetaCompaction is REQ-PROV-07.
 	Betas []string
 	// VertexProject and VertexLocation select the Vertex AI deployment
@@ -110,9 +117,10 @@ type Options struct {
 	// deployment can also flip with no code change at all.
 	VertexProject  string
 	VertexLocation string
-	// Attribution overrides AgentConfig.Attribution for this provider
-	// (REQ-SEC-13.2). Nil means on unless AGENTKIT_TELEMETRY=0.
-	Attribution *bool
+	// VertexTokenSource supplies the Google OAuth token a Vertex request is
+	// authorized with. Nil uses a Google access token in ANTHROPIC_AUTH_TOKEN
+	// when there is one, and Application Default Credentials otherwise.
+	VertexTokenSource oauth2.TokenSource
 	// BillingLookup resolves a SERVED model id to its catalog row
 	// (REQ-PROV-05.5). Nil bills a fallback-served response at the requested
 	// model's rates and still records the served name.
@@ -127,8 +135,6 @@ type Options struct {
 	OnToolPrefixSync func(provider.SyncReport)
 	// Now is injectable for deterministic timestamps in tests.
 	Now func() time.Time
-	// MaxSSEEventBytes bounds one accumulated SSE event; zero is the default.
-	MaxSSEEventBytes int
 }
 
 // Provider returns the registry entry (REQ-PROV-09).
@@ -197,13 +203,6 @@ func (c *client) Stream(ctx context.Context, m *core.Model, req core.Request, o 
 	if rep.Changed() && o.Warnf != nil {
 		o.Warnf("anthropic: %s", rep.String())
 	}
-	if vx.On() {
-		// The body half of NFR-COMPAT-05's second deployment. The model id is
-		// a URL segment here and the body field is rejected; the version moves
-		// out of the header and into the body.
-		body.Model = ""
-		body.AnthropicVersion = VertexAPIVersion
-	}
 	if c.wantsCompaction() {
 		// REQ-PROV-07: the beta header opts the REQUEST into the feature and
 		// the body names the edit; the server compacts only when both are
@@ -261,110 +260,80 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 	}
 
 	env := provider.Env{Override: req.Options.Env, Getenv: c.opts.Getenv}
-	table := VendorAuth
-	if vx.On() {
-		table = vertexVendorAuth
-	}
-	auth := provider.ResolveAuth(table, env)
+	sc := c.sdkClient(ctx, m, env, vx, req.Options.Transport)
 
-	base := provider.ResolveBaseURL(m, auth, defaultBase(c.opts.BaseURL))
-	if vx.On() {
-		// A Vertex proxy beats a general one: the two name different
-		// upstreams and a machine can carry both.
-		if u := env.Get(VertexBaseURLVar); u != "" {
-			base = strings.TrimRight(u, "/")
-		} else if base == strings.TrimRight(DefaultBaseURL, "/") {
-			// A project configured with no base URL anywhere: follow it to the
-			// Vertex host rather than sending a Vertex path to api.anthropic.com.
-			// An explicitly configured base URL is left exactly as it is.
-			base = vx.BaseURL()
+	// The body is ours: SDK params would re-encode replayed tool_use input,
+	// and its bytes must reach the wire as the model wrote them.
+	opts := []option.RequestOption{option.WithRequestBody("application/json", raw)}
+	if rt := req.Options.Transport; rt != nil && c.opts.Client != nil {
+		opts = append(opts, option.WithHTTPClient(&http.Client{Transport: rt}))
+	}
+	if n := req.Options.MaxRetries; n != nil {
+		opts = append(opts, option.WithMaxRetries(*n))
+	}
+	// REQ-AUTH-02: a request's own headers win, and a present-nil value
+	// removes the header the provider would otherwise send — how a gateway
+	// turns the upstream credential off.
+	for k, v := range req.Options.Headers {
+		if v == nil {
+			opts = append(opts, option.WithHeaderDel(k))
+		} else {
+			opts = append(opts, option.WithHeader(k, *v))
 		}
-		auth = vertexAuth(auth)
 	}
-	url := base + vx.Path(m, true)
-
-	headers := map[string]string{
-		"content-type": "application/json",
-		"accept":       "text/event-stream",
-	}
-	if !vx.On() {
-		// Vertex carries the version in the body instead, and rejects a
-		// request that names it in both places.
-		headers["anthropic-version"] = APIVersion
-	}
-	betas := c.opts.Betas
-	if !vx.On() && isOAuthBearer(auth) {
-		betas = append(slices.Clip(betas), BetaOAuth)
-	}
-	if len(betas) > 0 {
-		headers["anthropic-beta"] = strings.Join(betas, ",")
-	}
-
-	call := provider.Call{
-		Method: http.MethodPost, URL: url, Body: raw, Headers: headers,
-		Auth: auth, Model: m, Options: req.Options,
-		Attribution: c.opts.Attribution, Env: env,
-		Client: c.opts.HTTPClient, Retry: c.opts.Retry,
-	}
-
-	resp, err := call.Do(ctx)
-	if err != nil {
-		d.fail(transportError(caller, ctx, err), err)
-		return
-	}
-	defer resp.Body.Close()
-
 	if fn := req.Options.OnResponse; fn != nil {
-		if err := fn(resp, m); err != nil {
-			d.fail(err.Error(), err)
+		opts = append(opts, option.WithMiddleware(func(r *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+			resp, err := next(r)
+			if err != nil {
+				return resp, err
+			}
+			if herr := fn(resp, m); herr != nil {
+				resp.Body.Close()
+				return nil, herr
+			}
+			return resp, nil
+		}))
+	}
+
+	stream := sc.Messages.NewStreaming(ctx, sdk.MessageNewParams{}, opts...)
+	defer stream.Close()
+	started := false
+	for stream.Next() {
+		ev := stream.Current()
+		if !started {
+			d.emitStart()
+			started = true
+		}
+		if err := d.event(ev.Type, []byte(ev.RawJSON())); err != nil {
+			d.fail(streamErrorText(caller, ctx, err), err)
 			return
 		}
+		if d.sawStop {
+			break
+		}
 	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		err := statusErr(resp)
-		err.Text += vertexAuthNote(resp.StatusCode, vx, env)
-		d.fail(err.Text, err)
+	if err := stream.Err(); err != nil {
+		var apiErr *sdk.Error
+		if errors.As(err, &apiErr) && caller.Err() == nil {
+			text := statusText(apiErr) + vertexAuthNote(apiErr.StatusCode, vx, env)
+			d.fail(text, &StatusError{Code: apiErr.StatusCode, Text: text})
+			return
+		}
+		// A cancellation lands here as whatever the transport or the body
+		// reader reported, and only the contexts say which of REQ-LOOP-09's
+		// abort or REQ-PROV-18's timeout it was.
+		d.fail(transportErrorText(caller, ctx, err), err)
 		return
 	}
-
-	d.emitStart()
-	if err := d.consume(provider.NewSSEReader(resp.Body, c.opts.MaxSSEEventBytes)); err != nil {
-		// A cancellation lands here as whatever the body reader reported —
-		// an EOF, a "context canceled" — and only the contexts say which of
-		// REQ-LOOP-09's abort or REQ-PROV-18's timeout it was.
-		d.fail(provider.StreamErrorText("anthropic", caller, ctx, err), err)
+	if !d.sawStop {
+		// A 200 whose body simply stops is the single commonest streaming
+		// failure, and only this check turns it into an error.
+		d.fail(streamErrorText(caller, ctx, ErrStreamTruncated), ErrStreamTruncated)
 		return
 	}
 	d.finish(m, c.opts.BillingLookup)
 }
 
-// defaultBase is the compiled-in fallback, kept as a function so the zero
-// Options value works without a constructor.
-func defaultBase(configured string) string {
-	if configured != "" {
-		return configured
-	}
-	return DefaultBaseURL
-}
-
-// transportError renders a transport failure as text the SEMANTIC retry layer
-// can classify (REQ-PROV-14). A cancellation is normalized separately by the
-// caller; everything else keeps the underlying text, because that text is
-// where "getaddrinfo", "connection reset" and "EOF" live.
-func transportError(caller, req context.Context, err error) string {
-	if errors.Is(err, provider.ErrRetryDelayTooLong) {
-		return err.Error()
-	}
-	return provider.TransportErrorText("anthropic", caller, req, err)
-}
-
-// statusError builds the error text for a non-2xx response.
-//
-// The status CODE is included in the text on purpose: REQ-PROV-14's allowlist
-// matches bare "429"/"500"/"503" strings, so a message that renders only the
-// provider's prose loses the retry for a gateway that returns a 503 with an
-// empty body.
 // vertexAuthNote explains an authentication failure from the Vertex
 // deployment, and it is the second half of the same defect the ranked
 // selection in VertexSelectedBy fixes.
@@ -403,14 +372,71 @@ func vertexAuthNote(status int, vx Vertex, env provider.Env) string {
 		VertexProjectVar + " or set " + VertexEnableVar + "=0.]"
 }
 
-func statusErr(resp *http.Response) *provider.HTTPStatusError {
-	return provider.StatusErr("anthropic", resp, func(body []byte) string {
-		var we wireError
-		if json.Unmarshal(body, &we) == nil {
-			return we.String()
+// AbortText is the one error string that means "the caller stopped this". It
+// is matched by text because it has to survive a round trip through an
+// AssistantMessage's ErrorMessage.
+const AbortText = "Request was aborted"
+
+// ErrStreamTruncated is a stream that ended before message_stop.
+var ErrStreamTruncated = errors.New("agentkit: stream ended before message_stop")
+
+// StatusError is a non-2xx response: the status code and the error text.
+type StatusError struct {
+	Code int
+	Text string
+}
+
+func (e *StatusError) Error() string { return e.Text }
+
+// statusText renders a non-2xx response with its status code, so a caller's
+// retry policy that matches "429" or "503" sees them even when the body says
+// nothing.
+func statusText(e *sdk.Error) string {
+	text := fmt.Sprintf("anthropic: HTTP %d", e.StatusCode)
+	var we wireError
+	if raw := e.RawJSON(); raw != "" && json.Unmarshal([]byte(raw), &we) == nil {
+		if s := we.String(); s != "" {
+			text += ": " + s
 		}
-		return ""
-	}).(*provider.HTTPStatusError)
+	}
+	return text
+}
+
+// transportErrorText renders a transport failure, classifying the two
+// cancellation channels: the caller's (an abort) and the per-request timeout.
+func transportErrorText(caller, req context.Context, err error) string {
+	if text, ok := cancellationText(caller, req, err); ok {
+		return text
+	}
+	return "anthropic: " + err.Error()
+}
+
+// streamErrorText is transportErrorText for a failure while the stream was
+// being decoded, whose text already carries its prefix.
+func streamErrorText(caller, req context.Context, err error) string {
+	if text, ok := cancellationText(caller, req, err); ok {
+		return text
+	}
+	return err.Error()
+}
+
+func cancellationText(caller, req context.Context, err error) (string, bool) {
+	if caller.Err() != nil {
+		return AbortText, true
+	}
+	if req.Err() != nil && errors.Is(req.Err(), context.DeadlineExceeded) {
+		return "anthropic: request timeout (RequestOptions.TimeoutMs elapsed): " + err.Error(), true
+	}
+	return "", false
+}
+
+// defaultBase is the compiled-in fallback, kept as a function so the zero
+// Options value works without a constructor.
+func defaultBase(configured string) string {
+	if configured != "" {
+		return configured
+	}
+	return DefaultBaseURL
 }
 
 // ---------------------------------------------------------------- decode state
@@ -438,33 +464,11 @@ type decodeState struct {
 
 func (d *decodeState) emitStart() { d.s.Push(core.MessageStartEvent{Message: d.partial}) }
 
-// consume drives the SSE reader to completion.
-func (d *decodeState) consume(r *provider.SSEReader) error {
-	for {
-		ev, err := r.Next()
-		if err == io.EOF {
-			if !d.sawStop {
-				// A 200 whose body simply stops is the single commonest
-				// streaming failure and it is invisible to the transport
-				// layer. Only this check turns it into something a retry
-				// layer can classify.
-				return provider.ErrSSETruncated
-			}
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if err := d.event(ev); err != nil {
-			return err
-		}
-		if d.sawStop {
-			return nil
-		}
-	}
-}
-
-func (d *decodeState) event(ev provider.SSEEvent) error {
+func (d *decodeState) event(typ string, data []byte) error {
+	ev := struct {
+		Type string
+		Data []byte
+	}{typ, data}
 	if ev.Type == "ping" || (ev.Type == "" && len(ev.Data) == 0) {
 		return nil
 	}
@@ -472,7 +476,7 @@ func (d *decodeState) event(ev provider.SSEEvent) error {
 	// linear scan enforces the size, depth and container bounds and rejects
 	// duplicate keys, which is what stops a gateway sending two stop_reasons
 	// and letting last-wins choose which one we act on.
-	if err := provider.GuardUntrusted(ev.Data); err != nil {
+	if err := wire.Guard(ev.Data, wire.Limits{}); err != nil {
 		return fmt.Errorf("anthropic: %s event: %w", ev.Type, err)
 	}
 	if ev.Type == "" {
@@ -677,7 +681,7 @@ func (d *decodeState) fail(text string, err error) {
 	final.Usage = d.usage
 	final.Usage.BilledModel = ""
 	d.price(&final, d.model, d.lookup)
-	if text == provider.AbortText {
+	if text == AbortText {
 		final.StopReason = core.StopReasonAborted
 		final.ErrorMessage = text
 		d.s.Push(core.MessageEndEvent{Message: final})
@@ -720,7 +724,7 @@ func (d *decodeState) partialContent() core.Content {
 // call. Sharing the assembler is what makes that true by construction rather
 // than by coincidence, and DecodeResponse is how the test can say so.
 func DecodeResponse(m *core.Model, data []byte, lookup func(string) *core.Model) (*core.AssistantMessage, error) {
-	if err := provider.GuardUntrusted(data); err != nil {
+	if err := wire.Guard(data, wire.Limits{}); err != nil {
 		return nil, fmt.Errorf("anthropic: decoding response: %w", err)
 	}
 	var wr wireResponse

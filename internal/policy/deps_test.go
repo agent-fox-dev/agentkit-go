@@ -27,6 +27,10 @@ var approvedDeps = []string{
 	"github.com/tree-sitter-grammars/",
 	// Code mode's sandboxed Starlark runtime.
 	"go.starlark.net",
+	// The Anthropic wire: transport, auth, retries and stream framing.
+	"github.com/anthropics/anthropic-sdk-go",
+	// Google OAuth for the Vertex AI deployment's credentials.
+	"golang.org/x/oauth2",
 }
 
 // validateAllowlist returns an error naming every dependency in deps that no
@@ -114,5 +118,42 @@ func TestAnUnapprovedDependencyIsNamed_TS09_17(t *testing.T) {
 	// A prefix entry approves modules under it, not a lookalike beside it.
 	if err := validateAllowlist([]string{"github.com/tree-sitter-evil/x"}, approvedDeps); err == nil {
 		t.Fatal("a lookalike of an approved prefix passed")
+	}
+}
+
+// TS-10-1: go.mod requires the official Anthropic SDK directly, at a tagged
+// release rather than a pseudo-version.
+func TestAnthropicSDKIsPinned_TS10_1(t *testing.T) {
+	f, err := os.Open(filepath.Join(repoRoot(t), "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var version string
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(sc.Text()), "require "))
+		if len(fields) >= 2 && fields[0] == "github.com/anthropics/anthropic-sdk-go" {
+			if strings.Contains(sc.Text(), "// indirect") {
+				t.Fatal("the Anthropic SDK is only an indirect requirement")
+			}
+			version = fields[1]
+		}
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if version == "" {
+		t.Fatal("go.mod does not require github.com/anthropics/anthropic-sdk-go")
+	}
+	if !strings.HasPrefix(version, "v") || strings.Contains(version, "-0.") || strings.HasPrefix(version, "v0.0.0-") {
+		t.Fatalf("anthropic-sdk-go is pinned to %s, want a tagged release", version)
+	}
+}
+
+// TS-10-2: the allowlist approves the Anthropic SDK.
+func TestAnthropicSDKIsApproved_TS10_2(t *testing.T) {
+	if err := validateAllowlist([]string{"github.com/anthropics/anthropic-sdk-go"}, approvedDeps); err != nil {
+		t.Fatal(err)
 	}
 }

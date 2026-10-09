@@ -105,10 +105,13 @@ type RequestOptions struct {
 	// Headers merges into every request. A present-nil value is a DELETION
 	// MARKER suppressing a provider default of that name (REQ-AUTH-02); no
 	// string value can express that.
-	Headers         map[string]*string
-	TimeoutMs       *int
-	MaxRetries      *int // nil => 0 (OQ-9)
-	MaxRetryDelayMs *int // nil => 60000
+	Headers   map[string]*string
+	TimeoutMs *int
+	// MaxRetries overrides the SDK client's retry count for this request; nil
+	// keeps the client's own (the SDK's default is 2).
+	MaxRetries *int
+	// MaxRetryDelayMs is no longer read: the SDK schedules its own retries.
+	MaxRetryDelayMs *int
 	SessionID       string
 	CacheRetention  *CacheRetention
 	// Deferred opts into background submission (REQ-PROV-19). It lives here

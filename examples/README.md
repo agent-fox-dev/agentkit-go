@@ -100,25 +100,16 @@ request does reach Vertex without a credential, the 401 says so — it names the
 project, the setting that selected the deployment, and both ways out, because
 Google's own body names none of them.
 
-Vertex authenticates with a Google OAuth access token, and this module has no
-dependencies to mint one with. Two ways, neither of which adds one:
+Vertex authenticates with a Google OAuth access token, through the SDK's
+Vertex option. The token comes from, in order:
 
-```bash
-# 1. A token in the environment. Refresh it yourself; it is short-lived.
-export ANTHROPIC_AUTH_TOKEN="$(gcloud auth print-access-token)"
-```
-
-```go
-// 2. An ADC-authenticating transport, owned by the application.
-client, _ := google.DefaultClient(ctx, "https://www.googleapis.com/auth/cloud-platform")
-anthropic.Provider(anthropic.Options{HTTPClient: client})
-```
-
-With neither, the credential state is `ambient`, which is the honest
-answer: this process holds no readable credential and the transport may still
-have one. That is also why pre-flight passes — a Vertex deployment is
-configured, and a check that reported `none` would refuse the run and name the
-wrong cause.
+1. a Google access token in `ANTHROPIC_AUTH_TOKEN` (for example
+   `$(gcloud auth print-access-token)`; refresh it yourself, it is
+   short-lived);
+2. `anthropic.Options.VertexTokenSource`, any `oauth2.TokenSource` the
+   application owns;
+3. Google Application Default Credentials, looked up on the first request,
+   so building the provider needs no credential and no network.
 
 An `ANTHROPIC_API_KEY` left over from a direct deployment is **dropped**, not
 forwarded: it is not a Vertex credential, and sending it would hand a
@@ -172,7 +163,6 @@ to build this request", never "this model exists".
 
 | Variable | Effect |
 |---|---|
-| `AGENTKIT_TELEMETRY=0` | Disables every attribution header. AgentKit sends `x-agentkit-version` and `user-agent` to identify itself; neither carries a session id, workspace path, user identity or prompt content. `AgentConfig.Attribution = false` does the same in code. |
 
 ## Things every application has to decide
 
