@@ -200,8 +200,8 @@ func TestRootModuleStdlibOnly_TS02_58(t *testing.T) {
 
 	// Verify existing tools' descriptions are unchanged.
 	expectedDescs := map[string]string{
-		"read_file": "Read a file. Text is returned as at most 2000 lines or 50KB, " +
-			"whichever comes first; an image is returned as a note plus the image itself.",
+		"read_file": "Read a text file. At most 2000 lines or 50KB are returned, " +
+			"whichever comes first.",
 		"write_file": "Write a file, creating or replacing it.",
 		"list_files": "List the entries of a directory, directories with a trailing /. " +
 			"Does not apply .gitignore.",

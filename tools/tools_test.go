@@ -2014,21 +2014,16 @@ func assertObject(t *testing.T, where string, s *schema.Schema, want map[string]
 	}
 }
 
-// TS-06-11: read_file's OutputSchema is oneOf a text read and an image read.
+// TS-06-11: read_file's OutputSchema is the text read. Spec 09 removed the
+// image branch (09-REQ-3.6); an image file is an unsupported_file error.
 func TestOutputSchemaReadFile_TS06_11(t *testing.T) {
 	s := toolByName(t, t.TempDir(), "read_file").OutputSchema
-	if s == nil || len(s.OneOf) != 2 {
-		t.Fatalf("OutputSchema = %+v, want oneOf with two branches", s)
+	if s == nil || len(s.OneOf) != 0 {
+		t.Fatalf("OutputSchema = %+v, want one object schema", s)
 	}
-	assertObject(t, "read_file text", s.OneOf[0], map[string]prop{
+	assertObject(t, "read_file", s, map[string]prop{
 		"content":  {schema.TypeString, true},
 		"encoding": {schema.TypeString, true},
-	})
-	assertObject(t, "read_file image", s.OneOf[1], map[string]prop{
-		"note":      {schema.TypeString, true},
-		"mime_type": {schema.TypeString, true},
-		"width":     {schema.TypeInteger, true},
-		"height":    {schema.TypeInteger, true},
 	})
 }
 

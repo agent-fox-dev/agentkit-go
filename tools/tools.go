@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -343,8 +344,8 @@ func (f *fileTools) markTableRevalidateAll() {
 func (f *fileTools) readFile() core.Tool {
 	return core.Tool{
 		Name: "read_file",
-		Description: "Read a file. Text is returned as at most 2000 lines or 50KB, " +
-			"whichever comes first; an image is returned as a note plus the image itself.",
+		Description: "Read a text file. At most 2000 lines or 50KB are returned, " +
+			"whichever comes first.",
 		Builtin: true,
 		InputSchema: schema.Object(
 			schema.Prop("path", schema.String("Path to the file (relative to the workspace, or absolute)")),
@@ -352,17 +353,7 @@ func (f *fileTools) readFile() core.Tool {
 			schema.Opt("limit", schema.Int("Maximum lines to return")),
 		),
 		PromptGuidelines: []string{"Read a file before editing it."},
-		// A text read and an image read return different Data; exactly one
-		// branch matches any result (06-REQ-4.1).
-		OutputSchema: schema.OneOf(
-			schema.Object(schema.Prop("content", schema.String()), schema.Prop("encoding", schema.String())),
-			schema.Object(
-				schema.Prop("note", schema.String()),
-				schema.Prop("mime_type", schema.String()),
-				schema.Prop("width", schema.Int()),
-				schema.Prop("height", schema.Int()),
-			),
-		),
+		OutputSchema:     schema.Object(schema.Prop("content", schema.String()), schema.Prop("encoding", schema.String())),
 		Execute: func(ctx context.Context, in json.RawMessage) core.ToolResult {
 			var a struct {
 				Path   string `json:"path"`
@@ -392,6 +383,16 @@ func (f *fileTools) readFile() core.Tool {
 			}
 			defer fh.Close()
 			br := bufio.NewReaderSize(fh, 64<<10)
+
+			// Images are detected by MAGIC BYTES, never by extension:
+			// `screenshot.txt` is still a PNG if its first eight bytes say so,
+			// and splitting one into "lines" hands the model kilobytes of
+			// mojibake. Only the head is peeked.
+			head, _ := br.Peek(imageSniffBytes)
+			if format := imageFormat(head); format != "" {
+				return core.ErrResult("unsupported_file", fmt.Sprintf(
+					"%s is a %s image: reading images is not supported", f.ws.Rel(abs), format))
+			}
 
 			// 1-based, with 0 aliased to 1 (ruling P-21).
 			from := a.Offset
@@ -462,6 +463,26 @@ func (f *fileTools) readFile() core.Tool {
 			return r
 		},
 	}
+}
+
+// imageSniffBytes is how much of a file's head imageFormat needs. The longest
+// signature it knows (RIFF....WEBP) is twelve bytes.
+const imageSniffBytes = 16
+
+// imageFormat names the image format whose signature head begins with, or
+// returns "" for anything else.
+func imageFormat(head []byte) string {
+	switch {
+	case bytes.HasPrefix(head, []byte("\x89PNG\r\n\x1a\n")):
+		return "PNG"
+	case bytes.HasPrefix(head, []byte{0xff, 0xd8, 0xff}):
+		return "JPEG"
+	case bytes.HasPrefix(head, []byte("GIF87a")), bytes.HasPrefix(head, []byte("GIF89a")):
+		return "GIF"
+	case len(head) >= 12 && bytes.HasPrefix(head, []byte("RIFF")) && string(head[8:12]) == "WEBP":
+		return "WebP"
+	}
+	return ""
 }
 
 // EditFileMaxBytes is the largest file edit_file will load. The tool holds

@@ -7,7 +7,6 @@ package tools_test
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -184,8 +183,8 @@ func TestErrorCodesFailures_TS06_29(t *testing.T) {
 // the same JSON a programmatic caller would decode.
 //
 // The schema is checked as the value of a property rather than as the root:
-// schema.Validate walks a root schema's properties only, so a root oneOf such
-// as read_file's would never be evaluated.
+// schema.Validate walks a root schema's properties only, so a root oneOf
+// would never be evaluated.
 func validateToolData(t *testing.T, tool core.Tool, data map[string]any) {
 	t.Helper()
 	if tool.OutputSchema == nil {
@@ -207,23 +206,12 @@ func validateToolData(t *testing.T, tool core.Tool, data map[string]any) {
 	}
 }
 
-// onePixelPNG is a 1x1 transparent PNG.
-const onePixelPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk" +
-	"YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
-
 // TS-06-22: every built-in tool's successful Data conforms to its declared
 // OutputSchema, across the result shapes each one has: empty results,
-// truncation notes, both read_file variants.
+// truncation notes.
 // 06-REQ-9.1.
 func TestConformanceSuccessDataMatchesOutputSchema_TS06_22(t *testing.T) {
 	root := conformanceWorkspace(t)
-	png, err := base64.StdEncoding.DecodeString(onePixelPNG)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "pixel.png"), png, 0o644); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.Mkdir(filepath.Join(root, "empty"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +220,6 @@ func TestConformanceSuccessDataMatchesOutputSchema_TS06_22(t *testing.T) {
 	type call struct{ tool, args string }
 	calls := []call{
 		{"read_file", `{"path":"main.go"}`},
-		{"read_file", `{"path":"pixel.png"}`},
 		{"write_file", `{"path":"new.txt","content":"hello\n"}`},
 		{"edit_file", `{"path":"new.txt","edits":[{"old_string":"hello","new_string":"bye"}]}`},
 		{"list_files", `{}`},

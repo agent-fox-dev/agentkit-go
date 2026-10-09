@@ -81,6 +81,15 @@ tracer. They now assert the same linkage on the event stream:
 (nested tracing) tested the deleted hooks themselves and were removed, as the
 source PRD (§8) directs.
 
+## 09-REQ-3.6: two earlier pins of `read_file` changed with it
+
+TS-06-11 (`TestOutputSchemaReadFile_TS06_11`) pinned read_file's output schema
+as a `oneOf` with an image branch, and TS-02-58
+(`TestRootModuleStdlibOnly_TS02_58`) pinned its description, which promised an
+image. 09-REQ-3.6 removes both on purpose. The two tests now pin the text-only
+schema and the new description (`tools/tools.go`, `readFile`). An image file
+is the `unsupported_file` error that TS-09-6 and TS-09-7 check.
+
 ## `core.MarshalEvent` has no shipped message encoder
 
 `core.MarshalEvent` (`core/eventjson.go:22`) takes a `core.MessageEncoder`.
