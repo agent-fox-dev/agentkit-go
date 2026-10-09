@@ -83,3 +83,21 @@ survives were ported to `New`.
 - TS-11-14's deduplication, and the breakpoints on the system prompt, tools
   and last user block, were in place before this task; only the prefix
   assertions failed first.
+
+## 11-REQ-5: pruning and the context window
+
+- **The window check is not conditional on `Prune`.** 11-REQ-5.5 reads "after
+  pruning"; the driver checks the estimate before every request, pruned or
+  not (`outboundView` in `loop.go`), since a request larger than the window
+  fails at the API either way.
+- **What the estimate counts.** The anchor is the latest assistant message
+  whose usage reports a context size (`Usage.ContextTokens`). The 4
+  characters per token are counted over each message's JSON form, and the
+  unanchored fallback counts `Config.Prefix` with the transcript. After
+  pruning, the anchored estimate is lowered by the elided bytes that the
+  anchor's usage had counted.
+- **Turns.** A turn is an assistant message and the results that answer it;
+  with N assistant messages in the view, results of turns before
+  `N - KeepTurns` are elided. "Original bytes" is the length of the result's
+  text.
+- TS-11-17 checks declarations from task 1 and passed before this task.

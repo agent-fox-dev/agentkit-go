@@ -168,7 +168,7 @@
       "done_when": [
         "`go test -run 'TS-11-(1[7-9]|2[0-1])$' ./...` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,

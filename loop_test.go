@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"reflect"
 	"strings"
 	"sync"
@@ -829,5 +830,179 @@ func TestSystemPromptDeduplicatesGuidelines_TS11_14(t *testing.T) {
 	}
 	if got := fp.Requests()[0].System; len(got) != 1 || got[0].(core.TextBlock).Text != sys {
 		t.Fatalf("system sent = %v, want the assembled prompt", got)
+	}
+}
+
+// ------------------------------------------------------------------- 11-REQ-5
+
+// TS-11-17: PruneOptions carries the threshold and the turns kept whole.
+func TestPruneOptionsFields_TS11_17(t *testing.T) {
+	opts := PruneOptions{Threshold: 0.35, KeepTurns: 2}
+	if opts.Threshold != 0.35 || opts.KeepTurns != 2 {
+		t.Fatalf("opts = %+v", opts)
+	}
+}
+
+// bigResult is a tool whose result text is n bytes long.
+func bigResult(name string, n int) core.Tool {
+	return core.Tool{Name: name, InputSchema: schema.Object(),
+		Execute: func(context.Context, json.RawMessage) core.ToolResult {
+			return core.ToolResult{OK: true, Text: strings.Repeat("x", n)}
+		}}
+}
+
+// heavyTurn is a tool-call turn whose usage says the context is already
+// large, so the next request's anchored estimate is too.
+func heavyTurn(tokens int64, calls ...core.ContentBlock) faux.Turn {
+	return faux.Turn{Blocks: calls, StopReason: core.StopReasonToolUse, Usage: core.Usage{InputTokens: tokens}}
+}
+
+func toolResultIn(msgs core.Messages, id string) (core.ToolResultMessage, bool) {
+	for _, m := range msgs {
+		if tr, ok := m.(core.ToolResultMessage); ok && tr.ToolUseID == id {
+			return tr, true
+		}
+	}
+	return core.ToolResultMessage{}, false
+}
+
+// TS-11-18: past the threshold, results older than KeepTurns are elided in
+// the request; recent ones are sent whole.
+func TestPruningElidesOldToolResults_TS11_18(t *testing.T) {
+	fp := faux.New(
+		heavyTurn(400_000, faux.FauxToolCall("call_1", "toolA", `{}`)),
+		heavyTurn(400_000, faux.FauxToolCall("call_2", "toolA", `{}`)),
+		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("done")),
+	)
+	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{bigResult("toolA", 1500)},
+		Prune: PruneOptions{Threshold: 0.35, KeepTurns: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), "run query"); err != nil {
+		t.Fatal(err)
+	}
+	reqs := fp.Requests()
+	last := reqs[len(reqs)-1].Messages
+	old, ok := toolResultIn(last, "call_1")
+	if !ok || old.Content.Text() != "[result of toolA (1500 bytes) elided; call again if needed]" {
+		t.Fatalf("call_1 sent as %q, want the elision notice", old.Content.Text())
+	}
+	recent, ok := toolResultIn(last, "call_2")
+	if !ok || recent.Content.Text() != strings.Repeat("x", 1500) {
+		t.Fatalf("call_2 sent as %q, want it whole", recent.Content.Text())
+	}
+	// Below the threshold nothing is pruned: the second request's estimate
+	// is anchored at 400k of a 1M window too, but there is no older turn.
+	if tr, _ := toolResultIn(reqs[1].Messages, "call_1"); tr.Content.Text() != strings.Repeat("x", 1500) {
+		t.Fatalf("call_1 was pruned while it was within KeepTurns: %q", tr.Content.Text())
+	}
+}
+
+// TS-11-19: whatever is pruned, every result in a request still pairs with
+// the tool_use before it.
+func TestPruningKeepsToolUsePairing_TS11_19(t *testing.T) {
+	r := rand.New(rand.NewSource(19))
+	for trial := 0; trial < 10; trial++ {
+		var turns []faux.Turn
+		n := 2 + r.Intn(5)
+		for i := 0; i < n; i++ {
+			var calls []core.ContentBlock
+			for j := 0; j <= r.Intn(3); j++ {
+				calls = append(calls, faux.FauxToolCall(fmt.Sprintf("t%d_c%d", i, j), "toolA", `{}`))
+			}
+			turns = append(turns, heavyTurn(400_000, calls...))
+		}
+		fp := faux.New(turns...)
+		a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{bigResult("toolA", 100+r.Intn(2000))},
+			Prune: PruneOptions{Threshold: 0.35, KeepTurns: r.Intn(3)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.Run(context.Background(), "go"); err != nil {
+			t.Fatal(err)
+		}
+		elided := 0
+		for _, req := range fp.Requests() {
+			pending := map[string]bool{}
+			for _, m := range req.Messages {
+				switch v := m.(type) {
+				case core.AssistantMessage:
+					for _, b := range v.Content {
+						if tu, ok := b.(core.ToolUseBlock); ok {
+							pending[tu.ID] = true
+						}
+					}
+				case core.ToolResultMessage:
+					if !pending[v.ToolUseID] {
+						t.Fatalf("trial %d: result %s has no tool_use before it", trial, v.ToolUseID)
+					}
+					delete(pending, v.ToolUseID)
+					if strings.Contains(v.Content.Text(), "elided") {
+						elided++
+					}
+				}
+			}
+			if len(pending) > 0 {
+				t.Fatalf("trial %d: tool_use without a result: %v", trial, pending)
+			}
+		}
+		if n > 2 && elided == 0 {
+			t.Fatalf("trial %d: %d turns and nothing was pruned", trial, n)
+		}
+	}
+}
+
+// TS-11-20: pruning changes the request, never the transcript.
+func TestPruningLeavesTheTranscriptIntact_TS11_20(t *testing.T) {
+	fp := faux.New(
+		heavyTurn(400_000, faux.FauxToolCall("c1", "toolA", `{}`)),
+		heavyTurn(400_000, faux.FauxToolCall("c2", "toolA", `{}`)),
+		heavyTurn(400_000, faux.FauxToolCall("c3", "toolA", `{}`)),
+		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("done")),
+	)
+	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{bigResult("toolA", 800)},
+		Prune: PruneOptions{Threshold: 0.35, KeepTurns: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "long workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr, _ := toolResultIn(fp.Requests()[3].Messages, "c1"); !strings.Contains(tr.Content.Text(), "elided") {
+		t.Fatal("nothing was pruned; the test proves nothing")
+	}
+	for _, m := range a.Messages() {
+		if tr, ok := m.(core.ToolResultMessage); ok && tr.Content.Text() != strings.Repeat("x", 800) {
+			t.Fatalf("transcript result %s = %q, want it whole", tr.ToolUseID, tr.Content.Text())
+		}
+	}
+	if !reflect.DeepEqual(a.Messages(), res.Messages) {
+		t.Fatal("RunResult.Messages differs from the transcript")
+	}
+}
+
+// TS-11-21: a request still larger than the context window after pruning
+// ends the run with an error naming the model and the window.
+func TestContextOverflowEndsTheRun_TS11_21(t *testing.T) {
+	fp := faux.New(
+		heavyTurn(2_000_000, faux.FauxToolCall("c1", "toolA", `{}`)),
+		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("never")),
+	)
+	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{bigResult("toolA", 10)},
+		Prune: PruneOptions{Threshold: 0.35, KeepTurns: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "prompt")
+	if res.StopReason != core.RunStopError || res.Error == nil || !errors.Is(err, res.Error) {
+		t.Fatalf("result = %q, %v; want an error stop", res.StopReason, res.Error)
+	}
+	if msg := res.Error.Error(); !strings.Contains(msg, driverModel) || !strings.Contains(msg, "context window") {
+		t.Fatalf("error %q does not name the model and its context window", msg)
+	}
+	if fp.Calls() != 1 {
+		t.Fatalf("%d requests; the oversized one must not be sent", fp.Calls())
 	}
 }

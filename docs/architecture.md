@@ -83,7 +83,9 @@ Agent.Run / Stream
   └─ runLoop (loop.go)
        per turn:
          1. build Request: the assembled system prompt, the tools,
-            Config.Prefix, then the transcript
+            Config.Prefix, then the transcript — with old tool results
+            elided past Config.Prune's threshold, and refused when the
+            estimate exceeds the model's context window
          2. ProviderClient.Stream (Config.Provider, or the Anthropic
             provider over Config.Client) ── provider/anthropic repairs the
             transcript, encodes the wire body itself (exact bytes), sends

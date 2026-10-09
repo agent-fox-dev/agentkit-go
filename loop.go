@@ -2,6 +2,7 @@ package agentkit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -136,7 +137,14 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial core.U
 	s.Push(core.AgentStartEvent{Provider: a.model.Provider, API: a.model.API, Model: a.model.ID})
 
 	for {
-		view := a.Messages()
+		// The request's view: the transcript, with old tool results elided
+		// when it is large, and refused outright when even that cannot fit.
+		// Sending a request the model cannot hold only buys an HTTP 400.
+		view, err := a.outboundView(a.Messages())
+		if err != nil {
+			runReason, runErr = core.RunStopError, err
+			break
+		}
 
 		s.Push(core.TurnStartEvent{TurnIndex: turnCount})
 		assistant := a.callModel(ctx, s, view, report)
@@ -222,6 +230,98 @@ func (a *Agent) record(run *core.Messages, msgs ...core.Message) {
 	a.transcript = append(a.transcript, msgs...)
 	a.mu.Unlock()
 	*run = append(*run, msgs...)
+}
+
+// charsPerToken is the estimate's exchange rate where no usage report
+// anchors it.
+const charsPerToken = 4
+
+// elisionNotice replaces a pruned tool result's content in the request.
+const elisionNotice = "[result of %s (%d bytes) elided; call again if needed]"
+
+// outboundView is the message list a request sends: msgs, pruned when
+// Config.Prune says the estimate is past its threshold, and refused with an
+// error naming the model and its window when the estimate is still larger
+// than the window. msgs is never modified; the transcript keeps every result
+// whole.
+func (a *Agent) outboundView(msgs core.Messages) (core.Messages, error) {
+	window := int64(a.model.ContextWindow)
+	anchor, tokens := estimateTokens(a.cfg.Prefix, msgs)
+	if p := a.cfg.Prune; p.Threshold > 0 && window > 0 && float64(tokens)/float64(window) >= p.Threshold {
+		var saved int64
+		msgs, saved = pruneToolResults(msgs, p.KeepTurns, anchor)
+		tokens -= saved
+	}
+	if window > 0 && tokens > window {
+		return nil, fmt.Errorf("agentkit: the request to model %q is about %d tokens, more than its %d-token context window",
+			a.model.ID, tokens, window)
+	}
+	return msgs, nil
+}
+
+// estimateTokens is the anchored estimate of a request: the context the
+// latest assistant message's usage reports, plus charsPerToken for every
+// message after it. With no usage to anchor on, the prefix and messages are
+// estimated whole. anchor is the index of the anchoring message, or -1.
+func estimateTokens(prefix []core.Message, msgs core.Messages) (anchor int, tokens int64) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if am, ok := msgs[i].(core.AssistantMessage); ok && am.Usage.ContextTokens() > 0 {
+			return i, am.Usage.ContextTokens() + charTokens(msgs[i+1:])
+		}
+	}
+	return -1, charTokens(prefix) + charTokens(msgs)
+}
+
+// charTokens estimates msgs at charsPerToken of their JSON form.
+func charTokens(msgs []core.Message) int64 {
+	var n int64
+	for _, m := range msgs {
+		b, err := json.Marshal(m)
+		if err != nil {
+			continue
+		}
+		n += int64(len(b))
+	}
+	return n / charsPerToken
+}
+
+// pruneToolResults returns msgs with the content of every tool result older
+// than the last keep turns replaced by the elision notice. A turn is an
+// assistant message and the results that answer it. The results keep their
+// ToolUseID and name, so they still pair with their calls, and only the copy
+// changes. saved is the estimate the elisions take off the part of the view
+// an anchor's usage already counted (up to index anchor); results after the
+// anchor are re-estimated from the pruned view anyway.
+func pruneToolResults(msgs core.Messages, keep, anchor int) (out core.Messages, saved int64) {
+	turns := 0
+	for _, m := range msgs {
+		if _, ok := m.(core.AssistantMessage); ok {
+			turns++
+		}
+	}
+	cutoff := turns - keep // results of turns before this index are elided
+	out = make(core.Messages, len(msgs))
+	copy(out, msgs)
+	turn := -1
+	var savedChars int64
+	for i, m := range msgs {
+		switch v := m.(type) {
+		case core.AssistantMessage:
+			turn++
+		case core.ToolResultMessage:
+			if turn < 0 || turn >= cutoff {
+				continue
+			}
+			size := len(v.Content.Text())
+			notice := fmt.Sprintf(elisionNotice, v.ToolName, size)
+			v.Content = core.Content{core.TextBlock{Text: notice}}
+			out[i] = v
+			if i <= anchor {
+				savedChars += int64(size - len(notice))
+			}
+		}
+	}
+	return out, savedChars / charsPerToken
 }
 
 // abortError says why a run stopped on its context.

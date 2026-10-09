@@ -73,7 +73,12 @@ shell tool with no `Guard`.
 | `Policy` | `core.ToolPolicy`: `Tools`, `NoTools` (`all` / `builtin`), `ToolNames`, `ExcludeTools`, `CustomTools`, resolved over `Config.Tools` once, in `New`, and applied to what wrappers reach too. Non-nil empty `Policy.Tools` means no tools. |
 | `Guard` | `core.BeforeToolCall`, the authorization boundary for every call, nested ones included. Required when a shell tool is reachable (`ErrUnguardedExecute` from `New` otherwise); use `guard.Restricted` or `guard.AllowAll`. |
 | `After` | `core.AfterToolCall`. Receives the handler's `ToolResult` by value and the mutable `Result *ToolResultMessage`. `ToolResultMessage.Metadata` carries the tool's structured metadata (in the transcript and events, never sent to the model). |
+| `Prune` | `agentkit.PruneOptions{Threshold, KeepTurns}`; the zero value is off. Before each request the driver estimates its size: the context the latest assistant message's usage reports, plus 4 characters per token for the messages after it (4 characters per token over the whole view when no usage has been reported). When the estimate reaches `Threshold` of the model's context window, the content of every tool result older than the last `KeepTurns` turns is replaced in the request by `[result of NAME (N bytes) elided; call again if needed]`. The result keeps its `ToolUseID`; `Agent.Messages()` and `RunResult.Messages` keep it whole. |
 | `MaxTokens` | Output cap per response, capped at the model's output cap. Zero → `core.DefaultMaxTokens` (32768), not the model cap. |
+
+Whether or not `Prune` is set, a request whose estimate is still larger than
+the model's context window after pruning is not sent: the run ends with
+`core.RunStopError` and an error naming the model and its window.
 
 A batch's calls run concurrently, one goroutine per call, unless a tool in the
 batch is `Sequential`. Observation is the event stream `Agent.Stream` returns
