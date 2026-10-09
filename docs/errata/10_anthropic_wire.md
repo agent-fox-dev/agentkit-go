@@ -170,3 +170,19 @@ an embedder (or a test) supply credentials explicitly.
   decoder the stream uses, so a `tool_use` input keeps its bytes.
 - TS-10-28 passed before any change: `core.EventStream` never blocks its
   producer, and the provider already pushed through it.
+
+## 10-REQ-8: the golden is unindented, and checked against the transport
+
+- `testdata/golden/request_anthropic.json` holds the exact bytes the SDK
+  client hands its transport, unindented: indenting would rewrite the spacing
+  inside the replayed tool input that TS-10-33 pins. TS-10-29 compares it with
+  `BuildRequestJSON`, and the older golden tests (TS-04-54, TS-06-3,
+  TS-06-32) compare it with the captured transport bytes; the two are equal.
+- The canonical request moved to the catalog row `claude-opus-5-5` (adaptive)
+  and gained a second system block, a prefix, a replayed tool input with its
+  own spacing, a second tool carrying an output schema, a reachable tool and
+  the terminating flag, and `EffortHigh`.
+- TS-10-31 passed against the previous fixture, which already carried
+  `strict` since the tool task.
+- Not verified against the live API: whether every schema the tools declare
+  is accepted under `strict: true`. The golden is AgentKit's own output.
