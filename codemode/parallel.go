@@ -39,11 +39,11 @@ func (c *callDescriptor) Attr(name string) (starlark.Value, error) {
 // call is the call(tool, **kwargs) builtin.
 func (r *runner) call(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if len(args) != 1 {
-		return nil, fmt.Errorf("call takes one positional argument, the tool, then keyword arguments: call(read_file, path=p)")
+		return nil, argErrorf("call takes one positional argument, the tool, then keyword arguments: call(read_file, path=p)")
 	}
 	fn, err := r.boundTool(args[0])
 	if err != nil {
-		return nil, fmt.Errorf("call: %w", err)
+		return nil, argErrorf("call: %v", err)
 	}
 	d := starlark.NewDict(len(kwargs))
 	for _, kv := range kwargs {
@@ -82,16 +82,16 @@ func (r *runner) parallel(_ *starlark.Thread, b *starlark.Builtin, args starlark
 	}
 	list, ok := seq.(starlark.Indexable)
 	if _, isStr := seq.(starlark.String); !ok || isStr {
-		return nil, fmt.Errorf("parallel takes a list of calls, got %s", seq.Type())
+		return nil, argErrorf("parallel takes a list of calls, got %s", seq.Type())
 	}
 	blocks := make([]core.ToolUseBlock, list.Len())
 	for i := range blocks {
 		name, kw, err := r.callSpec(list.Index(i))
 		if err != nil {
-			return nil, fmt.Errorf("parallel: call %d: %w", i, err)
+			return nil, argErrorf("parallel: call %d: %v", i, err)
 		}
 		if blocks[i], err = r.block(name, kw); err != nil {
-			return nil, fmt.Errorf("parallel: call %d: %w", i, err)
+			return nil, argErrorf("parallel: call %d: %v", i, err)
 		}
 	}
 	out := make([]starlark.Value, 0, len(blocks))

@@ -62,6 +62,11 @@ func execute(ctx context.Context, opts Options, bound []core.Tool, in json.RawMe
 
 // run executes the script and renders its result.
 func (r *runner) run(script string) core.ToolResult {
+	// A run whose caller already gave up does not start (08-REQ-9.5).
+	if r.ctx.Err() != nil {
+		h := r.ctxHalt()
+		return r.failure(h.code, h.detail, false)
+	}
 	r.thread = &starlark.Thread{
 		Name:  r.opts.Name,
 		Print: func(_ *starlark.Thread, msg string) { r.print(msg) },
@@ -92,7 +97,7 @@ func (r *runner) run(script string) core.ToolResult {
 		return r.failure(h.code, h.detail, h.terminate)
 	}
 	if err != nil {
-		return r.failure("script_failed", err.Error(), false)
+		return r.scriptError(err)
 	}
 	retGo, err := toGo(ret)
 	if err != nil {

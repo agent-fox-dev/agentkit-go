@@ -59,7 +59,7 @@ func (h *halt) Error() string { return h.detail }
 func (r *runner) toolFunc(t core.Tool) *starlark.Builtin {
 	return starlark.NewBuiltin(t.Name, func(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 		if len(args) > 0 {
-			return nil, fmt.Errorf("%s only accepts keyword arguments, e.g. %s(name=value)", b.Name(), b.Name())
+			return nil, argErrorf("%s only accepts keyword arguments, e.g. %s(name=value)", b.Name(), b.Name())
 		}
 		block, err := r.block(t.Name, kwargs)
 		if err != nil {
@@ -80,13 +80,13 @@ func (r *runner) block(name string, kwargs []starlark.Tuple) (core.ToolUseBlock,
 		k := string(kv[0].(starlark.String))
 		gv, err := toGo(kv[1])
 		if err != nil {
-			return core.ToolUseBlock{}, fmt.Errorf("%s: argument %s: %w", name, k, err)
+			return core.ToolUseBlock{}, argErrorf("%s: argument %s: %v", name, k, err)
 		}
 		args[k] = gv
 	}
 	raw, err := json.Marshal(args)
 	if err != nil {
-		return core.ToolUseBlock{}, fmt.Errorf("%s: %w", name, err)
+		return core.ToolUseBlock{}, argErrorf("%s: %v", name, err)
 	}
 	r.seq++
 	return core.ToolUseBlock{ID: fmt.Sprintf("codemode_%d", r.seq), Name: name, Input: raw}, nil

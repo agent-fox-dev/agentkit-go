@@ -298,7 +298,7 @@
       "done_when": [
         "`go test ./codemode/... -run 'Test(Diagnostics|Ledger)'` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
