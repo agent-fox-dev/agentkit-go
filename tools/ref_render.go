@@ -51,9 +51,9 @@ func renderReferencesText(name string, res ReferenceResult) string {
 		for _, site := range groups[path] {
 			label := renderEnclosingLabel(site.Enclosing)
 			if site.Source != "" {
-				fmt.Fprintf(&b, "\n  L%d  %s  %-*s%s", site.Line, site.Confidence, width+6, label, site.Source)
+				fmt.Fprintf(&b, "\n  L%d  %-8s  %-*s%s", site.Line, site.Confidence, width+6, label, site.Source)
 			} else {
-				fmt.Fprintf(&b, "\n  L%d  %s  %s", site.Line, site.Confidence, label)
+				fmt.Fprintf(&b, "\n  L%d  %-8s  %s", site.Line, site.Confidence, label)
 			}
 		}
 	}

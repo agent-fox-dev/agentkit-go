@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"go/ast"
 	"os"
@@ -211,7 +212,7 @@ func Run() {
 		Name:      "Ping",
 		Container: "Base",
 	}
-	sitesPing := resolveGoReferences(loadGoWorkspace(ws, nil), targetPing)
+	sitesPing := resolveGoReferences(loadGoWorkspace(context.Background(), ws, nil), targetPing, "")
 	if len(sitesPing) == 0 {
 		t.Fatal("expected at least 1 reference site for Ping")
 	}
@@ -227,7 +228,7 @@ func Run() {
 		Name:      "Read",
 		Container: "Reader",
 	}
-	sitesRead := resolveGoReferences(loadGoWorkspace(ws, nil), targetRead)
+	sitesRead := resolveGoReferences(loadGoWorkspace(context.Background(), ws, nil), targetRead, "")
 	if len(sitesRead) == 0 {
 		t.Fatal("expected at least 1 reference site for Read")
 	}
@@ -242,7 +243,7 @@ func Run() {
 		Kind: outline.KindFunc,
 		Name: "Do",
 	}
-	sitesDo := resolveGoReferences(loadGoWorkspace(ws, nil), targetDo)
+	sitesDo := resolveGoReferences(loadGoWorkspace(context.Background(), ws, nil), targetDo, "")
 	if len(sitesDo) == 0 {
 		t.Fatal("expected at least 1 reference site for Do")
 	}
@@ -302,7 +303,7 @@ func Use() {
 		Name:      "Close",
 		Container: "Alpha",
 	}
-	sites := resolveGoReferences(loadGoWorkspace(ws, nil), alphaClose)
+	sites := resolveGoReferences(loadGoWorkspace(context.Background(), ws, nil), alphaClose, "")
 	if len(sites) == 0 {
 		t.Fatal("expected at least 1 reference for Alpha.Close")
 	}
@@ -354,7 +355,7 @@ func Call(client external.Client) {
 		Name:      "Do",
 		Container: "Handler",
 	}
-	sites := resolveGoReferences(loadGoWorkspace(ws, nil), targetDo)
+	sites := resolveGoReferences(loadGoWorkspace(context.Background(), ws, nil), targetDo, "")
 	var hit *ReferenceSite
 	for i := range sites {
 		if strings.Contains(sites[i].Source, "client.Do()") {
@@ -443,5 +444,31 @@ func Compute() {
 				return true
 			})
 		}
+	}
+}
+
+// TS-05-16 (unit): same-named functions in other packages, called
+// unqualified there, and same-named local variables are not references to
+// the target; only uses of the target's own object are.
+// Verifies: 05-REQ-3.3, 05-REQ-3.4
+func TestGoTypeResolver_ExcludeSameNameOtherPackages_TS_05_16(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "go.mod", "module example.com/x\n\ngo 1.22\n")
+	writeFile(t, dir, "a/a.go", "package a\n\ntype Alpha struct{}\n\nfunc (Alpha) Close() {}\n\nfunc Run() {}\n")
+	writeFile(t, dir, "b/b.go", "package b\n\nimport \"example.com/x/a\"\n\nfunc Run() {}\n\nfunc use() {\n\ta.Run()\n\tRun()\n\tClose := 3\n\t_ = Close\n\ta.Alpha{}.Close()\n}\n")
+	ws, err := NewWorkspace(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imp := loadGoWorkspace(context.Background(), ws, nil)
+
+	runSites := resolveGoReferences(imp, outline.Decl{Kind: outline.KindFunc, Name: "Run", StartLine: 7}, "a/a.go")
+	if len(runSites) != 1 || runSites[0].Path != "b/b.go" || runSites[0].Line != 8 || runSites[0].Confidence != "resolved" {
+		t.Fatalf("a.Run sites = %+v, want only the resolved a.Run() at b/b.go:8", runSites)
+	}
+
+	closeSites := resolveGoReferences(imp, outline.Decl{Kind: outline.KindMethod, Name: "Close", Container: "Alpha", StartLine: 5}, "a/a.go")
+	if len(closeSites) != 1 || closeSites[0].Line != 12 || closeSites[0].Confidence != "resolved" {
+		t.Fatalf("Alpha.Close sites = %+v, want only the resolved call at b/b.go:12", closeSites)
 	}
 }

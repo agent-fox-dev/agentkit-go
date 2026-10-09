@@ -122,24 +122,6 @@ func inSpans(spans [][2]int, off int) bool {
 	return i < len(spans) && spans[i][0] <= off
 }
 
-// sanitizeSourceLine strips control chars, replaces tabs/spaces, trims, and caps at 200 bytes.
-func sanitizeSourceLine(line string) string {
-	line = strings.TrimSpace(line)
-	var b strings.Builder
-	for _, r := range line {
-		if r < 32 && r != '\t' {
-			b.WriteByte(' ')
-		} else {
-			b.WriteRune(r)
-		}
-	}
-	s := b.String()
-	if len(s) > 200 {
-		s = s[:200]
-	}
-	return s
-}
-
 // scanContentForMatches scans content for whole-identifier occurrences of
 // target.Name. A hit is lexical when the language's grammar places it
 // outside any comment or string; otherwise it is text.
@@ -189,7 +171,7 @@ func scanContentForMatches(path string, content []byte, target outline.Decl) []R
 				Line:       lineIdx + 1,
 				Column:     matchStart + 1,
 				Confidence: confidence,
-				Source:     sanitizeSourceLine(line),
+				Source:     sanitizeSnippet(line),
 			})
 		}
 	}

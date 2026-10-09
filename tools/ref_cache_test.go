@@ -23,8 +23,8 @@ func TestRefCache_TS05_40(t *testing.T) {
 	ft := newFileTools(Options{Workspace: ws}.withDefaults())
 
 	// Given: a newly created fileTools instance with no prior reference queries
-	if ft.refCache != nil {
-		t.Fatalf("expected ft.refCache == nil before first query, got %v", ft.refCache)
+	if ft.refCache.Load() != nil {
+		t.Fatalf("expected ft.refCache == nil before first query, got %v", ft.refCache.Load())
 	}
 
 	// When: reference cache accessor is called on first query
@@ -32,8 +32,8 @@ func TestRefCache_TS05_40(t *testing.T) {
 	if c1 == nil {
 		t.Fatal("expected reference cache to be instantiated on first query, got nil")
 	}
-	if ft.refCache != c1 {
-		t.Fatalf("expected ft.refCache == c1 (%p), got %p", c1, ft.refCache)
+	if ft.refCache.Load() != c1 {
+		t.Fatalf("expected ft.refCache == c1 (%p), got %p", c1, ft.refCache.Load())
 	}
 
 	// When: reference cache accessor is called on second query
@@ -373,7 +373,7 @@ func TestRefCache_TS05_40_QueriesReadCache(t *testing.T) {
 	if got := refSites(t, ft, `{"name":"Target"}`); len(got) != 1 {
 		t.Fatalf("first query sites = %+v, want one", got)
 	}
-	rc := ft.refCache
+	rc := ft.refCache.Load()
 	rc.mu.Lock()
 	imp1, outlined := rc.importer, rc.outlines["lib.go"] != nil
 	rc.mu.Unlock()

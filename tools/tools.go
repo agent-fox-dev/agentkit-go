@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -283,7 +284,7 @@ type fileTools struct {
 	// find_references call and marked dirty by write_file, edit_file
 	// and shell tools.
 	refCacheOnce sync.Once
-	refCache     *referenceCache
+	refCache     atomic.Pointer[referenceCache]
 
 	// testOutlineHook, when set, runs before each outline batch of a
 	// symbol-table build. Tests use it to hold a build open.
@@ -317,9 +318,9 @@ func (f *fileTools) getTable() *symbolTable {
 // getRefCache returns the shared reference cache, creating it on first call.
 func (f *fileTools) getRefCache() *referenceCache {
 	f.refCacheOnce.Do(func() {
-		f.refCache = newReferenceCache(f.ws, f)
+		f.refCache.Store(newReferenceCache(f.ws, f))
 	})
-	return f.refCache
+	return f.refCache.Load()
 }
 
 // markTableDirty marks a workspace-relative path dirty in the shared symbol
@@ -329,8 +330,8 @@ func (f *fileTools) markTableDirty(rel string) {
 	if f.table != nil {
 		f.table.markDirty(rel)
 	}
-	if f.refCache != nil {
-		f.refCache.markDirty(rel)
+	if rc := f.refCache.Load(); rc != nil {
+		rc.markDirty(rel)
 	}
 }
 
@@ -340,8 +341,8 @@ func (f *fileTools) markTableRevalidateAll() {
 	if f.table != nil {
 		f.table.markRevalidateAll()
 	}
-	if f.refCache != nil {
-		f.refCache.markRevalidateAll()
+	if rc := f.refCache.Load(); rc != nil {
+		rc.markRevalidateAll()
 	}
 }
 

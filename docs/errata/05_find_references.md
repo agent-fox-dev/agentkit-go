@@ -68,3 +68,33 @@ defaults (50 000 files, 2 s) and type-checks from disk on every call.
 `find_references` uses the tool set's `SymbolOptions` and its reference cache.
 The results are identical whenever the tool set uses the default bounds and
 neither pass reaches them (TS-05-46, TS-05-58).
+
+## A Go target is searched by type only
+
+**Spec.** Candidate files mentioning the name are scanned. Matches in
+comments, strings or files without an outline are `text`, and the header
+counts them (05-REQ-4.2, 05-REQ-4.4, 05-REQ-7.1).
+
+**Code.** When the target is declared in Go, `executeReferenceSearch`
+(`tools/references.go`) reports only the identifiers the Go resolver finds.
+Go comments and strings, and non-Go files that mention the name, are not
+scanned, so a Go target's header always shows `0 text matches`. A
+non-Go or undeclared target is scanned as the spec describes.
+
+## Non-Go results include the declaration line
+
+**Spec.** Reference sites are usages.
+
+**Code.** `scanContentForMatches` (`tools/ref_scanner.go`) has no notion of
+a definition, so for a non-Go target the line that declares it is reported
+as a `lexical` site. The Go resolver skips definitions (`classifyGoIdent`,
+`tools/ref_gotypes.go`).
+
+## Resolution after the type-check is not time-bounded
+
+**Spec.** The pass stops when `MaxDuration` is reached (05-REQ-6.4).
+
+**Code.** The budget is checked per file walked, between Go package checks
+and between scanned candidate files (`tools/ref_rank.go`,
+`tools/ref_gotypes.go`, `tools/references.go`). Walking the ASTs of the
+packages already checked, to classify identifiers, runs to completion.

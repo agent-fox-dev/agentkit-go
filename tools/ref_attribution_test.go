@@ -243,3 +243,22 @@ func TestAttribution_WiredIntoReferences_TS_05_25(t *testing.T) {
 		t.Fatalf("no Python site at line 7: %+v", pyRes.Sites)
 	}
 }
+
+// TS-05-29 (property): non-Go reference sites carry the same sanitized
+// snippet as Go sites: no control characters, tabs included.
+// Verifies: 05-REQ-5.5
+func TestAttribution_ScannerSnippet_TS_05_29(t *testing.T) {
+	content := []byte("\x01\tcalc(1)\t# tab\x7f\n")
+	sites := scanContentForMatches("x.py", content, outline.Decl{Name: "calc"})
+	if len(sites) != 1 {
+		t.Fatalf("sites = %+v, want one", sites)
+	}
+	if got, want := sites[0].Source, sanitizeSnippet("\x01\tcalc(1)\t# tab\x7f"); got != want {
+		t.Fatalf("Source = %q, want %q", got, want)
+	}
+	for _, r := range sites[0].Source {
+		if r < 0x20 || r == 0x7f {
+			t.Fatalf("Source %q has control character %q", sites[0].Source, r)
+		}
+	}
+}

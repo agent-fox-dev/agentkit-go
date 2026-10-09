@@ -262,7 +262,7 @@ func TestRefScanner_UndeclaredTargetTextConfidence_TS_05_23(t *testing.T) {
 	}
 	// Target declaration not found in symbol table: find_references searches
 	// for the bare name with the text backend.
-	res, err := executeReferenceSearch(context.Background(), ws, outline.Decl{Name: "MY_GLOBAL_VAR"}, "text", ReferenceOptions{IncludeTests: true}, SymbolOptions{}, nil)
+	res, err := executeReferenceSearch(context.Background(), ws, outline.Decl{Name: "MY_GLOBAL_VAR"}, "", "text", ReferenceOptions{IncludeTests: true}, SymbolOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

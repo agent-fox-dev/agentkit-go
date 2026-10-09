@@ -8,8 +8,10 @@ import (
 	"go/token"
 	"go/types"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/agentfox/agentkit-go/outline"
@@ -190,21 +192,21 @@ func makeTypesConfig(imp *workspaceImporter) *types.Config {
 }
 
 // loadGoWorkspace parses and type-checks every directory of ws that holds
-// Go files, until budget refuses a file.
-func loadGoWorkspace(ws *Workspace, budget *refBudget) *workspaceImporter {
+// Go files, until budget runs out or ctx ends.
+func loadGoWorkspace(ctx context.Context, ws *Workspace, budget *refBudget) *workspaceImporter {
 	imp := newWorkspaceImporter(ws, "")
-	imp.load(budget)
+	imp.load(ctx, budget)
 	return imp
 }
 
 // load parses and type-checks every directory of imp's workspace that
-// holds Go files, reusing files already in imp.parsedFiles. When budget
-// refuses a file the walk stops and the directories already seen are
-// checked.
-func (imp *workspaceImporter) load(budget *refBudget) {
+// holds Go files, reusing files already in imp.parsedFiles, in path order.
+// When budget refuses a file the walk stops; when it runs out or ctx ends
+// between package checks, the remaining directories are not checked.
+func (imp *workspaceImporter) load(ctx context.Context, budget *refBudget) {
 	ws := imp.ws
 	dirs := make(map[string]bool)
-	_ = Walk(context.Background(), ws, ws.Root, WalkOptions{}, func(rel string, d fs.DirEntry) error {
+	_ = Walk(ctx, ws, ws.Root, WalkOptions{}, func(rel string, d fs.DirEntry) error {
 		if !d.IsDir() && strings.HasSuffix(d.Name(), ".go") {
 			if !budget.take() {
 				return filepath.SkipAll
@@ -213,7 +215,10 @@ func (imp *workspaceImporter) load(budget *refBudget) {
 		}
 		return nil
 	})
-	for dir := range dirs {
+	for _, dir := range slices.Sorted(maps.Keys(dirs)) {
+		if ctx.Err() != nil || budget.expired() {
+			return
+		}
 		relDir, err := filepath.Rel(ws.Root, dir)
 		if err != nil {
 			relDir = dir
@@ -223,6 +228,16 @@ func (imp *workspaceImporter) load(budget *refBudget) {
 		}
 		_, _ = checkPackage(imp, relDir)
 	}
+}
+
+// stats returns the number of package checks behind imp and the parse
+// and type errors they collected.
+func (imp *workspaceImporter) stats() (packages, errors int) {
+	checks := make(map[*types.Info]bool)
+	for _, info := range imp.pkgInfos {
+		checks[info] = true
+	}
+	return len(checks), len(imp.errors)
 }
 
 // definesName reports whether any type-checked package declares an object named name.
@@ -285,22 +300,40 @@ func isReceiverMatching(obj types.Object, container string) bool {
 	return typeNameFromType(sig.Recv().Type()) == container
 }
 
-// findTargetObject locates target's types.Object: first among the
-// declarations of every checked package, then in package scopes.
-func (imp *workspaceImporter) findTargetObject(target outline.Decl) types.Object {
+// findTargetObject locates target's declaring types.Object: among the
+// declarations of every checked package, in targetPath (a workspace-relative
+// file) when it is not empty, preferring the earliest file and position;
+// then, failing that, in package scopes.
+func (imp *workspaceImporter) findTargetObject(target outline.Decl, targetPath string) types.Object {
+	var wantFile string
+	if targetPath != "" {
+		wantFile = filepath.Join(imp.ws.Root, filepath.FromSlash(targetPath))
+	}
+	var best types.Object
+	var bestPos token.Position
 	for _, info := range imp.pkgInfos {
 		for ident, obj := range info.Defs {
 			if obj == nil || obj.Name() != target.Name || !isReceiverMatching(obj, target.Container) {
 				continue
 			}
-			if target.StartLine > 0 && imp.fset.Position(ident.Pos()).Line != target.StartLine {
+			pos := imp.fset.Position(ident.Pos())
+			if target.StartLine > 0 && pos.Line != target.StartLine {
 				continue
 			}
-			return obj
+			if wantFile != "" && pos.Filename != wantFile {
+				continue
+			}
+			if best == nil || pos.Filename < bestPos.Filename || (pos.Filename == bestPos.Filename && pos.Offset < bestPos.Offset) {
+				best, bestPos = obj, pos
+			}
 		}
 	}
-	for _, pkg := range imp.imported {
-		if obj := lookupInScope(pkg.Scope(), target); obj != nil {
+	if best != nil {
+		return best
+	}
+	paths := slices.Sorted(maps.Keys(imp.imported))
+	for _, p := range paths {
+		if obj := lookupInScope(imp.imported[p].Scope(), target); obj != nil {
 			return obj
 		}
 	}
@@ -338,34 +371,47 @@ func lookupInScope(scope *types.Scope, target outline.Decl) types.Object {
 
 // classifyGoIdent returns the confidence of a use of the target at id, or
 // "" when id is not a reference to it. info is the types.Info of id's file
-// (nil when the file was not type-checked) and parent is id's parent node.
-func classifyGoIdent(info *types.Info, id *ast.Ident, parent ast.Node, targetObj types.Object, container string) string {
+// (nil when the file was not type-checked), parent is id's parent node and
+// targetPos the position of the target's declaring identifier (NoPos when
+// it was not found).
+//
+// Identity is by declaring position, not by object: a package is checked
+// once as an import and again with its test files over the same parsed
+// files, and instantiated generic methods are new objects, but every one of
+// those objects keeps the position of the identifier that declares it.
+func classifyGoIdent(info *types.Info, id *ast.Ident, parent ast.Node, targetPos token.Pos) string {
 	if info == nil {
 		return "lexical"
 	}
-	if sel, ok := parent.(*ast.SelectorExpr); ok && sel.Sel == id {
-		if s := info.Selections[sel]; s != nil {
-			// A selector resolved to an unrelated type (Beta.Close vs Alpha.Close) is dropped.
-			if targetObj == nil || s.Obj() == targetObj || isReceiverMatching(s.Obj(), container) {
-				return "resolved"
-			}
-			return ""
-		}
+	var used types.Object
+	if sel, ok := parent.(*ast.SelectorExpr); ok && sel.Sel == id && info.Selections[sel] != nil {
+		used = info.Selections[sel].Obj()
 	} else if info.Defs[id] != nil {
 		return "" // a declaration, not a use
+	} else {
+		used = info.Uses[id]
 	}
-	if info.Uses[id] != nil {
+	switch {
+	case used == nil:
+		// Unresolved, e.g. a selector on a stubbed external type: demoted, not dropped.
+		return "lexical"
+	case !targetPos.IsValid():
+		return "lexical" // the target's object is unknown, so nothing can be confirmed
+	case used.Pos() == targetPos:
 		return "resolved"
+	default:
+		return "" // another object of the same name
 	}
-	// Unresolved, e.g. a selector on a stubbed external type: demoted, not dropped.
-	return "lexical"
 }
 
 // resolveGoReferences finds reference sites for target in the Go sources
 // imp has checked. It only reads imp, so a cached importer can serve
 // concurrent queries.
-func resolveGoReferences(imp *workspaceImporter, target outline.Decl) []ReferenceSite {
-	targetObj := imp.findTargetObject(target)
+func resolveGoReferences(imp *workspaceImporter, target outline.Decl, targetPath string) []ReferenceSite {
+	targetPos := token.NoPos
+	if obj := imp.findTargetObject(target, targetPath); obj != nil {
+		targetPos = obj.Pos()
+	}
 
 	// Index each file's types.Info once: the file scope is recorded in
 	// the Info of every package check that included the file.
@@ -397,7 +443,7 @@ func resolveGoReferences(imp *workspaceImporter, target outline.Decl) []Referenc
 			if len(stack) > 0 {
 				parent = stack[len(stack)-1]
 			}
-			confidence := classifyGoIdent(info, id, parent, targetObj, target.Container)
+			confidence := classifyGoIdent(info, id, parent, targetPos)
 			if confidence == "" {
 				return true
 			}

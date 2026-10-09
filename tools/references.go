@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/agentfox/agentkit-go/outline"
@@ -52,60 +53,47 @@ func clampMaxResults(maxResults int) int {
 // References finds usages and callers of target across the workspace,
 // bounded by the default SymbolOptions.
 func (w *Workspace) References(ctx context.Context, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error) {
-	return executeReferenceSearch(ctx, w, target, "", opts, SymbolOptions{}, nil)
+	return executeReferenceSearch(ctx, w, target, "", "", opts, SymbolOptions{}, nil)
 }
 
 // executeReferenceSearch runs reference discovery and ranking across
-// workspace files. An empty backend is chosen from the target: "go/types"
+// workspace files. targetPath, when known, is the workspace-relative file
+// that declares target. An empty backend is chosen from the target: "go/types"
 // when a Go package declares it, "lexical" otherwise, "text" for an empty
 // name. The pass is bounded by bounds (05-REQ-6.4). rc, when non-nil,
 // supplies the checked Go packages, outlines and candidate files it has
 // cached (05-REQ-8.1).
-func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.Decl, backend string, opts ReferenceOptions, bounds SymbolOptions, rc *referenceCache) (ReferenceResult, error) {
+func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.Decl, targetPath, backend string, opts ReferenceOptions, bounds SymbolOptions, rc *referenceCache) (ReferenceResult, error) {
 	if err := ctx.Err(); err != nil {
 		return ReferenceResult{}, err
 	}
 	if ws == nil {
 		return ReferenceResult{}, errors.New("tools: nil workspace")
 	}
-
-	var scopePrefix string
-	if opts.Path != "" {
-		resolved, err := ws.Resolve(opts.Path)
-		if err != nil {
-			return ReferenceResult{}, err
-		}
-		fi, err := os.Stat(resolved)
-		if err != nil {
-			return ReferenceResult{}, fmt.Errorf("references: path %q does not exist: %w", opts.Path, err)
-		}
-		if !fi.IsDir() {
-			return ReferenceResult{}, fmt.Errorf("references: path %q is not a directory", opts.Path)
-		}
-		scopePrefix = filepath.ToSlash(ws.Rel(resolved))
-		if scopePrefix != "" && !strings.HasSuffix(scopePrefix, "/") {
-			scopePrefix += "/"
-		}
+	scopePrefix, err := referenceScope(ws, opts.Path)
+	if err != nil {
+		return ReferenceResult{}, err
 	}
 
 	budget := newRefBudget(bounds)
-	loadGo := func() *workspaceImporter {
-		if rc != nil {
-			return rc.goImporter(budget)
-		}
-		return loadGoWorkspace(ws, budget)
-	}
 	outlineOf := func(rel string) []outline.Decl { return outlineDecls(ctx, ws, rel) }
 	if rc != nil {
 		outlineOf = func(rel string) []outline.Decl { return rc.outlineDecls(ctx, rel) }
 	}
 
 	var sites []ReferenceSite
-	switch backend {
-	case "":
-		imp := loadGo()
-		sites = resolveGoReferences(imp, target)
+	var packages, typeErrors int
+	if backend == "" || backend == "go/types" {
+		var imp *workspaceImporter
+		if rc != nil {
+			imp = rc.goImporter(ctx, budget)
+		} else {
+			imp = loadGoWorkspace(ctx, ws, budget)
+		}
+		sites = resolveGoReferences(imp, target, targetPath)
+		packages, typeErrors = imp.stats()
 		switch {
+		case backend != "":
 		case len(sites) > 0 || (target.Name != "" && imp.definesName(target.Name)):
 			backend = "go/types"
 		case target.Name != "":
@@ -113,49 +101,18 @@ func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.D
 		default:
 			backend = "text"
 		}
-	case "go/types":
-		sites = resolveGoReferences(loadGo(), target)
 	}
 
 	if backend == "go/types" {
-		if scopePrefix != "" {
-			var scoped []ReferenceSite
-			for _, s := range sites {
-				if strings.HasPrefix(s.Path, scopePrefix) {
-					scoped = append(scoped, s)
-				}
-			}
-			sites = scoped
-		}
+		sites = slices.DeleteFunc(sites, func(s ReferenceSite) bool { return !strings.HasPrefix(s.Path, scopePrefix) })
 	} else {
-		var candFiles []string
-		var err error
-		if rc != nil {
-			candFiles, err = rc.getCandidateFiles(ctx, target.Name, budget)
-		} else {
-			candFiles, err = findCandidateFiles(ctx, ws, target.Name, nil, budget)
-		}
+		sites, err = scanCandidates(ctx, ws, rc, target, scopePrefix, backend == "text", budget)
 		if err != nil {
 			return ReferenceResult{}, err
 		}
-		for _, rel := range candFiles {
-			if !strings.HasPrefix(rel, scopePrefix) {
-				continue
-			}
-			if budget.expired() {
-				break
-			}
-			content, err := os.ReadFile(filepath.Join(ws.Root, filepath.FromSlash(rel)))
-			if err != nil {
-				continue
-			}
-			for _, site := range scanContentForMatches(rel, content, target) {
-				if backend == "text" {
-					site.Confidence = "text"
-				}
-				sites = append(sites, site)
-			}
-		}
+	}
+	if err := ctx.Err(); err != nil {
+		return ReferenceResult{}, err
 	}
 
 	sites = filterTestSites(sites, opts.IncludeTests)
@@ -168,8 +125,73 @@ func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.D
 		Sites:           sites,
 		Backend:         backend,
 		Partial:         budget.exhausted(),
+		PackagesChecked: packages,
+		Errors:          typeErrors,
 		Truncated:       truncated,
-		PackagesChecked: 1,
 		partialReason:   budget.partialReason(),
 	}, nil
+}
+
+// referenceScope validates path, a directory inside ws, and returns it as
+// a slash-separated workspace-relative prefix ending in "/", or "" for the
+// whole workspace.
+func referenceScope(ws *Workspace, path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	resolved, err := ws.Resolve(path)
+	if err != nil {
+		return "", err
+	}
+	fi, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("references: path %q does not exist: %w", path, err)
+	}
+	if !fi.IsDir() {
+		return "", fmt.Errorf("references: path %q is not a directory", path)
+	}
+	prefix := filepath.ToSlash(ws.Rel(resolved))
+	if prefix == "." {
+		return "", nil
+	}
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	return prefix, nil
+}
+
+// scanCandidates scans the files under scopePrefix that mention target's
+// name for whole-identifier matches, all labelled text when allText, until
+// budget runs out or ctx ends.
+func scanCandidates(ctx context.Context, ws *Workspace, rc *referenceCache, target outline.Decl, scopePrefix string, allText bool, budget *refBudget) ([]ReferenceSite, error) {
+	var candFiles []string
+	var err error
+	if rc != nil {
+		candFiles, err = rc.getCandidateFiles(ctx, target.Name, budget)
+	} else {
+		candFiles, err = findCandidateFiles(ctx, ws, target.Name, nil, budget)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var sites []ReferenceSite
+	for _, rel := range candFiles {
+		if !strings.HasPrefix(rel, scopePrefix) {
+			continue
+		}
+		if ctx.Err() != nil || budget.expired() {
+			break
+		}
+		content, err := os.ReadFile(filepath.Join(ws.Root, filepath.FromSlash(rel)))
+		if err != nil {
+			continue
+		}
+		for _, site := range scanContentForMatches(rel, content, target) {
+			if allText {
+				site.Confidence = "text"
+			}
+			sites = append(sites, site)
+		}
+	}
+	return sites, nil
 }

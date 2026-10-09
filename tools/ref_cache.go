@@ -232,8 +232,8 @@ func (rc *referenceCache) refresh(ctx context.Context) error {
 // goImporter returns the cached check of the workspace's Go packages,
 // building it under budget when there is none. Files parsed by an earlier
 // build and not dirtied since are reused. A build cut short by budget is
-// returned but not cached.
-func (rc *referenceCache) goImporter(budget *refBudget) *workspaceImporter {
+// returned but not cached, as is one interrupted by ctx.
+func (rc *referenceCache) goImporter(ctx context.Context, budget *refBudget) *workspaceImporter {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	if rc.importer != nil {
@@ -242,9 +242,9 @@ func (rc *referenceCache) goImporter(budget *refBudget) *workspaceImporter {
 	imp := newWorkspaceImporter(rc.ws, "")
 	imp.fset = rc.fset
 	maps.Copy(imp.parsedFiles, rc.parsed)
-	imp.load(budget)
+	imp.load(ctx, budget)
 	rc.parsed = maps.Clone(imp.parsedFiles)
-	if !budget.exhausted() {
+	if !budget.exhausted() && ctx.Err() == nil {
 		rc.importer = imp
 	}
 	return imp
