@@ -53,6 +53,9 @@ func New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error) {
 	opts = opts.withDefaults()
 	seen := make(map[string]bool, len(tools))
 	for _, t := range tools {
+		if err := checkBindable(t.Name); err != nil && t.Name != opts.Name {
+			return core.Tool{}, BuildInfo{}, err
+		}
 		if seen[t.Name] {
 			return core.Tool{}, BuildInfo{}, fmt.Errorf("codemode: duplicate tool name: %s", t.Name)
 		}
@@ -86,7 +89,7 @@ func New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error) {
 		ReachableTools:   tools,
 		PromptGuidelines: guidelines,
 		Execute: func(ctx context.Context, in json.RawMessage) core.ToolResult {
-			return core.ErrResult("not_implemented", "the script runner is not built yet")
+			return execute(ctx, opts, tools, in)
 		},
 	}
 	return tool, BuildInfo{

@@ -139,7 +139,7 @@
       "done_when": [
         "`go test ./codemode/... -run 'Test(Runtime|Sandbox|Binding|CallNested)'` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
