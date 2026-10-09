@@ -96,7 +96,7 @@
       "done_when": [
         "`go test ./codemode/... -run 'Test(RenderSignature|Description)'` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,

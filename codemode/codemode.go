@@ -66,6 +66,12 @@ func New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error) {
 	}
 
 	desc := opts.Description
+	if desc == "" {
+		var err error
+		if desc, err = renderDescription(tools, opts); err != nil {
+			return core.Tool{}, BuildInfo{}, err
+		}
+	}
 	guidelines := opts.Guidelines
 	if guidelines == nil {
 		guidelines = append([]string(nil), defaultGuidelines...)
