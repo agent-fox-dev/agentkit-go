@@ -82,7 +82,8 @@ type AssistantMessage struct {
 	Model         string
 	ResponseModel string
 	ResponseID    string
-	ThinkingLevel ThinkingLevel
+	// Effort is the thinking effort the turn was requested with.
+	Effort Effort
 
 	// Deferred is the REQ-PROV-19 receipt, present INSTEAD OF CONTENT when
 	// StopReason is deferred. It is persisted with the message so a

@@ -91,8 +91,9 @@ type AgentConfig struct {
 	ErrorOnLimit  bool
 	ParallelTools bool
 	ToolChoice    ToolChoice
-	ThinkingLevel ThinkingLevel
-	ToolPolicy    ToolPolicy
+	// Effort is the thinking effort sent with every request; empty sends none.
+	Effort     Effort
+	ToolPolicy ToolPolicy
 
 	BeforeToolCall BeforeToolCall
 	AfterToolCall  AfterToolCall

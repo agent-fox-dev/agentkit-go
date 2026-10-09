@@ -28,7 +28,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -316,30 +315,13 @@ func (m *modelRow) toModel(vendorID, modelID string, v *vendorRow, path string) 
 			supported++
 		}
 	}
-	out.Thinking = thinkingKind(out.ThinkingLevelMap)
+	out.Thinking = core.ThinkingKindOf(out.ThinkingLevelMap)
 	if supported > 0 && !out.Reasoning {
 		return core.Model{}, badf(path+".reasoning",
 			"false, but thinking_level_map supports %d level(s) above off; a clamp would\n"+
 				"select a level the budget and provenance paths believe cannot exist", supported)
 	}
 	return out, nil
-}
-
-// thinkingKind reads how a row takes thinking from its level map: numeric
-// wire values are budgets, anything else (low, high, max…) is an effort, and
-// a map with nothing above off is a model without thinking.
-func thinkingKind(levels map[core.ThinkingLevel]*string) core.ThinkingKind {
-	kind := core.ThinkingKindNone
-	for lvl, wire := range levels {
-		if wire == nil || lvl == core.ThinkingOff {
-			continue
-		}
-		if _, err := strconv.Atoi(strings.TrimSpace(*wire)); err == nil {
-			return core.ThinkingKindBudget
-		}
-		kind = core.ThinkingKindAdaptive
-	}
-	return kind
 }
 
 func knownThinkingLevel(l core.ThinkingLevel) bool {

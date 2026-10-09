@@ -334,7 +334,7 @@ func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRet
 	// harness's capture point, sees it — rather than in Stream. The Vertex
 	// body edits and context_management stay in Stream: they follow the
 	// client's configuration, which BuildRequest does not have.
-	applyThinking(out, m, req.ThinkingLevel)
+	applyThinking(out, m, req.Effort)
 	return out, rep, sync, nil
 }
 

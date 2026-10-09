@@ -106,3 +106,25 @@ an embedder (or a test) supply credentials explicitly.
   context-window term was already zero (spec 09).
 - TS-10-15 passed before any change: the provider already carried no model
   id, price or token limit.
+
+## 10-REQ-4: Effort replaces ThinkingLevel on the request path
+
+- `core.Effort` replaces `ThinkingLevel` on `core.Request`, `AgentConfig`
+  (`Effort`), `AssistantMessage` (provenance) and `ConfigView`;
+  `Agent.SetThinkingLevel` is `Agent.SetEffort`. The `ThinkingLevel` type
+  remains as the catalog level map's key, for spec 12 to retire.
+- **No budget on the request.** TS-10-18 sends `ThinkingBudget: 4096`. The
+  request carries only an effort; a budget model's `budget_tokens` is its
+  catalog row's budget for that effort (`claude-sonnet-4-5`: low is 4096), as
+  PRD 10 §2 describes ("the catalog row says which models still take a
+  budget"). The budget is still held below `max_tokens` and dropped below the
+  vendor minimum of 1024, both wire rules.
+- **TS-10-17's model.** The pseudocode uses `claude-sonnet-4-5`, which the
+  catalog lists as a budget model; the test uses the adaptive
+  `claude-sonnet-5-5`.
+- **"Off" is gone.** There is no effort for no thinking; an empty effort
+  omits the parameter. The rows' `off` wire values (`disabled`,
+  `between_tools`) are no longer sent, and the tests of them were removed.
+- TS-10-16 (the constants) and TS-10-19 (omission on a model without
+  thinking) passed before the encoder changed: the first checks declarations,
+  and the second was already the behaviour.

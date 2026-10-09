@@ -92,6 +92,19 @@ const (
 	APIFaux              API = "faux" // NFR-TEST-05, shipped and supported
 )
 
+// Effort is how much thinking a model puts into a turn: on an adaptive model
+// it is sent as output_config.effort, on a budget model it picks the row's
+// budget_tokens.
+type Effort string
+
+const (
+	EffortLow    Effort = "low"
+	EffortMedium Effort = "medium"
+	EffortHigh   Effort = "high"
+	EffortXHigh  Effort = "xhigh"
+	EffortMax    Effort = "max"
+)
+
 // ThinkingLevel is REQ-PROV-15's request parameter and assistant provenance.
 type ThinkingLevel string
 

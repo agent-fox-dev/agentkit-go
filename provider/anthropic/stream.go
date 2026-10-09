@@ -166,8 +166,8 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 		s: s, model: m, lookup: c.opts.BillingLookup,
 		partial: core.AssistantMessage{
 			Provider: m.Provider, API: m.API, Model: m.ID,
-			ThinkingLevel: req.ThinkingLevel,
-			Timestamp:     c.now(),
+			Effort:    req.Effort,
+			Timestamp: c.now(),
 		},
 		accs: map[int]*blockAcc{},
 	}
@@ -697,78 +697,48 @@ var effortTokens = map[string]string{
 // is a 400.
 const minThinkingBudget = 1024
 
-// applyThinking is REQ-PROV-15's Anthropic arm: a TRI-state where undefined
-// omits the key entirely and an explicit "off" sends {"type":"disabled"} —
-// when the row says the model accepts it.
+// applyThinking encodes the requested effort for m (10-REQ-4):
 //
-// The catalog row's wire value for a level decides which generation of the
-// control is sent:
+//   - an adaptive model gets {"type":"adaptive"} and output_config.effort;
+//   - a budget model gets {"type":"enabled","budget_tokens":N}, N being its
+//     catalog row's budget for that effort;
+//   - no effort, a model without thinking, or a level the row does not list
+//     sends neither key. Nothing is clamped to another level.
 //
-//   - an INTEGER is a thinking budget: {"type":"enabled","budget_tokens":N},
-//     held below max_tokens and never below the vendor minimum;
-//   - an EFFORT token (low … max) is the current control:
-//     {"type":"adaptive"} plus output_config.effort, which is what every
-//     model since Claude 4.6 takes and what budget_tokens is a 400 on.
-//
-// The requested level is CLAMPED here — upward first, then downward — and the
-// RETURNED wire value is what is priced; an unclamped level never reaches the
-// wire (REQ-PROV-15: "passing an unclamped level through is prohibited").
-//
-// `off` skips the clamp (ruling P-27: a request for some thinking is never
-// clamped down to none, and a request for none is never clamped up to some)
-// but NOT the catalog. A row that maps off to a wire value sends
-// {"type":"disabled"}; a row that records off as present-and-null, or whose
-// ladder has no off entry, omits the key — on the models that cannot stop
-// thinking, disabled is a 400, and omission is the least thinking they offer.
-// A descriptor with no ladder at all also omits: the adapter sends disabled
-// only where something says the model accepts it.
-func applyThinking(r *request, m *core.Model, requested core.ThinkingLevel) {
-	switch requested {
-	case core.ThinkingUnset:
+// The row's level map may name a different wire effort for a level (an older
+// row maps minimal to low); its value is what is sent.
+func applyThinking(r *request, m *core.Model, effort core.Effort) {
+	if effort == "" {
 		return
-	case core.ThinkingOff:
-		if w := m.ThinkingLevelMap[core.ThinkingOff]; w != nil {
-			r.Thinking = &thinking{Type: offType(*w)}
+	}
+	wire, listed := string(effort), true
+	if m.ThinkingLevelMap != nil {
+		w := m.ThinkingLevelMap[core.ThinkingLevel(effort)]
+		listed = w != nil
+		if listed {
+			wire = strings.ToLower(strings.TrimSpace(*w))
 		}
+	}
+	if !listed {
 		return
 	}
-	w := m.ThinkingLevelMap[requested]
-	if w == nil {
-		return // the model does not take this level: omit rather than clamp
+	switch m.ThinkingMode() {
+	case core.ThinkingKindBudget:
+		if n, err := strconv.Atoi(wire); err == nil {
+			applyBudget(r, n)
+		}
+	case core.ThinkingKindAdaptive:
+		e, known := effortTokens[wire]
+		if !known {
+			// An effort the model has never heard of is a 400.
+			return
+		}
+		r.Thinking = &thinking{Type: "adaptive"}
+		r.OutputConfig = &outputConfig{Effort: e}
+		// Thinking rejects any explicit temperature or top_p. Dropping them
+		// is the only option that keeps the request valid.
+		r.Temperature, r.TopP = nil, nil
 	}
-	wire := strings.ToLower(strings.TrimSpace(*w))
-
-	if n, err := strconv.Atoi(wire); err == nil {
-		applyBudget(r, n)
-		return
-	}
-	effort, known := effortTokens[wire]
-	if !known {
-		// Neither a budget nor an effort token. Omitting is the only request
-		// that is not a 400: `enabled` without budget_tokens is, and so is an
-		// effort the model has never heard of.
-		return
-	}
-	r.Thinking = &thinking{Type: "adaptive"}
-	r.OutputConfig = &outputConfig{Effort: effort}
-	// Thinking rejects any explicit temperature or top_p. Dropping them is the
-	// only option that keeps the request valid; the alternative is a 400 that
-	// names sampling and not thinking, sending the reader to the wrong knob.
-	r.Temperature, r.TopP = nil, nil
-}
-
-// offType is the thinking type sent for a request of `off`, taken from the
-// row's wire value for that level. "between_tools" is the newer way to turn
-// thinking off (Claude Sonnet 5.5): the model skips up-front thinking and only
-// the short updates between tool calls come back as thinking blocks, and
-// {"type":"disabled"} is a 400 there. Anything else that is present and
-// non-null keeps the long-standing meaning, "disabled", so a row that writes
-// any other token for off behaves as it always did.
-func offType(wire string) string {
-	if strings.ToLower(strings.TrimSpace(wire)) == "between_tools" {
-		return "between_tools"
-	}
-	return "disabled"
 }
 
 // applyBudget is the budget_tokens arm of applyThinking.

@@ -335,12 +335,12 @@ func (a *Agent) Snapshot(ctx context.Context) (core.SessionSnapshot, error) {
 		Idle:       idle,
 		SessionID:  cfg.SessionID,
 		Config: core.ConfigView{
-			ModelID:       cfg.Model.ID,
-			Provider:      cfg.Model.Provider,
-			API:           cfg.Model.API,
-			MaxTokens:     cfg.MaxTokens,
-			ThinkingLevel: cfg.ThinkingLevel,
-			ToolNames:     names,
+			ModelID:   cfg.Model.ID,
+			Provider:  cfg.Model.Provider,
+			API:       cfg.Model.API,
+			MaxTokens: cfg.MaxTokens,
+			Effort:    cfg.Effort,
+			ToolNames: names,
 		},
 		Messages: msgs,
 		Usage:    usage,
@@ -379,10 +379,10 @@ func (a *Agent) SetModel(m *core.Model) error {
 	return nil
 }
 
-// SetThinkingLevel changes the reasoning level for the next request.
-func (a *Agent) SetThinkingLevel(l core.ThinkingLevel) error {
+// SetEffort changes the thinking effort for the next request.
+func (a *Agent) SetEffort(e core.Effort) error {
 	a.mu.Lock()
-	a.cfg.ThinkingLevel = l
+	a.cfg.Effort = e
 	a.mu.Unlock()
 	return nil
 }

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -23,7 +25,8 @@ type Request struct {
 	Temperature   *float64 // REQ-PROV-16 presence
 	TopP          *float64
 	StopSequences []string
-	ThinkingLevel ThinkingLevel
+	// Effort is the thinking effort; empty sends none.
+	Effort Effort
 	// EstContextTokens is the REQ-GO-15 anchored estimate, supplied by the
 	// loop. Providers never re-walk the transcript to estimate; without this
 	// field the REQ-CAT-04 clamp is either wrong or duplicated per provider.
@@ -154,6 +157,32 @@ type Model struct {
 	ClonedFrom       string                    `json:"-"`
 	// Thinking is how the model takes extended thinking, from its catalog row.
 	Thinking ThinkingKind `json:"thinking,omitzero"`
+}
+
+// ThinkingMode is how m takes thinking: Thinking when the catalog set it,
+// else what its level map implies.
+func (m *Model) ThinkingMode() ThinkingKind {
+	if m.Thinking != "" {
+		return m.Thinking
+	}
+	return ThinkingKindOf(m.ThinkingLevelMap)
+}
+
+// ThinkingKindOf reads how a model takes thinking from its level map: token
+// counts mean budget, effort names mean adaptive, and nothing above off means
+// none.
+func ThinkingKindOf(levels map[ThinkingLevel]*string) ThinkingKind {
+	kind := ThinkingKindNone
+	for lvl, wire := range levels {
+		if wire == nil || lvl == ThinkingOff {
+			continue
+		}
+		if _, err := strconv.Atoi(strings.TrimSpace(*wire)); err == nil {
+			return ThinkingKindBudget
+		}
+		kind = ThinkingKindAdaptive
+	}
+	return kind
 }
 
 // ThinkingKind is how a model takes extended thinking.

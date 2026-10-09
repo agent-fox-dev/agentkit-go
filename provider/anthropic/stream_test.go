@@ -735,39 +735,34 @@ func TestThinkingIsATriState(t *testing.T) {
 	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{
 		core.ThinkingOff: &disabled, core.ThinkingHigh: &budget}
 
-	if got := captureBody(t, m, core.ThinkingUnset); got["thinking"] != nil {
-		t.Fatalf("thinking = %v with an unset level, want the key OMITTED", got["thinking"])
+	if got := captureBody(t, m, ""); got["thinking"] != nil {
+		t.Fatalf("thinking = %v with no effort, want the key OMITTED", got["thinking"])
 	}
-	off := captureBody(t, m, core.ThinkingOff)["thinking"].(map[string]any)
-	if off["type"] != "disabled" {
-		t.Fatalf("thinking = %v for \"off\", want {\"type\":\"disabled\"}", off)
-	}
-	on := captureBody(t, m, core.ThinkingHigh)["thinking"].(map[string]any)
+	on := captureBody(t, m, core.EffortHigh)["thinking"].(map[string]any)
 	if on["type"] != "enabled" || on["budget_tokens"] != float64(2048) {
 		t.Fatalf("thinking = %v, want the catalog row's own budget", on)
 	}
 
 	// A level the row does not price is OMITTED, never clamped and never
 	// guessed (10-REQ-4.4): max on a row that tops out at high sends nothing.
-	if got := captureBody(t, m, core.ThinkingMax)["thinking"]; got != nil {
+	if got := captureBody(t, m, core.EffortMax)["thinking"]; got != nil {
 		t.Fatalf("thinking = %v for max on a row that tops out at high, want the key omitted", got)
 	}
 	// A model with NO map has no reachable level, and the key is omitted:
 	// sending a level the model does not know is a 400, and inventing a
 	// budget is worse than not thinking.
 	m.ThinkingLevelMap = nil
-	if got := captureBody(t, m, core.ThinkingHigh)["thinking"]; got != nil {
+	if got := captureBody(t, m, core.EffortHigh)["thinking"]; got != nil {
 		t.Fatalf("thinking = %v for a model with no map, want the key omitted", got)
 	}
 }
 
 // captureBody builds and captures the wire body for one thinking level.
-func captureBody(t *testing.T, m *core.Model, level core.ThinkingLevel) map[string]any {
+func captureBody(t *testing.T, m *core.Model, effort core.Effort) map[string]any {
 	t.Helper()
-	return captureRequest(t, m, core.Request{ThinkingLevel: level})
+	return captureRequest(t, m, core.Request{Effort: effort})
 }
 
-// captureRequest captures the wire body the provider would send for req.
 func captureRequest(t *testing.T, m *core.Model, req core.Request) map[string]any {
 	t.Helper()
 	var got map[string]any
@@ -778,47 +773,6 @@ func captureRequest(t *testing.T, m *core.Model, req core.Request) map[string]an
 	}
 	run(t, m, req, anthropic.Options{}, 200, streamFixture())
 	return got
-}
-
-// TestOffConsultsTheCatalogBeforeSendingDisabled is the other half of ruling
-// P-27. `off` skips the clamp — a request for no thinking is never clamped up
-// to some — but it must not skip the ROW: on a model that cannot stop
-// thinking, {"type":"disabled"} is a 400, and the catalog records that as an
-// off entry that is present-and-null. Omitting the key is the least thinking
-// such a model offers.
-func TestOffConsultsTheCatalogBeforeSendingDisabled(t *testing.T) {
-	high := "high"
-	cases := []struct {
-		name string
-		m    map[core.ThinkingLevel]*string
-		want bool // disabled on the wire
-	}{
-		{"off maps to a value", map[core.ThinkingLevel]*string{
-			core.ThinkingOff: strp("disabled"), core.ThinkingHigh: &high}, true},
-		{"off present-and-null (Fable)", map[core.ThinkingLevel]*string{
-			core.ThinkingOff: nil, core.ThinkingHigh: &high}, false},
-		{"off absent from a ladder", map[core.ThinkingLevel]*string{
-			core.ThinkingHigh: &high}, false},
-		{"no ladder at all", nil, false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			m := testModel()
-			m.ThinkingLevelMap = c.m
-			body := captureBody(t, m, core.ThinkingOff)
-			th, present := body["thinking"].(map[string]any)
-			if c.want && (!present || th["type"] != "disabled") {
-				t.Fatalf("thinking = %v, want {\"type\":\"disabled\"}: the row says the model accepts it", body["thinking"])
-			}
-			if !c.want && present {
-				t.Fatalf("thinking = %v, want the key OMITTED: nothing says this model can be told not to think, "+
-					"and on the models that cannot, disabled is a 400", th)
-			}
-			if body["output_config"] != nil {
-				t.Fatalf("output_config = %v with off, want none", body["output_config"])
-			}
-		})
-	}
 }
 
 func strp(s string) *string { return &s }
@@ -843,15 +797,15 @@ func TestAnEffortStyleRowSendsAdaptiveThinkingAndEffort(t *testing.T) {
 		}
 	}
 	temp, topP := 0.3, 0.9
-	withSampling := func(m *core.Model, level core.ThinkingLevel) map[string]any {
-		return captureRequest(t, m, core.Request{ThinkingLevel: level, Temperature: &temp, TopP: &topP})
+	withSampling := func(m *core.Model, effort core.Effort) map[string]any {
+		return captureRequest(t, m, core.Request{Effort: effort, Temperature: &temp, TopP: &topP})
 	}
 
 	m := testModel()
 	m.MaxTokens = 64000
 	high := "high"
 	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingHigh: &high}
-	body := withSampling(m, core.ThinkingHigh)
+	body := withSampling(m, core.EffortHigh)
 	assertNeverBudgetless(body)
 	th, _ := body["thinking"].(map[string]any)
 	if th == nil || th["type"] != "adaptive" || th["budget_tokens"] != nil {
@@ -870,15 +824,15 @@ func TestAnEffortStyleRowSendsAdaptiveThinkingAndEffort(t *testing.T) {
 	// minimal has no Anthropic counterpart and is sent as low; a row that
 	// writes it as "minimal" gets the same treatment as one that writes "low".
 	minimal := "minimal"
-	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingMinimal: &minimal}
-	body = withSampling(m, core.ThinkingMinimal)
+	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingLow: &minimal}
+	body = withSampling(m, core.EffortLow)
 	if oc, _ := body["output_config"].(map[string]any); oc == nil || oc["effort"] != "low" {
 		t.Fatalf("output_config = %v for a \"minimal\" wire value, want effort low", body["output_config"])
 	}
 
 	unknown := "turbo"
 	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingHigh: &unknown}
-	body = withSampling(m, core.ThinkingHigh)
+	body = withSampling(m, core.EffortHigh)
 	assertNeverBudgetless(body)
 	if body["thinking"] != nil || body["output_config"] != nil {
 		t.Fatalf("thinking/output_config = %v/%v for a wire token that is neither a budget nor an effort, want both omitted",
@@ -898,22 +852,18 @@ func TestAShippedEffortRowReachesTheWireAsEffort(t *testing.T) {
 	for _, c := range []struct {
 		id, effort string
 		thinking   string // wire type, or "" for omitted
-		level      core.ThinkingLevel
+		level      core.Effort
 	}{
-		{"anthropic/claude-opus-5", "xhigh", "adaptive", core.ThinkingXHigh},
-		{"anthropic/claude-fable-5-1", "max", "adaptive", core.ThinkingMax},
-		{"anthropic/claude-sonnet-4-6", "", "", core.ThinkingXHigh}, // no xhigh: omitted, never clamped (10-REQ-4.4)
-		{"anthropic/claude-fable-5-1", "", "", core.ThinkingOff},    // cannot stop thinking
-		{"anthropic/claude-opus-5", "", "disabled", core.ThinkingOff},
-		{"anthropic/claude-sonnet-5-5", "", "between_tools", core.ThinkingOff}, // "disabled" is a 400 there
-		{"anthropic/claude-opus-5-5", "", "", core.ThinkingOff},                // cannot stop thinking
+		{"anthropic/claude-opus-5", "xhigh", "adaptive", core.EffortXHigh},
+		{"anthropic/claude-fable-5-1", "max", "adaptive", core.EffortMax},
+		{"anthropic/claude-sonnet-4-6", "", "", core.EffortXHigh}, // no xhigh: omitted, never clamped (10-REQ-4.4)
 	} {
 		row, ok := catalog.Lookup(c.id)
 		if !ok {
 			t.Fatalf("%s is not in the catalog", c.id)
 		}
 		m := &row
-		body := captureRequest(t, m, core.Request{ThinkingLevel: c.level, Temperature: &temp})
+		body := captureRequest(t, m, core.Request{Effort: c.level, Temperature: &temp})
 		th, _ := body["thinking"].(map[string]any)
 		if (c.thinking == "") != (th == nil) || (th != nil && th["type"] != c.thinking) {
 			t.Errorf("%s %s: thinking = %v, want type %q", c.id, c.level, body["thinking"], c.thinking)
@@ -934,7 +884,7 @@ func TestAShippedEffortRowReachesTheWireAsEffort(t *testing.T) {
 		t.Fatalf("%s is not in the catalog", "anthropic/claude-haiku-4-5")
 	}
 	haiku := &row
-	body := captureBody(t, haiku, core.ThinkingHigh)
+	body := captureBody(t, haiku, core.EffortHigh)
 	th, _ := body["thinking"].(map[string]any)
 	if th == nil || th["type"] != "enabled" || th["budget_tokens"] != float64(32768) {
 		t.Fatalf("haiku high: thinking = %v, want enabled with the row's 32768 budget", body["thinking"])
@@ -1164,7 +1114,7 @@ func TestThinkingBudgetIsHeldBelowMaxTokens(t *testing.T) {
 	budget := "4096" // larger than max_tokens: Anthropic rejects this outright
 	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingHigh: &budget}
 
-	got := captureBody(t, m, core.ThinkingHigh)
+	got := captureBody(t, m, core.EffortHigh)
 	th, _ := got["thinking"].(map[string]any)
 	if th == nil {
 		t.Fatalf("thinking omitted; 2047 is a legal budget below max_tokens %v", got["max_tokens"])
@@ -1188,7 +1138,7 @@ func TestASubMinimumBudgetOmitsThinking(t *testing.T) {
 	m.ThinkingLevelMap = map[core.ThinkingLevel]*string{core.ThinkingHigh: &budget}
 	temp := 0.4
 
-	got := captureRequest(t, m, core.Request{ThinkingLevel: core.ThinkingHigh, Temperature: &temp})
+	got := captureRequest(t, m, core.Request{Effort: core.EffortHigh, Temperature: &temp})
 	if got["thinking"] != nil {
 		t.Fatalf("thinking = %v, want the key omitted: a budget under 1024 is a 400", got["thinking"])
 	}
@@ -1198,7 +1148,7 @@ func TestASubMinimumBudgetOmitsThinking(t *testing.T) {
 
 	// The minimum itself is legal.
 	m.MaxTokens = 1025
-	got = captureBody(t, m, core.ThinkingHigh)
+	got = captureBody(t, m, core.EffortHigh)
 	th, _ := got["thinking"].(map[string]any)
 	if th == nil || th["budget_tokens"] != float64(1024) {
 		t.Fatalf("thinking = %v, want the 1024 minimum sent", got["thinking"])
@@ -1313,8 +1263,8 @@ func TestBuildRequestCarriesTheThinkingConfig(t *testing.T) {
 	}
 	m := &row
 	out, _, err := anthropic.BuildRequest(m, core.Request{
-		Messages:      core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}},
-		ThinkingLevel: core.ThinkingHigh,
+		Messages: core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}},
+		Effort:   core.EffortHigh,
 	}, core.CacheRetentionNone)
 	if err != nil {
 		t.Fatal(err)
