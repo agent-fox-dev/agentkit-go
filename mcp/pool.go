@@ -416,10 +416,10 @@ func schemaFrom(in any) *schema.Schema {
 // Unlike schemaFrom it fails rather than falling back: an input schema that
 // cannot be read still has to accept arguments, but an output schema that
 // cannot be read is a promise nobody can hold the server to, and a guessed one
-// would mislead every caller that binds to it. A schema whose root is not an
-// object of the "object" type describes a non-object structuredContent, which
-// the adapted tool returns as Data {"value": ...}; the schema is wrapped the
-// same way so that it still describes Data.
+// would mislead every caller that binds to it. A root that declares a
+// non-object type describes a non-object structuredContent, which the adapted
+// tool returns as Data {"value": ...}; the schema is wrapped the same way so
+// that it still describes Data.
 func outputSchemaFrom(in any) (*schema.Schema, error) {
 	raw, err := json.Marshal(in)
 	if err != nil {
@@ -432,11 +432,84 @@ func outputSchemaFrom(in any) (*schema.Schema, error) {
 	if v.Kind != wire.KindObject {
 		return nil, fmt.Errorf("a schema must be a JSON object, got %s", bytes.TrimSpace(raw))
 	}
-	s := convertSchema(v, 0)
-	if s.Type != schema.TypeObject {
+	s := convertOutputSchema(v, 0)
+	if s.Type != schema.TypeObject && s.Type != schema.TypeNone {
 		return schema.Object(schema.Prop("value", s)), nil
 	}
 	return s, nil
+}
+
+// convertOutputSchema is convertSchema for an output schema, with one
+// difference: a sub-schema it cannot model (a type array, anyOf, an enum
+// with no type, a nesting deeper than 16) is left unconstrained rather than
+// guessed as an object or a string. A guess is harmless for an input schema,
+// which the server checks again; for an output schema it would reject the
+// server's valid structuredContent.
+func convertOutputSchema(v wire.Value, depth int) *schema.Schema {
+	if depth > 16 || v.Kind != wire.KindObject {
+		return &schema.Schema{}
+	}
+	desc := ""
+	if d, ok := v.Get("description"); ok && d.Kind == wire.KindString {
+		desc = d.String
+	}
+	typ := ""
+	if t, ok := v.Get("type"); ok && t.Kind == wire.KindString {
+		typ = t.String
+	} else if _, hasProps := v.Get("properties"); !ok && hasProps {
+		typ = "object"
+	}
+
+	switch typ {
+	case "object":
+		props, _ := v.Get("properties")
+		required := map[string]bool{}
+		if r, ok := v.Get("required"); ok && r.Kind == wire.KindArray {
+			for _, e := range r.Array {
+				if e.Kind == wire.KindString {
+					required[e.String] = true
+				}
+			}
+		}
+		var fields []schema.Field
+		for _, key := range props.Keys {
+			sub := convertOutputSchema(props.Object[key], depth+1)
+			if required[key] {
+				fields = append(fields, schema.Prop(key, sub))
+				continue
+			}
+			fields = append(fields, schema.Opt(key, sub))
+		}
+		return schema.Object(fields...).Describe(desc)
+	case "array":
+		items, ok := v.Get("items")
+		if !ok {
+			return schema.Array(&schema.Schema{}, desc)
+		}
+		return schema.Array(convertOutputSchema(items, depth+1), desc)
+	case "integer":
+		return schema.Int(desc)
+	case "number":
+		return schema.Number(desc)
+	case "boolean":
+		return schema.Bool(desc)
+	case "null":
+		return &schema.Schema{Type: schema.TypeNull, Description: desc}
+	case "string":
+		if e, ok := v.Get("enum"); ok && e.Kind == wire.KindArray {
+			var vals []string
+			for _, x := range e.Array {
+				if x.Kind == wire.KindString {
+					vals = append(vals, x.String)
+				}
+			}
+			if len(vals) == len(e.Array) && len(vals) > 0 {
+				return schema.Enum(desc, vals...)
+			}
+		}
+		return schema.String(desc)
+	}
+	return &schema.Schema{Description: desc}
 }
 
 func convertSchema(v wire.Value, depth int) *schema.Schema {

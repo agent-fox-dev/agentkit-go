@@ -151,7 +151,9 @@ Extension axes:
 - **`core.Tool.OutputSchema` never reaches a provider.** It documents the shape
   of `ToolResult.Data` for programmatic callers; `core.ToolWire` has no such
   field, so request bodies are the same with or without it. It is not checked
-  at runtime.
+  at runtime. `schema.Validate` does not evaluate a root combinator, so to
+  check Data against a schema like `read_file`'s root `oneOf`, validate it as
+  a property's value.
 - **No global state, no `init()` registration.** Providers, plugins and tracers
   live on the config.
 - **Session entries are appended, never rewritten**; a compaction is an entry

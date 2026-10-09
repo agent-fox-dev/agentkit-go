@@ -119,3 +119,50 @@ backstop that no input can reach.
 - The test spec names constructors such as `tools.ReadFileTool(ws)` that do
   not exist. The built-in tools are reached through `tools.All`,
   `tools.FetchTool` and `subagent.Tool`.
+
+## 06-REQ-2.1, 06-REQ-2.2: output schemas are converted by `outputSchemaFrom`, not `schemaFrom`
+
+**Spec.** `adapt` converts `outputSchema` with `schemaFrom`. When conversion
+fails, the schema is dropped with a diagnostic.
+
+**Code.** `schemaFrom` never fails: on any problem it falls back to an open
+object, which is right for an input schema. `outputSchemaFrom` and
+`convertOutputSchema` (`mcp/pool.go`) handle output schemas instead.
+- A schema is malformed, and dropped with a `SeverityError` diagnostic, when it
+  cannot be marshalled, cannot be parsed, or its root is not a JSON object.
+- A sub-schema the converter does not model (a type array, `anyOf`, an
+  `enum` with no type) becomes unconstrained, so it cannot reject valid
+  `structuredContent`.
+- A root that declares a non-object type is wrapped as `{"value": ...}`, the
+  same way `Data` wraps a non-object `structuredContent` (06-REQ-3.2).
+
+Tests: TS-06-4, TS-06-5, TS-06-6 and TS-06-34, plus
+`TestANonObjectOutputSchemaDescribesTheWrappedValue` and
+`TestUnmodelledOutputSchemaKeywordsDoNotRejectValidData` in `mcp/mcp_test.go`.
+
+## 06-REQ-7.2, 06-REQ-9.6: `exec_failed` carries no Data
+
+**Spec.** The 06-REQ-9.6 contract validates `Data` for `exec_failed` as well as
+`command_exit`.
+
+**Code.** `exec_failed` means the process never started (`tools/tools.go`,
+`tools/powershell.go`), so there is no output, exit code or outcome to report.
+The result is `core.ErrResult("exec_failed", ...)` with nil `Data`. The PRD's
+Design Decision 7 validates `Data` on error paths only when it is populated.
+TS-06-27 (`TestConformanceSubprocessFailureData_TS06_27`) validates
+`command_exit` Data and asserts that `exec_failed` has none.
+
+## `find_files` returns `[]`, not `null`, for no match
+
+`find_files` started from a nil slice, so a search with no match marshalled
+`"files": null` against 06-REQ-4.5's array. TS-06-22 found it. `found` now
+starts empty (`tools/tools.go`), as `list_files` and `find_symbol` already did.
+
+## Validating a root `oneOf` with `schema.Validate`
+
+`schema.Validate` walks the root schema's properties and does not evaluate a
+root combinator. Given `read_file`'s root `oneOf`, it returns nil for any
+Data. The conformance tests and smoke tests validate a schema as the value of
+a property, `schema.Object(schema.Prop("data", tool.OutputSchema))` against
+`{"data": Data}`, so the whole schema is checked. A caller validating
+`read_file` Data has to do the same.

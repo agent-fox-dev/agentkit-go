@@ -1613,3 +1613,49 @@ func TestSmokeMCPMalformedOutputSchema_TS06_34(t *testing.T) {
 		}
 	}
 }
+
+// An output schema keyword the converter does not model — a type array,
+// anyOf, an enum with no type, type null — must not be imported as some
+// other type: valid structuredContent would then fail the imported schema.
+// What cannot be modelled is left unconstrained.
+func TestUnmodelledOutputSchemaKeywordsDoNotRejectValidData(t *testing.T) {
+	s := mcp.NewServer(mcp.ServerOptions{Info: mcp.Implementation{Name: "k", Version: "1"}})
+	must(t, s.RegisterTool(&mcp.Tool{
+		Name: "kw",
+		OutputSchema: json.RawMessage(`{"type":"object","properties":{` +
+			`"n":{"type":["string","null"]},` +
+			`"a":{"anyOf":[{"type":"string"},{"type":"integer"}]},` +
+			`"e":{"enum":["x","y"]},` +
+			`"z":{"type":"null"},` +
+			`"s":{"type":"string"},` +
+			`"o":{"properties":{"k":{"type":"integer"}},"required":["k"]}},` +
+			`"required":["n","a","e","z","s","o"]}`),
+	}, func(context.Context, map[string]any) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{
+			Content:           []mcp.Content{&mcp.TextContent{Text: "ok"}},
+			StructuredContent: map[string]any{"n": "foo", "a": 3, "e": "x", "z": nil, "s": "str", "o": map[string]any{"k": 1}},
+		}, nil
+	}))
+	_, tools := schemaPool(t, s)
+	tl := tools["srv__kw"]
+	if tl.OutputSchema == nil {
+		t.Fatal("no OutputSchema imported")
+	}
+	if tl.OutputSchema.Properties["s"].Type != schema.TypeString || tl.OutputSchema.Properties["o"].Type != schema.TypeObject {
+		t.Fatalf("modelled keywords lost their type: %+v", tl.OutputSchema.Properties)
+	}
+	res := tl.Execute(context.Background(), json.RawMessage(`{}`))
+	blob, err := json.Marshal(map[string]any{"data": res.Data})
+	must(t, err)
+	ordered, err := jsonx.DecodeOrderedObject(blob)
+	must(t, err)
+	if err := schema.Validate(schema.Object(schema.Prop("data", tl.OutputSchema)), ordered); err != nil {
+		t.Fatalf("valid structuredContent fails the imported schema: %v\n%s", err, blob)
+	}
+	// A wrong type where the server's schema is definite is still caught.
+	bad, err := jsonx.DecodeOrderedObject([]byte(`{"data":{"n":null,"a":1,"e":"x","z":null,"s":5,"o":{"k":1}}}`))
+	must(t, err)
+	if schema.Validate(schema.Object(schema.Prop("data", tl.OutputSchema)), bad) == nil {
+		t.Fatal("a number for a string property passed the imported schema")
+	}
+}

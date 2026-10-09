@@ -54,7 +54,6 @@ func (idx *Index) Tools() []core.Tool {
 	return []core.Tool{idx.codeSearchTool()}
 }
 
-// codeSearchTool builds the code_search tool definition.
 // codeSearchOutputSchema is the Data executeCodeSearch builds: files in score
 // order, each with its match count and up to three context chunks, plus the
 // index's state. symbol_sources counts files per outline backend and
@@ -93,6 +92,7 @@ func codeSearchOutputSchema() *schema.Schema {
 	)
 }
 
+// codeSearchTool builds the code_search tool definition.
 func (idx *Index) codeSearchTool() core.Tool {
 	return core.Tool{
 		Name:         "code_search",

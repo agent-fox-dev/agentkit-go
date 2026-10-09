@@ -372,9 +372,12 @@ func TestConformanceSubprocessFailureData_TS06_27(t *testing.T) {
 		res := expectError(t, context.Background(), all[name], args, "command_exit")
 		validateToolData(t, all[name], res.Data)
 	}
+	// A process that never started has no output, exit code or outcome:
+	// exec_failed carries no Data, and there is nothing to validate. See
+	// docs/errata/06_tool_output_schemas.md.
 	res := expectError(t, context.Background(), all["run_command"], `{"argv":["/nonexistent_bin_xyz"]}`, "exec_failed")
 	if res.Data != nil {
-		validateToolData(t, all["run_command"], res.Data)
+		t.Fatalf("exec_failed Data = %+v, want none", res.Data)
 	}
 }
 

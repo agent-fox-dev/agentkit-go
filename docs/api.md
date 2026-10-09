@@ -138,9 +138,13 @@ What AgentKit adds on the client:
   `per_session_call_limit`, every call and every sampling request is audited,
   and sampling is advertised and answered only for a server with
   `allow_sampling`;
-- a tool's `outputSchema` becomes `core.Tool.OutputSchema`. A non-object
-  schema is wrapped as `{"value": <schema>}`. One that is not a JSON object
-  is dropped, the tool is still imported, and `Pool.Diagnostics()` gains a
+- a tool's `outputSchema` becomes `core.Tool.OutputSchema`. A schema whose
+  root declares a type other than `object` is wrapped as
+  `{"value": <schema>}`, matching how such a result's `Data` is shaped.
+  A keyword the converter does not model, such as a type array, `anyOf`, or
+  an `enum` with no type, becomes an unconstrained schema, so it never
+  rejects valid `structuredContent`. A schema that is not a JSON object is
+  dropped, the tool is still imported, and `Pool.Diagnostics()` gains a
   `SeverityError` entry, for example
   `mcp: server "srv" tool "broken": output schema dropped: a schema must be a JSON object, got "not a valid schema object"`;
 - a call's result `Data` is the server's `structuredContent` when it is a JSON

@@ -632,6 +632,11 @@ func TestOutputSchemaSearchFiles_TS06_14(t *testing.T) {
 			t.Errorf("matches[].%s = %+v, want %s", name, p, typ)
 		}
 	}
+	for _, ctxKey := range []string{"before", "after"} {
+		if it := item.Properties[ctxKey].Items; it == nil || it.Type != schema.TypeString {
+			t.Errorf("matches[].%s items = %+v, want string", ctxKey, it)
+		}
+	}
 	if len(item.Properties) != 5 || item.IsRequired("before") || item.IsRequired("after") || !item.IsRequired("line") {
 		t.Errorf("matches[] = %v required %v, want file/line/text required, before/after optional",
 			item.PropertyList(), item.Required)
