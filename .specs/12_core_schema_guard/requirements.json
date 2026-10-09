@@ -1,0 +1,534 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "12",
+  "spec_name": "core_schema_guard",
+  "schema_version": 2,
+  "introduction": "Specification 12 streamlines the core package vocabulary to under 50 exported types and 1,600 production lines, retires jsonx by folding order-preserving schema decoding into schema.Parse with issue 87 constraint validation, reshapes guard.Check as a pure execution authorization function, and simplifies system prompt assembly.",
+  "glossary": {
+    "byte_stability": "The preservation of original argument JSON bytes without re-marshaling or key re-ordering across tool execution turns.",
+    "issue_87_constraints": "Validation checks covering strict additionalProperties: false, literal enum matching, numeric bounds, string lengths and regex patterns, and array item cardinality.",
+    "ordered_schema": "A JSON Schema representation where authored property declaration order is preserved in a slice for model visibility.",
+    "pure_guard": "An authorization function that evaluates command program safety against allowlists without side effects or coupling to hook contexts."
+  },
+  "requirements": [
+    {
+      "id": "12-REQ-1",
+      "title": "Core Message and Content Block Types",
+      "rationale": "Restricting message and content structures to active text and tool types removes legacy session baggage and eliminates untyped ordered object wrappers.",
+      "criteria": [
+        {
+          "id": "12-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "core package",
+          "action": "define Message as a sealed interface implemented exclusively by UserMessage, AssistantMessage, and ToolResultMessage structs"
+        },
+        {
+          "id": "12-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "core package",
+          "action": "define ContentBlock as an interface implemented exclusively by TextBlock, ThinkingBlock, and ToolUseBlock structs, omitting ImageBlock, RawBlock, and ToolResultBlock"
+        },
+        {
+          "id": "12-REQ-1.3",
+          "pattern": "ubiquitous",
+          "system": "UserMessage, AssistantMessage, and ToolResultMessage structs",
+          "action": "omit Unknown fields of type jsonx.OrderedObject and Deferred fields of type *DeferredHandle"
+        },
+        {
+          "id": "12-REQ-1.4",
+          "pattern": "ubiquitous",
+          "system": "ToolUseBlock struct",
+          "action": "retain ID, Name, Input of type json.RawMessage, and ThoughtSignature, while omitting InputOrder"
+        },
+        {
+          "id": "12-REQ-1.5",
+          "pattern": "ubiquitous",
+          "system": "AssistantMessage struct",
+          "action": "declare Effort for thinking configuration while omitting ThinkingLevel, API, and Provider fields"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-2",
+      "title": "Core Argument Preparation and Stability",
+      "rationale": "Retaining raw message bytes while removing jsonx dependencies guarantees stable argument serialization across tool executions.",
+      "criteria": [
+        {
+          "id": "12-REQ-2.1",
+          "pattern": "ubiquitous",
+          "system": "core package",
+          "action": "define PreparedArguments with fields Raw of type json.RawMessage, Args of type map[string]any, and Coercions of type []schema.Coercion, containing no references to jsonx"
+        },
+        {
+          "id": "12-REQ-2.2",
+          "pattern": "event_driven",
+          "condition": "PrepareArguments executes for a tool use block without argument mutations or repairs",
+          "system": "core argument preparer",
+          "action": "preserve the original ToolUseBlock.Input bytes in PreparedArguments.Raw verbatim"
+        },
+        {
+          "id": "12-REQ-2.3",
+          "pattern": "event_driven",
+          "condition": "PrepareArguments executes for a tool with a non-nil PrepareArguments function that mutates arguments",
+          "system": "core argument preparer",
+          "action": "re-encode the updated arguments and update PreparedArguments.Raw with the mutated JSON bytes"
+        },
+        {
+          "id": "12-REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "PrepareArguments encounters arguments failing validation against the tool InputSchema",
+          "system": "core argument preparer",
+          "action": "reject the call and return an error containing the schema validation failure details",
+          "contract": "returns zero-value PreparedArguments and non-nil error wrapping the schema validation issue"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-3",
+      "title": "Core Provider Interface and Request Structure",
+      "rationale": "A single streaming method signature decouples model invocation from provider registries and middleware abstractions.",
+      "criteria": [
+        {
+          "id": "12-REQ-3.1",
+          "pattern": "ubiquitous",
+          "system": "core package",
+          "action": "define ProviderClient as an interface with the single method Stream(ctx context.Context, req Request) (<-chan StreamEvent, error)"
+        },
+        {
+          "id": "12-REQ-3.2",
+          "pattern": "ubiquitous",
+          "system": "core package",
+          "action": "define StreamEvent as a struct containing Event of type Event and Err of type error"
+        },
+        {
+          "id": "12-REQ-3.3",
+          "pattern": "ubiquitous",
+          "system": "core package",
+          "action": "define Request with System of type []ContentBlock, Messages of type Messages, Tools of type []ToolWire, ToolChoice of type ToolChoice, MaxTokens of type *int, Temperature of type *float64, TopP of type *float64, StopSequences of type []string, and Effort of type Effort"
+        },
+        {
+          "id": "12-REQ-3.4",
+          "pattern": "ubiquitous",
+          "system": "core package",
+          "action": "omit legacy provider types ProviderRegistry, ProviderStreamOptions, ClientFunc, StreamFunc, APIProvider, Complete, and Dispatch"
+        },
+        {
+          "id": "12-REQ-3.5",
+          "pattern": "unwanted",
+          "condition": "Stream is called with a canceled context or invalid request parameters",
+          "system": "ProviderClient implementation",
+          "action": "return a non-nil error or emit a StreamEvent carrying the terminal error on the channel",
+          "contract": "returns a non-nil error immediately or emits a StreamEvent with non-nil Err on the returned channel"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-4",
+      "title": "Core Tool and Model Usage Types",
+      "rationale": "Trimming unneeded MCP server pointers, sampling descriptors, and multi-vendor model fields leaves a clean vocabulary for tool invocation and usage tracking.",
+      "criteria": [
+        {
+          "id": "12-REQ-4.1",
+          "pattern": "ubiquitous",
+          "system": "Tool struct",
+          "action": "retain Name, Description, InputSchema, OutputSchema, ReachableTools, Terminating, ExecutionMode, PromptGuidelines, Handler, Execute, and PrepareArguments fields"
+        },
+        {
+          "id": "12-REQ-4.2",
+          "pattern": "ubiquitous",
+          "system": "core package",
+          "action": "omit MCPServerOf helper and omit MCPServer field from Tool"
+        },
+        {
+          "id": "12-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "ToolWire struct",
+          "action": "retain Name, Description, and InputSchema fields while omitting ConstrainedSampling"
+        },
+        {
+          "id": "12-REQ-4.4",
+          "pattern": "ubiquitous",
+          "system": "Usage struct",
+          "action": "retain InputTokens, OutputTokens, CacheReadTokens, CacheWriteTokens, Requests, CostUSD, RunResult, RunStopReason, and StopReason"
+        },
+        {
+          "id": "12-REQ-4.5",
+          "pattern": "ubiquitous",
+          "system": "core package",
+          "action": "remove the ThinkingLevel enum and all its ordering comparison functions"
+        },
+        {
+          "id": "12-REQ-4.6",
+          "pattern": "ubiquitous",
+          "system": "Model struct",
+          "action": "retain ID, ContextWindow, MaxOutputTokens, InputCostPerMillion, OutputCostPerMillion, CacheReadCostPerMillion, CacheWriteCostPerMillion, and ThinkingKind while omitting API and Provider fields"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-5",
+      "title": "Core Package Slimming and Size Limits",
+      "rationale": "Deleting obsolete session and configuration files shrinks the core package vocabulary and production footprint to meet maintainability limits.",
+      "criteria": [
+        {
+          "id": "12-REQ-5.1",
+          "pattern": "ubiquitous",
+          "system": "core package",
+          "action": "delete core/history.go and remove ConversationHistory, SnapshotBranch, SessionHeader, Entry, EntryID, MessageEntry, and CompactionEntry types"
+        },
+        {
+          "id": "12-REQ-5.2",
+          "pattern": "ubiquitous",
+          "system": "core package",
+          "action": "delete core/config.go and remove AgentConfig, StopContext, StopPolicy, ContextTransform, Hooks, and QueueMode types"
+        },
+        {
+          "id": "12-REQ-5.3",
+          "pattern": "ubiquitous",
+          "system": "core package",
+          "action": "for any exported type in core, maintain total exported type count at or below 50"
+        },
+        {
+          "id": "12-REQ-5.4",
+          "pattern": "ubiquitous",
+          "system": "core package",
+          "action": "for all production Go files in core excluding tests, maintain total line count at or below 1,600 lines"
+        },
+        {
+          "id": "12-REQ-5.5",
+          "pattern": "ubiquitous",
+          "system": "root module",
+          "action": "for all production Go files across the root module excluding tests and submodules, maintain total line count at or below 20,000 lines"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-6",
+      "title": "Retirement of jsonx Package and Imports",
+      "rationale": "Folding JSON parsing into schema eliminates redundant ordered decoding implementations across the codebase.",
+      "criteria": [
+        {
+          "id": "12-REQ-6.1",
+          "pattern": "ubiquitous",
+          "system": "file system",
+          "action": "delete the jsonx directory and files jsonx/ordered.go and jsonx/ordered_probe_test.go"
+        },
+        {
+          "id": "12-REQ-6.2",
+          "pattern": "ubiquitous",
+          "system": "codebase import graph",
+          "action": "for any Go source file in core, schema, tools, and mcp, forbid importing github.com/agent-fox-dev/agentkit-go/jsonx or github.com/agentfox/agentkit-go/jsonx"
+        },
+        {
+          "id": "12-REQ-6.3",
+          "pattern": "ubiquitous",
+          "system": "codebase import graph",
+          "action": "for any Go source file in the root module, forbid importing github.com/agent-fox-dev/agentkit-go/jsonx or github.com/agentfox/agentkit-go/jsonx"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-7",
+      "title": "Order-Preserving Schema Parsing",
+      "rationale": "Parsing JSON Schema definitions with jsontext preserves model-visible property declaration order without external ordered map packages.",
+      "criteria": [
+        {
+          "id": "12-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "schema.Parse is invoked with a valid JSON Schema byte slice containing object properties",
+          "system": "schema parser",
+          "action": "decode the schema using encoding/json/jsontext and populate PropertyOrder with property keys in the exact order they appear in the source bytes"
+        },
+        {
+          "id": "12-REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "schema.Parse is invoked with a valid JSON Schema byte slice",
+          "system": "schema parser",
+          "action": "populate Schema fields Properties, Required, Type, Description, Title, Items, Enum, Const, Nullable, AnyOf, OneOf, and AllOf from corresponding JSON keywords"
+        },
+        {
+          "id": "12-REQ-7.3",
+          "pattern": "event_driven",
+          "condition": "schema.Parse encounters JSON keywords not directly modeled by Schema fields",
+          "system": "schema parser",
+          "action": "preserve the unmodeled keywords in Schema.Extra while retaining their declaration order"
+        },
+        {
+          "id": "12-REQ-7.4",
+          "pattern": "unwanted",
+          "condition": "schema.Parse is invoked with syntactically malformed JSON bytes or unclosed tokens",
+          "system": "schema parser",
+          "action": "reject parsing and return an error detailing the syntax failure",
+          "contract": "returns nil *Schema and non-nil error"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-8",
+      "title": "Schema Constraint Validation and Coercion",
+      "rationale": "Complete JSON Schema constraint validation and type coercion close issue 87 gaps for direct and code mode script execution.",
+      "criteria": [
+        {
+          "id": "12-REQ-8.1",
+          "pattern": "unwanted",
+          "condition": "Validate is called on an object containing properties not listed in Properties or PropertyOrder when AdditionalProperties has Allowed set to false",
+          "system": "schema validator",
+          "action": "reject the object and report an unpermitted property error",
+          "contract": "returns non-nil error mentioning property not allowed"
+        },
+        {
+          "id": "12-REQ-8.2",
+          "pattern": "unwanted",
+          "condition": "Validate is called on a value that does not match any declared Enum literal in value and type",
+          "system": "schema validator",
+          "action": "reject the value and report an enum mismatch error",
+          "contract": "returns non-nil error indicating value must be one of declared enum choices"
+        },
+        {
+          "id": "12-REQ-8.3",
+          "pattern": "unwanted",
+          "condition": "Validate is called on a numeric value violating declared Minimum, Maximum, ExclusiveMinimum, ExclusiveMaximum, or MultipleOf constraints",
+          "system": "schema validator",
+          "action": "reject the numeric value and report a bound violation error",
+          "contract": "returns non-nil error indicating relational constraint violation"
+        },
+        {
+          "id": "12-REQ-8.4",
+          "pattern": "unwanted",
+          "condition": "Validate is called on a string violating MinLength, MaxLength, or failing to match Pattern",
+          "system": "schema validator",
+          "action": "reject the string and report a string constraint error",
+          "contract": "returns non-nil error indicating length or regex pattern mismatch"
+        },
+        {
+          "id": "12-REQ-8.5",
+          "pattern": "unwanted",
+          "condition": "Validate is called on an array violating MinItems, MaxItems, or containing duplicate items when UniqueItems is true",
+          "system": "schema validator",
+          "action": "reject the array and report an array constraint error",
+          "contract": "returns non-nil error indicating cardinality or uniqueness violation"
+        },
+        {
+          "id": "12-REQ-8.6",
+          "pattern": "event_driven",
+          "condition": "Coerce parses string representations of valid numbers or booleans matching the target schema",
+          "system": "schema coercer",
+          "action": "convert the strings into numeric or boolean representations and record Coercion entries"
+        },
+        {
+          "id": "12-REQ-8.7",
+          "pattern": "unwanted",
+          "condition": "Coerce encounters non-standard string representations such as NaN, Inf, +5, .5, 5., or 1_0 targeting a number or integer schema",
+          "system": "schema coercer",
+          "action": "refuse numeric coercion so invalid literals are not emitted into arguments",
+          "contract": "returns unchanged value without emitting non-standard numeric literals"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-9",
+      "title": "Pure-Function Shell Guard and Hook Adapter",
+      "rationale": "Decoupling program authorization into a pure function enables host verification while providing a clean execution hook adapter.",
+      "criteria": [
+        {
+          "id": "12-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "guard package",
+          "action": "define Decision struct containing Block of type bool, Reason of type string, and Terminate of type bool"
+        },
+        {
+          "id": "12-REQ-9.2",
+          "pattern": "unwanted",
+          "condition": "Check is called with an empty argv slice",
+          "system": "shell guard",
+          "action": "return a Decision blocking execution with Reason set to empty argv and Terminate set to opts.TerminateOnBlock",
+          "contract": "returns Decision{Block: true, Reason: \"empty argv\", Terminate: opts.TerminateOnBlock}"
+        },
+        {
+          "id": "12-REQ-9.3",
+          "pattern": "unwanted",
+          "condition": "Check evaluates argv[0] containing a path separator that does not match an exact cleaned path in opts.AllowedPrograms",
+          "system": "shell guard",
+          "action": "return a Decision blocking execution with Reason reporting that the program is not on the allowlist",
+          "contract": "returns Decision{Block: true, Reason: fmt.Sprintf(\"program %q is not on the allowlist\", argv[0]), Terminate: opts.TerminateOnBlock}"
+        },
+        {
+          "id": "12-REQ-9.4",
+          "pattern": "unwanted",
+          "condition": "Check evaluates a bare program name argv[0] that does not match any bare program in opts.AllowedPrograms",
+          "system": "shell guard",
+          "action": "return a Decision blocking execution with Reason reporting that the bare program is not on the allowlist",
+          "contract": "returns Decision{Block: true, Reason: fmt.Sprintf(\"program %q is not on the allowlist\", argv[0]), Terminate: opts.TerminateOnBlock}"
+        },
+        {
+          "id": "12-REQ-9.5",
+          "pattern": "event_driven",
+          "condition": "Check evaluates argv[0] that matches an authorized entry in opts.AllowedPrograms",
+          "system": "shell guard",
+          "action": "return a Decision permitting execution with Block set to false"
+        },
+        {
+          "id": "12-REQ-9.6",
+          "pattern": "ubiquitous",
+          "system": "guard package",
+          "action": "set ShellToolNames to []string{\"execute\", \"run_command\"}"
+        },
+        {
+          "id": "12-REQ-9.7",
+          "pattern": "event_driven",
+          "condition": "Restricted creates a BeforeToolCall hook and receives a tool invocation",
+          "system": "guard Restricted adapter",
+          "action": "evaluate blocked tools, shell operators, and environment prefix assignments before delegating program evaluation to Check"
+        }
+      ]
+    },
+    {
+      "id": "12-REQ-10",
+      "title": "Simplified Prompt Assembly",
+      "rationale": "Simplifying prompt assembly removes deleted skills dependencies and ensures first-seen tool guideline deduplication.",
+      "criteria": [
+        {
+          "id": "12-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "prompt package",
+          "action": "define Build with signature func Build(system string, tools []core.Tool) string"
+        },
+        {
+          "id": "12-REQ-10.2",
+          "pattern": "event_driven",
+          "condition": "Build is called with an empty system prompt string",
+          "system": "prompt builder",
+          "action": "initialize prompt text with BaseInstructions and append UniversalGuidelines"
+        },
+        {
+          "id": "12-REQ-10.3",
+          "pattern": "event_driven",
+          "condition": "Build is called with a non-empty system prompt string",
+          "system": "prompt builder",
+          "action": "use system prompt as the opening instructions in place of BaseInstructions and UniversalGuidelines"
+        },
+        {
+          "id": "12-REQ-10.4",
+          "pattern": "event_driven",
+          "condition": "Build processes tools containing PromptGuidelines",
+          "system": "prompt builder",
+          "action": "append per-tool guidelines in first-seen order, deduplicating identical guidelines"
+        },
+        {
+          "id": "12-REQ-10.5",
+          "pattern": "event_driven",
+          "condition": "Build processes tools including execute or search tools",
+          "system": "prompt builder",
+          "action": "append ExecuteFallbackGuideline when execute is present without search tools, or append SearchOverExecuteGuideline when both execute and search tools are present"
+        },
+        {
+          "id": "12-REQ-10.6",
+          "pattern": "ubiquitous",
+          "system": "prompt package",
+          "action": "remove prompt.Input, prompt.SkillBlocks, and all imports of the skills package"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "12-PATH-1",
+      "title": "Order-preserving schema parsing and argument validation pipeline",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "submits an authored JSON Schema byte slice to schema.Parse"
+        },
+        {
+          "actor": "schema parser",
+          "action": "parses the schema using jsontext, preserves property declaration order in PropertyOrder, and returns a *Schema"
+        },
+        {
+          "actor": "model caller",
+          "action": "supplies tool call argument bytes to core.PrepareArguments for execution"
+        },
+        {
+          "actor": "core argument preparer",
+          "action": "validates arguments against schema constraints and preserves original input bytes in PreparedArguments.Raw"
+        }
+      ]
+    },
+    {
+      "id": "12-PATH-2",
+      "title": "Pure guard authorization and Restricted tool hook enforcement",
+      "steps": [
+        {
+          "actor": "driver runtime",
+          "action": "dispatches a command execution request for run_command through the guard.Restricted hook"
+        },
+        {
+          "actor": "guard Restricted adapter",
+          "action": "extracts argv arguments from the invocation map and delegates evaluation to guard.Check"
+        },
+        {
+          "actor": "shell guard",
+          "action": "evaluates argv[0] against opts.AllowedPrograms without side effects and returns a Decision"
+        },
+        {
+          "actor": "guard Restricted adapter",
+          "action": "converts the Decision into a BeforeToolCallDecision reflecting authorization or refusal reason"
+        }
+      ]
+    },
+    {
+      "id": "12-PATH-3",
+      "title": "Simplified prompt construction and model stream dispatch",
+      "steps": [
+        {
+          "actor": "driver loop",
+          "action": "invokes prompt.Build with configured tools and optional custom system instructions"
+        },
+        {
+          "actor": "prompt builder",
+          "action": "assembles opening instructions and appends deduplicated tool guidelines in first-seen order"
+        },
+        {
+          "actor": "driver loop",
+          "action": "constructs a core.Request with assembled system blocks and dispatches it via core.ProviderClient.Stream"
+        },
+        {
+          "actor": "core provider client",
+          "action": "streams StreamEvent values carrying incremental progress and terminal status"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "encoding/json/jsontext",
+      "version": "go1.27",
+      "verified": true,
+      "symbols": [
+        {
+          "name": "NewDecoder",
+          "import_path": "encoding/json/jsontext",
+          "signature": "func NewDecoder(r io.Reader, opts ...Options) *Decoder",
+          "notes": "Constructs a streaming JSON decoder on an io.Reader"
+        },
+        {
+          "name": "Decoder.ReadToken",
+          "import_path": "encoding/json/jsontext",
+          "signature": "func (d *Decoder) ReadToken() (Token, error)",
+          "notes": "Reads the next JSON syntactic token from the input stream"
+        },
+        {
+          "name": "Decoder.PeekKind",
+          "import_path": "encoding/json/jsontext",
+          "signature": "func (d *Decoder) PeekKind() Kind",
+          "notes": "Reports the kind of the next token without advancing the decoder"
+        },
+        {
+          "name": "Token.Kind",
+          "import_path": "encoding/json/jsontext",
+          "signature": "func (t Token) Kind() Kind",
+          "notes": "Returns the syntactic kind of the token"
+        }
+      ]
+    }
+  ]
+}

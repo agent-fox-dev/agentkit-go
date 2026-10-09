@@ -1,0 +1,512 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "12",
+  "spec_name": "core_schema_guard",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./core/... ./schema/... ./guard/... ./prompt/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "09_repository_cut",
+      "reason": "Removes obsolete packages (session, skills, compaction, middleware, stop), removes dead tools, and renames module path."
+    },
+    {
+      "spec": "10_anthropic_wire",
+      "reason": "Rewrites provider/anthropic over official SDK, provides anthropic.Resolve, Claude catalog.Lookup, Effort, strict tool declarations, and cache breakpoints."
+    },
+    {
+      "spec": "11_minimal_driver",
+      "reason": "Establishes agentkit.Config and minimal driver loop with prefix caching breakpoints, transcript pruning, batch execution, and termination handling."
+    },
+    {
+      "spec": "07_nested_tool_calls",
+      "reason": "Defines ReachableTools, NestedCaller, and wrapper resolution semantics preserved in core."
+    },
+    {
+      "spec": "08_code_mode",
+      "reason": "Defines Starlark code mode which validates tool arguments against schema and runs nested calls."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Prune core Message and ContentBlock types and remove jsonx dependencies",
+      "criteria": [
+        "12-REQ-1.1",
+        "12-REQ-1.2",
+        "12-REQ-1.3",
+        "12-REQ-1.4",
+        "12-REQ-1.5"
+      ],
+      "tests": [
+        "TS-12-1",
+        "TS-12-2"
+      ],
+      "steps": [
+        "In core/message.go, restrict Message implementations to UserMessage, AssistantMessage, and ToolResultMessage, and seal the interface",
+        "In core/message.go, restrict ContentBlock implementations to TextBlock, ThinkingBlock, and ToolUseBlock, deleting ImageBlock, RawBlock, and ToolResultBlock declarations",
+        "From UserMessage, AssistantMessage, and ToolResultMessage, remove Unknown jsonx.OrderedObject and Deferred *DeferredHandle fields",
+        "In ToolUseBlock, keep ID, Name, Input of type json.RawMessage, ThoughtSignature, and delete InputOrder",
+        "In AssistantMessage, replace ThinkingLevel with Effort of type Effort, and remove legacy API and Provider provenance fields",
+        "Write unit tests TS-12-1 and TS-12-2 verifying sealed interfaces and pruned struct fields"
+      ],
+      "touches": [
+        "core/message.go",
+        "core/message_test.go"
+      ],
+      "done_when": [
+        "core.Message and core.ContentBlock are sealed interfaces with specified implementors only",
+        "ImageBlock, RawBlock, ToolResultBlock, jsonx references, and ThinkingLevel are removed from core/message.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Refactor core argument preparation and guarantee byte stability",
+      "criteria": [
+        "12-REQ-2.1",
+        "12-REQ-2.2",
+        "12-REQ-2.3",
+        "12-REQ-2.4"
+      ],
+      "tests": [
+        "TS-12-3",
+        "TS-12-4",
+        "TS-12-5",
+        "TS-12-6"
+      ],
+      "steps": [
+        "In core/arguments.go, redefine PreparedArguments with Raw json.RawMessage, Args map[string]any, and Coercions []schema.Coercion, removing jsonx.OrderedObject Order",
+        "Update PrepareArguments to parse raw arguments without jsonx, preserving original ToolUseBlock.Input bytes in PreparedArguments.Raw by default",
+        "When tool.PrepareArguments mutates the argument map, re-encode to JSON and update PreparedArguments.Raw with mutated bytes",
+        "When argument validation fails against tool.InputSchema, return zero PreparedArguments and non-nil validation error",
+        "Write unit tests TS-12-3, TS-12-4, TS-12-5, and TS-12-6 verifying field definitions, byte preservation, mutation re-encoding, and schema validation failures"
+      ],
+      "touches": [
+        "core/arguments.go",
+        "core/arguments_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "PreparedArguments contains Raw, Args, and Coercions without jsonx",
+        "PrepareArguments preserves verbatim Raw bytes unless mutated by tool hook, and rejects schema violations"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Streamline core ProviderClient interface and Request model",
+      "criteria": [
+        "12-REQ-3.1",
+        "12-REQ-3.2",
+        "12-REQ-3.3",
+        "12-REQ-3.4",
+        "12-REQ-3.5"
+      ],
+      "tests": [
+        "TS-12-7",
+        "TS-12-8",
+        "TS-12-9"
+      ],
+      "steps": [
+        "In core/provider.go, redefine ProviderClient interface with single method Stream(ctx context.Context, req Request) (<-chan StreamEvent, error)",
+        "Define StreamEvent with Event Event and Err error",
+        "Define Request with System []ContentBlock, Messages Messages, Tools []ToolWire, ToolChoice ToolChoice, MaxTokens *int, Temperature *float64, TopP *float64, StopSequences []string, and Effort Effort",
+        "Delete obsolete provider abstractions: ProviderRegistry, ProviderStreamOptions, ClientFunc, StreamFunc, APIProvider, Complete, and Dispatch",
+        "Write unit tests TS-12-7, TS-12-8, and TS-12-9 verifying ProviderClient signature, deleted registry types, and Stream error reporting"
+      ],
+      "touches": [
+        "core/provider.go",
+        "core/provider_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "ProviderClient defines single Stream method returning (<-chan StreamEvent, error)",
+        "StreamEvent and Request match simplified canonical structs without registry or middleware types"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Prune core Tool, ToolWire, Usage, and Model declarations",
+      "criteria": [
+        "12-REQ-4.1",
+        "12-REQ-4.2",
+        "12-REQ-4.3",
+        "12-REQ-4.4",
+        "12-REQ-4.5",
+        "12-REQ-4.6"
+      ],
+      "tests": [
+        "TS-12-10",
+        "TS-12-11"
+      ],
+      "steps": [
+        "In core/tool.go, keep core execution fields on Tool, remove MCPServer field, and delete MCPServerOf helper",
+        "In core/tool.go, retain Name, Description, and InputSchema on ToolWire while removing ConstrainedSampling",
+        "In core/usage.go, retain Usage, RunResult, RunStopReason, and StopReason, while deleting ThinkingLevel enum and comparison predicates",
+        "In core/usage.go, retain Model tracking fields and ThinkingKind, deleting Model.API and Model.Provider",
+        "Write unit tests TS-12-10 and TS-12-11 verifying cleaned Tool, ToolWire, Usage, and Model declarations"
+      ],
+      "touches": [
+        "core/tool.go",
+        "core/usage.go",
+        "core/tool_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "done_when": [
+        "Tool, ToolWire, Usage, and Model omit legacy MCP, ConstrainedSampling, ThinkingLevel, API, and Provider fields"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Delete core history and config files and enforce vocabulary size limits",
+      "criteria": [
+        "12-REQ-5.1",
+        "12-REQ-5.2",
+        "12-REQ-5.3",
+        "12-REQ-5.4",
+        "12-REQ-5.5"
+      ],
+      "tests": [
+        "TS-12-12",
+        "TS-12-13",
+        "TS-12-14"
+      ],
+      "steps": [
+        "Delete core/history.go and its session tree types (ConversationHistory, SnapshotBranch, SessionHeader, Entry, EntryID, MessageEntry, CompactionEntry)",
+        "Delete core/config.go and its legacy configuration types (AgentConfig, StopContext, StopPolicy, ContextTransform, Hooks, QueueMode)",
+        "Audit and clean up core package exported identifiers to ensure <= 50 exported types and <= 1,600 non-test lines",
+        "Verify that root module non-test lines remain under 20,000 lines",
+        "Write unit tests TS-12-12 and TS-12-14 and property test TS-12-13 verifying deleted files/types, exported type bounds, and line count budgets"
+      ],
+      "touches": [
+        "core/history.go",
+        "core/config.go",
+        "core/size_test.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "done_when": [
+        "core/history.go and core/config.go are deleted",
+        "core exported type count is <= 50, core production lines <= 1,600, root module lines <= 20,000"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Delete jsonx package and eliminate all jsonx imports",
+      "criteria": [
+        "12-REQ-6.1",
+        "12-REQ-6.2",
+        "12-REQ-6.3"
+      ],
+      "tests": [
+        "TS-12-15",
+        "TS-12-16",
+        "TS-12-17"
+      ],
+      "steps": [
+        "Delete directory jsonx/ and files jsonx/ordered.go and jsonx/ordered_probe_test.go",
+        "Remove all jsonx imports across core, schema, tools, mcp, and other root module files",
+        "Write unit test TS-12-15 and property tests TS-12-16 and TS-12-17 verifying filesystem deletion and absence of jsonx imports"
+      ],
+      "touches": [
+        "jsonx/ordered.go",
+        "jsonx/ordered_probe_test.go",
+        "schema/impl.go",
+        "tools/conformance_test.go",
+        "tools/runner_outcome_test.go",
+        "mcp/mcp_test.go",
+        "difftest/canon.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "jsonx package directory is deleted and no source files import jsonx"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Implement order-preserving schema.Parse using jsontext",
+      "criteria": [
+        "12-REQ-7.1",
+        "12-REQ-7.2",
+        "12-REQ-7.3",
+        "12-REQ-7.4"
+      ],
+      "tests": [
+        "TS-12-18",
+        "TS-12-19",
+        "TS-12-20",
+        "TS-12-21"
+      ],
+      "steps": [
+        "In schema/schema.go, implement Parse(data []byte) (*Schema, error) using encoding/json/jsontext.NewDecoder",
+        "Traverse object tokens with jsontext, recording property keys in slice declaration order in Schema.PropertyOrder",
+        "Decode child property schemas into Properties map and populate standard keywords (Required, Type, Description, Title, Items, Enum, Const, Nullable, AnyOf, OneOf, AllOf)",
+        "Preserve unmodeled keywords in Schema.Extra while retaining key order",
+        "Reject syntactically malformed JSON bytes or unclosed tokens with a descriptive parse error",
+        "Write unit tests TS-12-18, TS-12-19, TS-12-20, and TS-12-21 verifying order preservation, keyword decoding, Extra preservation, and parse errors"
+      ],
+      "touches": [
+        "schema/schema.go",
+        "schema/parse.go",
+        "schema/parse_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "done_when": [
+        "schema.Parse decodes JSON Schema bytes using jsontext, preserving PropertyOrder and populating standard keywords and Extra"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Complete JSON schema constraint validation and safe coercion",
+      "criteria": [
+        "12-REQ-8.1",
+        "12-REQ-8.2",
+        "12-REQ-8.3",
+        "12-REQ-8.4",
+        "12-REQ-8.5",
+        "12-REQ-8.6",
+        "12-REQ-8.7"
+      ],
+      "tests": [
+        "TS-12-22",
+        "TS-12-23",
+        "TS-12-24",
+        "TS-12-25",
+        "TS-12-26",
+        "TS-12-27",
+        "TS-12-28"
+      ],
+      "steps": [
+        "In schema/impl.go, reject unknown object properties when AdditionalProperties.Allowed is false against declared Properties and PropertyOrder",
+        "Enforce exact literal value and type equality for declared Enum choices in schema.Validate",
+        "Enforce relational bounds for Minimum, Maximum, ExclusiveMinimum, ExclusiveMaximum, and MultipleOf on numeric values",
+        "Enforce string constraints for MinLength, MaxLength, and Pattern regex matching",
+        "Enforce array constraints for MinItems, MaxItems, and UniqueItems uniqueness checks",
+        "In schema.Coerce, parse primitive strings into numeric or boolean representations, recording Coercion records while refusing non-standard literals (NaN, Inf, +5, .5, 5., 1_0)",
+        "Write unit tests TS-12-22, TS-12-23, TS-12-24, TS-12-25, TS-12-26, TS-12-27, and TS-12-28 verifying constraint validations and coercion safety"
+      ],
+      "touches": [
+        "schema/impl.go",
+        "schema/issue87_test.go",
+        "schema/coerce_test.go"
+      ],
+      "depends_on": [
+        6,
+        7
+      ],
+      "done_when": [
+        "schema.Validate enforces issue 87 constraints and schema.Coerce safely converts primitives rejecting invalid literals"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Reshape shell guard as a pure authorization function and update Restricted adapter",
+      "criteria": [
+        "12-REQ-9.1",
+        "12-REQ-9.2",
+        "12-REQ-9.3",
+        "12-REQ-9.4",
+        "12-REQ-9.5",
+        "12-REQ-9.6",
+        "12-REQ-9.7"
+      ],
+      "tests": [
+        "TS-12-29",
+        "TS-12-30",
+        "TS-12-31",
+        "TS-12-32",
+        "TS-12-33",
+        "TS-12-34"
+      ],
+      "steps": [
+        "In guard/guard.go, define Decision struct with Block bool, Reason string, and Terminate bool",
+        "Update ShellToolNames to []string{\\\"execute\\\", \\\"run_command\\\"}",
+        "Implement pure function Check(argv []string, opts Options) Decision: block empty argv, match separator paths against cleaned allowlist entries, and match bare names against bare allowlist entries",
+        "Refactor Restricted(opts Options) core.BeforeToolCall to evaluate blocked tools, shell operators, and environment prefix assignments, delegating program evaluation to Check",
+        "Write unit tests TS-12-29, TS-12-30, TS-12-31, TS-12-32, TS-12-33, and TS-12-34 verifying Decision, Check authorization rules, and Restricted hook behavior"
+      ],
+      "touches": [
+        "guard/guard.go",
+        "guard/guard_test.go"
+      ],
+      "done_when": [
+        "guard.Check evaluates argv against allowlists as a pure function returning Decision",
+        "guard.ShellToolNames is [execute, run_command] and Restricted delegates program evaluation to Check"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Simplify system prompt assembly and guideline deduplication",
+      "criteria": [
+        "12-REQ-10.1",
+        "12-REQ-10.2",
+        "12-REQ-10.3",
+        "12-REQ-10.4",
+        "12-REQ-10.5",
+        "12-REQ-10.6"
+      ],
+      "tests": [
+        "TS-12-35",
+        "TS-12-36",
+        "TS-12-37"
+      ],
+      "steps": [
+        "In prompt/prompt.go, change Build signature to func Build(system string, tools []core.Tool) string",
+        "When system is empty, start with BaseInstructions and UniversalGuidelines; when non-empty, use system in place of both",
+        "Append PromptGuidelines from tools in first-seen order, deduplicating identical guidelines",
+        "Inject ExecuteFallbackGuideline when execute is present without search tools, or SearchOverExecuteGuideline when both execute and search tools are present",
+        "Delete prompt.Input, prompt.SkillBlocks, and all imports of skills package",
+        "Write unit tests TS-12-35, TS-12-36, and TS-12-37 verifying Build signature, instruction selection, guideline deduplication, and shell fallback rules"
+      ],
+      "touches": [
+        "prompt/prompt.go",
+        "prompt/prompt_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "prompt.Build signature is func Build(system string, tools []core.Tool) string",
+        "Base instructions/custom prompt override, tool guideline deduplication, and shell guideline injection work as specified",
+        "prompt.Input, prompt.SkillBlocks, and skills package imports are removed"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify end-to-end execution paths, update documentation, and perform final integration",
+      "criteria": [
+        "12-REQ-1.1",
+        "12-REQ-1.2",
+        "12-REQ-1.3",
+        "12-REQ-1.4",
+        "12-REQ-1.5",
+        "12-REQ-2.1",
+        "12-REQ-2.2",
+        "12-REQ-2.3",
+        "12-REQ-2.4",
+        "12-REQ-3.1",
+        "12-REQ-3.2",
+        "12-REQ-3.3",
+        "12-REQ-3.4",
+        "12-REQ-3.5",
+        "12-REQ-4.1",
+        "12-REQ-4.2",
+        "12-REQ-4.3",
+        "12-REQ-4.4",
+        "12-REQ-4.5",
+        "12-REQ-4.6",
+        "12-REQ-5.1",
+        "12-REQ-5.2",
+        "12-REQ-5.3",
+        "12-REQ-5.4",
+        "12-REQ-5.5",
+        "12-REQ-6.1",
+        "12-REQ-6.2",
+        "12-REQ-6.3",
+        "12-REQ-7.1",
+        "12-REQ-7.2",
+        "12-REQ-7.3",
+        "12-REQ-7.4",
+        "12-REQ-8.1",
+        "12-REQ-8.2",
+        "12-REQ-8.3",
+        "12-REQ-8.4",
+        "12-REQ-8.5",
+        "12-REQ-8.6",
+        "12-REQ-8.7",
+        "12-REQ-9.1",
+        "12-REQ-9.2",
+        "12-REQ-9.3",
+        "12-REQ-9.4",
+        "12-REQ-9.5",
+        "12-REQ-9.6",
+        "12-REQ-9.7",
+        "12-REQ-10.1",
+        "12-REQ-10.2",
+        "12-REQ-10.3",
+        "12-REQ-10.4",
+        "12-REQ-10.5",
+        "12-REQ-10.6"
+      ],
+      "tests": [
+        "TS-12-38",
+        "TS-12-39",
+        "TS-12-40"
+      ],
+      "steps": [
+        "Write and run TS-12-38 confirming end-to-end schema parsing, property order retention, and byte-stable argument validation across 12-PATH-1",
+        "Write and run TS-12-39 confirming end-to-end run_command invocation through guard.Restricted and pure guard.Check authorization across 12-PATH-2",
+        "Write and run TS-12-40 confirming end-to-end prompt assembly with deduplicated guidelines and core.ProviderClient stream dispatch across 12-PATH-3",
+        "Verify that every criterion with a contract (12-REQ-2.4, 12-REQ-3.5, 12-REQ-7.4, 12-REQ-8.1, 12-REQ-8.2, 12-REQ-8.3, 12-REQ-8.4, 12-REQ-8.5, 12-REQ-8.7, 12-REQ-9.2, 12-REQ-9.3, 12-REQ-9.4) is exercised by production paths",
+        "Rewrite README.md under 200 lines describing the hands and one driver without test function names; rewrite docs/architecture.md, docs/configuration.md, docs/DEPS.md; move agent-kit-prd.md to docs/archive/agent-kit-prd.md, create docs/archive/wires.md, and delete docs/api.md and docs/cli.md",
+        "Search touched files across core, schema, guard, and prompt for stub markers (TODO, panic(\\\"not implemented\\\")) and verify make check succeeds"
+      ],
+      "touches": [
+        "README.md",
+        "docs/architecture.md",
+        "docs/configuration.md",
+        "docs/DEPS.md",
+        "docs/archive/agent-kit-prd.md",
+        "docs/archive/wires.md",
+        "docs/api.md",
+        "docs/cli.md",
+        "core/smoke_test.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "done_when": [
+        "All smoke tests pass end to end across schema parsing, guard authorization, and prompt stream dispatch",
+        "README.md, docs/architecture.md, docs/configuration.md, docs/DEPS.md, and docs/archive are updated per PRD goals 8, 9, 10",
+        "All stub markers are removed and make check passes cleanly"
+      ],
+      "state": "pending"
+    }
+  ]
+}

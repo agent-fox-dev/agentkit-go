@@ -1,0 +1,422 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "09",
+  "spec_name": "repository_cut",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-09-1",
+      "kind": "unit",
+      "verifies": [
+        "09-REQ-1.1",
+        "09-REQ-1.2",
+        "09-REQ-1.4"
+      ],
+      "title": "Deleted provider and auxiliary packages no longer exist on the filesystem",
+      "given": [
+        "the repository filesystem"
+      ],
+      "when": "the filesystem is inspected for deleted provider and auxiliary directories and files",
+      "then": [
+        "`provider/openai`, `provider/openairesponses`, `provider/google`, and `provider/ollama` do not exist on the filesystem",
+        "multi-wire provider files `credentials.go`, `salvage.go`, `repair.go`, `asymmetry_test.go`, and `fuzz_test.go` do not exist on the filesystem",
+        "auxiliary directories `plugins`, `skills`, `session`, `subagent`, `difftest`, `imagex`, `compaction`, `middleware`, and `stop` do not exist on the filesystem"
+      ],
+      "pseudocode": "for path in [\"provider/openai\", \"provider/openairesponses\", \"provider/google\", \"provider/ollama\", \"plugins\", \"skills\", \"_skills/code-review\", \"cmd/validate-plugins\", \"session\", \"subagent\", \"difftest\", \"imagex\", \"compaction\", \"middleware\", \"stop\"]:\n    assert !fileExists(path)\nfor path in [\"provider/credentials.go\", \"provider/credentials_test.go\", \"provider/salvage.go\", \"provider/salvage_test.go\", \"provider/repair.go\", \"provider/repair_test.go\", \"provider/asymmetry_test.go\", \"provider/conformance_test.go\", \"provider/fuzz_test.go\"]:\n    assert !fileExists(path)"
+    },
+    {
+      "id": "TS-09-2",
+      "kind": "unit",
+      "verifies": [
+        "09-REQ-1.3",
+        "09-REQ-1.5"
+      ],
+      "title": "Active providers and approved examples are retained on the filesystem",
+      "given": [
+        "the repository filesystem"
+      ],
+      "when": "the provider and example directory trees are inspected",
+      "then": [
+        "`provider/anthropic` and `provider/faux` directories exist with Go source files",
+        "retained examples `agentdemo`, `codingagent`, `customtools`, `codemode`, and `mcp` exist",
+        "deprecated example directories under `examples/` are removed from the filesystem"
+      ],
+      "pseudocode": "for path in [\"provider/anthropic/anthropic.go\", \"provider/faux/faux.go\"]:\n    assert fileExists(path)\nfor ex in [\"examples/agentdemo\", \"examples/codingagent\", \"examples/customtools\", \"examples/codemode\", \"examples/mcp\"]:\n    assert fileExists(ex)\nfor ex in [\"examples/branching\", \"examples/chat\", \"examples/cleaner\", \"examples/codesearch\", \"examples/compaction\", \"examples/deferred\", \"examples/delegation\", \"examples/flatline\", \"examples/images\", \"examples/interactive\", \"examples/mcpserver\", \"examples/middleware\", \"examples/observability\", \"examples/plugins\", \"examples/session\", \"examples/skills\", \"examples/streaming\", \"examples/testing\", \"examples/tools\", \"examples/triage\"]:\n    assert !fileExists(ex)"
+    },
+    {
+      "id": "TS-09-3",
+      "kind": "unit",
+      "verifies": [
+        "09-REQ-2.1",
+        "09-REQ-2.2"
+      ],
+      "title": "Obsolete root agent files and deleted tool/server files are absent",
+      "given": [
+        "the repository filesystem"
+      ],
+      "when": "the filesystem is checked for obsolete root, tool, and server files",
+      "then": [
+        "`tools/fetch.go`, `tools/ssrf.go`, `tools/ssrf_test.go`, and `tools/powershell.go` do not exist",
+        "`mcp/server.go`, `mcp/serve.go`, `mcp/server_test.go`, and `wire/bind.go` do not exist",
+        "`images.go`, `images_test.go`, `skillsconfig.go`, `skillsconfig_test.go`, `audit.go`, `audit_test.go`, `deferred.go`, `deferred_test.go`, `resume.go`, `resume_test.go`, and `resume_metadata_test.go` do not exist"
+      ],
+      "pseudocode": "for path in [\"tools/fetch.go\", \"tools/ssrf.go\", \"tools/ssrf_test.go\", \"tools/powershell.go\", \"mcp/server.go\", \"mcp/serve.go\", \"mcp/server_test.go\", \"wire/bind.go\", \"images.go\", \"images_test.go\", \"skillsconfig.go\", \"skillsconfig_test.go\", \"audit.go\", \"audit_test.go\", \"deferred.go\", \"deferred_test.go\", \"resume.go\", \"resume_test.go\", \"resume_metadata_test.go\"]:\n    assert !fileExists(path)"
+    },
+    {
+      "id": "TS-09-4",
+      "kind": "unit",
+      "verifies": [
+        "09-REQ-2.3",
+        "09-REQ-2.4"
+      ],
+      "title": "Deleted core definitions and deleted subsystem root tests are absent",
+      "given": [
+        "the repository filesystem"
+      ],
+      "when": "the core package and root directory are inspected for obsolete declarations and test suites",
+      "then": [
+        "`core/audit.go`, `core/audit_test.go`, `core/trace.go`, and `core/plugin.go` do not exist",
+        "`plugin_wiring_test.go`, `middleware_wiring_test.go`, `events_test.go`, and `compaction_usage_test.go` do not exist"
+      ],
+      "pseudocode": "for path in [\"core/audit.go\", \"core/audit_test.go\", \"core/trace.go\", \"core/plugin.go\", \"plugin_wiring_test.go\", \"middleware_wiring_test.go\", \"events_test.go\", \"compaction_usage_test.go\"]:\n    assert !fileExists(path)"
+    },
+    {
+      "id": "TS-09-5",
+      "kind": "unit",
+      "verifies": [
+        "09-REQ-3.1",
+        "09-REQ-3.6"
+      ],
+      "title": "Tools package imports no image libraries and declares text-only read_file schema",
+      "given": [
+        "the tools package AST and read_file tool declaration"
+      ],
+      "when": "imports of tools/tools.go and the read_file schema and description are inspected",
+      "then": [
+        "`tools/tools.go` does not import `imagex` or `golang.org/x/image`",
+        "the `read_file` Description contains no reference to image outputs",
+        "the `read_file` OutputSchema does not declare image result properties"
+      ],
+      "pseudocode": "f = parseAST(\"tools/tools.go\")\nfor imp in f.Imports:\n    assert imp.Path != \"github.com/agentfox/agentkit-go/imagex\"\n    assert imp.Path != \"github.com/agent-fox-dev/agentkit-go/imagex\"\n    assert imp.Path != \"golang.org/x/image\"\ntool = readFileTool()\nassert !contains(tool.Description, \"image\")\nschemaBytes = json.Marshal(tool.OutputSchema)\nassert !contains(schemaBytes, \"mime_type\")\nassert !contains(schemaBytes, \"width\")\nassert !contains(schemaBytes, \"height\")"
+    },
+    {
+      "id": "TS-09-6",
+      "kind": "unit",
+      "verifies": [
+        "09-REQ-3.2",
+        "09-REQ-3.3"
+      ],
+      "title": "read_file rejects PNG and JPEG files with unsupported_file error naming the format",
+      "given": [
+        "a workspace containing files with PNG and JPEG magic bytes"
+      ],
+      "when": "`read_file` is invoked on files beginning with PNG and JPEG magic bytes",
+      "then": [
+        "reading a PNG file returns core.ToolResult with OK false, Error 'unsupported_file', and Detail stating reading images is not supported and naming PNG",
+        "reading a JPEG file returns core.ToolResult with OK false, Error 'unsupported_file', and Detail stating reading images is not supported and naming JPEG"
+      ],
+      "pseudocode": "writeFile(\"sample.png\", []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00})\nresPNG = readFile(ctx, {\"path\": \"sample.png\"})\nassert resPNG.OK == false\nassert resPNG.Error == \"unsupported_file\"\nassert contains(resPNG.Detail, \"reading images is not supported\")\nassert contains(resPNG.Detail, \"PNG\")\n\nwriteFile(\"sample.jpg\", []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46})\nresJPEG = readFile(ctx, {\"path\": \"sample.jpg\"})\nassert resJPEG.OK == false\nassert resJPEG.Error == \"unsupported_file\"\nassert contains(resJPEG.Detail, \"reading images is not supported\")\nassert contains(resJPEG.Detail, \"JPEG\")"
+    },
+    {
+      "id": "TS-09-7",
+      "kind": "unit",
+      "verifies": [
+        "09-REQ-3.4",
+        "09-REQ-3.5"
+      ],
+      "title": "read_file rejects GIF and WebP files with unsupported_file error naming the format",
+      "given": [
+        "a workspace containing files with GIF and WebP magic bytes"
+      ],
+      "when": "`read_file` is invoked on files beginning with GIF and WebP magic bytes",
+      "then": [
+        "reading a GIF file returns core.ToolResult with OK false, Error 'unsupported_file', and Detail stating reading images is not supported and naming GIF",
+        "reading a WebP file returns core.ToolResult with OK false, Error 'unsupported_file', and Detail stating reading images is not supported and naming WebP"
+      ],
+      "pseudocode": "writeFile(\"sample.gif\", []byte(\"GIF89a\\x01\\x00\\x01\\x00\"))\nresGIF = readFile(ctx, {\"path\": \"sample.gif\"})\nassert resGIF.OK == false\nassert resGIF.Error == \"unsupported_file\"\nassert contains(resGIF.Detail, \"reading images is not supported\")\nassert contains(resGIF.Detail, \"GIF\")\n\nwriteFile(\"sample.webp\", append([]byte(\"RIFF\\x00\\x00\\x00\\x00WEBP\"), []byte(\"VP8 \")...))\nresWebP = readFile(ctx, {\"path\": \"sample.webp\"})\nassert resWebP.OK == false\nassert resWebP.Error == \"unsupported_file\"\nassert contains(resWebP.Detail, \"reading images is not supported\")\nassert contains(resWebP.Detail, \"WebP\")"
+    },
+    {
+      "id": "TS-09-8",
+      "kind": "unit",
+      "verifies": [
+        "09-REQ-4.1",
+        "09-REQ-4.3"
+      ],
+      "title": "Default tools list and tool conformance test omit pruned tools",
+      "given": [
+        "tools.All and the tools/conformance_test.go test definitions"
+      ],
+      "when": "`tools.All(tools.Options{})` is called and conformance test source is inspected",
+      "then": [
+        "`tools.All` does not register `fetch_url`, `powershell`, or `subagent`",
+        "`tools/conformance_test.go` contains no references or test cases for `fetch_url`, `powershell`, or `subagent`"
+      ],
+      "pseudocode": "allTools, err := tools.All(tools.Options{})\nnames := make([]string, len(allTools))\nfor i, t := range allTools { names[i] = t.Name }\nassert !slices.Contains(names, \"fetch_url\")\nassert !slices.Contains(names, \"powershell\")\nassert !slices.Contains(names, \"subagent\")\n\ntestSrc := readFile(\"tools/conformance_test.go\")\nassert !strings.Contains(testSrc, \"fetch_url\")\nassert !strings.Contains(testSrc, \"powershell\")\nassert !strings.Contains(testSrc, \"subagent\")"
+    },
+    {
+      "id": "TS-09-9",
+      "kind": "property",
+      "verifies": [
+        "09-REQ-4.2"
+      ],
+      "title": "Every tool in tools.All belongs to the approved workspace and navigation set",
+      "given": [
+        "the set of tools produced by tools.All with default and optional index options"
+      ],
+      "when": "for any tool returned by tools.All, its Name is checked against the approved whitelist",
+      "then": [
+        "each tool name matches one of the approved workspace mechanics and code navigation tools"
+      ],
+      "pseudocode": "approved := map[string]bool{\n    \"read_file\": true, \"write_file\": true, \"edit_file\": true,\n    \"list_files\": true, \"find_files\": true, \"search_files\": true,\n    \"file_outline\": true, \"find_symbol\": true, \"find_references\": true,\n    \"execute\": true, \"run_command\": true,\n}\nallTools, err := tools.All(tools.Options{})\nfor _, t := range allTools {\n    assert approved[t.Name]\n}"
+    },
+    {
+      "id": "TS-09-10",
+      "kind": "unit",
+      "verifies": [
+        "09-REQ-5.1",
+        "09-REQ-5.2"
+      ],
+      "title": "Agent struct and loop are decoupled from session, middleware, and compaction",
+      "given": [
+        "the Agent struct definition and loop methods in agent.go and loop.go"
+      ],
+      "when": "Agent struct fields, Agent methods, and loop.go contents are inspected",
+      "then": [
+        "`Agent` struct has no fields referencing `session.Recorder` or `middleware.Chain`",
+        "`Agent` has no `CacheStats`, `Meter`, or `Continue` methods",
+        "`loop.go` contains no calls to `compaction.EstimateContextTokens`"
+      ],
+      "pseudocode": "agentType := reflect.TypeOf(agentkit.Agent{})\nfor i := 0; i < agentType.NumField(); i++ {\n    f := agentType.Field(i)\n    assert f.Name != \"rec\"\n    assert f.Name != \"meter\"\n    assert !strings.Contains(f.Type.String(), \"session.Recorder\")\n    assert !strings.Contains(f.Type.String(), \"middleware.Chain\")\n}\n_, hasContinue := agentType.MethodByName(\"Continue\")\nassert !hasContinue\n_, hasCacheStats := agentType.MethodByName(\"CacheStats\")\nassert !hasCacheStats\nloopSrc := readFile(\"loop.go\")\nassert !strings.Contains(loopSrc, \"compaction.EstimateContextTokens\")"
+    },
+    {
+      "id": "TS-09-11",
+      "kind": "unit",
+      "verifies": [
+        "09-REQ-5.3"
+      ],
+      "title": "Provider defaults registry only supports Anthropic and Faux",
+      "given": [
+        "an AgentConfig initialized with RegisterDefaults"
+      ],
+      "when": "`DefaultProviders()` or `RegisterDefaults` is evaluated and providers are looked up by API",
+      "then": [
+        "only `anthropic` and `faux` provider implementations are registered and resolvable",
+        "legacy providers for `openai`, `google`, and `ollama` are absent and rejected"
+      ],
+      "pseudocode": "cfg := core.AgentConfig{}\nagentkit.RegisterDefaults(&cfg, anthropic.Provider(anthropic.Options{}), faux.Provider{})\n_, hasAnthropic := cfg.Providers.Get(\"anthropic\")\nassert hasAnthropic\n_, hasFaux := cfg.Providers.Get(\"faux\")\nassert hasFaux\n_, hasOpenAI := cfg.Providers.Get(\"openai\")\nassert !hasOpenAI\n_, hasGoogle := cfg.Providers.Get(\"google\")\nassert !hasGoogle\n_, hasOllama := cfg.Providers.Get(\"ollama\")\nassert !hasOllama"
+    },
+    {
+      "id": "TS-09-12",
+      "kind": "integration",
+      "verifies": [
+        "09-REQ-5.4"
+      ],
+      "title": "Batch and nested tool dispatch preserves event parent linkage and concurrency without audit or tracer hooks",
+      "given": [
+        "an Agent instance configured with nested tool callers"
+      ],
+      "when": "multiple tool calls are executed concurrently with ParentToolUseID",
+      "then": [
+        "emitted tool events preserve ParentToolUseID linkage",
+        "tool batch concurrency and result aggregation succeed cleanly",
+        "no audit logging calls or tracer spans are triggered during tool invocation"
+      ],
+      "pseudocode": "agent := newTestAgent(t)\ncaller := newNestedCaller(agent, \"call_parent_999\")\nres := caller.Call(ctx, \"read_file\", json.RawMessage(`{\"path\":\"test.txt\"}`))\nassert res.OK\nevents := agent.RecordedEvents()\nvar foundStart bool\nfor _, ev := range events {\n    if ev.Type == core.EventToolStart {\n        assert ev.ParentToolUseID == \"call_parent_999\"\n        foundStart = true\n    }\n}\nassert foundStart\nbatchRes := executeBatch(ctx, caller, []core.ToolCall{\n    {ID: \"c1\", Name: \"read_file\", Arguments: `{\"path\":\"a.txt\"}`},\n    {ID: \"c2\", Name: \"read_file\", Arguments: `{\"path\":\"b.txt\"}`},\n})\nassert len(batchRes) == 2"
+    },
+    {
+      "id": "TS-09-13",
+      "kind": "unit",
+      "verifies": [
+        "09-REQ-6.1",
+        "09-REQ-6.3"
+      ],
+      "title": "Root and codesearch go.mod files declare canonical module paths and replacements",
+      "given": [
+        "the root `go.mod` and `codesearch/go.mod` files"
+      ],
+      "when": "module paths and replacement directives are parsed from go.mod files",
+      "then": [
+        "root `go.mod` declares module path `github.com/agent-fox-dev/agentkit-go`",
+        "`codesearch/go.mod` declares module path `github.com/agent-fox-dev/agentkit-go/codesearch`",
+        "`codesearch/go.mod` requires `github.com/agent-fox-dev/agentkit-go v0.0.0` and sets `replace github.com/agent-fox-dev/agentkit-go => ..`"
+      ],
+      "pseudocode": "rootMod := parseModFile(\"go.mod\")\nassert rootMod.Module.Mod.Path == \"github.com/agent-fox-dev/agentkit-go\"\n\ncsMod := parseModFile(\"codesearch/go.mod\")\nassert csMod.Module.Mod.Path == \"github.com/agent-fox-dev/agentkit-go/codesearch\"\nvar foundReq, foundReplace bool\nfor _, req := range csMod.Require {\n    if req.Mod.Path == \"github.com/agent-fox-dev/agentkit-go\" && req.Mod.Version == \"v0.0.0\" {\n        foundReq = true\n    }\n}\nassert foundReq\nfor _, rep := range csMod.Replace {\n    if rep.Old.Path == \"github.com/agent-fox-dev/agentkit-go\" && rep.New.Path == \"..\" {\n        foundReplace = true\n    }\n}\nassert foundReplace"
+    },
+    {
+      "id": "TS-09-14",
+      "kind": "property",
+      "verifies": [
+        "09-REQ-6.2"
+      ],
+      "title": "Every Go file across the repository uses canonical agentkit-go import paths",
+      "given": [
+        "all Go source and test files in the repository"
+      ],
+      "when": "for any Go source or test file across the repository, its import declarations are inspected",
+      "then": [
+        "no import declaration references the legacy module path `github.com/agentfox/agentkit-go`",
+        "every internal module reference uses `github.com/agent-fox-dev/agentkit-go`"
+      ],
+      "pseudocode": "files := findFiles(\".\", \"*.go\")\nfor _, path := range files {\n    content := readFile(path)\n    assert !strings.Contains(content, \"\\\"github.com/agentfox/agentkit-go\")\n}"
+    },
+    {
+      "id": "TS-09-15",
+      "kind": "unit",
+      "verifies": [
+        "09-REQ-7.1"
+      ],
+      "title": "Pruned dependencies are absent from root go.mod",
+      "given": [
+        "the root `go.mod` file"
+      ],
+      "when": "direct dependencies in root `go.mod` are inspected",
+      "then": [
+        "`golang.org/x/net` is not present as a direct dependency in root `go.mod`",
+        "`golang.org/x/image` is not present as a direct dependency in root `go.mod`",
+        "`golang.org/x/time` is not present as a direct dependency in root `go.mod`",
+        "`code.dny.dev/ssrf` is not present as a direct dependency in root `go.mod`"
+      ],
+      "pseudocode": "mod := parseModFile(\"go.mod\")\ndisallowed := []string{\n    \"golang.org/x/net\",\n    \"golang.org/x/image\",\n    \"golang.org/x/time\",\n    \"code.dny.dev/ssrf\",\n}\nfor _, req := range mod.Require {\n    if !req.Indirect {\n        for _, dis := range disallowed {\n            assert req.Mod.Path != dis\n        }\n    }\n}"
+    },
+    {
+      "id": "TS-09-16",
+      "kind": "integration",
+      "verifies": [
+        "09-REQ-7.2"
+      ],
+      "title": "Dependency policy test passes when all direct dependencies are in the approved allowlist",
+      "given": [
+        "the root module dependencies"
+      ],
+      "when": "the dependency policy test in `internal/policy/deps_test.go` inspects direct dependencies from `go list -m`",
+      "then": [
+        "every direct dependency in the root module belongs to the approved direct dependency set",
+        "the dependency policy test in `internal/policy/deps_test.go` passes cleanly"
+      ],
+      "pseudocode": "cmd := exec.Command(\"go\", \"list\", \"-m\", \"-f\", \"{{if not .Indirect}}{{.Path}}{{end}}\", \"all\")\nout, err := cmd.Output()\nassert err == nil\nlines := strings.Split(strings.TrimSpace(string(out)), \"\\n\")\napprovedPrefixes := []string{\n    \"github.com/agent-fox-dev/agentkit-go\",\n    \"github.com/bmatcuk/doublestar/v4\",\n    \"github.com/modelcontextprotocol/go-sdk\",\n    \"github.com/pelletier/go-toml/v2\",\n    \"github.com/tree-sitter/\",\n    \"go.starlark.net\",\n}\nfor _, dep := range lines {\n    if dep == \"\" { continue }\n    var ok bool\n    for _, app := range approvedPrefixes {\n        if strings.HasPrefix(dep, app) { ok = true; break }\n    }\n    assert ok\n}"
+    },
+    {
+      "id": "TS-09-17",
+      "kind": "unit",
+      "verifies": [
+        "09-REQ-7.3"
+      ],
+      "title": "Dependency policy test rejects unapproved direct dependencies naming the disallowed module",
+      "given": [
+        "a mock list of direct dependencies containing an unapproved module"
+      ],
+      "when": "an unapproved direct dependency is encountered during allowlist validation",
+      "then": [
+        "the allowlist checker triggers a test failure via t.Fatalf or t.Errorf naming the disallowed module"
+      ],
+      "pseudocode": "deps := []string{\"github.com/bmatcuk/doublestar/v4\", \"github.com/unapproved/evil-dep\"}\nerr := validateAllowlist(deps, approvedSet)\nassert err != nil\nassert strings.Contains(err.Error(), \"github.com/unapproved/evil-dep\")"
+    },
+    {
+      "id": "TS-09-18",
+      "kind": "unit",
+      "verifies": [
+        "09-REQ-8.1",
+        "09-REQ-8.2"
+      ],
+      "title": "Wall-clock timing budget test is deleted and concurrency test duration assertions are removed",
+      "given": [
+        "the repository root and `tools/concurrency_test.go`"
+      ],
+      "when": "`perf_budget_test.go` existence is checked and `tools/concurrency_test.go` assertions are examined",
+      "then": [
+        "`perf_budget_test.go` does not exist on the filesystem",
+        "`tools/concurrency_test.go` contains no comparisons checking operation durations against wall-clock thresholds"
+      ],
+      "pseudocode": "assert !fileExists(\"perf_budget_test.go\")\ncontent := readFile(\"tools/concurrency_test.go\")\nassert !strings.Contains(content, \"writeElapsed >\")\nassert !strings.Contains(content, \"editElapsed >\")\nassert !strings.Contains(content, \"markElapsed >\")"
+    },
+    {
+      "id": "TS-09-19",
+      "kind": "unit",
+      "verifies": [
+        "09-REQ-8.3"
+      ],
+      "title": "Makefile contains only active targets and omits deleted submodules",
+      "given": [
+        "the repository `Makefile`"
+      ],
+      "when": "`Makefile` targets and definitions are parsed",
+      "then": [
+        "`build-examples` target is absent from `Makefile`",
+        "`difftest` and `examples/codesearch` targets and invocations are absent from `test`, `vet`, `lint`, and `tidy`"
+      ],
+      "pseudocode": "makefile := readFile(\"Makefile\")\nassert !strings.Contains(makefile, \"build-examples:\")\nassert !strings.Contains(makefile, \"difftest\")\nassert !strings.Contains(makefile, \"examples/codesearch\")"
+    },
+    {
+      "id": "TS-09-20",
+      "kind": "smoke",
+      "verifies": [
+        "09-PATH-1",
+        "09-REQ-8.4"
+      ],
+      "title": "Clean build, lint, test, and dependency policy gate execution across modules",
+      "given": [
+        "the repository after module cut, rename, and dependency pruning"
+      ],
+      "when": "`make check` is executed in the repository root",
+      "then": [
+        "`make check` exits with code 0",
+        "gofmt, go vet, and go test succeed across root module and codesearch submodule",
+        "dependency allowlist verification succeeds"
+      ],
+      "pseudocode": "cmd := exec.Command(\"make\", \"check\")\nout, err := cmd.CombinedOutput()\nassert err == nil\nassert cmd.ProcessState.ExitCode() == 0",
+      "real_components": [
+        "Makefile",
+        "go toolchain",
+        "internal/policy/deps_test.go",
+        "codesearch submodule"
+      ]
+    },
+    {
+      "id": "TS-09-21",
+      "kind": "smoke",
+      "verifies": [
+        "09-PATH-2"
+      ],
+      "title": "Agent read_file tool execution rejects image files via direct magic byte detection",
+      "given": [
+        "a workspace containing a binary image file (sample.png) starting with PNG magic bytes"
+      ],
+      "when": "an Agent executes `read_file` on a file with PNG magic bytes",
+      "then": [
+        "`read_file` returns core.ToolResult with OK false and Error 'unsupported_file'",
+        "the error detail explicitly states reading images is not supported and names PNG",
+        "no external image decoding library is invoked"
+      ],
+      "pseudocode": "ws := tools.NewWorkspace(t.TempDir())\nos.WriteFile(filepath.Join(ws.Root, \"test.png\"), []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00}, 0644)\nallTools, _ := tools.All(tools.Options{Workspace: ws})\nvar readFileTool core.Tool\nfor _, t := range allTools {\n    if t.Name == \"read_file\" { readFileTool = t; break }\n}\nres := readFileTool.Execute(context.Background(), json.RawMessage(`{\"path\":\"test.png\"}`))\nassert !res.OK\nassert res.Error == \"unsupported_file\"\nassert strings.Contains(res.Detail, \"reading images is not supported\")\nassert strings.Contains(res.Detail, \"PNG\")",
+      "real_components": [
+        "tools.NewWorkspace",
+        "tools.All",
+        "core.Tool.Execute"
+      ]
+    },
+    {
+      "id": "TS-09-22",
+      "kind": "smoke",
+      "verifies": [
+        "09-PATH-3"
+      ],
+      "title": "Consumer initializes Agent and executes a run turn using retained provider without session or middleware dependencies",
+      "given": [
+        "an AgentConfig specifying Anthropic or Faux provider and default workspace tools"
+      ],
+      "when": "an Agent instance is constructed and executes a conversation turn",
+      "then": [
+        "Agent constructs without session.Recorder or middleware.Chain instances",
+        "the conversation turn runs and produces a valid RunResult",
+        "usage tokens and conversation history are recorded correctly"
+      ],
+      "pseudocode": "cfg := core.AgentConfig{\n    Model: &core.Model{ID: \"faux-1\", API: \"faux\", Provider: \"faux\"},\n}\nagentkit.RegisterDefaults(&cfg, faux.Provider{})\nagent, err := agentkit.NewAgent(cfg)\nassert err == nil\nres, err := agent.RunMessage(context.Background(), core.NewUserMessage(\"hello\"))\nassert err == nil\nassert res.Usage.InputTokens > 0 || res.Usage.OutputTokens > 0",
+      "real_components": [
+        "agentkit.NewAgent",
+        "core.AgentConfig",
+        "provider.faux.Provider",
+        "agentkit.Agent.RunMessage"
+      ]
+    }
+  ]
+}

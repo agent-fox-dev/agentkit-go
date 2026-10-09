@@ -1,0 +1,265 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "09",
+  "spec_name": "repository_cut",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint"
+  },
+  "dependencies": [
+    {
+      "spec": "04_runner_and_tool_metadata",
+      "reason": "Subprocess execution runner (proc_windows.go, proc_unix.go, exec.go) is retained while powershell is removed."
+    },
+    {
+      "spec": "06_tool_output_schemas",
+      "reason": "Conformance tests and schema declarations for kept tools are preserved; output schemas for removed tools (fetch_url, powershell, subagent) are pruned."
+    },
+    {
+      "spec": "07_nested_tool_calls",
+      "reason": "Retains reachability, tool policy resolution, and nested caller execution while removing deprecated audit and trace hook calls."
+    },
+    {
+      "spec": "08_code_mode",
+      "reason": "Kept intact; continues to pass all conformance and smoke tests."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Decouple Agent struct, loop, and provider registry from obsolete subsystems",
+      "criteria": [
+        "09-REQ-5.1",
+        "09-REQ-5.2",
+        "09-REQ-5.3",
+        "09-REQ-5.4"
+      ],
+      "tests": [
+        "TS-09-10",
+        "TS-09-11",
+        "TS-09-12"
+      ],
+      "steps": [
+        "In agent.go, remove the rec *session.Recorder and chain middleware.Chain fields from Agent, and remove the CacheStats, Meter, and Use methods.",
+        "In loop.go, remove the call to compaction.EstimateContextTokens and remove the Continue method on Agent.",
+        "In providers.go, remove registration of OpenAI, Google, and Ollama providers so only anthropic and faux remain available.",
+        "In batch.go and nested.go, remove calls to audit logging and tracer hooks while preserving ParentToolUseID event linkage, tool preparation, concurrency, and result aggregation.",
+        "Run and pass TS-09-10, TS-09-11, and TS-09-12 verifying decoupled runtime scaffolding."
+      ],
+      "touches": [
+        "agent.go",
+        "loop.go",
+        "providers.go",
+        "batch.go",
+        "nested.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Delete unneeded provider packages, auxiliary subsystems, and dead files",
+      "criteria": [
+        "09-REQ-1.1",
+        "09-REQ-1.2",
+        "09-REQ-1.3",
+        "09-REQ-1.4",
+        "09-REQ-1.5",
+        "09-REQ-2.1",
+        "09-REQ-2.2",
+        "09-REQ-2.3",
+        "09-REQ-2.4"
+      ],
+      "tests": [
+        "TS-09-1",
+        "TS-09-2",
+        "TS-09-3",
+        "TS-09-4"
+      ],
+      "steps": [
+        "Delete provider backend directories provider/openai, provider/openairesponses, provider/google, and provider/ollama.",
+        "Delete multi-wire support files: provider/credentials.go, provider/credentials_test.go, provider/salvage.go, provider/salvage_test.go, provider/repair.go, provider/repair_test.go, provider/asymmetry_test.go, provider/conformance_test.go, and provider/fuzz_test.go.",
+        "Retain active provider packages provider/anthropic and provider/faux.",
+        "Delete auxiliary packages and directories: plugins, skills, _skills/code-review, cmd/validate-plugins, session, subagent, difftest, imagex, compaction, middleware, and stop.",
+        "Delete obsolete example directories under examples/ except examples/agentdemo, examples/codingagent, examples/customtools, examples/codemode, and examples/mcp.",
+        "Delete unneeded tool and MCP server files: tools/fetch.go, tools/ssrf.go, tools/ssrf_test.go, tools/powershell.go, mcp/server.go, mcp/serve.go, mcp/server_test.go, and wire/bind.go.",
+        "Delete obsolete root files: images.go, images_test.go, skillsconfig.go, skillsconfig_test.go, audit.go, audit_test.go, deferred.go, deferred_test.go, resume.go, resume_test.go, and resume_metadata_test.go.",
+        "Delete obsolete core files: core/audit.go, core/audit_test.go, core/trace.go, and core/plugin.go.",
+        "Delete root test files testing deleted subsystems: plugin_wiring_test.go, middleware_wiring_test.go, events_test.go, and compaction_usage_test.go.",
+        "Run and pass TS-09-1, TS-09-2, TS-09-3, and TS-09-4 verifying absent directories and preserved packages."
+      ],
+      "touches": [
+        "provider/anthropic/anthropic.go",
+        "provider/faux/faux.go",
+        "core/arguments.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Implement inline image magic byte rejection in read_file and prune toolset",
+      "criteria": [
+        "09-REQ-3.1",
+        "09-REQ-3.2",
+        "09-REQ-3.3",
+        "09-REQ-3.4",
+        "09-REQ-3.5",
+        "09-REQ-3.6",
+        "09-REQ-4.1",
+        "09-REQ-4.2",
+        "09-REQ-4.3"
+      ],
+      "tests": [
+        "TS-09-5",
+        "TS-09-6",
+        "TS-09-7",
+        "TS-09-8",
+        "TS-09-9"
+      ],
+      "steps": [
+        "Remove imports of imagex and golang.org/x/image from tools/tools.go.",
+        "In read_file in tools/tools.go, inspect the initial 16 bytes of the file for magic signatures: PNG (\\x89PNG\\r\\n\\x1a\\n), JPEG (\\xff\\xd8\\xff), GIF (GIF87a or GIF89a), and WebP (RIFF....WEBP).",
+        "When an image signature is detected in read_file, return core.ErrResult(\\\"unsupported_file\\\", ...) with a detail message indicating reading images is not supported and naming the detected format.",
+        "Update read_file tool description and output schema to remove image output descriptions and properties.",
+        "Update tools.All to omit registration of fetch_url, powershell, and subagent, keeping only approved workspace mechanics and navigation tools.",
+        "Update tools/conformance_test.go to remove tests and references for fetch_url, powershell, and subagent.",
+        "Run and pass TS-09-5, TS-09-6, TS-09-7, TS-09-8, and TS-09-9."
+      ],
+      "touches": [
+        "tools/tools.go",
+        "tools/conformance_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Rename module path to github.com/agent-fox-dev/agentkit-go across repository",
+      "criteria": [
+        "09-REQ-6.1",
+        "09-REQ-6.2",
+        "09-REQ-6.3"
+      ],
+      "tests": [
+        "TS-09-13",
+        "TS-09-14"
+      ],
+      "steps": [
+        "In the root go.mod, change the module path declaration to module github.com/agent-fox-dev/agentkit-go.",
+        "In codesearch/go.mod, set module path to github.com/agent-fox-dev/agentkit-go/codesearch, require github.com/agent-fox-dev/agentkit-go v0.0.0, and set replace github.com/agent-fox-dev/agentkit-go => ...",
+        "Rewrite all import declarations across all Go files in the repository from github.com/agentfox/agentkit-go/... to github.com/agent-fox-dev/agentkit-go/...",
+        "Run and pass TS-09-13 and TS-09-14 verifying module path declarations and canonical import paths."
+      ],
+      "touches": [
+        "go.mod",
+        "codesearch/go.mod"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Prune removed dependencies from go.mod and implement dependency allowlist test",
+      "criteria": [
+        "09-REQ-7.1",
+        "09-REQ-7.2",
+        "09-REQ-7.3"
+      ],
+      "tests": [
+        "TS-09-15",
+        "TS-09-16",
+        "TS-09-17"
+      ],
+      "steps": [
+        "Run go mod tidy in the root module to prune direct dependencies golang.org/x/net, golang.org/x/image, golang.org/x/time, and code.dny.dev/ssrf.",
+        "Create internal/policy/deps_test.go to test that direct dependencies from go list -m belong exclusively to the approved set: github.com/agent-fox-dev/agentkit-go, github.com/bmatcuk/doublestar/v4, github.com/modelcontextprotocol/go-sdk, github.com/pelletier/go-toml/v2, github.com/tree-sitter/ grammars, and go.starlark.net.",
+        "Ensure internal/policy/deps_test.go triggers t.Fatalf or t.Errorf naming the disallowed module when an unapproved direct dependency is encountered.",
+        "Run and pass TS-09-15, TS-09-16, and TS-09-17."
+      ],
+      "touches": [
+        "go.mod",
+        "go.sum",
+        "internal/policy/deps_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Eliminate wall-clock duration tests and update Makefile targets",
+      "criteria": [
+        "09-REQ-8.1",
+        "09-REQ-8.2",
+        "09-REQ-8.3",
+        "09-REQ-8.4"
+      ],
+      "tests": [
+        "TS-09-18",
+        "TS-09-19",
+        "TS-09-20"
+      ],
+      "steps": [
+        "Delete perf_budget_test.go from the repository root.",
+        "In tools/concurrency_test.go, remove duration threshold comparisons (time.Since or elapsed duration comparisons) while retaining concurrency execution and race checks.",
+        "In Makefile, remove difftest and examples/codesearch from test, vet, lint, and tidy targets, and delete the build-examples target.",
+        "Run make check to confirm formatting, vet, lint, and test pass across the root module and codesearch without errors.",
+        "Run and pass TS-09-18, TS-09-19, and TS-09-20."
+      ],
+      "touches": [
+        "perf_budget_test.go",
+        "tools/concurrency_test.go",
+        "Makefile"
+      ],
+      "depends_on": [
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "integration",
+      "title": "Verify repository cut, smoke execution paths, and system integration",
+      "tests": [
+        "TS-09-20",
+        "TS-09-21",
+        "TS-09-22"
+      ],
+      "steps": [
+        "Trace execution path 09-PATH-1 by running make check end to end, confirming gofmt, go vet, go test across root and codesearch, and the dependency policy gate pass with exit code 0.",
+        "Trace execution path 09-PATH-2 by invoking read_file on PNG, JPEG, GIF, and WebP files, confirming each produces a core.ErrResult(\\\"unsupported_file\\\", ...) with the format name in detail.",
+        "Trace execution path 09-PATH-3 by creating an Agent instance with RegisterDefaults and running a conversation turn with RunMessage without session or middleware components.",
+        "Verify producer-consumer contracts for rejected image files (09-REQ-3.2, 09-REQ-3.3, 09-REQ-3.4, 09-REQ-3.5), dependency allowlist failure reporting (09-REQ-7.3), and zero exit code from make check (09-REQ-8.4).",
+        "Confirm entry points from retained specs (04_runner_and_tool_metadata, 06_tool_output_schemas, 07_nested_tool_calls, 08_code_mode) remain callable and pass tests.",
+        "Search all touched files for language stub markers (panic(\\\"not implemented\\\"), TODO, bare returns on non-trivial paths) and remove any found.",
+        "Run and pass smoke tests TS-09-20, TS-09-21, and TS-09-22."
+      ],
+      "touches": [
+        "agent_test.go",
+        "tools/tools_test.go",
+        "internal/policy/deps_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "done_when": [
+        "make check exits 0 cleanly across root module and codesearch submodule with all tests passing and no wall-clock timing flakes."
+      ],
+      "state": "pending"
+    }
+  ]
+}

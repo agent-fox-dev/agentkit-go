@@ -1,0 +1,860 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "11",
+  "spec_name": "minimal_driver",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-11-1",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-1.1"
+      ],
+      "title": "Config struct defines all expected driver fields",
+      "given": [
+        "the agentkit Go package"
+      ],
+      "when": "instantiating agentkit.Config with all declared fields",
+      "then": [
+        "agentkit.Config defines all 15 fields with the expected types"
+      ],
+      "pseudocode": "cfg := agentkit.Config{\n    Client:     &anthropic.Client{},\n    Provider:   faux.New(),\n    Model:      \"claude-3-5-sonnet\",\n    Effort:     agentkit.EffortHigh,\n    System:     \"system instruction\",\n    Prefix:     []core.Message{core.UserMessage(\"preamble\")},\n    Tools:      []core.Tool{toolA},\n    Policy:     core.NewAllowAllPolicy(),\n    Guard:      guardFunc,\n    After:      afterFunc,\n    MaxTurns:   10,\n    MaxCostUSD: 1.5,\n    Timeout:    30 * time.Second,\n    Prune:      agentkit.PruneOptions{Threshold: 0.35, KeepTurns: 2},\n    MaxTokens:  4096,\n}\nassert cfg.Model == \"claude-3-5-sonnet\""
+    },
+    {
+      "id": "TS-11-2",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-1.2"
+      ],
+      "title": "Constructor rejects configuration with both Client and Provider nil",
+      "given": [
+        "a Config with Client=nil and Provider=nil"
+      ],
+      "when": "agentkit.New(cfg) is invoked with nil Client and nil Provider",
+      "then": [
+        "agentkit.New returns nil *Agent and a non-nil error indicating that a client or provider must be supplied"
+      ],
+      "pseudocode": "cfg := agentkit.Config{Model: \"claude-3-5-sonnet\"}\na, err := agentkit.New(cfg)\nassert a == nil\nassert err != nil\nassert strings.Contains(err.Error(), \"client or provider\")"
+    },
+    {
+      "id": "TS-11-3",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-1.3"
+      ],
+      "title": "Constructor rejects configuration with an empty Model",
+      "given": [
+        "a Config with valid Provider and Model=''"
+      ],
+      "when": "agentkit.New(cfg) is invoked with an empty Model string",
+      "then": [
+        "agentkit.New returns nil *Agent and a non-nil error indicating that a model identifier is required"
+      ],
+      "pseudocode": "cfg := agentkit.Config{Provider: faux.New(), Model: \"\"}\na, err := agentkit.New(cfg)\nassert a == nil\nassert err != nil\nassert strings.Contains(err.Error(), \"model\")"
+    },
+    {
+      "id": "TS-11-4",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-1.4"
+      ],
+      "title": "Constructor rejects tool configurations with invalid handlers, cycles, or wrappers to terminating tools",
+      "given": [
+        "configurations specifying invalid tool definitions (both Handler and Execute, neither, cycles, or wrappers to terminating tools)"
+      ],
+      "when": "agentkit.New(cfg) is called with each invalid tool hierarchy",
+      "then": [
+        "agentkit.New returns nil *Agent and a non-nil error describing the invalid tool configuration in every case"
+      ],
+      "pseudocode": "// Both Handler and Execute\nt1 := core.Tool{Name: \"both\", Handler: h, Execute: e}\n_, err1 := agentkit.New(agentkit.Config{Provider: fp, Model: \"m\", Tools: []core.Tool{t1}})\nassert err1 != nil\n\n// Neither Handler nor Execute\nt2 := core.Tool{Name: \"neither\"}\n_, err2 := agentkit.New(agentkit.Config{Provider: fp, Model: \"m\", Tools: []core.Tool{t2}})\nassert err2 != nil\n\n// Cycle in reachability\nt3 := core.Tool{Name: \"cycleA\", Handler: h, ReachableTools: []string{\"cycleB\"}}\nt4 := core.Tool{Name: \"cycleB\", Handler: h, ReachableTools: []string{\"cycleA\"}}\n_, err3 := agentkit.New(agentkit.Config{Provider: fp, Model: \"m\", Tools: []core.Tool{t3, t4}})\nassert err3 != nil\n\n// Wrapper reaching terminating tool\ntTerm := core.Tool{Name: \"done\", Handler: h, Terminating: true}\ntWrap := core.Tool{Name: \"wrap\", Handler: h, ReachableTools: []string{\"done\"}}\n_, err4 := agentkit.New(agentkit.Config{Provider: fp, Model: \"m\", Tools: []core.Tool{tTerm, tWrap}})\nassert err4 != nil"
+    },
+    {
+      "id": "TS-11-5",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-1.5",
+        "11-REQ-1.6"
+      ],
+      "title": "Constructor resolves active tools with policy and prioritizes Provider over Client",
+      "given": [
+        "a Config with both Client and Provider supplied, along with Tools and a ToolPolicy filtering tools"
+      ],
+      "when": "agentkit.New(cfg) is called with both Provider and Client present",
+      "then": [
+        "agentkit.New returns non-nil *Agent and nil error",
+        "active tools match the resolved policy set",
+        "dispatched requests use the injected Provider rather than Client"
+      ],
+      "pseudocode": "policy := core.NewAllowListPolicy(\"toolA\")\ncfg := agentkit.Config{\n    Client:   &anthropic.Client{},\n    Provider: fauxProvider,\n    Model:    \"claude-3-5-sonnet\",\n    Tools:    []core.Tool{toolA, toolB},\n    Policy:   policy,\n}\na, err := agentkit.New(cfg)\nassert err == nil\nassert a != nil\nassert len(a.ReachableTools()) == 1\nassert a.ReachableTools()[0].Name == \"toolA\"\n// Verify that provider takes precedence over client\nres, err := a.Run(ctx, \"hello\")\nassert fauxProvider.RequestsCount() > 0"
+    },
+    {
+      "id": "TS-11-6",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-2.1"
+      ],
+      "title": "Constructor rejects configuration when a resolved direct shell tool has no Guard",
+      "given": [
+        "a Config with an active shell tool and Guard=nil"
+      ],
+      "when": "agentkit.New(cfg) is invoked with a reachable shell tool and nil Guard",
+      "then": [
+        "agentkit.New returns nil *Agent and an error wrapping core.ErrUnguardedExecute naming the tool"
+      ],
+      "pseudocode": "shellTool := core.Tool{Name: \"execute\", Handler: dummyHandler}\ncfg := agentkit.Config{\n    Provider: faux.New(),\n    Model:    \"claude-3-5-sonnet\",\n    Tools:    []core.Tool{shellTool},\n    Guard:    nil,\n}\na, err := agentkit.New(cfg)\nassert a == nil\nassert errors.Is(err, core.ErrUnguardedExecute)\nassert strings.Contains(err.Error(), \"execute\")"
+    },
+    {
+      "id": "TS-11-7",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-2.2"
+      ],
+      "title": "Constructor rejects configuration when a transitively reachable shell tool has no Guard",
+      "given": [
+        "a Config with a wrapper tool reaching a shell tool and Guard=nil"
+      ],
+      "when": "agentkit.New(cfg) is invoked with a wrapper transitively reaching a shell tool and nil Guard",
+      "then": [
+        "agentkit.New returns nil *Agent and an error wrapping core.ErrUnguardedExecute naming the wrapper and the reached shell tool"
+      ],
+      "pseudocode": "shellTool := core.Tool{Name: \"bash\", Handler: dummyHandler}\nwrapperTool := core.Tool{Name: \"codemode\", Handler: dummyHandler, ReachableTools: []string{\"bash\"}}\ncfg := agentkit.Config{\n    Provider: faux.New(),\n    Model:    \"claude-3-5-sonnet\",\n    Tools:    []core.Tool{wrapperTool, shellTool},\n    Guard:    nil,\n}\na, err := agentkit.New(cfg)\nassert a == nil\nassert errors.Is(err, core.ErrUnguardedExecute)\nassert strings.Contains(err.Error(), \"codemode\")\nassert strings.Contains(err.Error(), \"bash\")"
+    },
+    {
+      "id": "TS-11-8",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-2.3"
+      ],
+      "title": "Constructor accepts configuration with reachable shell tool when Guard is provided",
+      "given": [
+        "a Config containing direct or transitively reachable shell tools and a non-nil Guard"
+      ],
+      "when": "agentkit.New(cfg) is invoked with reachable shell tool and non-nil Guard",
+      "then": [
+        "agentkit.New accepts the configuration and returns non-nil *Agent and nil error without returning core.ErrUnguardedExecute"
+      ],
+      "pseudocode": "shellTool := core.Tool{Name: \"execute\", Handler: dummyHandler}\nguardFunc := func(ctx context.Context, call core.ToolCall) (core.BeforeToolCallResult, error) {\n    return core.BeforeToolCallResult{Action: core.ToolCallActionAllow}, nil\n}\ncfg := agentkit.Config{\n    Provider: faux.New(),\n    Model:    \"claude-3-5-sonnet\",\n    Tools:    []core.Tool{shellTool},\n    Guard:    guardFunc,\n}\na, err := agentkit.New(cfg)\nassert err == nil\nassert a != nil"
+    },
+    {
+      "id": "TS-11-9",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-3.1"
+      ],
+      "title": "Agent struct exposes solely Run, Stream, Messages, Usage, and ReachableTools on its public surface",
+      "given": [
+        "an initialized Agent instance"
+      ],
+      "when": "inspecting the exported method set of *Agent via reflection",
+      "then": [
+        "the exported methods of *Agent consist solely of Run, Stream, Messages, Usage, and ReachableTools"
+      ],
+      "pseudocode": "agentType := reflect.TypeOf(&agentkit.Agent{})\nmethods := make(map[string]bool)\nfor i := 0; i < agentType.NumMethod(); i++ {\n    m := agentType.Method(i)\n    if m.PkgPath == \"\" { // exported method\n        methods[m.Name] = true\n    }\n}\nexpected := map[string]bool{\n    \"Run\":            true,\n    \"Stream\":         true,\n    \"Messages\":       true,\n    \"Usage\":          true,\n    \"ReachableTools\": true,\n}\nassert reflect.DeepEqual(methods, expected)"
+    },
+    {
+      "id": "TS-11-10",
+      "kind": "integration",
+      "verifies": [
+        "11-REQ-3.2"
+      ],
+      "title": "Run executes driver loop to completion and returns comprehensive RunResult",
+      "given": [
+        "an Agent configured with a scripted faux provider"
+      ],
+      "when": "agent.Run(ctx, 'do work') is called",
+      "then": [
+        "agent.Run executes until stop reason StopReasonStop, records turns to Messages(), and returns a RunResult with matching messages, usage, turn count, and stop reason"
+      ],
+      "pseudocode": "fp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c1\", \"toolA\", \"{}\")),\n    faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"all done\")),\n)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{toolA}})\nres, err := agent.Run(context.Background(), \"do work\")\nassert err == nil\nassert res.StopReason == core.RunStopEndTurn\nassert len(res.Messages) > 0\nassert agent.Messages().Equals(res.Messages)\nassert res.Usage.TotalTokens() > 0"
+    },
+    {
+      "id": "TS-11-11",
+      "kind": "integration",
+      "verifies": [
+        "11-REQ-3.3"
+      ],
+      "title": "Stream launches driver loop asynchronously and emits events without blocking producer",
+      "given": [
+        "an Agent configured with a scripted multi-turn faux provider"
+      ],
+      "when": "agent.Stream(ctx, 'stream prompt') is called",
+      "then": [
+        "agent.Stream returns an active *core.EventStream immediately, receives stream events asynchronously, and completes without blocking producer"
+      ],
+      "pseudocode": "fp := faux.New(faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"streamed response\")))\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\"})\nst, err := agent.Stream(context.Background(), \"stream prompt\")\nassert err == nil\nassert st != nil\n\nvar received []core.Event\nfor ev := range st.Events() {\n    received = append(received, ev)\n}\nassert len(received) > 0"
+    },
+    {
+      "id": "TS-11-12",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-3.4"
+      ],
+      "title": "Concurrent Run or Stream calls on the same Agent are rejected with ErrBusy",
+      "given": [
+        "an Agent with an active in-flight execution"
+      ],
+      "when": "a second Run or Stream call is initiated while an execution is in flight",
+      "then": [
+        "the overlapping Run or Stream invocation returns core.ErrBusy immediately"
+      ],
+      "pseudocode": "gate := make(chan struct{})\nfp := faux.New(faux.Turn{\n    Blocks: []core.ContentBlock{core.TextBlock{Text: \"waiting\"}},\n    Delay:  500 * time.Millisecond,\n})\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\"})\n\ngo func() {\n    _, _ = agent.Run(context.Background(), \"run 1\")\n    close(gate)\n}()\ntime.Sleep(50 * time.Millisecond)\n\n_, err := agent.Run(context.Background(), \"run 2\")\nassert errors.Is(err, core.ErrBusy)\n<-gate"
+    },
+    {
+      "id": "TS-11-13",
+      "kind": "property",
+      "verifies": [
+        "11-REQ-3.5"
+      ],
+      "title": "Concurrent inspection of Messages, Usage, and ReachableTools during active run is safe and race-free",
+      "given": [
+        "an Agent executing a multi-turn run in a background goroutine"
+      ],
+      "when": "for any concurrent invocation of Messages(), Usage(), or ReachableTools() while a run is executing",
+      "then": [
+        "each concurrent invocation returns a consistent view of the respective state without deadlocking or data races"
+      ],
+      "pseudocode": "agent, _ := agentkit.New(agentkit.Config{Provider: fpMultiTurn, Model: \"claude-3-5-sonnet\", Tools: tools})\nctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)\ndefer cancel()\n\nvar wg sync.WaitGroup\nwg.Add(1)\ngo func() {\n    defer wg.Done()\n    _, _ = agent.Run(ctx, \"start multi-turn\")\n}()\n\n// For any concurrent read of Messages(), Usage(), ReachableTools()\nfor i := 0; i < 50; i++ {\n    wg.Add(1)\n    go func() {\n        defer wg.Done()\n        _ = agent.Messages()\n        _ = agent.Usage()\n        _ = agent.ReachableTools()\n    }()\n}\nwg.Wait()"
+    },
+    {
+      "id": "TS-11-14",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-4.1"
+      ],
+      "title": "System prompt combines cfg.System and tool guidelines deduplicated in first-seen order",
+      "given": [
+        "a Config with cfg.System and tools declaring prompt guidelines with duplicates"
+      ],
+      "when": "assembling the system prompt for an outbound model request",
+      "then": [
+        "the assembled system prompt combines cfg.System with active tool PromptGuidelines deduplicated in first-seen order"
+      ],
+      "pseudocode": "t1 := core.Tool{Name: \"t1\", Handler: h, PromptGuidelines: []string{\"Rule A\", \"Rule B\"}}\nt2 := core.Tool{Name: \"t2\", Handler: h, PromptGuidelines: []string{\"Rule B\", \"Rule C\"}}\ncfg := agentkit.Config{\n    Provider: faux.New(),\n    Model:    \"claude-3-5-sonnet\",\n    System:   \"Base instruction\",\n    Tools:    []core.Tool{t1, t2},\n}\nsys := prompt.Build(cfg.System, cfg.Tools)\n// Deduplicated in first-seen order\nassert strings.Contains(sys, \"Base instruction\")\nassert strings.Index(sys, \"Rule A\") < strings.Index(sys, \"Rule B\")\nassert strings.Index(sys, \"Rule B\") < strings.Index(sys, \"Rule C\")\nassert strings.Count(sys, \"Rule B\") == 1"
+    },
+    {
+      "id": "TS-11-15",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-4.2"
+      ],
+      "title": "Prefix messages are prepended to outbound messages before the initial user prompt",
+      "given": [
+        "a Config with non-empty cfg.Prefix messages and a user prompt"
+      ],
+      "when": "constructing outbound messages for a model request",
+      "then": [
+        "outbound messages sent to the provider prepend cfg.Prefix messages before the initial user prompt and conversation turns"
+      ],
+      "pseudocode": "prefix := []core.Message{\n    core.UserMessage(\"Preamble 1\"),\n    core.AssistantMessage{Content: core.Content{core.TextBlock{Text: \"Acknowledged\"}}},\n}\nfp := faux.New(faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"done\")))\nagent, _ := agentkit.New(agentkit.Config{\n    Provider: fp,\n    Model:    \"claude-3-5-sonnet\",\n    Prefix:   prefix,\n})\n_, _ = agent.Run(context.Background(), \"user question\")\n\nreqs := fp.Requests()\nassert len(reqs) > 0\nsent := reqs[0].Messages\nassert sent[0].Equals(prefix[0])\nassert sent[1].Equals(prefix[1])\nassert sent[2].Role == core.RoleUser\nassert strings.Contains(sent[2].Text(), \"user question\")"
+    },
+    {
+      "id": "TS-11-16",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-4.3",
+        "11-REQ-4.4",
+        "11-REQ-4.5",
+        "11-REQ-4.6"
+      ],
+      "title": "Ephemeral cache control breakpoints are stamped across system, tools, prefix, and user messages",
+      "given": [
+        "an Agent with System, Tools, Prefix, and User messages"
+      ],
+      "when": "outbound request parameters are formatted for provider dispatch",
+      "then": [
+        "the final content block of the system prompt carries an ephemeral cache control breakpoint",
+        "the final tool definition in the tool list carries an ephemeral cache control breakpoint",
+        "the final content block of cfg.Prefix carries an ephemeral cache control breakpoint",
+        "the final content block of the most recent user message carries an ephemeral cache control breakpoint"
+      ],
+      "pseudocode": "agent, _ := agentkit.New(agentkit.Config{\n    Provider: fp,\n    Model:    \"claude-3-5-sonnet\",\n    System:   \"System instructions\",\n    Tools:    []core.Tool{toolA, toolB},\n    Prefix:   []core.Message{core.UserMessage(\"prefix text\")},\n})\n_, _ = agent.Run(context.Background(), \"user prompt\")\n\nreq := fp.Requests()[0]\n// 1. System final block\nassert req.System[len(req.System)-1].CacheControl.Type == \"ephemeral\"\n// 2. Final tool\nassert req.Tools[len(req.Tools)-1].CacheControl.Type == \"ephemeral\"\n// 3. Prefix final block\nprefixBlock := req.Messages[0].Content[len(req.Messages[0].Content)-1]\nassert prefixBlock.CacheControl.Type == \"ephemeral\"\n// 4. Final user block\nuserMsg := req.Messages[len(req.Messages)-1]\nassert userMsg.Content[len(userMsg.Content)-1].CacheControl.Type == \"ephemeral\""
+    },
+    {
+      "id": "TS-11-17",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-5.1"
+      ],
+      "title": "PruneOptions struct defines Threshold and KeepTurns fields",
+      "given": [
+        "the agentkit package"
+      ],
+      "when": "instantiating and inspecting agentkit.PruneOptions",
+      "then": [
+        "agentkit.PruneOptions defines Threshold as float64 and KeepTurns as int"
+      ],
+      "pseudocode": "opts := agentkit.PruneOptions{\n    Threshold: 0.35,\n    KeepTurns: 2,\n}\nassert opts.Threshold == 0.35\nassert opts.KeepTurns == 2"
+    },
+    {
+      "id": "TS-11-18",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-5.2"
+      ],
+      "title": "Outbound view replaces old tool result bodies with elision notices when token ratio meets threshold",
+      "given": [
+        "an agent configured with KeepTurns=1 and Threshold=0.35, where estimated tokens reach 40% of context window"
+      ],
+      "when": "outbound request is constructed before provider dispatch with token ratio meeting threshold",
+      "then": [
+        "tool results from turns older than KeepTurns have content replaced by the elision notice stating tool name and byte count",
+        "tool results within the KeepTurns window remain unpruned"
+      ],
+      "pseudocode": "agent, _ := agentkit.New(agentkit.Config{\n    Provider: fp,\n    Model:    \"claude-3-5-sonnet\",\n    Prune:    agentkit.PruneOptions{Threshold: 0.35, KeepTurns: 1},\n    Tools:    []core.Tool{toolA},\n})\n// Execute turns so that turn 1 tool result is older than KeepTurns\n_, _ = agent.Run(context.Background(), \"run query\")\n\nreq := fp.Requests()[len(fp.Requests())-1]\n// Turn 1 result in outbound request must be elided\noutboundResult := findToolResultInMessages(req.Messages, \"call_1\")\nassert strings.Contains(outboundResult.Text, \"[result of toolA (1500 bytes) elided; call again if needed]\")\n\n// Turn 2 result (within KeepTurns) remains unpruned\nrecentResult := findToolResultInMessages(req.Messages, \"call_2\")\nassert !strings.Contains(recentResult.Text, \"elided\")"
+    },
+    {
+      "id": "TS-11-19",
+      "kind": "property",
+      "verifies": [
+        "11-REQ-5.3"
+      ],
+      "title": "Outbound pruning preserves ToolUseID pairing across all pruned tool results",
+      "given": [
+        "a multi-turn conversation with varying numbers of tool calls and pruned turns"
+      ],
+      "when": "for any tool result pruned in the outbound view",
+      "then": [
+        "its ToolUseID strictly matches the ID of the corresponding assistant ToolUseBlock in the preceding message"
+      ],
+      "pseudocode": "for trial := 0; trial < 10; trial++ {\n    runPrunedConversation(trial)\n    req := fp.LastRequest()\n    for _, msg := range req.Messages {\n        for _, b := range msg.Content {\n            if tr, ok := b.(core.ToolResultBlock); ok {\n                // For any tool result pruned in the outbound view\n                paired := findPrecedingToolUse(req.Messages, tr.ToolUseID)\n                assert paired != nil\n                assert paired.ID == tr.ToolUseID\n            }\n        }\n    }\n}"
+    },
+    {
+      "id": "TS-11-20",
+      "kind": "property",
+      "verifies": [
+        "11-REQ-5.4"
+      ],
+      "title": "Outbound pruning preserves durable transcript unmodified on Messages and RunResult",
+      "given": [
+        "a run undergoing context pruning in outbound requests"
+      ],
+      "when": "for any outbound pruning operation, reading Messages() or RunResult.Messages",
+      "then": [
+        "the durable transcript returned by Messages() and RunResult.Messages contains the original unelided tool result content intact"
+      ],
+      "pseudocode": "res, _ := agent.Run(context.Background(), \"long workflow\")\n// For any outbound pruning operation\nfor _, msg := range agent.Messages() {\n    for _, b := range msg.Content {\n        if tr, ok := b.(core.ToolResultBlock); ok {\n            assert !strings.Contains(tr.Text, \"[result of \")\n            assert !strings.Contains(tr.Text, \"elided; call again if needed]\")\n        }\n    }\n}\nassert agent.Messages().Equals(res.Messages)"
+    },
+    {
+      "id": "TS-11-21",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-5.5"
+      ],
+      "title": "Post-pruning context overflow immediately terminates run with RunStopError naming context limit",
+      "given": [
+        "a conversation whose estimated tokens exceed the catalog model context window capacity after pruning"
+      ],
+      "when": "evaluating context token size before issuing an outbound request that exceeds capacity post-pruning",
+      "then": [
+        "the run terminates immediately with RunResult.StopReason set to RunStopError and RunResult.Error naming the model and context window capacity"
+      ],
+      "pseudocode": "fp := faux.New(hugeTurnGeneratingMassiveContent)\nagent, _ := agentkit.New(agentkit.Config{\n    Provider: fp,\n    Model:    \"claude-3-5-sonnet\",\n    Prune:    agentkit.PruneOptions{Threshold: 0.35, KeepTurns: 1},\n})\nres, err := agent.Run(context.Background(), \"prompt\")\nassert res.StopReason == core.RunStopError\nassert res.Error != nil\nassert strings.Contains(res.Error.Error(), \"claude-3-5-sonnet\")\nassert strings.Contains(res.Error.Error(), \"context window\")"
+    },
+    {
+      "id": "TS-11-22",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-6.1"
+      ],
+      "title": "Turn continuation is determined exclusively by presence of ToolUseBlock",
+      "given": [
+        "assistant messages with various StopReason values (e.g. StopReasonStop with tool calls, or StopReasonLength with no tool calls)"
+      ],
+      "when": "the driver evaluates whether to continue to the next turn",
+      "then": [
+        "the loop continues if and only if ToolUseBlock elements are present, regardless of StopReason"
+      ],
+      "pseudocode": "// Turn with StopReasonStop but containing ToolUseBlock -> continues\nturnWithTools := faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxToolCall(\"c1\", \"toolA\", \"{}\"))\n// Turn with StopReasonLength but containing no ToolUseBlock -> does not continue\nturnWithoutTools := faux.FauxAssistantMessage(core.StopReasonLength, faux.FauxText(\"truncated text\"))\n\nfp := faux.New(turnWithTools, turnWithoutTools)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{toolA}})\nres, _ := agent.Run(context.Background(), \"test continuation\")\nassert res.Turns == 2"
+    },
+    {
+      "id": "TS-11-23",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-6.2",
+        "11-REQ-6.3"
+      ],
+      "title": "Assistant response with ToolUseBlock and StopReasonLength appends synthetic notice and continues",
+      "given": [
+        "an assistant message with ToolUseBlock and StopReasonLength"
+      ],
+      "when": "an assistant message with ToolUseBlock and StopReasonLength is processed",
+      "then": [
+        "no tool handler functions in the batch are executed",
+        "each tool call receives the exact synthetic ToolResultMessage notice citing output token limit truncation",
+        "the synthetic results are appended to the transcript and the driver continues to the next turn without terminating"
+      ],
+      "pseudocode": "var handlerCalled bool\ntool := core.Tool{\n    Name: \"my_tool\",\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        handlerCalled = true\n        return core.ToolResult{Content: \"done\"}, nil\n    },\n}\nfp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonLength, faux.FauxToolCall(\"call_1\", \"my_tool\", `{\"partial\":`)),\n    faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"finished\")),\n)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{tool}})\nres, err := agent.Run(context.Background(), \"trigger\")\nassert err == nil\nassert !handlerCalled\n\nexpectedNotice := \"Tool call \\\"my_tool\\\" was not executed: the response hit the output token limit,\\nso its arguments may be truncated. Re-issue the tool call with complete arguments.\"\ntr := findToolResultInMessages(res.Messages, \"call_1\")\nassert tr.Text == expectedNotice\nassert res.Turns == 2"
+    },
+    {
+      "id": "TS-11-24",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-6.4"
+      ],
+      "title": "Assistant response with no ToolUseBlock and StopReasonRefusal terminates with RunStopRefusal",
+      "given": [
+        "an assistant message with no ToolUseBlock and StopReasonRefusal"
+      ],
+      "when": "the driver processes an assistant message with no ToolUseBlock and StopReasonRefusal",
+      "then": [
+        "the run terminates with RunResult.StopReason set to RunStopRefusal and RunResult.Error wrapping core.ErrRefusal"
+      ],
+      "pseudocode": "fp := faux.New(faux.FauxAssistantMessage(core.StopReasonRefusal, faux.FauxText(\"I cannot fulfill this request\")))\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\"})\nres, err := agent.Run(context.Background(), \"unsafe prompt\")\nassert res.StopReason == core.RunStopRefusal\nassert errors.Is(res.Error, core.ErrRefusal)"
+    },
+    {
+      "id": "TS-11-25",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-6.5"
+      ],
+      "title": "Assistant response with no ToolUseBlock and normal stop reason completes with RunStopEndTurn",
+      "given": [
+        "an assistant message with text content, no ToolUseBlock, and StopReasonStop"
+      ],
+      "when": "the driver processes an assistant message with no ToolUseBlock and normal stop reason",
+      "then": [
+        "the run completes successfully with RunResult.StopReason set to RunStopEndTurn and RunResult.Error nil"
+      ],
+      "pseudocode": "fp := faux.New(faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"Answer completed.\")))\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\"})\nres, err := agent.Run(context.Background(), \"regular query\")\nassert err == nil\nassert res.StopReason == core.RunStopEndTurn\nassert res.Error == nil"
+    },
+    {
+      "id": "TS-11-26",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-7.1"
+      ],
+      "title": "Phase 1 validates arguments and evaluates Guard sequentially without invoking handlers on error",
+      "given": [
+        "a batch of tool calls including an invalid argument call and a Guard-rejected call"
+      ],
+      "when": "Phase 1 Prepare executes on the loop goroutine",
+      "then": [
+        "core.PrepareArguments and Config.Guard run sequentially on the loop goroutine",
+        "invalid and blocked calls are finalized immediately as error results",
+        "their handlers are never invoked"
+      ],
+      "pseudocode": "var handlerInvoked bool\nt1 := core.Tool{\n    Name: \"schemaTool\",\n    Parameters: schema.Object(map[string]schema.Type{\"count\": schema.Integer()}),\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        handlerInvoked = true\n        return core.ToolResult{}, nil\n    },\n}\nguard := func(ctx context.Context, call core.ToolCall) (core.BeforeToolCallResult, error) {\n    if call.Name == \"blockedTool\" {\n        return core.BeforeToolCallResult{Action: core.ToolCallActionReject, Reason: \"disallowed\"}, nil\n    }\n    return core.BeforeToolCallResult{Action: core.ToolCallActionAllow}, nil\n}\n// Phase 1 executes sequentially on loop goroutine\nresults := executePhase1Prepare(calls, tools, guard)\nassert results[0].IsError // schema invalid\nassert results[1].IsError // guard rejected\nassert !handlerInvoked"
+    },
+    {
+      "id": "TS-11-27",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-7.2"
+      ],
+      "title": "Phase 2 abort decision marks all calls aborted without executing handlers when context is cancelled",
+      "given": [
+        "a batch of valid prepared tool calls where ctx.Err() != nil before Phase 3 handlers spawn"
+      ],
+      "when": "evaluating Phase 2 abort decision when ctx.Err() != nil",
+      "then": [
+        "all remaining unfinalized calls are marked as aborted without executing any handlers"
+      ],
+      "pseudocode": "ctx, cancel := context.WithCancel(context.Background())\ncancel() // cancel before Phase 2\n\nvar handlerExecuted bool\ntool := core.Tool{\n    Name: \"testTool\",\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        handlerExecuted = true\n        return core.ToolResult{}, nil\n    },\n}\nresults := executeBatch(ctx, calls, []core.Tool{tool}, nil, nil)\nassert !handlerExecuted\nfor _, r := range results {\n    assert r.IsAborted\n}"
+    },
+    {
+      "id": "TS-11-28",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-7.3",
+        "11-REQ-7.4"
+      ],
+      "title": "Phase 2 dispatches unfinalized calls to Phase 3 concurrent handler execution via sync.WaitGroup",
+      "given": [
+        "a batch of valid tool calls with an active context"
+      ],
+      "when": "evaluating Phase 2 with active context and executing handlers without sequential constraints",
+      "then": [
+        "Phase 2 dispatches all unfinalized calls to Phase 3",
+        "handlers execute concurrently in separate goroutines joined by sync.WaitGroup without errgroup"
+      ],
+      "pseudocode": "var concurrentCount int32\nvar maxConcurrent int32\ntool := core.Tool{\n    Name: \"parallelTool\",\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        c := atomic.AddInt32(&concurrentCount, 1)\n        updateMax(&maxConcurrent, c)\n        time.Sleep(20 * time.Millisecond)\n        atomic.AddInt32(&concurrentCount, -1)\n        return core.ToolResult{Content: \"ok\"}, nil\n    },\n}\ncalls := []core.ToolCall{call1, call2, call3}\nresults := executeBatch(context.Background(), calls, []core.Tool{tool}, nil, nil)\nassert maxConcurrent > 1\nassert len(results) == 3"
+    },
+    {
+      "id": "TS-11-29",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-7.5"
+      ],
+      "title": "Sequential tool in batch forces sequential Phase 3 handler execution in call order",
+      "given": [
+        "a batch of tool calls containing at least one tool marked Sequential"
+      ],
+      "when": "executing tool handlers in Phase 3 when at least one tool in the batch is marked Sequential",
+      "then": [
+        "handlers execute sequentially in assistant call order"
+      ],
+      "pseudocode": "var concurrentCount int32\nvar maxConcurrent int32\nseqTool := core.Tool{\n    Name: \"seqTool\",\n    Sequential: true,\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        c := atomic.AddInt32(&concurrentCount, 1)\n        updateMax(&maxConcurrent, c)\n        time.Sleep(10 * time.Millisecond)\n        atomic.AddInt32(&concurrentCount, -1)\n        return core.ToolResult{Content: \"ok\"}, nil\n    },\n}\ncalls := []core.ToolCall{call1, call2}\nresults := executeBatch(context.Background(), calls, []core.Tool{seqTool}, nil, nil)\nassert maxConcurrent == 1"
+    },
+    {
+      "id": "TS-11-30",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-7.6"
+      ],
+      "title": "Phase 4 evaluates After, emits events under mutex, and preserves slot-indexed result order",
+      "given": [
+        "concurrent handlers finishing in arbitrary order"
+      ],
+      "when": "finalizing tool execution in Phase 4",
+      "then": [
+        "Config.After and event emission are serialized under a batch-scoped mutex",
+        "results are placed by original slot index to preserve assistant call order"
+      ],
+      "pseudocode": "// Call 0 takes 50ms, Call 1 takes 5ms\ncalls := []core.ToolCall{\n    {ID: \"slot0\", Name: \"slowTool\"},\n    {ID: \"slot1\", Name: \"fastTool\"},\n}\nvar afterOrder []string\nafter := func(ctx context.Context, call core.ToolCall, res core.ToolResult) {\n    afterOrder = append(afterOrder, call.ID)\n}\nresults := executeBatch(context.Background(), calls, tools, nil, after)\n// Final results array must match slot index 0, then 1\nassert results[0].ToolUseID == \"slot0\"\nassert results[1].ToolUseID == \"slot1\""
+    },
+    {
+      "id": "TS-11-31",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-8.1",
+        "11-REQ-8.2"
+      ],
+      "title": "Tool result voting Terminate allows batch siblings to finish then terminates with RunStopToolTerminate",
+      "given": [
+        "a batch of parallel tool calls where tool A returns Terminate: true and tool B is still running"
+      ],
+      "when": "an executed tool handler returns a result with Terminate set to true",
+      "then": [
+        "sibling tool calls complete execution before the batch concludes",
+        "the run terminates after the batch with RunResult.StopReason set to RunStopToolTerminate"
+      ],
+      "pseudocode": "var siblingFinished bool\ntoolTerm := core.Tool{\n    Name: \"termTool\",\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        return core.ToolResult{Terminate: true, Content: \"stopping\"}, nil\n    },\n}\ntoolSlow := core.Tool{\n    Name: \"slowTool\",\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        time.Sleep(20 * time.Millisecond)\n        siblingFinished = true\n        return core.ToolResult{Content: \"sibling ok\"}, nil\n    },\n}\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{toolTerm, toolSlow}})\nres, err := agent.Run(context.Background(), \"run both\")\nassert siblingFinished\nassert res.StopReason == core.RunStopToolTerminate"
+    },
+    {
+      "id": "TS-11-32",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-8.3"
+      ],
+      "title": "Blocked or rejected calls in Phase 1 do not trigger RunStopToolTerminate",
+      "given": [
+        "a tool with Terminate capability whose call is blocked by Guard in Phase 1"
+      ],
+      "when": "a tool call is blocked by Config.Guard or fails argument validation during Phase 1",
+      "then": [
+        "the blocked call produces an error result with IsError true and Terminate false",
+        "the blocked call does not trigger RunStopToolTerminate"
+      ],
+      "pseudocode": "termTool := core.Tool{\n    Name: \"termTool\",\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        return core.ToolResult{Terminate: true}, nil\n    },\n}\nguard := func(ctx context.Context, call core.ToolCall) (core.BeforeToolCallResult, error) {\n    return core.BeforeToolCallResult{Action: core.ToolCallActionReject, Reason: \"denied\"}, nil\n}\nfp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c1\", \"termTool\", \"{}\")),\n    faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"continue\")),\n)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{termTool}, Guard: guard})\nres, _ := agent.Run(context.Background(), \"test guard\")\nassert res.StopReason != core.RunStopToolTerminate\nassert res.StopReason == core.RunStopEndTurn"
+    },
+    {
+      "id": "TS-11-33",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-9.1"
+      ],
+      "title": "Driver attaches core.NestedCaller with resolved reachable set to wrapper tool context",
+      "given": [
+        "a wrapper tool declaring ReachableTools=['childA', 'childB']"
+      ],
+      "when": "executing a tool that declares ReachableTools",
+      "then": [
+        "a core.NestedCaller configured with the tool's resolved reachable set is attached to the handler's execution context"
+      ],
+      "pseudocode": "var nestedCaller core.NestedCaller\nwrapper := core.Tool{\n    Name: \"wrapper\",\n    ReachableTools: []string{\"childA\", \"childB\"},\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        nestedCaller = core.NestedCallerFromContext(ctx)\n        return core.ToolResult{Content: \"wrapped\"}, nil\n    },\n}\nexecuteWrapper(wrapper)\nassert nestedCaller != nil\nassert nestedCaller.Allows(\"childA\")\nassert nestedCaller.Allows(\"childB\")"
+    },
+    {
+      "id": "TS-11-34",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-9.2"
+      ],
+      "title": "Nested call to an unreachable tool returns error ToolResult",
+      "given": [
+        "a wrapper executing with ReachableTools=['childA']"
+      ],
+      "when": "a nested call attempts to invoke a tool outside the wrapper's resolved reachable set",
+      "then": [
+        "NestedCaller.Call returns ToolResult with IsError true indicating the tool is unreachable"
+      ],
+      "pseudocode": "wrapper := core.Tool{\n    Name: \"wrapper\",\n    ReachableTools: []string{\"childA\"},\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        caller := core.NestedCallerFromContext(ctx)\n        results, err := caller.Call(ctx, []core.ToolCall{{ID: \"nc1\", Name: \"forbiddenTool\"}})\n        assert err == nil\n        assert len(results) == 1\n        assert results[0].IsError\n        assert strings.Contains(results[0].Content, \"unreachable\")\n        return core.ToolResult{Content: \"done\"}, nil\n    },\n}\nexecuteWrapper(wrapper)"
+    },
+    {
+      "id": "TS-11-35",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-9.3"
+      ],
+      "title": "Nested call emits execution events stamped with ParentToolUseID",
+      "given": [
+        "a wrapper tool execution with ID 'parent_call_1' invoking child tool 'childA'"
+      ],
+      "when": "a nested call is executed through NestedCaller.Call",
+      "then": [
+        "emitted execution events carry ParentToolUseID matching the parent tool call identifier"
+      ],
+      "pseudocode": "var emittedEvents []core.Event\neventSink := func(ev core.Event) { emittedEvents = append(emittedEvents, ev) }\nexecuteNested(parentID, childCall, eventSink)\n\nfor _, ev := range emittedEvents {\n    if se, ok := ev.(core.ToolStartEvent); ok && se.ToolName == \"childA\" {\n        assert se.ParentToolUseID == \"parent_call_1\"\n    }\n}"
+    },
+    {
+      "id": "TS-11-36",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-9.4"
+      ],
+      "title": "Nested call blocked by BeforeToolCall returns error ToolResult with nil Go error",
+      "given": [
+        "a wrapper making a nested call intercepted by BeforeToolCall that rejects the call"
+      ],
+      "when": "a nested call is blocked by a BeforeToolCall interceptor",
+      "then": [
+        "NestedCaller.Call returns ([]core.ToolResult, nil) where the result element has IsError true",
+        "the wrapper script can process the rejection without receiving a non-nil Go error"
+      ],
+      "pseudocode": "guard := func(ctx context.Context, call core.ToolCall) (core.BeforeToolCallResult, error) {\n    return core.BeforeToolCallResult{Action: core.ToolCallActionReject, Reason: \"permission denied\"}, nil\n}\nwrapper := core.Tool{\n    Name: \"wrapper\",\n    ReachableTools: []string{\"childA\"},\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        caller := core.NestedCallerFromContext(ctx)\n        results, err := caller.Call(ctx, []core.ToolCall{{ID: \"nc1\", Name: \"childA\"}})\n        // Go error must be nil, result carries IsError true\n        assert err == nil\n        assert results[0].IsError\n        assert strings.Contains(results[0].Content, \"permission denied\")\n        return core.ToolResult{Content: \"handled rejection\"}, nil\n    },\n}\nexecuteWrapperWithGuard(wrapper, guard)"
+    },
+    {
+      "id": "TS-11-37",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-9.5"
+      ],
+      "title": "Termination vote in nested interceptor rejects subsequent calls with ErrTerminated and bubbles vote",
+      "given": [
+        "an interceptor voting to terminate during a nested call"
+      ],
+      "when": "an interceptor votes to terminate during a nested call and subsequent calls are attempted",
+      "then": [
+        "subsequent calls are rejected with core.ErrTerminated",
+        "the termination vote propagates to the parent wrapper result"
+      ],
+      "pseudocode": "guard := func(ctx context.Context, call core.ToolCall) (core.BeforeToolCallResult, error) {\n    return core.BeforeToolCallResult{Action: core.ToolCallActionAllow, Terminate: true}, nil\n}\nwrapper := core.Tool{\n    Name: \"wrapper\",\n    ReachableTools: []string{\"childA\"},\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        caller := core.NestedCallerFromContext(ctx)\n        _, _ = caller.Call(ctx, []core.ToolCall{{ID: \"nc1\", Name: \"childA\"}})\n        // Subsequent call must fail with ErrTerminated\n        _, err2 := caller.Call(ctx, []core.ToolCall{{ID: \"nc2\", Name: \"childA\"}})\n        assert errors.Is(err2, core.ErrTerminated)\n        return core.ToolResult{Content: \"wrapper done\"}, nil\n    },\n}\nres := executeWrapperWithGuard(wrapper, guard)\nassert res.Terminate == true"
+    },
+    {
+      "id": "TS-11-38",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-10.1"
+      ],
+      "title": "Expiration of Config.Timeout terminates run with RunStopTimeout",
+      "given": [
+        "an Agent configured with Timeout=10ms and a faux provider turn delayed by 100ms"
+      ],
+      "when": "the run context deadline expires during loop execution",
+      "then": [
+        "the run context deadline expires and the run terminates with RunResult.StopReason set to RunStopTimeout"
+      ],
+      "pseudocode": "fp := faux.New(faux.Turn{\n    Blocks: []core.ContentBlock{core.TextBlock{Text: \"slow turn\"}},\n    Delay:  100 * time.Millisecond,\n})\nagent, _ := agentkit.New(agentkit.Config{\n    Provider: fp,\n    Model:    \"claude-3-5-sonnet\",\n    Timeout:  10 * time.Millisecond,\n})\nres, err := agent.Run(context.Background(), \"test timeout\")\nassert res.StopReason == core.RunStopTimeout"
+    },
+    {
+      "id": "TS-11-39",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-10.2"
+      ],
+      "title": "Reaching Config.MaxTurns terminates run with RunStopMaxTurns and core.ErrMaxTurns",
+      "given": [
+        "an Agent configured with MaxTurns=2 and a faux provider generating 3 turns of tool calls"
+      ],
+      "when": "the completed turn count reaches cfg.MaxTurns",
+      "then": [
+        "the run terminates with RunResult.StopReason set to RunStopMaxTurns and RunResult.Error wrapping core.ErrMaxTurns"
+      ],
+      "pseudocode": "fp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c1\", \"toolA\", \"{}\")),\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c2\", \"toolA\", \"{}\")),\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c3\", \"toolA\", \"{}\")),\n)\nagent, _ := agentkit.New(agentkit.Config{\n    Provider: fp,\n    Model:    \"claude-3-5-sonnet\",\n    MaxTurns: 2,\n    Tools:    []core.Tool{toolA},\n})\nres, err := agent.Run(context.Background(), \"test max turns\")\nassert res.StopReason == core.RunStopMaxTurns\nassert errors.Is(res.Error, core.ErrMaxTurns)"
+    },
+    {
+      "id": "TS-11-40",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-10.3"
+      ],
+      "title": "Exceeding Config.MaxCostUSD terminates before request with RunStopBudgetExceeded",
+      "given": [
+        "an Agent configured with MaxCostUSD=0.05 and previous turns totaling $0.06"
+      ],
+      "when": "accumulated model usage cost meets or exceeds cfg.MaxCostUSD before issuing a request",
+      "then": [
+        "the driver terminates before issuing the request with RunResult.StopReason set to RunStopBudgetExceeded and RunResult.Error wrapping core.ErrBudgetExceeded"
+      ],
+      "pseudocode": "turn1 := faux.Turn{\n    Blocks: []core.ContentBlock{core.TextBlock{Text: \"t1\"}},\n    Usage:  core.Usage{InputTokens: 100000, OutputTokens: 100000}, // cost > $0.05\n}\nturn2 := faux.Turn{Blocks: []core.ContentBlock{core.TextBlock{Text: \"t2\"}}}\nfp := faux.New(turn1, turn2)\nagent, _ := agentkit.New(agentkit.Config{\n    Provider:   fp,\n    Model:      \"claude-3-5-sonnet\",\n    MaxCostUSD: 0.05,\n})\nres, err := agent.Run(context.Background(), \"test budget\")\nassert res.StopReason == core.RunStopBudgetExceeded\nassert errors.Is(res.Error, core.ErrBudgetExceeded)"
+    },
+    {
+      "id": "TS-11-41",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-10.4"
+      ],
+      "title": "External cancellation between turns terminates run with RunStopAborted and core.ErrAborted",
+      "given": [
+        "a running agent whose context is cancelled externally between turns"
+      ],
+      "when": "the run context is cancelled externally without a timeout expiration",
+      "then": [
+        "the run terminates with RunResult.StopReason set to RunStopAborted and RunResult.Error wrapping core.ErrAborted"
+      ],
+      "pseudocode": "ctx, cancel := context.WithCancel(context.Background())\ntool := core.Tool{\n    Name: \"cancelTool\",\n    Handler: func(c context.Context, args json.RawMessage) (core.ToolResult, error) {\n        cancel() // external cancellation between turns\n        return core.ToolResult{Content: \"cancelling now\"}, nil\n    },\n}\nfp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c1\", \"cancelTool\", \"{}\")),\n    faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"should not reach\")),\n)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{tool}})\nres, err := agent.Run(ctx, \"test abort\")\nassert res.StopReason == core.RunStopAborted\nassert errors.Is(res.Error, core.ErrAborted)"
+    },
+    {
+      "id": "TS-11-42",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-10.5"
+      ],
+      "title": "Panic in tool handler or hook is recovered into error result without crashing process",
+      "given": [
+        "a tool handler that panics during execution"
+      ],
+      "when": "a tool handler, interceptor, or callback panics during execution",
+      "then": [
+        "the panic is recovered without crashing the process",
+        "tool execution finishes with IsError true and error details describing the panic"
+      ],
+      "pseudocode": "tool := core.Tool{\n    Name: \"panickyTool\",\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        panic(\"unexpected explosion\")\n    },\n}\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{tool}})\nres, err := agent.Run(context.Background(), \"trigger panic\")\n// Panic must be recovered\ntr := findToolResultInMessages(res.Messages, \"panickyTool\")\nassert tr.IsError\nassert strings.Contains(tr.Text, \"panic: unexpected explosion\")"
+    },
+    {
+      "id": "TS-11-43",
+      "kind": "unit",
+      "verifies": [
+        "11-REQ-10.6"
+      ],
+      "title": "Event stream drops or buffers unread events without blocking driver loop",
+      "given": [
+        "an Agent executing via Stream with a detached or slow consumer"
+      ],
+      "when": "the driver pushes multiple events to an unread or slow EventStream",
+      "then": [
+        "the driver loop buffers and drops unread events according to StreamOptions without blocking loop goroutine execution on slow or detached consumers"
+      ],
+      "pseudocode": "fp := faux.New(multiTurnResponses...)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\"})\nst, _ := agent.Stream(context.Background(), \"test non-blocking\")\n\n// Consumer does not read from st.Events() channel\ndone := make(chan struct{})\ngo func() {\n    _ = waitForStreamCompletion(st)\n    close(done)\n}()\nselect {\ncase <-done:\n    // Success, loop did not deadlock or block\ncase <-time.After(2 * time.Second):\n    t.Fatal(\"producer loop blocked on slow consumer\")\n}"
+    },
+    {
+      "id": "TS-11-44",
+      "kind": "smoke",
+      "verifies": [
+        "11-PATH-1",
+        "11-REQ-3.2",
+        "11-REQ-7.4"
+      ],
+      "title": "Smoke: Multi-turn prompt execution with concurrent tool batch",
+      "given": [
+        "an Agent initialized with real loop, executeBatch, and a faux provider scripting parallel tool calls and final text"
+      ],
+      "when": "agent.Run is invoked with a user prompt triggering concurrent tool calls",
+      "then": [
+        "the driver executes turns, prepares calls, runs handlers concurrently via sync.WaitGroup, orders results by slot index, and terminates with RunStopEndTurn"
+      ],
+      "pseudocode": "toolA := core.Tool{Name: \"toolA\", Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) { return core.ToolResult{Content: \"resA\"}, nil }}\ntoolB := core.Tool{Name: \"toolB\", Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) { return core.ToolResult{Content: \"resB\"}, nil }}\nfp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c1\", \"toolA\", \"{}\"), faux.FauxToolCall(\"c2\", \"toolB\", \"{}\")),\n    faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"finished\")),\n)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{toolA, toolB}})\nres, err := agent.Run(context.Background(), \"run multi-turn batch\")\nassert err == nil\nassert res.StopReason == core.RunStopEndTurn\nassert res.Turns == 2\nassert len(res.Messages) > 0",
+      "real_components": [
+        "Agent",
+        "runLoop",
+        "executeBatch",
+        "faux.Provider"
+      ]
+    },
+    {
+      "id": "TS-11-45",
+      "kind": "smoke",
+      "verifies": [
+        "11-PATH-2",
+        "11-REQ-5.2"
+      ],
+      "title": "Smoke: Outbound context pruning under token threshold pressure",
+      "given": [
+        "an Agent initialized with PruneOptions(Threshold=0.35, KeepTurns=1) and a multi-turn scripted faux provider"
+      ],
+      "when": "multi-turn execution causes estimated outbound tokens to meet or exceed the pruning threshold",
+      "then": [
+        "outbound view elides old tool results with elision notice, provider receives pruned request, and durable Messages() transcript remains intact"
+      ],
+      "pseudocode": "agent, _ := agentkit.New(agentkit.Config{\n    Provider: fpMultiTurnLargeResults,\n    Model:    \"claude-3-5-sonnet\",\n    Prune:    agentkit.PruneOptions{Threshold: 0.35, KeepTurns: 1},\n    Tools:    []core.Tool{toolA},\n})\nres, err := agent.Run(context.Background(), \"start multi-turn pruning\")\nassert err == nil\noutboundReq := fpMultiTurnLargeResults.LastRequest()\noutboundResult := findToolResultInMessages(outboundReq.Messages, \"c1\")\nassert strings.Contains(outboundResult.Text, \"[result of toolA\")\nassert strings.Contains(outboundResult.Text, \"elided; call again if needed]\")\n// Durable transcript intact\nassert !strings.Contains(agent.Messages().Text(), \"elided; call again if needed]\")",
+      "real_components": [
+        "Agent",
+        "runLoop",
+        "pruneOutboundView",
+        "faux.Provider"
+      ]
+    },
+    {
+      "id": "TS-11-46",
+      "kind": "smoke",
+      "verifies": [
+        "11-PATH-3",
+        "11-REQ-6.2",
+        "11-REQ-6.3"
+      ],
+      "title": "Smoke: Synthetic truncation recovery on max_tokens response",
+      "given": [
+        "an Agent configured with real loop and faux provider returning ToolUseBlock with StopReasonLength followed by complete response"
+      ],
+      "when": "the provider returns an assistant message with ToolUseBlock and StopReasonLength",
+      "then": [
+        "tool handlers are bypassed, synthetic truncation notices are recorded, and the run continues to the next turn completing with RunStopEndTurn"
+      ],
+      "pseudocode": "var executed bool\ntool := core.Tool{Name: \"my_tool\", Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) { executed = true; return core.ToolResult{}, nil }}\nfp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonLength, faux.FauxToolCall(\"c1\", \"my_tool\", `{\"partial\":`)),\n    faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"reissued and finished\")),\n)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{tool}})\nres, err := agent.Run(context.Background(), \"run recovery\")\nassert err == nil\nassert !executed\nassert res.StopReason == core.RunStopEndTurn\nassert strings.Contains(res.Messages[1].Content[0].(core.ToolResultBlock).Text, \"was not executed: the response hit the output token limit\")",
+      "real_components": [
+        "Agent",
+        "runLoop",
+        "syntheticTruncation",
+        "faux.Provider"
+      ]
+    },
+    {
+      "id": "TS-11-47",
+      "kind": "smoke",
+      "verifies": [
+        "11-PATH-4",
+        "11-REQ-9.1",
+        "11-REQ-9.3"
+      ],
+      "title": "Smoke: Nested tool execution through wrapper tool",
+      "given": [
+        "an Agent configured with a wrapper tool declaring ReachableTools and a faux provider triggering the wrapper"
+      ],
+      "when": "a tool declaring ReachableTools is executed by the agent",
+      "then": [
+        "nested caller is attached to context, child tool executes with parent attribution event, and parent tool result completes cleanly"
+      ],
+      "pseudocode": "child := core.Tool{Name: \"childTool\", Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) { return core.ToolResult{Content: \"child done\"}, nil }}\nwrapper := core.Tool{\n    Name: \"wrapperTool\",\n    ReachableTools: []string{\"childTool\"},\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        caller := core.NestedCallerFromContext(ctx)\n        res, _ := caller.Call(ctx, []core.ToolCall{{ID: \"nc1\", Name: \"childTool\"}})\n        return core.ToolResult{Content: \"wrapper: \" + res[0].Content}, nil\n    },\n}\nfp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c1\", \"wrapperTool\", \"{}\")),\n    faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"done\")),\n)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{wrapper, child}})\nres, err := agent.Run(context.Background(), \"run wrapper\")\nassert err == nil\nassert res.StopReason == core.RunStopEndTurn\nassert strings.Contains(res.Messages[1].Content[0].(core.ToolResultBlock).Text, \"wrapper: child done\")",
+      "real_components": [
+        "Agent",
+        "runLoop",
+        "executeBatch",
+        "nestedCaller"
+      ]
+    },
+    {
+      "id": "TS-11-48",
+      "kind": "smoke",
+      "verifies": [
+        "11-PATH-5",
+        "11-REQ-2.1"
+      ],
+      "title": "Smoke: Eager shell tool guard enforcement rejection at construction",
+      "given": [
+        "a Config with a shell tool and nil Guard"
+      ],
+      "when": "agentkit.New is invoked with a reachable shell tool and nil Guard",
+      "then": [
+        "construction is rejected immediately with an error wrapping core.ErrUnguardedExecute naming the shell tool"
+      ],
+      "pseudocode": "shellTool := core.Tool{Name: \"execute\", Handler: dummyHandler}\ncfg := agentkit.Config{\n    Provider: faux.New(),\n    Model:    \"claude-3-5-sonnet\",\n    Tools:    []core.Tool{shellTool},\n    Guard:    nil,\n}\nagent, err := agentkit.New(cfg)\nassert agent == nil\nassert errors.Is(err, core.ErrUnguardedExecute)\nassert strings.Contains(err.Error(), \"execute\")",
+      "real_components": [
+        "agentkit.New",
+        "guard.IsShellTool",
+        "checkExecuteGuard"
+      ]
+    },
+    {
+      "id": "TS-11-49",
+      "kind": "smoke",
+      "verifies": [
+        "11-PATH-6",
+        "11-REQ-10.3"
+      ],
+      "title": "Smoke: Run termination on budget limit exceeded before request dispatch",
+      "given": [
+        "an Agent configured with MaxCostUSD and a faux provider whose first turn reports usage reaching MaxCostUSD"
+      ],
+      "when": "accumulated cost meets or exceeds MaxCostUSD before issuing a model request",
+      "then": [
+        "the driver halts before issuing the second request, returning RunStopBudgetExceeded and core.ErrBudgetExceeded"
+      ],
+      "pseudocode": "turn1 := faux.Turn{\n    Blocks: []core.ContentBlock{faux.FauxToolCall(\"c1\", \"toolA\", \"{}\")},\n    Usage:  core.Usage{InputTokens: 100000, OutputTokens: 100000}, // cost exceeds $0.05\n}\nturn2 := faux.Turn{Blocks: []core.ContentBlock{core.TextBlock{Text: \"t2\"}}}\nfp := faux.New(turn1, turn2)\nagent, _ := agentkit.New(agentkit.Config{\n    Provider:   fp,\n    Model:      \"claude-3-5-sonnet\",\n    MaxCostUSD: 0.05,\n    Tools:      []core.Tool{toolA},\n})\nres, err := agent.Run(context.Background(), \"test budget smoke\")\nassert res.StopReason == core.RunStopBudgetExceeded\nassert errors.Is(res.Error, core.ErrBudgetExceeded)",
+      "real_components": [
+        "Agent",
+        "runLoop",
+        "faux.Provider",
+        "core.Usage"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,641 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "10",
+  "spec_name": "anthropic_wire",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-10-1",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-1.1"
+      ],
+      "title": "The go.mod module manifest pins the official Anthropic SDK dependency",
+      "given": [
+        "the repository root containing go.mod"
+      ],
+      "when": "go.mod dependencies are parsed",
+      "then": [
+        "github.com/anthropics/anthropic-sdk-go is listed as a direct dependency with a pinned minor version"
+      ],
+      "pseudocode": "mod = read('go.mod'); assert 'github.com/anthropics/anthropic-sdk-go' in mod; assert not 'v0.0.0-' in modVersion('github.com/anthropics/anthropic-sdk-go')"
+    },
+    {
+      "id": "TS-10-2",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-1.2"
+      ],
+      "title": "The dependency policy allowlist authorizes the official Anthropic SDK",
+      "given": [
+        "the policy test suite in internal/policy/deps_test.go"
+      ],
+      "when": "the dependency allowlist test is executed against the direct dependencies of go.mod",
+      "then": [
+        "the allowlist accepts github.com/anthropics/anthropic-sdk-go without assertion failure"
+      ],
+      "pseudocode": "allowed = loadAllowedDeps(); assert 'github.com/anthropics/anthropic-sdk-go' in allowed; runDepsPolicyTest(t)"
+    },
+    {
+      "id": "TS-10-3",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-1.3"
+      ],
+      "title": "The Anthropic provider delegates transport and streaming to the official SDK client",
+      "given": [
+        "an Anthropic provider constructed via official SDK options"
+      ],
+      "when": "the provider executes message creation or streaming requests",
+      "then": [
+        "requests and stream decoding are dispatched using anthropic.Client primitives",
+        "custom SSE parsing and ad-hoc credential refresh logic are not invoked"
+      ],
+      "pseudocode": "client := anthropic.NewClient(option.WithAPIKey(\"key\")); p := anthropicprovider.NewWithClient(client); assert p.UsesSDKClient()"
+    },
+    {
+      "id": "TS-10-4",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-2.1",
+        "10-REQ-2.2"
+      ],
+      "title": "Resolve accepts an isolated Env lookup map and defines Source type constants",
+      "given": [
+        "an Env lookup map implementation isolating process environment variables"
+      ],
+      "when": "Resolve is called with custom variable mappings and Source constants are inspected",
+      "then": [
+        "Resolve accepts the Env interface without reading or mutating os.Environ",
+        "SourceDirect, SourceVertex, and SourceBedrock are distinct typed Source constants"
+      ],
+      "pseudocode": "env := anthropic.MapEnv{\"ANTHROPIC_API_KEY\": \"sk-ant-test\"}; c, src, err := anthropic.Resolve(env); assert err == nil; assert src == anthropic.SourceDirect"
+    },
+    {
+      "id": "TS-10-5",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-2.3"
+      ],
+      "title": "Resolve configures Vertex AI client with project, region, and optional base URL",
+      "given": [
+        "an Env containing CLAUDE_CODE_USE_VERTEX=1, ANTHROPIC_VERTEX_PROJECT_ID=my-project, CLOUD_ML_REGION=europe-west1, and ANTHROPIC_VERTEX_BASE_URL=https://custom-proxy.internal"
+      ],
+      "when": "anthropic.Resolve(env) is evaluated",
+      "then": [
+        "it returns SourceVertex",
+        "the resolved client is configured with Vertex authentication and the custom base URL"
+      ],
+      "pseudocode": "env := anthropic.MapEnv{\"CLAUDE_CODE_USE_VERTEX\": \"1\", \"ANTHROPIC_VERTEX_PROJECT_ID\": \"my-proj\", \"CLOUD_ML_REGION\": \"europe-west1\", \"ANTHROPIC_VERTEX_BASE_URL\": \"https://custom-proxy.internal\"}; client, src, err := anthropic.Resolve(env); assert err == nil; assert src == anthropic.SourceVertex; assert client != nil"
+    },
+    {
+      "id": "TS-10-6",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-2.4"
+      ],
+      "title": "Resolve configures AWS Bedrock client when CLAUDE_CODE_USE_BEDROCK is truthy",
+      "given": [
+        "an Env containing CLAUDE_CODE_USE_BEDROCK=true"
+      ],
+      "when": "anthropic.Resolve(env) is evaluated",
+      "then": [
+        "it returns SourceBedrock",
+        "the resolved client pointer is non-nil and configured for AWS Bedrock"
+      ],
+      "pseudocode": "env := anthropic.MapEnv{\"CLAUDE_CODE_USE_BEDROCK\": \"true\"}; client, src, err := anthropic.Resolve(env); assert err == nil; assert src == anthropic.SourceBedrock; assert client != nil"
+    },
+    {
+      "id": "TS-10-7",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-2.5"
+      ],
+      "title": "Resolve configures Direct Anthropic client with API key or auth token and base URL",
+      "given": [
+        "an Env containing ANTHROPIC_API_KEY=sk-ant-api03 and ANTHROPIC_BASE_URL=https://api.anthropic.internal"
+      ],
+      "when": "anthropic.Resolve(env) is evaluated",
+      "then": [
+        "it returns SourceDirect",
+        "the client is configured with the provided base URL and API key"
+      ],
+      "pseudocode": "env := anthropic.MapEnv{\"ANTHROPIC_API_KEY\": \"sk-ant-api03\", \"ANTHROPIC_BASE_URL\": \"https://api.anthropic.internal\"}; client, src, err := anthropic.Resolve(env); assert err == nil; assert src == anthropic.SourceDirect; assert client != nil"
+    },
+    {
+      "id": "TS-10-8",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-2.6"
+      ],
+      "title": "Resolve rejects with an error when neither cloud deployment is selected and credentials are missing",
+      "given": [
+        "an Env with no Vertex or Bedrock flags and empty ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN"
+      ],
+      "when": "anthropic.Resolve(env) is called",
+      "then": [
+        "it returns a non-nil error stating missing credentials",
+        "the returned client pointer is nil"
+      ],
+      "pseudocode": "env := anthropic.MapEnv{}; client, src, err := anthropic.Resolve(env); assert client == nil; assert err != nil; assert strings.Contains(strings.ToLower(err.Error()), \"credentials\")"
+    },
+    {
+      "id": "TS-10-9",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-2.7"
+      ],
+      "title": "Explicit cloud off flag disables cloud deployment and falls through to direct resolution",
+      "given": [
+        "an Env with CLAUDE_CODE_USE_VERTEX=0, GOOGLE_CLOUD_PROJECT=my-project, and ANTHROPIC_API_KEY=sk-ant-test"
+      ],
+      "when": "anthropic.Resolve(env) is called",
+      "then": [
+        "Vertex deployment is disabled despite the presence of project coordinates",
+        "it falls through to direct resolution returning SourceDirect"
+      ],
+      "pseudocode": "env := anthropic.MapEnv{\"CLAUDE_CODE_USE_VERTEX\": \"0\", \"GOOGLE_CLOUD_PROJECT\": \"my-project\", \"ANTHROPIC_API_KEY\": \"sk-ant-test\"}; client, src, err := anthropic.Resolve(env); assert err == nil; assert src == anthropic.SourceDirect"
+    },
+    {
+      "id": "TS-10-10",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-2.8"
+      ],
+      "title": "Resolve offline unit tests inspect client configuration and URLs without network calls",
+      "given": [
+        "synthetic Env maps for Direct, Vertex, and Bedrock configurations"
+      ],
+      "when": "Resolve is invoked in test isolation",
+      "then": [
+        "client options, URLs, and source targets are validated offline",
+        "zero HTTP network connections or outbound DNS resolutions are initiated"
+      ],
+      "pseudocode": "for _, tc := range cases { c, src, err := anthropic.Resolve(tc.env); assert err == nil; assert tc.validateConfig(c, src) }"
+    },
+    {
+      "id": "TS-10-11",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-3.1",
+        "10-REQ-3.2"
+      ],
+      "title": "Catalog is pruned of non-Claude entries and clamp.go and resolve.go are removed",
+      "given": [
+        "the catalog package directory and catalog.json file"
+      ],
+      "when": "catalog.json contents and catalog directory files are inspected",
+      "then": [
+        "catalog.json contains Claude model entries and zero OpenAI or Google model entries",
+        "neither catalog/resolve.go nor catalog/clamp.go exists in the repository"
+      ],
+      "pseudocode": "raw = read('catalog/catalog.json'); assert 'claude' in raw; assert 'gpt-' not in raw; assert 'gemini' not in raw; assert not fileExists('catalog/resolve.go'); assert not fileExists('catalog/clamp.go')"
+    },
+    {
+      "id": "TS-10-12",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-3.3"
+      ],
+      "title": "Catalog Lookup returns model descriptor and true for known Claude model IDs",
+      "given": [
+        "known Claude model IDs with and without the anthropic/ vendor prefix"
+      ],
+      "when": "catalog.Lookup(id) is invoked",
+      "then": [
+        "it returns the corresponding core.Model descriptor",
+        "the returned boolean is true"
+      ],
+      "pseudocode": "m1, ok1 := catalog.Lookup(\"claude-sonnet-4-5\"); assert ok1 == true; assert m1.ID == \"claude-sonnet-4-5\"; m2, ok2 := catalog.Lookup(\"anthropic/claude-sonnet-4-5\"); assert ok2 == true; assert m2.ID == \"claude-sonnet-4-5\""
+    },
+    {
+      "id": "TS-10-13",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-3.4"
+      ],
+      "title": "Catalog Lookup returns safe default descriptor and false for uncataloged model IDs",
+      "given": [
+        "an unknown model ID such as claude-next-gen-future"
+      ],
+      "when": "catalog.Lookup(id) is invoked",
+      "then": [
+        "it returns a core.Model descriptor with ID set to claude-next-gen-future",
+        "ContextWindow is 1000000, MaxOutput is 128000, and ThinkingKind is ThinkingKindAdaptive",
+        "cost rates are zero",
+        "the returned boolean is false"
+      ],
+      "pseudocode": "m, ok := catalog.Lookup(\"claude-next-gen-future\"); assert ok == false; assert m.ID == \"claude-next-gen-future\"; assert m.ContextWindow == 1000000; assert m.MaxOutput == 128000; assert m.Cost.InputUSDPer1M == 0; assert m.Cost.OutputUSDPer1M == 0"
+    },
+    {
+      "id": "TS-10-14",
+      "kind": "property",
+      "verifies": [
+        "10-REQ-3.5"
+      ],
+      "title": "Catalog Lookup never fails or panics for any model ID string",
+      "given": [
+        "a string generator producing arbitrary model identifier strings"
+      ],
+      "when": "for any model ID queried against catalog.Lookup",
+      "then": [
+        "catalog.Lookup returns a usable model descriptor",
+        "the call does not panic, error, or return an empty descriptor ID"
+      ],
+      "pseudocode": "for id in genModelIDs(): m, _ := catalog.Lookup(id); assert len(m.ID) > 0; assert m.ContextWindow > 0; assert m.MaxOutput > 0"
+    },
+    {
+      "id": "TS-10-15",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-3.6"
+      ],
+      "title": "Model pricing rates and token limits reside exclusively in the catalog package",
+      "given": [
+        "the provider/anthropic codebase"
+      ],
+      "when": "source files under provider/anthropic are scanned for model IDs and pricing constants",
+      "then": [
+        "no hardcoded model identifiers, token limits, or price tables exist in provider/anthropic",
+        "model metadata is queried solely through the catalog package"
+      ],
+      "pseudocode": "files = listFiles('provider/anthropic/*.go'); for f in files: assert not containsPricingOrHardcodedModelLimits(f)"
+    },
+    {
+      "id": "TS-10-16",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-4.1"
+      ],
+      "title": "Core package defines Effort type with discrete levels",
+      "given": [
+        "package core"
+      ],
+      "when": "the Effort type and its constants are referenced",
+      "then": [
+        "core.EffortLow equals \"low\"",
+        "core.EffortMedium equals \"medium\"",
+        "core.EffortHigh equals \"high\"",
+        "core.EffortXHigh equals \"xhigh\"",
+        "core.EffortMax equals \"max\""
+      ],
+      "pseudocode": "assert core.EffortLow == \"low\"; assert core.EffortMedium == \"medium\"; assert core.EffortHigh == \"high\"; assert core.EffortXHigh == \"xhigh\"; assert core.EffortMax == \"max\""
+    },
+    {
+      "id": "TS-10-17",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-4.2"
+      ],
+      "title": "Request encoder emits adaptive thinking with effort level and omits budget tokens",
+      "given": [
+        "a request for a model with adaptive thinking configured with core.EffortHigh"
+      ],
+      "when": "anthropic.BuildRequest encodes the wire payload",
+      "then": [
+        "the JSON payload contains \"thinking\": {\"type\": \"adaptive\"}",
+        "the JSON payload contains \"output_config\": {\"effort\": \"high\"}",
+        "\"budget_tokens\" is omitted from the thinking object"
+      ],
+      "pseudocode": "req := core.Request{Model: \"claude-sonnet-4-5\", Effort: core.EffortHigh}; wire := anthropic.BuildRequest(req); assert wire[\"thinking\"][\"type\"] == \"adaptive\"; assert wire[\"output_config\"][\"effort\"] == \"high\"; assert \"budget_tokens\" not in wire[\"thinking\"]"
+    },
+    {
+      "id": "TS-10-18",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-4.3"
+      ],
+      "title": "Request encoder emits legacy budget tokens and omits output_config effort for budget models",
+      "given": [
+        "a request for a model configured with legacy budget thinking and a budget of 4096 tokens"
+      ],
+      "when": "anthropic.BuildRequest encodes the wire payload",
+      "then": [
+        "the JSON payload contains \"thinking\": {\"type\": \"enabled\", \"budget_tokens\": 4096}",
+        "\"output_config\" does not specify an effort level"
+      ],
+      "pseudocode": "req := core.Request{Model: \"claude-legacy-3\", ThinkingBudget: 4096}; wire := anthropic.BuildRequest(req); assert wire[\"thinking\"][\"budget_tokens\"] == 4096; assert \"effort\" not in wire[\"output_config\"]"
+    },
+    {
+      "id": "TS-10-19",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-4.4"
+      ],
+      "title": "Request encoder omits thinking parameters without mutating request when effort is unsupported",
+      "given": [
+        "a request targeting a model whose catalog entry indicates no reasoning effort support"
+      ],
+      "when": "anthropic.BuildRequest encodes the wire payload",
+      "then": [
+        "neither \"thinking\" nor \"output_config.effort\" is present in the serialized payload",
+        "the input request object remains unmodified"
+      ],
+      "pseudocode": "req := core.Request{Model: \"claude-no-thinking\"}; wire := anthropic.BuildRequest(req); assert \"thinking\" not in wire; assert \"output_config\" not in wire"
+    },
+    {
+      "id": "TS-10-20",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-5.1"
+      ],
+      "title": "Tool encoder emits strict true on every tool definition",
+      "given": [
+        "a tool list containing multiple tools"
+      ],
+      "when": "anthropic.BuildRequest serializes the tools into the wire representation",
+      "then": [
+        "every tool object in the tools array contains \"strict\": true"
+      ],
+      "pseudocode": "tools := []core.Tool{{Name: \"search\", InputSchema: schema1}, {Name: \"edit\", InputSchema: schema2}}; wire := anthropic.BuildRequest(core.Request{Tools: tools}); for t in wire[\"tools\"]: assert t[\"strict\"] == true"
+    },
+    {
+      "id": "TS-10-21",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-5.2"
+      ],
+      "title": "Tool encoder strips OutputSchema, ReachableTools, and Terminating from wire tool definitions",
+      "given": [
+        "tools configured with OutputSchema, ReachableTools, and Terminating properties"
+      ],
+      "when": "the tool definitions are projected to Anthropic wire JSON",
+      "then": [
+        "none of OutputSchema, ReachableTools, or Terminating (or their snake_case variants) appear in the serialized tool definitions"
+      ],
+      "pseudocode": "t := core.Tool{Name: \"test\", OutputSchema: s, ReachableTools: []string{\"sub\"}, Terminating: true}; wire := anthropic.BuildRequest(core.Request{Tools: []core.Tool{t}}); toolJSON := toJSON(wire[\"tools\"][0]); assert \"OutputSchema\" not in toolJSON; assert \"output_schema\" not in toolJSON; assert \"ReachableTools\" not in toolJSON; assert \"terminating\" not in toolJSON"
+    },
+    {
+      "id": "TS-10-22",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-5.3"
+      ],
+      "title": "Request encoder omits forced tool choice and emits auto or omits tool_choice",
+      "given": [
+        "requests configured with default, forced, or auto tool choices"
+      ],
+      "when": "anthropic.BuildRequest serializes the wire tool choice",
+      "then": [
+        "no forced tool choice such as \"any\" or a named tool lock is emitted on the wire",
+        "tool_choice is either omitted or set to {\"type\": \"auto\"}"
+      ],
+      "pseudocode": "wire := anthropic.BuildRequest(core.Request{ToolChoice: core.ToolChoiceAny}); assert wire[\"tool_choice\"] == nil || wire[\"tool_choice\"][\"type\"] == \"auto\""
+    },
+    {
+      "id": "TS-10-23",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-6.1"
+      ],
+      "title": "Message encoder preserves raw JSON argument bytes for assistant tool_use blocks",
+      "given": [
+        "an assistant message with a tool_use block whose RawArguments contains specific spacing and key ordering"
+      ],
+      "when": "the conversation history is serialized into an Anthropic wire request",
+      "then": [
+        "the replayed tool_use input in the wire request matches the original raw argument bytes exactly without reformatting"
+      ],
+      "pseudocode": "raw := json.RawMessage(`{\"b\": 1,  \"a\":  2}`); msg := core.AssistantMessage{Content: core.Content{core.ToolUseBlock{ID: \"call_1\", Name: \"tool\", RawArguments: raw}}}; wire := anthropic.BuildRequest(core.Request{Messages: []core.Message{msg}}); assert string(wire[\"messages\"][0][\"content\"][0][\"input\"]) == string(raw)"
+    },
+    {
+      "id": "TS-10-24",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-6.2",
+        "10-REQ-6.3"
+      ],
+      "title": "Request encoder attaches ephemeral cache control to the last system block and last tool",
+      "given": [
+        "a request with multiple system content blocks and multiple tool definitions"
+      ],
+      "when": "the request is serialized for the Anthropic wire",
+      "then": [
+        "cache_control with type ephemeral appears on the final system content block and nowhere else in system blocks",
+        "cache_control with type ephemeral appears on the final tool definition and nowhere else in tool definitions"
+      ],
+      "pseudocode": "wire := anthropic.BuildRequest(reqWithMultipleSystemAndTools); assert wire[\"system\"][last][\"cache_control\"][\"type\"] == \"ephemeral\"; assert wire[\"system\"][0][\"cache_control\"] == nil; assert wire[\"tools\"][last][\"cache_control\"][\"type\"] == \"ephemeral\"; assert wire[\"tools\"][0][\"cache_control\"] == nil"
+    },
+    {
+      "id": "TS-10-25",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-6.4",
+        "10-REQ-6.5"
+      ],
+      "title": "Request encoder attaches ephemeral cache control to the last prefix block and last user block",
+      "given": [
+        "a request containing prefix messages and user conversation history with multiple blocks"
+      ],
+      "when": "the request is serialized for the Anthropic wire",
+      "then": [
+        "cache_control with type ephemeral is applied to the final content block of the prefix messages",
+        "cache_control with type ephemeral is applied to the final content block of the user message history"
+      ],
+      "pseudocode": "wire := anthropic.BuildRequest(reqWithPrefixAndUser); assert wire[\"messages\"][prefixLastMsg][\"content\"][last][\"cache_control\"][\"type\"] == \"ephemeral\"; assert wire[\"messages\"][userLastMsg][\"content\"][last][\"cache_control\"][\"type\"] == \"ephemeral\""
+    },
+    {
+      "id": "TS-10-26",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-7.1"
+      ],
+      "title": "Response translator converts SDK message payloads into core AssistantMessage blocks",
+      "given": [
+        "an Anthropic SDK Message object containing text, thinking, and tool_use blocks"
+      ],
+      "when": "anthropic.TranslateMessage is called",
+      "then": [
+        "it returns a core.AssistantMessage",
+        "content blocks are correctly mapped to core.TextBlock, core.ThinkingBlock, and core.ToolUseBlock"
+      ],
+      "pseudocode": "sdkMsg := makeSDKMessageWithTextThinkingTool(); coreMsg := anthropic.TranslateMessage(sdkMsg); assert len(coreMsg.Content) == 3; _, ok0 := coreMsg.Content[0].(core.ThinkingBlock); assert ok0; _, ok1 := coreMsg.Content[1].(core.TextBlock); assert ok1; _, ok2 := coreMsg.Content[2].(core.ToolUseBlock); assert ok2"
+    },
+    {
+      "id": "TS-10-27",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-7.2"
+      ],
+      "title": "Stream translator records input, output, cache read, and cache creation token usage",
+      "given": [
+        "an Anthropic streaming event sequence containing message_start and message_delta with usage metadata"
+      ],
+      "when": "the stream events are processed by the stream translator",
+      "then": [
+        "the resulting core.Usage records input tokens, output tokens, cache read tokens, and cache creation tokens",
+        "the total request count is incremented"
+      ],
+      "pseudocode": "usage := anthropic.TranslateUsage(startUsage, deltaUsage); assert usage.InputTokens == 150; assert usage.OutputTokens == 42; assert usage.CacheReadTokens == 100; assert usage.CacheCreationTokens == 50; assert usage.Requests == 1"
+    },
+    {
+      "id": "TS-10-28",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-7.3"
+      ],
+      "title": "Stream translator event forwarding does not block provider loop on slow consumers",
+      "given": [
+        "a provider stream connected to a subscriber channel that consumes events slowly"
+      ],
+      "when": "the SDK stream yields a burst of stream events",
+      "then": [
+        "the stream loop processes incoming events without deadlocking or blocking on the consumer channel buffer"
+      ],
+      "pseudocode": "streamCh := make(chan core.StreamEvent, 1); go p.Stream(ctx, req, streamCh); time.Sleep(10*time.Millisecond); for ev := range streamCh { ... }"
+    },
+    {
+      "id": "TS-10-29",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-8.1"
+      ],
+      "title": "Golden request test verifies Anthropic wire serialization against canonical fixture",
+      "given": [
+        "the canonical test request and testdata/golden/request_anthropic.json"
+      ],
+      "when": "golden_requests_test.go executes TestRequestGoldenAnthropic",
+      "then": [
+        "the serialized HTTP request body produced by the SDK encoder matches request_anthropic.json exactly"
+      ],
+      "pseudocode": "goldenBytes := read('testdata/golden/request_anthropic.json'); reqBytes := anthropic.EncodeCanonical(canonicalRequest(t)); assert bytes.Equal(reqBytes, goldenBytes)"
+    },
+    {
+      "id": "TS-10-30",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-8.2"
+      ],
+      "title": "Golden fixture asserts exact placement of cache control annotations",
+      "given": [
+        "the serialized golden request payload in testdata/golden/request_anthropic.json"
+      ],
+      "when": "all cache_control annotations in the payload are indexed",
+      "then": [
+        "cache_control appears on the final system block",
+        "cache_control appears on the final tool definition",
+        "cache_control appears on the final prefix block",
+        "cache_control appears on the final user block",
+        "no other blocks contain cache_control"
+      ],
+      "pseudocode": "payload := parseJSON(read('testdata/golden/request_anthropic.json')); assertPayloadCacheControlPositions(payload)"
+    },
+    {
+      "id": "TS-10-31",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-8.3"
+      ],
+      "title": "Golden fixture asserts strict true on all tools and absence of internal metadata",
+      "given": [
+        "the serialized golden request payload in testdata/golden/request_anthropic.json"
+      ],
+      "when": "all tools in the payload are inspected",
+      "then": [
+        "every tool definition contains strict: true",
+        "none of OutputSchema, reachable_tools, terminating, or their camelCase variants appear anywhere in the payload"
+      ],
+      "pseudocode": "raw := read('testdata/golden/request_anthropic.json'); assert '\"strict\":true' in raw; assert 'OutputSchema' not in raw; assert 'reachable_tools' not in raw; assert 'terminating' not in raw"
+    },
+    {
+      "id": "TS-10-32",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-8.4"
+      ],
+      "title": "Golden fixture asserts adaptive thinking and output_config effort with no budget tokens",
+      "given": [
+        "the serialized golden request payload in testdata/golden/request_anthropic.json"
+      ],
+      "when": "the thinking and output configuration structures are inspected",
+      "then": [
+        "\"thinking\" has type \"adaptive\"",
+        "\"output_config\" contains \"effort\"",
+        "\"budget_tokens\" does not appear anywhere in the payload"
+      ],
+      "pseudocode": "payload := parseJSON(read('testdata/golden/request_anthropic.json')); assert payload.Thinking.Type == \"adaptive\"; assert len(payload.OutputConfig.Effort) > 0; assert 'budget_tokens' not in read('testdata/golden/request_anthropic.json')"
+    },
+    {
+      "id": "TS-10-33",
+      "kind": "unit",
+      "verifies": [
+        "10-REQ-8.5"
+      ],
+      "title": "Golden fixture asserts byte-for-byte fidelity of replayed tool arguments",
+      "given": [
+        "the serialized golden request payload in testdata/golden/request_anthropic.json"
+      ],
+      "when": "replayed tool_use argument JSON strings are compared against the canonical input fixture",
+      "then": [
+        "the argument bytes in the tool_use blocks match the input JSON bytes byte-for-byte without key reordering or whitespace alterations"
+      ],
+      "pseudocode": "payload := parseJSON(read('testdata/golden/request_anthropic.json')); assert payload.Messages[assistantIdx].Content[toolUseIdx].InputRaw == canonicalToolUseInputRaw"
+    },
+    {
+      "id": "TS-10-34",
+      "kind": "smoke",
+      "verifies": [
+        "10-PATH-1",
+        "10-REQ-2.3",
+        "10-REQ-2.8"
+      ],
+      "title": "Offline environment resolution for Claude on Google Cloud Vertex AI",
+      "given": [
+        "an Env configured with CLAUDE_CODE_USE_VERTEX=1, ANTHROPIC_VERTEX_PROJECT_ID=test-project, and CLOUD_ML_REGION=us-central1"
+      ],
+      "when": "anthropic.Resolve(env) is executed",
+      "then": [
+        "it resolves SourceVertex with an *anthropic.Client configured for Google Cloud Vertex AI",
+        "resolution completes offline without network requests"
+      ],
+      "pseudocode": "env := anthropic.MapEnv{\"CLAUDE_CODE_USE_VERTEX\": \"1\", \"ANTHROPIC_VERTEX_PROJECT_ID\": \"test-project\", \"CLOUD_ML_REGION\": \"us-central1\"}; client, src, err := anthropic.Resolve(env); if err != nil { t.Fatal(err) }; if src != anthropic.SourceVertex { t.Fatalf(\"want SourceVertex, got %v\", src) }; if client == nil { t.Fatal(\"expected non-nil client\") }",
+      "real_components": [
+        "anthropic.Resolve",
+        "anthropic.MapEnv"
+      ]
+    },
+    {
+      "id": "TS-10-35",
+      "kind": "smoke",
+      "verifies": [
+        "10-PATH-2",
+        "10-REQ-8.1"
+      ],
+      "title": "End-to-end wire request encoding with strict tools, adaptive thinking, and prompt caching matches golden fixture",
+      "given": [
+        "a canonical agent request configured with system prompt, user message, tool definition, and EffortHigh against a known Claude model"
+      ],
+      "when": "catalog.Lookup confirms model capabilities and anthropic.BuildRequest generates the wire payload",
+      "then": [
+        "the resulting JSON payload matches testdata/golden/request_anthropic.json byte-for-byte",
+        "strict tools, adaptive thinking effort, and ephemeral prompt cache breakpoints are serialized exactly"
+      ],
+      "pseudocode": "req := canonicalRequest(t); model, ok := catalog.Lookup(req.Model); if !ok { t.Fatal(\"model not found\") }; body, err := anthropic.BuildRequestJSON(req, model); if err != nil { t.Fatal(err) }; golden, err := os.ReadFile(\"testdata/golden/request_anthropic.json\"); if err != nil { t.Fatal(err) }; if !bytes.Equal(body, golden) { t.Fatalf(\"golden mismatch:\\n%s\", diff(golden, body)) }",
+      "real_components": [
+        "anthropic.BuildRequestJSON",
+        "catalog.Lookup"
+      ]
+    },
+    {
+      "id": "TS-10-36",
+      "kind": "smoke",
+      "verifies": [
+        "10-PATH-3",
+        "10-REQ-6.1"
+      ],
+      "title": "Multi-turn assistant tool use replay preserves raw argument bytes end-to-end",
+      "given": [
+        "an incoming assistant stream chunk with raw tool_use argument JSON bytes"
+      ],
+      "when": "the stream translator constructs the AssistantMessage and passes the conversation history to the request encoder for the subsequent turn",
+      "then": [
+        "the raw argument bytes in the outgoing wire request match the incoming argument bytes byte-for-byte"
+      ],
+      "pseudocode": "raw := []byte(`{\"path\": \"foo/bar.go\",   \"query\": \"func Test\"}`); asstMsg := anthropic.TranslateAssistantEvent(raw); req := core.Request{Messages: []core.Message{asstMsg, core.ToolResultMessage{ToolUseID: \"call_1\", Content: core.Content{core.TextBlock{Text: \"ok\"}}}}}; out := anthropic.BuildRequestJSON(req, defaultModel); assertReplayedToolUseBytesEqual(out, raw)",
+      "real_components": [
+        "anthropic.TranslateAssistantEvent",
+        "anthropic.BuildRequestJSON"
+      ]
+    }
+  ]
+}

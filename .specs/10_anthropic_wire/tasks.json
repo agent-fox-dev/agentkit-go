@@ -1,0 +1,326 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "10",
+  "spec_name": "anthropic_wire",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./provider/anthropic/... ./catalog/... ./core/... . -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "09_repository_cut",
+      "reason": "Removes non-Anthropic providers, unneeded tools, and examples, and sets up the module rename and dependency allowlist gate."
+    },
+    {
+      "spec": "06_tool_output_schemas",
+      "reason": "Supplies OutputSchema on core.Tool which must be filtered out of wire tool definitions."
+    },
+    {
+      "spec": "07_nested_tool_calls",
+      "reason": "Supplies ReachableTools and Terminating on core.Tool which must be filtered out of wire tool definitions."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Integrate official Anthropic SDK dependency and authorize in dependency policy",
+      "criteria": [
+        "10-REQ-1.1",
+        "10-REQ-1.2",
+        "10-REQ-1.3"
+      ],
+      "tests": [
+        "TS-10-1",
+        "TS-10-2",
+        "TS-10-3"
+      ],
+      "steps": [
+        "Add github.com/anthropics/anthropic-sdk-go pinned to a specific minor version in go.mod and run go mod tidy",
+        "Update internal/policy/deps_test.go to add github.com/anthropics/anthropic-sdk-go to the direct dependency allowlist table",
+        "Write unit tests TS-10-1 and TS-10-2 asserting the pinned SDK in go.mod and its authorization in internal/policy/deps_test.go",
+        "Refactor provider/anthropic to import the official SDK client and deprecate hand-rolled HTTP transport, provider/sse.go streaming parsers, and custom credential stores",
+        "Write unit test TS-10-3 confirming the Anthropic provider delegates transport and stream decoding directly to official SDK client primitives"
+      ],
+      "touches": [
+        "go.mod",
+        "go.sum",
+        "internal/policy/deps_test.go",
+        "provider/anthropic/anthropic.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Implement unified Direct, Vertex AI, and Bedrock environment resolution",
+      "criteria": [
+        "10-REQ-2.1",
+        "10-REQ-2.2",
+        "10-REQ-2.3",
+        "10-REQ-2.4",
+        "10-REQ-2.5",
+        "10-REQ-2.6",
+        "10-REQ-2.7",
+        "10-REQ-2.8"
+      ],
+      "tests": [
+        "TS-10-4",
+        "TS-10-5",
+        "TS-10-6",
+        "TS-10-7",
+        "TS-10-8",
+        "TS-10-9",
+        "TS-10-10"
+      ],
+      "steps": [
+        "Define the Env interface and MapEnv implementation in provider/anthropic to allow isolated variable lookups without mutating process environment",
+        "Define typed Source constants SourceDirect, SourceVertex, and SourceBedrock",
+        "Implement anthropic.Resolve(env Env) (*anthropic.Client, Source, error) checking CLAUDE_CODE_USE_VERTEX and CLAUDE_CODE_USE_BEDROCK flags with truthy and explicit off ('0' and 'false') handling",
+        "Configure SourceVertex with ANTHROPIC_VERTEX_PROJECT_ID (or GOOGLE_CLOUD_PROJECT), CLOUD_ML_REGION (defaulting to 'global'), and optional ANTHROPIC_VERTEX_BASE_URL",
+        "Configure SourceBedrock with AWS Bedrock client options",
+        "Configure SourceDirect reading ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN) and optional ANTHROPIC_BASE_URL, and return a descriptive missing credentials error if neither cloud flag nor API key is present",
+        "Write unit tests TS-10-4 through TS-10-10 in provider/anthropic/resolve_test.go verifying Direct, Vertex, and Bedrock resolution offline without network calls"
+      ],
+      "touches": [
+        "provider/anthropic/resolve.go",
+        "provider/anthropic/resolve_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Shrink model catalog to Claude lookups with safe uncataloged model defaults",
+      "criteria": [
+        "10-REQ-3.1",
+        "10-REQ-3.2",
+        "10-REQ-3.3",
+        "10-REQ-3.4",
+        "10-REQ-3.5",
+        "10-REQ-3.6"
+      ],
+      "tests": [
+        "TS-10-11",
+        "TS-10-12",
+        "TS-10-13",
+        "TS-10-14",
+        "TS-10-15"
+      ],
+      "steps": [
+        "Prune catalog/catalog.json by removing all non-Claude vendor models (OpenAI, Google) and keeping only Claude model descriptors",
+        "Delete catalog/resolve.go, catalog/resolve_test.go, catalog/clamp.go, and catalog/clamp_test.go",
+        "Implement catalog.Lookup(id string) (core.Model, bool) in catalog/catalog.go stripping optional 'anthropic/' prefix and matching Claude entries",
+        "Return a default core.Model descriptor (requested ID, 1,000,000 context window, 128,000 max output, ThinkingKindAdaptive, zero cost rates) and false when querying uncataloged models without returning errors",
+        "Verify that model pricing rates and token limits reside exclusively in catalog without hardcoded values in provider/anthropic",
+        "Write unit tests TS-10-11, TS-10-12, TS-10-13, TS-10-15 and property test TS-10-14 in catalog/catalog_test.go"
+      ],
+      "touches": [
+        "catalog/catalog.json",
+        "catalog/catalog.go",
+        "catalog/catalog_test.go",
+        "catalog/clamp.go",
+        "catalog/resolve.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Implement adaptive thinking Effort levels and request payload encoding",
+      "criteria": [
+        "10-REQ-4.1",
+        "10-REQ-4.2",
+        "10-REQ-4.3",
+        "10-REQ-4.4"
+      ],
+      "tests": [
+        "TS-10-16",
+        "TS-10-17",
+        "TS-10-18",
+        "TS-10-19"
+      ],
+      "steps": [
+        "Define Effort type in package core with discrete constants EffortLow ('low'), EffortMedium ('medium'), EffortHigh ('high'), EffortXHigh ('xhigh'), and EffortMax ('max')",
+        "Update request encoder to emit thinking: {type: 'adaptive'} and output_config: {effort: '<level>'} without budget_tokens when adaptive thinking is active",
+        "Emit budget_tokens and omit output_config.effort when legacy budget thinking is explicitly configured on the model",
+        "Omit thinking and output_config parameters entirely when a model's catalog entry does not support reasoning effort, without mutating or clamping the request",
+        "Write unit tests TS-10-16, TS-10-17, TS-10-18, and TS-10-19 verifying Effort definitions and wire thinking payload encoding"
+      ],
+      "touches": [
+        "core/stopreason.go",
+        "core/message.go",
+        "provider/anthropic/anthropic.go",
+        "provider/anthropic/request_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Implement strict tool serialization and schema metadata projection",
+      "criteria": [
+        "10-REQ-5.1",
+        "10-REQ-5.2",
+        "10-REQ-5.3"
+      ],
+      "tests": [
+        "TS-10-20",
+        "TS-10-21",
+        "TS-10-22"
+      ],
+      "steps": [
+        "Update wire tool serialization in provider/anthropic to set strict: true unconditionally on all tool definitions",
+        "Strip internal tool metadata fields OutputSchema, ReachableTools, and Terminating (and their snake_case variants) before serializing tool definitions",
+        "Omit forced tool choice ('any' or named tool locks) on the wire, defaulting to 'auto' or omitting tool_choice",
+        "Write unit tests TS-10-20, TS-10-21, and TS-10-22 asserting strict: true, absence of internal metadata, and tool choice behavior"
+      ],
+      "touches": [
+        "provider/anthropic/anthropic.go",
+        "provider/anthropic/tools_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Enforce tool argument raw byte preservation and prompt cache breakpoints",
+      "criteria": [
+        "10-REQ-6.1",
+        "10-REQ-6.2",
+        "10-REQ-6.3",
+        "10-REQ-6.4",
+        "10-REQ-6.5"
+      ],
+      "tests": [
+        "TS-10-23",
+        "TS-10-24",
+        "TS-10-25"
+      ],
+      "steps": [
+        "Ensure assistant tool_use blocks preserve raw json.RawMessage argument bytes without unmarshaling or re-serializing across multi-turn histories",
+        "Add ephemeral cache_control ({type: 'ephemeral'}) to the final content block of the system prompt",
+        "Add ephemeral cache_control to the final tool definition in the tools list",
+        "Add ephemeral cache_control to the final content block of prefix messages if prefix messages exist",
+        "Add ephemeral cache_control to the final content block of user message history",
+        "Write unit tests TS-10-23, TS-10-24, and TS-10-25 validating byte preservation of tool arguments and precise placement of cache control breakpoints"
+      ],
+      "touches": [
+        "provider/anthropic/anthropic.go",
+        "provider/anthropic/cache_test.go"
+      ],
+      "depends_on": [
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Implement Anthropic SDK response translation, stream decoding, and token accounting",
+      "criteria": [
+        "10-REQ-7.1",
+        "10-REQ-7.2",
+        "10-REQ-7.3"
+      ],
+      "tests": [
+        "TS-10-26",
+        "TS-10-27",
+        "TS-10-28"
+      ],
+      "steps": [
+        "Implement message translation from SDK Message payloads into core.AssistantMessage with TextBlock, ThinkingBlock, and ToolUseBlock content",
+        "Translate streaming chunks and message deltas, capturing input, output, cache read, and cache creation token counts into core.Usage and incrementing request count",
+        "Ensure streaming event forwarding into the agent event stream runs without blocking the provider loop on slow consumers",
+        "Write unit tests TS-10-26, TS-10-27, and TS-10-28 validating response translation, usage accounting, and non-blocking streaming behavior"
+      ],
+      "touches": [
+        "provider/anthropic/stream.go",
+        "provider/anthropic/stream_test.go",
+        "provider/anthropic/decode.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Pin Anthropic wire serialization with updated golden request tests",
+      "criteria": [
+        "10-REQ-8.1",
+        "10-REQ-8.2",
+        "10-REQ-8.3",
+        "10-REQ-8.4",
+        "10-REQ-8.5"
+      ],
+      "tests": [
+        "TS-10-29",
+        "TS-10-30",
+        "TS-10-31",
+        "TS-10-32",
+        "TS-10-33"
+      ],
+      "steps": [
+        "Update testdata/golden/request_anthropic.json to reflect SDK wire serialization containing strict tools, adaptive thinking effort, and ephemeral prompt caching",
+        "Rewrite golden_requests_test.go to assert wire request bodies generated for Anthropic match request_anthropic.json byte-for-byte",
+        "Assert that cache_control appears exactly on the last system block, last tool, last prefix block, and last user block",
+        "Assert that all tools have strict: true and that OutputSchema, reachable_tools, and terminating do not appear in the payload",
+        "Assert that adaptive models emit thinking: {type: 'adaptive'} and output_config.effort without budget_tokens",
+        "Assert that replayed tool_use arguments match the input fixture byte-for-byte",
+        "Execute tests TS-10-29 through TS-10-33 and verify golden comparisons pass"
+      ],
+      "touches": [
+        "golden_requests_test.go",
+        "testdata/golden/request_anthropic.json"
+      ],
+      "depends_on": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "integration",
+      "title": "Verify end-to-end Anthropic wire resolution, golden serialization, and replay paths",
+      "tests": [
+        "TS-10-34",
+        "TS-10-35",
+        "TS-10-36"
+      ],
+      "steps": [
+        "Execute TS-10-34 verifying offline environment resolution for Claude on Google Cloud Vertex AI (10-PATH-1)",
+        "Execute TS-10-35 verifying end-to-end wire request encoding with strict tools, adaptive thinking, and prompt caching against golden fixture (10-PATH-2)",
+        "Execute TS-10-36 verifying multi-turn assistant tool use replay with raw byte preservation end-to-end (10-PATH-3)",
+        "Trace 10-PATH-1 from anthropic.Resolve through Vertex client configuration to offline URL verification; confirm no stubs remain",
+        "Trace 10-PATH-2 from request construction and catalog.Lookup through anthropic.BuildRequest to golden wire payload comparison",
+        "Trace 10-PATH-3 from incoming assistant tool_use streaming through raw byte extraction to wire replay in subsequent turns",
+        "Confirm that the missing credentials error returned by anthropic.Resolve (10-REQ-2.6 contract) is consumed by caller error handling in production code, not only in tests",
+        "Search all touched files for panic('not implemented'), TODO, and stub markers to ensure complete implementation across all packages"
+      ],
+      "touches": [
+        "provider/anthropic/smoke_test.go"
+      ],
+      "depends_on": [
+        2,
+        8
+      ],
+      "state": "pending"
+    }
+  ]
+}

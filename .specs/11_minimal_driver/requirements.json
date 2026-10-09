@@ -1,0 +1,644 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "11",
+  "spec_name": "minimal_driver",
+  "schema_version": 2,
+  "introduction": "Specification 11 implements the streamlined agentkit.Config and New driver loop with prompt prefix caching breakpoints, transcript tool result pruning, batch tool execution, nested tool calling, and termination handling, providing a focused, robust driver for unattended coding pipelines.",
+  "glossary": {
+    "anchored_token_estimation": "Context token estimation strategy anchoring to the latest assistant usage report and adding 4 characters per token for subsequent messages.",
+    "cache_breakpoint": "Prompt caching annotation (cache_control: {type: ephemeral}) placed on the last block of system, tools, prefix, and rolling user messages.",
+    "context_pruning": "Replacing old tool result content in outbound model requests with single-line elision notices without modifying durable transcript messages.",
+    "nested_caller": "Context-attached helper that permits tools declaring ReachableTools to execute child tools within their resolved reachable set.",
+    "synthetic_truncation_result": "A deterministic notice appended as a ToolResultMessage when an assistant message with tool calls hits the output token cap (StopReasonLength)."
+  },
+  "requirements": [
+    {
+      "id": "11-REQ-1",
+      "title": "Driver Configuration and Constructor Validation",
+      "rationale": "A streamlined configuration structure with strict validation ensures deterministic driver instantiation while avoiding legacy configuration sprawl.",
+      "criteria": [
+        {
+          "id": "11-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "driver package",
+          "action": "define Config with Client, Provider, Model, Effort, System, Prefix, Tools, Policy, Guard, After, MaxTurns, MaxCostUSD, Timeout, Prune, and MaxTokens fields"
+        },
+        {
+          "id": "11-REQ-1.2",
+          "pattern": "unwanted",
+          "condition": "both cfg.Client and cfg.Provider are nil",
+          "system": "driver constructor",
+          "action": "reject construction with an error indicating that an Anthropic client or core provider must be provided",
+          "contract": "returns nil *Agent and non-nil error"
+        },
+        {
+          "id": "11-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "cfg.Model is empty",
+          "system": "driver constructor",
+          "action": "reject construction with an error indicating that a model identifier is required",
+          "contract": "returns nil *Agent and non-nil error"
+        },
+        {
+          "id": "11-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "any tool in cfg.Tools specifies both Handler and Execute, specifies neither, contains reachability cycles, or declares a wrapper reaching a terminating tool",
+          "system": "driver constructor",
+          "action": "reject construction with an error describing the invalid tool configuration",
+          "contract": "returns nil *Agent and non-nil error"
+        },
+        {
+          "id": "11-REQ-1.5",
+          "pattern": "event_driven",
+          "condition": "cfg contains a valid configuration and tool hierarchy",
+          "system": "driver constructor",
+          "action": "resolve active tools using cfg.Policy.Resolve(cfg.Tools) and return an initialized Agent instance",
+          "contract": "returns non-nil *Agent and nil error"
+        },
+        {
+          "id": "11-REQ-1.6",
+          "pattern": "complex_event",
+          "condition": "cfg.Provider is provided",
+          "guard": "cfg.Client is also provided",
+          "system": "driver constructor",
+          "action": "prioritize cfg.Provider over cfg.Client for model dispatch"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-2",
+      "title": "Eager Shell Tool Guard Enforcement",
+      "rationale": "Eagerly checking for shell tools across direct and nested tool hierarchies prevents accidental unguarded command execution before runs start.",
+      "criteria": [
+        {
+          "id": "11-REQ-2.1",
+          "pattern": "unwanted",
+          "condition": "any tool resolved from cfg.Tools is a shell tool recognized by guard.IsShellTool and cfg.Guard is nil",
+          "system": "driver constructor",
+          "action": "reject construction with an error wrapping core.ErrUnguardedExecute naming the tool",
+          "contract": "returns nil *Agent and error wrapping core.ErrUnguardedExecute"
+        },
+        {
+          "id": "11-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "any tool transitively reachable through tool wrappers in the resolved tool set is a shell tool recognized by guard.IsShellTool and cfg.Guard is nil",
+          "system": "driver constructor",
+          "action": "reject construction with an error wrapping core.ErrUnguardedExecute naming the wrapper and reached shell tool",
+          "contract": "returns nil *Agent and error wrapping core.ErrUnguardedExecute"
+        },
+        {
+          "id": "11-REQ-2.3",
+          "pattern": "event_driven",
+          "condition": "any reachable tool is a shell tool and cfg.Guard is non-nil",
+          "system": "driver constructor",
+          "action": "accept the configuration and initialize the Agent without returning core.ErrUnguardedExecute",
+          "contract": "returns non-nil *Agent and nil error"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-3",
+      "title": "Consumer Execution Surface and Concurrency Control",
+      "rationale": "Restricting the public surface to essential execution and inspection methods provides a clean consumer API and eliminates legacy steering and session complexity.",
+      "criteria": [
+        {
+          "id": "11-REQ-3.1",
+          "pattern": "ubiquitous",
+          "system": "Agent",
+          "action": "expose its public API consisting solely of Run, Stream, Messages, Usage, and ReachableTools methods"
+        },
+        {
+          "id": "11-REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "a caller invokes Run(ctx, prompt)",
+          "system": "Agent",
+          "action": "execute the minimal driver loop to a stop condition, record turns to its transcript, and return a RunResult containing transcript messages, usage, turn count, and stop reason",
+          "contract": "returns (core.RunResult, error)"
+        },
+        {
+          "id": "11-REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "a caller invokes Stream(ctx, prompt)",
+          "system": "Agent",
+          "action": "launch the driver loop asynchronously and return an active *core.EventStream that receives execution events without blocking the producer loop",
+          "contract": "returns (*core.EventStream, error)"
+        },
+        {
+          "id": "11-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "Run or Stream is invoked while another Run or Stream execution is actively in flight on the same Agent instance",
+          "system": "Agent",
+          "action": "reject the call immediately with core.ErrBusy",
+          "contract": "returns core.ErrBusy"
+        },
+        {
+          "id": "11-REQ-3.5",
+          "pattern": "ubiquitous",
+          "system": "Agent",
+          "action": "for any concurrent invocation of Messages(), Usage(), or ReachableTools() while a run is executing, safely return a consistent view of the respective state without deadlocking or data races"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-4",
+      "title": "Prompt Assembly and Cache Breakpoints",
+      "rationale": "System prompt guidelines and four-point cache breakpoints maximize model prompt cache reuse across turns while keeping system instructions aligned with available tools.",
+      "criteria": [
+        {
+          "id": "11-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "assembling the system prompt for a model request",
+          "system": "driver",
+          "action": "combine cfg.System with active tool PromptGuidelines deduplicated in first-seen order using prompt.Build"
+        },
+        {
+          "id": "11-REQ-4.2",
+          "pattern": "event_driven",
+          "condition": "constructing outbound messages for a model request",
+          "system": "driver",
+          "action": "prepend cfg.Prefix messages before the initial user prompt and conversation history"
+        },
+        {
+          "id": "11-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "driver",
+          "action": "stamp an ephemeral cache control breakpoint on the final content block of the assembled system prompt"
+        },
+        {
+          "id": "11-REQ-4.4",
+          "pattern": "complex_event",
+          "condition": "the resolved tool list contains at least one tool",
+          "guard": "model requests are dispatched",
+          "system": "driver",
+          "action": "stamp an ephemeral cache control breakpoint on the final tool definition in the tool list"
+        },
+        {
+          "id": "11-REQ-4.5",
+          "pattern": "complex_event",
+          "condition": "cfg.Prefix contains one or more messages with content blocks",
+          "guard": "model requests are dispatched",
+          "system": "driver",
+          "action": "stamp an ephemeral cache control breakpoint on the final content block of the prefix messages"
+        },
+        {
+          "id": "11-REQ-4.6",
+          "pattern": "event_driven",
+          "condition": "outbound user messages are prepared for a request",
+          "system": "driver",
+          "action": "stamp an ephemeral cache control breakpoint on the final content block of the most recent user message"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-5",
+      "title": "Outbound Context Pruning and Context Window Bounds",
+      "rationale": "Outbound context pruning prevents model context overflows by aging out verbose tool results while preserving complete conversation history on durable transcripts.",
+      "criteria": [
+        {
+          "id": "11-REQ-5.1",
+          "pattern": "ubiquitous",
+          "system": "driver",
+          "action": "define PruneOptions with Threshold float64 and KeepTurns int fields"
+        },
+        {
+          "id": "11-REQ-5.2",
+          "pattern": "complex_event",
+          "condition": "cfg.Prune.Threshold is greater than zero before issuing an outbound request",
+          "guard": "the ratio of estimated outbound tokens to the model context window retrieved via catalog.Lookup meets or exceeds cfg.Prune.Threshold",
+          "system": "driver",
+          "action": "replace the body of tool results older than KeepTurns in the outbound view with a single elision notice stating the tool name and original byte length"
+        },
+        {
+          "id": "11-REQ-5.3",
+          "pattern": "ubiquitous",
+          "system": "driver",
+          "action": "for any tool result pruned in the outbound view, preserve its ToolUseID pairing with the corresponding assistant ToolUseBlock"
+        },
+        {
+          "id": "11-REQ-5.4",
+          "pattern": "ubiquitous",
+          "system": "driver",
+          "action": "for any outbound pruning operation, leave the durable transcript returned by Messages() and RunResult.Messages intact and unmodified"
+        },
+        {
+          "id": "11-REQ-5.5",
+          "pattern": "unwanted",
+          "condition": "estimated transcript tokens exceed the model context window capacity retrieved from catalog.Lookup after pruning",
+          "system": "driver",
+          "action": "terminate the run immediately with RunStopError and return an error identifying the model and context window limit",
+          "contract": "RunResult.StopReason is RunStopError and RunResult.Error names the model and context window limit"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-6",
+      "title": "Turn Continuation and Truncation Notice",
+      "rationale": "Decoupling continuation from provider stop reasons and synthesizing fixed truncation notices prevents partial tool execution bugs while allowing models to recover.",
+      "criteria": [
+        {
+          "id": "11-REQ-6.1",
+          "pattern": "ubiquitous",
+          "system": "driver",
+          "action": "determine turn continuation exclusively by evaluating whether the assistant message contains one or more ToolUseBlock elements, independent of StopReason"
+        },
+        {
+          "id": "11-REQ-6.2",
+          "pattern": "complex_event",
+          "condition": "an assistant message contains one or more ToolUseBlock elements",
+          "guard": "its StopReason is StopReasonLength",
+          "system": "driver",
+          "action": "skip handler execution for all tool calls in the batch and append a synthetic ToolResultMessage to each call stating that the call was not executed due to output token limits"
+        },
+        {
+          "id": "11-REQ-6.3",
+          "pattern": "event_driven",
+          "condition": "synthetic truncation tool results are appended following a StopReasonLength response",
+          "system": "driver",
+          "action": "continue to the next turn without terminating the run"
+        },
+        {
+          "id": "11-REQ-6.4",
+          "pattern": "unwanted",
+          "condition": "an assistant message contains no ToolUseBlock elements and StopReason is StopReasonRefusal",
+          "system": "driver",
+          "action": "terminate the run with RunStopRefusal and return an error wrapping core.ErrRefusal",
+          "contract": "RunResult.StopReason is RunStopRefusal and RunResult.Error wraps core.ErrRefusal"
+        },
+        {
+          "id": "11-REQ-6.5",
+          "pattern": "complex_event",
+          "condition": "an assistant message contains no ToolUseBlock elements",
+          "guard": "its StopReason is neither an error nor a refusal",
+          "system": "driver",
+          "action": "complete the run successfully with RunStopEndTurn",
+          "contract": "RunResult.StopReason is RunStopEndTurn and RunResult.Error is nil"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-7",
+      "title": "Batch Tool Execution Pipeline",
+      "rationale": "Four-phase batch execution guarantees deterministic guard evaluation, atomic abort decisions, concurrent tool execution without premature sibling cancellation, and ordered results.",
+      "criteria": [
+        {
+          "id": "11-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "preparing a batch of tool calls in Phase 1",
+          "system": "driver",
+          "action": "sequentially validate arguments using core.PrepareArguments and evaluate Config.Guard for each call on the loop goroutine, finalizing any blocked call or validation error immediately as an error result without invoking its handler"
+        },
+        {
+          "id": "11-REQ-7.2",
+          "pattern": "complex_event",
+          "condition": "evaluating the Phase 2 abort decision before any handler starts",
+          "guard": "the run context is cancelled (ctx.Err() != nil)",
+          "system": "driver",
+          "action": "mark all remaining unfinalized calls as aborted without executing any handlers"
+        },
+        {
+          "id": "11-REQ-7.3",
+          "pattern": "complex_event",
+          "condition": "evaluating the Phase 2 abort decision before handlers start",
+          "guard": "the run context is active (ctx.Err() == nil)",
+          "system": "driver",
+          "action": "dispatch all remaining unfinalized calls to Phase 3 execution"
+        },
+        {
+          "id": "11-REQ-7.4",
+          "pattern": "event_driven",
+          "condition": "executing tool handlers in Phase 3 without Sequential tools",
+          "system": "driver",
+          "action": "execute handler functions concurrently with one goroutine per call joined by a sync.WaitGroup without using errgroup"
+        },
+        {
+          "id": "11-REQ-7.5",
+          "pattern": "complex_event",
+          "condition": "executing tool handlers in Phase 3",
+          "guard": "at least one tool in the batch is marked Sequential",
+          "system": "driver",
+          "action": "execute handlers sequentially in call order"
+        },
+        {
+          "id": "11-REQ-7.6",
+          "pattern": "event_driven",
+          "condition": "finalizing tool execution in Phase 4",
+          "system": "driver",
+          "action": "evaluate Config.After and emit completion events serialized under a batch-scoped mutex while assigning results by original slot index to preserve assistant call order"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-8",
+      "title": "Batch Tool Termination Voting",
+      "rationale": "Tool-initiated termination allows tools to signal mission completion while ensuring batches always finish executing cleanly and blocked calls do not trigger termination.",
+      "criteria": [
+        {
+          "id": "11-REQ-8.1",
+          "pattern": "complex_event",
+          "condition": "any executed tool handler in a batch returns a result with Terminate set to true",
+          "guard": "the entire batch completes execution",
+          "system": "driver",
+          "action": "terminate the run with RunStopToolTerminate",
+          "contract": "RunResult.StopReason is RunStopToolTerminate"
+        },
+        {
+          "id": "11-REQ-8.2",
+          "pattern": "complex_event",
+          "condition": "an executed tool votes Terminate true in a parallel batch",
+          "guard": "sibling tool calls are concurrently executing in the same batch",
+          "system": "driver",
+          "action": "await completion of all sibling handlers before terminating the run"
+        },
+        {
+          "id": "11-REQ-8.3",
+          "pattern": "unwanted",
+          "condition": "a tool call is blocked by Config.Guard or fails argument validation during Phase 1",
+          "system": "driver",
+          "action": "record an error result without setting a termination vote",
+          "contract": "the blocked call does not trigger RunStopToolTerminate"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-9",
+      "title": "Nested Tool Execution Pipeline",
+      "rationale": "The nested caller pipeline enables tools like Starlark code mode to execute child tools safely with bound reachability, parent attribution, and error introspection.",
+      "criteria": [
+        {
+          "id": "11-REQ-9.1",
+          "pattern": "event_driven",
+          "condition": "executing a tool that declares ReachableTools",
+          "system": "driver",
+          "action": "attach a core.NestedCaller configured with the tool's resolved reachable set to the handler's execution context"
+        },
+        {
+          "id": "11-REQ-9.2",
+          "pattern": "unwanted",
+          "condition": "a nested call attempts to invoke a tool outside the wrapper's resolved reachable set",
+          "system": "nested caller",
+          "action": "return an error result indicating that the tool is unreachable",
+          "contract": "returns ToolResult with IsError true"
+        },
+        {
+          "id": "11-REQ-9.3",
+          "pattern": "event_driven",
+          "condition": "a nested call is executed through NestedCaller.Call",
+          "system": "nested caller",
+          "action": "emit execution events populated with ParentToolUseID matching the parent tool call identifier"
+        },
+        {
+          "id": "11-REQ-9.4",
+          "pattern": "complex_event",
+          "condition": "a nested call is blocked by a BeforeToolCall interceptor",
+          "guard": "the wrapper evaluates the outcome",
+          "system": "nested caller",
+          "action": "return an error ToolResult value with a nil Go error to allow wrapper scripts to process the rejection",
+          "contract": "returns ([]core.ToolResult, nil) where the result element has IsError true"
+        },
+        {
+          "id": "11-REQ-9.5",
+          "pattern": "complex_event",
+          "condition": "an interceptor votes to terminate during a nested call",
+          "guard": "subsequent calls are attempted through the nested caller",
+          "system": "nested caller",
+          "action": "reject subsequent calls with core.ErrTerminated and propagate the termination vote to the parent wrapper result",
+          "contract": "returns (nil, core.ErrTerminated)"
+        }
+      ]
+    },
+    {
+      "id": "11-REQ-10",
+      "title": "Run Limits, Bounds, and Stream Resilience",
+      "rationale": "Strict turn limits, cost bounds, timeouts, panic recovery, and non-blocking streaming ensure unattended agent runs execute within predictable operational boundaries.",
+      "criteria": [
+        {
+          "id": "11-REQ-10.1",
+          "pattern": "complex_event",
+          "condition": "cfg.Timeout is greater than zero",
+          "guard": "the run context deadline expires during loop execution",
+          "system": "driver",
+          "action": "terminate the run with RunStopTimeout",
+          "contract": "RunResult.StopReason is RunStopTimeout"
+        },
+        {
+          "id": "11-REQ-10.2",
+          "pattern": "complex_event",
+          "condition": "cfg.MaxTurns is greater than zero",
+          "guard": "the completed turn count reaches cfg.MaxTurns",
+          "system": "driver",
+          "action": "terminate the run with RunStopMaxTurns and core.ErrMaxTurns",
+          "contract": "RunResult.StopReason is RunStopMaxTurns and RunResult.Error wraps core.ErrMaxTurns"
+        },
+        {
+          "id": "11-REQ-10.3",
+          "pattern": "complex_event",
+          "condition": "cfg.MaxCostUSD is greater than zero",
+          "guard": "accumulated model usage cost meets or exceeds cfg.MaxCostUSD before issuing a request",
+          "system": "driver",
+          "action": "terminate before the request with RunStopBudgetExceeded and core.ErrBudgetExceeded",
+          "contract": "RunResult.StopReason is RunStopBudgetExceeded and RunResult.Error wraps core.ErrBudgetExceeded"
+        },
+        {
+          "id": "11-REQ-10.4",
+          "pattern": "complex_event",
+          "condition": "the run context is cancelled externally without a timeout expiration",
+          "guard": "the loop detects cancellation between turns",
+          "system": "driver",
+          "action": "terminate the run with RunStopAborted and core.ErrAborted",
+          "contract": "RunResult.StopReason is RunStopAborted and RunResult.Error wraps core.ErrAborted"
+        },
+        {
+          "id": "11-REQ-10.5",
+          "pattern": "unwanted",
+          "condition": "a tool handler, interceptor, or callback panics during execution",
+          "system": "driver",
+          "action": "recover the panic, record an error ToolResultMessage describing the panic, and emit an error event without terminating the host process",
+          "contract": "tool execution finishes with IsError true and the process remains alive"
+        },
+        {
+          "id": "11-REQ-10.6",
+          "pattern": "ubiquitous",
+          "system": "driver event stream",
+          "action": "buffer and drop unread events according to StreamOptions without blocking loop goroutine execution on slow or detached consumers"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "11-PATH-1",
+      "title": "Multi-turn prompt execution with concurrent tool batch",
+      "steps": [
+        {
+          "actor": "caller",
+          "action": "invokes agent.Run with a user prompt"
+        },
+        {
+          "actor": "driver",
+          "action": "assembles the prompt with guidelines and prefix cache breakpoints and sends the request to the provider"
+        },
+        {
+          "actor": "provider",
+          "action": "returns an assistant message with parallel tool calls"
+        },
+        {
+          "actor": "driver",
+          "action": "prepares calls sequentially, executes handlers concurrently via sync.WaitGroup, and serializes results into slot order"
+        },
+        {
+          "actor": "provider",
+          "action": "returns a final assistant message with end turn stop reason"
+        },
+        {
+          "actor": "driver",
+          "action": "returns a RunResult containing transcript messages, usage, and RunStopEndTurn"
+        }
+      ]
+    },
+    {
+      "id": "11-PATH-2",
+      "title": "Outbound context pruning under token threshold pressure",
+      "steps": [
+        {
+          "actor": "caller",
+          "action": "configures an agent with PruneOptions and executes a long multi-turn workflow"
+        },
+        {
+          "actor": "driver",
+          "action": "estimates outbound tokens before request and detects token count exceeding the pruning threshold"
+        },
+        {
+          "actor": "driver",
+          "action": "replaces old tool result bodies in the outbound view with elision notices while keeping durable transcript messages intact"
+        },
+        {
+          "actor": "provider",
+          "action": "receives the pruned request and returns the next assistant turn successfully"
+        }
+      ]
+    },
+    {
+      "id": "11-PATH-3",
+      "title": "Synthetic truncation recovery on max_tokens response",
+      "steps": [
+        {
+          "actor": "caller",
+          "action": "invokes agent.Run with a prompt requiring structured tool execution"
+        },
+        {
+          "actor": "provider",
+          "action": "returns an assistant message containing tool calls with stop reason max_tokens (StopReasonLength)"
+        },
+        {
+          "actor": "driver",
+          "action": "bypasses tool handler execution, appends synthetic truncated tool result notices to transcript, and continues to the next turn"
+        },
+        {
+          "actor": "provider",
+          "action": "receives complete tool call re-issue and returns the final answer"
+        },
+        {
+          "actor": "driver",
+          "action": "completes the run with RunStopEndTurn"
+        }
+      ]
+    },
+    {
+      "id": "11-PATH-4",
+      "title": "Nested tool execution through wrapper tool",
+      "steps": [
+        {
+          "actor": "caller",
+          "action": "invokes agent.Run with a prompt triggering a tool with ReachableTools (such as code mode)"
+        },
+        {
+          "actor": "driver",
+          "action": "attaches a NestedCaller to the tool execution context and launches the wrapper handler"
+        },
+        {
+          "actor": "wrapper",
+          "action": "executes a nested tool call through the NestedCaller"
+        },
+        {
+          "actor": "nested caller",
+          "action": "validates the target tool against the reachable set, evaluates interceptors, emits nested events, and executes the nested tool"
+        },
+        {
+          "actor": "wrapper",
+          "action": "receives the nested result and completes execution returning its parent result"
+        },
+        {
+          "actor": "driver",
+          "action": "records the parent result in the batch and finishes the run"
+        }
+      ]
+    },
+    {
+      "id": "11-PATH-5",
+      "title": "Eager shell tool guard enforcement rejection at construction",
+      "steps": [
+        {
+          "actor": "caller",
+          "action": "invokes agentkit.New with a reachable shell tool in Config.Tools and a nil Config.Guard"
+        },
+        {
+          "actor": "driver constructor",
+          "action": "eagerly inspects resolved and transitively reachable tools for shell tool signatures"
+        },
+        {
+          "actor": "driver constructor",
+          "action": "rejects configuration immediately returning an error wrapping core.ErrUnguardedExecute naming the shell tool"
+        }
+      ]
+    },
+    {
+      "id": "11-PATH-6",
+      "title": "Run termination on budget limit exceeded before request dispatch",
+      "steps": [
+        {
+          "actor": "caller",
+          "action": "invokes agent.Run on an agent configured with MaxCostUSD"
+        },
+        {
+          "actor": "driver",
+          "action": "executes turn and accumulates usage cost from provider responses"
+        },
+        {
+          "actor": "driver",
+          "action": "checks accumulated cost against MaxCostUSD before issuing the next model request and halts the run"
+        },
+        {
+          "actor": "driver",
+          "action": "returns RunResult with StopReason RunStopBudgetExceeded and core.ErrBudgetExceeded"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/anthropics/anthropic-sdk-go",
+      "version": "v0.1.0",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "Client",
+          "import_path": "github.com/anthropics/anthropic-sdk-go",
+          "signature": "type Client struct { Messages *MessageService }",
+          "notes": "Official Anthropic Go SDK client"
+        },
+        {
+          "name": "MessageService.New",
+          "import_path": "github.com/anthropics/anthropic-sdk-go",
+          "signature": "func (s *MessageService) New(ctx context.Context, params MessageNewParams, opts ...option.RequestOption) (*Message, error)",
+          "notes": "Issues non-streaming message creation call"
+        },
+        {
+          "name": "MessageService.NewStreaming",
+          "import_path": "github.com/anthropics/anthropic-sdk-go",
+          "signature": "func (s *MessageService) NewStreaming(ctx context.Context, params MessageNewParams, opts ...option.RequestOption) *ssestream.Stream[MessageStreamEvent]",
+          "notes": "Issues streaming message creation call"
+        }
+      ]
+    }
+  ]
+}

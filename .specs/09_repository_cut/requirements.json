@@ -1,0 +1,346 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "09",
+  "spec_name": "repository_cut",
+  "schema_version": 2,
+  "introduction": "Specification 09 defines the foundational repository cut: deleting dead provider wires, auxiliary subsystems, and obsolete tools; decoupling the agent runtime from sessions and middleware; directly detecting image magic bytes in read_file; renaming the module to github.com/agent-fox-dev/agentkit-go; enforcing an automated direct dependency allowlist; and eliminating wall-clock threshold tests.",
+  "glossary": {
+    "dependency_allowlist": "The policy-enforced list of approved direct module dependencies in the root go.mod.",
+    "driver_scaffolding": "The agent runtime loop and tool dispatch engine that coordinates interactions between language models and workspace tools.",
+    "image_magic_bytes": "The initial signature bytes of a binary file used to identify image formats such as PNG, JPEG, GIF, and WebP.",
+    "the_hands": "The core workspace mechanics and code navigation tools of AgentKit, including file read/write/edit, symbol search, and command execution."
+  },
+  "requirements": [
+    {
+      "id": "09-REQ-1",
+      "title": "Provider and Auxiliary Subsystem Deletion",
+      "rationale": "Removing unmaintained provider wires and auxiliary subsystems reduces maintenance overhead and removes unused dependencies.",
+      "criteria": [
+        {
+          "id": "09-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "file system",
+          "action": "remove provider backend packages for OpenAI, OpenAI Responses, Google, and Ollama (`provider/openai`, `provider/openairesponses`, `provider/google`, `provider/ollama`)"
+        },
+        {
+          "id": "09-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "file system",
+          "action": "remove multi-wire provider support files (`provider/credentials.go`, `provider/credentials_test.go`, `provider/salvage.go`, `provider/salvage_test.go`, `provider/repair.go`, `provider/repair_test.go`, `provider/asymmetry_test.go`, `provider/conformance_test.go`, `provider/fuzz_test.go`)"
+        },
+        {
+          "id": "09-REQ-1.3",
+          "pattern": "ubiquitous",
+          "system": "file system",
+          "action": "retain `provider/anthropic` and `provider/faux` as the active provider packages"
+        },
+        {
+          "id": "09-REQ-1.4",
+          "pattern": "ubiquitous",
+          "system": "file system",
+          "action": "remove auxiliary packages `plugins`, `skills`, `_skills/code-review`, `cmd/validate-plugins`, `session`, `subagent`, `difftest`, `imagex`, `compaction`, `middleware`, and `stop`"
+        },
+        {
+          "id": "09-REQ-1.5",
+          "pattern": "ubiquitous",
+          "system": "file system",
+          "action": "remove deprecated example packages under `examples/` except `examples/agentdemo`, `examples/codingagent`, `examples/customtools`, `examples/codemode`, and `examples/mcp`"
+        }
+      ]
+    },
+    {
+      "id": "09-REQ-2",
+      "title": "Root and Subsystem File Cleanup",
+      "rationale": "Dead features, obsolete server abstractions, and obsolete test files must be pruned from the root and subsystem directories.",
+      "criteria": [
+        {
+          "id": "09-REQ-2.1",
+          "pattern": "ubiquitous",
+          "system": "file system",
+          "action": "remove deleted tool and MCP server files `tools/fetch.go`, `tools/ssrf.go`, `tools/ssrf_test.go`, `tools/powershell.go`, `mcp/server.go`, `mcp/serve.go`, `mcp/server_test.go`, and `wire/bind.go`"
+        },
+        {
+          "id": "09-REQ-2.2",
+          "pattern": "ubiquitous",
+          "system": "file system",
+          "action": "remove obsolete root agent files `images.go`, `images_test.go`, `skillsconfig.go`, `skillsconfig_test.go`, `audit.go`, `audit_test.go`, `deferred.go`, `deferred_test.go`, `resume.go`, `resume_test.go`, and `resume_metadata_test.go`"
+        },
+        {
+          "id": "09-REQ-2.3",
+          "pattern": "ubiquitous",
+          "system": "file system",
+          "action": "remove deleted core definitions `core/audit.go`, `core/audit_test.go`, `core/trace.go`, and `core/plugin.go`"
+        },
+        {
+          "id": "09-REQ-2.4",
+          "pattern": "ubiquitous",
+          "system": "file system",
+          "action": "remove root tests for deleted subsystems including `plugin_wiring_test.go`, `middleware_wiring_test.go`, `events_test.go`, and `compaction_usage_test.go`"
+        }
+      ]
+    },
+    {
+      "id": "09-REQ-3",
+      "title": "Inline Image Magic Byte Detection in read_file",
+      "rationale": "Directly inspecting image header bytes avoids third-party image decoding dependencies while cleanly rejecting binary image formats.",
+      "criteria": [
+        {
+          "id": "09-REQ-3.1",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "prevent imports of `github.com/agentfox/agentkit-go/imagex`, `github.com/agent-fox-dev/agentkit-go/imagex`, and `golang.org/x/image`"
+        },
+        {
+          "id": "09-REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "read_file targets a file whose leading bytes match PNG magic bytes",
+          "system": "read_file tool",
+          "action": "return an error result identifying the PNG format",
+          "contract": "core.ToolResult with OK set to false, Error set to unsupported_file, and Detail stating that reading images is not supported and naming PNG"
+        },
+        {
+          "id": "09-REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "read_file targets a file whose leading bytes match JPEG magic bytes",
+          "system": "read_file tool",
+          "action": "return an error result identifying the JPEG format",
+          "contract": "core.ToolResult with OK set to false, Error set to unsupported_file, and Detail stating that reading images is not supported and naming JPEG"
+        },
+        {
+          "id": "09-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "read_file targets a file whose leading bytes match GIF magic bytes",
+          "system": "read_file tool",
+          "action": "return an error result identifying the GIF format",
+          "contract": "core.ToolResult with OK set to false, Error set to unsupported_file, and Detail stating that reading images is not supported and naming GIF"
+        },
+        {
+          "id": "09-REQ-3.5",
+          "pattern": "unwanted",
+          "condition": "read_file targets a file whose leading bytes match WebP magic bytes",
+          "system": "read_file tool",
+          "action": "return an error result identifying the WebP format",
+          "contract": "core.ToolResult with OK set to false, Error set to unsupported_file, and Detail stating that reading images is not supported and naming WebP"
+        },
+        {
+          "id": "09-REQ-3.6",
+          "pattern": "ubiquitous",
+          "system": "read_file tool",
+          "action": "omit image block descriptions and output schema properties for image results in the read_file tool declaration"
+        }
+      ]
+    },
+    {
+      "id": "09-REQ-4",
+      "title": "Toolset and Conformance Pruning",
+      "rationale": "Removing unneeded tools reduces attack surface and aligns tool registration with the hands-only core.",
+      "criteria": [
+        {
+          "id": "09-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "tools.All is invoked",
+          "system": "tool registry",
+          "action": "omit registration of `fetch_url`, `powershell`, and `subagent`"
+        },
+        {
+          "id": "09-REQ-4.2",
+          "pattern": "ubiquitous",
+          "system": "tool registry",
+          "action": "for any tool returned by tools.All, ensure its name belongs to the approved set of workspace mechanics and code navigation tools"
+        },
+        {
+          "id": "09-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "tool conformance suite",
+          "action": "omit tests for `fetch_url`, `powershell`, and `subagent` from the tool conformance suite"
+        }
+      ]
+    },
+    {
+      "id": "09-REQ-5",
+      "title": "Agent Scaffolding Decoupling",
+      "rationale": "Agent execution must function without session persistence, compaction tokens, middleware wrappers, or audit and tracing hooks.",
+      "criteria": [
+        {
+          "id": "09-REQ-5.1",
+          "pattern": "ubiquitous",
+          "system": "Agent struct",
+          "action": "remove struct fields and methods referencing `session.Recorder` or `middleware.Chain` from `agent.go`"
+        },
+        {
+          "id": "09-REQ-5.2",
+          "pattern": "ubiquitous",
+          "system": "agent loop",
+          "action": "remove the call to `compaction.EstimateContextTokens` and the `Continue` method from `loop.go`"
+        },
+        {
+          "id": "09-REQ-5.3",
+          "pattern": "ubiquitous",
+          "system": "provider registry",
+          "action": "restrict provider registration in `providers.go` to `anthropic` and `faux` provider implementations"
+        },
+        {
+          "id": "09-REQ-5.4",
+          "pattern": "event_driven",
+          "condition": "tool calls execute in `batch.go` or `nested.go`",
+          "system": "execution engine",
+          "action": "preserve ParentToolUseID event linkage, tool concurrency, and result aggregation while omitting audit logging calls and tracer spans"
+        }
+      ]
+    },
+    {
+      "id": "09-REQ-6",
+      "title": "Module Rename and Canonical Import Paths",
+      "rationale": "Aligning the module path with the GitHub repository coordinates ensures consistent Go toolchain dependency resolution.",
+      "criteria": [
+        {
+          "id": "09-REQ-6.1",
+          "pattern": "ubiquitous",
+          "system": "root go.mod",
+          "action": "declare module path `github.com/agent-fox-dev/agentkit-go` in the root `go.mod`"
+        },
+        {
+          "id": "09-REQ-6.2",
+          "pattern": "ubiquitous",
+          "system": "repository import declarations",
+          "action": "for any Go source or test file across the repository, rewrite import paths from `github.com/agentfox/agentkit-go` to `github.com/agent-fox-dev/agentkit-go`"
+        },
+        {
+          "id": "09-REQ-6.3",
+          "pattern": "ubiquitous",
+          "system": "codesearch go.mod",
+          "action": "declare module `github.com/agent-fox-dev/agentkit-go/codesearch` in `codesearch/go.mod`, require `github.com/agent-fox-dev/agentkit-go v0.0.0`, and set `replace github.com/agent-fox-dev/agentkit-go => ..`"
+        }
+      ]
+    },
+    {
+      "id": "09-REQ-7",
+      "title": "Dependency Allowlist Policy Gate",
+      "rationale": "Restricting direct dependencies prevents dependency bloat and transitive security vulnerabilities.",
+      "criteria": [
+        {
+          "id": "09-REQ-7.1",
+          "pattern": "ubiquitous",
+          "system": "root go.mod",
+          "action": "prune direct dependencies `golang.org/x/net`, `golang.org/x/image`, `golang.org/x/time`, and `code.dny.dev/ssrf` from the root `go.mod`"
+        },
+        {
+          "id": "09-REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "the dependency allowlist test in `internal/policy/deps_test.go` inspects direct dependencies from `go list -m`",
+          "system": "dependency policy test",
+          "action": "assert that every direct dependency belongs to the approved direct dependency set"
+        },
+        {
+          "id": "09-REQ-7.3",
+          "pattern": "unwanted",
+          "condition": "an unapproved direct dependency is listed in the root module",
+          "system": "dependency policy test",
+          "action": "fail the test and print the unexpected dependency name",
+          "contract": "test failure via t.Fatalf or t.Errorf naming the disallowed module"
+        }
+      ]
+    },
+    {
+      "id": "09-REQ-8",
+      "title": "Elimination of Flaky Timing Tests and Target Cleanup",
+      "rationale": "Removing wall-clock thresholds and unneeded targets eliminates false CI failures under resource contention.",
+      "criteria": [
+        {
+          "id": "09-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "file system",
+          "action": "remove `perf_budget_test.go` from the repository"
+        },
+        {
+          "id": "09-REQ-8.2",
+          "pattern": "ubiquitous",
+          "system": "test suite",
+          "action": "remove wall-clock duration threshold comparisons from test assertions in `tools/concurrency_test.go`"
+        },
+        {
+          "id": "09-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "Makefile",
+          "action": "remove `difftest` and `examples/codesearch` targets and the `build-examples` target from `Makefile`"
+        },
+        {
+          "id": "09-REQ-8.4",
+          "pattern": "event_driven",
+          "condition": "`make check` is executed",
+          "system": "build pipeline",
+          "action": "execute fmt, vet, lint, and test across the root module and codesearch without failures",
+          "contract": "zero exit code from make check"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "09-PATH-1",
+      "title": "Developer runs the repository build and dependency policy gate",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "executes `make check` in the repository root"
+        },
+        {
+          "actor": "Makefile",
+          "action": "runs `gofmt`, `go vet`, and `go test` across the root module and the `codesearch` submodule"
+        },
+        {
+          "actor": "dependency policy test",
+          "action": "queries `go list -m` to inspect all direct dependencies against the approved allowlist"
+        },
+        {
+          "actor": "test runner",
+          "action": "verifies all tests pass with zero duration threshold flakes and outputs success"
+        }
+      ]
+    },
+    {
+      "id": "09-PATH-2",
+      "title": "Agent executes read_file on an image file and receives format-specific rejection",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "initiates an agent tool execution calling `read_file` with the path to a PNG image file"
+        },
+        {
+          "actor": "read_file tool",
+          "action": "reads leading magic bytes from the target file without invoking external image decoders"
+        },
+        {
+          "actor": "read_file tool",
+          "action": "detects PNG header bytes and constructs a structured error result"
+        },
+        {
+          "actor": "agent loop",
+          "action": "receives the error result indicating unsupported file format naming PNG"
+        }
+      ]
+    },
+    {
+      "id": "09-PATH-3",
+      "title": "Embedded consumer initializes Agent without legacy middleware or session recorder",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "constructs an AgentConfig specifying Anthropic provider and registers default tools"
+        },
+        {
+          "actor": "agent constructor",
+          "action": "creates an Agent instance decoupled from session recorder and middleware chains"
+        },
+        {
+          "actor": "agent loop",
+          "action": "executes a user prompt turn using Anthropic provider and emits execution events"
+        },
+        {
+          "actor": "embedder",
+          "action": "receives the completed run result with valid token usage and conversation history"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,410 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "10",
+  "spec_name": "anthropic_wire",
+  "schema_version": 2,
+  "introduction": "Specification 10 rewrites the Anthropic provider wire on the official anthropic-sdk-go SDK, introduces unified environment resolution across Direct, Vertex AI, and AWS Bedrock, streamlines the model catalog to Claude lookups with safe fallbacks, establishes discrete adaptive thinking effort controls and strict tool definitions, and enforces wire stability through golden request assertions.",
+  "glossary": {
+    "adaptive_thinking": "Claude reasoning mode where the model dynamically adjusts thinking token allocation based on a discrete Effort level instead of a fixed budget_tokens integer.",
+    "effort": "Discrete reasoning effort levels (low, medium, high, xhigh, max) passed in output_config to guide adaptive thinking models.",
+    "ephemeral_cache_control": "Anthropic prompt cache breakpoint annotation (cache_control: {type: ephemeral}) placed at strategic request positions to enable prompt prefix caching.",
+    "strict_tool": "Anthropic tool definition serialized with strict: true guaranteeing strict JSON schema compliance by the model."
+  },
+  "requirements": [
+    {
+      "id": "10-REQ-1",
+      "title": "Dependency Integration and Allowlist Policy",
+      "rationale": "Replacing hand-rolled transport and parsing with the official Anthropic SDK eliminates custom protocol maintenance while enforcing dependency allowlist constraints.",
+      "criteria": [
+        {
+          "id": "10-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "build system",
+          "action": "require github.com/anthropics/anthropic-sdk-go pinned in go.mod"
+        },
+        {
+          "id": "10-REQ-1.2",
+          "pattern": "event_driven",
+          "condition": "the dependency allowlist test in internal/policy/deps_test.go evaluates direct dependencies from go.mod",
+          "system": "dependency policy test",
+          "action": "approve github.com/anthropics/anthropic-sdk-go as an authorized direct dependency"
+        },
+        {
+          "id": "10-REQ-1.3",
+          "pattern": "ubiquitous",
+          "system": "anthropic provider",
+          "action": "use official SDK client primitives from github.com/anthropics/anthropic-sdk-go for HTTP transport and stream decoding, eliminating custom SSE parsing and ad-hoc credential refresh routines"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-2",
+      "title": "Multi-Deployment Environment Resolution",
+      "rationale": "Unified environment resolution allows switching seamlessly between Direct Anthropic, GCP Vertex AI, and AWS Bedrock deployments using ambient credentials and explicit flags.",
+      "criteria": [
+        {
+          "id": "10-REQ-2.1",
+          "pattern": "ubiquitous",
+          "system": "anthropic package",
+          "action": "expose Resolve(env Env) (*anthropic.Client, Source, error) where Env allows injecting variable lookups and override maps without modifying process-level environment variables"
+        },
+        {
+          "id": "10-REQ-2.2",
+          "pattern": "ubiquitous",
+          "system": "anthropic package",
+          "action": "define Source as a typed string with values SourceDirect, SourceVertex, and SourceBedrock"
+        },
+        {
+          "id": "10-REQ-2.3",
+          "pattern": "complex_event",
+          "condition": "env evaluates CLAUDE_CODE_USE_VERTEX as truthy (\"1\" or \"true\")",
+          "guard": "CLAUDE_CODE_USE_VERTEX is not an explicit off flag (\"0\" or \"false\")",
+          "system": "anthropic resolver",
+          "action": "construct an *anthropic.Client configured for Google Cloud Vertex AI using ANTHROPIC_VERTEX_PROJECT_ID (or GOOGLE_CLOUD_PROJECT), CLOUD_ML_REGION (defaulting to \"global\"), and custom proxy URL ANTHROPIC_VERTEX_BASE_URL if set, and return SourceVertex"
+        },
+        {
+          "id": "10-REQ-2.4",
+          "pattern": "complex_event",
+          "condition": "env evaluates CLAUDE_CODE_USE_BEDROCK as truthy (\"1\" or \"true\")",
+          "guard": "CLAUDE_CODE_USE_BEDROCK is not an explicit off flag (\"0\" or \"false\")",
+          "system": "anthropic resolver",
+          "action": "construct an *anthropic.Client configured for AWS Bedrock and return SourceBedrock"
+        },
+        {
+          "id": "10-REQ-2.5",
+          "pattern": "complex_event",
+          "condition": "neither Vertex nor Bedrock is enabled",
+          "guard": "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is present in env",
+          "system": "anthropic resolver",
+          "action": "construct a direct Anthropic client configured with the key or token and optional ANTHROPIC_BASE_URL, and return SourceDirect"
+        },
+        {
+          "id": "10-REQ-2.6",
+          "pattern": "unwanted",
+          "condition": "neither Vertex nor Bedrock is enabled and neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN is present in env",
+          "system": "anthropic resolver",
+          "action": "reject the resolution and return an error explaining that credentials are missing",
+          "contract": "non-nil error stating missing credentials and nil client pointer"
+        },
+        {
+          "id": "10-REQ-2.7",
+          "pattern": "complex_event",
+          "condition": "CLAUDE_CODE_USE_VERTEX or CLAUDE_CODE_USE_BEDROCK is explicitly set to \"0\" or \"false\"",
+          "guard": "secondary cloud project coordinates exist in env",
+          "system": "anthropic resolver",
+          "action": "disable the specified cloud deployment and fall through to direct resolution"
+        },
+        {
+          "id": "10-REQ-2.8",
+          "pattern": "ubiquitous",
+          "system": "resolver test suite",
+          "action": "verify Direct, Vertex, and Bedrock client configurations and base URLs offline without initiating network requests"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-3",
+      "title": "Claude Model Catalog and Lookup",
+      "rationale": "Simplifying the catalog to Claude model lookups eliminates dead multi-vendor code while providing safe fallback descriptors for newly released models.",
+      "criteria": [
+        {
+          "id": "10-REQ-3.1",
+          "pattern": "ubiquitous",
+          "system": "catalog file",
+          "action": "remove all non-Claude vendor sections (OpenAI, Google) from catalog/catalog.json and retain only Claude model descriptors"
+        },
+        {
+          "id": "10-REQ-3.2",
+          "pattern": "ubiquitous",
+          "system": "catalog package",
+          "action": "remove catalog/resolve.go and catalog/clamp.go"
+        },
+        {
+          "id": "10-REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "catalog.Lookup(id string) is called with a known Claude model ID, with or without an \"anthropic/\" prefix",
+          "system": "catalog lookup",
+          "action": "return the corresponding core.Model descriptor and boolean true"
+        },
+        {
+          "id": "10-REQ-3.4",
+          "pattern": "event_driven",
+          "condition": "catalog.Lookup(id string) is called with an uncataloged model ID",
+          "system": "catalog lookup",
+          "action": "return a default core.Model descriptor with ID set to the queried string, context window of 1,000,000 tokens, output cap of 128,000 tokens, ThinkingKindAdaptive, zero cost, and boolean false"
+        },
+        {
+          "id": "10-REQ-3.5",
+          "pattern": "ubiquitous",
+          "system": "catalog lookup",
+          "action": "for any model ID queried against catalog.Lookup, return a usable model descriptor without rejecting the query with an error"
+        },
+        {
+          "id": "10-REQ-3.6",
+          "pattern": "ubiquitous",
+          "system": "catalog package",
+          "action": "isolate all model pricing rates, token limits, and thinking capabilities exclusively within catalog without hardcoding model identifiers or rates in provider/anthropic"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-4",
+      "title": "Adaptive Thinking and Effort Controls",
+      "rationale": "Modern Claude models require adaptive thinking with discrete effort levels and reject legacy budget tokens with 400 Bad Request errors.",
+      "criteria": [
+        {
+          "id": "10-REQ-4.1",
+          "pattern": "ubiquitous",
+          "system": "core package",
+          "action": "define the Effort type with discrete levels EffortLow (\"low\"), EffortMedium (\"medium\"), EffortHigh (\"high\"), EffortXHigh (\"xhigh\"), and EffortMax (\"max\")"
+        },
+        {
+          "id": "10-REQ-4.2",
+          "pattern": "complex_event",
+          "condition": "encoding a request for a model configured with adaptive thinking",
+          "guard": "an effort level is specified",
+          "system": "request encoder",
+          "action": "emit \"thinking\": {\"type\": \"adaptive\"} and \"output_config\": {\"effort\": \"<level>\"} and omit budget_tokens"
+        },
+        {
+          "id": "10-REQ-4.3",
+          "pattern": "complex_event",
+          "condition": "encoding a request for a model configured with legacy budget thinking",
+          "guard": "a token budget is specified",
+          "system": "request encoder",
+          "action": "emit budget_tokens and omit output_config.effort"
+        },
+        {
+          "id": "10-REQ-4.4",
+          "pattern": "optional",
+          "condition": "a model's catalog metadata does not support reasoning effort",
+          "system": "request encoder",
+          "action": "omit the thinking parameter without mutating or clamping the request to off"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-5",
+      "title": "Strict Tool Serialization and Schema Projection",
+      "rationale": "Emitting strict: true guarantees adherence to schema definitions, while stripping internal tool metadata and forbidding forced tool choices prevents wire rejections.",
+      "criteria": [
+        {
+          "id": "10-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "emitting tool definitions on the Anthropic wire",
+          "system": "tool encoder",
+          "action": "set \"strict\": true on every tool declaration"
+        },
+        {
+          "id": "10-REQ-5.2",
+          "pattern": "ubiquitous",
+          "system": "tool encoder",
+          "action": "strip internal tool fields OutputSchema, ReachableTools, and Terminating from wire tool definitions"
+        },
+        {
+          "id": "10-REQ-5.3",
+          "pattern": "event_driven",
+          "condition": "emitting tool choice options on the Anthropic wire",
+          "system": "request encoder",
+          "action": "omit forced tool choice (\"any\" or a named tool lock) and set tool_choice to \"auto\" or omit the field"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-6",
+      "title": "Argument Byte Preservation and Prompt Cache Breakpoints",
+      "rationale": "Preserving argument JSON bytes and establishing fixed prompt cache breakpoints maximizes prompt cache hit rates across iterative agent turns.",
+      "criteria": [
+        {
+          "id": "10-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "replaying assistant tool_use argument inputs across multi-turn requests",
+          "system": "message encoder",
+          "action": "preserve the exact raw bytes received from the model (json.RawMessage) without re-serializing or reformatting JSON keys"
+        },
+        {
+          "id": "10-REQ-6.2",
+          "pattern": "event_driven",
+          "condition": "constructing request payloads with a system prompt",
+          "system": "request encoder",
+          "action": "apply ephemeral cache control (\"cache_control\": {\"type\": \"ephemeral\"}) to the final content block of the system prompt"
+        },
+        {
+          "id": "10-REQ-6.3",
+          "pattern": "event_driven",
+          "condition": "constructing request payloads with tool definitions",
+          "system": "request encoder",
+          "action": "apply ephemeral cache control (\"cache_control\": {\"type\": \"ephemeral\"}) to the final tool definition in the tools list"
+        },
+        {
+          "id": "10-REQ-6.4",
+          "pattern": "optional",
+          "condition": "prefix messages are provided in the conversation history",
+          "system": "request encoder",
+          "action": "apply ephemeral cache control (\"cache_control\": {\"type\": \"ephemeral\"}) to the final content block of the prefix messages"
+        },
+        {
+          "id": "10-REQ-6.5",
+          "pattern": "event_driven",
+          "condition": "constructing request payloads with user message history",
+          "system": "request encoder",
+          "action": "apply ephemeral cache control (\"cache_control\": {\"type\": \"ephemeral\"}) to the final content block of the user message history"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-7",
+      "title": "Response and Stream Translation",
+      "rationale": "Translating official SDK responses into AgentKit core types ensures seamless integration with transcript history and accurate token cost accounting.",
+      "criteria": [
+        {
+          "id": "10-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "receiving responses or streaming events from the Anthropic SDK",
+          "system": "response translator",
+          "action": "translate SDK message payloads into core.AssistantMessage with content blocks including TextBlock, ThinkingBlock, and ToolUseBlock"
+        },
+        {
+          "id": "10-REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "translating streaming events or message deltas from the Anthropic SDK",
+          "system": "stream translator",
+          "action": "record token consumption in core.Usage, tracking input tokens, output tokens, cache read tokens, cache creation tokens, and increment request counts"
+        },
+        {
+          "id": "10-REQ-7.3",
+          "pattern": "ubiquitous",
+          "system": "stream translator",
+          "action": "forward stream events to the agent event stream without blocking the provider loop when consumers process slowly"
+        }
+      ]
+    },
+    {
+      "id": "10-REQ-8",
+      "title": "Wire Golden Request Verification",
+      "rationale": "Golden request tests pin serialization invariants and guard against accidental drift across SDK updates.",
+      "criteria": [
+        {
+          "id": "10-REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "running golden_requests_test.go against testdata/golden/request_anthropic.json",
+          "system": "golden request test",
+          "action": "assert the complete wire request produced by the SDK encoder matches the golden request fixture"
+        },
+        {
+          "id": "10-REQ-8.2",
+          "pattern": "ubiquitous",
+          "system": "golden fixture assertion",
+          "action": "assert that cache_control appears exactly on the last system block, last tool definition, last prefix block, and last user block"
+        },
+        {
+          "id": "10-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "golden fixture assertion",
+          "action": "assert that every tool carries \"strict\": true and that no OutputSchema, ReachableTools, or Terminating fields appear in the payload"
+        },
+        {
+          "id": "10-REQ-8.4",
+          "pattern": "ubiquitous",
+          "system": "golden fixture assertion",
+          "action": "assert that modern models emit \"thinking\": {\"type\": \"adaptive\"} and \"output_config\": {\"effort\": \"<level>\"} without budget_tokens"
+        },
+        {
+          "id": "10-REQ-8.5",
+          "pattern": "ubiquitous",
+          "system": "golden fixture assertion",
+          "action": "assert that replayed tool_use arguments match the input fixture byte-for-byte"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "10-PATH-1",
+      "title": "Offline environment resolution for Claude on Google Cloud Vertex AI",
+      "steps": [
+        {
+          "actor": "test runner",
+          "action": "injects environment variables CLAUDE_CODE_USE_VERTEX=1, ANTHROPIC_VERTEX_PROJECT_ID=test-project, and CLOUD_ML_REGION=us-central1 via Env"
+        },
+        {
+          "actor": "anthropic resolver",
+          "action": "evaluates anthropic.Resolve(env) and identifies Vertex AI deployment configuration"
+        },
+        {
+          "actor": "anthropic resolver",
+          "action": "constructs an *anthropic.Client configured with Vertex Google authentication and regional base URL"
+        },
+        {
+          "actor": "test runner",
+          "action": "inspects the resolved client and asserts SourceVertex without making external network calls"
+        }
+      ]
+    },
+    {
+      "id": "10-PATH-2",
+      "title": "Wire request encoding with strict tools, adaptive thinking, and prompt caching",
+      "steps": [
+        {
+          "actor": "agent loop",
+          "action": "prepares a canonical request with system prompt, user history, a tool definition, and EffortHigh"
+        },
+        {
+          "actor": "catalog lookup",
+          "action": "evaluates catalog.Lookup to obtain model metadata confirming adaptive thinking capabilities"
+        },
+        {
+          "actor": "request encoder",
+          "action": "builds the Anthropic Messages wire request adding strict: true, ephemeral cache control breakpoints, and adaptive thinking effort"
+        },
+        {
+          "actor": "golden test harness",
+          "action": "verifies the serialized request matches testdata/golden/request_anthropic.json byte-for-byte"
+        }
+      ]
+    },
+    {
+      "id": "10-PATH-3",
+      "title": "Multi-turn assistant tool use replay with raw byte preservation",
+      "steps": [
+        {
+          "actor": "anthropic client",
+          "action": "streams an assistant message containing a tool_use block with formatted JSON input"
+        },
+        {
+          "actor": "stream translator",
+          "action": "extracts the raw JSON argument bytes into core.AssistantMessage without deserialization"
+        },
+        {
+          "actor": "agent loop",
+          "action": "submits the conversation history containing the assistant message to anthropic.BuildRequest for the next turn"
+        },
+        {
+          "actor": "request encoder",
+          "action": "serializes the replayed tool_use block retaining the exact original JSON bytes on the wire"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/anthropics/anthropic-sdk-go",
+      "version": "v0.1.0",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "NewClient",
+          "import_path": "github.com/anthropics/anthropic-sdk-go",
+          "signature": "func NewClient(opts ...option.RequestOption) *Client",
+          "notes": "Constructs a new Anthropic SDK client with functional options"
+        },
+        {
+          "name": "WithGoogleAuth",
+          "import_path": "github.com/anthropics/anthropic-sdk-go/vertex",
+          "signature": "func WithGoogleAuth(ctx context.Context, project, region string) option.RequestOption",
+          "notes": "Configures Vertex AI authentication options for the Anthropic client"
+        }
+      ]
+    }
+  ]
+}

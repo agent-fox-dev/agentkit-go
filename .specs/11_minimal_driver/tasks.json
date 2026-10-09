@@ -1,0 +1,362 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "11",
+  "spec_name": "minimal_driver",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./... -run 'TS_11'"
+  },
+  "dependencies": [
+    {
+      "spec": "09_repository_cut",
+      "reason": "Removes obsolete packages (compaction, session, middleware, stop), cleans up dead tools, and renames module."
+    },
+    {
+      "spec": "10_anthropic_wire",
+      "reason": "Rewrites provider/anthropic over official SDK, provides anthropic.Resolve, Claude catalog.Lookup, Effort, strict tool declarations, and cache breakpoints."
+    },
+    {
+      "spec": "07_nested_tool_calls",
+      "reason": "Provides ReachableTools, NestedCaller, and wrapper resolution semantics for batch execution."
+    },
+    {
+      "spec": "08_code_mode",
+      "reason": "Provides Starlark code mode tool which executes nested tool calls and depends on interceptor error values."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Implement driver configuration, constructor validation, and eager shell tool guard checks",
+      "criteria": [
+        "11-REQ-1",
+        "11-REQ-2"
+      ],
+      "tests": [
+        "TS-11-1",
+        "TS-11-2",
+        "TS-11-3",
+        "TS-11-4",
+        "TS-11-5",
+        "TS-11-6",
+        "TS-11-7",
+        "TS-11-8"
+      ],
+      "steps": [
+        "Define Config struct in agentkit with Client, Provider, Model, Effort, System, Prefix, Tools, Policy, Guard, After, MaxTurns, MaxCostUSD, Timeout, Prune, and MaxTokens.",
+        "Implement New(cfg Config) (*Agent, error) rejecting configurations where both cfg.Client and cfg.Provider are nil.",
+        "In New, validate that cfg.Model is non-empty, returning an error naming the missing model identifier.",
+        "In New, validate the tool hierarchy: check that each tool specifies exactly one of Handler or Execute, detect reachability cycles, and reject wrappers reaching Terminating tools.",
+        "In New, resolve active tools using cfg.Policy.Resolve(cfg.Tools), and prioritize cfg.Provider over cfg.Client for request dispatch.",
+        "In New, eagerly inspect resolved and transitively reachable tools for shell tools using guard.IsShellTool; if any shell tool is reachable and cfg.Guard is nil, return fmt.Errorf(\"%w (tool %q)\", core.ErrUnguardedExecute, toolName) or fmt.Errorf(\"%w (wrapper %q reached shell tool %q)\", core.ErrUnguardedExecute, wrapperName, shellToolName).",
+        "Write and verify unit tests TS-11-1 through TS-11-8 covering configuration fields, constructor rejections, tool resolution, and eager shell guard validation."
+      ],
+      "touches": [
+        "agent.go",
+        "execguard.go",
+        "agent_test.go"
+      ],
+      "done_when": [
+        "`go test -run 'TS-11-[1-8]$' ./...` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Implement consumer execution surface and Agent concurrency control",
+      "criteria": [
+        "11-REQ-3"
+      ],
+      "tests": [
+        "TS-11-9",
+        "TS-11-10",
+        "TS-11-11",
+        "TS-11-12",
+        "TS-11-13"
+      ],
+      "steps": [
+        "Restrict the exported method set of Agent solely to Run, Stream, Messages, Usage, and ReachableTools.",
+        "Implement single-execution concurrency control on Agent, rejecting overlapping calls to Run or Stream with core.ErrBusy.",
+        "Implement safe concurrent reads of Messages(), Usage(), and ReachableTools() while execution is actively in flight.",
+        "Implement Agent.Run(ctx, prompt) to run the minimal loop to a stop condition and return core.RunResult with transcript, usage, turns, and stop reason.",
+        "Implement Agent.Stream(ctx, prompt) to execute the driver loop asynchronously and return *core.EventStream without blocking loop execution.",
+        "Write and verify tests TS-11-9 through TS-11-13 covering surface restriction, Run execution, Stream non-blocking delivery, ErrBusy rejection, and race-free state inspection."
+      ],
+      "touches": [
+        "agent.go",
+        "loop.go",
+        "agent_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`go test -run 'TS-11-(9|1[0-3])$' ./...` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Implement prompt guideline assembly, prefix messages, and cache breakpoints",
+      "criteria": [
+        "11-REQ-4"
+      ],
+      "tests": [
+        "TS-11-14",
+        "TS-11-15",
+        "TS-11-16"
+      ],
+      "steps": [
+        "Assemble the system prompt for outbound requests using prompt.Build(cfg.System, resolvedTools), deduplicating PromptGuidelines in first-seen order.",
+        "Prepend cfg.Prefix messages before the user prompt and conversation history on all outbound requests.",
+        "Stamp an ephemeral cache control breakpoint on the final content block of the assembled system prompt.",
+        "Stamp an ephemeral cache control breakpoint on the final tool definition in the active tool list if tools are present.",
+        "Stamp an ephemeral cache control breakpoint on the final content block of cfg.Prefix when prefix messages exist.",
+        "Stamp an ephemeral cache control breakpoint on the final content block of the most recent outbound user message.",
+        "Write and verify unit tests TS-11-14 through TS-11-16 covering guideline assembly, prefix ordering, and four-point ephemeral cache breakpoints."
+      ],
+      "touches": [
+        "agent.go",
+        "loop.go",
+        "prompt/prompt.go",
+        "loop_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "`go test -run 'TS-11-(1[4-6])$' ./...` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Implement outbound context pruning and context window overflow enforcement",
+      "criteria": [
+        "11-REQ-5"
+      ],
+      "tests": [
+        "TS-11-17",
+        "TS-11-18",
+        "TS-11-19",
+        "TS-11-20",
+        "TS-11-21"
+      ],
+      "steps": [
+        "Define PruneOptions struct with Threshold float64 and KeepTurns int fields.",
+        "Implement anchored token estimation using the latest assistant usage report plus 4 characters per token for subsequent messages, falling back to 4 chars/token over the entire view if unanchored.",
+        "When cfg.Prune.Threshold > 0 and estimated tokens divided by the model context window from catalog.Lookup(cfg.Model) meets or exceeds Threshold, replace tool result bodies older than currentTurn - KeepTurns with the elision notice stating tool name and original byte length.",
+        "Ensure outbound view pruning strictly preserves ToolResultMessage.ToolUseID pairing with corresponding assistant ToolUseBlock.ID.",
+        "Ensure the durable transcript returned by Messages() and RunResult.Messages remains unmodified and intact during pruning.",
+        "If estimated tokens exceed the catalog model context window capacity after pruning, terminate the run immediately with RunStopError and an error naming the model and context window capacity.",
+        "Write and verify tests TS-11-17 through TS-11-21 covering PruneOptions, outbound result elision, ID pairing, transcript durability, and context window limit termination."
+      ],
+      "touches": [
+        "agent.go",
+        "loop.go",
+        "loop_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "`go test -run 'TS-11-(1[7-9]|2[0-1])$' ./...` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Implement turn continuation logic, synthetic truncation handling, and stop conditions",
+      "criteria": [
+        "11-REQ-6"
+      ],
+      "tests": [
+        "TS-11-22",
+        "TS-11-23",
+        "TS-11-24",
+        "TS-11-25"
+      ],
+      "steps": [
+        "Evaluate turn continuation exclusively by checking whether the assistant message contains one or more ToolUseBlock elements, ignoring StopReason.",
+        "When an assistant message contains ToolUseBlock elements and StopReason is StopReasonLength, skip tool handler execution for all calls in the batch.",
+        "For truncated batches under StopReasonLength, append a synthetic ToolResultMessage to each call stating the fixed notice that the call was not executed due to output token limit truncation and to re-issue with complete arguments.",
+        "Append synthetic truncation results to the transcript and continue the loop to the next turn without terminating the run.",
+        "When an assistant message contains no ToolUseBlock elements and StopReason is StopReasonRefusal, terminate the run with RunStopRefusal and core.ErrRefusal.",
+        "When an assistant message contains no ToolUseBlock elements and no error or refusal, complete the run normally with RunStopEndTurn.",
+        "Write and verify unit tests TS-11-22 through TS-11-25 covering tool-based turn continuation, synthetic truncation handling, refusal termination, and normal turn completion."
+      ],
+      "touches": [
+        "loop.go",
+        "loop_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "`go test -run 'TS-11-(2[2-5])$' ./...` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Implement batch tool execution pipeline and batch termination voting",
+      "criteria": [
+        "11-REQ-7",
+        "11-REQ-8"
+      ],
+      "tests": [
+        "TS-11-26",
+        "TS-11-27",
+        "TS-11-28",
+        "TS-11-29",
+        "TS-11-30",
+        "TS-11-31",
+        "TS-11-32"
+      ],
+      "steps": [
+        "Implement Phase 1 (Prepare): sequentially validate arguments with core.PrepareArguments and evaluate Config.Guard on the loop goroutine, immediately finalizing invalid or blocked calls as error results without invoking handlers.",
+        "Implement Phase 2 (Abort Decision): evaluate ctx.Err() once before handlers spawn; if context is cancelled, mark all remaining unfinalized calls aborted without starting handlers; if active, proceed to Phase 3.",
+        "Implement Phase 3 (Execute): run tool handlers concurrently using one goroutine per call joined by sync.WaitGroup (never errgroup); if any tool is marked Sequential or ParallelTools is disabled, execute handlers sequentially in call order.",
+        "Implement Phase 4 (Finalize): serialize Config.After callbacks and event emission under a batch-scoped mutex, placing results into slot index order so transcript order matches assistant call order.",
+        "Implement batch termination voting: when an executed handler returns Terminate: true, allow sibling calls in the batch to complete, then terminate the run with RunStopToolTerminate.",
+        "Ensure Phase 1 validation errors and guard rejections do not trigger RunStopToolTerminate.",
+        "Write and verify unit tests TS-11-26 through TS-11-32 covering Phase 1 prepare and guard rejection, Phase 2 abort evaluation, Phase 3 concurrency, Phase 4 slot-indexed ordering, batch termination voting, and no termination on blocked calls."
+      ],
+      "touches": [
+        "batch.go",
+        "batch_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`go test -run 'TS-11-(2[6-9]|3[0-2])$' ./...` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Implement nested tool execution pipeline for wrapper tools",
+      "criteria": [
+        "11-REQ-9"
+      ],
+      "tests": [
+        "TS-11-33",
+        "TS-11-34",
+        "TS-11-35",
+        "TS-11-36",
+        "TS-11-37"
+      ],
+      "steps": [
+        "In batch execution, when executing a tool with ReachableTools, construct a nestedCaller and attach core.NestedCaller to the handler's execution context.",
+        "In NestedCaller.Call, enforce reachability: reject tool calls outside the wrapper's resolved reachable set with an error ToolResult (IsError: true).",
+        "In NestedCaller.Call, emit execution events populated with ParentToolUseID matching the parent wrapper tool call ID.",
+        "When a nested call is blocked by a BeforeToolCall interceptor, return an error ToolResult with a nil Go error to allow wrapper scripts to inspect the rejection.",
+        "If an interceptor votes to terminate during a nested call, reject subsequent nested calls with core.ErrTerminated and propagate the termination vote to the parent wrapper result.",
+        "Write and verify unit tests TS-11-33 through TS-11-37 covering nested caller attachment, reachable set enforcement, parent event attribution, interceptor error values with nil Go error, and termination propagation."
+      ],
+      "touches": [
+        "nested.go",
+        "nested_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "done_when": [
+        "`go test -run 'TS-11-(3[3-7])$' ./...` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Implement run bounds, limits, panic recovery, and stream resilience",
+      "criteria": [
+        "11-REQ-10"
+      ],
+      "tests": [
+        "TS-11-38",
+        "TS-11-39",
+        "TS-11-40",
+        "TS-11-41",
+        "TS-11-42",
+        "TS-11-43"
+      ],
+      "steps": [
+        "When Config.Timeout > 0, derive run context with context.WithTimeout; terminate with RunStopTimeout if the deadline expires.",
+        "When Config.MaxTurns > 0 and turn count reaches MaxTurns, terminate the run with RunStopMaxTurns and core.ErrMaxTurns.",
+        "When Config.MaxCostUSD > 0, check accumulated model usage cost before issuing each request; terminate before request dispatch with RunStopBudgetExceeded and core.ErrBudgetExceeded if cost meets or exceeds MaxCostUSD.",
+        "When the run context is cancelled externally between turns without timeout expiration, terminate the run with RunStopAborted and core.ErrAborted.",
+        "Implement panic recovery around tool handlers, interceptors, and hooks: catch panics, convert to error ToolResultMessage, emit an error event, and keep the process alive.",
+        "Ensure *core.EventStream buffers and drops unread events according to StreamOptions without blocking loop goroutine execution on slow or detached consumers.",
+        "Write and verify unit tests TS-11-38 through TS-11-43 covering timeout expiration, turn limits, budget limits, external abort, panic recovery, and non-blocking event streaming."
+      ],
+      "touches": [
+        "loop.go",
+        "agent.go",
+        "loop_test.go"
+      ],
+      "depends_on": [
+        2,
+        5,
+        6
+      ],
+      "done_when": [
+        "`go test -run 'TS-11-(3[8-9]|4[0-3])$' ./...` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "integration",
+      "title": "Verify all driver execution paths end to end with smoke tests",
+      "tests": [
+        "TS-11-44",
+        "TS-11-45",
+        "TS-11-46",
+        "TS-11-47",
+        "TS-11-48",
+        "TS-11-49"
+      ],
+      "steps": [
+        "Implement and verify smoke test TS-11-44 for 11-PATH-1: multi-turn prompt execution with concurrent tool batch.",
+        "Implement and verify smoke test TS-11-45 for 11-PATH-2: outbound context pruning under token threshold pressure with durable transcript preservation.",
+        "Implement and verify smoke test TS-11-46 for 11-PATH-3: synthetic truncation recovery on max_tokens response with complete arguments re-issue.",
+        "Implement and verify smoke test TS-11-47 for 11-PATH-4: nested tool execution through wrapper tool with parent event attribution.",
+        "Implement and verify smoke test TS-11-48 for 11-PATH-5: eager shell tool guard enforcement rejection at construction.",
+        "Implement and verify smoke test TS-11-49 for 11-PATH-6: run termination on budget limit exceeded before outbound request dispatch.",
+        "Trace every execution path (11-PATH-1 through 11-PATH-6) through the real code in Agent, New, runLoop, executeBatch, and nestedCaller; confirm each step calls the next and no stub remains.",
+        "For every criterion with a contract (11-REQ-1.2, 11-REQ-1.3, 11-REQ-1.4, 11-REQ-1.5, 11-REQ-2.1, 11-REQ-2.2, 11-REQ-2.3, 11-REQ-3.2, 11-REQ-3.3, 11-REQ-3.4, 11-REQ-5.5, 11-REQ-6.4, 11-REQ-6.5, 11-REQ-8.1, 11-REQ-8.3, 11-REQ-9.2, 11-REQ-9.4, 11-REQ-9.5, 11-REQ-10.1, 11-REQ-10.2, 11-REQ-10.3, 11-REQ-10.4, 11-REQ-10.5), confirm the producer's result is consumed by a caller in production code.",
+        "Search touched files for stub markers ('TODO', 'panic(\\\"not implemented\\\")', bare returns on non-trivial paths) and confirm none remain."
+      ],
+      "touches": [
+        "agent_test.go",
+        "loop_test.go",
+        "nested_test.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "done_when": [
+        "`make test` passes and `make lint` passes with all smoke tests green"
+      ],
+      "state": "pending"
+    }
+  ]
+}
