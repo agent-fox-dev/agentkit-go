@@ -91,7 +91,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 
 	// env is what a wrapper's nested calls run with (07-REQ-4.3): the same
 	// config copy, stream and reporter as this batch.
-	env := &nestedEnv{a: a, cfg: cfg, s: s, assistant: assistant, turnCount: turnCount, report: report}
+	env := &nestedEnv{a: a, cfg: cfg, s: s, assistant: assistant, turnCount: turnCount, report: report, tracer: tracer}
 
 	// batchMu is BATCH-SCOPED: created here, acquired by nothing else, and
 	// a.mu is never acquired while it is held.
@@ -236,49 +236,10 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 		thunks = append(thunks, func() {
 			start := time.Now()
 
-			// REQ-OBS-02: a span around the HANDLER, wrapping only the part
-			// that does work. Wrapping the finalize block as well would put
-			// every peer's span duration inside every other peer's, because
-			// finalization is serialized under the batch mutex — so a parallel
-			// batch would trace as though it were sequential.
-			//
-			// The tracer is third-party code (NFR-REL-02). A panic in it is
-			// contained here, and if it panicked BEFORE handing us the span —
-			// so the handler never ran — the handler runs untraced rather
-			// than not at all: a broken tracer must not turn every tool call
-			// into an error result.
-			var (
-				out    core.ToolResult
-				traced bool
-			)
 			// A tool that reaches other tools runs with a NestedCaller bound
 			// to this call on its context.
 			hctx, nested := env.withCaller(ctx, c, tool)
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						report(fmt.Errorf("agentkit: panic in Tracer for %q: %v", c.Name, r))
-					}
-				}()
-				_ = tracer.StartSpan("agentkit.tool_call", func(sp core.Span) error {
-					defer sp.End()
-					traced = true
-					out = invokeHandler(hctx, tool, prepared)
-					sp.SetAttributes(map[string]any{
-						"tool_name":   c.Name,
-						"tool_use_id": c.ID,
-						"is_error":    !out.OK,
-						"elapsed_ms":  time.Since(start).Milliseconds(),
-					})
-					if !out.OK {
-						sp.SetStatus(errors.New(out.Error))
-					}
-					return nil
-				})
-			}()
-			if !traced {
-				out = invokeHandler(hctx, tool, prepared)
-			}
+			out := tracedInvoke(hctx, tracer, report, c, tool, prepared, "", start)
 			// An interceptor that voted to terminate during one of this
 			// wrapper's nested calls ends the run, whatever the wrapper
 			// returned (07-REQ-5.3). AfterToolCall below may still override.
@@ -419,6 +380,56 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 		}
 	}
 	return results, core.BatchTerminates(votes)
+}
+
+// tracedInvoke runs a tool's handler inside an "agentkit.tool_call" span, for
+// a direct call (parent "") and a nested one alike (07-REQ-8.5).
+//
+// REQ-OBS-02: the span wraps only the handler, the part that does work.
+// Wrapping the finalize block as well would put every peer's span duration
+// inside every other peer's, because finalization is serialized under the
+// batch mutex — so a parallel batch would trace as though it were sequential.
+//
+// The tracer is third-party code (NFR-REL-02). A panic in it is contained
+// here, and if it panicked BEFORE handing us the span — so the handler never
+// ran — the handler runs untraced rather than not at all: a broken tracer must
+// not turn every tool call into an error result.
+func tracedInvoke(ctx context.Context, tracer core.Tracer, report func(error), c core.ToolUseBlock, tool core.Tool,
+	prepared core.PreparedArguments, parent string, start time.Time) core.ToolResult {
+	var (
+		out    core.ToolResult
+		traced bool
+	)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				report(fmt.Errorf("agentkit: panic in Tracer for %q: %v", c.Name, r))
+			}
+		}()
+		_ = tracer.StartSpan("agentkit.tool_call", func(sp core.Span) error {
+			defer sp.End()
+			traced = true
+			out = invokeHandler(ctx, tool, prepared)
+			attrs := map[string]any{
+				"tool_name":   c.Name,
+				"tool_use_id": c.ID,
+				"is_error":    !out.OK,
+				"elapsed_ms":  time.Since(start).Milliseconds(),
+			}
+			if parent != "" {
+				attrs["parent_tool_use_id"] = parent
+			}
+			sp.SetAttributes(attrs)
+			if !out.OK {
+				sp.SetStatus(errors.New(out.Error))
+			}
+			return nil
+		})
+	}()
+	if !traced {
+		out = invokeHandler(ctx, tool, prepared)
+	}
+	return out
 }
 
 // invokeHandler calls the tool, converting every failure mode into a result.

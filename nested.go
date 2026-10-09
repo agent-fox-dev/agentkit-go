@@ -21,6 +21,7 @@ type nestedEnv struct {
 	assistant *core.AssistantMessage
 	turnCount int
 	report    func(error)
+	tracer    core.Tracer
 }
 
 // nestedCaller is the core.NestedCaller executeBatch attaches to a wrapper's
@@ -86,6 +87,7 @@ func (n *nestedCaller) Call(ctx context.Context, calls ...core.ToolUseBlock) ([]
 		}
 		if !ok {
 			results[i] = res
+			n.push(n.endEvent(call, res, 0))
 			n.audit(call, tool, prepared.Raw, res, false, 0)
 			continue
 		}
@@ -124,24 +126,31 @@ func nestedAborted() core.ToolResult { return core.ErrResult("aborted", "Operati
 func (n *nestedCaller) prepare(ctx context.Context, batch []core.ToolUseBlock, i int, c core.ToolUseBlock) (
 	prepared core.PreparedArguments, tool core.Tool, call core.ToolUseBlock, res core.ToolResult, ok bool) {
 
+	// Every nested call gets an id of its own (07-REQ-8.1): the wrapper's
+	// ids are its own business, and need not be unique across wrappers or
+	// turns. With the id it opens on the stream, so that, however it ends,
+	// it closes there too.
+	id := newID("nested")
+	call = core.ToolUseBlock{ID: id, Name: c.Name, Input: c.Input}
+	n.push(core.ToolExecutionStartEvent{ToolUseID: id, Name: c.Name, ParentToolUseID: n.parentID})
+
 	// A cancelled context starts nothing more.
 	if ctx.Err() != nil {
-		return prepared, tool, c, nestedAborted(), false
+		return prepared, tool, call, nestedAborted(), false
 	}
 	tool, known := n.tools[c.Name]
 	if !known {
-		return prepared, tool, c, core.ErrResult("unknown_tool",
+		return prepared, tool, call, core.ErrResult("unknown_tool",
 			fmt.Sprintf("%s cannot call %q: ", n.parentName, c.Name)+unknownToolMessage(c.Name, n.tools)), false
 	}
-	// Every nested call gets an id of its own: the wrapper's are its own
-	// business, and need not be unique across wrappers or turns.
 	input := c.Input
 	if len(input) == 0 {
 		input = json.RawMessage(`{}`)
 	}
-	call, err := core.NewToolUse(newID("nested"), c.Name, input)
+	call, err := core.NewToolUse(id, c.Name, input)
 	if err != nil {
-		return prepared, tool, c, core.ErrResult("invalid_arguments", err.Error()), false
+		return prepared, tool, core.ToolUseBlock{ID: id, Name: c.Name, Input: c.Input},
+			core.ErrResult("invalid_arguments", err.Error()), false
 	}
 
 	var perr error
@@ -207,7 +216,7 @@ func (n *nestedCaller) prepare(ctx context.Context, batch []core.ToolUseBlock, i
 func (n *nestedCaller) execute(ctx context.Context, call core.ToolUseBlock, tool core.Tool, prepared core.PreparedArguments) core.ToolResult {
 	start := time.Now()
 	hctx, child := n.env.withCaller(ctx, call, tool)
-	out := invokeHandler(hctx, tool, prepared)
+	out := tracedInvoke(hctx, n.env.tracer, n.env.report, call, tool, prepared, n.parentID, start)
 	if child != nil {
 		if child.terminated.Load() {
 			// A wrapper nested in this one was terminated; so is this one.
@@ -231,21 +240,24 @@ func (n *nestedCaller) execute(ctx context.Context, call core.ToolUseBlock, tool
 		out.Detail = annotate(out.Detail, "terminate vote ignored: "+call.Name+" was called through "+n.parentName)
 		n.voteIgnored.Store(true)
 	}
-	n.audit(call, tool, prepared.Raw, out, ignored, time.Since(start))
+	elapsed := time.Since(start)
+	n.audit(call, tool, prepared.Raw, out, ignored, elapsed)
 
-	cfg := n.env.cfg
-	if cfg.AfterToolCall != nil {
-		n.mu.Lock()
-		defer n.mu.Unlock()
+	// Finalize under the caller's mutex, as a direct call finalizes under the
+	// batch mutex: AfterToolCall and the end event are serialized, with a
+	// deferred unlock so a panicking listener cannot leave it held.
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if after := n.env.cfg.AfterToolCall; after != nil {
 		msg := toolResultMessage(call, out)
-		dec := callAfter(ctx, n.env.report, cfg.AfterToolCall, core.AfterToolCallContext{
+		dec := callAfter(ctx, n.env.report, after, core.AfterToolCallContext{
 			ToolName:        call.Name,
 			ToolUseID:       call.ID,
 			ParentToolUseID: n.parentID,
 			ParentToolName:  n.parentName,
 			Arguments:       prepared.Args,
 			Result:          &msg,
-			Elapsed:         time.Since(start),
+			Elapsed:         elapsed,
 			ToolResult:      out,
 		})
 		// The after-interceptor is the embedder's authority as much as the
@@ -254,6 +266,7 @@ func (n *nestedCaller) execute(ctx context.Context, call core.ToolUseBlock, tool
 			n.terminated.Store(true)
 		}
 	}
+	n.env.s.Push(n.endEvent(call, out, elapsed))
 	return out
 }
 
@@ -282,4 +295,20 @@ func (n *nestedCaller) audit(call core.ToolUseBlock, tool core.Tool, args json.R
 		ElapsedMS:        elapsed.Milliseconds(),
 		TerminateIgnored: ignored,
 	})
+}
+
+// push emits a nested call's execution event. Pushes are serialized so a
+// nested call's events are ordered as a direct call's are.
+func (n *nestedCaller) push(e core.Event) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.env.s.Push(e)
+}
+
+// endEvent closes a nested call on the stream. There is no ToolResultEvent:
+// that event is the transcript's, and a nested result is the wrapper's
+// (07-REQ-8.3).
+func (n *nestedCaller) endEvent(call core.ToolUseBlock, out core.ToolResult, elapsed time.Duration) core.Event {
+	return core.ToolExecutionEndEvent{ToolUseID: call.ID, Name: call.Name, IsError: !out.OK,
+		ElapsedMS: elapsed.Milliseconds(), ParentToolUseID: n.parentID}
 }

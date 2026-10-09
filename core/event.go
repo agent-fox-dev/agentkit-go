@@ -142,21 +142,28 @@ type ToolCallEndEvent struct {
 	Block      ToolUseBlock
 }
 
+// ParentToolUseID, on the three execution events, is the wrapper call a
+// nested call was made through, empty for a call the model made directly
+// (07-REQ-8.2). A nested call emits these events and no ToolResultEvent: its
+// result goes to the wrapper, not into the transcript.
 type ToolExecutionStartEvent struct {
-	ToolUseID string
-	Name      string
+	ToolUseID       string
+	Name            string
+	ParentToolUseID string
 }
 type ToolExecutionUpdateEvent struct {
-	ToolUseID string
-	Name      string
-	Chunk     string
+	ToolUseID       string
+	Name            string
+	Chunk           string
+	ParentToolUseID string
 }
 type ToolExecutionEndEvent struct {
-	ToolUseID string
-	Name      string
-	Result    Content
-	IsError   bool
-	ElapsedMS int64
+	ToolUseID       string
+	Name            string
+	Result          Content
+	IsError         bool
+	ElapsedMS       int64
+	ParentToolUseID string
 }
 
 type ToolResultEvent struct{ Message ToolResultMessage }

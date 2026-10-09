@@ -153,25 +153,28 @@ func MarshalEvent(e Event, enc MessageEncoder) ([]byte, error) {
 		}{v.EventType(), v.BlockIndex, v.Block.ID, v.Block.Name, rawOrEmptyObject(v.Block.Input)})
 	case ToolExecutionStartEvent:
 		return json.Marshal(struct {
-			Type      EventType `json:"type"`
-			ToolUseID string    `json:"tool_use_id"`
-			Name      string    `json:"name"`
-		}{v.EventType(), v.ToolUseID, v.Name})
+			Type            EventType `json:"type"`
+			ToolUseID       string    `json:"tool_use_id"`
+			Name            string    `json:"name"`
+			ParentToolUseID string    `json:"parent_tool_use_id,omitempty"`
+		}{v.EventType(), v.ToolUseID, v.Name, v.ParentToolUseID})
 	case ToolExecutionUpdateEvent:
 		return json.Marshal(struct {
-			Type      EventType `json:"type"`
-			ToolUseID string    `json:"tool_use_id"`
-			Name      string    `json:"name"`
-			Chunk     string    `json:"chunk"`
-		}{v.EventType(), v.ToolUseID, v.Name, v.Chunk})
+			Type            EventType `json:"type"`
+			ToolUseID       string    `json:"tool_use_id"`
+			Name            string    `json:"name"`
+			Chunk           string    `json:"chunk"`
+			ParentToolUseID string    `json:"parent_tool_use_id,omitempty"`
+		}{v.EventType(), v.ToolUseID, v.Name, v.Chunk, v.ParentToolUseID})
 	case ToolExecutionEndEvent:
 		return json.Marshal(struct {
-			Type      EventType `json:"type"`
-			ToolUseID string    `json:"tool_use_id"`
-			Name      string    `json:"name"`
-			IsError   bool      `json:"is_error"`
-			ElapsedMS int64     `json:"elapsed_ms"`
-		}{v.EventType(), v.ToolUseID, v.Name, v.IsError, v.ElapsedMS})
+			Type            EventType `json:"type"`
+			ToolUseID       string    `json:"tool_use_id"`
+			Name            string    `json:"name"`
+			IsError         bool      `json:"is_error"`
+			ElapsedMS       int64     `json:"elapsed_ms"`
+			ParentToolUseID string    `json:"parent_tool_use_id,omitempty"`
+		}{v.EventType(), v.ToolUseID, v.Name, v.IsError, v.ElapsedMS, v.ParentToolUseID})
 	case ToolResultEvent:
 		m, err := msg(v.Message)
 		if err != nil {

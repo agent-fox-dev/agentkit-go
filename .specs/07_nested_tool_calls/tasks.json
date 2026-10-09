@@ -210,7 +210,7 @@
       "done_when": [
         "`go test ./... -run 'TestNested(Events|Audit|Tracing|Usage|History|Stop)'` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
