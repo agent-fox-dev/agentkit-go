@@ -220,7 +220,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestAttribution' -count=1 passes"
       ],
-      "state": "done",
+      "state": "in_progress",
       "optional": false
     },
     {
@@ -258,7 +258,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestRefRanker' -count=1 passes"
       ],
-      "state": "done",
+      "state": "in_progress",
       "optional": false
     },
     {
@@ -338,7 +338,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestRefCache' -count=1 passes"
       ],
-      "state": "done",
+      "state": "in_progress",
       "optional": false
     },
     {
