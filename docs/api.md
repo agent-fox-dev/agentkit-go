@@ -110,7 +110,7 @@ type ReferenceResult struct {
 func (ws *Workspace) References(ctx context.Context, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error)
 ```
 
-`Workspace.References` enforces workspace containment, validates subdirectories, and executes exact Go type resolution and multi-language outline attribution with identical ranking and bounds to the `find_references` tool.
+`Workspace.References` enforces workspace containment, validates subdirectories, and executes exact Go type resolution and multi-language outline attribution with the same ranking and truncation as the `find_references` tool. Every site's `Enclosing` is the innermost declaration of the file's outline whose line range spans the site, or `Kind: "file"` at top level. The pass is bounded by the default `SymbolOptions` (50 000 files, 2 s); when a bound is reached it returns the sites found so far with `Partial` set and a nil error. Unlike the tool it keeps no cache between calls.
 
 ## Client side
 

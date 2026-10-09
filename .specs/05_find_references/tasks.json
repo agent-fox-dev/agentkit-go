@@ -427,7 +427,7 @@
       "done_when": [
         "make check passes and doc updates are verified"
       ],
-      "state": "in_progress",
+      "state": "done",
       "optional": false
     },
     {
