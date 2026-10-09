@@ -196,3 +196,23 @@ both shell guidelines each disabled). One detail follows the code: the
 execute fallback guideline is added when no file-navigation tool is
 present, not "when no search tool is" — `tools.FileNavigationTools()` is
 the set it checks.
+
+## Integration and documentation
+
+- **The smoke tests** (`core/smoke_test.go`) run the real parser, argument
+  pipeline, guard, prompt builder and `provider/faux`. 12-PATH-1 starts with
+  a developer calling `schema.Parse` through the public API: no production
+  code in this repository calls `Parse`, because the one place a schema
+  arrives from outside (the MCP client) receives it already decoded. The
+  argument half of the path runs in `batch.go` and `nested.go`.
+- **The package graph differs from the PRD's sketch.** The root does not
+  import `tools` (it imports `core`, `catalog`, `guard`, `prompt`, `provider`,
+  `provider/anthropic` and the SDK; `prompt` imports `tools`); `schema`,
+  `outline` and `wire` import no part of `core`; `codemode` also imports
+  `tools`, and `mcp` also imports `wire` and two internal packages.
+  `docs/architecture.md` describes the graph `go list` reports.
+- **The README's license line now says Apache 2.0**, which is what `LICENSE`
+  says; it used to say MIT.
+- **Issues 91 and 92 are not closed by this change.** Closing them is an
+  action on GitHub, left to whoever lands it; the README cites no test names
+  and the documentation describes the cut repository.

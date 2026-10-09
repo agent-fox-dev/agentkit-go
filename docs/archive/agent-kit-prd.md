@@ -1,3 +1,9 @@
+> **Archived.** This is the 0.4.2 AgentKit PRD, superseded by
+> [PRD 10](../prd/10-cut-agentkit-down-to-the-hands.md), which cut AgentKit
+> down to the hands and one driver. It is kept for history; its requirement
+> ids are no longer cited in new code or tests. Findings from the deleted
+> provider wires are in [`wires.md`](wires.md).
+
 # AgentKit: A Dependency-Free Agent SDK for Go
 
 **Author:** [Platform Engineering]

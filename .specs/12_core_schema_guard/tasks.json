@@ -506,7 +506,7 @@
         "README.md, docs/architecture.md, docs/configuration.md, docs/DEPS.md, and docs/archive are updated per PRD goals 8, 9, 10",
         "All stub markers are removed and make check passes cleanly"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
