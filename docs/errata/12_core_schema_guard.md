@@ -156,3 +156,17 @@ why.
 - No production code calls `Parse` yet: the MCP client converts the schemas
   its SDK has already decoded (`mcp/pool.go`, `schemaFrom`), whose key order
   is already gone, with fallbacks of its own.
+
+## 12-REQ-8: the constraints arrived with task 2
+
+`additionalProperties: false`, enum, the numeric bounds, `multipleOf`, string
+lengths and item counts were already enforced before this spec;
+`pattern` and `uniqueItems` were added, and coercion moved to plain values,
+when task 2 rewrote the validator over `map[string]any`
+(`validateValue`, `validateArray`, `validateString`, `validateNumber`,
+`coerceValue` in `schema/impl.go`). TS-12-22..28 therefore passed when
+written; each was seen to fail against a mutated `schema/impl.go` (closed
+objects, enum, minimum, pattern, uniqueness, the JSON-number check and
+boolean coercion each disabled in turn). The coercion tests sit in
+`schema/issue87_test.go` beside the issue 87 tests rather than in a
+`coerce_test.go` of their own.

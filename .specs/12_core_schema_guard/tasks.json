@@ -328,7 +328,7 @@
       "done_when": [
         "schema.Validate enforces issue 87 constraints and schema.Coerce safely converts primitives rejecting invalid literals"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
