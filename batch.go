@@ -285,6 +285,11 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 			if nested != nil && nested.terminated.Load() {
 				out.Terminate = true
 			}
+			// A nested call's own terminate vote was dropped; the wrapper's
+			// result records that it happened (07-REQ-6.3).
+			if nested != nil && nested.voteIgnored.Load() {
+				out.Detail = annotate(out.Detail, "nested terminate vote ignored")
+			}
 			a.audit(core.AuditEvent{
 				Kind: core.AuditToolCall, SessionID: auditSession,
 				ToolName: c.Name, ToolUseID: c.ID,

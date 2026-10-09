@@ -54,6 +54,13 @@ type AuditEvent struct {
 	// "aborted", "max_tokens". A refused call is audited like any other.
 	ErrorCode string
 	ElapsedMS int64
+	// ParentToolUseID is the wrapper call a nested call was made through,
+	// empty for a call the model made directly.
+	ParentToolUseID string
+	// TerminateIgnored records that a nested call's handler voted to end the
+	// run and the vote was dropped: only an interceptor, or a tool the model
+	// calls directly, ends a run.
+	TerminateIgnored bool
 
 	// Skills loaded (REQ-OBS-04).
 	Skills []string

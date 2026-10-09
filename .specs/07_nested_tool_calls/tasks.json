@@ -168,7 +168,7 @@
       "done_when": [
         "`go test ./... -run 'TestNested(Concurrency|Sequential|Isolation|Cancel|TerminateVote)'` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,

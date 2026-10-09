@@ -40,6 +40,9 @@ type nestedCaller struct {
 	// of this wrapper's nested calls. Every later Call returns
 	// ErrTerminated, and the wrapper's own result carries the vote.
 	terminated atomic.Bool
+	// voteIgnored is set when a nested handler voted to terminate and the
+	// vote was dropped; the wrapper's result says so (07-REQ-6.3).
+	voteIgnored atomic.Bool
 }
 
 func (env *nestedEnv) caller(parentID, parentName string, reach []core.Tool) *nestedCaller {
@@ -63,13 +66,19 @@ func (env *nestedEnv) withCaller(ctx context.Context, c core.ToolUseBlock, t cor
 
 // Call runs calls for the wrapper. Preparation and authorization run in
 // order, as for a direct batch, so the interceptor sees a deterministic
-// sequence; then the handlers run.
+// sequence. Then the handlers run: concurrently, one goroutine per call
+// joined by a WaitGroup (07-REQ-7.1), unless ParallelTools is off or one of
+// the calls is to a Sequential tool, which runs them in call order
+// (07-REQ-7.2). Results are written by index, so they come back in call
+// order whatever order the handlers finish in (07-REQ-7.3), and a call that
+// fails is a result of its own that stops no sibling (07-REQ-7.4).
 func (n *nestedCaller) Call(ctx context.Context, calls ...core.ToolUseBlock) ([]core.ToolResult, error) {
 	if n.terminated.Load() {
 		return nil, core.ErrTerminated
 	}
 	results := make([]core.ToolResult, len(calls))
 	var run []func()
+	sequential := !n.env.cfg.ParallelTools
 	for i, c := range calls {
 		prepared, tool, call, res, ok := n.prepare(ctx, calls, i, c)
 		if n.terminated.Load() {
@@ -77,12 +86,28 @@ func (n *nestedCaller) Call(ctx context.Context, calls ...core.ToolUseBlock) ([]
 		}
 		if !ok {
 			results[i] = res
+			n.audit(call, tool, prepared.Raw, res, false, 0)
 			continue
+		}
+		if tool.ExecutionMode == core.Sequential {
+			sequential = true
 		}
 		run = append(run, func() { results[i] = n.execute(ctx, call, tool, prepared) })
 	}
-	for _, f := range run {
-		f()
+	if sequential || len(run) <= 1 {
+		for _, f := range run {
+			f()
+		}
+	} else {
+		var wg sync.WaitGroup
+		for _, f := range run {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				f()
+			}()
+		}
+		wg.Wait()
 	}
 	if n.terminated.Load() {
 		return nil, core.ErrTerminated
@@ -90,11 +115,19 @@ func (n *nestedCaller) Call(ctx context.Context, calls ...core.ToolUseBlock) ([]
 	return results, nil
 }
 
+// nestedAborted is the result of a nested call that was cancelled
+// (07-REQ-7.5).
+func nestedAborted() core.ToolResult { return core.ErrResult("aborted", "Operation aborted") }
+
 // prepare takes one nested call through the steps before its handler. ok is
 // false when the call ends here, and res is its result.
 func (n *nestedCaller) prepare(ctx context.Context, batch []core.ToolUseBlock, i int, c core.ToolUseBlock) (
 	prepared core.PreparedArguments, tool core.Tool, call core.ToolUseBlock, res core.ToolResult, ok bool) {
 
+	// A cancelled context starts nothing more.
+	if ctx.Err() != nil {
+		return prepared, tool, c, nestedAborted(), false
+	}
 	tool, known := n.tools[c.Name]
 	if !known {
 		return prepared, tool, c, core.ErrResult("unknown_tool",
@@ -175,10 +208,30 @@ func (n *nestedCaller) execute(ctx context.Context, call core.ToolUseBlock, tool
 	start := time.Now()
 	hctx, child := n.env.withCaller(ctx, call, tool)
 	out := invokeHandler(hctx, tool, prepared)
-	if child != nil && child.terminated.Load() {
-		// A wrapper nested in this one was terminated; so is this one.
-		n.terminated.Store(true)
+	if child != nil {
+		if child.terminated.Load() {
+			// A wrapper nested in this one was terminated; so is this one.
+			n.terminated.Store(true)
+		}
+		if child.voteIgnored.Load() {
+			out.Detail = annotate(out.Detail, "nested terminate vote ignored")
+		}
 	}
+	// A call still running when the context was cancelled is aborted,
+	// whatever its handler made of the cancellation (07-REQ-7.5).
+	if ctx.Err() != nil {
+		out = nestedAborted()
+	}
+	// A nested handler cannot end the run (07-REQ-6.1). No tool a wrapper
+	// reaches is Terminating — registration refuses that — so the vote is
+	// always dropped, and recorded where it was cast and on the wrapper.
+	ignored := out.Terminate
+	if ignored {
+		out.Terminate = false
+		out.Detail = annotate(out.Detail, "terminate vote ignored: "+call.Name+" was called through "+n.parentName)
+		n.voteIgnored.Store(true)
+	}
+	n.audit(call, tool, prepared.Raw, out, ignored, time.Since(start))
 
 	cfg := n.env.cfg
 	if cfg.AfterToolCall != nil {
@@ -202,4 +255,31 @@ func (n *nestedCaller) execute(ctx context.Context, call core.ToolUseBlock, tool
 		}
 	}
 	return out
+}
+
+// annotate appends note to a result's detail.
+func annotate(detail, note string) string {
+	if detail == "" {
+		return note
+	}
+	return detail + "; " + note
+}
+
+// audit records one nested call like a direct one, linked to its wrapper's
+// call (07-REQ-8.4).
+func (n *nestedCaller) audit(call core.ToolUseBlock, tool core.Tool, args json.RawMessage, out core.ToolResult,
+	ignored bool, elapsed time.Duration) {
+	if len(args) == 0 {
+		args = call.Input
+	}
+	n.env.a.audit(core.AuditEvent{
+		Kind: core.AuditToolCall, SessionID: n.env.cfg.SessionID,
+		ToolName: call.Name, ToolUseID: call.ID, ParentToolUseID: n.parentID,
+		ServerName:       serverNameOf(tool, call.Name),
+		ArgumentsHash:    core.HashArguments(args),
+		IsError:          !out.OK,
+		ErrorCode:        errorCodeOf(out),
+		ElapsedMS:        elapsed.Milliseconds(),
+		TerminateIgnored: ignored,
+	})
 }
