@@ -2069,3 +2069,36 @@ var declProps = map[string]prop{
 	"Exported": {schema.TypeBoolean, true}, "StartLine": {schema.TypeInteger, true},
 	"EndLine": {schema.TypeInteger, true},
 }
+
+// TS-09-21 (smoke, 09-PATH-2): read_file from tools.All, over a real
+// workspace, refuses a PNG by its magic bytes and names the format.
+func TestSmokeReadFileRefusesPNG_TS09_21(t *testing.T) {
+	ws, err := NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	png := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00}
+	if err := os.WriteFile(filepath.Join(ws.Root, "test.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	all, err := All(Options{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var readFile core.Tool
+	for _, tl := range all {
+		if tl.Name == "read_file" {
+			readFile = tl
+		}
+	}
+	res := readFile.Execute(context.Background(), json.RawMessage(`{"path":"test.png"}`))
+	if res.OK || res.Error != "unsupported_file" {
+		t.Fatalf("OK %v Error %q, want unsupported_file", res.OK, res.Error)
+	}
+	if !strings.Contains(res.Detail, "reading images is not supported") || !strings.Contains(res.Detail, "PNG") {
+		t.Fatalf("Detail = %q", res.Detail)
+	}
+	if len(res.Blocks) != 0 {
+		t.Fatalf("a refused image carries %d blocks", len(res.Blocks))
+	}
+}

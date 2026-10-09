@@ -259,7 +259,7 @@
       "done_when": [
         "make check exits 0 cleanly across root module and codesearch submodule with all tests passing and no wall-clock timing flakes."
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
