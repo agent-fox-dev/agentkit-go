@@ -240,20 +240,6 @@ func typeNameFromType(t types.Type) string {
 	return ""
 }
 
-// typeNameFromExpr extracts simple type name from an ast.Expr receiver.
-func typeNameFromExpr(expr ast.Expr) string {
-	switch e := expr.(type) {
-	case *ast.Ident:
-		return e.Name
-	case *ast.StarExpr:
-		return typeNameFromExpr(e.X)
-	case *ast.IndexExpr:
-		return typeNameFromExpr(e.X)
-	default:
-		return ""
-	}
-}
-
 // getSourceLine returns the sanitized line from filePath at 1-based lineNum.
 func (imp *workspaceImporter) getSourceLine(filePath string, lineNum int) string {
 	lines, ok := imp.fileSources[filePath]
@@ -363,22 +349,6 @@ func classifyGoIdent(info *types.Info, id *ast.Ident, parent ast.Node, targetObj
 	return "lexical"
 }
 
-// enclosingFunc returns the innermost function or method declaration on
-// stack, or a Kind "file" declaration at top level.
-func enclosingFunc(stack []ast.Node) outline.Decl {
-	for i := len(stack) - 1; i >= 0; i-- {
-		fn, ok := stack[i].(*ast.FuncDecl)
-		if !ok {
-			continue
-		}
-		if fn.Recv != nil && len(fn.Recv.List) > 0 {
-			return outline.Decl{Kind: outline.KindMethod, Name: fn.Name.Name, Container: typeNameFromExpr(fn.Recv.List[0].Type)}
-		}
-		return outline.Decl{Kind: outline.KindFunc, Name: fn.Name.Name}
-	}
-	return outline.Decl{Kind: "file"}
-}
-
 // resolveGoReferences finds reference sites for target in the Go sources imp has checked.
 func resolveGoReferences(imp *workspaceImporter, target outline.Decl) []ReferenceSite {
 	targetObj := imp.findTargetObject(target)
@@ -422,7 +392,6 @@ func resolveGoReferences(imp *workspaceImporter, target outline.Decl) []Referenc
 				Line:       pos.Line,
 				Column:     pos.Column,
 				Confidence: confidence,
-				Enclosing:  enclosingFunc(stack),
 				Source:     imp.getSourceLine(filePath, pos.Line),
 			})
 			return true

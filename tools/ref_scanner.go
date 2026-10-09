@@ -182,7 +182,6 @@ func scanContentForMatches(path string, content []byte, target outline.Decl) []R
 				Line:       lineIdx + 1,
 				Column:     matchStart + 1,
 				Confidence: confidence,
-				Enclosing:  outline.Decl{Kind: "file"},
 				Source:     sanitizeSourceLine(line),
 			})
 		}

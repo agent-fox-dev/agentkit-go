@@ -141,6 +141,7 @@ func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.D
 	sites = filterTestSites(sites, opts.IncludeTests)
 	sortReferenceSites(sites)
 	sites, truncated := applyResultLimits(sites, clampMaxResults(opts.MaxResults))
+	attributeSites(sites, func(rel string) []outline.Decl { return outlineDecls(ctx, ws, rel) })
 
 	return ReferenceResult{
 		Target:          target,
