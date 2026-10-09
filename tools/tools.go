@@ -358,6 +358,17 @@ func (f *fileTools) readFile() core.Tool {
 			schema.Opt("limit", schema.Int("Maximum lines to return")),
 		),
 		PromptGuidelines: []string{"Read a file before editing it."},
+		// A text read and an image read return different Data; exactly one
+		// branch matches any result (06-REQ-4.1).
+		OutputSchema: schema.OneOf(
+			schema.Object(schema.Prop("content", schema.String()), schema.Prop("encoding", schema.String())),
+			schema.Object(
+				schema.Prop("note", schema.String()),
+				schema.Prop("mime_type", schema.String()),
+				schema.Prop("width", schema.Int()),
+				schema.Prop("height", schema.Int()),
+			),
+		),
 		Execute: func(ctx context.Context, in json.RawMessage) core.ToolResult {
 			var a struct {
 				Path   string `json:"path"`
@@ -666,9 +677,10 @@ func readImage(abs, shown string, data []byte, mime string) core.ToolResult {
 
 func (f *fileTools) writeFile() core.Tool {
 	return core.Tool{
-		Name:        "write_file",
-		Description: "Write a file, creating or replacing it.",
-		Builtin:     true,
+		Name:         "write_file",
+		OutputSchema: schema.Object(schema.Prop("written", schema.Bool()), schema.Prop("bytes", schema.Int())),
+		Description:  "Write a file, creating or replacing it.",
+		Builtin:      true,
 		PromptGuidelines: []string{
 			"Prefer edit_file for an existing file; write_file replaces the whole file.",
 		},
@@ -733,8 +745,9 @@ func (f *fileTools) writeFile() core.Tool {
 
 func (f *fileTools) editFile() core.Tool {
 	return core.Tool{
-		Name:    "edit_file",
-		Builtin: true,
+		Name:         "edit_file",
+		OutputSchema: schema.Object(schema.Prop("edits_applied", schema.Int())),
+		Builtin:      true,
 		Description: "Apply one or more exact-match edits to a file. " +
 			"Every old_string is matched against the ORIGINAL file content, not against " +
 			"the result of an earlier edit in the same call. Each old_string must appear " +
@@ -974,6 +987,11 @@ func looksLikeEdits(v any) bool {
 func (f *fileTools) listFiles() core.Tool {
 	return core.Tool{
 		Name: "list_files",
+		OutputSchema: schema.Object(
+			schema.Prop("entries", schema.Array(schema.String())),
+			schema.Prop("truncated", schema.Bool()),
+			schema.Opt("note", schema.String()),
+		),
 		Description: "List the entries of a directory, directories with a trailing /. " +
 			"Does not apply .gitignore.",
 		Builtin: true,
@@ -1041,7 +1059,12 @@ func (f *fileTools) listFiles() core.Tool {
 
 func (f *fileTools) findFiles() core.Tool {
 	return core.Tool{
-		Name:        "find_files",
+		Name: "find_files",
+		OutputSchema: schema.Object(
+			schema.Prop("files", schema.Array(schema.String())),
+			schema.Prop("truncated", schema.Bool()),
+			schema.Opt("marker", schema.String()),
+		),
 		Description: "Find files by glob pattern, skipping .gitignored paths.",
 		Builtin:     true,
 		InputSchema: schema.Object(

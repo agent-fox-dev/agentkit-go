@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentfox/agentkit-go/core"
+	"github.com/agentfox/agentkit-go/schema"
 )
 
 // ------------------------------------------------------------------ edit_file
@@ -2043,5 +2044,95 @@ func TestBuiltinLeniencySurvivesStrictValidation(t *testing.T) {
 	}
 	if fmt.Sprint(p.Args["max_matches"]) != fmt.Sprint(SearchMatchCap) {
 		t.Fatalf("max_matches = %v, want the cap %d", p.Args["max_matches"], SearchMatchCap)
+	}
+}
+
+// ------------------------------------------------------------ output schemas
+
+// prop is one expected property of an output schema: its type and whether
+// the object requires it.
+type prop struct {
+	typ      schema.Type
+	required bool
+}
+
+// assertObject checks that s is an object schema with exactly the given
+// properties, types and requiredness — no more, no fewer.
+func assertObject(t *testing.T, where string, s *schema.Schema, want map[string]prop) {
+	t.Helper()
+	if s == nil {
+		t.Fatalf("%s: schema is nil", where)
+	}
+	if s.Type != schema.TypeObject {
+		t.Fatalf("%s: type = %q, want object", where, s.Type)
+	}
+	if len(s.Properties) != len(want) {
+		t.Errorf("%s: properties = %v, want %d of them", where, s.PropertyList(), len(want))
+	}
+	for name, w := range want {
+		got := s.Properties[name]
+		if got == nil {
+			t.Errorf("%s: property %q is missing", where, name)
+			continue
+		}
+		if got.Type != w.typ {
+			t.Errorf("%s.%s: type = %q, want %q", where, name, got.Type, w.typ)
+		}
+		if s.IsRequired(name) != w.required {
+			t.Errorf("%s.%s: required = %v, want %v", where, name, s.IsRequired(name), w.required)
+		}
+	}
+}
+
+// TS-06-11: read_file's OutputSchema is oneOf a text read and an image read.
+func TestOutputSchemaReadFile_TS06_11(t *testing.T) {
+	s := toolByName(t, t.TempDir(), "read_file").OutputSchema
+	if s == nil || len(s.OneOf) != 2 {
+		t.Fatalf("OutputSchema = %+v, want oneOf with two branches", s)
+	}
+	assertObject(t, "read_file text", s.OneOf[0], map[string]prop{
+		"content":  {schema.TypeString, true},
+		"encoding": {schema.TypeString, true},
+	})
+	assertObject(t, "read_file image", s.OneOf[1], map[string]prop{
+		"note":      {schema.TypeString, true},
+		"mime_type": {schema.TypeString, true},
+		"width":     {schema.TypeInteger, true},
+		"height":    {schema.TypeInteger, true},
+	})
+}
+
+// TS-06-12: write_file and edit_file declare their result objects.
+func TestOutputSchemaWriteAndEditFile_TS06_12(t *testing.T) {
+	dir := t.TempDir()
+	assertObject(t, "write_file", toolByName(t, dir, "write_file").OutputSchema, map[string]prop{
+		"written": {schema.TypeBoolean, true},
+		"bytes":   {schema.TypeInteger, true},
+	})
+	assertObject(t, "edit_file", toolByName(t, dir, "edit_file").OutputSchema, map[string]prop{
+		"edits_applied": {schema.TypeInteger, true},
+	})
+}
+
+// TS-06-13: list_files and find_files declare string arrays, the truncated
+// flag and their optional marker.
+func TestOutputSchemaListAndFindFiles_TS06_13(t *testing.T) {
+	dir := t.TempDir()
+	l := toolByName(t, dir, "list_files").OutputSchema
+	assertObject(t, "list_files", l, map[string]prop{
+		"entries":   {schema.TypeArray, true},
+		"truncated": {schema.TypeBoolean, true},
+		"note":      {schema.TypeString, false},
+	})
+	f := toolByName(t, dir, "find_files").OutputSchema
+	assertObject(t, "find_files", f, map[string]prop{
+		"files":     {schema.TypeArray, true},
+		"truncated": {schema.TypeBoolean, true},
+		"marker":    {schema.TypeString, false},
+	})
+	for name, s := range map[string]*schema.Schema{"list_files.entries": l.Properties["entries"], "find_files.files": f.Properties["files"]} {
+		if s.Items == nil || s.Items.Type != schema.TypeString {
+			t.Errorf("%s items = %+v, want string", name, s.Items)
+		}
 	}
 }

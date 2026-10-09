@@ -166,7 +166,7 @@
       "done_when": [
         "go test ./tools/... -run 'TestOutputSchema' passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
