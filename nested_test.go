@@ -686,3 +686,128 @@ func TestNestedAfterToolCallMayCallNested(t *testing.T) {
 		t.Fatal("deadlocked")
 	}
 }
+
+// ------------------------------------------------------------------ 11-REQ-9
+
+// TS-11-33: a tool with ReachableTools runs with a NestedCaller bound to
+// its resolved reachable set; a tool without runs with none.
+func TestNestedCallerIsAttached_TS11_33(t *testing.T) {
+	var got []core.ToolResult
+	var callErr, plainErr error
+	wrapper := wrapperTool("wrapper", func(ctx context.Context) core.ToolResult {
+		got, callErr = core.CallNested(ctx, core.ToolUseBlock{Name: "childA"}, core.ToolUseBlock{Name: "childB"})
+		return core.OKResult(nil)
+	}, childTool("childA"), childTool("childB"))
+	plain := wrapperTool("plain", func(ctx context.Context) core.ToolResult {
+		_, plainErr = core.CallNested(ctx, core.ToolUseBlock{Name: "childA"})
+		return core.OKResult(nil)
+	})
+	s := &scripted{turns: []core.AssistantMessage{assistantWithTools(core.StopReasonToolUse,
+		toolUse(t, "c1", "wrapper", `{}`), toolUse(t, "c2", "plain", `{}`))}}
+	a := newTestAgent(t, s, nil, wrapper, plain)
+	if _, err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if callErr != nil || len(got) != 2 || !got[0].OK || !got[1].OK || got[0].Data["tool"] != "childA" || got[1].Data["tool"] != "childB" {
+		t.Fatalf("CallNested from the wrapper = %+v, %v; want both children run", got, callErr)
+	}
+	if !errors.Is(plainErr, core.ErrNoNestedCaller) {
+		t.Fatalf("CallNested from a tool reaching nothing = %v, want ErrNoNestedCaller", plainErr)
+	}
+}
+
+// TS-11-34: a nested call to a tool outside the reachable set is an error
+// result, not a Go error.
+func TestNestedUnreachableToolIsAnErrorResult_TS11_34(t *testing.T) {
+	var got []core.ToolResult
+	var callErr error
+	wrapper := wrapperTool("wrapper", func(ctx context.Context) core.ToolResult {
+		got, callErr = core.CallNested(ctx, core.ToolUseBlock{Name: "forbiddenTool"})
+		return core.OKResult(nil)
+	}, childTool("childA"))
+	runWrapper(t, "wrapper", nil, wrapper, childTool("forbiddenTool"))
+	if callErr != nil || len(got) != 1 || got[0].OK || got[0].Error != "unknown_tool" ||
+		!strings.Contains(got[0].Detail, `wrapper cannot call "forbiddenTool"`) {
+		t.Fatalf("CallNested = %+v, %v; want an unknown_tool result naming the tool", got, callErr)
+	}
+}
+
+// TS-11-35: a nested call's execution events carry the parent call's id.
+func TestNestedEventsCarryTheParent_TS11_35(t *testing.T) {
+	wrapper := wrapperTool("wrapper", func(ctx context.Context) core.ToolResult {
+		_, _ = core.CallNested(ctx, core.ToolUseBlock{Name: "childA"})
+		return core.OKResult(nil)
+	}, childTool("childA"))
+	s := &scripted{turns: []core.AssistantMessage{assistantWithTools(core.StopReasonToolUse, toolUse(t, "parent_call_1", "wrapper", `{}`))}}
+	a := newTestAgent(t, s, nil, wrapper)
+	st, err := a.Stream(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts, ends := 0, 0
+	for e := range st.Events() {
+		switch v := e.(type) {
+		case core.ToolExecutionStartEvent:
+			if v.Name == "childA" {
+				starts++
+				if v.ParentToolUseID != "parent_call_1" {
+					t.Fatalf("nested start parent = %q", v.ParentToolUseID)
+				}
+			}
+		case core.ToolExecutionEndEvent:
+			if v.Name == "childA" {
+				ends++
+				if v.ParentToolUseID != "parent_call_1" {
+					t.Fatalf("nested end parent = %q", v.ParentToolUseID)
+				}
+			}
+		}
+	}
+	if starts != 1 || ends != 1 {
+		t.Fatalf("nested events: %d start / %d end, want 1/1", starts, ends)
+	}
+}
+
+// TS-11-36: a nested call the Guard blocks is an error result and a nil Go
+// error, so the wrapper carries on.
+func TestNestedBlockIsAValue_TS11_36(t *testing.T) {
+	var got []core.ToolResult
+	var callErr error
+	wrapper := wrapperTool("wrapper", func(ctx context.Context) core.ToolResult {
+		got, callErr = core.CallNested(ctx, core.ToolUseBlock{Name: "childA"})
+		return core.OKResult(map[string]any{"handled": true})
+	}, childTool("childA"))
+	res, _ := runWrapper(t, "wrapper", func(c *Config) {
+		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+			return core.BeforeToolCallDecision{Block: in.ParentToolUseID != "", Reason: "permission denied"}
+		}
+	}, wrapper)
+	if callErr != nil || len(got) != 1 || got[0].OK || got[0].Error != core.BlockErrorCode || got[0].Detail != "permission denied" {
+		t.Fatalf("CallNested = %+v, %v; want a blocked result and no error", got, callErr)
+	}
+	if tr := resultFor(t, res, "parent_call_1"); tr.IsError || !strings.Contains(resultText(tr), "handled") {
+		t.Fatalf("the wrapper did not complete: %q", resultText(tr))
+	}
+}
+
+// TS-11-37: an interceptor's terminate vote in a nested call fails every
+// later call with ErrTerminated and ends the run through the wrapper.
+func TestNestedTerminateVote_TS11_37(t *testing.T) {
+	var second error
+	wrapper := wrapperTool("wrapper", func(ctx context.Context) core.ToolResult {
+		_, _ = core.CallNested(ctx, core.ToolUseBlock{Name: "childA"})
+		_, second = core.CallNested(ctx, core.ToolUseBlock{Name: "childA"})
+		return core.OKResult(map[string]any{"wrapper": "done"})
+	}, childTool("childA"))
+	res, s := runWrapper(t, "wrapper", func(c *Config) {
+		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+			return core.BeforeToolCallDecision{Block: in.ParentToolUseID != "", Terminate: in.ParentToolUseID != "", Reason: "stop"}
+		}
+	}, wrapper)
+	if !errors.Is(second, core.ErrTerminated) {
+		t.Fatalf("second CallNested = %v, want ErrTerminated", second)
+	}
+	if res.StopReason != core.RunStopToolTerminate || s.turnsRun() != 1 {
+		t.Fatalf("stop %q after %d turns; the wrapper's result must carry the vote", res.StopReason, s.turnsRun())
+	}
+}

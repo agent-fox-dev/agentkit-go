@@ -128,3 +128,16 @@ reason, truncation not detected, refusal not mapped).
 - TS-11-26..30 and TS-11-32 passed before this task: the four phases, the
   single abort decision and slot order were already the batch's behaviour.
   Only TS-11-31 failed first.
+
+## 11-REQ-9: the nested pipeline is spec 07's
+
+`nested.go` already attached the caller, enforced the reachable set,
+stamped `ParentToolUseID`, returned a block as a result and failed later
+calls with `core.ErrTerminated` after an interceptor's terminate vote.
+TS-11-33..37 passed when written, and each was seen to fail against a
+mutated `nested.go`. Two details follow the code rather than the
+pseudocode: there is no `NestedCallerFromContext` or `Allows`, so TS-11-33
+calls the reachable tools through `core.CallNested`; and an unreachable
+tool is the `unknown_tool` result (`wrapper cannot call "forbiddenTool"`),
+not a result saying "unreachable". A terminate vote counts beside `Block`,
+as for a direct call (TS-11-37's interceptor blocks and votes).
