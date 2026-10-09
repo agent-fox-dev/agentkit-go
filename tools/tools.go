@@ -1179,8 +1179,9 @@ func renderList(entries []string, marker, empty string) string {
 func executeTool(opts Options) core.Tool {
 	opts = opts.withDefaults()
 	return core.Tool{
-		Name:    "execute",
-		Builtin: true,
+		Name:         "execute",
+		OutputSchema: execResultOutputSchema(),
+		Builtin:      true,
 		Description: "Run a shell command in the workspace root. Pipes, redirection, && and $() " +
 			"all work. Only the last 50 KB of output is kept, so the tail of a failing build " +
 			"is preserved. No default timeout; pass timeout_s for anything that may not exit. " +
@@ -1246,6 +1247,20 @@ func timeoutArg(s *int) (time.Duration, error) {
 // having run a subprocess, not of how the command was spelled, and three
 // copies would drift on the next field added to ToolMetadata.
 //
+// execOutputSchema is the one schema of execResultToTool's Data, shared by
+// execute, run_command and powershell so the three cannot drift apart. Data
+// carries it on a failed outcome as well as on success (06-REQ-7.2).
+var execOutputSchema = schema.Object(
+	schema.Prop("output", schema.String()),
+	schema.Prop("exit_code", schema.Int()),
+	schema.Prop("outcome", schema.Enum("", string(OutcomeOK), string(OutcomeExit),
+		string(OutcomeSignal), string(OutcomeTimeout), string(OutcomeAbort))),
+)
+
+// execResultOutputSchema returns the shared subprocess output schema. It is
+// one value, not a fresh copy per tool; callers must not modify it.
+func execResultOutputSchema() *schema.Schema { return execOutputSchema }
+
 // The model reads the output ITSELF (core.ToolResult.Text), followed by one
 // status line only when there is something to say: `[exit 1]`, `[timeout
 // after 30s]`, `[aborted]`, `[killed by signal 9]`. A command that exited 0
@@ -1317,8 +1332,9 @@ func execStatusLine(res ExecResult, timeout time.Duration) string {
 func runCommandTool(opts Options) core.Tool {
 	opts = opts.withDefaults()
 	return core.Tool{
-		Name:    "run_command",
-		Builtin: true,
+		Name:         "run_command",
+		OutputSchema: execResultOutputSchema(),
+		Builtin:      true,
 		Description: "Run a program with an explicit argument list and NO shell. " +
 			"Pipes, redirection, globs and $() do not work here — use execute for those. " +
 			"Prefer this when arguments come from data, since nothing is re-parsed.",

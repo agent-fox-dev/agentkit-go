@@ -55,11 +55,50 @@ func (idx *Index) Tools() []core.Tool {
 }
 
 // codeSearchTool builds the code_search tool definition.
+// codeSearchOutputSchema is the Data executeCodeSearch builds: files in score
+// order, each with its match count and up to three context chunks, plus the
+// index's state. symbol_sources counts files per outline backend and
+// dirty_files counts files searched from the overlay.
+func codeSearchOutputSchema() *schema.Schema {
+	counts := &schema.Schema{Type: schema.TypeObject,
+		AdditionalProperties: &schema.AdditionalProperties{Allowed: true, Schema: schema.Int()}}
+	return schema.Object(
+		schema.Prop("files", schema.Array(schema.Object(
+			schema.Prop("path", schema.String()),
+			schema.Prop("score", schema.Number()),
+			schema.Prop("matches", schema.Int()),
+			schema.Prop("chunks", schema.Array(schema.Object(
+				schema.Prop("lines", schema.Array(schema.Object(
+					schema.Prop("line", schema.Int()),
+					schema.Prop("text", schema.String()),
+					schema.Prop("match", schema.Bool()),
+				))),
+			))),
+			// null when no declaration starts on a matched line.
+			schema.Prop("symbols", schema.Array(schema.String()).Nullable_()),
+		))),
+		schema.Prop("truncated", schema.Bool()),
+		schema.Prop("note", schema.String()),
+		schema.Prop("partial", schema.Bool()),
+		schema.Prop("partial_reason", schema.String()),
+		schema.Prop("symbol_sources", counts),
+		schema.Prop("files_indexed", schema.Int()),
+		schema.Prop("dirty_files", schema.Int()),
+		schema.Prop("skipped", schema.Object(
+			schema.Prop("binary", schema.Int()),
+			schema.Prop("oversized", schema.Int()),
+			schema.Prop("too_many_trigrams", schema.Int()),
+			schema.Prop("too_small", schema.Int()),
+		)),
+	)
+}
+
 func (idx *Index) codeSearchTool() core.Tool {
 	return core.Tool{
-		Name:        "code_search",
-		Description: codeSearchDescription,
-		Builtin:     true,
+		Name:         "code_search",
+		OutputSchema: codeSearchOutputSchema(),
+		Description:  codeSearchDescription,
+		Builtin:      true,
 		// ExecutionMode defaults to Parallel (zero value).
 		InputSchema: schema.Object(
 			schema.Prop("query", schema.String("The search query in zoekt query syntax.")),

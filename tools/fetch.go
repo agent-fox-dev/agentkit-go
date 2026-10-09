@@ -109,6 +109,19 @@ func FetchTool(opts FetchOptions) core.Tool {
 
 	return core.Tool{
 		Name: "fetch_url",
+		OutputSchema: schema.Object(
+			schema.Prop("status", schema.Int()),
+			schema.Prop("url", schema.String()),
+			schema.Prop("content_type", schema.String()),
+			schema.Prop("headers", &schema.Schema{Type: schema.TypeObject,
+				AdditionalProperties: &schema.AdditionalProperties{Allowed: true, Schema: schema.String()}}),
+			schema.Prop("truncated", schema.Bool()),
+			// A body that is not text is described, not returned: binary
+			// and bytes are set instead of body.
+			schema.Opt("binary", schema.Bool()),
+			schema.Opt("bytes", schema.Int()),
+			schema.Opt("body", schema.String()),
+		),
 		Description: "Fetch a URL over HTTPS and return its body. Private, loopback, " +
 			"link-local and reserved addresses are refused.",
 		Builtin: true,

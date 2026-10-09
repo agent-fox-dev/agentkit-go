@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os"
@@ -11,6 +12,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agentfox/agentkit-go/core"
+	"github.com/agentfox/agentkit-go/jsonx"
+	"github.com/agentfox/agentkit-go/schema"
 )
 
 type outcomeScenario struct {
@@ -463,4 +468,83 @@ func TestTS_04_26_StartFailuresReturnZeroResultAndError(t *testing.T) {
 			t.Fatalf("Outcome = %q, want %q", res.Outcome, OutcomeAbort)
 		}
 	})
+}
+
+// TS-06-18: execute, run_command and powershell share one output schema, and
+// a non-zero exit still fills Data with output, exit_code and outcome that
+// conform to it.
+func TestOutputSchemaSubprocessTools_TS06_18(t *testing.T) {
+	dir := t.TempDir()
+	ex := toolByName(t, dir, "execute")
+	rc := toolByName(t, dir, "run_command")
+	ps := toolByName(t, dir, "powershell")
+	if ex.OutputSchema == nil || ex.OutputSchema != rc.OutputSchema || rc.OutputSchema != ps.OutputSchema {
+		t.Fatalf("schemas %p %p %p, want one shared non-nil schema", ex.OutputSchema, rc.OutputSchema, ps.OutputSchema)
+	}
+	assertObject(t, "subprocess", ex.OutputSchema, map[string]prop{
+		"output":    {schema.TypeString, true},
+		"exit_code": {schema.TypeInteger, true},
+		"outcome":   {schema.TypeString, true},
+	})
+	var enum []string
+	for _, raw := range ex.OutputSchema.Properties["outcome"].Enum {
+		var v string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			t.Fatal(err)
+		}
+		enum = append(enum, v)
+	}
+	if want := []string{"ok", "exit", "signal", "timeout", "abort"}; !reflect.DeepEqual(enum, want) {
+		t.Fatalf("outcome enum = %v, want %v", enum, want)
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("exit 3 is a POSIX shell command")
+	}
+
+	for name, tc := range map[string]struct {
+		tool core.Tool
+		args string
+	}{
+		"execute":     {ex, `{"command":"echo out; exit 3"}`},
+		"run_command": {rc, `{"argv":["sh","-c","echo out; exit 3"]}`},
+	} {
+		res := tc.tool.Execute(context.Background(), json.RawMessage(tc.args))
+		if res.OK || res.Error != "command_exit" {
+			t.Fatalf("%s: OK %v error %q, want command_exit", name, res.OK, res.Error)
+		}
+		if res.Data["exit_code"] != 3 || res.Data["outcome"] != "exit" || !strings.Contains(fmt.Sprint(res.Data["output"]), "out") {
+			t.Fatalf("%s: Data = %+v, want output, exit_code 3, outcome exit", name, res.Data)
+		}
+		blob, err := json.Marshal(res.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ord, err := jsonx.DecodeOrderedObject(blob)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := schema.Validate(tc.tool.OutputSchema, ord); err != nil {
+			t.Fatalf("%s: Data does not conform: %v", name, err)
+		}
+	}
+}
+
+// TS-06-19: fetch_url declares its response metadata and, beyond the spec's
+// list, the body it returns for a text response.
+func TestOutputSchemaFetchURL_TS06_19(t *testing.T) {
+	s := FetchTool(FetchOptions{}).OutputSchema
+	assertObject(t, "fetch_url", s, map[string]prop{
+		"status":       {schema.TypeInteger, true},
+		"url":          {schema.TypeString, true},
+		"content_type": {schema.TypeString, true},
+		"headers":      {schema.TypeObject, true},
+		"truncated":    {schema.TypeBoolean, true},
+		"binary":       {schema.TypeBoolean, false},
+		"bytes":        {schema.TypeInteger, false},
+		"body":         {schema.TypeString, false},
+	})
+	ap := s.Properties["headers"].AdditionalProperties
+	if ap == nil || ap.Schema == nil || ap.Schema.Type != schema.TypeString {
+		t.Errorf("headers additionalProperties = %+v, want string", ap)
+	}
 }

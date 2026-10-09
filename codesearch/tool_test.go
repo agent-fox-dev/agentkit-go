@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/agentfox/agentkit-go/core"
+	"github.com/agentfox/agentkit-go/schema"
 	"github.com/agentfox/agentkit-go/tools"
 )
 
@@ -591,4 +592,67 @@ func getResultFilePaths(r core.ToolResult) []string {
 		}
 	}
 	return paths
+}
+
+// TS-06-20: code_search declares the Data it returns. A file entry carries a
+// match count and context chunks, symbol_sources counts files per backend,
+// and dirty_files is a count.
+func TestOutputSchemaCodeSearch_TS06_20(t *testing.T) {
+	root := t.TempDir()
+	mkFile(t, root, "main.go", "package main\n")
+	ws, err := tools.NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, err := newIndex(ws, Options{TempDir: t.TempDir(), Ignore: tools.NoGlobalExcludes()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	s := idx.Tools()[0].OutputSchema
+	if s == nil || s.Type != schema.TypeObject {
+		t.Fatalf("OutputSchema = %+v, want an object", s)
+	}
+	type p struct {
+		typ      schema.Type
+		required bool
+	}
+	check := func(where string, s *schema.Schema, want map[string]p) {
+		t.Helper()
+		if s == nil || s.Type != schema.TypeObject || len(s.Properties) != len(want) {
+			t.Fatalf("%s = %+v, want an object with %d properties", where, s, len(want))
+		}
+		for name, w := range want {
+			got := s.Properties[name]
+			if got == nil || got.Type != w.typ || s.IsRequired(name) != w.required {
+				t.Errorf("%s.%s = %+v (required %v), want %s required=%v", where, name, got, s.IsRequired(name), w.typ, w.required)
+			}
+		}
+	}
+	check("code_search", s, map[string]p{
+		"files": {schema.TypeArray, true}, "truncated": {schema.TypeBoolean, true},
+		"note": {schema.TypeString, true}, "partial": {schema.TypeBoolean, true},
+		"partial_reason": {schema.TypeString, true}, "symbol_sources": {schema.TypeObject, true},
+		"files_indexed": {schema.TypeInteger, true}, "dirty_files": {schema.TypeInteger, true},
+		"skipped": {schema.TypeObject, true},
+	})
+	check("code_search.skipped", s.Properties["skipped"], map[string]p{
+		"binary": {schema.TypeInteger, true}, "oversized": {schema.TypeInteger, true},
+		"too_many_trigrams": {schema.TypeInteger, true}, "too_small": {schema.TypeInteger, true},
+	})
+	file := s.Properties["files"].Items
+	check("code_search.files[]", file, map[string]p{
+		"path": {schema.TypeString, true}, "score": {schema.TypeNumber, true},
+		"matches": {schema.TypeInteger, true}, "chunks": {schema.TypeArray, true},
+		"symbols": {schema.TypeArray, true},
+	})
+	if !file.Properties["symbols"].Nullable {
+		t.Error("code_search.files[].symbols must be nullable: collectDeclNames returns nil when no declaration matches")
+	}
+	check("code_search.files[].chunks[]", file.Properties["chunks"].Items, map[string]p{
+		"lines": {schema.TypeArray, true},
+	})
+	check("code_search.files[].chunks[].lines[]", file.Properties["chunks"].Items.Properties["lines"].Items, map[string]p{
+		"line": {schema.TypeInteger, true}, "text": {schema.TypeString, true}, "match": {schema.TypeBoolean, true},
+	})
 }

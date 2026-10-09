@@ -78,6 +78,10 @@ func Tool(parent *agentkit.Agent, factory Factory, opts Options) core.Tool {
 	return core.Tool{
 		Name:        opts.Name,
 		Description: desc,
+		OutputSchema: schema.Object(
+			schema.Prop("result", schema.String()),
+			schema.Prop("turns", schema.Int()),
+		),
 		InputSchema: schema.Object(
 			schema.Prop(opts.PromptField, schema.String(
 				"The complete task for the specialist. It sees NONE of this "+

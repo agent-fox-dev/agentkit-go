@@ -69,3 +69,26 @@ has no `score`, and it has a `backend` field. `signature`, `container` and
 `result` is the whole `ReferenceResult`. None of these types has json tags.
 The schema in `tools/find_references.go` declares these keys. Test:
 TS-06-17, `TestOutputSchemaFindReferences_TS06_17`.
+
+### 06-REQ-8.1: `fetch_url` also declares `body`
+
+**Spec.** `status`, `url`, `content_type`, `headers`, `truncated`, and optional
+`binary` and `bytes`.
+
+**Code.** A text response sets `data["body"]` (`tools/fetch.go`), and a binary
+one sets `binary` and `bytes` instead. The schema adds an optional `body`
+string. `headers` is declared as an object of strings. Test: TS-06-19,
+`TestOutputSchemaFetchURL_TS06_19`.
+
+### 06-REQ-8.2: `code_search` files carry a match count and context chunks
+
+**Spec.** Each file has `path` and `matches`, an array of line objects with
+`context_before` and `context_after`. `symbol_sources` and `dirty_files` are
+arrays of strings.
+
+**Code.** `executeCodeSearch` (`codesearch/tool.go`) builds each file as
+`path`, `score` (number), `matches` (an integer count), `chunks` (each
+`{lines: [{line, text, match}]}`) and `symbols`. `symbols` is null when no
+declaration starts on a matched line. `symbol_sources` is a `map[string]int`
+of files per backend, and `dirty_files` is an `int`. `codeSearchOutputSchema`
+declares exactly that. Test: TS-06-20, `TestOutputSchemaCodeSearch_TS06_20`.

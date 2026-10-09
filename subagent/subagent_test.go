@@ -10,6 +10,7 @@ import (
 	agentkit "github.com/agentfox/agentkit-go"
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/internal/testkit"
+	"github.com/agentfox/agentkit-go/schema"
 	"github.com/agentfox/agentkit-go/stop"
 )
 
@@ -353,4 +354,20 @@ func mustLookup(t *testing.T, r *Registry, name string) Definition {
 		t.Fatalf("no specialist %q", name)
 	}
 	return d
+}
+
+// TS-06-21: the delegation tool declares {result, turns}.
+func TestOutputSchemaSubagent_TS06_21(t *testing.T) {
+	parent := newTestAgent(t, &testkit.Scripted{}, nil)
+	tl := Tool(parent, func(context.Context) (*agentkit.Agent, error) { return nil, nil }, Options{Name: "helper"})
+	s := tl.OutputSchema
+	if s == nil || s.Type != schema.TypeObject || len(s.Properties) != 2 {
+		t.Fatalf("OutputSchema = %+v, want an object with result and turns", s)
+	}
+	if r := s.Properties["result"]; r == nil || r.Type != schema.TypeString || !s.IsRequired("result") {
+		t.Errorf("result = %+v, want a required string", r)
+	}
+	if n := s.Properties["turns"]; n == nil || n.Type != schema.TypeInteger || !s.IsRequired("turns") {
+		t.Errorf("turns = %+v, want a required integer", n)
+	}
 }

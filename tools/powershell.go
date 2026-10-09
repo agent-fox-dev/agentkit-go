@@ -31,8 +31,9 @@ import (
 func PowerShell(opts Options) core.Tool {
 	opts = opts.withDefaults()
 	return core.Tool{
-		Name:    "powershell",
-		Builtin: true,
+		Name:         "powershell",
+		OutputSchema: execResultOutputSchema(),
+		Builtin:      true,
 		Description: "Run a PowerShell command. Windows-only; on other platforms this " +
 			"reports that it is unavailable rather than falling back to another shell.",
 		// Sequential, like execute: a command has process-wide side effects.

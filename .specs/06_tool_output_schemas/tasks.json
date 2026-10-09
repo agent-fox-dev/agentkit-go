@@ -250,7 +250,7 @@
       "done_when": [
         "go test ./tools/... ./codesearch/... ./subagent/... passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
