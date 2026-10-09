@@ -6,6 +6,7 @@ package tools_test
 // code_search lives in its own module and is covered in codesearch/tool_test.go.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,7 +17,6 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/jsonx"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/tools"
 )
@@ -197,7 +197,7 @@ func validateToolData(t *testing.T, tool core.Tool, data map[string]any) {
 	if err != nil {
 		t.Fatalf("%s: Data does not marshal: %v", tool.Name, err)
 	}
-	ordered, err := jsonx.DecodeOrderedObject(blob)
+	ordered, err := jsonObject(blob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,4 +344,14 @@ func TestSmokeSubprocessFailureData_TS06_33(t *testing.T) {
 		}
 		validateToolData(t, all[name], res.Data)
 	}
+}
+
+// jsonObject decodes a JSON object as schema.Validate takes it: numbers as
+// json.Number.
+func jsonObject(b []byte) (map[string]any, error) {
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.UseNumber()
+	var m map[string]any
+	err := d.Decode(&m)
+	return m, err
 }

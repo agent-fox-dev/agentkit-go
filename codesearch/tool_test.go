@@ -3,6 +3,7 @@
 package codesearch
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/jsonx"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/tools"
 )
@@ -710,7 +710,7 @@ func TestConformanceCodeSearchDataMatchesOutputSchema_TS06_22(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ordered, err := jsonx.DecodeOrderedObject(blob)
+		ordered, err := jsonObject(blob)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -718,4 +718,14 @@ func TestConformanceCodeSearchDataMatchesOutputSchema_TS06_22(t *testing.T) {
 			t.Errorf("%s: Data does not conform: %v\nData: %s", q, err, blob)
 		}
 	}
+}
+
+// jsonObject decodes a JSON object as schema.Validate takes it: numbers as
+// json.Number.
+func jsonObject(b []byte) (map[string]any, error) {
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.UseNumber()
+	var m map[string]any
+	err := d.Decode(&m)
+	return m, err
 }

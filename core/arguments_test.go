@@ -1,8 +1,11 @@
 package core
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -123,5 +126,67 @@ func TestAValidationErrorEchoesOnceAndAbbreviatesLongStrings(t *testing.T) {
 	}
 	if !strings.Contains(msg, "not a JSON string") {
 		t.Errorf("an array sent as a string must say so:\n%s", msg)
+	}
+}
+
+// TS-12-3: PreparedArguments is the raw bytes, the decoded map and the
+// coercions, with no ordered form.
+func TestPreparedArgumentsFields_TS12_3(t *testing.T) {
+	p := PreparedArguments{Raw: json.RawMessage(`{"k":"v"}`), Args: map[string]any{"k": "v"}}
+	typ := reflect.TypeOf(p)
+	want := map[string]reflect.Type{
+		"Raw":       reflect.TypeOf(json.RawMessage(nil)),
+		"Args":      reflect.TypeOf(map[string]any(nil)),
+		"Coercions": reflect.TypeOf([]schema.Coercion(nil)),
+	}
+	if typ.NumField() != len(want) {
+		t.Fatalf("PreparedArguments has %d fields, want %d", typ.NumField(), len(want))
+	}
+	for name, ft := range want {
+		f, ok := typ.FieldByName(name)
+		if !ok || f.Type != ft {
+			t.Errorf("field %s missing or not %s", name, ft)
+		}
+	}
+}
+
+// TS-12-4: arguments nothing changed reach the handler as the model's own
+// bytes.
+func TestPrepareKeepsTheModelsBytes_TS12_4(t *testing.T) {
+	in := json.RawMessage(`{"query": "test",  "limit":10}`)
+	tool := Tool{Name: "search", InputSchema: schema.Object(schema.Prop("query", schema.String()), schema.Opt("limit", schema.Int()))}
+	p, err := PrepareArguments(tool, ToolUseBlock{ID: "t1", Name: "search", Input: in})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(p.Raw, in) {
+		t.Fatalf("Raw = %s, want the input bytes %s", p.Raw, in)
+	}
+	if p.Args["query"] != "test" || p.Args["limit"] != json.Number("10") {
+		t.Fatalf("Args = %v", p.Args)
+	}
+}
+
+// TS-12-5: a tool's own argument repair is re-encoded into Raw.
+func TestPrepareReencodesARepair_TS12_5(t *testing.T) {
+	tool := Tool{Name: "custom", PrepareArguments: func(a map[string]any) map[string]any {
+		a["injected"] = true
+		return a
+	}}
+	p, err := PrepareArguments(tool, ToolUseBlock{ID: "t1", Name: "custom", Input: json.RawMessage(`{"v": 1}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(p.Raw) != `{"v": 1,"injected":true}` || p.Args["injected"] != true {
+		t.Fatalf("Raw = %s, Args = %v; want the untouched key kept and the new one added", p.Raw, p.Args)
+	}
+}
+
+// TS-12-6: arguments the schema rejects are an error and no arguments.
+func TestPrepareRejectsInvalidArguments_TS12_6(t *testing.T) {
+	tool := Tool{Name: "t", InputSchema: schema.Object(schema.Prop("count", schema.Int()))}
+	p, err := PrepareArguments(tool, ToolUseBlock{ID: "t1", Name: "t", Input: json.RawMessage(`{"count":"invalid_string"}`)})
+	if !errors.Is(err, schema.ErrArgumentValidation) || len(p.Raw) != 0 || p.Args != nil {
+		t.Fatalf("PrepareArguments = %+v, %v; want nothing and a validation error", p, err)
 	}
 }

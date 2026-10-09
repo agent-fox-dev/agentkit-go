@@ -3,15 +3,15 @@ package schema
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 	"math"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/agent-fox-dev/agentkit-go/jsonx"
 )
 
 // forbiddenStrict is REQ-TOOL-03's rejection list. It is checked against
@@ -283,58 +283,58 @@ func strictRewrite(s *Schema) {
 	}
 }
 
-func deleteOptionalNulls(s *Schema, in jsonx.OrderedObject) jsonx.OrderedObject {
-	out := make(jsonx.OrderedObject, 0, len(in))
-	for _, m := range in {
-		if s != nil && m.Value.Kind == jsonx.KindNull && !s.IsRequired(m.Key) {
-			if _, declared := s.Properties[m.Key]; declared {
+// The argument functions work on the value encoding/json produces: nil,
+// bool, string, json.Number (or any Go number), []any and map[string]any.
+
+func deleteOptionalNulls(s *Schema, in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		var sub *Schema
+		if s != nil {
+			sub = s.Properties[k]
+			if v == nil && sub != nil && !s.IsRequired(k) {
 				continue
 			}
 		}
-		v := m.Value
-		var sub *Schema
-		if s != nil {
-			sub = s.Properties[m.Key]
-		}
-		out = append(out, jsonx.Member{Key: m.Key, Value: descendNulls(sub, v)})
+		out[k] = descendNulls(sub, v)
 	}
 	return out
 }
 
-func descendNulls(s *Schema, v jsonx.OrderedValue) jsonx.OrderedValue {
-	switch v.Kind {
-	case jsonx.KindObject:
-		v.Object = deleteOptionalNulls(s, v.Object)
-	case jsonx.KindArray:
+func descendNulls(s *Schema, v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		return deleteOptionalNulls(s, t)
+	case []any:
 		var item *Schema
 		if s != nil {
 			item = s.Items
 		}
-		arr := make([]jsonx.OrderedValue, len(v.Array))
-		for i := range v.Array {
-			arr[i] = descendNulls(item, v.Array[i])
+		arr := make([]any, len(t))
+		for i := range t {
+			arr[i] = descendNulls(item, t[i])
 		}
-		v.Array = arr
+		return arr
 	}
 	return v
 }
 
-func coerce(s *Schema, in jsonx.OrderedObject) (jsonx.OrderedObject, []Coercion) {
+func coerce(s *Schema, in map[string]any) (map[string]any, []Coercion) {
 	var log []Coercion
-	out := make(jsonx.OrderedObject, len(in))
-	for i, m := range in {
+	out := make(map[string]any, len(in))
+	for _, k := range sortedKeys(in) {
 		var sub *Schema
 		if s != nil {
-			sub = s.Properties[m.Key]
+			sub = s.Properties[k]
 		}
-		v, l := coerceValue(sub, m.Value, m.Key)
+		v, l := coerceValue(sub, in[k], k)
 		log = append(log, l...)
-		out[i] = jsonx.Member{Key: m.Key, Value: v}
+		out[k] = v
 	}
 	return out, log
 }
 
-func coerceValue(s *Schema, v jsonx.OrderedValue, path string) (jsonx.OrderedValue, []Coercion) {
+func coerceValue(s *Schema, v any, path string) (any, []Coercion) {
 	if s == nil {
 		return v, nil
 	}
@@ -345,55 +345,82 @@ func coerceValue(s *Schema, v jsonx.OrderedValue, path string) (jsonx.OrderedVal
 			s = only
 		}
 	}
-	switch v.Kind {
-	case jsonx.KindObject:
-		o, l := coerce(s, v.Object)
-		v.Object = o
-		return v, l
-	case jsonx.KindArray:
+	switch t := v.(type) {
+	case map[string]any:
+		return coerce(s, t)
+	case []any:
 		var log []Coercion
-		arr := make([]jsonx.OrderedValue, len(v.Array))
-		for i := range v.Array {
-			e, l := coerceValue(s.Items, v.Array[i], path+"/"+strconv.Itoa(i))
+		arr := make([]any, len(t))
+		for i := range t {
+			e, l := coerceValue(s.Items, t[i], path+"/"+strconv.Itoa(i))
 			arr[i] = e
 			log = append(log, l...)
 		}
-		v.Array = arr
-		return v, log
-	case jsonx.KindString:
-		var str string
-		_ = json.Unmarshal(v.Scalar, &str)
+		return arr, log
+	case string:
 		switch s.Type {
 		case TypeInteger, TypeNumber:
 			// Surrounding space and trailing separators are dropped first: a
 			// model writing read_file's offset as "1, " meant 1. What is left
-			// is written as a number only if it IS a JSON number: ParseFloat
-			// also takes "NaN", "+5", ".5", "5." and "1_0", and writing those
+			// becomes a number only if it IS a JSON number: ParseFloat also
+			// takes "NaN", "+5", ".5", "5." and "1_0", and writing those
 			// verbatim made the arguments invalid JSON. Anything else is left
 			// as the string for validation to refuse.
-			num := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(str), ",;"))
-			if jsonNumber.MatchString(num) && (s.Type == TypeNumber || isIntegral(num)) {
-				return jsonx.OrderedValue{Kind: jsonx.KindNumber, Scalar: json.RawMessage(num)},
-					[]Coercion{{Path: path, From: TypeString, To: s.Type}}
+			num := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(t), ",;"))
+			if !jsonNumber.MatchString(num) {
+				break
+			}
+			if s.Type == TypeInteger {
+				if n, err := strconv.ParseInt(num, 10, 64); err == nil {
+					return n, []Coercion{{Path: path, From: TypeString, To: s.Type}}
+				}
+				if isIntegral(num) {
+					return json.Number(num), []Coercion{{Path: path, From: TypeString, To: s.Type}}
+				}
+				break
+			}
+			if f, err := strconv.ParseFloat(num, 64); err == nil {
+				return f, []Coercion{{Path: path, From: TypeString, To: s.Type}}
 			}
 		case TypeBoolean:
-			if b, err := strconv.ParseBool(str); err == nil {
-				lit := "false"
-				if b {
-					lit = "true"
-				}
-				return jsonx.OrderedValue{Kind: jsonx.KindBool, Scalar: json.RawMessage(lit)},
-					[]Coercion{{Path: path, From: TypeString, To: TypeBoolean}}
+			if b, err := strconv.ParseBool(t); err == nil {
+				return b, []Coercion{{Path: path, From: TypeString, To: TypeBoolean}}
 			}
 		}
-	case jsonx.KindNumber:
-		if s.Type == TypeString {
-			q, _ := json.Marshal(string(v.Scalar))
-			return jsonx.OrderedValue{Kind: jsonx.KindString, Scalar: q},
-				[]Coercion{{Path: path, From: TypeNumber, To: TypeString}}
+	default:
+		if text, ok := numberText(v); ok && s.Type == TypeString {
+			return text, []Coercion{{Path: path, From: TypeNumber, To: TypeString}}
 		}
 	}
 	return v, nil
+}
+
+// numberText is v's JSON number literal, when v is a number.
+func numberText(v any) (string, bool) {
+	switch n := v.(type) {
+	case json.Number:
+		return n.String(), true
+	case float64:
+		return strconv.FormatFloat(n, 'g', -1, 64), true
+	case float32:
+		return strconv.FormatFloat(float64(n), 'g', -1, 32), true
+	case int:
+		return strconv.Itoa(n), true
+	case int8, int16, int32, int64:
+		return fmt.Sprint(n), true
+	case uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprint(n), true
+	}
+	return "", false
+}
+
+func sortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // jsonNumber is RFC 8259's number grammar.
@@ -422,55 +449,61 @@ func soleNonNullBranch(alts []*Schema) *Schema {
 	return only
 }
 
-func validate(s *Schema, in jsonx.OrderedObject) error {
+func validate(s *Schema, v any) error {
 	var issues []Issue
-	validateObject(s, in, "", &issues)
+	if m, ok := v.(map[string]any); ok && s != nil && s.Type == "" {
+		// A bare object schema (no type) is still a set of properties.
+		validateObject(s, m, "", &issues)
+	} else {
+		validateValue(s, v, "", &issues)
+	}
 	if len(issues) == 0 {
 		return nil
 	}
-	return &ValidationError{Issues: issues, Args: in}
+	args, _ := json.Marshal(v)
+	return &ValidationError{Issues: issues, Args: args}
 }
 
-func validateObject(s *Schema, in jsonx.OrderedObject, path string, issues *[]Issue) {
+func validateObject(s *Schema, in map[string]any, path string, issues *[]Issue) {
 	if s == nil {
 		return
 	}
 	for _, req := range s.Required {
-		if _, ok := in.Get(req); !ok {
+		if _, ok := in[req]; !ok {
 			*issues = append(*issues, Issue{Path: join(path, req), Message: "required property is missing"})
 		}
 	}
-	for _, m := range in {
-		sub := s.Properties[m.Key]
+	for _, k := range sortedKeys(in) {
+		sub := s.Properties[k]
 		if sub == nil {
 			// additionalProperties: false is a promise strict mode makes to
 			// the model; a key outside the declared set breaks it.
 			if ap := s.AdditionalProperties; ap != nil {
 				switch {
 				case !ap.Allowed:
-					*issues = append(*issues, Issue{Path: join(path, m.Key),
+					*issues = append(*issues, Issue{Path: join(path, k),
 						Message: "property not allowed: this object accepts only its declared properties"})
 				case ap.Schema != nil:
-					validateValue(ap.Schema, m.Value, join(path, m.Key), issues)
+					validateValue(ap.Schema, in[k], join(path, k), issues)
 				}
 			}
 			continue
 		}
-		validateValue(sub, m.Value, join(path, m.Key), issues)
+		validateValue(sub, in[k], join(path, k), issues)
 	}
 }
 
 // validateValue checks v against everything s declares: type (nullable
 // included, for containers as for scalars), const and enum, the anyOf, oneOf
 // and allOf combinators, numeric bounds and integrality, string lengths and
-// item counts. A schema that only states `type` is checked for its type, as
-// before; the other keywords are what strict mode promises the model, and a
-// promise the SDK does not check is a promise to nobody.
-func validateValue(s *Schema, v jsonx.OrderedValue, path string, issues *[]Issue) {
+// pattern, and item counts and uniqueness. The keywords beyond `type` are
+// what strict mode promises the model, and a promise the SDK does not check
+// is a promise to nobody.
+func validateValue(s *Schema, v any, path string, issues *[]Issue) {
 	if s == nil {
 		return
 	}
-	if v.Kind == jsonx.KindNull && s.Nullable {
+	if v == nil && s.Nullable {
 		return
 	}
 	add := func(msg string) { *issues = append(*issues, Issue{Path: path, Message: msg}) }
@@ -501,7 +534,7 @@ func validateValue(s *Schema, v jsonx.OrderedValue, path string, issues *[]Issue
 			}
 		}
 		if passing == 0 {
-			add("matches no anyOf alternative (got " + kindName(v.Kind) + ")")
+			add("matches no anyOf alternative (got " + kindName(v) + ")")
 			return
 		}
 	}
@@ -523,106 +556,155 @@ func validateValue(s *Schema, v jsonx.OrderedValue, path string, issues *[]Issue
 
 	switch s.Type {
 	case TypeObject:
-		if v.Kind != jsonx.KindObject {
-			add("expected object, got " + kindName(v.Kind) + sentAsString(v))
+		m, ok := v.(map[string]any)
+		if !ok {
+			add("expected object, got " + kindName(v) + sentAsString(v))
 			return
 		}
-		validateObject(s, v.Object, path, issues)
+		validateObject(s, m, path, issues)
 	case TypeArray:
-		if v.Kind != jsonx.KindArray {
-			add("expected array, got " + kindName(v.Kind) + sentAsString(v))
+		arr, ok := v.([]any)
+		if !ok {
+			add("expected array, got " + kindName(v) + sentAsString(v))
 			return
 		}
-		if s.MinItems != nil && len(v.Array) < *s.MinItems {
-			add(fmt.Sprintf("expected at least %d items, got %d", *s.MinItems, len(v.Array)))
-		}
-		if s.MaxItems != nil && len(v.Array) > *s.MaxItems {
-			add(fmt.Sprintf("expected at most %d items, got %d", *s.MaxItems, len(v.Array)))
-		}
-		if s.Items != nil {
-			for i := range v.Array {
-				validateValue(s.Items, v.Array[i], path+"/"+strconv.Itoa(i), issues)
-			}
-		}
+		validateArray(s, arr, path, add, issues)
 	case TypeString:
-		if v.Kind != jsonx.KindString {
-			add("expected string, got " + kindName(v.Kind))
+		str, ok := v.(string)
+		if !ok {
+			add("expected string, got " + kindName(v))
 			return
 		}
-		var str string
-		_ = json.Unmarshal(v.Scalar, &str)
-		n := utf8.RuneCountInString(str)
-		if s.MinLength != nil && n < *s.MinLength {
-			add(fmt.Sprintf("expected at least %d characters, got %d", *s.MinLength, n))
-		}
-		if s.MaxLength != nil && n > *s.MaxLength {
-			add(fmt.Sprintf("expected at most %d characters, got %d", *s.MaxLength, n))
-		}
+		validateString(s, str, add)
 	case TypeInteger, TypeNumber:
-		if v.Kind != jsonx.KindNumber {
-			msg := "expected " + string(s.Type) + ", got " + kindName(v.Kind)
-			if v.Kind == jsonx.KindString {
-				msg += " " + quotedPreview(v) + "; pass a number, e.g. 120"
-			}
-			add(msg)
-			return
-		}
-		f, err := strconv.ParseFloat(string(v.Scalar), 64)
-		if err != nil {
-			add("expected " + string(s.Type) + ", got " + string(v.Scalar))
-			return
-		}
-		if s.Type == TypeInteger && f != math.Trunc(f) {
-			add("expected integer, got " + string(v.Scalar))
-			return
-		}
-		bound := func(ok bool, rel string, b float64) {
-			if !ok {
-				add(fmt.Sprintf("must be %s %s, got %s", rel, strconv.FormatFloat(b, 'g', -1, 64), v.Scalar))
-			}
-		}
-		if s.Minimum != nil {
-			bound(f >= *s.Minimum, "at least", *s.Minimum)
-		}
-		if s.Maximum != nil {
-			bound(f <= *s.Maximum, "at most", *s.Maximum)
-		}
-		if s.ExclusiveMinimum != nil {
-			bound(f > *s.ExclusiveMinimum, "greater than", *s.ExclusiveMinimum)
-		}
-		if s.ExclusiveMaximum != nil {
-			bound(f < *s.ExclusiveMaximum, "less than", *s.ExclusiveMaximum)
-		}
-		if s.MultipleOf != nil && *s.MultipleOf > 0 {
-			q := f / *s.MultipleOf
-			bound(q == math.Trunc(q), "a multiple of", *s.MultipleOf)
-		}
+		validateNumber(s, v, add)
 	case TypeBoolean:
-		if v.Kind != jsonx.KindBool {
-			add("expected boolean, got " + kindName(v.Kind))
+		if _, ok := v.(bool); !ok {
+			add("expected boolean, got " + kindName(v))
 		}
 	case TypeNull:
-		if v.Kind != jsonx.KindNull {
-			add("expected null, got " + kindName(v.Kind))
+		if v != nil {
+			add("expected null, got " + kindName(v))
 		}
 	}
 }
 
+func validateArray(s *Schema, arr []any, path string, add func(string), issues *[]Issue) {
+	if s.MinItems != nil && len(arr) < *s.MinItems {
+		add(fmt.Sprintf("expected at least %d items, got %d", *s.MinItems, len(arr)))
+	}
+	if s.MaxItems != nil && len(arr) > *s.MaxItems {
+		add(fmt.Sprintf("expected at most %d items, got %d", *s.MaxItems, len(arr)))
+	}
+	if s.UniqueItems != nil && *s.UniqueItems {
+		seen := make(map[string]int, len(arr))
+		for i, e := range arr {
+			key := canonical(e)
+			if j, dup := seen[key]; dup {
+				add(fmt.Sprintf("items must be unique: item %d repeats item %d", i, j))
+				break
+			}
+			seen[key] = i
+		}
+	}
+	if s.Items != nil {
+		for i := range arr {
+			validateValue(s.Items, arr[i], path+"/"+strconv.Itoa(i), issues)
+		}
+	}
+}
+
+func validateString(s *Schema, str string, add func(string)) {
+	n := utf8.RuneCountInString(str)
+	if s.MinLength != nil && n < *s.MinLength {
+		add(fmt.Sprintf("expected at least %d characters, got %d", *s.MinLength, n))
+	}
+	if s.MaxLength != nil && n > *s.MaxLength {
+		add(fmt.Sprintf("expected at most %d characters, got %d", *s.MaxLength, n))
+	}
+	if s.Pattern != "" {
+		re, err := regexp.Compile(s.Pattern)
+		switch {
+		case err != nil:
+			add("the schema's pattern does not compile: " + err.Error())
+		case !re.MatchString(str):
+			add("must match pattern " + strconv.Quote(s.Pattern) + ", got " + quotedPreview(str))
+		}
+	}
+}
+
+func validateNumber(s *Schema, v any, add func(string)) {
+	text, ok := numberText(v)
+	if !ok {
+		msg := "expected " + string(s.Type) + ", got " + kindName(v)
+		if str, isStr := v.(string); isStr {
+			msg += " " + quotedPreview(str) + "; pass a number, e.g. 120"
+		}
+		add(msg)
+		return
+	}
+	f, err := strconv.ParseFloat(text, 64)
+	if err != nil {
+		add("expected " + string(s.Type) + ", got " + text)
+		return
+	}
+	if s.Type == TypeInteger && f != math.Trunc(f) {
+		add("expected integer, got " + text)
+		return
+	}
+	bound := func(ok bool, rel string, b float64) {
+		if !ok {
+			add(fmt.Sprintf("must be %s %s, got %s", rel, strconv.FormatFloat(b, 'g', -1, 64), text))
+		}
+	}
+	if s.Minimum != nil {
+		bound(f >= *s.Minimum, "at least", *s.Minimum)
+	}
+	if s.Maximum != nil {
+		bound(f <= *s.Maximum, "at most", *s.Maximum)
+	}
+	if s.ExclusiveMinimum != nil {
+		bound(f > *s.ExclusiveMinimum, "greater than", *s.ExclusiveMinimum)
+	}
+	if s.ExclusiveMaximum != nil {
+		bound(f < *s.ExclusiveMaximum, "less than", *s.ExclusiveMaximum)
+	}
+	if s.MultipleOf != nil && *s.MultipleOf > 0 {
+		q := f / *s.MultipleOf
+		bound(q == math.Trunc(q), "a multiple of", *s.MultipleOf)
+	}
+}
+
 // conforms reports whether v satisfies s, for the combinators.
-func conforms(s *Schema, v jsonx.OrderedValue) bool {
+func conforms(s *Schema, v any) bool {
 	var issues []Issue
 	validateValue(s, v, "", &issues)
 	return len(issues) == 0
 }
 
+// canonical is v's JSON with object keys sorted and numbers by value, so two
+// values equal in meaning compare equal as strings.
+func canonical(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%#v", v)
+	}
+	var norm any
+	if err := json.Unmarshal(b, &norm); err != nil {
+		return string(b)
+	}
+	out, _ := json.Marshal(norm)
+	return string(out)
+}
+
 // sameJSON compares a value with a raw JSON literal by meaning, not bytes:
 // 1 and 1.0 are equal, key order does not matter.
-func sameJSON(v jsonx.OrderedValue, raw json.RawMessage) bool {
+func sameJSON(v any, raw json.RawMessage) bool {
 	var want any
 	if err := json.Unmarshal(raw, &want); err != nil {
 		return false
 	}
-	b, err := v.MarshalJSON()
+	b, err := json.Marshal(v)
 	if err != nil {
 		return false
 	}
@@ -643,11 +725,11 @@ func enumList(vals []json.RawMessage) string {
 
 // preview renders a value for an issue: a string quoted and abbreviated, any
 // other value as its JSON.
-func preview(v jsonx.OrderedValue) string {
-	if v.Kind == jsonx.KindString {
-		return quotedPreview(v)
+func preview(v any) string {
+	if str, ok := v.(string); ok {
+		return quotedPreview(str)
 	}
-	b, _ := v.MarshalJSON()
+	b, _ := json.Marshal(v)
 	return string(b)
 }
 
@@ -658,18 +740,21 @@ func join(path, k string) string {
 	return path + "/" + k
 }
 
-func kindName(k jsonx.ValueKind) string {
-	switch k {
-	case jsonx.KindNull:
+func kindName(v any) string {
+	switch v.(type) {
+	case nil:
 		return "null"
-	case jsonx.KindBool:
+	case bool:
 		return "boolean"
-	case jsonx.KindNumber:
-		return "number"
-	case jsonx.KindString:
+	case string:
 		return "string"
-	case jsonx.KindArray:
+	case []any:
 		return "array"
+	case map[string]any:
+		return "object"
+	}
+	if _, ok := numberText(v); ok {
+		return "number"
 	}
 	return "object"
 }
@@ -681,17 +766,16 @@ const echoPreviewRunes = 80
 // sentAsString is the hint for a structure delivered as a string — an array
 // or object the model JSON-encoded into a string — with the start of what
 // arrived.
-func sentAsString(v jsonx.OrderedValue) string {
-	if v.Kind != jsonx.KindString {
+func sentAsString(v any) string {
+	str, ok := v.(string)
+	if !ok {
 		return ""
 	}
-	return ": pass the value itself, not a JSON string (received " + quotedPreview(v) + ")"
+	return ": pass the value itself, not a JSON string (received " + quotedPreview(str) + ")"
 }
 
-// quotedPreview is a string value, quoted, cut at echoPreviewRunes.
-func quotedPreview(v jsonx.OrderedValue) string {
-	var str string
-	_ = json.Unmarshal(v.Scalar, &str)
+// quotedPreview is a string, quoted, cut at echoPreviewRunes.
+func quotedPreview(str string) string {
 	q, _ := json.Marshal(abbreviate(str))
 	return string(q)
 }
@@ -708,36 +792,35 @@ func abbreviate(s string) string {
 	return s
 }
 
-// abbreviated is a copy of o with every long string value abbreviated, keys
-// and their order untouched.
-func abbreviated(o jsonx.OrderedObject) jsonx.OrderedObject {
-	out := make(jsonx.OrderedObject, len(o))
-	for i, m := range o {
-		out[i] = m
-		out[i].Value = abbreviatedValue(m.Value)
-	}
-	return out
-}
-
-func abbreviatedValue(v jsonx.OrderedValue) jsonx.OrderedValue {
-	switch v.Kind {
-	case jsonx.KindObject:
-		v.Object = abbreviated(v.Object)
-	case jsonx.KindArray:
-		arr := make([]jsonx.OrderedValue, len(v.Array))
-		for i := range v.Array {
-			arr[i] = abbreviatedValue(v.Array[i])
+// abbreviatedJSON is raw with every long string value abbreviated, keys and
+// their order untouched: it is re-encoded token by token.
+func abbreviatedJSON(raw []byte) []byte {
+	dec := jsontext.NewDecoder(bytes.NewReader(raw))
+	var out bytes.Buffer
+	enc := jsontext.NewEncoder(&out)
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			break
 		}
-		v.Array = arr
-	case jsonx.KindString:
-		var str string
-		if json.Unmarshal(v.Scalar, &str) == nil {
-			if short := abbreviate(str); short != str {
-				v.Scalar, _ = json.Marshal(short)
+		if tok.Kind() == '"' {
+			str := tok.String()
+			if short := abbreviate(str); short != str && !isName(dec) {
+				tok = jsontext.String(short)
 			}
 		}
+		if enc.WriteToken(tok) != nil {
+			return raw
+		}
 	}
-	return v
+	return bytes.TrimSpace(out.Bytes())
+}
+
+// isName reports whether the token just read is an object member's name: in
+// an object, names are the odd-numbered tokens.
+func isName(dec *jsontext.Decoder) bool {
+	kind, n := dec.StackIndex(dec.StackDepth())
+	return kind == '{' && n%2 == 1
 }
 
 // renderValidationError echoes the model's OWN arguments in the model's own
@@ -756,9 +839,6 @@ func renderValidationError(e *ValidationError) string {
 		b.WriteByte('\n')
 	}
 	b.WriteString("Arguments received:\n")
-	raw, err := abbreviated(e.Args).MarshalJSON()
-	if err == nil {
-		b.Write(raw)
-	}
+	b.Write(abbreviatedJSON(e.Args))
 	return b.String()
 }

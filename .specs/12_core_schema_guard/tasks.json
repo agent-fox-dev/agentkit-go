@@ -98,7 +98,7 @@
         "PreparedArguments contains Raw, Args, and Coercions without jsonx",
         "PrepareArguments preserves verbatim Raw bytes unless mutated by tool hook, and rejects schema violations"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,

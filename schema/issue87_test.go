@@ -1,20 +1,22 @@
 package schema
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
-
-	"github.com/agent-fox-dev/agentkit-go/jsonx"
 )
 
-func obj(t *testing.T, s string) jsonx.OrderedObject {
+// obj decodes s the way core.PrepareArguments does: numbers as json.Number.
+func obj(t *testing.T, s string) map[string]any {
 	t.Helper()
-	v, err := jsonx.DecodeOrdered([]byte(s))
-	if err != nil {
+	d := json.NewDecoder(bytes.NewReader([]byte(s)))
+	d.UseNumber()
+	var m map[string]any
+	if err := d.Decode(&m); err != nil {
 		t.Fatal(err)
 	}
-	return v.Object
+	return m
 }
 
 // Issue #87 §1: coercion writes a number only when the string IS a JSON
@@ -25,7 +27,7 @@ func TestCoerceWritesOnlyJSONNumbers(t *testing.T) {
 	for _, bad := range []string{"NaN", "Inf", "-Inf", "+5", ".5", "5.", "1_0", "0x10"} {
 		in := obj(t, `{"n":`+mustJSON(bad)+`}`)
 		out, _ := Coerce(s, in)
-		raw, err := out.MarshalJSON()
+		raw, err := json.Marshal(out)
 		if err != nil || !json.Valid(raw) {
 			t.Errorf("%q: coerced arguments are not valid JSON: %s (%v)", bad, raw, err)
 		}
@@ -33,9 +35,10 @@ func TestCoerceWritesOnlyJSONNumbers(t *testing.T) {
 			t.Errorf("%q passed validation as a number", bad)
 		}
 	}
-	for good, want := range map[string]string{"5": "5", "-1.5e3": "-1.5e3", " 7 ": "7", "1, ": "1"} {
+	// A coerced number is the value, as a float64: -1.5e3 is -1500.
+	for good, want := range map[string]string{"5": "5", "-1.5e3": "-1500", " 7 ": "7", "1, ": "1"} {
 		out, _ := Coerce(s, obj(t, `{"n":`+mustJSON(good)+`}`))
-		if raw, _ := out.MarshalJSON(); string(raw) != `{"n":`+want+`}` {
+		if raw, _ := json.Marshal(out); string(raw) != `{"n":`+want+`}` {
 			t.Errorf("%q coerced to %s, want %s", good, raw, want)
 		}
 	}
@@ -105,7 +108,7 @@ func TestValidateEnforcesTheDeclaredConstraints(t *testing.T) {
 func TestCoerceThroughASingleNonNullAnyOfBranch(t *testing.T) {
 	s := Object(Prop("n", AnyOf(Int(), &Schema{Type: TypeNull})))
 	out, _ := Coerce(s, obj(t, `{"n":"5"}`))
-	if raw, _ := out.MarshalJSON(); string(raw) != `{"n":5}` {
+	if raw, _ := json.Marshal(out); string(raw) != `{"n":5}` {
 		t.Fatalf("coerced to %s, want {\"n\":5}", raw)
 	}
 	if err := Validate(s, out); err != nil {
