@@ -113,6 +113,25 @@ func newTestAgent(t *testing.T, s *scripted, mutate func(*core.AgentConfig)) *Ag
 	return a
 }
 
+func oneToolTurn(t *testing.T) *scripted {
+	t.Helper()
+	return &scripted{turns: []core.AssistantMessage{
+		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "echo", `{"v":"x"}`)),
+		{Content: core.Content{core.TextBlock{Text: "done"}}, StopReason: core.StopReasonStop},
+	}}
+}
+
+func findToolResult(t *testing.T, msgs core.Messages, id string) core.ToolResultMessage {
+	t.Helper()
+	for _, m := range msgs {
+		if r, ok := m.(core.ToolResultMessage); ok && r.ToolUseID == id {
+			return r
+		}
+	}
+	t.Fatalf("no tool result for %q in %d messages", id, len(msgs))
+	return core.ToolResultMessage{}
+}
+
 func echoTool(name string, calls *atomic.Int32) core.Tool {
 	return core.Tool{
 		Name:        name,
@@ -711,72 +730,6 @@ func TestSteerBeforeRunIsDeliveredIntoTheRun(t *testing.T) {
 		t.Fatal("a message steered before Run was silently dropped: the run slot must be " +
 			"claimed and the queue drained under one lock (REQ-LOOP-15)")
 	}
-}
-
-// ------------------------------------------------------------------- REQ-LOOP-16
-
-func TestContinuePreconditions(t *testing.T) {
-	t.Run("empty history is not continuable", func(t *testing.T) {
-		a := newTestAgent(t, &scripted{}, nil)
-		if _, err := a.Continue(context.Background()); !errors.Is(err, core.ErrNotContinuable) {
-			t.Fatalf("err = %v, want ErrNotContinuable", err)
-		}
-	})
-
-	t.Run("completed assistant turn is not continuable", func(t *testing.T) {
-		s := &scripted{turns: []core.AssistantMessage{
-			{Content: core.Content{core.TextBlock{Text: "done"}}, StopReason: core.StopReasonStop},
-		}}
-		a := newTestAgent(t, s, nil)
-		if _, err := a.Run(context.Background(), "go"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := a.Continue(context.Background()); !errors.Is(err, core.ErrNotContinuable) {
-			t.Fatalf("err = %v, want ErrNotContinuable", err)
-		}
-	})
-
-	t.Run("assistant turn with a queued message is continuable", func(t *testing.T) {
-		s := &scripted{turns: []core.AssistantMessage{
-			{Content: core.Content{core.TextBlock{Text: "done"}}, StopReason: core.StopReasonStop},
-			{Content: core.Content{core.TextBlock{Text: "more"}}, StopReason: core.StopReasonStop},
-		}}
-		a := newTestAgent(t, s, nil)
-		if _, err := a.Run(context.Background(), "go"); err != nil {
-			t.Fatal(err)
-		}
-		if err := a.SteerText("carry on"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := a.Continue(context.Background()); err != nil {
-			t.Fatalf("Continue: %v", err)
-		}
-	})
-
-	t.Run("history ending in a tool result is continuable without a new message", func(t *testing.T) {
-		// This is the normal outcome of REQ-LOOP-09 cancellation, so Continue
-		// is not an optional convenience.
-		h := core.NewConversationHistory()
-		h.Record(core.NullLeaf, core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}})
-		h.Record(core.NullLeaf, core.AssistantMessage{
-			Content:    core.Content{toolUse(t, "c1", "echo", `{}`)},
-			StopReason: core.StopReasonToolUse,
-		})
-		h.Record(core.NullLeaf, core.ToolResultMessage{ToolUseID: "c1", ToolName: "echo"})
-
-		s := &scripted{turns: []core.AssistantMessage{
-			{Content: core.Content{core.TextBlock{Text: "resumed"}}, StopReason: core.StopReasonStop},
-		}}
-		cfg := core.AgentConfig{Model: testModel(), StopPolicy: stop.AfterTurns(5),
-			Providers: core.ProviderRegistry{testAPI: s.provider()}}
-		a, err := NewAgentWithHistory(cfg, h)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := a.Continue(context.Background()); err != nil {
-			t.Fatalf("Continue on a transcript ending in a tool result: %v", err)
-		}
-	})
 }
 
 // ------------------------------------------------------------------- REQ-TOOL-13

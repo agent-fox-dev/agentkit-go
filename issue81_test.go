@@ -1,7 +1,6 @@
 package agentkit
 
 import (
-	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,49 +9,6 @@ import (
 	"github.com/agentfox/agentkit-go/session"
 )
 
-// Issue #81 §1: every tool call is audited — including one an interceptor
-// blocked, one naming an unknown tool, and one cut off by max_tokens — with
-// IsError and the reason code. A denied call is the entry a security reviewer
-// most needs.
-func TestEveryToolCallIsAuditedWithItsReason(t *testing.T) {
-	s := &scripted{turns: []core.AssistantMessage{
-		assistantWithTools(core.StopReasonToolUse,
-			toolUse(t, "c1", "echo", `{"v":"x"}`), toolUse(t, "c2", "nope", `{}`)),
-		assistantWithTools(core.StopReasonLength, toolUse(t, "c3", "echo", `{"v":"cut"}`)),
-	}}
-	got := map[string]core.AuditEvent{}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.ToolPolicy.CustomTools = []core.Tool{echoTool("echo", nil)}
-		c.BeforeToolCall = func(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
-			return core.BeforeToolCallDecision{Block: true, Reason: "denied by policy"}
-		}
-		c.Hooks.OnAudit = func(e core.AuditEvent) {
-			if e.Kind == core.AuditToolCall {
-				got[e.ToolUseID] = e
-			}
-		}
-	})
-	if _, err := a.Run(context.Background(), "go"); err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]string{"c1": core.BlockErrorCode, "c2": "unknown_tool", "c3": "max_tokens"}
-	for id, code := range want {
-		e, ok := got[id]
-		if !ok {
-			t.Errorf("call %s has no audit event", id)
-			continue
-		}
-		if !e.IsError || e.ErrorCode != code {
-			t.Errorf("call %s audited IsError=%v ErrorCode=%q, want true, %q", id, e.IsError, e.ErrorCode, code)
-		}
-		if e.ArgumentsHash == "" {
-			t.Errorf("call %s audited with no arguments hash", id)
-		}
-	}
-}
-
-// Issue #81 §2: with no resolver, a config whose provider or API differs from
-// the log's is refused, not just one whose model id differs.
 func TestResumeWithoutAResolverComparesTheWholeTriple(t *testing.T) {
 	r := &session.Resume{Provider: "anthropic", API: "anthropic-messages", ModelID: "test-model",
 		History: core.NewConversationHistory()}

@@ -3,7 +3,6 @@ package agentkit
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -43,21 +42,11 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	// agent's usage (and a budget computed from it, by the next delegation
 	// in the same parallel batch) sees it at once rather than when the batch
 	// finalizes.
-	ctx = core.WithUsageReporter(ctx, a.addOffLoopUsage)
+	ctx = core.WithUsageReporter(ctx, a.addUsage)
 	a.mu.Lock()
 	cfg := a.cfg
 	tools := cfg.ToolPolicy.Resolve(a.tools)
 	a.mu.Unlock()
-
-	// Read ONCE, here, alongside cfg. Reaching back through a.mu from inside a
-	// thunk would put lock traffic on the per-tool path of a parallel batch —
-	// the one path NFR-PERF-04 asks to be genuinely concurrent — and would
-	// acquire the agent lock from a goroutine the executor does not own.
-	tracer := cfg.Tracer
-	if tracer == nil {
-		tracer = core.NoopTracer
-	}
-	auditSession := cfg.SessionID
 
 	// report surfaces an error from INSIDE the batch-scoped critical section
 	// without touching a.mu. The hooks are taken from the cfg copy above, so
@@ -91,7 +80,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 
 	// env is what a wrapper's nested calls run with (07-REQ-4.3): the same
 	// config copy, stream and reporter as this batch.
-	env := &nestedEnv{a: a, cfg: cfg, s: s, assistant: assistant, turnCount: turnCount, report: report, tracer: tracer}
+	env := &nestedEnv{a: a, cfg: cfg, s: s, assistant: assistant, turnCount: turnCount, report: report}
 
 	// batchMu is BATCH-SCOPED: created here, acquired by nothing else, and
 	// a.mu is never acquired while it is held.
@@ -105,27 +94,14 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 
 	// ---- Phase 1: prepare, strictly sequential.
 	// finalizeInline closes a call that never reaches a handler — unknown
-	// tool, bad arguments, a block, a plugin veto. It still emits the
-	// execution end event and the result, so every call opens and closes
-	// exactly once on the stream whichever way it ended (REQ-LOOP-11.3), and
-	// a UI keyed on the start event never waits for an end that will not come.
-	//
-	// It is audited like a call that ran (REQ-OBS-05: "every tool call"),
-	// with the reason it did not: a blocked or refused call is the entry a
-	// security reviewer most needs, and it is the one that was missing.
-	finalizeInline := func(i int, code string, m core.ToolResultMessage) {
+	// tool, bad arguments, a block. It still emits the execution end event
+	// and the result, so every call opens and closes exactly once on the
+	// stream whichever way it ended (REQ-LOOP-11.3), and a UI keyed on the
+	// start event never waits for an end that will not come.
+	finalizeInline := func(i int, m core.ToolResultMessage) {
 		results[i] = m
 		s.Push(core.ToolExecutionEndEvent{ToolUseID: m.ToolUseID, Name: m.ToolName, IsError: m.IsError})
 		s.Push(core.ToolResultEvent{Message: m})
-		c := calls[i]
-		a.audit(core.AuditEvent{
-			Kind: core.AuditToolCall, SessionID: auditSession,
-			ToolName: c.Name, ToolUseID: c.ID,
-			ServerName:    serverNameOf(byName[c.Name], c.Name),
-			ArgumentsHash: core.HashArguments(c.Input),
-			IsError:       m.IsError,
-			ErrorCode:     code,
-		})
 	}
 
 	for i, c := range calls {
@@ -154,7 +130,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 
 		tool, known := byName[c.Name]
 		if !known {
-			finalizeInline(i, "unknown_tool", errorResult(c, "unknown_tool", unknownToolMessage(c.Name, byName)))
+			finalizeInline(i, errorResult(c, "unknown_tool", unknownToolMessage(c.Name, byName)))
 			continue
 		}
 
@@ -178,7 +154,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 		if perr != nil {
 			// The error text re-serializes the model's OWN key order, so the
 			// message is self-correcting (REQ-TOOL-11.4, REQ-TOOL-12.3).
-			finalizeInline(i, "invalid_arguments", errorResult(c, "invalid_arguments", perr.Error()))
+			finalizeInline(i, errorResult(c, "invalid_arguments", perr.Error()))
 			continue
 		}
 
@@ -204,7 +180,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				// the model into retrying (REQ-TOOL-13.2). Honoured only when
 				// Block is set.
 				votes[i] = dec.Terminate
-				finalizeInline(i, core.BlockErrorCode, errorResult(c, core.BlockErrorCode, reason))
+				finalizeInline(i, errorResult(c, core.BlockErrorCode, reason))
 				continue
 			}
 			if dec.Arguments != nil {
@@ -213,24 +189,12 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				// alone, as any other invalid arguments do.
 				next, err := prepared.TryWithArgs(dec.Arguments)
 				if err != nil {
-					finalizeInline(i, "invalid_arguments", errorResult(c, "invalid_arguments",
+					finalizeInline(i, errorResult(c, "invalid_arguments",
 						"BeforeToolCall returned arguments that are not JSON: "+err.Error()))
 					continue
 				}
 				prepared = next
 			}
-		}
-
-		// REQ-PLUGIN-04, as amended by REQ-SEC-03.5. Event hooks run AFTER the
-		// embedder's interceptor and may only NARROW: an "allow" here means
-		// "this hook does not object", never "overrule the authorization
-		// boundary". The original ordering — a static allowlist ahead of hooks
-		// — is gone, and with it any notion of the SDK running something
-		// before the interceptor that the interceptor cannot override.
-		if d, by := pluginVeto(ctx, cfg.Plugins, c.Name, prepared.Raw); d == core.PluginBlock {
-			finalizeInline(i, "blocked_by_plugin", toolResultMessage(c, core.ErrResult("blocked_by_plugin",
-				fmt.Sprintf("plugin %q blocked this call", by.PluginName()))))
-			continue
 		}
 
 		thunks = append(thunks, func() {
@@ -239,7 +203,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 			// A tool that reaches other tools runs with a NestedCaller bound
 			// to this call on its context.
 			hctx, nested := env.withCaller(ctx, c, tool)
-			out := tracedInvoke(hctx, tracer, report, c, tool, prepared, "", start)
+			out := invokeHandler(hctx, tool, prepared)
 			// An interceptor that voted to terminate during one of this
 			// wrapper's nested calls ends the run, whatever the wrapper
 			// returned (07-REQ-5.3). AfterToolCall below may still override.
@@ -251,16 +215,6 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 			if nested != nil && nested.voteIgnored.Load() {
 				out.Detail = annotate(out.Detail, "nested terminate vote ignored")
 			}
-			a.audit(core.AuditEvent{
-				Kind: core.AuditToolCall, SessionID: auditSession,
-				ToolName: c.Name, ToolUseID: c.ID,
-				ServerName:    serverNameOf(tool, c.Name),
-				ArgumentsHash: core.HashArguments(prepared.Raw),
-				IsError:       !out.OK,
-				ErrorCode:     errorCodeOf(out),
-				ElapsedMS:     time.Since(start).Milliseconds(),
-			})
-
 			// ---- Phase 3, per call: finalize under the batch mutex.
 			// A func-scoped critical section with a DEFERRED unlock: a
 			// panicking AfterToolCall or event listener must not leak the
@@ -329,7 +283,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				s.Push(core.ToolExecutionStartEvent{ToolUseID: c.ID, Name: c.Name})
 				started[i] = true
 			}
-			finalizeInline(i, "aborted", abortedResult(c))
+			finalizeInline(i, abortedResult(c))
 		}
 		// The calls that were blocked in prepare keep their termination vote;
 		// an aborted call abstains. The AND over the batch is therefore false
@@ -380,56 +334,6 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 		}
 	}
 	return results, core.BatchTerminates(votes)
-}
-
-// tracedInvoke runs a tool's handler inside an "agentkit.tool_call" span, for
-// a direct call (parent "") and a nested one alike (07-REQ-8.5).
-//
-// REQ-OBS-02: the span wraps only the handler, the part that does work.
-// Wrapping the finalize block as well would put every peer's span duration
-// inside every other peer's, because finalization is serialized under the
-// batch mutex — so a parallel batch would trace as though it were sequential.
-//
-// The tracer is third-party code (NFR-REL-02). A panic in it is contained
-// here, and if it panicked BEFORE handing us the span — so the handler never
-// ran — the handler runs untraced rather than not at all: a broken tracer must
-// not turn every tool call into an error result.
-func tracedInvoke(ctx context.Context, tracer core.Tracer, report func(error), c core.ToolUseBlock, tool core.Tool,
-	prepared core.PreparedArguments, parent string, start time.Time) core.ToolResult {
-	var (
-		out    core.ToolResult
-		traced bool
-	)
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				report(fmt.Errorf("agentkit: panic in Tracer for %q: %v", c.Name, r))
-			}
-		}()
-		_ = tracer.StartSpan("agentkit.tool_call", func(sp core.Span) error {
-			defer sp.End()
-			traced = true
-			out = invokeHandler(ctx, tool, prepared)
-			attrs := map[string]any{
-				"tool_name":   c.Name,
-				"tool_use_id": c.ID,
-				"is_error":    !out.OK,
-				"elapsed_ms":  time.Since(start).Milliseconds(),
-			}
-			if parent != "" {
-				attrs["parent_tool_use_id"] = parent
-			}
-			sp.SetAttributes(attrs)
-			if !out.OK {
-				sp.SetStatus(errors.New(out.Error))
-			}
-			return nil
-		})
-	}()
-	if !traced {
-		out = invokeHandler(ctx, tool, prepared)
-	}
-	return out
 }
 
 // invokeHandler calls the tool, converting every failure mode into a result.
@@ -550,13 +454,4 @@ func unknownToolMessage(name string, available map[string]core.Tool) string {
 		names = names[:maxListedTools]
 	}
 	return msg + "; available tools: " + strings.Join(names, ", ") + more
-}
-
-// errorCodeOf is a result's error code for the audit record, empty for a
-// success.
-func errorCodeOf(r core.ToolResult) string {
-	if r.OK {
-		return ""
-	}
-	return r.Error
 }

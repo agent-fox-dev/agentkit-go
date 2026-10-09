@@ -8,8 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -18,7 +16,6 @@ import (
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/guard"
 	"github.com/agentfox/agentkit-go/provider/anthropic"
-	"github.com/agentfox/agentkit-go/stop"
 	"github.com/agentfox/agentkit-go/tools"
 )
 
@@ -116,19 +113,14 @@ func ts0461RunAgent(t *testing.T, srv *httptest.Server, requestBodies *[][]byte,
 	toolResultEvents []core.ToolResultMessage,
 	turnEndResults []core.ToolResultMessage,
 	stopResults []core.ToolResultMessage,
-	sessionPath string,
 	model *core.Model,
 ) {
 	t.Helper()
-
-	sessionPath = filepath.Join(t.TempDir(), "session.jsonl")
 
 	model = &core.Model{
 		ID: "claude-test", Name: "Claude Test", API: anthropic.API, Provider: "anthropic",
 		ContextWindow: 200000, MaxTokens: 4096,
 	}
-
-	store, _ := openTestSession(t, sessionPath)
 
 	var (
 		afterMu sync.Mutex
@@ -168,7 +160,6 @@ func ts0461RunAgent(t *testing.T, srv *httptest.Server, requestBodies *[][]byte,
 			afterMu.Unlock()
 			return core.AfterToolCallDecision{}
 		},
-		SessionStore: store,
 	}
 
 	a, err := NewAgent(cfg)
@@ -183,22 +174,17 @@ func ts0461RunAgent(t *testing.T, srv *httptest.Server, requestBodies *[][]byte,
 
 	toolResultEvents, turnEndResults = ts0461Drain(t, a)
 
-	if err := store.Close(); err != nil {
-		t.Fatalf("store.Close: %v", err)
-	}
-
-	return afterRecs, toolResultEvents, turnEndResults, stopResults, sessionPath, model
+	return afterRecs, toolResultEvents, turnEndResults, stopResults, model
 }
 
 // TS-04-61 (smoke): A failing execute call's metadata reaches observers and
-// the session log, never the provider request, and survives resume.
+// never the provider request.
 // ts0461Data holds the shared state from the TS-04-61 agent run.
 type ts0461Data struct {
 	afterRecs        []ts0461AfterRecord
 	toolResultEvents []core.ToolResultMessage
 	turnEndResults   []core.ToolResultMessage
 	stopResults      []core.ToolResultMessage
-	sessionPath      string
 	model            *core.Model
 	srv              *httptest.Server
 	requestBodies    *[][]byte
@@ -214,13 +200,13 @@ func ts0461Setup(t *testing.T) ts0461Data {
 		t.Skip("no shell available")
 	}
 	srv, requestBodies, requestMu := ts0461Server(t)
-	afterRecs, toolResultEvents, turnEndResults, stopResults, sessionPath, model :=
+	afterRecs, toolResultEvents, turnEndResults, stopResults, model :=
 		ts0461RunAgent(t, srv, requestBodies, requestMu)
 	return ts0461Data{
 		afterRecs: afterRecs, toolResultEvents: toolResultEvents,
 		turnEndResults: turnEndResults, stopResults: stopResults,
-		sessionPath: sessionPath, model: model,
-		srv: srv, requestBodies: requestBodies, requestMu: requestMu,
+		model: model,
+		srv:   srv, requestBodies: requestBodies, requestMu: requestMu,
 	}
 }
 
@@ -264,35 +250,6 @@ func TestTS_04_61_Events(t *testing.T) {
 	}
 }
 
-func TestTS_04_61_SessionLog(t *testing.T) {
-	d := ts0461Setup(t)
-	logData, err := os.ReadFile(d.sessionPath)
-	if err != nil {
-		t.Fatalf("reading session log: %v", err)
-	}
-	var toolResultLine string
-	for _, line := range strings.Split(string(logData), "\n") {
-		if strings.Contains(line, `"tool_result"`) && strings.Contains(line, `"metadata"`) {
-			toolResultLine = line
-			break
-		}
-	}
-	if toolResultLine == "" {
-		t.Fatal("no tool_result line with metadata")
-	}
-	if !strings.Contains(toolResultLine, `"exit_code":2`) {
-		t.Fatal("missing exit_code:2")
-	}
-	if !strings.Contains(toolResultLine, `"outcome":"exit"`) {
-		t.Fatal("missing outcome:exit")
-	}
-	metaIdx := strings.Index(toolResultLine, `"metadata"`)
-	lastTsIdx := strings.LastIndex(toolResultLine, `"timestamp"`)
-	if metaIdx < 0 || lastTsIdx < 0 || metaIdx >= lastTsIdx {
-		t.Fatal("metadata should appear before timestamp")
-	}
-}
-
 func TestTS_04_61_RequestBodyNoMetadata(t *testing.T) {
 	d := ts0461Setup(t)
 	d.requestMu.Lock()
@@ -313,49 +270,6 @@ func TestTS_04_61_RequestBodyNoMetadata(t *testing.T) {
 		if strings.Contains(string(reqBody["messages"]), s) {
 			t.Fatalf("request messages contain %s", s)
 		}
-	}
-}
-
-func TestTS_04_61_Resume(t *testing.T) {
-	d := ts0461Setup(t)
-	store2, resume := openTestSession(t, d.sessionPath)
-	defer store2.Close()
-
-	cfg2 := core.AgentConfig{
-		Model:      d.model,
-		StopPolicy: stop.AfterTurns(5),
-		Providers: core.ProviderRegistry{anthropic.API: anthropic.Provider(anthropic.Options{
-			BaseURL: d.srv.URL,
-			Getenv: func(k string) string {
-				if k == "ANTHROPIC_API_KEY" {
-					return "sk-ant-test-key-smoke"
-				}
-				return ""
-			},
-		})},
-		SessionStore: store2,
-	}
-	a2, err := NewAgentFromSession(cfg2, resume,
-		func(provider string, api core.API, modelID string) (*core.Model, error) {
-			return d.model, nil
-		})
-	if err != nil {
-		t.Fatalf("NewAgentFromSession: %v", err)
-	}
-	var resumedMD *core.ToolMetadata
-	for _, m := range a2.History().Messages() {
-		if tr, ok := m.(core.ToolResultMessage); ok && tr.ToolName == "execute" {
-			resumedMD = tr.Metadata
-		}
-	}
-	if resumedMD == nil {
-		t.Fatal("resumed: nil Metadata")
-	}
-	if resumedMD.ExitCode == nil || *resumedMD.ExitCode != 2 {
-		t.Fatalf("resumed: ExitCode = %v, want 2", resumedMD.ExitCode)
-	}
-	if resumedMD.Outcome != "exit" {
-		t.Fatalf("resumed: Outcome = %q, want exit", resumedMD.Outcome)
 	}
 }
 

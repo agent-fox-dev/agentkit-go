@@ -147,67 +147,6 @@ func TestACancelledBatchEndsTheRunAtTheTurnBoundary(t *testing.T) {
 	if role, _ := a.History().LastRole(); role != core.RoleToolResult {
 		t.Fatalf("transcript ends in %q, want tool_result", role)
 	}
-	// And the resume path the requirement names actually works.
-	if _, err := a.Continue(context.Background()); err != nil {
-		t.Fatalf("Continue after a cancelled batch: %v", err)
-	}
-	if s.turnsRun() != 2 {
-		t.Fatalf("Continue did not resume the loop: %d provider calls", s.turnsRun())
-	}
-}
-
-// TestContinueAfterAnAbortedTurnIsAllowed: a trailing aborted assistant
-// message is the REQ-LOOP-09 terminal marker, not a completed turn. Rule 2 of
-// REQ-PROV-11 drops it from the outbound request, so the model still owes a
-// reply and Continue must accept the transcript.
-func TestContinueAfterAnAbortedTurnIsAllowed(t *testing.T) {
-	b := &blocking{started: make(chan struct{})}
-	a := newTestAgent(t, nil, nil)
-	a.cfg.Providers = core.ProviderRegistry{testAPI: b.provider()}
-	go func() { <-b.started; a.Abort() }()
-	_, _ = a.Run(context.Background(), "go")
-	if role, _ := a.History().LastRole(); role != core.RoleAssistant {
-		t.Fatalf("setup: last role %q", role)
-	}
-
-	// Swap in a provider that completes, then Continue.
-	s := &scripted{}
-	a.cfg.Providers = core.ProviderRegistry{testAPI: s.provider()}
-	if _, err := a.Continue(context.Background()); err != nil {
-		t.Fatalf("Continue after an aborted turn: %v (REQ-LOOP-16)", err)
-	}
-	if s.turnsRun() != 1 {
-		t.Fatal("Continue did not issue a request")
-	}
-}
-
-// TestContinueWithOnlyAFollowUpQueuedDeliversItFirst: REQ-LOOP-16's
-// assistant branch drains BOTH queues. A follow-up alone used to be delivered
-// a turn late, after a request carrying the assistant-terminated transcript.
-func TestContinueWithOnlyAFollowUpQueuedDeliversItFirst(t *testing.T) {
-	s := &scripted{}
-	a := newTestAgent(t, s, nil)
-	if _, err := a.Run(context.Background(), "first"); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.FollowUpText("second"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := a.Continue(context.Background()); err != nil {
-		t.Fatalf("Continue: %v", err)
-	}
-	sent := s.sentAt(1)
-	if sent == nil {
-		t.Fatal("no second request")
-	}
-	last := sent[len(sent)-1]
-	um, ok := last.(core.UserMessage)
-	if !ok || um.Content.Text() != "second" {
-		t.Fatalf("the first request after Continue ended in %v; want the follow-up %q", last, "second")
-	}
-	if s.turnsRun() != 2 {
-		t.Fatalf("%d provider calls; the follow-up must be delivered in ONE request, not after a spurious one", s.turnsRun())
-	}
 }
 
 // ------------------------------------------------------------------ NFR-REL-02
@@ -482,31 +421,6 @@ func TestSetModelDuringARunDoesNotRace(t *testing.T) {
 		}()
 		_, _ = a.Run(context.Background(), "go")
 		<-done
-	}
-}
-
-// ------------------------------------------------------------------ REQ-OBS-03
-
-type sessionHook struct {
-	votingHook
-	starts, ends *atomic.Int32
-}
-
-func (h *sessionHook) OnSessionStart(core.AuditEvent) { h.starts.Add(1) }
-func (h *sessionHook) OnSessionEnd(core.AuditEvent)   { h.ends.Add(1) }
-
-// TestPluginSessionHooksFire: REQ-OBS-03 names EventHookPlugin explicitly,
-// and the registry's hooks never received session boundaries at all.
-func TestPluginSessionHooksFire(t *testing.T) {
-	var starts, ends atomic.Int32
-	h := &sessionHook{votingHook: votingHook{name: "obs"}, starts: &starts, ends: &ends}
-	s := &scripted{}
-	a := newTestAgent(t, s, func(c *core.AgentConfig) { c.Plugins = registryWith(h) })
-	if _, err := a.Run(context.Background(), "go"); err != nil {
-		t.Fatal(err)
-	}
-	if starts.Load() != 1 || ends.Load() != 1 {
-		t.Fatalf("plugin saw %d session starts and %d ends, want 1/1 (REQ-OBS-03)", starts.Load(), ends.Load())
 	}
 }
 

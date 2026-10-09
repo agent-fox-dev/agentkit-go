@@ -12,7 +12,6 @@ import (
 	agentkit "github.com/agentfox/agentkit-go"
 	"github.com/agentfox/agentkit-go/core"
 	"github.com/agentfox/agentkit-go/guard"
-	"github.com/agentfox/agentkit-go/plugins"
 	"github.com/agentfox/agentkit-go/provider"
 	"github.com/agentfox/agentkit-go/schema"
 	"github.com/agentfox/agentkit-go/stop"
@@ -544,43 +543,6 @@ func TestBlockedNilMetadata_TS04_37(t *testing.T) {
 	}
 }
 
-// TestPluginVetoedNilMetadata_TS04_37 verifies that a plugin veto produces
-// a message with nil Metadata.
-func TestPluginVetoedNilMetadata_TS04_37(t *testing.T) {
-	var ran bool
-	metaTool := ts0437MetaTool(&ran)
-
-	s := &mdScripted{turns: []core.AssistantMessage{
-		mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
-	}}
-	reg := plugins.NewRegistry()
-	reg.Register(&blockingPlugin{name: "blocker"})
-	a := mdNewTestAgent(t, s, func(c *core.AgentConfig) {
-		c.BeforeToolCall = guard.AllowAll
-		c.Plugins = reg
-	})
-	if err := a.RegisterTool(metaTool); err != nil {
-		t.Fatal(err)
-	}
-	res, events := mdCollectToolResultEvents(t, a, s, "go")
-	if ran {
-		t.Fatal("handler should not have run")
-	}
-	if len(events) == 0 {
-		t.Fatal("no ToolResultEvent")
-	}
-	if events[0].Metadata != nil {
-		t.Fatalf("plugin-vetoed call Metadata = %+v, want nil", events[0].Metadata)
-	}
-	msg := mdFindToolResult(t, res.Messages, "c1")
-	if !msg.IsError {
-		t.Fatal("plugin-vetoed call should be an error")
-	}
-	if !strings.Contains(msg.Content.Text(), "blocked_by_plugin") {
-		t.Fatalf("plugin-vetoed content = %q, want blocked_by_plugin", msg.Content.Text())
-	}
-}
-
 // TestAbortedNilMetadata_TS04_37 verifies that a batch abort produces
 // a message with nil Metadata.
 func TestAbortedNilMetadata_TS04_37(t *testing.T) {
@@ -623,17 +585,6 @@ func TestAbortedNilMetadata_TS04_37(t *testing.T) {
 	if !strings.Contains(abortEvents[0].Content.Text(), "aborted") {
 		t.Fatalf("aborted content = %q, want aborted", abortEvents[0].Content.Text())
 	}
-}
-
-// blockingPlugin is a plugin event hook that blocks every tool call.
-type blockingPlugin struct {
-	plugins.BaseEventHook
-	name string
-}
-
-func (p *blockingPlugin) PluginName() string { return p.name }
-func (p *blockingPlugin) OnToolUse(_ context.Context, _ string, _ json.RawMessage) core.PluginDecision {
-	return core.PluginBlock
 }
 
 // ---------------------------------------------------------------- TS-04-38

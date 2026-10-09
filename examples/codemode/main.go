@@ -8,7 +8,7 @@
 // two scripted code_mode calls. The tools are real — list_files, find_files
 // and read_file over a temporary workspace, and a stock lookup served by an
 // in-process MCP server — and every call a script makes goes through the
-// agent's own interceptor, audit and event pipeline.
+// agent's own interceptor and event pipeline.
 package main
 
 import (
@@ -114,16 +114,22 @@ func run(ctx context.Context, w io.Writer) error {
 		StopPolicy:    stop.AfterTurns(5),
 		ParallelTools: true,
 		ToolPolicy:    core.ToolPolicy{CustomTools: []core.Tool{cm}},
-		Hooks: core.Hooks{OnAudit: func(e core.AuditEvent) {
-			if e.Kind == core.AuditToolCall && e.ParentToolUseID != "" {
-				fmt.Fprintf(w, "  audit: %s called %s (ok=%v)\n", e.ParentToolUseID, e.ToolName, !e.IsError)
-			}
-		}},
 	})
 	if err != nil {
 		return err
 	}
-	res, err := agent.Run(ctx, "What Go files and notes are in the workspace, and how many apples and pears are in stock?")
+	st, err := agent.Stream(ctx, "What Go files and notes are in the workspace, and how many apples and pears are in stock?")
+	if err != nil {
+		return err
+	}
+	// Every call a script makes closes on the agent's event stream with the
+	// code_mode call as its parent.
+	for e := range st.Events() {
+		if end, ok := e.(core.ToolExecutionEndEvent); ok && end.ParentToolUseID != "" {
+			fmt.Fprintf(w, "  nested: %s called %s (ok=%v)\n", end.ParentToolUseID, end.Name, !end.IsError)
+		}
+	}
+	res, err := st.RunResult()
 	if err != nil {
 		return err
 	}

@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -256,7 +254,7 @@ func TestNestedInterceptorRewritesArguments_TS07_21(t *testing.T) {
 }
 
 // TS-07-22: a nested handler's terminate vote is ignored, annotated on the
-// nested result and the wrapper's, and audited; the run goes on.
+// nested result and the wrapper's; the run goes on.
 func TestNestedTerminateVoteIgnored_TS07_22(t *testing.T) {
 	child := core.Tool{Name: "child", InputSchema: schema.Object(),
 		Execute: func(context.Context, json.RawMessage) core.ToolResult {
@@ -271,11 +269,8 @@ func TestNestedTerminateVoteIgnored_TS07_22(t *testing.T) {
 		r.Detail = "wrapper finished"
 		return r
 	}, child)
-	var mu sync.Mutex
-	var audits []core.AuditEvent
 	var wrapperOut core.ToolResult
 	res, s := runWrapper(t, "wrap", func(c *core.AgentConfig) {
-		c.Hooks.OnAudit = func(e core.AuditEvent) { mu.Lock(); audits = append(audits, e); mu.Unlock() }
 		c.AfterToolCall = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			if in.ToolName == "wrap" {
 				wrapperOut = in.ToolResult
@@ -293,15 +288,6 @@ func TestNestedTerminateVoteIgnored_TS07_22(t *testing.T) {
 	}
 	if res.StopReason == core.RunStopToolTerminate || s.turnsRun() != 2 {
 		t.Fatalf("stop %q after %d turns: the ignored vote ended the run", res.StopReason, s.turnsRun())
-	}
-	var found bool
-	for _, a := range audits {
-		if a.ToolName == "child" && a.TerminateIgnored && a.ParentToolUseID == "parent_call_1" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("no nested audit record with TerminateIgnored: %+v", audits)
 	}
 }
 
@@ -563,89 +549,6 @@ func TestNestedEvents_TS07_29(t *testing.T) {
 	}
 }
 
-// TS-07-30: a nested call's audit record links it to its parent.
-func TestNestedAudit_TS07_30(t *testing.T) {
-	slow := core.Tool{Name: "child", InputSchema: schema.Object(),
-		Execute: func(context.Context, json.RawMessage) core.ToolResult {
-			time.Sleep(5 * time.Millisecond)
-			return core.ErrResult("child_failed", "x")
-		}}
-	var mu sync.Mutex
-	var audits []core.AuditEvent
-	runWrapper(t, "parent", func(c *core.AgentConfig) {
-		c.Hooks.OnAudit = func(e core.AuditEvent) { mu.Lock(); audits = append(audits, e); mu.Unlock() }
-	}, fanOut(slow))
-	var nested []core.AuditEvent
-	for _, a := range audits {
-		if a.ParentToolUseID != "" {
-			nested = append(nested, a)
-		}
-	}
-	if len(nested) != 2 {
-		t.Fatalf("%d nested audit records, want 2: %+v", len(nested), audits)
-	}
-	for _, a := range nested {
-		if a.ParentToolUseID != "parent_call_1" || a.Kind != core.AuditToolCall || a.ToolName != "child" ||
-			a.ArgumentsHash == "" || !a.IsError || a.ErrorCode != "child_failed" || a.ElapsedMS <= 0 || a.ToolUseID == "" {
-			t.Fatalf("nested audit = %+v", a)
-		}
-	}
-}
-
-// namedSpanRecorder keeps every span's name and attributes.
-type namedSpanRecorder struct {
-	mu    sync.Mutex
-	spans []map[string]any
-	names []string
-}
-
-func (r *namedSpanRecorder) StartSpan(name string, fn func(core.Span) error) error {
-	sp := &namedSpan{attrs: map[string]any{}}
-	err := fn(sp)
-	r.mu.Lock()
-	r.names = append(r.names, name)
-	r.spans = append(r.spans, sp.attrs)
-	r.mu.Unlock()
-	return err
-}
-
-type namedSpan struct{ attrs map[string]any }
-
-func (s *namedSpan) SetAttributes(kv map[string]any) {
-	for k, v := range kv {
-		s.attrs[k] = v
-	}
-}
-func (s *namedSpan) SetStatus(err error) {
-	if err != nil {
-		s.attrs["status"] = err.Error()
-	}
-}
-func (s *namedSpan) AddEvent(string, map[string]any) {}
-func (s *namedSpan) End()                            {}
-
-// TS-07-31: each nested handler runs in an agentkit.tool_call span that
-// records its parent.
-func TestNestedTracing_TS07_31(t *testing.T) {
-	rec := &namedSpanRecorder{}
-	runWrapper(t, "parent", func(c *core.AgentConfig) { c.Tracer = rec }, fanOut(childTool("child")))
-	nested := 0
-	for i, attrs := range rec.spans {
-		if rec.names[i] != "agentkit.tool_call" {
-			continue
-		}
-		if attrs["parent_tool_use_id"] == "parent_call_1" {
-			nested++
-			if attrs["tool_name"] != "child" || attrs["tool_use_id"] == "" || attrs["is_error"] != false {
-				t.Fatalf("nested span = %+v", attrs)
-			}
-		}
-	}
-	if nested != 2 {
-		t.Fatalf("%d nested spans, want 2: %+v", nested, rec.spans)
-	}
-}
-
 // TS-07-32: usage a nested handler reports reaches the agent at once.
 func TestNestedUsage_TS07_32(t *testing.T) {
 	var during int64
@@ -673,15 +576,10 @@ func TestNestedUsage_TS07_32(t *testing.T) {
 	}
 }
 
-// TS-07-33: the transcript and the session log hold the wrapper's call and
-// result, and nothing of its nested calls.
+// TS-07-33: the transcript holds the wrapper's call and result, and nothing
+// of its nested calls.
 func TestNestedHistory_TS07_33(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.jsonl")
-	store, _ := openTestSession(t, path)
-	defer store.Close()
-	res, _ := runWrapper(t, "parent", func(c *core.AgentConfig) { c.SessionStore = store },
-		fanOut(childTool("nested_child_tool")))
-	_ = res
+	res, _ := runWrapper(t, "parent", nil, fanOut(childTool("nested_child_tool")))
 	var wrapperCalls, wrapperResults int
 	check := func(where string, msgs core.Messages) {
 		for _, m := range msgs {
@@ -707,16 +605,6 @@ func TestNestedHistory_TS07_33(t *testing.T) {
 	if wrapperCalls != 1 || wrapperResults != 1 {
 		t.Fatalf("history has %d calls and %d results, want the wrapper's 1 and 1", wrapperCalls, wrapperResults)
 	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "nested_child_tool") {
-		t.Fatal("the session log records a nested call")
-	}
-	if !strings.Contains(string(raw), "parent_call_1") {
-		t.Fatal("the session log does not record the wrapper call")
-	}
 }
 
 // TS-07-34: stop.WhenToolCalled sees top-level calls only.
@@ -736,12 +624,10 @@ func TestNestedStopPolicy_TS07_34(t *testing.T) {
 	}
 }
 
-// A block-and-terminate still closes the blocked call on the stream and
-// audits it, and closes the calls already queued behind it: every nested
-// call that opened closes exactly once, as a direct one does.
+// A block-and-terminate still closes the blocked call on the stream as an
+// error, and closes the calls already queued behind it: every nested call
+// that opened closes exactly once, as a direct one does.
 func TestNestedTerminateClosesEveryOpenedCall(t *testing.T) {
-	var mu sync.Mutex
-	var audits []core.AuditEvent
 	s := &scripted{turns: []core.AssistantMessage{
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "parent_call_1", "parent", `{}`)),
 	}}
@@ -751,7 +637,6 @@ func TestNestedTerminateClosesEveryOpenedCall(t *testing.T) {
 	}, childTool("ok"), childTool("deny"))
 	a := newTestAgent(t, s, func(c *core.AgentConfig) {
 		c.ToolPolicy.CustomTools = []core.Tool{wrap}
-		c.Hooks.OnAudit = func(e core.AuditEvent) { mu.Lock(); audits = append(audits, e); mu.Unlock() }
 		c.BeforeToolCall = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			if in.ToolName == "deny" {
 				return core.BeforeToolCallDecision{Block: true, Terminate: true, Reason: "no"}
@@ -764,6 +649,7 @@ func TestNestedTerminateClosesEveryOpenedCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	open := map[string]int{}
+	var blocked bool
 	for e := range st.Events() {
 		switch ev := e.(type) {
 		case core.ToolExecutionStartEvent:
@@ -773,6 +659,9 @@ func TestNestedTerminateClosesEveryOpenedCall(t *testing.T) {
 		case core.ToolExecutionEndEvent:
 			if ev.ParentToolUseID != "" {
 				open[ev.ToolUseID]--
+				if ev.Name == "deny" && ev.IsError {
+					blocked = true
+				}
 			}
 		}
 	}
@@ -784,19 +673,8 @@ func TestNestedTerminateClosesEveryOpenedCall(t *testing.T) {
 			t.Fatalf("nested call %s opened and closed unevenly (%d)", id, n)
 		}
 	}
-	var blocked bool
-	nested := 0
-	for _, e := range audits {
-		if e.ParentToolUseID == "" {
-			continue
-		}
-		nested++
-		if e.ToolName == "deny" && e.ErrorCode == "blocked_by_policy" {
-			blocked = true
-		}
-	}
-	if !blocked || nested != 2 {
-		t.Fatalf("nested audits = %d (blocked deny recorded %v): %+v", nested, blocked, audits)
+	if !blocked {
+		t.Fatal("the blocked deny call did not close as an error")
 	}
 }
 

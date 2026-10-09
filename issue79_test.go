@@ -3,7 +3,6 @@ package agentkit
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -11,95 +10,11 @@ import (
 	"github.com/agentfox/agentkit-go/core"
 )
 
-// brokenStore is a SessionStore whose Append fails or panics.
-type brokenStore struct {
-	core.SessionStore // nil: any other method panics, and none is expected
-	appendErr         error
-	appendPanic       bool
-}
-
-func (b *brokenStore) Append(core.Entry) error {
-	if b.appendPanic {
-		panic("store exploded")
-	}
-	return b.appendErr
-}
-func (b *brokenStore) Head() core.EntryID                        { return core.NullLeaf }
-func (b *brokenStore) Entries() []core.Entry                     { return nil }
-func (b *brokenStore) Header() core.SessionHeader                { return core.SessionHeader{} }
-func (b *brokenStore) Branch(core.EntryID) ([]core.Entry, error) { return nil, nil }
-func (b *brokenStore) Leaves() []core.EntryID                    { return nil }
-func (b *brokenStore) Sync() error                               { return nil }
-
 func toolTurns(t *testing.T) []core.AssistantMessage {
 	return []core.AssistantMessage{
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "echo", `{"v":"x"}`)),
 	}
 }
-
-// Issue #79 §1: a failed Append surfaces the error but does not take the
-// message out of the model's view. The second request carries the first
-// turn and its tool result.
-func TestAFailedAppendKeepsTheMessageInHistory(t *testing.T) {
-	s := &scripted{turns: toolTurns(t)}
-	var errs []error
-	a := newTestAgent(t, s, func(c *core.AgentConfig) {
-		c.SessionStore = &brokenStore{appendErr: errors.New("disk full")}
-		c.ToolPolicy.CustomTools = []core.Tool{echoTool("echo", nil)}
-		c.Hooks.OnError = func(err error) { errs = append(errs, err) }
-	})
-	if _, err := a.Run(context.Background(), "go"); err != nil {
-		t.Fatal(err)
-	}
-	if len(errs) == 0 {
-		t.Fatal("the persist failure was not surfaced")
-	}
-	sent := s.sentAt(1)
-	var sawResult bool
-	for _, m := range sent {
-		if tr, ok := m.(core.ToolResultMessage); ok && tr.ToolUseID == "c1" {
-			sawResult = !strings.Contains(tr.Content.Text(), "No result provided")
-		}
-	}
-	if len(sent) < 3 || !sawResult {
-		t.Fatalf("the second request carried %d messages (tool result seen: %v); a persist "+
-			"failure must not remove the turn from the model's view", len(sent), sawResult)
-	}
-}
-
-// Issue #79 §2: user code reached on the loop's own paths — the store, the
-// persist-error hook, the plugin registry — cannot crash the process with a
-// panic, including from inside the loop's panic recovery.
-func TestPanicsInTheStoreAndRegistryAreContained(t *testing.T) {
-	cases := map[string]func(c *core.AgentConfig){
-		"SessionStore.Append panics": func(c *core.AgentConfig) {
-			c.SessionStore = &brokenStore{appendPanic: true}
-		},
-		"OnPersistError panics": func(c *core.AgentConfig) {
-			c.SessionStore = &brokenStore{appendErr: errors.New("disk full")}
-			c.OnPersistError = func(error) { panic("hook exploded") }
-		},
-		"PluginRegistry.EventHooks panics": func(c *core.AgentConfig) {
-			c.Plugins = panickingRegistry{}
-		},
-	}
-	for name, mutate := range cases {
-		t.Run(name, func(t *testing.T) {
-			s := &scripted{}
-			a := newTestAgent(t, s, mutate)
-			// Reaching the assertion at all is the test: before the fix the
-			// panic escaped the deferred recover and killed the binary.
-			_, _ = a.Run(context.Background(), "go")
-			if s.turnsRun() == 0 {
-				t.Fatal("the run never called the model")
-			}
-		})
-	}
-}
-
-type panickingRegistry struct{}
-
-func (panickingRegistry) EventHooks() []core.EventHookPlugin { panic("registry exploded") }
 
 // Issue #79 §3: RunResult.Usage and StopContext.Usage are THIS run's usage;
 // Agent.Usage is the lifetime aggregate.
