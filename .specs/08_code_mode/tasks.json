@@ -58,7 +58,7 @@
       "done_when": [
         "`go test ./codemode/... -run 'Test(New|Options|BuildInfo|Schema)'` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,

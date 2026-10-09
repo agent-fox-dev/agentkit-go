@@ -1,0 +1,91 @@
+// Package codemode provides a tool that runs a model-written Starlark script
+// whose functions are other tools. The model can chain calls, run them
+// concurrently and filter their results inside one tool call, and only what
+// the script prints and returns reaches the conversation.
+//
+// The script is sandboxed: it has no file system, network, environment,
+// processes or clock, only the tools bound to it. Every call it makes goes
+// through the agent's own nested-call pipeline (core.CallNested), so
+// interceptors, plugins, audit and events see each one as they see a call the
+// model makes directly.
+package codemode
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"unicode/utf8"
+
+	"github.com/agentfox/agentkit-go/core"
+	"github.com/agentfox/agentkit-go/schema"
+)
+
+// outputSchema is the Data of every code-mode tool. It is one value shared by
+// all of them, which is also how New recognizes a code-mode tool it is asked
+// to bind, whatever that tool is called.
+var outputSchema = schema.Object(
+	schema.Prop("output", schema.String("What the script printed, and its return value")),
+	schema.Prop("return_value", &schema.Schema{Description: "The script's return value, any JSON value"}),
+	schema.Prop("calls_completed", schema.Array(schema.Object(
+		schema.Prop("tool", schema.String()),
+		schema.Prop("arguments", schema.Object()),
+		schema.Prop("ok", schema.Bool()),
+		schema.Opt("error", schema.String()),
+	), "The nested tool calls the script made, in order")),
+)
+
+var defaultGuidelines = []string{
+	"Use code_mode to chain several tool calls, run independent calls concurrently with parallel(...), " +
+		"or filter a large result down before it reaches the conversation.",
+	"Inside code_mode, tools take keyword arguments only and return an error value rather than raising; " +
+		"check is_error(result) before using a result.",
+}
+
+// New returns a tool that runs a Starlark script over tools. The tool
+// declares tools as its ReachableTools, so the agent's tool policy and shell
+// guard look through it, and its description declares each tool as a typed
+// function, generated from the tools' own schemas.
+//
+// New refuses a tool set that contains a code-mode tool (by opts.Name, or
+// any tool New built, under any name and at any depth) and one with two
+// tools of the same name.
+func New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error) {
+	opts = opts.withDefaults()
+	seen := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		if seen[t.Name] {
+			return core.Tool{}, BuildInfo{}, fmt.Errorf("codemode: duplicate tool name: %s", t.Name)
+		}
+		seen[t.Name] = true
+	}
+	for _, t := range core.ReachableTools(tools) {
+		if t.Name == opts.Name || t.OutputSchema == outputSchema {
+			return core.Tool{}, BuildInfo{}, fmt.Errorf(
+				"codemode: cannot bind code_mode tool inside code_mode (%q is a code-mode tool)", t.Name)
+		}
+	}
+
+	desc := opts.Description
+	guidelines := opts.Guidelines
+	if guidelines == nil {
+		guidelines = append([]string(nil), defaultGuidelines...)
+	}
+	tool := core.Tool{
+		Name:        opts.Name,
+		Description: desc,
+		InputSchema: schema.Object(
+			schema.Prop("script", schema.String("The Starlark script to execute.")),
+		),
+		OutputSchema:     outputSchema,
+		ReachableTools:   tools,
+		PromptGuidelines: guidelines,
+		Execute: func(ctx context.Context, in json.RawMessage) core.ToolResult {
+			return core.ErrResult("not_implemented", "the script runner is not built yet")
+		},
+	}
+	return tool, BuildInfo{
+		DescriptionBytes: len(tool.Description),
+		DescriptionChars: utf8.RuneCountInString(tool.Description),
+		BoundToolsCount:  len(tools),
+	}, nil
+}
