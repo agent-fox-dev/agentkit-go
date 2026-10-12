@@ -1,0 +1,1466 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "13",
+  "spec_name": "sandbox_core",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-13-1",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-1.1",
+        "13-REQ-1.7"
+      ],
+      "title": "The generated file descriptor declares agentkit.sandbox.v1 with one Agent service of five RPCs, JSON payloads as bytes, and self-contained Call messages",
+      "given": [
+        "the checked-in sandbox/internal/sandboxpb generated code"
+      ],
+      "when": "the test inspects sandboxpb.File_sandbox_proto through protoreflect",
+      "then": [
+        "the package is agentkit.sandbox.v1 and the go_package option ends in sandbox/internal/sandboxpb",
+        "there is exactly one service, Agent, with exactly the methods Hello, Tools, Call, SyncTar and ExportTar",
+        "Hello, Tools and Call are unary; SyncTar is client-streaming with input TarChunk and output SyncResponse; ExportTar is server-streaming with input ExportRequest and output TarChunk",
+        "CallRequest has a string tool-name field and a bytes input field; CallResponse has bool ok, bytes data, string error, string detail, bytes metadata and string text",
+        "no field of CallRequest or CallResponse is message-typed (no google.protobuf.Struct, no session or id reference), and the input, data and metadata fields have kind BytesKind"
+      ],
+      "pseudocode": "fd = sandboxpb.File_sandbox_proto\nassert fd.Package() == 'agentkit.sandbox.v1'\nassert strings.HasSuffix(fd.Options().GoPackage, 'sandbox/internal/sandboxpb')\nassert fd.Services().Len() == 1; svc = fd.Services().Get(0); assert svc.Name() == 'Agent'\nassert methodNames(svc) == {Hello,Tools,Call,SyncTar,ExportTar}\nassert svc.Method('SyncTar').IsStreamingClient() && !IsStreamingServer()\nassert svc.Method('ExportTar').IsStreamingServer() && !IsStreamingClient()\nreq = fd.Messages().ByName('CallRequest'); resp = ...('CallResponse')\nfor f in [req.input, resp.data, resp.metadata]: assert f.Kind() == BytesKind\nfor f in fields(req)+fields(resp): assert f.Kind() != MessageKind"
+    },
+    {
+      "id": "TS-13-2",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-1.2"
+      ],
+      "title": "The root module builds and tests the sandbox packages with no protoc or protoc plugin on PATH",
+      "given": [
+        "a PATH containing only the directory of the go binary (no protoc, protoc-gen-go or protoc-gen-go-grpc)"
+      ],
+      "when": "the test runs `go build ./...` and `go vet ./sandbox/...` in the repository root with that PATH",
+      "then": [
+        "both commands exit 0",
+        "sandbox.pb.go and sandbox_grpc.pb.go exist in sandbox/internal/sandboxpb beside sandbox.proto"
+      ],
+      "pseudocode": "env = filterEnv(os.Environ(), PATH=dir(lookPath('go')))\nassert lookPathIn(env,'protoc') fails\nfor args in [['build','./...'],['vet','./sandbox/...']]: out,err = run('go',args,env); assert err == nil, out\nassert exists('sandbox/internal/sandboxpb/sandbox.pb.go') && exists('.../sandbox_grpc.pb.go')"
+    },
+    {
+      "id": "TS-13-3",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-1.3"
+      ],
+      "title": "make proto installs the pinned plugins into build/bin and regenerates output identical to the checked-in code and hash",
+      "given": [
+        "the repository checked out cleanly",
+        "protoc on PATH (the test skips with a message when it is not)"
+      ],
+      "when": "the test first runs `make -n proto`, then runs `make proto` and compares the generated files and hash file with their checked-in bytes",
+      "then": [
+        "the dry run names `go install` of google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11 and google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1 with GOBIN under build/bin, and a protoc invocation on sandbox/internal/sandboxpb/sandbox.proto",
+        "`make proto` exits 0 and build/bin holds protoc-gen-go and protoc-gen-go-grpc",
+        "after the run, sandbox.pb.go, sandbox_grpc.pb.go and the hash file are byte-identical to their contents before the run",
+        "the hash file holds the hex SHA-256 of sandbox.proto"
+      ],
+      "pseudocode": "dry = run('make','-n','proto'); assert contains(dry,'protoc-gen-go@v1.36.11') && contains(dry,'protoc-gen-go-grpc@v1.5.1') && contains(dry,'build/bin')\nif !lookPath('protoc'): t.Skip('protoc not on PATH')\nbefore = readAll(generated+hashfile)\n_,err = run('make','proto'); assert err == nil\nassert readAll(generated+hashfile) == before\nassert strings.TrimSpace(read(hashfile)) == hex(sha256(read('sandbox.proto')))"
+    },
+    {
+      "id": "TS-13-4",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-1.4"
+      ],
+      "title": "make proto without protoc fails, names protoc, and modifies no checked-in file",
+      "given": [
+        "a PATH holding go, make and the POSIX shell utilities but no protoc"
+      ],
+      "when": "the test runs `make proto` with that PATH",
+      "then": [
+        "the exit status is non-zero",
+        "the combined output contains the word `protoc`",
+        "the SHA-256 of sandbox.proto, sandbox.pb.go, sandbox_grpc.pb.go and the hash file is the same before and after the run"
+      ],
+      "pseudocode": "before = hashes(files); out,err = run('make','proto', env=PATH(without protoc))\nassert exitCode(err) != 0; assert contains(out,'protoc'); assert hashes(files) == before"
+    },
+    {
+      "id": "TS-13-5",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-1.5"
+      ],
+      "title": "The offline staleness check fails with a 'run make proto' message when the .proto hash differs from the recorded one",
+      "given": [
+        "the sandboxpb package's staleness check function and its in-package test"
+      ],
+      "when": "the check is called with the real sandbox.proto and recorded hash, and then with a modified copy of the .proto against the recorded hash",
+      "then": [
+        "the real pair passes (the in-package staleness test is green on the checked-in tree)",
+        "the modified pair returns an error whose message contains `make proto`",
+        "neither call executes protoc or any plugin (the test runs with PATH emptied)"
+      ],
+      "pseudocode": "t.Setenv('PATH','')\nassert checkProtoHash(read('sandbox.proto'), read(hashFile)) == nil\nerr = checkProtoHash(append(read('sandbox.proto'), '\\n// edit'), read(hashFile))\nassert err != nil && contains(err.Error(),'make proto')"
+    },
+    {
+      "id": "TS-13-6",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-1.6"
+      ],
+      "title": "The protocol constants are 1.0 and 16 MiB, and both ends raise their send and receive limits to MaxMessageBytes",
+      "given": [
+        "an agent service served over one end of a net.Pipe",
+        "a fake Agent server attached through the attach package"
+      ],
+      "when": "a raw sandboxpb client (with a 64 MiB send limit) sends Call requests of 15 MiB and 17 MiB to the agent, and the host proxy receives a 10 MiB Data response from the fake server",
+      "then": [
+        "sandbox.ProtocolMajor == 1, sandbox.ProtocolMinor == 0, sandbox.MaxMessageBytes == 16<<20 == wire.Defaults().MaxMessageBytes",
+        "the 15 MiB request reaches the agent (it answers a normal CallResponse), so the server's receive limit is above gRPC's 4 MiB default",
+        "the 17 MiB request fails with gRPC status ResourceExhausted",
+        "the proxy decodes the 10 MiB Data response with OK=true, so the host client's receive limit is above the default"
+      ],
+      "pseudocode": "assert sandbox.ProtocolMajor==1 && sandbox.ProtocolMinor==0 && sandbox.MaxMessageBytes==16<<20 && sandbox.MaxMessageBytes==wire.Defaults().MaxMessageBytes\nc = rawClient(agentConn, MaxCallSendMsgSize(64<<20))\nresp,err = c.Call(ctx,{Name:'write_file',Input: jsonWithContent(15<<20)}); assert err==nil\n_,err = c.Call(ctx,{Input: bytes(17<<20)}); assert status.Code(err)==codes.ResourceExhausted\nfake.callResp = {Ok:true, Data: jsonObject(10<<20)}; r = proxy.Execute(ctx,'{}'); assert r.OK"
+    },
+    {
+      "id": "TS-13-7",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-1.6"
+      ],
+      "title": "Tar data travels in chunks of at most 1 MiB in both directions",
+      "given": [
+        "a recording fake Agent server attached through the attach package",
+        "an agent service whose workspace holds a 3 MiB file big.bin"
+      ],
+      "when": "the host Syncs a 3.5 MiB tar to the recording server, and a raw client calls ExportTar(\"big.bin\") on the agent",
+      "then": [
+        "the recorded SyncTar stream is a start chunk followed by data chunks, every data chunk has len(data) <= 1<<20, and the concatenated data equals the tar bytes",
+        "every ExportTar chunk carries at most 1<<20 bytes of data and there are at least 3 chunks"
+      ],
+      "pseudocode": "sb.Sync(ctx, Tar{R: bytes.NewReader(tar35MiB)})\nassert fake.chunks[0].isStart; for c in fake.chunks[1:]: assert len(c.Data) <= 1<<20\nassert concat(fake.chunks[1:]) == tar35MiB\nstream = raw.ExportTar(ctx,{Path:'big.bin'}); n=0; for c in stream: assert len(c.Data)<=1<<20; n++\nassert n >= 3"
+    },
+    {
+      "id": "TS-13-8",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-2.1"
+      ],
+      "title": "The sandbox package exports the specified host API with the specified field names, constants, sealed interfaces and errors",
+      "given": [
+        "a test file in package sandbox_test that references every exported name"
+      ],
+      "when": "the test compiles and inspects the values",
+      "then": [
+        "sandbox.AgentPath == \"/usr/local/libexec/agentkit-sandboxd\"",
+        "Spec, Resources, Network, Endpoint, Capabilities, AgentInfo, ToolOptions, Tar, TarOut and SyncResult compile as composite literals with exactly the specified fields and types",
+        "NetworkNone is the zero value of NetworkMode, and NetworkAllowlist, NetworkUnrestricted and the four Isolation constants are distinct",
+        "Source and Destination each have an unexported method (reflect shows NumMethod counting a non-exported name), Tar implements Source and TarOut implements Destination",
+        "ErrUnsupported, ErrProtocol, ErrUnavailable, ErrClosed, ErrToolMismatch, ErrToolsConfigured and ErrUnsafeArchive are non-nil and pairwise not errors.Is-equal"
+      ],
+      "pseudocode": "_ = sandbox.Spec{Image:'',Workdir:'',Env:map[string]string{},Resources:sandbox.Resources{CPUs:0,MemoryBytes:0,PIDs:0,DiskBytes:0},Network:sandbox.Network{Mode:sandbox.NetworkNone,Allow:[]sandbox.Endpoint{{Host:'h',Port:1}}},TTL:0,Labels:nil,Provider:map[string]any{}}\nvar _ sandbox.Provider; var _ sandbox.Sandbox; var _ sandbox.Source = sandbox.Tar{}; var _ sandbox.Destination = sandbox.TarOut{}\nassert sandbox.NetworkMode(0) == sandbox.NetworkNone\nassert hasUnexportedMethod(reflect.TypeOf((*sandbox.Source)(nil)).Elem())\nerrs=[...7]; for i!=j: assert !errors.Is(errs[i],errs[j])"
+    },
+    {
+      "id": "TS-13-9",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-2.2"
+      ],
+      "title": "CheckSpec fills TTL 0 with one hour and Workdir with /workspace only when the provider honours Workdir",
+      "given": [
+        "caps covering NetworkUnrestricted, once with Workdir true and once with Workdir false"
+      ],
+      "when": "CheckSpec is called with a spec that has TTL 0, empty Workdir, Env {\"A\":\"1\"} and Labels {\"team\":\"x\"}, and again with TTL 5m and Workdir /src under the Workdir-true caps",
+      "then": [
+        "under Workdir-true caps the first call returns TTL 1h, Workdir /workspace and nil",
+        "under Workdir-false caps it returns TTL 1h, empty Workdir and nil",
+        "the second call returns TTL 5m and Workdir /src unchanged",
+        "Env, Labels, Network and every other field compare equal to the input"
+      ],
+      "pseudocode": "s,err = CheckSpec(capsWD, spec0); assert err==nil && s.TTL==time.Hour && s.Workdir=='/workspace'\ns,err = CheckSpec(capsNoWD, spec0); assert err==nil && s.Workdir==''\ns,_ = CheckSpec(capsWD, spec{TTL:5m,Workdir:'/src'}); assert s.TTL==5m && s.Workdir=='/src'\nassert reflect.DeepEqual(s.Env, spec.Env) && reflect.DeepEqual(s.Labels, spec.Labels)"
+    },
+    {
+      "id": "TS-13-10",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-2.3"
+      ],
+      "title": "CheckSpec refuses each field outside the capabilities with a *SpecError matching ErrUnsupported and the documented message",
+      "given": [
+        "caps = {Provider: \"local\", Network: [NetworkUnrestricted], no Resources, Image false, Workdir false}"
+      ],
+      "when": "CheckSpec is called with the zero Spec, with Network.Mode NetworkAllowlist, with each Resources field set to 1 in turn, with Image \"alpine\", and with Workdir \"/w\"",
+      "then": [
+        "every call returns the zero Spec and an error for which errors.As yields a *SpecError with Provider \"local\" and Field naming the field (Network.Mode, Resources.CPUs, Resources.MemoryBytes, Resources.PIDs, Resources.DiskBytes, Image, Workdir)",
+        "errors.Is(err, ErrUnsupported) is true for every call",
+        "the zero-Spec error message starts with `sandbox: provider \"local\" cannot honour Spec.Network.Mode = none: ` and has a non-empty reason"
+      ],
+      "pseudocode": "for tc in cases: s,err = CheckSpec(localCaps, tc.spec)\n  assert reflect.DeepEqual(s, Spec{}); var se *SpecError; assert errors.As(err,&se) && se.Provider=='local' && se.Field==tc.field\n  assert errors.Is(err, ErrUnsupported)\nassert strings.HasPrefix(errZero.Error(), `sandbox: provider \"local\" cannot honour Spec.Network.Mode = none: `)"
+    },
+    {
+      "id": "TS-13-11",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-2.4"
+      ],
+      "title": "CheckSpec refuses values no provider accepts, even under capabilities that cover every field",
+      "given": [
+        "fullCaps covering every network mode, every Resources field, Image and Workdir"
+      ],
+      "when": "CheckSpec is called with: TTL -1s; each Resources field -1; Env name \"\"; Env name \"A=B\"; Env name \"A\\x00\"; Env value \"v\\x00\"; Labels key \"agentkit.sandbox\"; Allow set with Mode NetworkUnrestricted; Allowlist endpoint Host \"\"; Allowlist endpoint Port 0 and Port 65536",
+      "then": [
+        "every call returns the zero Spec and a non-nil error",
+        "each error message names the offending field (TTL, Resources.<field>, Env, Labels, Network.Allow, Network.Allow[0].Host, Network.Allow[0].Port)",
+        "an Allowlist spec with endpoint {example.com, 443} passes under fullCaps"
+      ],
+      "pseudocode": "for tc in invalid: s,err = CheckSpec(fullCaps, tc.spec); assert s==Spec{} (DeepEqual) && err!=nil && contains(err.Error(), tc.field)\n_,err = CheckSpec(fullCaps, Spec{Network:{Mode:NetworkAllowlist,Allow:[{'example.com',443}]}}); assert err==nil"
+    },
+    {
+      "id": "TS-13-12",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-2.5",
+        "13-REQ-2.6"
+      ],
+      "title": "A refused spec, including an unknown Spec.Provider key, leaves no sandbox resources behind",
+      "given": [
+        "TMPDIR set to a fresh t.TempDir() so local's root is isolated",
+        "the local provider"
+      ],
+      "when": "Create is called with Spec{Network: Unrestricted, Provider: {\"bogus_key\": 1}} and then with the zero Spec",
+      "then": [
+        "the first Create returns a nil Sandbox and an error whose message contains `bogus_key`",
+        "the second Create returns a nil Sandbox and an error matching ErrUnsupported",
+        "after both calls, <TMPDIR>/agentkit-sandbox-local either does not exist or has no entries, and no goroutine running an agent service remains"
+      ],
+      "pseudocode": "t.Setenv('TMPDIR', t.TempDir())\nsb,err = local.Unisolated().Create(ctx, Spec{Network:{Mode:NetworkUnrestricted}, Provider:{'bogus_key':1}})\nassert sb==nil && contains(err.Error(),'bogus_key')\nsb,err = Create(ctx, Spec{}); assert sb==nil && errors.Is(err,ErrUnsupported)\nassert entries(filepath.Join(os.TempDir(),'agentkit-sandbox-local')) == 0"
+    },
+    {
+      "id": "TS-13-13",
+      "kind": "property",
+      "verifies": [
+        "13-REQ-2.7"
+      ],
+      "title": "CheckSpec returns ErrUnsupported exactly when the spec sets a field the capabilities do not cover",
+      "given": [
+        "a seeded generator of Capabilities (random subsets of network modes and boundable Resources fields, random Image and Workdir flags) and of Specs that pass the provider-independent checks"
+      ],
+      "when": "for any generated Capabilities and any generated valid Spec, CheckSpec(caps, spec) is called",
+      "then": [
+        "errors.Is(err, ErrUnsupported) is true if and only if an independent oracle finds an uncovered field (mode not in caps.Network, a non-zero Resources field caps cannot bound, Image set without caps.Image, Workdir set without caps.Workdir)",
+        "when err is nil the returned spec differs from the input only in the TTL and Workdir defaults"
+      ],
+      "pseudocode": "for i in 0..2000: caps = genCaps(r); spec = genValidSpec(r)\n  out,err = CheckSpec(caps, spec)\n  assert errors.Is(err,ErrUnsupported) == oracleUncovered(caps,spec)\n  if err==nil: assert equalExceptDefaults(out, spec, caps)"
+    },
+    {
+      "id": "TS-13-14",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-3.1"
+      ],
+      "title": "The agent refuses to start on a missing workspace path or one that is a regular file",
+      "given": [
+        "a path that does not exist and a path to a regular file"
+      ],
+      "when": "agent.New is called with each path as the workspace",
+      "then": [
+        "each call returns a nil agent and a non-nil error whose message contains the path",
+        "no listener or goroutine is started (nothing to Serve)"
+      ],
+      "pseudocode": "for p in [filepath.Join(t.TempDir(),'nope'), fileIn(t.TempDir())]: a,err = agent.New(agent.Config{Workdir:p, Env:env, TTL:time.Hour}); assert a==nil && err!=nil && contains(err.Error(), p)"
+    },
+    {
+      "id": "TS-13-15",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-3.2"
+      ],
+      "title": "Hello reports the protocol version, the module version, the resolved workspace root, the outline backend and git presence",
+      "given": [
+        "a workspace reached through a symlink to a real directory",
+        "explicit environment A with PATH pointing at a directory holding an executable named git",
+        "explicit environment B with PATH pointing at an empty directory"
+      ],
+      "when": "an agent built with each environment is served over net.Pipe and a raw sandboxpb client calls Hello",
+      "then": [
+        "ProtocolMajor is 1 and ProtocolMinor is 0",
+        "Version equals debug.ReadBuildInfo's main module version, or `(devel)` when there is none or it is empty",
+        "Workdir equals filepath.EvalSymlinks of the symlinked path",
+        "OutlineBackend is `tree-sitter` in a cgo build and `none` in a cgo-off build (asserted in build-tagged test files)",
+        "Git is true with environment A and false with environment B"
+      ],
+      "pseudocode": "real = t.TempDir(); link = symlink(real)\nh = helloVia(agent.New({Workdir:link, Env:envA}))\nassert h.ProtocolMajor==1 && h.ProtocolMinor==0 && h.Workdir==evalSymlinks(link)\nassert h.Version == expectedVersion()  // '(devel)' fallback\nassert h.OutlineBackend == (cgo ? 'tree-sitter' : 'none')\nassert h.Git == true; assert helloVia(agent.New({Workdir:real, Env:envB})).Git == false"
+    },
+    {
+      "id": "TS-13-16",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-3.3"
+      ],
+      "title": "Tools builds tools.All with the explicit environment and NoGlobalExcludes and returns names and shared-function digests in tools.All order",
+      "given": [
+        "process env carrying AGENTKIT_HOST_ONLY=1 and XDG_CONFIG_HOME whose git/ignore lists secret.txt",
+        "an explicit agent env with PATH and AGENT_ONLY=1 but no AGENTKIT_HOST_ONLY",
+        "a workspace holding secret.txt, ignored.txt and a .gitignore listing ignored.txt"
+      ],
+      "when": "a raw client calls Tools with empty options, then Calls list_files on the root and execute with `env`",
+      "then": [
+        "the response lists the eleven tool names in tools.All order, each digest equal to the shared digest function applied to the matching tools.All value built locally with the same options",
+        "list_files shows secret.txt (global excludes are not read) and does not show ignored.txt (the workspace's own ignore file applies)",
+        "execute's output contains AGENT_ONLY=1 and does not contain AGENTKIT_HOST_ONLY"
+      ],
+      "pseudocode": "t.Setenv('AGENTKIT_HOST_ONLY','1'); t.Setenv('XDG_CONFIG_HOME', cfgWithGlobalIgnore('secret.txt'))\nresp = raw.Tools(ctx,{})\nwant = toolsAll(ws, NoGlobalExcludes()); assert names(resp)==names(want)\nfor i: assert resp.Tools[i].Digest == sandbox digest(want[i])\nls = call('list_files',{\"path\":\".\"}); assert contains(ls,'secret.txt') && !contains(ls,'ignored.txt')\nout = call('execute',{\"command\":\"env\"}); assert contains(out,'AGENT_ONLY=1') && !contains(out,'AGENTKIT_HOST_ONLY')"
+    },
+    {
+      "id": "TS-13-17",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-3.3"
+      ],
+      "title": "An empty SpillDir spills under the explicit environment's TMPDIR, not the process's os.TempDir",
+      "given": [
+        "process TMPDIR set to dirB",
+        "explicit agent env with TMPDIR set to dirA",
+        "Tools configured with empty SpillDir"
+      ],
+      "when": "a Call runs execute with a command that prints more than tools.DefaultByteLimit bytes",
+      "then": [
+        "the result's metadata SpillPath is under dirA/agentkit-spill",
+        "dirB holds no agentkit-spill directory or spill file"
+      ],
+      "pseudocode": "t.Setenv('TMPDIR', dirB); a = agent.New({Env: [..., 'TMPDIR='+dirA]}); raw.Tools(ctx,{})\nr = call('execute', {\"command\":\"yes x | head -c 400000\"})\nmd = decodeMetadata(r.Metadata); assert strings.HasPrefix(md.SpillPath, filepath.Join(dirA,'agentkit-spill'))\nassert !exists(filepath.Join(dirB,'agentkit-spill'))"
+    },
+    {
+      "id": "TS-13-18",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-3.4"
+      ],
+      "title": "A relative SpillDir is InvalidArgument, differing repeated options are FailedPrecondition, and identical repeats return the same answer",
+      "given": [
+        "a served agent with no tool set configured"
+      ],
+      "when": "a raw client calls Tools with SpillDir \"rel/dir\", then Tools with defaults, then Tools with defaults again, then Tools with Symbols.MaxFiles 7",
+      "then": [
+        "the relative SpillDir call fails with gRPC status InvalidArgument and a subsequent Call still gets `unknown_tool` (no tool set was configured)",
+        "the two default calls return identical names and digests",
+        "the MaxFiles 7 call fails with gRPC status FailedPrecondition",
+        "a Call to read_file after the refusal still succeeds on the original tool set"
+      ],
+      "pseudocode": "_,err = raw.Tools(ctx,{SpillDir:'rel/dir'}); assert status.Code(err)==codes.InvalidArgument\nassert call('read_file',..).Error=='unknown_tool'\na,_ = raw.Tools(ctx,{}); b,_ = raw.Tools(ctx,{}); assert proto.Equal(a,b)\n_,err = raw.Tools(ctx,{Symbols:{MaxFiles:7}}); assert status.Code(err)==codes.FailedPrecondition\nassert call('read_file',{\"path\":\"f.txt\"}).Ok"
+    },
+    {
+      "id": "TS-13-19",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-3.5"
+      ],
+      "title": "Call runs each request concurrently with the RPC context, marshals Data and Metadata with encoding/json, and a cancelled RPC kills the command's process group",
+      "given": [
+        "a served agent on Unix with tools configured",
+        "a workspace holding f.txt"
+      ],
+      "when": "a raw client calls read_file, runs four `sleep 1` execute calls in parallel, and runs execute with `sleep 60 & echo $! > child.pid; wait` under a context it cancels once child.pid appears",
+      "then": [
+        "the read_file response's data bytes equal json.Marshal of the Data a local tools.All read_file returns for the same input, and its metadata bytes equal json.Marshal of its Metadata (empty bytes when nil)",
+        "the four parallel calls complete in under 3 seconds in total",
+        "after the cancel, the RPC returns status Canceled and kill(childPid, 0) returns ESRCH within 5 seconds"
+      ],
+      "pseudocode": "r = raw.Call(ctx,{Name:'read_file',Input:in}); local = toolsAll(ws)['read_file'].Execute(ctx,in)\nassert r.Data == mustJSON(local.Data); assert r.Metadata == (local.Metadata==nil ? [] : mustJSON(local.Metadata))\nstart=now(); parallel(4, call('execute',{\"command\":\"sleep 1\"})); assert since(start) < 3s\ncctx,cancel = withCancel(); go raw.Call(cctx, execute(\"sleep 60 & echo $! > child.pid; wait\")); waitFile('child.pid'); cancel()\nassert status.Code(err)==codes.Canceled; eventually(5s, syscall.Kill(pid,0)==ESRCH)"
+    },
+    {
+      "id": "TS-13-20",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-3.6"
+      ],
+      "title": "Unknown tools, calls before Tools, marshal failures and panics come back as failed results with RPC status OK",
+      "given": [
+        "an agent built in-package with a stub tool builder offering `badjson` (Data holds a channel), `boom` (panics) and `ok`"
+      ],
+      "when": "a raw client Calls `ok` before any Tools RPC, then configures Tools and Calls `nosuch`, `badjson`, `boom`, and finally Hello",
+      "then": [
+        "the call before Tools returns ok=false, error `unknown_tool` and a nil RPC error",
+        "`nosuch` returns ok=false, error `unknown_tool` and a detail naming `ok`, `badjson` and `boom`",
+        "`badjson` returns ok=false, error `marshal_failed`; `boom` returns ok=false, error `panic`; each with a nil RPC error",
+        "the final Hello succeeds, showing the agent kept serving"
+      ],
+      "pseudocode": "r,err = raw.Call(ctx,{Name:'ok'}); assert err==nil && !r.Ok && r.Error=='unknown_tool'\nraw.Tools(ctx,{})\nr,err = raw.Call(ctx,{Name:'nosuch'}); assert err==nil && r.Error=='unknown_tool' && containsAll(r.Detail,'ok','badjson','boom')\nassert call('badjson').Error=='marshal_failed'; assert call('boom').Error=='panic'\n_,err = raw.Hello(ctx,{}); assert err==nil"
+    },
+    {
+      "id": "TS-13-21",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-3.7"
+      ],
+      "title": "A successful SyncTar rebuilds the configured tool set so find_symbol sees synced files, while an in-flight call finishes on the old set",
+      "given": [
+        "a served agent with Tools configured over an empty workspace"
+      ],
+      "when": "a raw client starts execute `sleep 1; echo done`, then SyncTars a tar holding pkg/thing.go declaring func NewThing, then calls find_symbol for NewThing",
+      "then": [
+        "before the sync, find_symbol for NewThing reports no match",
+        "the in-flight execute completes with ok=true and output `done`",
+        "after the sync, find_symbol for NewThing returns a match in pkg/thing.go"
+      ],
+      "pseudocode": "assert noMatch(call('find_symbol',{\"name\":\"NewThing\"}))\ngo inflight = call('execute',{\"command\":\"sleep 1; echo done\"})\nsyncTar(raw, tarOf({'pkg/thing.go':'package pkg\\nfunc NewThing() {}\\n'}))\nassert match(call('find_symbol',{\"name\":\"NewThing\"}),'pkg/thing.go')\nassert (<-inflight).Ok && contains(text,'done')"
+    },
+    {
+      "id": "TS-13-22",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-3.8"
+      ],
+      "title": "At the TTL the agent stops serving, cancels in-flight calls and Serve returns an error naming the TTL",
+      "given": [
+        "an agent constructed with TTL 300ms on Unix, served over net.Pipe"
+      ],
+      "when": "a raw client starts execute `sleep 60 & echo $! > child.pid; wait` and the test waits for Serve to return",
+      "then": [
+        "Serve returns within 5 seconds with a non-nil error whose message contains `300ms`",
+        "the in-flight Call ends with a non-nil RPC error",
+        "kill(childPid, 0) returns ESRCH within 5 seconds"
+      ],
+      "pseudocode": "a = agent.New({TTL:300*time.Millisecond}); errc = go a.Serve(conn)\ngo call(execute(...)); waitFile('child.pid')\nerr = recvWithin(errc, 5s); assert err!=nil && contains(err.Error(),'300ms')\nassert callErr != nil; eventually(5s, kill(pid,0)==ESRCH)"
+    },
+    {
+      "id": "TS-13-23",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-4.1"
+      ],
+      "title": "agentkit-sandboxd defaults to /workspace and 1h and hands its own environment to the tools verbatim",
+      "given": [
+        "the command's flag parser exercised in-package",
+        "the built binary started with cmd.Env = [PATH=<host PATH>, MARKER=sandboxd-env] and --workdir <tempdir>"
+      ],
+      "when": "the parser runs on an empty argument list, and the test attaches to the binary and runs execute `env`",
+      "then": [
+        "the parsed workdir is /workspace and the parsed ttl is 1h",
+        "the execute output contains MARKER=sandboxd-env",
+        "the execute output does not contain a variable that is set in the test process but absent from cmd.Env"
+      ],
+      "pseudocode": "cfg,err = parseFlags([]); assert err==nil && cfg.Workdir=='/workspace' && cfg.TTL==time.Hour\nt.Setenv('HOST_ONLY_VAR','1'); p = start(bin,'--workdir',tmp, env=['PATH='+os.Getenv('PATH'),'MARKER=sandboxd-env'])\nsb = attachTo(p); tl = sb.Tools(ctx,{}); out = exec(tl,'execute','env')\nassert contains(out,'MARKER=sandboxd-env') && !contains(out,'HOST_ONLY_VAR')"
+    },
+    {
+      "id": "TS-13-24",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-4.2",
+        "13-REQ-4.3"
+      ],
+      "title": "--version prints the versions and exits 0, and usage errors exit non-zero with a one-line stderr message without serving",
+      "given": [
+        "the agentkit-sandboxd binary built into a temp directory"
+      ],
+      "when": "the binary is run with --version, then with --ttl 0, --ttl -1s, --ttl bogus and --nosuchflag, each with stdin closed",
+      "then": [
+        "--version exits 0 and its stdout contains the agent version and `1.0`",
+        "each usage-error run exits with a non-zero status",
+        "each usage-error run writes exactly one non-empty line to stderr and nothing to stdout"
+      ],
+      "pseudocode": "out,err = run(bin,'--version'); assert err==nil && contains(out, expectedVersion) && contains(out,'1.0')\nfor args in [['--ttl','0'],['--ttl','-1s'],['--ttl','bogus'],['--nosuchflag']]:\n  so,se,code = run(bin, args...); assert code != 0 && countLines(trim(se))==1 && so==''"
+    },
+    {
+      "id": "TS-13-25",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-4.4"
+      ],
+      "title": "The command points os.Stdout at stderr before serving and opens no listening socket",
+      "given": [
+        "the command's stdout-redirect step exercised in-package with stderr captured through a pipe",
+        "the built binary started with --workdir <tempdir> on Linux"
+      ],
+      "when": "the redirect step runs and a value is written with fmt.Println, and the test inspects /proc/<pid>/fd of the running binary after a Hello over its stdio",
+      "then": [
+        "the Println text appears on the captured stderr, and the file returned for the transport is the original stdout",
+        "Hello over the binary's stdin and stdout succeeds",
+        "no file descriptor of the running process is a socket (no `socket:` link under /proc/<pid>/fd); the check is skipped on non-Linux hosts"
+      ],
+      "pseudocode": "orig = redirectStdout(); fmt.Println('stray'); assert contains(read(stderrPipe),'stray'); assert orig is original stdout\np = start(bin,'--workdir',tmp); sb = attachTo(p); assert sb.Agent().ProtocolMajor==1\nif linux: for fd in readdir('/proc/'+pid+'/fd'): assert !strings.HasPrefix(readlink(fd),'socket:')"
+    },
+    {
+      "id": "TS-13-26",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-4.6"
+      ],
+      "title": "A startup failure or TTL expiry exits non-zero with one stderr line naming the cause",
+      "given": [
+        "the agentkit-sandboxd binary built into a temp directory"
+      ],
+      "when": "the binary is run with --workdir pointing at a missing path, and separately with --workdir <tempdir> --ttl 300ms and its stdin held open",
+      "then": [
+        "the missing-workdir run exits non-zero and its stderr is one line containing the missing path",
+        "the TTL run exits non-zero within 5 seconds and its stderr is one line containing `300ms`"
+      ],
+      "pseudocode": "so,se,code = run(bin,'--workdir',missing); assert code!=0 && countLines(trim(se))==1 && contains(se,missing)\np = start(bin,'--workdir',tmp,'--ttl','300ms'); code = waitWithin(p,5s); assert code!=0 && countLines(trim(stderr))==1 && contains(stderr,'300ms')"
+    },
+    {
+      "id": "TS-13-27",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-4.7"
+      ],
+      "title": "agentkit-sandboxd builds on the four cross targets with cgo off and on the host with cgo on",
+      "given": [
+        "the go toolchain on PATH (skipped under -short, like the existing cross-target gate)"
+      ],
+      "when": "the test runs `go build ./sandbox/cmd/agentkit-sandboxd` with CGO_ENABLED=0 for linux/amd64, linux/arm64, darwin/arm64 and windows/amd64, and with CGO_ENABLED=1 for the host",
+      "then": [
+        "all five builds exit 0"
+      ],
+      "pseudocode": "for tgt in crossTargets: assert run('go','build','-o',devnull,'./sandbox/cmd/agentkit-sandboxd', env=GOOS,GOARCH,CGO_ENABLED=0) == nil\nassert run('go','build','-o',devnull,'./sandbox/cmd/agentkit-sandboxd', env=CGO_ENABLED=1) == nil"
+    },
+    {
+      "id": "TS-13-28",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-5.1"
+      ],
+      "title": "Attach dials the given connection exactly once, never redials, and forwards per-call outgoing metadata",
+      "given": [
+        "the attach package's one-shot dialer",
+        "a fake Agent server on one end of a net.Pipe that records incoming metadata and counts connections"
+      ],
+      "when": "the dialer is invoked twice directly, and the attach package attaches to the fake server with outgoing metadata {x-agentkit-test: 1} and makes Hello and Call",
+      "then": [
+        "the first dialer invocation returns the given net.Conn and the second returns a non-nil error",
+        "the fake server sees x-agentkit-test=1 on both Hello and Call",
+        "after the fake server closes the connection, a further RPC fails and the server's connection count stays 1"
+      ],
+      "pseudocode": "d = oneShotDialer(conn); c1,err1 = d(ctx,''); c2,err2 = d(ctx,''); assert c1==conn && err1==nil && c2==nil && err2!=nil\nsb = attach(fakeConn, withMetadata('x-agentkit-test','1')); proxy.Execute(ctx,'{}')\nassert fake.md['Hello']['x-agentkit-test']==['1'] && fake.md['Call'][...]==['1']\nfake.closeConn(); proxy.Execute(ctx,'{}'); assert fake.conns==1"
+    },
+    {
+      "id": "TS-13-29",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-5.2"
+      ],
+      "title": "A different protocol major is refused with ErrProtocol naming both versions, and the destroy step runs",
+      "given": [
+        "a fake Agent server whose Hello reports ProtocolMajor 2, ProtocolMinor 0",
+        "a stub destroy step that counts its calls"
+      ],
+      "when": "the attach package's create path runs against it",
+      "then": [
+        "it returns a nil Sandbox and an error with errors.Is(err, ErrProtocol) true",
+        "the error message contains `2.0` and `1.0`",
+        "the destroy step ran exactly once and the client connection is closed"
+      ],
+      "pseudocode": "fake.hello = {ProtocolMajor:2}; sb,err = attach.Create(ctx, conn, destroy)\nassert sb==nil && errors.Is(err,ErrProtocol) && contains(err.Error(),'2.0') && contains(err.Error(),'1.0')\nassert destroyCalls==1"
+    },
+    {
+      "id": "TS-13-30",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-5.3"
+      ],
+      "title": "Any minor of the same major is accepted, Spec returns the effective spec with the reported workdir, and Agent returns the Hello facts",
+      "given": [
+        "a fake Agent server whose Hello reports 1.7, Version v9.0.0, Workdir /real/ws, OutlineBackend none and Git true",
+        "a caller spec with TTL 0"
+      ],
+      "when": "the attach package creates a sandbox from it",
+      "then": [
+        "Create returns a non-nil Sandbox and nil",
+        "Spec().TTL is 1h and Spec().Workdir is /real/ws",
+        "Agent() equals AgentInfo{Version: v9.0.0, ProtocolMajor: 1, ProtocolMinor: 7, Workdir: /real/ws, OutlineBackend: none, Git: true}"
+      ],
+      "pseudocode": "fake.hello = {1,7,'v9.0.0','/real/ws','none',true}; sb,err = attach.Create(ctx, conn, checked(Spec{TTL:0}))\nassert err==nil && sb!=nil && sb.Spec().TTL==time.Hour && sb.Spec().Workdir=='/real/ws'\nassert sb.Agent()==AgentInfo{...}"
+    },
+    {
+      "id": "TS-13-31",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-5.4"
+      ],
+      "title": "Deliberate refusals leave the sandbox live, Unimplemented names the agent version, and any other status makes it unavailable",
+      "given": [
+        "a fake Agent server reporting protocol 1.3 whose Tools handler returns a configurable gRPC status"
+      ],
+      "when": "for each of InvalidArgument, FailedPrecondition, NotFound and Unimplemented, Tools is called and then called again; then Tools is called with the server returning Internal, and once more",
+      "then": [
+        "each deliberate refusal returns a non-nil error not matching ErrUnavailable, and the second Tools call reaches the server (its counter increments)",
+        "the Unimplemented error's message contains `1.3`",
+        "the Internal call returns an error matching ErrUnavailable, and the following Tools call returns ErrUnavailable without the server's counter changing"
+      ],
+      "pseudocode": "for code in [InvalidArgument,FailedPrecondition,NotFound,Unimplemented]: fake.toolsErr=status.Error(code,'x')\n  n=fake.tools; _,err = sb.Tools(ctx,o); assert err!=nil && !errors.Is(err,ErrUnavailable); sb.Tools(ctx,o); assert fake.tools==n+2\n  if code==Unimplemented: assert contains(err.Error(),'1.3')\nfake.toolsErr=status.Error(codes.Internal,'x'); _,err=sb.Tools(ctx,o); assert errors.Is(err,ErrUnavailable)\nn=fake.tools; _,err=sb.Tools(ctx,o); assert errors.Is(err,ErrUnavailable) && fake.tools==n"
+    },
+    {
+      "id": "TS-13-32",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-5.5"
+      ],
+      "title": "Cancelling the Create context after Create returns does not end the sandbox",
+      "given": [
+        "TMPDIR isolated",
+        "a local sandbox created under a cancellable context"
+      ],
+      "when": "the context is cancelled right after Create returns, the test waits 200ms, and then calls Tools and a proxy list_files with a fresh context",
+      "then": [
+        "Tools returns eleven tools and nil",
+        "list_files returns OK=true"
+      ],
+      "pseudocode": "cctx,cancel = withCancel(bg); sb,_ = local.Unisolated().Create(cctx, unrestricted); cancel(); sleep(200ms)\ntl,err = sb.Tools(bg, ToolOptions{}); assert err==nil && len(tl)==11\nassert byName(tl,'list_files').Execute(bg, `{\"path\":\".\"}`).OK"
+    },
+    {
+      "id": "TS-13-33",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-5.6"
+      ],
+      "title": "At the TTL the host timer makes the sandbox unavailable and destroys it, and an agent that ends makes it unavailable",
+      "given": [
+        "TMPDIR isolated",
+        "a local sandbox created with Spec.TTL 500ms",
+        "a separate sandbox attached to a fake Agent server"
+      ],
+      "when": "the test waits 1.5s on the local sandbox, and stops the fake server and closes its connection end on the other",
+      "then": [
+        "after the wait, Tools on the local sandbox returns an error matching ErrUnavailable and its directory under agentkit-sandbox-local no longer exists",
+        "within 2s of the fake agent ending, Sync on that sandbox returns an error matching ErrUnavailable"
+      ],
+      "pseudocode": "sb,_ = Create(ctx, Spec{Network:unrestricted, TTL:500ms}); dir = sandboxDir(sb.ID()); sleep(1.5s)\n_,err = sb.Tools(ctx,{}); assert errors.Is(err,ErrUnavailable); assert !exists(dir)\nfake.Stop(); fakeConn.Close(); eventually(2s, errors.Is(fsb.Sync(ctx,Tar{R:emptyTar}), ErrUnavailable))"
+    },
+    {
+      "id": "TS-13-34",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-5.7"
+      ],
+      "title": "Close runs the destroy step once, returns its error first, cancels the TTL timer, and later Closes return nil",
+      "given": [
+        "a sandbox attached to a fake Agent server with effective TTL 300ms and a stub destroy step returning errBoom"
+      ],
+      "when": "Close is called twice, and the test then waits 600ms",
+      "then": [
+        "the first Close returns an error with errors.Is(err, errBoom) true",
+        "the second Close returns nil",
+        "the destroy step ran exactly once, including after the TTL would have elapsed, and the client connection is closed"
+      ],
+      "pseudocode": "sb = attach.Create(ctx, conn, destroy=func(){calls++; return errBoom}, ttl=300ms)\nassert errors.Is(sb.Close(ctx), errBoom); assert sb.Close(ctx)==nil; sleep(600ms); assert calls==1"
+    },
+    {
+      "id": "TS-13-35",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-5.8"
+      ],
+      "title": "Tools, Sync and Export on an unavailable or closed sandbox return ErrUnavailable or ErrClosed without an RPC",
+      "given": [
+        "two sandboxes attached to counting fake Agent servers: one made unavailable by a Call answered with codes.Internal, one Closed"
+      ],
+      "when": "Tools, Sync and Export are called on each",
+      "then": [
+        "on the unavailable sandbox each returns an error matching ErrUnavailable",
+        "on the closed sandbox each returns an error matching ErrClosed",
+        "neither fake server's Tools, SyncTar or ExportTar counter changes"
+      ],
+      "pseudocode": "for op in [Tools,Sync,Export]: assert errors.Is(op(unavail), ErrUnavailable); assert errors.Is(op(closed), ErrClosed)\nassert fakeU.counts == beforeU && fakeC.counts == beforeC"
+    },
+    {
+      "id": "TS-13-36",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-6.1",
+        "13-REQ-6.4"
+      ],
+      "title": "Proxy tools over local match tools.All one for one in order, with equal definition fields, byte-identical schemas and a remote-only execution",
+      "given": [
+        "TMPDIR isolated",
+        "a local sandbox with a synced tar of a small tree",
+        "the host's tools.All built with the same options over a separate temp workspace"
+      ],
+      "when": "Sandbox.Tools(ctx, ToolOptions{}) is called and each proxy is compared with its tools.All counterpart",
+      "then": [
+        "there are as many proxies as tools.All values, in the same order by Name",
+        "Name, Description, PromptGuidelines, Builtin, ExecutionMode and Label are equal, and json.Marshal of InputSchema and OutputSchema is byte-identical",
+        "PrepareArguments is non-nil exactly for search_files and edit_file, as in tools.All",
+        "Handler and ReachableTools are nil, Terminating is false and Execute is non-nil; after the sandbox is closed every proxy Execute returns `sandbox_unavailable` (no local closure runs)"
+      ],
+      "pseudocode": "proxies,err = sb.Tools(ctx, ToolOptions{}); host = tools.All({Workspace:tmpWS})\nassert err==nil && len(proxies)==len(host)\nfor i: p,h = proxies[i],host[i]; assert p.Name==h.Name && p.Description==h.Description && p.Label==h.Label && equal(p.PromptGuidelines,h.PromptGuidelines) && p.Builtin==h.Builtin && p.ExecutionMode==h.ExecutionMode\n  assert mustJSON(p.InputSchema)==mustJSON(h.InputSchema) && mustJSON(p.OutputSchema)==mustJSON(h.OutputSchema)\n  assert (p.PrepareArguments!=nil)==(h.PrepareArguments!=nil); assert p.Handler==nil && p.ReachableTools==nil && !p.Terminating && p.Execute!=nil\nsb.Close(ctx); for p: assert p.Execute(ctx,'{}').Error=='sandbox_unavailable'"
+    },
+    {
+      "id": "TS-13-37",
+      "kind": "property",
+      "verifies": [
+        "13-REQ-6.2"
+      ],
+      "title": "The definition digest is equal exactly when name, description, schemas, guidelines, Builtin and execution mode are equal",
+      "given": [
+        "the shared digest function",
+        "a seeded generator of core.Tool values built from random strings, random schema.Object trees, random guideline slices, a random Builtin flag and a random ExecutionMode"
+      ],
+      "when": "for any generated tool, the digest is compared with that of a copy, of a copy differing in exactly one of the seven fields, and of a copy differing only in fields outside the seven (Execute, Handler, PrepareArguments, Label)",
+      "then": [
+        "an exact copy and a copy differing only outside the seven fields have the equal digest",
+        "a copy differing in any one of the seven fields has a different digest",
+        "the host's digest of every tools.All value equals the agent's digest of the same value (same function)"
+      ],
+      "pseudocode": "for i in 0..1000: t = genTool(r)\n  assert digest(t)==digest(clone(t)); assert digest(t)==digest(withOtherExecute(t))\n  for f in [Name,Description,InputSchema,OutputSchema,PromptGuidelines,Builtin,ExecutionMode]: assert digest(t)!=digest(mutate(t,f,r))"
+    },
+    {
+      "id": "TS-13-38",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-6.3"
+      ],
+      "title": "A digest, name or order difference from the agent is refused with ErrToolMismatch naming each differing tool and both versions",
+      "given": [
+        "a fake Agent server whose Hello reports Version v9.9.9 and whose Tools response is configurable"
+      ],
+      "when": "Tools is called with the agent answering (a) tools.All names with read_file's digest altered, (b) edit_file and write_file swapped, (c) find_references missing",
+      "then": [
+        "each call returns nil tools and an error with errors.Is(err, ErrToolMismatch) true",
+        "the messages name read_file in (a), edit_file and write_file in (b), find_references in (c), and each contains `v9.9.9` and the host version",
+        "after each refusal, a Sync on the sandbox reaches the fake server (the sandbox stays live)"
+      ],
+      "pseudocode": "for tc in [alterDigest('read_file'), swap('edit_file','write_file'), drop('find_references')]: fake.tools = tc.resp\n  tl,err = sb.Tools(ctx,{}); assert tl==nil && errors.Is(err,ErrToolMismatch)\n  assert containsAll(err.Error(), tc.names..., 'v9.9.9', hostVersion())\n  n=fake.sync; sb.Sync(ctx,Tar{R:emptyTar}); assert fake.sync==n+1"
+    },
+    {
+      "id": "TS-13-39",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-6.5",
+        "13-REQ-6.6"
+      ],
+      "title": "A second Tools call with equal options returns equivalent proxies, and one with different options fails with ErrToolsConfigured without reconfiguring the agent",
+      "given": [
+        "TMPDIR isolated",
+        "a local sandbox on which Tools(ctx, ToolOptions{}) has returned the first slice"
+      ],
+      "when": "Tools is called again with ToolOptions{}, then with ToolOptions{DisableSpill: true}, and a first-slice execute call that produces more than tools.DefaultByteLimit bytes is run",
+      "then": [
+        "the second call returns nil error and tools whose names, order and definition fields equal the first slice's",
+        "the third call returns nil tools and an error with errors.Is(err, ErrToolsConfigured) true",
+        "the execute call still spills (its metadata has a SpillPath), showing the agent kept the original options"
+      ],
+      "pseudocode": "a,_ = sb.Tools(ctx,{}); b,err = sb.Tools(ctx,{}); assert err==nil && sameDefinitions(a,b)\nc,err = sb.Tools(ctx,{DisableSpill:true}); assert c==nil && errors.Is(err,ErrToolsConfigured)\nr = byName(a,'execute').Execute(ctx, `{\"command\":\"yes x | head -c 400000\"}`); assert r.Metadata!=nil && r.Metadata.SpillPath!=''"
+    },
+    {
+      "id": "TS-13-40",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-6.7"
+      ],
+      "title": "Concurrent proxy calls each get their own result, are not serialised on the host, and are race-free",
+      "given": [
+        "TMPDIR isolated",
+        "a local sandbox synced with files f0.txt..f15.txt whose contents are their indexes",
+        "the test run under go test -race"
+      ],
+      "when": "32 goroutines concurrently call read_file on f(i%16).txt and execute `echo i`, and separately 8 goroutines call execute `sleep 1`",
+      "then": [
+        "every read_file result's Text contains its own file's index and every execute result's Text contains its own i",
+        "the 8 sleep calls finish in under 4 seconds in total",
+        "the race detector reports no data race"
+      ],
+      "pseudocode": "var wg; for i in 0..31: go { r = rf.Execute(ctx, path(i%16)); assert contains(r.Text, str(i%16)); e = ex.Execute(ctx, cmd('echo '+i)); assert contains(e.Text, str(i)) }\nstart=now(); parallel(8, ex.Execute(ctx, cmd('sleep 1'))); assert since(start) < 4s"
+    },
+    {
+      "id": "TS-13-41",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-7.1"
+      ],
+      "title": "A proxy sends its input bytes verbatim and maps a well-formed response onto a ToolResult with UseNumber Data and decoded Metadata",
+      "given": [
+        "a fake Agent server that records CallRequest.Input and answers {ok:true, data:`{\"n\":12345678901234567890,\"s\":\"x\"}`, error:\"\", detail:\"d\", metadata:`{\"exit_code\":0}`, text:\"t\"}"
+      ],
+      "when": "a proxy Execute is called with input `{ \"path\" :  \"a.txt\" }` (unusual whitespace), and then with the fake answering empty data and empty metadata",
+      "then": [
+        "the recorded input bytes equal the input exactly",
+        "the result has OK true, Detail \"d\", Text \"t\", Terminate false and nil Blocks",
+        "Data[\"n\"] is a json.Number and json.Marshal(Data) equals the agent's data bytes; Metadata is a non-nil *core.ToolMetadata with ExitCode 0",
+        "with empty data and metadata, Data and Metadata are nil"
+      ],
+      "pseudocode": "in = []byte(`{ \"path\" :  \"a.txt\" }`); r = p.Execute(ctx,in)\nassert bytes.Equal(fake.lastInput, in); assert r.OK && r.Detail=='d' && r.Text=='t' && !r.Terminate && r.Blocks==nil\n_,isNum = r.Data['n'].(json.Number); assert isNum && mustJSON(r.Data)==fake.data\nassert r.Metadata!=nil\nfake.data,fake.md = nil,nil; r = p.Execute(ctx,in); assert r.Data==nil && r.Metadata==nil"
+    },
+    {
+      "id": "TS-13-42",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-7.2"
+      ],
+      "title": "An input larger than MaxMessageBytes returns arguments_too_large without an RPC and leaves the sandbox live",
+      "given": [
+        "a counting fake Agent server and a proxy write_file"
+      ],
+      "when": "Execute is called with a JSON input of MaxMessageBytes+1 bytes, then with a small input",
+      "then": [
+        "the first result has OK false and Error `arguments_too_large`",
+        "the fake server's Call counter did not change for the first call",
+        "the second call reaches the server and returns its answer"
+      ],
+      "pseudocode": "n=fake.calls; r = p.Execute(ctx, bigJSON(sandbox.MaxMessageBytes+1)); assert !r.OK && r.Error=='arguments_too_large' && fake.calls==n\nr = p.Execute(ctx, `{}`); assert fake.calls==n+1 && r.Error!='sandbox_unavailable'"
+    },
+    {
+      "id": "TS-13-43",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-7.3"
+      ],
+      "title": "Malformed Data or Metadata from the agent is a transport failure returning sandbox_unavailable naming the field",
+      "given": [
+        "a fake Agent server whose CallResponse is configurable, one fresh sandbox per case"
+      ],
+      "when": "a proxy Execute receives data `[1,2]`, data with a duplicate key `{\"a\":1,\"a\":2}`, data nested deeper than wire.Defaults allows, and metadata `{\"exit_code\":` (truncated) or `{\"exit_code\":\"x\"}`",
+      "then": [
+        "each result has OK false and Error `sandbox_unavailable`",
+        "the Detail contains `data` for the data cases and `metadata` for the metadata cases",
+        "afterwards Tools on that sandbox returns an error matching ErrUnavailable"
+      ],
+      "pseudocode": "for tc in cases: sb,p = fresh(fake{resp:tc}); r = p.Execute(ctx,'{}')\n  assert !r.OK && r.Error=='sandbox_unavailable' && contains(r.Detail, tc.field)\n  _,err = sb.Tools(ctx,{}); assert errors.Is(err,ErrUnavailable)"
+    },
+    {
+      "id": "TS-13-44",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-7.4"
+      ],
+      "title": "A host context that ends before or during a call returns the aborted result at once, cancels the RPC and leaves the sandbox live",
+      "given": [
+        "a fake Agent server whose Call blocks until its context is done and records ctx.Err()"
+      ],
+      "when": "Execute is called with an already-cancelled context, then with a context cancelled 100ms after the server signals the call arrived, then with a live context",
+      "then": [
+        "both cancelled calls return a result reflect.DeepEqual to core.ErrResult(\"aborted\", \"Operation aborted\")",
+        "the pre-cancelled call made no RPC (Call counter unchanged), and the mid-call result arrives within 1s of the cancel",
+        "the server observes context.Canceled for the mid-call request within 2s",
+        "the live call afterwards reaches the server and does not return sandbox_unavailable"
+      ],
+      "pseudocode": "c,cancel = withCancel(); cancel(); n=fake.calls; assert DeepEqual(p.Execute(c,'{}'), core.ErrResult('aborted','Operation aborted')) && fake.calls==n\nc2,cancel2 = withCancel(); go r = p.Execute(c2,'{}'); <-fake.entered; sleep(100ms); cancel2(); assert DeepEqual(recvWithin(1s), core.ErrResult('aborted','Operation aborted'))\neventually(2s, fake.lastErr==context.Canceled); fake.block=false; assert p.Execute(bg,'{}').Error!='sandbox_unavailable'"
+    },
+    {
+      "id": "TS-13-45",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-7.5"
+      ],
+      "title": "A transport failure returns sandbox_unavailable naming the cause and every later call on any proxy fails the same way without an RPC",
+      "given": [
+        "a counting fake Agent server whose Call returns gRPC status Unavailable once",
+        "two proxies, read_file and execute, from the same sandbox"
+      ],
+      "when": "read_file Execute is called, then execute Execute and read_file Execute again",
+      "then": [
+        "the first result has OK false, Error `sandbox_unavailable` and a non-empty Detail containing the gRPC error text",
+        "both later results have Error `sandbox_unavailable`",
+        "the fake server's Call counter increased by exactly one across all three calls (no retry, no reconnect)"
+      ],
+      "pseudocode": "fake.callErr = status.Error(codes.Unavailable,'pipe broke'); n=fake.calls\nr = rf.Execute(ctx,'{}'); assert !r.OK && r.Error=='sandbox_unavailable' && contains(r.Detail,'pipe broke')\nassert ex.Execute(ctx,'{}').Error=='sandbox_unavailable' && rf.Execute(ctx,'{}').Error=='sandbox_unavailable'\nassert fake.calls==n+1"
+    },
+    {
+      "id": "TS-13-46",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-7.6",
+        "13-REQ-7.7"
+      ],
+      "title": "After Close a proxy returns sandbox_unavailable with detail 'sandbox closed', and an agent's unknown_tool answer is passed through",
+      "given": [
+        "a counting fake Agent server answering Call with {ok:false, error:\"unknown_tool\", detail:\"available: a, b\"}"
+      ],
+      "when": "a proxy Execute is called on the live sandbox, then the sandbox is Closed and Execute is called again",
+      "then": [
+        "the live call returns OK false, Error `unknown_tool` and Detail `available: a, b`, and a following Tools call reaches the server (sandbox live)",
+        "the call after Close returns OK false, Error `sandbox_unavailable` and Detail exactly `sandbox closed`",
+        "the call after Close made no RPC"
+      ],
+      "pseudocode": "r = p.Execute(ctx,'{}'); assert !r.OK && r.Error=='unknown_tool' && r.Detail=='available: a, b'\nn=fake.tools; sb.Tools(ctx,o); assert fake.tools==n+1\nsb.Close(ctx); n=fake.calls; r = p.Execute(ctx,'{}'); assert r.Error=='sandbox_unavailable' && r.Detail=='sandbox closed' && fake.calls==n"
+    },
+    {
+      "id": "TS-13-47",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-8.1"
+      ],
+      "title": "Absolute and escaping Tar and Export paths are refused before any byte moves, while empty and dot name the root",
+      "given": [
+        "a counting fake Agent server"
+      ],
+      "when": "Sync is called with Tar.Path `/abs`, `../x` and `a/../../x`, Export with `/etc` and `..`, and then Sync and Export with `\"\"`, `.` and `a/../b`",
+      "then": [
+        "each refused call returns a non-nil error whose message contains the path",
+        "the fake server's SyncTar and ExportTar counters do not change for the refused calls",
+        "the `\"\"`, `.` and `a/../b` calls reach the server, and a Tools call afterwards reaches it too (sandbox live)"
+      ],
+      "pseudocode": "for p in ['/abs','../x','a/../../x']: _,err = sb.Sync(ctx,Tar{R:emptyTar,Path:p}); assert err!=nil && contains(err.Error(),p)\nfor p in ['/etc','..']: err = sb.Export(ctx,p,TarOut{W:io.Discard}); assert contains(err.Error(),p)\nassert fake.sync==0 && fake.export==0\nfor p in ['','.','a/../b']: sb.Sync(ctx,Tar{R:emptyTar,Path:p}); sb.Export(ctx,p,TarOut{W:io.Discard}); assert fake.sync==3 && fake.export==3"
+    },
+    {
+      "id": "TS-13-48",
+      "kind": "property",
+      "verifies": [
+        "13-REQ-8.2"
+      ],
+      "title": "The entry rules accept exactly the streams made of allowed entries, refuse at the first forbidden entry, and clear special mode bits",
+      "given": [
+        "the shared entry-rules function applied to a fresh target directory per stream",
+        "a seeded generator of tar entry sequences mixing regular files, directories, inside symlinks, outside symlinks (absolute and relative), hard links, char and block devices, FIFOs, unknown typeflags, absolute names, names with `..`, and names written through an earlier symlink, with random modes including setuid, setgid and sticky"
+      ],
+      "when": "for any generated stream, it is processed by the extraction path and by the export-validation path",
+      "then": [
+        "both paths accept the stream if and only if an independent oracle classifies every entry as allowed",
+        "when refused, both paths stop at the same first forbidden entry and name it",
+        "every accepted file or directory ends with mode & (setuid|setgid|sticky) == 0 on disk and in the validated header",
+        "no file is created outside the target directory"
+      ],
+      "pseudocode": "for i in 0..500: es = genEntries(r); tarb = build(es)\n  e1 = extract(tmpA, tarb); e2 = validateExport(tarb, io.Discard)\n  ok = oracle(es); assert (e1==nil)==ok && (e2==nil)==ok\n  if !ok: assert firstBad(es) named in e1 and e2\n  for f in walk(tmpA): assert mode(f)&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky)==0\n  assert outsideUnchanged()"
+    },
+    {
+      "id": "TS-13-49",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-8.2"
+      ],
+      "title": "The Goal 7 hostile entries are refused both when a tar is synced into a local sandbox and when the host validates an export",
+      "given": [
+        "TMPDIR isolated and a fresh local sandbox per case",
+        "a fake Agent server whose ExportTar streams a given tar"
+      ],
+      "when": "each of these tars is synced through Sync and streamed through Export: `../x`; `/etc/x`; symlink `l -> sub` with sub outside... specifically `l -> ../../outside` followed by `l/f`; symlink `s -> /etc`; symlink `s -> ../..`; hard link `h -> a.txt`; char device; block device; FIFO",
+      "then": [
+        "every Sync returns an error with errors.Is(err, ErrUnsafeArchive) true naming the entry",
+        "every Export returns an error with errors.Is(err, ErrUnsafeArchive) true",
+        "a symlink `in -> sub/file` inside the target, a directory and a regular file are accepted in both directions"
+      ],
+      "pseudocode": "for tc in hostile: _,err = fresh().Sync(ctx,Tar{R:tc.tar}); assert errors.Is(err,ErrUnsafeArchive) && contains(err.Error(), tc.entry)\n  fake.export = tc.tar; err = fsb.Export(ctx,'',TarOut{W:&buf}); assert errors.Is(err,ErrUnsafeArchive)\nok = tarOf(dir('sub/'), file('sub/file'), symlink('in','sub/file')); assert Sync ok && Export ok"
+    },
+    {
+      "id": "TS-13-50",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-8.3"
+      ],
+      "title": "Extraction writes go through os.Root, so neither a pre-existing nor an earlier-extracted symlink lets a write escape the target",
+      "given": [
+        "a target directory containing a pre-existing symlink esc -> <outside dir>",
+        "the extractor's low-level root writer callable in-package without the entry-rules check"
+      ],
+      "when": "the extractor processes a tar with entry esc/pwn.txt, and the low-level writer is asked directly to write esc/pwn2.txt and to MkdirAll esc/d",
+      "then": [
+        "the extractor refuses esc/pwn.txt",
+        "the direct writes return non-nil errors (os.Root refuses the escape)",
+        "<outside dir> contains no pwn.txt, pwn2.txt or d after all three attempts"
+      ],
+      "pseudocode": "os.Symlink(outside, filepath.Join(target,'esc'))\nassert extract(target, tarOf(file('esc/pwn.txt'))) != nil\nroot,_ = os.OpenRoot(target); assert writeFileVia(root,'esc/pwn2.txt') != nil; assert root.MkdirAll('esc/d',0o755) != nil\nassert entries(outside) == 0"
+    },
+    {
+      "id": "TS-13-51",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-8.4"
+      ],
+      "title": "Sync creates missing parents, reports files and content bytes, and Replace empties the path while keeping or creating it",
+      "given": [
+        "TMPDIR isolated and a local sandbox whose workspace already holds keep.txt and sub/old.txt"
+      ],
+      "when": "Sync sends a tar with a/b/c.txt (5 bytes, no directory entries), d.txt (3 bytes) and directory e/; then Tar{Path: \"sub\", Replace: true} with new.txt; then Tar{Path: \"fresh\", Replace: true} with x.txt; then Tar{Path: \"sub\"} without Replace holding more.txt",
+      "then": [
+        "the first Sync returns SyncResult{Files: 2, Bytes: 8} and nil, and a/b/c.txt, d.txt and e/ exist",
+        "after the Replace into sub, sub/old.txt is gone, sub/new.txt exists, sub is still a directory and keep.txt is untouched",
+        "the Replace into the absent fresh creates fresh/x.txt",
+        "the non-Replace Sync keeps sub/new.txt and adds sub/more.txt"
+      ],
+      "pseudocode": "res,err = sb.Sync(ctx,Tar{R:tarOf(file('a/b/c.txt','12345'),file('d.txt','abc'),dir('e/'))}); assert err==nil && res==SyncResult{2,8}\nsb.Sync(ctx,Tar{R:tarOf(file('new.txt')),Path:'sub',Replace:true}); assert !exists(ws+'/sub/old.txt') && exists(ws+'/sub/new.txt') && exists(ws+'/keep.txt')\nsb.Sync(ctx,Tar{R:tarOf(file('x.txt')),Path:'fresh',Replace:true}); assert exists(ws+'/fresh/x.txt')\nsb.Sync(ctx,Tar{R:tarOf(file('more.txt')),Path:'sub'}); assert exists(ws+'/sub/new.txt') && exists(ws+'/sub/more.txt')"
+    },
+    {
+      "id": "TS-13-52",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-8.5"
+      ],
+      "title": "A refused entry stops the sync with InvalidArgument on the agent and ErrUnsafeArchive on the host, keeping earlier entries and the sandbox live",
+      "given": [
+        "a served agent reached by a raw client",
+        "TMPDIR isolated and a local sandbox"
+      ],
+      "when": "a tar holding a.txt, then ../evil, then z.txt is sent through the raw SyncTar stream and through Sandbox.Sync",
+      "then": [
+        "the raw SyncTar returns gRPC status InvalidArgument whose message contains `../evil`",
+        "Sync returns an error with errors.Is(err, ErrUnsafeArchive) true whose message contains `../evil`",
+        "in both workspaces a.txt exists and z.txt does not",
+        "a proxy read_file of a.txt afterwards returns OK true (the sandbox stays live)"
+      ],
+      "pseudocode": "t = tarOf(file('a.txt'), file('../evil'), file('z.txt'))\n_,err = rawSync(raw,t); assert status.Code(err)==codes.InvalidArgument && contains(status.Convert(err).Message(),'../evil')\n_,err = sb.Sync(ctx,Tar{R:t}); assert errors.Is(err,ErrUnsafeArchive) && contains(err.Error(),'../evil')\nassert exists(ws+'/a.txt') && !exists(ws+'/z.txt'); assert rf.Execute(ctx, path('a.txt')).OK"
+    },
+    {
+      "id": "TS-13-53",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-8.6"
+      ],
+      "title": "A read error from R or a cancelled context fails Sync with that cause, cancels the RPC and leaves the sandbox live",
+      "given": [
+        "a fake Agent server whose SyncTar records whether its stream context was cancelled"
+      ],
+      "when": "Sync is called with R = MultiReader(2 MiB of valid tar, a reader that fails with errBoom), then with R = an io.Pipe reader that never yields under a context cancelled after 100ms, then with a valid tar",
+      "then": [
+        "the first Sync returns an error with errors.Is(err, errBoom) true and the server sees its stream context cancelled",
+        "the second returns within 1s with errors.Is(err, context.Canceled) true",
+        "the third Sync succeeds (the sandbox stays live)"
+      ],
+      "pseudocode": "_,err = sb.Sync(ctx,Tar{R:io.MultiReader(partialTar2MiB, errReader{errBoom})}); assert errors.Is(err,errBoom); eventually(fake.syncCtxCancelled)\nc,cancel = context.WithTimeout(bg,100ms); pr,_ = io.Pipe(); _,err = sb.Sync(c,Tar{R:pr}); assert errors.Is(err,context.Canceled) || errors.Is(err, context.DeadlineExceeded) per ctx.Err()\n_,err = sb.Sync(bg,Tar{R:validTar}); assert err==nil"
+    },
+    {
+      "id": "TS-13-54",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-8.7"
+      ],
+      "title": "Export archives a subtree verbatim with hidden and ignored files, symlinks as symlinks, other types skipped, and names relative to the path",
+      "given": [
+        "TMPDIR isolated and a local sandbox on Unix whose workspace holds out/result.txt, out/.hidden, out/.gitignore listing *.log, out/build.log, out/link -> result.txt, and a FIFO out/pipe"
+      ],
+      "when": "Export is called with path `out`, and again with path `out/result.txt`",
+      "then": [
+        "the first archive's entry names are exactly {result.txt, .hidden, .gitignore, build.log, link} (plus an optional root directory entry), none prefixed with out/",
+        "link is a TypeSymlink entry with Linkname result.txt, and result.txt carries its original content",
+        "no entry for pipe appears",
+        "the second archive holds a single regular entry result.txt with the file's content"
+      ],
+      "pseudocode": "var buf; err = sb.Export(ctx,'out',TarOut{W:&buf}); assert err==nil\nhs = readTar(buf); assert names(hs) ⊇= {'result.txt','.hidden','.gitignore','build.log','link'} and no 'pipe' and no 'out/' prefix\nassert hs['link'].Typeflag==tar.TypeSymlink && hs['link'].Linkname=='result.txt'\nbuf2; sb.Export(ctx,'out/result.txt',TarOut{W:&buf2}); assert names(readTar(buf2))==['result.txt']"
+    },
+    {
+      "id": "TS-13-55",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-8.8"
+      ],
+      "title": "Exporting a missing path is NotFound naming the path, and a refused exported entry stops with ErrUnsafeArchive writing nothing from it onward",
+      "given": [
+        "a served agent reached by a raw client",
+        "TMPDIR isolated and a local sandbox",
+        "a fake Agent server whose ExportTar streams good.txt, then symlink bad -> /etc/passwd, then after.txt"
+      ],
+      "when": "the raw client calls ExportTar(\"missing\"), the local sandbox Exports `missing`, and the fake-backed sandbox Exports `\"\"` into a buffer",
+      "then": [
+        "the raw ExportTar stream ends with gRPC status NotFound",
+        "the local Export returns a non-nil error whose message contains `missing`",
+        "the fake-backed Export returns an error with errors.Is(err, ErrUnsafeArchive) true, and reading the buffer yields good.txt and neither bad nor after.txt",
+        "both sandboxes stay live (a subsequent Tools call succeeds on local and reaches the fake)"
+      ],
+      "pseudocode": "s = raw.ExportTar(ctx,{Path:'missing'}); _,err = s.Recv(); assert status.Code(err)==codes.NotFound\nerr = sb.Export(ctx,'missing',TarOut{W:io.Discard}); assert contains(err.Error(),'missing')\nerr = fsb.Export(ctx,'',TarOut{W:&buf}); assert errors.Is(err,ErrUnsafeArchive); assert namesReadable(buf)==['good.txt']\n_,err = sb.Tools(ctx,{}); assert err==nil"
+    },
+    {
+      "id": "TS-13-56",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-9.1"
+      ],
+      "title": "local reports no isolation, only unrestricted network, no resources, image or workdir, and a plain note",
+      "given": [
+        "local.Unisolated()"
+      ],
+      "when": "Capabilities() is read",
+      "then": [
+        "Provider is \"local\", Isolation is IsolationNone and Network is exactly [NetworkUnrestricted]",
+        "no Resources field is boundable, Image is false and Workdir is false",
+        "Notes is non-empty and states that tools run in the embedder's process with its privileges (contains `process` and `privileges`)"
+      ],
+      "pseudocode": "c = local.Unisolated().Capabilities(); assert c.Provider=='local' && c.Isolation==IsolationNone && slices.Equal(c.Network,[NetworkUnrestricted])\nassert c.Resources == zero && !c.Image && !c.Workdir && contains(c.Notes,'process') && contains(c.Notes,'privileges')"
+    },
+    {
+      "id": "TS-13-57",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-9.2"
+      ],
+      "title": "local refuses the zero network, allowlist, resources, image, workdir and provider options without creating a directory",
+      "given": [
+        "TMPDIR isolated"
+      ],
+      "when": "Create is called with the zero Spec, NetworkAllowlist with one endpoint, each of Resources CPUs, MemoryBytes, PIDs and DiskBytes set to 1, Image \"alpine\", Workdir \"/w\", and Provider {\"x\": 1} (each otherwise Unrestricted)",
+      "then": [
+        "every Create returns a nil Sandbox and an error whose message contains `\"local\"` and the offending field or key (Network.Mode, Resources.CPUs, Image, Workdir, x, ...)",
+        "errors.Is(err, ErrUnsupported) is true for every case except the Provider key case",
+        "<TMPDIR>/agentkit-sandbox-local holds no sandbox directory afterwards"
+      ],
+      "pseudocode": "for tc in cases: sb,err = local.Unisolated().Create(ctx, tc.spec); assert sb==nil && contains(err.Error(),`\"local\"`) && contains(err.Error(), tc.field)\n  if tc.capability: assert errors.Is(err,ErrUnsupported)\nassert entries(localRoot) == 0"
+    },
+    {
+      "id": "TS-13-58",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-9.3",
+        "13-REQ-9.6"
+      ],
+      "title": "Create lays out a private 0700 directory tree with a marker, and Close removes it",
+      "given": [
+        "TMPDIR isolated",
+        "Spec{Network: Unrestricted, Labels: {\"team\": \"core\"}}"
+      ],
+      "when": "Create is called, the directory is inspected, and Close is called",
+      "then": [
+        "ID() matches ^[0-9a-f]{16}$ and <TMPDIR>/agentkit-sandbox-local/<id> exists",
+        "workspace/, home/ and tmp/ exist with permission bits 0700 (checked on Unix)",
+        "the marker file records pid == os.Getpid(), labels {team: core}, a creation time within the test window and TTL 1h; Agent().Workdir equals EvalSymlinks of workspace/",
+        "Close returns nil and the <id> directory no longer exists"
+      ],
+      "pseudocode": "sb,err = Create(ctx, spec); assert err==nil && regexp('^[0-9a-f]{16}$').MatchString(sb.ID())\nd = filepath.Join(os.TempDir(),'agentkit-sandbox-local',sb.ID()); for s in [workspace,home,tmp]: assert stat(d/s).Mode().Perm()==0o700\nm = readMarker(d); assert m.PID==os.Getpid() && m.Labels['team']=='core' && within(m.Created) && m.TTL==time.Hour\nassert sb.Agent().Workdir == evalSymlinks(d+'/workspace'); assert sb.Close(ctx)==nil && !exists(d)"
+    },
+    {
+      "id": "TS-13-59",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-9.4"
+      ],
+      "title": "The local agent's environment is Spec.Env plus host PATH, LANG and TERM where absent, plus private HOME and TMPDIR",
+      "given": [
+        "TMPDIR isolated",
+        "host env with LANG=C.UTF-8, TERM=xterm and HOST_SECRET=1 set via t.Setenv",
+        "Spec.Env {FOO: bar, TERM: dumb}"
+      ],
+      "when": "a local sandbox is created and a proxy execute runs `env`",
+      "then": [
+        "the output contains FOO=bar, TERM=dumb (Spec.Env wins), LANG=C.UTF-8 and the host's PATH",
+        "HOME is <sandbox dir>/home and TMPDIR is <sandbox dir>/tmp",
+        "HOST_SECRET does not appear"
+      ],
+      "pseudocode": "t.Setenv('LANG','C.UTF-8'); t.Setenv('TERM','xterm'); t.Setenv('HOST_SECRET','1')\nsb = Create(ctx, Spec{Network:unrestricted, Env:{'FOO':'bar','TERM':'dumb'}}); out = exec(sb,'execute','env')\nassert containsAll(out,'FOO=bar','TERM=dumb','LANG=C.UTF-8','PATH='+os.Getenv('PATH'),'HOME='+d+'/home','TMPDIR='+d+'/tmp') && !contains(out,'HOST_SECRET')"
+    },
+    {
+      "id": "TS-13-60",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-9.5"
+      ],
+      "title": "local runs the agent over os.Pipe through the command's own net.Conn adapter and applies no confinement",
+      "given": [
+        "the shared stdio net.Conn adapter package",
+        "TMPDIR isolated and a local sandbox",
+        "a host file outside the sandbox workspace"
+      ],
+      "when": "the adapter is built over two os.Pipe pairs and exercised, `go list -deps` is run for sandbox/local and sandbox/cmd/agentkit-sandboxd, and a proxy execute runs `cat <host file>`",
+      "then": [
+        "bytes written on one adapter end are read on the other, Close of one end yields io.EOF on the peer, and LocalAddr and RemoteAddr are non-nil",
+        "both packages' dependency lists include the same adapter package",
+        "the execute call returns OK true with the host file's content (no confinement)"
+      ],
+      "pseudocode": "a,b = adapterPair(os.Pipe(),os.Pipe()); a.Write('hi'); assert readN(b,2)=='hi'; a.Close(); _,err = b.Read(buf); assert err==io.EOF; assert a.LocalAddr()!=nil\nassert contains(goListDeps('./sandbox/local'), adapterPkg) && contains(goListDeps('./sandbox/cmd/agentkit-sandboxd'), adapterPkg)\nr = exec(sb,'execute','cat '+hostFile); assert r.OK && contains(r.Text, hostContent)"
+    },
+    {
+      "id": "TS-13-61",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-9.7"
+      ],
+      "title": "Reap removes sandbox directories whose marker pid is dead, returns their ids, and leaves live ones untouched",
+      "given": [
+        "TMPDIR isolated on Unix",
+        "two local sandboxes A and B created and not closed",
+        "A's marker rewritten with the pid of a child process that has already exited"
+      ],
+      "when": "Reap(ctx) is called",
+      "then": [
+        "it returns [A.ID()] and nil",
+        "A's directory no longer exists and B's directory still exists",
+        "on a platform without a liveness probe (build-tagged test), Reap returns no ids and removes nothing"
+      ],
+      "pseudocode": "a,b = Create(...),Create(...); c = exec.Command('true'); c.Run(); rewriteMarkerPID(a, c.ProcessState.Pid())\nids,err = local.Unisolated().Reap(ctx); assert err==nil && ids==[a.ID()]\nassert !exists(dir(a)) && exists(dir(b))"
+    },
+    {
+      "id": "TS-13-62",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-10.1"
+      ],
+      "title": "agentkit.New refuses proxy shell tools with a nil Guard exactly as it refuses local ones",
+      "given": [
+        "TMPDIR isolated and a local sandbox with proxy tools",
+        "provider/faux as the provider"
+      ],
+      "when": "agentkit.New is called with all proxy tools and nil Guard, with only the proxy run_command and nil Guard, and with all proxy tools and a Guard set",
+      "then": [
+        "the first two return a nil *Agent and an error with errors.Is(err, core.ErrUnguardedExecute) true",
+        "the third returns a non-nil *Agent and nil"
+      ],
+      "pseudocode": "a,err = agentkit.New(Config{Provider:faux.New(), Model:m, Tools:proxies}); assert a==nil && errors.Is(err, core.ErrUnguardedExecute)\na,err = agentkit.New(Config{..., Tools:[byName(proxies,'run_command')]}); assert a==nil && errors.Is(err, core.ErrUnguardedExecute)\na,err = agentkit.New(Config{..., Tools:proxies, Guard: guardFn}); assert a!=nil && err==nil"
+    },
+    {
+      "id": "TS-13-63",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-10.3"
+      ],
+      "title": "Every file effect of a proxy tool lands in the sandbox workspace and nothing in the host working directory",
+      "given": [
+        "TMPDIR isolated",
+        "the test process chdir'd (t.Chdir) into an empty host directory",
+        "a local sandbox with proxy tools"
+      ],
+      "when": "proxies run write_file w.txt, edit_file on w.txt, execute `echo e > e.txt`, and run_command creating r.txt",
+      "then": [
+        "each call returns OK true",
+        "w.txt (with the edit applied), e.txt and r.txt exist under the sandbox's workspace",
+        "the host directory is still empty"
+      ],
+      "pseudocode": "t.Chdir(hostDir)\nassert exec(p,'write_file',{path:'w.txt',content:'a'}).OK && exec(p,'edit_file',{path:'w.txt',...'a'->'b'}).OK\nassert exec(p,'execute',{command:'echo e > e.txt'}).OK && exec(p,'run_command',{argv:['sh','-c','echo r > r.txt']}).OK\nfor f in ['w.txt','e.txt','r.txt']: assert exists(ws+'/'+f); assert read(ws+'/w.txt')=='b'\nassert entries(hostDir)==0"
+    },
+    {
+      "id": "TS-13-64",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-10.4"
+      ],
+      "title": "The shared internal/toolconformance case table passes against tools.All and against proxy tools over local",
+      "given": [
+        "internal/toolconformance exporting the spec 06 case table and a runner that takes a builder from a workspace tree to []core.Tool"
+      ],
+      "when": "the tools package test runs the table with a builder returning tools.All over the tree with NoGlobalExcludes, and the sandbox test runs it with a builder that tars the tree, syncs it into a local sandbox and returns its proxy tools",
+      "then": [
+        "every case passes against tools.All, and the set of case names equals the TS-06 cases tools/conformance_test.go held before the move",
+        "every case passes against the proxy tools, including Data validated against each OutputSchema on success and each documented error code"
+      ],
+      "pseudocode": "// tools/conformance_test.go\ntoolconformance.Run(t, func(t, root) []core.Tool { return tools.All({Workspace:ws(root), Ignore:tools.NoGlobalExcludes()}) })\n// sandbox/..._test.go\ntoolconformance.Run(t, func(t, root) []core.Tool { sb = localCreate(t); sb.Sync(ctx,Tar{R:tarDir(root)}); return sb.Tools(ctx,{}) })\nassert toolconformance.CaseNames() ⊇ previousTS06Names"
+    },
+    {
+      "id": "TS-13-65",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-10.5"
+      ],
+      "title": "grpc and protobuf are direct requirements at the go.sum versions, approved with reasons, with x/net indirect and the module graph unchanged",
+      "given": [
+        "internal/policy tests reading go.mod, deps_test.go and the go toolchain"
+      ],
+      "when": "the tests parse go.mod, parse approvedDeps with its comments via go/parser, and run `go list -m all` and `go list -m -f '{{if not .Indirect}}{{.Path}}{{end}}' all`",
+      "then": [
+        "go.mod requires google.golang.org/grpc v1.64.1 and google.golang.org/protobuf v1.36.11 without `// indirect`, and golang.org/x/net only as indirect",
+        "approvedDeps contains both module paths, each preceded by a non-empty comment, and validateAllowlist passes on the direct set",
+        "the direct set equals the pre-spec direct set plus exactly those two modules",
+        "the `go list -m all` output equals the snapshot recorded from the pre-spec tree under internal/policy/testdata"
+      ],
+      "pseudocode": "req = parseGoMod(); assert req['google.golang.org/grpc']=={v1.64.1,direct} && req['google.golang.org/protobuf']=={v1.36.11,direct} && req['golang.org/x/net'].indirect\nfor m in [grpc,protobuf]: assert inApprovedDepsWithComment(m)\ndirect = goList(direct); assert validateAllowlist(direct, approvedDeps)==nil && set(direct)==preSpecDirect ∪ {grpc,protobuf}\nassert goList('-m','all') == read('internal/policy/testdata/go-list-m-all.txt')"
+    },
+    {
+      "id": "TS-13-66",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-10.6"
+      ],
+      "title": "The cross-target and host-cgo gates and TS-12-14's 20,000-line budget pass with the sandbox tree and generated code counted",
+      "given": [
+        "the sandbox tree, including sandbox/internal/sandboxpb, inside the root module with no nested go.mod"
+      ],
+      "when": "TestCrossTargetBuildAndVet, TestHostCgoBuildAndVet, TestLineBudgets_TS12_14 and TestMakeCheckSucceeds_TS09_20 run",
+      "then": [
+        "the four cross targets build and vet with CGO_ENABLED=0 and the host builds and vets with CGO_ENABLED=1",
+        "no go.mod exists under sandbox/, and the code-line counter run over sandbox/internal/sandboxpb counts more than zero lines",
+        "the root module's counted lines are at most 20,000",
+        "`make check` exits 0"
+      ],
+      "pseudocode": "assert !exists('sandbox/go.mod'); assert codeLines(t, root+'/sandbox/internal/sandboxpb', true) > 0\nassert codeLines(t, root, true) <= 20000\nrun TestCrossTargetBuildAndVet, TestHostCgoBuildAndVet, TestMakeCheckSucceeds_TS09_20 -> pass"
+    },
+    {
+      "id": "TS-13-67",
+      "kind": "unit",
+      "verifies": [
+        "13-REQ-10.7"
+      ],
+      "title": "Only sandbox/, examples/sandbox and internal test helpers import sandbox packages, and the exported APIs of agentkit, core, tools and codemode are unchanged",
+      "given": [
+        "a policy test walking every Go file of the root module with go/parser",
+        "a golden list of exported identifiers of agentkit, core, tools and codemode recorded from the pre-spec tree"
+      ],
+      "when": "the test collects importers of any package under <module>/sandbox and the current exported identifiers (with signatures) of the four packages",
+      "then": [
+        "every importer lies under sandbox/ or examples/sandbox/, or is a file under internal/ that is a _test.go file or belongs to a test-helper package imported only by tests",
+        "no non-test file outside sandbox/ and examples/sandbox/ imports google.golang.org/grpc",
+        "the exported identifiers and their signatures for agentkit, core, tools and codemode equal the golden list"
+      ],
+      "pseudocode": "for file, imps in importsOf(root): for imp in imps: if strings.HasPrefix(imp, mod+'/sandbox'): assert under(file,'sandbox/') || under(file,'examples/sandbox/') || (under(file,'internal/') && isTestHelper(file))\nfor pkg in ['.','core','tools','codemode']: assert exportedAPI(pkg) == golden[pkg]"
+    },
+    {
+      "id": "TS-13-68",
+      "kind": "integration",
+      "verifies": [
+        "13-REQ-10.8"
+      ],
+      "title": "The examples/sandbox program runs offline against local and provider/faux and exits 0",
+      "given": [
+        "examples/sandbox/main_test.go",
+        "ANTHROPIC_API_KEY unset and no network required"
+      ],
+      "when": "the test runs `go run .` in examples/sandbox and calls the example's run function in process",
+      "then": [
+        "`go run .` exits 0 and its output contains the example's completion line",
+        "run(ctx, &buf) returns nil and buf shows a proxy tool result from the sandbox workspace"
+      ],
+      "pseudocode": "t.Setenv('ANTHROPIC_API_KEY',''); out,err = exec.Command('go','run','.').CombinedOutput(); assert err==nil && contains(out, completionLine)\nvar b strings.Builder; assert run(context.Background(), &b)==nil && contains(b.String(), expectedToolOutput)"
+    },
+    {
+      "id": "TS-13-69",
+      "kind": "smoke",
+      "verifies": [
+        "13-PATH-1"
+      ],
+      "title": "An embedder creates a local sandbox, syncs a project, gets eleven proxy tools, reads a synced file and closes the sandbox",
+      "given": [
+        "TMPDIR isolated",
+        "a tar holding hello.txt (\"hi there\\n\") and src/main.go"
+      ],
+      "when": "the test calls local.Unisolated().Create with NetworkUnrestricted, Sync(Tar{R: tar}), Tools(ToolOptions{}), the proxy read_file Execute on hello.txt, and Close",
+      "then": [
+        "Create returns a live sandbox whose directory holds workspace/, home/, tmp/ and the marker",
+        "Sync returns SyncResult{Files: 2} and Tools returns the eleven tool names in tools.All order",
+        "read_file returns OK true, Text containing `hi there`, a non-nil Data object and decoded Metadata",
+        "Close returns nil and the sandbox directory is gone"
+      ],
+      "pseudocode": "sb = Create(ctx, Spec{Network:{Mode:NetworkUnrestricted}}); res = sb.Sync(ctx,Tar{R:tar}); assert res.Files==2\ntl = sb.Tools(ctx,{}); assert names(tl)==names(tools.All(...))\nr = byName(tl,'read_file').Execute(ctx, `{\"path\":\"hello.txt\"}`); assert r.OK && contains(r.Text,'hi there') && r.Data!=nil\nassert sb.Close(ctx)==nil && !exists(dir)",
+      "real_components": [
+        "local provider",
+        "sandbox attach package",
+        "agent service (sandbox/internal/agent)",
+        "sandboxpb gRPC client and server",
+        "stdio net.Conn adapter over os.Pipe",
+        "tar entry rules and os.Root extractor",
+        "tools.All"
+      ]
+    },
+    {
+      "id": "TS-13-70",
+      "kind": "smoke",
+      "verifies": [
+        "13-PATH-2",
+        "13-REQ-10.2"
+      ],
+      "title": "A faux-driven code-mode script over proxy tools has one guard-blocked call that errors while the others complete with nested events parented on code_mode",
+      "given": [
+        "TMPDIR isolated and a local sandbox synced with notes.txt containing `needle`",
+        "codemode.New over the proxy read_file, search_files and execute",
+        "a Config.Guard that blocks execute commands containing `forbidden`",
+        "provider/faux scripted with a code_mode call whose script calls read_file, search_files, execute `echo ok` and execute `echo forbidden`, then a final text turn"
+      ],
+      "when": "agentkit.New(Config{Provider: faux, Tools: [code_mode], Guard: guard}) runs the conversation with Stream and the events are collected",
+      "then": [
+        "the script's output records an error result for the `forbidden` execute call",
+        "read_file, search_files and execute `echo ok` return ok results carrying sandbox data (notes.txt content, a needle match, `ok`)",
+        "every ToolExecutionStart and ToolExecutionEnd event for a nested call has ParentToolUseID equal to the code_mode call's ToolUseID",
+        "the run ends with the faux final text and no error"
+      ],
+      "pseudocode": "cm,_,_ = codemode.New([rf,sf,ex], codemode.Options{}); a,_ = agentkit.New(Config{Provider:faux.New(turns...), Tools:[cm], Guard:blockForbidden})\nevents = collect(a.Stream(ctx, prompt)); out = codeModeResult(events)\nassert hasError(out,'forbidden'); assert okResults(out, ['read_file','search_files','echo ok'])\nfor e in nestedExecEvents(events): assert e.ParentToolUseID == codeModeCallID\nassert finalText(events)==fauxFinal",
+      "real_components": [
+        "agentkit.New driver and batch executor",
+        "nested caller",
+        "codemode",
+        "provider/faux",
+        "Config.Guard",
+        "proxy tools",
+        "local provider",
+        "agent service"
+      ]
+    },
+    {
+      "id": "TS-13-71",
+      "kind": "smoke",
+      "verifies": [
+        "13-PATH-3",
+        "13-REQ-7.4"
+      ],
+      "title": "Cancelling a proxy execute returns aborted at once, kills the sandbox process, and the sandbox keeps serving",
+      "given": [
+        "TMPDIR isolated and a local sandbox on Unix with proxy tools"
+      ],
+      "when": "the proxy execute runs `sleep 60 & echo $! > child.pid; wait` under a context the test cancels once child.pid appears in the workspace, and a proxy list_files is then called",
+      "then": [
+        "Execute returns within 1s a result equal to core.ErrResult(\"aborted\", \"Operation aborted\")",
+        "kill(childPid, 0) returns ESRCH within 5s",
+        "list_files afterwards returns OK true"
+      ],
+      "pseudocode": "c,cancel = withCancel(); go r = ex.Execute(c, cmd('sleep 60 & echo $! > child.pid; wait')); waitFile(ws+'/child.pid'); cancel()\nassert DeepEqual(recvWithin(1s), core.ErrResult('aborted','Operation aborted')); eventually(5s, kill(pid,0)==ESRCH)\nassert ls.Execute(bg, `{\"path\":\".\"}`).OK",
+      "real_components": [
+        "proxy tools",
+        "sandbox attach package",
+        "agent service",
+        "tools.Run process-group kill",
+        "local provider"
+      ]
+    },
+    {
+      "id": "TS-13-72",
+      "kind": "smoke",
+      "verifies": [
+        "13-PATH-4",
+        "13-REQ-7.5",
+        "13-REQ-9.8",
+        "13-REQ-5.8"
+      ],
+      "title": "Cutting the connection mid-call makes the sandbox sticky-unavailable for every later proxy call and operation",
+      "given": [
+        "TMPDIR isolated and a local sandbox with proxy tools",
+        "the local provider's internal connection-cut hook"
+      ],
+      "when": "a proxy execute `sleep 60` is in flight, the test triggers the cut hook, then calls proxy read_file, Sync and Tools",
+      "then": [
+        "the in-flight Execute returns OK false, Error `sandbox_unavailable` and a non-empty Detail naming the cause",
+        "the later read_file returns `sandbox_unavailable` immediately without reaching the agent",
+        "Sync and Tools return errors matching ErrUnavailable",
+        "Close then returns and the sandbox directory is removed"
+      ],
+      "pseudocode": "go r = ex.Execute(ctx, cmd('echo $$ > p; sleep 60')); waitFile(ws+'/p'); localtest.Cut(sb)\nr = recv(); assert r.Error=='sandbox_unavailable' && r.Detail!=''\nassert rf.Execute(ctx, path('a')).Error=='sandbox_unavailable'\n_,err = sb.Sync(ctx,Tar{R:emptyTar}); assert errors.Is(err,ErrUnavailable); _,err = sb.Tools(ctx,{}); assert errors.Is(err,ErrUnavailable)\nsb.Close(ctx); assert !exists(dir)",
+      "real_components": [
+        "local provider and its connection-cut hook",
+        "sandbox attach package",
+        "proxy tools",
+        "agent service",
+        "stdio net.Conn adapter over os.Pipe"
+      ]
+    },
+    {
+      "id": "TS-13-73",
+      "kind": "smoke",
+      "verifies": [
+        "13-PATH-5",
+        "13-REQ-8.7"
+      ],
+      "title": "An embedder exports a subtree written by a proxy tool and finds the file in the validated tar",
+      "given": [
+        "TMPDIR isolated and a local sandbox with proxy tools on Unix"
+      ],
+      "when": "the proxy write_file creates out/result.txt with content `done`, the proxy execute runs `ln -s result.txt out/link`, and Export(ctx, \"out\", TarOut{W: buf}) is called",
+      "then": [
+        "Export returns nil",
+        "reading buf with archive/tar yields result.txt with content `done`",
+        "it yields link as a TypeSymlink with Linkname result.txt, and no name starts with out/"
+      ],
+      "pseudocode": "wf.Execute(ctx, `{\"path\":\"out/result.txt\",\"content\":\"done\"}`); ex.Execute(ctx, cmd('ln -s result.txt out/link'))\nerr = sb.Export(ctx,'out',TarOut{W:&buf}); assert err==nil\nhs = readTar(buf); assert hs['result.txt'].content=='done' && hs['link'].Typeflag==tar.TypeSymlink && hs['link'].Linkname=='result.txt'",
+      "real_components": [
+        "local provider",
+        "sandbox attach package",
+        "agent service export",
+        "tar entry rules on the host",
+        "archive/tar",
+        "proxy tools"
+      ]
+    },
+    {
+      "id": "TS-13-74",
+      "kind": "smoke",
+      "verifies": [
+        "13-PATH-6",
+        "13-REQ-4.4",
+        "13-REQ-4.5"
+      ],
+      "title": "The built agentkit-sandboxd binary serves the protocol on its stdio to the attach package and exits 0 when the host closes",
+      "given": [
+        "agentkit-sandboxd built with go build into a temp directory",
+        "a workdir holding seed.txt"
+      ],
+      "when": "the test starts the binary with --workdir <workdir> --ttl 1m, wraps its stdout and stdin as a net.Conn with the shared adapter, attaches, calls Tools and a proxy list_files, and closes the connection",
+      "then": [
+        "Agent() reports ProtocolMajor 1 and Workdir equal to EvalSymlinks(workdir)",
+        "Tools returns the eleven tools and list_files returns OK true with seed.txt in its Text",
+        "after the close, the process exits with status 0 within 5s"
+      ],
+      "pseudocode": "p = exec.Command(bin,'--workdir',wd,'--ttl','1m'); in,_ = p.StdinPipe(); out,_ = p.StdoutPipe(); p.Start()\nconn = stdioconn.New(out, in); sb = attach.Create(ctx, conn, ...); assert sb.Agent().ProtocolMajor==1 && sb.Agent().Workdir==evalSymlinks(wd)\ntl = sb.Tools(ctx,{}); assert len(tl)==11; r = byName(tl,'list_files').Execute(ctx, `{\"path\":\".\"}`); assert r.OK && contains(r.Text,'seed.txt')\nsb.Close(ctx); assert waitWithin(p,5s)==0",
+      "real_components": [
+        "agentkit-sandboxd binary",
+        "stdio net.Conn adapter",
+        "sandbox attach package",
+        "agent service",
+        "sandboxpb gRPC over HTTP/2",
+        "tools.All"
+      ]
+    }
+  ]
+}

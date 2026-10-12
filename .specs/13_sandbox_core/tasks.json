@@ -1,0 +1,573 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "13",
+  "spec_name": "sandbox_core",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./sandbox/... ./internal/... ./tools/... ./core/... ./examples/sandbox/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "08_code_mode",
+      "reason": "codemode.New binds proxy tools unchanged and converts their Data through JSON with UseNumber; codemode/smoke_test.go is the model for this spec's faux-driven code-mode test over proxy tools (TS-13-70)."
+    },
+    {
+      "spec": "09_repository_cut",
+      "reason": "Modifies its direct-dependency allowlist (internal/policy/deps_test.go approvedDeps, TS-09-16) to add google.golang.org/grpc and google.golang.org/protobuf, and must keep TS-09-15 (golang.org/x/net indirect) and TS-09-20 (make check) green."
+    },
+    {
+      "spec": "11_minimal_driver",
+      "reason": "Relies unchanged on the batch executor (Execute(ctx, Raw), Sequential demotion, the aborted result), the nested caller, and New's unguarded-shell refusal (core.ErrUnguardedExecute)."
+    },
+    {
+      "spec": "12_core_schema_guard",
+      "reason": "Uses the core.Tool/ToolResult/ToolMetadata vocabulary, guard.IsShellTool and schema marshalling in authored order for byte comparison; TS-12-14's 20,000-line budget (core/size_test.go) constrains the new code including generated sandboxpb."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Define the agentkit.sandbox.v1 protocol, check in its generated code, add make proto and promote grpc and protobuf to direct dependencies",
+      "criteria": [
+        "13-REQ-1.1",
+        "13-REQ-1.2",
+        "13-REQ-1.3",
+        "13-REQ-1.4",
+        "13-REQ-1.5",
+        "13-REQ-1.7",
+        "13-REQ-10.5"
+      ],
+      "tests": [
+        "TS-13-1",
+        "TS-13-2",
+        "TS-13-3",
+        "TS-13-4",
+        "TS-13-5",
+        "TS-13-65"
+      ],
+      "steps": [
+        "Before touching go.mod, write the output of `go list -m all` to internal/policy/testdata/go-list-m-all.txt and record the current direct requirements; TS-13-65 compares against the snapshot file and against the pre-spec direct set encoded as a literal in the test",
+        "Write sandbox/internal/sandboxpb/sandbox.proto: syntax proto3, package agentkit.sandbox.v1, option go_package = \"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb;sandboxpb\"; messages HelloRequest{}, HelloResponse{uint32 protocol_major, uint32 protocol_minor, string version, string workdir, string outline_backend, bool git}, ToolsRequest{int64 symbols_max_files, int64 symbols_max_duration_nanos, string spill_dir, bool disable_spill}, ToolInfo{string name, bytes digest}, ToolsResponse{repeated ToolInfo tools}, CallRequest{string name, bytes input}, CallResponse{bool ok, bytes data, string error, string detail, bytes metadata, string text}, TarStart{string path, bool replace}, TarChunk{oneof body {TarStart start; bytes data}}, SyncResponse{int64 files, int64 bytes}, ExportRequest{string path}; service Agent with unary Hello/Tools/Call, client-streaming SyncTar(stream TarChunk) returns (SyncResponse) and server-streaming ExportTar(ExportRequest) returns (stream TarChunk). Header comment: fields are added, never renumbered, and any addition bumps ProtocolMinor; CallRequest/CallResponse reference no other message or session state",
+        "Add a `proto` target (with a `##` help line) to the Makefile: its first recipe line runs `command -v protoc` and, when missing, prints `make proto: protoc not found on PATH; install protoc` to stderr and exits 1 before anything else runs; then `GOBIN=$(CURDIR)/build/bin go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11` and `GOBIN=$(CURDIR)/build/bin go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1`; then protoc with --plugin=protoc-gen-go=build/bin/protoc-gen-go --plugin=protoc-gen-go-grpc=build/bin/protoc-gen-go-grpc, --go_out/--go-grpc_out=. with paths=source_relative on sandbox/internal/sandboxpb/sandbox.proto",
+        "In the same target, rewrite the `// \tprotoc  vX.Y` header line of both generated files to a fixed `(unknown)` value with sed so regeneration is byte-identical whatever protoc release is installed, then write the hex SHA-256 of sandbox.proto (sha256sum, falling back to `shasum -a 256`) to sandbox/internal/sandboxpb/sandbox.proto.sha256",
+        "Run `make proto` and check in sandbox.pb.go, sandbox_grpc.pb.go and sandbox.proto.sha256 beside the .proto; confirm the grpc output references grpc.SupportPackageIsVersion9 and compiles against grpc v1.64.1",
+        "Run `go mod tidy` so google.golang.org/grpc v1.64.1 and google.golang.org/protobuf v1.36.11 move to the direct require block with unchanged versions; if tidy tries to change a version, pin with `go mod edit -require`; confirm golang.org/x/net stays `// indirect` and `go list -m all` still equals the snapshot",
+        "Add both module paths to approvedDeps in internal/policy/deps_test.go, each preceded by a one-line reason comment (the sandbox agent protocol transport; the generated protobuf runtime), and add a ruling for each to docs/DEPS.md in its existing format, stating that they are promoted at the versions already in go.sum and that upgrading is a separate ruling",
+        "Write sandbox/internal/sandboxpb/proto_test.go (package sandboxpb): TS-13-1 inspects File_sandbox_proto through protoreflect (package, go_package suffix, one service Agent with exactly the five methods and their streaming shapes, CallRequest/CallResponse field kinds, no message-typed field); TS-13-5 uses a test-file helper checkProtoHash(proto, recorded []byte) error that returns an error containing `run make proto` on mismatch, runs with PATH emptied, and asserts the checked-in pair passes and a modified copy fails",
+        "Write internal/policy/proto_test.go: TS-13-2 runs `go build ./...` and `go vet ./sandbox/...` with PATH set to the go binary's directory only; TS-13-3 checks `make -n proto` names both pinned plugins and build/bin, then (skipping when protoc is absent) runs `make proto` and asserts the generated files and hash file are byte-identical and the hash matches sandbox.proto; TS-13-4 runs `make proto` with PATH set to a temp dir holding only symlinks to go and make, and asserts a non-zero exit, `protoc` in the output and unchanged hashes of the four files. All three skip under -short like the cross-target gate",
+        "Add TS-13-65 to internal/policy/deps_test.go: parse go.mod for the two direct requirements and x/net as indirect, parse approvedDeps with go/parser to check each new entry has a non-empty preceding comment, run validateAllowlist on the direct set, compare the direct set with the pre-spec set plus exactly the two modules, and compare `go list -m all` with internal/policy/testdata/go-list-m-all.txt"
+      ],
+      "touches": [
+        "sandbox/internal/sandboxpb/sandbox.proto",
+        "sandbox/internal/sandboxpb/sandbox.pb.go",
+        "sandbox/internal/sandboxpb/sandbox_grpc.pb.go",
+        "sandbox/internal/sandboxpb/sandbox.proto.sha256",
+        "sandbox/internal/sandboxpb/proto_test.go",
+        "Makefile",
+        "go.mod",
+        "go.sum",
+        "internal/policy/deps_test.go",
+        "internal/policy/proto_test.go",
+        "internal/policy/testdata/go-list-m-all.txt",
+        "docs/DEPS.md"
+      ],
+      "done_when": [
+        "`go build ./...` succeeds with no protoc or protoc plugin on PATH",
+        "`go list -m all` output is byte-identical to the pre-spec snapshot"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Add the sandbox host API, CheckSpec, the shared definition digest and the shared build-version lookup",
+      "criteria": [
+        "13-REQ-2.1",
+        "13-REQ-2.2",
+        "13-REQ-2.3",
+        "13-REQ-2.4",
+        "13-REQ-2.7",
+        "13-REQ-6.2"
+      ],
+      "tests": [
+        "TS-13-8",
+        "TS-13-9",
+        "TS-13-10",
+        "TS-13-11",
+        "TS-13-13",
+        "TS-13-37"
+      ],
+      "steps": [
+        "Create sandbox/doc.go with the package doc (a sandbox holds one workspace; Tools returns drop-in proxies for tools.All; local is not isolation) and sandbox/version.go with AgentPath = \"/usr/local/libexec/agentkit-sandboxd\", ProtocolMajor = 1, ProtocolMinor = 0 and MaxMessageBytes = 16 << 20",
+        "In sandbox/spec.go define Spec{Image, Workdir string; Env map[string]string; Resources Resources; Network Network; TTL time.Duration; Labels map[string]string; Provider map[string]any}, Resources{CPUs float64; MemoryBytes int64; PIDs int64; DiskBytes int64}, NetworkMode (int; NetworkNone = 0, NetworkAllowlist, NetworkUnrestricted) with a String method returning none/allowlist/unrestricted, Endpoint{Host string; Port int} and Network{Mode NetworkMode; Allow []Endpoint}",
+        "Define Isolation (IsolationNone, IsolationConfinement, IsolationContainer, IsolationMicroVM), ResourceCaps{CPUs, MemoryBytes, PIDs, DiskBytes bool} and Capabilities{Provider string; Isolation Isolation; Network []NetworkMode; Resources ResourceCaps; Image, Workdir bool; Notes string}",
+        "In sandbox/sandbox.go define the Provider interface (Capabilities, Create(ctx, Spec) (Sandbox, error), Reap(ctx) ([]string, error)), the Sandbox interface (ID, Spec, Agent() AgentInfo, Sync, Tools, Export, Close), AgentInfo{Version string; ProtocolMajor, ProtocolMinor uint32; Workdir, OutlineBackend string; Git bool}, ToolOptions{Symbols tools.SymbolOptions; SpillDir string; DisableSpill bool}, SyncResult{Files int; Bytes int64}, and the sealed Source/Destination interfaces (unexported isSource/isDestination methods) implemented only by Tar{R io.Reader; Path string; Replace bool} and TarOut{W io.Writer}; document on Tar that entries extracted before a refused entry stay, and that a transfer has no ordering guarantee with concurrent tool calls",
+        "In sandbox/errors.go declare ErrUnsupported, ErrProtocol, ErrUnavailable, ErrClosed, ErrToolMismatch, ErrToolsConfigured and ErrUnsafeArchive (distinct errors.New values) and SpecError{Provider, Field, Reason string} whose Error() reads `sandbox: provider \"<p>\" cannot honour Spec.<Field> = <value>: <reason>` (value rendered with the field's String form, e.g. none) and whose Is reports true for ErrUnsupported",
+        "Implement CheckSpec(caps, spec) (Spec, error) in sandbox/check.go: first the provider-independent checks in a fixed order (negative TTL, each negative Resources field, Env names empty or containing '=' or NUL, Env values containing NUL, the reserved Labels key agentkit.sandbox, a non-empty Allow with a mode other than NetworkAllowlist, an Allow endpoint with empty Host or Port outside 1-65535), each returning a plain error naming the field (Spec.TTL, Spec.Resources.PIDs, Spec.Env, Spec.Labels, Spec.Network.Allow, Spec.Network.Allow[i].Host/Port)",
+        "Then in CheckSpec refuse uncovered fields in the order Network.Mode (not in caps.Network), Resources.CPUs/MemoryBytes/PIDs/DiskBytes (non-zero and not boundable), Image (set without caps.Image), Workdir (set without caps.Workdir) with a *SpecError naming caps.Provider and the field; on success return a copy with TTL 0 replaced by time.Hour and, only when caps.Workdir is true and Workdir is empty, Workdir set to /workspace; every error path returns the zero Spec",
+        "Create sandbox/internal/tooldigest with Digest(t core.Tool) []byte: SHA-256 over a length-prefixed encoding of Name, Description, json.Marshal(InputSchema), json.Marshal(OutputSchema), the count and each element of PromptGuidelines, the Builtin flag and ExecutionMode, so that the encoding is injective; it is the only digest function, used by both the agent and the host",
+        "Create sandbox/internal/buildver with Version() string: the github.com/agent-fox-dev/agentkit-go module version from runtime/debug.ReadBuildInfo (Main when it is that module, otherwise the matching Deps entry), or `(devel)` when absent or empty; the agent's Hello and the host's mismatch message both use it",
+        "Write sandbox/api_test.go (package sandbox_test) for TS-13-8, sandbox/check_test.go for TS-13-9, TS-13-10, TS-13-11 and the seeded property test TS-13-13 (math/rand/v2 with a fixed seed, 2000 iterations, an independent oracle for uncovered fields), and sandbox/internal/tooldigest/digest_test.go for the property test TS-13-37, including the check that every tools.All value's digest is stable across two tools.All builds"
+      ],
+      "touches": [
+        "sandbox/doc.go",
+        "sandbox/version.go",
+        "sandbox/spec.go",
+        "sandbox/sandbox.go",
+        "sandbox/errors.go",
+        "sandbox/check.go",
+        "sandbox/api_test.go",
+        "sandbox/check_test.go",
+        "sandbox/internal/tooldigest/digest.go",
+        "sandbox/internal/tooldigest/digest_test.go",
+        "sandbox/internal/buildver/buildver.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Implement the shared tar entry rules, the os.Root extractor, the export validator and the verbatim archiver",
+      "criteria": [
+        "13-REQ-8.2",
+        "13-REQ-8.3"
+      ],
+      "tests": [
+        "TS-13-48",
+        "TS-13-50"
+      ],
+      "steps": [
+        "Create sandbox/internal/tarsafe with CleanRel(p string) (string, error): accept slash-separated workspace-relative paths, map \"\" and \".\" to \".\", refuse absolute paths (leading /, filepath.IsAbs or a volume name) and any path containing a `..` component after path.Clean, with an error naming the path; the agent and the host both use it",
+        "Define EntryError{Name, Reason string} (Error: `unsafe tar entry \"<name>\": <reason>`) and a Validator that records symlinks seen in the stream and takes an optional lookup func(name string) (target string, isLink bool, err error) for symlinks already on disk",
+        "Implement (*Validator).Check(hdr *tar.Header) (*tar.Header, error): refuse an absolute name or a name with a `..` component; allow only TypeReg (and the legacy TypeRegA), TypeDir and TypeSymlink, refusing TypeLink, TypeChar, TypeBlock, TypeFifo and every other typeflag; refuse a symlink whose target is absolute or which, joined to the link's own directory and cleaned, leaves the target; walk each parent component of the name and refuse when it passes through a known symlink (stream or disk) that resolves outside; return a copy with the 04000|02000|01000 bits cleared from Mode",
+        "Implement an unexported writeEntry(root *os.Root, hdr *tar.Header, r io.Reader) (int64, error) that performs every write through root: MkdirAll for directories and missing parents, OpenFile(O_WRONLY|O_CREATE|O_TRUNC, mode&0o777) plus io.Copy for regular files, Symlink for symlinks (removing an existing non-directory entry of the same name first)",
+        "Implement Extract(root *os.Root, r io.Reader) (Stats{Files int; Bytes int64}, error): read with archive/tar, Check each header with a Validator whose lookup uses root.Lstat and root.Readlink, write accepted entries with writeEntry, count regular files and content bytes, stop at the first refused entry with its EntryError, and report a malformed stream (tar.ErrHeader, io.ErrUnexpectedEOF) as an EntryError naming the last header read or `malformed archive`",
+        "Implement ValidateStream(r io.Reader, w io.Writer) error for the host's export check: read with archive/tar, Check each header with a stream-only Validator, write each accepted header (sanitised) and its content through a tar.Writer on w, and on the first refused or malformed entry Flush what was written and return its EntryError without writing that entry or anything after it; Close the tar writer only on success",
+        "Implement Archive(root *os.Root, rel string, w io.Writer) error for the agent's export: Lstat rel through root; a regular file becomes one entry named by its base name; a directory is walked with fs.WalkDir(root.FS(), rel), naming entries relative to rel, writing directories, regular files with content and symlinks as TypeSymlink with fs.ReadLink (never followed), skipping every other type, including hidden and ignored files verbatim",
+        "Write sandbox/internal/tarsafe/rules_test.go with the seeded property test TS-13-48 (generator of mixed entries and modes, an independent oracle, Extract into a fresh t.TempDir root and ValidateStream into a buffer, same first refused entry named by both, no special mode bits on disk or in validated headers, nothing created outside) and extract_test.go with TS-13-50 (pre-existing esc symlink to an outside dir; Extract refuses esc/pwn.txt; writeEntry and root.MkdirAll directly fail; the outside dir stays empty)"
+      ],
+      "touches": [
+        "sandbox/internal/tarsafe/path.go",
+        "sandbox/internal/tarsafe/rules.go",
+        "sandbox/internal/tarsafe/extract.go",
+        "sandbox/internal/tarsafe/validate.go",
+        "sandbox/internal/tarsafe/archive.go",
+        "sandbox/internal/tarsafe/rules_test.go",
+        "sandbox/internal/tarsafe/extract_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Implement the agent service: Hello, Tools, Call, SyncTar, ExportTar, tool-set rebuild and TTL",
+      "criteria": [
+        "13-REQ-3"
+      ],
+      "tests": [
+        "TS-13-14",
+        "TS-13-15",
+        "TS-13-16",
+        "TS-13-17",
+        "TS-13-18",
+        "TS-13-19",
+        "TS-13-20",
+        "TS-13-21",
+        "TS-13-22"
+      ],
+      "steps": [
+        "Create sandbox/internal/agent with Config{Workdir string; Env []string; TTL time.Duration} and New(cfg) (*Agent, error): os.Stat the workdir and refuse a missing path or a non-directory with an error naming it; resolve it with filepath.EvalSymlinks; record the start time; keep an unexported build func(tools.Options) ([]core.Tool, error) defaulting to tools.All so in-package tests can inject stub tools",
+        "Implement (*Agent).Serve(conn net.Conn) error: grpc.NewServer(grpc.MaxRecvMsgSize(sandbox.MaxMessageBytes), grpc.MaxSendMsgSize(sandbox.MaxMessageBytes)), register the sandboxpb Agent server, and serve on a single-connection net.Listener whose first Accept returns conn and later Accepts block until Close; wrap conn so a read EOF or Close signals that the host has gone",
+        "In Serve, wait for the host-gone signal, the TTL (remaining from the start time) or a server error: on host-gone call Stop and return nil; at the TTL call Stop (which cancels every in-flight RPC context, so tools.Run kills each command's process group) and return fmt.Errorf(\"agent: TTL %v expired\", ttl)",
+        "Implement Hello: ProtocolMajor/Minor from the sandbox package, Version from buildver.Version(), the resolved workspace root, OutlineBackend from build-tagged files (backend_cgo.go `//go:build cgo` returns tree-sitter, backend_nocgo.go returns none), and Git from a lookPathIn(env, \"git\") helper that scans the PATH entry of the explicit environment for an executable regular file (never exec.LookPath, which reads the process PATH)",
+        "Implement Tools: refuse a non-empty relative spill_dir with status InvalidArgument; default an empty spill_dir to filepath.Join(<TMPDIR from the explicit env, falling back to TEMP, TMP, then /tmp>, \"agentkit-spill\"); build with tools.NewWorkspace(root) and tools.All(tools.Options{Workspace, Env: cfg.Env, Ignore: tools.NoGlobalExcludes(), Symbols, SpillDir, DisableSpill}) and no Index; answer names and tooldigest.Digest values in tools.All order; store the options and the response",
+        "On a repeated Tools RPC return the stored response when the options are equal, and status FailedPrecondition (tool set unchanged) when they differ",
+        "Implement Call: snapshot the current tool set under a read lock (gRPC already serves each unary RPC on its own goroutine); before any Tools, or for a name not in the set, answer ok=false, error unknown_tool, detail `available: <comma-separated names>`; otherwise call Execute(ctx, input) with the RPC context and the input bytes verbatim, recovering a panic into error panic; marshal Data (when len > 0) and Metadata (when non-nil and not IsEmpty) with encoding/json, empty bytes otherwise, and turn a marshal error into ok=false, error marshal_failed; the RPC status is OK in all these cases",
+        "Implement SyncTar: require a TarStart first chunk (else InvalidArgument); CleanRel the path; open an os.Root at the workspace, MkdirAll the path, and with replace remove each existing child of the path while keeping the path; open an os.Root at the target and feed the following data chunks through an io.Pipe into tarsafe.Extract as they arrive; map an EntryError to InvalidArgument whose message names the entry; return SyncResponse{files, bytes}",
+        "After every successful SyncTar, if a tool set is configured, rebuild it with the stored options and swap it in under the write lock; calls already in flight keep the snapshot they took",
+        "Implement ExportTar: CleanRel the path (InvalidArgument on refusal), Lstat it through the workspace os.Root and answer NotFound when it does not exist, then run tarsafe.Archive into a writer that sends TarChunk{data} messages of at most 1 MiB each",
+        "Write the tests with a raw sandboxpb client over net.Pipe (grpc.NewClient with a passthrough target and a dialer returning the pipe end): TS-13-14, TS-13-15 (cgo and nocgo expectations in build-tagged test files), TS-13-16, TS-13-17, TS-13-18, TS-13-19 and TS-13-22 (Unix only, child pid file plus syscall.Kill(pid, 0) returning ESRCH), TS-13-20 with the injected stub builder, TS-13-21 with a SyncTar stream helper"
+      ],
+      "touches": [
+        "sandbox/internal/agent/agent.go",
+        "sandbox/internal/agent/serve.go",
+        "sandbox/internal/agent/hello.go",
+        "sandbox/internal/agent/backend_cgo.go",
+        "sandbox/internal/agent/backend_nocgo.go",
+        "sandbox/internal/agent/tools.go",
+        "sandbox/internal/agent/call.go",
+        "sandbox/internal/agent/transfer.go",
+        "sandbox/internal/agent/agent_test.go",
+        "sandbox/internal/agent/call_test.go",
+        "sandbox/internal/agent/transfer_test.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Implement attach: the one-shot gRPC client, handshake, lifetime and state machine, failure classification, proxy tool definitions and baseline Call, Sync and Export",
+      "criteria": [
+        "13-REQ-5",
+        "13-REQ-6.1",
+        "13-REQ-6.3",
+        "13-REQ-6.4",
+        "13-REQ-6.5",
+        "13-REQ-6.6"
+      ],
+      "tests": [
+        "TS-13-28",
+        "TS-13-29",
+        "TS-13-30",
+        "TS-13-31",
+        "TS-13-34",
+        "TS-13-35",
+        "TS-13-38"
+      ],
+      "steps": [
+        "Create sandbox/internal/attach with Config{ID string; Spec sandbox.Spec (already checked); Destroy func(context.Context) error; Metadata metadata.MD}, New(ctx, cc grpc.ClientConnInterface, closer io.Closer, cfg) (sandbox.Sandbox, error) written only against the client interface plus per-call outgoing metadata (attached to every RPC with metadata.NewOutgoingContext), and Dial(ctx, conn net.Conn, cfg) that builds the client and calls New",
+        "In Dial use grpc.NewClient(\"passthrough:///agentkit-sandbox\", ...) with grpc.WithContextDialer(oneShot(conn)), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(sandbox.MaxMessageBytes), grpc.MaxCallSendMsgSize(sandbox.MaxMessageBytes)) and grpc.WithIdleTimeout(0) so the channel never idles into a redial; oneShot hands out conn on its first call and returns an error on every later one",
+        "Handshake in New: call Hello under the Create ctx; on a different ProtocolMajor close the client, run Destroy once and return fmt.Errorf(\"%w: agent protocol %d.%d, host protocol %d.%d\", sandbox.ErrProtocol, ...); accept any minor; on any other Hello failure also close and Destroy; build AgentInfo from the response and the effective Spec as cfg.Spec with Workdir set to the reported root",
+        "Never use the Create ctx after New returns: lifetime work runs under a context derived from context.Background(); start time.AfterFunc(effective TTL) that marks the sandbox unavailable with cause `TTL <d> expired` and runs the shared teardown; when cc is a *grpc.ClientConn, watch WaitForStateChange and mark the sandbox unavailable with cause `agent connection ended` on TransientFailure or Shutdown",
+        "Implement the state machine (live, unavailable with a stored cause, closed) under a mutex or atomics, and a classify(ctx, err) helper: a done caller ctx returns its own error and is never a transport failure; InvalidArgument, FailedPrecondition, NotFound and Unimplemented are deliberate refusals that leave the sandbox live, with Unimplemented reported as `agent protocol <maj>.<min> does not implement <rpc>`; any other status marks the sandbox unavailable and returns an error wrapping sandbox.ErrUnavailable and the cause",
+        "Implement Close: a sync.Once teardown (stop the timer, close the client, run Destroy) shared with the TTL path; the first Close marks the sandbox closed and returns the first teardown error, every later Close returns nil; ID, Spec and Agent return the stored values",
+        "Gate Tools, Sync and Export: unavailable returns an error wrapping ErrUnavailable and the cause, closed returns ErrClosed, both without an RPC",
+        "Implement Tools: once configured, equal ToolOptions (compared with ==) return a fresh copy of the stored proxy slice and different ones return ErrToolsConfigured without an RPC; otherwise send the Tools RPC, then build the host's tools.All over a throwaway os.MkdirTemp workspace (removed afterwards) with the same Symbols, SpillDir and DisableSpill, Ignore tools.NoGlobalExcludes() and an empty Env",
+        "Compare the agent's names (same set, same order) and digests with tooldigest.Digest of the host values; on any difference return nil and fmt.Errorf(\"%w: ...\", sandbox.ErrToolMismatch) naming each differing, missing, extra or misplaced tool and both the agent's AgentInfo.Version and buildver.Version(); the sandbox stays live",
+        "Build each proxy by copying Name, Description, InputSchema, OutputSchema, PromptGuidelines, Builtin, ExecutionMode, PrepareArguments and Label from the host value, leaving Handler and ReachableTools nil and Terminating false, with Execute = a remote call that applies the gate (closed gives sandbox_unavailable / `sandbox closed`, unavailable gives sandbox_unavailable with the cause), sends CallRequest{name, input verbatim} and maps OK, Error, Detail and Text, Data (decoded with json.Decoder.UseNumber) and Metadata (decoded into *core.ToolMetadata, nil when empty); task 6 hardens it",
+        "Implement baseline Sync (send TarStart{CleanRel(path), replace}, then R in data chunks read through a 1 MiB buffer, CloseAndRecv, classify errors, return SyncResult) and baseline Export (receive TarChunk data into an io.Pipe consumed by tarsafe.ValidateStream(pr, W), classify errors); task 9 adds path refusal, error mapping and cancellation",
+        "Create sandbox/internal/fakeagent, a test-helper Agent server over net.Pipe with configurable Hello, Tools, Call, SyncTar and ExportTar behaviour, per-RPC counters, recorded inputs, chunks and incoming metadata, a block-until-cancelled Call mode and a Stop that closes its end; write sandbox/internal/attach tests TS-13-28, TS-13-29, TS-13-30, TS-13-31, TS-13-34, TS-13-35 and TS-13-38 against it"
+      ],
+      "touches": [
+        "sandbox/internal/attach/attach.go",
+        "sandbox/internal/attach/state.go",
+        "sandbox/internal/attach/tools.go",
+        "sandbox/internal/attach/proxy.go",
+        "sandbox/internal/attach/transfer.go",
+        "sandbox/internal/attach/attach_test.go",
+        "sandbox/internal/attach/tools_test.go",
+        "sandbox/internal/fakeagent/fakeagent.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Harden proxy tool execution: size limit, guarded decoding, cancellation, sticky transport failure and concurrency",
+      "criteria": [
+        "13-REQ-7",
+        "13-REQ-6.7",
+        "13-REQ-1.6"
+      ],
+      "tests": [
+        "TS-13-6",
+        "TS-13-41",
+        "TS-13-42",
+        "TS-13-43",
+        "TS-13-44",
+        "TS-13-45",
+        "TS-13-46"
+      ],
+      "steps": [
+        "Before any RPC, return core.ErrResult(\"aborted\", \"Operation aborted\") when ctx is already done, and return core.ErrResult(\"arguments_too_large\", ...) when proto.Size(&sandboxpb.CallRequest{Name, Input}) exceeds sandbox.MaxMessageBytes, with a detail giving the size and the limit; neither changes the sandbox state",
+        "When the Call RPC fails while ctx is done, return the same aborted result and leave the sandbox live; the cancelled RPC context reaches the agent and tools.Run kills the process group",
+        "Validate non-empty Data with wire.Guard(data, wire.Limits{}), require a JSON object (first non-space byte `{`), and decode with json.Decoder.UseNumber into map[string]any so re-encoding yields the agent's bytes; on failure treat the response as a transport failure with cause `malformed response: data: <err>`",
+        "Validate non-empty Metadata with wire.Guard and json.Unmarshal it into core.ToolMetadata (a type mismatch is an error); empty metadata gives nil; on failure treat it as a transport failure with cause `malformed response: metadata: <err>`",
+        "On any transport failure (classify from task 5 or a malformed response) mark the sandbox unavailable and return core.ErrResult(\"sandbox_unavailable\", cause) with no retry and no reconnect; every later Execute on any proxy of the sandbox returns sandbox_unavailable from the gate without an RPC, and after Close the detail is exactly `sandbox closed`",
+        "Copy OK, Error, Detail and Text verbatim, leave Terminate false and Blocks nil, and pass an agent unknown_tool answer through as an ordinary result that keeps the sandbox live",
+        "Make Execute safe for concurrent use: read state through atomics or an RWMutex, hold no lock across the RPC, keep no shared mutable buffers, and do not serialise calls on the host",
+        "Write sandbox/internal/attach/proxy_test.go against fakeagent: TS-13-41, TS-13-42, TS-13-43 (fresh sandbox per malformed case), TS-13-44 (blocking Call mode), TS-13-45 (Unavailable once, two proxies, Call counter +1), TS-13-46",
+        "Write sandbox/internal/attach/limits_test.go for TS-13-6: assert the constants, drive a real agent.Agent over net.Pipe with a raw client using a 64 MiB send limit (a 15 MiB write_file Call is answered, a 17 MiB Call fails with ResourceExhausted), and have a fakeagent answer a 10 MiB Data object that the proxy decodes with OK true"
+      ],
+      "touches": [
+        "sandbox/internal/attach/proxy.go",
+        "sandbox/internal/attach/state.go",
+        "sandbox/internal/attach/proxy_test.go",
+        "sandbox/internal/attach/limits_test.go"
+      ],
+      "depends_on": [
+        4,
+        5
+      ],
+      "done_when": [
+        "`go test -race ./sandbox/internal/attach/... -count=1` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Add the stdio net.Conn adapter and the agentkit-sandboxd command",
+      "criteria": [
+        "13-REQ-4"
+      ],
+      "tests": [
+        "TS-13-23",
+        "TS-13-24",
+        "TS-13-25",
+        "TS-13-26",
+        "TS-13-27",
+        "TS-13-74"
+      ],
+      "steps": [
+        "Create sandbox/internal/stdioconn with New(r io.ReadCloser, w io.WriteCloser) net.Conn: Read from r, Write to w, an idempotent Close that closes both, LocalAddr and RemoteAddr returning a fixed stdio address, and SetDeadline/SetReadDeadline/SetWriteDeadline forwarded when the underlying values support them (an *os.File does) and a no-op returning nil otherwise; it is the one adapter used by the command and by local",
+        "Create sandbox/cmd/agentkit-sandboxd/main.go with parseFlags(args []string) (config, error) on a flag.NewFlagSet with ContinueOnError and discarded output: --workdir (default /workspace), --ttl (time.Duration, default 1h; zero or negative is a usage error) and --version",
+        "With --version print `agentkit-sandboxd <buildver.Version()> (protocol 1.0)` built from sandbox.ProtocolMajor/Minor to stdout and exit 0 without serving",
+        "On a usage error write exactly one line `agentkit-sandboxd: <error>` to stderr, nothing to stdout, and exit 2",
+        "Implement redirectStdout() *os.File that saves os.Stdout, points os.Stdout at os.Stderr and returns the original, and call it before serving",
+        "Build agent.New(agent.Config{Workdir, Env: os.Environ() verbatim, TTL}) and Serve(stdioconn.New(os.Stdin, origStdout)); open no listening socket; exit 0 when Serve returns nil (host closed the connection), and on a startup failure or the TTL error write one line naming the cause (newlines replaced) to stderr and exit 1",
+        "Add /agentkit-sandboxd to .gitignore so a `go build` in the root does not leave an untracked binary",
+        "Write sandbox/internal/stdioconn/conn_test.go covering two os.Pipe pairs (bytes pass, Close gives io.EOF on the peer, non-nil addresses)",
+        "Write sandbox/cmd/agentkit-sandboxd/main_test.go with a helper that builds the binary into t.TempDir(): TS-13-23 (parseFlags defaults; cmd.Env of PATH plus MARKER; attach.Dial over stdioconn of the child's pipes; execute env), TS-13-24, TS-13-25 (in-package redirect with a captured stderr pipe; /proc/<pid>/fd has no socket on Linux, skipped elsewhere), TS-13-26, TS-13-27 (the four cross targets with CGO_ENABLED=0 and the host with CGO_ENABLED=1, skipped under -short) and the smoke test TS-13-74"
+      ],
+      "touches": [
+        "sandbox/internal/stdioconn/conn.go",
+        "sandbox/internal/stdioconn/conn_test.go",
+        "sandbox/cmd/agentkit-sandboxd/main.go",
+        "sandbox/cmd/agentkit-sandboxd/main_test.go",
+        ".gitignore"
+      ],
+      "depends_on": [
+        4,
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Implement the local provider: capabilities, refusals, private directories, explicit environment, in-process agent over os.Pipe, Close, Reap and the connection-cut hook",
+      "criteria": [
+        "13-REQ-9",
+        "13-REQ-2.5",
+        "13-REQ-2.6",
+        "13-REQ-5.5",
+        "13-REQ-5.6"
+      ],
+      "tests": [
+        "TS-13-12",
+        "TS-13-32",
+        "TS-13-33",
+        "TS-13-56",
+        "TS-13-57",
+        "TS-13-58",
+        "TS-13-59",
+        "TS-13-60",
+        "TS-13-61",
+        "TS-13-72"
+      ],
+      "steps": [
+        "Create sandbox/local with Unisolated() sandbox.Provider; Capabilities returns Provider \"local\", IsolationNone, Network []NetworkMode{NetworkUnrestricted}, zero ResourceCaps, Image and Workdir false, and Notes `local provides no isolation: tools run in the embedder's process with its privileges, on the host filesystem and network`",
+        "In Create call sandbox.CheckSpec with those capabilities first, then refuse any Spec.Provider key (local defines none) with `sandbox: provider \"local\" does not define Spec.Provider option \"<key>\"`; both checks run before any directory, pipe or goroutine exists",
+        "Generate the id as 16 lowercase hex characters from 8 crypto/rand bytes; create <os.TempDir()>/agentkit-sandbox-local/<id>/ with workspace/, home/ and tmp/, chmod each to 0700 explicitly so the umask cannot widen them, and write the marker file agentkit-sandbox.json with pid (os.Getpid()), labels, created (RFC 3339) and ttl_ns from the effective spec",
+        "Build the agent environment: Spec.Env entries, plus PATH, LANG and TERM from the host for each one Spec.Env lacks, plus HOME=<dir>/home and TMPDIR=<dir>/tmp, sorted as NAME=value strings",
+        "Create two os.Pipe pairs, wrap them with stdioconn.New into an agent-side and a host-side net.Conn, construct agent.New(agent.Config{Workdir: <dir>/workspace, Env, TTL: effective TTL}) and run Serve on a goroutine with a done channel; apply no confinement of any kind",
+        "Call attach.Dial(ctx, hostConn, attach.Config{ID, Spec: effective, Destroy}) where Destroy closes both conns, waits (bounded) for Serve to return, deregisters the cut hook and removes the sandbox directory; if Dial fails, make sure Destroy has run so nothing is left behind",
+        "Implement Reap: list the root, read each marker, and remove the directories whose pid is not running, returning their ids; liveness lives in build-tagged files (alive_unix.go uses syscall.Kill(pid, 0), treating ESRCH as dead and EPERM as alive; alive_other.go reports no probe, and Reap then removes nothing); entries without a readable marker are left alone",
+        "Add sandbox/internal/localtest with Cut(sb sandbox.Sandbox) error backed by a registry keyed by sandbox ID that local fills at Create; the registered func closes both pipe conns abruptly, so an in-flight Call sees a transport failure; no exported method is added to any public type",
+        "Write sandbox/local/local_test.go with TMPDIR set to t.TempDir(): TS-13-12, TS-13-32, TS-13-33 (local TTL 500ms plus a fakeagent-backed attach sandbox whose agent stops), TS-13-56, TS-13-57, TS-13-58, TS-13-59, TS-13-60 (adapter round trip, `go list -deps` of ./sandbox/local and ./sandbox/cmd/agentkit-sandboxd both containing the stdioconn package, execute `cat` of a host file), TS-13-61 (Unix; marker rewritten with an exited child's pid) and the smoke test TS-13-72 using localtest.Cut"
+      ],
+      "touches": [
+        "sandbox/local/local.go",
+        "sandbox/local/env.go",
+        "sandbox/local/marker.go",
+        "sandbox/local/alive_unix.go",
+        "sandbox/local/alive_other.go",
+        "sandbox/local/local_test.go",
+        "sandbox/internal/localtest/localtest.go"
+      ],
+      "depends_on": [
+        6,
+        7
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Complete tar sync and export: path refusal, chunking, unsafe-archive mapping, read errors, cancellation and NotFound",
+      "criteria": [
+        "13-REQ-8.1",
+        "13-REQ-8.4",
+        "13-REQ-8.5",
+        "13-REQ-8.6",
+        "13-REQ-8.7",
+        "13-REQ-8.8",
+        "13-REQ-1.6"
+      ],
+      "tests": [
+        "TS-13-7",
+        "TS-13-47",
+        "TS-13-49",
+        "TS-13-51",
+        "TS-13-52",
+        "TS-13-53",
+        "TS-13-54",
+        "TS-13-55",
+        "TS-13-73"
+      ],
+      "steps": [
+        "In attach Sync and Export, after the state gate, run tarsafe.CleanRel on the path and return an error naming it before opening any stream, leaving the sandbox live; \"\", \".\" and paths such as a/../b are accepted",
+        "Harden Sync: open the SyncTar stream under a context derived from ctx and cancelled on every exit; send TarStart{path, replace}; read R through a 1 MiB buffer and send each read as one data chunk; on a read error cancel the stream and return an error wrapping it; when ctx ends return an error wrapping ctx.Err(); neither changes the sandbox state",
+        "Map the agent's InvalidArgument from SyncTar to fmt.Errorf(\"%w: %s\", sandbox.ErrUnsafeArchive, <agent message naming the entry>) and keep the sandbox live; other statuses go through classify; return SyncResult{Files, Bytes} from SyncResponse",
+        "Harden Export: require TarOut; map NotFound to an error naming the path; run tarsafe.ValidateStream on the received chunks and map an EntryError to an error wrapping ErrUnsafeArchive, cancelling the stream so nothing from the refused entry onward reaches W; refusals never mark the sandbox unavailable, transport failures do",
+        "Verify the agent side end to end and fix gaps in sandbox/internal/agent/transfer.go and tarsafe.Archive: missing parents created, Replace empties an existing path and creates an absent one, Files counts regular files and Bytes content bytes, a single-file export archives that file under its base name, symlinks are stored unfollowed, FIFOs skipped, and ExportTar chunks never exceed 1 MiB",
+        "Document on Sandbox.Sync and Export (sandbox/sandbox.go) that entries extracted before a refused entry stay in the workspace and that transfers have no ordering guarantee with concurrent tool calls",
+        "Write sandbox/internal/attach/transfer_test.go against fakeagent for TS-13-7 (recorded SyncTar chunks; plus a raw client on a real agent for ExportTar chunk sizes), TS-13-47 and TS-13-53",
+        "Write sandbox/transfer_test.go (package sandbox_test, TMPDIR isolated) over local, using fakeagent where the test calls for a fake export: TS-13-49, TS-13-51, TS-13-52 (also a raw SyncTar on a served agent), TS-13-54 (Unix, FIFO via syscall.Mkfifo), TS-13-55 and the smoke test TS-13-73"
+      ],
+      "touches": [
+        "sandbox/internal/attach/transfer.go",
+        "sandbox/internal/attach/transfer_test.go",
+        "sandbox/internal/agent/transfer.go",
+        "sandbox/internal/tarsafe/archive.go",
+        "sandbox/sandbox.go",
+        "sandbox/transfer_test.go"
+      ],
+      "depends_on": [
+        8
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Share the spec 06 conformance table and prove driver, guard and code mode work over proxy tools",
+      "criteria": [
+        "13-REQ-10.1",
+        "13-REQ-10.2",
+        "13-REQ-10.3",
+        "13-REQ-10.4",
+        "13-REQ-6.1",
+        "13-REQ-6.4",
+        "13-REQ-6.5",
+        "13-REQ-6.6",
+        "13-REQ-6.7"
+      ],
+      "tests": [
+        "TS-13-36",
+        "TS-13-39",
+        "TS-13-40",
+        "TS-13-62",
+        "TS-13-63",
+        "TS-13-64",
+        "TS-13-70"
+      ],
+      "steps": [
+        "Create internal/toolconformance (a test-helper package imported only by tests): a Tree type (ordered entries of path, body, mode and directory flag) with Write(t, dir) and Tar(t) []byte, the TS-06 base tree (f.txt, main.go, dir/inner.txt), a Builder func(t *testing.T, tree Tree) []core.Tool, and the TS-06-22 to TS-06-33 case groups moved verbatim from tools/conformance_test.go together with expectError and validateToolData",
+        "Give every case group its own tree so tree changes made today after the tools are built (the empty/ directory of TS-06-22, the mode-0 locked.go of TS-06-29, skipped on Windows and as root) are part of the tree passed to Builder; export RunGroup(t, id string, build Builder) and CaseNames()",
+        "Rewrite tools/conformance_test.go to keep each TestXxx_TS06_NN function name and call toolconformance.RunGroup with a builder that writes the tree to t.TempDir() and returns tools.All(tools.Options{Workspace, Ignore: tools.NoGlobalExcludes()}); outcomes stay unchanged",
+        "Write sandbox/conformance_test.go (package sandbox_test) running every group with a builder that creates a local sandbox (t.Cleanup Close), Syncs bytes.NewReader(tree.Tar(t)) and returns its proxy tools; this is TS-13-64 together with the tools-side run and a CaseNames check against the previous TS-06 names",
+        "Write sandbox/integration_test.go (TMPDIR isolated): TS-13-36 (proxies versus a host tools.All, field by field, byte-identical schema JSON, PrepareArguments presence, remote-only Execute after Close), TS-13-39, TS-13-40 under go test -race, TS-13-62 (agentkit.New with provider/faux and nil Guard over all proxies and over run_command alone, then with a Guard) and TS-13-63 (t.Chdir into an empty host directory)",
+        "Write sandbox/codemode_smoke_test.go for TS-13-70 on the model of codemode/smoke_test.go: sync notes.txt containing needle, wrap the proxy read_file, search_files and execute with codemode.New, script provider/faux with a code_mode call (read_file, search_files, execute `echo ok`, execute `echo forbidden`) and a final text turn, set Config.Guard to block execute commands containing forbidden, collect Stream events and assert the blocked call's error, the other results and ParentToolUseID on every nested ToolExecutionStartEvent and ToolExecutionEndEvent",
+        "Fix any gap these tests expose in the proxy or attach code rather than in the driver, core, tools or codemode, whose exported surfaces must not change"
+      ],
+      "touches": [
+        "internal/toolconformance/toolconformance.go",
+        "tools/conformance_test.go",
+        "sandbox/conformance_test.go",
+        "sandbox/integration_test.go",
+        "sandbox/codemode_smoke_test.go"
+      ],
+      "depends_on": [
+        9
+      ],
+      "done_when": [
+        "`go test -race ./sandbox/... ./tools/... -count=1` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "implement",
+      "title": "Enforce layout and budget gates, add examples/sandbox, and update the documentation",
+      "criteria": [
+        "13-REQ-10.6",
+        "13-REQ-10.7",
+        "13-REQ-10.8"
+      ],
+      "tests": [
+        "TS-13-66",
+        "TS-13-67",
+        "TS-13-68"
+      ],
+      "steps": [
+        "Add TestSandboxCountedInBudget_TS13_66 to core/size_test.go beside TestLineBudgets_TS12_14, reusing codeLines and moduleRoot: no go.mod under sandbox/, codeLines over sandbox/internal/sandboxpb is above zero, and the root module total stays at most 20,000; run TestCrossTargetBuildAndVet, TestHostCgoBuildAndVet and TestMakeCheckSucceeds_TS09_20 and fix any failure in the sandbox tree (build tags, Windows stubs) rather than in the gates",
+        "Write internal/policy/layout_test.go for TS-13-67: walk every Go file of the root module with go/parser, require each importer of a <module>/sandbox package to be under sandbox/ or examples/sandbox/ or to be an internal/ test file or test-helper package, and refuse a google.golang.org/grpc import in non-test files outside sandbox/ and examples/sandbox/",
+        "Generate internal/policy/testdata/exported-api.golden with a go/ast walker that prints every exported declaration and signature of the root package, core, tools and codemode; first confirm with `git diff` against the commit before task 1 that no non-test Go file of those packages changed, so the golden equals the pre-spec API; TS-13-67 compares the current walk with it",
+        "Write examples/sandbox/main.go with run(ctx, w io.Writer) error: local.Unisolated().Create with NetworkUnrestricted, Sync an in-memory tar of a small project, Tools, codemode.New over read_file, search_files and execute, agentkit.New with a provider/faux script and guard.Restricted, Run, Export a subtree to a TarOut and print a proxy tool result and the line `Sandbox example completed successfully`; main calls run and exits non-zero on error",
+        "Write examples/sandbox/main_test.go for TS-13-68 on the model of examples/codemode/main_test.go (go run . plus run in process, ANTHROPIC_API_KEY unset), examples/sandbox/README.md, and add the example to examples/README.md",
+        "Run `make doc`, then update README.md: a Sandboxes section after Code mode, the sandbox packages in the packages table, `make proto` in the make targets table, and the socket sentence rewritten as `the library listens on no socket; agentkit-sandboxd serves the agent service on its stdio`",
+        "Update docs/architecture.md (package graph rows for sandbox, sandbox/local, sandbox/cmd/agentkit-sandboxd and the internal packages; a Sandboxes section on the Agent service, the proxy guarantees and the live/unavailable/closed state machine; the D3 record), docs/configuration.md (sandbox.Spec, Resources, Network, ToolOptions, Tar/TarOut, local, and a table of which provider honours which field), recreate docs/cli.md with the agentkit-sandboxd flags and exit codes, and confirm the two DEPS.md rulings from task 1; write no tests about documentation",
+        "Run `make check` and fix whatever it reports"
+      ],
+      "touches": [
+        "core/size_test.go",
+        "internal/policy/layout_test.go",
+        "internal/policy/testdata/exported-api.golden",
+        "examples/sandbox/main.go",
+        "examples/sandbox/main_test.go",
+        "examples/sandbox/README.md",
+        "examples/README.md",
+        "README.md",
+        "docs/architecture.md",
+        "docs/configuration.md",
+        "docs/cli.md",
+        "docs/DEPS.md"
+      ],
+      "depends_on": [
+        10
+      ],
+      "done_when": [
+        "`make check` exits 0"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 12,
+      "kind": "integration",
+      "title": "Verify every sandbox execution path end to end through the real code",
+      "tests": [
+        "TS-13-69",
+        "TS-13-70",
+        "TS-13-71",
+        "TS-13-72",
+        "TS-13-73",
+        "TS-13-74"
+      ],
+      "steps": [
+        "Write TS-13-69 and TS-13-71 in sandbox/smoke_test.go (package sandbox_test, TMPDIR isolated, TS-13-71 Unix only) and re-run TS-13-70, TS-13-72, TS-13-73 and TS-13-74 with -race; none may use fakeagent",
+        "Trace 13-PATH-1 through the code: local.Create calls sandbox.CheckSpec, creates the directories and marker, starts agent.Serve over stdioconn on os.Pipe pairs and calls attach.Dial; Dial runs Hello and starts the TTL timer; Sync streams to SyncTar and tarsafe.Extract; Tools calls the Tools RPC, tools.All and tooldigest.Digest; proxy Execute calls Call and decodes the result; Close runs local's Destroy",
+        "Trace 13-PATH-2 to 13-PATH-6: codemode.New over proxies through agentkit.New, the nested caller and Config.Guard; a cancelled proxy Execute reaching tools.Run's process-group kill; localtest.Cut leading to classify and the sticky sandbox_unavailable; Export through ExportTar, tarsafe.Archive and tarsafe.ValidateStream; agentkit-sandboxd main through redirectStdout, stdioconn and agent.Serve; confirm each step calls the next",
+        "Confirm every contract is consumed in production code: CheckSpec's *SpecError and the Spec.Provider refusal are returned by local.Create; ErrProtocol and Destroy on handshake failure flow out of attach.New; the agent's InvalidArgument and NotFound become ErrUnsafeArchive and the named-path error in attach Sync and Export; agent.Serve's TTL error and nil return drive agentkit-sandboxd's exit codes; the aborted, arguments_too_large, sandbox_unavailable and unknown_tool results reach the batch executor; the make proto target and the staleness test agree on sandbox.proto.sha256",
+        "Confirm the entry points owned by other specs are called from production code: agentkit.New's checkShellGuard (spec 11) sees proxy execute and run_command by name, the batch executor's invokeHandler calls proxy Execute with PreparedArguments.Raw, and codemode.New (spec 08) binds the proxies without modification",
+        "Search every file in the tasks' touches lists, above all sandbox/internal/attach/transfer.go and proxy.go from task 5, for panic(\"not implemented\"), TODO, FIXME, `not implemented` errors and bare `return nil` on non-trivial paths, and replace each with the real behaviour",
+        "Run `make check` and `go test -race ./sandbox/... -count=1`, and confirm `go build ./...` still needs no protoc"
+      ],
+      "touches": [
+        "sandbox/smoke_test.go"
+      ],
+      "depends_on": [
+        11
+      ],
+      "done_when": [
+        "`make check` exits 0",
+        "`go test -race ./sandbox/... -count=1` passes with all six smoke tests running against real components"
+      ],
+      "state": "pending"
+    }
+  ]
+}
