@@ -152,8 +152,9 @@ binary into a running container. Two images are published per release:
 - `ghcr.io/agent-fox-dev/agentkit-sandbox:<version>`, the **base image**:
   a small Debian-based image with the agent at
   `/usr/local/libexec/agentkit-sandboxd`, built with cgo so `outline` has
-  its tree-sitter grammars, plus `git`, `rsync`, `bash`, `ca-certificates`
-  and a non-root user. `Spec.Image` defaults to it.
+  its tree-sitter grammars, plus `git`, `bash`, `ca-certificates` and a
+  non-root user. `Spec.Image` defaults to it. No `rsync`: the agent
+  carries the rsync protocol itself (D7).
 - `ghcr.io/agent-fox-dev/agentkit-sandboxd:<version>`, the **overlay
   image**: `FROM scratch`, holding only a statically linked agent
   (`CGO_ENABLED=0`, so `outline` is `go/ast` for Go and `none` for the
@@ -167,8 +168,8 @@ binary into a running container. Two images are published per release:
 The agent's path is a constant of the protocol (`sandbox.AgentPath`). A
 `Create` whose image has no agent there fails before any tool call, with
 an error naming the path and the `COPY --from` line. The agent reports its
-build (version, protocol version, outline backend, whether `rsync` and
-`git` are present) in the `Hello` RPC, and `Capabilities` repeats it.
+build (version, protocol version, outline backend, whether `git` is
+present) in the `Hello` RPC, and `Capabilities` repeats it.
 
 The injection alternative (copy a host binary in after create) would have
 let any image work, but it put a host artifact inside the sandbox on
@@ -185,7 +186,7 @@ module `sandbox/gateway/` with its binary in `cmd/agentkit-gateway`
 inside that module, like `codesearch`. PRD 10's rule that "nothing in this
 module listens on a socket" stays true of the root module.
 
-### D7. Sync is `git clone` for public repositories and `rsync` for local folders, as explicit API
+### D7. Sync is `git clone` for public repositories and rsync for local folders, with rsync as a Go library
 
 **Decided.** Two sources, both first-class operations on a `Sandbox`:
 
@@ -193,17 +194,43 @@ module listens on a socket" stays true of the root module.
   **init step** with network access (§3.5), before the sandbox proper
   starts with its own network policy. No credential is involved, which is
   why it is public repositories only in the first release.
-- **`LocalDir`**: a host directory, copied with `rsync` over the
-  provider's exec channel, honouring `.gitignore` through rsync's own
-  filter (`--filter=':- .gitignore'`), incremental on every later `Sync`,
-  and reversible: `Export` to a `LocalDir` is the same rsync the other
-  way, so an embedder can pull the model's edits back into a working
-  tree without a tar in between.
+- **`LocalDir`**: a host directory, transferred with the rsync protocol,
+  honouring `.gitignore`, incremental on every later `Sync` (the
+  protocol's own quick check and delta transfer), and reversible:
+  `Export` to a `LocalDir` is the same transfer the other way, so an
+  embedder can pull the model's edits back into a working tree without a
+  tar in between.
+
+**The rsync is `github.com/gokrazy/rsync`, not an `rsync` binary.** It is
+a native Go implementation of the rsync protocol (version 27,
+wire-compatible with tridge rsync and openrsync) with a client package,
+`rsyncclient`, whose `Client.Run(ctx, conn io.ReadWriteCloser, paths)`
+runs one transfer over *any* connection, and a server package, `rsyncd`,
+whose `NewConnection(r, w, name)` and `Server.HandleConnArgs(ctx, conn,
+module, args)` serve a `Module{Path, Writable}` over any reader and
+writer pair. So the two ends run in the two agentkit processes, the bytes
+travel on a stream of the agent service (§3.2), nothing on the host or in
+the image has to be installed, and a sync through a gateway is the same
+code path as a local one with no remote-shell bridge. The host is always
+the client: a sender for `Sync`, a receiver for `Export`. The agent is
+always the server, with one module, the workspace, writable for `Sync`
+and read-only for `Export`. Filter rules (`--filter`, `--exclude`,
+`--include`) and `--delete` are parsed by the library's option table;
+`--exclude-from` and `--include-from` are not, so `.gitignore` is applied
+as a filter rule (`--filter=':- .gitignore'`, the per-directory merge
+rule). *Spec time:* confirm the library's filter engine honours the `:`
+dir-merge modifier and that the receiver acts on `--delete`; if either is
+missing, the host expands the rules itself with the `tools` ignore
+engine into explicit `--exclude` patterns, and the acceptance criteria
+in §8 catch a gap either way. Known limits of the library, acceptable for
+a source tree: no xattrs or ACLs (protocol 30 features), MD4 checksums,
+and the project's own statement that it has fewer users than tridge
+rsync. It becomes a direct dependency of the root module with a ruling
+in `docs/DEPS.md`; what it pulls in is listed under Dependencies.
 
 `Tar` stays as the third source and destination for an embedder with its
-own packaging, and as the fallback when `rsync` is not on the host or in
-the image. A private repository in the first release is cloned on the
-host and sent as a `LocalDir`.
+own packaging. A private repository in the first release is cloned on
+the host and sent as a `LocalDir`.
 
 ## Goals
 
@@ -264,7 +291,8 @@ host and sent as a `LocalDir`.
   it. A spec that asks for an allowlist from a provider without one is
   refused (goal 4), not approximated.
 - **Implementing an OCI runtime, a hypervisor, a Kubernetes client or an
-  rsync.** The providers drive what is installed.
+  rsync protocol.** The providers drive what is installed; the rsync
+  protocol is a library (D7).
 - **Browsers, displays, GPUs.** A provider may pass through what its
   backend offers via provider-specific options; nothing here depends on
   it.
@@ -303,9 +331,13 @@ What exists and is reused:
   forwards its stderr. `podman exec` is such a child.
 - `google.golang.org/grpc` and `google.golang.org/protobuf` are already
   in `go.mod` as indirect requirements of the MCP SDK.
+- The `tools` ignore engine decides what a workspace is; the rsync filter
+  rules of D7 say the same thing in rsync's vocabulary, and §8 checks
+  that the two agree on `.gitignore`.
 
 What does not exist: any notion of a tool running elsewhere, a provider
-abstraction, a lifecycle, or a protocol between two agentkit processes.
+abstraction, a lifecycle, a file transfer, or a protocol between two
+agentkit processes.
 
 **OpenShell** (NVIDIA, github.com/NVIDIA/OpenShell), as of this writing: a
 runtime for autonomous agents where a sandbox runs behind a *gateway*,
@@ -333,7 +365,7 @@ exact names.
 | **Sandbox agent** (`agentkit-sandboxd`) | The AgentKit process inside the sandbox, at `/usr/local/libexec/agentkit-sandboxd`. It owns the workspace, runs `tools.All` over it, and serves the agent service on its stdio. |
 | **Base image**, **overlay image** | The two published images (D5): one to run as is, one to `COPY --from` into an embedder's own image. |
 | **Init step** | A short-lived run on the workspace volume, before the sandbox starts, that clones a `GitRepo`. The one place the provider allows network access that `Spec.Network` would not. |
-| **Agent service**, **gateway service** | The two gRPC services of `agentkit.sandbox.v1`: tool calls, sync, export and hello to an agent; lifecycle and relay on a gateway. |
+| **Agent service**, **gateway service** | The two gRPC services of `agentkit.sandbox.v1`: hello, tool calls, the rsync stream and tar sync and export to an agent; lifecycle and relay on a gateway. |
 | **Gateway** | A service on a remote host that implements the provider operations and relays the agent service to each sandbox it manages. |
 | **Proxy tool** | A `core.Tool` on the host whose definition comes from `tools` and whose `Execute` runs the call in a sandbox. |
 
@@ -382,8 +414,9 @@ type Sandbox interface {
     Spec() Spec
     // Sync populates or updates the workspace from src. It is the only way
     // bytes enter the sandbox other than through a tool call. A LocalDir
-    // sync is incremental; a GitRepo sync is allowed once, before the
-    // first Tools call, because it runs in the init step.
+    // sync is incremental and SyncResult carries the transfer statistics
+    // (files listed, transferred, bytes sent); a GitRepo sync is allowed
+    // once, before the first Tools call, because it runs in the init step.
     Sync(ctx context.Context, src Source) (SyncResult, error)
     // Tools is the built-in tool set over the sandbox's workspace, with
     // tools.All's definitions and a remote Execute. opts selects the same
@@ -391,7 +424,8 @@ type Sandbox interface {
     // the sandbox).
     Tools(ctx context.Context, opts ToolOptions) ([]core.Tool, error)
     // Export copies the workspace, or a subtree of it, out: to a LocalDir
-    // by rsync, or to a Tar. It is the embedder's action, never a tool's.
+    // by the rsync protocol, or to a Tar. It is the embedder's action,
+    // never a tool's.
     Export(ctx context.Context, path string, dst Destination) error
     // Close destroys the sandbox and its volume. Idempotent. A sandbox is
     // also destroyed at its TTL and when the agent process ends.
@@ -417,7 +451,7 @@ p, err := podman.New(podman.Options{})            // or gateway.Dial(url, token)
 sb, err := p.Create(ctx, sandbox.Spec{
     Resources: sandbox.Resources{CPUs: 2, MemoryBytes: 4 << 30}, TTL: 30 * time.Minute})
 defer sb.Close(ctx)
-_, err = sb.Sync(ctx, sandbox.LocalDir{Path: "."})  // rsync, .gitignore honoured
+_, err = sb.Sync(ctx, sandbox.LocalDir{Path: "."})  // rsync protocol, .gitignore honoured
 ts, err := sb.Tools(ctx, sandbox.ToolOptions{})     // a drop-in for tools.All
 cm, _, err := codemode.New(subset(ts, "read_file", "search_files", "execute"), codemode.Options{})
 agent, err := agentkit.New(agentkit.Config{
@@ -475,7 +509,8 @@ only process the provider starts; everything else inside is a child of a
 tool call.
 
 It has no model, no provider client, no driver: it is `tools`, the
-generated proto package and the service, about the size of
+generated proto package, the service, and the `rsyncd` server of
+`gokrazy/rsync` serving the workspace as its one module, about the size of
 `mcp/client.go`. The overlay build is `CGO_ENABLED=0`; the base-image
 build has cgo for tree-sitter.
 
@@ -483,11 +518,11 @@ build has cgo for tree-sitter.
 
 ```protobuf
 service Agent {
-  rpc Hello(HelloRequest) returns (HelloResponse);        // versions, workspace, tool names, outline backend, has rsync/git
+  rpc Hello(HelloRequest) returns (HelloResponse);        // versions, workspace, tool names, outline backend, has git
   rpc Call(CallRequest) returns (CallResponse);           // tool, input (JSON bytes) -> ToolResult (ok, data JSON bytes, error, detail, metadata, text)
-  rpc Sync(stream SyncChunk) returns (SyncResult);        // a tar stream into path, replace or merge
-  rpc Export(ExportRequest) returns (stream ExportChunk); // a tar stream out of path
-  rpc Exec(stream ExecInput) returns (stream ExecOutput); // stdin/stdout/exit of a program in the workspace; used by rsync (§3.5), not exposed as a tool
+  rpc Rsync(stream RsyncFrame) returns (stream RsyncFrame); // first frame: direction and the server-side rsync args; then bytes both ways (§3.5)
+  rpc SyncTar(stream TarChunk) returns (SyncResult);       // a tar stream into path, replace or merge
+  rpc ExportTar(ExportRequest) returns (stream TarChunk);  // a tar stream out of path
   // D3 (c), later:
   // rpc RunScript(stream ScriptFrame) returns (stream ScriptFrame);
 }
@@ -513,10 +548,15 @@ Rules:
   through a symlink out of the target, no device nodes. On the host the
   exported tar is treated as untrusted: a hostile repository's build step
   wrote it.
-- `Exec` is not a tool. It exists so `rsync` has a remote shell when the
-  provider's own exec channel is not available on the host (through a
-  gateway), and it is reachable only from the `sandbox` packages. The
-  model never sees it; nothing in `core` or `codemode` can address it.
+- `Rsync` is not a tool. Its stream is an `io.ReadWriteCloser` on each
+  end: the host hands it to `rsyncclient.Client.Run`, the agent wraps it
+  with `rsyncd.NewConnection` and hands it to `Server.HandleConnArgs`
+  with the workspace module. The first frame carries the direction (which
+  decides whether the module is writable) and the server-side options the
+  client computes with `ServerCommandOptions`; the agent accepts only the
+  options the library's own table knows and refuses a path outside the
+  workspace. The model never sees it; nothing in `core` or `codemode` can
+  address it.
 - Versioning is the proto's: fields are added, never renumbered. `Hello`
   carries the agent's module version and the protocol's; a host refuses
   an agent whose protocol major differs and warns on an older minor. A
@@ -587,23 +627,25 @@ processes on the same volume. On Kubernetes this is literally an init
 container. A `GitRepo` sync after `Tools` has been called is refused: the
 init step is before the sandbox has run anything.
 
-**`LocalDir`, by rsync.** `rsync -a` from the host directory to the
-workspace, with the provider's exec channel as the remote shell
-(`-e 'podman exec -i <id>'` locally; through a gateway, a small bridge
-command in the client package that speaks the gateway's `Exec` stream),
-`--filter=':- .gitignore'` unless `IncludeIgnored`, `--exclude .git`
-only when `ExcludeGit`, `--delete` when `Delete`. It needs `rsync` on the
-host and in the image; `Capabilities` and `Hello` say whether it is
-there, and `Sync` falls back to a `Tar` stream over the agent service
-when it is not, non-incrementally, with the ignore engine deciding what
-goes. A second `Sync` of the same `LocalDir` sends only what changed,
-which is what makes a local-folder workflow (edit on the host, re-sync,
-run the agent again) cheap.
+**`LocalDir`, by the rsync protocol.** The host opens the `Rsync` stream
+and runs `rsyncclient.New(args, rsyncclient.WithSender())` over it, with
+`args` of `-a`, `--filter=':- .gitignore'` unless `IncludeIgnored`,
+`--exclude=.git` only when `ExcludeGit`, and `--delete` when `Delete`;
+the agent serves the workspace as a writable `rsyncd.Module`. Nothing is
+installed on either side: both ends are `gokrazy/rsync` in the two
+agentkit binaries, and the bytes ride the gRPC stream, so a sync through
+a gateway is the same code as a sync into a local container. A second
+`Sync` of the same `LocalDir` sends only what changed, by the protocol's
+quick check (size and mtime) and delta transfer, which is what makes a
+local-folder workflow (edit on the host, re-sync, run the agent again)
+cheap. `SyncResult` carries the library's `TransferStats`.
 
-**`Export`** mirrors `Sync`: to a `LocalDir` by the same rsync reversed
-(the sandbox's `.gitignore` honoured the same way, so build output stays
+**`Export`** mirrors `Sync`: to a `LocalDir` by the same protocol
+reversed, the host as receiver and the workspace served read-only (the
+sandbox's `.gitignore` honoured the same way, so build output stays
 behind unless asked), or to a `TarOut`. What comes back is treated as
-untrusted on the host (§3.2).
+untrusted on the host (§3.2): the receiver writes only under the
+destination directory and never follows a symlink out of it.
 
 ## 4. Code mode and the sandbox
 
@@ -649,10 +691,11 @@ service Gateway {
 - **Client.** `gateway.Dial(url, token) Provider`, in the root module. A
   `Sandbox` from it holds the id and makes `Agent` RPCs against the
   gateway with the id in metadata; `Sync`, `Tools`, `Export` and `Close`
-  are the same calls whoever is on the other end. rsync through a gateway
-  uses the proxied `Exec` stream as its remote shell. The gateway client
-  is how a remote OpenShell deployment, a Kubernetes cluster and a plain
-  remote Podman host all look the same to an embedder (goal 5).
+  are the same calls whoever is on the other end; the `Rsync` stream is
+  proxied like any other, so a sync through a gateway needs no bridge.
+  The gateway client is how a remote OpenShell deployment, a Kubernetes
+  cluster and a plain remote Podman host all look the same to an embedder
+  (goal 5).
 - **Server.** `cmd/agentkit-gateway` in the nested `sandbox/gateway`
   module (D6). It holds one *backend* provider, the same `Provider`
   interface, driving Podman or Docker on its own host or pods in its
@@ -708,20 +751,22 @@ usable on its own.
    runs against proxy tools over `local`; the proxy tools' definitions
    are checked against `tools.All`; cancellation, `unknown_tool`, a dead
    agent and an oversized message are pinned. Code mode over proxy tools
-   against `provider/faux` (§4). `Sync` and `Export` with `Tar` only.
+   against `provider/faux` (§4). `Sync` and `Export` for `LocalDir` over
+   the `Rsync` stream with `gokrazy/rsync` on both ends, and for `Tar`;
+   both run end to end over `local`'s pipe.
 2. **Images.** The two Containerfiles, the release workflow that
    publishes them, and the `Create` failure that names `AgentPath` and
    the `COPY --from` line.
 3. **`podman`.** `podman.Args(Spec)` as a pure function with golden argv
    for each hardening flag and each refusal; the workspace volume; the
-   init step for `GitRepo`; `LocalDir` by rsync over `podman exec`; TTL
-   on both sides; labels and `Reap`; `docker` through `Options.Binary`;
+   init step for `GitRepo`; TTL on both sides; labels and `Reap`;
+   `docker` through `Options.Binary`;
    the micro-VM runtime flag. Integration tests gated on the binary being
    present.
 4. **Gateway.** The `Gateway` service and the proxied `Agent` service;
-   the client in the root module with the rsync bridge; the server and
-   its Podman backend in the nested module; tests run client and server
-   in one process over `local`.
+   the client in the root module; the server and its Podman backend in
+   the nested module; tests run client and server in one process over
+   `local`, the `Rsync` stream included.
 5. **Documentation and tag** (below). This is the first release.
 6. **Kubernetes backend** in the gateway module.
 7. **OpenShell provider**, after verifying its gRPC surface and policy
@@ -756,13 +801,21 @@ Offline, in `make check`:
   `NetworkAllowlist` is refused with an error naming the provider and
   the mode; the init-step argv for a `GitRepo` has the volume, no
   `--network none`, no `Spec.Env`, and `git clone` as its command.
-- A `LocalDir` sync's rsync argv carries `--filter=':- .gitignore'`
-  unless `IncludeIgnored`, `--exclude .git` only with `ExcludeGit`,
-  `--delete` only with `Delete`, and the provider's exec channel as `-e`.
-  The `Tar` fallback sends no ignored file, follows no symlink out of the
-  directory, and sends hidden files. An exported tar with an entry named
-  `../x`, an absolute name, or a symlink-then-file-through-it sequence is
-  refused on the host.
+- A `LocalDir` sync over `local` (both rsync ends in-process, no `rsync`
+  binary on `PATH`, which the test asserts by emptying `PATH`) puts every
+  file the `tools` ignore engine would list into the workspace and none it
+  would skip, sends hidden files, follows no symlink out of the source
+  directory, and leaves `.git` behind only with `ExcludeGit`. A second
+  sync after changing one file reports one transferred file in
+  `SyncResult`. With `Delete`, a file removed on the host is removed in
+  the workspace; without it, it stays. An `Export` to a `LocalDir` brings
+  back a file the sandbox created and writes nothing outside the
+  destination directory. A `Tar` sync sends no ignored file and follows
+  no symlink out; an exported tar with an entry named `../x`, an absolute
+  name, or a symlink-then-file-through-it sequence is refused on the
+  host.
+- The agent refuses an `Rsync` stream whose first frame names a path
+  outside the workspace or an option the library does not know.
 - A `GitRepo` sync after `Tools` has been called is refused.
 - A code-mode script over proxy tools, driven by `provider/faux` through
   `agentkit.New`, has one call blocked by `Config.Guard` and receives an
@@ -777,8 +830,9 @@ Offline, in `make check`:
   `core.ErrUnguardedExecute`, as with local ones.
 - The root module's direct dependencies gain exactly
   `google.golang.org/grpc` and `google.golang.org/protobuf`, both already
-  in the module graph; `go list -m all` gains no module. The allowlist
-  test in `internal/policy` is the check.
+  in the module graph, and `github.com/gokrazy/rsync`. The allowlist test
+  in `internal/policy` is the check, and `docs/DEPS.md` carries the
+  rulings.
 - `go build ./...` needs no `protoc` or `buf`; `make proto` regenerates
   and a test fails when the checked-in code is stale.
 
@@ -798,8 +852,9 @@ With `podman` (or `docker`) installed, skipped otherwise:
   allocates 1 GiB sees that process killed, and the sandbox survives.
 - A sandbox created with `TTL: 5s` and no `Close` is gone after `Reap`,
   and gone without `Reap` once the agent's own TTL fires.
-- A second `LocalDir` sync after editing one host file transfers that
-  file and not the rest (rsync's own statistics, read by `SyncResult`).
+- A second `LocalDir` sync into the container after editing one host file
+  transfers that file and not the rest (`SyncResult`'s statistics), and
+  `Export` back to the host directory returns the model's edits.
 - No tool result from a sandboxed run contains the host's working
   directory or home path.
 
@@ -814,6 +869,10 @@ With `podman` (or `docker`) installed, skipped otherwise:
   the folder. The credential stays on the host, which is the point.
 - **Any image.** The agent has to be in the image. One `COPY --from` line
   is the price, and the error on a missing agent prints it.
+- **rsync's newer protocol features.** `gokrazy/rsync` speaks protocol
+  27: no xattrs, no ACLs, MD4 checksums, and a smaller user base than
+  tridge rsync. A source tree needs none of the first three; the last is
+  why §8 tests the transfer semantics rather than trusting them.
 - **Reconnection.** A sandbox whose agent dies is dead. The run sees
   `sandbox_unavailable` results and ends on its own bounds; the embedder
   creates a new sandbox and re-syncs. PRD 10 §9 already chose "a run that
@@ -834,13 +893,20 @@ With `podman` (or `docker`) installed, skipped otherwise:
 ## Dependencies
 
 - Runtime, not Go: `podman` or `docker` on the host for the container
-  provider; a Podman with `krun` or `crun-vm` for micro-VMs; `rsync` on
-  the host for incremental `LocalDir` sync (otherwise the `Tar` fallback);
-  `git` and `rsync` in the image (both in the base image).
+  provider; a Podman with `krun` or `crun-vm` for micro-VMs; `git` in the
+  image for `GitRepo` (in the base image). No `rsync` anywhere.
 - Go, root module: `google.golang.org/grpc` and
-  `google.golang.org/protobuf` promoted from indirect to direct, with a
-  ruling each in `docs/DEPS.md`; otherwise `encoding/json`, `archive/tar`,
-  `os/exec`, and this module's `core`, `tools` and `guard`.
+  `google.golang.org/protobuf` promoted from indirect to direct;
+  `github.com/gokrazy/rsync` (v0.3.8 at this writing, `go 1.25.0`,
+  packages `rsyncclient` on the host side and `rsyncd` in the agent). Its
+  own requirements are `BurntSushi/toml`, `coreos/go-systemd`,
+  `google/renameio/v2`, `google/shlex`, `mmcloughlin/md4`,
+  `landlock-lsm/go-landlock` and `golang.org/x/{crypto,sync,sys}`; *spec
+  time:* check with `go mod why` which of these the two library packages
+  actually import (the systemd and landlock ones are expected to be the
+  daemon command's) and record it in the ruling. A ruling each in
+  `docs/DEPS.md`; otherwise `encoding/json`, `archive/tar`, `os/exec`,
+  and this module's `core`, `tools` and `guard`.
 - Go, nested modules: `client-go` in `sandbox/gateway` (server side, step
   6); OpenShell's gRPC client in `sandbox/openshell` (step 7). Each gets a
   ruling before it lands; neither enters the root module's graph.
@@ -866,10 +932,11 @@ With `podman` (or `docker`) installed, skipped otherwise:
   `LocalDir`, `GitRepo`, `podman.Options`, `gateway.Dial`, the
   `agentkit-sandboxd` and `agentkit-gateway` flags, the two images and
   their tags.
-- `docs/DEPS.md`: rulings for `grpc` and `protobuf`; rulings for the
-  nested modules' dependencies as they land; a "Rejected" row each for the
-  Docker and Podman Go clients and for `client-go` in the root module,
-  with the reasons in D4.
+- `docs/DEPS.md`: rulings for `grpc`, `protobuf` and `gokrazy/rsync`;
+  rulings for the nested modules' dependencies as they land; a "Rejected"
+  row each for the Docker and Podman Go clients and for `client-go` in
+  the root module, with the reasons in D4, and one for an external
+  `rsync` binary, with the reason in D7.
 - `guard` package documentation: that `Restricted` is still a floor, that
   a sandbox is the boundary it was never claiming to be, and when
   `AllowAll` is reasonable.
