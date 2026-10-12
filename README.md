@@ -138,6 +138,7 @@ The identifiers an embedder such as agent-fox builds on.
 | `make lint` | `golangci-lint` in both modules; skipped when not installed |
 | `make fmt` | `gofmt -l -w .` |
 | `make tidy` | `go mod tidy` in both modules |
+| `make doc` | `go doc -all` for every public package in both modules, written as text to `build/doc/` (git-ignored) |
 
 ## Documentation
 
