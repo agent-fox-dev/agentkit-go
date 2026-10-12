@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
@@ -79,5 +80,41 @@ func TestNoForcedToolChoice_TS10_22(t *testing.T) {
 		if obj == nil || obj["type"] != "auto" || obj["name"] != nil {
 			t.Errorf("tool choice %q went out as %v, want auto or nothing", choice, tc)
 		}
+	}
+}
+
+// A strict tool's schema must be in the strict subset, or the API answers 400
+// "additionalProperties must be explicitly set to false". schema.Object leaves
+// the keyword unset, so the encoder is what closes it.
+func TestToolSchemaIsProjectedIntoStrictSubset(t *testing.T) {
+	m := *testModel()
+	open := core.Tool{Name: "lookup", InputSchema: schema.Object(
+		schema.Prop("ids", schema.Array(schema.String())),
+		schema.Opt("verbose", schema.Bool("more detail"))),
+		Execute: func(context.Context, json.RawMessage) core.ToolResult { return core.OKResult(nil) }}
+	tools := wireTools(t, wireOf(t, m, core.Request{Messages: userTurn(), Tools: core.ToolWires([]core.Tool{open})}))
+	in, _ := tools[0]["input_schema"].(map[string]any)
+	if in["additionalProperties"] != false {
+		t.Errorf("additionalProperties = %v, want false: %v", in["additionalProperties"], in)
+	}
+	if req, _ := in["required"].([]any); len(req) != 2 {
+		t.Errorf("required = %v, want both properties listed", in["required"])
+	}
+	// The tool's own schema is shared with the validator and must not change.
+	if open.InputSchema.AdditionalProperties != nil || len(open.InputSchema.Required) != 1 {
+		t.Errorf("the tool's schema was mutated: %+v", open.InputSchema)
+	}
+}
+
+// A schema the strict subset cannot express is refused by name, not sent to
+// be rejected by the API.
+func TestUnconvertibleToolSchemaNamesTheTool(t *testing.T) {
+	m := *testModel()
+	dict := core.Tool{Name: "tally", InputSchema: &schema.Schema{Type: schema.TypeObject,
+		AdditionalProperties: &schema.AdditionalProperties{Allowed: true, Schema: schema.Int()}},
+		Execute: func(context.Context, json.RawMessage) core.ToolResult { return core.OKResult(nil) }}
+	_, _, err := anthropic.BuildRequest(&m, core.Request{Messages: userTurn(), Tools: core.ToolWires([]core.Tool{dict})}, core.CacheRetentionNone)
+	if err == nil || !strings.Contains(err.Error(), "tally") {
+		t.Fatalf("err = %v, want one naming the tool \"tally\"", err)
 	}
 }

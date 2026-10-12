@@ -14,6 +14,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/provider"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
 // API is the wire API id.
@@ -151,6 +152,29 @@ type tool struct {
 	// feature — it HIDES the tool from the model until a tool-search server
 	// tool finds it — and sending it without declaring that server tool made
 	// every late-added tool invisible for the rest of the session.
+}
+
+// strictSchema marshals a tool's schema in the strict subset. Every tool is
+// declared strict, and the API refuses a strict tool whose object schemas do
+// not set additionalProperties to false and list every property as required.
+// StrictSubset works on a clone, so the schema the validator reads is intact.
+func strictSchema(s *schema.Schema) (json.RawMessage, error) {
+	c, err := schema.StrictSubset(s)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(c)
+}
+
+// nameStrictFailure says which tool's schema the strict subset refused, which
+// the marshaller, given only a schema, cannot.
+func nameStrictFailure(tools []core.ToolWire, err error) error {
+	for _, t := range tools {
+		if _, serr := schema.StrictSubset(t.InputSchema); serr != nil {
+			return fmt.Errorf("anthropic: tool %q: %w", t.Name, serr)
+		}
+	}
+	return err
 }
 
 type toolChoice struct {
@@ -312,9 +336,9 @@ func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRet
 	// halves separately would make each call see the other half as removed —
 	// reporting a prefix invalidation on every turn and evicting the very
 	// entries the cache exists to keep.
-	schemas, srep, err := prefix.Sync(req.Tools)
+	schemas, srep, err := prefix.SyncWith(req.Tools, strictSchema)
 	if err != nil {
-		return nil, rep, sync, err
+		return nil, rep, sync, nameStrictFailure(req.Tools, err)
 	}
 	sync = srep
 	byName := make(map[string]json.RawMessage, len(req.Tools))
