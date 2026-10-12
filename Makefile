@@ -38,8 +38,8 @@ doc: ## Generate Go package reference (go doc -all) as text files under build/do
 	@rm -rf $(DOC_DIR)
 	@mkdir -p $(DOC_DIR)
 	@for m in . codesearch; do \
-		( cd $$m && mod=$$(go list -m) && \
-		for p in $$(go list ./... | grep -v -e /internal/ -e /examples/); do \
+		( cd $$m && mod=$$(go list -m) && pkgs=$$(go list ./...) && \
+		for p in $$(printf '%s\n' "$$pkgs" | grep -v -e /internal/ -e /examples/); do \
 			rel=$${p#$$mod}; rel=$${rel#/}; out="$(CURDIR)/$(DOC_DIR)/$${rel:-$$(basename $$mod)}.txt"; \
 			mkdir -p "$$(dirname "$$out")" && go doc -all "$$p" > "$$out" || exit 1; \
 		done ) || exit 1; \
