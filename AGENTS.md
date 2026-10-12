@@ -28,6 +28,7 @@ Do not implement anything before completing these steps.
 <main_package>/         # Main package
 <test_directory>/       # Tests directory
 docs/                   # Documentation
+build/docs/             # golang docs
 .specs/                 # Specs to be implemented
 .specs/archive/         # Old specs. Ignore for coding tasks, except for reference
 ```
@@ -52,6 +53,7 @@ libraries — API signatures in specs may be unverified assumptions.
 |---------|-------------|
 | `make check` | Run lint + all tests (use before committing) |
 | `make test` | Run all tests (`uv run pytest -q`) |
+| `make lint` | formatting and static checks |
 
 Run the full quality suite before committing:
 
@@ -89,6 +91,7 @@ make check
   divergences. NN is the spec number the erratum relates to (e.g.
   `28_github_issue_rest_api.md` for spec 28). For project-wide errata not
   tied to a specific spec, omit the numeric prefix.
+- **golang docs** live in `build/docs`.
 - **Other docs** live in `docs/{topic}.md`.
 - When you add or change user-facing behavior, public APIs, configuration, or
   architecture, update the relevant documentation in the same session.
@@ -99,6 +102,6 @@ A session is not complete until:
 
 1. `make lint` and `make test` passes (no regressions).
 2. Changes are committed with a clear conventional commit message.
-3. Changes are merged into `main` locally.
+3. Changes are pushed to origin as a pull request.
 4. `git status` shows a clean working tree.
 5. You provide a brief handoff note summarizing what was done and what remains.

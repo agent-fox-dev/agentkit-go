@@ -3,8 +3,8 @@ package core
 import (
 	"context"
 	"reflect"
-	"time"
 	"testing"
+	"time"
 )
 
 // TS-12-7: ProviderClient has one method, Stream(ctx, Request) returning a

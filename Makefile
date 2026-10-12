@@ -1,4 +1,5 @@
 .DEFAULT_GOAL := help
+DOC_DIR ?= build/doc
 
 .PHONY: help
 help: ## Show this help
@@ -9,7 +10,7 @@ test: ## Run all Go tests (root module and the codesearch submodule)
 	go test ./...
 	cd codesearch && go test ./...
 
-# Generate test coverage
+.PHONY: coverage
 coverage:
 	go test ./... -coverprofile=coverage.txt -covermode=atomic
 	go tool cover -func=coverage.txt
@@ -30,8 +31,6 @@ lint: ## Run golangci-lint if installed, otherwise skip
 	else \
 		echo "golangci-lint not installed; skipping (see https://golangci-lint.run)"; \
 	fi
-
-DOC_DIR ?= build/doc
 
 .PHONY: doc
 doc: ## Generate Go package reference (go doc -all) as text files under build/doc

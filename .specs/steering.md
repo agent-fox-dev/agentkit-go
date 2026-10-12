@@ -17,6 +17,8 @@ After implementing any spec, you **must** update all affected documentation
 before the session is considered complete. Outdated docs are treated as
 regressions.
 
+Before updating the documentation, run `make doc` first, to refresh the golang docs.
+
 **When to update:** Every time a spec implementation adds, changes, or removes
 any of the items listed below, update the corresponding document in the same
 session — not as a follow-up task.
