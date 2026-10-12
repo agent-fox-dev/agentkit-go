@@ -232,9 +232,9 @@ in `docs/DEPS.md`; what it pulls in is listed under Dependencies.
 own packaging. A private repository in the first release is cloned on
 the host and sent as a `LocalDir`.
 
-### D8. Landlock: the agent confines itself, and nothing else gets confined by accident
+### D8. Landlock: the agent confines itself, nothing else gets confined by accident, and a provider is built on it
 
-**Decided**, in two parts, both in the first release.
+**Decided**, in three parts, all in the first release.
 
 **Part one is not optional.** `rsyncd.NewServer` in `gokrazy/rsync`
 applies Landlock to the *whole calling process* at construction whenever
@@ -287,10 +287,25 @@ Rules that follow:
 - **The host is never confined.** No code path in `sandbox`, the
   gateway client or `local` applies Landlock to the process it runs in.
 
-A possible third use, a `sandbox/landlock` provider that runs the agent
-as a confined child process on a Linux host with no container at all,
-is recorded in §6 as a candidate for a later release; it needs nothing
-from the first release beyond the ruleset part two already builds.
+**Part three: a provider with no container, `sandbox/landlock`.** On a
+Linux host the agent runs as a child process of the embedder, over
+pipes, with the part-two ruleset as its *only* boundary: a workspace
+directory, a private `TMPDIR` and `HOME` the provider creates for that
+sandbox; read and execute on the system directories, so the host's own
+toolchain is available to `execute`; nothing else readable, so `~/.ssh`,
+`~/.aws`, the embedder's source and the real home directory are not;
+TCP denied under `NetworkNone`; `Spec.Env` as the whole environment. It
+starts in milliseconds, needs no image and no daemon, and is the
+provider a developer reaches for on their own machine and the one a
+Linux CI job can use without privileges. What it cannot do, it refuses
+rather than approximates: `Resources` (Landlock bounds none of them),
+`NetworkAllowlist` (ports, not hosts), and any kernel below ABI v4,
+because filesystem confinement with the network open is not what
+`NetworkNone` promises. It is a *confinement*, not an isolation: no
+kernel boundary, no PID namespace, no resource limits, and the gaps
+listed above (UDP and Unix sockets below ABI v9 and v10, Multipath TCP).
+Its `Capabilities` say exactly that, and the provider table in §6 ranks
+it between `local` and `podman`. Details in §3.6.
 
 ## Goals
 
@@ -324,7 +339,8 @@ from the first release beyond the ruleset part two already builds.
    construction as a pure function, the gRPC service with both ends in
    one process over a pipe, the gateway client against an in-process
    server. Container integration tests run when `podman` or `docker` is
-   installed and are skipped, not failed, otherwise.
+   installed, Landlock provider tests when the kernel has ABI v4, and
+   both are skipped, not failed, otherwise.
 8. `agentkit.Config`, `New`, `core`, `tools` and `codemode` are unchanged
    in their exported surface. A sandbox is a different source of
    `core.Tool`s, nothing else.
@@ -421,7 +437,7 @@ exact names.
 |---|---|
 | **Sandbox** | One isolated execution environment with one workspace, created from a `Spec` by a `Provider`, destroyed on `Close` or at its TTL. |
 | **Workspace** | The one directory inside a sandbox that tools operate on, `/workspace` unless the spec says otherwise. A volume the provider creates with the sandbox and destroys with it; never a mount of a host path. |
-| **Provider** | What creates sandboxes: `podman`, `docker` (same code), `gateway` (a client to a remote gateway), `openshell`, and `local` (no isolation, tests only). |
+| **Provider** | What creates sandboxes: `podman`, `docker` (same code), `landlock` (a confined child process, Linux), `gateway` (a client to a remote gateway), `openshell`, and `local` (no isolation, tests only). |
 | **Sandbox agent** (`agentkit-sandboxd`) | The AgentKit process inside the sandbox, at `/usr/local/libexec/agentkit-sandboxd`. It owns the workspace, runs `tools.All` over it, and serves the agent service on its stdio. |
 | **Base image**, **overlay image** | The two published images (D5): one to run as is, one to `COPY --from` into an embedder's own image. |
 | **Init step** | A short-lived run on the workspace volume, before the sandbox starts, that clones a `GitRepo`. The one place the provider allows network access that `Spec.Network` would not. |
@@ -508,7 +524,7 @@ type TarOut struct { W io.Writer }                  // as a Destination
 How it composes with the rest of the module, which is the point:
 
 ```go
-p, err := podman.New(podman.Options{})            // or gateway.Dial(url, token)
+p, err := podman.New(podman.Options{})            // or landlock.New(landlock.Options{}), or gateway.Dial(url, token)
 sb, err := p.Create(ctx, sandbox.Spec{
     Resources: sandbox.Resources{CPUs: 2, MemoryBytes: 4 << 30}, TTL: 30 * time.Minute})
 defer sb.Close(ctx)
@@ -716,6 +732,52 @@ behind unless asked), or to a `TarOut`. What comes back is treated as
 untrusted on the host (§3.2): the receiver writes only under the
 destination directory and never follows a symlink out of it.
 
+### 3.6 The Landlock provider
+
+`landlock.New(landlock.Options{})` returns a `Provider` on Linux and an
+error naming `podman` as the alternative elsewhere. `New` probes the
+kernel once: ABI v4 or later, else an error naming the ABI found and the
+kernel version that carries v4. What `Create` does:
+
+- **A sandbox directory** under `Options.Root` (default: a per-user
+  directory under `os.UserCacheDir()`), holding `workspace/`, `home/` and
+  `tmp/`, mode `0700`, plus a marker file with the agent's pid and the
+  `Spec`. There is no volume and no image; the directory is the sandbox.
+- **The agent as a child.** `agentkit-sandboxd` is started from
+  `Options.AgentBinary` (default: next to the embedder's executable, then
+  `PATH`) in its own process group, stdio as the gRPC connection,
+  environment exactly `Spec.Env` plus `HOME`, `TMPDIR` and `PATH` set to
+  the sandbox's `home/`, `tmp/` and the system directories. The agent
+  applies the part-two ruleset with the workspace, `home/` and `tmp/`
+  read-write, the system directories (`/usr`, `/bin`, `/sbin`, `/lib`,
+  `/lib64`, `/etc`, `/opt`, `/usr/local`) read and execute,
+  `Options.ExtraRO` and `Options.ExtraRW` as the embedder's deliberate
+  widening (a shared Go build cache, a toolchain under the user's home),
+  and TCP denied under `NetworkNone`. `Hello` reports the ABI; the
+  provider refuses the sandbox if it is below v4, whatever
+  `Spec.RequireLandlock` says, because here there is no other boundary.
+- **The init step for `GitRepo`** is a second child, `git clone` into
+  `workspace/`, under the same filesystem ruleset but with TCP allowed,
+  and it ends before the agent starts. As on the container providers,
+  nothing of its network reaches the sandbox: the agent is a different
+  process with its own, stricter ruleset.
+- **What is refused.** `Resources` with any field set; `NetworkAllowlist`;
+  `Spec.Image` (there is no image); a kernel below ABI v4. Each refusal
+  names the field and the provider.
+- **Lifetime.** `TTL` kills the agent's process group from the host, and
+  the agent exits on its own at `TTL` as everywhere. `Close` kills the
+  group and removes the directory. `Reap` walks `Options.Root`, and
+  removes every sandbox directory whose marker names a pid that is no
+  longer alive or no longer the agent.
+- **What it gives up**, said once more because it is the provider most
+  likely to be mistaken for more than it is: the host kernel, memory and
+  CPU are shared; a process inside can see the host's process list and
+  signal processes it owns; UDP, Unix sockets below ABI v9 and v10, and
+  Multipath TCP are not restricted; `chmod` and `stat` are not
+  restricted. It keeps the model's commands out of the embedder's files,
+  home directory and network, which is what a developer running an agent
+  over their own checkout needs most, and nothing more.
+
 ## 4. Code mode and the sandbox
 
 Under D3 (a), `codemode.New(proxyTools, opts)` is the whole story: the
@@ -788,6 +850,7 @@ service Gateway {
 | Provider | Package | Backend | Isolation | Network modes | Status |
 |---|---|---|---|---|---|
 | `podman` | `sandbox/podman` | `podman` CLI; `docker` CLI with `Options.Binary: "docker"` | container; micro-VM with `Options.Runtime` (`krun` or `crun-vm`) | none, unrestricted | first release |
+| `landlock` | `sandbox/landlock` | a child process on a Linux host, Landlock ABI v4 or later | filesystem and TCP confinement only; no resource limits, no kernel boundary (§3.6) | none (TCP), unrestricted | first release, Linux only |
 | `gateway` | `sandbox/gateway` (client) | any gateway | the gateway's backend | the backend's | first release |
 | `local` | `sandbox/local` | a temp dir and an in-process agent over a pipe | **none** | unrestricted | first release, tests and development only |
 | Kubernetes | `sandbox/gateway` module (server backend) | pods via `client-go` | container; the cluster's runtime | none, unrestricted | second release |
@@ -804,15 +867,12 @@ it is in-process, it applies no Landlock ruleset and its `rsyncd` is
 built with `DontRestrict()` (D8): nothing `local` does may confine the
 process that embeds it.
 
-**Candidate for a later release: `sandbox/landlock`.** The agent as a
-confined child process on a Linux host, no container: the D8 ruleset on
-a copy of the workspace, a private `TMPDIR` and `HOME`, TCP denied,
-`Resources` refused because Landlock bounds none of them, the host's own
-toolchain available to `execute`. Instant start and no image, in
-exchange for no kernel boundary, no resource limits, and the Landlock
-gaps D8 lists. It sits between `local` and `podman`; it is not in the
-first release, and it needs nothing from it beyond the ruleset the agent
-already applies.
+`landlock` is the provider between those two: a real boundary for files
+and TCP, no boundary for anything else, and `Capabilities` that say so
+(§3.6). An embedder that wants a run bounded in memory or time, or that
+runs code it does not trust with the host kernel, uses `podman`; one
+that wants the model kept out of its files and network while using the
+host's toolchain uses `landlock`.
 
 The OpenShell provider maps `Spec` onto an OpenShell policy (network
 allowlist to `network_policies`, resources to its sandbox options) and
@@ -847,19 +907,24 @@ usable on its own.
    `docker` through `Options.Binary`;
    the micro-VM runtime flag. Integration tests gated on the binary being
    present.
-4. **Gateway.** The `Gateway` service and the proxied `Agent` service;
+4. **`landlock`.** The provider of §3.6: the sandbox directory and
+   marker, the agent as a confined child, the init-step clone as a second
+   child, the refusals, TTL, `Close` and `Reap`. Tests gated on Linux
+   with ABI v4; the refusals and the directory layout are tested
+   everywhere.
+5. **Gateway.** The `Gateway` service and the proxied `Agent` service;
    the client in the root module; the server and its Podman backend in
    the nested module; tests run client and server in one process over
    `local`, the `Rsync` stream included.
-5. **Documentation and tag** (below). This is the first release.
-6. **Kubernetes backend** in the gateway module.
-7. **OpenShell provider**, after verifying its gRPC surface and policy
+6. **Documentation and tag** (below). This is the first release.
+7. **Kubernetes backend** in the gateway module.
+8. **OpenShell provider**, after verifying its gRPC surface and policy
    schema against the proto definitions and writing them into the spec's
    `external_apis`.
-8. **D3 (c)**: `codemode` in the agent, the `RunScript` stream, the
+9. **D3 (c)**: `codemode` in the agent, the `RunScript` stream, the
    host-side `code_mode` proxy.
 
-Steps 2, 3 and 4 are independent once step 1 has landed.
+Steps 2, 3, 4 and 5 are independent once step 1 has landed.
 
 ## 8. Acceptance criteria
 
@@ -906,13 +971,33 @@ Offline, in `make check`:
 - `Hello` from the in-process agent reports Landlock ABI 0, and a `Spec`
   with `RequireLandlock` is refused by `local` with an error naming the
   field.
-- On Linux with Landlock ABI v4 or later (skipped otherwise): the agent
-  binary started as a child process with the D8 ruleset over a temporary
-  workspace answers `execute` of a write into the workspace with success,
-  a write into the test's own home directory with a permission error, a
-  read of a file outside the ruleset with a permission error, and a TCP
-  connect to a listener the test opened with a refusal; `Hello` reports
-  the ABI applied.
+- `landlock.New` on a non-Linux host returns an error naming `podman`;
+  `Create` refuses a `Spec` with `Resources` set, with `NetworkAllowlist`,
+  or with `Image`, each naming the field; the sandbox directory layout
+  (`workspace/`, `home/`, `tmp/`, the marker) and `Reap`'s rule (a dead
+  or foreign pid in the marker) are tested with a fake agent on every
+  platform.
+
+On Linux with Landlock ABI v4 or later, skipped otherwise:
+
+- A `landlock` sandbox answers `execute` of a write into the workspace
+  with success, a write into the test's real home directory with a
+  permission error, a read of a file outside the ruleset with a
+  permission error, and a TCP connect to a listener the test opened with
+  a refusal; `Hello` reports the ABI applied; `env` inside shows exactly
+  `Spec.Env` plus `HOME`, `TMPDIR` and `PATH`, and `HOME` is the
+  sandbox's own.
+- `execute` of `go version` succeeds when `go` is under a system
+  directory or named in `Options.ExtraRO`, and fails with a permission
+  error when it is only under the test's home.
+- A `GitRepo` sync clones a public repository into the workspace, and
+  the agent started afterwards still refuses TCP.
+- A `landlock` sandbox created with `TTL: 5s` and no `Close` has its
+  process group gone and its directory removed by `Reap`; `Close` on a
+  live one kills the group, children of `execute` included, and removes
+  the directory.
+- On a kernel reporting ABI 1 to 3 (simulated by the probe's test seam),
+  `New` fails naming the ABI found and the one required.
 - A `GitRepo` sync after `Tools` has been called is refused.
 - A code-mode script over proxy tools, driven by `provider/faux` through
   `agentkit.New`, has one call blocked by `Config.Guard` and receives an
@@ -981,6 +1066,12 @@ With `podman` (or `docker`) installed, skipped otherwise:
   (an old host, a micro-VM image built without the LSM) gets the
   container boundary alone, visibly in `Hello`, and `RequireLandlock`
   is the embedder's way to refuse that.
+- **Resource limits and a kernel boundary on `landlock`.** The provider
+  refuses `Resources` rather than pretend, and shares the host kernel. A
+  run that must be bounded in memory or time, or that runs code the
+  embedder does not trust with its kernel, belongs on `podman`.
+- **`landlock` on macOS.** There is no equivalent in scope; `New` says
+  so and names `podman`, whose VM is the boundary there.
 - **Reconnection.** A sandbox whose agent dies is dead. The run sees
   `sandbox_unavailable` results and ends on its own bounds; the embedder
   creates a new sandbox and re-syncs. PRD 10 §9 already chose "a run that
@@ -1002,7 +1093,11 @@ With `podman` (or `docker`) installed, skipped otherwise:
 
 - Runtime, not Go: `podman` or `docker` on the host for the container
   provider; a Podman with `krun` or `crun-vm` for micro-VMs; `git` in the
-  image for `GitRepo` (in the base image). No `rsync` anywhere.
+  image for `GitRepo` (in the base image). For `landlock`: a Linux kernel
+  with Landlock ABI v4 (6.7 or later, with the LSM enabled), the
+  `agentkit-sandboxd` binary on the host (`go install` or beside the
+  embedder's executable), and `git` on the host for `GitRepo`. No `rsync`
+  anywhere.
 - Go, root module: `google.golang.org/grpc` and
   `google.golang.org/protobuf` promoted from indirect to direct;
   `github.com/gokrazy/rsync` (v0.3.8 at this writing, `go 1.25.0`,
@@ -1048,9 +1143,10 @@ With `podman` (or `docker`) installed, skipped otherwise:
   host; inside a sandbox the agent's ruleset contains `execute` too, and
   the text says where that holds and where it does not.
 - `docs/configuration.md`: `sandbox.Spec`, `Resources`, `Network`,
-  `LocalDir`, `GitRepo`, `podman.Options`, `gateway.Dial`, the
+  `LocalDir`, `GitRepo`, `podman.Options`, `landlock.Options` (`Root`,
+  `AgentBinary`, `ExtraRO`, `ExtraRW`), `gateway.Dial`, the
   `agentkit-sandboxd` and `agentkit-gateway` flags, the two images and
-  their tags.
+  their tags, and a table of which provider honours which `Spec` field.
 - `docs/DEPS.md`: rulings for `grpc`, `protobuf`, `gokrazy/rsync` and
   `go-landlock` (the latter recording the `DontRestrict()` rule and why
   `BestEffort()` is never used); rulings for the nested modules'
@@ -1062,5 +1158,5 @@ With `podman` (or `docker`) installed, skipped otherwise:
   a sandbox is the boundary it was never claiming to be, and when
   `AllowAll` is reasonable.
 - `examples/sandbox`: the §2 program against `local` and
-  `provider/faux`, offline, with a `--podman` flag that uses the real
-  provider when the binary is present.
+  `provider/faux`, offline, with `--podman` and `--landlock` flags that
+  use the real providers when the binary or the kernel allows.
