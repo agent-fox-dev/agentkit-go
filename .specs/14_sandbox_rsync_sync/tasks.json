@@ -1,0 +1,522 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "14",
+  "spec_name": "sandbox_rsync_sync",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./sandbox/... ./internal/policy/... ./examples/sandbox/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "13_sandbox_core",
+      "reason": "Builds on and modifies its sandbox API (sealed Source/Destination, SyncResult, ErrUnsupported/ErrUnavailable/ErrClosed, ProtocolMinor), the sandboxpb proto with make proto and the hash file, the agent (tool-set rebuild after SyncTar, TTL Stop), attach (state machine, classify, deliberate refusals), tarsafe (CleanRel and the symlink rule), local.Unisolated, localtest, fakeagent and examples/sandbox; updates TS-13-1, TS-13-6, TS-13-15, TS-13-24 and TS-13-65 and reuses TS-13-67's exported-API golden."
+    },
+    {
+      "spec": "09_repository_cut",
+      "reason": "Its direct-dependency allowlist approvedDeps (TS-09-16) gains github.com/gokrazy/rsync, and TS-09-15 (golang.org/x/net not direct) and TS-09-20 (make check) must stay green."
+    },
+    {
+      "spec": "12_core_schema_guard",
+      "reason": "TS-12-14's 20,000 non-test line budget in core/size_test.go, generated sandboxpb code included, constrains every file this spec adds."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add the bidirectional Rsync RPC and RsyncFrame to agentkit.sandbox.v1 and bump ProtocolMinor to 1",
+      "criteria": [
+        "14-REQ-2.1",
+        "14-REQ-2.2"
+      ],
+      "tests": [
+        "TS-14-4",
+        "TS-14-5"
+      ],
+      "steps": [
+        "Write TS-14-4 and TS-14-5 and confirm they fail",
+        "Extend sandbox/internal/sandboxpb/sandbox.proto without renumbering anything: message RsyncStart { enum Direction { DIRECTION_UNSPECIFIED = 0; SYNC = 1; EXPORT = 2; } Direction direction = 1; string path = 2; bool include_ignored = 3; bool exclude_git = 4; bool delete = 5; }, RsyncPlan { repeated string rules = 1; bool file = 2; }, RsyncArgs { repeated string args = 1; }, RsyncDone { int64 files = 1; int64 bytes = 2; int64 deleted = 3; }, RsyncFrame { oneof frame { RsyncStart start = 1; RsyncPlan plan = 2; RsyncArgs args = 3; bytes data = 4; RsyncDone done = 5; } }, and `rpc Rsync(stream RsyncFrame) returns (stream RsyncFrame);` on service Agent, with a comment giving the frame order (start, plan, args, data both ways, done, status OK) and stating that one stream carries all state of one transfer",
+        "Set ProtocolMinor = 1 in sandbox/version.go; Hello and the agentkit-sandboxd --version line already read the constant",
+        "Run `make proto` and check in the regenerated sandbox.pb.go, sandbox_grpc.pb.go and sandbox.proto.sha256; note which stream types protoc-gen-go-grpc v1.5.1 emitted against grpc v1.64.1 (grpc.BidiStreamingClient/BidiStreamingServer[RsyncFrame, RsyncFrame] or named Agent_RsyncClient/Agent_RsyncServer interfaces) so later tasks use the real ones",
+        "Keep the tree compiling: if agent.Agent or fakeagent does not embed sandboxpb.UnimplementedAgentServer, give it an Rsync method returning status Unimplemented; task 5 replaces the agent's and task 6 the fakeagent's",
+        "Update spec 13's pinned tests: TS-13-1 expects exactly six methods with Rsync streaming on both sides and 13's five unchanged, TS-13-6 and the Hello test TS-13-15 pin ProtocolMinor 1, and TS-13-24 expects `1.1` in the --version output",
+        "Write TS-14-4 in sandbox/internal/sandboxpb/rsync_proto_test.go with protoreflect over File_sandbox_proto: Rsync input/output RsyncFrame and both streaming flags, oneof members exactly start/plan/args/data/done, the direction enum values, and every field kind",
+        "Write TS-14-5 in sandbox/internal/sandboxpb/version_test.go (package sandboxpb_test): the constants, six methods, Agent() of a local.Unisolated() sandbox reporting 1.1, and the staleness check run with PATH emptied through an export_test.go that exposes the existing checkProtoHash helper"
+      ],
+      "touches": [
+        "sandbox/internal/sandboxpb/sandbox.proto",
+        "sandbox/internal/sandboxpb/sandbox.pb.go",
+        "sandbox/internal/sandboxpb/sandbox_grpc.pb.go",
+        "sandbox/internal/sandboxpb/sandbox.proto.sha256",
+        "sandbox/internal/sandboxpb/proto_test.go",
+        "sandbox/internal/sandboxpb/rsync_proto_test.go",
+        "sandbox/internal/sandboxpb/version_test.go",
+        "sandbox/internal/sandboxpb/export_test.go",
+        "sandbox/version.go",
+        "sandbox/internal/agent/agent_test.go",
+        "sandbox/internal/attach/limits_test.go",
+        "sandbox/cmd/agentkit-sandboxd/main_test.go"
+      ],
+      "done_when": [
+        "`go build ./...` succeeds with no protoc on PATH"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Add github.com/gokrazy/rsync v0.3.8 behind sandbox/internal/rsyncx: the single DontRestrict server constructor, client wrapper, argument checks, Windows stubs, ruling and gates",
+      "criteria": [
+        "14-REQ-9.1",
+        "14-REQ-9.2",
+        "14-REQ-9.3",
+        "14-REQ-7.2"
+      ],
+      "tests": [
+        "TS-14-42",
+        "TS-14-36",
+        "TS-14-43"
+      ],
+      "steps": [
+        "Before touching go.mod, copy internal/policy/testdata/go-list-m-all.txt to internal/policy/testdata/go-list-m-all.13.txt as the baseline TS-14-42 compares against; then write TS-14-42, TS-14-36 and TS-14-43 and confirm they fail",
+        "Run `go get github.com/gokrazy/rsync@v0.3.8`, then read the module source under `go env GOMODCACHE` and confirm the real shapes of rsyncclient.New, WithSender, (*Client).Run, ServerCommandOptions, the option parser, rsyncd.NewServer, DontRestrict, Module, NewConnection and HandleConnArgs before writing code against them",
+        "Create sandbox/internal/rsyncx/doc.go with no build constraint: the package doc (the only package that imports github.com/gokrazy/rsync; shared by host attach and the agent), type Direction with DirSync and DirExport, MaxDataChunk = 1 << 20 and MaxRuleBytes = 8 << 20",
+        "Create sandbox/internal/rsyncx/server.go (`//go:build !windows`, const Supported = true): ModulesFor(ws string, d Direction) []rsyncd.Module returning exactly one module {Name: \"workspace\", Path: ws, Writable: d == DirSync}; NewServer(ws string, d Direction), the only function in the module that calls rsyncd.NewServer, always passing rsyncd.DontRestrict() and incrementing an atomic counter read by ServersBuilt() int64; Serve(ctx, srv, conn io.ReadWriteCloser, args []string) error running rsyncd.NewConnection plus HandleConnArgs on that module",
+        "Create sandbox/internal/rsyncx/client.go (`//go:build !windows`): ClientArgs(delete bool, rules []string) []string giving -r -l -t -p, --delete when set and one `--exclude=<rule>` per rule; ServerArgs(clientArgs []string, sender bool, operand string) []string built from the library's ServerCommandOptions; RunClient(ctx, conn io.ReadWriteCloser, args []string, sender bool, local string) error wrapping rsyncclient.New (with WithSender only when sender) and Run",
+        "Create sandbox/internal/rsyncx/args.go (`//go:build !windows`): ParseArgs(args) (Parsed{Recursive, Links, Times, Perms, Delete, Sender, Server bool; Excludes, Operands []string}, error) over the library's own parser; CheckServerArgs(args []string, d Direction, startPath string) error returning *ArgError{Token, Reason} for an option the parser rejects (naming it), a recognised token outside the allowlist (bundled short flags expanded; allowlist = recursion, links, times, permissions, delete, exclude, server and sender plus the protocol tokens ServerArgs itself emits for the four Direction x delete configurations, computed once), a sender flag that does not match d, and a path operand other than the module root or startPath",
+        "Create sandbox/internal/rsyncx/stub_windows.go (`//go:build windows`, const Supported = false) declaring every identifier server.go, client.go and args.go export, each function returning an error wrapping ErrUnsupported (declared in doc.go) that names runtime.GOOS",
+        "Run `go mod tidy`; confirm github.com/gokrazy/rsync v0.3.8 is a direct requirement without `// indirect`, its requirements are indirect, golang.org/x/net and github.com/landlock-lsm/go-landlock stay indirect, and every line of go-list-m-all.13.txt appears unchanged in `go list -m all`; regenerate go-list-m-all.txt. If MVS would move any existing version, do not commit the bump: record the module and versions in docs/errata/14_sandbox_rsync_sync.md and stop",
+        "Add github.com/gokrazy/rsync to approvedDeps in internal/policy/deps_test.go with a one-line reason comment (in-process rsync protocol for sandbox LocalDir transfers), and extend TS-13-65's expected direct set with it",
+        "Add the docs/DEPS.md ruling: users (sandbox/internal/rsyncx, reached by the agent and attach), v0.3.8, why (both ends in-process, delta transfer, nothing to install, same path through a gateway), `go mod why -m` for each new module and which are linked, protocol 27 limits (no xattrs, ACLs; MD4), and the rule that every server is built with DontRestrict(); add a Rejected row for an external rsync binary",
+        "Write TS-14-36 in internal/policy/rsyncd_ast_test.go (go/parser over every non-test .go file of the root module, skipping testdata and directories with their own go.mod, resolving the rsyncd import alias, inline fixture sources with fake file names), TS-14-43 in internal/policy/buildtags_test.go (go/build/constraint evaluated for windows, linux and darwin; windows-file identifier parity per package; runs the gates) and TS-14-42 in internal/policy/deps_test.go",
+        "Run TestCrossTargetBuildAndVet, TestHostCgoBuildAndVet and TestLineBudgets_TS12_14 with their environments unchanged; if psx's cgo variant fails to link under the host-cgo gate, add no CGO_LDFLAGS_ALLOW or other variable: record the failure in docs/errata/14_sandbox_rsync_sync.md and stop"
+      ],
+      "touches": [
+        "go.mod",
+        "go.sum",
+        "sandbox/internal/rsyncx/doc.go",
+        "sandbox/internal/rsyncx/server.go",
+        "sandbox/internal/rsyncx/client.go",
+        "sandbox/internal/rsyncx/args.go",
+        "sandbox/internal/rsyncx/stub_windows.go",
+        "internal/policy/deps_test.go",
+        "internal/policy/rsyncd_ast_test.go",
+        "internal/policy/buildtags_test.go",
+        "internal/policy/testdata/go-list-m-all.txt",
+        "internal/policy/testdata/go-list-m-all.13.txt",
+        "docs/DEPS.md"
+      ],
+      "done_when": [
+        "every line of internal/policy/testdata/go-list-m-all.13.txt appears unchanged in `go list -m all`",
+        "TS-09-15 and TS-09-16 pass"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Add sandbox.LocalDir and the Deleted and Sent fields of SyncResult, and report Sent for Tar syncs",
+      "criteria": [
+        "14-REQ-1.1",
+        "14-REQ-1.3",
+        "14-REQ-1.4"
+      ],
+      "tests": [
+        "TS-14-1",
+        "TS-14-3"
+      ],
+      "steps": [
+        "Write TS-14-1 and TS-14-3 and confirm they fail",
+        "In sandbox/sandbox.go add `type LocalDir struct { Path string; Ignore tools.IgnoreOptions; IncludeIgnored bool; ExcludeGit bool; Delete bool }` in that field order with the unexported isSource and isDestination methods, so it satisfies both sealed interfaces next to Tar and TarOut; document each field per direction (Path resolved once against the working directory with symlinks evaluated; zero Ignore reads the real environment as tools.Options.Ignore does; IncludeIgnored turns rules off on both sides; ExcludeGit affects Sync only because Export always leaves .git behind; Delete removes receiving-side entries the sender lacks; Windows refuses LocalDir)",
+        "Extend SyncResult to `Files int; Bytes int64; Deleted int; Sent int64` and document both meanings: for LocalDir, files created or changed, their content bytes, entries removed under Delete and rsync data bytes the host wrote (tool writes in the same window may be counted); for Tar, 13's Files and Bytes, Deleted 0 even under Replace, Sent the tar bytes read from R and sent",
+        "In sandbox/internal/attach/transfer.go wrap Tar.R in a counting reader and set Sent to the bytes actually sent in data chunks; leave Deleted 0",
+        "Route LocalDir in attach's Sync and Export type switches to syncLocalDir and exportLocalDir in a new sandbox/internal/attach/rsync.go; until tasks 6 and 7 replace them they apply the state gate and then return fmt.Errorf(\"%w: LocalDir\", sandbox.ErrUnsupported); package sandbox itself imports nothing from github.com/gokrazy/rsync",
+        "Update spec 13 tests that compare whole SyncResult literals so they include the Sent value",
+        "Write TS-14-1 in sandbox/localdir_api_test.go (reflect field lists, compile-time interface assertions, go/parser over package sandbox's non-test files, PkgPath of reachable types) and TS-14-3 in sandbox/tar_sent_test.go over local.Unisolated() with counting readers"
+      ],
+      "touches": [
+        "sandbox/sandbox.go",
+        "sandbox/internal/attach/transfer.go",
+        "sandbox/internal/attach/rsync.go",
+        "sandbox/internal/attach/transfer_test.go",
+        "sandbox/transfer_test.go",
+        "sandbox/localdir_api_test.go",
+        "sandbox/tar_sent_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Implement the rsyncx stream adapter and the per-side exclude-rule computation, combination and size cap",
+      "criteria": [
+        "14-REQ-2.5",
+        "14-REQ-2.6",
+        "14-REQ-3.1",
+        "14-REQ-3.2",
+        "14-REQ-3.3",
+        "14-REQ-3.4",
+        "14-REQ-3.5",
+        "14-REQ-3.6",
+        "14-REQ-3.7"
+      ],
+      "tests": [
+        "TS-14-8"
+      ],
+      "steps": [
+        "Write TS-14-8 and confirm it fails",
+        "In sandbox/internal/tarsafe export SymlinkEscapes(name, target string) bool (absolute target, or path.Join(path.Dir(name), target) cleaned leaves the root) and make Validator.Check call it, so tar and rsync share one symlink predicate",
+        "Create sandbox/internal/rsyncx/conn.go (no build constraint): small interfaces hostStream {Send, Recv, CloseSend, Context} and agentStream {Send, Recv, Context} over *sandboxpb.RsyncFrame, satisfied by the generated stream types and by test fakes; type Conn with constructors HostConn(st) and AgentConn(st) implementing io.ReadWriteCloser",
+        "Write: hold one mutex for the whole call, copy the input and send it as data frames of at most MaxDataChunk bytes in order, and add the bytes to a counter read by Sent() int64 (the host's rsync data bytes)",
+        "Read: return buffered bytes first, then Recv; a data frame refills the buffer; on the host a done frame stores its counts (Done() (*sandboxpb.RsyncDone, bool)) and Read returns io.EOF from then on; Recv io.EOF gives io.EOF; any other frame kind returns *FrameError{Kind} naming it (the host treats it as a malformed response, the agent as InvalidArgument)",
+        "Close: the host end calls CloseSend exactly once through sync.Once; the agent end only marks the Conn closed so later Writes fail",
+        "Create sandbox/internal/rsyncx/rules.go: RuleOptions{Ignore tools.IgnoreOptions; IncludeIgnored, ExcludeGit, File bool}, Compute(ctx, root string, opts) (RuleSet, error) and RuleSet{Ignored, Unreadable, Escaping []string; Git bool} with List(withIgnored bool) []string returning the sorted, deduplicated raw slash-relative rules plus `.git` when Git is set",
+        "Ignored part (skipped when IncludeIgnored or File): tools.NewWorkspace(root) and tools.Walk with IncludeHidden true and opts.Ignore give the visited set; a filepath.WalkDir pass over root adds every entry that is not visited, has no `.git` component, and whose parent is root or visited, then skips its subtree, so each ignored directory yields one rule at its highest level",
+        "In the same WalkDir pass, never following symlinks: a directory whose ReadDir fails or a regular file os.Open refuses becomes an Unreadable rule (subtree skipped); a symlink whose os.Readlink target SymlinkEscapes rejects relative to root becomes an Escaping rule; .git subtrees are scanned for escaping links when transferred, and skipped with Git = true when ExcludeGit is set",
+        "Combine(host, plan []string) []string: union, remove duplicates, sort by raw rule, then keep `.git` unanchored and turn every other rule into \"/\" + rule with a backslash before each `\\`, `*`, `?` and `[`; CheckRuleSize(rules []string) error measures the sum of len(rule) and, above MaxRuleBytes, returns an error containing the measured size and `8 MiB`",
+        "Write TS-14-8 in sandbox/internal/rsyncx/conn_test.go with a fake stream, run under -race; add in-package rules_test.go unit tests for Compute against a filepath.WalkDir/tools.Walk oracle, Combine and CheckRuleSize at 8<<20 and 8<<20+1 bytes (the sandbox-level halves of TS-14-9 to TS-14-15 belong to tasks 5, 6 and 9)"
+      ],
+      "touches": [
+        "sandbox/internal/tarsafe/rules.go",
+        "sandbox/internal/rsyncx/conn.go",
+        "sandbox/internal/rsyncx/rules.go",
+        "sandbox/internal/rsyncx/conn_test.go",
+        "sandbox/internal/rsyncx/rules_test.go"
+      ],
+      "depends_on": [
+        1,
+        2
+      ],
+      "done_when": [
+        "`go test -race ./sandbox/internal/rsyncx/... -count=1` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Implement the agent's Rsync service: one stream at a time, start validation, plan, argument checks, the DontRestrict server, done statistics and tool-set rebuild",
+      "criteria": [
+        "14-REQ-6",
+        "14-REQ-2.3",
+        "14-REQ-2.4",
+        "14-REQ-2.7",
+        "14-REQ-4.4"
+      ],
+      "tests": [
+        "TS-14-7",
+        "TS-14-11",
+        "TS-14-31",
+        "TS-14-32"
+      ],
+      "steps": [
+        "Write TS-14-7, TS-14-11, TS-14-31 and TS-14-32 and confirm they fail",
+        "Add sandbox/internal/agent/rsync.go with (*Agent).Rsync(stream): take a single-stream slot with atomic.Bool CompareAndSwap, answering FailedPrecondition `another Rsync stream is running` when it is held and releasing it on every return; derive a cancellable ctx from stream.Context() and cancel it on every exit so a started server stops; when rsyncx.Supported is false end the RPC with FailedPrecondition naming the platform before sending plan",
+        "Read the first frame: any kind other than start ends with InvalidArgument naming the kind. Validate start in this order: unspecified or unknown direction gives InvalidArgument naming direction; SYNC with a non-empty path gives InvalidArgument naming path; for EXPORT, tarsafe.CleanRel failure gives InvalidArgument naming path, a missing path (Lstat through an os.Root at the workspace) gives NotFound naming it, a symlink or other non-regular non-directory gives InvalidArgument naming path, and delete with a regular-file path gives InvalidArgument naming delete",
+        "Compute the agent's rules with rsyncx.Compute over the transfer root (the workspace for SYNC, workspace/path for an EXPORT directory) with tools.NoGlobalExcludes(), include_ignored from start, ExcludeGit = exclude_git || EXPORT and File for a regular-file export; run rsyncx.CheckRuleSize on List(true) and answer FailedPrecondition naming the size and 8 MiB instead of plan; otherwise send exactly one plan{rules, file}",
+        "Read the next frame: anything but args ends with InvalidArgument naming the kind; rsyncx.CheckServerArgs(args, dir, start.path) failures end with InvalidArgument carrying the ArgError text that names the token; no server is built for a refused stream",
+        "For SYNC, record the before-snapshot: walk the workspace without following symlinks, keeping every entry path and, for regular files, size and modification time",
+        "Build the server only through rsyncx.NewServer(workspace root, dir) (one module, writable exactly for SYNC, DontRestrict inside) and run rsyncx.Serve(ctx, srv, rsyncx.AgentConn(stream), args); a *FrameError from the adapter (a second start or args, or a plan or done from the host) cancels ctx and ends the RPC with InvalidArgument naming the kind",
+        "Map Serve's outcome: when ctx is done (host cancel, TTL Stop) return its status; any other error while the stream is intact ends the RPC with FailedPrecondition carrying the library's message, and the agent keeps serving",
+        "On SYNC success compute done from the snapshots (files new or with changed size or mtime, their content bytes, entries present before and absent after), rebuild the configured tool set with its stored options through the same helper SyncTar uses, then send done; on EXPORT success send done with zero counts; return nil so the RPC ends OK; reference no state outside the stream",
+        "Add an internal accessor attach.ClientConn(sb) grpc.ClientConnInterface and localtest.RawClient(sb) sandboxpb.AgentClient, so tests open raw Rsync streams over a local sandbox's existing connection",
+        "Write TS-14-7, TS-14-31 (stream 1 driven by rsyncx.RunClient over rsyncx.HostConn) and TS-14-32 (rsyncx.ServerArgs baselines, rsyncx.ServersBuilt) in sandbox/internal/agent/rsync_test.go over net.Pipe with a raw sandboxpb client, and TS-14-11 in sandbox/rsync_rules_test.go using rsyncx.Compute and a raw SYNC plan through localtest.RawClient"
+      ],
+      "touches": [
+        "sandbox/internal/agent/rsync.go",
+        "sandbox/internal/agent/agent.go",
+        "sandbox/internal/agent/transfer.go",
+        "sandbox/internal/agent/rsync_test.go",
+        "sandbox/internal/attach/attach.go",
+        "sandbox/internal/localtest/localtest.go",
+        "sandbox/rsync_rules_test.go"
+      ],
+      "depends_on": [
+        2,
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Implement Sync of a LocalDir on the host: path resolution and checks, host rules, the start-plan-args handshake, the sending client and the SyncResult",
+      "criteria": [
+        "14-REQ-4.1",
+        "14-REQ-4.2",
+        "14-REQ-4.4",
+        "14-REQ-4.5",
+        "14-REQ-4.6",
+        "14-REQ-4.7",
+        "14-REQ-3.6",
+        "14-REQ-1.2"
+      ],
+      "tests": [
+        "TS-14-14",
+        "TS-14-17",
+        "TS-14-18",
+        "TS-14-20",
+        "TS-14-21",
+        "TS-14-22",
+        "TS-14-23"
+      ],
+      "steps": [
+        "Write TS-14-14, TS-14-17, TS-14-18, TS-14-20, TS-14-21, TS-14-22 and TS-14-23 and confirm they fail",
+        "Replace syncLocalDir in sandbox/internal/attach/rsync.go: apply the state gate; when rsyncx.Supported is false return an error wrapping sandbox.ErrUnsupported naming runtime.GOOS; when Agent().ProtocolMinor < 1 return fmt.Errorf(\"%w: LocalDir needs agent protocol 1.1, agent speaks %d.%d\", sandbox.ErrUnsupported, ...); all before any walk or stream",
+        "Resolve Path once: refuse \"\"; join a relative path to os.Getwd() at call time; filepath.EvalSymlinks; os.Stat must report a directory; each refusal quotes the path with %q, returns a zero SyncResult and opens no stream; never call os.Chdir",
+        "Compute the host rules with rsyncx.Compute(ctx, src, RuleOptions{Ignore: ld.Ignore, IncludeIgnored: ld.IncludeIgnored, ExcludeGit: ld.ExcludeGit}).List(true)",
+        "Write the shared helper runRsync (Export reuses it): open exactly one Rsync stream under a streamCtx derived from ctx and cancelled on every exit, with the sandbox's outgoing metadata; send start; Recv exactly one plan, treating any other first frame or a status OK before plan as a malformed response and passing gRPC errors to classify",
+        "Combine the host and plan rules with rsyncx.Combine and refuse with rsyncx.CheckRuleSize before sending args (the sandbox stays live, and cancelling our own stream is never classified as a transport failure); build rsyncx.ClientArgs(ld.Delete, combined) and rsyncx.ServerArgs(clientArgs, false, module root) and send them as the args frame",
+        "Run rsyncx.RunClient(streamCtx, rsyncx.HostConn(stream), clientArgs, true, src+\"/\") so Path's contents map onto the workspace root; afterwards read until done if it has not arrived, then require status OK",
+        "Resolve errors in this order: ctx done gives an error wrapping ctx.Err(); a deliberate refusal status gives an error carrying the agent's message and code with the sandbox live; any other status goes through classify; a library error with the stream intact cancels the stream and is returned wrapped; never retry",
+        "Return SyncResult{Files, Bytes, Deleted from the done frame; Sent from HostConn.Sent()}",
+        "Extend sandbox/internal/fakeagent with a configurable Hello ProtocolMinor, an Rsync behaviour func receiving the stream, and an Rsync call counter; create test-helper package sandbox/internal/relaytest: a recording Agent server that forwards Hello, Tools, Call, SyncTar and ExportTar unchanged to a real agent.Agent over net.Pipe and every RsyncFrame unchanged both ways, recording per transfer each frame's kind, direction, order and data length, the start, plan, args and done contents, the final status and other RPCs served meanwhile, with an optional frame-mutator hook; New(t) returns a sandbox attached with attach.Dial, the relay and the workspace path",
+        "Write TS-14-17 in sandbox/internal/attach/rsync_test.go against fakeagent, and TS-14-14, TS-14-18 and TS-14-20 (through relaytest) and TS-14-21, TS-14-22 and TS-14-23 (over local.Unisolated()) in sandbox/rsync_sync_test.go"
+      ],
+      "touches": [
+        "sandbox/internal/attach/rsync.go",
+        "sandbox/internal/attach/rsync_test.go",
+        "sandbox/internal/fakeagent/fakeagent.go",
+        "sandbox/internal/relaytest/relaytest.go",
+        "sandbox/rsync_sync_test.go"
+      ],
+      "depends_on": [
+        3,
+        5
+      ],
+      "done_when": [
+        "`go test -race ./sandbox/... -count=1` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Implement Export to a LocalDir: path and destination checks, destination rules, the receiving client against a read-only server, and the relayable stream",
+      "criteria": [
+        "14-REQ-5",
+        "14-REQ-1.2",
+        "14-REQ-2.7",
+        "14-REQ-6.6"
+      ],
+      "tests": [
+        "TS-14-2",
+        "TS-14-6",
+        "TS-14-25",
+        "TS-14-26",
+        "TS-14-27",
+        "TS-14-28",
+        "TS-14-29",
+        "TS-14-30",
+        "TS-14-33"
+      ],
+      "steps": [
+        "Write TS-14-2, TS-14-6, TS-14-25, TS-14-26, TS-14-27, TS-14-28, TS-14-29, TS-14-30 and TS-14-33 and confirm they fail",
+        "Replace exportLocalDir in sandbox/internal/attach/rsync.go: state gate, the Windows and protocol-minor refusals shared with Sync, then tarsafe.CleanRel(path) refusing with an error naming the path before the destination is touched",
+        "Resolve the destination once: refuse \"\"; join a relative path to os.Getwd(); an existing path is EvalSymlinks-resolved and must be a directory, else an error naming it; a missing path needs an existing parent directory (resolved with EvalSymlinks), else an error naming it; create nothing yet",
+        "When the destination exists compute its RuleSet with rsyncx.Compute(ctx, dst, RuleOptions{Ignore: ld.Ignore, IncludeIgnored: ld.IncludeIgnored, ExcludeGit: true}), keeping the ignored part separable",
+        "Through runRsync send start{EXPORT, path, include_ignored, exclude_git, delete}; after plan, drop the host's ignored part when plan.file is set, create a missing destination with os.Mkdir, Combine the rules (`.git` always present), apply CheckRuleSize, and send args from rsyncx.ClientArgs(ld.Delete, combined) and rsyncx.ServerArgs(clientArgs, true, path)",
+        "Run rsyncx.RunClient(streamCtx, rsyncx.HostConn(stream), clientArgs, false, dst+\"/\") so a directory's contents map onto dst and a regular file lands as dst/<base name>; reuse Sync's error resolution; Export returns only the error",
+        "Confirm the agent side end to end and fix gaps in sandbox/internal/agent/rsync.go or rsyncx: the EXPORT module is read-only (ModulesFor gives Writable false), escaping-symlink rules are relative to the export root, `.git` is always excluded, and a file export applies no ignore rules",
+        "Document on Sandbox.Export and LocalDir the trust model: workspace content is untrusted, the agent binary is trusted, and host safety rests on the agent's escaping-symlink exclusion plus the host's own receiver-side rules, which protect dst's ignored files, .git and escaping symlinks from being overwritten, written through or deleted",
+        "Write TS-14-25 in sandbox/internal/attach/rsync_test.go against fakeagent; TS-14-30 in sandbox/internal/agent/rsync_test.go plus its host Export part in sandbox/rsync_export_test.go; TS-14-2, TS-14-26, TS-14-27, TS-14-28 and TS-14-33 in sandbox/rsync_export_test.go; TS-14-6 in sandbox/relay_test.go with relaytest and a directly attached agent",
+        "Write the TS-14-29 property in sandbox/rsync_export_property_test.go: 50 logged seeds of hostile content planted through the proxy execute tool, a sentinel directory outside dst, and snapshots of dst's parent and dst/.git"
+      ],
+      "touches": [
+        "sandbox/internal/attach/rsync.go",
+        "sandbox/internal/attach/rsync_test.go",
+        "sandbox/internal/agent/rsync.go",
+        "sandbox/internal/agent/rsync_test.go",
+        "sandbox/internal/rsyncx/rules.go",
+        "sandbox/sandbox.go",
+        "sandbox/rsync_export_test.go",
+        "sandbox/rsync_export_property_test.go",
+        "sandbox/relay_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Complete LocalDir failure handling: pre-checks, refusals, transport failures, host library errors, cancellation, agent failures, TTL and Windows refusal",
+      "criteria": [
+        "14-REQ-8",
+        "14-REQ-4.8",
+        "14-REQ-6.7",
+        "14-REQ-6.8"
+      ],
+      "tests": [
+        "TS-14-24",
+        "TS-14-34",
+        "TS-14-35",
+        "TS-14-37",
+        "TS-14-38",
+        "TS-14-39",
+        "TS-14-40",
+        "TS-14-41"
+      ],
+      "steps": [
+        "Write TS-14-24, TS-14-34, TS-14-35, TS-14-37, TS-14-38, TS-14-39, TS-14-40 and TS-14-41 and confirm they fail",
+        "Audit the LocalDir pre-check order in attach's Sync and Export: the state gate (ErrUnavailable with its cause, ErrClosed) first, then the Windows refusal naming the platform, then the protocol-minor refusal naming 1.0 style agent version and 1.1, then path and destination checks, and only then any walk, directory creation or stream",
+        "Return a deliberate refusal on the Rsync stream (InvalidArgument, FailedPrecondition, NotFound, Unimplemented) as an error that carries the agent's message and still yields the gRPC code through status.FromError on the wrapped chain; Unimplemented uses 13's classify wording; the sandbox stays live",
+        "Classify as a transport failure, marking the sandbox unavailable with cause `malformed response: rsync: <reason>`: any non-refusal status, status OK without a done frame, and agent frames out of order (done before plan, a second plan, data before plan, a plan or args during data); later Sync, Export and Call return ErrUnavailable without an RPC",
+        "On a host library error with the stream intact, cancel streamCtx, wait for the client goroutine, and return fmt.Errorf(\"sandbox: rsync client: %w\", err); make sure the Canceled status this produces is not classified as a transport failure and that the agent releases its stream slot so the next Sync works",
+        "On ctx cancellation return an error for which errors.Is(err, ctx.Err()) holds; files already written stay and the sandbox stays live",
+        "Confirm the agent side: a library failure with the stream intact ends with FailedPrecondition carrying the library's message, and the TTL Stop cancels the stream ctx so the adapter's Recv unblocks and Serve returns",
+        "Add to relaytest a throttled net.Pipe pair (rate-limited host end and a byte-count callback) for attaching a real agent.Agent with attach.Dial",
+        "Write TS-14-38 and TS-14-39 in sandbox/internal/attach/rsync_failure_test.go against fakeagent; TS-14-37 (closed and localtest.Cut local sandboxes plus a minor-0 fakeagent) and TS-14-24, TS-14-34 (corrupting relay via the mutator hook plus a raw client), TS-14-35 and TS-14-40 (Unix, skipped as root) in sandbox/rsync_failure_test.go",
+        "Write TS-14-41 in `//go:build windows` files sandbox/rsync_windows_test.go and sandbox/internal/agent/rsync_windows_test.go so the windows/amd64 cross-target vet type-checks them"
+      ],
+      "touches": [
+        "sandbox/internal/attach/rsync.go",
+        "sandbox/internal/attach/state.go",
+        "sandbox/internal/attach/rsync_failure_test.go",
+        "sandbox/internal/agent/rsync.go",
+        "sandbox/internal/agent/rsync_windows_test.go",
+        "sandbox/internal/relaytest/relaytest.go",
+        "sandbox/rsync_failure_test.go",
+        "sandbox/rsync_windows_test.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "done_when": [
+        "`go test -race ./sandbox/... -count=1` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Prove the transfer set end to end: Walk agreement over generated trees, side-specific rules, .git, unreadable entries, the size cap and the either-side exclusion property",
+      "criteria": [
+        "14-REQ-3.1",
+        "14-REQ-3.2",
+        "14-REQ-3.3",
+        "14-REQ-3.4",
+        "14-REQ-3.5",
+        "14-REQ-3.7",
+        "14-REQ-3.8",
+        "14-REQ-4.3"
+      ],
+      "tests": [
+        "TS-14-9",
+        "TS-14-10",
+        "TS-14-12",
+        "TS-14-13",
+        "TS-14-15",
+        "TS-14-16",
+        "TS-14-19"
+      ],
+      "steps": [
+        "Create test-helper package sandbox/internal/treegen: Gen(t, seed) writes a tree with nested .gitignore files, `!` re-includes, .git/info/exclude, a nested repository, hidden files, internal and escaping symlinks, and names containing `*`, `?`, `[` and spaces; Pair(t, seed) writes (source, receiving) trees with overlapping names, different .gitignore patterns, escaping symlinks named like directories on the other side, and optional .git directories; both t.Logf the seed",
+        "Add oracles to treegen: WalkSet (tools.Walk with IncludeHidden true), GitTrees (every .git whose parent Walk lists), Escaping (tarsafe.SymlinkEscapes relative to the tree root), and Snapshot recording existence, type, mode, content, modification time and link target for a set of paths",
+        "Write the TS-14-19 property in sandbox/rsync_property_test.go: PATH emptied with t.Setenv, 100 seeds, a fresh local.Unisolated() sandbox each, Sync(LocalDir{Path: src, Ignore: tools.NoGlobalExcludes()}), and equality of the workspace entries with WalkSet plus GitTrees minus Escaping, content, permission bits and link targets included",
+        "Write the TS-14-16 property in the same file: 50 pairs in both directions, comparing Snapshot of the oracle's excluded set and of directories outside the receiving tree before and after",
+        "Write TS-14-9 and TS-14-10 in sandbox/rsync_rules_test.go (global excludes through IgnoreOptions{Getenv} and XDG_CONFIG_HOME, raw plans through localtest.RawClient) and TS-14-12 there through relaytest",
+        "Write TS-14-13 in sandbox/rsync_unreadable_unix_test.go (`//go:build unix`, skipped when Geteuid() == 0, modes restored in t.Cleanup)",
+        "Write TS-14-15 in sandbox/rsync_rulesize_test.go through relaytest, with the file-heavy host, agent and split cases skipped under -short",
+        "Fix whatever rsyncx.Compute, Combine or the agent's plan gets wrong (highest-level rules, wildcard names, .git handling, unreadable entries); the library's sender-side --exclude and receiver-side deletion protection are unverified, so if either is not honoured record it in docs/errata/14_sandbox_rsync_sync.md and fix it inside rsyncx or the agent, never by weakening a test, changing the option set, or invoking an external rsync"
+      ],
+      "touches": [
+        "sandbox/internal/treegen/treegen.go",
+        "sandbox/internal/rsyncx/rules.go",
+        "sandbox/internal/agent/rsync.go",
+        "sandbox/rsync_property_test.go",
+        "sandbox/rsync_rules_test.go",
+        "sandbox/rsync_unreadable_unix_test.go",
+        "sandbox/rsync_rulesize_test.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Prove the embedding process stays unconfined, switch examples/sandbox to LocalDir, hold the API and size gates, and update the documentation",
+      "criteria": [
+        "14-REQ-7.1",
+        "14-REQ-9.4",
+        "14-REQ-9.5",
+        "14-REQ-9.6"
+      ],
+      "tests": [
+        "TS-14-49",
+        "TS-14-43",
+        "TS-14-44",
+        "TS-14-45"
+      ],
+      "steps": [
+        "Write TS-14-49, TS-14-44 and TS-14-45 and confirm the new parts fail",
+        "Write TS-14-49 in sandbox/unconfined_test.go with a unix-only helper file for syscall.Umask: the parent re-executes os.Args[0] with -test.run selecting a child test and the marker AGENTKIT_SANDBOX_UNCONFINED_CHILD=1; the child test skips without the marker, otherwise records os.Getwd, os.Getuid and the umask (set and restored with syscall.Umask), runs a LocalDir Sync and Export over local.Unisolated(), creates a file in a fresh os.MkdirTemp directory outside the workspace, reads a regular file under /sys on Linux, compares the recorded values, prints a completion marker and names any failed check on stderr; the parent asserts exit status 0 and the marker",
+        "Audit the non-test code of sandbox/internal/rsyncx, sandbox/internal/agent and sandbox/internal/attach for os.Chdir, syscall.Chroot, Setuid, Setgid, Umask or any Landlock call and remove any found; every rsyncd server is built by rsyncx.NewServer",
+        "Switch examples/sandbox/main.go to write its small project into a temporary host directory, Sync it with sandbox.LocalDir, and Export the result into a temporary host output directory with sandbox.LocalDir, printing the exported file's presence before `Sandbox example completed successfully`; extend examples/sandbox/main_test.go with TS-14-45 (go/ast finds no Tar or TarOut literal; offline with ANTHROPIC_API_KEY unset) and update examples/sandbox/README.md",
+        "Write TS-14-44 in internal/policy/exported_api_14_test.go: run 13's TS-13-67 walker over the root package, core, tools and codemode against internal/policy/testdata/exported-api.golden, and pin the golden's SHA-256 as recorded before this spec's changes",
+        "Run TS-14-43, TestCrossTargetBuildAndVet, TestHostCgoBuildAndVet and TestLineBudgets_TS12_14; if the 20,000-line budget no longer fits, move the sandbox tree into a nested module as 13_sandbox_core's Design Decision 5 prescribes (sandbox/go.mod and the Makefile test, vet, lint, tidy and doc loops) instead of raising the budget",
+        "Run `make doc`, then update README.md's Sandboxes section to show a LocalDir Sync and Export",
+        "Update docs/configuration.md: the LocalDir fields and their meaning on Sync and on Export, the four SyncResult fields for LocalDir and Tar, the ignore and .git rules, the warning that IncludeIgnored with Delete on Export removes host-ignored files such as .env, the note that a .git/config holding a token in a remote URL travels into the sandbox unless ExcludeGit is set, and the Windows refusal",
+        "Update docs/architecture.md: rsyncx in the package graph, the Rsync stream and its frame order, the transfer-set rule (each side's rules, union, anchored excludes, 8 MiB cap), the trust model, and the invariant that no code in this module confines the process that embeds it; confirm the docs/DEPS.md ruling from task 2 is complete; write no tests about documentation",
+        "Run `make check` and fix whatever it reports"
+      ],
+      "touches": [
+        "sandbox/unconfined_test.go",
+        "sandbox/unconfined_unix_test.go",
+        "examples/sandbox/main.go",
+        "examples/sandbox/main_test.go",
+        "examples/sandbox/README.md",
+        "internal/policy/exported_api_14_test.go",
+        "README.md",
+        "docs/configuration.md",
+        "docs/architecture.md",
+        "docs/DEPS.md"
+      ],
+      "depends_on": [
+        8,
+        9
+      ],
+      "done_when": [
+        "`make check` exits 0"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify every LocalDir execution path end to end through the real code",
+      "tests": [
+        "TS-14-46",
+        "TS-14-47",
+        "TS-14-48",
+        "TS-14-49"
+      ],
+      "steps": [
+        "Write TS-14-46, TS-14-47 and TS-14-48 in sandbox/rsync_smoke_test.go (package sandbox_test, TMPDIR isolated; TS-14-46 with HOME and XDG_CONFIG_HOME pointed at empty directories and GIT_CONFIG_GLOBAL at an empty file) and re-run TS-14-49; none may use fakeagent or relaytest",
+        "Trace 14-PATH-1 through the code: Sync calls attach syncLocalDir, which checks state and protocol minor, resolves Path, calls rsyncx.Compute with LocalDir.Ignore and runRsync; the agent's Rsync validates start, calls rsyncx.Compute with NoGlobalExcludes and takes the before-snapshot, sends plan; attach calls rsyncx.Combine, CheckRuleSize, ClientArgs and ServerArgs and sends args; the agent calls CheckServerArgs, rsyncx.NewServer and Serve over AgentConn while attach calls RunClient over HostConn; the agent diffs snapshots, rebuilds the tool set and sends done; attach builds SyncResult with Sent from HostConn; a proxy read_file sees the change. Confirm each step calls the next",
+        "Trace 14-PATH-2: Export calls exportLocalDir, CleanRel, destination resolution and rsyncx.Compute over dst, sends the EXPORT start, merges plan rules with `.git`, runs RunClient as receiver against the read-only server, and leaves dst/.git and dst/.env untouched",
+        "Trace 14-PATH-3: localtest.RawClient reaches the agent's Rsync, whose start validation and rsyncx.CheckServerArgs refuse with InvalidArgument before rsyncx.NewServer, and a following proxy list_files and LocalDir Sync succeed; trace 14-PATH-4 from the parent test through the re-executed child's Sync and Export to its checks",
+        "Confirm every contract is consumed in production code: the done frame becomes SyncResult.Files, Bytes and Deleted and HostConn.Sent becomes Sent; the Tar counting reader fills Sent; agent InvalidArgument, NotFound and FailedPrecondition reach the caller as errors with the sandbox live; malformed Rsync responses and transport failures mark the sandbox unavailable; the rule-size error is returned before args; the ErrUnsupported pre-checks run before any walk; ctx cancellation is wrapped",
+        "Confirm entry points owned by spec 13 call this spec's code from production paths: local.Unisolated().Create builds the agent whose registered gRPC service exposes Rsync, attach's Sync and Export type switches route LocalDir to syncLocalDir and exportLocalDir, the tool-set rebuild helper shared with SyncTar runs after an rsync SYNC, and examples/sandbox/main.go uses LocalDir",
+        "Search every file in the tasks' touches lists for panic(\"not implemented\"), TODO, FIXME, `not implemented` errors, the temporary `%w: LocalDir` ErrUnsupported placeholder from task 3, any Rsync method still returning Unimplemented from task 1, and bare `return nil` on non-trivial paths, and replace each with the real behaviour",
+        "Run `make check` and `go test -race ./sandbox/... -count=1`"
+      ],
+      "touches": [
+        "sandbox/rsync_smoke_test.go"
+      ],
+      "depends_on": [
+        10
+      ],
+      "done_when": [
+        "`make check` exits 0",
+        "`go test -race ./sandbox/... -count=1` passes with the four smoke tests running against real components"
+      ],
+      "state": "pending"
+    }
+  ]
+}
