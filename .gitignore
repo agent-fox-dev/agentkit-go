@@ -33,3 +33,6 @@ testdata/fuzz/
 .nightshift/
 prompts.md
 
+
+# `make doc` output.
+/build/
