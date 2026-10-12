@@ -232,6 +232,66 @@ in `docs/DEPS.md`; what it pulls in is listed under Dependencies.
 own packaging. A private repository in the first release is cloned on
 the host and sent as a `LocalDir`.
 
+### D8. Landlock: the agent confines itself, and nothing else gets confined by accident
+
+**Decided**, in two parts, both in the first release.
+
+**Part one is not optional.** `rsyncd.NewServer` in `gokrazy/rsync`
+applies Landlock to the *whole calling process* at construction whenever
+its module list is non-empty: `landlock.V3.BestEffort().RestrictPaths`
+with a default set of system directories read-only, the module paths
+read-write, and everything else denied, irrevocably, for the process and
+every child it starts afterwards. Inside `agentkit-sandboxd` that would
+confine every later tool call to the workspace and that default list,
+so `execute` would lose `/tmp`, the Go build cache and anything else a
+command needs. In the `local` provider, where the agent runs in the
+embedder's process, it would landlock the embedder itself, `go test`
+included. So every `rsyncd.Server` this module constructs is built with
+`rsyncd.DontRestrict()`, and confinement is this module's own decision,
+made once, in one place (part two). A test pins it: after a `Sync` over
+`local`, the test process can still write outside the workspace.
+
+**Part two: the agent applies its own ruleset at startup.** Before it
+serves its first RPC, and before any cgo thread exists, the agent
+restricts itself with `github.com/landlock-lsm/go-landlock`: read and
+write on the workspace, the spill directory and a private `HOME`; read and
+execute on `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc` and `/opt`;
+nothing else on the filesystem; and, under `NetworkNone`, no TCP `bind` or
+`connect` on any port (ABI v4, Linux 6.7). Every process a tool starts
+inherits it. This closes a gap the code has always stated: "`Workspace`
+does NOT constrain `execute`". Inside the sandbox it now does, at the
+kernel, under the container boundary rather than instead of it, so a
+provider option that weakened the container (a writable root, a host
+network) still meets a second layer.
+
+Rules that follow:
+
+- **Never `BestEffort()` for a boundary.** A best-effort call succeeds
+  with no error on a kernel without Landlock. The agent asks for the ABI
+  it needs and reports the ABI it *applied* (or none) in `Hello`;
+  `Capabilities` repeats it. `Spec.RequireLandlock` makes a missing or
+  lower ABI a `Create` failure; off by default in the first release,
+  because the container boundary is the primary one and a micro-VM or
+  `podman machine` kernel may lack Landlock, and on by default once the
+  published images' kernels are known to carry it.
+- **Early, and before threads.** The base-image agent is a cgo build;
+  below ABI v8 Landlock reaches other OS threads only through the psx
+  trick go-landlock performs, and threads created before the call by C
+  code are not covered. The ruleset is applied first thing in `main`.
+- **Where it does not reach.** Landlock restricts filesystem and TCP; it
+  does not bound memory, CPU or process count, cannot see UDP or Unix
+  sockets below ABI v9 and v10, and cannot restrict Multipath TCP, which
+  Go's `net.Listen` uses by default since Go 1.24. Those stay the
+  container's job. The ruleset is defense in depth, and the
+  documentation says so.
+- **The host is never confined.** No code path in `sandbox`, the
+  gateway client or `local` applies Landlock to the process it runs in.
+
+A possible third use, a `sandbox/landlock` provider that runs the agent
+as a confined child process on a Linux host with no container at all,
+is recorded in §6 as a candidate for a later release; it needs nothing
+from the first release beyond the ruleset part two already builds.
+
 ## Goals
 
 1. An embedder can create a sandbox from a provider, populate its one
@@ -383,6 +443,7 @@ type Spec struct {
     Resources Resources         // zero fields take the provider's defaults
     Network   Network           // zero value: NetworkNone
     TTL       time.Duration     // destroyed at TTL whatever happens; default 1h, never unbounded
+    RequireLandlock bool        // fail Create unless the agent applied its Landlock ruleset (D8)
     Labels    map[string]string // forwarded to the backend for the embedder's own bookkeeping
     Provider  map[string]any    // provider-specific options, validated by the provider
 }
@@ -500,25 +561,26 @@ tool is sandbox-bound, and the `guard` documentation will say so.
 
 ### 3.1 `agentkit-sandboxd`
 
-A command in this module, built into both images (D5). It takes the
-workspace path and the tool options as flags, builds `tools.All` over
-`tools.NewWorkspace(workdir)` with `Env` set to its own (explicit)
-environment, and serves the agent service over gRPC on its stdin/stdout,
-one HTTP/2 connection on a `net.Conn` made of the two pipes. It is the
-only process the provider starts; everything else inside is a child of a
-tool call.
+A command in this module, built into both images (D5). First thing in
+`main`, it applies the Landlock ruleset of D8 (or records that the kernel
+has none), then takes the workspace path and the tool options from its
+flags, builds `tools.All` over `tools.NewWorkspace(workdir)` with `Env`
+set to its own (explicit) environment, and serves the agent service over
+gRPC on its stdin/stdout, one HTTP/2 connection on a `net.Conn` made of
+the two pipes. It is the only process the provider starts; everything
+else inside is a child of a tool call, and inherits the ruleset.
 
 It has no model, no provider client, no driver: it is `tools`, the
 generated proto package, the service, and the `rsyncd` server of
-`gokrazy/rsync` serving the workspace as its one module, about the size of
-`mcp/client.go`. The overlay build is `CGO_ENABLED=0`; the base-image
+`gokrazy/rsync` serving the workspace as its one module, constructed
+with `rsyncd.DontRestrict()` (D8), about the size of `mcp/client.go`. The overlay build is `CGO_ENABLED=0`; the base-image
 build has cgo for tree-sitter.
 
 ### 3.2 The protocol: `agentkit.sandbox.v1`
 
 ```protobuf
 service Agent {
-  rpc Hello(HelloRequest) returns (HelloResponse);        // versions, workspace, tool names, outline backend, has git
+  rpc Hello(HelloRequest) returns (HelloResponse);        // versions, workspace, tool names, outline backend, has git, Landlock ABI applied (0 = none)
   rpc Call(CallRequest) returns (CallResponse);           // tool, input (JSON bytes) -> ToolResult (ok, data JSON bytes, error, detail, metadata, text)
   rpc Rsync(stream RsyncFrame) returns (stream RsyncFrame); // first frame: direction and the server-side rsync args; then bytes both ways (§3.5)
   rpc SyncTar(stream TarChunk) returns (SyncResult);       // a tar stream into path, replace or merge
@@ -590,6 +652,13 @@ argv `podman.Args(spec)` produces, offline.
   rootless where the backend supports it (`--userns` as configured), the
   image's non-root user, and the backend's default seccomp profile. The
   micro-VM runtime adds a kernel boundary on top.
+- **Kernel confinement inside (D8).** The agent's own Landlock ruleset,
+  inherited by every tool process: filesystem writes only in the
+  workspace, the spill directory and its private `HOME`; reads and
+  execution only from the system directories; no TCP under
+  `NetworkNone`. The ABI applied is in `Hello`; `Spec.RequireLandlock`
+  turns "none" into a `Create` failure. This layer is in addition to the
+  container's, never a substitute, and does not bound resources.
 - **Resources.** `--cpus`, `--memory` (with swap equal to memory, so
   swap cannot be used to exceed it), `--pids-limit`.
 - **Lifetime.** `TTL` is enforced twice: the provider schedules a destroy
@@ -631,8 +700,8 @@ init step is before the sandbox has run anything.
 and runs `rsyncclient.New(args, rsyncclient.WithSender())` over it, with
 `args` of `-a`, `--filter=':- .gitignore'` unless `IncludeIgnored`,
 `--exclude=.git` only when `ExcludeGit`, and `--delete` when `Delete`;
-the agent serves the workspace as a writable `rsyncd.Module`. Nothing is
-installed on either side: both ends are `gokrazy/rsync` in the two
+the agent serves the workspace as a writable `rsyncd.Module` on a server
+built with `DontRestrict()` (D8). Nothing is installed on either side: both ends are `gokrazy/rsync` in the two
 agentkit binaries, and the bytes ride the gRPC stream, so a sync through
 a gateway is the same code as a sync into a local container. A second
 `Sync` of the same `LocalDir` sends only what changed, by the protocol's
@@ -730,7 +799,20 @@ PRD runnable without a container, and it is **not a sandbox**. Its
 `Create` refuses a `Spec` with `Network` other than unrestricted or with
 `Resources` set, so a test cannot accidentally assert isolation it does
 not have. It runs the agent in-process over a pipe pair, so the gRPC
-service is exercised end to end with no container and no socket.
+service is exercised end to end with no container and no socket. Because
+it is in-process, it applies no Landlock ruleset and its `rsyncd` is
+built with `DontRestrict()` (D8): nothing `local` does may confine the
+process that embeds it.
+
+**Candidate for a later release: `sandbox/landlock`.** The agent as a
+confined child process on a Linux host, no container: the D8 ruleset on
+a copy of the workspace, a private `TMPDIR` and `HOME`, TCP denied,
+`Resources` refused because Landlock bounds none of them, the host's own
+toolchain available to `execute`. Instant start and no image, in
+exchange for no kernel boundary, no resource limits, and the Landlock
+gaps D8 lists. It sits between `local` and `podman`; it is not in the
+first release, and it needs nothing from it beyond the ruleset the agent
+already applies.
 
 The OpenShell provider maps `Spec` onto an OpenShell policy (network
 allowlist to `network_policies`, resources to its sandbox options) and
@@ -753,7 +835,9 @@ usable on its own.
    agent and an oversized message are pinned. Code mode over proxy tools
    against `provider/faux` (§4). `Sync` and `Export` for `LocalDir` over
    the `Rsync` stream with `gokrazy/rsync` on both ends, and for `Tar`;
-   both run end to end over `local`'s pipe.
+   both run end to end over `local`'s pipe. The D8 ruleset in the agent,
+   `DontRestrict()` on every `rsyncd`, the ABI in `Hello`, and
+   `Spec.RequireLandlock`.
 2. **Images.** The two Containerfiles, the release workflow that
    publishes them, and the `Create` failure that names `AgentPath` and
    the `COPY --from` line.
@@ -816,6 +900,19 @@ Offline, in `make check`:
   host.
 - The agent refuses an `Rsync` stream whose first frame names a path
   outside the workspace or an option the library does not know.
+- After a `LocalDir` sync over `local`, the test process can still create
+  a file outside the workspace and read `/sys`: no `rsyncd` this module
+  builds confines its caller (D8 part one).
+- `Hello` from the in-process agent reports Landlock ABI 0, and a `Spec`
+  with `RequireLandlock` is refused by `local` with an error naming the
+  field.
+- On Linux with Landlock ABI v4 or later (skipped otherwise): the agent
+  binary started as a child process with the D8 ruleset over a temporary
+  workspace answers `execute` of a write into the workspace with success,
+  a write into the test's own home directory with a permission error, a
+  read of a file outside the ruleset with a permission error, and a TCP
+  connect to a listener the test opened with a refusal; `Hello` reports
+  the ABI applied.
 - A `GitRepo` sync after `Tools` has been called is refused.
 - A code-mode script over proxy tools, driven by `provider/faux` through
   `agentkit.New`, has one call blocked by `Config.Guard` and receives an
@@ -830,9 +927,10 @@ Offline, in `make check`:
   `core.ErrUnguardedExecute`, as with local ones.
 - The root module's direct dependencies gain exactly
   `google.golang.org/grpc` and `google.golang.org/protobuf`, both already
-  in the module graph, and `github.com/gokrazy/rsync`. The allowlist test
-  in `internal/policy` is the check, and `docs/DEPS.md` carries the
-  rulings.
+  in the module graph, `github.com/gokrazy/rsync`, and
+  `github.com/landlock-lsm/go-landlock`, which `gokrazy/rsync` already
+  requires. The allowlist test in `internal/policy` is the check, and
+  `docs/DEPS.md` carries the rulings.
 - `go build ./...` needs no `protoc` or `buf`; `make proto` regenerates
   and a test fails when the checked-in code is stale.
 
@@ -845,7 +943,12 @@ With `podman` (or `docker`) installed, skipped otherwise:
   and `podman ps -a` and `podman volume ls` show nothing with the label.
 - Create with a `GitRepo` of a public repository under `NetworkNone`: the
   clone is present, and `execute` of a `curl` to any host fails inside
-  the sandbox.
+  the sandbox. With the base image on a kernel with Landlock, `Hello`
+  reports the ABI and a `Spec` with `RequireLandlock` succeeds.
+- `execute` of a write to `/var/tmp` or `/home` inside the base image
+  fails with a permission error even where the container has those paths
+  writable: the Landlock layer, not the read-only root, is what refuses
+  it.
 - Create with an image lacking the agent at `AgentPath` fails before any
   tool call, and the error names the path and the `COPY --from` line.
 - A sandbox with `MemoryBytes: 256 << 20` running a process that
@@ -873,6 +976,11 @@ With `podman` (or `docker`) installed, skipped otherwise:
   27: no xattrs, no ACLs, MD4 checksums, and a smaller user base than
   tridge rsync. A source tree needs none of the first three; the last is
   why §8 tests the transfer semantics rather than trusting them.
+- **A second layer on every kernel.** Landlock is applied where the
+  kernel has it and reported where it does not. A kernel without it
+  (an old host, a micro-VM image built without the LSM) gets the
+  container boundary alone, visibly in `Hello`, and `RequireLandlock`
+  is the embedder's way to refuse that.
 - **Reconnection.** A sandbox whose agent dies is dead. The run sees
   `sandbox_unavailable` results and ends on its own bounds; the embedder
   creates a new sandbox and re-syncs. PRD 10 §9 already chose "a run that
@@ -903,10 +1011,15 @@ With `podman` (or `docker`) installed, skipped otherwise:
   `google/renameio/v2`, `google/shlex`, `mmcloughlin/md4`,
   `landlock-lsm/go-landlock` and `golang.org/x/{crypto,sync,sys}`; *spec
   time:* check with `go mod why` which of these the two library packages
-  actually import (the systemd and landlock ones are expected to be the
-  daemon command's) and record it in the ruling. A ruling each in
-  `docs/DEPS.md`; otherwise `encoding/json`, `archive/tar`, `os/exec`,
-  and this module's `core`, `tools` and `guard`.
+  actually import (the systemd one is expected to be the daemon
+  command's) and record it in the ruling.
+  `github.com/landlock-lsm/go-landlock` (v0.10.1 at this writing), used by
+  `cmd/agentkit-sandboxd` for the D8 ruleset; it brings
+  `kernel.org/pub/linux/libs/security/libcap/psx` for the pre-v8 thread
+  handling in cgo builds, and it is already required by `gokrazy/rsync`.
+  A ruling each in `docs/DEPS.md`; otherwise `encoding/json`,
+  `archive/tar`, `os/exec`, and this module's `core`, `tools` and
+  `guard`.
 - Go, nested modules: `client-go` in `sandbox/gateway` (server side, step
   6); OpenShell's gRPC client in `sandbox/openshell` (step 7). Each gets a
   ruling before it lands; neither enters the root module's graph.
@@ -927,13 +1040,21 @@ With `podman` (or `docker`) installed, skipped otherwise:
 - `docs/architecture.md`: the package graph rows for `sandbox`, its
   providers and the generated proto package; a "Sandboxes" section with
   the service, the proxy tool guarantees, the isolation list of §3.3 as
-  invariants, the init step, and the D3 record.
+  invariants, the init step, the D3 record, and two new invariants: "no
+  code in this module confines the process that embeds it" and "the
+  agent's Landlock ruleset is applied before any other work".
+- `tools.Workspace`'s doc comment and `docs/configuration.md`'s "File
+  tools are contained to a workspace root" paragraph: still true on a
+  host; inside a sandbox the agent's ruleset contains `execute` too, and
+  the text says where that holds and where it does not.
 - `docs/configuration.md`: `sandbox.Spec`, `Resources`, `Network`,
   `LocalDir`, `GitRepo`, `podman.Options`, `gateway.Dial`, the
   `agentkit-sandboxd` and `agentkit-gateway` flags, the two images and
   their tags.
-- `docs/DEPS.md`: rulings for `grpc`, `protobuf` and `gokrazy/rsync`;
-  rulings for the nested modules' dependencies as they land; a "Rejected"
+- `docs/DEPS.md`: rulings for `grpc`, `protobuf`, `gokrazy/rsync` and
+  `go-landlock` (the latter recording the `DontRestrict()` rule and why
+  `BestEffort()` is never used); rulings for the nested modules'
+  dependencies as they land; a "Rejected"
   row each for the Docker and Podman Go clients and for `client-go` in
   the root module, with the reasons in D4, and one for an external
   `rsync` binary, with the reason in D7.
