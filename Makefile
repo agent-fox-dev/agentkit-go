@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-DOC_DIR ?= build/doc
+DOC_DIR ?= build/docs
 
 .PHONY: help
 help: ## Show this help
