@@ -118,3 +118,43 @@ func TestUnconvertibleToolSchemaNamesTheTool(t *testing.T) {
 		t.Fatalf("err = %v, want one naming the tool \"tally\"", err)
 	}
 }
+
+// The strict subset has no numeric, string-length or array-size bounds: the
+// API answers 400 "properties maximum, minimum are not supported". The wire
+// schema drops them and tells the model in the description instead; the tool's
+// own schema keeps them, so the validator still enforces every bound.
+func TestStrictWireSchemaDropsUnsupportedBounds(t *testing.T) {
+	m := *testModel()
+	bounded := core.Tool{Name: "convert", InputSchema: schema.Object(
+		schema.Prop("value", schema.Int("amount").Min(1).Max(10)),
+		schema.Prop("names", schema.Array(schema.String("a name")).MinItemsN(2)),
+		schema.Prop("one", schema.Array(schema.String()).MinItemsN(1)),
+		schema.Opt("limit", schema.Int("how many").Min(0))),
+		Execute: func(context.Context, json.RawMessage) core.ToolResult { return core.OKResult(nil) }}
+	tools := wireTools(t, wireOf(t, m, core.Request{Messages: userTurn(), Tools: core.ToolWires([]core.Tool{bounded})}))
+	raw, _ := json.Marshal(tools[0]["input_schema"])
+	for _, kw := range []string{`"minimum"`, `"maximum"`, `"minLength"`, `"maxLength"`, `"maxItems"`, `"multipleOf"`} {
+		if strings.Contains(string(raw), kw) {
+			t.Errorf("wire schema carries %s: %s", kw, raw)
+		}
+	}
+	props := tools[0]["input_schema"].(map[string]any)["properties"].(map[string]any)
+	if d, _ := props["value"].(map[string]any)["description"].(string); !strings.Contains(d, "amount") ||
+		!strings.Contains(d, "minimum: 1") || !strings.Contains(d, "maximum: 10") {
+		t.Errorf("value description = %q, want the text plus {minimum: 1, maximum: 10}", d)
+	}
+	if n, _ := props["names"].(map[string]any)["minItems"]; n != nil {
+		t.Errorf("minItems 2 stayed on the wire: %v", n)
+	}
+	if n, _ := props["one"].(map[string]any)["minItems"].(float64); n != 1 {
+		t.Errorf("minItems 1 is supported and must stay: %v", props["one"])
+	}
+	// The tool's own schema still carries the bounds for the validator.
+	v := bounded.InputSchema.Properties["value"]
+	if v.Minimum == nil || v.Maximum == nil || v.Description != "amount" {
+		t.Errorf("the tool's schema was changed: %+v", v)
+	}
+	if err := schema.Validate(bounded.InputSchema, map[string]any{"value": 99, "names": []any{"a", "b"}, "one": []any{"x"}}); err == nil {
+		t.Error("the validator no longer enforces maximum")
+	}
+}

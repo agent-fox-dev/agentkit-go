@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
@@ -163,7 +164,70 @@ func strictSchema(s *schema.Schema) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
+	dropUnsupportedBounds(c)
 	return json.Marshal(c)
+}
+
+// supportedFormats is the closed list of string formats strict mode accepts.
+var supportedFormats = map[string]bool{"date-time": true, "time": true, "date": true,
+	"duration": true, "email": true, "hostname": true, "uri": true,
+	"ipv4": true, "ipv6": true, "uuid": true}
+
+// dropUnsupportedBounds removes the constraints strict mode answers 400 to
+// (numeric bounds, string lengths, array sizes beyond minItems 0 or 1, a
+// format off the supported list) from a schema StrictSubset already cloned.
+// Each is appended to the description, the way Anthropic's own SDKs do, so the
+// model still reads the limit. The tool's schema is the validator's and keeps
+// every bound: a call that breaks one comes back as an error the model fixes.
+func dropUnsupportedBounds(s *schema.Schema) {
+	if s == nil {
+		return
+	}
+	var notes []string
+	num := func(name string, v **float64) {
+		if *v != nil {
+			notes = append(notes, name+": "+strconv.FormatFloat(**v, 'g', -1, 64))
+			*v = nil
+		}
+	}
+	size := func(name string, v **int) {
+		if *v != nil {
+			notes = append(notes, name+": "+strconv.Itoa(**v))
+			*v = nil
+		}
+	}
+	num("minimum", &s.Minimum)
+	num("maximum", &s.Maximum)
+	num("exclusiveMinimum", &s.ExclusiveMinimum)
+	num("exclusiveMaximum", &s.ExclusiveMaximum)
+	num("multipleOf", &s.MultipleOf)
+	size("minLength", &s.MinLength)
+	size("maxLength", &s.MaxLength)
+	size("maxItems", &s.MaxItems)
+	if s.MinItems != nil && *s.MinItems > 1 {
+		size("minItems", &s.MinItems)
+	}
+	if s.UniqueItems != nil {
+		notes = append(notes, "uniqueItems: "+strconv.FormatBool(*s.UniqueItems))
+		s.UniqueItems = nil
+	}
+	if s.Format != "" && !supportedFormats[s.Format] {
+		notes = append(notes, "format: "+s.Format)
+		s.Format = ""
+	}
+	if len(notes) > 0 {
+		if s.Description != "" {
+			s.Description += "\n\n"
+		}
+		s.Description += "{" + strings.Join(notes, ", ") + "}"
+	}
+	for _, p := range s.Properties {
+		dropUnsupportedBounds(p)
+	}
+	dropUnsupportedBounds(s.Items)
+	for _, a := range s.AnyOf {
+		dropUnsupportedBounds(a)
+	}
 }
 
 // nameStrictFailure says which tool's schema the strict subset refused, which
