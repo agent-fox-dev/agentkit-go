@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
@@ -42,6 +43,9 @@ type Agent struct {
 
 	mu  sync.RWMutex
 	set *toolSet // nil until the first successful Tools RPC
+
+	// rsyncBusy holds the one Rsync stream slot.
+	rsyncBusy atomic.Bool
 }
 
 // New checks cfg and returns an agent. The workspace must already exist and

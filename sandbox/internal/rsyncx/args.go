@@ -18,7 +18,9 @@ func ParseArgs(args []string) (Parsed, error) {
 			p.Operands = append(p.Operands, a)
 			continue
 		}
-		if _, err := newClient([]string{a}, false); err != nil {
+		// Checked one token at a time, so a refusal names it; with --server,
+		// which server-only options such as --sender require.
+		if _, err := newClient([]string{"--server", a}, false); err != nil {
 			return p, &ArgError{Token: a, Reason: "the rsync library does not know it: " + err.Error()}
 		}
 		p.Options = append(p.Options, a)

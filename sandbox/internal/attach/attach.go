@@ -68,7 +68,7 @@ func oneShot(conn net.Conn) func(context.Context, string) (net.Conn, error) {
 // timer. closer closes the client. On any failure the client is closed and
 // the destroy step runs. ctx bounds creation only.
 func New(ctx context.Context, cc grpc.ClientConnInterface, closer io.Closer, cfg Config) (sandbox.Sandbox, error) {
-	s := &sb{client: sandboxpb.NewAgentClient(cc), closer: closer, cfg: cfg}
+	s := &sb{cc: cc, client: sandboxpb.NewAgentClient(cc), closer: closer, cfg: cfg}
 	h, err := s.client.Hello(s.outgoing(ctx), &sandboxpb.HelloRequest{})
 	if err == nil && h.ProtocolMajor != sandbox.ProtocolMajor {
 		err = fmt.Errorf("%w: agent protocol %d.%d, host protocol %d.%d", sandbox.ErrProtocol,
@@ -97,6 +97,7 @@ func New(ctx context.Context, cc grpc.ClientConnInterface, closer io.Closer, cfg
 
 // sb is the one Sandbox implementation.
 type sb struct {
+	cc     grpc.ClientConnInterface
 	client sandboxpb.AgentClient
 	closer io.Closer
 	cfg    Config
@@ -112,6 +113,15 @@ type sb struct {
 	toolsMu  sync.Mutex
 	tools    []core.Tool
 	toolOpts sandbox.ToolOptions
+}
+
+// ClientConn is the gRPC connection of a sandbox this package attached, or
+// nil; tests open raw streams on it.
+func ClientConn(s sandbox.Sandbox) grpc.ClientConnInterface {
+	if x, ok := s.(*sb); ok {
+		return x.cc
+	}
+	return nil
 }
 
 func (s *sb) ID() string               { return s.cfg.ID }

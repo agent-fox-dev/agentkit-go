@@ -9,6 +9,8 @@ import (
 	"sync"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/attach"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 )
 
 var (
@@ -40,4 +42,10 @@ func Cut(sb sandbox.Sandbox) error {
 		return fmt.Errorf("localtest: %q is not a live local sandbox", sb.ID())
 	}
 	return cut()
+}
+
+// RawClient is a raw protocol client over sb's own connection, for tests that
+// send frames the attach code never would.
+func RawClient(sb sandbox.Sandbox) sandboxpb.AgentClient {
+	return sandboxpb.NewAgentClient(attach.ClientConn(sb))
 }
