@@ -272,6 +272,9 @@ func (s *sb) runRsync(ctx context.Context, start *sandboxpb.RsyncStart,
 		}
 		return nil, 0, s.rsyncFailure(ctx, fail)
 	}
+	if conn.Ended() {
+		return nil, 0, s.malformed("the stream ended without a done frame")
+	}
 	if runErr != nil {
 		// The library failed with the stream intact: cancel the stream (the
 		// deferred cancel) and return the library's error; the sandbox stays

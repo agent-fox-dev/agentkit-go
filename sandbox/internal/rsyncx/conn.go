@@ -162,6 +162,15 @@ func (c *Conn) Failure() error {
 	return c.failure
 }
 
+// Ended reports whether a read met the end of the stream, status OK,
+// without a done frame: a malformed response, whatever the library made of
+// it.
+func (c *Conn) Ended() bool {
+	c.rmu.Lock()
+	defer c.rmu.Unlock()
+	return c.eof && c.done == nil
+}
+
 // Sent is the data bytes written to the stream.
 func (c *Conn) Sent() int64 { return c.sent.Load() }
 

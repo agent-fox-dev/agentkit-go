@@ -132,3 +132,20 @@ Escaping symlinks are still decided relative to the export path.
   `WithSender`, which only `sandbox/internal/rsyncx` may construct (TS-14-36),
   so that half lives in `sandbox/internal/rsyncx/server_test.go`; the Export
   half is in `sandbox/rsync_export_test.go`.
+
+## TS-14-40: a read-only directory is no host write failure under -p
+
+TS-14-40 makes `dst/out` mode 0555 and expects the host's receiver to fail
+writing `out/new.txt`. With `-p` the receiver gives `dst/out` the
+workspace's mode before it fills the directory (as rsync does; a directory
+without owner write is made writable and fixed up afterwards), so the export
+succeeds. The test instead puts a non-empty directory at `dst/out/new.txt`,
+which the receiver cannot replace with a regular file; Export then returns
+`sandbox: rsync client: unlinking to make room for regular file: removeat
+out/new.txt: directory not empty`, which wraps the library's error and names
+`out/new.txt` as the test's contract asks (`sandbox/rsync_failure_test.go`).
+The test no longer depends on permissions, so it also runs as root.
+
+`go test -race ./sandbox/... -count=1`, task 8's done-when, matches no
+package from the repository root since D-2; the same packages are tested by
+`go test -race ./... -count=1` inside `sandbox/`.

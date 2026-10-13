@@ -241,6 +241,8 @@ type Env struct {
 	Sandbox   sandbox.Sandbox
 	Relay     *Relay
 	Workspace string
+	// Served receives the agent's Serve result, for Throttled.
+	Served <-chan error
 }
 
 // New starts a real agent over a fresh workspace, a relay in front of it, and
@@ -298,6 +300,89 @@ func Direct(t *testing.T) *Env {
 	}
 	t.Cleanup(func() { _ = sb.Close(context.Background()) })
 	return &Env{Sandbox: sb, Workspace: ws}
+}
+
+// Throttle configures Throttled.
+type Throttle struct {
+	// Rate is the host end's bytes per second, each way.
+	Rate int
+	// OnBytes, when set, is called with the running total of bytes that
+	// crossed the host end, both ways.
+	OnBytes func(total int64)
+	// TTL is the agent's TTL; zero means an hour.
+	TTL time.Duration
+}
+
+// Throttled starts a real agent over a fresh workspace and a host sandbox
+// attached to it with attach.Dial over a net.Pipe pair whose host end is
+// rate-limited and counted.
+func Throttled(t *testing.T, th Throttle) *Env {
+	t.Helper()
+	ttl := th.TTL
+	if ttl == 0 {
+		ttl = time.Hour
+	}
+	ws := t.TempDir()
+	a, err := agent.New(agent.Config{Workdir: ws, Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir()}, TTL: ttl})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostEnd, agentEnd := net.Pipe()
+	served := make(chan error, 1)
+	go func() { served <- a.Serve(agentEnd) }()
+	sb, err := attach.Dial(context.Background(), &throttled{Conn: hostEnd, th: th}, attach.Config{Spec: sandbox.Spec{TTL: ttl}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sb.Close(context.Background()) })
+	return &Env{Sandbox: sb, Workspace: ws, Served: served}
+}
+
+// throttleChunk is the most one throttled Read or Write moves at a time.
+const throttleChunk = 4 << 10
+
+// throttled is a rate-limited, counted net.Conn.
+type throttled struct {
+	net.Conn
+	th    Throttle
+	mu    sync.Mutex
+	total int64
+}
+
+func (c *throttled) account(n int) {
+	if n <= 0 {
+		return
+	}
+	c.mu.Lock()
+	c.total += int64(n)
+	total := c.total
+	c.mu.Unlock()
+	if c.th.OnBytes != nil {
+		c.th.OnBytes(total)
+	}
+	if c.th.Rate > 0 {
+		time.Sleep(time.Duration(n) * time.Second / time.Duration(c.th.Rate))
+	}
+}
+
+func (c *throttled) Write(p []byte) (int, error) {
+	n := 0
+	for len(p) > 0 {
+		k, err := c.Conn.Write(p[:min(len(p), throttleChunk)])
+		n += k
+		c.account(k)
+		if err != nil {
+			return n, err
+		}
+		p = p[k:]
+	}
+	return n, nil
+}
+
+func (c *throttled) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p[:min(len(p), throttleChunk)])
+	c.account(n)
+	return n, err
 }
 
 // oneConn hands out one connection, then blocks until closed.
