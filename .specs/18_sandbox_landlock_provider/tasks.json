@@ -78,7 +78,7 @@
         "internal/policy/landlock_provider_test.go",
         "internal/policy/testdata/sandbox-direct-requires.18.txt"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
