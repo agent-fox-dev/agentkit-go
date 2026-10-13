@@ -45,6 +45,34 @@ doc: ## Generate Go package reference (go doc -all) as text files under build/do
 	done
 	@echo "package docs written to $(DOC_DIR)"
 
+PROTO_DIR := sandbox/internal/sandboxpb
+PROTOC_GEN_GO := google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+PROTOC_GEN_GO_GRPC := google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+
+# proto generates into build/.proto (a directory `go build ./...` skips) and
+# moves each file into place, so a build running at the same time never reads
+# a half-written file. The protoc release in the generated headers is pinned
+# to "(unknown)" so the output does not depend on which protoc is installed.
+.PHONY: proto
+proto: ## Regenerate the sandbox agent protocol's Go code (needs protoc)
+	@command -v protoc >/dev/null 2>&1 || { echo "make proto: protoc not found on PATH; install protoc" >&2; exit 1; }
+	GOBIN=$(CURDIR)/build/bin go install $(PROTOC_GEN_GO)
+	GOBIN=$(CURDIR)/build/bin go install $(PROTOC_GEN_GO_GRPC)
+	@rm -rf build/.proto && mkdir -p build/.proto
+	protoc -I $(PROTO_DIR) --plugin=protoc-gen-go=build/bin/protoc-gen-go --plugin=protoc-gen-go-grpc=build/bin/protoc-gen-go-grpc \
+		--go_out=build/.proto --go_opt=paths=source_relative \
+		--go-grpc_out=build/.proto --go-grpc_opt=paths=source_relative \
+		$(PROTO_DIR)/sandbox.proto
+	@for f in sandbox.pb.go sandbox_grpc.pb.go; do \
+		sed -E 's#^(//[[:space:]-]+protoc[[:space:]]+)v.*$$#\1(unknown)#' build/.proto/$$f > build/.proto/$$f.tmp && \
+		mv build/.proto/$$f.tmp $(PROTO_DIR)/$$f || exit 1; \
+	done
+	@if command -v sha256sum >/dev/null 2>&1; then sha256sum $(PROTO_DIR)/sandbox.proto; \
+		else shasum -a 256 $(PROTO_DIR)/sandbox.proto; fi | cut -d' ' -f1 > build/.proto/sandbox.proto.sha256 && \
+		mv build/.proto/sandbox.proto.sha256 $(PROTO_DIR)/sandbox.proto.sha256
+	@rm -rf build/.proto
+	@echo "generated code and hash written to $(PROTO_DIR)"
+
 .PHONY: tidy
 tidy: ## go mod tidy the root module and submodules
 	go mod tidy

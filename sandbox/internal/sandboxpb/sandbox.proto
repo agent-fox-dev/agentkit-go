@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+// The agentkit.sandbox.v1 protocol: the host talks to the AgentKit agent
+// inside a sandbox (agentkit-sandboxd) over this one service.
+//
+// Fields are added, never renumbered, and any addition bumps
+// sandbox.ProtocolMinor. CallRequest and CallResponse reference no other
+// message and no session state, so a later script stream can reuse them as
+// frames. Tool input, result data and result metadata are JSON bytes, never
+// proto structs.
+//
+// After an edit, run `make proto`: it regenerates the Go code beside this
+// file and records this file's SHA-256 in sandbox.proto.sha256.
+
+package agentkit.sandbox.v1;
+
+option go_package = "github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb;sandboxpb";
+
+service Agent {
+  // Protocol and agent versions, workspace root, outline backend, git present.
+  rpc Hello(HelloRequest) returns (HelloResponse);
+  // Configure the tool set; returns each tool's name and definition digest.
+  rpc Tools(ToolsRequest) returns (ToolsResponse);
+  // Run one tool call.
+  rpc Call(CallRequest) returns (CallResponse);
+  // First chunk: target path and replace flag; then tar bytes.
+  rpc SyncTar(stream TarChunk) returns (SyncResponse);
+  // A tar stream of a workspace subtree.
+  rpc ExportTar(ExportRequest) returns (stream TarChunk);
+}
+
+message HelloRequest {}
+
+message HelloResponse {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  string version = 3;
+  string workdir = 4;
+  string outline_backend = 5;
+  bool git = 6;
+}
+
+message ToolsRequest {
+  int64 symbols_max_files = 1;
+  int64 symbols_max_duration_nanos = 2;
+  string spill_dir = 3;
+  bool disable_spill = 4;
+}
+
+message ToolInfo {
+  string name = 1;
+  bytes digest = 2;
+}
+
+message ToolsResponse {
+  repeated ToolInfo tools = 1;
+}
+
+message CallRequest {
+  string name = 1;
+  bytes input = 2;  // JSON
+}
+
+message CallResponse {
+  bool ok = 1;
+  bytes data = 2;  // JSON object, or empty
+  string error = 3;
+  string detail = 4;
+  bytes metadata = 5;  // JSON core.ToolMetadata, or empty
+  string text = 6;
+}
+
+message TarStart {
+  string path = 1;
+  bool replace = 2;
+}
+
+message TarChunk {
+  oneof body {
+    TarStart start = 1;
+    bytes data = 2;  // at most 1 MiB
+  }
+}
+
+message SyncResponse {
+  int64 files = 1;
+  int64 bytes = 2;
+}
+
+message ExportRequest {
+  string path = 1;
+}

@@ -25,6 +25,8 @@ is not on it. An entry ending in `/` approves every module under that path.
 | `github.com/pelletier/go-toml/v2` | TOML parsing for MCP configuration (`internal/toml`) |
 | `golang.org/x/oauth2` | Google credentials for the Vertex AI deployment |
 | `github.com/aws/aws-sdk-go-v2`, `github.com/aws/aws-sdk-go-v2/…` | AWS configuration and credentials for the Bedrock deployment |
+| `google.golang.org/grpc` | the sandbox agent protocol's transport |
+| `google.golang.org/protobuf` | the protobuf runtime of the generated sandbox protocol code |
 
 Adding a direct dependency means adding it there, with its reason, and a
 ruling here. The `codesearch` module is separate and not covered: its zoekt
@@ -184,6 +186,43 @@ re-implementing SigV4 credentials would be neither smaller nor safer.
 
 **What is pulled in.** `github.com/aws/smithy-go` and the AWS SDK's internal,
 SSO, SSO-OIDC and STS modules, which `config` needs for the credential chain.
+
+## `google.golang.org/grpc`
+
+**Used by.** The sandbox packages: the generated client and server in
+`sandbox/internal/sandboxpb`, the agent service in `sandbox/internal/agent`
+and the host side in `sandbox/internal/attach`. Nothing outside `sandbox/`
+imports it.
+
+**Version.** `v1.64.1`, promoted from an indirect requirement at the version
+already in `go.sum`, so `go list -m all` did not change. Upgrading it is a
+separate ruling. `protoc-gen-go-grpc` v1.5.1 output needs v1.64.0 or later
+(`grpc.SupportPackageIsVersion9`).
+
+**Why this module.** PRD 11 (D2) chose an AgentKit gRPC protocol over MCP for
+the sandbox, so tool schemas come from the `tools` package byte for byte and
+`ToolMetadata` survives the trip. gRPC brings HTTP/2 multiplexing over one
+pipe, per-call cancellation that reaches the agent as a cancelled context,
+streaming for tar transfer, and message size limits. A hand-rolled framing
+over stdio would have to rebuild each of those.
+
+**What is pulled in.** `golang.org/x/net` (HTTP/2), `golang.org/x/sys`,
+`golang.org/x/text` and `google.golang.org/genproto/googleapis/rpc`, all
+already in the module graph through the Vertex AI dependencies. `x/net` stays
+indirect (TS-09-15).
+
+## `google.golang.org/protobuf`
+
+**Used by.** The generated code in `sandbox/internal/sandboxpb`.
+
+**Version.** `v1.36.11`, promoted from an indirect requirement at the version
+already in `go.sum`. `make proto` pins `protoc-gen-go` to the same version.
+Upgrading it is a separate ruling.
+
+**Why this module.** It is the runtime that `protoc-gen-go` output requires;
+gRPC uses it to marshal every message.
+
+**What is pulled in.** Nothing that was not already in the graph.
 
 ## Rejected
 

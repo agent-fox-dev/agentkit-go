@@ -3,9 +3,13 @@ package policy
 import (
 	"bufio"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -34,6 +38,10 @@ var approvedDeps = []string{
 	// AWS configuration and credentials for the Bedrock deployment.
 	"github.com/aws/aws-sdk-go-v2",
 	"github.com/aws/aws-sdk-go-v2/",
+	// The sandbox agent protocol's transport (sandbox/internal/sandboxpb).
+	"google.golang.org/grpc",
+	// The protobuf runtime the generated sandbox protocol code uses.
+	"google.golang.org/protobuf",
 }
 
 // validateAllowlist returns an error naming every dependency in deps that no
@@ -151,6 +159,132 @@ func TestAnthropicSDKIsPinned_TS10_1(t *testing.T) {
 	}
 	if !strings.HasPrefix(version, "v") || strings.Contains(version, "-0.") || strings.HasPrefix(version, "v0.0.0-") {
 		t.Fatalf("anthropic-sdk-go is pinned to %s, want a tagged release", version)
+	}
+}
+
+// preSpec13Direct is the root module's direct-dependency set before spec 13
+// promoted grpc and protobuf.
+var preSpec13Direct = []string{
+	"github.com/agent-fox-dev/agentkit-go",
+	"github.com/anthropics/anthropic-sdk-go",
+	"github.com/aws/aws-sdk-go-v2",
+	"github.com/aws/aws-sdk-go-v2/config",
+	"github.com/aws/aws-sdk-go-v2/credentials",
+	"github.com/bmatcuk/doublestar/v4",
+	"github.com/modelcontextprotocol/go-sdk",
+	"github.com/pelletier/go-toml/v2",
+	"github.com/tree-sitter-grammars/tree-sitter-kotlin",
+	"github.com/tree-sitter-grammars/tree-sitter-lua",
+	"github.com/tree-sitter/go-tree-sitter",
+	"github.com/tree-sitter/tree-sitter-bash",
+	"github.com/tree-sitter/tree-sitter-c",
+	"github.com/tree-sitter/tree-sitter-c-sharp",
+	"github.com/tree-sitter/tree-sitter-cpp",
+	"github.com/tree-sitter/tree-sitter-java",
+	"github.com/tree-sitter/tree-sitter-javascript",
+	"github.com/tree-sitter/tree-sitter-php",
+	"github.com/tree-sitter/tree-sitter-python",
+	"github.com/tree-sitter/tree-sitter-ruby",
+	"github.com/tree-sitter/tree-sitter-rust",
+	"github.com/tree-sitter/tree-sitter-scala",
+	"github.com/tree-sitter/tree-sitter-typescript",
+	"go.starlark.net",
+	"golang.org/x/oauth2",
+}
+
+// TS-13-65: grpc and protobuf are direct requirements at the go.sum
+// versions, approved with reasons, with x/net indirect and the module graph
+// unchanged. 13-REQ-10.5.
+func TestSandboxDepsPromoted_TS13_65(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go is not on PATH")
+	}
+	root := repoRoot(t)
+	mod, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type req struct {
+		version  string
+		indirect bool
+	}
+	reqs := map[string]req{}
+	for _, line := range strings.Split(string(mod), "\n") {
+		fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), "require "))
+		if len(fields) >= 2 && strings.Contains(fields[0], ".") {
+			reqs[fields[0]] = req{fields[1], strings.Contains(line, "// indirect")}
+		}
+	}
+	for m, v := range map[string]string{"google.golang.org/grpc": "v1.64.1", "google.golang.org/protobuf": "v1.36.11"} {
+		if r := reqs[m]; r.version != v || r.indirect {
+			t.Errorf("go.mod requires %s %+v, want %s direct", m, r, v)
+		}
+	}
+	if r, ok := reqs["golang.org/x/net"]; !ok || !r.indirect {
+		t.Errorf("golang.org/x/net is %+v, want an indirect requirement", r)
+	}
+
+	// Each new allowlist entry carries a reason on the line above it.
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filepath.Join(root, "internal", "policy", "deps_test.go"), nil, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commented := map[string]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		line := fset.Position(lit.Pos()).Line
+		for _, cg := range f.Comments {
+			if fset.Position(cg.End()).Line == line-1 && strings.TrimSpace(cg.Text()) != "" {
+				commented[strings.Trim(lit.Value, `"`)] = true
+			}
+		}
+		return true
+	})
+	for _, m := range []string{"google.golang.org/grpc", "google.golang.org/protobuf"} {
+		if !slices.Contains(approvedDeps, m) || !commented[m] {
+			t.Errorf("approvedDeps lacks %s with a reason comment above it", m)
+		}
+	}
+
+	cmd := exec.Command("go", "list", "-m", "-f", "{{if not .Indirect}}{{.Path}}{{end}}", "all")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list -m: %v", err)
+	}
+	var direct []string
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if l != "" {
+			direct = append(direct, l)
+		}
+	}
+	if err := validateAllowlist(direct, approvedDeps); err != nil {
+		t.Error(err)
+	}
+	want := append(slices.Clone(preSpec13Direct), "google.golang.org/grpc", "google.golang.org/protobuf")
+	slices.Sort(want)
+	slices.Sort(direct)
+	if !slices.Equal(direct, want) {
+		t.Errorf("direct requirements are\n%s\nwant the pre-spec set plus grpc and protobuf:\n%s",
+			strings.Join(direct, "\n"), strings.Join(want, "\n"))
+	}
+
+	cmd = exec.Command("go", "list", "-m", "all")
+	cmd.Dir = root
+	all, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list -m all: %v", err)
+	}
+	snap, err := os.ReadFile(filepath.Join(root, "internal", "policy", "testdata", "go-list-m-all.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(all) != string(snap) {
+		t.Errorf("go list -m all differs from the pre-spec snapshot:\n%s", all)
 	}
 }
 

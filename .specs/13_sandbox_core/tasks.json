@@ -78,7 +78,7 @@
         "`go build ./...` succeeds with no protoc or protoc plugin on PATH",
         "`go list -m all` output is byte-identical to the pre-spec snapshot"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
