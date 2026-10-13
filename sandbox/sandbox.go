@@ -77,12 +77,22 @@ type ToolOptions struct {
 	DisableSpill bool
 }
 
-// SyncResult reports what a Sync wrote.
+// SyncResult reports what a Sync did.
+//
+// For a LocalDir, Files counts the regular files the transfer created or
+// changed in the workspace and Bytes their content bytes, from the agent
+// comparing size and modification time before and after (a tool writing in
+// the same window may be counted); Deleted counts the entries removed under
+// Delete; Sent is the rsync data bytes the host wrote to the stream.
+//
+// For a Tar, Files and Bytes are the regular files written and their content
+// bytes, Deleted is 0 even when Replace removed entries, and Sent is the tar
+// bytes read from R and sent.
 type SyncResult struct {
-	// Files is the number of regular files written.
-	Files int
-	// Bytes is the number of bytes of file content written.
-	Bytes int64
+	Files   int
+	Bytes   int64
+	Deleted int
+	Sent    int64
 }
 
 // Source is what Sync reads from. This package provides Tar.
@@ -103,6 +113,42 @@ type Tar struct {
 }
 
 func (Tar) isSource() {}
+
+// LocalDir is a host directory: a Source that Sync fills the workspace from,
+// and a Destination that Export writes into. The bytes travel over the rsync
+// protocol, and only what changed moves. Both directions apply the same
+// ignore rules AgentKit's own file tools do, never transfer a symlink whose
+// target leaves the transfer root, and never export .git. Windows refuses
+// LocalDir with ErrUnsupported.
+//
+// Trust model: workspace content is untrusted and the agent binary is
+// trusted. On Export the host's safety rests on two things: the agent never
+// sends an escaping symlink, and the host's own rules over the destination
+// keep its ignored files, its .git and its escaping symlinks from being
+// overwritten, written through or deleted.
+type LocalDir struct {
+	// Path is the host directory. A relative path resolves against the
+	// working directory at call time, and symlinks in it are resolved once.
+	// On Sync it must be an existing directory; on Export it must be one, or
+	// be missing with an existing parent, and is then created.
+	Path string
+	// Ignore configures the host's ignore engine. The zero value reads the
+	// real environment, global excludes included, exactly as
+	// tools.Options.Ignore does; tools.NoGlobalExcludes() is hermetic. The
+	// agent always uses tools.NoGlobalExcludes().
+	Ignore tools.IgnoreOptions
+	// IncludeIgnored turns ignore rules off on both sides.
+	IncludeIgnored bool
+	// ExcludeGit leaves .git behind on Sync. Export always leaves .git
+	// behind.
+	ExcludeGit bool
+	// Delete removes, on the receiving side, the entries the sending side
+	// does not have, except what either side's rules exclude.
+	Delete bool
+}
+
+func (LocalDir) isSource()      {}
+func (LocalDir) isDestination() {}
 
 // TarOut receives a tar stream of an exported subtree, with entry names
 // relative to the exported path.

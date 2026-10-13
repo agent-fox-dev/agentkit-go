@@ -204,8 +204,8 @@ func TestSyncParentsCountsAndReplace_TS13_51(t *testing.T) {
 	}
 	ctx := context.Background()
 	res, err := sb.Sync(ctx, sandbox.Tar{R: bytes.NewReader(tarOf(t, file("a/b/c.txt", "12345"), file("d.txt", "abc"), dir("e/")))})
-	if err != nil || res != (sandbox.SyncResult{Files: 2, Bytes: 8}) {
-		t.Fatalf("Sync = %+v, %v; want {2 8}", res, err)
+	if err != nil || res.Files != 2 || res.Bytes != 8 {
+		t.Fatalf("Sync = %+v, %v; want Files 2, Bytes 8", res, err)
 	}
 	for _, p := range []string{"a/b/c.txt", "d.txt", "e"} {
 		if !exists(filepath.Join(ws, p)) {

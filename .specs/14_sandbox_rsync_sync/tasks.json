@@ -145,7 +145,7 @@
         "sandbox/localdir_api_test.go",
         "sandbox/tar_sent_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
