@@ -10,18 +10,6 @@ import (
 	"github.com/gokrazy/rsync/rsyncclient"
 )
 
-// ClientArgs are the options of every transfer: recursion, links, times
-// (which make the quick check, and so incremental re-syncs, work) and
-// permissions. With del, --delete is added as the declared intent; AgentKit
-// deletes, and the library never sees it.
-func ClientArgs(del bool) []string {
-	args := []string{"-r", "-l", "-t", "-p"}
-	if del {
-		args = append(args, "--delete")
-	}
-	return args
-}
-
 // newClient is the only function in this repository that calls
 // rsyncclient.New. It always passes rsyncclient.DontRestrict(): as a
 // receiver the library otherwise applies Landlock to the whole process.

@@ -1,6 +1,7 @@
 package rsyncx
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path"
@@ -29,9 +30,11 @@ func DeleteAbsent(root string, m *Matcher, present []string) (int, error) {
 // in it.
 func deleteIn(r *os.Root, dir string, m *Matcher, have map[string]bool) (keep bool, n int, err error) {
 	ents, err := fs.ReadDir(r.FS(), dir)
-	if err != nil {
-		// An unreadable directory is left alone.
+	if errors.Is(err, fs.ErrPermission) {
+		// A directory we may not read is left alone, as its rule says.
 		return true, 0, nil
+	} else if err != nil {
+		return true, 0, err
 	}
 	for _, e := range ents {
 		p := path.Join(dir, e.Name())

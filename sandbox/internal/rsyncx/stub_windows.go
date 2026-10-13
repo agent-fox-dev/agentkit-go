@@ -33,15 +33,6 @@ func NewServer(fs.FS) (*Server, error) { return nil, unsupported() }
 // Serve refuses on this platform.
 func (*Server) Serve(context.Context, io.ReadWriteCloser, []string) error { return unsupported() }
 
-// ClientArgs are the options of every transfer.
-func ClientArgs(del bool) []string {
-	args := []string{"-r", "-l", "-t", "-p"}
-	if del {
-		args = append(args, "--delete")
-	}
-	return args
-}
-
 // ServerArgs refuses on this platform.
 func ServerArgs([]string, bool, string) ([]string, error) { return nil, unsupported() }
 

@@ -248,7 +248,17 @@ func TestRsyncArgChecks_TS14_32(t *testing.T) {
 			t.Fatalf("%v: %v", k.args, err)
 		}
 		_ = st.Send(argsFrame(k.args))
-		err := drain(st)
+		var err error
+		data := 0
+		for err == nil {
+			var f *sandboxpb.RsyncFrame
+			if f, err = st.Recv(); f.GetData() != nil {
+				data++
+			}
+		}
+		if data != 0 {
+			t.Errorf("%q: %d data frames: the refused stream reached the transfer", k.args, data)
+		}
 		if status.Code(err) != codes.InvalidArgument || !strings.Contains(status.Convert(err).Message(), k.word) {
 			t.Errorf("%q: %v, want InvalidArgument naming %s", k.args, err, k.word)
 		}
@@ -343,5 +353,32 @@ func TestRsyncStartChecks_TS14_30(t *testing.T) {
 	}
 	if got := treeSnapshot(t, ws); !slices.Equal(got, snap) {
 		t.Error("the workspace changed")
+	}
+}
+
+// A stream that arrives while a cancelled stream is still unwinding waits
+// for its slot instead of being refused (14-REQ-4.8: a following Sync
+// succeeds); a live holder is still refused at once (TS-14-31).
+func TestRsyncSlotAfterCancel(t *testing.T) {
+	var s rsyncSlot
+	live := context.Background()
+	ctx1, cancel := context.WithCancel(context.Background())
+	if !s.acquire(ctx1) {
+		t.Fatal("the free slot was refused")
+	}
+	if s.acquire(live) {
+		t.Fatal("a live holder's slot was granted")
+	}
+	cancel()
+	got := make(chan bool)
+	go func() { got <- s.acquire(live) }()
+	select {
+	case ok := <-got:
+		t.Fatalf("acquire returned %v before the cancelled holder released", ok)
+	case <-time.After(50 * time.Millisecond):
+	}
+	s.release()
+	if !<-got {
+		t.Error("the slot was refused after the cancelled holder released")
 	}
 }

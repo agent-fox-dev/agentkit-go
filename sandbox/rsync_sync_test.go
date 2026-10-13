@@ -119,8 +119,11 @@ func TestSyncHandshake_TS14_18(t *testing.T) {
 		t.Errorf("args %q parsed as %+v", tr.Args.Args, p)
 	}
 	for _, o := range p.Options {
-		if o != "--server" && o != "--delete" && !strings.HasPrefix(o, "-") {
-			t.Errorf("unexpected option %s", o)
+		if o == "--server" || o == "--delete" {
+			continue
+		}
+		if strings.HasPrefix(o, "--") || strings.Trim(o[1:], "rltp") != "" {
+			t.Errorf("unexpected option %s: only --server, --delete and -r -l -t -p are used", o)
 		}
 	}
 	if !slices.Contains(tr.Args.Rules, ".git") {
@@ -284,7 +287,7 @@ func TestRepeatedSync_TS14_23(t *testing.T) {
 	if _, err := sb.Sync(ctx, ld); err != nil {
 		t.Fatal(err)
 	}
-	if r := tool(t, sb, "read_file").Execute(ctx, []byte(`{"path":"c.txt"}`)); !r.OK {
+	if r := tool(t, sb, "read_file").Execute(ctx, []byte(`{"path":"c.txt"}`)); !r.OK || !strings.Contains(fmt.Sprint(r.Data["content"]), "c") {
 		t.Errorf("read_file c.txt: %+v", r)
 	}
 }

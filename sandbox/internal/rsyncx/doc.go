@@ -43,10 +43,22 @@ func ModulesFor(ws string, d Direction) []Module {
 	return []Module{{Root: ws, Writable: d == DirSync}}
 }
 
+// ClientArgs are the options of every transfer: recursion, links, times
+// (which make the quick check, and so incremental re-syncs, work) and
+// permissions. With del, --delete is added as the declared intent; AgentKit
+// deletes, and the library never sees it.
+func ClientArgs(del bool) []string {
+	args := []string{"-r", "-l", "-t", "-p"}
+	if del {
+		args = append(args, "--delete")
+	}
+	return args
+}
+
 // Parsed is a server-side argument list, read by ParseArgs.
 type Parsed struct {
 	Recursive, Links, Times, Perms bool
-	Delete, Sender, Server         bool
+	Delete, Sender                 bool
 	Excludes                       []string
 	// Options are the option tokens, in order.
 	Options []string

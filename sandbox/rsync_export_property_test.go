@@ -9,11 +9,13 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/relaytest"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/tarsafe"
 )
 
@@ -142,5 +144,36 @@ func TestExportConfinement_TS14_29(t *testing.T) {
 			t.Logf("seed %d: script %s, subdir %s, hadGit %v", seed, h.script, h.subdir, hadGit)
 			return
 		}
+	}
+}
+
+// TS-14-29 (late links): a symlink planted after the agent computed its plan,
+// as a background process could, never reaches dst. 14-REQ-5.6.
+func TestExportLateSymlink_TS14_29(t *testing.T) {
+	e := relaytest.New(t)
+	outside := t.TempDir()
+	writeFiles(t, e.Workspace, map[string]string{"a.txt": "a", "sub/b.txt": "b"})
+	e.Relay.SetMutator(func(fromHost bool, _ int, f *sandboxpb.RsyncFrame) *sandboxpb.RsyncFrame {
+		if !fromHost && f.GetPlan() != nil {
+			_ = os.Symlink("/etc", filepath.Join(e.Workspace, "late"))
+			_ = os.Symlink(outside, filepath.Join(e.Workspace, "sub", "late-dir"))
+			_ = os.Symlink("../a.txt", filepath.Join(e.Workspace, "sub", "inside"))
+		}
+		return f
+	})
+	dst := t.TempDir()
+	if err := e.Sandbox.Export(context.Background(), ".", sandbox.LocalDir{Path: dst, Ignore: hermetic}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(e.Relay.Last().Plan.Rules, ".git") || slices.Contains(e.Relay.Last().Plan.Rules, "late") {
+		t.Fatalf("the plan %q already knew the late link", e.Relay.Last().Plan.Rules)
+	}
+	for _, p := range []string{"late", "sub/late-dir"} {
+		if lexists(filepath.Join(dst, p)) {
+			t.Errorf("the late escaping link %s reached dst", p)
+		}
+	}
+	if l, err := os.Readlink(filepath.Join(dst, "sub", "inside")); err != nil || l != "../a.txt" {
+		t.Errorf("the inside link: %q, %v", l, err)
 	}
 }

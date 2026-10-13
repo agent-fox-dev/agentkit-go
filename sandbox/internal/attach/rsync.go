@@ -35,19 +35,28 @@ func (s *sb) rsyncCheck() error {
 	return nil
 }
 
-// resolveDir resolves a LocalDir path once: a relative path joins the
-// working directory at call time, and symlinks are evaluated.
-func resolveDir(p string) (string, error) {
+// absPath refuses an empty LocalDir path and joins a relative one to the
+// working directory at call time.
+func absPath(p string) (string, error) {
 	if p == "" {
 		return "", fmt.Errorf("sandbox: LocalDir path %q is empty", p)
 	}
-	abs := p
-	if !filepath.IsAbs(abs) {
-		wd, err := os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("sandbox: LocalDir path %q: %v", p, err)
-		}
-		abs = filepath.Join(wd, p)
+	if filepath.IsAbs(p) {
+		return p, nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("sandbox: LocalDir path %q: %v", p, err)
+	}
+	return filepath.Join(wd, p), nil
+}
+
+// resolveDir resolves a LocalDir path once: a relative path joins the
+// working directory at call time, and symlinks are evaluated.
+func resolveDir(p string) (string, error) {
+	abs, err := absPath(p)
+	if err != nil {
+		return "", err
 	}
 	return filepath.EvalSymlinks(abs)
 }
@@ -181,16 +190,9 @@ func (s *sb) exportLocalDir(ctx context.Context, path string, ld sandbox.LocalDi
 // existing path must be a directory; a missing one needs an existing parent
 // directory. It reports whether the destination exists.
 func resolveDest(p string) (string, bool, error) {
-	if p == "" {
-		return "", false, fmt.Errorf("sandbox: LocalDir path %q is empty", p)
-	}
-	abs := p
-	if !filepath.IsAbs(abs) {
-		wd, err := os.Getwd()
-		if err != nil {
-			return "", false, fmt.Errorf("sandbox: LocalDir path %q: %v", p, err)
-		}
-		abs = filepath.Join(wd, p)
+	abs, err := absPath(p)
+	if err != nil {
+		return "", false, err
 	}
 	if _, err := os.Lstat(abs); err == nil {
 		dst, err := filepath.EvalSymlinks(abs)

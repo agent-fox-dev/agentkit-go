@@ -14,7 +14,8 @@ import (
 
 // rsyncConstructors are the gokrazy/rsync constructors that confine the whole
 // process unless given their package's DontRestrict option: the server
-// always (14-REQ-7.2), the client as a receiver (D-4).
+// always (14-REQ-7.2), the client as a receiver (D-4 in
+// docs/errata/14_sandbox_rsync_sync.md).
 var rsyncConstructors = []struct{ pkg, fn string }{
 	{"github.com/gokrazy/rsync/rsyncd", "NewServer"},
 	{"github.com/gokrazy/rsync/rsyncclient", "New"},
@@ -25,7 +26,7 @@ const rsyncxDir = "sandbox/internal/rsyncx"
 
 // rsyncCall is one constructor call found by checkRsyncCalls.
 type rsyncCall struct {
-	fn, encl, at string
+	fn, encl string
 }
 
 // checkRsyncCalls finds every call of a constructor in f (named rel, a
@@ -63,11 +64,13 @@ func checkRsyncCalls(fset *token.FileSet, f *ast.File, rel string) (calls []rsyn
 		return ok && id.Name == local
 	}
 	for _, d := range f.Decls {
-		fd, ok := d.(*ast.FuncDecl)
-		if !ok || fd.Body == nil {
-			continue
+		// A call in a function counts against that function; one in a
+		// package-level initialiser against "package level".
+		encl := "package level"
+		if fd, ok := d.(*ast.FuncDecl); ok {
+			encl = fd.Name.Name
 		}
-		ast.Inspect(fd.Body, func(n ast.Node) bool {
+		ast.Inspect(d, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
 				return true
@@ -78,7 +81,7 @@ func checkRsyncCalls(fset *token.FileSet, f *ast.File, rel string) (calls []rsyn
 						continue
 					}
 					at := fmt.Sprintf("%s:%d", rel, fset.Position(call.Pos()).Line)
-					calls = append(calls, rsyncCall{pkg + "." + c.fn, rel + ":" + fd.Name.Name, at})
+					calls = append(calls, rsyncCall{pkg + "." + c.fn, rel + ":" + encl})
 					if filepath.ToSlash(filepath.Dir(rel)) != rsyncxDir {
 						violations = append(violations, at+": "+c.fn+" outside "+rsyncxDir)
 					}
@@ -156,6 +159,7 @@ func TestRsyncConstructorsDontRestrict_TS14_36(t *testing.T) {
 		{"sandbox/other/outside.go", "package other\nimport \"github.com/gokrazy/rsync/rsyncd\"\nfunc f() {\n\trsyncd.NewServer(nil, rsyncd.DontRestrict())\n}\n"},
 		{rsyncxDir + "/alias.go", "package rsyncx\nimport rd \"github.com/gokrazy/rsync/rsyncd\"\nfunc f() {\n\trd.NewServer(nil)\n}\n"},
 		{rsyncxDir + "/client.go", "package rsyncx\nimport \"github.com/gokrazy/rsync/rsyncclient\"\nfunc f() {\n\trsyncclient.New(nil)\n}\n"},
+		{"sandbox/other/pkgvar.go", "package other\nimport \"github.com/gokrazy/rsync/rsyncd\"\n\nvar s, _ = rsyncd.NewServer(nil, rsyncd.DontRestrict())\n"},
 	}
 	for _, fx := range fixtures {
 		f, err := parser.ParseFile(fset, fx.name, fx.src, 0)

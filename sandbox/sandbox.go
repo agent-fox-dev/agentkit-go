@@ -101,10 +101,11 @@ type SyncResult struct {
 	Sent    int64
 }
 
-// Source is what Sync reads from. This package provides Tar.
+// Source is what Sync reads from. This package provides Tar and LocalDir.
 type Source interface{ isSource() }
 
-// Destination is what Export writes to. This package provides TarOut.
+// Destination is what Export writes to. This package provides TarOut and
+// LocalDir.
 type Destination interface{ isDestination() }
 
 // Tar is a tar stream to extract into the workspace. Path is the

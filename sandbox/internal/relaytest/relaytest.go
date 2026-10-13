@@ -235,6 +235,17 @@ func (r *Relay) Rsync(stream sandboxpb.Agent_RsyncServer) error {
 	}
 }
 
+// newAgent builds a real agent over a fresh workspace with the given TTL.
+func newAgent(t *testing.T, ttl time.Duration) (string, *agent.Agent) {
+	t.Helper()
+	ws := t.TempDir()
+	a, err := agent.New(agent.Config{Workdir: ws, Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir()}, TTL: ttl})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ws, a
+}
+
 // Env is a test environment: a host sandbox attached to the relay, the
 // relay, and the agent's workspace.
 type Env struct {
@@ -249,11 +260,7 @@ type Env struct {
 // a host sandbox attached to the relay with attach.Dial.
 func New(t *testing.T) *Env {
 	t.Helper()
-	ws := t.TempDir()
-	a, err := agent.New(agent.Config{Workdir: ws, Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir()}, TTL: time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws, a := newAgent(t, time.Hour)
 	agentHost, agentEnd := net.Pipe()
 	go func() { _ = a.Serve(agentEnd) }()
 	cc, err := grpc.NewClient("passthrough:///agent",
@@ -287,11 +294,7 @@ func New(t *testing.T) *Env {
 // compared with.
 func Direct(t *testing.T) *Env {
 	t.Helper()
-	ws := t.TempDir()
-	a, err := agent.New(agent.Config{Workdir: ws, Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir()}, TTL: time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws, a := newAgent(t, time.Hour)
 	hostEnd, agentEnd := net.Pipe()
 	go func() { _ = a.Serve(agentEnd) }()
 	sb, err := attach.Dial(context.Background(), hostEnd, attach.Config{Spec: sandbox.Spec{TTL: time.Hour}})
@@ -322,11 +325,7 @@ func Throttled(t *testing.T, th Throttle) *Env {
 	if ttl == 0 {
 		ttl = time.Hour
 	}
-	ws := t.TempDir()
-	a, err := agent.New(agent.Config{Workdir: ws, Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir()}, TTL: ttl})
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws, a := newAgent(t, ttl)
 	hostEnd, agentEnd := net.Pipe()
 	served := make(chan error, 1)
 	go func() { served <- a.Serve(agentEnd) }()

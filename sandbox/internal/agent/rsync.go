@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -31,10 +32,10 @@ func (a *Agent) Rsync(stream sandboxpb.Agent_RsyncServer) error {
 	if !rsyncx.Supported {
 		return status.Errorf(codes.FailedPrecondition, "LocalDir transfers are not supported on %s", runtime.GOOS)
 	}
-	if !a.rsyncBusy.CompareAndSwap(false, true) {
+	if !a.rsync.acquire(stream.Context()) {
 		return status.Error(codes.FailedPrecondition, "another Rsync stream is running")
 	}
-	defer a.rsyncBusy.Store(false)
+	defer a.rsync.release()
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 
@@ -88,6 +89,52 @@ func (a *Agent) Rsync(stream sandboxpb.Agent_RsyncServer) error {
 		return a.receive(ctx, stream, conn, m, parsed.Delete, args.Present)
 	}
 	return a.send(ctx, stream, conn, t, m, parsed.Delete, args.Args)
+}
+
+// rsyncSlot is the one Rsync stream slot. A stream that finds it held by a
+// live stream is refused at once; one that finds it held by a stream whose
+// context is already done (the host cancelled it, and the server is only
+// unwinding) waits for the release, so a Sync right after a cancelled one is
+// not refused.
+type rsyncSlot struct {
+	mu    sync.Mutex
+	held  <-chan struct{} // the holder's context's Done; nil when free
+	freed chan struct{}   // closed when the holder releases
+}
+
+// rsyncUnwind bounds the wait for a cancelled holder.
+const rsyncUnwind = 5 * time.Second
+
+func (s *rsyncSlot) acquire(ctx context.Context) bool {
+	for {
+		s.mu.Lock()
+		if s.held == nil {
+			s.held, s.freed = ctx.Done(), make(chan struct{})
+			s.mu.Unlock()
+			return true
+		}
+		held, freed := s.held, s.freed
+		s.mu.Unlock()
+		select {
+		case <-held:
+		default:
+			return false
+		}
+		select {
+		case <-freed:
+		case <-ctx.Done():
+			return false
+		case <-time.After(rsyncUnwind):
+			return false
+		}
+	}
+}
+
+func (s *rsyncSlot) release() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.held = nil
+	close(s.freed)
 }
 
 // transfer is a validated start frame.

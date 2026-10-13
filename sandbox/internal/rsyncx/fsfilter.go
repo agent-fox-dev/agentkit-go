@@ -5,10 +5,14 @@ import (
 	"os"
 	"path"
 	"strings"
+
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/tarsafe"
 )
 
 // Filtered is a read-only view of root in which every path the matcher
-// excludes does not exist. The matcher's rules are relative to under, the
+// excludes, and every symlink whose target leaves the transfer root, does not
+// exist. Symlinks are judged each time they are served, so a link created
+// after the rules were computed is hidden too. The matcher's rules are relative to under, the
 // transfer root inside root ("." for root itself); paths outside under are
 // left as they are, so the library can reach under through its ancestors.
 // The sender serves this view, so the rsync library never sees a rule.
@@ -22,7 +26,8 @@ type filtered struct {
 	m     *Matcher
 }
 
-// hidden reports whether name is an excluded path under the transfer root.
+// hidden reports whether name is an excluded path under the transfer root,
+// or a symlink there whose target leaves it.
 func (f *filtered) hidden(name string) bool {
 	name = path.Clean(name)
 	rel := name
@@ -36,7 +41,18 @@ func (f *filtered) hidden(name string) bool {
 		}
 		rel = r
 	}
-	return f.m.Excluded(rel)
+	if rel == "." {
+		return false
+	}
+	if f.m.Excluded(rel) {
+		return true
+	}
+	fi, err := fs.Lstat(f.base, name)
+	if err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+		return false
+	}
+	target, err := fs.ReadLink(f.base, name)
+	return err != nil || tarsafe.SymlinkEscapes(rel, target)
 }
 
 func (f *filtered) notExist(op, name string) error {

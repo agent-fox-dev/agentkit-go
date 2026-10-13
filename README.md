@@ -198,7 +198,7 @@ The identifiers an embedder such as agent-fox builds on.
 | `make lint` | `golangci-lint` in every module; skipped when not installed |
 | `make fmt` | `gofmt -l -w .` |
 | `make tidy` | `go mod tidy` in every module |
-| `make doc` | `go doc -all` for every public package of the root, `codesearch` and `sandbox` modules, written as text to `build/doc/` (git-ignored) |
+| `make doc` | `go doc -all` for every public package of the root, `codesearch` and `sandbox` modules, written as text to `build/docs/` (git-ignored) |
 | `make proto` | Regenerate the sandbox protocol's Go code and its recorded hash; needs `protoc`, installs the pinned plugins into `build/bin` |
 
 ## Documentation

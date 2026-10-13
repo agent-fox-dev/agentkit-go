@@ -149,3 +149,44 @@ The test no longer depends on permissions, so it also runs as root.
 `go test -race ./sandbox/... -count=1`, task 8's done-when, matches no
 package from the repository root since D-2; the same packages are tested by
 `go test -race ./... -count=1` inside `sandbox/`.
+
+## D-4: both library constructors are confined to rsyncx
+
+The spec's 14-REQ-7.2 and TS-14-36 name only `rsyncd.NewServer`. Under D-3
+the receiver is always an `rsyncclient`, which applies Landlock to the whole
+process as a receiver unless given `rsyncclient.DontRestrict()`. The project
+owner decided (D-4) that `rsyncclient.New` is held to the same rule: each
+constructor is called in exactly one function of `sandbox/internal/rsyncx`,
+always with its package's `DontRestrict()`. TS-14-36
+(`internal/policy/rsyncd_ast_test.go`) checks both, in function bodies and in
+package-level initialisers.
+
+## TS-14-32: --remove-source-files is unknown to the library
+
+TS-14-32 lists `--remove-source-files` as an option the library recognises
+but the allowlist refuses. gokrazy/rsync v0.3.8 does not know it, so it is
+refused by the parser check, still with `InvalidArgument` naming it. The
+recognised-but-refused cases are `--include=x`, `--filter=- x` and `-c`, each
+first confirmed recognised by `rsyncx.ParseArgs`
+(`sandbox/internal/agent/rsync_test.go`).
+
+## Conformance: escaping symlinks are judged when served
+
+Escaping-symlink rules are computed once, before the plan. A symlink a
+process in the sandbox creates after that was not on the list, and the
+library's receiver creates links without checking their targets, so an
+Export could plant `dst/x -> /etc` (14-REQ-5.6). `rsyncx.Filtered` now hides
+every symlink `tarsafe.SymlinkEscapes` rejects at the moment it is served
+(`sandbox/internal/rsyncx/fsfilter.go`); `TestExportLateSymlink_TS14_29`
+plants links while the plan frame is in flight and
+`TestFilteredHidesLateEscapingLinks_TS14_29` checks the view.
+
+## Conformance: a stream after a cancelled one waits for its slot
+
+The agent runs one Rsync stream at a time (14-REQ-6.2). The host returns as
+soon as it cancels a stream, while the agent may still be unwinding it, so a
+Sync right after a cancelled one could be refused, against 14-REQ-4.8's "a
+following Sync succeeds". A stream that finds the slot held by a stream whose
+context is already done now waits for the release, up to 5 seconds; a live
+holder is still refused at once (`rsyncSlot` in
+`sandbox/internal/agent/rsync.go`).

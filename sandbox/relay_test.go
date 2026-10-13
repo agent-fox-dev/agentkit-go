@@ -49,13 +49,15 @@ func TestRelayedTransfers_TS14_6(t *testing.T) {
 		"big.bin": strings.Repeat("z", 3<<20)})
 	ctx := context.Background()
 	var results [2]sandbox.SyncResult
+	var dsts [2]string
 	for i, e := range []*relaytest.Env{relayed, direct} {
 		r, err := e.Sandbox.Sync(ctx, sandbox.LocalDir{Path: src, Ignore: hermetic})
 		if err != nil {
 			t.Fatal(err)
 		}
 		results[i] = r
-		if err := e.Sandbox.Export(ctx, ".", sandbox.LocalDir{Path: filepath.Join(t.TempDir(), "dst")}); err != nil {
+		dsts[i] = filepath.Join(t.TempDir(), "dst")
+		if err := e.Sandbox.Export(ctx, ".", sandbox.LocalDir{Path: dsts[i], Ignore: hermetic}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -94,6 +96,9 @@ func TestRelayedTransfers_TS14_6(t *testing.T) {
 	}
 	if !mapsEqual(treeOf(t, relayed.Workspace), treeOf(t, direct.Workspace)) {
 		t.Error("the relayed and direct workspaces differ")
+	}
+	if a, b := treeOf(t, dsts[0]), treeOf(t, dsts[1]); len(a) == 0 || !mapsEqual(a, b) {
+		t.Errorf("the relayed and direct exports differ: %v, %v", a, b)
 	}
 }
 

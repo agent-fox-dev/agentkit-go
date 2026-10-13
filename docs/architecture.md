@@ -66,10 +66,10 @@ First-party imports, from
 | `sandbox/internal/buildver` | none | |
 | `sandbox/internal/tarsafe` | none | |
 | `sandbox/internal/stdioconn` | none | |
-| `sandbox/internal/rsyncx` | `sandbox/internal/{sandboxpb,tarsafe}`, `tools` | `github.com/gokrazy/rsync/{rsyncclient,rsyncd}`, in `//go:build !windows` files |
+| `sandbox/internal/rsyncx` | `sandbox/internal/{sandboxpb,tarsafe}`, `tools`; `sandbox` in its Windows stubs | `github.com/gokrazy/rsync/{rsyncclient,rsyncd}`, in `//go:build !windows` files |
 | `sandbox/internal/agent` | `core`, `sandbox`, `sandbox/internal/{buildver,rsyncx,sandboxpb,tarsafe,tooldigest}`, `tools` | `google.golang.org/grpc` |
 | `sandbox/internal/attach` | `core`, `sandbox`, `sandbox/internal/{buildver,rsyncx,sandboxpb,tarsafe,tooldigest}`, `tools`, `wire` | `google.golang.org/grpc`, `google.golang.org/protobuf` |
-| `sandbox/internal/localtest` | `sandbox` | |
+| `sandbox/internal/localtest` | `sandbox`, `sandbox/internal/{attach,sandboxpb}` | |
 | `sandbox/local` | `sandbox`, `sandbox/internal/{agent,attach,localtest,stdioconn}` | |
 | `sandbox/cmd/agentkit-sandboxd` | `sandbox`, `sandbox/internal/{agent,buildver,stdioconn}` | |
 | `sandbox/internal/fakeagent` (tests only) | `sandbox/internal/{sandboxpb,tooldigest}`, `tools` | `google.golang.org/grpc` |
@@ -525,7 +525,8 @@ frame, is a malformed response (`malformed response: rsync: <reason>`) and
 makes the sandbox unavailable. The agent refuses a bad start or args frame
 with `InvalidArgument` (a missing export path with `NotFound`) before it
 builds any server, runs one stream at a time (a second is
-`FailedPrecondition`), and ends a library failure with `FailedPrecondition`
+`FailedPrecondition`; one that arrives while a cancelled stream is still
+unwinding waits for it, up to 5 seconds), and ends a library failure with `FailedPrecondition`
 carrying the library's message; all of these keep the sandbox live. A failure
 of the host's own side of the library cancels the stream and returns
 `sandbox: rsync client: <the library's error>`, the sandbox live. An agent
@@ -550,7 +551,9 @@ combined rules before args.
 
 *Trust.* Workspace content is untrusted; the agent binary is trusted. On
 Export the host's safety rests on two things: the agent never sends an
-escaping symlink or `.git`, and the host's own rules over the destination
+escaping symlink or `.git` (the filtered view judges every symlink as it is
+served, so a link planted after the plan is hidden too), and the host's own
+rules over the destination
 keep its ignored files, its `.git` and its escaping symlinks from being
 overwritten, written through or deleted. The agent serves each stream with
 exactly one module over the workspace root, writable only for SYNC
@@ -560,8 +563,12 @@ exactly one module over the workspace root, writable only for SYNC
 constructors, `rsyncd.NewServer` and `rsyncclient.New`, are called in exactly
 one `rsyncx` function each, always with `DontRestrict()`: without it the
 library applies Landlock to the whole process, which under `local` is the
-embedder. Nothing in the sandbox module calls `chroot`, changes the working
-directory, the user id or the umask; `internal/policy` checks the
+embedder. Nothing in the sandbox module calls `chroot` or changes the
+working directory or the user id. The library's receiver reads the umask
+once per process by setting it to 0 and straight back
+(`internal/receiver/permissionsumask.go`); the umask is unchanged after it,
+but a file another goroutine creates in that instant gets mode bits from a
+zero umask; `internal/policy` checks the
 constructors, and a re-executed test child checks the process stays
 unconfined after a Sync and an Export.
 

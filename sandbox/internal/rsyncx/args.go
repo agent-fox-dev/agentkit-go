@@ -25,8 +25,6 @@ func ParseArgs(args []string) (Parsed, error) {
 		}
 		p.Options = append(p.Options, a)
 		switch {
-		case a == "--server":
-			p.Server = true
 		case a == "--sender":
 			p.Sender = true
 		case a == "--delete":

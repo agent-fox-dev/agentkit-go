@@ -3,7 +3,7 @@
 // drop-in replacement for tools.All whose every call runs in the AgentKit
 // agent inside the sandbox; the driver does not change.
 //
-//	go run ./examples/sandbox
+//	cd examples/sandbox && go run .
 //
 // The project goes in from a host directory with sandbox.LocalDir, and the
 // result comes back out into another, over the rsync protocol.
