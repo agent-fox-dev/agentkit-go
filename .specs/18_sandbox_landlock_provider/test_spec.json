@@ -1,0 +1,1418 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "18",
+  "spec_name": "sandbox_landlock_provider",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-18-1",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-1.1"
+      ],
+      "title": "Package sandbox/landlock declares Options, ErrNoLandlock and New with the specified shapes and builds and vets on all four targets",
+      "given": [
+        "the sandbox module with sandbox/landlock added"
+      ],
+      "when": "compile-time assertions are evaluated in a test, and `go build ./landlock/` and `go vet ./landlock/` run in sandbox/ with CGO_ENABLED=0 for linux/amd64, linux/arm64, darwin/arm64 and windows/amd64",
+      "then": [
+        "Options has exactly the fields Root string, AgentBinary string, ExtraRO []string and ExtraRW []string",
+        "ErrNoLandlock.Error() equals 'landlock: this host cannot confine a sandbox with Landlock ABI 4'",
+        "New is assignable to func(landlock.Options) (sandbox.Provider, error)",
+        "build and vet exit 0 on every one of the four targets, and internal/policy TestCrossTargetBuildAndVet still passes"
+      ],
+      "pseudocode": "var _ func(landlock.Options) (sandbox.Provider, error) = landlock.New\n_ = landlock.Options{Root: '', AgentBinary: '', ExtraRO: nil, ExtraRW: nil}\nassert reflect.TypeOf(Options{}).NumField() == 4\nassert landlock.ErrNoLandlock.Error() == 'landlock: this host cannot confine a sandbox with Landlock ABI 4'\nfor goos, goarch in [(linux,amd64),(linux,arm64),(darwin,arm64),(windows,amd64)]: for verb in [build, vet]: assert run('go', verb, './landlock/', dir='sandbox', env={GOOS, GOARCH, CGO_ENABLED:0}).exit == 0"
+    },
+    {
+      "id": "TS-18-2",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-1.1"
+      ],
+      "title": "New runs its checks in order, stops at the first failure and starts no process other than the version check",
+      "given": [
+        "the platform seam reports linux and the probe seam is a fake that counts calls",
+        "Root names a path that does not exist yet beneath t.TempDir()",
+        "a process counter wraps the version runner and the starter seam"
+      ],
+      "when": "New is called with (a) probe ABI 3, a relative ExtraRO and no agent binary; (b) probe ABI 4, Root a regular file and a relative ExtraRO; (c) probe ABI 4, a valid Root, a relative ExtraRO and no agent binary; (d) probe ABI 4 and every option valid with a fake agent binary",
+      "then": [
+        "(a) fails with the ABI error and Root was not created",
+        "(b) fails naming Root, not ExtraRO",
+        "(c) fails naming Options.ExtraRO[0] and no agent-binary lookup or version run happened",
+        "(d) succeeds after exactly one version run, and the starter seam was never invoked in any case"
+      ],
+      "pseudocode": "_, err = New(Options{Root: missing, ExtraRO: ['rel']}) with probe=3; assert errors.Is(err, ErrNoLandlock); assert !exists(missing)\n_, err = New(Options{Root: aFile, ExtraRO: ['rel']}) with probe=4; assert contains(err, aFile) && !contains(err, 'ExtraRO')\n_, err = New(Options{Root: dir, ExtraRO: ['rel']}) with probe=4; assert contains(err, 'Options.ExtraRO[0]'); assert versionRuns == 0\np, err = New(valid); assert err == nil; assert versionRuns == 1; assert starterCalls == 0"
+    },
+    {
+      "id": "TS-18-3",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-1.2"
+      ],
+      "title": "New on a non-Linux GOOS refuses with ErrNoLandlock naming the GOOS and sandbox/podman, without probing or creating anything",
+      "given": [
+        "the platform seam reports darwin (and, on darwin and windows runners, the real runtime.GOOS)",
+        "a counting probe seam and a Root path that does not exist"
+      ],
+      "when": "New(Options{Root: missing, AgentBinary: anyPath}) is called",
+      "then": [
+        "the provider is nil",
+        "errors.Is(err, ErrNoLandlock) is true",
+        "the message contains the GOOS ('darwin', or the runner's GOOS) and 'sandbox/podman'",
+        "the probe was called 0 times, Root does not exist and no process was started"
+      ],
+      "pseudocode": "p, err = New(Options{Root: missing}) with goos='darwin'\nassert p == nil && errors.Is(err, ErrNoLandlock)\nassert contains(err.Error(), 'darwin') && contains(err.Error(), 'sandbox/podman')\nassert probeCalls == 0 && !exists(missing) && processes == 0"
+    },
+    {
+      "id": "TS-18-4",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-1.3"
+      ],
+      "title": "On Linux New probes the kernel exactly once and continues for any ABI of 4 or more, and the default probe is the syscall-444 version query",
+      "given": [
+        "the platform seam reports linux, a valid Root and a fake agent binary that passes the version check"
+      ],
+      "when": "New is called with the probe seam returning ABI 4, 5 and 6 in turn; on a real Linux host the default probe is also called directly",
+      "then": [
+        "each New call returns a non-nil provider and nil error",
+        "the probe seam was invoked exactly once per New call",
+        "on Linux, the default probe returns the same ABI or errno as syscall.Syscall(444, 0, 0, 1) issued by the test"
+      ],
+      "pseudocode": "for abi in [4,5,6]: calls = 0; p, err = New(valid) with probe=func(){calls++; return abi, nil}; assert err == nil && p != nil && calls == 1\nif linux: r, _, e = syscall.Syscall(444,0,0,1); got, gerr = defaultProbe(); assert (e != 0 && errors.Is(gerr, e)) || got == int(r)"
+    },
+    {
+      "id": "TS-18-5",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-1.4"
+      ],
+      "title": "A probed kernel ABI from 0 to 3 makes New refuse with ErrNoLandlock naming the ABI found, ABI 4, Linux 6.7 and sandbox/podman",
+      "given": [
+        "the platform seam reports linux and a valid Root"
+      ],
+      "when": "New is called with the probe seam returning ABI 0, 1, 2 and 3 in turn",
+      "then": [
+        "each call returns a nil provider",
+        "errors.Is(err, ErrNoLandlock) is true",
+        "the message contains the ABI found, 'ABI 4', 'Linux 6.7' and 'sandbox/podman'",
+        "no agent-binary lookup and no process run happened"
+      ],
+      "pseudocode": "for abi in 0..3: p, err = New(valid) with probe=abi; assert p == nil && errors.Is(err, ErrNoLandlock); assert contains(err, itoa(abi)) && contains(err, 'ABI 4') && contains(err, 'Linux 6.7') && contains(err, 'sandbox/podman'); assert versionRuns == 0"
+    },
+    {
+      "id": "TS-18-6",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-1.5"
+      ],
+      "title": "A failing probe makes New refuse with ErrNoLandlock naming the errno and the errno-specific hint",
+      "given": [
+        "the platform seam reports linux and a valid Root"
+      ],
+      "when": "New is called with the probe seam failing with syscall.ENOSYS, syscall.EOPNOTSUPP, syscall.EPERM and syscall.EINVAL in turn",
+      "then": [
+        "each call returns a nil provider and an error for which errors.Is(err, ErrNoLandlock) is true",
+        "each message contains the errno's text",
+        "the ENOSYS message says the kernel has no Landlock, the EOPNOTSUPP message mentions 'lsm=', and the EPERM message mentions a seccomp filter",
+        "the EINVAL message names the errno without any of the three hints"
+      ],
+      "pseudocode": "hints = {ENOSYS: 'no Landlock', EOPNOTSUPP: 'lsm=', EPERM: 'seccomp'}\nfor e in [ENOSYS, EOPNOTSUPP, EPERM, EINVAL]: p, err = New(valid) with probe=(0, e); assert p == nil && errors.Is(err, ErrNoLandlock) && contains(err, e.Error()); if e in hints: assert contains(err, hints[e])"
+    },
+    {
+      "id": "TS-18-7",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-1.6"
+      ],
+      "title": "Concurrent Create calls on one provider yield independent sandboxes with distinct ids, directories and agents",
+      "given": [
+        "a provider built by the offline test helper with the in-process starter seam (agent.New served over pipes, reporting ABI 4, TCP true and the sandbox's resolved workspace/, home/ and tmp/ as Writable)",
+        "the test runs under -race"
+      ],
+      "when": "8 goroutines call Create(ctx, sandbox.Spec{}) at once, then one sandbox is closed",
+      "then": [
+        "all 8 calls return a non-nil sandbox and nil error",
+        "the 8 IDs are distinct and the 8 directories <Root>/<id> are distinct and exist",
+        "after closing one, its directory is gone while Tools on each of the other 7 succeeds and their directories remain",
+        "the race detector reports nothing"
+      ],
+      "pseudocode": "res = parallel(8, func(){ return p.Create(ctx, Spec{}) })\nassert all(err == nil); assert len(set(s.ID())) == 8\nres[0].Close(ctx); assert !exists(root/res[0].ID())\nfor s in res[1:]: _, err = s.Tools(ctx, ToolOptions{}); assert err == nil; assert exists(root/s.ID())"
+    },
+    {
+      "id": "TS-18-8",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-2.1"
+      ],
+      "title": "New resolves Root to an absolute, symlink-free existing directory, using the user cache default when empty and creating it with mode 0700",
+      "given": [
+        "the platform and probe seams pass and a fake agent binary passes the version check",
+        "os.UserCacheDir redirected through t.Setenv (XDG_CACHE_HOME on Linux, HOME on darwin)"
+      ],
+      "when": "New is called with (a) Root empty; (b) Root 'rel' after t.Chdir(tmp); (c) Root a symlink to an existing directory; (d) Root a missing path",
+      "then": [
+        "(a) the provider's root is <cache>/agentkit-sandbox-landlock, symlink-resolved, and exists with mode 0700",
+        "(b) the root is the absolute, resolved tmp/rel",
+        "(c) the root equals filepath.EvalSymlinks of the link",
+        "(d) the missing directory is created with mode 0700 (on unix)"
+      ],
+      "pseudocode": "t.Setenv('XDG_CACHE_HOME', cache); p = New(Options{}); assert rootOf(p) == evalSymlinks(cache + '/agentkit-sandbox-landlock'); assert mode(rootOf(p)) == 0700\nt.Chdir(tmp); p = New(Options{Root: 'rel'}); assert rootOf(p) == evalSymlinks(tmp+'/rel')\nsymlink(dir, link); p = New(Options{Root: link}); assert rootOf(p) == evalSymlinks(dir)\np = New(Options{Root: missing}); assert isDir(missing) && mode(missing) == 0700"
+    },
+    {
+      "id": "TS-18-9",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-2.2"
+      ],
+      "title": "A Root that is not a directory or cannot be created makes New fail with a plain error naming Root",
+      "given": [
+        "the platform and probe seams pass"
+      ],
+      "when": "New is called with Root set to a regular file, and with Root set to a path beneath a regular file",
+      "then": [
+        "each call returns a nil provider",
+        "each message contains 'Root' and the path given",
+        "errors.Is(err, ErrNoLandlock) is false",
+        "no version run happened"
+      ],
+      "pseudocode": "for r in [aFile, aFile + '/sub']: p, err = New(Options{Root: r}); assert p == nil && err != nil && contains(err, 'Root') && contains(err, r) && !errors.Is(err, ErrNoLandlock); assert versionRuns == 0"
+    },
+    {
+      "id": "TS-18-10",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-2.3"
+      ],
+      "title": "A relative or / ExtraRO or ExtraRW entry makes New fail naming the field and its index, without ErrNoLandlock",
+      "given": [
+        "the platform and probe seams pass and Root is a valid temporary directory",
+        "absolute entries are built from t.TempDir()"
+      ],
+      "when": "New is called with ExtraRO [abs, 'rel/dir'], with ExtraRO ['./x'], and with ExtraRW ['/']",
+      "then": [
+        "each call returns a nil provider",
+        "the messages contain 'Options.ExtraRO[1]', 'Options.ExtraRO[0]' and 'Options.ExtraRW[0]' respectively",
+        "errors.Is(err, ErrNoLandlock) is false in each case",
+        "no version run happened"
+      ],
+      "pseudocode": "_, err = New(Options{Root: r, ExtraRO: [abs, 'rel/dir']}); assert contains(err, 'Options.ExtraRO[1]') && !errors.Is(err, ErrNoLandlock)\n_, err = New(Options{Root: r, ExtraRO: ['./x']}); assert contains(err, 'Options.ExtraRO[0]')\n_, err = New(Options{Root: r, ExtraRW: ['/']}); assert contains(err, 'Options.ExtraRW[0]')"
+    },
+    {
+      "id": "TS-18-11",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-2.4"
+      ],
+      "title": "An ExtraRO or ExtraRW entry that equals, contains or lies beneath Root, after resolution or cleaning, is refused naming the entry and Root",
+      "given": [
+        "the platform and probe seams pass and Root R is a resolved temporary directory",
+        "link is a symlink to R; sibling is R + '-other'"
+      ],
+      "when": "New is called with ExtraRO [R], ExtraRW [filepath.Dir(R)], ExtraRO [R/missing/sub], ExtraRO [link], ExtraRO [R/../<base(R)>/x], and, as a control, ExtraRO [sibling]",
+      "then": [
+        "each overlapping case returns a nil provider and an error containing 'Options.ExtraRO[0]' or 'Options.ExtraRW[0]' and R",
+        "errors.Is(err, ErrNoLandlock) is false in each overlapping case",
+        "the sibling R-other, which shares a name prefix but not a path, is accepted"
+      ],
+      "pseudocode": "for o in [{ExtraRO:[R]}, {ExtraRW:[dir(R)]}, {ExtraRO:[R+'/missing/sub']}, {ExtraRO:[link]}, {ExtraRO:[R+'/../'+base(R)+'/x']}]: p, err = New(o with Root R); assert p == nil && contains(err, R) && containsAny(err, 'Options.ExtraRO[0]', 'Options.ExtraRW[0]') && !errors.Is(err, ErrNoLandlock)\np, err = New(Options{Root: R, ExtraRO: [R+'-other']}); assert err == nil"
+    },
+    {
+      "id": "TS-18-12",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-2.5"
+      ],
+      "title": "The agent binary resolves as AgentBinary, then beside the resolved executable, then on PATH, accepting only regular executable files",
+      "given": [
+        "unix (execute bits)",
+        "the unexported resolver is called with AgentBinary, an executable path and PATH set through t.Setenv",
+        "executable fake agentkit-sandboxd files in an exe directory and a PATH directory"
+      ],
+      "when": "the resolver runs with (a) AgentBinary 'bin/agent' relative after t.Chdir while both other candidates exist; (b) AgentBinary empty and the executable path a symlink into the exe directory; (c) no file beside the executable; (d) a directory, then a mode-0644 file, named agentkit-sandboxd beside the executable",
+      "then": [
+        "(a) yields the absolute path of bin/agent",
+        "(b) yields <resolved exe dir>/agentkit-sandboxd",
+        "(c) yields the PATH directory's agentkit-sandboxd",
+        "(d) skips the directory and the non-executable file and yields the PATH candidate"
+      ],
+      "pseudocode": "assert resolveAgent('bin/agent', exe, path) == abs('bin/agent')\nassert resolveAgent('', symlinkToExe, path) == evalSymlinks(exeDir)+'/agentkit-sandboxd'\nremove(exeDir+'/agentkit-sandboxd'); assert resolveAgent('', exe, path) == pathDir+'/agentkit-sandboxd'\nmkdir(exeDir+'/agentkit-sandboxd'); assert resolveAgent('', exe, path) == pathDir+'/agentkit-sandboxd'"
+    },
+    {
+      "id": "TS-18-13",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-2.6"
+      ],
+      "title": "With no usable agent binary New fails, without ErrNoLandlock, listing every path tried and the version-specific install command",
+      "given": [
+        "the platform and probe seams pass",
+        "PATH is set to an empty temporary directory and nothing named agentkit-sandboxd lies beside the executable"
+      ],
+      "when": "New is called with AgentBinary empty, then with AgentBinary naming a directory; the install-line function is also called with versions '(devel)' and 'v1.4.0'",
+      "then": [
+        "the first error lists the path beside the executable and the PATH lookup of agentkit-sandboxd, and contains the install command for buildver.Version()",
+        "the second error names the AgentBinary path",
+        "for '(devel)' the install line is 'cd sandbox && go install ./cmd/agentkit-sandboxd'; for 'v1.4.0' it is 'go install github.com/agent-fox-dev/agentkit-go/sandbox/cmd/agentkit-sandboxd@v1.4.0'",
+        "errors.Is(err, ErrNoLandlock) is false in both New cases"
+      ],
+      "pseudocode": "_, err = New(Options{Root: r}); assert contains(err, exeDir+'/agentkit-sandboxd') && contains(err, 'agentkit-sandboxd') && contains(err, installLine(buildver.Version())) && !errors.Is(err, ErrNoLandlock)\n_, err = New(Options{Root: r, AgentBinary: aDir}); assert contains(err, aDir)\nassert installLine('(devel)') == 'cd sandbox && go install ./cmd/agentkit-sandboxd'\nassert installLine('v1.4.0') == 'go install github.com/agent-fox-dev/agentkit-go/sandbox/cmd/agentkit-sandboxd@v1.4.0'"
+    },
+    {
+      "id": "TS-18-14",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-2.7"
+      ],
+      "title": "New runs the agent's --version once with an empty environment and accepts protocol 1.N for N at least 2",
+      "given": [
+        "unix; the platform and probe seams pass",
+        "a fake agent shell script that appends its arguments and the value of $AGENTKIT_TEST_SENTINEL to a log file and prints a version line",
+        "t.Setenv('AGENTKIT_TEST_SENTINEL', 'leak')"
+      ],
+      "when": "New is called with the script printing 'agentkit-sandboxd v0.9.0 (protocol 1.2)', then 'agentkit-sandboxd (devel) (protocol 1.7)'; the parser is also called directly; on Linux the TestMain-built agentkit-sandboxd is used as AgentBinary",
+      "then": [
+        "each New returns a non-nil provider and nil error",
+        "the log shows exactly one invocation per New, with the single argument '--version' and an empty sentinel value",
+        "the parser returns major 1 and minor 2 for the first line and 1 and 7 for the second",
+        "the unexported version timeout equals 10 seconds, and the real built agent passes on Linux"
+      ],
+      "pseudocode": "p, err = New(Options{Root: r, AgentBinary: script}); assert err == nil && p != nil\nassert lines(log) == ['--version|']\nassert parseVersion('agentkit-sandboxd v0.9.0 (protocol 1.2)\\n') == (1, 2)\nassert versionTimeout == 10*time.Second\nif linux: _, err = New(Options{Root: r, AgentBinary: agentBin}); assert err == nil"
+    },
+    {
+      "id": "TS-18-15",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-2.8"
+      ],
+      "title": "A version run that fails, hangs, prints garbage or reports an unsupported protocol makes New refuse, quoting the output and the install command",
+      "given": [
+        "unix; the platform and probe seams pass",
+        "the version timeout is shortened by the test to 500 ms"
+      ],
+      "when": "New is called with fake agent scripts that (a) print 'boom' and exit 1; (b) print 'hello'; (c) print 'agentkit-sandboxd v1 (protocol 2.5)'; (d) print 'agentkit-sandboxd v1 (protocol 1.1)'; (e) sleep 60 seconds",
+      "then": [
+        "each call returns a nil provider",
+        "the messages contain 'boom', 'hello', 'protocol 2.5' and 'protocol 1.1' respectively, and (e) reports the timeout within a few seconds",
+        "every message contains the install command of 18-REQ-2.6",
+        "errors.Is(err, ErrNoLandlock) is false in every case"
+      ],
+      "pseudocode": "for script, want in cases: p, err = New(Options{Root: r, AgentBinary: script}); assert p == nil && contains(err, want) && contains(err, installLine(buildver.Version())) && !errors.Is(err, ErrNoLandlock)\nassert elapsed(case e) < 5*time.Second"
+    },
+    {
+      "id": "TS-18-16",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-3.1"
+      ],
+      "title": "Capabilities report a landlock confinement with two network modes, no resources, no image or workdir, and Landlock",
+      "given": [
+        "providers built by the offline test helper with Options{} and with Options{ExtraRO, ExtraRW, Root} set, on every platform"
+      ],
+      "when": "Capabilities() is called on each provider",
+      "then": [
+        "Provider is 'landlock' and Isolation is sandbox.IsolationConfinement",
+        "Network equals [NetworkNone, NetworkUnrestricted]",
+        "Resources equals sandbox.ResourceCaps{} and Image and Workdir are false",
+        "Landlock is true, and both providers return equal values apart from nothing"
+      ],
+      "pseudocode": "for p in [newTestProvider(t, Options{}), newTestProvider(t, Options{ExtraRO: [a], ExtraRW: [b]})]: c = p.Capabilities(); assert c.Provider == 'landlock' && c.Isolation == sandbox.IsolationConfinement && slices.Equal(c.Network, [NetworkNone, NetworkUnrestricted]) && c.Resources == ResourceCaps{} && !c.Image && !c.Workdir && c.Landlock\nassert reflect.DeepEqual(caps0, caps1)"
+    },
+    {
+      "id": "TS-18-17",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-3.2"
+      ],
+      "title": "Capabilities.Notes states plainly what the confinement does not protect",
+      "given": [
+        "a provider built by the offline test helper"
+      ],
+      "when": "Capabilities().Notes is read",
+      "then": [
+        "Notes contains 'not an isolation', 'UDP', 'Multipath TCP', 'Unix socket', 'D-Bus', 'ssh-agent', 'signal', 'new session' and 'host paths'"
+      ],
+      "pseudocode": "n = p.Capabilities().Notes\nfor s in ['not an isolation','UDP','Multipath TCP','Unix socket','D-Bus','ssh-agent','signal','new session','host paths']: assert contains(n, s)"
+    },
+    {
+      "id": "TS-18-18",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-3.3"
+      ],
+      "title": "Create refuses Resources, NetworkAllowlist, Image and Workdir through CheckSpec with a landlock SpecError, before anything exists",
+      "given": [
+        "a provider built by the offline test helper with a counting starter seam and an empty Root"
+      ],
+      "when": "Create is called with Spec{Resources: {CPUs: 1}}, {MemoryBytes: 1}, {PIDs: 1}, {DiskBytes: 1}, Spec{Network: {Mode: NetworkAllowlist, Allow: [{Host: 'h', Port: 443}]}}, Spec{Image: 'x'} and Spec{Workdir: '/w'}",
+      "then": [
+        "each call returns a nil sandbox and a *sandbox.SpecError with Provider 'landlock'",
+        "Field is 'Resources.CPUs', 'Resources.MemoryBytes', 'Resources.PIDs', 'Resources.DiskBytes', 'Network.Mode', 'Image' and 'Workdir' respectively",
+        "errors.Is(err, sandbox.ErrUnsupported) is true",
+        "Root has no entry and the starter seam was invoked 0 times"
+      ],
+      "pseudocode": "for spec, field in cases: s, err = p.Create(ctx, spec); var se *sandbox.SpecError; assert s == nil && errors.As(err, &se) && se.Provider == 'landlock' && se.Field == field && errors.Is(err, sandbox.ErrUnsupported)\nassert len(readDir(root)) == 0 && starterCalls == 0"
+    },
+    {
+      "id": "TS-18-19",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-3.4"
+      ],
+      "title": "Create refuses any Spec.Provider key with a SpecError on Field Provider naming the first key in sorted order",
+      "given": [
+        "a provider built by the offline test helper with a counting starter seam and an empty Root"
+      ],
+      "when": "Create is called with Spec{Provider: {'zeta': 1, 'alpha': 2}}",
+      "then": [
+        "the sandbox is nil and the error is a *sandbox.SpecError with Provider 'landlock' and Field 'Provider'",
+        "the message contains 'alpha'",
+        "errors.Is(err, sandbox.ErrUnsupported) is true",
+        "Root has no entry and the starter seam was invoked 0 times"
+      ],
+      "pseudocode": "s, err = p.Create(ctx, Spec{Provider: {'zeta': 1, 'alpha': 2}}); var se *sandbox.SpecError; assert s == nil && errors.As(err, &se) && se.Provider == 'landlock' && se.Field == 'Provider' && contains(err, 'alpha') && errors.Is(err, sandbox.ErrUnsupported)\nassert len(readDir(root)) == 0 && starterCalls == 0"
+    },
+    {
+      "id": "TS-18-20",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-3.5"
+      ],
+      "title": "Create refuses a Spec.Env that sets HOME or TMPDIR instead of overriding it",
+      "given": [
+        "a provider built by the offline test helper with a counting starter seam and an empty Root"
+      ],
+      "when": "Create is called with Spec{Env: {'HOME': '/x'}} and with Spec{Env: {'TMPDIR': '/y'}}",
+      "then": [
+        "each call returns a nil sandbox and a *sandbox.SpecError with Provider 'landlock' and Field 'Env'",
+        "the reason names 'HOME' (respectively 'TMPDIR') and says the provider sets it to the sandbox's private directory",
+        "Root has no entry and the starter seam was invoked 0 times"
+      ],
+      "pseudocode": "for v in ['HOME','TMPDIR']: s, err = p.Create(ctx, Spec{Env: {v: '/x'}}); var se *sandbox.SpecError; assert s == nil && errors.As(err, &se) && se.Provider == 'landlock' && se.Field == 'Env' && contains(se.Reason, v) && contains(se.Reason, 'private')\nassert len(readDir(root)) == 0 && starterCalls == 0"
+    },
+    {
+      "id": "TS-18-21",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-3.6"
+      ],
+      "title": "A spec with RequireLandlock, a zero TTL and Labels is accepted with a 1h TTL and the labels recorded only in the marker",
+      "given": [
+        "a provider built by the offline test helper with the in-process starter seam reporting ABI 4, TCP true and the correct Writable roots",
+        "the starter seam records the argument list and environment it receives"
+      ],
+      "when": "Create is called with Spec{RequireLandlock: true, TTL: 0, Labels: {'team': 'lbl-sentinel-7'}}",
+      "then": [
+        "Create returns a non-nil sandbox and nil error",
+        "Spec().TTL equals time.Hour and the recorded arguments begin with sandbox.AgentArgs of a spec with TTL 1h",
+        "the marker's labels equal {'team': 'lbl-sentinel-7'}",
+        "no recorded argument and no environment entry contains 'lbl-sentinel-7'"
+      ],
+      "pseudocode": "s, err = p.Create(ctx, Spec{RequireLandlock: true, Labels: {'team': 'lbl-sentinel-7'}}); assert err == nil\nassert s.Spec().TTL == time.Hour\nm = readMarker(root/s.ID()); assert m.Labels['team'] == 'lbl-sentinel-7'\nassert !anyContains(rec.args ++ rec.env, 'lbl-sentinel-7')"
+    },
+    {
+      "id": "TS-18-22",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-4.1"
+      ],
+      "title": "Each sandbox gets a 16-hex id and a 0700 directory with 0700 workspace, home and tmp and a 0600 marker under any umask",
+      "given": [
+        "unix; a provider built by the offline test helper with the in-process starter seam"
+      ],
+      "when": "for umask 0, 022 and 077 in turn (set with syscall.Umask and restored), Create(ctx, Spec{}) is called",
+      "then": [
+        "ID() matches ^[0-9a-f]{16}$",
+        "<Root>/<id>, workspace/, home/ and tmp/ each have permission bits 0700",
+        "agentkit-sandbox.json has permission bits 0600"
+      ],
+      "pseudocode": "for um in [0, 0o022, 0o077]: old = syscall.Umask(um); s = p.Create(ctx, Spec{}); syscall.Umask(old)\n  assert regexp('^[0-9a-f]{16}$').match(s.ID())\n  d = root/s.ID(); for x in [d, d/'workspace', d/'home', d/'tmp']: assert perm(x) == 0o700\n  assert perm(d/'agentkit-sandbox.json') == 0o600"
+    },
+    {
+      "id": "TS-18-23",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-4.2"
+      ],
+      "title": "The marker records the owner's pid, start time and boot id, its role, creation time, TTL, network mode and labels, and never Spec.Env",
+      "given": [
+        "a provider built by the offline test helper with the in-process starter seam and a fake process table reporting start time and boot id for each pid",
+        "the starter seam copies the marker bytes before the agent starts"
+      ],
+      "when": "Create is called with Spec{Env: {'SECRET_TOKEN': 'env-sentinel-91f3'}, Labels: {'a': 'b'}, TTL: 2*time.Minute, Network: {Mode: NetworkUnrestricted}}",
+      "then": [
+        "both the copied and the final marker decode as JSON into pid, start time, boot id, role, created, TTL, network and labels",
+        "TTL is 2m, network is unrestricted, labels are {'a': 'b'} and created lies within the test's time window",
+        "start time and boot id equal what the process table reports for the recorded pid",
+        "neither marker's bytes contain 'env-sentinel-91f3' or 'SECRET_TOKEN'"
+      ],
+      "pseudocode": "s = p.Create(ctx, spec); for b in [copiedBytes, readFile(root/s.ID()/'agentkit-sandbox.json')]: m = jsonDecode(b); assert m.TTL == 2*time.Minute && m.Network == 'unrestricted' && m.Labels == {'a':'b'} && before <= m.Created <= after; assert m.StartTime == procTable.start(m.PID) && m.BootID == procTable.boot(); assert !contains(b, 'env-sentinel-91f3') && !contains(b, 'SECRET_TOKEN')"
+    },
+    {
+      "id": "TS-18-24",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-4.3"
+      ],
+      "title": "The marker names the creator until the agent starts and is then atomically replaced to name the agent",
+      "given": [
+        "a provider built by the offline test helper whose starter seam reads the marker before starting and reports agent pid 4242",
+        "the fake process table reports start time 777 for pid 4242 and the real start time for os.Getpid()"
+      ],
+      "when": "Create(ctx, Spec{}) is called",
+      "then": [
+        "the marker read inside the starter seam has pid os.Getpid() and role 'creator'",
+        "after Create returns the marker has pid 4242, start time 777 and role 'agent'",
+        "the sandbox directory holds exactly agentkit-sandbox.json, home, tmp and workspace, so no temporary file remains"
+      ],
+      "pseudocode": "s = p.Create(ctx, Spec{}); assert seenInStarter.PID == os.Getpid() && seenInStarter.Role == 'creator'\nm = readMarker(root/s.ID()); assert m.PID == 4242 && m.StartTime == 777 && m.Role == 'agent'\nassert sorted(names(readDir(root/s.ID()))) == ['agentkit-sandbox.json','home','tmp','workspace']"
+    },
+    {
+      "id": "TS-18-25",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-4.4"
+      ],
+      "title": "No agent argument or environment value exposes the sandbox directory itself, only its three subdirectories",
+      "given": [
+        "Root R, an id, ExtraRO and ExtraRW directories outside R, and a resolver directory d"
+      ],
+      "when": "the argument builder and environment builder are called for NetworkNone and NetworkUnrestricted",
+      "then": [
+        "every --workdir, --landlock-ro and --landlock-rw value and the HOME and TMPDIR values are either one of R/id/workspace, R/id/home, R/id/tmp or neither equal to nor an ancestor of R/id",
+        "no value equals R/id or R"
+      ],
+      "pseudocode": "for mode in [None, Unrestricted]: for v in flagValues(agentArgs(eff(mode), opts, d)) ++ [env['HOME'], env['TMPDIR']]: assert v in {R/id/workspace, R/id/home, R/id/tmp} || !(v == R/id || isAncestor(v, R/id)); assert v != R"
+    },
+    {
+      "id": "TS-18-26",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-4.4"
+      ],
+      "title": "On a Landlock ABI 4 host nothing inside the sandbox can read the marker or list the sandbox directory",
+      "given": [
+        "Linux with Landlock ABI 4 or later (skipped naming the ABI otherwise)",
+        "TestMain has built agentkit-sandboxd with CGO_ENABLED=0",
+        "a provider from landlock.New with that binary and a temporary Root"
+      ],
+      "when": "Create(ctx, Spec{}) and Tools are called, then proxy execute runs `cat <Root>/<id>/agentkit-sandbox.json` and `ls <Root>/<id>`",
+      "then": [
+        "both commands exit non-zero with output containing 'Permission denied'",
+        "the output does not contain the marker's '\"pid\"' key"
+      ],
+      "pseudocode": "needABI4(t); s = p.Create(ctx, Spec{}); ts = s.Tools(ctx, opts)\ncode, out = execute(ts, 'cat '+dir+'/agentkit-sandbox.json'); assert code != 0 && contains(out, 'Permission denied') && !contains(out, '\"pid\"')\ncode, out = execute(ts, 'ls '+dir); assert code != 0 && contains(out, 'Permission denied')"
+    },
+    {
+      "id": "TS-18-27",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-4.5"
+      ],
+      "title": "Every Create failure after the sandbox directory exists removes it before returning",
+      "given": [
+        "a provider built by the offline test helper and an empty Root"
+      ],
+      "when": "Create is called with (a) a starter seam that returns an error; (b) a starter seam serving a fake agent whose Hello reports protocol major 2; (c) the in-process starter reporting ABI 3",
+      "then": [
+        "each call returns a nil sandbox and a non-nil error",
+        "Root has no entry when each Create returns"
+      ],
+      "pseudocode": "for starter in [failingStarter, fakeAgentStarter(major=2), inProcStarter(abi=3)]: s, err = newTestProvider(t, opts, starter).Create(ctx, Spec{}); assert s == nil && err != nil && len(readDir(root)) == 0"
+    },
+    {
+      "id": "TS-18-28",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-5.1"
+      ],
+      "title": "The agent argument list is AgentArgs with the host workspace, then ExtraRO, the resolver directory and ExtraRW, in order",
+      "given": [
+        "Root R, id i, Options{ExtraRO: [a, b], ExtraRW: [c]} and a resolver directory d passed in"
+      ],
+      "when": "the pure argument builder is called for an effective spec with TTL 30m under NetworkNone, then under NetworkUnrestricted, and twice with the same inputs",
+      "then": [
+        "under NetworkNone the list equals sandbox.AgentArgs(Spec{TTL: 30m, Network: none, Workdir: R/i/workspace}) followed by '--landlock-ro a --landlock-ro b --landlock-rw c'",
+        "the list contains '--workdir' followed by R/i/workspace",
+        "under NetworkUnrestricted the list is AgentArgs followed by '--landlock-ro a --landlock-ro b --landlock-ro d --landlock-rw c'",
+        "two calls with the same inputs return equal lists"
+      ],
+      "pseudocode": "eff = Spec{TTL: 30*time.Minute, Workdir: R+'/'+i+'/workspace'}\nassert agentArgs(eff, opts, d) == AgentArgs(eff) ++ ['--landlock-ro', a, '--landlock-ro', b, '--landlock-rw', c]\neff.Network.Mode = NetworkUnrestricted; assert agentArgs(eff, opts, d) == AgentArgs(eff) ++ ['--landlock-ro', a, '--landlock-ro', b, '--landlock-ro', d, '--landlock-rw', c]"
+    },
+    {
+      "id": "TS-18-29",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-5.2"
+      ],
+      "title": "The resolver directory is the resolved resolv.conf's directory only beneath /run or /var/run, and is added only under NetworkUnrestricted",
+      "given": [
+        "temporary files and symlinks for the path-reading cases",
+        "resolved paths for the classification cases"
+      ],
+      "when": "the resolver function is called with a regular file, a dangling symlink and a missing path; its classification is applied to /run/systemd/resolve/stub-resolv.conf, /var/run/foo/resolv.conf, /run/resolv.conf, /var/run/resolv.conf, /etc/resolv.conf and /runx/a/resolv.conf; and a provider with the resolver seam yielding /run/systemd/resolve creates a NetworkNone and a NetworkUnrestricted sandbox",
+      "then": [
+        "the regular temp file, the dangling link and the missing path yield none",
+        "/run/systemd/resolve/stub-resolv.conf yields /run/systemd/resolve and /var/run/foo/resolv.conf yields /var/run/foo; the other four yield none",
+        "on Linux, when /run/systemd/resolve/stub-resolv.conf exists, a temporary symlink to it yields /run/systemd/resolve",
+        "the NetworkNone agent arguments contain no resolver --landlock-ro and the NetworkUnrestricted ones contain '--landlock-ro /run/systemd/resolve'"
+      ],
+      "pseudocode": "for p in [regular, dangling, missing]: assert resolverDir(p) == ''\nassert classify('/run/systemd/resolve/stub-resolv.conf') == '/run/systemd/resolve'; assert classify('/var/run/foo/resolv.conf') == '/var/run/foo'\nfor p in ['/run/resolv.conf','/var/run/resolv.conf','/etc/resolv.conf','/runx/a/resolv.conf']: assert classify(p) == ''\nassert !containsPair(argsOf(createNone), '--landlock-ro', '/run/systemd/resolve') && containsPair(argsOf(createUnrestricted), '--landlock-ro', '/run/systemd/resolve')"
+    },
+    {
+      "id": "TS-18-30",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-5.3"
+      ],
+      "title": "The agent environment is exactly Spec.Env plus HOME, TMPDIR and a default PATH, sorted, with nothing from the embedder",
+      "given": [
+        "t.Setenv('AGENTKIT_EMBEDDER_SENTINEL', 'leak') and a sandbox directory dir"
+      ],
+      "when": "the pure environment builder is called with Spec.Env {'B': '2', 'A': '1'}, with {'PATH': '/custom'}, and with nil",
+      "then": [
+        "the first result equals ['A=1', 'B=2', 'HOME=<dir>/home', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'TMPDIR=<dir>/tmp']",
+        "the second keeps 'PATH=/custom' and adds no default PATH",
+        "the third equals exactly the HOME, PATH and TMPDIR entries",
+        "no result contains AGENTKIT_EMBEDDER_SENTINEL and every result is sorted by name"
+      ],
+      "pseudocode": "assert agentEnv({'B':'2','A':'1'}, dir) == ['A=1','B=2','HOME='+dir+'/home','PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','TMPDIR='+dir+'/tmp']\ne = agentEnv({'PATH':'/custom'}, dir); assert count(e, 'PATH=') == 1 && contains(e, 'PATH=/custom')\nassert len(agentEnv(nil, dir)) == 3; assert slices.IsSorted(e) && !anyContains(e, 'AGENTKIT_EMBEDDER_SENTINEL')"
+    },
+    {
+      "id": "TS-18-31",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-5.4"
+      ],
+      "title": "The real starter runs the agent as its own session leader in the workspace, independent of Create's context",
+      "given": [
+        "Linux with Landlock ABI 4 (skipped naming the ABI otherwise) and the TestMain-built agentkit-sandboxd",
+        "a provider from landlock.New and a cancellable context cctx"
+      ],
+      "when": "Create(cctx, Spec{}) returns, cctx is cancelled, and then Tools and proxy execute `true` are called with a fresh context",
+      "then": [
+        "fields 5 and 6 of /proc/<agent pid>/stat (process group and session id) both equal the agent's pid",
+        "/proc/<agent pid>/cwd resolves to <Root>/<id>/workspace",
+        "after cancelling cctx the agent process is still alive and Tools and execute succeed"
+      ],
+      "pseudocode": "needABI4(t); s = p.Create(cctx, Spec{}); pid = readMarker(dir).PID\nst = procStat(pid); assert st.pgrp == pid && st.session == pid\nassert readlink('/proc/'+pid+'/cwd') == dir+'/workspace'\ncancel(); ts, err = s.Tools(ctx, opts); assert err == nil; code, _ = execute(ts, 'true'); assert code == 0 && alive(pid)"
+    },
+    {
+      "id": "TS-18-32",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-5.4",
+        "18-REQ-5.6"
+      ],
+      "title": "An agent that exits before Hello yields the exit status and only the last 8 KiB of its stderr, and the directory is removed",
+      "given": [
+        "unix, with the platform and probe seams passing",
+        "a fake agent script that prints a valid version line for --version and otherwise writes 'HEAD-MARKER', 20000 filler bytes and 'TAIL-MARKER' to stderr and exits 2"
+      ],
+      "when": "Create(ctx, Spec{}) is called on a provider using that script as AgentBinary and the real starter",
+      "then": [
+        "Create returns a nil sandbox and an error beginning 'landlock: agentkit-sandboxd exited with status 2: '",
+        "the carried stderr tail ends with 'TAIL-MARKER', does not contain 'HEAD-MARKER' and is at most 8192 bytes",
+        "Root has no entry"
+      ],
+      "pseudocode": "s, err = p.Create(ctx, Spec{}); assert s == nil && hasPrefix(err.Error(), 'landlock: agentkit-sandboxd exited with status 2: ')\ntail = trimPrefix(err.Error(), prefix); assert hasSuffix(trim(tail), 'TAIL-MARKER') && !contains(tail, 'HEAD-MARKER') && len(tail) <= 8192\nassert len(readDir(root)) == 0"
+    },
+    {
+      "id": "TS-18-33",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-5.5"
+      ],
+      "title": "When the agent's report passes every check Create returns the provider's wrapper with the host workspace as Workdir",
+      "given": [
+        "a provider built by the offline test helper with the in-process starter reporting ABI 4, KernelABI 6, TCP true and the resolved workspace/, home/ and tmp/ as Writable"
+      ],
+      "when": "Create(ctx, Spec{}) is called",
+      "then": [
+        "Create returns a nil error and a sandbox of the provider's wrapper type, not attach's",
+        "Spec().Workdir equals the resolved <Root>/<id>/workspace",
+        "Agent().Landlock equals the report the starter served"
+      ],
+      "pseudocode": "s, err = p.Create(ctx, Spec{}); assert err == nil; _, ok = s.(*landlockSandbox); assert ok\nassert s.Spec().Workdir == evalSymlinks(root)+'/'+s.ID()+'/workspace'\nassert reflect.DeepEqual(s.Agent().Landlock, report)"
+    },
+    {
+      "id": "TS-18-34",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-5.6"
+      ],
+      "title": "A failing attach is classified: protocol and RequireLandlock errors pass through, a done context wraps ctx.Err(), and nothing is left",
+      "given": [
+        "a provider built by the offline test helper with a fake process table and a counting destroy hook"
+      ],
+      "when": "Create is called with (a) a fake agent whose Hello reports protocol major 2; (b) Spec{RequireLandlock: true} and an in-process agent reporting ABI 1; (c) a context cancelled while a fake agent blocks Hello",
+      "then": [
+        "(a) errors.Is(err, sandbox.ErrProtocol) is true and the message carries no 'agentkit-sandboxd exited' text",
+        "(b) the error is attach's *sandbox.SpecError about RequireLandlock, unchanged",
+        "(c) errors.Is(err, context.Canceled) is true",
+        "in every case the sandbox is nil, the destroy step ran once, Root has no entry and the fake process table has no live process in the agent's session"
+      ],
+      "pseudocode": "s, err = create(fakeAgent(major=2)); assert errors.Is(err, sandbox.ErrProtocol) && !contains(err, 'exited')\ns, err = create(inProc(abi=1), Spec{RequireLandlock: true}); var se *sandbox.SpecError; assert errors.As(err, &se) && contains(se.Error(), 'RequireLandlock')\nctx2, cancel = withCancel(ctx); go cancelAfterHelloEntered(); s, err = create(blockingHello, ctx2); assert errors.Is(err, context.Canceled)\nfor each: assert s == nil && destroyCount == 1 && len(readDir(root)) == 0 && procTable.session(agentPid) == []"
+    },
+    {
+      "id": "TS-18-35",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-5.7"
+      ],
+      "title": "A report below the ABI 4 floor, without TCP under NetworkNone, or missing a sandbox subdirectory closes the sandbox and wraps ErrNoLandlock",
+      "given": [
+        "a provider built by the offline test helper with a counting destroy hook"
+      ],
+      "when": "Create(ctx, Spec{}) is called with the in-process agent reporting (a) ABI 3, KernelABI 3, TCP false, Note 'abi3-note'; (b) ABI 4, KernelABI 5, TCP false, Note 'tcp-note'; (c) ABI 4, TCP true, Writable without tmp/, Note 'w-note'; and, as a control, (d) ABI 4, TCP false under Spec{Network: {Mode: NetworkUnrestricted}}",
+      "then": [
+        "(a), (b) and (c) return a nil sandbox and an error for which errors.Is(err, ErrNoLandlock) is true",
+        "each message quotes the report's ABI, KernelABI, TCP value and Note",
+        "the destroy step ran exactly once in each failing case and Root has no entry",
+        "(d) succeeds"
+      ],
+      "pseudocode": "for rep, note in cases: s, err = create(inProc(rep)); assert s == nil && errors.Is(err, ErrNoLandlock) && contains(err, itoa(rep.ABI)) && contains(err, itoa(rep.KernelABI)) && contains(err, fmt.Sprint(rep.TCP)) && contains(err, note); assert destroyCount == 1 && len(readDir(root)) == 0\n_, err = create(inProc(abi4NoTCP), Spec{Network: {Mode: NetworkUnrestricted}}); assert err == nil"
+    },
+    {
+      "id": "TS-18-36",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-5.8"
+      ],
+      "title": "A reported root that equals or contains Root closes the sandbox with an error naming Root and the containing root",
+      "given": [
+        "a provider built by the offline test helper with Root R and a counting destroy hook"
+      ],
+      "when": "Create(ctx, Spec{}) is called with an in-process agent whose otherwise valid report adds (a) filepath.Dir(R) to ReadOnly; (b) R to Writable",
+      "then": [
+        "each call returns a nil sandbox",
+        "the message names R and the containing root (filepath.Dir(R), respectively R)",
+        "the message tells the caller to choose a Root outside the system directories",
+        "the destroy step ran exactly once in each case"
+      ],
+      "pseudocode": "for extra in [{ReadOnly: +dir(R)}, {Writable: +R}]: s, err = create(inProc(valid + extra)); assert s == nil && contains(err, R) && contains(err, containing) && contains(err, 'outside the system directories') && destroyCount == 1"
+    },
+    {
+      "id": "TS-18-37",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-5.6"
+      ],
+      "title": "On a real host an ExtraRW containing a system directory makes the agent exit 2 and Create report its status and stderr",
+      "given": [
+        "Linux with Landlock ABI 4 (skipped naming the ABI otherwise) and the TestMain-built agentkit-sandboxd",
+        "landlock.New with ExtraRW ['/usr'] and a temporary Root, which New accepts"
+      ],
+      "when": "Create(ctx, Spec{}) is called",
+      "then": [
+        "Create returns a nil sandbox and an error beginning 'landlock: agentkit-sandboxd exited with status 2: '",
+        "the carried stderr names '--landlock-rw'",
+        "Root has no entry and no process has the agent's pid as its session id"
+      ],
+      "pseudocode": "needABI4(t); p = New(Options{Root: r, AgentBinary: agentBin, ExtraRW: ['/usr']}); s, err = p.Create(ctx, Spec{})\nassert s == nil && hasPrefix(err.Error(), 'landlock: agentkit-sandboxd exited with status 2: ') && contains(err, '--landlock-rw')\nassert len(readDir(r)) == 0"
+    },
+    {
+      "id": "TS-18-38",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-6.4"
+      ],
+      "title": "Under NetworkUnrestricted a TCP connect from proxy execute to a loopback listener succeeds",
+      "given": [
+        "Linux with Landlock ABI 4 (skipped naming the ABI otherwise) and the TestMain-built agentkit-sandboxd and dialtcp helper",
+        "a loopback listener opened by the test that counts accepted connections"
+      ],
+      "when": "Create(ctx, Spec{Network: {Mode: NetworkUnrestricted}}), a LocalDir Sync carrying the dialtcp helper, Tools, and proxy execute `./dialtcp 127.0.0.1:<port>`",
+      "then": [
+        "the command exits 0",
+        "the listener accepted exactly one connection"
+      ],
+      "pseudocode": "needABI4(t); ln = listen('127.0.0.1:0'); s = p.Create(ctx, Spec{Network: {Mode: NetworkUnrestricted}}); s.Sync(ctx, LocalDir{helperDir}); ts = s.Tools(ctx, opts)\ncode, _ = execute(ts, './dialtcp '+ln.Addr()); assert code == 0 && ln.accepted() == 1"
+    },
+    {
+      "id": "TS-18-39",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-6.5",
+        "18-REQ-6.6"
+      ],
+      "title": "Agent().Landlock reports ABI 4 with TCP and the sandbox's roots, and tools see exactly Spec.Env plus HOME, TMPDIR and PATH",
+      "given": [
+        "Linux with Landlock ABI exactly 4 for the ABI assertion (ABI 4 or later otherwise, skipped naming the ABI below 4) and the TestMain-built agentkit-sandboxd"
+      ],
+      "when": "Create(ctx, Spec{Env: {'FOO': 'bar', 'MARKER': 'landlock-env'}}), Tools, and proxy execute `env`",
+      "then": [
+        "Agent().Landlock.ABI == 4 on an ABI 4 kernel and TCP is true",
+        "the symlink-resolved <Root>/<id>/workspace, home and tmp are each among Agent().Landlock.Writable",
+        "ignoring the shell's own PWD, OLDPWD, SHLVL and _, the env output is exactly FOO=bar, MARKER=landlock-env, HOME=<Root>/<id>/home, TMPDIR=<Root>/<id>/tmp and PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "pseudocode": "k = needABI4(t); s = p.Create(ctx, Spec{Env: env}); ll = s.Agent().Landlock\nif k == 4: assert ll.ABI == 4\nassert ll.TCP; for d in ['workspace','home','tmp']: assert slices.Contains(ll.Writable, evalSymlinks(dir+'/'+d))\n_, out = execute(ts, 'env'); got = sorted(filterOut(lines(out), ['PWD','OLDPWD','SHLVL','_'])); assert got == sorted(['FOO=bar','MARKER=landlock-env','HOME='+dir+'/home','TMPDIR='+dir+'/tmp','PATH='+defaultPATH])"
+    },
+    {
+      "id": "TS-18-40",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-6.7"
+      ],
+      "title": "go version runs inside the sandbox when the go on PATH lies beneath a system directory or an ExtraRO directory",
+      "given": [
+        "Linux with Landlock ABI 4 (skipped naming the ABI otherwise), the TestMain-built agentkit-sandboxd and a go toolchain on the test's PATH (skipped otherwise)",
+        "goDir is the directory of the resolved go binary"
+      ],
+      "when": "a sandbox is created with Spec.Env PATH set to goDir plus the default directories; when goDir lies beneath a system directory Options are default, otherwise Options.ExtraRO names the toolchain's root; then proxy execute runs `go version`",
+      "then": [
+        "the command exits 0",
+        "the output starts with 'go version'"
+      ],
+      "pseudocode": "needABI4(t); goPath = evalSymlinks(lookPath('go')); opts = Options{Root: r, AgentBinary: agentBin}\nif !beneathSystemDir(goPath): opts.ExtraRO = [goroot(goPath)]\ns = New(opts).Create(ctx, Spec{Env: {'PATH': dir(goPath)+':/usr/bin:/bin'}}); code, out = execute(ts, 'go version'); assert code == 0 && hasPrefix(out, 'go version')"
+    },
+    {
+      "id": "TS-18-41",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-6.8"
+      ],
+      "title": "go version fails with a permission error when the go on PATH lies only beneath a directory outside the ruleset",
+      "given": [
+        "Linux with Landlock ABI 4 (skipped naming the ABI otherwise) and the TestMain-built agentkit-sandboxd",
+        "a copy of the go binary in a sibling temporary directory outside Root, not named in ExtraRO"
+      ],
+      "when": "a sandbox is created with Spec.Env PATH set to that directory first, and proxy execute runs `go version`",
+      "then": [
+        "the command exits non-zero",
+        "the output contains 'Permission denied'"
+      ],
+      "pseudocode": "needABI4(t); copyFile(goPath, outside+'/go', 0o755); s = p.Create(ctx, Spec{Env: {'PATH': outside+':/usr/bin:/bin'}})\ncode, out = execute(ts, 'go version'); assert code != 0 && contains(out, 'Permission denied')"
+    },
+    {
+      "id": "TS-18-42",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-7.1"
+      ],
+      "title": "The destroy step runs once, performs its three actions in order even after a failure, joins their errors and fits the 30-second budget",
+      "given": [
+        "a provider built by the offline test helper whose agent handle, process table and directory removal record the order of calls",
+        "a variant whose agent wait returns an error and whose process-table scan always fails"
+      ],
+      "when": "a sandbox is created and closed twice, and the failing variant is closed once",
+      "then": [
+        "the recorded order is stop-agent, session-kill, remove, and the destroy step ran exactly once across both Close calls",
+        "in the success case the first Close returns nil",
+        "in the failing variant the directory is still removed and the error satisfies errors.Is for both the wait error and the scan error",
+        "the unexported stop and session timeouts are 5 s each, well within attach's 30-second destroy budget"
+      ],
+      "pseudocode": "s = p.Create(ctx, Spec{}); assert s.Close(ctx) == nil; s.Close(ctx); assert calls == ['stop','session','remove'] && destroyCount == 1\nerr = failing.Close(ctx); assert !exists(dir) && errors.Is(err, errWait) && errors.Is(err, errScan)\nassert stopWait == 5*time.Second && sessionWait == 5*time.Second && stopWait+sessionWait < 30*time.Second"
+    },
+    {
+      "id": "TS-18-43",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-7.2"
+      ],
+      "title": "Stopping the agent waits for an exit on EOF and SIGKILLs the process group of an agent that ignores EOF after 5 seconds",
+      "given": [
+        "Linux; real child processes started with Setsid and a stdin pipe through the starter's process handle"
+      ],
+      "when": "the stop-agent action runs after closing stdin for (a) `cat`, which exits on EOF, and (b) `sh -c 'trap \"\" TERM HUP; exec sleep 60'`, which ignores EOF",
+      "then": [
+        "(a) returns within 5 seconds, the recorded exit is status 0 and no signal was sent",
+        "(b) returns after about 5 seconds, the recorded exit is death by SIGKILL, and no process remains in that process group"
+      ],
+      "pseudocode": "h = start(['cat'], setsid); closeStdin(h); t0 = now(); stopAgent(h); assert since(t0) < 5s && h.exit.Code == 0 && !h.exit.Signaled\nh = start(['sh','-c','trap \"\" TERM HUP; exec sleep 60'], setsid); closeStdin(h); t0 = now(); stopAgent(h); assert 5s <= since(t0) < 7s && h.exit.Signal == SIGKILL && pgroupEmpty(h.pid)"
+    },
+    {
+      "id": "TS-18-44",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-7.3"
+      ],
+      "title": "The session kill SIGKILLs every non-zombie process in the agent's session, rescans until none remain, and names survivors after 5 seconds",
+      "given": [
+        "a fake process table for agent pid 100 holding 101 (session 100, state S), 102 (session 100, state Z), 103 (session 200, state S) and 104 (session 100, state R), whose fake kill removes the target",
+        "a second fake table where 105 (session 100) survives every kill"
+      ],
+      "when": "the session-kill action runs against each table",
+      "then": [
+        "against the first table SIGKILL went to 101 and 104 only, never to the zombie 102 or to 103, and the final scan found no non-zombie process in session 100",
+        "against the second table the action returns after about 5 seconds with an error naming 105"
+      ],
+      "pseudocode": "kills = sessionKill(ctx, table1, 100); assert sorted(kills) == [(101, SIGKILL), (104, SIGKILL)] && table1.scans >= 2\nt0 = now(); err = sessionKill(ctx, table2, 100); assert 5s <= since(t0) < 7s && contains(err, '105')"
+    },
+    {
+      "id": "TS-18-45",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-7.4"
+      ],
+      "title": "Directory removal restores owner permissions so read-only trees are removed completely, and a missing directory is not an error",
+      "given": [
+        "unix; a sandbox-shaped tree whose home/go/pkg/mod/x@v1.0.0 has directories 0555 and files 0444, whose workspace/ro tree was made read-only like chmod -R a-w, and whose top directory is 0500"
+      ],
+      "when": "the removal function is called on the tree, then again on the now-missing path",
+      "then": [
+        "the first call returns nil and the tree no longer exists",
+        "the second call returns nil"
+      ],
+      "pseudocode": "buildModCacheTree(d+'/home'); chmodRecursive(d+'/workspace/ro', 'a-w'); chmod(d, 0o500)\nassert removeTree(d) == nil && !exists(d)\nassert removeTree(d) == nil"
+    },
+    {
+      "id": "TS-18-46",
+      "kind": "property",
+      "verifies": [
+        "18-REQ-7.5"
+      ],
+      "title": "Removal deletes any tree mixing read-only directories, read-only files and outward symlinks without touching the symlink targets",
+      "given": [
+        "unix; an outside directory holding target files and directories with recorded content hashes and modes"
+      ],
+      "when": "for any generated tree of depth up to 4 containing directories with modes 0500, 0555 or 0700, files with modes 0444 or 0644, and symlinks to outside files, outside directories and the outside directory itself (seeded generator, at least 100 cases)",
+      "then": [
+        "removal returns nil and the tree's root no longer exists",
+        "every outside target still exists with its original content hash and mode, and every outside directory keeps its entries"
+      ],
+      "pseudocode": "for seed in 1..100: tree = genTree(seed, outside); snap = snapshot(outside); assert removeTree(tree) == nil && !exists(tree); assert snapshot(outside) == snap"
+    },
+    {
+      "id": "TS-18-47",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-7.6"
+      ],
+      "title": "Close kills the agent and a background sleep left by execute and removes a sandbox containing a read-only tree",
+      "given": [
+        "Linux with Landlock ABI 4 (skipped naming the ABI otherwise) and the TestMain-built agentkit-sandboxd"
+      ],
+      "when": "proxy execute runs `sleep 300 >/dev/null 2>&1 & echo $!` and `mkdir -p ro/a/b && touch ro/a/b/f && chmod -R a-w ro`, then Close is called",
+      "then": [
+        "Close returns nil",
+        "the agent's pid and the sleep's pid no longer name live processes",
+        "<Root>/<id> does not exist"
+      ],
+      "pseudocode": "needABI4(t); s = p.Create(ctx, Spec{}); ts = s.Tools(ctx, opts); agentPid = readMarker(dir).PID\n_, out = execute(ts, 'sleep 300 >/dev/null 2>&1 & echo $!'); sleepPid = atoi(trim(out)); execute(ts, 'mkdir -p ro/a/b && touch ro/a/b/f && chmod -R a-w ro')\nassert s.Close(ctx) == nil; eventually(1s, !alive(agentPid) && !alive(sleepPid)); assert !exists(dir)"
+    },
+    {
+      "id": "TS-18-48",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-8.1"
+      ],
+      "title": "The wrapper forwards ID, Spec, Agent, Export and Close, and Tools and LocalDir Sync wait for an in-flight GitRepo",
+      "given": [
+        "a provider built by the offline test helper with in-process agents for the sandbox and the init agent, and a fake git executable on the sandbox's Spec.Env PATH",
+        "the init-command seam runs a helper that blocks until the test releases it"
+      ],
+      "when": "a GitRepo Sync starts; once the init command has entered, Tools and a LocalDir Sync are issued from other goroutines; the helper is released after 200 ms; then Export and Close are called",
+      "then": [
+        "Tools and the LocalDir Sync each return no earlier than the GitRepo Sync returns",
+        "ID, Spec and Agent equal those of attach's underlying sandbox",
+        "Export of a LocalDir succeeds and Close closes the sandbox"
+      ],
+      "pseudocode": "go { s.Sync(ctx, GitRepo{URL: u}); tGit = now() }; <-entered\ngo { s.Tools(ctx, opts); tTools = now() }; go { s.Sync(ctx, LocalDir{src}); tSync = now() }\nsleep(200ms); release(); wait(); assert tTools >= tGit && tSync >= tGit\nassert s.ID() == inner.ID() && s.Spec() == inner.Spec(); assert s.Export(ctx, LocalDir{out}) == nil && s.Close(ctx) == nil"
+    },
+    {
+      "id": "TS-18-49",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-8.2"
+      ],
+      "title": "The GitRepo slot is taken by a successful GitRepo or other Sync and by the first Tools call, but not by a failed GitRepo or a failed Sync",
+      "given": [
+        "a provider built by the offline test helper with in-process agents and a fake git on the sandbox's PATH",
+        "the init-command seam selects a helper that succeeds or exits 1"
+      ],
+      "when": "on fresh sandboxes: (a) a failing GitRepo then a GitRepo; (b) a successful GitRepo then a GitRepo; (c) a successful LocalDir Sync then a GitRepo; (d) a Tools call that fails then a GitRepo; (e) a LocalDir Sync of a missing directory then a GitRepo",
+      "then": [
+        "in (a) and (e) the second GitRepo is accepted and starts an init agent",
+        "in (b), (c) and (d) the GitRepo returns the error 'landlock: GitRepo must be the first Sync and come before Tools' and starts no init agent"
+      ],
+      "pseudocode": "a: fail(s.Sync(ctx, repo)); n = starterCalls; s.Sync(ctx, repo); assert starterCalls == n+1\nfor taker in [okGitRepo, okLocalDir, failingTools]: s = fresh(); taker(s); n = starterCalls; _, err = s.Sync(ctx, repo); assert err.Error() == 'landlock: GitRepo must be the first Sync and come before Tools' && starterCalls == n\ne: s.Sync(ctx, LocalDir{missing}) fails; s.Sync(ctx, repo) starts an init agent"
+    },
+    {
+      "id": "TS-18-50",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-8.3"
+      ],
+      "title": "GitRepo preconditions are checked in order, live, repository, slot, git, and refuse before any process starts",
+      "given": [
+        "a provider built by the offline test helper with a counting starter seam",
+        "a snapshot of the workspace's entries"
+      ],
+      "when": "GitRepo Sync is called on (a) a closed sandbox with URL 'http://h/r'; (b) a live sandbox whose slot is taken with URL 'http://h/r'; (c) a sandbox whose slot is taken, whose agent reports Git false, with a valid URL; (d) a fresh sandbox with Spec.Env PATH '/nowhere', so Agent().Git is false",
+      "then": [
+        "(a) returns the error attach.Live returns for that sandbox",
+        "(b) returns gitclone.Check's error, which names 'URL'",
+        "(c) returns 'landlock: GitRepo must be the first Sync and come before Tools'",
+        "(d) returns 'landlock: git is not on the sandbox's PATH (/nowhere); a GitRepo needs it', and in every case no init agent was started and the workspace is unchanged"
+      ],
+      "pseudocode": "s.Close(ctx); _, err = s.Sync(ctx, GitRepo{URL: 'http://h/r'}); assert err.Error() == attach.Live(inner).Error()\n_, err = taken.Sync(ctx, GitRepo{URL: 'http://h/r'}); assert err.Error() == gitclone.Check(GitRepo{URL: 'http://h/r'}).Error()\n_, err = takenNoGit.Sync(ctx, okRepo); assert err.Error() == 'landlock: GitRepo must be the first Sync and come before Tools'\n_, err = noGit.Sync(ctx, okRepo); assert err.Error() == \"landlock: git is not on the sandbox's PATH (/nowhere); a GitRepo needs it\"\nassert starterCalls == sandboxesCreated && readDir(ws) == snapshot"
+    },
+    {
+      "id": "TS-18-51",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-8.4"
+      ],
+      "title": "The init agent gets the expiry-bounded TTL, unrestricted network, the same roots plus the resolver directory, and a git-only environment",
+      "given": [
+        "a provider with Options{ExtraRO: [a], ExtraRW: [c]}, the resolver seam yielding d, and a starter seam that records each start's argv and environment",
+        "a sandbox with Spec{TTL: 10m, Env: {'SPEC_SENTINEL': 's-1', 'PATH': <fakegit dir>:/usr/bin}} and an init command that succeeds"
+      ],
+      "when": "a GitRepo Sync runs",
+      "then": [
+        "the second recorded argv equals sandbox.AgentArgs(Spec{TTL: T, Network: unrestricted, Workdir: <workspace>}) followed by '--landlock-ro a --landlock-ro d --landlock-rw c', where T is a whole number of seconds no greater than 600 s and no less than 600 s minus the elapsed time",
+        "the second recorded environment equals exactly ['GIT_CONFIG_NOSYSTEM=1', 'GIT_TERMINAL_PROMPT=0', 'HOME=<dir>/home', 'PATH=<fakegit dir>:/usr/bin', 'TMPDIR=<dir>/tmp'] and contains no SPEC_SENTINEL",
+        "after the init agent is closed <Root>/<id> still exists and the sandbox's own agent still answers Agent()"
+      ],
+      "pseudocode": "s.Sync(ctx, repo); args, env = rec[1]\nT = parseDuration(argAfter(args, '--ttl')); assert T % time.Second == 0 && 600s-elapsed <= T <= 600s\nassert args == AgentArgs(Spec{TTL: T, Network: {Mode: NetworkUnrestricted}, Workdir: ws}) ++ ['--landlock-ro', a, '--landlock-ro', d, '--landlock-rw', c]\nassert env == ['GIT_CONFIG_NOSYSTEM=1','GIT_TERMINAL_PROMPT=0','HOME='+dir+'/home','PATH='+fakeGit+':/usr/bin','TMPDIR='+dir+'/tmp']\nassert exists(dir) && s.Agent().Version != ''"
+    },
+    {
+      "id": "TS-18-52",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-8.5"
+      ],
+      "title": "A successful init runs the clone through the init agent's run_command, fills the workspace, takes the slot and closes the init sandbox",
+      "given": [
+        "a provider built by the offline test helper with in-process agents and a fake git on the sandbox's PATH",
+        "the init-command seam returns argv for a helper that writes README.md and .git/HEAD into the workspace and exits 0"
+      ],
+      "when": "Sync(ctx, GitRepo{URL: 'https://example.invalid/r', Ref: 'main', Depth: 1}) is called; the default init command is also computed for that repository",
+      "then": [
+        "Sync returns sandbox.SyncResult{} and nil",
+        "the workspace contains README.md and .git/HEAD",
+        "the init sandbox was closed (its destroy hook ran once) and its Tools call carried DisableSpill true, and a later GitRepo is refused because the slot is taken",
+        "the default init argv is ['git'] followed by gitclone.Args(repo, <workspace>)"
+      ],
+      "pseudocode": "res, err = s.Sync(ctx, repo); assert err == nil && res == sandbox.SyncResult{}\nassert exists(ws+'/README.md') && exists(ws+'/.git/HEAD'); assert initDestroyCount == 1 && initToolsOpts.DisableSpill\n_, err = s.Sync(ctx, repo); assert contains(err, 'GitRepo must be the first Sync')\nassert defaultInitArgv(repo, ws) == ['git'] ++ gitclone.Args(repo, ws)"
+    },
+    {
+      "id": "TS-18-53",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-8.6"
+      ],
+      "title": "An init agent whose report is below ABI 4 or lacks the workspace is closed without running git and the Sync wraps ErrNoLandlock",
+      "given": [
+        "a provider built by the offline test helper whose starter serves a good report to the sandbox's agent and a chosen report to the init agent",
+        "a counting init-command seam"
+      ],
+      "when": "GitRepo Sync is called with the init agent reporting (a) ABI 3; (b) ABI 4 without the workspace among Writable; then a GitRepo with a good init report",
+      "then": [
+        "(a) and (b) return an error for which errors.Is(err, ErrNoLandlock) is true",
+        "the init-command seam ran 0 times and each init sandbox was closed",
+        "the slot stays free: the following GitRepo is accepted and succeeds"
+      ],
+      "pseudocode": "for rep in [abi3, abi4NoWorkspace]: initReport = rep; _, err = s.Sync(ctx, repo); assert errors.Is(err, ErrNoLandlock) && initCmdCalls == 0 && initClosed\ninitReport = good; _, err = s.Sync(ctx, repo); assert err == nil"
+    },
+    {
+      "id": "TS-18-54",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-8.7"
+      ],
+      "title": "An init command that cannot run git or exits non-zero fails the Sync with the specified advice or the URL and a bounded output tail",
+      "given": [
+        "a provider built by the offline test helper with in-process agents and a fake git on the sandbox's PATH"
+      ],
+      "when": "the init-command seam returns (a) argv ['/nonexistent/git'] (exec_failed); (b) a helper exiting 127; (c) a helper exiting 126; (d) a helper that prints 'HEAD-START', 5000 filler bytes and 'FATAL-END' and exits 128",
+      "then": [
+        "(a), (b) and (c) return an error saying git could not be run under the sandbox's ruleset, mentioning a system directory and 'Options.ExtraRO', and carrying the output tail",
+        "(d) returns an error containing the URL and 'FATAL-END' but not 'HEAD-START', whose carried output is at most 2048 bytes"
+      ],
+      "pseudocode": "for c in [execFailed, exit127, exit126]: _, err = s.Sync(ctx, repo); assert contains(err, \"could not be run under the sandbox's ruleset\") && contains(err, 'system director') && contains(err, 'Options.ExtraRO')\n_, err = s.Sync(ctx, repo) with exit128; assert contains(err, repo.URL) && contains(err, 'FATAL-END') && !contains(err, 'HEAD-START') && len(outputTail(err)) <= 2048"
+    },
+    {
+      "id": "TS-18-55",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-8.7"
+      ],
+      "title": "A GitRepo Sync whose context ends wraps ctx.Err(), and one that reaches the sandbox's expiry wraps ErrUnavailable",
+      "given": [
+        "a provider built by the offline test helper with in-process agents and a fake git on the sandbox's PATH",
+        "the init-command seam runs a helper that sleeps 30 seconds"
+      ],
+      "when": "(a) the Sync context is cancelled 200 ms after the init command enters; (b) on a sandbox created with TTL 3s, the Sync runs until the expiry",
+      "then": [
+        "(a) returns within a few seconds an error for which errors.Is(err, context.Canceled) is true",
+        "(b) returns shortly after the expiry an error for which errors.Is(err, sandbox.ErrUnavailable) is true"
+      ],
+      "pseudocode": "cctx, cancel = withCancel(ctx); go { <-entered; sleep(200ms); cancel() }; _, err = s.Sync(cctx, repo); assert errors.Is(err, context.Canceled)\ns3 = p.Create(ctx, Spec{TTL: 3*time.Second}); _, err = s3.Sync(ctx, repo); assert errors.Is(err, sandbox.ErrUnavailable) && elapsed < 10s"
+    },
+    {
+      "id": "TS-18-56",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-8.8"
+      ],
+      "title": "A failed init empties the workspace, keeps the directory and the free slot, and leaves the sandbox's agent working",
+      "given": [
+        "a provider built by the offline test helper with in-process agents and a fake git on the sandbox's PATH",
+        "the init-command seam runs a helper that writes partial files and a read-only subdirectory (0555) into the workspace and exits 1"
+      ],
+      "when": "a GitRepo Sync fails, then Tools is called on the sandbox",
+      "then": [
+        "the workspace directory still exists and os.ReadDir of it returns no entries",
+        "a following GitRepo Sync is accepted (the slot is free)",
+        "Tools on the sandbox succeeds and proxy execute `true` exits 0"
+      ],
+      "pseudocode": "_, err = s.Sync(ctx, repo); assert err != nil\nassert isDir(ws) && len(readDir(ws)) == 0\nn = starterCalls; s.Sync(ctx, repo); assert starterCalls == n+1 (on a second sandbox, then) ts, err = s.Tools(ctx, opts); assert err == nil"
+    },
+    {
+      "id": "TS-18-57",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-9.1"
+      ],
+      "title": "Reap considers only 16-hex directories with a readable marker and leaves every other entry untouched",
+      "given": [
+        "a provider built by the offline test helper with a fake process table in which no recorded owner is alive",
+        "Root holding a file '0123456789abcdef', a symlink 'fedcba9876543210' to an outside directory holding a dead-owner marker, directories '0123456789ABCDEF', '0123456789abcde' and 'notasandbox', a directory 'aaaaaaaaaaaaaaaa' with no marker, a directory 'bbbbbbbbbbbbbbbb' whose marker is '{garbage', and a directory 'cccccccccccccccc' with a valid dead-owner marker"
+      ],
+      "when": "Reap(ctx) is called",
+      "then": [
+        "Reap returns ['cccccccccccccccc'] and nil",
+        "every other entry, the symlink and its target, and their contents are unchanged"
+      ],
+      "pseudocode": "snap = snapshot(root, outside); ids, err = p.Reap(ctx); assert err == nil && ids == ['cccccccccccccccc']\nassert snapshot(root, outside) == snap minus 'cccccccccccccccc'"
+    },
+    {
+      "id": "TS-18-58",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-9.2"
+      ],
+      "title": "Reap's decision keeps a live owner and removes a dead owner, a reused pid and a marker from another boot",
+      "given": [
+        "a marker {pid 500, start 1000, boot 'B1'} and the pure decision function with a fake process lookup, on every platform"
+      ],
+      "when": "the decision is evaluated with the lookup reporting (a) pid 500 with start 1000 on boot B1; (b) no pid 500; (c) pid 500 with start 2000 on boot B1; (d) pid 500 with start 1000 on boot B2",
+      "then": [
+        "(a) keep",
+        "(b) remove",
+        "(c) remove",
+        "(d) remove"
+      ],
+      "pseudocode": "m = marker{PID: 500, StartTime: 1000, BootID: 'B1'}\nassert decide(m, look(500, 1000, 'B1')) == keep; assert decide(m, look(none, 'B1')) == remove; assert decide(m, look(500, 2000, 'B1')) == remove; assert decide(m, look(500, 1000, 'B2')) == remove"
+    },
+    {
+      "id": "TS-18-59",
+      "kind": "property",
+      "verifies": [
+        "18-REQ-9.2"
+      ],
+      "title": "For any marker and process lookup the owner is alive exactly when the pid exists with the recorded start time on the recorded boot",
+      "given": [
+        "the pure decision function and a generator of markers and lookups"
+      ],
+      "when": "for any marker (pid, start time, boot id, role creator or agent) and any lookup (pid present or absent, its start time, the current boot id), drawn from small domains so that matches are frequent (at least 1000 cases)",
+      "then": [
+        "alive(marker, lookup) equals present && start == marker.start && boot == marker.boot",
+        "the decision is keep exactly when alive is true, whatever the role"
+      ],
+      "pseudocode": "for (m, l) in gen(1000): want = l.present && l.start == m.StartTime && l.boot == m.BootID; assert alive(m, l) == want; assert (decide(m, l) == keep) == want"
+    },
+    {
+      "id": "TS-18-60",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-9.3",
+        "18-REQ-9.4"
+      ],
+      "title": "Reap skips live owners, kills a dead agent's session only on the same boot when its pid is gone, and removes every dead sandbox",
+      "given": [
+        "a provider built by the offline test helper with a fake process table recording kills, on boot B1",
+        "sandbox A: role agent, owner alive",
+        "sandbox B: role agent, pid 300 absent, boot B1, processes 301 and 302 in session 300",
+        "sandbox C: role agent, boot B0, a process in session 310 (its recorded pid)",
+        "sandbox D: role creator, owner dead, processes in session 320",
+        "sandbox E: role agent, boot B1, pid 330 present with a different start time, with processes in session 330"
+      ],
+      "when": "Reap(ctx) is called",
+      "then": [
+        "A's directory remains and its id is not returned, and nothing in A's session is signalled",
+        "301 and 302 received SIGKILL and B's directory is gone",
+        "no signal went to C's, D's or E's session processes, and their directories are gone",
+        "Reap returns the ids of B, C, D and E sorted"
+      ],
+      "pseudocode": "ids, err = p.Reap(ctx); assert err == nil && ids == sorted([B, C, D, E])\nassert exists(root/A) && kills == {301: SIGKILL, 302: SIGKILL}\nfor x in [B, C, D, E]: assert !exists(root/x)"
+    },
+    {
+      "id": "TS-18-61",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-9.5"
+      ],
+      "title": "Reap returns the removed ids sorted, together with the joined errors of failed removals",
+      "given": [
+        "a provider built by the offline test helper with three dead-owner sandboxes created in the order 'ffffffffffffffff', '0000000000000000', '8888888888888888'",
+        "a removal failure injected for '8888888888888888' in the second run"
+      ],
+      "when": "Reap(ctx) is called with all removals succeeding on one copy of the tree, and with the injected failure on another",
+      "then": [
+        "the first returns ['0000000000000000', '8888888888888888', 'ffffffffffffffff'] and nil",
+        "the second returns ['0000000000000000', 'ffffffffffffffff'] and a non-nil error whose text names '8888888888888888' and wraps the injected error"
+      ],
+      "pseudocode": "ids, err = p.Reap(ctx); assert err == nil && ids == ['0000000000000000','8888888888888888','ffffffffffffffff']\nids, err = p2.Reap(ctx) with failRemove('8888888888888888'); assert ids == ['0000000000000000','ffffffffffffffff'] && errors.Is(err, errInjected) && contains(err, '8888888888888888')"
+    },
+    {
+      "id": "TS-18-62",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-10.1"
+      ],
+      "title": "sandbox/landlock depends on neither go-landlock nor confine, and the TS-15-39 import policy holds",
+      "given": [
+        "the repository with sandbox/landlock added and go on PATH"
+      ],
+      "when": "`go list -deps ./landlock` runs in sandbox/ for the host and with GOOS=linux, and the TS-15-39 confinement check scans the repository",
+      "then": [
+        "neither listing contains github.com/landlock-lsm/go-landlock or github.com/agent-fox-dev/agentkit-go/sandbox/internal/confine",
+        "the confinement check reports no violation"
+      ],
+      "pseudocode": "for goos in [host, 'linux']: deps = lines(run('go','list','-deps','./landlock', dir='sandbox', env={GOOS: goos})); assert !anyHasPrefix(deps, 'github.com/landlock-lsm/go-landlock') && !contains(deps, modulePath+'/sandbox/internal/confine')\nviolations, _, _ = checkConfinement(root, goFiles(root)); assert violations == []"
+    },
+    {
+      "id": "TS-18-63",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-10.2"
+      ],
+      "title": "The sandbox module's direct requirements are unchanged by this spec",
+      "given": [
+        "the direct requirements of sandbox/go.mod recorded before this spec in internal/policy testdata"
+      ],
+      "when": "`go mod edit -json` runs in sandbox/ and its non-indirect Require entries are collected",
+      "then": [
+        "the set of direct module paths and versions equals the recorded set"
+      ],
+      "pseudocode": "mod = jsonDecode(run('go','mod','edit','-json', dir='sandbox')); direct = {r.Path+'@'+r.Version for r in mod.Require if !r.Indirect}; assert direct == readLines('testdata/sandbox-direct-requires.18.txt')"
+    },
+    {
+      "id": "TS-18-64",
+      "kind": "integration",
+      "verifies": [
+        "18-REQ-10.3"
+      ],
+      "title": "An embedder process that used the provider end to end stays unconfined for files and TCP",
+      "given": [
+        "Linux with Landlock ABI 4 (skipped naming the ABI otherwise) and the TestMain-built agentkit-sandboxd",
+        "a loopback listener opened by the parent test and a sibling temporary directory outside any workspace"
+      ],
+      "when": "a re-executed test child runs landlock.New, Create, a LocalDir Sync, Tools, proxy execute `true` and Close, then creates a file in the sibling directory and connects to the parent's listener",
+      "then": [
+        "the child exits 0",
+        "the file exists in the sibling directory",
+        "the listener accepted exactly one connection"
+      ],
+      "pseudocode": "needABI4(t); ln = listen(); cmd = exec(os.Args[0], '-test.run=TestUnconfinedChild', env={AGENTKIT_LANDLOCK_CHILD: '1', ADDR: ln.Addr(), OUT: sibling}); assert cmd.Run() == nil\nassert exists(sibling+'/after-close') && ln.accepted() == 1"
+    },
+    {
+      "id": "TS-18-65",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-10.4"
+      ],
+      "title": "The Linux test gate skips below ABI 4 with a message naming the ABI it found",
+      "given": [
+        "the package's ABI-4 gate helper with an injectable probe and a recording testing.TB"
+      ],
+      "when": "the gate runs with the probe returning 3, failing with ENOSYS, and returning 4",
+      "then": [
+        "for 3 the test is skipped and the message contains '3' and '4'",
+        "for ENOSYS the test is skipped and the message names the error",
+        "for 4 the test is not skipped and the helper returns 4"
+      ],
+      "pseudocode": "tb = &recTB{}; gate(tb, probe(3)); assert tb.skipped && contains(tb.msg, '3') && contains(tb.msg, '4')\ntb = &recTB{}; gate(tb, probeErr(ENOSYS)); assert tb.skipped && contains(tb.msg, ENOSYS.Error())\ntb = &recTB{}; k = gate(tb, probe(4)); assert !tb.skipped && k == 4"
+    },
+    {
+      "id": "TS-18-66",
+      "kind": "unit",
+      "verifies": [
+        "18-REQ-10.5"
+      ],
+      "title": "make sandbox-landlock-test runs the verbose landlock tests with the default clone URL and is not part of make check",
+      "given": [
+        "make on PATH (skipped otherwise), run from the repository root"
+      ],
+      "when": "`make -n sandbox-landlock-test` runs with and without AGENTKIT_SANDBOX_GIT_URL=https://example.invalid/r, and `make -n check` runs",
+      "then": [
+        "the dry run prints a command that changes into sandbox and runs 'go test -count=1 -v ./landlock/' with AGENTKIT_SANDBOX_GIT_URL=https://github.com/agent-fox-dev/agentkit-go",
+        "with the variable overridden, the printed command carries https://example.invalid/r instead",
+        "the check target's prerequisites do not include sandbox-landlock-test and its dry run contains no 'go test -count=1 -v ./landlock/'"
+      ],
+      "pseudocode": "out = run('make','-n','sandbox-landlock-test'); assert contains(out, 'cd sandbox') && contains(out, 'go test -count=1 -v ./landlock/') && contains(out, 'AGENTKIT_SANDBOX_GIT_URL=https://github.com/agent-fox-dev/agentkit-go')\nout = run('make','-n','sandbox-landlock-test','AGENTKIT_SANDBOX_GIT_URL=https://example.invalid/r'); assert contains(out, 'https://example.invalid/r')\nassert !contains(prereqs('check'), 'sandbox-landlock-test') && !contains(run('make','-n','check'), 'go test -count=1 -v ./landlock/')"
+    },
+    {
+      "id": "TS-18-67",
+      "kind": "smoke",
+      "verifies": [
+        "18-PATH-1",
+        "18-REQ-6.1",
+        "18-REQ-6.2",
+        "18-REQ-6.3"
+      ],
+      "title": "An embedder creates a confined sandbox, runs commands that write the workspace but cannot reach home, a sibling directory or TCP, and closes it",
+      "given": [
+        "Linux with Landlock ABI 4 (skipped naming the ABI otherwise) and agentkit-sandboxd built by TestMain with CGO_ENABLED=0",
+        "a temporary Root, a source directory with the dialtcp helper, a sibling temporary directory holding secret.txt with content 'sibling-secret', and a loopback listener counting accepts"
+      ],
+      "when": "landlock.New(Options{AgentBinary, Root}), Create(ctx, sandbox.Spec{}), Sync(LocalDir{src}), Tools, then proxy execute of `touch ws.txt`, `touch $HOME/h.txt $TMPDIR/t.txt`, `touch <real home>/agentkit-ll-<id>.txt`, `cat <sibling>/secret.txt` and `./dialtcp 127.0.0.1:<port>`, then Close",
+      "then": [
+        "the workspace, home and tmp touches exit 0 and ws.txt exists on the host beneath <Root>/<id>/workspace",
+        "the real-home touch and the sibling cat exit non-zero with 'Permission denied', no file appears in the real home and 'sibling-secret' is not in the output",
+        "the dialtcp command exits non-zero and the listener accepted no connection",
+        "Close returns nil and <Root>/<id> no longer exists"
+      ],
+      "pseudocode": "needABI4(t); p = New(Options{AgentBinary: agentBin, Root: r}); s = p.Create(ctx, Spec{}); s.Sync(ctx, LocalDir{src}); ts = s.Tools(ctx, opts)\nassert execute(ts, 'touch ws.txt').code == 0 && exists(dir+'/workspace/ws.txt'); assert execute(ts, 'touch $HOME/h.txt $TMPDIR/t.txt').code == 0\nc, out = execute(ts, 'touch '+realHome+'/agentkit-ll-'+id+'.txt'); assert c != 0 && contains(out, 'Permission denied') && !exists(realHome+'/agentkit-ll-'+id+'.txt')\nc, out = execute(ts, 'cat '+sibling+'/secret.txt'); assert c != 0 && contains(out, 'Permission denied') && !contains(out, 'sibling-secret')\nc, _ = execute(ts, './dialtcp '+ln.Addr()); assert c != 0 && ln.accepted() == 0\nassert s.Close(ctx) == nil && !exists(dir)",
+      "real_components": [
+        "landlock.New with the default syscall-444 probe",
+        "the real starter and the TestMain-built agentkit-sandboxd applying its Landlock ruleset",
+        "attach and stdioconn over the child's pipes",
+        "rsync LocalDir Sync",
+        "the proxy tools",
+        "the destroy step against real processes and the real filesystem"
+      ]
+    },
+    {
+      "id": "TS-18-68",
+      "kind": "smoke",
+      "verifies": [
+        "18-PATH-2",
+        "18-REQ-8.4",
+        "18-REQ-8.5"
+      ],
+      "title": "A GitRepo Sync runs its init command in a confined init agent that may use TCP while the sandbox's own agent still cannot",
+      "given": [
+        "Linux with Landlock ABI 4 (skipped naming the ABI otherwise), the TestMain-built agentkit-sandboxd and dialtcp helper, and git on a system directory of the PATH (skipped otherwise)",
+        "the init-command seam replaced by a helper, readable beneath an ExtraRO directory, that connects to a loopback listener, writes the received bytes and its own environment into files in the workspace, and exits 0",
+        "a loopback listener that sends 'hello-from-host' to each connection and counts accepts"
+      ],
+      "when": "a NetworkNone sandbox is created and Sync(ctx, GitRepo{URL: 'https://example.invalid/r'}) is called, then Tools and proxy execute of `cat` on the written files and of the dialtcp helper copied in through the workspace",
+      "then": [
+        "Sync returns sandbox.SyncResult{} and nil and the listener accepted exactly one connection from the init child",
+        "the workspace holds the file with 'hello-from-host', and the init child's recorded environment is exactly GIT_CONFIG_NOSYSTEM=1, GIT_TERMINAL_PROMPT=0, HOME, TMPDIR and PATH of the sandbox",
+        "no process remains in the init agent's session after Sync returns",
+        "the dialtcp command from the sandbox's own proxy execute exits non-zero and the listener's accept count stays 1"
+      ],
+      "pseudocode": "needABI4(t); setInitCommand(p, helperArgv(ln.Addr())); s = p.Create(ctx, Spec{}); res, err = s.Sync(ctx, GitRepo{URL: u})\nassert err == nil && res == SyncResult{} && ln.accepted() == 1\nassert readFile(ws+'/got.txt') == 'hello-from-host' && sorted(keys(readEnvFile(ws+'/env.txt'))) == ['GIT_CONFIG_NOSYSTEM','GIT_TERMINAL_PROMPT','HOME','PATH','TMPDIR']\nts = s.Tools(ctx, opts); c, _ = execute(ts, './dialtcp '+ln.Addr()); assert c != 0 && ln.accepted() == 1",
+      "real_components": [
+        "landlock.New and the real starter",
+        "two TestMain-built agentkit-sandboxd processes (the sandbox's agent and the init agent) applying their Landlock rulesets",
+        "attach, stdioconn and the init agent's run_command proxy",
+        "the GitRepo slot wrapper",
+        "the loopback TCP stack"
+      ]
+    },
+    {
+      "id": "TS-18-69",
+      "kind": "smoke",
+      "verifies": [
+        "18-PATH-2",
+        "18-REQ-10.6"
+      ],
+      "title": "With AGENTKIT_SANDBOX_GIT_URL set, a real public clone under NetworkNone fills the workspace and the sandbox still cannot connect over TCP",
+      "given": [
+        "Linux with Landlock ABI 4, git beneath a system directory, network access and AGENTKIT_SANDBOX_GIT_URL set (skipped otherwise, which is the case under make check)",
+        "the TestMain-built agentkit-sandboxd and dialtcp helper and a loopback listener"
+      ],
+      "when": "a NetworkNone sandbox is created and Sync(ctx, GitRepo{URL: $AGENTKIT_SANDBOX_GIT_URL, Depth: 1}) is called with the default init command, then Tools, proxy execute `git -C . rev-parse HEAD` and the dialtcp helper",
+      "then": [
+        "Sync returns nil and the workspace holds the repository (.git and its tracked files, for the default URL sandbox/go.mod)",
+        "git rev-parse HEAD exits 0 with a 40-hex commit",
+        "the dialtcp command exits non-zero and the listener accepted nothing",
+        "Close removes <Root>/<id>"
+      ],
+      "pseudocode": "u = os.Getenv('AGENTKIT_SANDBOX_GIT_URL'); if u == '': t.Skip(); needABI4(t)\ns = p.Create(ctx, Spec{}); _, err = s.Sync(ctx, GitRepo{URL: u, Depth: 1}); assert err == nil && isDir(ws+'/.git')\nts = s.Tools(ctx, opts); c, out = execute(ts, 'git -C . rev-parse HEAD'); assert c == 0 && regexp('^[0-9a-f]{40}').match(out)\nc, _ = execute(ts, './dialtcp '+ln.Addr()); assert c != 0 && ln.accepted() == 0; assert s.Close(ctx) == nil && !exists(dir)",
+      "real_components": [
+        "landlock.New and the real starter",
+        "the sandbox's agentkit-sandboxd and the init agentkit-sandboxd under Landlock",
+        "the default init command running the host's git through run_command",
+        "gitclone.Args",
+        "the public network and the Git server"
+      ]
+    },
+    {
+      "id": "TS-18-70",
+      "kind": "smoke",
+      "verifies": [
+        "18-PATH-3",
+        "18-REQ-7.8",
+        "18-REQ-9.6",
+        "18-REQ-9.3"
+      ],
+      "title": "A sandbox left by a killed embedder is reaped with its outliving background process, while a live sandbox is left alone",
+      "given": [
+        "Linux with Landlock ABI 4 (skipped naming the ABI otherwise) and the TestMain-built agentkit-sandboxd",
+        "a shared temporary Root; the parent test also holds an open sandbox on a second provider over the same Root"
+      ],
+      "when": "a re-executed test child creates a sandbox, starts `sleep 300 >/dev/null 2>&1 &` through proxy execute, reports the sandbox id, agent pid and sleep pid, and is SIGKILLed; once the agent has exited, the parent calls landlock.New with the same Root and Reap(ctx)",
+      "then": [
+        "after the child dies the agent process exits and the sandbox directory still exists with a marker of role 'agent'",
+        "Reap returns a slice containing the child's sandbox id and not the parent's open sandbox id",
+        "the sleep process no longer exists and the child's sandbox directory is gone",
+        "the parent's open sandbox directory remains and its Tools and execute still work"
+      ],
+      "pseudocode": "needABI4(t); live = p.Create(ctx, Spec{}); child = reexec('TestReapChild', root); id, agentPid, sleepPid = child.report(); child.Process.Kill()\neventually(10s, !alive(agentPid)); assert exists(root/id) && readMarker(root/id).Role == 'agent'\nids, err = New(Options{Root: root, AgentBinary: agentBin}).Reap(ctx); assert err == nil && contains(ids, id) && !contains(ids, live.ID())\nassert !alive(sleepPid) && !exists(root/id) && exists(root/live.ID()) && execute(live.Tools(ctx, opts), 'true').code == 0",
+      "real_components": [
+        "landlock.New and the real starter",
+        "the TestMain-built agentkit-sandboxd",
+        "a re-executed embedder child killed with SIGKILL",
+        "the /proc process table and boot id",
+        "Reap's session kill and directory removal"
+      ]
+    },
+    {
+      "id": "TS-18-71",
+      "kind": "smoke",
+      "verifies": [
+        "18-PATH-4",
+        "18-REQ-7.7"
+      ],
+      "title": "A sandbox never closed is destroyed at its 5-second TTL with its background process, and later calls fail as unavailable",
+      "given": [
+        "Linux with Landlock ABI 4 (skipped naming the ABI otherwise) and the TestMain-built agentkit-sandboxd"
+      ],
+      "when": "Create(ctx, Spec{TTL: 5*time.Second}), Tools, proxy execute `sleep 300 >/dev/null 2>&1 & echo $!`, then the test waits without calling Close",
+      "then": [
+        "within a few seconds after the TTL the agent and the sleep no longer exist and <Root>/<id> is gone",
+        "a later Tools or proxy execute call on the sandbox fails with an error for which errors.Is(err, sandbox.ErrUnavailable) is true"
+      ],
+      "pseudocode": "needABI4(t); s = p.Create(ctx, Spec{TTL: 5*time.Second}); ts = s.Tools(ctx, opts); _, out = execute(ts, 'sleep 300 >/dev/null 2>&1 & echo $!'); sleepPid = atoi(out); agentPid = readMarker(dir).PID\neventually(5s+5s, !alive(agentPid) && !alive(sleepPid) && !exists(dir))\n_, err = s.Tools(ctx, opts); assert errors.Is(err, sandbox.ErrUnavailable)",
+      "real_components": [
+        "landlock.New and the real starter",
+        "the TestMain-built agentkit-sandboxd with its own --ttl",
+        "attach's host-side TTL timer",
+        "the destroy step against real processes and the real filesystem"
+      ]
+    },
+    {
+      "id": "TS-18-72",
+      "kind": "smoke",
+      "verifies": [
+        "18-PATH-5",
+        "18-REQ-10.7"
+      ],
+      "title": "The sandbox example runs on the Landlock provider with --landlock and --agent, and its default offline run is unchanged",
+      "given": [
+        "the examples/sandbox module and agentkit-sandboxd built into a temporary directory"
+      ],
+      "when": "`go test ./...` runs in examples/sandbox, and `go run . --landlock --agent <path>` runs there",
+      "then": [
+        "the existing main_test.go passes unchanged",
+        "on a Linux host with Landlock ABI 4 the --landlock run exits 0 and prints the same completion line as the default run",
+        "on any other host the --landlock run exits non-zero with output containing ErrNoLandlock's message 'landlock: this host cannot confine a sandbox with Landlock ABI 4'"
+      ],
+      "pseudocode": "assert goTest('examples/sandbox').ok\nout, code = goRun('examples/sandbox', '--landlock', '--agent', agentBin)\nif linux && abi >= 4: assert code == 0 && contains(out, completionLine) else: assert code != 0 && contains(out, 'landlock: this host cannot confine a sandbox with Landlock ABI 4')",
+      "real_components": [
+        "examples/sandbox main",
+        "landlock.New and the real starter",
+        "the built agentkit-sandboxd",
+        "the proxy tools"
+      ]
+    }
+  ]
+}

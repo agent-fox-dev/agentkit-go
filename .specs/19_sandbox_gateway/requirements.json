@@ -1,0 +1,960 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "19",
+  "spec_name": "sandbox_gateway",
+  "schema_version": 2,
+  "introduction": "The sandbox gateway lets an embedder create and use sandboxes on another host: a `gateway.Dial` client in the sandbox module implements `sandbox.Provider` over a bearer-authenticated gRPC connection, and the nested `sandbox/gatewayd` module (with its `agentkit-gateway` command) holds one backend provider, owns every sandbox it creates per token, and relays the Agent protocol to each sandbox so it behaves exactly like a locally created one.",
+  "glossary": {
+    "GitRepo slot": "Spec 17's per-sandbox rule that a `GitRepo` sync must be the first Sync and precede Tools; the gateway keeps it itself because relayed RPCs bypass the backend wrapper.",
+    "backend": "The single `sandbox.Provider` a gateway holds (`local` in offline tests, `podman` in the command).",
+    "gateway": "The `Gateway` gRPC service in `gateway.proto` plus the Agent relay, served by `gatewayd.Server` on a remote host.",
+    "gateway client": "Package `sandbox/gateway` in the sandbox module: `Dial`, `Provider` and the sandboxes it returns.",
+    "gatewayd": "The nested module `github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd` holding the server library and the `agentkit-gateway` command.",
+    "network ceiling": "`gatewayd.Config.NetworkModes`: the network modes the gateway lets clients request, intersected with the backend's modes.",
+    "owner": "The SHA-256 of the bearer token that created a sandbox; the only identity the server keeps. Logs show its first 8 hex characters (the fingerprint).",
+    "refusal": "The typed `Refusal` message (kind UNSUPPORTED, NO_AGENT, NO_PUBLISHED_IMAGE, PROTOCOL, CAPACITY or REFUSED) a Create or SyncGit response carries instead of a gRPC error.",
+    "relay": "The typed `Agent` service implementation in gatewayd that forwards Hello, Tools, Call, SyncTar, ExportTar and Rsync to the backend sandbox named by `agentkit-sandbox-id`.",
+    "sandbox_unavailable": "The error class of `sandbox.ErrUnavailable`: the sandbox met a transport failure and stays unusable.",
+    "shared connection": "The single gRPC client connection a `gateway.Provider` holds to its gateway, used by every sandbox it creates, with no connection watcher."
+  },
+  "requirements": [
+    {
+      "id": "19-REQ-1",
+      "title": "The gateway protocol",
+      "rationale": "A second proto file with its own version keeps the Agent protocol and every agent build untouched while giving the gateway a typed, hash-checked wire contract.",
+      "criteria": [
+        {
+          "id": "19-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "sandboxpb package",
+          "action": "declare in `sandbox/internal/sandboxpb/gateway.proto`, package `agentkit.sandbox.v1` with the same `go_package` as `sandbox.proto`, exactly one service `Gateway` with the six unary RPCs Capabilities, Create, SyncGit, List, Destroy and Reap, while `sandbox.proto` stays byte-unchanged and still declares exactly one service",
+          "contract": "TS-13-1 passes unchanged; parsing gateway.proto finds one service with exactly those six non-streaming methods"
+        },
+        {
+          "id": "19-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "sandboxpb package",
+          "action": "define `SandboxSpec` mirroring `sandbox.Spec` field for field (Env and Labels as string maps, Resources with its four fields, a network-mode enum numbered none 0, allowlist 1, unrestricted 2, Allow as a list of host and port, TTL in nanoseconds, RequireLandlock as a bool, Provider as JSON bytes), carry every time as Unix nanoseconds with no well-known types, and define `Refusal{kind, field, reason, message}` with kinds UNSUPPORTED, NO_AGENT, NO_PUBLISHED_IMAGE, PROTOCOL, CAPACITY and REFUSED",
+          "contract": "the generated Go types expose exactly these fields; gateway.proto imports no google/protobuf well-known type"
+        },
+        {
+          "id": "19-REQ-1.3",
+          "pattern": "ubiquitous",
+          "system": "gateway conversion code",
+          "action": "for any `sandbox.Spec` whose Provider value encodes as JSON, and for any `sandbox.Capabilities`, convert to the wire message and back to a value equal to the original (Provider compared as decoded JSON)",
+          "contract": "round trip yields reflect.DeepEqual values"
+        },
+        {
+          "id": "19-REQ-1.4",
+          "pattern": "ubiquitous",
+          "system": "gateway client",
+          "action": "export `ProtocolMajor = 1`, `ProtocolMinor = 0` and `SandboxIDKey = \"agentkit-sandbox-id\"`, and leave `sandbox.ProtocolMajor` and `sandbox.ProtocolMinor` (2) unchanged",
+          "contract": "constants compare equal to 1, 0, \"agentkit-sandbox-id\" and sandbox.ProtocolMinor == 2"
+        },
+        {
+          "id": "19-REQ-1.5",
+          "pattern": "ubiquitous",
+          "system": "gateway client",
+          "action": "send `authorization: Bearer <token>` on every RPC of both services, send `agentkit-sandbox-id: <id>` on every Agent RPC, and never put a sandbox id in the metadata of a Gateway RPC (ids travel in the request message)",
+          "contract": "a recording fake gateway sees the authorization key on every RPC, the id key on every Agent RPC and on no Gateway RPC"
+        },
+        {
+          "id": "19-REQ-1.6",
+          "pattern": "event_driven",
+          "condition": "`make proto` runs",
+          "system": "Makefile",
+          "action": "generate `gateway.pb.go` and `gateway_grpc.pb.go` with the same pinned plugins and the same `(unknown)` header rewrite as the Agent files, record `gateway.proto.sha256`, and have the policy proto tests list the four new files",
+          "contract": "internal/policy proto tests read and check gateway.proto, both generated files and the hash file"
+        },
+        {
+          "id": "19-REQ-1.7",
+          "pattern": "unwanted",
+          "condition": "the SHA-256 of `gateway.proto` differs from the value in `gateway.proto.sha256`",
+          "system": "sandboxpb package test",
+          "action": "fail offline without invoking protoc",
+          "contract": "the test fails with a message containing \"run make proto\""
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-2",
+      "title": "Dialling a gateway",
+      "rationale": "Capabilities() has no context or error, so the URL, the token and the gateway's identity must be checked once at Dial, and a bearer token must never cross a network in clear text.",
+      "criteria": [
+        {
+          "id": "19-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "`Dial(ctx, rawURL, Options)` is called with `https://host[:port]`, or with `http://host[:port]` whose host is `localhost` or a loopback IP literal",
+          "system": "gateway client",
+          "action": "connect with TLS and default port 443 for https, or plaintext and default port 80 for http, using `Options.Dialer` instead of TCP when it is set",
+          "contract": "the dialer receives host:443 or host:80 when no port is given"
+        },
+        {
+          "id": "19-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "the URL carries user information, a query, a fragment, a path other than empty or `/`, a scheme other than http or https, or an http host that is neither `localhost` nor a loopback IP literal",
+          "system": "gateway client",
+          "action": "refuse the URL without attempting a connection",
+          "contract": "Dial returns a nil *Provider and an error naming the offending part; the Dialer is called 0 times"
+        },
+        {
+          "id": "19-REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "`Options.Token` is empty or contains a character outside printable ASCII or any whitespace",
+          "system": "gateway client",
+          "action": "refuse the token without attempting a connection",
+          "contract": "Dial returns a nil *Provider and an error naming the token rule; the Dialer is called 0 times; the token value does not appear in the error text"
+        },
+        {
+          "id": "19-REQ-2.4",
+          "pattern": "ubiquitous",
+          "system": "gateway client",
+          "action": "for https use a clone of `Options.TLSConfig` or, when it is nil, the system roots with MinVersion TLS 1.2, default `ServerName` to the URL host, set send and receive limits to `sandbox.MaxMessageBytes`, and send the token as per-RPC credentials that require transport security for https",
+          "contract": "the caller's TLSConfig is not mutated; a TLS test server with a certificate for the URL host accepts the Dial"
+        },
+        {
+          "id": "19-REQ-2.5",
+          "pattern": "event_driven",
+          "condition": "the gateway answers `Capabilities` under ctx with the same gateway protocol major",
+          "system": "gateway client",
+          "action": "return a *Provider whose `Gateway()` reports the URL, the gateway version, the backend name, the gateway protocol major and minor, MaxTTL and MaxSandboxes from that answer",
+          "contract": "Dial returns (*Provider, nil) and Gateway() equals the answered values"
+        },
+        {
+          "id": "19-REQ-2.6",
+          "pattern": "unwanted",
+          "condition": "`Capabilities` at Dial is answered `Unauthenticated`, for a missing or wrong token",
+          "system": "gateway client",
+          "action": "close the connection and fail",
+          "contract": "Dial returns an error for which errors.Is(err, gateway.ErrUnauthenticated) is true"
+        },
+        {
+          "id": "19-REQ-2.7",
+          "pattern": "unwanted",
+          "condition": "the gateway reports a gateway protocol major other than `gateway.ProtocolMajor`",
+          "system": "gateway client",
+          "action": "close the connection and fail",
+          "contract": "Dial returns an error wrapping sandbox.ErrProtocol whose text names both the gateway's and the client's versions"
+        },
+        {
+          "id": "19-REQ-2.8",
+          "pattern": "unwanted",
+          "condition": "`Capabilities` at Dial fails for any other reason, including ctx ending",
+          "system": "gateway client",
+          "action": "close the connection and fail",
+          "contract": "Dial returns an error whose text contains the URL"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-3",
+      "title": "The gateway Provider's methods",
+      "rationale": "The provider must look like any other sandbox.Provider while letting an embedder enumerate and destroy what it left on a shared gateway.",
+      "criteria": [
+        {
+          "id": "19-REQ-3.1",
+          "pattern": "ubiquitous",
+          "system": "gateway client",
+          "action": "return from `Capabilities()`, without an RPC, the answer cached at Dial: Provider `\"gateway/\" + <backend provider>`, Network the offered modes within the gateway's ceiling, Isolation, Resources, Image, Workdir and Landlock as the backend's, and Notes as the backend's notes followed by one sentence naming the gateway host, its maximum TTL and its maximum number of sandboxes",
+          "contract": "over a local backend with ceiling [NetworkUnrestricted], Provider is \"gateway/local\" and Network is [NetworkUnrestricted]"
+        },
+        {
+          "id": "19-REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "`Reap(ctx)` is called",
+          "system": "gateway client",
+          "action": "call `Gateway.Reap` and return the removed ids sorted ascending",
+          "contract": "returns (sorted ids, nil) when the server's error text is empty, and (sorted ids, error containing the server's error text) otherwise"
+        },
+        {
+          "id": "19-REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "`List(ctx)` is called",
+          "system": "gateway client",
+          "action": "call `Gateway.List` and return the caller's sandboxes as `Info{ID, Labels, Created, Expires}` sorted by Created and then by ID",
+          "contract": "[]Info in that order"
+        },
+        {
+          "id": "19-REQ-3.4",
+          "pattern": "event_driven",
+          "condition": "`Destroy(ctx, id)` is called",
+          "system": "gateway client",
+          "action": "call `Gateway.Destroy` for id, treating an unknown id as success so that repeated calls are idempotent",
+          "contract": "returns nil for a known id, for an unknown id and on a second call for the same id; the backend sandbox is gone afterwards"
+        },
+        {
+          "id": "19-REQ-3.5",
+          "pattern": "event_driven",
+          "condition": "`Provider.Close()` is called while sandboxes created through it are still open",
+          "system": "gateway client",
+          "action": "close each of those sandboxes, which destroys each on the gateway, then close the shared connection; later calls to Close do nothing",
+          "contract": "returns errors.Join of every failure (nil when none); a second Close returns nil; every backend local directory is gone"
+        },
+        {
+          "id": "19-REQ-3.6",
+          "pattern": "unwanted",
+          "condition": "`Create`, `Reap`, `List` or `Destroy` is called after `Provider.Close`",
+          "system": "gateway client",
+          "action": "fail without sending an RPC",
+          "contract": "the method returns an error matching gateway.ErrClosed; the fake gateway records 0 RPCs"
+        },
+        {
+          "id": "19-REQ-3.7",
+          "pattern": "unwanted",
+          "condition": "any Gateway RPC after Dial is answered `Unauthenticated`",
+          "system": "gateway client",
+          "action": "return an authentication failure",
+          "contract": "the error matches gateway.ErrUnauthenticated"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-4",
+      "title": "Creating a sandbox through the gateway",
+      "rationale": "Create must fail early with the same typed errors a local provider gives, and must never strand a sandbox the gateway already created.",
+      "criteria": [
+        {
+          "id": "19-REQ-4.1",
+          "pattern": "unwanted",
+          "condition": "`Create(ctx, spec)` receives a spec that `sandbox.CheckSpec(p.Capabilities(), spec)` refuses, whose effective TTL exceeds the gateway's MaxTTL, or whose `Provider` value does not encode as JSON",
+          "system": "gateway client",
+          "action": "refuse the spec before any RPC",
+          "contract": "returns a *sandbox.SpecError matching sandbox.ErrUnsupported with Provider \"gateway/<backend>\" and Field the refused field (for example RequireLandlock, Image, Network.Mode, TTL or Provider); the fake gateway records 0 Create RPCs"
+        },
+        {
+          "id": "19-REQ-4.2",
+          "pattern": "complex_event",
+          "condition": "`Create` receives a spec with an empty `Image`",
+          "guard": "the cached capabilities honour `Image`",
+          "system": "gateway client",
+          "action": "send the client's own `sandbox.DefaultImage()` as the image, and when DefaultImage fails return its error unchanged without sending Create",
+          "contract": "the Create request carries DefaultImage()'s value; on failure the returned error matches sandbox.ErrNoPublishedImage and 0 Create RPCs are sent"
+        },
+        {
+          "id": "19-REQ-4.3",
+          "pattern": "unwanted",
+          "condition": "`Gateway.Create` or `Gateway.SyncGit` answers with a refusal, or fails with a gRPC error",
+          "system": "gateway client",
+          "action": "map the refusal to the sentinel for its kind, carrying the server's message",
+          "contract": "UNSUPPORTED with a field becomes *sandbox.SpecError{Provider: client provider name, Field, Reason}; UNSUPPORTED without a field wraps sandbox.ErrUnsupported; NO_AGENT wraps sandbox.ErrNoAgent; NO_PUBLISHED_IMAGE wraps sandbox.ErrNoPublishedImage; PROTOCOL wraps sandbox.ErrProtocol; CAPACITY wraps gateway.ErrCapacity; REFUSED is a plain error; a gRPC error becomes an error naming the gateway URL"
+        },
+        {
+          "id": "19-REQ-4.4",
+          "pattern": "event_driven",
+          "condition": "`Gateway.Create` returns an id and effective spec",
+          "system": "gateway client",
+          "action": "call `attach.New` over the shared connection wrapped so it is not a *grpc.ClientConn, with a no-op closer and `Config{ID: id, Spec: effective spec, Metadata: {agentkit-sandbox-id: id}, Provider: client provider name, Destroy: Gateway.Destroy(id)}`, and return its sandbox",
+          "contract": "the returned sandbox's ID() is the gateway id, Spec() is the effective spec with Workdir as the agent reported it, Agent() is the relayed Hello; Tools, Export, Sync of Tar or LocalDir and Close are attach's"
+        },
+        {
+          "id": "19-REQ-4.5",
+          "pattern": "unwanted",
+          "condition": "the attach handshake fails after `Gateway.Create` succeeded, or ctx ends after `Gateway.Create` succeeded but before `Create` returns",
+          "system": "gateway client",
+          "action": "send `Gateway.Destroy` for the id (through attach's destroy step for a handshake failure, by the client itself for an ended ctx)",
+          "contract": "Create returns a non-nil error and no sandbox; List no longer reports the id; the backend local directory is gone"
+        },
+        {
+          "id": "19-REQ-4.6",
+          "pattern": "event_driven",
+          "condition": "`Sync(ctx, sandbox.GitRepo{...})` is called on a gateway sandbox",
+          "system": "gateway client",
+          "action": "check `attach.Live`, then run `gitclone.Check` (refusing an invalid repository before any RPC), then call `Gateway.SyncGit{id, URL, Ref, Depth}` under ctx, mapping a refusal as in 19-REQ-4.3",
+          "contract": "success returns a zero SyncResult and nil; a closed or unavailable sandbox returns attach's ErrClosed or ErrUnavailable with 0 RPCs; an invalid repository returns gitclone.Check's error with 0 RPCs"
+        },
+        {
+          "id": "19-REQ-4.7",
+          "pattern": "event_driven",
+          "condition": "`Close` is called on a gateway sandbox",
+          "system": "gateway client",
+          "action": "run attach's teardown, which sends `Gateway.Destroy` with attach's fresh 30-second context",
+          "contract": "returns nil and the backend sandbox is gone; when Destroy fails, Close returns that error and the entry stays on the gateway until its expiry"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-5",
+      "title": "Server configuration, authentication and ownership",
+      "rationale": "The server is the trust boundary: every RPC is authenticated before anything else is read, and one token holder can neither reach nor discover another's sandboxes.",
+      "criteria": [
+        {
+          "id": "19-REQ-5.1",
+          "pattern": "unwanted",
+          "condition": "`gatewayd.New(Config)` gets a nil Backend, no tokens, a token shorter than 32 characters or containing non-printable ASCII or whitespace, a repeated token, a negative MaxSandboxes, MaxTTL or ReapInterval, or NetworkModes whose intersection with the backend's modes is empty",
+          "system": "gatewayd",
+          "action": "refuse the configuration",
+          "contract": "New returns a nil *Server and a non-nil error; for the network case the error names both the configured and the backend's mode lists"
+        },
+        {
+          "id": "19-REQ-5.2",
+          "pattern": "event_driven",
+          "condition": "`New` gets zero values for the optional fields",
+          "system": "gatewayd",
+          "action": "apply the defaults NetworkModes [NetworkNone], MaxSandboxes 16, MaxTTL 24h, ReapInterval 10m and a discarding Logger",
+          "contract": "a client's Capabilities shows Network [NetworkNone] (when the backend offers it), MaxSandboxes 16 and MaxTTL 24h"
+        },
+        {
+          "id": "19-REQ-5.3",
+          "pattern": "event_driven",
+          "condition": "`Serve(listener)` is called",
+          "system": "gatewayd",
+          "action": "run a gRPC server with `sandbox.MaxMessageBytes` send and receive limits, TLS credentials when Config.TLS is set and plaintext otherwise, the Gateway service and the Agent relay registered, an authentication interceptor on every unary and streaming RPC, and `Backend.Reap` once at start and every ReapInterval with failures logged and never fatal",
+          "contract": "Serve returns nil after Shutdown and the listener's error otherwise; a counting backend sees Reap at start"
+        },
+        {
+          "id": "19-REQ-5.4",
+          "pattern": "unwanted",
+          "condition": "an RPC of either service arrives without `authorization: Bearer <token>` matching a configured token under a constant-time comparison",
+          "system": "gatewayd",
+          "action": "reject it without reading the rest of the request or calling the backend, and log one line with the peer address",
+          "contract": "status Unauthenticated; a counting backend records 0 Create calls; the log line contains the peer address and no token"
+        },
+        {
+          "id": "19-REQ-5.5",
+          "pattern": "ubiquitous",
+          "system": "gatewayd",
+          "action": "keep only each token's SHA-256 as the owner identity of every sandbox it creates, and show only the first 8 hex characters of that hash in logs",
+          "contract": "no log line contains a configured token; create log lines carry an 8-hex-character owner fingerprint"
+        },
+        {
+          "id": "19-REQ-5.6",
+          "pattern": "unwanted",
+          "condition": "a caller authenticated with token B names, in an Agent RPC, SyncGit, Destroy or List, a sandbox created with token A",
+          "system": "gatewayd",
+          "action": "answer exactly as for an id that does not exist and leave the sandbox untouched",
+          "contract": "List with B omits it; Destroy with B answers OK and the sandbox stays live for A; an Agent RPC with B answers Unavailable naming the id; SyncGit with B answers as for an unknown id"
+        },
+        {
+          "id": "19-REQ-5.7",
+          "pattern": "ubiquitous",
+          "system": "gatewayd",
+          "action": "log one structured line per create (id, owner fingerprint, TTL, network mode), per destroy (id and reason `client`, `expired`, `unavailable` or `shutdown`), per refused authentication (peer address) and per backend reap, and never log a token, an Env value, a tool input or a tool result",
+          "contract": "a captured slog handler sees those attributes; a test with a secret token, Env value and tool payload finds none of them in the captured output"
+        },
+        {
+          "id": "19-REQ-5.8",
+          "pattern": "event_driven",
+          "condition": "`List` or `Reap` is called by an authenticated caller",
+          "system": "gatewayd",
+          "action": "answer List with the caller's entries (id, labels, creation and expiry time) and answer Reap by running `Backend.Reap`",
+          "contract": "ReapResponse carries the removed ids and the joined error text, empty when every removal succeeded"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-6",
+      "title": "Server sandbox lifecycle",
+      "rationale": "A network service must bound what any token holder consumes and must never leave a backend sandbox behind.",
+      "criteria": [
+        {
+          "id": "19-REQ-6.1",
+          "pattern": "unwanted",
+          "condition": "a Create request is malformed, carries an unknown enum value, or carries Provider JSON that `wire.Guard` rejects under the default limits",
+          "system": "gatewayd",
+          "action": "reject it without calling the backend",
+          "contract": "status InvalidArgument; the backend's Create count is unchanged"
+        },
+        {
+          "id": "19-REQ-6.2",
+          "pattern": "unwanted",
+          "condition": "a Create request asks for a network mode outside the network ceiling, or a TTL above MaxTTL",
+          "system": "gatewayd",
+          "action": "refuse it without calling the backend, counting a zero TTL as 1h",
+          "contract": "Refusal UNSUPPORTED with field Network.Mode or TTL respectively"
+        },
+        {
+          "id": "19-REQ-6.3",
+          "pattern": "unwanted",
+          "condition": "after pruning entries whose backend sandbox is no longer live, recorded sandboxes plus creates already in progress reach MaxSandboxes, including under concurrent Create calls",
+          "system": "gatewayd",
+          "action": "refuse the Create without calling the backend",
+          "contract": "Refusal CAPACITY (client error matches gateway.ErrCapacity); with MaxSandboxes N and N+k concurrent Creates exactly N succeed"
+        },
+        {
+          "id": "19-REQ-6.4",
+          "pattern": "unwanted",
+          "condition": "`Backend.Create(rpcCtx, spec)` returns an error",
+          "system": "gatewayd",
+          "action": "map the error to a refusal or a status",
+          "contract": "*sandbox.SpecError becomes UNSUPPORTED with its field and reason; another ErrUnsupported becomes UNSUPPORTED; ErrNoAgent becomes NO_AGENT; ErrNoPublishedImage becomes NO_PUBLISHED_IMAGE; ErrProtocol becomes PROTOCOL; anything else becomes status Unavailable carrying its message"
+        },
+        {
+          "id": "19-REQ-6.5",
+          "pattern": "unwanted",
+          "condition": "the backend sandbox exposes no agent connection through attach's accessor, or the RPC context is done by the time `Backend.Create` returns",
+          "system": "gatewayd",
+          "action": "close the backend sandbox and record nothing",
+          "contract": "status Internal naming the backend for the unrelayable case; no entry is recorded and the backend sandbox is gone in both cases"
+        },
+        {
+          "id": "19-REQ-6.6",
+          "pattern": "event_driven",
+          "condition": "`Backend.Create` returns a relayable sandbox to a caller still waiting",
+          "system": "gatewayd",
+          "action": "record an entry with the owner, the creation time, expires = created + effective TTL and the effective spec, and answer with the backend sandbox's ID() and Spec(), the creation time and the expiry",
+          "contract": "CreateResponse{id = backend ID(), effective spec, created, expires}"
+        },
+        {
+          "id": "19-REQ-6.7",
+          "pattern": "event_driven",
+          "condition": "an entry reaches its expiry, any access finds its backend sandbox no longer live, or its owner calls Destroy",
+          "system": "gatewayd",
+          "action": "remove the entry and close its backend sandbox, treating Destroy of an unknown id as a no-op",
+          "contract": "Destroy answers OK for a known or unknown id; when the backend's Close fails the entry is removed anyway and Destroy answers Unavailable carrying the error; after a 2-second TTL the backend local directory is gone"
+        },
+        {
+          "id": "19-REQ-6.8",
+          "pattern": "event_driven",
+          "condition": "`Shutdown(ctx)` is called",
+          "system": "gatewayd",
+          "action": "stop accepting new RPCs, close every backend sandbox it holds (ending relayed calls in flight), wait for handlers until ctx is done and then force the server to stop; later calls do nothing",
+          "contract": "returns errors.Join of the close failures (nil when none); a second Shutdown returns nil; Serve returns nil; every backend sandbox is gone"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-7",
+      "title": "The Agent relay and the GitRepo slot",
+      "rationale": "attach decides liveness by status code, so the relay must keep the four refusal codes for the agent alone, strip private metadata, and keep spec 17's slot rules that relayed RPCs would otherwise bypass.",
+      "criteria": [
+        {
+          "id": "19-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "an authenticated Hello, Tools, Call, SyncTar, ExportTar or Rsync arrives naming a live sandbox of the caller in `agentkit-sandbox-id`",
+          "system": "relay",
+          "action": "forward it over the backend sandbox's own agent connection under the incoming RPC's context, with messages unchanged including unknown fields, copying streams frame by frame in both directions and propagating a half-close",
+          "contract": "cancelling the host call cancels the agent call; a relayed message with an unknown field arrives with that field intact"
+        },
+        {
+          "id": "19-REQ-7.2",
+          "pattern": "unwanted",
+          "condition": "the `agentkit-sandbox-id` value is missing or malformed, is unknown, belongs to another owner, or names a sandbox whose backend is not live",
+          "system": "relay",
+          "action": "answer without contacting any agent, and for a non-live backend also close the sandbox and remove its entry",
+          "contract": "status Unavailable whose message names the id; never InvalidArgument, FailedPrecondition, NotFound or Unimplemented"
+        },
+        {
+          "id": "19-REQ-7.3",
+          "pattern": "ubiquitous",
+          "system": "relay",
+          "action": "forward none of the incoming metadata to the agent",
+          "contract": "an agent recording incoming metadata on every RPC it serves never sees the authorization or agentkit-sandbox-id key"
+        },
+        {
+          "id": "19-REQ-7.4",
+          "pattern": "unwanted",
+          "condition": "the agent answers a relayed RPC with an error, or the RPC is an Agent method the gateway's build does not know",
+          "system": "relay",
+          "action": "pass InvalidArgument, FailedPrecondition, NotFound and Unimplemented through with their messages and convert every other upstream error to Unavailable carrying the upstream message",
+          "contract": "an Export of a missing path returns the agent's NotFound refusal and the client sandbox stays live; an unknown method answers Unimplemented"
+        },
+        {
+          "id": "19-REQ-7.5",
+          "pattern": "unwanted",
+          "condition": "`SyncGit` arrives for a sandbox whose GitRepo slot is taken by an earlier successful SyncGit, the first relayed Tools whatever its outcome, a relayed SyncTar that succeeded, or a relayed Rsync whose start frame says SYNC and that ended OK",
+          "system": "gatewayd",
+          "action": "refuse the SyncGit without calling the backend",
+          "contract": "Refusal REFUSED with message \"GitRepo must be the first Sync and come before Tools\""
+        },
+        {
+          "id": "19-REQ-7.6",
+          "pattern": "event_driven",
+          "condition": "`SyncGit` arrives for a caller's live sandbox whose slot is free",
+          "system": "gatewayd",
+          "action": "call `Sync(ctx, sandbox.GitRepo{URL, Ref, Depth})` on the backend sandbox and take the slot only when it succeeds",
+          "contract": "success answers with no refusal; ErrUnsupported becomes UNSUPPORTED (client error matches sandbox.ErrUnsupported, as on a local backend); any other error becomes REFUSED carrying its message and leaves the slot free"
+        },
+        {
+          "id": "19-REQ-7.7",
+          "pattern": "ubiquitous",
+          "system": "gatewayd",
+          "action": "for any interleaving of concurrent SyncGit and slot-taking relayed RPCs on one sandbox, serialise them so the outcome equals some sequential order of the same calls",
+          "contract": "either SyncGit succeeds and precedes the Tools, or the Tools takes the slot and SyncGit is REFUSED; never both proceed"
+        },
+        {
+          "id": "19-REQ-7.8",
+          "pattern": "ubiquitous",
+          "system": "attach package",
+          "action": "make `attach.ClientConn` and `attach.Live` follow a sandbox's `Unwrap() sandbox.Sandbox` chain, and give the `sandbox/podman` and `sandbox/landlock` wrapper types an unexported-type `Unwrap` method returning the attached sandbox, with no exported identifier of any package changed",
+          "contract": "ClientConn of a wrapper returns the attached sandbox's connection; the exported-API golden is unchanged"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-8",
+      "title": "The agentkit-gateway command",
+      "rationale": "The one network service must be safe without flags: loopback by default, TLS or explicit plaintext, tokens only from a file, Podman or Docker only.",
+      "criteria": [
+        {
+          "id": "19-REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "`agentkit-gateway` starts with a valid `--token-file` and either `--plaintext` or both `--tls-cert` and `--tls-key`",
+          "system": "agentkit-gateway",
+          "action": "build the backend with `podman.New(podman.Options{Binary, Engine, Runtime, UserNS, EngineEnv: the command's environment})`, bind `--listen` (default 127.0.0.1:8443) and print one stderr line `agentkit-gateway: listening on <bound address> (<tls|plaintext>), backend <name>, version <v>`",
+          "contract": "with a fake engine script printing `podman version 5.0.0` on PATH, the line appears and a client Dial succeeds with Capabilities().Provider == \"gateway/podman\""
+        },
+        {
+          "id": "19-REQ-8.2",
+          "pattern": "optional",
+          "condition": "`--plaintext` is used with a non-loopback listen address",
+          "system": "agentkit-gateway",
+          "action": "log one warning line on stderr in addition to the listening line",
+          "contract": "stderr contains a warning naming plaintext and the address"
+        },
+        {
+          "id": "19-REQ-8.3",
+          "pattern": "event_driven",
+          "condition": "the token file is read",
+          "system": "agentkit-gateway",
+          "action": "take one token per line, ignore blank lines and lines starting with `#`, trim surrounding whitespace, apply the token rules of 19-REQ-5.1, and accept tokens from no flag or environment variable",
+          "contract": "a file with comments, blank lines and padded tokens yields exactly the padded tokens trimmed"
+        },
+        {
+          "id": "19-REQ-8.4",
+          "pattern": "event_driven",
+          "condition": "the running command receives SIGINT or SIGTERM",
+          "system": "agentkit-gateway",
+          "action": "run `Shutdown` with a 60-second budget",
+          "contract": "exit code 0, or 1 when destroying any sandbox failed"
+        },
+        {
+          "id": "19-REQ-8.5",
+          "pattern": "unwanted",
+          "condition": "the arguments contain an unknown flag, no `--token-file`, only one of the TLS pair, `--plaintext` together with TLS flags, neither plaintext nor TLS, an `--engine` other than empty, podman or docker, a `--runtime` other than empty or krun, a `--network` entry other than none or unrestricted, a non-positive `--max-sandboxes`, `--max-ttl` or `--reap-interval`, or an extra positional argument",
+          "system": "agentkit-gateway",
+          "action": "exit before reading the token file or contacting the engine",
+          "contract": "exit code 2 and exactly one stderr line `agentkit-gateway: <cause>`"
+        },
+        {
+          "id": "19-REQ-8.6",
+          "pattern": "unwanted",
+          "condition": "the token file cannot be read or holds an invalid token, the TLS files are invalid, `podman.New` fails, or listening fails",
+          "system": "agentkit-gateway",
+          "action": "exit without serving",
+          "contract": "exit code 1 and exactly one stderr line `agentkit-gateway: <cause>`; no token value appears in it"
+        },
+        {
+          "id": "19-REQ-8.7",
+          "pattern": "event_driven",
+          "condition": "`--version` is given",
+          "system": "agentkit-gateway",
+          "action": "print `agentkit-gateway <version> (gateway protocol M.N, agent protocol M.N)` with `buildver.Version()` as the version",
+          "contract": "exit code 0; the protocol numbers equal gateway.ProtocolMajor.Minor and sandbox.ProtocolMajor.Minor"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-9",
+      "title": "Module, build and policy wiring",
+      "rationale": "The library's promise to listen on no socket and its dependency budget stay checked invariants, and the new module is held to the same gates as the others.",
+      "criteria": [
+        {
+          "id": "19-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "gatewayd module",
+          "action": "be a separate module at `sandbox/gatewayd` with `go 1.27`, `replace ../../` for the root and `replace ../` for the sandbox module, and direct requirements limited to the root module, the sandbox module, gRPC and (only when imported directly) protobuf",
+          "contract": "a policy test checks the direct set is on the allowlist and within that set; `sandboxModules` lists the gatewayd module path"
+        },
+        {
+          "id": "19-REQ-9.2",
+          "pattern": "ubiquitous",
+          "system": "gatewayd module",
+          "action": "resolve a `go list -m all` graph that contains no module absent from the sandbox module's graph",
+          "contract": "a policy test comparing the two graphs passes"
+        },
+        {
+          "id": "19-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "policy tests",
+          "action": "include `sandbox/gatewayd` in `gateModules`, building and vetting it on all four targets with cgo off and on the host with cgo on",
+          "contract": "the cross-target gate test covers sandbox/gatewayd"
+        },
+        {
+          "id": "19-REQ-9.4",
+          "pattern": "unwanted",
+          "condition": "a non-test Go file of the root or sandbox module refers to `net.Listen`, `net.ListenTCP`, `net.ListenUnix`, `net.ListenPacket`, `net.ListenConfig`, `tls.Listen` or `http.ListenAndServe*`",
+          "system": "policy tests",
+          "action": "fail the no-listen check, which exempts only the gatewayd module",
+          "contract": "the test fails naming the file and the API; it passes on the tree as delivered"
+        },
+        {
+          "id": "19-REQ-9.5",
+          "pattern": "ubiquitous",
+          "system": "build",
+          "action": "leave the root and sandbox modules' direct requirements and graphs, the exported-API golden for agentkit, core, tools and codemode, and `sandbox.ProtocolMinor` unchanged",
+          "contract": "the existing graph, golden and version policy tests pass with unchanged testdata"
+        },
+        {
+          "id": "19-REQ-9.6",
+          "pattern": "event_driven",
+          "condition": "`make sandbox-gateway` runs",
+          "system": "Makefile",
+          "action": "build `build/bin/agentkit-gateway` with `-trimpath`, adding `-ldflags -X …/sandbox/internal/buildver.stamp=$(AGENTKIT_VERSION)` when AGENTKIT_VERSION is set; `MODULES` and the doc loop include sandbox/gatewayd, and `make sandbox-gateway-test` depends on sandbox-images and is not part of `make check`",
+          "contract": "a built binary's --version reports the stamped version"
+        },
+        {
+          "id": "19-REQ-9.7",
+          "pattern": "ubiquitous",
+          "system": "build",
+          "action": "run `make check`, including every gatewayd test, without network access, a container engine or protoc",
+          "contract": "opt-in engine tests skip and every offline test passes with no engine on PATH and no network"
+        }
+      ]
+    },
+    {
+      "id": "19-REQ-10",
+      "title": "Parity with a local sandbox",
+      "rationale": "To the embedder and the model a gateway sandbox must behave exactly like a local one, including how it fails.",
+      "criteria": [
+        {
+          "id": "19-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "gateway sandbox",
+          "action": "for any proxy tool returned by `Tools` of a sandbox created through an in-process gateway over `local`, report Name, Description, PromptGuidelines, Builtin, ExecutionMode and Label equal to the matching `tools.All` tool with both schemas marshalling to byte-identical JSON, and pass the shared `internal/toolconformance` table",
+          "contract": "field-by-field equality and the conformance table pass unchanged from spec 13"
+        },
+        {
+          "id": "19-REQ-10.2",
+          "pattern": "event_driven",
+          "condition": "a proxy tool call through the gateway is cancelled from the host",
+          "system": "gateway sandbox",
+          "action": "end the call and the process it started",
+          "contract": "the call returns outcome aborted and the started process no longer exists"
+        },
+        {
+          "id": "19-REQ-10.3",
+          "pattern": "ubiquitous",
+          "system": "gateway sandbox",
+          "action": "for any generated tree, produce through a `LocalDir` Sync and Export and a `Tar` Sync and Export the same workspace and destination trees as a direct `local` sandbox",
+          "contract": "tree comparisons with the direct run are equal"
+        },
+        {
+          "id": "19-REQ-10.4",
+          "pattern": "unwanted",
+          "condition": "the client-to-gateway connection is cut, the backend agent's connection is cut with `localtest.Cut`, or the gateway destroys the sandbox",
+          "system": "gateway sandbox",
+          "action": "fail the calls in flight and every later call on that sandbox",
+          "contract": "each returns an error matching sandbox.ErrUnavailable (sandbox_unavailable)"
+        },
+        {
+          "id": "19-REQ-10.5",
+          "pattern": "optional",
+          "condition": "a container engine and AGENTKIT_SANDBOX_BASE_IMAGE are available and the tests do not run under -short",
+          "system": "gateway with podman backend",
+          "action": "support Create under NetworkNone, a LocalDir Sync, proxy read_file, write_file and execute, Export, and a GitRepo Sync cloning a public repository after which TCP from execute still fails, and leave no container or volume with the sandbox label after Close and after Shutdown",
+          "contract": "the opt-in tests pass; without an engine, without the image variable or under -short they skip"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "19-PATH-1",
+      "title": "An embedder dials a gateway, creates a sandbox and runs a proxy tool",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls gateway.Dial(ctx, \"http://127.0.0.1\", Options{Token, Dialer})"
+        },
+        {
+          "actor": "gateway client",
+          "action": "validates the URL and token and sends Gateway.Capabilities with authorization: Bearer <token>"
+        },
+        {
+          "actor": "gatewayd",
+          "action": "authenticates the token, records its SHA-256 owner and answers capabilities named for the local backend within the network ceiling"
+        },
+        {
+          "actor": "embedder",
+          "action": "calls Provider.Create(ctx, spec) and then Tools on the returned sandbox"
+        },
+        {
+          "actor": "gateway client",
+          "action": "runs CheckSpec and the TTL check, sends Gateway.Create, then attach.New sends Hello with agentkit-sandbox-id"
+        },
+        {
+          "actor": "gatewayd",
+          "action": "checks ceiling, TTL and capacity, calls local Backend.Create, records the entry, and relays Hello and Tools to the backend agent with no incoming metadata"
+        },
+        {
+          "actor": "embedder",
+          "action": "runs the read_file proxy tool and receives the agent's result, identical to a local sandbox's"
+        }
+      ]
+    },
+    {
+      "id": "19-PATH-2",
+      "title": "A LocalDir Sync and Export ride the relayed Rsync stream",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls Sync(ctx, sandbox.LocalDir{...}) on a gateway sandbox"
+        },
+        {
+          "actor": "gateway client",
+          "action": "opens the Rsync stream through attach with agentkit-sandbox-id metadata"
+        },
+        {
+          "actor": "relay",
+          "action": "routes by id and owner, copies frames in both directions to the backend agent, and takes the GitRepo slot when the SYNC stream ends OK"
+        },
+        {
+          "actor": "backend agent",
+          "action": "writes the files into the sandbox workspace"
+        },
+        {
+          "actor": "embedder",
+          "action": "calls Export to a local directory and finds a tree equal to the one a direct local sandbox gives"
+        }
+      ]
+    },
+    {
+      "id": "19-PATH-3",
+      "title": "Provider.Close destroys every open sandbox on the gateway",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls Provider.Close with two sandboxes still open"
+        },
+        {
+          "actor": "gateway client",
+          "action": "closes each sandbox, whose attach teardown sends Gateway.Destroy(id), then closes the shared connection"
+        },
+        {
+          "actor": "gatewayd",
+          "action": "removes each entry, closes each local backend sandbox and logs a destroy line with reason client"
+        },
+        {
+          "actor": "local backend",
+          "action": "deletes each sandbox directory"
+        }
+      ]
+    },
+    {
+      "id": "19-PATH-4",
+      "title": "A sandbox expires on the gateway and the client sees it unavailable",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "creates a sandbox with a 2-second TTL through the gateway"
+        },
+        {
+          "actor": "gatewayd",
+          "action": "fires the entry's expiry timer, closes the backend sandbox and logs a destroy line with reason expired"
+        },
+        {
+          "actor": "embedder",
+          "action": "calls a proxy tool on the sandbox"
+        },
+        {
+          "actor": "relay",
+          "action": "finds no entry for the id and answers Unavailable naming the id"
+        },
+        {
+          "actor": "gateway client",
+          "action": "classifies the error as a transport failure and returns sandbox_unavailable for this and every later call"
+        }
+      ]
+    },
+    {
+      "id": "19-PATH-5",
+      "title": "An operator runs agentkit-gateway offline and stops it",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "runs agentkit-gateway --token-file tokens --plaintext --listen 127.0.0.1:0 with a fake podman script on PATH"
+        },
+        {
+          "actor": "agentkit-gateway",
+          "action": "reads the token file, builds the podman backend, binds and prints its listening line to stderr"
+        },
+        {
+          "actor": "embedder",
+          "action": "calls gateway.Dial against the printed address and reads Capabilities().Provider == \"gateway/podman\""
+        },
+        {
+          "actor": "operator",
+          "action": "sends SIGTERM"
+        },
+        {
+          "actor": "agentkit-gateway",
+          "action": "runs Shutdown with a 60-second budget and exits 0"
+        }
+      ]
+    },
+    {
+      "id": "19-PATH-6",
+      "title": "A Podman sandbox behind the gateway clones a repository and runs isolated (opt-in)",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "dials an in-process gateway with a podman backend and creates a sandbox under NetworkNone"
+        },
+        {
+          "actor": "gateway client",
+          "action": "fills in its own DefaultImage and sends Gateway.Create"
+        },
+        {
+          "actor": "gatewayd",
+          "action": "calls podman Backend.Create, reaches the agent through the wrapper's Unwrap, and records the entry"
+        },
+        {
+          "actor": "embedder",
+          "action": "calls Sync with a GitRepo for a public repository"
+        },
+        {
+          "actor": "gatewayd",
+          "action": "takes the GitRepo slot and runs the backend's provider-side clone"
+        },
+        {
+          "actor": "embedder",
+          "action": "runs execute, read_file and write_file through the relay, sees TCP fail from execute, and Exports the workspace"
+        },
+        {
+          "actor": "embedder",
+          "action": "closes the sandbox and finds no container or volume with the sandbox label left"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/agent-fox-dev/agentkit-go/sandbox (in repository)",
+      "version": "v0.0.0 (replace ../)",
+      "verified": true,
+      "symbols": [
+        {
+          "name": "attach.New",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/internal/attach",
+          "signature": "func New(ctx context.Context, cc grpc.ClientConnInterface, closer io.Closer, cfg Config) (sandbox.Sandbox, error)",
+          "notes": "Watcher runs only when cc is a *grpc.ClientConn; teardown runs Destroy with a fresh 30s context."
+        },
+        {
+          "name": "attach.Config",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/internal/attach",
+          "signature": "type Config struct { ID string; Spec sandbox.Spec; Destroy func(context.Context) error; Metadata metadata.MD; Provider string }"
+        },
+        {
+          "name": "attach.ClientConn",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/internal/attach",
+          "signature": "func ClientConn(s sandbox.Sandbox) grpc.ClientConnInterface",
+          "notes": "Returns nil for a non-attach sandbox today; this spec makes it follow Unwrap()."
+        },
+        {
+          "name": "localtest.Cut",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/internal/localtest",
+          "signature": "func Cut(sb sandbox.Sandbox) error"
+        },
+        {
+          "name": "local.Unisolated",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/local",
+          "signature": "func Unisolated() sandbox.Provider"
+        },
+        {
+          "name": "sandbox.CheckSpec",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "func CheckSpec(caps Capabilities, spec Spec) (Spec, error)"
+        },
+        {
+          "name": "sandbox.SpecError",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "type SpecError struct { Provider, Field, Reason string; value string } // Is(ErrUnsupported) == true"
+        },
+        {
+          "name": "sandbox.DefaultImage",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "func DefaultImage() (string, error)"
+        },
+        {
+          "name": "buildver.Version",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver",
+          "signature": "func Version() string"
+        },
+        {
+          "name": "wire.Guard",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/wire",
+          "signature": "func Guard(data []byte, l Limits) error"
+        }
+      ]
+    },
+    {
+      "package": "spec 17/18 symbols (not yet in repository)",
+      "version": "specified by .specs/17_sandbox_podman",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "podman.New",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/podman",
+          "signature": "func New(o Options) (sandbox.Provider, error) // Options{Binary string; Engine Engine; Runtime, UserNS string; EngineEnv []string}"
+        },
+        {
+          "name": "sandbox.GitRepo",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "type GitRepo struct { URL, Ref string; Depth int }"
+        },
+        {
+          "name": "sandbox.ErrNoAgent",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "var ErrNoAgent error"
+        },
+        {
+          "name": "gitclone.Check",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/internal/gitclone",
+          "signature": "func Check(sandbox.GitRepo) error"
+        },
+        {
+          "name": "attach.Live",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/internal/attach",
+          "signature": "func Live(sandbox.Sandbox) error"
+        }
+      ]
+    },
+    {
+      "package": "google.golang.org/grpc",
+      "version": "v1.64.1",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "grpc.Creds",
+          "import_path": "google.golang.org/grpc",
+          "signature": "func Creds(c credentials.TransportCredentials) grpc.ServerOption"
+        },
+        {
+          "name": "grpc.ChainUnaryInterceptor",
+          "import_path": "google.golang.org/grpc",
+          "signature": "func ChainUnaryInterceptor(interceptors ...grpc.UnaryServerInterceptor) grpc.ServerOption"
+        },
+        {
+          "name": "grpc.ChainStreamInterceptor",
+          "import_path": "google.golang.org/grpc",
+          "signature": "func ChainStreamInterceptor(interceptors ...grpc.StreamServerInterceptor) grpc.ServerOption"
+        },
+        {
+          "name": "grpc.WithPerRPCCredentials",
+          "import_path": "google.golang.org/grpc",
+          "signature": "func WithPerRPCCredentials(creds credentials.PerRPCCredentials) grpc.DialOption"
+        },
+        {
+          "name": "credentials.PerRPCCredentials",
+          "import_path": "google.golang.org/grpc/credentials",
+          "signature": "interface { GetRequestMetadata(ctx context.Context, uri ...string) (map[string]string, error); RequireTransportSecurity() bool }"
+        },
+        {
+          "name": "credentials.NewTLS",
+          "import_path": "google.golang.org/grpc/credentials",
+          "signature": "func NewTLS(c *tls.Config) credentials.TransportCredentials"
+        },
+        {
+          "name": "metadata.FromIncomingContext",
+          "import_path": "google.golang.org/grpc/metadata",
+          "signature": "func FromIncomingContext(ctx context.Context) (metadata.MD, bool)"
+        },
+        {
+          "name": "peer.FromContext",
+          "import_path": "google.golang.org/grpc/peer",
+          "signature": "func FromContext(ctx context.Context) (*peer.Peer, bool)"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1496 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "19",
+  "spec_name": "sandbox_gateway",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-19-1",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-1.1"
+      ],
+      "title": "gateway.proto declares one Gateway service of six unary RPCs in agentkit.sandbox.v1, and sandbox.proto still declares exactly one service",
+      "given": [
+        "the generated descriptors File_gateway_proto and File_sandbox_proto in sandbox/internal/sandboxpb"
+      ],
+      "when": "the descriptors are inspected by a test in sandbox/internal/sandboxpb (gateway_proto_test.go)",
+      "then": [
+        "File_gateway_proto.Package() is agentkit.sandbox.v1 and its go_package equals File_sandbox_proto's",
+        "it declares exactly one service, named Gateway",
+        "the sorted method names are Capabilities, Create, Destroy, List, Reap, SyncGit and none is client- or server-streaming",
+        "File_sandbox_proto still declares exactly one service, Agent, and TestProtocolShape_TS13_1 passes unchanged"
+      ],
+      "pseudocode": "fd := File_gateway_proto\nassert fd.Package() == \"agentkit.sandbox.v1\"\nassert goPackage(fd) == goPackage(File_sandbox_proto)\nassert fd.Services().Len() == 1 && fd.Services().Get(0).Name() == \"Gateway\"\nnames := sorted(methodNames(svc)); assert names == [Capabilities Create Destroy List Reap SyncGit]\nfor m in methods: assert !m.IsStreamingClient() && !m.IsStreamingServer()\nassert File_sandbox_proto.Services().Len() == 1"
+    },
+    {
+      "id": "TS-19-2",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-1.2"
+      ],
+      "title": "SandboxSpec mirrors sandbox.Spec field for field, times are Unix nanoseconds, and Refusal carries the six kinds",
+      "given": [
+        "the generated gateway descriptor and Go types"
+      ],
+      "when": "the SandboxSpec, Refusal, CreateResponse, ListResponse and CapabilitiesResponse descriptors are compared with sandbox.Spec and sandbox.Capabilities by reflection",
+      "then": [
+        "every exported field of sandbox.Spec has a matching SandboxSpec field: env and labels are map<string,string>, resources has four fields, network has a mode enum and a repeated allow of host and port, the TTL is an int64 of nanoseconds, require_landlock is bool, provider is bytes",
+        "the network-mode enum numbers are none 0, allowlist 1, unrestricted 2, equal to int(sandbox.NetworkNone), int(NetworkAllowlist), int(NetworkUnrestricted)",
+        "Refusal has fields kind, field, reason and message, and its kind enum names are exactly UNSUPPORTED, NO_AGENT, NO_PUBLISHED_IMAGE, PROTOCOL, CAPACITY and REFUSED",
+        "every creation and expiry time field is int64 and no import of gateway.proto starts with google/protobuf/"
+      ],
+      "pseudocode": "for f in reflect.TypeOf(sandbox.Spec{}).Fields: assert SandboxSpec.Fields().ByName(snake(f.Name)) != nil\nassert kind(SandboxSpec.env) is map<string,string>; kind(ttl) == Int64Kind; kind(provider) == BytesKind\nassert enumValue(NetworkMode, NONE)==0 && ALLOWLIST==1 && UNRESTRICTED==2\nassert enumNames(Refusal.Kind) == {UNSUPPORTED, NO_AGENT, NO_PUBLISHED_IMAGE, PROTOCOL, CAPACITY, REFUSED}\nfor i in fd.Imports(): assert !strings.HasPrefix(i.Path(), \"google/protobuf/\")"
+    },
+    {
+      "id": "TS-19-3",
+      "kind": "property",
+      "verifies": [
+        "19-REQ-1.3"
+      ],
+      "title": "Spec and Capabilities survive a round trip through the wire messages unchanged",
+      "given": [
+        "the Spec and Capabilities conversion functions shared by the gateway client and server"
+      ],
+      "when": "for any generated sandbox.Spec (random Image, Workdir, Env and Labels maps, Resources, any network mode with an Allow list, TTL, RequireLandlock, and a Provider value that encodes as JSON: nil, number, string, slice or map) and any generated sandbox.Capabilities",
+      "then": [
+        "converting the Spec to SandboxSpec and back yields a value reflect.DeepEqual to the original, with Provider compared as decoded JSON",
+        "converting the Capabilities to the wire message and back yields a value reflect.DeepEqual to the original"
+      ],
+      "pseudocode": "for seed in 0..500:\n  s := genSpec(seed); got := specFromPB(specToPB(s))\n  assert jsonEqual(got.Provider, s.Provider); got.Provider, s.Provider = nil, nil; assert DeepEqual(got, s)\n  c := genCaps(seed); assert DeepEqual(capsFromPB(capsToPB(c)), c)"
+    },
+    {
+      "id": "TS-19-4",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-1.4"
+      ],
+      "title": "The gateway protocol constants and SandboxIDKey have their stated values and the Agent protocol minor stays 2",
+      "given": [
+        "package sandbox/gateway"
+      ],
+      "when": "the exported constants are read",
+      "then": [
+        "gateway.ProtocolMajor == 1 and gateway.ProtocolMinor == 0",
+        "gateway.SandboxIDKey == \"agentkit-sandbox-id\"",
+        "sandbox.ProtocolMinor == 2 and sandbox.ProtocolMajor is unchanged"
+      ],
+      "pseudocode": "assert gateway.ProtocolMajor == 1 && gateway.ProtocolMinor == 0\nassert gateway.SandboxIDKey == \"agentkit-sandbox-id\"\nassert sandbox.ProtocolMinor == 2"
+    },
+    {
+      "id": "TS-19-5",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-1.5"
+      ],
+      "title": "The client sends the bearer token on every RPC and the sandbox id only on Agent RPCs",
+      "given": [
+        "a fake gateway in sandbox/gateway tests built from the generated stubs, served over an in-memory listener, with unary and stream interceptors recording each RPC's full method and incoming metadata",
+        "a fakeagent.Agent registered on the same server, answering HostTools()",
+        "a provider from Dial(ctx, \"http://127.0.0.1\", Options{Token: tok, Dialer: mem})"
+      ],
+      "when": "the test runs Create, Tools, a read_file proxy Call, a Tar Sync, a TarOut Export, List, Reap, Destroy of another id and sandbox Close",
+      "then": [
+        "every recorded RPC carries authorization == [\"Bearer \" + tok]",
+        "every /agentkit.sandbox.v1.Agent/ RPC carries agentkit-sandbox-id == [id]",
+        "no /agentkit.sandbox.v1.Gateway/ RPC carries the agentkit-sandbox-id key",
+        "the DestroyRequest sent by Close carries id in its message"
+      ],
+      "pseudocode": "for r in fake.recorded():\n  assert r.md[\"authorization\"] == [\"Bearer \"+tok]\n  if hasPrefix(r.method, \"/agentkit.sandbox.v1.Agent/\"): assert r.md[\"agentkit-sandbox-id\"] == [id]\n  else: assert r.md[\"agentkit-sandbox-id\"] == nil\nassert fake.lastDestroy().Id == id"
+    },
+    {
+      "id": "TS-19-6",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-1.6"
+      ],
+      "title": "make proto generates and records the gateway files and the policy proto tests check them",
+      "given": [
+        "internal/policy/proto_test.go with protoFiles extended",
+        "the pinned protoc plugins, under the same conditions TestMakeProtoRegenerates_TS13_3 runs"
+      ],
+      "when": "the policy proto tests run, including the make proto regeneration",
+      "then": [
+        "protoFiles lists gateway.proto, gateway.pb.go, gateway_grpc.pb.go and gateway.proto.sha256",
+        "regeneration leaves gateway.pb.go and gateway_grpc.pb.go byte-identical, each with the (unknown) protoc header rewrite",
+        "gateway.proto.sha256 holds the hex SHA-256 of gateway.proto",
+        "TestBuildNeedsNoProtoc_TS13_2 and TestMakeProtoWithoutProtoc_TS13_4 read the gateway files and pass"
+      ],
+      "pseudocode": "assert contains(protoFiles, \"gateway.proto\", \"gateway.pb.go\", \"gateway_grpc.pb.go\", \"gateway.proto.sha256\")\nbefore := readProtoFiles(t, root); run(\"make proto\"); after := readProtoFiles(t, root)\nassert before == after\nassert contains(after[\"gateway.pb.go\"], \"protoc        (unknown)\")\nassert trim(after[\"gateway.proto.sha256\"]) == hex(sha256(after[\"gateway.proto\"]))"
+    },
+    {
+      "id": "TS-19-7",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-1.7"
+      ],
+      "title": "An edited gateway.proto fails the offline staleness check with run make proto",
+      "given": [
+        "sandbox/internal/sandboxpb with gateway.proto and gateway.proto.sha256",
+        "PATH set to empty so no protoc can run"
+      ],
+      "when": "the hash check runs on the committed file and on a copy with an appended comment",
+      "then": [
+        "the committed gateway.proto passes the check",
+        "the edited copy fails with an error containing \"run make proto\""
+      ],
+      "pseudocode": "t.Setenv(\"PATH\", \"\")\nproto, rec := read(\"gateway.proto\"), read(\"gateway.proto.sha256\")\nassert checkProtoHash(proto, rec) == nil\nerr := checkProtoHash(append(proto, \"\\n// edit\\n\"...), rec)\nassert err != nil && contains(err.Error(), \"run make proto\")"
+    },
+    {
+      "id": "TS-19-8",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-2.1"
+      ],
+      "title": "Dial applies the default ports, TLS for https and plaintext for loopback http, through Options.Dialer",
+      "given": [
+        "a recording Dialer that hands one end of a net.Pipe to a fake gateway (plaintext, or TLS with a test certificate for gw.example.test)",
+        "a valid token"
+      ],
+      "when": "Dial is called with http://127.0.0.1, http://127.0.0.1/, http://localhost:9000, http://[::1] and https://gw.example.test (TLSConfig.RootCAs trusting the test CA)",
+      "then": [
+        "the Dialer receives 127.0.0.1:80, 127.0.0.1:80, localhost:9000, [::1]:80 and gw.example.test:443 respectively",
+        "each Dial returns a non-nil *Provider and nil error",
+        "the https connection completes a TLS handshake and the http ones do not"
+      ],
+      "pseudocode": "for url, want in cases:\n  d := recordingDialer(fake)\n  p, err := gateway.Dial(ctx, url, Options{Token: tok, Dialer: d.Dial, TLSConfig: cfgFor(url)})\n  assert err == nil && p != nil && d.addrs == [want]\n  p.Close()"
+    },
+    {
+      "id": "TS-19-9",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-2.2"
+      ],
+      "title": "A URL with user information, query, fragment, a path, a foreign scheme or a non-loopback http host is refused without connecting",
+      "given": [
+        "a counting Dialer",
+        "a valid token"
+      ],
+      "when": "Dial is called with http://user:pw@127.0.0.1, https://gw.example.test/x, https://gw.example.test?q=1, https://gw.example.test#f, ftp://gw.example.test, grpc://127.0.0.1, http://gw.example.test and http://10.0.0.1",
+      "then": [
+        "each call returns a nil *Provider and a non-nil error",
+        "the errors name the problem: user information, path, query, fragment, scheme, and loopback for the two http hosts",
+        "the Dialer is called 0 times"
+      ],
+      "pseudocode": "for url, word in cases:\n  p, err := gateway.Dial(ctx, url, Options{Token: tok, Dialer: counting.Dial})\n  assert p == nil && err != nil && containsFold(err.Error(), word)\nassert counting.n == 0"
+    },
+    {
+      "id": "TS-19-10",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-2.3"
+      ],
+      "title": "An empty token or one with whitespace or non-printable-ASCII characters is refused without connecting and without echoing it",
+      "given": [
+        "a counting Dialer",
+        "the URL http://127.0.0.1"
+      ],
+      "when": "Dial is called with tokens \"\", \"has space\", \"tab\\tin\", \"ctl\\x01char\", \"ünïcode-token\" and \"trailing\\n\"",
+      "then": [
+        "each call returns a nil *Provider and an error naming the token rule",
+        "no error text contains the token value",
+        "the Dialer is called 0 times"
+      ],
+      "pseudocode": "for tok in bad:\n  p, err := gateway.Dial(ctx, \"http://127.0.0.1\", Options{Token: tok, Dialer: counting.Dial})\n  assert p == nil && containsFold(err.Error(), \"token\")\n  if tok != \"\": assert !contains(err.Error(), tok)\nassert counting.n == 0"
+    },
+    {
+      "id": "TS-19-11",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-2.4"
+      ],
+      "title": "For https the client clones the caller's TLS config, falls back to system roots, uses the URL host as ServerName and carries messages up to MaxMessageBytes",
+      "given": [
+        "a fake gateway and fakeagent served with gRPC TLS credentials and a test certificate for gw.example.test, over an in-memory Dialer",
+        "cfg := &tls.Config{RootCAs: testPool} with ServerName empty"
+      ],
+      "when": "Dial(ctx, \"https://gw.example.test\", Options{Token, TLSConfig: cfg, Dialer}) runs, a sandbox is created and a write_file Call with a 12 MiB input is sent; then Dial runs again with TLSConfig nil",
+      "then": [
+        "the first Dial succeeds and cfg.ServerName is still empty and cfg is otherwise unmodified",
+        "the fake agent receives the 12 MiB input intact, above gRPC's 4 MiB default",
+        "the fake gateway sees the authorization metadata over a TLS connection of version >= TLS 1.2",
+        "the Dial with TLSConfig nil fails because the system roots do not trust the test CA, with an error containing the URL"
+      ],
+      "pseudocode": "snap := cfg.Clone()\np, err := gateway.Dial(ctx, \"https://gw.example.test\", Options{Token: tok, TLSConfig: cfg, Dialer: mem})\nassert err == nil && reflect.DeepEqual(cfg, snap)\nsb := p.Create(ctx, spec); callWriteFile(sb, 12<<20)\nassert len(agent.LastInput()) > 12<<20\nassert fake.tlsVersion() >= tls.VersionTLS12\n_, err = gateway.Dial(ctx, url, Options{Token: tok, Dialer: mem}); assert contains(err.Error(), url)"
+    },
+    {
+      "id": "TS-19-12",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-2.5"
+      ],
+      "title": "A successful handshake yields a Provider whose Gateway() reports the answered gateway identity and limits",
+      "given": [
+        "a fake gateway answering Capabilities with protocol 1.3, version v0.19.0, backend podman, max TTL 2h and max sandboxes 5"
+      ],
+      "when": "Dial(ctx, \"http://127.0.0.1\", Options{Token, Dialer}) is called",
+      "then": [
+        "Dial returns a non-nil *Provider and nil error (a newer minor is accepted)",
+        "Gateway() equals GatewayInfo{URL: \"http://127.0.0.1\", Version: \"v0.19.0\", Backend: \"podman\", ProtocolMajor: 1, ProtocolMinor: 3, MaxTTL: 2h, MaxSandboxes: 5}"
+      ],
+      "pseudocode": "p, err := gateway.Dial(ctx, \"http://127.0.0.1\", opts)\nassert err == nil\nassert p.Gateway() == GatewayInfo{URL: \"http://127.0.0.1\", Version: \"v0.19.0\", Backend: \"podman\", ProtocolMajor: 1, ProtocolMinor: 3, MaxTTL: 2*time.Hour, MaxSandboxes: 5}"
+    },
+    {
+      "id": "TS-19-13",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-2.6",
+        "19-REQ-2.7",
+        "19-REQ-2.8"
+      ],
+      "title": "A refused, incompatible or failing handshake closes the connection and returns the matching error",
+      "given": [
+        "a fake gateway whose Capabilities answer is set per case, counting open client connections"
+      ],
+      "when": "Dial is called while Capabilities answers (a) status Unauthenticated, (b) protocol major 2, (c) status Unavailable, (d) nothing until a 100 ms ctx deadline passes",
+      "then": [
+        "(a) returns a nil *Provider and errors.Is(err, gateway.ErrUnauthenticated)",
+        "(b) returns errors.Is(err, sandbox.ErrProtocol) with text naming the gateway's 2.x and the client's 1.0",
+        "(c) and (d) return errors whose text contains \"http://127.0.0.1\"",
+        "in every case the fake sees the client connection closed"
+      ],
+      "pseudocode": "fake.caps = statusErr(codes.Unauthenticated); _, err := Dial(...); assert errors.Is(err, ErrUnauthenticated)\nfake.caps = capsWithMajor(2); _, err = Dial(...); assert errors.Is(err, sandbox.ErrProtocol) && contains(err, \"2.\") && contains(err, \"1.0\")\nfake.caps = statusErr(codes.Unavailable); _, err = Dial(...); assert contains(err, url)\nfake.block(); ctx, _ := WithTimeout(100ms); _, err = Dial(ctx, ...); assert contains(err, url)\nassert eventually(fake.openConns() == 0)"
+    },
+    {
+      "id": "TS-19-14",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-3.1"
+      ],
+      "title": "Capabilities over a local backend are named gateway/local, limited to the ceiling, pass the backend's fields through and are served from the cache",
+      "given": [
+        "an in-process gatewayd.Server over local.Unisolated() with NetworkModes [NetworkUnrestricted], MaxTTL 2h and MaxSandboxes 3, on an in-memory listener",
+        "a provider from gateway.Dial(ctx, \"http://127.0.0.1\", Options{Token, Dialer})"
+      ],
+      "when": "p.Capabilities() is read, then the server is shut down and p.Capabilities() is read again",
+      "then": [
+        "Provider == \"gateway/local\" and Network == [NetworkUnrestricted]",
+        "Isolation, Resources, Image, Workdir and Landlock equal local.Unisolated().Capabilities()'s",
+        "Notes starts with the local notes and its final sentence names 127.0.0.1, 2h and 3",
+        "the second read, with the server gone, returns an equal value"
+      ],
+      "pseudocode": "c := p.Capabilities(); lc := local.Unisolated().Capabilities()\nassert c.Provider == \"gateway/local\" && c.Network == [NetworkUnrestricted]\nassert c.Isolation == lc.Isolation && c.Resources == lc.Resources && c.Image == lc.Image && c.Workdir == lc.Workdir && c.Landlock == lc.Landlock\nlast := lastSentence(c.Notes); assert contains(last, \"127.0.0.1\", \"2h\", \"3\")\nsrv.Shutdown(ctx); assert DeepEqual(p.Capabilities(), c)"
+    },
+    {
+      "id": "TS-19-15",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-3.2"
+      ],
+      "title": "Reap returns the server's ids sorted and surfaces the server's error text",
+      "given": [
+        "a fake gateway whose Reap answers ids [c a b] with empty error text, then ids [b a] with error text \"remove x: busy\""
+      ],
+      "when": "p.Reap(ctx) is called twice",
+      "then": [
+        "the first call returns [a b c] and nil",
+        "the second call returns [a b] and an error whose text contains \"remove x: busy\""
+      ],
+      "pseudocode": "ids, err := p.Reap(ctx); assert ids == [a b c] && err == nil\nids, err = p.Reap(ctx); assert ids == [a b] && contains(err.Error(), \"remove x: busy\")"
+    },
+    {
+      "id": "TS-19-16",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-3.3"
+      ],
+      "title": "List returns the caller's sandboxes as Info sorted by creation time and then id",
+      "given": [
+        "a fake gateway whose List answers entries z (t1), b (t2), a (t2) with labels and expiry times in Unix nanoseconds, t1 < t2"
+      ],
+      "when": "p.List(ctx) is called",
+      "then": [
+        "the result is [z a b]",
+        "each Info carries the entry's Labels, and Created and Expires equal time.Unix(0, nanos)"
+      ],
+      "pseudocode": "infos, err := p.List(ctx); assert err == nil\nassert ids(infos) == [z a b]\nassert infos[1].Labels == {\"k\":\"v\"} && infos[1].Created.Equal(time.Unix(0, t2)) && infos[1].Expires.Equal(time.Unix(0, e2))"
+    },
+    {
+      "id": "TS-19-17",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-3.4"
+      ],
+      "title": "Destroy removes a known sandbox, and an unknown or repeated id returns nil",
+      "given": [
+        "an in-process gatewayd.Server over a recording wrapper of local.Unisolated() with ceiling [NetworkUnrestricted]",
+        "a sandbox sb created through p, whose backend directory dir the wrapper recorded"
+      ],
+      "when": "p.Destroy(ctx, sb.ID()) is called twice and p.Destroy(ctx, \"no-such-id\") once",
+      "then": [
+        "all three calls return nil",
+        "dir no longer exists and p.List omits sb.ID()",
+        "a later proxy call on sb returns sandbox_unavailable"
+      ],
+      "pseudocode": "assert p.Destroy(ctx, sb.ID()) == nil; assert !exists(dir)\nassert p.Destroy(ctx, sb.ID()) == nil\nassert p.Destroy(ctx, \"no-such-id\") == nil\nassert !containsID(p.List(ctx), sb.ID())\nassert callReadFile(sb).Code == \"sandbox_unavailable\""
+    },
+    {
+      "id": "TS-19-18",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-3.5"
+      ],
+      "title": "Provider.Close destroys every open sandbox, joins the failures, closes the connection and is idempotent",
+      "given": [
+        "a fake gateway and fakeagent; sandboxes s1 and s2 created through p",
+        "the fake's Destroy fails for s2 with status Unavailable \"boom\""
+      ],
+      "when": "p.Close() is called twice",
+      "then": [
+        "the first Close returns a non-nil error containing \"boom\"",
+        "the fake recorded a Destroy for s1 and for s2, then saw the client connection close",
+        "the second Close returns nil and sends no RPC"
+      ],
+      "pseudocode": "err := p.Close(); assert contains(err.Error(), \"boom\")\nassert fake.destroyed() == {s1.ID(), s2.ID()} && eventually(fake.openConns() == 0)\nn := fake.rpcCount(); assert p.Close() == nil && fake.rpcCount() == n"
+    },
+    {
+      "id": "TS-19-19",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-3.6"
+      ],
+      "title": "After Close, Create, Reap, List and Destroy return ErrClosed without sending an RPC",
+      "given": [
+        "a fake gateway; a provider p that has been Closed"
+      ],
+      "when": "Create, Reap, List and Destroy are called on p",
+      "then": [
+        "each returns an error for which errors.Is(err, gateway.ErrClosed) is true",
+        "the fake's RPC count is unchanged"
+      ],
+      "pseudocode": "p.Close(); n := fake.rpcCount()\n_, e1 := p.Create(ctx, spec); _, e2 := p.Reap(ctx); _, e3 := p.List(ctx); e4 := p.Destroy(ctx, \"x\")\nfor e in [e1 e2 e3 e4]: assert errors.Is(e, gateway.ErrClosed)\nassert fake.rpcCount() == n"
+    },
+    {
+      "id": "TS-19-20",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-3.7"
+      ],
+      "title": "An Unauthenticated answer to any Gateway RPC after Dial matches ErrUnauthenticated",
+      "given": [
+        "a fake gateway that accepted the Dial and then answers every Gateway RPC with status Unauthenticated",
+        "a sandbox sb created before the switch"
+      ],
+      "when": "Create, List, Destroy, Reap and sb.Sync(ctx, sandbox.GitRepo{URL: \"https://example.test/r.git\"}) are called",
+      "then": [
+        "each returns an error for which errors.Is(err, gateway.ErrUnauthenticated) is true"
+      ],
+      "pseudocode": "fake.denyAll()\nfor err in [create(), list(), destroy(), reap(), syncGit(sb)]: assert errors.Is(err, gateway.ErrUnauthenticated)"
+    },
+    {
+      "id": "TS-19-21",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-4.1"
+      ],
+      "title": "A spec over MaxTTL, with an unencodable Provider, or refused by CheckSpec fails on the client before any Create RPC",
+      "given": [
+        "a fake gateway answering capabilities for backend podman with Network [NetworkNone], Image honoured and MaxTTL 1h"
+      ],
+      "when": "Create is called with TTL 2h, with Provider: make(chan int), and with Network.Mode NetworkUnrestricted",
+      "then": [
+        "each returns a *sandbox.SpecError matching sandbox.ErrUnsupported with Provider \"gateway/podman\"",
+        "the fields are TTL, Provider and Network.Mode respectively",
+        "the fake records 0 Create RPCs"
+      ],
+      "pseudocode": "for spec, field in [{TTL: 2h}, {Provider: make(chan int)}, {Network: {Mode: NetworkUnrestricted}}]:\n  _, err := p.Create(ctx, spec); var se *sandbox.SpecError\n  assert errors.As(err, &se) && errors.Is(err, sandbox.ErrUnsupported) && se.Provider == \"gateway/podman\" && se.Field == field\nassert fake.count(\"Create\") == 0"
+    },
+    {
+      "id": "TS-19-22",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-4.1"
+      ],
+      "title": "Over a local backend, RequireLandlock, Image and NetworkNone are refused on the client naming gateway/local",
+      "given": [
+        "an in-process gatewayd.Server over a counting wrapper of local.Unisolated() with ceiling [NetworkUnrestricted]",
+        "a provider p dialled to it"
+      ],
+      "when": "Create is called with RequireLandlock true, with Image \"example/img\", and with Network.Mode NetworkNone",
+      "then": [
+        "each returns a *sandbox.SpecError matching sandbox.ErrUnsupported with Provider \"gateway/local\"",
+        "the fields are RequireLandlock, Image and Network.Mode respectively",
+        "the counting backend records 0 Create calls"
+      ],
+      "pseudocode": "for spec, field in cases: _, err := p.Create(ctx, spec); assert asSpecError(err).Provider == \"gateway/local\" && .Field == field && errors.Is(err, sandbox.ErrUnsupported)\nassert backend.creates() == 0"
+    },
+    {
+      "id": "TS-19-23",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-4.2"
+      ],
+      "title": "An empty Image is filled with the client's DefaultImage when the backend honours Image, and DefaultImage's error is returned unchanged",
+      "given": [
+        "a fake gateway whose capabilities honour Image",
+        "the test binary's own build version, (devel), for which sandbox.DefaultImage fails"
+      ],
+      "when": "Create(Spec{}) runs once with the package-internal default-image hook stubbed to \"ghcr.io/agent-fox-dev/agentkit-sandbox:0.19.0\", once with the real DefaultImage, once with Image \"mine\", and once against capabilities that do not honour Image",
+      "then": [
+        "with the stub, the CreateRequest's spec carries image ghcr.io/agent-fox-dev/agentkit-sandbox:0.19.0",
+        "with the real DefaultImage, Create returns an error matching sandbox.ErrNoPublishedImage whose text equals DefaultImage()'s error, and 0 Create RPCs are sent",
+        "Image \"mine\" is sent unchanged, and without Image support the image is sent empty"
+      ],
+      "pseudocode": "defaultImage = func() (string, error) { return ref, nil }; p.Create(ctx, Spec{}); assert fake.lastCreate().Spec.Image == ref\ndefaultImage = sandbox.DefaultImage; n := fake.count(\"Create\"); _, err := p.Create(ctx, Spec{})\n_, want := sandbox.DefaultImage(); assert errors.Is(err, sandbox.ErrNoPublishedImage) && err.Error() == want.Error() && fake.count(\"Create\") == n"
+    },
+    {
+      "id": "TS-19-24",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-4.3"
+      ],
+      "title": "Each Create and SyncGit refusal kind maps to its sentinel carrying the server's message, and a gRPC error names the gateway",
+      "given": [
+        "a fake gateway whose Create and SyncGit answers are set per case, for backend podman"
+      ],
+      "when": "Create and sb.Sync(GitRepo) receive refusals UNSUPPORTED with field Resources.CPUs, UNSUPPORTED without field, NO_AGENT, NO_PUBLISHED_IMAGE, PROTOCOL, CAPACITY and REFUSED, each with message m, and then a status Unavailable error",
+      "then": [
+        "UNSUPPORTED with a field is a *sandbox.SpecError{Provider: \"gateway/podman\", Field: \"Resources.CPUs\", Reason}; without a field it wraps sandbox.ErrUnsupported",
+        "NO_AGENT wraps sandbox.ErrNoAgent, NO_PUBLISHED_IMAGE wraps sandbox.ErrNoPublishedImage, PROTOCOL wraps sandbox.ErrProtocol and CAPACITY wraps gateway.ErrCapacity",
+        "REFUSED matches none of those sentinels, and every mapped error's text contains m",
+        "the gRPC error becomes an error whose text contains \"http://127.0.0.1\""
+      ],
+      "pseudocode": "for kind, sentinel in table:\n  fake.refuse(kind, m)\n  for err in [create(), syncGit(sb)]: assert errors.Is(err, sentinel) && contains(err.Error(), m)\nassert asSpecError(errUnsupportedField).Provider == \"gateway/podman\"\nassert !anySentinel(errRefused)\nfake.createErr = status.Error(codes.Unavailable, \"x\"); assert contains(create().Error(), url)"
+    },
+    {
+      "id": "TS-19-25",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-4.4"
+      ],
+      "title": "The sandbox Create returns carries the gateway id, the effective spec with the agent's Workdir and the relayed Hello, and is attach's sandbox",
+      "given": [
+        "an in-process gatewayd.Server over a recording wrapper of local.Unisolated() with ceiling [NetworkUnrestricted]",
+        "a provider p dialled to it"
+      ],
+      "when": "sb, err := p.Create(ctx, Spec{Network: {Mode: NetworkUnrestricted}, Labels: {\"k\": \"v\"}}) runs",
+      "then": [
+        "err is nil and sb.ID() equals the recorded backend sandbox's ID()",
+        "sb.Spec() equals the effective spec from CreateResponse with Workdir == sb.Agent().Workdir == the backend sandbox's Spec().Workdir",
+        "sb.Agent() equals the backend sandbox's Agent() (the relayed Hello)",
+        "sb's concrete type is attach's sandbox type and a Tar Sync and TarOut Export on it succeed"
+      ],
+      "pseudocode": "sb, err := p.Create(ctx, spec); assert err == nil\nbsb := backend.last(); assert sb.ID() == bsb.ID()\nassert sb.Spec().Workdir == sb.Agent().Workdir && sb.Spec().Workdir == bsb.Spec().Workdir\nassert sb.Agent() == bsb.Agent()\nassert typeName(sb) == attachSandboxType\nassert sb.Sync(ctx, sandbox.Tar{R: tarOf(tree)}) ok && sb.Export(ctx, \".\", sandbox.TarOut{W: &buf}) == nil"
+    },
+    {
+      "id": "TS-19-26",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-4.5"
+      ],
+      "title": "A handshake failure or a context ending after Gateway.Create leaves no sandbox on the gateway or the backend",
+      "given": [
+        "an in-process gatewayd.Server whose test backend creates a real local sandbox directory and relays to a fakeagent; the fakeagent answers the backend's own Hello with protocol major 1 and is then switched to major 99",
+        "a second test backend that creates a local sandbox and cancels the caller's ctx just before returning"
+      ],
+      "when": "p.Create runs against the first backend, and p.Create with the cancellable ctx runs against the second",
+      "then": [
+        "the first returns a nil sandbox and an error matching sandbox.ErrProtocol",
+        "the second returns a nil sandbox and a non-nil error",
+        "in both cases p.List no longer reports the id and the backend local directory is eventually gone"
+      ],
+      "pseudocode": "sb, err := p1.Create(ctx, spec); assert sb == nil && errors.Is(err, sandbox.ErrProtocol)\nassert eventually(len(p1.List(ctx)) == 0 && !exists(backend1.dir()))\nctx2, cancel := context.WithCancel(ctx); backend2.onCreate = cancel\nsb, err = p2.Create(ctx2, spec); assert sb == nil && err != nil\nassert eventually(len(p2.List(ctx)) == 0 && !exists(backend2.dir()))"
+    },
+    {
+      "id": "TS-19-27",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-4.6"
+      ],
+      "title": "A GitRepo Sync checks liveness and the repository locally before calling SyncGit, and a success returns a zero SyncResult",
+      "given": [
+        "a fake gateway counting SyncGit RPCs and a fakeagent; a sandbox sb created through p"
+      ],
+      "when": "sb.Sync runs with GitRepo{URL: \"https://example.test/r.git\", Ref: \"main\", Depth: 1}, with a repository gitclone.Check refuses (URL \"ext::sh -c x\"), on a second sandbox after Close, and on a third sandbox made unavailable by a fakeagent Call answering status Unavailable",
+      "then": [
+        "the valid repository returns SyncResult{} and nil, and the fake received SyncGitRequest{id: sb.ID(), url, ref: \"main\", depth: 1}",
+        "the refused repository returns an error equal in text to gitclone.Check's for it, with 0 SyncGit RPCs",
+        "the closed sandbox returns sandbox.ErrClosed and the unavailable one sandbox.ErrUnavailable, each with 0 SyncGit RPCs"
+      ],
+      "pseudocode": "r, err := sb.Sync(ctx, good); assert r == sandbox.SyncResult{} && err == nil && fake.lastSyncGit() == {sb.ID(), url, \"main\", 1}\nn := fake.count(\"SyncGit\")\n_, err = sb.Sync(ctx, bad); assert err.Error() == gitclone.Check(bad).Error()\n_, err = closed.Sync(ctx, good); assert errors.Is(err, sandbox.ErrClosed)\n_, err = unavail.Sync(ctx, good); assert errors.Is(err, sandbox.ErrUnavailable)\nassert fake.count(\"SyncGit\") == n"
+    },
+    {
+      "id": "TS-19-28",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-4.7"
+      ],
+      "title": "Closing a gateway sandbox destroys it on the gateway and removes the backend sandbox",
+      "given": [
+        "an in-process gatewayd.Server over a recording wrapper of local.Unisolated()",
+        "a sandbox sb created through p with backend directory dir"
+      ],
+      "when": "sb.Close(ctx) is called twice",
+      "then": [
+        "the first Close returns nil, dir no longer exists and p.List omits sb.ID()",
+        "the second Close returns nil"
+      ],
+      "pseudocode": "assert sb.Close(ctx) == nil && !exists(dir) && !containsID(p.List(ctx), sb.ID())\nassert sb.Close(ctx) == nil"
+    },
+    {
+      "id": "TS-19-29",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-4.7"
+      ],
+      "title": "A failed Destroy is returned by Close, is sent with a fresh 30-second context, and leaves the entry on the gateway",
+      "given": [
+        "a fake gateway whose Destroy records its ctx deadline and answers status Unavailable \"backend busy\"",
+        "a sandbox sb created through p"
+      ],
+      "when": "sb.Close is called with an already-cancelled ctx",
+      "then": [
+        "Close returns an error containing \"backend busy\"",
+        "the fake received Destroy for sb.ID() with a deadline more than 25 seconds away",
+        "the fake still lists the entry"
+      ],
+      "pseudocode": "ctx, cancel := context.WithCancel(bg); cancel()\nerr := sb.Close(ctx); assert contains(err.Error(), \"backend busy\")\nassert fake.lastDestroy().id == sb.ID() && fake.lastDestroy().deadlineIn > 25*time.Second\nassert fake.has(sb.ID())"
+    },
+    {
+      "id": "TS-19-30",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-5.1"
+      ],
+      "title": "New refuses a missing backend, bad or repeated tokens, negative limits and an empty network intersection",
+      "given": [
+        "a valid 40-character token and a stub backend offering only NetworkUnrestricted"
+      ],
+      "when": "gatewayd.New runs with a nil Backend, no tokens, a 31-character token, a token with a space, a token with a control character, a repeated token, MaxSandboxes -1, MaxTTL -1, ReapInterval -1, and NetworkModes [NetworkNone]",
+      "then": [
+        "each returns a nil *Server and a non-nil error",
+        "the network case's error names both [none] and [unrestricted]"
+      ],
+      "pseudocode": "for cfg in bad: s, err := gatewayd.New(cfg); assert s == nil && err != nil\n_, err := gatewayd.New(Config{Backend: unrestrictedOnly, Tokens: [tok], NetworkModes: [NetworkNone]})\nassert contains(err.Error(), \"none\") && contains(err.Error(), \"unrestricted\")"
+    },
+    {
+      "id": "TS-19-31",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-5.2"
+      ],
+      "title": "Zero optional fields default to a none-only ceiling, 16 sandboxes, a 24h TTL, a 10m reap interval and a silent logger",
+      "given": [
+        "a counting stub backend offering NetworkNone and NetworkUnrestricted",
+        "gatewayd.New(Config{Backend, Tokens: [tok]}) serving on an in-memory listener"
+      ],
+      "when": "a client dials and reads Capabilities and Gateway(), and the test waits 300 ms",
+      "then": [
+        "Capabilities().Network == [NetworkNone]",
+        "Gateway().MaxSandboxes == 16 and Gateway().MaxTTL == 24h",
+        "the backend's Reap count is exactly 1 after 300 ms, and serving with a nil Logger neither panics nor writes to stderr"
+      ],
+      "pseudocode": "p := dial(); assert p.Capabilities().Network == [NetworkNone]\nassert p.Gateway().MaxSandboxes == 16 && p.Gateway().MaxTTL == 24*time.Hour\ntime.Sleep(300ms); assert backend.reaps() == 1"
+    },
+    {
+      "id": "TS-19-32",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-5.3"
+      ],
+      "title": "Serve reaps the backend at start and every interval without failing, and returns nil after Shutdown or the listener's error",
+      "given": [
+        "a counting stub backend whose Reap fails with \"reap failed\"",
+        "gatewayd.New with ReapInterval 50ms and a captured slog logger"
+      ],
+      "when": "Serve runs on an in-memory listener for 400 ms while a client dials and creates a sandbox, then Shutdown is called; a second server's Serve is given a listener that is already closed",
+      "then": [
+        "the backend's Reap count is >= 1 immediately after start and >= 4 after 400 ms",
+        "the Dial and Create succeed and the logger holds lines for the failed reaps",
+        "the first Serve returns nil after Shutdown",
+        "the second Serve returns a non-nil error from the closed listener"
+      ],
+      "pseudocode": "go func(){ done <- srv.Serve(l) }()\nassert eventually(backend.reaps() >= 1); p := dial(); assert p.Create(ctx, spec) ok\ntime.Sleep(400ms); assert backend.reaps() >= 4 && logs.contains(\"reap failed\")\nsrv.Shutdown(ctx); assert <-done == nil\nl2.Close(); assert srv2.Serve(l2) != nil"
+    },
+    {
+      "id": "TS-19-33",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-5.3",
+        "19-REQ-2.4"
+      ],
+      "title": "With Config.TLS the server serves TLS to an https client, and relayed messages up to MaxMessageBytes pass",
+      "given": [
+        "gatewayd.Server over local.Unisolated() with Config.TLS holding a test certificate for gw.example.test and ceiling [NetworkUnrestricted]"
+      ],
+      "when": "a client dials https://gw.example.test with TLSConfig.RootCAs trusting the test CA and an in-memory Dialer, creates a sandbox and calls write_file with 12 MiB of content; a plaintext http client dials the same listener",
+      "then": [
+        "the https Dial and Create succeed",
+        "the written file in the backend workspace is 12 MiB",
+        "the plaintext Dial fails with an error containing its URL"
+      ],
+      "pseudocode": "p := gateway.Dial(ctx, \"https://gw.example.test\", Options{Token, TLSConfig: &tls.Config{RootCAs: pool}, Dialer: mem})\nsb := p.Create(ctx, spec); writeFile(sb, \"big.bin\", 12<<20)\nassert size(filepath.Join(sb.Spec().Workdir, \"big.bin\")) == 12<<20\n_, err := gateway.Dial(ctx, \"http://127.0.0.1\", Options{Token, Dialer: mem}); assert err != nil"
+    },
+    {
+      "id": "TS-19-34",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-5.4",
+        "19-REQ-2.6"
+      ],
+      "title": "Every RPC of both services without a valid bearer token is answered Unauthenticated before the backend is touched",
+      "given": [
+        "gatewayd.Server over a counting backend with token tokA, a captured slog logger, an in-memory listener",
+        "a raw gRPC client connection with no per-RPC credentials"
+      ],
+      "when": "each of the six Gateway RPCs and each of the six Agent RPCs (streams read to their first Recv) is sent with no authorization, with \"Bearer wrong-token-of-sufficient-length-000000\", with \"Basic tokA\", and with a bearer of tokA's first 31 characters; and gateway.Dial runs with a well-formed wrong token",
+      "then": [
+        "every RPC is answered with codes.Unauthenticated",
+        "the counting backend records 0 Create, Close and Sync calls",
+        "the log holds a refused-authentication line with the peer address and no line contains tokA or the wrong token",
+        "Dial with the wrong token returns an error matching gateway.ErrUnauthenticated"
+      ],
+      "pseudocode": "for auth in [none, wrong, basic, prefix]:\n  for m in gatewayMethods+agentMethods: assert status.Code(invoke(raw, m, auth)) == codes.Unauthenticated\nassert backend.creates() == 0 && backend.closes() == 0\nassert logs.contains(\"peer\") && !logs.contains(tokA) && !logs.contains(wrong)\n_, err := gateway.Dial(ctx, url, Options{Token: wrong, Dialer: mem}); assert errors.Is(err, gateway.ErrUnauthenticated)"
+    },
+    {
+      "id": "TS-19-35",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-5.5",
+        "19-REQ-5.7"
+      ],
+      "title": "The server logs creates, destroys, refused authentications and reaps with an 8-hex owner fingerprint and never a token, Env value or tool payload",
+      "given": [
+        "gatewayd.Server over local.Unisolated() with a JSON slog handler writing to a buffer and token T",
+        "a sandbox created with Env {\"API_KEY\": \"env-secret-value\"} and TTL 1h, another with TTL 1s, a third whose backend is later cut with localtest.Cut, and a fourth left open"
+      ],
+      "when": "the first sandbox runs write_file with content \"tool-payload-secret\" and is Closed, the 1s sandbox expires, the cut sandbox is accessed, an unauthenticated RPC is sent, and Shutdown runs",
+      "then": [
+        "each create line carries id, owner == hex(sha256(T))[:8], ttl and network",
+        "destroy lines carry reasons client, expired, unavailable and shutdown for the respective ids",
+        "a refused-authentication line carries the peer address, and at least one reap line is present",
+        "the buffer contains neither T, nor its full 64-character hash, nor env-secret-value, nor tool-payload-secret"
+      ],
+      "pseudocode": "fp := hex(sha256(T))[:8]\nassert every(lines(\"create\"), l.owner == fp && l.id != \"\" && l.ttl != nil && l.network != nil)\nassert reasons(lines(\"destroy\")) == {client, expired, unavailable, shutdown}\nassert any(lines, l.peer != \"\") && any(lines, l.msg contains \"reap\")\nfor s in [T, hex(sha256(T)), \"env-secret-value\", \"tool-payload-secret\"]: assert !contains(buf, s)"
+    },
+    {
+      "id": "TS-19-36",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-5.6"
+      ],
+      "title": "Token B can neither list, destroy, relay to nor git-sync a sandbox created with token A",
+      "given": [
+        "gatewayd.Server over local.Unisolated() with tokens A and B and ceiling [NetworkUnrestricted]",
+        "providers pA and pB; sandbox sbA created through pA"
+      ],
+      "when": "pB.List, pB.Destroy(sbA.ID()), a raw Agent Hello with token B and agentkit-sandbox-id sbA.ID(), and raw SyncGit with token B for sbA.ID() and for \"no-such-id\" are sent",
+      "then": [
+        "pB.List omits sbA.ID()",
+        "pB.Destroy returns nil and sbA's next execute through pA still succeeds",
+        "the raw Hello is answered codes.Unavailable with a message containing sbA.ID()",
+        "the SyncGit answer for sbA.ID() equals the answer for \"no-such-id\" in status code and refusal kind"
+      ],
+      "pseudocode": "assert !containsID(pB.List(ctx), sbA.ID())\nassert pB.Destroy(ctx, sbA.ID()) == nil && execute(sbA, \"true\").ok\nerr := rawHello(B, sbA.ID()); assert status.Code(err) == codes.Unavailable && contains(err, sbA.ID())\na, b := rawSyncGit(B, sbA.ID()), rawSyncGit(B, \"no-such-id\"); assert sameShape(a, b)"
+    },
+    {
+      "id": "TS-19-37",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-5.8"
+      ],
+      "title": "List answers the caller's entries and Reap answers the backend's ids with the joined error text",
+      "given": [
+        "gatewayd.Server over a stub backend whose Reap returns ([x2 x1], errors.Join(\"rm x3: busy\", \"rm x4: gone\")) once and ([], nil) once, and whose Create returns local sandboxes",
+        "two sandboxes created through a raw Gateway client with labels {\"run\": \"1\"} and {\"run\": \"2\"}"
+      ],
+      "when": "raw List and Reap (twice) are sent with the creating token",
+      "then": [
+        "ListResponse holds both entries with their id, labels, and creation and expiry times equal to their CreateResponses",
+        "the first ReapResponse holds ids x2 and x1 and an error text containing both \"rm x3: busy\" and \"rm x4: gone\"",
+        "the second ReapResponse holds no ids and an empty error text"
+      ],
+      "pseudocode": "l := raw.List(); assert entries(l) == {c1.Id: {labels1, c1.Created, c1.Expires}, c2.Id: {...}}\nr := raw.Reap(); assert sorted(r.Ids) == [x1 x2] && contains(r.Error, \"rm x3: busy\") && contains(r.Error, \"rm x4: gone\")\nr = raw.Reap(); assert len(r.Ids) == 0 && r.Error == \"\""
+    },
+    {
+      "id": "TS-19-38",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-6.1"
+      ],
+      "title": "A Create with an unknown enum value or Provider JSON that wire.Guard rejects is answered InvalidArgument without calling the backend",
+      "given": [
+        "gatewayd.Server over a counting backend, a raw Gateway client with a valid token"
+      ],
+      "when": "Create is sent with network mode enum value 7, with provider bytes \"{\", with provider bytes {\"a\":1,\"a\":2}, and with provider JSON nested deeper than wire.Defaults() allows",
+      "then": [
+        "each is answered with codes.InvalidArgument",
+        "the counting backend's Create count is 0"
+      ],
+      "pseudocode": "for req in [mode7, providerSyntax, providerDuplicate, providerTooDeep]: assert status.Code(raw.Create(req)) == codes.InvalidArgument\nassert backend.creates() == 0"
+    },
+    {
+      "id": "TS-19-39",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-6.2"
+      ],
+      "title": "A network mode outside the ceiling or a TTL above MaxTTL, counting zero as 1h, is refused as UNSUPPORTED before the backend",
+      "given": [
+        "gatewayd.Server over a counting stub backend offering NetworkNone and NetworkUnrestricted, ceiling [NetworkNone], MaxTTL 30m",
+        "a raw Gateway client"
+      ],
+      "when": "Create is sent with network unrestricted, with TTL 31m, with TTL 0, and with network none and TTL 30m",
+      "then": [
+        "the first is refused UNSUPPORTED with field Network.Mode",
+        "the second and third are refused UNSUPPORTED with field TTL",
+        "the fourth succeeds and the backend's Create count is exactly 1"
+      ],
+      "pseudocode": "assert raw.Create(spec(unrestricted, 10m)).Refusal == {UNSUPPORTED, \"Network.Mode\"}\nassert raw.Create(spec(none, 31m)).Refusal == {UNSUPPORTED, \"TTL\"}\nassert raw.Create(spec(none, 0)).Refusal == {UNSUPPORTED, \"TTL\"}\nassert raw.Create(spec(none, 30m)).Refusal == nil && backend.creates() == 1"
+    },
+    {
+      "id": "TS-19-40",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-6.3"
+      ],
+      "title": "Capacity counts recorded and in-progress creates, holds under concurrency, and is freed by pruning dead entries",
+      "given": [
+        "gatewayd.Server over a wrapper of local.Unisolated() whose Create blocks until released, MaxSandboxes 2, ceiling [NetworkUnrestricted]",
+        "a provider p dialled to it"
+      ],
+      "when": "five Creates run concurrently and the backend is released; then one backend sandbox is cut with localtest.Cut and a sixth Create runs",
+      "then": [
+        "exactly 2 of the five succeed and 3 return errors matching gateway.ErrCapacity",
+        "the backend's Create count after the five is 2",
+        "the sixth Create succeeds because the cut entry was pruned"
+      ],
+      "pseudocode": "results := parallel(5, func(){ return p.Create(ctx, spec) }); backend.release()\nassert count(ok, results) == 2 && count(errors.Is(e, gateway.ErrCapacity), results) == 3 && backend.creates() == 2\nlocaltest.Cut(backend.sandboxes()[0]); _, err := p.Create(ctx, spec); assert err == nil"
+    },
+    {
+      "id": "TS-19-41",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-6.4"
+      ],
+      "title": "Backend Create errors map to UNSUPPORTED, NO_AGENT, NO_PUBLISHED_IMAGE, PROTOCOL or status Unavailable",
+      "given": [
+        "gatewayd.Server over a stub backend whose Create error is set per case, a raw Gateway client"
+      ],
+      "when": "Create is sent while the backend returns &sandbox.SpecError{Provider: \"stub\", Field: \"Resources.CPUs\", Reason: \"r\"}, fmt.Errorf(\"%w: gpu\", sandbox.ErrUnsupported), sandbox.ErrNoAgent, sandbox.ErrNoPublishedImage, sandbox.ErrProtocol, and errors.New(\"engine down\")",
+      "then": [
+        "the SpecError becomes refusal UNSUPPORTED with field Resources.CPUs and reason r, and the wrapped ErrUnsupported becomes UNSUPPORTED with no field",
+        "ErrNoAgent becomes NO_AGENT, ErrNoPublishedImage NO_PUBLISHED_IMAGE and ErrProtocol PROTOCOL",
+        "\"engine down\" becomes status codes.Unavailable with a message containing \"engine down\""
+      ],
+      "pseudocode": "for berr, want in table: backend.err = berr; resp, err := raw.Create(req)\n  if want.kind: assert resp.Refusal.Kind == want.kind && resp.Refusal.Field == want.field\n  else: assert status.Code(err) == codes.Unavailable && contains(err, \"engine down\")"
+    },
+    {
+      "id": "TS-19-42",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-6.5"
+      ],
+      "title": "An unrelayable backend sandbox or a caller gone by the time the backend returns is closed and nothing is recorded",
+      "given": [
+        "a backend wrapping local.Unisolated() that returns each sandbox inside a wrapper type with no Unwrap method",
+        "a second backend wrapping local.Unisolated() whose Create waits for the RPC context to be done before creating and returning"
+      ],
+      "when": "a raw Create is sent to a server over the first backend; and a raw Create with a 200 ms deadline is sent to a server over the second",
+      "then": [
+        "the first is answered codes.Internal with a message naming the backend provider",
+        "for both, the backend local directory is gone and List with the same token is empty"
+      ],
+      "pseudocode": "_, err := raw1.Create(req); assert status.Code(err) == codes.Internal && contains(err, backend1.Capabilities().Provider)\nassert !exists(backend1.dir()) && len(raw1.List().Entries) == 0\nctx, _ := WithTimeout(200ms); raw2.Create(ctx, req)\nassert eventually(!exists(backend2.dir())) && len(raw2.List().Entries) == 0"
+    },
+    {
+      "id": "TS-19-43",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-6.6"
+      ],
+      "title": "A recorded Create answers the backend's id and spec, the creation time, and an expiry of created plus the effective TTL",
+      "given": [
+        "gatewayd.Server over a recording wrapper of local.Unisolated() with ceiling [NetworkUnrestricted], a raw Gateway client"
+      ],
+      "when": "Create is sent with TTL 0 and labels {\"k\": \"v\"}, and again with TTL 90s, recording the wall clock before and after each",
+      "then": [
+        "resp.Id equals the backend sandbox's ID() and resp.Spec decodes to its Spec(), including Workdir and labels",
+        "resp.Created lies between the recorded before and after times",
+        "Expires - Created is 1h for TTL 0 and 90s for TTL 90s",
+        "List reports the same id, creation and expiry"
+      ],
+      "pseudocode": "before := now(); r := raw.Create(spec(ttl=0)); after := now()\nassert r.Id == backend.last().ID() && specFromPB(r.Spec) == backend.last().Spec()\nassert before <= r.Created <= after && r.Expires-r.Created == int64(time.Hour)\nr2 := raw.Create(spec(ttl=90s)); assert r2.Expires-r2.Created == int64(90*time.Second)"
+    },
+    {
+      "id": "TS-19-44",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-6.7"
+      ],
+      "title": "Destroy, expiry and a failed liveness check each remove the entry and close the backend sandbox, and a failing Close still removes it",
+      "given": [
+        "gatewayd.Server over a recording wrapper of local.Unisolated() with ceiling [NetworkUnrestricted] and a captured logger",
+        "a second server over a stub backend whose sandbox Close fails with \"close failed\""
+      ],
+      "when": "raw Destroy is sent for a known id and for an unknown id; a raw Create with TTL 2s is left alone; a sandbox's backend is cut with localtest.Cut and List is sent; raw Destroy is sent to the second server",
+      "then": [
+        "Destroy answers OK for the known and the unknown id and the known sandbox's directory is gone",
+        "within 4 s the 2s-TTL sandbox's directory is gone, List omits it, and its destroy line has reason expired",
+        "after the cut, List omits the cut id and its directory is gone",
+        "the second server's Destroy answers codes.Unavailable containing \"close failed\" and its List no longer reports the id"
+      ],
+      "pseudocode": "assert raw.Destroy(id1) ok && !exists(dir1); assert raw.Destroy(\"no-such-id\") ok\nr := raw.Create(spec(ttl=2s)); assert within(4s, !exists(dirOf(r.Id))) && logs.reason(r.Id) == \"expired\"\nlocaltest.Cut(bsb3); assert !containsID(raw.List(), bsb3.ID()) && eventually(!exists(dir3))\n_, err := raw2.Destroy(id); assert status.Code(err) == codes.Unavailable && contains(err, \"close failed\") && !containsID(raw2.List(), id)"
+    },
+    {
+      "id": "TS-19-45",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-6.8"
+      ],
+      "title": "Shutdown ends in-flight relayed calls, closes every backend sandbox, makes Serve return nil and is idempotent",
+      "given": [
+        "gatewayd.Server over a recording wrapper of local.Unisolated() with ceiling [NetworkUnrestricted]",
+        "two sandboxes through p, one running execute \"sleep 30\"",
+        "a second server over a stub backend whose sandbox Close fails with \"close failed\", holding one sandbox"
+      ],
+      "when": "Shutdown(ctx with 5 s deadline) is called twice on the first server and once on the second",
+      "then": [
+        "the first Shutdown returns nil, the in-flight execute returns sandbox_unavailable within 5 s, and Serve returns nil",
+        "both backend directories are gone and a new Dial fails",
+        "the second Shutdown returns nil",
+        "the second server's Shutdown returns an error containing \"close failed\""
+      ],
+      "pseudocode": "go res <- execute(sb1, \"sleep 30\")\nassert srv.Shutdown(ctx5s) == nil; assert within(5s, (<-res).Code == \"sandbox_unavailable\") && <-serveDone == nil\nassert !exists(dir1) && !exists(dir2) && Dial(...) fails\nassert srv.Shutdown(ctx) == nil\nassert contains(srv2.Shutdown(ctx).Error(), \"close failed\")"
+    },
+    {
+      "id": "TS-19-46",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-7.1"
+      ],
+      "title": "The relay forwards messages unchanged with unknown fields, copies streams frame by frame with half-close, and propagates cancellation",
+      "given": [
+        "gatewayd.Server over a test backend whose sandbox's Unwrap target is attached to a recording AgentServer",
+        "a raw AgentClient carrying a valid token and agentkit-sandbox-id of a sandbox the same token created"
+      ],
+      "when": "a CallRequest with unknown field 99 is sent and the agent's response also carries unknown field 99; a SyncTar of three chunks then CloseSend; an ExportTar of three chunks; a bidirectional Rsync exchange; and a Call cancelled after the agent entered it",
+      "then": [
+        "the agent's received CallRequest has GetUnknown() equal to the sent bytes, and the client's response has the agent's unknown bytes",
+        "the agent receives the three chunks in order followed by io.EOF, and the client receives the three ExportTar chunks and all Rsync frames in order",
+        "the cancelled Call's server-side context ends with context.Canceled"
+      ],
+      "pseudocode": "req := &CallRequest{Name: \"read_file\"}; req.ProtoReflect().SetUnknown(unk)\nresp := raw.Call(ctx, req); assert agent.lastCall().ProtoReflect().GetUnknown() == unk && resp.ProtoReflect().GetUnknown() == agentUnk\ns := raw.SyncTar(ctx); send 3 chunks; s.CloseAndRecv(); assert agent.chunks() == 3 && agent.sawEOF()\nctx2, cancel := WithCancel(ctx); go raw.Call(ctx2, req); <-agent.Entered(); cancel(); assert eventually(errors.Is(agent.CallCtxErr(), context.Canceled))"
+    },
+    {
+      "id": "TS-19-47",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-7.2"
+      ],
+      "title": "A missing, malformed, unknown, foreign or dead sandbox id is answered Unavailable naming the id, without reaching an agent",
+      "given": [
+        "gatewayd.Server with tokens A and B over a test backend relaying to a counting fakeagent, plus a local.Unisolated()-backed sandbox for the dead case",
+        "a raw AgentClient"
+      ],
+      "when": "Hello is sent with token A and no id, with id \"../../etc\", with id \"no-such-id\", with token B and A's id, and with A's id of a sandbox whose backend was cut with localtest.Cut",
+      "then": [
+        "each is answered codes.Unavailable whose message names the id (or says it is missing)",
+        "no answer is InvalidArgument, FailedPrecondition, NotFound or Unimplemented",
+        "the fakeagent's Hello count is unchanged by these calls",
+        "the cut sandbox's entry is removed from List and its backend directory is gone"
+      ],
+      "pseudocode": "for tok, id in cases:\n  err := rawHello(tok, id); assert status.Code(err) == codes.Unavailable && (id == \"\" || contains(err, id))\n  assert status.Code(err) not in {InvalidArgument, FailedPrecondition, NotFound, Unimplemented}\nassert agent.Count(\"Hello\") == n\nassert !containsID(rawList(A), cutID) && eventually(!exists(cutDir))"
+    },
+    {
+      "id": "TS-19-48",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-7.3"
+      ],
+      "title": "An agent behind the gateway never sees the authorization header or the sandbox id key",
+      "given": [
+        "gatewayd.Server over a test backend relaying to a fakeagent that records incoming metadata per RPC and answers HostTools()",
+        "a provider p and a sandbox sb created through it"
+      ],
+      "when": "sb runs Tools, a proxy Call, a Tar Sync and a TarOut Export, and a raw AgentClient with token and id sends an Rsync stream",
+      "then": [
+        "the fakeagent served Hello, Tools, Call, SyncTar, ExportTar and Rsync at least once each",
+        "for each of them the recorded metadata has no authorization key and no agentkit-sandbox-id key"
+      ],
+      "pseudocode": "for rpc in [Hello Tools Call SyncTar ExportTar Rsync]:\n  assert agent.Count(rpc) >= 1\n  md := agent.Metadata(rpc); assert md[\"authorization\"] == nil && md[\"agentkit-sandbox-id\"] == nil"
+    },
+    {
+      "id": "TS-19-49",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-7.4"
+      ],
+      "title": "The agent's four refusal codes pass through, any other upstream error becomes Unavailable, and an unknown Agent method is Unimplemented",
+      "given": [
+        "gatewayd.Server over local.Unisolated() with ceiling [NetworkUnrestricted] and a sandbox sb created through p",
+        "a second server over a test backend relaying to a fakeagent whose Call error is set per case"
+      ],
+      "when": "sb.Export(ctx, \"missing/path\", sandbox.LocalDir{Path: dst}) runs and then a read_file proxy call; raw Calls run while the fakeagent answers InvalidArgument, FailedPrecondition, NotFound, Unimplemented and Internal \"agent boom\"; and conn.Invoke is sent for /agentkit.sandbox.v1.Agent/Future",
+      "then": [
+        "the Export returns the agent's NotFound refusal (not sandbox.ErrUnavailable) and the following read_file succeeds, so sb stays live",
+        "the four refusal codes arrive with the same codes and messages",
+        "Internal \"agent boom\" arrives as codes.Unavailable containing \"agent boom\"",
+        "the unknown method is answered codes.Unimplemented"
+      ],
+      "pseudocode": "err := sb.Export(ctx, \"missing/path\", sandbox.LocalDir{Path: dst}); assert err != nil && !errors.Is(err, sandbox.ErrUnavailable)\nassert readFile(sb, \"x\").ok\nfor c in [InvalidArgument FailedPrecondition NotFound Unimplemented]: agent.SetCall(nil, status.Error(c, \"m\"), true); e := raw.Call(); assert status.Code(e) == c && status.Convert(e).Message() == \"m\"\nagent.SetCall(nil, status.Error(codes.Internal, \"agent boom\"), true); assert status.Code(raw.Call()) == codes.Unavailable\nassert status.Code(conn.Invoke(ctx, \"/agentkit.sandbox.v1.Agent/Future\", in, out)) == codes.Unimplemented"
+    },
+    {
+      "id": "TS-19-50",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-7.5"
+      ],
+      "title": "Each slot-taking action makes a later SyncGit refused, and non-taking actions leave the slot free",
+      "given": [
+        "gatewayd.Server over a slot test backend that wraps local.Unisolated(), simulates the clone in Sync(GitRepo), counts clones and implements Unwrap",
+        "a provider p with ceiling [NetworkUnrestricted]"
+      ],
+      "when": "on separate fresh sandboxes the first action is a successful GitRepo Sync, a successful Tools, a raw Tools that the agent refuses, a successful Tar Sync, a successful LocalDir Sync, a LocalDir Export, and a Tar Sync refused with ErrUnsafeArchive; then each sandbox runs a GitRepo Sync",
+      "then": [
+        "after the first five actions the GitRepo Sync returns an error containing \"GitRepo must be the first Sync and come before Tools\" that matches neither sandbox.ErrUnsupported nor sandbox.ErrUnavailable",
+        "those refused SyncGits do not call the backend's clone",
+        "after the LocalDir Export and the refused Tar Sync, the GitRepo Sync succeeds"
+      ],
+      "pseudocode": "for first in [syncGit, tools, rawToolsRefused, tarSync, localDirSync]:\n  sb := p.Create(); first(sb); n := backend.clones()\n  _, err := sb.Sync(ctx, repo); assert contains(err, \"GitRepo must be the first Sync and come before Tools\") && backend.clones() == n\nfor first in [localDirExport, unsafeTarSync]: sb := p.Create(); first(sb); _, err := sb.Sync(ctx, repo); assert err == nil"
+    },
+    {
+      "id": "TS-19-51",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-7.6"
+      ],
+      "title": "SyncGit on a free slot calls the backend's Sync, maps ErrUnsupported and other errors, and takes the slot only on success",
+      "given": [
+        "gatewayd.Server over the slot test backend, whose Sync(GitRepo) result is set per case",
+        "a second server over plain local.Unisolated() with ceiling [NetworkUnrestricted]"
+      ],
+      "when": "sb.Sync(GitRepo{URL, Ref: \"main\", Depth: 1}) runs while the backend succeeds; on another sandbox while it returns fmt.Errorf(\"%w: no git\", ErrUnsupported); on another while it returns \"clone failed: 128\" and then, retried, succeeds; and on a sandbox of the plain local server",
+      "then": [
+        "the success returns nil and the backend received GitRepo{URL, \"main\", 1}, after which Tools still succeeds",
+        "the ErrUnsupported case returns an error matching sandbox.ErrUnsupported, as does the plain local backend",
+        "\"clone failed: 128\" returns a REFUSED error containing that message and not matching ErrUnsupported, and the retry succeeds because the slot stayed free"
+      ],
+      "pseudocode": "_, err := sb1.Sync(ctx, repo); assert err == nil && backend.lastRepo() == repo && sb1.Tools(ctx, opts) ok\nbackend.err = fmt.Errorf(\"%w: no git\", sandbox.ErrUnsupported); _, err = sb2.Sync(ctx, repo); assert errors.Is(err, sandbox.ErrUnsupported)\nbackend.err = errors.New(\"clone failed: 128\"); _, err = sb3.Sync(ctx, repo); assert contains(err, \"clone failed: 128\") && !errors.Is(err, sandbox.ErrUnsupported)\nbackend.err = nil; _, err = sb3.Sync(ctx, repo); assert err == nil\n_, err = localSb.Sync(ctx, repo); assert errors.Is(err, sandbox.ErrUnsupported)"
+    },
+    {
+      "id": "TS-19-52",
+      "kind": "property",
+      "verifies": [
+        "19-REQ-7.7"
+      ],
+      "title": "Concurrent SyncGit and slot-taking relayed RPCs on one sandbox always produce the outcome of some sequential order",
+      "given": [
+        "gatewayd.Server over the slot test backend, whose simulated clone sleeps a seeded random 0-20 ms and logs clone start and end; the relayed agent logs Tools arrival"
+      ],
+      "when": "for any seed in 0..100, a fresh sandbox receives a GitRepo Sync and a Tools (and, for odd seeds, a Tar Sync) started concurrently with seeded random start delays",
+      "then": [
+        "either SyncGit succeeds, the clone ended before any Tools or SyncTar reached the agent, and those then succeed",
+        "or a Tools or SyncTar took the slot first, SyncGit is REFUSED with the slot message, and no clone ran",
+        "never do SyncGit succeed and a slot-taking RPC reach the agent while the clone runs"
+      ],
+      "pseudocode": "for seed in 0..100:\n  sb := p.Create(); r := rand(seed)\n  g, tl := concurrently(delay(r, syncGit(sb)), delay(r, tools(sb)))\n  if g.err == nil: assert backend.cloneEnd() < agent.toolsArrival() && tl.err == nil\n  else: assert isSlotRefusal(g.err) && backend.clones() == 0 && tl.err == nil"
+    },
+    {
+      "id": "TS-19-53",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-7.8"
+      ],
+      "title": "attach.ClientConn and attach.Live follow an Unwrap chain, and the podman and landlock wrappers unwrap to their attached sandbox",
+      "given": [
+        "in sandbox/internal/attach, a sandbox sb attached to a fakeagent and two nested test wrappers w1{sb} and w2{w1} implementing Unwrap() sandbox.Sandbox",
+        "a non-attach sandbox with no Unwrap",
+        "internal tests in sandbox/podman and sandbox/landlock constructing their wrapper around an attached sandbox"
+      ],
+      "when": "ClientConn and Live are applied to w2, to the non-attach sandbox, and to w2 after sb.Close; and each provider wrapper's Unwrap is called",
+      "then": [
+        "ClientConn(w2) is non-nil and equals ClientConn(sb), and Live(w2) is nil while sb is live",
+        "ClientConn of the non-attach sandbox is nil",
+        "after sb.Close, Live(w2) matches sandbox.ErrClosed",
+        "the podman and landlock wrappers' Unwrap returns the attached sandbox, and no exported identifier is added (the exported-API golden and layout tests pass unchanged)"
+      ],
+      "pseudocode": "assert attach.ClientConn(w2) != nil && attach.ClientConn(w2) == attach.ClientConn(sb) && attach.Live(w2) == nil\nassert attach.ClientConn(plain) == nil\nsb.Close(ctx); assert errors.Is(attach.Live(w2), sandbox.ErrClosed)\nassert podmanWrapper.Unwrap() == attached && landlockWrapper.Unwrap() == attached"
+    },
+    {
+      "id": "TS-19-54",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-8.2"
+      ],
+      "title": "Serving plaintext on a non-loopback address logs a warning line in addition to the listening line",
+      "given": [
+        "agentkit-gateway built into a temp directory (not on Windows)",
+        "a fake podman script on PATH printing \"podman version 5.0.0\" and a valid token file"
+      ],
+      "when": "the command runs with --plaintext --listen 0.0.0.0:0, and again with --plaintext --listen 127.0.0.1:0, each stopped with SIGTERM after its listening line",
+      "then": [
+        "the 0.0.0.0 run's stderr holds the listening line and a warning line naming plaintext and 0.0.0.0",
+        "the 127.0.0.1 run's stderr holds the listening line and no warning line"
+      ],
+      "pseudocode": "out := runUntilListening(\"--token-file\", tf, \"--plaintext\", \"--listen\", \"0.0.0.0:0\")\nassert hasLine(out, \"listening on\") && hasLineMatching(out, \"(?i)warn.*plaintext.*0\\\\.0\\\\.0\\\\.0\")\nout = runUntilListening(..., \"127.0.0.1:0\"); assert !hasLineMatching(out, \"(?i)warn\")"
+    },
+    {
+      "id": "TS-19-55",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-8.3"
+      ],
+      "title": "The token file yields one trimmed token per non-blank, non-comment line, and tokens come from no flag or environment variable",
+      "given": [
+        "a token file containing \"# comment\\n\\n   <tokA>   \\n\\t<tokB>\\n#<tokC>\\n\" with tokA and tokB of 40 printable characters",
+        "a second file whose only token is 20 characters"
+      ],
+      "when": "the command's token-file reader parses both files, the command's flag set is listed, and the command is run with AGENTKIT_GATEWAY_TOKEN set but no --token-file",
+      "then": [
+        "the first file yields exactly [tokA, tokB]",
+        "the second file is refused with an error that does not contain the token",
+        "no flag other than --token-file mentions a token",
+        "the environment-only run exits 2 because --token-file is required"
+      ],
+      "pseudocode": "toks, err := readTokenFile(f1); assert err == nil && toks == [tokA, tokB]\n_, err = readTokenFile(f2); assert err != nil && !contains(err, short)\nfor fl in flags(): assert fl.Name == \"token-file\" || !containsFold(fl.Name, \"token\")\nassert run(env{AGENTKIT_GATEWAY_TOKEN: tokA}, \"--plaintext\").exit == 2"
+    },
+    {
+      "id": "TS-19-56",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-8.4"
+      ],
+      "title": "A stop signal runs Shutdown and the command exits 0, or 1 when destroying a sandbox failed",
+      "given": [
+        "the command's run function with an injected backend factory and an injected signal channel",
+        "one backend whose sandboxes close cleanly and one whose sandbox Close fails"
+      ],
+      "when": "run serves on 127.0.0.1:0, a client dials and creates a sandbox, and SIGTERM (then SIGINT in a second run) is delivered on the channel",
+      "then": [
+        "with the clean backend run returns exit code 0 for both SIGTERM and SIGINT",
+        "with the failing backend run returns exit code 1 and stderr names the failure in one agentkit-gateway: line",
+        "in every run the created sandbox's backend Close was called"
+      ],
+      "pseudocode": "code := run(args, deps{newBackend: clean, signals: ch}); ch <- syscall.SIGTERM; assert code == 0\ncode = run(args, deps{newBackend: failing, signals: ch}); ch <- syscall.SIGINT; assert code == 1\nassert clean.closed() && failing.closed()"
+    },
+    {
+      "id": "TS-19-57",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-8.5"
+      ],
+      "title": "Usage errors exit 2 with one stderr line, before the token file is read or the engine contacted",
+      "given": [
+        "a fake podman script on PATH that logs every invocation",
+        "a token-file path whose file is unreadable, so reading it would exit 1"
+      ],
+      "when": "the command runs with an unknown flag, no --token-file, only --tls-cert, --plaintext with both TLS flags, neither plaintext nor TLS, --engine kube, --runtime runc, --network none,allowlist, --max-sandboxes 0, --max-ttl 0s, --reap-interval -1m, and an extra positional argument",
+      "then": [
+        "each exits 2",
+        "each writes exactly one stderr line beginning \"agentkit-gateway: \"",
+        "the fake engine's invocation log is empty"
+      ],
+      "pseudocode": "for args in usageCases:\n  code, stderr := runCmd(append([\"--token-file\", unreadable], args...))\n  assert code == 2 && len(lines(stderr)) == 1 && hasPrefix(stderr, \"agentkit-gateway: \")\nassert engineLog() == \"\""
+    },
+    {
+      "id": "TS-19-58",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-8.6"
+      ],
+      "title": "Startup failures exit 1 with one stderr line that never contains a token",
+      "given": [
+        "agentkit-gateway built into a temp directory (not on Windows), a fake podman script on PATH, and a valid token tok"
+      ],
+      "when": "the command runs with a missing token file, a token file holding a 20-character token, --tls-cert and --tls-key naming non-PEM files, --engine-binary /nonexistent/podman --plaintext, and --listen on an address already bound",
+      "then": [
+        "each exits 1",
+        "each writes exactly one stderr line beginning \"agentkit-gateway: \"",
+        "no stderr contains tok or the short token"
+      ],
+      "pseudocode": "for args in startupCases:\n  code, stderr := runCmd(args)\n  assert code == 1 && len(lines(stderr)) == 1 && hasPrefix(stderr, \"agentkit-gateway: \")\n  assert !contains(stderr, tok) && !contains(stderr, short)"
+    },
+    {
+      "id": "TS-19-59",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-8.7"
+      ],
+      "title": "--version prints the build version and both protocol versions and exits 0",
+      "given": [
+        "the command built from the gatewayd module"
+      ],
+      "when": "the command runs with --version and no other flag",
+      "then": [
+        "it exits 0",
+        "its output is exactly agentkit-gateway <buildver.Version()> (gateway protocol 1.0, agent protocol <sandbox.ProtocolMajor>.<sandbox.ProtocolMinor>)"
+      ],
+      "pseudocode": "code, out := runCmd(\"--version\")\nwant := fmt.Sprintf(\"agentkit-gateway %s (gateway protocol %d.%d, agent protocol %d.%d)\", buildver.Version(), gateway.ProtocolMajor, gateway.ProtocolMinor, sandbox.ProtocolMajor, sandbox.ProtocolMinor)\nassert code == 0 && trim(out) == want"
+    },
+    {
+      "id": "TS-19-60",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-9.1"
+      ],
+      "title": "The gatewayd module is separate, replaces both parent modules, and directly requires only the allowed set",
+      "given": [
+        "internal/policy deps tests with sandboxModules extended"
+      ],
+      "when": "go mod edit -json and go list -m -json run in sandbox/gatewayd",
+      "then": [
+        "the module path is github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd with go 1.27",
+        "the root module is replaced by ../../ and the sandbox module by ../",
+        "its direct requirements are a subset of {root, sandbox, google.golang.org/grpc, google.golang.org/protobuf}, protobuf only when imported directly, and pass validateAllowlist",
+        "sandboxModules lists the gatewayd module path"
+      ],
+      "pseudocode": "m := goModEditJSON(\"sandbox/gatewayd\")\nassert m.Module.Path == gatewaydPath && m.Go == \"1.27\"\nassert replaces(m, rootPath) == \"../../\" && replaces(m, sandboxPath) == \"../\"\nd := directSet(\"sandbox/gatewayd\"); assert subset(d, {rootPath, sandboxPath, grpc, protobuf})\nassert validateAllowlist(d, approvedDeps + sandboxModules) == nil && contains(sandboxModules, gatewaydPath)"
+    },
+    {
+      "id": "TS-19-61",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-9.2"
+      ],
+      "title": "The gatewayd module graph adds no module absent from the sandbox module graph",
+      "given": [
+        "internal/policy deps tests"
+      ],
+      "when": "go list -m all runs in sandbox/gatewayd and in sandbox",
+      "then": [
+        "every module path in the gatewayd graph, other than the gatewayd module itself, appears in the sandbox graph"
+      ],
+      "pseudocode": "g, s := modPaths(goListMAll(\"sandbox/gatewayd\")), modPaths(goListMAll(\"sandbox\"))\nfor p in g - {gatewaydPath}: assert p in s"
+    },
+    {
+      "id": "TS-19-62",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-9.3"
+      ],
+      "title": "The cross-target gates build and vet sandbox/gatewayd",
+      "given": [
+        "internal/policy/crosstarget_test.go"
+      ],
+      "when": "TestCrossTargetBuildAndVet and TestHostCgoBuildAndVet run",
+      "then": [
+        "gateModules contains sandbox/gatewayd",
+        "sandbox/gatewayd builds and vets on all four targets with CGO_ENABLED=0 and on the host with CGO_ENABLED=1"
+      ],
+      "pseudocode": "assert contains(gateModules, \"sandbox/gatewayd\")\nfor target in targets: assert run(\"go build ./... && go vet ./...\", dir=\"sandbox/gatewayd\", GOOS/GOARCH=target, CGO_ENABLED=0) ok\nassert run(..., CGO_ENABLED=1) ok"
+    },
+    {
+      "id": "TS-19-63",
+      "kind": "unit",
+      "verifies": [
+        "19-REQ-9.4"
+      ],
+      "title": "The no-listen check fails on any socket-listening API in non-test files of the root or sandbox module and exempts only gatewayd",
+      "given": [
+        "the no-listen policy test in internal/policy, scanning Go files by AST with import aliases resolved"
+      ],
+      "when": "it runs on the delivered tree, and on temp module copies containing a non-test file that uses, one per case, net.Listen, net.ListenTCP, net.ListenUnix, net.ListenPacket, net.ListenConfig, tls.Listen, http.ListenAndServe and http.ListenAndServeTLS (one through an aliased import n \"net\"); a _test.go file using net.Listen; and a gatewayd file using net.Listen",
+      "then": [
+        "the delivered tree passes",
+        "each non-test case fails with a message naming the file and the API",
+        "the _test.go and gatewayd cases pass"
+      ],
+      "pseudocode": "assert noListen(repoRoot) == nil\nfor api in apis: dir := copyWith(\"x.go\", use(api)); err := noListen(dir); assert contains(err, \"x.go\") && contains(err, api)\nassert noListen(copyWith(\"x_test.go\", use(\"net.Listen\"))) == nil\nassert noListen(copyWith(\"sandbox/gatewayd/x.go\", use(\"net.Listen\"))) == nil"
+    },
+    {
+      "id": "TS-19-64",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-9.5"
+      ],
+      "title": "The root and sandbox modules' requirements and graphs, the exported-API golden and the Agent protocol minor are unchanged",
+      "given": [
+        "internal/policy testdata (exported-api.golden, go-list-m-all.txt, sandbox-go-list-m-all.txt) as before this spec"
+      ],
+      "when": "the existing graph, golden and version policy tests run (TS-09-15, TS-09-16, TS-13-65, TS-14-44, TS-15-42) and sandbox.ProtocolMinor is read",
+      "then": [
+        "each passes with its testdata unmodified",
+        "sandbox.ProtocolMinor == 2"
+      ],
+      "pseudocode": "for t in [TS09_15, TS09_16, TS13_65, TS14_44, TS15_42]: assert pass(t)\nassert gitDiff(\"internal/policy/testdata\") == \"\"\nassert sandbox.ProtocolMinor == 2"
+    },
+    {
+      "id": "TS-19-65",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-9.6"
+      ],
+      "title": "make sandbox-gateway builds a trimmed, stamped binary and the Makefile wires the gatewayd module and the opt-in target",
+      "given": [
+        "the repository Makefile"
+      ],
+      "when": "make sandbox-gateway AGENTKIT_VERSION=v0.19.0-test runs, build/bin/agentkit-gateway --version is invoked, go version -m reads the binary, and make -n check and make -n sandbox-gateway-test are inspected",
+      "then": [
+        "--version reports v0.19.0-test",
+        "the build info shows -trimpath=true",
+        "MODULES and the doc loop include sandbox/gatewayd",
+        "make -n sandbox-gateway-test runs the sandbox-images recipe first, and make -n check does not run sandbox-gateway-test"
+      ],
+      "pseudocode": "run(\"make sandbox-gateway AGENTKIT_VERSION=v0.19.0-test\")\nassert contains(run(\"build/bin/agentkit-gateway --version\"), \"v0.19.0-test\")\nassert contains(run(\"go version -m build/bin/agentkit-gateway\"), \"-trimpath=true\")\nassert contains(makeVar(\"MODULES\"), \"sandbox/gatewayd\")\nassert precedes(run(\"make -n sandbox-gateway-test\"), imagesRecipe, gatewayTestRecipe) && !contains(run(\"make -n check\"), \"sandbox-gateway-test\")"
+    },
+    {
+      "id": "TS-19-66",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-9.7"
+      ],
+      "title": "make check, including every gatewayd test, passes offline with no engine and no protoc",
+      "given": [
+        "PATH without podman, docker or protoc",
+        "GOPROXY=off and GOFLAGS=-mod=mod disabled so no module download is possible"
+      ],
+      "when": "make check runs (as in TS-09-20)",
+      "then": [
+        "it succeeds",
+        "the gatewayd module's offline tests run and pass",
+        "the opt-in engine tests report SKIP"
+      ],
+      "pseudocode": "env := {PATH: stripped(\"podman\", \"docker\", \"protoc\"), GOPROXY: \"off\"}\nout, err := run(\"make check\", env); assert err == nil\nassert contains(out, \"sandbox/gatewayd\") && skipped(out, optInTests)"
+    },
+    {
+      "id": "TS-19-67",
+      "kind": "property",
+      "verifies": [
+        "19-REQ-10.1"
+      ],
+      "title": "Every proxy tool from a gateway sandbox matches tools.All and passes the shared conformance table",
+      "given": [
+        "an in-process gatewayd.Server over local.Unisolated() with NetworkModes [NetworkUnrestricted] and a client dialled through Options.Dialer to http://127.0.0.1"
+      ],
+      "when": "for any proxy tool returned by Tools on a gateway sandbox, paired with the tools.All tool of the same name; and toolconformance.RunGroup runs with a Builder that writes each tree into a fresh gateway sandbox",
+      "then": [
+        "Name, Description, PromptGuidelines, Builtin, ExecutionMode and Label are equal",
+        "the input and output schemas marshal to byte-identical JSON",
+        "every conformance case passes unchanged from spec 13"
+      ],
+      "pseudocode": "proxies := sb.Tools(ctx, opts); host := tools.All(...)\nfor i, px in proxies: h := host[i]; assert px.Name == h.Name && px.Description == h.Description && px.PromptGuidelines == h.PromptGuidelines && px.Builtin == h.Builtin && px.ExecutionMode == h.ExecutionMode && px.Label == h.Label\n  assert json(px.InputSchema) == json(h.InputSchema) && json(px.OutputSchema) == json(h.OutputSchema)\ntoolconformance.RunGroup(t, \"gateway\", gatewayBuilder)"
+    },
+    {
+      "id": "TS-19-68",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-10.2"
+      ],
+      "title": "An execute call through the gateway cancelled from the host returns aborted and its process is gone",
+      "given": [
+        "an in-process gatewayd.Server over local.Unisolated() with ceiling [NetworkUnrestricted], a gateway sandbox sb (not on Windows)"
+      ],
+      "when": "the execute proxy runs \"echo $$ > pid; exec sleep 300\" and its ctx is cancelled once pid is written",
+      "then": [
+        "the call returns outcome aborted",
+        "the process with the recorded pid no longer exists within 5 s"
+      ],
+      "pseudocode": "ctx, cancel := WithCancel(bg); go res <- execute(ctx, sb, \"echo $$ > pid; exec sleep 300\")\npid := waitRead(filepath.Join(sb.Spec().Workdir, \"pid\")); cancel()\nassert (<-res).Outcome == \"aborted\"\nassert within(5s, syscall.Kill(pid, 0) == syscall.ESRCH)"
+    },
+    {
+      "id": "TS-19-69",
+      "kind": "property",
+      "verifies": [
+        "19-REQ-10.3"
+      ],
+      "title": "LocalDir and Tar transfers through the gateway give the same workspace and destination trees as a direct local sandbox",
+      "given": [
+        "an in-process gatewayd.Server over local.Unisolated() with ceiling [NetworkUnrestricted]",
+        "a direct local.Unisolated() provider"
+      ],
+      "when": "for any seed in 0..20, treegen.Gen(t, seed) builds a source tree that is synced into a fresh gateway sandbox and a fresh direct sandbox by LocalDir and by Tar, and each workspace is exported by LocalDir and by TarOut",
+      "then": [
+        "treegen.Entries of the two workspaces are equal after each Sync",
+        "the LocalDir destination trees are equal and the TarOut archives list equal entries and contents"
+      ],
+      "pseudocode": "for seed in 0..20:\n  src := treegen.Gen(t, seed)\n  for e in [gw, direct]: e.sb.Sync(ctx, sandbox.LocalDir{Path: src, Ignore: hermetic}); e.sb.Export(ctx, \".\", sandbox.LocalDir{Path: e.dst})\n  assert treegen.Entries(gw.ws) == treegen.Entries(direct.ws) && treegen.Entries(gw.dst) == treegen.Entries(direct.dst)\n  repeat with sandbox.Tar{R: tarOf(src)} and sandbox.TarOut{W}; assert untarEntries(gw.out) == untarEntries(direct.out)"
+    },
+    {
+      "id": "TS-19-70",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-10.4"
+      ],
+      "title": "A cut client connection, a cut backend agent connection or a gateway-side destroy fails in-flight and later calls with sandbox_unavailable",
+      "given": [
+        "an in-process gatewayd.Server over local.Unisolated() with ceiling [NetworkUnrestricted]",
+        "a client whose Dialer wraps each connection so the test can close it"
+      ],
+      "when": "in three separate runs a gateway sandbox's execute \"sleep 30\" is in flight when (a) the test closes the client-to-gateway connection, (b) localtest.Cut is applied to the backend sandbox, (c) another provider with the same token calls Destroy(sb.ID())",
+      "then": [
+        "in each run the in-flight call returns sandbox_unavailable",
+        "a later read_file proxy call returns sandbox_unavailable",
+        "later Sync and Export return errors matching sandbox.ErrUnavailable"
+      ],
+      "pseudocode": "for cut in [closeClientConn, func(){ localtest.Cut(backend.sandboxFor(sb.ID())) }, func(){ p2.Destroy(ctx, sb.ID()) }]:\n  go res <- execute(sb, \"sleep 30\"); waitStarted(); cut()\n  assert (<-res).Code == \"sandbox_unavailable\" && readFile(sb, \"x\").Code == \"sandbox_unavailable\"\n  _, err := sb.Sync(ctx, sandbox.Tar{R: emptyTar}); assert errors.Is(err, sandbox.ErrUnavailable)"
+    },
+    {
+      "id": "TS-19-71",
+      "kind": "integration",
+      "verifies": [
+        "19-REQ-10.5",
+        "19-REQ-6.8"
+      ],
+      "title": "Opt-in: Shutdown of a gateway over Podman destroys live sandboxes and leaves no labelled container or volume",
+      "given": [
+        "a container engine chosen as specs 16 and 17 do, AGENTKIT_SANDBOX_BASE_IMAGE set, not -short (otherwise the test skips)",
+        "an in-process gatewayd.Server over podman.New with ceiling [NetworkNone]"
+      ],
+      "when": "two sandboxes are created through a gateway client and left open, and Server.Shutdown runs",
+      "then": [
+        "Shutdown returns nil",
+        "the engine lists no container and no volume carrying the sandbox label"
+      ],
+      "pseudocode": "skipUnlessEngine(t); p := dial(); sb1, sb2 := p.Create(ctx, spec), p.Create(ctx, spec)\nassert srv.Shutdown(ctx) == nil\nassert engine(\"ps\", \"-a\", \"--filter\", \"label=\"+label) == \"\" && engine(\"volume\", \"ls\", \"--filter\", \"label=\"+label) == \"\""
+    },
+    {
+      "id": "TS-19-72",
+      "kind": "smoke",
+      "verifies": [
+        "19-PATH-1",
+        "19-REQ-4.4",
+        "19-REQ-7.1"
+      ],
+      "title": "An embedder dials an in-process gateway over local, creates a sandbox and reads a file through the proxy as from a local sandbox",
+      "given": [
+        "an in-process gatewayd.Server over local.Unisolated() with NetworkModes [NetworkUnrestricted] on an in-memory listener",
+        "a direct local.Unisolated() sandbox for comparison"
+      ],
+      "when": "gateway.Dial(ctx, \"http://127.0.0.1\", Options{Token, Dialer}) runs, Create and Tools run, a file is synced by Tar, and the read_file proxy reads it",
+      "then": [
+        "Dial, Create and Tools succeed and the sandbox reports the gateway's id",
+        "the read_file result equals the result of the same call on the direct local sandbox",
+        "the server holds one entry for the token's owner"
+      ],
+      "real_components": [
+        "gateway.Dial and gateway.Provider",
+        "attach state machine and proxies",
+        "gatewayd.Server Gateway service",
+        "gatewayd Agent relay",
+        "local.Unisolated backend",
+        "in-process agentkit agent"
+      ]
+    },
+    {
+      "id": "TS-19-73",
+      "kind": "smoke",
+      "verifies": [
+        "19-PATH-2",
+        "19-REQ-10.3"
+      ],
+      "title": "A LocalDir Sync and Export ride the relayed Rsync stream and match a direct sandbox, and the completed SYNC takes the GitRepo slot",
+      "given": [
+        "an in-process gatewayd.Server over local.Unisolated() with NetworkModes [NetworkUnrestricted]",
+        "a gateway sandbox and a direct local sandbox",
+        "a source tree with .gitignore, nested files and a 3 MiB file"
+      ],
+      "when": "each sandbox runs Sync(LocalDir{src}) then Export(\".\", LocalDir{dst}); then the gateway sandbox runs a GitRepo Sync",
+      "then": [
+        "the gateway workspace and destination trees equal the direct sandbox's",
+        "the GitRepo Sync returns the error \"GitRepo must be the first Sync and come before Tools\""
+      ],
+      "real_components": [
+        "gateway client sandbox (attach rsync client)",
+        "gatewayd Agent relay Rsync forwarding",
+        "GitRepo slot bookkeeping",
+        "local.Unisolated backend",
+        "in-process agent rsync server"
+      ]
+    },
+    {
+      "id": "TS-19-74",
+      "kind": "smoke",
+      "verifies": [
+        "19-PATH-3",
+        "19-REQ-3.5"
+      ],
+      "title": "Provider.Close destroys every open sandbox on the gateway and the local backend deletes their directories",
+      "given": [
+        "an in-process gatewayd.Server over local.Unisolated() with NetworkModes [NetworkUnrestricted] and a captured logger",
+        "two open gateway sandboxes whose backend directories are recorded"
+      ],
+      "when": "Provider.Close is called",
+      "then": [
+        "Close returns nil",
+        "both backend directories are gone and List with the same token from a new provider is empty",
+        "the log holds a destroy line with reason client for each id"
+      ],
+      "real_components": [
+        "gateway.Provider",
+        "attach teardown",
+        "gatewayd.Server Gateway service",
+        "local.Unisolated backend"
+      ]
+    },
+    {
+      "id": "TS-19-75",
+      "kind": "smoke",
+      "verifies": [
+        "19-PATH-4",
+        "19-REQ-6.7",
+        "19-REQ-10.4"
+      ],
+      "title": "A 2-second-TTL sandbox expires on the gateway, its backend is removed, and the client sees sandbox_unavailable",
+      "given": [
+        "an in-process gatewayd.Server over local.Unisolated() with NetworkModes [NetworkUnrestricted] and a captured logger"
+      ],
+      "when": "a sandbox is created through the gateway client with TTL 2s, the test waits 3 s, and then calls read_file and a Tar Sync",
+      "then": [
+        "the backend directory is gone and the log holds a destroy line for the id",
+        "read_file returns sandbox_unavailable",
+        "Sync returns an error matching sandbox.ErrUnavailable, and so does a second Sync"
+      ],
+      "real_components": [
+        "gateway client sandbox",
+        "gatewayd expiry timer",
+        "gatewayd Agent relay",
+        "local.Unisolated backend"
+      ]
+    },
+    {
+      "id": "TS-19-76",
+      "kind": "smoke",
+      "verifies": [
+        "19-PATH-5",
+        "19-REQ-8.1",
+        "19-REQ-8.4"
+      ],
+      "title": "The agentkit-gateway command starts against a fake engine, accepts a Dial reporting gateway/podman and exits 0 on SIGTERM",
+      "given": [
+        "agentkit-gateway built into a temp directory (not on Windows)",
+        "a fake podman script on PATH printing \"podman version 5.0.0\"",
+        "a token file with one valid token"
+      ],
+      "when": "the command runs with --token-file, --plaintext and --listen 127.0.0.1:0; a client dials the address from its listening line; then SIGTERM is sent",
+      "then": [
+        "stderr holds agentkit-gateway: listening on 127.0.0.1:<port> (plaintext), backend podman, version <v>",
+        "gateway.Dial succeeds and Capabilities().Provider == \"gateway/podman\"",
+        "the command exits 0"
+      ],
+      "real_components": [
+        "agentkit-gateway binary",
+        "flag and token-file parsing",
+        "podman.New backend over the fake engine script",
+        "gatewayd.Server on a TCP listener",
+        "gateway.Dial client"
+      ]
+    },
+    {
+      "id": "TS-19-77",
+      "kind": "smoke",
+      "verifies": [
+        "19-PATH-6",
+        "19-REQ-10.5"
+      ],
+      "title": "Opt-in: a Podman sandbox behind the gateway clones a public repository, runs the proxies under NetworkNone and leaves nothing behind",
+      "given": [
+        "a container engine chosen as specs 16 and 17 do, AGENTKIT_SANDBOX_BASE_IMAGE set, not -short (otherwise the test skips)",
+        "an in-process gatewayd.Server over podman.New with ceiling [NetworkNone]"
+      ],
+      "when": "a client creates a sandbox under NetworkNone, syncs a GitRepo of a public repository, runs a LocalDir Sync, read_file, write_file and execute, tries TCP from execute, exports the workspace and closes the sandbox",
+      "then": [
+        "every step succeeds, the cloned files and synced files are readable, and the export holds the written file",
+        "the TCP attempt from execute fails",
+        "after Close the engine lists no container or volume carrying the sandbox label"
+      ],
+      "real_components": [
+        "gateway client",
+        "gatewayd.Server and Agent relay",
+        "podman backend and its Unwrap wrapper",
+        "container engine",
+        "base image agent"
+      ]
+    }
+  ]
+}

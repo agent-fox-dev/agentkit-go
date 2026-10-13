@@ -1,0 +1,774 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "18",
+  "spec_name": "sandbox_landlock_provider",
+  "schema_version": 2,
+  "introduction": "sandbox/landlock is an AgentKit sandbox provider that needs no container engine, image or privilege: on a Linux host whose kernel offers Landlock ABI 4, it runs agentkit-sandboxd as a child process of the embedder in its own session, and the agent's Landlock ruleset (workspace, private HOME and TMPDIR, read-only system directories, TCP denied under NetworkNone) is the only boundary. It reports itself as a confinement, refuses every spec field it cannot honour before anything exists, fills a workspace from a public GitRepo through a second confined init agent, cleans up everything it started on Close, at the TTL and through Reap, and never confines the embedder's own process.",
+  "glossary": {
+    "ABI 4 floor": "The provider's minimum Landlock ABI (sandbox.LandlockTCPABI = 4, Linux 6.7), enforced both by the kernel probe in New and on the agent's Hello report after every attach, whatever Spec.RequireLandlock says.",
+    "GitRepo slot": "Per-sandbox state allowing exactly one GitRepo Sync, before any other successful Sync and before the first Tools call; mirrors 17's slot rule with its own implementation.",
+    "destroy step": "The provider's teardown, passed to attach as Config.Destroy and run once: (1) wait up to 5 s for the agent to exit, then SIGKILL its process group; (2) SIGKILL every non-zombie process whose session id is the agent's pid, rescanning for up to 5 s; (3) remove the sandbox directory without following symlinks, restoring owner rwx on each directory first.",
+    "effective spec": "The Spec returned by sandbox.CheckSpec (TTL 0 replaced by 1h) with Workdir set to the host path <Root>/<id>/workspace for the agent's arguments.",
+    "init agent": "A second agentkit-sandboxd started for a GitRepo Sync with --network unrestricted, the same workspace and extra roots, and a git-only environment. It runs git through its run_command tool beside the sandbox's own idle agent and is always closed before Sync returns.",
+    "marker": "agentkit-sandbox.json (mode 0600) in the sandbox directory: the owner's pid, start time (/proc/<pid>/stat field 22) and boot id, the owner's role (creator or agent), the creation time, TTL, network mode and labels. It never holds Spec.Env.",
+    "owner": "The process a marker names: first the creating process (role creator), then, after an atomic replace, the agent (role agent). It counts as alive only when /proc/<pid> exists, its start time equals the recorded one and the current boot id equals the recorded one.",
+    "probe seam": "The unexported function New calls once to learn the kernel's Landlock ABI. Its default issues syscall.Syscall(444, 0, 0, 1), the Landlock version query; offline tests substitute a fake returning any ABI or errno.",
+    "process table seam": "The unexported /proc reader the destroy step and Reap use to list processes, their session ids, states and start times; offline tests substitute a fake.",
+    "resolver directory": "Under NetworkUnrestricted only: the directory of the file /etc/resolv.conf resolves to, when it lies beneath /run or /var/run and is not /run or /var/run itself (for example /run/systemd/resolve). It is passed to the agent as an extra --landlock-ro.",
+    "sandbox directory": "<Root>/<id>/, mode 0700, where id is 16 random lowercase hex characters. It holds the marker agentkit-sandbox.json and the 0700 subdirectories workspace/, home/ and tmp/.",
+    "session kill": "Action 2 of the destroy step. It reaches background jobs that tools.Run left in their own process groups, because they stay in the agent's session.",
+    "starter seam": "The unexported function that starts an agent process and returns its net.Conn, exit status and stderr tail. Offline tests substitute an in-process agent.New served over pipes with a test-chosen Landlock report."
+  },
+  "requirements": [
+    {
+      "id": "18-REQ-1",
+      "title": "Package API, platform and kernel checks in New",
+      "rationale": "An embedder deciding whether to fall back to podman needs one sentinel, returned from New, that means this host cannot confine a sandbox.",
+      "criteria": [
+        {
+          "id": "18-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "package sandbox/landlock",
+          "action": "declare `Options{Root, AgentBinary string; ExtraRO, ExtraRW []string}`, the sentinel `ErrNoLandlock = errors.New(\"landlock: this host cannot confine a sandbox with Landlock ABI 4\")` and `New(o Options) (sandbox.Provider, error)`, and build and vet on linux/amd64, linux/arm64, darwin/arm64 and windows/amd64",
+          "contract": "New performs, in order and stopping at the first failure, the platform check, the kernel probe, the Root check, the ExtraRO/ExtraRW checks and the agent-binary resolution and version check; the version check is the only process New starts"
+        },
+        {
+          "id": "18-REQ-1.2",
+          "pattern": "unwanted",
+          "condition": "New is called on a GOOS other than linux",
+          "system": "New",
+          "action": "refuse without probing, creating a directory or starting a process",
+          "contract": "returns a nil provider and an error for which errors.Is(err, ErrNoLandlock) is true and whose message names the GOOS and `sandbox/podman`"
+        },
+        {
+          "id": "18-REQ-1.3",
+          "pattern": "event_driven",
+          "condition": "New runs on linux",
+          "system": "New",
+          "action": "query the kernel's Landlock ABI exactly once through the probe seam, whose default issues `syscall.Syscall(444, 0, 0, 1)` (landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)), and issue no other Landlock syscall",
+          "contract": "a probed ABI of 4 or more lets New continue to the Root check; the probe seam is invoked exactly one time per New call"
+        },
+        {
+          "id": "18-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "the probe reports a kernel Landlock ABI from 0 to 3",
+          "system": "New",
+          "action": "refuse the host",
+          "contract": "returns a nil provider and an error wrapping ErrNoLandlock whose message names the ABI found, `ABI 4`, `Linux 6.7` and `sandbox/podman`"
+        },
+        {
+          "id": "18-REQ-1.5",
+          "pattern": "unwanted",
+          "condition": "the probe itself fails with an errno",
+          "system": "New",
+          "action": "refuse the host and explain the errno",
+          "contract": "returns a nil provider and an error wrapping ErrNoLandlock whose message names the errno and, for ENOSYS, says the kernel has no Landlock; for EOPNOTSUPP, says Landlock is not enabled in `lsm=`; for EPERM, says the call is blocked, typically by a container's seccomp filter"
+        },
+        {
+          "id": "18-REQ-1.6",
+          "pattern": "ubiquitous",
+          "system": "landlock provider",
+          "action": "be safe for concurrent use, so that concurrent Create calls on one provider each produce an independent sandbox with its own id, sandbox directory and agent process",
+          "contract": "N concurrent Create calls that succeed return N sandboxes with N distinct IDs and N distinct sandbox directories; closing one leaves the others usable"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-2",
+      "title": "Root, extra paths and agent binary in New",
+      "rationale": "A misconfiguration must fail in New with a plain error, distinct from ErrNoLandlock, and must never let one sandbox reach another.",
+      "criteria": [
+        {
+          "id": "18-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "New reaches the Root check",
+          "system": "New",
+          "action": "use `<os.UserCacheDir()>/agentkit-sandbox-landlock` when Options.Root is empty, make the path absolute, create it with mode 0700 when missing, and resolve symlinks in it once",
+          "contract": "the provider's Root is an absolute, symlink-free path to an existing directory; a missing Root is created with mode 0700"
+        },
+        {
+          "id": "18-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "the resolved Root is not a directory, or cannot be created",
+          "system": "New",
+          "action": "refuse the options",
+          "contract": "returns a nil provider and an error naming Options.Root for which errors.Is(err, ErrNoLandlock) is false"
+        },
+        {
+          "id": "18-REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "an ExtraRO or ExtraRW entry is a relative path or is `/`",
+          "system": "New",
+          "action": "refuse the options",
+          "contract": "returns a nil provider and an error naming `Options.ExtraRO[i]` or `Options.ExtraRW[i]` with the entry's index, for which errors.Is(err, ErrNoLandlock) is false"
+        },
+        {
+          "id": "18-REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "an ExtraRO or ExtraRW entry, symlink-resolved where it exists and cleaned otherwise, equals Root, contains Root or lies beneath Root",
+          "system": "New",
+          "action": "refuse the options",
+          "contract": "returns a nil provider and an error naming `Options.ExtraRO[i]` or `Options.ExtraRW[i]` and Root, for which errors.Is(err, ErrNoLandlock) is false"
+        },
+        {
+          "id": "18-REQ-2.5",
+          "pattern": "event_driven",
+          "condition": "New reaches the agent-binary step",
+          "system": "New",
+          "action": "resolve the agent binary as Options.AgentBinary made absolute when set; otherwise `agentkit-sandboxd` beside the symlink-resolved os.Executable(), then exec.LookPath(\"agentkit-sandboxd\") on the host's PATH; and accept only a regular file with an execute bit",
+          "contract": "the first candidate in that order that is a regular executable file becomes the binary every agent and init agent is started from"
+        },
+        {
+          "id": "18-REQ-2.6",
+          "pattern": "unwanted",
+          "condition": "no candidate agent binary is a regular executable file",
+          "system": "New",
+          "action": "refuse the options",
+          "contract": "returns a nil provider and an error, not wrapping ErrNoLandlock, that lists every path tried and the install command `go install github.com/agent-fox-dev/agentkit-go/sandbox/cmd/agentkit-sandboxd@<buildver.Version()>`, or `cd sandbox && go install ./cmd/agentkit-sandboxd` when the version is `(devel)`"
+        },
+        {
+          "id": "18-REQ-2.7",
+          "pattern": "event_driven",
+          "condition": "an agent binary has been resolved",
+          "system": "New",
+          "action": "run `<binary> --version` once with a 10-second timeout and an empty environment, and parse its output as `agentkit-sandboxd <version> (protocol M.N)`",
+          "contract": "New returns a non-nil provider and nil error when M equals sandbox.ProtocolMajor and N is at least 2"
+        },
+        {
+          "id": "18-REQ-2.8",
+          "pattern": "unwanted",
+          "condition": "the version run fails, times out, prints output that does not parse, or reports M different from sandbox.ProtocolMajor or N below 2",
+          "system": "New",
+          "action": "refuse the binary",
+          "contract": "returns a nil provider and an error, not wrapping ErrNoLandlock, that quotes the version output and the install command of 18-REQ-2.6"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-3",
+      "title": "Capabilities and Create refusals",
+      "rationale": "The provider must say plainly that it is a confinement and refuse, before anything exists, every field it cannot honour.",
+      "criteria": [
+        {
+          "id": "18-REQ-3.1",
+          "pattern": "ubiquitous",
+          "system": "Capabilities",
+          "action": "return Provider \"landlock\", Isolation sandbox.IsolationConfinement, Network [NetworkNone, NetworkUnrestricted], every Resources capability false, Image false, Workdir false and Landlock true",
+          "contract": "Capabilities() equals that value on every platform and for every Options"
+        },
+        {
+          "id": "18-REQ-3.2",
+          "pattern": "ubiquitous",
+          "system": "Capabilities",
+          "action": "set Notes to text stating that the provider is a confinement, not an isolation, sharing the host kernel, memory, CPU and process table with no resource limits; that NetworkNone denies TCP only and leaves UDP and Multipath TCP unrestricted; that a process inside can connect to any Unix socket the embedder's user can reach (a D-Bus session bus, an ssh-agent, a podman or docker socket) and act outside the confinement through it; that it can signal the user's processes; that a process starting a new session can outlive Close; and that tool results name host paths",
+          "contract": "Capabilities().Notes contains the substrings `not an isolation`, `UDP`, `Multipath TCP`, `Unix socket`, `D-Bus`, `ssh-agent`, `signal`, `new session` and `host paths`"
+        },
+        {
+          "id": "18-REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "Create receives a Spec with any non-zero Resources field, Network.Mode NetworkAllowlist, a non-empty Image or a non-empty Workdir",
+          "system": "Create",
+          "action": "refuse the spec through sandbox.CheckSpec(p.Capabilities(), spec) before creating any directory or starting any process",
+          "contract": "returns a nil sandbox and a *sandbox.SpecError with Provider \"landlock\" and Field `Resources.<name>`, `Network.Mode`, `Image` or `Workdir`, matching sandbox.ErrUnsupported; Root has no new entry and no process was started"
+        },
+        {
+          "id": "18-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "Create receives a Spec whose Provider map has any key",
+          "system": "Create",
+          "action": "refuse the spec before creating any directory or starting any process",
+          "contract": "returns a nil sandbox and a *sandbox.SpecError{Provider: \"landlock\", Field: \"Provider\"} whose message names the first key in sorted order, matching sandbox.ErrUnsupported; Root has no new entry and no process was started"
+        },
+        {
+          "id": "18-REQ-3.5",
+          "pattern": "unwanted",
+          "condition": "Create receives a Spec whose Env sets HOME or TMPDIR",
+          "system": "Create",
+          "action": "refuse the spec instead of overriding the variable, before creating any directory or starting any process",
+          "contract": "returns a nil sandbox and a *sandbox.SpecError{Provider: \"landlock\", Field: \"Env\"} whose reason names the variable and says the provider sets it to the sandbox's private directory; Root has no new entry and no process was started"
+        },
+        {
+          "id": "18-REQ-3.6",
+          "pattern": "event_driven",
+          "condition": "Create receives a Spec that passes every check, including one with RequireLandlock true, TTL 0 or Labels set",
+          "system": "Create",
+          "action": "accept it, use the effective spec's TTL of 1h when TTL is 0, and record Labels only in the marker",
+          "contract": "the returned sandbox's Spec().TTL is 1h for a zero TTL; RequireLandlock does not cause a refusal on a host that passed New; Labels appear in the marker and in no agent argument or environment value"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-4",
+      "title": "Sandbox directory and marker",
+      "rationale": "Reap and cleanup depend on a private, well-formed directory whose marker names a process that can be told apart from a reused pid.",
+      "criteria": [
+        {
+          "id": "18-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "Create has passed every spec check",
+          "system": "Create",
+          "action": "draw 16 random lowercase hex characters as the id, create `<Root>/<id>/` with mode 0700, write the marker `agentkit-sandbox.json` with mode 0600 immediately, and then create `workspace/`, `home/` and `tmp/`, each chmodded to 0700 whatever the umask",
+          "contract": "the sandbox's ID() matches ^[0-9a-f]{16}$; under umask 0, 022 and 077 the directory and its three subdirectories have mode 0700 and the marker has mode 0600"
+        },
+        {
+          "id": "18-REQ-4.2",
+          "pattern": "ubiquitous",
+          "system": "marker",
+          "action": "record the owner's pid, its start time from /proc/<pid>/stat field 22, the boot id from /proc/sys/kernel/random/boot_id, the owner's role `creator` or `agent`, the creation time, the TTL, the network mode and the labels, and never record any Spec.Env name or value",
+          "contract": "the marker is JSON that decodes into those fields; for a Spec.Env containing a unique sentinel value, the marker bytes do not contain that value"
+        },
+        {
+          "id": "18-REQ-4.3",
+          "pattern": "event_driven",
+          "condition": "the agent process has started",
+          "system": "Create",
+          "action": "replace the marker, which until then names the creating process with role `creator`, by writing a temporary file in the sandbox directory and renaming it over the marker, so that it names the agent's pid and start time with role `agent`",
+          "contract": "before the agent starts the marker's pid is os.Getpid() and role is `creator`; after Create returns the marker's pid is the agent's pid and role is `agent`; no temporary file remains in the sandbox directory"
+        },
+        {
+          "id": "18-REQ-4.4",
+          "pattern": "ubiquitous",
+          "system": "landlock provider",
+          "action": "keep the marker and `<Root>/<id>/` itself out of the agent's ruleset by passing only `workspace/`, `home/`, `tmp/`, ExtraRO, ExtraRW and the resolver directory as roots",
+          "contract": "no --workdir, --landlock-ro or --landlock-rw argument and no HOME or TMPDIR value equals or contains `<Root>/<id>` other than the three subdirectories; on Linux ABI 4, `cat` of the marker through proxy execute fails with a permission error"
+        },
+        {
+          "id": "18-REQ-4.5",
+          "pattern": "unwanted",
+          "condition": "any step of Create fails after `<Root>/<id>/` was created",
+          "system": "Create",
+          "action": "remove the sandbox directory before returning",
+          "contract": "returns a nil sandbox and a non-nil error, and `<Root>/<id>/` no longer exists when Create returns"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-5",
+      "title": "Starting, attaching and checking the agent",
+      "rationale": "Landlock is the only boundary, so the agent's arguments, environment and reported ruleset are all checked rather than trusted.",
+      "criteria": [
+        {
+          "id": "18-REQ-5.1",
+          "pattern": "ubiquitous",
+          "system": "agent argument builder",
+          "action": "build, as a pure unexported function, the argument list: sandbox.AgentArgs of the effective spec with Workdir `<Root>/<id>/workspace` (giving --ttl, --network, --workdir), then `--landlock-ro P` for each ExtraRO in order, then `--landlock-ro <resolver directory>` when one applies, then `--landlock-rw P` for each ExtraRW in order",
+          "contract": "for Options{ExtraRO: [a, b], ExtraRW: [c]} and NetworkNone the list is AgentArgs(eff) ++ [--landlock-ro a --landlock-ro b --landlock-rw c]"
+        },
+        {
+          "id": "18-REQ-5.2",
+          "pattern": "ubiquitous",
+          "system": "resolver directory function",
+          "action": "take the resolv.conf path to read as a parameter and return the directory of the file it resolves to only when that directory lies beneath /run or /var/run and is not /run or /var/run itself; the provider adds that directory only under NetworkUnrestricted",
+          "contract": "a path resolving to /run/systemd/resolve/stub-resolv.conf yields /run/systemd/resolve; a regular /etc/resolv.conf, a target directly in /run, a dangling link and a missing file yield none; under NetworkNone no resolver --landlock-ro is ever added"
+        },
+        {
+          "id": "18-REQ-5.3",
+          "pattern": "ubiquitous",
+          "system": "agent environment builder",
+          "action": "build, as a pure unexported function, exactly Spec.Env plus `HOME=<dir>/home` and `TMPDIR=<dir>/tmp`, plus `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` when Spec.Env sets no PATH, as `NAME=value` strings sorted by name, taking nothing from the embedder's environment",
+          "contract": "with the embedder's environment holding a sentinel variable, the result contains no entry for it; a Spec.Env PATH is kept unchanged; the slice is sorted"
+        },
+        {
+          "id": "18-REQ-5.4",
+          "pattern": "ubiquitous",
+          "system": "starter seam",
+          "action": "start the agent from the resolved binary with the workspace as its working directory, SysProcAttr Setsid true, stdin and stdout as pipes adapted with stdioconn.New, stderr drained into a tail buffer of the last 8 KiB, a lifetime independent of Create's context, and a goroutine that waits on it and records its exit status",
+          "contract": "the started agent is its own session leader (session id equals its pid); cancelling Create's context after Create returns does not end the agent"
+        },
+        {
+          "id": "18-REQ-5.5",
+          "pattern": "event_driven",
+          "condition": "the agent has started",
+          "system": "Create",
+          "action": "call attach.Dial(ctx, conn, attach.Config{ID: id, Spec: eff, Destroy: <destroy step>, Provider: \"landlock\"}) and, after Hello and whatever Spec.RequireLandlock says, check that Agent().Landlock has ABI >= sandbox.LandlockTCPABI, TCP true under NetworkNone, the resolved workspace/, home/ and tmp/ among Writable, and no other Writable or ReadOnly root equal to or containing Root",
+          "contract": "when every check passes, Create returns the provider's wrapper sandbox whose Spec().Workdir is the host path `<Root>/<id>/workspace` and a nil error"
+        },
+        {
+          "id": "18-REQ-5.6",
+          "pattern": "unwanted",
+          "condition": "attach.Dial fails",
+          "system": "Create",
+          "action": "classify the failure after attach has run the destroy step",
+          "contract": "sandbox.ErrProtocol errors and attach's RequireLandlock *sandbox.SpecError are returned unchanged; when ctx is done the error wraps ctx.Err(); when the agent has exited the error reads `landlock: agentkit-sandboxd exited with status N: <stderr tail>`; in every case the sandbox directory is gone and the agent's session has no live process"
+        },
+        {
+          "id": "18-REQ-5.7",
+          "pattern": "unwanted",
+          "condition": "the agent's report has ABI below 4, or TCP false under NetworkNone, or lacks the resolved workspace/, home/ or tmp/ among Writable",
+          "system": "Create",
+          "action": "close the sandbox, running the destroy step exactly once",
+          "contract": "returns a nil sandbox and an error wrapping ErrNoLandlock that quotes the report's ABI, KernelABI, TCP and Note; the destroy step's invocation count is 1 and the sandbox directory is gone"
+        },
+        {
+          "id": "18-REQ-5.8",
+          "pattern": "unwanted",
+          "condition": "a Writable or ReadOnly root in the agent's report, other than the three sandbox subdirectories, equals or contains Root",
+          "system": "Create",
+          "action": "close the sandbox, running the destroy step exactly once",
+          "contract": "returns a nil sandbox and an error naming Options.Root and the containing root and telling the caller to choose a Root outside the system directories; the destroy step's invocation count is 1"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-6",
+      "title": "Confinement on a Landlock ABI 4 kernel",
+      "rationale": "The provider is only worth using if the agent's ruleset actually keeps the model's commands away from the embedder's files and, under NetworkNone, from TCP.",
+      "criteria": [
+        {
+          "id": "18-REQ-6.1",
+          "pattern": "state_driven",
+          "condition": "a sandbox created on a Linux host with Landlock ABI 4 or later is open",
+          "system": "landlock sandbox",
+          "action": "let proxy execute create files beneath the workspace, the sandbox's home/ and tmp/",
+          "contract": "`touch` of a new file in the workspace exits 0 and the file exists on the host beneath `<Root>/<id>/workspace`"
+        },
+        {
+          "id": "18-REQ-6.2",
+          "pattern": "unwanted",
+          "condition": "a command run by proxy execute creates a file in the embedder's real home directory or reads a file in a sibling directory outside the ruleset",
+          "system": "landlock sandbox",
+          "action": "deny the access",
+          "contract": "the command exits non-zero with output naming a permission error, no file is created in the real home directory, and the sibling file's content does not appear in the output"
+        },
+        {
+          "id": "18-REQ-6.3",
+          "pattern": "unwanted",
+          "condition": "a command run by proxy execute in a NetworkNone sandbox opens a TCP connection to a loopback listener",
+          "system": "landlock sandbox",
+          "action": "deny the connection",
+          "contract": "the connect fails inside the sandbox and the listener accepts no connection"
+        },
+        {
+          "id": "18-REQ-6.4",
+          "pattern": "event_driven",
+          "condition": "a command run by proxy execute in a NetworkUnrestricted sandbox opens a TCP connection to a loopback listener",
+          "system": "landlock sandbox",
+          "action": "allow the connection",
+          "contract": "the connect succeeds and the listener accepts exactly one connection"
+        },
+        {
+          "id": "18-REQ-6.5",
+          "pattern": "ubiquitous",
+          "system": "landlock sandbox",
+          "action": "expose through Agent().Landlock the agent's applied ruleset",
+          "contract": "on an ABI 4 kernel, Agent().Landlock.ABI == 4, TCP is true under NetworkNone, and the symlink-resolved workspace/, home/ and tmp/ are each among Writable"
+        },
+        {
+          "id": "18-REQ-6.6",
+          "pattern": "ubiquitous",
+          "system": "landlock sandbox",
+          "action": "give tools exactly the environment of 18-REQ-5.3",
+          "contract": "`env` through proxy execute prints exactly the Spec.Env entries plus HOME, TMPDIR and PATH, with HOME equal to `<Root>/<id>/home` and TMPDIR equal to `<Root>/<id>/tmp`"
+        },
+        {
+          "id": "18-REQ-6.7",
+          "pattern": "optional",
+          "condition": "the `go` on the sandbox's PATH lies beneath a system directory or beneath a directory named in Options.ExtraRO",
+          "system": "landlock sandbox",
+          "action": "let proxy execute run `go version`",
+          "contract": "`go version` exits 0 and prints a line starting with `go version`"
+        },
+        {
+          "id": "18-REQ-6.8",
+          "pattern": "unwanted",
+          "condition": "the `go` on the sandbox's PATH lies only beneath a directory outside the ruleset",
+          "system": "landlock sandbox",
+          "action": "deny its execution",
+          "contract": "`go version` through proxy execute fails with a permission error"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-7",
+      "title": "Destroy step, Close and TTL",
+      "rationale": "tools.Run gives every command its own process group, so only a session-wide kill and a permission-restoring removal leave nothing behind.",
+      "criteria": [
+        {
+          "id": "18-REQ-7.1",
+          "pattern": "ubiquitous",
+          "system": "destroy step",
+          "action": "run exactly once per sandbox, on Close, at the host-side TTL and on every Create failure after the agent has started, performing stop-agent, session kill and directory removal in that order, running each action even when an earlier one failed, and finishing within attach's 30-second destroy budget",
+          "contract": "returns errors.Join of the actions' errors (nil when all succeed); a second Close returns without running it again"
+        },
+        {
+          "id": "18-REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "the destroy step stops the agent",
+          "system": "destroy step",
+          "action": "wait up to 5 seconds for the agent to exit after attach closed its connection, then SIGKILL the agent's process group",
+          "contract": "an agent that exits on EOF is reaped without a signal; an agent that ignores EOF is killed after 5 s and its exit is recorded"
+        },
+        {
+          "id": "18-REQ-7.3",
+          "pattern": "event_driven",
+          "condition": "the destroy step kills the session",
+          "system": "destroy step",
+          "action": "scan the process table seam for processes whose /proc/<pid>/stat field 6 (session id) equals the agent's pid, skip zombies (field 3 `Z`), SIGKILL each, and repeat until a scan finds none or 5 seconds have passed",
+          "contract": "after the action no non-zombie process with that session id remains, or the step returns an error naming the survivors after 5 s"
+        },
+        {
+          "id": "18-REQ-7.4",
+          "pattern": "event_driven",
+          "condition": "the destroy step removes the sandbox directory",
+          "system": "destroy step",
+          "action": "remove the tree without following any symlink, restoring owner read, write and execute on each directory before removing its entries, and treat a missing directory as success",
+          "contract": "a tree holding read-only directories (a Go module cache under home/, a `chmod -R a-w` tree) is removed completely; removal of an already-missing directory returns nil"
+        },
+        {
+          "id": "18-REQ-7.5",
+          "pattern": "ubiquitous",
+          "system": "directory removal",
+          "action": "for any directory tree mixing read-only directories, read-only files and symlinks to paths outside the tree, delete the whole tree and leave every symlink target, its contents and its mode unchanged"
+        },
+        {
+          "id": "18-REQ-7.6",
+          "pattern": "event_driven",
+          "condition": "Close is called on a Linux ABI 4 sandbox in which proxy execute started a background `sleep` with redirected output and ran `chmod -R a-w` on a directory tree",
+          "system": "Close",
+          "action": "run the destroy step",
+          "contract": "Close returns nil; afterwards the agent and the `sleep` process no longer exist and `<Root>/<id>/` does not exist"
+        },
+        {
+          "id": "18-REQ-7.7",
+          "pattern": "event_driven",
+          "condition": "a sandbox's TTL elapses without Close",
+          "system": "landlock provider",
+          "action": "let attach's host timer run the destroy step, while the agent's own --ttl ends the agent even when the host is gone",
+          "contract": "a sandbox created with TTL 5s and never closed has no live agent, no live session process and no sandbox directory within a few seconds after its TTL; later calls on it fail with sandbox.ErrUnavailable"
+        },
+        {
+          "id": "18-REQ-7.8",
+          "pattern": "event_driven",
+          "condition": "the embedder's process dies while a sandbox is open",
+          "system": "agentkit-sandboxd",
+          "action": "exit when its stdin closes, leaving the sandbox directory and any process that outlived it for Reap",
+          "contract": "the agent process exits; the sandbox directory still exists with a marker naming the agent"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-8",
+      "title": "Sync, Tools and the GitRepo init agent",
+      "rationale": "A GitRepo clone needs TCP, which the sandbox's own agent must never get, so it runs in a second confined agent beside the idle one, under 17's slot rule.",
+      "criteria": [
+        {
+          "id": "18-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "landlock sandbox wrapper",
+          "action": "forward ID, Spec, Agent, Export and Close to attach's sandbox, forward Tools and every non-GitRepo Sync under a read lock, and run a GitRepo Sync under the write lock, so Tools and Sync wait for an in-flight GitRepo",
+          "contract": "a Tools or LocalDir Sync call issued during a GitRepo Sync returns only after the GitRepo Sync has returned"
+        },
+        {
+          "id": "18-REQ-8.2",
+          "pattern": "ubiquitous",
+          "system": "GitRepo slot",
+          "action": "become taken on a successful GitRepo Sync, on any other successful Sync, and on the first Tools call whatever its outcome, and stay free after a failed GitRepo Sync",
+          "contract": "after a failed GitRepo Sync a second GitRepo Sync is accepted; after any of the taking events a GitRepo Sync is refused"
+        },
+        {
+          "id": "18-REQ-8.3",
+          "pattern": "unwanted",
+          "condition": "a GitRepo Sync arrives while attach.Live fails, gitclone.Check refuses the repository, the slot is taken, or Agent().Git is false (checked in that order under the write lock)",
+          "system": "landlock sandbox wrapper",
+          "action": "refuse it before starting any process",
+          "contract": "returns attach.Live's error, gitclone.Check's error, `landlock: GitRepo must be the first Sync and come before Tools`, or `landlock: git is not on the sandbox's PATH (<PATH>); a GitRepo needs it` respectively; no init agent is started and the workspace is unchanged"
+        },
+        {
+          "id": "18-REQ-8.4",
+          "pattern": "event_driven",
+          "condition": "a GitRepo Sync passes its preconditions",
+          "system": "landlock sandbox wrapper",
+          "action": "start an init agent from the same binary in its own session with --ttl the time left to the sandbox's expiry rounded up to a second, --network unrestricted, --workdir the same workspace, the same --landlock-ro and --landlock-rw flags plus the resolver directory, and an environment of exactly GIT_CONFIG_NOSYSTEM=1, GIT_TERMINAL_PROMPT=0, the sandbox's HOME and TMPDIR and the sandbox agent's PATH; attach it with Spec{Network: NetworkUnrestricted, TTL: <that>}, Provider \"landlock\" and a destroy step of actions 1 and 2 only",
+          "contract": "the init agent's argv and environment equal those values (no Spec.Env entry appears); its destroy step never removes the sandbox directory"
+        },
+        {
+          "id": "18-REQ-8.5",
+          "pattern": "event_driven",
+          "condition": "the init agent's report shows ABI >= 4 and the workspace among Writable",
+          "system": "landlock sandbox wrapper",
+          "action": "call Tools(ctx, sandbox.ToolOptions{DisableSpill: true}) on the init sandbox, call its run_command proxy with argv `git` followed by gitclone.Args(repo, <workspace>) under the Sync context bounded by the sandbox's expiry through the init-command seam, and always close the init sandbox before returning",
+          "contract": "on success the slot is taken, Sync returns a zero SyncResult and nil error, the repository's files are in the workspace, no init agent process remains, and a TCP connect from the sandbox's own proxy execute still fails under NetworkNone"
+        },
+        {
+          "id": "18-REQ-8.6",
+          "pattern": "unwanted",
+          "condition": "the init agent's report shows ABI below 4 or lacks the workspace among Writable",
+          "system": "landlock sandbox wrapper",
+          "action": "close the init sandbox without running git",
+          "contract": "Sync returns an error wrapping ErrNoLandlock; the slot stays free"
+        },
+        {
+          "id": "18-REQ-8.7",
+          "pattern": "unwanted",
+          "condition": "the init command returns outcome exec_failed or exit status 126 or 127, any other non-zero exit, or the context ends or the sandbox's expiry is reached",
+          "system": "landlock sandbox wrapper",
+          "action": "fail the Sync",
+          "contract": "exec_failed/126/127: an error saying git could not be run under the sandbox's ruleset, advising to install git beneath a system directory or add its directory to Options.ExtraRO, with the output tail; other non-zero exit: an error naming the URL with the last 2 KiB of output; done context: an error wrapping ctx.Err(); expiry: an error wrapping sandbox.ErrUnavailable"
+        },
+        {
+          "id": "18-REQ-8.8",
+          "pattern": "unwanted",
+          "condition": "a GitRepo Sync fails after the init agent started",
+          "system": "landlock sandbox wrapper",
+          "action": "once the init agent is gone, remove the workspace's contents with the destroy step's removal while keeping the workspace directory, and leave the sandbox's own agent running",
+          "contract": "after the failed Sync the workspace directory exists and is empty, the slot is free, and Tools on the sandbox still succeeds"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-9",
+      "title": "Reap",
+      "rationale": "A crashed embedder leaves a directory and possibly a background process behind; Reap must remove them without ever touching a live sandbox or a reused pid.",
+      "criteria": [
+        {
+          "id": "18-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "Reap",
+          "action": "list Root's direct entries and consider only directories (never symlinks) whose name is 16 lowercase hex characters and whose marker can be read, leaving every other entry untouched",
+          "contract": "files, symlinks, directories with other names and directories with an unreadable or missing marker remain unchanged after Reap"
+        },
+        {
+          "id": "18-REQ-9.2",
+          "pattern": "ubiquitous",
+          "system": "Reap decision",
+          "action": "for any marker and process lookup, judge the owner alive exactly when /proc/<pid> exists, the process's start time equals the recorded one and the current boot id equals the recorded one, as a pure function tested on every platform",
+          "contract": "owner alive → keep; owner dead → remove; pid reused with a different start time → remove; different boot id → remove"
+        },
+        {
+          "id": "18-REQ-9.3",
+          "pattern": "state_driven",
+          "condition": "a sandbox's marker owner is alive",
+          "system": "Reap",
+          "action": "skip the sandbox, whichever process created it",
+          "contract": "the sandbox directory and its agent are unchanged and its id is not returned"
+        },
+        {
+          "id": "18-REQ-9.4",
+          "pattern": "event_driven",
+          "condition": "a sandbox's marker owner is not alive",
+          "system": "Reap",
+          "action": "SIGKILL every process in the agent's session as the destroy step's action 2 does when the marker names the agent, the boot id matches and no process with the agent's pid exists, and then remove the directory as the destroy step's action 3 does",
+          "contract": "the session's processes no longer exist and the sandbox directory is gone; no signal is sent when the boot id differs or the marker names the creator"
+        },
+        {
+          "id": "18-REQ-9.5",
+          "pattern": "ubiquitous",
+          "system": "Reap",
+          "action": "return the ids it removed, sorted, together with the joined errors of any removals that failed",
+          "contract": "returns ([]string sorted ascending, nil) when every removal succeeds, or (removed ids, errors.Join of failures) otherwise"
+        },
+        {
+          "id": "18-REQ-9.6",
+          "pattern": "event_driven",
+          "condition": "on Linux ABI 4, the process that created a sandbox (a re-executed test child) is killed after starting a background process through proxy execute",
+          "system": "Reap",
+          "action": "remove that sandbox and kill the background process that outlived the agent",
+          "contract": "Reap returns a slice containing the sandbox's id; the background process and the sandbox directory no longer exist; a sandbox with a live agent created by another process is not removed"
+        }
+      ]
+    },
+    {
+      "id": "18-REQ-10",
+      "title": "Unconfined host, build constraints, test target and example",
+      "rationale": "The provider must never confine the embedder or add a dependency, and its network test and example must stay out of the offline gate.",
+      "criteria": [
+        {
+          "id": "18-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "package sandbox/landlock",
+          "action": "import neither github.com/landlock-lsm/go-landlock nor sandbox/internal/confine, directly or transitively",
+          "contract": "`go list -deps ./landlock` in the sandbox module lists neither package, and TS-15-39 passes"
+        },
+        {
+          "id": "18-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "sandbox module",
+          "action": "gain no Go module dependency from this spec",
+          "contract": "the sandbox module's direct requirements in sandbox/go.mod are unchanged"
+        },
+        {
+          "id": "18-REQ-10.3",
+          "pattern": "ubiquitous",
+          "system": "landlock provider",
+          "action": "apply no Landlock ruleset, seccomp filter or other restriction to the embedder's own process",
+          "contract": "a re-executed test child that runs Create, a LocalDir Sync, Tools, proxy execute and Close over this provider can afterwards create a file outside the workspace and connect to a loopback listener"
+        },
+        {
+          "id": "18-REQ-10.4",
+          "pattern": "optional",
+          "condition": "the Linux tests run on a kernel with Landlock ABI below 4",
+          "system": "sandbox/landlock Linux tests",
+          "action": "skip with a message naming the ABI found, while the offline tests run on every platform within make check without network access",
+          "contract": "`go test ./landlock/` exits 0 on such a host and every skipped test's message names the probed ABI"
+        },
+        {
+          "id": "18-REQ-10.5",
+          "pattern": "ubiquitous",
+          "system": "Makefile",
+          "action": "provide a `sandbox-landlock-test` target that runs `go test -count=1 -v ./landlock/` in sandbox/ with AGENTKIT_SANDBOX_GIT_URL defaulting to `https://github.com/agent-fox-dev/agentkit-go`, and keep it out of `make check`",
+          "contract": "`make -n sandbox-landlock-test` prints that command with the default URL; `check` does not depend on `sandbox-landlock-test`"
+        },
+        {
+          "id": "18-REQ-10.6",
+          "pattern": "optional",
+          "condition": "AGENTKIT_SANDBOX_GIT_URL is set on a Linux ABI 4 host",
+          "system": "sandbox/landlock Linux tests",
+          "action": "run a real public GitRepo clone under NetworkNone",
+          "contract": "the repository's files appear in the workspace and a later TCP connect from proxy execute fails; without the variable the test is skipped"
+        },
+        {
+          "id": "18-REQ-10.7",
+          "pattern": "optional",
+          "condition": "examples/sandbox is run with --landlock and --agent PATH",
+          "system": "examples/sandbox",
+          "action": "run the same program on landlock.New(Options{AgentBinary: PATH}) under NetworkNone, leaving the default offline run and its main_test.go unchanged",
+          "contract": "the program exits 0 on a Linux ABI 4 host, and exits non-zero with an error wrapping ErrNoLandlock elsewhere"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "18-PATH-1",
+      "title": "An embedder runs a command in a confined sandbox and closes it",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls landlock.New(Options{AgentBinary: <built agentkit-sandboxd>, Root: <temp dir>})"
+        },
+        {
+          "actor": "landlock provider",
+          "action": "probes the kernel's Landlock ABI with syscall 444, resolves Root and the agent binary, and runs `<binary> --version` to check protocol 1.≥2"
+        },
+        {
+          "actor": "embedder",
+          "action": "calls Create(ctx, sandbox.Spec{}) asking for NetworkNone"
+        },
+        {
+          "actor": "landlock provider",
+          "action": "runs CheckSpec and its own refusals, creates <Root>/<id>/ with the creator marker, workspace/, home/ and tmp/, and starts agentkit-sandboxd in a new session with --ttl, --network none and --workdir <workspace> and the private environment"
+        },
+        {
+          "actor": "agentkit-sandboxd",
+          "action": "applies its Landlock ruleset and answers Hello with its LandlockInfo"
+        },
+        {
+          "actor": "landlock provider",
+          "action": "checks the report against the ABI 4 floor, rewrites the marker to name the agent and returns the wrapper sandbox"
+        },
+        {
+          "actor": "embedder",
+          "action": "Syncs a LocalDir, calls Tools and runs proxy execute commands that write in the workspace and fail to write the real home or open a TCP connection"
+        },
+        {
+          "actor": "embedder",
+          "action": "calls Close"
+        },
+        {
+          "actor": "destroy step",
+          "action": "stops the agent, kills every process in its session and removes <Root>/<id>/"
+        }
+      ]
+    },
+    {
+      "id": "18-PATH-2",
+      "title": "An embedder fills a sandbox from a public GitRepo through the init agent",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "creates a NetworkNone sandbox and calls Sync(ctx, sandbox.GitRepo{URL: <https url>})"
+        },
+        {
+          "actor": "landlock sandbox wrapper",
+          "action": "checks attach.Live, gitclone.Check, the free slot and Agent().Git under the write lock"
+        },
+        {
+          "actor": "landlock sandbox wrapper",
+          "action": "starts an init agentkit-sandboxd with --network unrestricted, the same workspace and roots plus the resolver directory, and a git-only environment, and checks its Landlock report"
+        },
+        {
+          "actor": "init agent",
+          "action": "runs `git` with gitclone.Args through its run_command tool, writing the repository into the workspace"
+        },
+        {
+          "actor": "landlock sandbox wrapper",
+          "action": "closes the init sandbox, takes the slot and returns a zero SyncResult"
+        },
+        {
+          "actor": "embedder",
+          "action": "calls Tools and proxy execute, sees the cloned files, and a TCP connect from the sandbox still fails"
+        }
+      ]
+    },
+    {
+      "id": "18-PATH-3",
+      "title": "A crashed embedder's sandbox is reaped by a later process",
+      "steps": [
+        {
+          "actor": "embedder child process",
+          "action": "creates a sandbox, starts a background process through proxy execute and is killed"
+        },
+        {
+          "actor": "agentkit-sandboxd",
+          "action": "sees its stdin close and exits, leaving the sandbox directory and the background process"
+        },
+        {
+          "actor": "later embedder",
+          "action": "calls landlock.New with the same Root and then Reap(ctx)"
+        },
+        {
+          "actor": "Reap",
+          "action": "reads the marker, finds the agent owner dead on the same boot, SIGKILLs the agent's session and removes the sandbox directory"
+        },
+        {
+          "actor": "Reap",
+          "action": "returns the removed sandbox's id while leaving sandboxes with live agents untouched"
+        }
+      ]
+    },
+    {
+      "id": "18-PATH-4",
+      "title": "A sandbox that is never closed is destroyed at its TTL",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls Create with Spec{TTL: 5 * time.Second} and starts a background process through proxy execute without calling Close"
+        },
+        {
+          "actor": "attach host timer",
+          "action": "fires at the TTL and runs the provider's destroy step"
+        },
+        {
+          "actor": "destroy step",
+          "action": "stops the agent, kills its session including the background process, and removes <Root>/<id>/"
+        },
+        {
+          "actor": "embedder",
+          "action": "observes that later calls on the sandbox fail with sandbox.ErrUnavailable"
+        }
+      ]
+    },
+    {
+      "id": "18-PATH-5",
+      "title": "A developer runs the sandbox example on the Landlock provider",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "runs `go run ./examples/sandbox --landlock --agent <path to agentkit-sandboxd>`"
+        },
+        {
+          "actor": "examples/sandbox",
+          "action": "constructs landlock.New with that agent binary and creates a NetworkNone sandbox"
+        },
+        {
+          "actor": "landlock provider",
+          "action": "starts the confined agent and returns the sandbox"
+        },
+        {
+          "actor": "examples/sandbox",
+          "action": "runs the same program as the default run over the sandbox's proxy tools, closes the sandbox and exits 0"
+        }
+      ]
+    }
+  ]
+}

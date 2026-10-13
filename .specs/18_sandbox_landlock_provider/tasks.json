@@ -1,0 +1,529 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "18",
+  "spec_name": "sandbox_landlock_provider",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "cd sandbox && go test -count=1 ./landlock/"
+  },
+  "dependencies": [
+    {
+      "spec": "13_sandbox_core",
+      "reason": "Builds on Provider, Sandbox, Spec, Capabilities with IsolationConfinement, CheckSpec, SpecError, attach.Dial with its destroy-on-failure and host-side TTL timer, stdioconn, agent.New for the offline starter seam, run_command over proxy tools, and local's directory and marker pattern."
+    },
+    {
+      "spec": "14_sandbox_rsync_sync",
+      "reason": "LocalDir Sync and Export run unchanged over the child's stdio under the agent's ruleset; the Linux tests sync the dialtcp helper with them."
+    },
+    {
+      "spec": "15_sandbox_landlock_agent",
+      "reason": "Uses the agent's ruleset, --network, --landlock-ro and --landlock-rw, Hello's LandlockInfo, Capabilities.Landlock and RequireLandlock, AgentArgs and the ABI cap; TS-15-39 constrains the provider's imports."
+    },
+    {
+      "spec": "16_sandbox_images",
+      "reason": "Relies on buildver.Version() and the agent's --version output format for the install line and the protocol check."
+    },
+    {
+      "spec": "17_sandbox_podman",
+      "reason": "Uses sandbox.GitRepo, gitclone.Check and gitclone.Args, attach.Live and attach's GitRepo refusal, and mirrors its GitRepo slot rule; these must be in the tree before task 8."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Create sandbox/landlock with Options, ErrNoLandlock and New's platform and kernel-probe checks, plus the ABI-4 test gate and the import policy tests",
+      "criteria": [
+        "18-REQ-1.1",
+        "18-REQ-1.2",
+        "18-REQ-1.3",
+        "18-REQ-1.4",
+        "18-REQ-1.5",
+        "18-REQ-10.1",
+        "18-REQ-10.2",
+        "18-REQ-10.4"
+      ],
+      "tests": [
+        "TS-18-1",
+        "TS-18-3",
+        "TS-18-5",
+        "TS-18-6",
+        "TS-18-62",
+        "TS-18-63",
+        "TS-18-65"
+      ],
+      "steps": [
+        "Before adding any code, run `go mod edit -json` in sandbox/ and write its non-indirect Require entries as sorted `path@version` lines to internal/policy/testdata/sandbox-direct-requires.18.txt",
+        "Write TS-18-63 and TS-18-62 in internal/policy/landlock_provider_test.go: TS-18-63 compares the current direct requirements with the recorded file; TS-18-62 runs `go list -deps ./landlock` in sandbox/ for the host GOOS and GOOS=linux, asserts neither github.com/landlock-lsm/go-landlock nor modulePath+\"/sandbox/internal/confine\" appears, and calls the existing checkConfinement over the repository's Go files expecting no violation",
+        "Write TS-18-1 (sandbox/landlock/api_test.go: compile-time assertion `var _ func(Options) (sandbox.Provider, error) = New`, reflect field count 4, exact ErrNoLandlock text, and a loop running `go build` and `go vet` of ./landlock/ in sandbox/ with CGO_ENABLED=0 for linux/amd64, linux/arm64, darwin/arm64, windows/amd64), TS-18-3, TS-18-5 and TS-18-6 (sandbox/landlock/new_test.go) and TS-18-65 (sandbox/landlock/gate_test.go); confirm they fail",
+        "Add sandbox/landlock/landlock.go: package doc (a Landlock confinement on Linux ABI 4, not an isolation; New names sandbox/podman elsewhere), Options{Root, AgentBinary string; ExtraRO, ExtraRW []string} with the PRD's field docs, and `var ErrNoLandlock = errors.New(\"landlock: this host cannot confine a sandbox with Landlock ABI 4\")`",
+        "Define an unexported `seams` struct (goos string; probe func() (int, error); later tasks add the version runner, starter, process table, resolver path and init command) and `New(o Options)` that calls unexported `newProvider(o, defaultSeams())`, so offline tests inject seams per provider without mutating globals",
+        "Declare the unexported `provider` struct (resolved root, agent binary, extraRO, extraRW, seams) with Capabilities, Create and Reap methods so it satisfies sandbox.Provider; their bodies are `panic(\"not implemented\")` until tasks 3, 5 and 9 replace them",
+        "Platform step: when seams.goos != \"linux\" return nil and fmt.Errorf(\"%w: GOOS %s has no Landlock; use sandbox/podman\", ErrNoLandlock, goos) before probing, touching the filesystem or starting a process",
+        "Add sandbox/landlock/probe_linux.go with `defaultProbe()` issuing `syscall.Syscall(444, 0, 0, 1)` and returning int(r) or the syscall.Errno, and probe_other.go returning (0, errors.ErrUnsupported); newProvider calls seams.probe exactly once",
+        "Probe error: return fmt.Errorf(\"%w: probing Landlock: %w%s\", ErrNoLandlock, err, hint) where hint is ' (the kernel has no Landlock)' for ENOSYS, ' (Landlock is not enabled in lsm=)' for EOPNOTSUPP, ' (the call is blocked, typically by a container's seccomp filter)' for EPERM, and empty otherwise",
+        "ABI below sandbox.LandlockTCPABI: return an ErrNoLandlock-wrapped error reading 'kernel Landlock ABI N; this provider needs ABI 4 (Linux 6.7) or later; use sandbox/podman'; after a passing probe newProvider returns the provider built so far (task 2 inserts the Root, extra-path and agent-binary steps at this point)",
+        "In gate_test.go add `abiGate(tb testing.TB, probe func() (int, error)) int` that skips with 'Landlock unavailable: <err>' on a probe error and 'kernel Landlock ABI %d, these tests need ABI 4' below 4, returning the ABI otherwise, and `needABI4(t)` calling it with defaultProbe; every later Linux test uses needABI4",
+        "Confirm internal/policy TestCrossTargetBuildAndVet and the TS-15-39 confinement test still pass"
+      ],
+      "touches": [
+        "sandbox/landlock/landlock.go",
+        "sandbox/landlock/probe_linux.go",
+        "sandbox/landlock/probe_other.go",
+        "sandbox/landlock/api_test.go",
+        "sandbox/landlock/new_test.go",
+        "sandbox/landlock/gate_test.go",
+        "internal/policy/landlock_provider_test.go",
+        "internal/policy/testdata/sandbox-direct-requires.18.txt"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Complete New: resolve Root, check ExtraRO/ExtraRW against it, resolve the agent binary and check its --version protocol",
+      "criteria": [
+        "18-REQ-1.1",
+        "18-REQ-1.3",
+        "18-REQ-2"
+      ],
+      "tests": [
+        "TS-18-2",
+        "TS-18-4",
+        "TS-18-8",
+        "TS-18-9",
+        "TS-18-10",
+        "TS-18-11",
+        "TS-18-12",
+        "TS-18-13",
+        "TS-18-14",
+        "TS-18-15"
+      ],
+      "steps": [
+        "Add sandbox/landlock/main_test.go with TestMain that, on Linux, builds agentkit-sandboxd with CGO_ENABLED=0 (`go build -o <tmp>/agentkit-sandboxd ./cmd/agentkit-sandboxd` from the sandbox module root) into a package variable agentBin, removing the temporary directory after m.Run",
+        "Write TS-18-2, TS-18-4, TS-18-8, TS-18-9, TS-18-10, TS-18-11 and TS-18-13 in new_test.go and TS-18-12, TS-18-14, TS-18-15 in agentbin_unix_test.go (//go:build unix, fake agent shell scripts printing version lines); confirm they fail",
+        "Root step (sandbox/landlock/options.go): empty Root means filepath.Join(os.UserCacheDir(), \"agentkit-sandbox-landlock\"); make it absolute with filepath.Abs, create it with os.MkdirAll(root, 0o700) when missing, resolve it once with filepath.EvalSymlinks, and require os.Stat(root).IsDir(); failures return a plain error naming Options.Root and the path given",
+        "Add `within(parent, p string) bool` comparing cleaned paths component-wise (so R-other is not beneath R) and use it for the extra-path step: each ExtraRO[i]/ExtraRW[i] must satisfy filepath.IsAbs and differ from \"/\", is resolved with EvalSymlinks when it exists and filepath.Clean otherwise, and must not equal Root, contain Root or lie beneath Root; refusals name `Options.ExtraRO[i]`/`Options.ExtraRW[i]` with the index and Root, and never wrap ErrNoLandlock",
+        "Agent resolution (sandbox/landlock/agentbin.go): unexported resolveAgent(agentBinary string, executable func() (string, error), lookPath func(string) (string, error)) returning the chosen path and every path tried: AgentBinary made absolute when set; otherwise filepath.Join(filepath.Dir(EvalSymlinks(os.Executable())), \"agentkit-sandboxd\"), then exec.LookPath(\"agentkit-sandboxd\"); accept only a regular file with mode&0o111 != 0",
+        "Add installLine(version string): \"(devel)\" gives 'cd sandbox && go install ./cmd/agentkit-sandboxd', anything else 'go install github.com/agent-fox-dev/agentkit-go/sandbox/cmd/agentkit-sandboxd@'+version; the not-found error lists every path tried and installLine(buildver.Version()) and does not wrap ErrNoLandlock",
+        "Version check: a `runVersion` seam (default: exec.CommandContext with a `versionTimeout = 10 * time.Second` package variable, Env set to a non-nil empty slice, the single argument --version, combined output); parseVersion matches `^agentkit-sandboxd (\\S+) \\(protocol (\\d+)\\.(\\d+)\\)` and returns major and minor",
+        "Refuse unless major == sandbox.ProtocolMajor and minor >= 2; a run error, timeout, unparsable output or wrong protocol returns a plain error quoting the output (%q) and the install line",
+        "Order newProvider's steps platform, probe, Root, extra paths, agent resolution, version run, stopping at the first failure; the version run is the only process New starts and the starter seam is never called",
+        "Store the resolved root, binary and cleaned extra paths on the provider for Create and Reap"
+      ],
+      "touches": [
+        "sandbox/landlock/landlock.go",
+        "sandbox/landlock/options.go",
+        "sandbox/landlock/agentbin.go",
+        "sandbox/landlock/main_test.go",
+        "sandbox/landlock/new_test.go",
+        "sandbox/landlock/agentbin_unix_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Report Capabilities and build the agent's argument list, environment and resolver directory as pure functions",
+      "criteria": [
+        "18-REQ-3.1",
+        "18-REQ-3.2",
+        "18-REQ-4.4",
+        "18-REQ-5.1",
+        "18-REQ-5.2",
+        "18-REQ-5.3"
+      ],
+      "tests": [
+        "TS-18-16",
+        "TS-18-17",
+        "TS-18-25",
+        "TS-18-28",
+        "TS-18-30"
+      ],
+      "steps": [
+        "Add sandbox/landlock/helpers_test.go with newTestProvider(t, Options, ...func(*seams)) building a provider through newProvider with goos \"linux\", a probe returning 4, a temporary Root and a runVersion fake printing 'agentkit-sandboxd v0.0.0-test (protocol 1.2)' against a placeholder executable file, so it works on every platform; later tasks extend it with starter and process-table fakes",
+        "Write TS-18-16 and TS-18-17 (caps_test.go), TS-18-25 and TS-18-28 (args_test.go) and TS-18-30 (env_test.go); confirm they fail",
+        "Replace the Capabilities placeholder (sandbox/landlock/caps.go): Provider \"landlock\", Isolation sandbox.IsolationConfinement, Network []sandbox.NetworkMode{NetworkNone, NetworkUnrestricted}, Resources sandbox.ResourceCaps{}, Image and Workdir false, Landlock true, Notes from a package constant; the value never depends on Options",
+        "Write the Notes constant in plain sentences containing 'not an isolation' (host kernel, memory, CPU and process table shared, no resource limits), 'NetworkNone denies TCP only; UDP and Multipath TCP are not restricted', 'connect to any Unix socket the embedder's user can reach, such as a D-Bus session bus, an ssh-agent, or a podman or docker socket', 'can signal the user's processes', 'a process that starts a new session can outlive Close' and 'tool results name host paths'",
+        "Add agentArgs(eff sandbox.Spec, extraRO, extraRW []string, resolver string) []string in sandbox/landlock/args.go: sandbox.AgentArgs(eff) (eff.Workdir already the host workspace), then `--landlock-ro P` per ExtraRO in order, then `--landlock-ro resolver` only when resolver != \"\" and eff.Network.Mode == NetworkUnrestricted, then `--landlock-rw P` per ExtraRW; no other input is read",
+        "Add resolverDir(path string) string: filepath.EvalSymlinks(path) (error gives \"\"), require a regular file via os.Stat, then classifyResolver(resolved) returns filepath.Dir(resolved) only when that directory lies strictly beneath /run or /var/run (component-wise, so /runx does not match) and is not /run or /var/run itself",
+        "Add agentEnv(specEnv map[string]string, dir string) []string in sandbox/landlock/env.go: copy Spec.Env, set HOME=dir/home and TMPDIR=dir/tmp, add PATH=defaultPATH ('/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') when Spec.Env has no PATH, format NAME=value and sort by name; never read os.Environ",
+        "Check with TS-18-25 that every --workdir, --landlock-ro and --landlock-rw value and HOME/TMPDIR is one of <Root>/<id>/workspace, home or tmp, or outside <Root>/<id>, so the marker and the sandbox directory itself stay out of the ruleset"
+      ],
+      "touches": [
+        "sandbox/landlock/caps.go",
+        "sandbox/landlock/args.go",
+        "sandbox/landlock/env.go",
+        "sandbox/landlock/helpers_test.go",
+        "sandbox/landlock/caps_test.go",
+        "sandbox/landlock/args_test.go",
+        "sandbox/landlock/env_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Implement the process table seam, the agent process handle, session kill, symlink-safe tree removal and the destroy step",
+      "criteria": [
+        "18-REQ-5.4",
+        "18-REQ-7.1",
+        "18-REQ-7.2",
+        "18-REQ-7.3",
+        "18-REQ-7.4",
+        "18-REQ-7.5"
+      ],
+      "tests": [
+        "TS-18-43",
+        "TS-18-44",
+        "TS-18-45",
+        "TS-18-46"
+      ],
+      "steps": [
+        "Write TS-18-44 (destroy_test.go, fake process table), TS-18-45 and TS-18-46 (remove_unix_test.go; the property test uses a seeded math/rand generator over at least 100 trees) and TS-18-43 (process_linux_test.go, real children); confirm they fail",
+        "Add sandbox/landlock/proc.go: `type procEntry struct{ PID, Session int; State byte; Start uint64 }` and the unexported `procTable` interface with list() ([]procEntry, error), lookup(pid) (start uint64, ok bool, err error), bootID() (string, error) and kill(pid int, sig syscall.Signal) error; add it to seams",
+        "Add proc_linux.go: the default table reads /proc/<pid>/stat, splitting after the last ')' so field 3 is the state, field 6 the session id and field 22 the start time; bootID trims /proc/sys/kernel/random/boot_id; kill is syscall.Kill. Add proc_other.go whose methods return errors.ErrUnsupported (never reached because New refuses off Linux)",
+        "Add process_unix.go (//go:build unix): startProcess(bin string, args, env []string, dir string) (*agentProc, io.WriteCloser, io.ReadCloser, error) using exec.Command (not CommandContext) with Dir, Env, SysProcAttr{Setsid: true}, stdin and stdout pipes and stderr copied into a tailBuffer; a goroutine calls cmd.Wait, records the exit status and closes agentProc.done. Add process_other.go returning errors.ErrUnsupported",
+        "Add tail.go: tailBuffer, a mutex-guarded io.Writer keeping only the last 8192 bytes, with String()",
+        "Give agentProc pid, done channel, exit status (code, signal), tail, a `stopping` flag set when the destroy step begins, and killGroup() sending SIGKILL to -pid",
+        "Add stopAgent(h *agentProc, wait time.Duration) error: mark stopping, wait for h.done up to wait, else killGroup and wait for h.done again; a package variable stopWait = 5 * time.Second",
+        "Add sessionKill(ctx, pt procTable, sid int, wait time.Duration) error: list processes whose Session == sid and State != 'Z', SIGKILL each, rescan every ~50 ms until none remain; after wait (package variable sessionWait = 5 * time.Second) return an error naming the surviving pids",
+        "Add removeTree(dir string) error in remove.go: os.Lstat (missing gives nil); a symlink or file is os.Remove'd; a directory is chmodded to mode|0o700 before os.ReadDir, each entry is handled recursively through Lstat so no symlink is ever followed or chmodded through, then the directory is removed; errors are joined",
+        "Add newDestroy(h *agentProc, pt procTable, dir string) func(context.Context) error in destroy.go running stopAgent, sessionKill(h.pid) and removeTree(dir) in that order, each even when an earlier one failed, returning errors.Join, guarded by sync.Once so a second invocation returns nil; stopWait+sessionWait stays well inside attach's 30-second destroy budget"
+      ],
+      "touches": [
+        "sandbox/landlock/proc.go",
+        "sandbox/landlock/proc_linux.go",
+        "sandbox/landlock/proc_other.go",
+        "sandbox/landlock/process_unix.go",
+        "sandbox/landlock/process_other.go",
+        "sandbox/landlock/tail.go",
+        "sandbox/landlock/remove.go",
+        "sandbox/landlock/destroy.go",
+        "sandbox/landlock/destroy_test.go",
+        "sandbox/landlock/remove_unix_test.go",
+        "sandbox/landlock/process_linux_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Implement Create's success path: refusals, sandbox directory and marker, starter seam, attach and report checks, and the forwarding wrapper",
+      "criteria": [
+        "18-REQ-1.6",
+        "18-REQ-3.3",
+        "18-REQ-3.4",
+        "18-REQ-3.5",
+        "18-REQ-3.6",
+        "18-REQ-4.1",
+        "18-REQ-4.2",
+        "18-REQ-4.3",
+        "18-REQ-5.2",
+        "18-REQ-5.4",
+        "18-REQ-5.5"
+      ],
+      "tests": [
+        "TS-18-7",
+        "TS-18-18",
+        "TS-18-19",
+        "TS-18-20",
+        "TS-18-21",
+        "TS-18-22",
+        "TS-18-23",
+        "TS-18-24",
+        "TS-18-29",
+        "TS-18-33"
+      ],
+      "steps": [
+        "Extend helpers_test.go with an in-process starter: for each start it records argv and env, creates agent.New(agent.Config{Workdir: <the --workdir argument>, Env: env, TTL, Landlock: report(dir)}) served over two os.Pipe pairs adapted with stdioconn.New, returns an agentProc with a fake pid whose done closes when Serve ends, and registers that pid (start time, session) in a fake procTable; the report function defaults to ABI 4, TCP true and the resolved workspace/, home/ and tmp/ as Writable",
+        "Write TS-18-7, TS-18-18 to TS-18-24, TS-18-29 and TS-18-33 (create_test.go, marker_test.go; TS-18-22 is //go:build unix and uses syscall.Umask); confirm they fail",
+        "Add the starter seam `start func(req startReq) (*agentProc, net.Conn, error)` (startReq: bin, args, env, dir); the default calls startProcess from task 4 and returns stdioconn.New(stdout, stdin); it is never given Create's ctx",
+        "Add sandbox/landlock/marker.go: marker{PID int; StartTime uint64; BootID string; Role string (\"creator\" or \"agent\"); Created time.Time; TTL time.Duration; Network string; Labels map[string]string} with JSON tags and no Env field; writeMarker writes agentkit-sandbox.json with mode 0600 (chmod after write); replaceMarker writes os.CreateTemp(dir, \".agentkit-sandbox-*.json\"), chmods 0600, closes and os.Renames over the marker; readMarker decodes it",
+        "Replace the Create placeholder: call sandbox.CheckSpec(p.Capabilities(), spec); then refuse any Spec.Provider key with &sandbox.SpecError{Provider: \"landlock\", Field: \"Provider\", Reason: ...naming slices.Sorted(maps.Keys(spec.Provider))[0]}; then refuse Spec.Env HOME or TMPDIR with &sandbox.SpecError{Provider: \"landlock\", Field: \"Env\", Reason: \"<VAR> is set by the landlock provider to the sandbox's private directory\"}, all before any filesystem or process work",
+        "Draw a 16-hex id with crypto/rand, os.Mkdir(<root>/<id>, 0o700) plus Chmod, write the creator marker immediately (os.Getpid(), its start time and the boot id from the procTable seam, role creator, time.Now(), eff.TTL, eff.Network.Mode.String(), eff.Labels), then create workspace/, home/ and tmp/ each chmodded 0700; on any failure remove the directory with removeTree before returning",
+        "Build eff.Workdir = <dir>/workspace; resolver = p.seams.resolver(\"/etc/resolv.conf\") only under NetworkUnrestricted (seam default resolverDir); args = agentArgs(eff, p.extraRO, p.extraRW, resolver); env = agentEnv(eff.Env, dir); start the agent with dir/workspace as its working directory",
+        "After the start, replaceMarker so it names the agent's pid and start time with role agent, build destroy := newDestroy(h, pt, dir), and call attach.Dial(ctx, conn, attach.Config{ID: id, Spec: eff, Destroy: destroy, Provider: \"landlock\"}); return a Dial error as is for now (task 6 classifies it)",
+        "Check Agent().Landlock after Hello whatever RequireLandlock says: ABI >= sandbox.LandlockTCPABI; TCP true under NetworkNone; filepath.EvalSymlinks of workspace/, home/ and tmp/ all among Writable; no other Writable or ReadOnly root equal to or containing Root (via within); on a failure close the attach sandbox and return an error (task 6 sets the exact messages)",
+        "Add sandbox/landlock/sandbox.go: type landlockSandbox struct{ inner sandbox.Sandbox; p *provider; dir, ws string; created time.Time; agentPATH string } forwarding ID, Spec (Workdir the host workspace), Agent, Sync, Tools, Export and Close; Create returns it",
+        "Keep the provider free of shared mutable state (seams are read-only after New) so TS-18-7 passes under `go test -race`; Labels go only into the marker"
+      ],
+      "touches": [
+        "sandbox/landlock/create.go",
+        "sandbox/landlock/marker.go",
+        "sandbox/landlock/start.go",
+        "sandbox/landlock/sandbox.go",
+        "sandbox/landlock/helpers_test.go",
+        "sandbox/landlock/create_test.go",
+        "sandbox/landlock/marker_test.go"
+      ],
+      "depends_on": [
+        3,
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Classify Create failures, enforce the ABI 4 floor and Root containment on the report, and run the destroy step exactly once",
+      "criteria": [
+        "18-REQ-4.5",
+        "18-REQ-5.6",
+        "18-REQ-5.7",
+        "18-REQ-5.8",
+        "18-REQ-7.1"
+      ],
+      "tests": [
+        "TS-18-27",
+        "TS-18-32",
+        "TS-18-34",
+        "TS-18-35",
+        "TS-18-36",
+        "TS-18-42"
+      ],
+      "steps": [
+        "Extend helpers_test.go with a fakeagent-based starter (sandbox/internal/fakeagent with Hello protocol major 2, or blocking Hello), a failing starter, a destroy-counting wrapper seam around newDestroy, an order-recording agent handle/procTable/remove seam, and failing wait and scan variants",
+        "Write TS-18-27 and TS-18-34 to TS-18-36 (create_fail_test.go), TS-18-32 (create_fail_unix_test.go with a fake agent script that prints a valid version line for --version and otherwise writes HEAD-MARKER, 20000 filler bytes and TAIL-MARKER to stderr and exits 2) and TS-18-42 (destroy_test.go); confirm they fail",
+        "Before the agent starts, every failure (marker, subdirectories, starter) removes the directory with removeTree; after it starts, every failure goes through the sync.Once destroy step exactly once: attach runs it when Dial fails, Create runs it through the attach sandbox's Close on check failures, and directly when replaceMarker fails before Dial",
+        "Classify a Dial error: errors.Is(err, sandbox.ErrProtocol) or an attach *sandbox.SpecError (RequireLandlock) is returned unchanged; else when ctx.Err() != nil return fmt.Errorf(\"landlock: creating sandbox: %w\", ctx.Err()); else when the agent's exit was recorded before the destroy step set `stopping`, return fmt.Errorf(\"landlock: agentkit-sandboxd exited with status %d: %s\", code, tail); otherwise wrap err with a 'landlock:' prefix",
+        "Make the exit message carry the stderr tail (at most 8192 bytes, trimmed), noting that status 2 means a refused flag value such as an ExtraRW containing a system directory",
+        "Report check 1-3 failure (ABI < 4, TCP false under NetworkNone, or a missing workspace/, home/ or tmp/ in Writable): close the sandbox and return fmt.Errorf(\"%w: agentkit-sandboxd reported Landlock ABI %d (kernel ABI %d), TCP %t, note %q\", ErrNoLandlock, ...), joining any Close error without hiding the sentinel",
+        "Report check 4 failure: close the sandbox and return an error naming Options.Root and the containing root, e.g. 'landlock: the agent's ruleset root %s contains Options.Root %s, so one sandbox could read another; choose a Root outside the system directories'",
+        "Verify through TS-18-42 that Close runs stop, session and remove in order once across two Close calls, returns nil on success, still removes the directory and joins both injected errors in the failing variant, and that stopWait and sessionWait are 5 s each"
+      ],
+      "touches": [
+        "sandbox/landlock/create.go",
+        "sandbox/landlock/destroy.go",
+        "sandbox/landlock/helpers_test.go",
+        "sandbox/landlock/create_fail_test.go",
+        "sandbox/landlock/create_fail_unix_test.go",
+        "sandbox/landlock/destroy_test.go"
+      ],
+      "depends_on": [
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Prove confinement, cleanup, TTL and an unconfined host against real agentkit-sandboxd processes on a Landlock ABI 4 kernel",
+      "criteria": [
+        "18-REQ-4.4",
+        "18-REQ-5.4",
+        "18-REQ-5.6",
+        "18-REQ-6",
+        "18-REQ-7.6",
+        "18-REQ-7.7",
+        "18-REQ-7.8",
+        "18-REQ-10.3"
+      ],
+      "tests": [
+        "TS-18-26",
+        "TS-18-31",
+        "TS-18-37",
+        "TS-18-38",
+        "TS-18-39",
+        "TS-18-40",
+        "TS-18-41",
+        "TS-18-47",
+        "TS-18-64"
+      ],
+      "steps": [
+        "Extend TestMain to also build sandbox/cmd/agentkit-sandboxd/testdata/dialtcp with CGO_ENABLED=0, and to dispatch re-executed children when AGENTKIT_LANDLOCK_CHILD is set (used by TS-18-64 here and TS-18-70 in task 11)",
+        "Add linux_helpers_test.go (//go:build linux): newRealProvider(t, Options) using agentBin and a temporary Root, execute(ts, cmd) calling the proxy execute tool's Execute and returning exit code and output, procStat(pid) (pgrp, session), alive(pid) and eventually(d, cond)",
+        "Write TS-18-26, TS-18-31, TS-18-37, TS-18-38, TS-18-39, TS-18-40, TS-18-41, TS-18-47 and TS-18-64 in *_linux_test.go files, each starting with needABI4(t); run them on an ABI 4 host and confirm which fail",
+        "Make the real starter pass TS-18-31: the agent's pgrp and session equal its pid, /proc/<pid>/cwd is <Root>/<id>/workspace, and cancelling Create's context leaves it running",
+        "Confirm the agent gets the host workspace as --workdir and HOME/TMPDIR as the sandbox's home/ and tmp/, so writes there succeed while the real home, a sibling directory, the marker and <Root>/<id> itself are denied with 'Permission denied' (6.1, 6.2, 4.4)",
+        "Confirm NetworkNone denies a TCP connect from the synced dialtcp helper and NetworkUnrestricted allows it (6.3, 6.4), and that Agent().Landlock carries ABI 4, TCP and the resolved roots (6.5)",
+        "Confirm `env` through execute shows exactly Spec.Env plus HOME, TMPDIR and PATH apart from the shell's PWD, OLDPWD, SHLVL and _ (6.6), and that the go toolchain runs only beneath a system directory or an ExtraRO directory (the toolchain root, a directory) and fails with a permission error from an outside copy (6.7, 6.8)",
+        "Confirm Close kills a background `sleep` left in its own process group through the session kill and removes a tree made read-only by `chmod -R a-w` (7.6)",
+        "Pass eff.TTL to both --ttl and attach.Config.Spec so attach's host timer runs the destroy step at the TTL and the agent's own --ttl ends it when the host is gone (7.7); the agent exits on stdin EOF because it is not tied to the embedder's context, leaving the agent-role marker for Reap (7.8)",
+        "Confirm an ExtraRW of /usr makes the real agent exit 2 and Create report 'landlock: agentkit-sandboxd exited with status 2: ' with '--landlock-rw' in the tail and an empty Root (TS-18-37)",
+        "Confirm the re-executed child of TS-18-64 can still create a file outside the workspace and connect to the parent's loopback listener after Close: the package applies nothing to its own process"
+      ],
+      "touches": [
+        "sandbox/landlock/main_test.go",
+        "sandbox/landlock/linux_helpers_test.go",
+        "sandbox/landlock/confine_linux_test.go",
+        "sandbox/landlock/lifecycle_linux_test.go",
+        "sandbox/landlock/unconfined_linux_test.go",
+        "sandbox/landlock/process_unix.go",
+        "sandbox/landlock/create.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Add the GitRepo slot to the wrapper and run a GitRepo Sync through a confined init agent",
+      "criteria": [
+        "18-REQ-8"
+      ],
+      "tests": [
+        "TS-18-48",
+        "TS-18-49",
+        "TS-18-50",
+        "TS-18-51",
+        "TS-18-52",
+        "TS-18-53",
+        "TS-18-54",
+        "TS-18-55",
+        "TS-18-56"
+      ],
+      "steps": [
+        "Extend helpers_test.go: the in-process starter tells the sandbox's agent from the init agent (second start for the same directory) and lets a test choose the init report; a fake executable `git` in a temporary directory placed on Spec.Env PATH so Hello.Git is true; an `initCommand func(repo sandbox.GitRepo, ws string) []string` seam returning helper argv (shell scripts or the re-executed test binary) that block, succeed, write files or exit with a chosen status",
+        "Write TS-18-48 to TS-18-56 in gitrepo_test.go; confirm they fail",
+        "Add slot state to landlockSandbox: a sync.RWMutex and a mutex-guarded `taken` flag; Tools holds the read lock, forwards and marks the slot taken whatever its outcome; a non-GitRepo Sync holds the read lock and marks it taken on success; a sandbox.GitRepo Sync holds the write lock",
+        "Check GitRepo preconditions in order under the write lock before starting anything: attach.Live(inner); gitclone.Check(repo); slot free, else errors.New(\"landlock: GitRepo must be the first Sync and come before Tools\"); inner.Agent().Git, else fmt.Errorf(\"landlock: git is not on the sandbox's PATH (%s); a GitRepo needs it\", agentPATH) where agentPATH is the PATH entry of the sandbox agent's environment saved at Create",
+        "Compute the init TTL as the time left until created+eff.TTL rounded up to a whole second (none left gives an error wrapping sandbox.ErrUnavailable) and build its argv with agentArgs(sandbox.Spec{TTL: ttl, Network: sandbox.Network{Mode: sandbox.NetworkUnrestricted}, Workdir: ws}, extraRO, extraRW, resolver), which adds the resolver directory",
+        "Build initEnv(dir, agentPATH) = sorted [GIT_CONFIG_NOSYSTEM=1, GIT_TERMINAL_PROMPT=0, HOME=dir/home, PATH=agentPATH, TMPDIR=dir/tmp], with no Spec.Env value",
+        "Start the init agent through the starter seam (its own session) and attach.Dial it with Spec{Network: NetworkUnrestricted, TTL: ttl}, Provider \"landlock\" and a destroy that runs only stopAgent and sessionKill for the init handle, never removing the directory",
+        "Check the init report: ABI >= sandbox.LandlockTCPABI and the resolved workspace among Writable; otherwise close the init sandbox and return an error wrapping ErrNoLandlock without running git",
+        "Call init.Tools(ctx, sandbox.ToolOptions{DisableSpill: true}), find run_command and Execute it with {\"argv\": initCommand(repo, ws)} (default ['git'] + gitclone.Args(repo, ws)) under context.WithDeadline(ctx, expiry); always close the init sandbox with a fresh context before returning",
+        "Map outcomes: OK takes the slot and returns sandbox.SyncResult{}; outcome exec_failed or exit_code 126/127 gives \"landlock: git could not be run under the sandbox's ruleset; install git beneath a system directory or add its directory to Options.ExtraRO: <tail>\"; another non-zero exit names the URL with the last 2048 bytes of output; a done Sync ctx wraps ctx.Err(); reaching the expiry wraps sandbox.ErrUnavailable",
+        "On every failure after the init agent started, once it is closed, empty the workspace with emptyDir(ws) (removeTree on each entry, restoring ws's own rwx, keeping ws) and leave the slot free; the sandbox's own agent is never touched"
+      ],
+      "touches": [
+        "sandbox/landlock/sandbox.go",
+        "sandbox/landlock/gitrepo.go",
+        "sandbox/landlock/remove.go",
+        "sandbox/landlock/helpers_test.go",
+        "sandbox/landlock/gitrepo_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Implement Reap with a pure owner-liveness decision, session kill for dead agents and sorted results",
+      "criteria": [
+        "18-REQ-9"
+      ],
+      "tests": [
+        "TS-18-57",
+        "TS-18-58",
+        "TS-18-59",
+        "TS-18-60",
+        "TS-18-61"
+      ],
+      "steps": [
+        "Extend the fake procTable in helpers_test.go with pid presence, start times, a configurable boot id, sessions and recorded kills, and add a `remove func(string) error` seam (default removeTree) so a test can inject a removal failure",
+        "Write TS-18-57, TS-18-58, TS-18-60 and TS-18-61 (reap_test.go) and the property test TS-18-59 (reap_property_test.go, at least 1000 generated cases over small domains); confirm they fail",
+        "Add ownerAlive(m marker, present bool, start uint64, boot string) bool returning present && start == m.StartTime && boot == m.BootID, and decide(m, lookup) returning keep exactly when the owner is alive, whatever the role; both pure and platform-independent",
+        "Replace the Reap placeholder: os.ReadDir(p.root) (a missing Root gives nil, nil); consider an entry only when os.Lstat shows a directory that is not a symlink, its name matches ^[0-9a-f]{16}$ and readMarker decodes its marker; leave every other entry untouched",
+        "For each considered sandbox, look the marker's pid up in the procTable and read the current boot id; skip it when decide says keep, whichever process created it",
+        "For a dead owner, when the role is agent, the boot id matches and no process with the agent's pid exists, call sessionKill(ctx, pt, m.PID, sessionWait); never signal when the boot id differs, the role is creator or the pid exists with another start time",
+        "Remove the directory through the remove seam; collect removed ids, slices.Sort them, and join failures as fmt.Errorf(\"landlock: reaping %s: %w\", id, err) returned beside the ids that were removed"
+      ],
+      "touches": [
+        "sandbox/landlock/reap.go",
+        "sandbox/landlock/helpers_test.go",
+        "sandbox/landlock/reap_test.go",
+        "sandbox/landlock/reap_property_test.go"
+      ],
+      "depends_on": [
+        4,
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Add the sandbox-landlock-test make target, the --landlock example run and the documentation",
+      "criteria": [
+        "18-REQ-10.5",
+        "18-REQ-10.6",
+        "18-REQ-10.7"
+      ],
+      "tests": [
+        "TS-18-66"
+      ],
+      "steps": [
+        "Write TS-18-66 in sandbox/landlock/makefile_test.go running `make -n sandbox-landlock-test` (with and without AGENTKIT_SANDBOX_GIT_URL=https://example.invalid/r) and `make -n check` from the repository root, skipping when make is not on PATH; confirm it fails",
+        "In Makefile add `AGENTKIT_SANDBOX_GIT_URL ?= https://github.com/agent-fox-dev/agentkit-go` and a .PHONY `sandbox-landlock-test` target with a ## help comment whose recipe is `cd sandbox && AGENTKIT_SANDBOX_GIT_URL=$(AGENTKIT_SANDBOX_GIT_URL) go test -count=1 -v ./landlock/`; do not add it to check's prerequisites",
+        "In examples/sandbox/main.go parse --landlock and --agent PATH with the flag package; move the body of run into runWith(ctx, w, dir, prov sandbox.Provider, spec sandbox.Spec) and keep run(ctx, w, dir) calling it with local.Unisolated() and NetworkUnrestricted so main_test.go stays unchanged",
+        "With --landlock, build the provider with landlock.New(landlock.Options{AgentBinary: *agent}) and run with sandbox.Spec{} (NetworkNone); a New error is printed to stderr and exits 1, so elsewhere the output carries ErrNoLandlock's message; update examples/sandbox/README.md and the package doc comment with the --landlock run",
+        "Run `make doc` first, then add a landlock.New section to docs/configuration.md: the Options table, New's checks in order and their errors, ErrNoLandlock and when to fall back to sandbox/podman, installing the agent with go install (both install lines), the environment rule and the HOME/TMPDIR refusal, the directory layout and marker fields, the resolver-directory rule, and Reap's rule; add a landlock column to 'Which provider honours which field'",
+        "Add 'The Landlock provider' to the Sandboxes section of docs/architecture.md: the Create sequence, the agent's own session and why a process group is not enough, the init child beside the idle agent, the two-sided TTL, Reap, and what the provider gives up (Unix sockets including D-Bus, ssh-agent and engine sockets, UDP, Multipath TCP, signals, host paths in results, file descriptors opened without close-on-exec)",
+        "In README.md name sandbox/landlock and its go install line in the Sandboxes section and add it to the packages table",
+        "Run `make check` and confirm it passes offline and does not run the verbose landlock target"
+      ],
+      "touches": [
+        "Makefile",
+        "examples/sandbox/main.go",
+        "examples/sandbox/README.md",
+        "docs/configuration.md",
+        "docs/architecture.md",
+        "README.md",
+        "sandbox/landlock/makefile_test.go"
+      ],
+      "depends_on": [
+        7,
+        8,
+        9
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify the confine, GitRepo, reap, TTL and example paths end to end against real agents",
+      "tests": [
+        "TS-18-67",
+        "TS-18-68",
+        "TS-18-69",
+        "TS-18-70",
+        "TS-18-71",
+        "TS-18-72"
+      ],
+      "steps": [
+        "Write TS-18-67, TS-18-70 and TS-18-71 in sandbox/landlock/smoke_linux_test.go (needABI4, TestMain-built agentkit-sandboxd and dialtcp; TS-18-70 uses the AGENTKIT_LANDLOCK_CHILD re-exec child killed with SIGKILL) and confirm they pass on an ABI 4 host",
+        "Write TS-18-68 with the init-command seam replaced by a helper built in TestMain and placed beneath an ExtraRO directory, and TS-18-69 skipped unless AGENTKIT_SANDBOX_GIT_URL is set; run TS-18-69 through `make sandbox-landlock-test` on a networked ABI 4 host",
+        "Write TS-18-72 in examples/sandbox/landlock_smoke_test.go: build agentkit-sandboxd from ../../sandbox into a temporary directory, run `go run . --landlock --agent <path>`, expect exit 0 and the completion line on Linux ABI 4 and ErrNoLandlock's message elsewhere; confirm main_test.go is byte-for-byte unchanged",
+        "Trace 18-PATH-1 through the code: New → defaultProbe (syscall 444) → Root → extra paths → resolveAgent → runVersion; Create → CheckSpec → Provider/Env refusals → directory and creator marker → default starter (Setsid) → replaceMarker → attach.Dial with newDestroy → report checks → landlockSandbox; Close → attach → stopAgent, sessionKill, removeTree",
+        "Trace 18-PATH-2: landlockSandbox.Sync(GitRepo) → attach.Live, gitclone.Check, slot, Agent().Git → init agent start with initEnv → init report check → run_command with the default initCommand (git + gitclone.Args) → init Close → slot taken",
+        "Trace 18-PATH-3 and 18-PATH-4: a dead embedder leaves an agent-role marker → Reap → decide → sessionKill → removeTree; attach's host TTL timer calls the destroy step passed in attach.Config.Destroy; and 18-PATH-5: examples/sandbox main → landlock.New → runWith",
+        "Confirm each contract result is consumed in production code: ErrNoLandlock wrapped by New and the report checks and tested with errors.Is by the example; resolverDir called with /etc/resolv.conf from Create and GitRepo; agentArgs/agentEnv/initEnv feed the real starter; the default procTable, starter, initCommand and runVersion are what defaultSeams returns",
+        "Grep every file in the tasks' touches (sandbox/landlock/*.go, Makefile, examples/sandbox/main.go) for `panic(\"not implemented\")`, TODO, `NotImplementedError` and bare `return nil` on non-trivial paths; confirm the Capabilities, Create and Reap placeholders from task 1 are gone",
+        "Confirm the entry points from spec 17 (sandbox.GitRepo, gitclone.Check, gitclone.Args, attach.Live) are called from sandbox/landlock production code and that the package still imports neither go-landlock nor sandbox/internal/confine",
+        "Run `make check` and confirm it passes without network access, with the Linux tests skipping below ABI 4 and naming the ABI found"
+      ],
+      "touches": [
+        "sandbox/landlock/smoke_linux_test.go",
+        "sandbox/landlock/main_test.go",
+        "examples/sandbox/landlock_smoke_test.go"
+      ],
+      "depends_on": [
+        7,
+        8,
+        9,
+        10
+      ],
+      "done_when": [
+        "`make sandbox-landlock-test` passes on a Linux host with Landlock ABI 4, git beneath a system directory and network access",
+        "`make check` passes offline on Linux and macOS"
+      ],
+      "state": "pending"
+    }
+  ]
+}

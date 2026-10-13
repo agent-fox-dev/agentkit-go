@@ -1,0 +1,608 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "19",
+  "spec_name": "sandbox_gateway",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make vet && make lint",
+    "spec_tests": "(cd sandbox && go test -count=1 ./gateway/... ./internal/gatewaywire/... ./internal/sandboxpb/... ./internal/attach/... ./podman/... ./landlock/...) && (cd sandbox/gatewayd && go test -count=1 ./...) && go test -count=1 ./internal/policy/..."
+  },
+  "dependencies": [
+    {
+      "spec": "13_sandbox_core",
+      "reason": "Builds on attach.New with Config.Metadata and its destroy step, classify and the state machine, the proxies, sandboxpb and make proto, CheckSpec and SpecError, local.Unisolated, localtest.Cut and internal/toolconformance; this spec extends attach.ClientConn to follow Unwrap and make proto to a second file."
+    },
+    {
+      "spec": "14_sandbox_rsync_sync",
+      "reason": "LocalDir Sync and Export ride the relayed Rsync stream, and the GitRepo slot reads RsyncStart.Direction; TS-14-6's relay shows typed forwarding works."
+    },
+    {
+      "spec": "15_sandbox_landlock_agent",
+      "reason": "Capabilities.Landlock, Spec.RequireLandlock and the LandlockReport in Hello pass through the gateway unchanged and are mirrored in the wire messages."
+    },
+    {
+      "spec": "16_sandbox_images",
+      "reason": "Uses sandbox.DefaultImage for an empty Spec.Image, buildver's link-time stamp for the gateway version, and make sandbox-images plus its image and engine variables for the opt-in tests."
+    },
+    {
+      "spec": "17_sandbox_podman",
+      "reason": "podman.New is the command's backend; sandbox.GitRepo, gitclone.Check, sandbox.ErrNoAgent, attach.Live and the GitRepo slot rules are reused; its wrapper type gains Unwrap."
+    },
+    {
+      "spec": "18_sandbox_landlock_provider",
+      "reason": "Its landlockSandbox wrapper gains Unwrap so the gatewayd library can relay to any first-party provider."
+    },
+    {
+      "spec": "09_repository_cut",
+      "reason": "The policy tests it owns gain the gatewayd module (sandboxModules, gateModules), its direct-set and graph checks, and the no-listen check."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add gateway.proto with its generated code and hash, the shared wire conversions and the gateway protocol constants",
+      "criteria": [
+        "19-REQ-1.1",
+        "19-REQ-1.2",
+        "19-REQ-1.3",
+        "19-REQ-1.4",
+        "19-REQ-1.6",
+        "19-REQ-1.7"
+      ],
+      "tests": [
+        "TS-19-1",
+        "TS-19-2",
+        "TS-19-3",
+        "TS-19-4",
+        "TS-19-6",
+        "TS-19-7"
+      ],
+      "steps": [
+        "Write TS-19-1, TS-19-2 and TS-19-7 in sandbox/internal/sandboxpb/gateway_proto_test.go, TS-19-3 in sandbox/internal/gatewaywire/convert_test.go, TS-19-4 in sandbox/gateway/version_test.go, and extend internal/policy/proto_test.go for TS-19-6; confirm they fail",
+        "Add sandbox/internal/sandboxpb/gateway.proto: proto3, `package agentkit.sandbox.v1;`, the same `option go_package` line as sandbox.proto, no imports, a header comment stating gateway protocol 1.0 (fields are added and never renumbered; any addition bumps gateway.ProtocolMinor), and `service Gateway` with the unary RPCs Capabilities, Create, SyncGit, List, Destroy and Reap; leave sandbox.proto byte-unchanged so TS-13-1 still sees exactly one service",
+        "Define messages whose names do not collide with sandbox.proto's (it already declares SyncResponse, ExportRequest, TarChunk and others): SandboxSpec{image, workdir, map<string,string> env, Resources{double cpus; int64 memory_bytes, pids, disk_bytes}, a network message {NetworkMode mode; repeated Endpoint allow{string host; int32 port}}, int64 ttl_nanos, map<string,string> labels, bytes provider, bool require_landlock}; top-level enum NetworkMode {NONE = 0; ALLOWLIST = 1; UNRESTRICTED = 2}; Refusal{Kind kind; string field, reason, message} with nested enum Kind {UNSUPPORTED = 0; NO_AGENT = 1; NO_PUBLISHED_IMAGE = 2; PROTOCOL = 3; CAPACITY = 4; REFUSED = 5}",
+        "Define CapabilitiesRequest/CapabilitiesResponse (uint32 protocol_major and protocol_minor, version, provider, isolation, repeated NetworkMode network, the four ResourceCaps bools, image, workdir and landlock bools, notes, int64 max_ttl_nanos, int32 max_sandboxes), CreateRequest{SandboxSpec spec}, CreateResponse{Refusal refusal; id; SandboxSpec spec; int64 created_unix_nanos, expires_unix_nanos}, SyncGitRequest{id, url, ref, int32 depth}, SyncGitResponse{Refusal refusal}, ListRequest, ListResponse{repeated entries of id, labels, created and expires nanos}, DestroyRequest{id}, DestroyResponse, ReapRequest and ReapResponse{repeated string ids; string error}",
+        "Extend the Makefile `proto` target: pass sandbox.proto and gateway.proto to the one protoc call, run the `(unknown)` sed rewrite over sandbox.pb.go, sandbox_grpc.pb.go, gateway.pb.go and gateway_grpc.pb.go, and record gateway.proto.sha256 through build/.proto exactly as sandbox.proto.sha256 is; run `make proto` once and commit gateway.pb.go, gateway_grpc.pb.go and gateway.proto.sha256",
+        "In sandbox/internal/sandboxpb/proto_test.go generalise the hash check to checkProtoHashFor(name string, proto, recorded []byte) whose error ends with `run make proto`, keep checkProtoHash delegating to it for sandbox.proto so TS-13-5 is unchanged, and use it for gateway.proto in TS-19-7 with PATH emptied",
+        "In internal/policy/proto_test.go add the four gateway files to protoFiles, replace the `protoFiles[1:3]` indexing with an explicit list of the four generated .pb.go files, and check gateway.proto.sha256 in TestMakeProtoRegenerates_TS13_3 and the no-protoc tests the same way sandbox.proto.sha256 is checked",
+        "Add package sandbox/internal/gatewaywire, shared by the client and the server: SpecToPB(sandbox.Spec) (*sandboxpb.SandboxSpec, error) encoding Provider with encoding/json, SpecFromPB(*sandboxpb.SandboxSpec) (sandbox.Spec, error) refusing an unknown NetworkMode value and undecodable provider bytes, CapsToPB/CapsFromPB for sandbox.Capabilities, mode conversions and Nanos/FromNanos time helpers (Unix nanoseconds, time.Unix(0, n))",
+        "Because proto cannot tell a nil map or slice from an empty one, have SpecFromPB and CapsFromPB return nil for empty collections and have the TS-19-3 generators produce nil rather than empty collections, so reflect.DeepEqual holds (Provider compared as decoded JSON)",
+        "Add sandbox/gateway/doc.go with the package doc (client for a remote agentkit gateway) and sandbox/gateway/version.go with `ProtocolMajor = 1`, `ProtocolMinor = 0` and `SandboxIDKey = \"agentkit-sandbox-id\"`; do not touch sandbox.ProtocolMinor (2)"
+      ],
+      "touches": [
+        "sandbox/internal/sandboxpb/gateway.proto",
+        "sandbox/internal/sandboxpb/gateway.pb.go",
+        "sandbox/internal/sandboxpb/gateway_grpc.pb.go",
+        "sandbox/internal/sandboxpb/gateway.proto.sha256",
+        "sandbox/internal/sandboxpb/gateway_proto_test.go",
+        "sandbox/internal/sandboxpb/proto_test.go",
+        "sandbox/internal/gatewaywire/convert.go",
+        "sandbox/internal/gatewaywire/convert_test.go",
+        "sandbox/gateway/doc.go",
+        "sandbox/gateway/version.go",
+        "sandbox/gateway/version_test.go",
+        "Makefile",
+        "internal/policy/proto_test.go"
+      ],
+      "done_when": [
+        "TestProtocolShape_TS13_1 and TestProtoNotStale_TS13_5 pass unmodified"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Make attach.ClientConn and attach.Live follow an Unwrap chain and give the podman and landlock wrappers Unwrap",
+      "criteria": [
+        "19-REQ-7.8"
+      ],
+      "tests": [
+        "TS-19-53"
+      ],
+      "steps": [
+        "Write TS-19-53: sandbox/internal/attach/unwrap_test.go (a fakeagent-attached sandbox sb, test wrappers w1{sb} and w2{w1} with Unwrap() sandbox.Sandbox, a plain non-attach sandbox), sandbox/podman/unwrap_internal_test.go and sandbox/landlock/unwrap_internal_test.go constructing each wrapper around an attached sandbox; confirm they fail",
+        "In sandbox/internal/attach/attach.go add unexported unwrapAttached(s sandbox.Sandbox) *sb that returns s when it is *sb, otherwise follows `interface{ Unwrap() sandbox.Sandbox }` until it reaches *sb, a nil, or a non-unwrappable sandbox, with a fixed depth bound (32) so a cyclic chain cannot loop",
+        "Make ClientConn return unwrapAttached(s).cc, returning an untyped nil interface (never a typed nil) when the chain holds no attached sandbox",
+        "Make attach.Live (spec 17) resolve its argument through unwrapAttached before reading the state, keeping its existing answer for a sandbox whose chain holds no attached sandbox",
+        "Add `func (s *<wrapper>) Unwrap() sandbox.Sandbox` returning the attached inner sandbox to the podman wrapper in sandbox/podman/sandbox.go and to landlockSandbox in sandbox/landlock/sandbox.go, each with a doc comment saying attach.ClientConn and attach.Live follow it",
+        "Confirm no exported identifier changed: TestSandboxLayoutAndAPI_TS13_67, TestExportedAPIUnchanged_TS14_44 and TestExportedAPIUnchanged_TS15_42 pass with internal/policy/testdata untouched"
+      ],
+      "touches": [
+        "sandbox/internal/attach/attach.go",
+        "sandbox/internal/attach/state.go",
+        "sandbox/internal/attach/unwrap_test.go",
+        "sandbox/podman/sandbox.go",
+        "sandbox/podman/unwrap_internal_test.go",
+        "sandbox/landlock/sandbox.go",
+        "sandbox/landlock/unwrap_internal_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Implement gateway.Dial with its URL, token, transport and handshake rules and the Provider's Capabilities, Reap, List and Destroy",
+      "criteria": [
+        "19-REQ-2.1",
+        "19-REQ-2.2",
+        "19-REQ-2.3",
+        "19-REQ-2.5",
+        "19-REQ-2.6",
+        "19-REQ-2.7",
+        "19-REQ-2.8",
+        "19-REQ-3.1",
+        "19-REQ-3.2",
+        "19-REQ-3.3"
+      ],
+      "tests": [
+        "TS-19-8",
+        "TS-19-9",
+        "TS-19-10",
+        "TS-19-12",
+        "TS-19-13",
+        "TS-19-15",
+        "TS-19-16"
+      ],
+      "steps": [
+        "Add sandbox/gateway/fakegw_test.go: a fake Gateway server built from sandboxpb.RegisterGatewayServer on a grpc.Server over a net.Pipe-backed in-memory listener, with a recording Dialer, settable Capabilities/List/Reap answers, unary and stream interceptors recording full method and incoming metadata, an open-connection counter, and a fakeagent.Agent registered on the same server; write TS-19-8, TS-19-9, TS-19-10, TS-19-12, TS-19-13, TS-19-15 and TS-19-16; confirm they fail",
+        "In sandbox/gateway/gateway.go declare Options{Token string; TLSConfig *tls.Config; Dialer func(context.Context, string) (net.Conn, error)}, Provider, Info{ID string; Labels map[string]string; Created, Expires time.Time}, GatewayInfo{URL, Version, Backend string; ProtocolMajor, ProtocolMinor uint32; MaxTTL time.Duration; MaxSandboxes int} and ErrUnauthenticated, ErrCapacity and ErrClosed as errors.New sentinels prefixed `gateway:`",
+        "Add parseURL(raw) (target, host string, useTLS bool, err error) in sandbox/gateway/dial.go: url.Parse, then refuse user information, a query (including ForceQuery), a fragment, an opaque part, a path other than \"\" or \"/\", and a scheme other than http or https, each error naming the part; for http accept only host `localhost` or a netip address with IsLoopback(), else an error naming loopback; default the port to 443 (https) or 80 (http) and build the target with net.JoinHostPort",
+        "Add checkToken: refuse an empty token or any byte outside 0x21..0x7e with an error naming the rule (non-empty printable ASCII without whitespace) and never containing the token; run parseURL and checkToken before any dial",
+        "Build the connection with grpc.NewClient(\"passthrough:///\"+target, ...): WithContextDialer using Options.Dialer when set or a net.Dialer; for https credentials.NewTLS on a Clone of Options.TLSConfig, or &tls.Config{MinVersion: tls.VersionTLS12} with system roots when nil, setting ServerName to the URL host on the clone only when empty; for http insecure.NewCredentials(); WithDefaultCallOptions(MaxCallRecvMsgSize and MaxCallSendMsgSize of sandbox.MaxMessageBytes); WithPerRPCCredentials(bearer{token, requireTLS: https}) whose GetRequestMetadata returns authorization: Bearer <token>",
+        "Handshake in Dial: call Gateway.Capabilities under ctx; on failure close the connection and return fmt.Errorf(\"%w ...\", ErrUnauthenticated) for codes.Unauthenticated, otherwise an error naming the URL; when the answered protocol major differs from ProtocolMajor close and return an error wrapping sandbox.ErrProtocol naming the gateway's M.N and the client's 1.0; accept any minor",
+        "Cache the answer: gatewaywire.CapsFromPB with Provider \"gateway/\"+backend provider, Network the answered (already ceiling-limited) modes, the backend's Isolation, Resources, Image, Workdir and Landlock, and Notes the backend notes followed by one sentence naming the URL host, MaxTTL (time.Duration String) and MaxSandboxes; Capabilities() and Gateway() return the cached values without an RPC",
+        "Add rpcErr(err) shared by every Gateway RPC: codes.Unauthenticated wraps ErrUnauthenticated, anything else becomes an error naming the gateway URL",
+        "Implement Reap (Gateway.Reap, ids sorted with slices.Sort, a non-empty error text returned as an error carrying it), List (entries mapped to Info with gatewaywire.FromNanos, sorted by Created then ID with slices.SortFunc) and Destroy (Gateway.Destroy{id}, nil on OK so an unknown id succeeds), each returning ErrClosed before any RPC once the provider is closed",
+        "Implement a first Provider.Close that closes the connection once under sync.Once and marks the provider closed (task 4 adds closing open sandboxes)"
+      ],
+      "touches": [
+        "sandbox/gateway/gateway.go",
+        "sandbox/gateway/dial.go",
+        "sandbox/gateway/creds.go",
+        "sandbox/gateway/provider.go",
+        "sandbox/gateway/fakegw_test.go",
+        "sandbox/gateway/dial_test.go",
+        "sandbox/gateway/provider_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Implement gateway Create, the returned sandbox with its GitRepo Sync, refusal mapping, metadata and Provider.Close",
+      "criteria": [
+        "19-REQ-4",
+        "19-REQ-1.5",
+        "19-REQ-2.4",
+        "19-REQ-3.4",
+        "19-REQ-3.5",
+        "19-REQ-3.6",
+        "19-REQ-3.7"
+      ],
+      "tests": [
+        "TS-19-5",
+        "TS-19-11",
+        "TS-19-18",
+        "TS-19-19",
+        "TS-19-20",
+        "TS-19-21",
+        "TS-19-23",
+        "TS-19-24",
+        "TS-19-27",
+        "TS-19-29"
+      ],
+      "steps": [
+        "Extend the fake gateway with Create (answering an id, the effective spec and times, or a set Refusal or status), SyncGit, Destroy recording its ctx deadline with a settable failure, a deny-all Unauthenticated mode, per-method counters and a TLS mode serving a test CA and leaf for gw.example.test generated with crypto/x509; write TS-19-5, TS-19-11, TS-19-18, TS-19-19, TS-19-20, TS-19-21, TS-19-23, TS-19-24, TS-19-27 and TS-19-29; confirm they fail",
+        "Create local checks in sandbox/gateway/create.go, with no RPC: ErrClosed when closed; eff, err := sandbox.CheckSpec(p.Capabilities(), spec); effective TTL (eff.TTL, zero meaning 1h) above MaxTTL returns &sandbox.SpecError{Provider: p.caps.Provider, Field: \"TTL\", Reason}; a Provider value json.Marshal rejects returns a SpecError with Field \"Provider\"; an empty Image with caps.Image calls the package var defaultImage (= sandbox.DefaultImage, stubbed by TS-19-23) and returns its error unchanged",
+        "Send Gateway.Create with gatewaywire.SpecToPB; map gRPC errors with rpcErr",
+        "Add refusalErr(provider string, r *sandboxpb.Refusal) used by Create and SyncGit: UNSUPPORTED with a field becomes *sandbox.SpecError{Provider, Field, Reason}, without a field fmt.Errorf(\"%w: %s\", sandbox.ErrUnsupported, msg); NO_AGENT wraps sandbox.ErrNoAgent; NO_PUBLISHED_IMAGE wraps sandbox.ErrNoPublishedImage; PROTOCOL wraps sandbox.ErrProtocol; CAPACITY wraps ErrCapacity; REFUSED is errors.New of the message; every result carries the server's message",
+        "Attach: attach.New(ctx, noWatch{p.cc}, nopCloser{}, attach.Config{ID: resp.Id, Spec: SpecFromPB(resp.Spec), Metadata: metadata.Pairs(SandboxIDKey, id), Provider: p.caps.Provider, Destroy: func(ctx) error { p.forget(id); return p.destroyRPC(ctx, id) }}), where noWatch is a struct embedding grpc.ClientConnInterface so attach's *grpc.ClientConn watcher never starts; on a handshake error return nil and the error (attach already ran Destroy)",
+        "When ctx is done after attach.New succeeded, Close the sandbox with context.Background() (sending Gateway.Destroy) and return nil with an error wrapping ctx.Err(); otherwise record the sandbox in the provider's open set, closing it immediately if the provider closed meanwhile",
+        "Return an unexported gwSandbox{inner, p, id} that forwards ID, Spec, Agent, Tools, Export, Close and every non-GitRepo Sync to attach's sandbox unchanged and implements Unwrap() returning it (TS-19-25's attach-type check is made on that Unwrap target)",
+        "GitRepo Sync: attach.Live(inner) first, then gitclone.Check(repo), each returned with no RPC; then Gateway.SyncGit{id, URL, Ref, Depth} under ctx, mapping a Refusal with refusalErr and a gRPC error with rpcErr; success returns sandbox.SyncResult{} and nil",
+        "Close a gwSandbox through attach's teardown so Gateway.Destroy runs with attach's fresh 30-second context; a failed Destroy is returned by Close",
+        "Complete Provider.Close: under sync.Once snapshot the open set, Close each sandbox with context.Background(), errors.Join the failures, then close the connection; later Close returns nil and Create, Reap, List and Destroy return ErrClosed without an RPC",
+        "Confirm TS-19-5's metadata rule holds: the per-RPC credentials put authorization on every RPC, Config.Metadata puts agentkit-sandbox-id only on Agent RPCs, and Gateway RPCs carry the id in their messages only"
+      ],
+      "touches": [
+        "sandbox/gateway/create.go",
+        "sandbox/gateway/sandbox.go",
+        "sandbox/gateway/refusal.go",
+        "sandbox/gateway/provider.go",
+        "sandbox/gateway/fakegw_test.go",
+        "sandbox/gateway/create_test.go",
+        "sandbox/gateway/sandbox_test.go",
+        "sandbox/gateway/metadata_test.go",
+        "sandbox/gateway/tls_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Create the sandbox/gatewayd module with Config validation, authenticated Serve and the Gateway service's Capabilities, Create, List, Destroy and Reap",
+      "criteria": [
+        "19-REQ-5.1",
+        "19-REQ-5.2",
+        "19-REQ-5.3",
+        "19-REQ-5.4",
+        "19-REQ-5.5",
+        "19-REQ-5.8",
+        "19-REQ-3.1",
+        "19-REQ-6.1",
+        "19-REQ-6.2",
+        "19-REQ-6.4",
+        "19-REQ-6.6"
+      ],
+      "tests": [
+        "TS-19-14",
+        "TS-19-30",
+        "TS-19-31",
+        "TS-19-34",
+        "TS-19-37",
+        "TS-19-38",
+        "TS-19-39",
+        "TS-19-41",
+        "TS-19-43"
+      ],
+      "steps": [
+        "Create sandbox/gatewayd/go.mod: `module github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd`, `go 1.27`, require the root module, the sandbox module and google.golang.org/grpc at the sandbox module's version (protobuf only if a hand-written file imports it), `replace github.com/agent-fox-dev/agentkit-go => ../../` and `replace github.com/agent-fox-dev/agentkit-go/sandbox => ../`; tidy offline; add sandbox/gatewayd to the Makefile MODULES and to the `doc` target's module loop",
+        "Add sandbox/gatewayd/internal/gwtest: a net.Pipe-backed in-memory listener with a Dial func for gateway.Options.Dialer, Start(t, gatewayd.Config) serving in a goroutine with Shutdown in t.Cleanup, Dial(t, token) returning a *gateway.Provider for http://127.0.0.1, raw Gateway and Agent clients with a chosen authorization value, a captured JSON slog handler, and backends Counting (counts Create, Reap, sandbox Close and Sync around a provider), Recording (records each backend sandbox and its local directory) and Stub (settable Capabilities, Create error, Reap result, sandbox Close error); write TS-19-14, TS-19-30, TS-19-31, TS-19-34, TS-19-37, TS-19-38, TS-19-39, TS-19-41 and TS-19-43; confirm they fail",
+        "Add sandbox/gatewayd/internal/token with Validate([]string) error (at least one token; each at least 32 bytes in 0x21..0x7e; no repeats; errors name the token's position, never its value)",
+        "In config.go declare Config{Backend sandbox.Provider; Tokens []string; TLS *tls.Config; NetworkModes []sandbox.NetworkMode; MaxSandboxes int; MaxTTL, ReapInterval time.Duration; Logger *slog.Logger} and New(Config) (*Server, error): nil Backend, token.Validate errors and negative limits are refused; NetworkModes defaults to [NetworkNone], its intersection with Backend.Capabilities().Network must be non-empty or the error names both lists; defaults MaxSandboxes 16, MaxTTL 24h, ReapInterval 10m, Logger slog.New(slog.DiscardHandler); keep only sha256 sums of the tokens",
+        "In auth.go add unary and stream interceptors: read `authorization` from metadata.FromIncomingContext, require exactly `Bearer <token>`, compare sha256(token) against every stored sum with subtle.ConstantTimeCompare; on failure log one `authentication refused` line with the peer.FromContext address and return status Unauthenticated without calling the handler; on success put the owner sum in the context (the stream interceptor wraps ServerStream.Context)",
+        "In server.go implement Serve(net.Listener) once: grpc.NewServer with MaxRecvMsgSize/MaxSendMsgSize of sandbox.MaxMessageBytes, grpc.Creds(credentials.NewTLS(cfg.TLS)) when TLS is set, ChainUnaryInterceptor and ChainStreamInterceptor of the auth interceptors; register the Gateway service and an Agent relay type (embedding sandboxpb.UnimplementedAgentServer until task 6); run Backend.Reap at start and on a ReapInterval ticker, logging one `backend reap` line with the removed count and any error, never failing; return nil after Shutdown and the listener's error otherwise",
+        "Add a first Shutdown(ctx): once, GracefulStop the gRPC server, falling back to Stop when ctx ends, stop the reap ticker, and return nil on later calls (task 7 adds closing the held sandboxes)",
+        "Capabilities answers gateway.ProtocolMajor/Minor, buildver.Version(), CapsToPB of the backend's capabilities with Network intersected with the ceiling, MaxTTL nanos and MaxSandboxes",
+        "Create: gatewaywire.SpecFromPB errors and Provider bytes rejected by wire.Guard(b, wire.Defaults()) answer InvalidArgument; a mode outside the ceiling is Refusal UNSUPPORTED field Network.Mode; TTL zero counts as 1h and above MaxTTL is UNSUPPORTED field TTL; then Backend.Create(rpcCtx, spec), mapping *sandbox.SpecError to UNSUPPORTED with its field and reason, other ErrUnsupported to UNSUPPORTED, ErrNoAgent to NO_AGENT, ErrNoPublishedImage to NO_PUBLISHED_IMAGE, ErrProtocol to PROTOCOL and anything else to status Unavailable with its message",
+        "After Backend.Create: when attach.ClientConn(bsb) is nil close it and answer Internal naming the backend provider; otherwise record entry{owner, created, expires = created + effective TTL, spec: bsb.Spec(), sb: bsb} keyed by bsb.ID(), log one `sandbox created` line {id, owner: first 8 hex chars, ttl, network}, and answer {id, SpecToPB(bsb.Spec()), created, expires}",
+        "List answers the caller's entries {id, labels, created, expires}; Destroy of the caller's id removes the entry, closes the backend sandbox and logs `sandbox destroyed` with reason client (Unavailable carrying a Close error), and is OK for an unknown id; Reap runs Backend.Reap and answers its ids plus the joined error text (empty on success)"
+      ],
+      "touches": [
+        "sandbox/gatewayd/go.mod",
+        "sandbox/gatewayd/go.sum",
+        "sandbox/gatewayd/doc.go",
+        "sandbox/gatewayd/config.go",
+        "sandbox/gatewayd/auth.go",
+        "sandbox/gatewayd/server.go",
+        "sandbox/gatewayd/gateway.go",
+        "sandbox/gatewayd/registry.go",
+        "sandbox/gatewayd/relay.go",
+        "sandbox/gatewayd/log.go",
+        "sandbox/gatewayd/internal/token/token.go",
+        "sandbox/gatewayd/internal/gwtest/gwtest.go",
+        "sandbox/gatewayd/config_test.go",
+        "sandbox/gatewayd/auth_test.go",
+        "sandbox/gatewayd/create_test.go",
+        "sandbox/gatewayd/list_reap_test.go",
+        "Makefile"
+      ],
+      "depends_on": [
+        2,
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Implement the typed Agent relay with routing, metadata stripping and status normalisation, and SyncGit with the GitRepo slot",
+      "criteria": [
+        "19-REQ-7.1",
+        "19-REQ-7.2",
+        "19-REQ-7.3",
+        "19-REQ-7.4",
+        "19-REQ-7.5",
+        "19-REQ-7.6",
+        "19-REQ-7.7",
+        "19-REQ-5.3"
+      ],
+      "tests": [
+        "TS-19-32",
+        "TS-19-33",
+        "TS-19-46",
+        "TS-19-47",
+        "TS-19-48",
+        "TS-19-49",
+        "TS-19-50",
+        "TS-19-51",
+        "TS-19-52"
+      ],
+      "steps": [
+        "Add gwtest backends: FakeAgent (Create attaches a fakeagent.Agent through attach.Dial and returns a wrapper with Unwrap, optionally with a local directory to remove) and Slot (wraps local.Unisolated(), simulates the clone in Sync(GitRepo) with a settable error and seeded delay, counts and logs clone start/end, implements Unwrap); write TS-19-32, TS-19-33, TS-19-46, TS-19-47, TS-19-48, TS-19-49, TS-19-50, TS-19-51 and TS-19-52; confirm they fail",
+        "In relay.go add route(ctx) (*entry, error): read the single gateway.SandboxIDKey value; a missing, repeated or malformed id (empty, over 256 bytes, or outside printable ASCII) answers status Unavailable saying it is missing or naming it; an unknown id and another owner's id both answer the same Unavailable `no sandbox %q`; when attach.Live(entry.sb) fails remove the entry with reason unavailable, close it and answer Unavailable naming the id",
+        "Forward over sandboxpb.NewAgentClient(attach.ClientConn(entry.sb)) using the incoming RPC's context with metadata.NewOutgoingContext(ctx, metadata.MD{}) so no incoming metadata (authorization, agentkit-sandbox-id) reaches the agent and cancellation and deadlines propagate",
+        "Add mapUpstream(err): nil stays nil; InvalidArgument, FailedPrecondition, NotFound and Unimplemented pass through with their messages; every other error becomes status Unavailable carrying the upstream message; never answer a gateway-side condition with one of the four refusal codes",
+        "Relay Hello, Tools and Call as unary forwards; relay SyncTar by Recv-ing client chunks and Send-ing upstream, CloseAndRecv on io.EOF and SendAndClose the answer; relay ExportTar by copying upstream frames to the client; relay Rsync with two goroutines copying frames in both directions, CloseSend upstream on the client's io.EOF, ending when the upstream stream ends (follow relaytest.Relay); generated messages keep unknown fields; leave unknown Agent methods to gRPC's default Unimplemented",
+        "Give each entry a GitRepo slot: a sync.RWMutex and an atomic taken flag; while the slot is free, Tools holds the read lock for its RPC and takes the slot whatever its outcome, SyncTar holds it and takes the slot on success, and Rsync reads its first client frame and, when GetStart().GetDirection() == sandboxpb.RsyncStart_SYNC, holds it and takes the slot when the stream ends OK",
+        "Implement Gateway.SyncGit: an unknown or foreign id answers the same status Unavailable naming the id; take the slot's write lock; a taken slot answers Refusal REFUSED \"GitRepo must be the first Sync and come before Tools\" without calling the backend; else check attach.Live, call entry.sb.Sync(ctx, sandbox.GitRepo{URL, Ref, Depth}); a *SpecError or ErrUnsupported answers UNSUPPORTED (with field when present), any other error REFUSED with its message leaving the slot free, success takes the slot",
+        "Confirm TS-19-32 (reaping at start and every interval while a client dials and creates through the relay) and TS-19-33 (TLS server, https client, 12 MiB write_file relayed within sandbox.MaxMessageBytes, plaintext dial refused) pass with the relay in place",
+        "Remove the UnimplementedAgentServer-only placeholder behaviour from task 5: every one of the six Agent methods is relayed"
+      ],
+      "touches": [
+        "sandbox/gatewayd/relay.go",
+        "sandbox/gatewayd/slot.go",
+        "sandbox/gatewayd/gateway.go",
+        "sandbox/gatewayd/registry.go",
+        "sandbox/gatewayd/internal/gwtest/gwtest.go",
+        "sandbox/gatewayd/internal/gwtest/backends.go",
+        "sandbox/gatewayd/relay_test.go",
+        "sandbox/gatewayd/slot_test.go",
+        "sandbox/gatewayd/serve_test.go"
+      ],
+      "depends_on": [
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Complete the server lifecycle: capacity with pruning, caller-gone and unrelayable creates, expiry, liveness removal, ownership, logging and Shutdown",
+      "criteria": [
+        "19-REQ-5.6",
+        "19-REQ-5.7",
+        "19-REQ-6.3",
+        "19-REQ-6.5",
+        "19-REQ-6.7",
+        "19-REQ-6.8",
+        "19-REQ-3.4",
+        "19-REQ-4.5",
+        "19-REQ-4.7"
+      ],
+      "tests": [
+        "TS-19-17",
+        "TS-19-26",
+        "TS-19-28",
+        "TS-19-35",
+        "TS-19-36",
+        "TS-19-40",
+        "TS-19-42",
+        "TS-19-44",
+        "TS-19-45"
+      ],
+      "steps": [
+        "Add gwtest backends: Blocking (Create blocks until released), Unrelayable (returns local sandboxes inside a wrapper with no Unwrap), CtxWait (waits for the RPC ctx to end, then creates), CancelOnCreate (cancels the caller's ctx before returning), HandshakeFail (fakeagent switched to protocol major 99 after the backend's own Hello) and FailingClose; write TS-19-17, TS-19-26, TS-19-28, TS-19-35, TS-19-36, TS-19-40, TS-19-42, TS-19-44 and TS-19-45; confirm they fail",
+        "Capacity in Create: under the registry mutex prune entries whose attach.Live fails (removed with reason unavailable), then refuse with Refusal CAPACITY when recorded entries plus creates in progress reach MaxSandboxes; otherwise increment the in-progress count and decrement it when Backend.Create returns, so N+k concurrent Creates let exactly N through",
+        "After the relayability check, when the RPC context is done close the backend sandbox, record nothing and return the context's status",
+        "Expiry: arm a time.AfterFunc per entry at expires that removes it with reason expired; stop the timer on every other removal",
+        "Centralise removal in registry.remove(id, reason): delete the entry once under the mutex, stop its timer, close its backend sandbox, log one `sandbox destroyed` line {id, reason} with reason client, expired, unavailable or shutdown, and return the Close error; Destroy removes the entry even when Close fails and answers Unavailable carrying the error",
+        "Run a liveness check on every access (relay route, SyncGit, List, Destroy, Create's pruning) so a non-live backend sandbox is removed with reason unavailable; List omits it",
+        "Key every lookup by (owner, id): another owner's id is omitted by List, a no-op OK for Destroy, and answered by the relay and SyncGit exactly as an unknown id",
+        "Complete Shutdown(ctx): once; start GracefulStop in a goroutine so no new RPC is accepted, stop the reap loop, remove every entry with reason shutdown (closing backend sandboxes ends relayed calls in flight), wait for GracefulStop until ctx is done then call Stop, and return errors.Join of the Close failures; later calls return nil and Serve returns nil",
+        "Log hygiene: log only ids, the 8-hex owner fingerprint, TTL, network mode, peer address, reasons, counts and error texts; never a token, the full token hash, an Env value, a tool input or a tool result",
+        "Confirm the client paths end-to-end: a failed handshake (attach's Destroy), a ctx ended after Gateway.Create (client Close), sandbox Close and Provider.Destroy each leave List empty and the backend local directory gone"
+      ],
+      "touches": [
+        "sandbox/gatewayd/registry.go",
+        "sandbox/gatewayd/gateway.go",
+        "sandbox/gatewayd/relay.go",
+        "sandbox/gatewayd/server.go",
+        "sandbox/gatewayd/log.go",
+        "sandbox/gatewayd/internal/gwtest/backends.go",
+        "sandbox/gatewayd/lifecycle_test.go",
+        "sandbox/gatewayd/ownership_test.go",
+        "sandbox/gatewayd/logging_test.go",
+        "sandbox/gatewayd/shutdown_test.go",
+        "sandbox/gatewayd/client_lifecycle_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Prove parity with a local sandbox over the gateway: proxies, conformance, cancellation, transfers and transport failures",
+      "criteria": [
+        "19-REQ-10.1",
+        "19-REQ-10.2",
+        "19-REQ-10.3",
+        "19-REQ-10.4",
+        "19-REQ-4.1",
+        "19-REQ-4.4"
+      ],
+      "tests": [
+        "TS-19-22",
+        "TS-19-25",
+        "TS-19-67",
+        "TS-19-68",
+        "TS-19-69",
+        "TS-19-70"
+      ],
+      "steps": [
+        "Write TS-19-67 in sandbox/gatewayd/parity_test.go: a gateway sandbox over local.Unisolated() with NetworkModes [NetworkUnrestricted]; compare each proxy from Tools with the tools.All tool of the same name field by field and by marshalled InputSchema and OutputSchema, then toolconformance.RunGroup(t, \"gateway\", builder) where builder creates a fresh gateway sandbox, Syncs tree.Tar(t) and returns its Tools (follow sandbox/conformance_test.go)",
+        "Write TS-19-68 in sandbox/gatewayd/cancel_unix_test.go (build tag !windows): execute `echo $$ > pid; exec sleep 300`, cancel once pid exists, require outcome aborted and syscall.Kill(pid, 0) == ESRCH within 5 s",
+        "Write TS-19-69 in sandbox/gatewayd/transfer_parity_test.go: for seeds 0..20 treegen.Gen a tree, LocalDir and Tar Sync it into a fresh gateway sandbox and a fresh direct local sandbox, Export by LocalDir and TarOut, and compare treegen.Entries and untarred entries",
+        "Write TS-19-70 in sandbox/gatewayd/unavailable_test.go: a Dialer wrapping each conn so the test can close it; with execute `sleep 30` in flight (a) close the client conn, (b) localtest.Cut the recorded backend sandbox, (c) Destroy(sb.ID()) from a second provider with the same token; require sandbox_unavailable in flight and for a later read_file, and sandbox.ErrUnavailable for later Sync and Export",
+        "Write TS-19-22 (RequireLandlock, Image and NetworkNone refused on the client naming gateway/local with 0 backend Creates) and TS-19-25 (ID, effective spec with the agent's Workdir, relayed Hello, the Unwrap target is attach's sandbox, Tar Sync and TarOut Export work) in sandbox/gatewayd/client_create_test.go",
+        "Run the tests and fix divergences in the relay or client, not in the tests: cancellation must reach the agent through the forwarded ctx; a client-side cut must surface as a non-refusal code so attach marks the sandbox unavailable; a backend cut or destroy mid-call must map to Unavailable and every later call must hit route's Unavailable",
+        "Keep these tests offline and inside make check: no engine, no network, -short safe"
+      ],
+      "touches": [
+        "sandbox/gatewayd/parity_test.go",
+        "sandbox/gatewayd/cancel_unix_test.go",
+        "sandbox/gatewayd/transfer_parity_test.go",
+        "sandbox/gatewayd/unavailable_test.go",
+        "sandbox/gatewayd/client_create_test.go",
+        "sandbox/gatewayd/relay.go",
+        "sandbox/gateway/sandbox.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Add the agentkit-gateway command, the sandbox-gateway make targets and the opt-in Podman tests",
+      "criteria": [
+        "19-REQ-8",
+        "19-REQ-9.6",
+        "19-REQ-10.5"
+      ],
+      "tests": [
+        "TS-19-54",
+        "TS-19-55",
+        "TS-19-56",
+        "TS-19-57",
+        "TS-19-58",
+        "TS-19-59",
+        "TS-19-65",
+        "TS-19-71"
+      ],
+      "steps": [
+        "Write TS-19-55, TS-19-56, TS-19-57 and TS-19-59 in sandbox/gatewayd/cmd/agentkit-gateway (run, flag and token-file tests; a fake podman script on PATH printing `podman version 5.0.0` and logging invocations), TS-19-54 and TS-19-58 against a binary built in TestMain (skipped on Windows), TS-19-65 in internal/policy/gateway_make_test.go (skipped under -short or without make), and TS-19-71 in sandbox/gatewayd/podman_optin_test.go; confirm they fail",
+        "In main.go: main calls os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, defaultDeps())) where deps{newBackend func(podman.Options) (sandbox.Provider, error); signals <-chan os.Signal} defaults to podman.New and signal.Notify for SIGINT and SIGTERM",
+        "Parse flags with flag.NewFlagSet(\"agentkit-gateway\", flag.ContinueOnError) and SetOutput(io.Discard): --listen 127.0.0.1:8443, --token-file, --tls-cert, --tls-key, --plaintext, --engine-binary podman, --engine, --runtime, --userns, --network none, --max-sandboxes 16, --max-ttl 24h, --reap-interval 10m, --version; handle --version first, printing `agentkit-gateway <buildver.Version()> (gateway protocol 1.0, agent protocol <sandbox.ProtocolMajor>.<sandbox.ProtocolMinor>)` and exiting 0",
+        "Usage errors exit 2 with exactly one stderr line `agentkit-gateway: <cause>` before reading the token file or running the engine: a parse error, an extra argument, no --token-file, half a TLS pair, --plaintext with TLS flags, neither, --engine not empty/podman/docker, --runtime not empty/krun, a --network entry not none/unrestricted, and non-positive --max-sandboxes, --max-ttl or --reap-interval",
+        "Add readTokenFile(path) ([]string, error): one token per line, trimmed, blank and `#` lines skipped, then gatewayd/internal/token.Validate; no flag or environment variable supplies tokens; read, TLS (tls.LoadX509KeyPair into &tls.Config{MinVersion: tls.VersionTLS12}), backend and listen failures exit 1 with one `agentkit-gateway: <cause>` line naming no token",
+        "Build the backend with deps.newBackend(podman.Options{Binary: --engine-binary, Engine: the --engine value as podman.Engine (empty means detect), Runtime, UserNS, EngineEnv: os.Environ()}), then gatewayd.New with the tokens, TLS, network ceiling, limits and a slog text logger on stderr",
+        "Listen with net.Listen(\"tcp\", --listen), print `agentkit-gateway: listening on <l.Addr()> (<tls|plaintext>), backend <Backend.Capabilities().Provider>, version <buildver.Version()>` to stderr, and with --plaintext on a host that is neither localhost nor a loopback IP also print a warning line naming plaintext and the address",
+        "Serve in a goroutine; on a signal run Shutdown with a 60-second context and exit 0, or 1 with one stderr line when Shutdown returns an error; a Serve error before any signal exits 1",
+        "Add Makefile targets: `sandbox-gateway` building build/bin/agentkit-gateway from sandbox/gatewayd with `go build -trimpath`, adding `-ldflags \"-X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=$(AGENTKIT_VERSION)\"` when AGENTKIT_VERSION is set; `sandbox-gateway-test: sandbox-images` running the opt-in tests in sandbox/gatewayd with AGENTKIT_SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE):$(SANDBOX_IMAGE_TAG) and AGENTKIT_CONTAINER=$(CONTAINER), not part of check",
+        "In podman_optin_test.go add the prerequisite helper (skip under -short, engine from AGENTKIT_CONTAINER then podman then docker, skip without AGENTKIT_SANDBOX_BASE_IMAGE) as spec 17 does, and write TS-19-71: an in-process server over podman.New with ceiling [NetworkNone], two open sandboxes, Shutdown returns nil and the engine lists no container or volume with the sandbox label"
+      ],
+      "touches": [
+        "sandbox/gatewayd/cmd/agentkit-gateway/main.go",
+        "sandbox/gatewayd/cmd/agentkit-gateway/run.go",
+        "sandbox/gatewayd/cmd/agentkit-gateway/flags.go",
+        "sandbox/gatewayd/cmd/agentkit-gateway/tokens.go",
+        "sandbox/gatewayd/cmd/agentkit-gateway/main_test.go",
+        "sandbox/gatewayd/cmd/agentkit-gateway/flags_test.go",
+        "sandbox/gatewayd/cmd/agentkit-gateway/tokens_test.go",
+        "sandbox/gatewayd/cmd/agentkit-gateway/run_test.go",
+        "sandbox/gatewayd/cmd/agentkit-gateway/binary_unix_test.go",
+        "sandbox/gatewayd/podman_optin_test.go",
+        "internal/policy/gateway_make_test.go",
+        "Makefile"
+      ],
+      "depends_on": [
+        7
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Pin the gatewayd module's dependencies, gates and the no-socket-listening invariant in the policy tests",
+      "criteria": [
+        "19-REQ-9.1",
+        "19-REQ-9.2",
+        "19-REQ-9.3",
+        "19-REQ-9.4",
+        "19-REQ-9.5"
+      ],
+      "tests": [
+        "TS-19-60",
+        "TS-19-61",
+        "TS-19-62",
+        "TS-19-63",
+        "TS-19-64"
+      ],
+      "steps": [
+        "Write TS-19-60, TS-19-61 in internal/policy/gatewayd_deps_test.go, extend crosstarget_test.go for TS-19-62, write TS-19-63 in internal/policy/nolisten_test.go and TS-19-64 in internal/policy/gateway_unchanged_test.go; confirm they fail",
+        "In deps_test.go add \"github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd\" to sandboxModules; in TS-19-60 read `go mod edit -json` in sandbox/gatewayd (module path, go 1.27, replace of the root to ../../ and of the sandbox module to ../), compute directSet, require it within {root, sandbox, google.golang.org/grpc, google.golang.org/protobuf} with protobuf only when a non-generated gatewayd file imports it, and run validateAllowlist against approvedDeps plus sandboxModules",
+        "In TS-19-61 run `go list -m all` in sandbox/gatewayd and sandbox and require every gatewayd module path other than its own to appear in the sandbox graph",
+        "Add \"sandbox/gatewayd\" to gateModules in crosstarget_test.go without adding any environment variable (TS-15-41 stays green), so it is built and vetted on the four targets with CGO_ENABLED=0 and on the host with CGO_ENABLED=1",
+        "Implement noListen(root string) error: walk the root module's files (as moduleGoFiles does) and the sandbox module's files (skipping nested modules such as sandbox/gatewayd, testdata, build and dot-directories), skip _test.go files, parse each with go/parser, resolve import names including aliases for net, crypto/tls and net/http, and report file:line and API for selectors net.Listen, net.ListenTCP, net.ListenUnix, net.ListenPacket, net.ListenConfig, tls.Listen and http.ListenAndServe*",
+        "TS-19-63 runs noListen on the repository (must pass) and on temporary module copies holding one offending non-test file per API (one through `n \"net\"`), a _test.go use and a sandbox/gatewayd use (both must pass)",
+        "TS-19-64 parses sandbox/version.go for `ProtocolMinor = 2` and relies on TS-09-15, TS-09-16, TS-13-65, TS-14-44 and TS-15-42 passing; do not edit any file under internal/policy/testdata"
+      ],
+      "touches": [
+        "internal/policy/deps_test.go",
+        "internal/policy/crosstarget_test.go",
+        "internal/policy/gatewayd_deps_test.go",
+        "internal/policy/nolisten_test.go",
+        "internal/policy/gateway_unchanged_test.go"
+      ],
+      "depends_on": [
+        8,
+        9
+      ],
+      "done_when": [
+        "internal/policy/testdata is unchanged"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "implement",
+      "title": "Update the documentation for the gateway and prove make check passes offline",
+      "criteria": [
+        "19-REQ-9.7"
+      ],
+      "tests": [
+        "TS-19-66"
+      ],
+      "steps": [
+        "Write TS-19-66 as TestMakeCheckOffline_TS19_66 in internal/policy/check_test.go with TS-09-20's guards (skip under -short, inside make check, or without make): build a temporary bin directory symlinking every PATH executable except podman, docker and protoc, run `make check` with that PATH, GOPROXY=off and AGENTKIT_IN_MAKE_CHECK=1, and require success with sandbox/gatewayd tests run and the opt-in engine tests skipped; confirm it fails before the docs and wiring are complete, if it does",
+        "Run `make doc` first so the generated package reference includes sandbox/gateway and sandbox/gatewayd",
+        "README.md: add the gateway to the Sandboxes section with a short gateway.Dial example; change the socket sentence to \"the library listens on no socket; `agentkit-sandboxd` serves the agent service on its stdio, and `agentkit-gateway`, a separate module, is the one network service\"; add sandbox/gateway and sandbox/gatewayd to the packages table and sandbox-gateway and sandbox-gateway-test to the make-targets table",
+        "docs/architecture.md: list four nested modules in Shape, update the network-API paragraph, add package-graph rows for sandbox/gateway, sandbox/internal/gatewaywire and sandbox/gatewayd, and add a \"The gateway\" part covering topology, the typed relay, metadata hygiene, ownership, the GitRepo slot, how transport failures map to the state machine, and the invariant that no code in the root or sandbox module listens on a socket",
+        "docs/configuration.md: gateway.Options, Dial with its URL and TLS rules, the Provider methods, gatewayd.Config with its defaults, the network ceiling and MaxTTL, and a gateway column in \"Which provider honours which field\"",
+        "docs/cli.md: an agentkit-gateway section with every flag and default, the token-file format and the exit codes; docs/DEPS.md: name the gateway client and the gatewayd module as gRPC and protobuf users, adding no module; docs/releasing.md: the gateway is not published and `make sandbox-gateway AGENTKIT_VERSION=…` stamps its version; document that the GitRepo init step on the gateway host reaches any HTTPS URL the client names",
+        "Run `make check` and fix anything it reports"
+      ],
+      "touches": [
+        "internal/policy/check_test.go",
+        "README.md",
+        "docs/architecture.md",
+        "docs/configuration.md",
+        "docs/cli.md",
+        "docs/DEPS.md",
+        "docs/releasing.md"
+      ],
+      "depends_on": [
+        10
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 12,
+      "kind": "integration",
+      "title": "Verify every gateway execution path end to end and remove any remaining stub",
+      "tests": [
+        "TS-19-72",
+        "TS-19-73",
+        "TS-19-74",
+        "TS-19-75",
+        "TS-19-76",
+        "TS-19-77"
+      ],
+      "steps": [
+        "Write TS-19-72, TS-19-73, TS-19-74 and TS-19-75 in sandbox/gatewayd/smoke_test.go with gwtest over the real local.Unisolated() backend, TS-19-76 in sandbox/gatewayd/cmd/agentkit-gateway/smoke_unix_test.go against the built binary and a fake podman script, and TS-19-77 in sandbox/gatewayd/podman_optin_test.go (skipping without an engine); confirm each passes",
+        "Trace 19-PATH-1: gateway.Dial → parseURL/checkToken → grpc.NewClient with bearer credentials → Gateway.Capabilities → auth interceptor → Capabilities handler; Provider.Create → CheckSpec and TTL check → Gateway.Create → Backend.Create → registry record → attach.New Hello through route and the relay → Tools → read_file Call; confirm each step calls the next",
+        "Trace 19-PATH-2 (gwSandbox.Sync(LocalDir) → attach rsync client → relay Rsync with the slot taken on an OK SYNC → agent → Export) and 19-PATH-3 (Provider.Close → gwSandbox.Close → attach teardown → Gateway.Destroy → registry.remove(client) → local Close)",
+        "Trace 19-PATH-4 (AfterFunc expiry → registry.remove(expired) → route answers Unavailable → attach classify → sandbox_unavailable), 19-PATH-5 (main → run → flags → readTokenFile → podman.New → gatewayd.New → net.Listen → listening line → Serve → signal → Shutdown → exit 0) and 19-PATH-6 (podman Create → wrapper Unwrap → attach.ClientConn → SyncGit → backend Sync(GitRepo) → relayed tools → Close)",
+        "Confirm contract producers are consumed in production code: gatewaywire conversions by both the client and the server; refusalErr by Create and GitRepo Sync; rpcErr by every client Gateway RPC; attach.ClientConn and attach.Live through Unwrap by gatewayd Create, route and pruning; token.Validate by gatewayd.New and readTokenFile; buildver.Version by Capabilities and --version; gateway.ProtocolMajor by Dial and Capabilities; gateway.SandboxIDKey by the client's Config.Metadata and route",
+        "Confirm entry points from other specs are called from production code: attach.New (13) from gateway Create, sandbox.CheckSpec (13) from Create, gitclone.Check and attach.Live (17) from gwSandbox.Sync, sandbox.DefaultImage (16) from Create, sandboxpb.RsyncStart_SYNC (14) from the relay's slot logic, podman.New (17) from the command's default deps",
+        "Search every file in the tasks' touches for panic(\"not implemented\"), TODO, FIXME, an Agent relay method still served by UnimplementedAgentServer, and bare `return nil` or empty results on non-trivial paths; remove any that remain",
+        "Run the spec tests and `make check` offline (no engine, no protoc, GOPROXY=off) and confirm the opt-in tests skip"
+      ],
+      "touches": [
+        "sandbox/gatewayd/smoke_test.go",
+        "sandbox/gatewayd/cmd/agentkit-gateway/smoke_unix_test.go",
+        "sandbox/gatewayd/podman_optin_test.go"
+      ],
+      "depends_on": [
+        11
+      ],
+      "done_when": [
+        "`make check` passes offline with no container engine and no protoc on PATH",
+        "every execution path 19-PATH-1 to 19-PATH-6 is traced through production code with no stub left"
+      ],
+      "state": "pending"
+    }
+  ]
+}
