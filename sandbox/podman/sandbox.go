@@ -28,8 +28,15 @@ type podSandbox struct {
 	slotTaken atomic.Bool
 }
 
-func (s *podSandbox) ID() string               { return s.inner.ID() }
-func (s *podSandbox) Spec() sandbox.Spec       { return s.inner.Spec() }
+func (s *podSandbox) ID() string { return s.inner.ID() }
+
+// Spec is the attached sandbox's spec with the effective TTL (attach's own
+// timer was given what was left of it after Create).
+func (s *podSandbox) Spec() sandbox.Spec {
+	sp := s.inner.Spec()
+	sp.TTL = s.eff.TTL
+	return sp
+}
 func (s *podSandbox) Agent() sandbox.AgentInfo { return s.inner.Agent() }
 
 // Sync forwards every source but a GitRepo to the attached sandbox; a

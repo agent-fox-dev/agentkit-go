@@ -55,6 +55,12 @@ func (s *podSandbox) syncGitRepo(ctx context.Context, repo sandbox.GitRepo) (san
 		}
 		return sandbox.SyncResult{}, errors.Join(fmt.Errorf("podman: GitRepo init step for %s did not finish before the sandbox expired at %s", repo.URL, expiry.UTC().Format(time.RFC3339)), rmErr)
 	}
+	if err := attach.Live(s.inner); err != nil {
+		// Closed or expired while the clone ran: the destroy step may have
+		// removed the volume before the init container's --mount re-created
+		// it, without labels, so remove it again.
+		return sandbox.SyncResult{}, errors.Join(err, s.p.removeVolume(context.WithoutCancel(ctx), s.id))
+	}
 	switch {
 	case res.Outcome == tools.OutcomeOK:
 		s.slotTaken.Store(true)

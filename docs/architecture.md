@@ -663,7 +663,8 @@ images before it publishes them; [`releasing.md`](releasing.md) describes it.
 **The Podman and Docker provider.** `sandbox/podman` runs each sandbox's
 agent as the only process of a container that holds one named volume, with
 no host mount, a read-only root, no capabilities, `no-new-privileges`, an
-explicit environment and, by default, no network. Its argument lists are
+explicit environment (on docker the image's own `ENV` is added, since docker
+cannot drop it) and, by default, no network. Its argument lists are
 pure functions (`podman.Args`, `podman.InitArgs`), golden-tested offline, and
 every engine command goes through an unexported runner seam that the
 offline tests replace with a fake serving an in-process agent.
@@ -684,11 +685,16 @@ clone's network never reaches the agent. It is allowed only before anything
 else has written to the workspace and before the tool set exists. The TTL is
 enforced on both sides: attach's host timer runs the destroy step, and the
 agent's `--ttl` ends the container, which `--rm` removes, even when the host
-is gone. The volume of a host that died keeps its
-`agentkit.sandbox.expires` label, and `Reap` removes containers and volumes
-only once that expiry has passed, so it never touches a sandbox that a live
-process on another host may own. When the handshake fails with an exit
-other than the engine's own 125, a `--version` run of the image without
+is gone. The host timer counts from the creation time the volume's
+`agentkit.sandbox.expires` label is written from, not from the end of
+`Create`, so the sandbox never outlives its label. The volume of a host that
+died keeps that label, and `Reap` removes containers and volumes only once
+the expiry has passed, so it never touches a sandbox that a live process on
+another host still uses, as long as the hosts' clocks agree. A `GitRepo`
+sync that finds the sandbox closed or expired when its clone ends removes
+the volume again, since the init container's mount may have re-created it.
+When the handshake fails with a non-zero exit other than the engine's own
+125, a `--version` run of the image without
 `--init` (whose init process would decide the exit status) tells an image
 with no agent (126 or 127, reported as `sandbox.ErrNoAgent` with the
 `COPY --from` line that fixes it) from an agent that failed to start.

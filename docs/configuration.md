@@ -641,7 +641,7 @@ lists the provider runs after the binary, for the effective spec with
 | `--network none` | Unless the spec is `NetworkUnrestricted`. |
 | `--cap-drop ALL`, `--security-opt no-new-privileges` | No capabilities, and none to gain. |
 | `--read-only` | A read-only root. |
-| `--tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777` | The only writable directory besides the workspace; memory-backed, so it counts against `MemoryBytes`. |
+| `--tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777` | The tools' writable directory besides the workspace (`HOME` and `TMPDIR`); memory-backed, so it counts against `MemoryBytes`. Podman's `--read-only` also mounts tmpfs at `/run`, `/var/tmp` and `/dev/shm`, which the agent's Landlock ruleset keeps read-only for the tools. |
 | `--mount type=volume,source=agentkit-<id>,target=<Workdir>` | The workspace: a named volume, never a host path. |
 | `--cpus`, `--memory` and `--memory-swap` (equal), `--pids-limit` | One flag per non-zero `Resources` field. |
 | `--runtime krun`, `--userns=<v>` | When set in `Options`. |
@@ -658,8 +658,11 @@ run as root); the base image does.
 `HOME=/tmp`, `LANG=C.UTF-8`,
 `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
 `TERM=dumb`, `TMPDIR=/tmp`. Both engines also add `HOSTNAME`, the
-container's own. `HOME` and `TMPDIR` in `Spec.Env` must be `/tmp`, the
-workspace, or beneath either, since nothing else is writable. The values
+container's own. On podman `--unsetenv-all` drops the image's own `ENV`;
+docker has no such flag, so there an image's `ENV` also reaches the tools
+(the base image declares none). `HOME` and `TMPDIR` in `Spec.Env` must be
+`/tmp`, the workspace, or beneath either: nothing else is writable under
+`--read-only` and the agent's Landlock ruleset. The values
 appear on the engine's command line on the host, so credentials never belong
 in `Spec.Env`.
 
@@ -671,7 +674,8 @@ and attaches over its stdio. Whatever fails after the volume exists, the
 container and the volume are removed before `Create` returns. A protocol
 mismatch (`ErrProtocol`) and the `RequireLandlock` `*SpecError` pass
 through; a done context returns its error; an engine exit of 125 returns an
-engine error with the last 8 KiB of its stderr. Any other failed handshake
+engine error with the last 8 KiB of its stderr. A failed handshake with any
+other non-zero exit
 runs `run --rm … --entrypoint <AgentPath> <image> --version` without
 `--init` or a volume: exit 126 or 127 means the image has no agent, and the
 error wraps `sandbox.ErrNoAgent`
@@ -689,8 +693,10 @@ even when the host is gone.
 `agentkit.sandbox`, reads their labels from the engine's inspect JSON, and
 removes those whose `agentkit.sandbox.expires` parses and is not after now,
 containers first. Everything else, including an entry without a readable
-expiry, is left alone, so a sandbox another process or host still owns is
-never touched; a crashed host's volume lingers until its TTL.
+expiry, is left alone. The host-side TTL counts from the same creation time
+as the label, so an expired sandbox is already being destroyed by its owner,
+and one another process or host still uses is never touched (as long as the
+hosts' clocks agree); a crashed host's volume lingers until its TTL.
 
 ### `sandbox.GitRepo`
 
@@ -708,9 +714,10 @@ matching `ErrUnsupported`.
 The clone runs `git -c protocol.allow=never -c protocol.https.allow=always clone [--depth N] [--branch REF] -- URL <Workdir>`
 in a separate `agentkit-<id>-init` container with the same labels,
 hardening, volume and bounds, on the engine's default network, while the
-agent's container sits idle beside it with its own network policy. Only
-`GIT_TERMINAL_PROMPT=0` and the `HOME`, `LANG` and `PATH` defaults reach it,
-never `Spec.Env`. A `GitRepo` must be the first `Sync` and come before the
+agent's container sits idle beside it with its own network policy. Its
+environment is `GIT_TERMINAL_PROMPT=0` and the `HOME`, `LANG` and `PATH`
+defaults, plus the engine's `HOSTNAME` (and, on docker, the image's own
+`ENV`), never `Spec.Env`. A `GitRepo` must be the first `Sync` and come before the
 first `Tools` call: any successful `Sync` and the first `Tools` call take
 the slot, and a later `GitRepo` is refused with
 `GitRepo must be the first Sync and come before Tools`. A failed clone takes

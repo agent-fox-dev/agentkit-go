@@ -53,8 +53,13 @@ func (p *provider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandb
 		defer cancel()
 		return nil, errors.Join(fmt.Errorf("podman: starting %s run: %w", p.engine, err), p.destroy(id, nil)(dctx))
 	}
+	// attach's host-side timer starts after Hello; give it what is left of
+	// the TTL since created, so the sandbox never outlives the expiry label
+	// Reap reads.
+	attached := eff
+	attached.TTL = max(eff.TTL-p.now().Sub(created), time.Millisecond)
 	inner, err := attach.Dial(ctx, stdioconn.New(proc.Stdout(), proc.Stdin()),
-		attach.Config{ID: id, Spec: eff, Destroy: p.destroy(id, proc), Provider: string(p.engine)})
+		attach.Config{ID: id, Spec: attached, Destroy: p.destroy(id, proc), Provider: string(p.engine)})
 	if err != nil {
 		return nil, p.createFailed(ctx, err, proc, id, created, eff)
 	}

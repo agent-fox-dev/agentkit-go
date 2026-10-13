@@ -16,9 +16,10 @@ type reapEntry struct{ name, id string }
 // agentkit.sandbox.expires label parses and is not after now, containers
 // first, and returns the sorted, distinct sandbox ids it removed something
 // for. An entry that has not expired, has no or an unparsable expiry, or
-// whose labels cannot be read is left alone: after its TTL a sandbox is dead
-// whoever owns it, so the expiry rule never touches a live one, on this host
-// or another. Failed removals do not stop the others; their errors are
+// whose labels cannot be read is left alone: the host-side TTL counts from
+// the same creation time as the label, so after its expiry a sandbox is
+// being destroyed whoever owns it, on this host or another (as long as the
+// hosts' clocks agree). Failed removals do not stop the others; their errors are
 // joined and returned with the ids that were removed.
 func (p *provider) Reap(ctx context.Context) ([]string, error) {
 	containers, err := p.list(ctx, "ps", "-a", "--filter", "label="+labelID, "--format", "{{.Names}}")
@@ -46,14 +47,14 @@ func (p *provider) Reap(ctx context.Context) ([]string, error) {
 	for _, e := range expiredC {
 		if err := p.remove(ctx, "rm", "-f", e.name); err != nil {
 			errs = append(errs, err)
-		} else {
+		} else if e.id != "" {
 			ids = append(ids, e.id)
 		}
 	}
 	for _, e := range expiredV {
 		if err := p.remove(ctx, "volume", "rm", e.name); err != nil {
 			errs = append(errs, err)
-		} else {
+		} else if e.id != "" {
 			ids = append(ids, e.id)
 		}
 	}
@@ -69,7 +70,9 @@ func (p *provider) list(ctx context.Context, args ...string) ([]string, error) {
 	}
 	var names []string
 	for _, l := range strings.Split(res.Output, "\n") {
-		if l = strings.TrimSpace(l); l != "" {
+		// A name is one word; a line with spaces is engine noise on stderr,
+		// such as a WARN line.
+		if l = strings.TrimSpace(l); l != "" && !strings.ContainsAny(l, " \t") {
 			names = append(names, l)
 		}
 	}
@@ -84,7 +87,7 @@ func (p *provider) expired(ctx context.Context, now time.Time, args ...string) (
 		return "", false
 	}
 	var labels map[string]string
-	if json.Unmarshal([]byte(strings.TrimSpace(res.Output)), &labels) != nil {
+	if json.Unmarshal([]byte(jsonLine(res.Output)), &labels) != nil {
 		return "", false
 	}
 	exp, err := time.Parse(time.RFC3339, labels[labelExpires])
@@ -92,4 +95,15 @@ func (p *provider) expired(ctx context.Context, now time.Time, args ...string) (
 		return "", false
 	}
 	return labels[labelID], true
+}
+
+// jsonLine is the line of out that holds the JSON object; the output also
+// carries the engine's stderr.
+func jsonLine(out string) string {
+	for _, l := range strings.Split(out, "\n") {
+		if l = strings.TrimSpace(l); strings.HasPrefix(l, "{") {
+			return l
+		}
+	}
+	return strings.TrimSpace(out)
 }

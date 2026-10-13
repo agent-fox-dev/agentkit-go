@@ -13,9 +13,11 @@ import (
 const (
 	// defaultPATH is the container's PATH unless Spec.Env sets one.
 	defaultPATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-	// tmpfsSpec is the one writable directory besides the workspace: /tmp,
-	// executable (go test runs binaries from TMPDIR) and world-writable, so
-	// any image user can use it as HOME and TMPDIR.
+	// tmpfsSpec is the writable directory the tools use besides the
+	// workspace: /tmp, executable (go test runs binaries from TMPDIR) and
+	// world-writable, so any image user can use it as HOME and TMPDIR.
+	// Podman's --read-only also mounts tmpfs at /run, /var/tmp and /dev/shm,
+	// which the agent's Landlock ruleset keeps read-only.
 	tmpfsSpec = "/tmp:rw,exec,nosuid,nodev,mode=1777"
 	// labelID and labelExpires are the reserved labels on every container
 	// and volume the provider creates; the key prefix agentkit.sandbox. is

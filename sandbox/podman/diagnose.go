@@ -38,7 +38,7 @@ func (p *provider) createFailed(ctx context.Context, err error, proc process, id
 		return err
 	}
 	if ctx.Err() != nil {
-		return fmt.Errorf("podman: create: %w (%v)", ctx.Err(), err)
+		return fmt.Errorf("podman: create: %w: %w", ctx.Err(), err)
 	}
 	select {
 	case <-proc.Done():
@@ -55,7 +55,7 @@ func (p *provider) createFailed(ctx context.Context, err error, proc process, id
 	case 0:
 		return handshake
 	case 125:
-		return fmt.Errorf("podman: create: %s run failed with exit status 125 (an engine error); engine stderr: %s", p.engine, tail)
+		return fmt.Errorf("podman: create: %s run failed with exit status 125 (an engine error); engine stderr: %s; %w", p.engine, tail, err)
 	}
 	dctx, cancel := context.WithTimeout(context.Background(), diagTimeout)
 	defer cancel()
@@ -63,7 +63,7 @@ func (p *provider) createFailed(ctx context.Context, err error, proc process, id
 	if derr != nil || (res.ExitCode != 126 && res.ExitCode != 127) {
 		return handshake
 	}
-	return noAgentErr(eff.Image, strings.TrimSpace(res.Output)+"\n"+tail)
+	return errors.Join(noAgentErr(eff.Image, strings.TrimSpace(res.Output)+"\n"+tail), err)
 }
 
 // noAgentErr is ErrNoAgent for image, with the Containerfile line that adds

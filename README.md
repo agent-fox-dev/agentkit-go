@@ -124,7 +124,8 @@ if err := sb.Export(ctx, ".", sandbox.LocalDir{Path: "./result"}); err != nil {
 `sandbox/podman` is the first provider that isolates: `podman.New(podman.Options{})`
 runs each sandbox's agent in a hardened, ephemeral podman or docker container
 with one workspace volume, no host mount, a read-only root, no capabilities,
-an explicit environment and, by default, no network, and can fill the
+an explicit environment (plus the image's own `ENV` on docker) and, by
+default, no network, and can fill the
 workspace from a public repository with `sandbox.GitRepo`. `local` is **not
 isolation**: it runs the agent in the embedder's process with its
 privileges, for tests and development, over the same protocol and

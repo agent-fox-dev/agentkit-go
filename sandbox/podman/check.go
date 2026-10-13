@@ -15,8 +15,10 @@ import (
 // container cannot honour: any Spec.Provider key, a label the provider
 // reserves or the engine cannot carry, a Workdir that is not a plain
 // absolute path outside /tmp and the kernel's filesystems, an image
-// reference that could be read as a flag, and a HOME or TMPDIR that would be
-// read-only under --read-only. eff is the effective spec.
+// reference that could be read as a flag, and a HOME or TMPDIR outside /tmp
+// and the workspace, which would be read-only under --read-only (or, on
+// podman's other tmpfs mounts, outside the agent's Landlock roots). eff is
+// the effective spec.
 func (p *provider) checkSpec(eff sandbox.Spec) error {
 	refuse := func(field, reason string) error {
 		return &sandbox.SpecError{Provider: string(p.engine), Field: field, Reason: reason}
@@ -48,7 +50,7 @@ func (p *provider) checkSpec(eff sandbox.Spec) error {
 		}
 		c := path.Clean(v)
 		if !path.IsAbs(v) || !within(c, "/tmp") && !within(c, eff.Workdir) {
-			return refuse("Env."+name, fmt.Sprintf("%q is not /tmp, the workspace %s, or beneath either: nothing else is writable under --read-only", v, eff.Workdir))
+			return refuse("Env."+name, fmt.Sprintf("%q is not /tmp, the workspace %s, or beneath either: nothing else is writable for the tools under --read-only and Landlock", v, eff.Workdir))
 		}
 	}
 	return nil
