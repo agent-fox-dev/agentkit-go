@@ -15,9 +15,15 @@ import (
 // Serve serves the Agent service as one HTTP/2 connection on conn. It
 // returns nil when the host closes the connection, and an error naming the
 // TTL when the TTL expires; either way every in-flight call's context is
-// cancelled, which kills the processes the call started.
+// cancelled, which kills the processes the call started, and Serve returns
+// after those calls have. Closing conn must interrupt a blocked Read or
+// Write on it.
 func (a *Agent) Serve(conn net.Conn) error {
-	srv := grpc.NewServer(grpc.MaxRecvMsgSize(sandbox.MaxMessageBytes), grpc.MaxSendMsgSize(sandbox.MaxMessageBytes))
+	// WaitForHandlers: Stop returns only after every cancelled call has
+	// returned, so the processes a call started are gone before Serve
+	// returns and a command built on it exits.
+	srv := grpc.NewServer(grpc.MaxRecvMsgSize(sandbox.MaxMessageBytes), grpc.MaxSendMsgSize(sandbox.MaxMessageBytes),
+		grpc.WaitForHandlers(true))
 	sandboxpb.RegisterAgentServer(srv, a)
 	wc := &watchedConn{Conn: conn, gone: make(chan struct{})}
 	lis := &oneConnListener{conns: make(chan net.Conn, 1), done: make(chan struct{}), addr: conn.LocalAddr()}
@@ -26,15 +32,18 @@ func (a *Agent) Serve(conn net.Conn) error {
 	go func() { errc <- srv.Serve(lis) }()
 	ttl := time.NewTimer(time.Until(a.start.Add(a.ttl)))
 	defer ttl.Stop()
-	defer srv.Stop()
+	var err error
 	select {
 	case <-wc.gone:
-		return nil
 	case <-ttl.C:
-		return fmt.Errorf("agent: TTL %v expired", a.ttl)
-	case err := <-errc:
-		return err
+		err = fmt.Errorf("agent: TTL %v expired", a.ttl)
+	case err = <-errc:
 	}
+	// Close the connection first: Stop does not know a connection still in
+	// its handshake, and would wait for that to time out.
+	_ = wc.Close()
+	srv.Stop()
+	return err
 }
 
 // watchedConn signals gone when a read fails or the connection is closed:

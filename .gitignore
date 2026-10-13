@@ -1,6 +1,7 @@
 # Binaries
 /agentkit
 /agentdemo
+/agentkit-sandboxd
 # `go build ./examples/<name>` drops the binary in the working directory.
 /chat
 /streaming
