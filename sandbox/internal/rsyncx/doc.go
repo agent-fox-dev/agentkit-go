@@ -36,7 +36,9 @@ type Module struct {
 }
 
 // ModulesFor is the agent's one module for a transfer in direction d over
-// the workspace ws.
+// the workspace ws: writable for SYNC, where the agent's client receives
+// into it, and read-only for EXPORT, where the agent's server sends a
+// read-only view of it. The agent dispatches on it.
 func ModulesFor(ws string, d Direction) []Module {
 	return []Module{{Root: ws, Writable: d == DirSync}}
 }

@@ -51,7 +51,7 @@ func (a *Agent) Rsync(stream sandboxpb.Agent_RsyncServer) error {
 		return err
 	}
 	rs, err := rsyncx.Compute(ctx, t.root, rsyncx.RuleOptions{Ignore: tools.NoGlobalExcludes(),
-		IncludeIgnored: start.IncludeIgnored, ExcludeGit: start.ExcludeGit || t.dir == rsyncx.DirExport, File: t.file})
+		IncludeIgnored: start.IncludeIgnored, ExcludeGit: start.ExcludeGit || t.dir == rsyncx.DirExport, File: t.file, Base: a.root})
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "computing the rules: %v", err)
 	}
@@ -82,7 +82,9 @@ func (a *Agent) Rsync(stream sandboxpb.Agent_RsyncServer) error {
 	}
 	conn := rsyncx.AgentConn(stream)
 	m := rsyncx.NewMatcher(args.Rules)
-	if t.dir == rsyncx.DirSync {
+	// One module over the workspace root, writable only for SYNC: an EXPORT
+	// stream only ever reads it, through a read-only view.
+	if rsyncx.ModulesFor(a.root, t.dir)[0].Writable {
 		return a.receive(ctx, stream, conn, m, parsed.Delete, args.Present)
 	}
 	return a.send(ctx, stream, conn, t, m, parsed.Delete, args.Args)

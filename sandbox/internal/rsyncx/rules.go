@@ -24,6 +24,11 @@ type RuleOptions struct {
 	ExcludeGit bool
 	// File marks a transfer of a single regular file: no ignore rules.
 	File bool
+	// Base, when set and root is a directory inside it, is the tree whose
+	// ignore files apply: an export of a workspace subdirectory honours the
+	// workspace's ignore rules. A root that Base's rules ignore takes only
+	// its own ignore files, since it was named explicitly.
+	Base string
 }
 
 // RuleSet is one side's exclude rules over its tree, as slash-separated
@@ -69,14 +74,14 @@ func Compute(ctx context.Context, root string, opts RuleOptions) (RuleSet, error
 	ignoring := !opts.IncludeIgnored
 	visited := map[string]bool{".": true}
 	if ignoring {
-		ws, err := tools.NewWorkspace(root)
+		reached, err := visitFrom(ctx, opts.Base, root, opts.Ignore, visited)
 		if err != nil {
 			return rs, err
 		}
-		err = tools.Walk(ctx, ws, ws.Root, tools.WalkOptions{Ignore: opts.Ignore, IncludeHidden: true},
-			func(rel string, _ fs.DirEntry) error { visited[rel] = true; return nil })
-		if err != nil {
-			return rs, err
+		if !reached {
+			if _, err := visitFrom(ctx, "", root, opts.Ignore, visited); err != nil {
+				return rs, err
+			}
 		}
 	}
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, werr error) error {
@@ -128,6 +133,42 @@ func Compute(ctx context.Context, root string, opts RuleOptions) (RuleSet, error
 		slices.Sort(l)
 	}
 	return rs, nil
+}
+
+// visitFrom marks in visited, relative to root, every entry under root that
+// tools.Walk visits from base (root when base is empty or does not contain
+// root). It reports whether the walk reached root.
+func visitFrom(ctx context.Context, base, root string, ig tools.IgnoreOptions, visited map[string]bool) (bool, error) {
+	prefix := ""
+	if base != "" {
+		b, err := filepath.EvalSymlinks(base)
+		if err != nil {
+			return false, err
+		}
+		if r, err := filepath.Rel(b, root); err == nil && r != "." && filepath.IsLocal(r) {
+			base, prefix = b, filepath.ToSlash(r)
+		}
+	}
+	if prefix == "" {
+		base = root
+	}
+	ws, err := tools.NewWorkspace(base)
+	if err != nil {
+		return false, err
+	}
+	reached := prefix == ""
+	err = tools.Walk(ctx, ws, ws.Root, tools.WalkOptions{Ignore: ig, IncludeHidden: true}, func(rel string, _ fs.DirEntry) error {
+		switch {
+		case prefix == "":
+			visited[rel] = true
+		case rel == prefix:
+			reached = true
+		case strings.HasPrefix(rel, prefix+"/"):
+			visited[rel[len(prefix)+1:]] = true
+		}
+		return nil
+	})
+	return reached, err
 }
 
 // skip skips a directory's subtree, and nothing for a file (fs.SkipDir on a

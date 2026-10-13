@@ -280,6 +280,26 @@ func New(t *testing.T) *Env {
 	return &Env{Sandbox: sb, Relay: r, Workspace: ws}
 }
 
+// Direct starts a real agent over a fresh workspace and a host sandbox
+// attached to it directly, with no relay: the reference a relayed run is
+// compared with.
+func Direct(t *testing.T) *Env {
+	t.Helper()
+	ws := t.TempDir()
+	a, err := agent.New(agent.Config{Workdir: ws, Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir()}, TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostEnd, agentEnd := net.Pipe()
+	go func() { _ = a.Serve(agentEnd) }()
+	sb, err := attach.Dial(context.Background(), hostEnd, attach.Config{Spec: sandbox.Spec{TTL: time.Hour}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sb.Close(context.Background()) })
+	return &Env{Sandbox: sb, Workspace: ws}
+}
+
 // oneConn hands out one connection, then blocks until closed.
 type oneConn struct {
 	c    chan net.Conn

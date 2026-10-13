@@ -43,10 +43,16 @@ type Sandbox interface {
 	// ErrToolsConfigured. Tools fails with ErrToolMismatch when the agent's
 	// tool definitions differ from the host's.
 	Tools(ctx context.Context, opts ToolOptions) ([]core.Tool, error)
-	// Export writes a workspace subtree to dst, after checking every entry
-	// with the same rules as Sync; the first refused entry stops it with
-	// ErrUnsafeArchive. An export has no ordering guarantee with tool calls
-	// running at the same time.
+	// Export writes a workspace subtree to dst. For a TarOut, every entry is
+	// checked with the same rules as Sync; the first refused entry stops it
+	// with ErrUnsafeArchive. For a LocalDir, path is a workspace directory,
+	// whose contents map onto dst, or a regular file, written as
+	// dst/<base name>. Workspace content is untrusted and the agent binary
+	// trusted: the agent never sends an escaping symlink or .git, and the
+	// host's own rules over dst keep dst's ignored files, its .git and its
+	// escaping symlinks from being overwritten, written through or deleted.
+	// An export has no ordering guarantee with tool calls running at the same
+	// time.
 	Export(ctx context.Context, path string, dst Destination) error
 	// Close destroys the sandbox. It is idempotent: a later Close returns
 	// nil.

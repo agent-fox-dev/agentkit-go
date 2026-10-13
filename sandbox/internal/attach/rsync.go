@@ -15,6 +15,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/rsyncx"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/tarsafe"
 )
 
 // rsyncCheck refuses a LocalDir transfer this host or agent cannot run,
@@ -115,13 +116,105 @@ func (s *sb) syncLocalDir(ctx context.Context, ld sandbox.LocalDir) (sandbox.Syn
 	return sandbox.SyncResult{Files: int(done.Files), Bytes: done.Bytes, Deleted: int(done.Deleted), Sent: sent}, nil
 }
 
-// exportLocalDir writes a workspace path into a host directory over the
-// Rsync stream.
+// exportLocalDir writes a workspace path into a host directory: the agent
+// serves a filtered, read-only view of the path, the host's client receives
+// into the destination, and the host deletes what the agent's transfer set
+// lacks when asked (D-3, docs/errata/14_sandbox_rsync_sync.md).
 func (s *sb) exportLocalDir(ctx context.Context, path string, ld sandbox.LocalDir) error {
 	if err := s.rsyncCheck(); err != nil {
 		return err
 	}
-	return fmt.Errorf("%w: LocalDir export", sandbox.ErrUnsupported)
+	rel, err := tarsafe.CleanRel(path)
+	if err != nil {
+		return fmt.Errorf("sandbox: export path: %w", err)
+	}
+	dst, exists, err := resolveDest(ld.Path)
+	if err != nil {
+		return err
+	}
+	rs := rsyncx.RuleSet{Git: true}
+	if exists {
+		if rs, err = rsyncx.Compute(ctx, dst, rsyncx.RuleOptions{Ignore: ld.Ignore, IncludeIgnored: ld.IncludeIgnored, ExcludeGit: true}); err != nil {
+			return fmt.Errorf("sandbox: LocalDir %q: %w", ld.Path, err)
+		}
+	}
+	start := &sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_EXPORT, Path: rel,
+		IncludeIgnored: ld.IncludeIgnored, ExcludeGit: ld.ExcludeGit, Delete: ld.Delete}
+	var m *rsyncx.Matcher
+	prepare := func(plan *sandboxpb.RsyncPlan) (*sandboxpb.RsyncArgs, transferFunc, error) {
+		// A single file takes no ignore rules, on either side.
+		rules := rsyncx.Combine(rs.List(!plan.File), plan.Rules)
+		if err := rsyncx.CheckRuleSize(rules); err != nil {
+			return nil, nil, fmt.Errorf("sandbox: LocalDir %q: %w", ld.Path, err)
+		}
+		m = rsyncx.NewMatcher(rules)
+		operand := rel
+		if !plan.File && rel != "." {
+			operand = rel + "/"
+		}
+		args := &sandboxpb.RsyncArgs{Rules: rules}
+		if args.Args, err = rsyncx.ServerArgs(rsyncx.ClientArgs(ld.Delete), true, operand); err != nil {
+			return nil, nil, err
+		}
+		if !exists {
+			if err := os.Mkdir(dst, 0o755); err != nil {
+				return nil, nil, fmt.Errorf("sandbox: LocalDir path %q: %w", ld.Path, err)
+			}
+		}
+		return args, func(ctx context.Context, conn *rsyncx.Conn) error {
+			return rsyncx.RunClient(ctx, conn, rsyncx.ClientArgs(false), dst)
+		}, nil
+	}
+	done, _, err := s.runRsync(ctx, start, prepare)
+	if err != nil {
+		return err
+	}
+	if ld.Delete {
+		if _, err := rsyncx.DeleteAbsent(dst, m, done.Present); err != nil {
+			return fmt.Errorf("sandbox: LocalDir %q: deleting: %w", ld.Path, err)
+		}
+	}
+	return nil
+}
+
+// resolveDest resolves an Export destination once, creating nothing: an
+// existing path must be a directory; a missing one needs an existing parent
+// directory. It reports whether the destination exists.
+func resolveDest(p string) (string, bool, error) {
+	if p == "" {
+		return "", false, fmt.Errorf("sandbox: LocalDir path %q is empty", p)
+	}
+	abs := p
+	if !filepath.IsAbs(abs) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", false, fmt.Errorf("sandbox: LocalDir path %q: %v", p, err)
+		}
+		abs = filepath.Join(wd, p)
+	}
+	if _, err := os.Lstat(abs); err == nil {
+		dst, err := filepath.EvalSymlinks(abs)
+		if err != nil {
+			return "", false, fmt.Errorf("sandbox: LocalDir path %q: %w", p, err)
+		}
+		if fi, err := os.Stat(dst); err != nil || !fi.IsDir() {
+			return "", false, fmt.Errorf("sandbox: LocalDir path %q is not a directory", p)
+		}
+		return dst, true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", false, fmt.Errorf("sandbox: LocalDir path %q: %w", p, err)
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err == nil {
+		var fi os.FileInfo
+		if fi, err = os.Stat(parent); err == nil && !fi.IsDir() {
+			err = errors.New("not a directory")
+		}
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("sandbox: LocalDir path %q: its parent directory is unusable: %v", p, err)
+	}
+	return filepath.Join(parent, filepath.Base(abs)), false, nil
 }
 
 // transferFunc runs the host's side of the library over the stream.

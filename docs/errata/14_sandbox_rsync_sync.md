@@ -106,3 +106,29 @@ indirect. TS-14-42 compares the sandbox module's graph with its pre-rsync
 snapshot (`internal/policy/testdata/sandbox-go-list-m-all.13.txt`): every
 line is unchanged except these six, and the root module's graph still equals
 spec 13's snapshot.
+
+## 14-REQ-3.1 and 14-REQ-5.3: a subdirectory export honours the workspace's ignore files
+
+14-REQ-3.1 says each side computes its ignore rules "over its own tree", and
+TS-14-27 expects `Export("logs", ...)` to leave out `logs/app.log` when the
+workspace root's `.gitignore` says `*.log`. A walk rooted at the export path
+does not see ignore files above it, so the agent's rules now come from a walk
+of the whole workspace, re-rooted at the export path
+(`rsyncx.RuleOptions.Base`, `sandbox/internal/rsyncx/rules.go`; the agent
+passes `Base: a.root` in `sandbox/internal/agent/rsync.go`). An export path
+that the workspace's own rules ignore was named explicitly, so it takes only
+the ignore files inside it, as a single file takes none (14-REQ-3.2).
+Escaping symlinks are still decided relative to the export path.
+
+## Task 7: where the export plumbing differs from its steps
+
+- The steps name `rsyncx.ClientArgs(ld.Delete, combined)` and
+  `rsyncx.RunClient(..., clientArgs, false, dst+"/")`. Under D-3 the rules
+  travel in the args frame and never reach the library, so `ClientArgs`
+  takes only the delete intent and `RunClient` takes the destination
+  directory; the operand (`"."`, `dir/` or a file's path) is what maps a
+  directory's contents, or a file under its base name, onto it.
+- TS-14-33's push into an EXPORT-mode server needs a client built with
+  `WithSender`, which only `sandbox/internal/rsyncx` may construct (TS-14-36),
+  so that half lives in `sandbox/internal/rsyncx/server_test.go`; the Export
+  half is in `sandbox/rsync_export_test.go`.

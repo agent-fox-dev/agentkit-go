@@ -306,3 +306,42 @@ func treeSnapshot(t *testing.T, dir string) []string {
 	})
 	return out
 }
+
+// TS-14-30: an invalid start frame is refused before plan with
+// InvalidArgument naming the field, or NotFound for a missing export path.
+// 14-REQ-6.1. The host half is in sandbox/rsync_export_test.go.
+func TestRsyncStartChecks_TS14_30(t *testing.T) {
+	c, ws := rsyncAgent(t)
+	writeFile(t, ws, "file.txt", "f")
+	if err := os.Symlink("file.txt", filepath.Join(ws, "link")); err != nil {
+		t.Fatal(err)
+	}
+	snap := treeSnapshot(t, ws)
+	cases := []struct {
+		start *sandboxpb.RsyncStart
+		code  codes.Code
+		word  string
+	}{
+		{&sandboxpb.RsyncStart{}, codes.InvalidArgument, "direction"},
+		{&sandboxpb.RsyncStart{Direction: 7}, codes.InvalidArgument, "direction"},
+		{&sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_SYNC, Path: "x"}, codes.InvalidArgument, "path"},
+		{&sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_EXPORT, Path: "../x"}, codes.InvalidArgument, "path"},
+		{&sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_EXPORT, Path: "missing"}, codes.NotFound, "missing"},
+		{&sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_EXPORT, Path: "link"}, codes.InvalidArgument, "path"},
+		{&sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_EXPORT, Path: "file.txt", Delete: true}, codes.InvalidArgument, "delete"},
+	}
+	for _, k := range cases {
+		st, _ := c.Rsync(context.Background())
+		_ = st.Send(&sandboxpb.RsyncFrame{Frame: &sandboxpb.RsyncFrame_Start{Start: k.start}})
+		f, err := st.Recv()
+		if f != nil || status.Code(err) != k.code || !strings.Contains(status.Convert(err).Message(), k.word) {
+			t.Errorf("start %v: frame %v, %v; want %v naming %s", k.start, f, err, k.code, k.word)
+		}
+		if r := call(t, c, "list_files", `{"path":"."}`); !r.Ok {
+			t.Error(r)
+		}
+	}
+	if got := treeSnapshot(t, ws); !slices.Equal(got, snap) {
+		t.Error("the workspace changed")
+	}
+}
