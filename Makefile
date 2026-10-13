@@ -103,6 +103,12 @@ SANDBOX_LABELS = --label org.opencontainers.image.version=$(AGENTKIT_VERSION) --
 sandbox-images-test: sandbox-images ## Build the sandbox images and run the end-to-end image tests against them
 	cd sandbox && AGENTKIT_SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE):$(SANDBOX_IMAGE_TAG) AGENTKIT_SANDBOX_OVERLAY_IMAGE=$(SANDBOX_OVERLAY_IMAGE):$(SANDBOX_IMAGE_TAG) AGENTKIT_SANDBOX_IMAGE_VERSION=$(AGENTKIT_VERSION) AGENTKIT_CONTAINER=$(CONTAINER) go test -count=1 -v ./images/
 
+# The podman provider's integration tests run against the locally built
+# images, in the nested sandbox module. Not part of check: they need an engine.
+.PHONY: sandbox-podman-test
+sandbox-podman-test: sandbox-images ## Build the sandbox images and run the podman provider's integration tests
+	cd sandbox && AGENTKIT_SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE):$(SANDBOX_IMAGE_TAG) AGENTKIT_SANDBOX_OVERLAY_IMAGE=$(SANDBOX_OVERLAY_IMAGE):$(SANDBOX_IMAGE_TAG) AGENTKIT_SANDBOX_IMAGE_VERSION=$(AGENTKIT_VERSION) AGENTKIT_CONTAINER=$(CONTAINER) go test -count=1 -v ./podman/
+
 .PHONY: check
 check: fmt vet lint test ## Run fmt, vet, lint and test - use before committing
 

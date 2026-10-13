@@ -105,7 +105,9 @@ type SyncResult struct {
 	Sent    int64
 }
 
-// Source is what Sync reads from. This package provides Tar and LocalDir.
+// Source is what Sync reads from. This package provides Tar, LocalDir and
+// GitRepo; a provider without an init step refuses a GitRepo with
+// ErrUnsupported.
 type Source interface{ isSource() }
 
 // Destination is what Export writes to. This package provides TarOut and
@@ -124,6 +126,20 @@ type Tar struct {
 }
 
 func (Tar) isSource() {}
+
+// GitRepo is a public git repository cloned into the workspace by the
+// provider's init step. It is a Source. A provider with an init step
+// accepts it only as the first Sync and before the first Tools call, and
+// reports a SyncResult of zeros; a provider without one refuses it with an
+// error matching ErrUnsupported. A private repository is cloned on the host
+// and synced as a LocalDir.
+type GitRepo struct {
+	URL   string // https only
+	Ref   string // a branch or tag; empty means the remote's default branch
+	Depth int    // > 0: shallow clone of that depth; 0: full history
+}
+
+func (GitRepo) isSource() {}
 
 // LocalDir is a host directory: a Source that Sync fills the workspace from,
 // and a Destination that Export writes into. The bytes travel over the rsync

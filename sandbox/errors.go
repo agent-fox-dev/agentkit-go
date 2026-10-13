@@ -21,6 +21,9 @@ var (
 	ErrToolsConfigured = errors.New("sandbox: tools already configured with different options")
 	// ErrUnsafeArchive: a tar entry broke the entry rules.
 	ErrUnsafeArchive = errors.New("sandbox: unsafe archive")
+	// ErrNoAgent: the image has no executable agent at AgentPath. Container
+	// providers return it, wrapped, after their missing-agent diagnostic.
+	ErrNoAgent = errors.New("sandbox: the image has no executable agent at sandbox.AgentPath")
 )
 
 // SpecError is CheckSpec's refusal of a Spec field the provider's

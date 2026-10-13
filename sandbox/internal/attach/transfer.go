@@ -15,13 +15,20 @@ import (
 )
 
 // Sync streams a start chunk and then the tar in data chunks of at most
-// tarsafe.ChunkBytes; the agent extracts it as it arrives. A refused entry
+// tarsafe.ChunkBytes; the agent extracts it as it arrives. A GitRepo is
+// refused with an error matching ErrUnsupported that names the provider,
+// with no RPC. A refused entry
 // is ErrUnsafeArchive. A read error from the tar or a done ctx cancels the
 // stream and is returned. None of these changes the sandbox's state; a
 // transport failure does.
 func (s *sb) Sync(ctx context.Context, src sandbox.Source) (sandbox.SyncResult, error) {
 	if err := s.gate(); err != nil {
 		return sandbox.SyncResult{}, err
+	}
+	if _, ok := src.(sandbox.GitRepo); ok {
+		// Cloning is a provider's init step; a provider that has one
+		// handles the GitRepo before it reaches here.
+		return sandbox.SyncResult{}, fmt.Errorf("sandbox: provider %q does not support a GitRepo source: %w", s.cfg.Provider, sandbox.ErrUnsupported)
 	}
 	if ld, ok := src.(sandbox.LocalDir); ok {
 		return s.syncLocalDir(ctx, ld)

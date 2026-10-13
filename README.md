@@ -121,11 +121,18 @@ if err := sb.Export(ctx, ".", sandbox.LocalDir{Path: "./result"}); err != nil {
 }
 ```
 
-`local` is the only provider so far, and it is **not isolation**: it runs the
-agent in the embedder's process with its privileges, for tests and
-development. It speaks the same protocol, over the same transport, as the
-providers that will contain `execute`, so a proxy shell tool still needs a
-`Guard`. A cancelled call returns `aborted` and kills the process it started
+`sandbox/podman` is the first provider that isolates: `podman.New(podman.Options{})`
+runs each sandbox's agent in a hardened, ephemeral podman or docker container
+with one workspace volume, no host mount, a read-only root, no capabilities,
+an explicit environment (plus the image's own `ENV` on docker) and, by
+default, no network, and can fill the
+workspace from a public repository with `sandbox.GitRepo`. `local` is **not
+isolation**: it runs the agent in the embedder's process with its
+privileges, for tests and development, over the same protocol and
+transport. A proxy shell tool still needs a `Guard`; `guard.AllowAll` is
+reasonable only for proxies from an isolating provider under `NetworkNone`
+([`docs/configuration.md`](docs/configuration.md#guardoptions)). A cancelled
+call returns `aborted` and kills the process it started
 in the sandbox; a broken connection makes every later call return
 `sandbox_unavailable`. `sandbox.LocalDir` moves a host directory in or out
 over the rsync protocol: never an escaping symlink, never `.git` on export,
@@ -208,6 +215,7 @@ The identifiers an embedder such as agent-fox builds on.
 | `wire` | Bounded, strict parsing of untrusted JSON, and frame readers. |
 | `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `CheckSpec`, `LocalDir`, `Tar`/`TarOut`, the protocol version and the errors. Its internal packages hold the protocol, the agent service, the attach and proxy code, the tar entry rules and the rsync adapter. |
 | `sandbox/local` | `local.Unisolated()`: an in-process provider with no isolation, for tests and development. |
+| `sandbox/podman` | `podman.New(Options)`: the first isolating provider, a hardened podman or docker container per sandbox. |
 | `sandbox/cmd/agentkit-sandboxd` | The agent command a sandbox image installs at `sandbox.AgentPath`; serves the protocol on its stdio. |
 | `codesearch` | Separate module: zoekt-backed `code_search`, opted in with `tools.Options{Index: idx}`. |
 
@@ -225,6 +233,7 @@ The identifiers an embedder such as agent-fox builds on.
 | `make proto` | Regenerate the sandbox protocol's Go code and its recorded hash; needs `protoc`, installs the pinned plugins into `build/bin` |
 | `make sandbox-images` | Build the sandbox base and overlay images for the host platform with podman (or docker); not part of `check` |
 | `make sandbox-images-test` | Build the sandbox images and run the end-to-end image tests against them; not part of `check` |
+| `make sandbox-podman-test` | Build the sandbox images and run the podman provider's integration tests against them; not part of `check` |
 
 ## Documentation
 

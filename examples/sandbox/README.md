@@ -18,6 +18,21 @@ provider. **`local` is not isolation**: it runs the agent in this process with
 its privileges, and exists for tests and development. It speaks the same
 protocol, over the same transport, as the providers that isolate.
 
+## On a real container: `--podman`
+
+```bash
+make sandbox-images   # from the repository root: builds ghcr.io/agent-fox-dev/agentkit-sandbox:dev
+cd examples/sandbox && go run . --podman --image ghcr.io/agent-fox-dev/agentkit-sandbox:dev
+```
+
+`--podman` runs the same program on `sandbox/podman`: `podman.New(podman.Options{})`
+and a `Spec` with the zero `Network` (`NetworkNone`), `MemoryBytes` 1 GiB and
+`PIDs` 512, from the image `--image` names (empty means
+`sandbox.DefaultImage()`, which a development build does not have). The
+agent then runs in a hardened container with no network; the first line of
+the output names the provider. The default run, without `--podman`, stays
+offline on `local`.
+
 ## What it does
 
 1. `local.Unisolated().Create` with `NetworkUnrestricted`. `local` cannot

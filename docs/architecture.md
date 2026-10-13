@@ -73,6 +73,8 @@ First-party imports, from
 | `sandbox/internal/attach` | `core`, `sandbox`, `sandbox/internal/{buildver,rsyncx,sandboxpb,tarsafe,tooldigest}`, `tools`, `wire` | `google.golang.org/grpc`, `google.golang.org/protobuf` |
 | `sandbox/internal/localtest` | `sandbox`, `sandbox/internal/{attach,sandboxpb}` | |
 | `sandbox/local` | `sandbox`, `sandbox/internal/{agent,attach,localtest,stdioconn}` | |
+| `sandbox/internal/gitclone` | `sandbox` | |
+| `sandbox/podman` | `core`, `sandbox`, `sandbox/internal/{attach,gitclone,stdioconn}`, `tools` | |
 | `sandbox/cmd/agentkit-sandboxd` | `sandbox`, `sandbox/internal/{agent,buildver,confine,stdioconn}` | |
 | `sandbox/internal/fakeagent` (tests only) | `sandbox/internal/{sandboxpb,tooldigest}`, `tools` | `google.golang.org/grpc` |
 | `sandbox/internal/relaytest` (tests only) | `sandbox`, `sandbox/internal/{agent,attach,rsyncx,sandboxpb}` | `google.golang.org/grpc` |
@@ -132,6 +134,8 @@ What follows from it:
 | `sandbox/internal/confine` | The agent's Landlock confinement: `Plan`, the ruleset, `Setup`. Only `agentkit-sandboxd` imports it. |
 | `sandbox/internal/agentenv` | Reads the agent's explicit environment: a variable, the temporary directory. |
 | `sandbox/local` | The in-process provider with no isolation. |
+| `sandbox/podman` | The Podman and Docker provider: a hardened container per sandbox, driven through the engine's command line. |
+| `sandbox/internal/gitclone` | `GitRepo` validation and the `git clone` argument list. |
 | `sandbox/cmd/agentkit-sandboxd` | The agent command. |
 
 ## Data flow of one run
@@ -655,6 +659,45 @@ would make anonymous volumes no provider reaps. Providers pass
 `--entrypoint sandbox.AgentPath` (an overlay-based image keeps its own
 entrypoint) and `--init` for zombie reaping. The release workflow tests the
 images before it publishes them; [`releasing.md`](releasing.md) describes it.
+
+**The Podman and Docker provider.** `sandbox/podman` runs each sandbox's
+agent as the only process of a container that holds one named volume, with
+no host mount, a read-only root, no capabilities, `no-new-privileges`, an
+explicit environment (on docker the image's own `ENV` is added, since docker
+cannot drop it) and, by default, no network. Its argument lists are
+pure functions (`podman.Args`, `podman.InitArgs`), golden-tested offline, and
+every engine command goes through an unexported runner seam that the
+offline tests replace with a fake serving an in-process agent.
+
+```
+Create   CheckSpec → provider checks → volume create agentkit-<id> (labels)
+         → <engine> run --rm -i --init … --entrypoint AgentPath <image> AgentArgs
+           (own process group; stdin pipe, private stdout pipe, 8 KiB stderr tail)
+         → attach.Dial over stdioconn → Hello → host TTL timer
+Close    attach teardown → destroy: wait ≤5 s / kill group → rm -f both names
+         → volume rm (retried ≤10 s while in use)
+```
+
+A `GitRepo` sync runs a second, short-lived container, `agentkit-<id>-init`,
+with `--entrypoint git` on the same volume and the engine's default network,
+while the agent's container sits idle beside it under its own policy: the
+clone's network never reaches the agent. It is allowed only before anything
+else has written to the workspace and before the tool set exists. The TTL is
+enforced on both sides: attach's host timer runs the destroy step, and the
+agent's `--ttl` ends the container, which `--rm` removes, even when the host
+is gone. The host timer counts from the creation time the volume's
+`agentkit.sandbox.expires` label is written from, not from the end of
+`Create`, so the sandbox never outlives its label. The volume of a host that
+died keeps that label, and `Reap` removes containers and volumes only once
+the expiry has passed, so it never touches a sandbox that a live process on
+another host still uses, as long as the hosts' clocks agree. A `GitRepo`
+sync that finds the sandbox closed or expired when its clone ends removes
+the volume again, since the init container's mount may have re-created it.
+When the handshake fails with a non-zero exit other than the engine's own
+125, a `--version` run of the image without
+`--init` (whose init process would decide the exit status) tells an image
+with no agent (126 or 127, reported as `sandbox.ErrNoAgent` with the
+`COPY --from` line that fixes it) from an agent that failed to start.
 
 **`local` is not isolation.** Its capabilities say so (`IsolationNone`, only
 `NetworkUnrestricted`, nothing else honoured), and it refuses the zero
