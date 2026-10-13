@@ -165,11 +165,6 @@ func (p *provider) Capabilities() sandbox.Capabilities {
 	}
 }
 
-// Create is not implemented yet.
-func (p *provider) Create(context.Context, sandbox.Spec) (sandbox.Sandbox, error) {
-	return nil, fmt.Errorf("podman: Create: not yet implemented: %w", sandbox.ErrUnsupported)
-}
-
 // Reap is not implemented yet.
 func (p *provider) Reap(context.Context) ([]string, error) {
 	return nil, fmt.Errorf("podman: Reap: not yet implemented: %w", sandbox.ErrUnsupported)
