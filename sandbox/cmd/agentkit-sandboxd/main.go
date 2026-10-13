@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -124,7 +125,12 @@ func run(args []string) int {
 		fail(err)
 		return 1
 	}
-	if err := a.Serve(stdioconn.New(pollable(os.Stdin, 0), pollable(out, 1))); err != nil {
+	err = a.Serve(stdioconn.New(pollable(os.Stdin, 0), pollable(out, 1)))
+	// pollable wraps fd 1 in a new *os.File. The original, unreachable once
+	// os.Stdout was redirected, would close fd 1 (the protocol stream) when
+	// the garbage collector finalized it, so it must outlive Serve.
+	runtime.KeepAlive(out)
+	if err != nil {
 		fail(err)
 		return 1
 	}
