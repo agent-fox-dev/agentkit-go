@@ -38,6 +38,16 @@ Go resolves that module's `vX.Y.Z` from the git tag `sandbox/vX.Y.Z`, not
 (its `v*` trigger does not match `sandbox/v*`), so a release pushes both
 tags at the same commit; `docs/releasing.md` says so.
 
+## The images were verified with local Podman (D-4)
+
+The spec's engine tests and smoke tests assume a host with podman or
+docker. They ran with Podman 5 on podman-machine (Fedora, linux/arm64,
+kernel Landlock ABI 9; the agent reports ABI 4): `make sandbox-images-test`
+stamped and unstamped, TS-16-51 and TS-16-52 with `AGENTKIT_SANDBOX_SMOKE=1`,
+and the cross-architecture build of TS-16-49 for linux/amd64. Docker and
+the release workflow were not run: TS-16-53 needs a pushed `vX.Y.Z` tag and
+public GHCR packages, and skips without `AGENTKIT_SANDBOX_RELEASE_VERSION`.
+
 ## make sandbox-images restates the version and revision labels
 
 16-REQ-6.2 lists the arguments of the two builds. `make sandbox-images`

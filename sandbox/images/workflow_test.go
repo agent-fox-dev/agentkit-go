@@ -394,13 +394,12 @@ func TestVersionStepTags_TS16_32(t *testing.T) {
 	}
 	for _, ref := range refs {
 		out, code, version, tags := versionStep(t, wf, tagPush(ref)...)
-		core, pre, hasPre := strings.Cut(strings.TrimPrefix(ref, "v"), "-")
+		core, _, hasPre := strings.Cut(strings.TrimPrefix(ref, "v"), "-")
 		want := []string{strings.TrimPrefix(ref, "v")}
 		if !hasPre {
 			f := strings.Split(core, ".")
 			want = append(want, f[0]+"."+f[1])
 		}
-		_ = pre
 		got := strings.Fields(tags)
 		slices.Sort(got)
 		slices.Sort(want)

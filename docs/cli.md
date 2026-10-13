@@ -14,7 +14,7 @@ image installs it at `sandbox.AgentPath`
 (`/usr/local/libexec/agentkit-sandboxd`).
 
 ```bash
-go build -o agentkit-sandboxd ./sandbox/cmd/agentkit-sandboxd
+(cd sandbox && go build -o ../agentkit-sandboxd ./cmd/agentkit-sandboxd)
 agentkit-sandboxd --workdir /workspace --ttl 1h --network none
 ```
 

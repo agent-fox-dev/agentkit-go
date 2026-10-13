@@ -127,7 +127,7 @@ What follows from it:
 | `sandbox/internal/agent` | The agent service: runs `tools.All` against one workspace with an explicit environment. |
 | `sandbox/internal/attach` | The one `Sandbox` implementation, for every provider: handshake, state machine, failure classification, proxy tools, tar transfer. |
 | `sandbox/internal/tarsafe` | The tar entry rules both directions share, the `os.Root` extractor, the export validator and the archiver. |
-| `sandbox/internal/tooldigest`, `sandbox/internal/buildver` | The definition digest host and agent share; the module version from the build info. |
+| `sandbox/internal/tooldigest`, `sandbox/internal/buildver` | The definition digest host and agent share; the agent's version: the link-time stamp, else the sandbox module's version from the build info, else `(devel)`. |
 | `sandbox/internal/stdioconn` | A `net.Conn` over a reader and a writer: stdin/stdout, or two `os.Pipe` pairs. |
 | `sandbox/internal/confine` | The agent's Landlock confinement: `Plan`, the ruleset, `Setup`. Only `agentkit-sandboxd` imports it. |
 | `sandbox/internal/agentenv` | Reads the agent's explicit environment: a variable, the temporary directory. |
@@ -636,8 +636,10 @@ base          debian:trixie-slim + git, bash, ca-certificates + agent-cgo's agen
 overlay       FROM scratch + agent-static's agent, one layer
 ```
 
-The build stages run on the build platform and cross-compile, so nothing is
-emulated; only linux/amd64 and linux/arm64 are built. Both agents are built
+The build stages run on the build platform and cross-compile, so the Go
+builds are never emulated; only the base stage's package install and user
+setup run under QEMU when it is built for a foreign platform, as in the
+release's multi-arch push. Only linux/amd64 and linux/arm64 are built. Both agents are built
 in the nested `sandbox` module with `-trimpath`, `-buildvcs=false` and
 `-ldflags -X …/sandbox/internal/buildver.stamp=$AGENTKIT_VERSION`:
 `buildver.Version()` returns the stamp when it is set, so a published agent

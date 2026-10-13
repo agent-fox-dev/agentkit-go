@@ -23,8 +23,9 @@ image references, so both tags are pushed together
 (`docs/errata/16_sandbox_images.md`). The workflow's `v*` trigger does not
 match `sandbox/v*`, so the second tag starts nothing.
 
-The tag must match `^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$`;
-anything else fails the workflow before it builds.
+Only tags starting with `v` start the workflow, and such a tag must match
+`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$`;
+any other `v*` tag fails the workflow before it builds.
 
 ## What the workflow does
 
@@ -35,8 +36,8 @@ anything else fails the workflow before it builds.
 2. It then sets up QEMU and buildx, logs in to `ghcr.io` with the workflow's
    `GITHUB_TOKEN`, and pushes both targets for linux/amd64 and linux/arm64.
 3. The `verify` job pulls every published tag for both platforms without
-   logging in, and checks that `--version` prints
-   `agentkit-sandboxd vX.Y.Z (protocol M.N)`.
+   logging in, and checks that `--version` prints a line starting with
+   `agentkit-sandboxd vX.Y.Z ` (followed by `(protocol M.N)`).
 
 ## Tags
 

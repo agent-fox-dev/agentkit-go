@@ -6,7 +6,9 @@
 # base is Debian with the cgo-built agent (tree-sitter outlines) for a
 # uid-1000 user; overlay is the static agent alone, for an embedder to copy
 # into its own image with sandbox.OverlayCopyLine. The build stages run on
-# the build platform and cross-compile, so no stage is emulated. The agent
+# the build platform and cross-compile, so the Go builds are never emulated;
+# only the base stage's RUN steps run under emulation for a foreign
+# platform. The agent
 # lives in the nested sandbox module, which replaces the root module with
 # ../ (docs/errata/16_sandbox_images.md). AGENTKIT_VERSION is stamped into
 # the agent; empty, the agent reports (devel).

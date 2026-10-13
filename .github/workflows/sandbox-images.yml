@@ -103,7 +103,10 @@ jobs:
                   echo "::error::cannot pull $ref for $platform anonymously; is the package public?"
                   exit 1
                 fi
-                out="$(docker run --rm --platform "$platform" --entrypoint /usr/local/libexec/agentkit-sandboxd "$ref" --version)"
+                if ! out="$(docker run --rm --platform "$platform" --entrypoint /usr/local/libexec/agentkit-sandboxd "$ref" --version)"; then
+                  echo "::error::$ref ($platform): --version failed"
+                  exit 1
+                fi
                 case "$out" in
                   "agentkit-sandboxd $VERSION "*) ;;
                   *)

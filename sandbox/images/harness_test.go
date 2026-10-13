@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -183,13 +184,18 @@ func (h *harness) cleanup() {
 }
 
 // startT starts image's agent, fails t with start's error, and fetches the
-// tools; it cleans up when t ends.
+// tools; it cleans up when t ends, logging the engine's stderr if t failed.
 func startT(t *testing.T, engine, image string) *harness {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	h, err := start(ctx, engine, image)
-	t.Cleanup(h.cleanup)
+	t.Cleanup(func() {
+		h.cleanup()
+		if t.Failed() {
+			t.Logf("engine stderr: %s", h.stderr.String())
+		}
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,8 +234,10 @@ func execIn(ctx context.Context, tools []core.Tool, command string) (int, string
 		return 0, r.Text, fmt.Errorf("execute %q: no rc= line in %q", command, r.Text)
 	}
 	last := m[len(m)-1]
-	var rc int
-	fmt.Sscan(r.Text[last[2]:last[3]], &rc)
+	rc, err := strconv.Atoi(r.Text[last[2]:last[3]])
+	if err != nil {
+		return 0, r.Text, fmt.Errorf("execute %q: bad rc= line in %q: %v", command, r.Text, err)
+	}
 	return rc, strings.TrimSpace(r.Text[:last[0]]), nil
 }
 
@@ -459,8 +467,10 @@ func TestLandlockCheck_TS16_25(t *testing.T) {
 func TestHarnessStartFailure_TS16_47(t *testing.T) {
 	engine, _ := requireImage(t, "AGENTKIT_SANDBOX_BASE_IMAGE")
 	h, err := start(context.Background(), engine, "agentkit-imgtest-INVALID:Ref")
-	if err == nil || !strings.Contains(err.Error(), "agentkit-imgtest-INVALID") {
-		t.Errorf("start = %v, want an error carrying the engine's stderr", err)
+	if err == nil {
+		t.Errorf("start succeeded, want an error carrying the engine's stderr")
+	} else if _, stderr, ok := strings.Cut(err.Error(), "engine stderr: "); !ok || !strings.Contains(stderr, "agentkit-imgtest-INVALID") {
+		t.Errorf("start = %v, want the engine's stderr, naming agentkit-imgtest-INVALID", err)
 	}
 	if h == nil {
 		t.Fatal("start returned no harness to clean up")

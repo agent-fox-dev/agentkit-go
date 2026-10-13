@@ -28,7 +28,11 @@ func TestDockerignore_TS16_15(t *testing.T) {
 	}
 	matches := func(rel string) string {
 		for _, p := range patterns {
-			if ok, _ := filepath.Match(p, rel); ok {
+			ok, err := filepath.Match(p, rel)
+			if err != nil {
+				t.Fatalf(".dockerignore pattern %q: %v", p, err)
+			}
+			if ok {
 				return p
 			}
 		}
