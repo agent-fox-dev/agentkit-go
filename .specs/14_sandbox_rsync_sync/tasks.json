@@ -516,7 +516,7 @@
         "`make check` exits 0",
         "`go test -race ./sandbox/... -count=1` passes with the four smoke tests running against real components"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
