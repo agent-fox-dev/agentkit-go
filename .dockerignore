@@ -1,0 +1,14 @@
+# The build context of sandbox/images/Containerfile is the repository root.
+# Podman reads this file when there is no .containerignore, so one file
+# serves both engines. Nothing a package of the root or sandbox module needs,
+# nor go.mod or go.sum, may be excluded.
+.git
+.github
+.specs
+.claude
+build
+codesearch
+docs
+coverage.*
+*.test
+.DS_Store

@@ -1,0 +1,92 @@
+# The AgentKit sandbox images, built from the repository root:
+#
+#   <engine> build -f sandbox/images/Containerfile --target base .
+#   <engine> build -f sandbox/images/Containerfile --target overlay .
+#
+# base is Debian with the cgo-built agent (tree-sitter outlines) for a
+# uid-1000 user; overlay is the static agent alone, for an embedder to copy
+# into its own image with sandbox.OverlayCopyLine. The build stages run on
+# the build platform and cross-compile, so the Go builds are never emulated;
+# only the base stage's RUN steps run under emulation for a foreign
+# platform. The agent
+# lives in the nested sandbox module, which replaces the root module with
+# ../ (docs/errata/16_sandbox_images.md). AGENTKIT_VERSION is stamped into
+# the agent; empty, the agent reports (devel).
+
+FROM --platform=$BUILDPLATFORM golang:1.27-trixie AS agent-cgo
+ARG TARGETARCH
+ARG BUILDARCH
+ARG AGENTKIT_VERSION=
+ENV GOTOOLCHAIN=local
+RUN case "$TARGETARCH" in \
+      amd64|arm64) ;; \
+      *) echo "unsupported platform linux/$TARGETARCH: the sandbox images are built for linux/amd64 and linux/arm64 only" >&2; exit 1 ;; \
+    esac
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY sandbox/go.mod sandbox/go.sum ./sandbox/
+RUN cd sandbox && go mod download
+COPY . .
+RUN set -e; \
+    if [ "$TARGETARCH" != "$BUILDARCH" ]; then \
+      apt-get update; \
+      apt-get install -y --no-install-recommends crossbuild-essential-${TARGETARCH}; \
+      rm -rf /var/lib/apt/lists/*; \
+      case "$TARGETARCH" in \
+        amd64) export CC=x86_64-linux-gnu-gcc ;; \
+        arm64) export CC=aarch64-linux-gnu-gcc ;; \
+      esac; \
+    fi; \
+    cd sandbox && CGO_ENABLED=1 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -buildvcs=false \
+      -ldflags "-s -w -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=${AGENTKIT_VERSION}" \
+      -o /out/agentkit-sandboxd ./cmd/agentkit-sandboxd
+
+FROM --platform=$BUILDPLATFORM golang:1.27-trixie AS agent-static
+ARG TARGETARCH
+ARG AGENTKIT_VERSION=
+ENV GOTOOLCHAIN=local
+RUN case "$TARGETARCH" in \
+      amd64|arm64) ;; \
+      *) echo "unsupported platform linux/$TARGETARCH: the sandbox images are built for linux/amd64 and linux/arm64 only" >&2; exit 1 ;; \
+    esac
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY sandbox/go.mod sandbox/go.sum ./sandbox/
+RUN cd sandbox && go mod download
+COPY . .
+RUN cd sandbox && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -buildvcs=false \
+      -ldflags "-s -w -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=${AGENTKIT_VERSION}" \
+      -o /out/agentkit-sandboxd ./cmd/agentkit-sandboxd
+
+FROM debian:trixie-slim AS base
+ARG AGENTKIT_VERSION=
+ARG AGENTKIT_REVISION=
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git bash ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --gid 1000 agentkit \
+ && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/agentkit --shell /bin/bash agentkit \
+ && install -d -o 1000 -g 1000 -m 0755 /workspace \
+ && git config --system --add safe.directory '*'
+COPY --from=agent-cgo /out/agentkit-sandboxd /usr/local/libexec/agentkit-sandboxd
+LABEL org.opencontainers.image.source="https://github.com/agent-fox-dev/agentkit-go" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.title="agentkit-sandbox" \
+      org.opencontainers.image.description="The AgentKit sandbox agent, agentkit-sandboxd, at /usr/local/libexec/agentkit-sandboxd" \
+      org.opencontainers.image.version="${AGENTKIT_VERSION}" \
+      org.opencontainers.image.revision="${AGENTKIT_REVISION}"
+USER 1000:1000
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/libexec/agentkit-sandboxd"]
+
+FROM scratch AS overlay
+ARG AGENTKIT_VERSION=
+ARG AGENTKIT_REVISION=
+COPY --from=agent-static /out/agentkit-sandboxd /usr/local/libexec/agentkit-sandboxd
+LABEL org.opencontainers.image.source="https://github.com/agent-fox-dev/agentkit-go" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.title="agentkit-sandbox" \
+      org.opencontainers.image.description="The AgentKit sandbox agent, agentkit-sandboxd, at /usr/local/libexec/agentkit-sandboxd" \
+      org.opencontainers.image.version="${AGENTKIT_VERSION}" \
+      org.opencontainers.image.revision="${AGENTKIT_REVISION}"
+ENTRYPOINT ["/usr/local/libexec/agentkit-sandboxd"]

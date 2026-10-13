@@ -14,7 +14,7 @@ image installs it at `sandbox.AgentPath`
 (`/usr/local/libexec/agentkit-sandboxd`).
 
 ```bash
-go build -o agentkit-sandboxd ./sandbox/cmd/agentkit-sandboxd
+(cd sandbox && go build -o ../agentkit-sandboxd ./cmd/agentkit-sandboxd)
 agentkit-sandboxd --workdir /workspace --ttl 1h --network none
 ```
 
@@ -43,7 +43,7 @@ The standard `flag` package: `-flag` and `--flag` are equivalent.
 | `--network` | `none` | The sandbox's network mode: exactly `none`, `allowlist` or `unrestricted`; anything else is a usage error. Under `none`, at Landlock ABI 4, the ruleset denies every TCP bind and connect, loopback included; under the other two it handles no network right. `sandbox.AgentArgs` passes the effective spec's mode. |
 | `--landlock-ro PATH` | | An extra read-and-execute root, repeatable. It must be absolute; a missing one is skipped with a note. |
 | `--landlock-rw PATH` | | An extra writable root, repeatable. It must be absolute, and may not be `/` or equal to or an ancestor of a system directory; a missing one is skipped with a note. |
-| `--version` | | Print `agentkit-sandboxd <module version> (protocol <major>.<minor>)` to stdout (currently `(protocol 1.2)`) and exit 0 without serving or probing Landlock. The module version comes from the build info, or is `(devel)`. |
+| `--version` | | Print `agentkit-sandboxd <module version> (protocol <major>.<minor>)` to stdout (currently `(protocol 1.2)`) and exit 0 without serving or probing Landlock. The version is the one stamped at link time (`-ldflags -X …/sandbox/internal/buildver.stamp=vX.Y.Z`), which is the release version in the published images; otherwise it comes from the build info, or is `(devel)`, as in an unstamped image build. |
 
 ### Environment
 

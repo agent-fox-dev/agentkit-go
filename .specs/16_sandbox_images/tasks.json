@@ -62,7 +62,7 @@
         "sandbox/internal/buildver/api_test.go",
         "sandbox/cmd/agentkit-sandboxd/stamp_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -95,7 +95,7 @@
         "sandbox/image_test.go",
         "sandbox/image_internal_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -144,7 +144,7 @@
       "done_when": [
         "With an engine available, `--target base` and `--target overlay` builds from the repository root exit 0, or docs/errata/16_sandbox_images.md records the psx link failure"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -176,7 +176,7 @@
       "depends_on": [
         3
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -213,7 +213,7 @@
         2,
         4
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -257,7 +257,7 @@
       "done_when": [
         "With podman or docker available, every TestBaseImage* test reports PASS (TS-16-44 under an unstamped build) in `make sandbox-images-test`"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -297,7 +297,7 @@
       "done_when": [
         "With podman or docker available, TestOverlayImage, TestOverlayImageDerived, TestBaseImageCrossArchBuild and TestBaseImageUnsupportedArch report PASS in `make sandbox-images-test`"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -336,7 +336,7 @@
       "depends_on": [
         4
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -382,7 +382,7 @@
         7,
         8
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -421,7 +421,7 @@
         "TS-16-51 and TS-16-52 pass with AGENTKIT_SANDBOX_SMOKE=1 on a host with podman or docker",
         "TS-16-53 passes with AGENTKIT_SANDBOX_RELEASE_VERSION set once the first vX.Y.Z tag has been pushed and both GHCR packages are public"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

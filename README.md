@@ -139,6 +139,25 @@ too-weak ruleset a `Create` failure (`local` never confines and refuses it).
 code-mode script over proxy tools offline; [`docs/cli.md`](docs/cli.md)
 covers the agent command.
 
+The agent ships in two images, built from `sandbox/images/Containerfile` and
+published for linux/amd64 and linux/arm64 on each release:
+
+- `ghcr.io/agent-fox-dev/agentkit-sandbox:X.Y.Z` (`sandbox.BaseImageRepo`) is
+  Debian trixie-slim with `git`, `bash` and `ca-certificates`, a uid-1000
+  user `agentkit`, and the cgo-built agent (tree-sitter outlines) at
+  `sandbox.AgentPath`. It runs as is; `sandbox.DefaultImage()` names it for
+  the build's version.
+- `ghcr.io/agent-fox-dev/agentkit-sandboxd:X.Y.Z` (`sandbox.OverlayImageRepo`)
+  holds one static file, the agent, for an embedder's own toolchain image,
+  which adds it with the line `sandbox.OverlayCopyLine` returns:
+
+  ```dockerfile
+  COPY --from=ghcr.io/agent-fox-dev/agentkit-sandboxd:X.Y.Z /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/
+  ```
+
+`make sandbox-images` builds both locally, and
+[`docs/releasing.md`](docs/releasing.md) covers publishing them.
+
 ## Consumer contract
 
 The identifiers an embedder such as agent-fox builds on.
@@ -204,6 +223,8 @@ The identifiers an embedder such as agent-fox builds on.
 | `make tidy` | `go mod tidy` in every module |
 | `make doc` | `go doc -all` for every public package of the root, `codesearch` and `sandbox` modules, written as text to `build/docs/` (git-ignored) |
 | `make proto` | Regenerate the sandbox protocol's Go code and its recorded hash; needs `protoc`, installs the pinned plugins into `build/bin` |
+| `make sandbox-images` | Build the sandbox base and overlay images for the host platform with podman (or docker); not part of `check` |
+| `make sandbox-images-test` | Build the sandbox images and run the end-to-end image tests against them; not part of `check` |
 
 ## Documentation
 
@@ -212,6 +233,7 @@ The identifiers an embedder such as agent-fox builds on.
 | [`docs/architecture.md`](docs/architecture.md) | Package graph, the data flow of a run, invariants, nested calls, code mode, the MCP client, `Workspace.References`, sandboxes. |
 | [`docs/configuration.md`](docs/configuration.md) | `agentkit.Config`, environment variables, provider, tool, code-mode, MCP and sandbox options, the model catalog. |
 | [`docs/cli.md`](docs/cli.md) | The `agentkit-sandboxd` command: flags, transport and exit codes. |
+| [`docs/releasing.md`](docs/releasing.md) | Publishing the sandbox images: the version tags, GHCR visibility, re-runs and local builds. |
 | [`docs/DEPS.md`](docs/DEPS.md) | Why each direct dependency is allowed, and the libraries considered and rejected. |
 | [`examples/README.md`](examples/README.md) | The six example programs and how to configure an application. |
 | [`docs/prd/`](docs/prd) | Product requirements. |

@@ -589,6 +589,67 @@ is refused before any directory is made. `Close` removes the directory; `Reap` r
 marker names a process that is no longer running (on Unix; elsewhere it
 removes nothing).
 
+### Sandbox images
+
+The agent is published in two images, both with the agent at
+`sandbox.AgentPath` (`/usr/local/libexec/agentkit-sandboxd`), owned by root
+with mode 0755, and `ENTRYPOINT` set to it. A provider must not rely on that
+entrypoint: an embedder's image built with the overlay keeps its own, so
+providers start the agent with `--entrypoint sandbox.AgentPath` and
+`sandbox.AgentArgs(spec)`.
+
+| Identifier | Value or behaviour |
+|---|---|
+| `sandbox.BaseImageRepo` | `ghcr.io/agent-fox-dev/agentkit-sandbox` |
+| `sandbox.OverlayImageRepo` | `ghcr.io/agent-fox-dev/agentkit-sandboxd` |
+| `sandbox.ImageTag(version)` | The tag of a release version: `version` without its `v`. Only `vMAJOR.MINOR.PATCH` with no leading zeros and an optional `-prerelease` is accepted; `(devel)`, build metadata (`+dirty`, `+incompatible`) and Go pseudo-versions give `("", false)`. |
+| `sandbox.DefaultImage()` | `BaseImageRepo:<tag>` for the build's version (`buildver`: the link-time stamp, else the sandbox module's version, else `(devel)`). |
+| `sandbox.OverlayImage()` | `OverlayImageRepo:<tag>` for the build's version. |
+| `sandbox.ErrNoPublishedImage` | `sandbox: no published image for this agentkit-go version`. `DefaultImage` and `OverlayImage` wrap it when the version has no published image; the message names the version and says to set `Spec.Image` or build an image with `make sandbox-images`. |
+| `sandbox.OverlayCopyLine(ref)` | `COPY --from=<ref> /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/`: the one line an embedder adds to its own Containerfile. |
+
+The default is the exact `X.Y.Z` tag, never `X.Y`: the `Tools` digest check
+fails when the host and the agent are at different versions.
+
+**The base image** (`--target base`):
+
+| Content | Value |
+|---|---|
+| Base | `debian:trixie-slim` |
+| Packages | `git`, `bash`, `ca-certificates`; nothing else (the agent carries rsync itself; zombie reaping is the provider's `--init`) |
+| User | `agentkit`, uid 1000, gid 1000, home `/home/agentkit`, shell `/bin/bash`; `USER 1000:1000` |
+| Workspace | `/workspace`, owned 1000:1000, mode 0755, `WORKDIR`; not a `VOLUME` |
+| git | `safe.directory = *` in the system config |
+| Agent | cgo-built (tree-sitter outlines), at `sandbox.AgentPath` |
+| Environment | none beyond the Debian image's `PATH` |
+| Labels | `org.opencontainers.image.source` (`https://github.com/agent-fox-dev/agentkit-go`), `licenses` (`Apache-2.0`), `title`, `description`, `version`, `revision` |
+
+**The overlay image** (`--target overlay`) is `FROM scratch` with one layer:
+the static agent (`OutlineBackend` `none`) and the same labels.
+
+**Tags.** A release `vX.Y.Z` publishes `X.Y.Z`, plus a moving `X.Y` when there
+is no prerelease part, for linux/amd64 and linux/arm64; there is no
+`latest`. A re-run rebuilds a tag, so an embedder who needs an immutable
+image pins its digest. [`releasing.md`](releasing.md) has the details.
+
+**Make variables** for `make sandbox-images` and `make sandbox-images-test`,
+each overridable on the command line:
+
+| Variable | Default |
+|---|---|
+| `CONTAINER` | `podman` when on `PATH`, else `docker` |
+| `SANDBOX_BASE_IMAGE` | `ghcr.io/agent-fox-dev/agentkit-sandbox` |
+| `SANDBOX_OVERLAY_IMAGE` | `ghcr.io/agent-fox-dev/agentkit-sandboxd` |
+| `SANDBOX_IMAGE_TAG` | `dev` |
+| `SANDBOX_PLATFORM` | empty: the host platform; when set, passed as `--platform` |
+| `AGENTKIT_VERSION` | empty: the agent reports `(devel)` |
+| `AGENTKIT_REVISION` | `git rev-parse HEAD`, or empty outside a checkout |
+
+`make sandbox-images-test` runs the image tests in `sandbox/images` with
+`AGENTKIT_SANDBOX_BASE_IMAGE`, `AGENTKIT_SANDBOX_OVERLAY_IMAGE`,
+`AGENTKIT_SANDBOX_IMAGE_VERSION` and `AGENTKIT_CONTAINER` set; without those
+variables, a container engine, or under `-short`, the image tests skip.
+
 ## Limits on untrusted input
 
 `wire.Defaults()`: 16 MiB per message, 1,000,000 elements per container,

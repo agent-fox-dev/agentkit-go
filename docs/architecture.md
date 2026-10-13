@@ -127,7 +127,7 @@ What follows from it:
 | `sandbox/internal/agent` | The agent service: runs `tools.All` against one workspace with an explicit environment. |
 | `sandbox/internal/attach` | The one `Sandbox` implementation, for every provider: handshake, state machine, failure classification, proxy tools, tar transfer. |
 | `sandbox/internal/tarsafe` | The tar entry rules both directions share, the `os.Root` extractor, the export validator and the archiver. |
-| `sandbox/internal/tooldigest`, `sandbox/internal/buildver` | The definition digest host and agent share; the module version from the build info. |
+| `sandbox/internal/tooldigest`, `sandbox/internal/buildver` | The definition digest host and agent share; the agent's version: the link-time stamp, else the sandbox module's version from the build info, else `(devel)`. |
 | `sandbox/internal/stdioconn` | A `net.Conn` over a reader and a writer: stdin/stdout, or two `os.Pipe` pairs. |
 | `sandbox/internal/confine` | The agent's Landlock confinement: `Plan`, the ruleset, `Setup`. Only `agentkit-sandboxd` imports it. |
 | `sandbox/internal/agentenv` | Reads the agent's explicit environment: a variable, the temporary directory. |
@@ -623,6 +623,38 @@ therefore sees every call a script makes, inside a sandbox or not. Running the
 interpreter in the sandbox with authorization called back to the host
 (D3 (c)) is deferred to the second release; only the self-contained `Call`
 messages are designed for it.
+
+**Sandbox images.** One Containerfile, `sandbox/images/Containerfile`, builds
+both published images from the repository root:
+
+```
+agent-cgo     FROM --platform=$BUILDPLATFORM golang:1.27-trixie, GOTOOLCHAIN=local;
+              cross-compiles with crossbuild-essential-$TARGETARCH when the
+              target differs; CGO_ENABLED=1 (tree-sitter, psx's cgo variant)
+agent-static  the same, CGO_ENABLED=0
+base          debian:trixie-slim + git, bash, ca-certificates + agent-cgo's agent
+overlay       FROM scratch + agent-static's agent, one layer
+```
+
+The build stages run on the build platform and cross-compile, so the Go
+builds are never emulated; only the base stage's package install and user
+setup run under QEMU when it is built for a foreign platform, as in the
+release's multi-arch push. Only linux/amd64 and linux/arm64 are built. Both agents are built
+in the nested `sandbox` module with `-trimpath`, `-buildvcs=false` and
+`-ldflags -X …/sandbox/internal/buildver.stamp=$AGENTKIT_VERSION`:
+`buildver.Version()` returns the stamp when it is set, so a published agent
+reports its release version, and an unstamped build `(devel)`. The agent is
+owned by root with mode 0755 and the tools run as uid 1000, which cannot
+replace the binary that confines it (14's trust model). The layout lines up
+with the agent's Landlock roots: `/workspace` (the workspace), `/home/agentkit`
+(`HOME`) and `/tmp` (the temporary directory) are writable, and `git`,
+`bash` and the CA bundle sit under the read-only system directories. Neither
+image declares `ENV`, since Docker cannot unset an image's variables and the
+agent hands its environment to every tool verbatim, nor `VOLUME`, which
+would make anonymous volumes no provider reaps. Providers pass
+`--entrypoint sandbox.AgentPath` (an overlay-based image keeps its own
+entrypoint) and `--init` for zombie reaping. The release workflow tests the
+images before it publishes them; [`releasing.md`](releasing.md) describes it.
 
 **`local` is not isolation.** Its capabilities say so (`IsolationNone`, only
 `NetworkUnrestricted`, nothing else honoured), and it refuses the zero
