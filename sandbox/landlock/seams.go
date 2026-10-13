@@ -11,10 +11,9 @@ import (
 
 // defaultSeams are the real platform, probe and helpers.
 func defaultSeams() seams {
-	return seams{goos: runtime.GOOS, probe: defaultProbe, runVersion: runVersion, executable: os.Executable, lookPath: exec.LookPath}
+	return seams{goos: runtime.GOOS, probe: defaultProbe, runVersion: runVersion, executable: os.Executable, lookPath: exec.LookPath,
+		resolver: resolverDir}
 }
-
-func (p *provider) Capabilities() sandbox.Capabilities { panic("not implemented") }
 
 func (p *provider) Create(context.Context, sandbox.Spec) (sandbox.Sandbox, error) {
 	panic("not implemented")
