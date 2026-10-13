@@ -452,7 +452,7 @@
         "`go test -short ./podman/` in sandbox/ exits 0 with every real-engine test skipped",
         "`make sandbox-podman-test` passes on a host with podman or docker"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,
