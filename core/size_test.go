@@ -278,3 +278,29 @@ func TestNoJSONXImportsAnywhere_TS12_17(t *testing.T) {
 		}
 	}
 }
+
+// TS-13-66: the sandbox tree, generated code included, is in the root
+// module and counted by its line counter, and the module stays within
+// TS-12-14's budget (budgetLines, docs/errata/13_sandbox_core.md). The
+// cross-target, host-cgo and make check gates run in internal/policy.
+// 13-REQ-10.6.
+func TestSandboxCountedInBudget_TS13_66(t *testing.T) {
+	root := moduleRoot(t)
+	err := filepath.WalkDir(filepath.Join(root, "sandbox"), func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && d.Name() == "go.mod" {
+			t.Errorf("%s makes part of sandbox/ a nested module", path)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := codeLines(t, filepath.Join(root, "sandbox", "internal", "sandboxpb"), true); n == 0 {
+		t.Error("the line counter counts no lines in sandbox/internal/sandboxpb")
+	}
+	n := budgetLines(t, root)
+	if n > 20000 {
+		t.Errorf("the root module has %d lines of hand-written library code, over 20,000", n)
+	}
+	t.Logf("root module: %d lines counted, %d within the budget", codeLines(t, root, true), n)
+}

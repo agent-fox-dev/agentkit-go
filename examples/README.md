@@ -6,8 +6,8 @@ feature is, how to run it, and the code an embedder copies. Each is a single
 rather than sharing a helper package, so nothing you need is in a file you
 have not opened.
 
-`agentdemo` and `codemode` need **no API key and no network**: they run
-against the scripted provider `provider/faux`. The others call a model and
+`agentdemo`, `codemode` and `sandbox` need **no API key and no network**:
+they run against the scripted provider `provider/faux`. The others call a model and
 need an Anthropic credential (below).
 
 | Example | Run it | What it teaches |
@@ -17,6 +17,7 @@ need an Anthropic credential (below).
 | [`customtools`](customtools) | `go run ./examples/customtools` | Writing tools well: the schema combinators, `Handler` vs `Execute`, argument repair, sequential execution, per-tool prompt guidelines, and a tool that ends the run. |
 | [`mcp`](mcp) | `go run ./examples/mcp` · `--external CMD` | The MCP client: consuming a server's tools under qualified names, with the pool refusing a server tool that would shadow one of yours. |
 | [`codemode`](codemode) | `go run ./examples/codemode` | Code mode: one tool that runs a model-written Starlark script over other tools — chained and parallel calls, errors as values, filtering before anything reaches the conversation — through the agent's own nested-call pipeline. |
+| [`sandbox`](sandbox) | `go run ./examples/sandbox` | Sandboxes: syncing a project into one, proxy tools that are drop-in replacements for `tools.All`, a guarded code-mode script over them, and exporting files back out — against `local`, which is not isolation. |
 
 ## Configuring an application
 

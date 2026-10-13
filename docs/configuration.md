@@ -371,6 +371,85 @@ ignored. A server with no `name`, with neither `command` nor `url`, with an
 unknown `transport`, or with a duplicate name is dropped with an error
 diagnostic.
 
+## Sandboxes (`sandbox.Spec`, `sandbox.ToolOptions`, `local`)
+
+A `sandbox.Provider` creates a sandbox from a `sandbox.Spec`. Every provider
+checks it with `sandbox.CheckSpec` first: a field the provider's
+`Capabilities` do not cover is refused with a `*sandbox.SpecError` (matching
+`sandbox.ErrUnsupported`) that reads
+`sandbox: provider "local" cannot honour Spec.Network.Mode = none: …`. No
+provider silently widens a policy.
+
+### `sandbox.Spec`
+
+| Field | Meaning | Default |
+|---|---|---|
+| `Image` | The container or VM image. | the provider's |
+| `Workdir` | The workspace path inside the sandbox. | `/workspace`, for a provider that honours it; `Spec()` then reports the root the agent resolved |
+| `Env map[string]string` | Extra environment for the tools. A name may not be empty or hold `=` or NUL, a value may not hold NUL. | none |
+| `Resources` | `CPUs float64`, `MemoryBytes`, `PIDs`, `DiskBytes int64`; zero means no bound, negative is refused. | none |
+| `Network` | `Mode`: `NetworkNone` (the zero value), `NetworkAllowlist` or `NetworkUnrestricted`; `Allow []Endpoint{Host, Port}` only with `NetworkAllowlist`, each with a host and a port in 1–65535. | `NetworkNone` |
+| `TTL` | The sandbox's lifetime; at the TTL it becomes unavailable and is destroyed. Negative is refused. | 1 hour |
+| `Labels map[string]string` | Tags for the provider. The key `agentkit.sandbox` is reserved. | none |
+| `Provider map[string]any` | Provider-specific options. A key the provider does not define is refused, naming it. | none |
+
+The context passed to `Create` bounds creation only, not the sandbox's
+lifetime.
+
+### Which provider honours which field
+
+| Field | `local` |
+|---|---|
+| `Image` | refused |
+| `Workdir` | refused (the workspace is `<dir>/workspace`) |
+| `Env` | yes |
+| `Resources.*` | refused |
+| `Network.Mode` | `NetworkUnrestricted` only; the zero `Spec` is refused |
+| `TTL` | yes |
+| `Labels` | yes (recorded in the marker) |
+| `Provider` | no keys defined; any key is refused |
+
+### `sandbox.ToolOptions`
+
+`Sandbox.Tools(ctx, opts)` configures the agent's tool set. The options are
+fixed by the first successful call; a later call with different options
+fails with `sandbox.ErrToolsConfigured`.
+
+| Field | Default |
+|---|---|
+| `Symbols` | `tools.SymbolOptions{}`, as for `tools.Options`. |
+| `SpillDir` | `agentkit-spill` under the `TMPDIR` of the tools' environment inside the sandbox. A non-empty value must be absolute. |
+| `DisableSpill` | false. |
+
+The agent always uses `tools.NoGlobalExcludes()` (the workspace's own ignore
+files still apply), its explicit environment, and no index.
+
+### Transfer: `sandbox.Tar` and `sandbox.TarOut`
+
+`Sync(ctx, sandbox.Tar{R, Path, Replace})` extracts the tar stream `R` into
+`Path`, a workspace-relative slash-separated path (`""` and `.` are the
+root; an absolute or escaping path is refused). With `Replace`, the existing
+contents of `Path` are removed first and `Path` is kept, or created. It
+returns `SyncResult{Files, Bytes}`. `Export(ctx, path, sandbox.TarOut{W})`
+writes a tar of the subtree to `W`, names relative to `path`, verbatim
+(hidden and ignored files included, symlinks as symlinks, other types
+skipped). Both directions refuse absolute names, `..`, hard links, devices,
+FIFOs and escaping symlinks with `sandbox.ErrUnsafeArchive`; a refused entry
+ends a sync, and entries extracted before it stay.
+
+### `local.Unisolated()`
+
+For tests and development only: no isolation. The agent runs in the
+embedder's process with its privileges. Each sandbox is
+`<os.TempDir()>/agentkit-sandbox-local/<16 hex>/` holding `workspace/`,
+`home/` and `tmp/` (each 0700) and a marker, `agentkit-sandbox.json`, with
+the creating pid, the labels, the creation time and the TTL. The tools'
+environment is `Spec.Env`, plus the host's `PATH`, `LANG` and `TERM` where
+`Spec.Env` lacks them, plus `HOME` and `TMPDIR` pointing at the private
+directories. `Close` removes the directory; `Reap` removes directories whose
+marker names a process that is no longer running (on Unix; elsewhere it
+removes nothing).
+
 ## Limits on untrusted input
 
 `wire.Defaults()`: 16 MiB per message, 1,000,000 elements per container,
@@ -378,7 +457,9 @@ depth 64, 2,000,000 nodes. The MCP client holds every inbound stdio frame,
 JSON response body and SSE event to `ConnectionOptions.Limits` (zero fields
 take these defaults) and rejects duplicate keys before the SDK decodes it. The
 Anthropic provider checks each stream event and response body the same way,
-with the defaults.
+with the defaults. A sandbox proxy guards the `Data` and `Metadata` of every agent answer the
+same way, and every sandbox protocol message is bounded by
+`sandbox.MaxMessageBytes`, also 16 MiB.
 
 ## Compatibility
 
