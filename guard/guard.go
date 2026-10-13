@@ -16,7 +16,18 @@
 //
 // Restricted is a floor for unattended safety, not a sandbox: an allowlist
 // wide enough to run a build is escapable through the allowed programs' own
-// configuration and subprocess surfaces.
+// configuration and subprocess surfaces. It remains that floor whatever runs
+// the tools.
+//
+// A sandbox is the boundary the guard never claimed to be. AllowAll is a
+// reasonable choice only when every shell tool the agent can reach is a
+// proxy from a sandbox whose provider reports sandbox.IsolationContainer or
+// sandbox.IsolationMicroVM (sandbox/podman), under sandbox.NetworkNone (or
+// with egress the embedder accepts), with Spec.Resources set, and with the
+// files exported from it treated as untrusted. It is never reasonable with
+// the local provider (sandbox/local), which isolates nothing, or with any
+// local shell tool in the set. agentkit.New still requires a Guard either
+// way.
 package guard
 
 import (
@@ -36,6 +47,12 @@ var ShellToolNames = []string{"execute", "run_command"}
 // AllowAll is the explicit opt-out from the guard: an interceptor
 // that never blocks. Passing it is the affirmative act OQ-8 asks for — the
 // embedder has said, in code, that this agent runs an unrestricted shell.
+//
+// It is reasonable only when every shell tool the agent can reach is a proxy
+// from a sandbox whose provider reports IsolationContainer or
+// IsolationMicroVM, under NetworkNone (or egress the embedder accepts), with
+// Resources set and exported files treated as untrusted; never with the
+// local provider or with a local shell tool in the set.
 func AllowAll(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
 	return core.BeforeToolCallDecision{}
 }

@@ -13,11 +13,18 @@
 // in-process provider. local is NOT isolation — it runs the agent in this
 // process with its privileges, and exists for tests and development — but
 // it speaks the same protocol, over the same transport, as a real provider.
+//
+// With --podman the same program runs on sandbox/podman, a hardened
+// container with no network, from the base image --image names (build one
+// with make sandbox-images):
+//
+//	go run . --podman --image ghcr.io/agent-fox-dev/agentkit-sandbox:dev
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -31,12 +38,20 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/local"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/podman"
 )
 
 func main() {
+	usePodman := flag.Bool("podman", false, "run on the podman provider (a container with no network) instead of local")
+	image := flag.String("image", "", "the sandbox image for --podman; empty means sandbox.DefaultImage()")
+	flag.Parse()
 	dir, err := os.MkdirTemp("", "agentkit-sandbox-example-")
 	if err == nil {
-		err = run(context.Background(), os.Stdout, dir)
+		if *usePodman {
+			err = runPodman(context.Background(), os.Stdout, dir, *image)
+		} else {
+			err = run(context.Background(), os.Stdout, dir)
+		}
 		_ = os.RemoveAll(dir)
 	}
 	if err != nil {
@@ -66,17 +81,32 @@ if is_error(removed):
     print("rm:", removed.error)
 `
 
-// run works in dir: the project is written to dir/project and the result
-// exported to dir/out.
+// run works in dir on local: the project is written to dir/project and the
+// result exported to dir/out. local refuses a Spec it cannot honour, and the
+// zero Network means "none", which it cannot: say what you accept.
 func run(ctx context.Context, w io.Writer, dir string) error {
-	// 1. Create a sandbox. local refuses a Spec it cannot honour, and the
-	// zero Network means "none", which it cannot: say what you accept.
-	sb, err := local.Unisolated().Create(ctx, sandbox.Spec{Network: sandbox.Network{Mode: sandbox.NetworkUnrestricted}})
+	return runOn(ctx, w, dir, local.Unisolated(), sandbox.Spec{Network: sandbox.Network{Mode: sandbox.NetworkUnrestricted}})
+}
+
+// runPodman is run on the podman provider, under NetworkNone (the zero
+// Network) with image, and bounded resources.
+func runPodman(ctx context.Context, w io.Writer, dir, image string) error {
+	p, err := podman.New(podman.Options{})
+	if err != nil {
+		return err
+	}
+	return runOn(ctx, w, dir, p, sandbox.Spec{Image: image, Resources: sandbox.Resources{MemoryBytes: 1 << 30, PIDs: 512}})
+}
+
+// runOn works in dir on a sandbox p creates from spec.
+func runOn(ctx context.Context, w io.Writer, dir string, p sandbox.Provider, spec sandbox.Spec) error {
+	// 1. Create a sandbox.
+	sb, err := p.Create(ctx, spec)
 	if err != nil {
 		return err
 	}
 	defer sb.Close(ctx)
-	fmt.Fprintf(w, "sandbox %s: agent %s, protocol %d.%d\n", sb.ID(), sb.Agent().Version, sb.Agent().ProtocolMajor, sb.Agent().ProtocolMinor)
+	fmt.Fprintf(w, "sandbox %s on %s: agent %s, protocol %d.%d\n", sb.ID(), p.Capabilities().Provider, sb.Agent().Version, sb.Agent().ProtocolMajor, sb.Agent().ProtocolMinor)
 
 	// 2. Put the project in from a host directory. Only what changed moves,
 	// and the same ignore rules as the file tools apply.

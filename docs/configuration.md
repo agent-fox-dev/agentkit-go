@@ -90,6 +90,15 @@ whether the program is on `AllowedPrograms`. `Check` is a pure function
 returning a `guard.Decision{Block, Reason, Terminate}`. The guard is a floor
 for unattended safety, not a sandbox.
 
+A sandbox is the boundary the guard never claimed to be. `guard.AllowAll`,
+the interceptor that never blocks, is a reasonable choice only when every
+shell tool the agent can reach is a proxy from a sandbox whose provider
+reports `sandbox.IsolationContainer` or `sandbox.IsolationMicroVM`
+(`sandbox/podman`), under `sandbox.NetworkNone` (or with egress you accept),
+with `Spec.Resources` set, and with the files you export from it treated as
+untrusted. It is never reasonable with `local` or with any local shell tool
+in the set. `agentkit.New` still requires a `Guard` either way.
+
 | Field | Meaning |
 |---|---|
 | `AllowedPrograms` | Programs that may run. A bare name admits only that bare name; a path admits only that path, after cleaning. A program spelled with a path separator is refused unless that path is listed. Empty blocks every shell call. |
@@ -399,17 +408,17 @@ lifetime.
 
 ### Which provider honours which field
 
-| Field | `local` |
-|---|---|
-| `Image` | refused |
-| `Workdir` | refused (the workspace is `<dir>/workspace`) |
-| `Env` | yes |
-| `Resources.*` | refused |
-| `Network.Mode` | `NetworkUnrestricted` only; the zero `Spec` is refused |
-| `TTL` | yes |
-| `Labels` | yes (recorded in the marker) |
-| `Provider` | no keys defined; any key is refused |
-| `RequireLandlock` | refused (`Capabilities.Landlock` is false: its agent runs in the embedder's process, which nothing may confine) |
+| Field | `local` | `podman` / `docker` |
+|---|---|---|
+| `Image` | refused | yes; empty means `sandbox.DefaultImage()`; refused when it starts with `-` or holds whitespace or a control character |
+| `Workdir` | refused (the workspace is `<dir>/workspace`) | yes (default `/workspace`); must be absolute and clean, not `/`, `/tmp` or beneath it, not beneath `/proc`, `/sys` or `/dev`, and hold no `,` or control character |
+| `Env` | yes | yes, plus the defaults below; `HOME` and `TMPDIR` must be `/tmp`, the workspace, or beneath either |
+| `Resources.*` | refused | `CPUs`, `MemoryBytes`, `PIDs`; `DiskBytes` is refused; a zero field takes the engine's default |
+| `Network.Mode` | `NetworkUnrestricted` only; the zero `Spec` is refused | `NetworkNone` (`--network none`) or `NetworkUnrestricted` (the engine's default network); `NetworkAllowlist` is refused |
+| `TTL` | yes | yes, twice: attach's host timer and the agent's `--ttl`; the volume carries the expiry |
+| `Labels` | yes (recorded in the marker) | yes, on the container, the init container and the volume; the key prefix `agentkit.sandbox.` is reserved, and a key may not be empty or hold `=`, whitespace or a control character, nor a value a control character |
+| `Provider` | no keys defined; any key is refused | no keys defined; any key is refused with a `*SpecError` |
+| `RequireLandlock` | refused (`Capabilities.Landlock` is false: its agent runs in the embedder's process, which nothing may confine) | yes; the engine's default seccomp profile may withhold Landlock, which the agent then reports |
 
 ### Landlock: `RequireLandlock`, `Capabilities.Landlock`, `AgentInfo.Landlock`
 
@@ -588,6 +597,137 @@ agent reports ABI 0 with the note
 is refused before any directory is made. `Close` removes the directory; `Reap` removes directories whose
 marker names a process that is no longer running (on Unix; elsewhere it
 removes nothing).
+
+### The Podman and Docker provider (`sandbox/podman`)
+
+The first provider that isolates. Each sandbox's agent runs as the only
+process of a hardened, ephemeral container that holds one workspace volume.
+The provider drives the `podman` or `docker` command line, never their Go
+API clients.
+
+```go
+p, err := podman.New(podman.Options{})
+sb, err := p.Create(ctx, sandbox.Spec{Image: image, Resources: sandbox.Resources{MemoryBytes: 1 << 30, PIDs: 512}})
+```
+
+| `podman.Options` field | Meaning |
+|---|---|
+| `Binary` | The engine command; empty means `podman`. A bare name is resolved through `EngineEnv`'s `PATH`. |
+| `Engine` | `podman.EnginePodman` or `podman.EngineDocker`; empty means detected once from `<Binary> --version` (`podman version …` is podman, which includes a `docker` shim that runs podman; `Docker version …` is docker). |
+| `Runtime` | `""` (the engine's default runtime) or `krun` (a libkrun micro-VM, podman only). `crun-vm` is refused: it boots VM disk images, not OCI images with an entrypoint. |
+| `UserNS` | Passed as `--userns=<UserNS>` when set. |
+| `EngineEnv` | The environment of every engine command; nil means `os.Environ()`. Nothing in it reaches a container. |
+
+`podman.New(o)` resolves the binary (an error says
+`engine binary "podman" not found on PATH; install podman or docker, or set Options.Binary`),
+refuses an unknown `Engine`, an unsupported `Runtime` and `krun` with
+docker, and runs no command but one `--version`, with a 30-second timeout,
+and only when `Engine` is empty. `Capabilities()` reports the engine as
+`Provider`, `IsolationMicroVM` with `krun` and `IsolationContainer`
+otherwise, `NetworkNone` and `NetworkUnrestricted`, `CPUs`, `MemoryBytes`
+and `PIDs`, and `Image`, `Workdir` and `Landlock`.
+
+**The container.** `podman.Args(o, id, created, spec)` and
+`podman.InitArgs(o, id, created, spec, repo)` are the exact, pure argument
+lists the provider runs after the binary, for the effective spec with
+`Image` set. Every sandbox container carries:
+
+| Flag | Why |
+|---|---|
+| `run --rm -i --init` | The agent is the container's own process on stdio; `--rm` removes the container when it ends, and `--init` reaps zombies. |
+| `--name agentkit-<id>` | The container's name; the init step's is `agentkit-<id>-init`. |
+| `--label agentkit.sandbox=<id>`, `--label agentkit.sandbox.expires=<created+TTL>` | The reserved labels, RFC 3339 UTC to the second, then the embedder's labels sorted by key. |
+| `--log-driver none` | The agent's stdout is the protocol stream; no log driver copies it. |
+| `--network none` | Unless the spec is `NetworkUnrestricted`. |
+| `--cap-drop ALL`, `--security-opt no-new-privileges` | No capabilities, and none to gain. |
+| `--read-only` | A read-only root. |
+| `--tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777` | The only writable directory besides the workspace; memory-backed, so it counts against `MemoryBytes`. |
+| `--mount type=volume,source=agentkit-<id>,target=<Workdir>` | The workspace: a named volume, never a host path. |
+| `--cpus`, `--memory` and `--memory-swap` (equal), `--pids-limit` | One flag per non-zero `Resources` field. |
+| `--runtime krun`, `--userns=<v>` | When set in `Options`. |
+| `--unsetenv-all` | Podman only: drop the image's environment. |
+| `--env NAME=value`, sorted | The environment, below. |
+| `--entrypoint /usr/local/libexec/agentkit-sandboxd <image> <sandbox.AgentArgs…>` | Always the agent at `sandbox.AgentPath`, whatever the image's own entrypoint. |
+
+No other flag is emitted: no `-v`/`--volume`, bind mount, `--privileged`,
+`--cap-add` or seccomp override; the engine's default seccomp profile
+applies. The image must have the workspace directory, owned by its user (or
+run as root); the base image does.
+
+**The environment** is `Spec.Env`, plus each default it does not set:
+`HOME=/tmp`, `LANG=C.UTF-8`,
+`PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+`TERM=dumb`, `TMPDIR=/tmp`. Both engines also add `HOSTNAME`, the
+container's own. `HOME` and `TMPDIR` in `Spec.Env` must be `/tmp`, the
+workspace, or beneath either, since nothing else is writable. The values
+appear on the engine's command line on the host, so credentials never belong
+in `Spec.Env`.
+
+**`Create`** runs `sandbox.CheckSpec` and then the provider's own checks
+(the table above), all before any engine command; with an empty `Image` it
+uses `sandbox.DefaultImage()`, whose `ErrNoPublishedImage` it returns as is.
+It then runs `volume create` with the labels, starts the engine with `Args`
+and attaches over its stdio. Whatever fails after the volume exists, the
+container and the volume are removed before `Create` returns. A protocol
+mismatch (`ErrProtocol`) and the `RequireLandlock` `*SpecError` pass
+through; a done context returns its error; an engine exit of 125 returns an
+engine error with the last 8 KiB of its stderr. Any other failed handshake
+runs `run --rm … --entrypoint <AgentPath> <image> --version` without
+`--init` or a volume: exit 126 or 127 means the image has no agent, and the
+error wraps `sandbox.ErrNoAgent`
+(`sandbox: the image has no executable agent at sandbox.AgentPath`), names
+the image and gives the fix, the line `sandbox.OverlayCopyLine` returns.
+
+**`Close`** (also at the TTL) waits up to 5 seconds for the engine process
+and then kills its group, runs `rm -f agentkit-<id>` and
+`rm -f agentkit-<id>-init`, and `volume rm agentkit-<id>`, retried for up to
+10 seconds while it is in use. A missing container or volume is not an
+error. The agent's own `--ttl` ends the container, which `--rm` removes,
+even when the host is gone.
+
+**`Reap`** lists the containers and volumes with the label key
+`agentkit.sandbox`, reads their labels from the engine's inspect JSON, and
+removes those whose `agentkit.sandbox.expires` parses and is not after now,
+containers first. Everything else, including an entry without a readable
+expiry, is left alone, so a sandbox another process or host still owns is
+never touched; a crashed host's volume lingers until its TTL.
+
+### `sandbox.GitRepo`
+
+`sandbox.GitRepo{URL, Ref, Depth}` is a `Source`: a public repository the
+provider's init step clones into the workspace. `podman` honours it;
+`local` (and any provider without an init step) refuses it with an error
+matching `ErrUnsupported`.
+
+| Field | Rule |
+|---|---|
+| `URL` | `https` only, with a host, no user information, no fragment, no whitespace or control character. |
+| `Ref` | A branch or tag; empty means the remote's default branch. Letters, digits, `.`, `_`, `-` and `/` only, not starting with `-` or `/`, and no `..`. |
+| `Depth` | `> 0`: a shallow clone of that depth; `0`: full history; negative is refused. |
+
+The clone runs `git -c protocol.allow=never -c protocol.https.allow=always clone [--depth N] [--branch REF] -- URL <Workdir>`
+in a separate `agentkit-<id>-init` container with the same labels,
+hardening, volume and bounds, on the engine's default network, while the
+agent's container sits idle beside it with its own network policy. Only
+`GIT_TERMINAL_PROMPT=0` and the `HOME`, `LANG` and `PATH` defaults reach it,
+never `Spec.Env`. A `GitRepo` must be the first `Sync` and come before the
+first `Tools` call: any successful `Sync` and the first `Tools` call take
+the slot, and a later `GitRepo` is refused with
+`GitRepo must be the first Sync and come before Tools`. A failed clone takes
+nothing. `Tools` and `Sync` wait for a clone in progress. The image needs
+`git` on its `PATH`. A successful clone reports a `SyncResult` of zeros;
+its files are then visible to the tools. A private repository is cloned on
+the host and synced as a `LocalDir`.
+
+**Testing it.** `make sandbox-podman-test` builds the images (`make
+sandbox-images`) and runs the provider's integration tests in
+`sandbox/podman` with `AGENTKIT_SANDBOX_BASE_IMAGE`,
+`AGENTKIT_SANDBOX_OVERLAY_IMAGE`, `AGENTKIT_SANDBOX_IMAGE_VERSION` and
+`AGENTKIT_CONTAINER` set; it is not part of `make check`. Without an engine,
+without `AGENTKIT_SANDBOX_BASE_IMAGE` or under `-short`, those tests skip.
+The `GitRepo` test clones `AGENTKIT_SANDBOX_GIT_URL` (default
+`https://github.com/agent-fox-dev/agentkit-go`) at depth 1, and the
+micro-VM test runs only with `AGENTKIT_SANDBOX_RUNTIME=krun`.
 
 ### Sandbox images
 

@@ -505,7 +505,7 @@
         "`make check` passes with no container engine on PATH",
         "internal/policy/testdata/exported-api.golden is byte-for-byte unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 12,

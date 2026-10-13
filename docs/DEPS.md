@@ -324,6 +324,8 @@ name code that has since been deleted; they are kept as the record.
 
 | Area | Candidate | Why not |
 |---|---|---|
+| Sandbox container provider (`sandbox/podman`) | `github.com/docker/docker/client` (the Docker Go client) | PRD 11 D4: the provider drives the CLI. The client brings a large dependency graph into the sandbox module for what a pure argument builder and `tools.RunArgv` already do, against the allowlist rule. |
+| Sandbox container provider (`sandbox/podman`) | `github.com/containers/podman/v5/pkg/bindings` (the Podman Go bindings) | PRD 11 D4, as for the Docker client: a very large dependency graph (much of podman itself), and it reaches only podman. |
 | Sandbox agent confinement | raw Landlock syscalls through `golang.org/x/sys/unix` | The syscalls are simple; reaching every thread is not. A per-thread `landlock_restrict_self` leaves the runtime's other threads unconfined, and doing it right means re-implementing go-landlock's all-thread plumbing (psx under cgo, `AllThreadsSyscall` without). |
 | Sandbox `LocalDir` transfer | an external `rsync` binary | It must be installed on both sides, at compatible versions; it runs as a subprocess outside the agent protocol, so a gateway cannot relay it as a stream; and the agent would hand the embedder's environment to another program. |
 | Provider argument salvage | JSON-repair libraries | They close a truncated string; salvage drops the incomplete member, so `{"path":"/etc/pas` never becomes a valid call. |
