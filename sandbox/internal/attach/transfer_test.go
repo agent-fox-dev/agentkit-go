@@ -159,3 +159,27 @@ func TestSyncReadErrorAndCancel_TS13_53(t *testing.T) {
 		t.Fatalf("a valid Sync afterwards = %v", err)
 	}
 }
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+// A destination that fails is the caller's error: Export returns it, not
+// ErrUnsafeArchive, and the sandbox stays live (13-REQ-5.4: only RPC
+// failures and malformed responses are transport failures).
+func TestExportDestinationFailureKeepsSandboxLive(t *testing.T) {
+	f := fakeagent.New()
+	f.SetExport(tarWithFile(t, "a.txt", 10), nil)
+	sb := attachFake(t, f, Config{})
+	err := sb.Export(context.Background(), "", sandbox.TarOut{W: failingWriter{}})
+	if err == nil || !strings.Contains(err.Error(), "disk full") || errors.Is(err, sandbox.ErrUnsafeArchive) || errors.Is(err, sandbox.ErrUnavailable) {
+		t.Fatalf("Export to a failing writer = %v, want the writer's error alone", err)
+	}
+	n := f.Count("SyncTar")
+	if _, err := sb.Sync(context.Background(), sandbox.Tar{R: bytes.NewReader(emptyTar)}); err != nil || f.Count("SyncTar") != n+1 {
+		t.Fatalf("the sandbox did not stay live: %v", err)
+	}
+	if _, err := sb.Sync(context.Background(), sandbox.Tar{}); err == nil {
+		t.Fatal("Sync with no reader succeeded")
+	}
+}

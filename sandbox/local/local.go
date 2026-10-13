@@ -54,7 +54,8 @@ func (p provider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandbo
 	if err != nil {
 		return nil, err
 	}
-	for _, k := range slices.Sorted(maps.Keys(spec.Provider)) {
+	if len(spec.Provider) > 0 {
+		k := slices.Sorted(maps.Keys(spec.Provider))[0]
 		return nil, fmt.Errorf("sandbox: provider %q does not define Spec.Provider option %q", "local", k)
 	}
 	id, err := newID()

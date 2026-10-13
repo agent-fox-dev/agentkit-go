@@ -86,17 +86,20 @@ func (a *Agent) buildSet(opts toolOptions) (*toolSet, error) {
 
 // rebuild remakes a configured tool set with its options, so the symbol
 // table and the reference cache see files a sync wrote. Calls in flight keep
-// the set they started on.
-func (a *Agent) rebuild() {
+// the set they started on. On failure the previous set stays.
+func (a *Agent) rebuild() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.set == nil {
-		return
+		return nil
 	}
-	if set, err := a.buildSet(a.set.opts); err == nil {
-		set.resp = a.set.resp
-		a.set = set
+	set, err := a.buildSet(a.set.opts)
+	if err != nil {
+		return err
 	}
+	set.resp = a.set.resp
+	a.set = set
+	return nil
 }
 
 // tempDir is the explicit environment's temporary directory.

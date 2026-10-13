@@ -79,7 +79,7 @@ What follows from it:
   SDK because `Config.Client` is an SDK client; `New` builds the provider
   over it.
 - Nothing imports the root package except `examples/`.
-- The sandbox tree imports `core`, `tools` and `wire`, and nothing outside it
+- The sandbox tree imports `core`, `schema`, `tools` and `wire`, and nothing outside it
   imports the sandbox tree except `examples/sandbox` and test helpers under
   `internal/` (`internal/policy` checks this, and that no non-test file
   outside it imports gRPC). `core`, `tools`, `codemode` and the driver do not
@@ -461,6 +461,7 @@ batch executor decides what runs in sequence. `checkShellGuard` sees a proxy
 | live | unavailable | an RPC error other than the agent's deliberate refusals (`InvalidArgument`, `FailedPrecondition`, `NotFound`, `Unimplemented`) while the host context is live; a malformed response; the agent's connection ending; the TTL |
 | live, unavailable | closed | `Close` (idempotent; a later `Close` returns nil) |
 
+A failing `TarOut` destination is the caller's error and changes nothing.
 Once unavailable or closed, `Tools`, `Sync` and `Export` return
 `ErrUnavailable` or `ErrClosed` without an RPC, and proxies return
 `sandbox_unavailable` (detail `sandbox closed` after `Close`). There is no

@@ -196,7 +196,7 @@ func TestRefusals_TS13_57(t *testing.T) {
 		{"Resources.DiskBytes", true, with(func(s *sandbox.Spec) { s.Resources.DiskBytes = 1 })},
 		{"Image", true, with(func(s *sandbox.Spec) { s.Image = "alpine" })},
 		{"Workdir", true, with(func(s *sandbox.Spec) { s.Workdir = "/w" })},
-		{"x", false, with(func(s *sandbox.Spec) { s.Provider = map[string]any{"x": 1} })},
+		{`option "x"`, false, with(func(s *sandbox.Spec) { s.Provider = map[string]any{"x": 1} })},
 	}
 	for _, tc := range cases {
 		sb, err := local.Unisolated().Create(context.Background(), tc.spec)

@@ -24,8 +24,8 @@ func (s *sb) Sync(ctx context.Context, src sandbox.Source) (sandbox.SyncResult, 
 		return sandbox.SyncResult{}, err
 	}
 	t, ok := src.(sandbox.Tar)
-	if !ok {
-		return sandbox.SyncResult{}, fmt.Errorf("sandbox: unsupported source %T", src)
+	if !ok || t.R == nil {
+		return sandbox.SyncResult{}, fmt.Errorf("sandbox: unsupported source %T or a Tar with no reader", src)
 	}
 	rel, err := tarsafe.CleanRel(t.Path)
 	if err != nil {
@@ -150,6 +150,11 @@ func (s *sb) Export(ctx context.Context, path string, dst sandbox.Destination) e
 		return fmt.Errorf("%w: %v", sandbox.ErrUnsafeArchive, ee)
 	case status.Code(err) == codes.NotFound:
 		return fmt.Errorf("sandbox: export: path %q does not exist in the workspace", path)
+	}
+	if _, isStatus := status.FromError(err); !isStatus && ctx.Err() == nil {
+		// Not from the stream: the destination failed, which is the
+		// caller's error and says nothing about the sandbox.
+		return fmt.Errorf("sandbox: export: %w", err)
 	}
 	return s.classify(ctx, "ExportTar", err)
 }

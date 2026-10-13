@@ -73,7 +73,9 @@ func (a *Agent) SyncTar(stream sandboxpb.Agent_SyncTarServer) error {
 	if _, err := io.Copy(io.Discard, pr); err != nil {
 		return err
 	}
-	a.rebuild()
+	if err := a.rebuild(); err != nil {
+		return status.Errorf(codes.FailedPrecondition, "the tar was extracted, but rebuilding the tool set failed: %v", err)
+	}
 	return stream.SendAndClose(&sandboxpb.SyncResponse{Files: int64(st.Files), Bytes: st.Bytes})
 }
 
