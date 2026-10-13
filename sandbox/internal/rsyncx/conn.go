@@ -64,10 +64,11 @@ type Conn struct {
 	closed atomic.Bool
 	once   sync.Once
 
-	rmu  sync.Mutex
-	rbuf []byte
-	eof  bool
-	done *sandboxpb.RsyncDone
+	rmu     sync.Mutex
+	rbuf    []byte
+	eof     bool
+	done    *sandboxpb.RsyncDone
+	failure error // the stream error or out-of-order frame a read met
 }
 
 // HostConn wraps the host's end: Close half-closes the send side, and a done
@@ -118,6 +119,7 @@ func (c *Conn) Read(p []byte) (int, error) {
 			return 0, io.EOF
 		}
 		if err != nil {
+			c.failure = err
 			return 0, err
 		}
 		switch fr := f.GetFrame().(type) {
@@ -125,11 +127,13 @@ func (c *Conn) Read(p []byte) (int, error) {
 			c.rbuf = fr.Data
 		case *sandboxpb.RsyncFrame_Done:
 			if !c.host {
-				return 0, &FrameError{Kind: "done"}
+				c.failure = &FrameError{Kind: "done"}
+				return 0, c.failure
 			}
 			c.done, c.eof = fr.Done, true
 		default:
-			return 0, &FrameError{Kind: FrameKind(f)}
+			c.failure = &FrameError{Kind: FrameKind(f)}
+			return 0, c.failure
 		}
 	}
 	n := copy(p, c.rbuf)
@@ -148,6 +152,14 @@ func (c *Conn) Close() error {
 		}
 	})
 	return err
+}
+
+// Failure is the stream error, or the *FrameError, a read met; nil when the
+// stream itself was sound.
+func (c *Conn) Failure() error {
+	c.rmu.Lock()
+	defer c.rmu.Unlock()
+	return c.failure
 }
 
 // Sent is the data bytes written to the stream.

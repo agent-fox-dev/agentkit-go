@@ -33,6 +33,7 @@ type Agent struct {
 	block     bool
 	exportTar []byte
 	exportErr error
+	rsync     func(sandboxpb.Agent_RsyncServer) error
 
 	counts    map[string]int
 	md        map[string]metadata.MD
@@ -110,6 +111,9 @@ func (f *Agent) SetTools(resp *sandboxpb.ToolsResponse, err error) {
 func (f *Agent) SetCall(resp *sandboxpb.CallResponse, err error, once bool) {
 	f.with(func() { f.callResp, f.callErr, f.callOnce = resp, err, once })
 }
+
+// SetRsync sets what Rsync does with its stream; nil answers Unimplemented.
+func (f *Agent) SetRsync(fn func(sandboxpb.Agent_RsyncServer) error) { f.with(func() { f.rsync = fn }) }
 
 // SetBlockCall makes Call block until its context is done.
 func (f *Agent) SetBlockCall(b bool) { f.with(func() { f.block = b }) }
@@ -217,6 +221,17 @@ func (f *Agent) Call(ctx context.Context, req *sandboxpb.CallRequest) (*sandboxp
 		return nil, ctx.Err()
 	}
 	return resp, err
+}
+
+func (f *Agent) Rsync(stream sandboxpb.Agent_RsyncServer) error {
+	f.record(stream.Context(), "Rsync")
+	f.mu.Lock()
+	fn := f.rsync
+	f.mu.Unlock()
+	if fn == nil {
+		return f.UnimplementedAgentServer.Rsync(stream)
+	}
+	return fn(stream)
 }
 
 func (f *Agent) SyncTar(stream sandboxpb.Agent_SyncTarServer) error {
