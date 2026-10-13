@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/localtest"
@@ -43,13 +44,26 @@ func writeLinks(t *testing.T, root string) {
 }
 
 // rawPlan opens a raw Rsync stream on sb, sends start and returns the plan.
+// On return it half-closes and reads until the agent ends the stream, so the
+// agent has released its one stream slot before the caller's next transfer:
+// returning earlier raced a following Sync into "another Rsync stream is
+// running".
 func rawPlan(t *testing.T, client sandboxpb.AgentClient, start *sandboxpb.RsyncStart) (*sandboxpb.RsyncPlan, error) {
 	t.Helper()
-	st, err := client.Rsync(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	st, err := client.Rsync(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = st.CloseSend() }()
+	defer func() {
+		_ = st.CloseSend()
+		for {
+			if _, err := st.Recv(); err != nil {
+				return
+			}
+		}
+	}()
 	if err := st.Send(&sandboxpb.RsyncFrame{Frame: &sandboxpb.RsyncFrame_Start{Start: start}}); err != nil {
 		t.Fatal(err)
 	}
