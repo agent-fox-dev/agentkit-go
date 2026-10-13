@@ -158,7 +158,7 @@
         "sandbox/internal/tarsafe/rules_test.go",
         "sandbox/internal/tarsafe/extract_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
