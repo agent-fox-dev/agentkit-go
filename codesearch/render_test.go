@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -385,7 +386,7 @@ func TestCapMarkerAndTruncatedByLines_TS03_28(t *testing.T) {
 	// Create 30 files matching the query.
 	for i := 0; i < 30; i++ {
 		mkFile(t, root, fmt.Sprintf("file%03d.go", i),
-			fmt.Sprintf("package pkg\n// commonword here\n"))
+			"package pkg\n// commonword here\n")
 	}
 
 	ws, err := tools.NewWorkspace(root)
@@ -731,8 +732,10 @@ func checkMarkersValid(t *testing.T, text string, _ interface{}, _ context.Conte
 			re := regexp.MustCompile(`max_files=(\d+)`)
 			m := re.FindStringSubmatch(line)
 			if len(m) > 1 {
-				var val int
-				fmt.Sscanf(m[1], "%d", &val)
+				val, err := strconv.Atoi(m[1])
+				if err != nil {
+					t.Fatalf("marker max_files=%s: %v", m[1], err)
+				}
 				if val > 25 {
 					t.Errorf("marker suggests max_files=%d which exceeds cap 25: %s", val, line)
 				}

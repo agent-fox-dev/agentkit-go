@@ -122,7 +122,7 @@ func Compute(ctx context.Context, root string, opts RuleOptions) (RuleSet, error
 				rs.Unreadable = append(rs.Unreadable, rel)
 				return nil
 			}
-			f.Close()
+			_ = f.Close()
 		}
 		return nil
 	})

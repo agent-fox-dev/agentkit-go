@@ -40,12 +40,12 @@ func writeFileAtomic(path string, data []byte) error {
 	cleanup := func() { _ = os.Remove(tmpName) }
 
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		cleanup()
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		cleanup()
 		return err
 	}

@@ -59,8 +59,10 @@ func TestOverlayShardMergeByScore_TS03_44(t *testing.T) {
 
 	// Now edit edited.go so it matches HOTWORD (with lower score than the
 	// 30 hot files).
-	os.WriteFile(filepath.Join(root, "edited.go"),
-		[]byte("package pkg\n// HOTWORD appears here\nfunc Edited() {}\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(root, "edited.go"),
+		[]byte("package pkg\n// HOTWORD appears here\nfunc Edited() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	idx.Invalidate("edited.go")
 
 	// Search with max_files=10. The edited file should appear even though
@@ -178,8 +180,10 @@ func TestRebuildThreshold_TS03_45(t *testing.T) {
 	// Invalidate 4 files (4% of 100).
 	for i := 0; i < 4; i++ {
 		rel := fmt.Sprintf("file%03d.go", i)
-		os.WriteFile(filepath.Join(root, rel),
-			[]byte(fmt.Sprintf("package pkg\n// updated%03d unique\nfunc F%03d() {}\n", i, i)), 0o644)
+		if err := os.WriteFile(filepath.Join(root, rel),
+			[]byte(fmt.Sprintf("package pkg\n// updated%03d unique\nfunc F%03d() {}\n", i, i)), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		idx.Invalidate(rel)
 	}
 
@@ -196,8 +200,10 @@ func TestRebuildThreshold_TS03_45(t *testing.T) {
 	// Invalidate 2 more files (now 6% of 100).
 	for i := 4; i < 6; i++ {
 		rel := fmt.Sprintf("file%03d.go", i)
-		os.WriteFile(filepath.Join(root, rel),
-			[]byte(fmt.Sprintf("package pkg\n// updated%03d unique\nfunc F%03d() {}\n", i, i)), 0o644)
+		if err := os.WriteFile(filepath.Join(root, rel),
+			[]byte(fmt.Sprintf("package pkg\n// updated%03d unique\nfunc F%03d() {}\n", i, i)), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		idx.Invalidate(rel)
 	}
 
@@ -267,8 +273,10 @@ func TestRebuildWaitAndAbort_TS03_46(t *testing.T) {
 	// Invalidate 6 files (6% of 100) to trigger a rebuild.
 	for i := 0; i < 6; i++ {
 		rel := fmt.Sprintf("file%03d.go", i)
-		os.WriteFile(filepath.Join(root, rel),
-			[]byte(fmt.Sprintf("package pkg\n// newword%03d unique\nfunc F%03d() {}\n", i, i)), 0o644)
+		if err := os.WriteFile(filepath.Join(root, rel),
+			[]byte(fmt.Sprintf("package pkg\n// newword%03d unique\nfunc F%03d() {}\n", i, i)), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		idx.Invalidate(rel)
 	}
 
@@ -425,7 +433,9 @@ func TestFreshnessPropertySequence_TS03_49(t *testing.T) {
 						}
 					}
 					content := fmt.Sprintf("package pkg\n// %s written\nfunc W%d() {}\n", token, tokenCounter)
-					os.WriteFile(filepath.Join(root, rel), []byte(content), 0o644)
+					if err := os.WriteFile(filepath.Join(root, rel), []byte(content), 0o644); err != nil {
+						t.Fatal(err)
+					}
 					model[rel] = content
 					idx.Invalidate(rel)
 
@@ -449,7 +459,9 @@ func TestFreshnessPropertySequence_TS03_49(t *testing.T) {
 						}
 					}
 					content := fmt.Sprintf("package pkg\n// %s edited\nfunc E%d() {}\n", token, tokenCounter)
-					os.WriteFile(filepath.Join(root, rel), []byte(content), 0o644)
+					if err := os.WriteFile(filepath.Join(root, rel), []byte(content), 0o644); err != nil {
+						t.Fatal(err)
+					}
 					model[rel] = content
 					idx.Invalidate(rel)
 
@@ -472,7 +484,9 @@ func TestFreshnessPropertySequence_TS03_49(t *testing.T) {
 						}
 					}
 					content := fmt.Sprintf("package pkg\n// %s shell\nfunc S%d() {}\n", token, tokenCounter)
-					os.WriteFile(filepath.Join(root, rel), []byte(content), 0o644)
+					if err := os.WriteFile(filepath.Join(root, rel), []byte(content), 0o644); err != nil {
+						t.Fatal(err)
+					}
 					model[rel] = content
 					idx.Invalidate("") // shell triggers revalidateAll
 
@@ -494,14 +508,18 @@ func TestFreshnessPropertySequence_TS03_49(t *testing.T) {
 							}
 						}
 					}
-					os.Remove(filepath.Join(root, rel))
+					if err := os.Remove(filepath.Join(root, rel)); err != nil {
+						t.Fatal(err)
+					}
 					delete(model, rel)
 					idx.Invalidate("") // shell triggers revalidateAll
 
 				case 4: // shell create
 					rel := fmt.Sprintf("new%d.go", tokenCounter)
 					content := fmt.Sprintf("package pkg\n// %s created\nfunc C%d() {}\n", token, tokenCounter)
-					os.WriteFile(filepath.Join(root, rel), []byte(content), 0o644)
+					if err := os.WriteFile(filepath.Join(root, rel), []byte(content), 0o644); err != nil {
+						t.Fatal(err)
+					}
 					model[rel] = content
 					idx.Invalidate("") // shell triggers revalidateAll
 				}

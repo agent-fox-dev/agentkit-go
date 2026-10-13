@@ -428,8 +428,10 @@ func TestSymbolsRevalidatesAndReoutlines_TS03_53(t *testing.T) {
 	}
 
 	// Edit a.go to add func Fresh.
-	os.WriteFile(filepath.Join(root, "a.go"),
-		[]byte("package pkg\n\nfunc Fresh() {}\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(root, "a.go"),
+		[]byte("package pkg\n\nfunc Fresh() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	idx.Invalidate("a.go")
 
 	// Symbols should find Fresh.
@@ -445,7 +447,9 @@ func TestSymbolsRevalidatesAndReoutlines_TS03_53(t *testing.T) {
 	}
 
 	// Rename x.go to y.go via filesystem (simulating execute).
-	os.Rename(filepath.Join(root, "x.go"), filepath.Join(root, "y.go"))
+	if err := os.Rename(filepath.Join(root, "x.go"), filepath.Join(root, "y.go")); err != nil {
+		t.Fatal(err)
+	}
 	idx.Invalidate("") // triggers revalidation
 
 	// Symbols should find InX under y.go, not x.go.
@@ -495,8 +499,10 @@ func TestSymbolsCancelledContext_TS03_54(t *testing.T) {
 	}
 
 	// Make a dirty file so Symbols has work to do.
-	os.WriteFile(filepath.Join(root, "a.go"),
-		[]byte("package pkg\n\nfunc B() {}\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(root, "a.go"),
+		[]byte("package pkg\n\nfunc B() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	idx.Invalidate("a.go")
 
 	// Cancelled context should return an error.

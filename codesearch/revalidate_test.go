@@ -76,7 +76,9 @@ func dirtyFiles(t *testing.T, r core.ToolResult) int {
 func TestRevalidationIsCancellable(t *testing.T) {
 	root, idx, search := revalFixture(t, 20, true)
 
-	os.Remove(filepath.Join(root, "f005.go"))
+	if err := os.Remove(filepath.Join(root, "f005.go")); err != nil {
+		t.Fatal(err)
+	}
 	idx.Invalidate("")
 
 	// The hook runs just before the walk; ending the context there is the
@@ -144,7 +146,7 @@ func TestRevalidationDoesNotOpenUnchangedFiles(t *testing.T) {
 	if err := os.Chmod(filepath.Join(root, "f007.go"), 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(filepath.Join(root, "f007.go"), 0o644) })
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(root, "f007.go"), 0o644) })
 
 	idx.Invalidate("")
 	r := search(context.Background(), "token007")
@@ -268,7 +270,7 @@ func TestVerifiedRacyFileIsNotReadAgain(t *testing.T) {
 	if err := os.Chmod(path, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(path, 0o644) })
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
 	idx.Invalidate("")
 	r := search("token007")
 	if !r.OK || !slices.Equal(getResultFilePaths(r), []string{"f007.go"}) {

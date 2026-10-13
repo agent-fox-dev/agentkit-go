@@ -197,7 +197,7 @@ func (c *client) requestOptions(m *core.Model, raw []byte) []option.RequestOptio
 				return resp, err
 			}
 			if herr := fn(resp, m); herr != nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				return nil, herr
 			}
 			return resp, nil

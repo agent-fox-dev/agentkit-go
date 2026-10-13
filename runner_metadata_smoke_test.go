@@ -257,7 +257,9 @@ func sseResponse(events ...string) string {
 		if err := json.Unmarshal([]byte(e), &obj); err == nil {
 			if t, ok := obj["type"]; ok {
 				var typ string
-				json.Unmarshal(t, &typ)
+				if err := json.Unmarshal(t, &typ); err != nil {
+					panic(fmt.Sprintf("sseResponse: event type in %s: %v", e, err))
+				}
 				fmt.Fprintf(&b, "event: %s\ndata: %s\n\n", typ, e)
 				continue
 			}

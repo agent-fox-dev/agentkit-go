@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	"go.starlark.net/starlark"
-	"go.starlark.net/syntax"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 )
@@ -41,7 +40,7 @@ func isIdentifier(name string) bool {
 		}
 	}
 	// A keyword parses as itself, not as an identifier.
-	_, err := syntax.ParseExpr("", name, 0)
+	_, err := fileOptions.ParseExpr("", name, 0)
 	return err == nil
 }
 

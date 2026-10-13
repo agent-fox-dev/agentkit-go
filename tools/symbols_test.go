@@ -96,11 +96,15 @@ func TestIndexedFileSetEqualsSearchFiles_TS02_32(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		target := filepath.Join(root, "main.go")
 		link := filepath.Join(root, "link_to_main.go")
-		os.Symlink(target, link)
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
 
 		targetDir := filepath.Join(root, "sub")
 		linkDir := filepath.Join(root, "link_to_sub")
-		os.Symlink(targetDir, linkDir)
+		if err := os.Symlink(targetDir, linkDir); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	// Get the set of files search_files would select (Walk with IncludeHidden=false,
@@ -663,13 +667,12 @@ func TestTableWalkUsesMemoizedIgnore_TS02_57(t *testing.T) {
 		t.Fatal("expected at least one walk call")
 	}
 
-	// Every walk should have received the memoized IgnoreOptions.
+	// Every walk should have received the configured, hermetic
+	// IgnoreOptions, not the zero value that reads the real environment.
 	for i, opt := range opts {
-		// The memoized IgnoreOptions should be the same object (cached).
-		if opt.Getenv == nil && igOpts.Getenv == nil {
-			// Both nil — that's fine, they match.
+		if opt.Getenv == nil || opt.GitConfig == nil || opt.Getenv("HOME") != "" || opt.GitConfig() != "" {
+			t.Errorf("walk %d did not receive the configured IgnoreOptions", i)
 		}
-		_ = i
 	}
 
 	// The ignore configuration should be loaded once (memoized).
@@ -733,11 +736,15 @@ func TestRevalidationReoutlinesChangedNewRacyDropsUnseen_TS02_44(t *testing.T) {
 
 	// Now make changes:
 	// 1. changed.go: change its content (different size).
-	os.WriteFile(filepath.Join(root, "changed.go"),
-		[]byte("package main\n\nfunc ChangedNew() {}\nfunc Extra() {}\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(root, "changed.go"),
+		[]byte("package main\n\nfunc ChangedNew() {}\nfunc Extra() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	// 2. deleted.go: remove it.
-	os.Remove(filepath.Join(root, "deleted.go"))
+	if err := os.Remove(filepath.Join(root, "deleted.go")); err != nil {
+		t.Fatal(err)
+	}
 
 	// 3. new.go: create a new file.
 	mkSymFile(t, root, "new.go", "package main\n\nfunc NewFunc() {}\n")
@@ -750,7 +757,9 @@ func TestRevalidationReoutlinesChangedNewRacyDropsUnseen_TS02_44(t *testing.T) {
 	if len(racyNew) != len(racyOld) {
 		t.Fatalf("racy content size mismatch: %d vs %d", len(racyNew), len(racyOld))
 	}
-	os.WriteFile(filepath.Join(root, "racy.go"), []byte(racyNew), 0o644)
+	if err := os.WriteFile(filepath.Join(root, "racy.go"), []byte(racyNew), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	// Set mtime to the same as the original to simulate a same-size edit
 	// within the racy window. The file was just written so its mtime is
 	// close to now, which is within 2s of the racy.go entry's indexedAt.

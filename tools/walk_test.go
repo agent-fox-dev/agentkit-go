@@ -167,7 +167,7 @@ func TestWalkMissingRootAndUnreadable_TS0151(t *testing.T) {
 	if err := os.Chmod(unreadable, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(unreadable, 0o755) })
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o755) })
 
 	var visited []string
 	err = walk(ctx, root, NoGlobalExcludes(), false, func(rel string, d fs.DirEntry) error {

@@ -670,17 +670,6 @@ func TestUnknownToolYieldsAnErrorResultNotACrash(t *testing.T) {
 
 var _ = fmt.Sprintf
 
-func assistantSaying(s string, tokens int64) core.Message {
-	m := core.AssistantMessage{
-		Content:    core.Content{core.TextBlock{Text: s}},
-		StopReason: core.StopReasonStop,
-	}
-	if tokens > 0 {
-		m.Usage.SetField(core.UsageInputTokens, tokens)
-	}
-	return m
-}
-
 // ------------------------------------------------------------------- 11-REQ-4
 
 // TS-11-15: Config.Prefix is sent ahead of the prompt on every request.
