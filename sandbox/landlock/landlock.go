@@ -17,6 +17,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"os/exec"
+	"runtime"
 	"syscall"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
@@ -66,6 +69,13 @@ type startReq struct {
 	bin       string
 	args, env []string
 	dir       string
+}
+
+// defaultSeams are the real platform, probe and helpers.
+func defaultSeams() seams {
+	return seams{goos: runtime.GOOS, probe: defaultProbe, runVersion: runVersion, executable: os.Executable, lookPath: exec.LookPath,
+		resolver: resolverDir, procs: defaultProcTable(), start: defaultStart, remove: removeTree,
+		initCommand: defaultInitCommand}
 }
 
 // provider is the landlock provider.
