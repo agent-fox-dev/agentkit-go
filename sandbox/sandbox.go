@@ -72,6 +72,10 @@ type AgentInfo struct {
 	OutlineBackend string
 	// Git reports whether git resolves on the tools' PATH.
 	Git bool
+	// Landlock is the Landlock ruleset the agent applied to itself, from
+	// Hello. An agent older than protocol 1.2 reports none: ABI 0 and the
+	// note "agent protocol 1.N does not report Landlock".
+	Landlock LandlockInfo
 }
 
 // ToolOptions configures the agent's tool set; see tools.Options.

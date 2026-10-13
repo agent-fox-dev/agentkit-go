@@ -107,5 +107,8 @@ func checkCovered(caps Capabilities, spec Spec) error {
 	if spec.Workdir != "" && !caps.Workdir {
 		return refuse("Workdir", fmt.Sprintf("%q", spec.Workdir), "it does not choose the workspace path")
 	}
+	if spec.RequireLandlock && !caps.Landlock {
+		return refuse("RequireLandlock", "true", "its agents cannot apply a Landlock ruleset")
+	}
 	return nil
 }

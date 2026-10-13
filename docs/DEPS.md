@@ -28,6 +28,7 @@ is not on it. An entry ending in `/` approves every module under that path.
 | `google.golang.org/grpc` | the sandbox agent protocol's transport |
 | `google.golang.org/protobuf` | the protobuf runtime of the generated sandbox protocol code |
 | `github.com/gokrazy/rsync` | the in-process rsync protocol for sandbox `LocalDir` transfers (sandbox module) |
+| `github.com/landlock-lsm/go-landlock` | the sandbox agent's own Landlock confinement (sandbox module) |
 
 Adding a direct dependency means adding it there, with its reason, and a
 ruling here. The same list covers the nested `sandbox` module, whose direct
@@ -274,13 +275,44 @@ host's binary through `rsyncx`):
 
 | Module | Why | Linked |
 |---|---|---|
-| `github.com/landlock-lsm/go-landlock` | `rsyncd` → `internal/restrict` | yes, never called (`DontRestrict`) |
+| `github.com/landlock-lsm/go-landlock` | `rsyncd` → `internal/restrict` (and, since spec 15, `confine` directly) | yes, never called by `rsyncd` (`DontRestrict`) |
 | `kernel.org/pub/linux/libs/security/libcap/psx` | go-landlock's syscalls | on Linux |
 | `github.com/mmcloughlin/md4` | the receiver's protocol-27 checksums | yes |
 | `github.com/google/renameio/v2` | the receiver's atomic writes | yes |
 | `github.com/google/shlex` | `rsyncclient` → `internal/maincmd` | yes |
 | `github.com/coreos/go-systemd` | `internal/maincmd` (socket activation) | on Linux |
 | `github.com/BurntSushi/toml` | `internal/rsyncdconfig` | yes |
+
+## `github.com/landlock-lsm/go-landlock`
+
+**Used by.** `sandbox/internal/confine` directly, in the nested `sandbox`
+module, and only from `//go:build linux` files; a `!linux` stub reports ABI
+0. Only `agentkit-sandboxd` imports `confine`, so the agent confines its own
+process before any other work and nothing the `local` provider runs inside an
+embedder can reach it. `rsyncd` imports it too (`internal/restrict`), and
+`rsyncx` always passes `DontRestrict()`, so that path never applies a ruleset.
+
+**Version.** `v0.0.0-20250303204525-1544bccde3a3`, the version gokrazy/rsync
+v0.3.8 already selected. Spec 15 promoted it to a direct requirement and
+moved no version: the sandbox module's `go list -m all` is unchanged
+(`TestLandlockPromoted_TS15_40`).
+
+**Why this module.** A ruleset must reach every thread of a Go process, and
+the runtime makes threads behind the program's back. go-landlock applies
+`no_new_privs` and the ruleset to all threads at once: through
+`syscall.AllThreadsSyscall` in a non-cgo build, and through psx, which wraps
+`pthread_create`, in a cgo build.
+
+**What is pulled in.** `kernel.org/pub/linux/libs/security/libcap/psx`
+(on Linux, for the all-thread calls) and `golang.org/x/sys`. Both stay
+indirect.
+
+**Why `BestEffort` is never used.** It downgrades to whatever the kernel
+offers and succeeds silently, without restricting anything, on a kernel
+without Landlock. The agent instead applies a configuration of exactly the
+ABI it chose (V2, V3 or V4), reports that choice in `Hello`, and an embedder
+can make too little a `Create` failure with `Spec.RequireLandlock`. An
+`internal/policy` test forbids any call of a method named `BestEffort`.
 
 ## Rejected
 
@@ -292,6 +324,7 @@ name code that has since been deleted; they are kept as the record.
 
 | Area | Candidate | Why not |
 |---|---|---|
+| Sandbox agent confinement | raw Landlock syscalls through `golang.org/x/sys/unix` | The syscalls are simple; reaching every thread is not. A per-thread `landlock_restrict_self` leaves the runtime's other threads unconfined, and doing it right means re-implementing go-landlock's all-thread plumbing (psx under cgo, `AllThreadsSyscall` without). |
 | Sandbox `LocalDir` transfer | an external `rsync` binary | It must be installed on both sides, at compatible versions; it runs as a subprocess outside the agent protocol, so a gateway cannot relay it as a stream; and the agent would hand the embedder's environment to another program. |
 | Provider argument salvage | JSON-repair libraries | They close a truncated string; salvage drops the incomplete member, so `{"path":"/etc/pas` never becomes a valid call. |
 | Provider transport retry | `cenkalti/backoff`, `go-retryablehttp` | The code was the header policy, not the curve; savings under 60 lines. (The transport is now the SDK's.) |

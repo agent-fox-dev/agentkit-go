@@ -72,7 +72,7 @@ func TestHostAPI_TS13_8(t *testing.T) {
 			}
 		}
 	}
-	if sandbox.ProtocolMajor != 1 || sandbox.ProtocolMinor != 1 || sandbox.MaxMessageBytes != 16<<20 {
+	if sandbox.ProtocolMajor != 1 || sandbox.ProtocolMinor != 2 || sandbox.MaxMessageBytes != 16<<20 {
 		t.Errorf("protocol %d.%d, max %d", sandbox.ProtocolMajor, sandbox.ProtocolMinor, sandbox.MaxMessageBytes)
 	}
 }

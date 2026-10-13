@@ -31,12 +31,17 @@ var (
 // Workspace is the containment boundary for the built-in FILE tools
 // (REQ-SEC-01).
 //
-// It does NOT constrain `execute`. That is not an oversight, and it is stated
-// here rather than left to be discovered: a shell command can read and write
-// anything the process can, and pretending otherwise would be worse than
-// admitting it. The boundary for `execute` is the BeforeToolCall interceptor
-// (REQ-SEC-03). See TestExecuteIsNotPathContained, whose name is the
-// documentation.
+// On a host it does NOT constrain `execute`. That is not an oversight, and
+// it is stated here rather than left to be discovered: a shell command can
+// read and write anything the process can, and pretending otherwise would be
+// worse than admitting it. The boundary for `execute` is the BeforeToolCall
+// interceptor (REQ-SEC-03). See TestExecuteIsNotPathContained, whose name is
+// the documentation.
+//
+// Inside a sandbox whose agent reports a Landlock ABI
+// (sandbox.AgentInfo.Landlock), the agent's kernel ruleset confines
+// `execute`, and every process it starts, to the ruleset's writable roots.
+// Under the local provider, or on a kernel without Landlock, it does not.
 type Workspace struct {
 	// Root is the absolute, symlink-resolved workspace root.
 	Root string

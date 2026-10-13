@@ -232,7 +232,7 @@ output cap (`catalog.DefaultMaxTokens`), adaptive thinking and no price.
 
 | Field | Default |
 |---|---|
-| `Workspace` | `tools.NewWorkspace("")`, the current directory. File tools cannot leave it. |
+| `Workspace` | `tools.NewWorkspace("")`, the current directory. File tools cannot leave it. On a host `execute` can; inside a sandbox whose agent reports a Landlock ABI (`AgentInfo.Landlock`), the agent's kernel ruleset confines `execute` and every process it starts to the writable roots. Under `local`, or on a kernel without Landlock, it does not. |
 | `SpillDir` | A per-workspace directory under `os.TempDir()`. Spill files are the embedder's to clean. |
 | `DisableSpill` | false. |
 | `Env` | `tools.ReducedEnv(nil)`. |
@@ -392,6 +392,7 @@ provider silently widens a policy.
 | `TTL` | The sandbox's lifetime; at the TTL it becomes unavailable and is destroyed. Negative is refused. | 1 hour |
 | `Labels map[string]string` | Tags for the provider. The key `agentkit.sandbox` is reserved. | none |
 | `Provider map[string]any` | Provider-specific options. A key the provider does not define is refused, naming it. | none |
+| `RequireLandlock` | Make `Create` fail unless the agent confines itself with Landlock enough for the network mode: `CheckSpec` refuses it when `Capabilities.Landlock` is false, and after `Hello` the agent's report must satisfy `LandlockInfo.Satisfies(Network.Mode)`. Either refusal is a `*SpecError` with `Field` `RequireLandlock`; the second destroys the sandbox first. | false |
 
 The context passed to `Create` bounds creation only, not the sandbox's
 lifetime.
@@ -408,6 +409,76 @@ lifetime.
 | `TTL` | yes |
 | `Labels` | yes (recorded in the marker) |
 | `Provider` | no keys defined; any key is refused |
+| `RequireLandlock` | refused (`Capabilities.Landlock` is false: its agent runs in the embedder's process, which nothing may confine) |
+
+### Landlock: `RequireLandlock`, `Capabilities.Landlock`, `AgentInfo.Landlock`
+
+`Capabilities.Landlock` says the provider starts `agentkit-sandboxd` in a
+way that lets it apply its Landlock ruleset; `local` reports false.
+`Sandbox.Agent().Landlock` is the `sandbox.LandlockInfo` the agent reported
+in `Hello` (protocol 1.2 and later):
+
+| Field | Meaning |
+|---|---|
+| `ABI int` | The ABI of the ruleset applied; 0 means none. |
+| `KernelABI int` | The ABI the kernel offered, uncapped; 0 means none or unknown. |
+| `TCP bool` | TCP bind and connect are denied. |
+| `Note string` | Why nothing, or only part, was applied. |
+| `Writable []string` | The resolved writable roots, then the device files, in rule order. |
+| `ReadOnly []string` | The resolved read roots, ending with `/proc`, in rule order. |
+
+`LandlockInfo.Satisfies(mode)` is true when `ABI >= sandbox.LandlockMinABI`
+(2) and, under `NetworkNone`, `TCP` too; `sandbox.LandlockTCPABI` (4) is the
+ABI that restricts TCP. An agent older than protocol 1.2 reports ABI 0 with
+the note `agent protocol 1.N does not report Landlock`, and `local`'s
+in-process agent reports ABI 0 with the note
+`in-process agent (local provider): no confinement`.
+
+`sandbox.AgentArgs(spec)` returns the agent's flags for an effective spec:
+`--ttl`, `--network` and, when `Workdir` is set, `--workdir`. Providers start
+the agent with it.
+
+### The agent's Landlock ruleset
+
+On Linux, `agentkit-sandboxd` probes the kernel's Landlock ABI once and
+applies a ruleset of exactly the version it chose, never a best-effort one,
+to its whole process before any other work; `no_new_privs` is set on every
+thread as part of it. The ruleset grants exactly:
+
+| Access | Paths |
+|---|---|
+| Every right the applied ABI defines (execute, refer from ABI 2, truncate from ABI 3) | the workspace (`--workdir`), `HOME`, the temporary directory (`TMPDIR`, else `TEMP`, `TMP`, `/tmp`, from the agent's environment), each `--landlock-rw` |
+| Read and execute | `/usr`, `/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64`, `/libx32`, `/etc`, `/opt`, each `--landlock-ro` |
+| Read | `/proc` |
+| Read and write (and truncate from ABI 3) | `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom` |
+| TCP bind and connect | denied, loopback included, under `--network none` at ABI 4; not handled under `allowlist` or `unrestricted` |
+
+Every root is resolved through symlinks and duplicates collapse. A missing
+system or device path is skipped silently; a missing `--landlock-ro` or
+`--landlock-rw` is skipped with a note. `HOME` or the temporary directory is
+skipped, with a note naming the variable and why, when it is unset,
+relative, missing, `/`, or equal to or an ancestor of a system directory. A
+`--workdir` or `--landlock-rw` that is `/` or contains a system directory
+(a relative `--workdir` is judged by the absolute directory it names), and
+a relative `--landlock-ro` or `--landlock-rw`, are usage errors (exit 2).
+With a ruleset applied, a `ToolOptions.SpillDir` outside the writable
+directory roots is refused at `Tools` with `InvalidArgument`; the default
+spill directory always qualifies.
+
+What the agent applies for each kernel (`Plan`):
+
+| Kernel ABI | Applied ABI | `TCP` | `Note` |
+|---|---|---|---|
+| probe error | 0 | false | `Landlock unavailable: <error>` |
+| 0 | 0 | false | `kernel reports no Landlock support` |
+| 1 | 0 | false | `kernel Landlock ABI 1 cannot permit cross-directory renames (needs ABI 2, Linux 5.19); not applied` |
+| 2 or 3 | the kernel's | false | under `none`: `kernel Landlock ABI k cannot restrict TCP (needs ABI 4, Linux 6.7)` |
+| 4 or later | 4 | true only under `none` | empty |
+
+Under `allowlist`, at any applied ABI above 0, the note says that Landlock
+cannot express a host allowlist and that TCP is left to the provider. A
+probe failure is not fatal; a ruleset that cannot be built or applied after
+a good probe ends the agent with exit status 1.
 
 ### `sandbox.ToolOptions`
 
@@ -511,7 +582,10 @@ embedder's process with its privileges. Each sandbox is
 the creating pid, the labels, the creation time and the TTL. The tools'
 environment is `Spec.Env`, plus the host's `PATH`, `LANG` and `TERM` where
 `Spec.Env` lacks them, plus `HOME` and `TMPDIR` pointing at the private
-directories. `Close` removes the directory; `Reap` removes directories whose
+directories. Nothing is confined: `Capabilities().Landlock` is false, the
+agent reports ABI 0 with the note
+`in-process agent (local provider): no confinement`, and `RequireLandlock`
+is refused before any directory is made. `Close` removes the directory; `Reap` removes directories whose
 marker names a process that is no longer running (on Unix; elsewhere it
 removes nothing).
 

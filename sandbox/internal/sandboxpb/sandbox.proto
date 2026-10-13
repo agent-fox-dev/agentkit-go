@@ -43,6 +43,22 @@ message HelloResponse {
   string workdir = 4;
   string outline_backend = 5;
   bool git = 6;
+  // landlock is the Landlock ruleset the agent applied to its own process;
+  // protocol 1.2 added it.
+  LandlockReport landlock = 7;
+}
+
+// LandlockReport is what the agent's Landlock confinement applied: the ABI
+// of the ruleset (0 when none), the ABI the kernel offered, whether TCP bind
+// and connect are denied, why nothing or only part was applied, and the
+// resolved roots of the ruleset.
+message LandlockReport {
+  uint32 abi = 1;
+  uint32 kernel_abi = 2;
+  bool tcp = 3;
+  string note = 4;
+  repeated string writable = 5;
+  repeated string read_only = 6;
 }
 
 message ToolsRequest {

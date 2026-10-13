@@ -131,7 +131,11 @@ in the sandbox; a broken connection makes every later call return
 over the rsync protocol: never an escaping symlink, never `.git` on export,
 and never the destination's ignored files, `.git` or escaping symlinks
 touched. `sandbox.Tar` and `sandbox.TarOut` move a tar stream instead, every
-entry checked before it is written. [`examples/sandbox`](examples/sandbox) runs a
+entry checked before it is written. On Linux the agent also confines itself
+with a Landlock ruleset before any other work, reported in
+`Sandbox.Agent().Landlock`, and `Spec.RequireLandlock` makes a missing or
+too-weak ruleset a `Create` failure (`local` never confines and refuses it).
+[`examples/sandbox`](examples/sandbox) runs a
 code-mode script over proxy tools offline; [`docs/cli.md`](docs/cli.md)
 covers the agent command.
 

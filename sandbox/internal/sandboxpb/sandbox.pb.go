@@ -79,7 +79,7 @@ func (x RsyncStart_Direction) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use RsyncStart_Direction.Descriptor instead.
 func (RsyncStart_Direction) EnumDescriptor() ([]byte, []int) {
-	return file_sandbox_proto_rawDescGZIP(), []int{11, 0}
+	return file_sandbox_proto_rawDescGZIP(), []int{12, 0}
 }
 
 type HelloRequest struct {
@@ -126,8 +126,11 @@ type HelloResponse struct {
 	Workdir        string                 `protobuf:"bytes,4,opt,name=workdir,proto3" json:"workdir,omitempty"`
 	OutlineBackend string                 `protobuf:"bytes,5,opt,name=outline_backend,json=outlineBackend,proto3" json:"outline_backend,omitempty"`
 	Git            bool                   `protobuf:"varint,6,opt,name=git,proto3" json:"git,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// landlock is the Landlock ruleset the agent applied to its own process;
+	// protocol 1.2 added it.
+	Landlock      *LandlockReport `protobuf:"bytes,7,opt,name=landlock,proto3" json:"landlock,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *HelloResponse) Reset() {
@@ -202,6 +205,101 @@ func (x *HelloResponse) GetGit() bool {
 	return false
 }
 
+func (x *HelloResponse) GetLandlock() *LandlockReport {
+	if x != nil {
+		return x.Landlock
+	}
+	return nil
+}
+
+// LandlockReport is what the agent's Landlock confinement applied: the ABI
+// of the ruleset (0 when none), the ABI the kernel offered, whether TCP bind
+// and connect are denied, why nothing or only part was applied, and the
+// resolved roots of the ruleset.
+type LandlockReport struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Abi           uint32                 `protobuf:"varint,1,opt,name=abi,proto3" json:"abi,omitempty"`
+	KernelAbi     uint32                 `protobuf:"varint,2,opt,name=kernel_abi,json=kernelAbi,proto3" json:"kernel_abi,omitempty"`
+	Tcp           bool                   `protobuf:"varint,3,opt,name=tcp,proto3" json:"tcp,omitempty"`
+	Note          string                 `protobuf:"bytes,4,opt,name=note,proto3" json:"note,omitempty"`
+	Writable      []string               `protobuf:"bytes,5,rep,name=writable,proto3" json:"writable,omitempty"`
+	ReadOnly      []string               `protobuf:"bytes,6,rep,name=read_only,json=readOnly,proto3" json:"read_only,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LandlockReport) Reset() {
+	*x = LandlockReport{}
+	mi := &file_sandbox_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LandlockReport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LandlockReport) ProtoMessage() {}
+
+func (x *LandlockReport) ProtoReflect() protoreflect.Message {
+	mi := &file_sandbox_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LandlockReport.ProtoReflect.Descriptor instead.
+func (*LandlockReport) Descriptor() ([]byte, []int) {
+	return file_sandbox_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *LandlockReport) GetAbi() uint32 {
+	if x != nil {
+		return x.Abi
+	}
+	return 0
+}
+
+func (x *LandlockReport) GetKernelAbi() uint32 {
+	if x != nil {
+		return x.KernelAbi
+	}
+	return 0
+}
+
+func (x *LandlockReport) GetTcp() bool {
+	if x != nil {
+		return x.Tcp
+	}
+	return false
+}
+
+func (x *LandlockReport) GetNote() string {
+	if x != nil {
+		return x.Note
+	}
+	return ""
+}
+
+func (x *LandlockReport) GetWritable() []string {
+	if x != nil {
+		return x.Writable
+	}
+	return nil
+}
+
+func (x *LandlockReport) GetReadOnly() []string {
+	if x != nil {
+		return x.ReadOnly
+	}
+	return nil
+}
+
 type ToolsRequest struct {
 	state                   protoimpl.MessageState `protogen:"open.v1"`
 	SymbolsMaxFiles         int64                  `protobuf:"varint,1,opt,name=symbols_max_files,json=symbolsMaxFiles,proto3" json:"symbols_max_files,omitempty"`
@@ -214,7 +312,7 @@ type ToolsRequest struct {
 
 func (x *ToolsRequest) Reset() {
 	*x = ToolsRequest{}
-	mi := &file_sandbox_proto_msgTypes[2]
+	mi := &file_sandbox_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -226,7 +324,7 @@ func (x *ToolsRequest) String() string {
 func (*ToolsRequest) ProtoMessage() {}
 
 func (x *ToolsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sandbox_proto_msgTypes[2]
+	mi := &file_sandbox_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -239,7 +337,7 @@ func (x *ToolsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolsRequest.ProtoReflect.Descriptor instead.
 func (*ToolsRequest) Descriptor() ([]byte, []int) {
-	return file_sandbox_proto_rawDescGZIP(), []int{2}
+	return file_sandbox_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ToolsRequest) GetSymbolsMaxFiles() int64 {
@@ -280,7 +378,7 @@ type ToolInfo struct {
 
 func (x *ToolInfo) Reset() {
 	*x = ToolInfo{}
-	mi := &file_sandbox_proto_msgTypes[3]
+	mi := &file_sandbox_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -292,7 +390,7 @@ func (x *ToolInfo) String() string {
 func (*ToolInfo) ProtoMessage() {}
 
 func (x *ToolInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_sandbox_proto_msgTypes[3]
+	mi := &file_sandbox_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -305,7 +403,7 @@ func (x *ToolInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolInfo.ProtoReflect.Descriptor instead.
 func (*ToolInfo) Descriptor() ([]byte, []int) {
-	return file_sandbox_proto_rawDescGZIP(), []int{3}
+	return file_sandbox_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ToolInfo) GetName() string {
@@ -331,7 +429,7 @@ type ToolsResponse struct {
 
 func (x *ToolsResponse) Reset() {
 	*x = ToolsResponse{}
-	mi := &file_sandbox_proto_msgTypes[4]
+	mi := &file_sandbox_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -343,7 +441,7 @@ func (x *ToolsResponse) String() string {
 func (*ToolsResponse) ProtoMessage() {}
 
 func (x *ToolsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sandbox_proto_msgTypes[4]
+	mi := &file_sandbox_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -356,7 +454,7 @@ func (x *ToolsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolsResponse.ProtoReflect.Descriptor instead.
 func (*ToolsResponse) Descriptor() ([]byte, []int) {
-	return file_sandbox_proto_rawDescGZIP(), []int{4}
+	return file_sandbox_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ToolsResponse) GetTools() []*ToolInfo {
@@ -376,7 +474,7 @@ type CallRequest struct {
 
 func (x *CallRequest) Reset() {
 	*x = CallRequest{}
-	mi := &file_sandbox_proto_msgTypes[5]
+	mi := &file_sandbox_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -388,7 +486,7 @@ func (x *CallRequest) String() string {
 func (*CallRequest) ProtoMessage() {}
 
 func (x *CallRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sandbox_proto_msgTypes[5]
+	mi := &file_sandbox_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -401,7 +499,7 @@ func (x *CallRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CallRequest.ProtoReflect.Descriptor instead.
 func (*CallRequest) Descriptor() ([]byte, []int) {
-	return file_sandbox_proto_rawDescGZIP(), []int{5}
+	return file_sandbox_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CallRequest) GetName() string {
@@ -432,7 +530,7 @@ type CallResponse struct {
 
 func (x *CallResponse) Reset() {
 	*x = CallResponse{}
-	mi := &file_sandbox_proto_msgTypes[6]
+	mi := &file_sandbox_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -444,7 +542,7 @@ func (x *CallResponse) String() string {
 func (*CallResponse) ProtoMessage() {}
 
 func (x *CallResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sandbox_proto_msgTypes[6]
+	mi := &file_sandbox_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -457,7 +555,7 @@ func (x *CallResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CallResponse.ProtoReflect.Descriptor instead.
 func (*CallResponse) Descriptor() ([]byte, []int) {
-	return file_sandbox_proto_rawDescGZIP(), []int{6}
+	return file_sandbox_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *CallResponse) GetOk() bool {
@@ -512,7 +610,7 @@ type TarStart struct {
 
 func (x *TarStart) Reset() {
 	*x = TarStart{}
-	mi := &file_sandbox_proto_msgTypes[7]
+	mi := &file_sandbox_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -524,7 +622,7 @@ func (x *TarStart) String() string {
 func (*TarStart) ProtoMessage() {}
 
 func (x *TarStart) ProtoReflect() protoreflect.Message {
-	mi := &file_sandbox_proto_msgTypes[7]
+	mi := &file_sandbox_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -537,7 +635,7 @@ func (x *TarStart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TarStart.ProtoReflect.Descriptor instead.
 func (*TarStart) Descriptor() ([]byte, []int) {
-	return file_sandbox_proto_rawDescGZIP(), []int{7}
+	return file_sandbox_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *TarStart) GetPath() string {
@@ -567,7 +665,7 @@ type TarChunk struct {
 
 func (x *TarChunk) Reset() {
 	*x = TarChunk{}
-	mi := &file_sandbox_proto_msgTypes[8]
+	mi := &file_sandbox_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -579,7 +677,7 @@ func (x *TarChunk) String() string {
 func (*TarChunk) ProtoMessage() {}
 
 func (x *TarChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_sandbox_proto_msgTypes[8]
+	mi := &file_sandbox_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -592,7 +690,7 @@ func (x *TarChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TarChunk.ProtoReflect.Descriptor instead.
 func (*TarChunk) Descriptor() ([]byte, []int) {
-	return file_sandbox_proto_rawDescGZIP(), []int{8}
+	return file_sandbox_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *TarChunk) GetBody() isTarChunk_Body {
@@ -646,7 +744,7 @@ type SyncResponse struct {
 
 func (x *SyncResponse) Reset() {
 	*x = SyncResponse{}
-	mi := &file_sandbox_proto_msgTypes[9]
+	mi := &file_sandbox_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -658,7 +756,7 @@ func (x *SyncResponse) String() string {
 func (*SyncResponse) ProtoMessage() {}
 
 func (x *SyncResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sandbox_proto_msgTypes[9]
+	mi := &file_sandbox_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -671,7 +769,7 @@ func (x *SyncResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncResponse.ProtoReflect.Descriptor instead.
 func (*SyncResponse) Descriptor() ([]byte, []int) {
-	return file_sandbox_proto_rawDescGZIP(), []int{9}
+	return file_sandbox_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *SyncResponse) GetFiles() int64 {
@@ -697,7 +795,7 @@ type ExportRequest struct {
 
 func (x *ExportRequest) Reset() {
 	*x = ExportRequest{}
-	mi := &file_sandbox_proto_msgTypes[10]
+	mi := &file_sandbox_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -709,7 +807,7 @@ func (x *ExportRequest) String() string {
 func (*ExportRequest) ProtoMessage() {}
 
 func (x *ExportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sandbox_proto_msgTypes[10]
+	mi := &file_sandbox_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -722,7 +820,7 @@ func (x *ExportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExportRequest.ProtoReflect.Descriptor instead.
 func (*ExportRequest) Descriptor() ([]byte, []int) {
-	return file_sandbox_proto_rawDescGZIP(), []int{10}
+	return file_sandbox_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ExportRequest) GetPath() string {
@@ -745,7 +843,7 @@ type RsyncStart struct {
 
 func (x *RsyncStart) Reset() {
 	*x = RsyncStart{}
-	mi := &file_sandbox_proto_msgTypes[11]
+	mi := &file_sandbox_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -757,7 +855,7 @@ func (x *RsyncStart) String() string {
 func (*RsyncStart) ProtoMessage() {}
 
 func (x *RsyncStart) ProtoReflect() protoreflect.Message {
-	mi := &file_sandbox_proto_msgTypes[11]
+	mi := &file_sandbox_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -770,7 +868,7 @@ func (x *RsyncStart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RsyncStart.ProtoReflect.Descriptor instead.
 func (*RsyncStart) Descriptor() ([]byte, []int) {
-	return file_sandbox_proto_rawDescGZIP(), []int{11}
+	return file_sandbox_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *RsyncStart) GetDirection() RsyncStart_Direction {
@@ -818,7 +916,7 @@ type RsyncPlan struct {
 
 func (x *RsyncPlan) Reset() {
 	*x = RsyncPlan{}
-	mi := &file_sandbox_proto_msgTypes[12]
+	mi := &file_sandbox_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -830,7 +928,7 @@ func (x *RsyncPlan) String() string {
 func (*RsyncPlan) ProtoMessage() {}
 
 func (x *RsyncPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_sandbox_proto_msgTypes[12]
+	mi := &file_sandbox_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -843,7 +941,7 @@ func (x *RsyncPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RsyncPlan.ProtoReflect.Descriptor instead.
 func (*RsyncPlan) Descriptor() ([]byte, []int) {
-	return file_sandbox_proto_rawDescGZIP(), []int{12}
+	return file_sandbox_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *RsyncPlan) GetRules() []string {
@@ -876,7 +974,7 @@ type RsyncArgs struct {
 
 func (x *RsyncArgs) Reset() {
 	*x = RsyncArgs{}
-	mi := &file_sandbox_proto_msgTypes[13]
+	mi := &file_sandbox_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -888,7 +986,7 @@ func (x *RsyncArgs) String() string {
 func (*RsyncArgs) ProtoMessage() {}
 
 func (x *RsyncArgs) ProtoReflect() protoreflect.Message {
-	mi := &file_sandbox_proto_msgTypes[13]
+	mi := &file_sandbox_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -901,7 +999,7 @@ func (x *RsyncArgs) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RsyncArgs.ProtoReflect.Descriptor instead.
 func (*RsyncArgs) Descriptor() ([]byte, []int) {
-	return file_sandbox_proto_rawDescGZIP(), []int{13}
+	return file_sandbox_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RsyncArgs) GetArgs() []string {
@@ -939,7 +1037,7 @@ type RsyncDone struct {
 
 func (x *RsyncDone) Reset() {
 	*x = RsyncDone{}
-	mi := &file_sandbox_proto_msgTypes[14]
+	mi := &file_sandbox_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -951,7 +1049,7 @@ func (x *RsyncDone) String() string {
 func (*RsyncDone) ProtoMessage() {}
 
 func (x *RsyncDone) ProtoReflect() protoreflect.Message {
-	mi := &file_sandbox_proto_msgTypes[14]
+	mi := &file_sandbox_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -964,7 +1062,7 @@ func (x *RsyncDone) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RsyncDone.ProtoReflect.Descriptor instead.
 func (*RsyncDone) Descriptor() ([]byte, []int) {
-	return file_sandbox_proto_rawDescGZIP(), []int{14}
+	return file_sandbox_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *RsyncDone) GetFiles() int64 {
@@ -1011,7 +1109,7 @@ type RsyncFrame struct {
 
 func (x *RsyncFrame) Reset() {
 	*x = RsyncFrame{}
-	mi := &file_sandbox_proto_msgTypes[15]
+	mi := &file_sandbox_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1023,7 +1121,7 @@ func (x *RsyncFrame) String() string {
 func (*RsyncFrame) ProtoMessage() {}
 
 func (x *RsyncFrame) ProtoReflect() protoreflect.Message {
-	mi := &file_sandbox_proto_msgTypes[15]
+	mi := &file_sandbox_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1036,7 +1134,7 @@ func (x *RsyncFrame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RsyncFrame.ProtoReflect.Descriptor instead.
 func (*RsyncFrame) Descriptor() ([]byte, []int) {
-	return file_sandbox_proto_rawDescGZIP(), []int{15}
+	return file_sandbox_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *RsyncFrame) GetFrame() isRsyncFrame_Frame {
@@ -1130,14 +1228,23 @@ var File_sandbox_proto protoreflect.FileDescriptor
 const file_sandbox_proto_rawDesc = "" +
 	"\n" +
 	"\rsandbox.proto\x12\x13agentkit.sandbox.v1\"\x0e\n" +
-	"\fHelloRequest\"\xcc\x01\n" +
+	"\fHelloRequest\"\x8d\x02\n" +
 	"\rHelloResponse\x12%\n" +
 	"\x0eprotocol_major\x18\x01 \x01(\rR\rprotocolMajor\x12%\n" +
 	"\x0eprotocol_minor\x18\x02 \x01(\rR\rprotocolMinor\x12\x18\n" +
 	"\aversion\x18\x03 \x01(\tR\aversion\x12\x18\n" +
 	"\aworkdir\x18\x04 \x01(\tR\aworkdir\x12'\n" +
 	"\x0foutline_backend\x18\x05 \x01(\tR\x0eoutlineBackend\x12\x10\n" +
-	"\x03git\x18\x06 \x01(\bR\x03git\"\xb9\x01\n" +
+	"\x03git\x18\x06 \x01(\bR\x03git\x12?\n" +
+	"\blandlock\x18\a \x01(\v2#.agentkit.sandbox.v1.LandlockReportR\blandlock\"\xa0\x01\n" +
+	"\x0eLandlockReport\x12\x10\n" +
+	"\x03abi\x18\x01 \x01(\rR\x03abi\x12\x1d\n" +
+	"\n" +
+	"kernel_abi\x18\x02 \x01(\rR\tkernelAbi\x12\x10\n" +
+	"\x03tcp\x18\x03 \x01(\bR\x03tcp\x12\x12\n" +
+	"\x04note\x18\x04 \x01(\tR\x04note\x12\x1a\n" +
+	"\bwritable\x18\x05 \x03(\tR\bwritable\x12\x1b\n" +
+	"\tread_only\x18\x06 \x03(\tR\breadOnly\"\xb9\x01\n" +
 	"\fToolsRequest\x12*\n" +
 	"\x11symbols_max_files\x18\x01 \x01(\x03R\x0fsymbolsMaxFiles\x12;\n" +
 	"\x1asymbols_max_duration_nanos\x18\x02 \x01(\x03R\x17symbolsMaxDurationNanos\x12\x1b\n" +
@@ -1224,51 +1331,53 @@ func file_sandbox_proto_rawDescGZIP() []byte {
 }
 
 var file_sandbox_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_sandbox_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_sandbox_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_sandbox_proto_goTypes = []any{
 	(RsyncStart_Direction)(0), // 0: agentkit.sandbox.v1.RsyncStart.Direction
 	(*HelloRequest)(nil),      // 1: agentkit.sandbox.v1.HelloRequest
 	(*HelloResponse)(nil),     // 2: agentkit.sandbox.v1.HelloResponse
-	(*ToolsRequest)(nil),      // 3: agentkit.sandbox.v1.ToolsRequest
-	(*ToolInfo)(nil),          // 4: agentkit.sandbox.v1.ToolInfo
-	(*ToolsResponse)(nil),     // 5: agentkit.sandbox.v1.ToolsResponse
-	(*CallRequest)(nil),       // 6: agentkit.sandbox.v1.CallRequest
-	(*CallResponse)(nil),      // 7: agentkit.sandbox.v1.CallResponse
-	(*TarStart)(nil),          // 8: agentkit.sandbox.v1.TarStart
-	(*TarChunk)(nil),          // 9: agentkit.sandbox.v1.TarChunk
-	(*SyncResponse)(nil),      // 10: agentkit.sandbox.v1.SyncResponse
-	(*ExportRequest)(nil),     // 11: agentkit.sandbox.v1.ExportRequest
-	(*RsyncStart)(nil),        // 12: agentkit.sandbox.v1.RsyncStart
-	(*RsyncPlan)(nil),         // 13: agentkit.sandbox.v1.RsyncPlan
-	(*RsyncArgs)(nil),         // 14: agentkit.sandbox.v1.RsyncArgs
-	(*RsyncDone)(nil),         // 15: agentkit.sandbox.v1.RsyncDone
-	(*RsyncFrame)(nil),        // 16: agentkit.sandbox.v1.RsyncFrame
+	(*LandlockReport)(nil),    // 3: agentkit.sandbox.v1.LandlockReport
+	(*ToolsRequest)(nil),      // 4: agentkit.sandbox.v1.ToolsRequest
+	(*ToolInfo)(nil),          // 5: agentkit.sandbox.v1.ToolInfo
+	(*ToolsResponse)(nil),     // 6: agentkit.sandbox.v1.ToolsResponse
+	(*CallRequest)(nil),       // 7: agentkit.sandbox.v1.CallRequest
+	(*CallResponse)(nil),      // 8: agentkit.sandbox.v1.CallResponse
+	(*TarStart)(nil),          // 9: agentkit.sandbox.v1.TarStart
+	(*TarChunk)(nil),          // 10: agentkit.sandbox.v1.TarChunk
+	(*SyncResponse)(nil),      // 11: agentkit.sandbox.v1.SyncResponse
+	(*ExportRequest)(nil),     // 12: agentkit.sandbox.v1.ExportRequest
+	(*RsyncStart)(nil),        // 13: agentkit.sandbox.v1.RsyncStart
+	(*RsyncPlan)(nil),         // 14: agentkit.sandbox.v1.RsyncPlan
+	(*RsyncArgs)(nil),         // 15: agentkit.sandbox.v1.RsyncArgs
+	(*RsyncDone)(nil),         // 16: agentkit.sandbox.v1.RsyncDone
+	(*RsyncFrame)(nil),        // 17: agentkit.sandbox.v1.RsyncFrame
 }
 var file_sandbox_proto_depIdxs = []int32{
-	4,  // 0: agentkit.sandbox.v1.ToolsResponse.tools:type_name -> agentkit.sandbox.v1.ToolInfo
-	8,  // 1: agentkit.sandbox.v1.TarChunk.start:type_name -> agentkit.sandbox.v1.TarStart
-	0,  // 2: agentkit.sandbox.v1.RsyncStart.direction:type_name -> agentkit.sandbox.v1.RsyncStart.Direction
-	12, // 3: agentkit.sandbox.v1.RsyncFrame.start:type_name -> agentkit.sandbox.v1.RsyncStart
-	13, // 4: agentkit.sandbox.v1.RsyncFrame.plan:type_name -> agentkit.sandbox.v1.RsyncPlan
-	14, // 5: agentkit.sandbox.v1.RsyncFrame.args:type_name -> agentkit.sandbox.v1.RsyncArgs
-	15, // 6: agentkit.sandbox.v1.RsyncFrame.done:type_name -> agentkit.sandbox.v1.RsyncDone
-	1,  // 7: agentkit.sandbox.v1.Agent.Hello:input_type -> agentkit.sandbox.v1.HelloRequest
-	3,  // 8: agentkit.sandbox.v1.Agent.Tools:input_type -> agentkit.sandbox.v1.ToolsRequest
-	6,  // 9: agentkit.sandbox.v1.Agent.Call:input_type -> agentkit.sandbox.v1.CallRequest
-	9,  // 10: agentkit.sandbox.v1.Agent.SyncTar:input_type -> agentkit.sandbox.v1.TarChunk
-	11, // 11: agentkit.sandbox.v1.Agent.ExportTar:input_type -> agentkit.sandbox.v1.ExportRequest
-	16, // 12: agentkit.sandbox.v1.Agent.Rsync:input_type -> agentkit.sandbox.v1.RsyncFrame
-	2,  // 13: agentkit.sandbox.v1.Agent.Hello:output_type -> agentkit.sandbox.v1.HelloResponse
-	5,  // 14: agentkit.sandbox.v1.Agent.Tools:output_type -> agentkit.sandbox.v1.ToolsResponse
-	7,  // 15: agentkit.sandbox.v1.Agent.Call:output_type -> agentkit.sandbox.v1.CallResponse
-	10, // 16: agentkit.sandbox.v1.Agent.SyncTar:output_type -> agentkit.sandbox.v1.SyncResponse
-	9,  // 17: agentkit.sandbox.v1.Agent.ExportTar:output_type -> agentkit.sandbox.v1.TarChunk
-	16, // 18: agentkit.sandbox.v1.Agent.Rsync:output_type -> agentkit.sandbox.v1.RsyncFrame
-	13, // [13:19] is the sub-list for method output_type
-	7,  // [7:13] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	3,  // 0: agentkit.sandbox.v1.HelloResponse.landlock:type_name -> agentkit.sandbox.v1.LandlockReport
+	5,  // 1: agentkit.sandbox.v1.ToolsResponse.tools:type_name -> agentkit.sandbox.v1.ToolInfo
+	9,  // 2: agentkit.sandbox.v1.TarChunk.start:type_name -> agentkit.sandbox.v1.TarStart
+	0,  // 3: agentkit.sandbox.v1.RsyncStart.direction:type_name -> agentkit.sandbox.v1.RsyncStart.Direction
+	13, // 4: agentkit.sandbox.v1.RsyncFrame.start:type_name -> agentkit.sandbox.v1.RsyncStart
+	14, // 5: agentkit.sandbox.v1.RsyncFrame.plan:type_name -> agentkit.sandbox.v1.RsyncPlan
+	15, // 6: agentkit.sandbox.v1.RsyncFrame.args:type_name -> agentkit.sandbox.v1.RsyncArgs
+	16, // 7: agentkit.sandbox.v1.RsyncFrame.done:type_name -> agentkit.sandbox.v1.RsyncDone
+	1,  // 8: agentkit.sandbox.v1.Agent.Hello:input_type -> agentkit.sandbox.v1.HelloRequest
+	4,  // 9: agentkit.sandbox.v1.Agent.Tools:input_type -> agentkit.sandbox.v1.ToolsRequest
+	7,  // 10: agentkit.sandbox.v1.Agent.Call:input_type -> agentkit.sandbox.v1.CallRequest
+	10, // 11: agentkit.sandbox.v1.Agent.SyncTar:input_type -> agentkit.sandbox.v1.TarChunk
+	12, // 12: agentkit.sandbox.v1.Agent.ExportTar:input_type -> agentkit.sandbox.v1.ExportRequest
+	17, // 13: agentkit.sandbox.v1.Agent.Rsync:input_type -> agentkit.sandbox.v1.RsyncFrame
+	2,  // 14: agentkit.sandbox.v1.Agent.Hello:output_type -> agentkit.sandbox.v1.HelloResponse
+	6,  // 15: agentkit.sandbox.v1.Agent.Tools:output_type -> agentkit.sandbox.v1.ToolsResponse
+	8,  // 16: agentkit.sandbox.v1.Agent.Call:output_type -> agentkit.sandbox.v1.CallResponse
+	11, // 17: agentkit.sandbox.v1.Agent.SyncTar:output_type -> agentkit.sandbox.v1.SyncResponse
+	10, // 18: agentkit.sandbox.v1.Agent.ExportTar:output_type -> agentkit.sandbox.v1.TarChunk
+	17, // 19: agentkit.sandbox.v1.Agent.Rsync:output_type -> agentkit.sandbox.v1.RsyncFrame
+	14, // [14:20] is the sub-list for method output_type
+	8,  // [8:14] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_sandbox_proto_init() }
@@ -1276,11 +1385,11 @@ func file_sandbox_proto_init() {
 	if File_sandbox_proto != nil {
 		return
 	}
-	file_sandbox_proto_msgTypes[8].OneofWrappers = []any{
+	file_sandbox_proto_msgTypes[9].OneofWrappers = []any{
 		(*TarChunk_Start)(nil),
 		(*TarChunk_Data)(nil),
 	}
-	file_sandbox_proto_msgTypes[15].OneofWrappers = []any{
+	file_sandbox_proto_msgTypes[16].OneofWrappers = []any{
 		(*RsyncFrame_Start)(nil),
 		(*RsyncFrame_Plan)(nil),
 		(*RsyncFrame_Args)(nil),
@@ -1293,7 +1402,7 @@ func file_sandbox_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sandbox_proto_rawDesc), len(file_sandbox_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   16,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

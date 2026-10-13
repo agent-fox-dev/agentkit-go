@@ -77,7 +77,7 @@
         "sandbox/internal/fakeagent/fakeagent.go",
         "sandbox/cmd/agentkit-sandboxd/main_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -120,7 +120,7 @@
       "depends_on": [
         1
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -173,7 +173,7 @@
         "go.mod requires github.com/landlock-lsm/go-landlock without `// indirect` and psx only with `// indirect`",
         "`go list -m all` output equals internal/policy/testdata/go-list-m-all.txt byte for byte"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -230,7 +230,7 @@
       "depends_on": [
         3
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -283,7 +283,7 @@
         2,
         4
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -320,7 +320,7 @@
       "depends_on": [
         5
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -366,7 +366,7 @@
         "`make check` exits 0",
         "`make doc` was run before the documentation edits"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -402,7 +402,7 @@
         "`make check` exits 0",
         "On a Linux kernel offering Landlock ABI 4 or later, TS-15-43 and TS-15-46 pass without skipping"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

@@ -10,12 +10,12 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox/local"
 )
 
-// TS-14-5: ProtocolMinor is 1, the service has six RPCs, Hello reports
-// protocol 1.1 and the regenerated code passes the staleness check offline.
-// 14-REQ-2.2.
-func TestProtocolMinorOne_TS14_5(t *testing.T) {
-	if sandbox.ProtocolMajor != 1 || sandbox.ProtocolMinor != 1 {
-		t.Errorf("protocol %d.%d, want 1.1", sandbox.ProtocolMajor, sandbox.ProtocolMinor)
+// TS-14-5: the service has six RPCs, Hello reports the current protocol
+// (1.2 since spec 15, 15-REQ-4.2; 14 set 1.1) and the regenerated code
+// passes the staleness check offline. 14-REQ-2.2.
+func TestProtocolMinor_TS14_5(t *testing.T) {
+	if sandbox.ProtocolMajor != 1 || sandbox.ProtocolMinor != 2 {
+		t.Errorf("protocol %d.%d, want 1.2", sandbox.ProtocolMajor, sandbox.ProtocolMinor)
 	}
 	svc := sandboxpb.File_sandbox_proto.Services().ByName("Agent")
 	if svc.Methods().Len() != 6 || svc.Methods().ByName("Rsync") == nil {
@@ -27,8 +27,8 @@ func TestProtocolMinorOne_TS14_5(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sb.Close(context.Background())
-	if a := sb.Agent(); a.ProtocolMajor != 1 || a.ProtocolMinor != 1 {
-		t.Errorf("Agent() reports %d.%d, want 1.1", a.ProtocolMajor, a.ProtocolMinor)
+	if a := sb.Agent(); a.ProtocolMajor != 1 || a.ProtocolMinor != 2 {
+		t.Errorf("Agent() reports %d.%d, want 1.2", a.ProtocolMajor, a.ProtocolMinor)
 	}
 	proto, err := os.ReadFile("sandbox.proto")
 	if err != nil {
