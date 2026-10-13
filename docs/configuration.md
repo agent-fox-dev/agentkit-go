@@ -408,17 +408,17 @@ lifetime.
 
 ### Which provider honours which field
 
-| Field | `local` | `podman` / `docker` |
-|---|---|---|
-| `Image` | refused | yes; empty means `sandbox.DefaultImage()`; refused when it starts with `-` or holds whitespace or a control character |
-| `Workdir` | refused (the workspace is `<dir>/workspace`) | yes (default `/workspace`); must be absolute and clean, not `/`, `/tmp` or beneath it, not beneath `/proc`, `/sys` or `/dev`, and hold no `,` or control character |
-| `Env` | yes | yes, plus the defaults below; `HOME` and `TMPDIR` must be `/tmp`, the workspace, or beneath either |
-| `Resources.*` | refused | `CPUs`, `MemoryBytes`, `PIDs`; `DiskBytes` is refused; a zero field takes the engine's default |
-| `Network.Mode` | `NetworkUnrestricted` only; the zero `Spec` is refused | `NetworkNone` (`--network none`) or `NetworkUnrestricted` (the engine's default network); `NetworkAllowlist` is refused |
-| `TTL` | yes | yes, twice: attach's host timer and the agent's `--ttl`; the volume carries the expiry |
-| `Labels` | yes (recorded in the marker) | yes, on the container, the init container and the volume; the key prefix `agentkit.sandbox.` is reserved, and a key may not be empty or hold `=`, whitespace or a control character, nor a value a control character |
-| `Provider` | no keys defined; any key is refused | no keys defined; any key is refused with a `*SpecError` |
-| `RequireLandlock` | refused (`Capabilities.Landlock` is false: its agent runs in the embedder's process, which nothing may confine) | yes; the engine's default seccomp profile may withhold Landlock, which the agent then reports |
+| Field | `local` | `podman` / `docker` | `landlock` |
+|---|---|---|---|
+| `Image` | refused | yes; empty means `sandbox.DefaultImage()`; refused when it starts with `-` or holds whitespace or a control character | refused |
+| `Workdir` | refused (the workspace is `<dir>/workspace`) | yes (default `/workspace`); must be absolute and clean, not `/`, `/tmp` or beneath it, not beneath `/proc`, `/sys` or `/dev`, and hold no `,` or control character | refused (the workspace is `<Root>/<id>/workspace`) |
+| `Env` | yes | yes, plus the defaults below; `HOME` and `TMPDIR` must be `/tmp`, the workspace, or beneath either | yes, plus `HOME`, `TMPDIR` and a default `PATH`; `HOME` and `TMPDIR` in `Spec.Env` are refused |
+| `Resources.*` | refused | `CPUs`, `MemoryBytes`, `PIDs`; `DiskBytes` is refused; a zero field takes the engine's default | refused (no resource is bounded) |
+| `Network.Mode` | `NetworkUnrestricted` only; the zero `Spec` is refused | `NetworkNone` (`--network none`) or `NetworkUnrestricted` (the engine's default network); `NetworkAllowlist` is refused | `NetworkNone` (TCP denied by the agent's Landlock ruleset) or `NetworkUnrestricted`; `NetworkAllowlist` is refused |
+| `TTL` | yes | yes, twice: attach's host timer and the agent's `--ttl`; the volume carries the expiry | yes, twice: attach's host timer and the agent's `--ttl` |
+| `Labels` | yes (recorded in the marker) | yes, on the container, the init container and the volume; the key prefix `agentkit.sandbox.` is reserved, and a key may not be empty or hold `=`, whitespace or a control character, nor a value a control character | yes (recorded in the marker only) |
+| `Provider` | no keys defined; any key is refused | no keys defined; any key is refused with a `*SpecError` | no keys defined; any key is refused with a `*SpecError` |
+| `RequireLandlock` | refused (`Capabilities.Landlock` is false: its agent runs in the embedder's process, which nothing may confine) | yes; the engine's default seccomp profile may withhold Landlock, which the agent then reports | yes; the provider's ABI 4 floor applies whether it is set or not |
 
 ### Landlock: `RequireLandlock`, `Capabilities.Landlock`, `AgentInfo.Landlock`
 
@@ -735,6 +735,130 @@ without `AGENTKIT_SANDBOX_BASE_IMAGE` or under `-short`, those tests skip.
 The `GitRepo` test clones `AGENTKIT_SANDBOX_GIT_URL` (default
 `https://github.com/agent-fox-dev/agentkit-go`) at depth 1, and the
 micro-VM test runs only with `AGENTKIT_SANDBOX_RUNTIME=krun`.
+
+### The Landlock provider (`sandbox/landlock`)
+
+A confined child process on Linux, for hosts whose kernel offers Landlock
+ABI 4 (Linux 6.7) or later. The agent runs as a child of the embedder, over
+pipes, and its own Landlock ruleset is the only boundary: it can write only
+its workspace, `home/` and `tmp/`, read and execute the system directories,
+and, under `NetworkNone`, open no TCP connection. It needs no container
+engine, no image and no privileges. It is a confinement, not an isolation
+(`IsolationConfinement`): the host kernel, memory, CPU and process table are
+shared, there are no resource limits, and UDP, Multipath TCP, Unix sockets
+(a D-Bus session bus, an ssh-agent, a podman or docker socket) and signals
+to the user's processes stay open. Use `sandbox/podman` for untrusted code.
+
+```go
+p, err := landlock.New(landlock.Options{})
+if errors.Is(err, landlock.ErrNoLandlock) {
+	// this host cannot confine: fall back to sandbox/podman
+}
+sb, err := p.Create(ctx, sandbox.Spec{}) // NetworkNone
+```
+
+| `landlock.Options` field | Meaning |
+|---|---|
+| `Root` | Holds one directory per sandbox. Empty means `<os.UserCacheDir()>/agentkit-sandbox-landlock`. It is made absolute, created with mode 0700 and resolved through symlinks once. Choose it outside the system directories. |
+| `AgentBinary` | The `agentkit-sandboxd` to run. Empty means the file beside `os.Executable()` (symlinks resolved), then the one on `PATH`. |
+| `ExtraRO` | Absolute directories the agent and its tools may read and execute beneath (`--landlock-ro`). |
+| `ExtraRW` | Absolute directories they may also write beneath (`--landlock-rw`). |
+
+**`landlock.New(o)`** checks, in order, stopping at the first failure:
+
+1. The platform: any `GOOS` but `linux` fails with
+   `landlock: this host cannot confine a sandbox with Landlock ABI 4: GOOS darwin has no Landlock; use sandbox/podman`.
+2. The kernel, probed once with the Landlock version query (syscall 444).
+   A probe errno is named with a hint (`ENOSYS`: the kernel has no Landlock;
+   `EOPNOTSUPP`: Landlock is not enabled in `lsm=`; `EPERM`: the call is
+   blocked, typically by a container's seccomp filter); an ABI below 4 reads
+   `kernel Landlock ABI N; this provider needs ABI 4 (Linux 6.7) or later; use sandbox/podman`.
+3. `Root`, as above; a failure names `Options.Root`.
+4. Each `ExtraRO` and `ExtraRW` entry must be absolute, not `/`, and must
+   neither equal, contain nor lie beneath `Root` (one sandbox could reach
+   another); a refusal names `Options.ExtraRO[i]` or `Options.ExtraRW[i]`.
+5. The agent binary, resolved as above, must be a regular executable file,
+   and `<binary> --version`, run once with an empty environment and a
+   10-second timeout, must report protocol 1.2 or later (the first to report
+   Landlock). A failure lists the paths tried or quotes the output, with the
+   install command.
+
+Only steps 1 and 2 wrap `landlock.ErrNoLandlock`
+(`landlock: this host cannot confine a sandbox with Landlock ABI 4`), as does
+an agent whose report falls short at `Create`; a misconfiguration does not.
+The version check is the only process `New` starts.
+
+**Installing the agent.** There are no prebuilt host binaries:
+
+```bash
+go install github.com/agent-fox-dev/agentkit-go/sandbox/cmd/agentkit-sandboxd@vX.Y.Z   # the release your module uses
+cd sandbox && go install ./cmd/agentkit-sandboxd                                       # from a checkout, for a (devel) build
+```
+
+**The environment** is exactly `Spec.Env`, plus `HOME=<Root>/<id>/home` and
+`TMPDIR=<Root>/<id>/tmp`, plus
+`PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` when
+`Spec.Env` sets no `PATH`; nothing comes from the embedder's environment.
+`HOME` or `TMPDIR` in `Spec.Env` is refused with a `*sandbox.SpecError` on
+`Env`, because those two variables are the ruleset's writable roots.
+
+**The sandbox directory** is `<Root>/<id>/` (mode 0700, `id` 16 lowercase
+hex characters) holding `workspace/`, `home/` and `tmp/` (each 0700) and the
+marker `agentkit-sandbox.json` (0600). The marker is JSON with `pid`,
+`start_time` (`/proc/<pid>/stat` field 22), `boot_id`, `role` (`creator`,
+then `agent` once the agent has started, replaced atomically), `created`,
+`ttl`, `network` and `labels`; it never holds `Spec.Env`. Neither the marker
+nor `<Root>/<id>/` itself is inside the ruleset, so nothing in the sandbox
+can read it. `Spec().Workdir` is the host path of the workspace, and tool
+results name host paths.
+
+**The agent** gets `--ttl`, `--network`, `--workdir <Root>/<id>/workspace`,
+then `--landlock-ro` for each `ExtraRO`, then, under `NetworkUnrestricted`
+only, the resolver directory, then `--landlock-rw` for each `ExtraRW`. The
+resolver directory is the directory of the file `/etc/resolv.conf` resolves
+to when it lies beneath `/run` or `/var/run` but is neither of them, such as
+systemd-resolved's `/run/systemd/resolve`; without it DNS does not work on
+such hosts. The agent runs as the leader of its own session, in the
+workspace. After `Hello`, whatever `RequireLandlock` says, its report must
+show ABI 4 or later, TCP under `NetworkNone`, and the sandbox's `workspace/`,
+`home/` and `tmp/` among `Writable`, and no other reported root may contain
+`Root`; otherwise `Create` closes the sandbox and fails. An agent that exits
+before `Hello` is reported as
+`landlock: agentkit-sandboxd exited with status N: <stderr tail>` (status 2
+is a refused flag value, such as an `ExtraRW` containing a system directory).
+
+**`Close`** (also at the TTL, and after any failure once the agent has
+started) waits up to 5 seconds for the agent to exit, then kills its process
+group; kills every process left in the agent's session, rescanning for up to
+5 seconds; and removes `<Root>/<id>/` without following symlinks, restoring
+owner permissions on read-only directories first. A process a tool started
+with `setsid` escapes the session kill.
+
+**`GitRepo`** is cloned by a second, confined agent with
+`--network unrestricted`, the same workspace and roots plus the resolver
+directory, and only `GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, the
+sandbox's `HOME` and `TMPDIR` and its agent's `PATH` in its environment; it
+runs `git` through its `run_command` tool, bounded by the sandbox's expiry,
+while the sandbox's own agent waits under its stricter ruleset. The slot
+rules of the podman provider apply, with the messages
+`landlock: GitRepo must be the first Sync and come before Tools` and
+`landlock: git is not on the sandbox's PATH (<PATH>); a GitRepo needs it`.
+git must lie beneath a system directory or an `ExtraRO` directory. A failed
+clone empties the workspace and leaves the slot free.
+
+**`Reap`** considers only directories under `Root` named by 16 lowercase hex
+characters with a readable marker. Their owner is alive when its pid exists
+with the recorded start time on the recorded boot; such a sandbox is kept,
+whoever created it. Otherwise `Reap` kills what is left of a dead agent's
+session (same boot, pid gone) and removes the directory, and returns the
+removed ids, sorted.
+
+**Testing it.** The offline tests run everywhere in `make check`; the Linux
+tests run there too on a kernel with Landlock ABI 4 and skip, naming the ABI,
+below it. `make sandbox-landlock-test` runs `go test -count=1 -v ./landlock/`
+in `sandbox/` with `AGENTKIT_SANDBOX_GIT_URL` (default
+`https://github.com/agent-fox-dev/agentkit-go`), which turns on the real
+public clone; it is not part of `make check`.
 
 ### Sandbox images
 

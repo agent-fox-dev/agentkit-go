@@ -19,6 +19,13 @@
 // with make sandbox-images):
 //
 //	go run . --podman --image ghcr.io/agent-fox-dev/agentkit-sandbox:dev
+//
+// With --landlock it runs on sandbox/landlock, the agent as a child process
+// confined by its own Landlock ruleset under NetworkNone; --agent names the
+// agentkit-sandboxd to run (install one with go install). It needs Linux
+// with Landlock ABI 4; elsewhere it fails with landlock.ErrNoLandlock:
+//
+//	go run . --landlock --agent "$(go env GOPATH)/bin/agentkit-sandboxd"
 package main
 
 import (
@@ -37,6 +44,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/guard"
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/landlock"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/local"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/podman"
 )
@@ -44,12 +52,17 @@ import (
 func main() {
 	usePodman := flag.Bool("podman", false, "run on the podman provider (a container with no network) instead of local")
 	image := flag.String("image", "", "the sandbox image for --podman; empty means sandbox.DefaultImage()")
+	useLandlock := flag.Bool("landlock", false, "run on the landlock provider (a confined child process, Linux only) instead of local")
+	agentPath := flag.String("agent", "", "the agentkit-sandboxd for --landlock; empty means beside this program, then on PATH")
 	flag.Parse()
 	dir, err := os.MkdirTemp("", "agentkit-sandbox-example-")
 	if err == nil {
-		if *usePodman {
+		switch {
+		case *usePodman:
 			err = runPodman(context.Background(), os.Stdout, dir, *image)
-		} else {
+		case *useLandlock:
+			err = runLandlock(context.Background(), os.Stdout, dir, *agentPath)
+		default:
 			err = run(context.Background(), os.Stdout, dir)
 		}
 		_ = os.RemoveAll(dir)
@@ -96,6 +109,16 @@ func runPodman(ctx context.Context, w io.Writer, dir, image string) error {
 		return err
 	}
 	return runOn(ctx, w, dir, p, sandbox.Spec{Image: image, Resources: sandbox.Resources{MemoryBytes: 1 << 30, PIDs: 512}})
+}
+
+// runLandlock is run on the landlock provider, under NetworkNone (the zero
+// Spec), with the agent binary agent.
+func runLandlock(ctx context.Context, w io.Writer, dir, agent string) error {
+	p, err := landlock.New(landlock.Options{AgentBinary: agent})
+	if err != nil {
+		return err
+	}
+	return runOn(ctx, w, dir, p, sandbox.Spec{})
 }
 
 // runOn works in dir on a sandbox p creates from spec.

@@ -109,6 +109,13 @@ sandbox-images-test: sandbox-images ## Build the sandbox images and run the end-
 sandbox-podman-test: sandbox-images ## Build the sandbox images and run the podman provider's integration tests
 	cd sandbox && AGENTKIT_SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE):$(SANDBOX_IMAGE_TAG) AGENTKIT_SANDBOX_OVERLAY_IMAGE=$(SANDBOX_OVERLAY_IMAGE):$(SANDBOX_IMAGE_TAG) AGENTKIT_SANDBOX_IMAGE_VERSION=$(AGENTKIT_VERSION) AGENTKIT_CONTAINER=$(CONTAINER) go test -count=1 -v ./podman/
 
+# The landlock provider's tests, verbose, with the opt-in public clone; its
+# offline and kernel-gated tests already run in check.
+AGENTKIT_SANDBOX_GIT_URL ?= https://github.com/agent-fox-dev/agentkit-go
+.PHONY: sandbox-landlock-test
+sandbox-landlock-test: ## Run the landlock provider's tests verbosely, including the public GitRepo clone
+	cd sandbox && AGENTKIT_SANDBOX_GIT_URL=$(AGENTKIT_SANDBOX_GIT_URL) go test -count=1 -v ./landlock/
+
 .PHONY: check
 check: fmt vet lint test ## Run fmt, vet, lint and test - use before committing
 

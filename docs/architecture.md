@@ -75,6 +75,7 @@ First-party imports, from
 | `sandbox/local` | `sandbox`, `sandbox/internal/{agent,attach,localtest,stdioconn}` | |
 | `sandbox/internal/gitclone` | `sandbox` | |
 | `sandbox/podman` | `core`, `sandbox`, `sandbox/internal/{attach,gitclone,stdioconn}`, `tools` | |
+| `sandbox/landlock` | `core`, `sandbox`, `sandbox/internal/{attach,buildver,gitclone,stdioconn}` | |
 | `sandbox/cmd/agentkit-sandboxd` | `sandbox`, `sandbox/internal/{agent,buildver,confine,stdioconn}` | |
 | `sandbox/internal/fakeagent` (tests only) | `sandbox/internal/{sandboxpb,tooldigest}`, `tools` | `google.golang.org/grpc` |
 | `sandbox/internal/relaytest` (tests only) | `sandbox`, `sandbox/internal/{agent,attach,rsyncx,sandboxpb}` | `google.golang.org/grpc` |
@@ -135,6 +136,7 @@ What follows from it:
 | `sandbox/internal/agentenv` | Reads the agent's explicit environment: a variable, the temporary directory. |
 | `sandbox/local` | The in-process provider with no isolation. |
 | `sandbox/podman` | The Podman and Docker provider: a hardened container per sandbox, driven through the engine's command line. |
+| `sandbox/landlock` | The Landlock provider: `agentkit-sandboxd` as a confined child process on Linux with Landlock ABI 4. |
 | `sandbox/internal/gitclone` | `GitRepo` validation and the `git clone` argument list. |
 | `sandbox/cmd/agentkit-sandboxd` | The agent command. |
 
@@ -698,6 +700,39 @@ When the handshake fails with a non-zero exit other than the engine's own
 `--init` (whose init process would decide the exit status) tells an image
 with no agent (126 or 127, reported as `sandbox.ErrNoAgent` with the
 `COPY --from` line that fixes it) from an agent that failed to start.
+
+**The Landlock provider.** `sandbox/landlock` runs `agentkit-sandboxd` as a
+child process of the embedder, and the agent's own Landlock ruleset is the
+only boundary. `New` probes the kernel once with the raw version query
+(syscall 444), not with `confine` or go-landlock, which only the agent may
+import, and checks the agent binary's `--version`.
+
+```
+Create   CheckSpec → refuse Provider keys, HOME/TMPDIR → <Root>/<id>/ + creator marker
+         → workspace/ home/ tmp/ → agentkit-sandboxd in a new session (Setsid),
+           --workdir <workspace>, ExtraRO/resolver/ExtraRW roots, Spec.Env+HOME+TMPDIR+PATH
+         → marker names the agent → attach.Dial → report: ABI ≥ 4, TCP, roots, Root contained
+Close    attach teardown → wait ≤5 s / SIGKILL group → SIGKILL the session (≤5 s)
+         → remove <Root>/<id>/ (no symlink followed, rwx restored)
+```
+
+The agent leads its own session because `tools.Run` gives every command its
+own process group: killing the agent's group would miss a background job a
+tool left behind, but the job stays in the session, and the destroy step
+kills the session by scanning `/proc`. A process that calls `setsid` escapes
+that. A `GitRepo` sync starts a second agent with TCP allowed, beside the
+idle sandbox agent, and runs `git` through its `run_command` tool, so the
+clone is confined too and its network never reaches the sandbox's agent.
+The TTL is enforced on both sides: attach's host timer runs the destroy step,
+and the agent's `--ttl` ends it when the host is gone; a crashed host leaves
+a directory whose marker names the agent by pid, start time and boot id, and
+`Reap` removes it once that owner is gone, killing what outlived it, but
+never a sandbox whose agent is alive. What the provider gives up: Unix
+sockets, including a D-Bus session bus, an ssh-agent and engine sockets;
+UDP; Multipath TCP; signals to the user's processes; host paths in tool
+results; and file descriptors the embedder opened without close-on-exec.
+Landlock at the agent's ABI cap of 4 cannot express those, so the provider
+reports `IsolationConfinement` and its `Notes` say so.
 
 **`local` is not isolation.** Its capabilities say so (`IsolationNone`, only
 `NetworkUnrestricted`, nothing else honoured), and it refuses the zero

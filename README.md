@@ -131,7 +131,13 @@ isolation**: it runs the agent in the embedder's process with its
 privileges, for tests and development, over the same protocol and
 transport. A proxy shell tool still needs a `Guard`; `guard.AllowAll` is
 reasonable only for proxies from an isolating provider under `NetworkNone`
-([`docs/configuration.md`](docs/configuration.md#guardoptions)). A cancelled
+([`docs/configuration.md`](docs/configuration.md#guardoptions)).
+`sandbox/landlock` needs no engine: on Linux with Landlock ABI 4 it runs the
+agent as a confined child process, which protects the embedder's files and,
+under `NetworkNone`, TCP, but is a confinement, not an isolation; install the
+agent with
+`go install github.com/agent-fox-dev/agentkit-go/sandbox/cmd/agentkit-sandboxd@vX.Y.Z`.
+A cancelled
 call returns `aborted` and kills the process it started
 in the sandbox; a broken connection makes every later call return
 `sandbox_unavailable`. `sandbox.LocalDir` moves a host directory in or out
@@ -216,6 +222,7 @@ The identifiers an embedder such as agent-fox builds on.
 | `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `CheckSpec`, `LocalDir`, `Tar`/`TarOut`, the protocol version and the errors. Its internal packages hold the protocol, the agent service, the attach and proxy code, the tar entry rules and the rsync adapter. |
 | `sandbox/local` | `local.Unisolated()`: an in-process provider with no isolation, for tests and development. |
 | `sandbox/podman` | `podman.New(Options)`: the first isolating provider, a hardened podman or docker container per sandbox. |
+| `sandbox/landlock` | `landlock.New(Options)`: the agent as a child process confined by Landlock, on Linux with ABI 4. |
 | `sandbox/cmd/agentkit-sandboxd` | The agent command a sandbox image installs at `sandbox.AgentPath`; serves the protocol on its stdio. |
 | `codesearch` | Separate module: zoekt-backed `code_search`, opted in with `tools.Options{Index: idx}`. |
 
@@ -234,6 +241,7 @@ The identifiers an embedder such as agent-fox builds on.
 | `make sandbox-images` | Build the sandbox base and overlay images for the host platform with podman (or docker); not part of `check` |
 | `make sandbox-images-test` | Build the sandbox images and run the end-to-end image tests against them; not part of `check` |
 | `make sandbox-podman-test` | Build the sandbox images and run the podman provider's integration tests against them; not part of `check` |
+| `make sandbox-landlock-test` | Run the landlock provider's tests verbosely, with the public `GitRepo` clone of `AGENTKIT_SANDBOX_GIT_URL`; not part of `check` |
 
 ## Documentation
 
