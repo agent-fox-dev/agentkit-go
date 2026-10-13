@@ -91,6 +91,20 @@ func goodReport(dir string) sandbox.LandlockInfo {
 	return sandbox.LandlockInfo{ABI: 4, KernelABI: 6, TCP: true, Note: "fake", Writable: append(w, "/dev/null"), ReadOnly: []string{"/usr", "/proc"}}
 }
 
+// isInit reports whether dir already had an agent started: the next start
+// for it is the init agent's.
+func (f *inProc) isInit(dir string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, r := range f.recs {
+		if filepath.Dir(argAfter(r.args, "--workdir")) == dir {
+			n++
+		}
+	}
+	return n > 1
+}
+
 // with installs f as p's starter and process table.
 func (f *inProc) with(s *seams) { s.start, s.procs = f.start, f.table }
 

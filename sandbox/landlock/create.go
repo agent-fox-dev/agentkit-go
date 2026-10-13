@@ -62,7 +62,7 @@ func (p *provider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandb
 	if err := p.checkReport(inner.Agent().Landlock, dir, eff.Network.Mode); err != nil {
 		return nil, errors.Join(err, inner.Close(context.Background()))
 	}
-	return &landlockSandbox{inner: inner, p: p, h: h, dir: dir, ws: ws, created: created, agentPATH: envValue(env, "PATH")}, nil
+	return &landlockSandbox{inner: inner, p: p, h: h, dir: dir, ws: ws, created: created, ttl: eff.TTL, agentPATH: envValue(env, "PATH")}, nil
 }
 
 // checkSpec refuses what CheckSpec allows but this provider does not

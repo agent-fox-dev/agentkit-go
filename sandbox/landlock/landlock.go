@@ -57,6 +57,8 @@ type seams struct {
 	procs    procTable
 	start    func(req startReq) (*agentProc, net.Conn, error)
 	remove   func(dir string) error
+	// initCommand is the argv the init agent's run_command runs.
+	initCommand func(repo sandbox.GitRepo, ws string) []string
 }
 
 // startReq is what the starter starts: bin with args and env in dir.

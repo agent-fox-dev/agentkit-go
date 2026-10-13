@@ -38,3 +38,27 @@ func removeTree(dir string) error {
 	}
 	return os.Remove(dir)
 }
+
+// emptyDir removes dir's contents with removeTree, keeping dir itself (with
+// its owner rwx restored). A missing dir is not an error.
+func emptyDir(dir string) error {
+	fi, err := os.Lstat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, fi.Mode().Perm()|0o700); err != nil {
+		return err
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, e := range ents {
+		errs = append(errs, removeTree(filepath.Join(dir, e.Name())))
+	}
+	return errors.Join(errs...)
+}

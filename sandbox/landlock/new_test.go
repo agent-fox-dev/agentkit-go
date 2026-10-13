@@ -38,10 +38,11 @@ func testSeams(abi int, versionRuns *int) seams {
 			}
 			return versionLine, nil
 		},
-		executable: func() (string, error) { return "/nonexistent/test.binary", nil },
-		lookPath:   func(string) (string, error) { return "", os.ErrNotExist },
-		resolver:   func(string) string { return "" },
-		remove:     removeTree,
+		executable:  func() (string, error) { return "/nonexistent/test.binary", nil },
+		lookPath:    func(string) (string, error) { return "", os.ErrNotExist },
+		resolver:    func(string) string { return "" },
+		remove:      removeTree,
+		initCommand: defaultInitCommand,
 	}
 }
 

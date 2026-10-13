@@ -66,11 +66,9 @@ func execute(t *testing.T, ts []core.Tool, command string) (int, string) {
 		if tl.Name == "execute" {
 			r := tl.Execute(context.Background(), b)
 			code := 0
-			switch v := r.Data["exit_code"].(type) {
-			case float64:
-				code = int(v)
-			case int:
-				code = v
+			if n, ok := r.Data["exit_code"].(json.Number); ok {
+				i, _ := n.Int64()
+				code = int(i)
 			}
 			if !r.OK && code == 0 {
 				code = -1
