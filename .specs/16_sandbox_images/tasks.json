@@ -257,7 +257,7 @@
       "done_when": [
         "With podman or docker available, every TestBaseImage* test reports PASS (TS-16-44 under an unstamped build) in `make sandbox-images-test`"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,

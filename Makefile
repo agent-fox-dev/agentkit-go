@@ -90,8 +90,13 @@ tidy: ## go mod tidy the root module and the nested modules
 .PHONY: sandbox-images
 sandbox-images: ## Build the sandbox base and overlay images for the host platform
 	@command -v "$(CONTAINER)" >/dev/null 2>&1 || { echo "sandbox-images: container engine '$(CONTAINER)' not found on PATH; install podman or docker, or set CONTAINER=<engine>" >&2; exit 1; }
-	$(CONTAINER) build -f sandbox/images/Containerfile --target base $(if $(SANDBOX_PLATFORM),--platform $(SANDBOX_PLATFORM) )--build-arg AGENTKIT_VERSION=$(AGENTKIT_VERSION) --build-arg AGENTKIT_REVISION=$(AGENTKIT_REVISION) -t $(SANDBOX_BASE_IMAGE):$(SANDBOX_IMAGE_TAG) .
-	$(CONTAINER) build -f sandbox/images/Containerfile --target overlay $(if $(SANDBOX_PLATFORM),--platform $(SANDBOX_PLATFORM) )--build-arg AGENTKIT_VERSION=$(AGENTKIT_VERSION) --build-arg AGENTKIT_REVISION=$(AGENTKIT_REVISION) -t $(SANDBOX_OVERLAY_IMAGE):$(SANDBOX_IMAGE_TAG) .
+	$(CONTAINER) build -f sandbox/images/Containerfile --target base $(if $(SANDBOX_PLATFORM),--platform $(SANDBOX_PLATFORM) )--build-arg AGENTKIT_VERSION=$(AGENTKIT_VERSION) --build-arg AGENTKIT_REVISION=$(AGENTKIT_REVISION) $(SANDBOX_LABELS) -t $(SANDBOX_BASE_IMAGE):$(SANDBOX_IMAGE_TAG) .
+	$(CONTAINER) build -f sandbox/images/Containerfile --target overlay $(if $(SANDBOX_PLATFORM),--platform $(SANDBOX_PLATFORM) )--build-arg AGENTKIT_VERSION=$(AGENTKIT_VERSION) --build-arg AGENTKIT_REVISION=$(AGENTKIT_REVISION) $(SANDBOX_LABELS) -t $(SANDBOX_OVERLAY_IMAGE):$(SANDBOX_IMAGE_TAG) .
+
+# SANDBOX_LABELS restates the version and revision labels on the command
+# line: buildah's layer cache keeps a stale LABEL in the overlay stage, which
+# has no RUN to carry the build arguments into its cache key.
+SANDBOX_LABELS = --label org.opencontainers.image.version=$(AGENTKIT_VERSION) --label org.opencontainers.image.revision=$(AGENTKIT_REVISION)
 
 # The image tests live in the nested sandbox module, so they run there.
 .PHONY: sandbox-images-test

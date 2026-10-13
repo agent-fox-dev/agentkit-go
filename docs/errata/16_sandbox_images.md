@@ -37,3 +37,17 @@ Go resolves that module's `vX.Y.Z` from the git tag `sandbox/vX.Y.Z`, not
 `vX.Y.Z`. The release workflow still publishes images on the `vX.Y.Z` tag
 (its `v*` trigger does not match `sandbox/v*`), so a release pushes both
 tags at the same commit; `docs/releasing.md` says so.
+
+## make sandbox-images restates the version and revision labels
+
+16-REQ-6.2 lists the arguments of the two builds. `make sandbox-images`
+also passes `--label org.opencontainers.image.version=$(AGENTKIT_VERSION)`
+and `--label org.opencontainers.image.revision=$(AGENTKIT_REVISION)`
+(`SANDBOX_LABELS` in the Makefile). With podman, buildah's layer cache
+reused the overlay stage's `LABEL` step from an earlier build after
+`AGENTKIT_REVISION` changed: the overlay stage has no `RUN`, so the build
+arguments never enter its cache key, and TS-16-42 found the overlay
+labelled with the previous commit while the base carried the current one.
+The command-line labels apply to the final image whatever the cache
+holds; the Containerfile's labels are unchanged, and the release workflow's
+BuildKit builds recompute them anyway.
