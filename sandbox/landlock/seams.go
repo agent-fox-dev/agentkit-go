@@ -2,6 +2,8 @@ package landlock
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"runtime"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
@@ -9,7 +11,7 @@ import (
 
 // defaultSeams are the real platform, probe and helpers.
 func defaultSeams() seams {
-	return seams{goos: runtime.GOOS, probe: defaultProbe}
+	return seams{goos: runtime.GOOS, probe: defaultProbe, runVersion: runVersion, executable: os.Executable, lookPath: exec.LookPath}
 }
 
 func (p *provider) Capabilities() sandbox.Capabilities { panic("not implemented") }

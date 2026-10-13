@@ -46,13 +46,19 @@ var ErrNoLandlock = errors.New("landlock: this host cannot confine a sandbox wit
 // seams are what offline tests replace; each provider holds its own, read
 // only after New.
 type seams struct {
-	goos  string
-	probe func() (int, error)
+	goos       string
+	probe      func() (int, error)
+	runVersion func(bin string) (string, error)
+	executable func() (string, error)
+	lookPath   func(string) (string, error)
 }
 
 // provider is the landlock provider.
 type provider struct {
-	seams seams
+	seams            seams
+	root             string // absolute, symlink-free
+	bin              string // the agent binary
+	extraRO, extraRW []string
 }
 
 // New returns the provider after checking, in order and stopping at the
@@ -80,7 +86,23 @@ func newProvider(o Options, s seams) (*provider, error) {
 		return nil, fmt.Errorf("%w: kernel Landlock ABI %d; this provider needs ABI %d (Linux 6.7) or later; use sandbox/podman",
 			ErrNoLandlock, abi, sandbox.LandlockTCPABI)
 	}
-	return &provider{seams: s}, nil
+	root, err := resolveRoot(o.Root)
+	if err != nil {
+		return nil, err
+	}
+	extraRO, err := checkExtra("ExtraRO", o.ExtraRO, root)
+	if err != nil {
+		return nil, err
+	}
+	extraRW, err := checkExtra("ExtraRW", o.ExtraRW, root)
+	if err != nil {
+		return nil, err
+	}
+	bin, err := checkAgent(o, s)
+	if err != nil {
+		return nil, err
+	}
+	return &provider{seams: s, root: root, bin: bin, extraRO: extraRO, extraRW: extraRW}, nil
 }
 
 // probeHint explains a probe errno.
