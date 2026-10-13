@@ -6,8 +6,11 @@ replacement for `tools.All` whose every call runs in the AgentKit agent inside
 it, over the `agentkit.sandbox.v1` protocol. The driver does not change.
 
 ```bash
-go run ./examples/sandbox
+cd examples/sandbox && go run .
 ```
+
+The example is its own Go module, because it imports the nested `sandbox`
+module, which the root module does not require.
 
 It runs offline, with no API key: the "model" is `provider/faux` replaying one
 scripted `code_mode` call, and the sandbox comes from `local`, the in-process

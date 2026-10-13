@@ -1,15 +1,17 @@
-// Package buildver reports the AgentKit module version a binary was built
-// from. The agent's Hello and the host's tool-mismatch message both use it.
+// Package buildver reports the AgentKit sandbox module version a binary was
+// built from. The agent's Hello and the host's tool-mismatch message both use
+// it.
 package buildver
 
 import "runtime/debug"
 
-// modulePath is the root module's path.
-const modulePath = "github.com/agent-fox-dev/agentkit-go"
+// modulePath is the sandbox module's path; the agent and the host code both
+// live in it.
+const modulePath = "github.com/agent-fox-dev/agentkit-go/sandbox"
 
-// Version is the agentkit-go module version from the build info: the main
-// module's when the binary is built from it, otherwise the dependency's. It
-// is (devel) when there is none.
+// Version is the sandbox module's version from the build info: the main
+// module's when the binary is built from it, otherwise the dependency's (its
+// replacement's, when replaced). It is (devel) when there is none.
 func Version() string {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -20,8 +22,12 @@ func Version() string {
 		v = bi.Main.Version
 	} else {
 		for _, d := range bi.Deps {
-			if d.Path == modulePath {
-				v = d.Version
+			if d.Path != modulePath {
+				continue
+			}
+			v = d.Version
+			if d.Replace != nil {
+				v = d.Replace.Version
 			}
 		}
 	}

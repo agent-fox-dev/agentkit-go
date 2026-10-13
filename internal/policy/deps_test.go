@@ -192,39 +192,53 @@ var preSpec13Direct = []string{
 	"golang.org/x/oauth2",
 }
 
-// TS-13-65: grpc and protobuf are direct requirements at the go.sum
-// versions, approved with reasons, with x/net indirect and the module graph
-// unchanged. 13-REQ-10.5.
-func TestSandboxDepsPromoted_TS13_65(t *testing.T) {
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go is not on PATH")
-	}
-	root := repoRoot(t)
-	mod, err := os.ReadFile(filepath.Join(root, "go.mod"))
+// goModRequire is one require line of a go.mod.
+type goModRequire struct {
+	version  string
+	indirect bool
+}
+
+// parseGoMod returns the require lines of the go.mod in dir.
+func parseGoMod(t *testing.T, dir string) map[string]goModRequire {
+	t.Helper()
+	mod, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	type req struct {
-		version  string
-		indirect bool
-	}
-	reqs := map[string]req{}
+	reqs := map[string]goModRequire{}
 	for _, line := range strings.Split(string(mod), "\n") {
 		fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), "require "))
-		if len(fields) >= 2 && strings.Contains(fields[0], ".") {
-			reqs[fields[0]] = req{fields[1], strings.Contains(line, "// indirect")}
+		if len(fields) >= 2 && strings.Contains(fields[0], ".") && !strings.HasPrefix(fields[0], "//") {
+			reqs[fields[0]] = goModRequire{fields[1], strings.Contains(line, "// indirect")}
 		}
 	}
-	for m, v := range map[string]string{"google.golang.org/grpc": "v1.64.1", "google.golang.org/protobuf": "v1.36.11"} {
-		if r := reqs[m]; r.version != v || r.indirect {
-			t.Errorf("go.mod requires %s %+v, want %s direct", m, r, v)
-		}
-	}
-	if r, ok := reqs["golang.org/x/net"]; !ok || !r.indirect {
-		t.Errorf("golang.org/x/net is %+v, want an indirect requirement", r)
-	}
+	return reqs
+}
 
-	// Each new allowlist entry carries a reason on the line above it.
+// directSet is the sorted direct-dependency set `go list -m` reports for the
+// module in dir, the module itself included.
+func directSet(t *testing.T, dir string) []string {
+	t.Helper()
+	cmd := exec.Command("go", "list", "-m", "-f", "{{if not .Indirect}}{{.Path}}{{end}}", "all")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list -m in %s: %v", dir, err)
+	}
+	var direct []string
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if l != "" {
+			direct = append(direct, l)
+		}
+	}
+	slices.Sort(direct)
+	return direct
+}
+
+// commentedDeps returns the approvedDeps entries that have a non-empty comment
+// on the line above them.
+func commentedDeps(t *testing.T, root string) map[string]bool {
+	t.Helper()
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, filepath.Join(root, "internal", "policy", "deps_test.go"), nil, parser.ParseComments)
 	if err != nil {
@@ -244,36 +258,66 @@ func TestSandboxDepsPromoted_TS13_65(t *testing.T) {
 		}
 		return true
 	})
+	return commented
+}
+
+// sandboxModules are the nested modules that hold the sandbox tree; their
+// own module paths are allowed in their direct sets.
+var sandboxModules = []string{
+	"github.com/agent-fox-dev/agentkit-go/sandbox",
+	"github.com/agent-fox-dev/agentkit-go/examples/sandbox",
+}
+
+// TS-13-65: grpc and protobuf are direct requirements at the go.sum
+// versions, approved with reasons, with x/net indirect and the root module's
+// graph unchanged. 13-REQ-10.5. Since spec 14 the sandbox tree is its own
+// module (docs/errata/14_sandbox_rsync_sync.md): grpc and protobuf are direct
+// requirements of sandbox/go.mod, and the root module's direct set is back to
+// the pre-spec-13 set.
+func TestSandboxDepsPromoted_TS13_65(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go is not on PATH")
+	}
+	root := repoRoot(t)
+	sb := filepath.Join(root, "sandbox")
+	reqs := parseGoMod(t, sb)
+	for m, v := range map[string]string{"google.golang.org/grpc": "v1.64.1", "google.golang.org/protobuf": "v1.36.11"} {
+		if r := reqs[m]; r.version != v || r.indirect {
+			t.Errorf("sandbox/go.mod requires %s %+v, want %s direct", m, r, v)
+		}
+	}
+	for _, dir := range []string{root, sb} {
+		if r, ok := parseGoMod(t, dir)["golang.org/x/net"]; !ok || !r.indirect {
+			t.Errorf("%s: golang.org/x/net is %+v, want an indirect requirement", dir, r)
+		}
+	}
+	commented := commentedDeps(t, root)
 	for _, m := range []string{"google.golang.org/grpc", "google.golang.org/protobuf"} {
 		if !slices.Contains(approvedDeps, m) || !commented[m] {
 			t.Errorf("approvedDeps lacks %s with a reason comment above it", m)
 		}
 	}
 
-	cmd := exec.Command("go", "list", "-m", "-f", "{{if not .Indirect}}{{.Path}}{{end}}", "all")
-	cmd.Dir = root
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list -m: %v", err)
-	}
-	var direct []string
-	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if l != "" {
-			direct = append(direct, l)
-		}
-	}
+	direct := directSet(t, root)
 	if err := validateAllowlist(direct, approvedDeps); err != nil {
 		t.Error(err)
 	}
-	want := append(slices.Clone(preSpec13Direct), "google.golang.org/grpc", "google.golang.org/protobuf")
-	slices.Sort(want)
-	slices.Sort(direct)
+	want := slices.Sorted(slices.Values(preSpec13Direct))
 	if !slices.Equal(direct, want) {
-		t.Errorf("direct requirements are\n%s\nwant the pre-spec set plus grpc and protobuf:\n%s",
+		t.Errorf("root direct requirements are\n%s\nwant the pre-spec set:\n%s",
 			strings.Join(direct, "\n"), strings.Join(want, "\n"))
 	}
+	sbDirect := directSet(t, sb)
+	if err := validateAllowlist(sbDirect, append(slices.Clone(approvedDeps), sandboxModules...)); err != nil {
+		t.Error(err)
+	}
+	for _, m := range []string{"google.golang.org/grpc", "google.golang.org/protobuf"} {
+		if !slices.Contains(sbDirect, m) {
+			t.Errorf("the sandbox module's direct set lacks %s: %v", m, sbDirect)
+		}
+	}
 
-	cmd = exec.Command("go", "list", "-m", "all")
+	cmd := exec.Command("go", "list", "-m", "all")
 	cmd.Dir = root
 	all, err := cmd.Output()
 	if err != nil {

@@ -279,25 +279,23 @@ func TestNoJSONXImportsAnywhere_TS12_17(t *testing.T) {
 	}
 }
 
-// TS-13-66: the sandbox tree, generated code included, is in the root
-// module and counted by its line counter, and the module stays within
-// TS-12-14's budget (budgetLines, docs/errata/13_sandbox_core.md). The
-// cross-target, host-cgo and make check gates run in internal/policy.
-// 13-REQ-10.6.
+// TS-13-66: the root module stays within TS-12-14's budget. Since spec 14
+// the sandbox tree is its own nested module, as spec 13's design decision 5
+// prescribes when the root module would not fit: sandbox/go.mod exists, the
+// counter skips the tree, and the root module's own count holds the budget
+// (docs/errata/14_sandbox_rsync_sync.md). 13-REQ-10.6, 14-REQ-9.4.
 func TestSandboxCountedInBudget_TS13_66(t *testing.T) {
 	root := moduleRoot(t)
-	err := filepath.WalkDir(filepath.Join(root, "sandbox"), func(path string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() && d.Name() == "go.mod" {
-			t.Errorf("%s makes part of sandbox/ a nested module", path)
+	if _, err := os.Stat(filepath.Join(root, "sandbox", "go.mod")); err != nil {
+		t.Errorf("sandbox/ is not a nested module: %v", err)
+	}
+	sandbox := filepath.Join(root, "sandbox") + string(filepath.Separator)
+	countCode(t, root, true, func(path string) bool {
+		if strings.HasPrefix(path, sandbox) {
+			t.Errorf("the root module's counter visits %s, inside the nested sandbox module", path)
 		}
-		return err
+		return false
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := codeLines(t, filepath.Join(root, "sandbox", "internal", "sandboxpb"), true); n == 0 {
-		t.Error("the line counter counts no lines in sandbox/internal/sandboxpb")
-	}
 	n := budgetLines(t, root)
 	if n > 20000 {
 		t.Errorf("the root module has %d lines of hand-written library code, over 20,000", n)

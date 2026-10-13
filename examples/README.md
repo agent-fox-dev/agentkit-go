@@ -17,7 +17,7 @@ need an Anthropic credential (below).
 | [`customtools`](customtools) | `go run ./examples/customtools` | Writing tools well: the schema combinators, `Handler` vs `Execute`, argument repair, sequential execution, per-tool prompt guidelines, and a tool that ends the run. |
 | [`mcp`](mcp) | `go run ./examples/mcp` · `--external CMD` | The MCP client: consuming a server's tools under qualified names, with the pool refusing a server tool that would shadow one of yours. |
 | [`codemode`](codemode) | `go run ./examples/codemode` | Code mode: one tool that runs a model-written Starlark script over other tools — chained and parallel calls, errors as values, filtering before anything reaches the conversation — through the agent's own nested-call pipeline. |
-| [`sandbox`](sandbox) | `go run ./examples/sandbox` | Sandboxes: syncing a project into one, proxy tools that are drop-in replacements for `tools.All`, a guarded code-mode script over them, and exporting files back out — against `local`, which is not isolation. |
+| [`sandbox`](sandbox) | `cd examples/sandbox && go run .` (its own module) | Sandboxes: syncing a project into one, proxy tools that are drop-in replacements for `tools.All`, a guarded code-mode script over them, and exporting files back out — against `local`, which is not isolation. |
 
 ## Configuring an application
 

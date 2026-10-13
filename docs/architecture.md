@@ -6,12 +6,21 @@ disagree, fix this file.
 
 ## Shape
 
-One Go module, `github.com/agent-fox-dev/agentkit-go` (`go 1.27`), plus one
-nested module with its own `go.mod`, [`codesearch/`](../codesearch), which is
-not in the root build graph. cgo is allowed only in `//go:build cgo` files,
-each with a pure-Go fallback; `internal/policy` builds the four supported
-targets with cgo off and the host with cgo on. The root module's direct
-dependencies are an allowlist ([`DEPS.md`](DEPS.md)).
+One Go module, `github.com/agent-fox-dev/agentkit-go` (`go 1.27`), plus
+three nested modules with their own `go.mod`, none of them in the root build
+graph:
+
+- [`codesearch/`](../codesearch), the zoekt-backed index;
+- [`sandbox/`](../sandbox) (`…/sandbox`), the sandbox API, protocol, agent and
+  providers, with their dependencies (gRPC, protobuf, the rsync protocol). It
+  requires the root module through a `replace`; import paths are unchanged;
+- [`examples/sandbox/`](../examples/sandbox), the example program that uses it.
+
+cgo is allowed only in `//go:build cgo` files, each with a pure-Go fallback;
+`internal/policy` builds the four supported targets with cgo off and the host
+with cgo on, for the root and the two sandbox modules. Direct dependencies are
+an allowlist ([`DEPS.md`](DEPS.md)), checked for the root and the sandbox
+module.
 
 AgentKit is two parts:
 
@@ -51,7 +60,7 @@ First-party imports, from
 | `prompt` | `core`, `guard`, `tools` | |
 | `.` (root, `agentkit`) | `core`, `catalog`, `guard`, `prompt`, `provider`, `provider/anthropic` | `github.com/anthropics/anthropic-sdk-go` |
 | `codesearch` (nested module) | `core`, `outline`, `schema`, `tools` | `github.com/sourcegraph/zoekt` |
-| `sandbox` | `core`, `tools` | |
+| `sandbox` (nested module; so are the rows below) | `core`, `tools` | |
 | `sandbox/internal/sandboxpb` | none (generated) | `google.golang.org/grpc`, `google.golang.org/protobuf` |
 | `sandbox/internal/tooldigest` | `core`, `schema` | |
 | `sandbox/internal/buildver` | none | |
@@ -503,5 +512,5 @@ messages are designed for it.
 - `provider/faux` scripts a model offline; the root tests and the examples run
   against it.
 
-Run everything with `make check` (fmt, vet, lint, test for the root and
-`codesearch` modules).
+Run everything with `make check` (fmt, vet, lint, test for every module:
+the root, `codesearch`, `sandbox` and `examples/sandbox`).
