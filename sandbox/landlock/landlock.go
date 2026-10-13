@@ -53,6 +53,7 @@ type seams struct {
 	lookPath   func(string) (string, error)
 	// resolver is the resolver directory for the resolv.conf path given.
 	resolver func(path string) string
+	procs    procTable
 }
 
 // provider is the landlock provider.
