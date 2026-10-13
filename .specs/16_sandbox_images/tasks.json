@@ -421,7 +421,7 @@
         "TS-16-51 and TS-16-52 pass with AGENTKIT_SANDBOX_SMOKE=1 on a host with podman or docker",
         "TS-16-53 passes with AGENTKIT_SANDBOX_RELEASE_VERSION set once the first vX.Y.Z tag has been pushed and both GHCR packages are public"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
