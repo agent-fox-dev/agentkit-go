@@ -523,7 +523,7 @@
         "`make sandbox-landlock-test` passes on a Linux host with Landlock ABI 4, git beneath a system directory and network access",
         "`make check` passes offline on Linux and macOS"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
