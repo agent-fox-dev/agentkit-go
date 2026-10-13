@@ -66,12 +66,15 @@ First-party imports, from
 | `sandbox/internal/buildver` | none | |
 | `sandbox/internal/tarsafe` | none | |
 | `sandbox/internal/stdioconn` | none | |
-| `sandbox/internal/agent` | `core`, `sandbox`, `sandbox/internal/{buildver,sandboxpb,tarsafe,tooldigest}`, `tools` | `google.golang.org/grpc` |
-| `sandbox/internal/attach` | `core`, `sandbox`, `sandbox/internal/{buildver,sandboxpb,tarsafe,tooldigest}`, `tools`, `wire` | `google.golang.org/grpc`, `google.golang.org/protobuf` |
+| `sandbox/internal/rsyncx` | `sandbox/internal/{sandboxpb,tarsafe}`, `tools` | `github.com/gokrazy/rsync/{rsyncclient,rsyncd}`, in `//go:build !windows` files |
+| `sandbox/internal/agent` | `core`, `sandbox`, `sandbox/internal/{buildver,rsyncx,sandboxpb,tarsafe,tooldigest}`, `tools` | `google.golang.org/grpc` |
+| `sandbox/internal/attach` | `core`, `sandbox`, `sandbox/internal/{buildver,rsyncx,sandboxpb,tarsafe,tooldigest}`, `tools`, `wire` | `google.golang.org/grpc`, `google.golang.org/protobuf` |
 | `sandbox/internal/localtest` | `sandbox` | |
 | `sandbox/local` | `sandbox`, `sandbox/internal/{agent,attach,localtest,stdioconn}` | |
 | `sandbox/cmd/agentkit-sandboxd` | `sandbox`, `sandbox/internal/{agent,buildver,stdioconn}` | |
 | `sandbox/internal/fakeagent` (tests only) | `sandbox/internal/{sandboxpb,tooldigest}`, `tools` | `google.golang.org/grpc` |
+| `sandbox/internal/relaytest` (tests only) | `sandbox`, `sandbox/internal/{agent,attach,rsyncx,sandboxpb}` | `google.golang.org/grpc` |
+| `sandbox/internal/treegen` (tests only) | `sandbox/internal/tarsafe`, `tools` | |
 
 What follows from it:
 
@@ -416,22 +419,23 @@ Provider.Create   CheckSpec(Capabilities, Spec): every field the provider does
 attach            gRPC client over that connection (one-shot dialer, never
                   redialled); Hello: a different protocol major is refused
                   (ErrProtocol), any minor accepted; TTL timer started
-Sandbox.Sync      a TarStart chunk, then the tar in chunks of at most 1 MiB;
-                  the agent extracts through tarsafe as the bytes arrive
+Sandbox.Sync      Tar: a TarStart chunk, then the tar in chunks of at most
+                  1 MiB; the agent extracts through tarsafe as the bytes
+                  arrive. LocalDir: one Rsync stream (below)
 Sandbox.Tools     Tools RPC; the host builds its own tools.All and compares
                   names, order and definition digests (ErrToolMismatch);
                   returns one proxy per tool
 proxy Execute     Call RPC with the model's bytes verbatim; the agent runs the
                   tool with the RPC context; Data and Metadata come back as
                   JSON bytes and pass wire.Guard
-Sandbox.Export    ExportTar; the host re-validates every entry before the
-                  destination sees it
+Sandbox.Export    TarOut: ExportTar; the host re-validates every entry before
+                  the destination sees it. LocalDir: one Rsync stream
 Sandbox.Close     timer stopped, connection closed, the provider's destroy step
 ```
 
 **The agent service.** `agentkit.sandbox.v1` has one service, `Agent`, with
-`Hello`, `Tools`, `Call`, client-streaming `SyncTar` and server-streaming
-`ExportTar`. Tool input, result data and metadata travel as JSON bytes, so
+`Hello`, `Tools`, `Call`, client-streaming `SyncTar`, server-streaming
+`ExportTar` and, since protocol 1.1, bidirectional `Rsync`. Tool input, result data and metadata travel as JSON bytes, so
 schemas stay the `tools` package's own and new `ToolMetadata` fields need no
 proto change; `CallRequest` and `CallResponse` are self-contained. Every
 message is bounded by `sandbox.MaxMessageBytes` (16 MiB, the same number as
@@ -486,6 +490,80 @@ refused; setuid, setgid and sticky bits are cleared. Extraction writes through
 an `os.Root`, so no write follows a symlink out. A refused entry ends a sync
 with `ErrUnsafeArchive`, and entries already extracted stay. A transfer has no
 ordering guarantee with tool calls running at the same time.
+
+**LocalDir transfer.** `sandbox.LocalDir` moves a host directory over the
+rsync protocol, `github.com/gokrazy/rsync` behind `sandbox/internal/rsyncx`,
+the only package that imports it. That library can neither apply exclude
+rules safely nor keep excluded paths from deletion
+(`docs/errata/14_sandbox_rsync_sync.md`), so it only ever moves the files of
+a tree that already is the transfer set: the sending side serves a filtered,
+read-only `fs.FS` view of its tree (`rsyncx.Filtered`) with an `rsyncd`
+server, and the receiving side runs an `rsyncclient` receiver into its
+directory. On Sync the host serves and the agent receives into the workspace;
+on Export the agent serves and the host receives into the destination. The
+library never sees a rule or `--delete`; deletion is AgentKit's own
+(`rsyncx.DeleteAbsent`, through an `os.Root`, never following a symlink).
+
+One `Rsync` stream carries one transfer, its frames in this order:
+
+```
+host  -> agent  start  direction (SYNC or EXPORT), path (empty for SYNC),
+                       include_ignored, exclude_git, delete
+agent -> host   plan   the agent's rules over its tree; file: the export path
+                       is a regular file
+host  -> agent  args   the agent's server-side argument list (--sender exactly
+                       for EXPORT, --delete as the declared intent), the
+                       combined rules and, for a SYNC with delete, the host's
+                       transfer set
+both            data   rsync protocol bytes, at most 1 MiB a frame
+agent -> host   done   files, bytes, deleted for SYNC; the transfer set for an
+                       EXPORT with delete
+```
+
+A frame out of this order, or a stream that ends with status OK and no done
+frame, is a malformed response (`malformed response: rsync: <reason>`) and
+makes the sandbox unavailable. The agent refuses a bad start or args frame
+with `InvalidArgument` (a missing export path with `NotFound`) before it
+builds any server, runs one stream at a time (a second is
+`FailedPrecondition`), and ends a library failure with `FailedPrecondition`
+carrying the library's message; all of these keep the sandbox live. A failure
+of the host's own side of the library cancels the stream and returns
+`sandbox: rsync client: <the library's error>`, the sandbox live. An agent
+below protocol 1.1 and a Windows host are refused before any walk or stream.
+
+*The transfer set.* Each side computes rules over its own tree: the entries
+`tools.Walk` (hidden files included) does not visit, one rule per ignored
+directory at its highest level and none under `.git` (the host walks with
+`LocalDir.Ignore`, the agent with `tools.NoGlobalExcludes()`; an export of a
+subdirectory honours the workspace's ignore files above it); every symlink
+`tarsafe.SymlinkEscapes` rejects, relative to the transfer root; every entry
+it cannot read; and `.git`, which excludes a `.git` component at any depth, on
+a Sync with `ExcludeGit` and on every Export. `IncludeIgnored`, or an export
+of a single regular file, drops the ignore rules only. A rule is a literal
+path (wildcard characters are plain characters) and excludes its subtree. The
+host combines both sides' rules into their sorted union; a path either side
+excludes is not sent, not overwritten, not written through and not deleted on
+the receiving side. The combined rules, and a sender's transfer set, are
+capped at 8 MiB: the agent refuses its own oversized rules with
+`FailedPrecondition` instead of sending plan, and the host refuses oversized
+combined rules before args.
+
+*Trust.* Workspace content is untrusted; the agent binary is trusted. On
+Export the host's safety rests on two things: the agent never sends an
+escaping symlink or `.git`, and the host's own rules over the destination
+keep its ignored files, its `.git` and its escaping symlinks from being
+overwritten, written through or deleted. The agent serves each stream with
+exactly one module over the workspace root, writable only for SYNC
+(`rsyncx.ModulesFor`), so an EXPORT stream cannot change the workspace.
+
+*No code in this module confines the process that embeds it.* Both library
+constructors, `rsyncd.NewServer` and `rsyncclient.New`, are called in exactly
+one `rsyncx` function each, always with `DontRestrict()`: without it the
+library applies Landlock to the whole process, which under `local` is the
+embedder. Nothing in the sandbox module calls `chroot`, changes the working
+directory, the user id or the umask; `internal/policy` checks the
+constructors, and a re-executed test child checks the process stays
+unconfined after a Sync and an Export.
 
 **D3: the script runs on the host.** PRD 11's decision D3 (a) is what spec 13
 implements: a code-mode script over proxy tools runs in the host's Starlark

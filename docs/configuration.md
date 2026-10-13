@@ -430,12 +430,77 @@ files still apply), its explicit environment, and no index.
 `Path`, a workspace-relative slash-separated path (`""` and `.` are the
 root; an absolute or escaping path is refused). With `Replace`, the existing
 contents of `Path` are removed first and `Path` is kept, or created. It
-returns `SyncResult{Files, Bytes}`. `Export(ctx, path, sandbox.TarOut{W})`
+returns `SyncResult{Files, Bytes, Deleted, Sent}`: the regular files written
+and their content bytes, `Deleted` 0 even when `Replace` removed entries,
+and `Sent` the tar bytes read from `R` and sent. `Export(ctx, path, sandbox.TarOut{W})`
 writes a tar of the subtree to `W`, names relative to `path`, verbatim
 (hidden and ignored files included, symlinks as symlinks, other types
 skipped). Both directions refuse absolute names, `..`, hard links, devices,
 FIFOs and escaping symlinks with `sandbox.ErrUnsafeArchive`; a refused entry
 ends a sync, and entries extracted before it stay.
+
+### Transfer: `sandbox.LocalDir`
+
+`sandbox.LocalDir` is a host directory, a `Source` for `Sync` and a
+`Destination` for `Export`. The bytes travel over the rsync protocol, and
+only what changed moves. It needs an agent speaking protocol 1.1; an older
+agent is refused with `ErrUnsupported` (`LocalDir needs agent protocol 1.1,
+agent speaks 1.0`) before any walk or stream.
+
+| Field | On `Sync` | On `Export` |
+|---|---|---|
+| `Path` | An existing host directory whose contents map onto the workspace root. | A host directory, or a missing one whose parent exists, created once the agent accepts the transfer. A workspace directory's contents map onto it; a regular file lands as `Path/<base name>`. |
+| `Ignore tools.IgnoreOptions` | The host's ignore environment. The zero value reads the real environment, global excludes included, as `tools.Options.Ignore` does; `tools.NoGlobalExcludes()` is hermetic. The agent always uses `tools.NoGlobalExcludes()`. | The same, for the host's rules over the destination. |
+| `IncludeIgnored` | Turns ignore rules off on both sides. | The same. |
+| `ExcludeGit` | Leaves `.git` behind. Without it `.git` content transfers whole. | No effect: an export always leaves `.git` behind. |
+| `Delete` | Removes workspace entries the host directory lacks, except what either side's rules exclude. | Removes destination entries the exported directory lacks, except what either side's rules exclude. Refused for a regular-file export path. |
+
+A relative `Path` resolves against the working directory at call time, and
+symlinks in it are resolved once; the working directory is never changed.
+An empty `Path`, a missing `Sync` directory, a destination that is not a
+directory, or one whose parent is missing is refused before any stream,
+naming the path. The `Export` path is checked like a `Tar` path; a symlink
+there is refused (`InvalidArgument`) and a missing one is `NotFound`.
+
+For a `LocalDir` sync, `SyncResult.Files` counts the regular files the
+transfer created or changed in the workspace and `Bytes` their content bytes
+(from the agent comparing size and modification time before and after, so a
+tool writing in the same window may be counted), `Deleted` the entries
+removed under `Delete`, and `Sent` the rsync data bytes the host wrote to the
+stream. `Export` returns only an error.
+
+**What moves.** Each side computes rules over its own tree, and a path
+either side's rules exclude is not sent, not overwritten, not written
+through and not deleted:
+
+- ignored entries: what `tools.Walk` with hidden files does not visit, at
+  the highest ignored level, never under `.git`. An export of a
+  subdirectory honours the workspace's ignore files above it; `IncludeIgnored`
+  and a single-file export apply none;
+- every symlink whose target leaves the transfer root (absolute, or climbing
+  above it), on both sides, `IncludeIgnored` or not;
+- every entry the side cannot read, with its subtree;
+- `.git`, at any depth, on a `Sync` with `ExcludeGit` and on every `Export`.
+
+A rule is a literal path; `*`, `?` and `[` in a name are plain characters.
+The combined rules may measure at most 8 MiB; past that the transfer is
+refused before any file moves, with `rsync rules measure N bytes, over the
+8 MiB limit (8388608 bytes)`.
+
+**Warning: `IncludeIgnored` with `Delete` on `Export`** turns off the rules
+that protect the destination's ignored files, so a host `.env` (or any other
+ignored file) the workspace lacks is deleted. **A `.git/config` holding a
+token in a remote URL travels into the sandbox** on a `Sync` unless
+`ExcludeGit` is set.
+
+Failures: a closed or unavailable sandbox returns `ErrClosed` or
+`ErrUnavailable` before anything else. On Windows the host refuses with
+`ErrUnsupported` naming the platform, and a Windows-built agent answers
+`Rsync` with `FailedPrecondition`. The agent's deliberate refusals, a failure
+of the rsync library on either side, and a cancelled context (the error
+wraps `ctx.Err()`; files already written stay) keep the sandbox live; a
+transport failure or a malformed stream makes it unavailable. No transfer is
+retried.
 
 ### `local.Unisolated()`
 
