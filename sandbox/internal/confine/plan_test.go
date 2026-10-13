@@ -3,6 +3,7 @@ package confine
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -51,5 +52,24 @@ func TestPlanTable_TS15_8(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TS-15-9 (file half): Plan lives in a file with no build constraint and no
+// GOOS or GOARCH suffix, and so does its test file. 15-REQ-2.3. The probe
+// counting runs in setup_linux_test.go.
+func TestPlanUnconstrained_TS15_9(t *testing.T) {
+	for _, name := range []string{"plan.go", "plan_test.go"} {
+		if c := fileConstraint(t, name); c != nil {
+			t.Errorf("%s has the build constraint %v", name, c)
+		}
+		base := strings.TrimSuffix(strings.TrimSuffix(name, ".go"), "_test")
+		if strings.Contains(base, "_") {
+			t.Errorf("%s has a GOOS or GOARCH suffix", name)
+		}
+	}
+	src, err := os.ReadFile("plan.go")
+	if err != nil || !strings.Contains(string(src), "func Plan(") {
+		t.Errorf("plan.go does not declare Plan: %v", err)
 	}
 }

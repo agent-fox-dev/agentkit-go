@@ -74,14 +74,3 @@ func New(cfg Config) (*Agent, error) {
 	env := append([]string{}, cfg.Env...) // non-nil: nil would mean the process's environment
 	return &Agent{root: root, env: env, ttl: cfg.TTL, start: time.Now(), build: tools.All, landlock: cfg.Landlock}, nil
 }
-
-// envValue is the last value of key in env, as exec resolves duplicates.
-func envValue(env []string, key string) string {
-	v := ""
-	for _, kv := range env {
-		if len(kv) > len(key) && kv[len(key)] == '=' && kv[:len(key)] == key {
-			v = kv[len(key)+1:]
-		}
-	}
-	return v
-}

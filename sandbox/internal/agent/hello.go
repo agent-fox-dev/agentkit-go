@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/agentenv"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 )
@@ -39,7 +40,7 @@ func lookPathIn(env []string, file string) bool {
 	if runtime.GOOS == "windows" {
 		file += ".exe"
 	}
-	for _, dir := range filepath.SplitList(envValue(env, "PATH")) {
+	for _, dir := range filepath.SplitList(agentenv.Value(env, "PATH")) {
 		if !filepath.IsAbs(dir) {
 			continue
 		}

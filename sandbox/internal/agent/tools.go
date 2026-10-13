@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/agentenv"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/tooldigest"
 	"github.com/agent-fox-dev/agentkit-go/tools"
@@ -58,7 +59,8 @@ func (a *Agent) Tools(_ context.Context, req *sandboxpb.ToolsRequest) (*sandboxp
 func (a *Agent) buildSet(opts toolOptions) (*toolSet, error) {
 	spill := opts.spillDir
 	if spill == "" && !opts.disableSpill {
-		spill = filepath.Join(a.tempDir(), "agentkit-spill")
+		dir, _ := agentenv.TempDir(a.env)
+		spill = filepath.Join(dir, "agentkit-spill")
 	}
 	ws, err := tools.NewWorkspace(a.root)
 	if err != nil {
@@ -100,14 +102,4 @@ func (a *Agent) rebuild() error {
 	set.resp = a.set.resp
 	a.set = set
 	return nil
-}
-
-// tempDir is the explicit environment's temporary directory.
-func (a *Agent) tempDir() string {
-	for _, k := range []string{"TMPDIR", "TEMP", "TMP"} {
-		if v := envValue(a.env, k); v != "" {
-			return v
-		}
-	}
-	return "/tmp"
 }
