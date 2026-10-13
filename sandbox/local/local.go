@@ -33,7 +33,8 @@ type provider struct{}
 func Unisolated() sandbox.Provider { return provider{} }
 
 // Capabilities: no isolation, unrestricted network only, no resource
-// bounds, no image and no workdir choice.
+// bounds, no image, no workdir choice, and no Landlock: the agent runs in the
+// embedder's process, which nothing may confine.
 func (provider) Capabilities() sandbox.Capabilities {
 	return sandbox.Capabilities{
 		Provider:  "local",
@@ -69,7 +70,8 @@ func (p provider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandbo
 	if err := writeMarker(dir, marker{PID: os.Getpid(), Labels: eff.Labels, Created: time.Now(), TTLNs: int64(eff.TTL)}); err != nil {
 		return nil, errors.Join(err, os.RemoveAll(dir))
 	}
-	a, err := agent.New(agent.Config{Workdir: filepath.Join(dir, "workspace"), Env: agentEnv(eff.Env, dir), TTL: eff.TTL})
+	a, err := agent.New(agent.Config{Workdir: filepath.Join(dir, "workspace"), Env: agentEnv(eff.Env, dir), TTL: eff.TTL,
+		Landlock: sandbox.LandlockInfo{Note: "in-process agent (local provider): no confinement"}})
 	if err != nil {
 		return nil, errors.Join(err, os.RemoveAll(dir))
 	}
@@ -93,7 +95,7 @@ func (p provider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandbo
 		localtest.Deregister(id)
 		return os.RemoveAll(dir)
 	}
-	return attach.Dial(ctx, hostConn, attach.Config{ID: id, Spec: eff, Destroy: destroy})
+	return attach.Dial(ctx, hostConn, attach.Config{ID: id, Spec: eff, Destroy: destroy, Provider: "local"})
 }
 
 // newID is 16 random lowercase hex characters.

@@ -25,6 +25,11 @@ type Spec struct {
 	// Provider holds provider-specific options. Each provider refuses a key
 	// it does not define.
 	Provider map[string]any
+	// RequireLandlock makes Create fail unless the sandbox's agent confines
+	// itself with Landlock: CheckSpec refuses it when Capabilities.Landlock
+	// is false, and after Hello the agent's report must satisfy the network
+	// mode (LandlockInfo.Satisfies). Off by default.
+	RequireLandlock bool
 }
 
 // Resources bounds what a sandbox may use. Zero means no bound.
@@ -109,4 +114,7 @@ type Capabilities struct {
 	Workdir bool
 	// Notes is a plain statement of what the provider does not do.
 	Notes string
+	// Landlock says the provider starts agentkit-sandboxd in a way that lets
+	// it apply its Landlock ruleset.
+	Landlock bool
 }

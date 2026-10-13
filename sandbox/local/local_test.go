@@ -166,8 +166,8 @@ func TestCapabilities_TS13_56(t *testing.T) {
 	if c.Provider != "local" || c.Isolation != sandbox.IsolationNone || !slices.Equal(c.Network, []sandbox.NetworkMode{sandbox.NetworkUnrestricted}) {
 		t.Errorf("capabilities %+v", c)
 	}
-	if c.Resources != (sandbox.ResourceCaps{}) || c.Image || c.Workdir {
-		t.Errorf("capabilities %+v claim a resource, image or workdir", c)
+	if c.Resources != (sandbox.ResourceCaps{}) || c.Image || c.Workdir || c.Landlock {
+		t.Errorf("capabilities %+v claim a resource, image, workdir or Landlock", c)
 	}
 	if !strings.Contains(c.Notes, "process") || !strings.Contains(c.Notes, "privileges") {
 		t.Errorf("Notes %q", c.Notes)

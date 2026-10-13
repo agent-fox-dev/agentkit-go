@@ -34,6 +34,11 @@ type SpecError struct {
 }
 
 func (e *SpecError) Error() string {
+	if e.value == "" {
+		// Built outside CheckSpec (attach's RequireLandlock refusal), where
+		// the reason carries the facts.
+		return fmt.Sprintf("sandbox: provider %q cannot honour Spec.%s: %s", e.Provider, e.Field, e.Reason)
+	}
 	return fmt.Sprintf("sandbox: provider %q cannot honour Spec.%s = %s: %s", e.Provider, e.Field, e.value, e.Reason)
 }
 

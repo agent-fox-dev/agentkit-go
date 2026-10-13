@@ -129,7 +129,8 @@ func TestCheckSpecInvalid_TS13_11(t *testing.T) {
 }
 
 // TS-13-13: CheckSpec returns ErrUnsupported exactly when the spec sets a
-// field the capabilities do not cover. 13-REQ-2.7.
+// field the capabilities do not cover. 13-REQ-2.7. Spec 15 added
+// RequireLandlock against Capabilities.Landlock to the oracle.
 func TestCheckSpecProperty_TS13_13(t *testing.T) {
 	r := rand.New(rand.NewPCG(13, 13))
 	modes := []sandbox.NetworkMode{sandbox.NetworkNone, sandbox.NetworkAllowlist, sandbox.NetworkUnrestricted}
@@ -143,8 +144,10 @@ func TestCheckSpecProperty_TS13_13(t *testing.T) {
 		caps.Provider = "p"
 		caps.Resources = sandbox.ResourceCaps{CPUs: r.IntN(2) == 0, MemoryBytes: r.IntN(2) == 0, PIDs: r.IntN(2) == 0, DiskBytes: r.IntN(2) == 0}
 		caps.Image, caps.Workdir = r.IntN(2) == 0, r.IntN(2) == 0
+		caps.Landlock = r.IntN(2) == 0
 
 		var spec sandbox.Spec
+		spec.RequireLandlock = r.IntN(2) == 0
 		spec.Network.Mode = modes[r.IntN(3)]
 		if spec.Network.Mode == sandbox.NetworkAllowlist && r.IntN(2) == 0 {
 			spec.Network.Allow = []sandbox.Endpoint{{Host: "example.com", Port: 1 + r.IntN(65535)}}
@@ -167,7 +170,8 @@ func TestCheckSpecProperty_TS13_13(t *testing.T) {
 			(spec.Resources.MemoryBytes != 0 && !caps.Resources.MemoryBytes) ||
 			(spec.Resources.PIDs != 0 && !caps.Resources.PIDs) ||
 			(spec.Resources.DiskBytes != 0 && !caps.Resources.DiskBytes) ||
-			(spec.Image != "" && !caps.Image) || (spec.Workdir != "" && !caps.Workdir)
+			(spec.Image != "" && !caps.Image) || (spec.Workdir != "" && !caps.Workdir) ||
+			(spec.RequireLandlock && !caps.Landlock) // 15-REQ-6.3
 
 		out, err := sandbox.CheckSpec(caps, spec)
 		if errors.Is(err, sandbox.ErrUnsupported) != uncovered {
@@ -186,6 +190,99 @@ func TestCheckSpecProperty_TS13_13(t *testing.T) {
 			}
 			if !reflect.DeepEqual(out, want) {
 				t.Fatalf("CheckSpec returned %+v, want %+v", out, want)
+			}
+		}
+	}
+}
+
+// TS-15-33: CheckSpec refuses RequireLandlock against capabilities without
+// Landlock with a RequireLandlock SpecError matching ErrUnsupported.
+// 15-REQ-6.1, 15-REQ-6.2.
+func TestRequireLandlockCheck_TS15_33(t *testing.T) {
+	caps := sandbox.Capabilities{Provider: "p", Network: []sandbox.NetworkMode{sandbox.NetworkNone, sandbox.NetworkUnrestricted}}
+	withLL := caps
+	withLL.Landlock = true
+	spec := sandbox.Spec{Network: sandbox.Network{Mode: sandbox.NetworkNone}, RequireLandlock: true}
+	_, err := sandbox.CheckSpec(caps, spec)
+	var se *sandbox.SpecError
+	if !errors.As(err, &se) || se.Field != "RequireLandlock" || se.Provider != "p" || !errors.Is(err, sandbox.ErrUnsupported) {
+		t.Errorf("against Landlock false: %v (%+v)", err, se)
+	}
+	if eff, err := sandbox.CheckSpec(withLL, spec); err != nil || !eff.RequireLandlock {
+		t.Errorf("against Landlock true: %+v, %v", eff, err)
+	}
+	spec.RequireLandlock = false
+	if _, err := sandbox.CheckSpec(caps, spec); err != nil {
+		t.Errorf("RequireLandlock false: %v", err)
+	}
+	if (sandbox.Capabilities{}).Landlock || (sandbox.Spec{}).RequireLandlock {
+		t.Error("the zero Capabilities or Spec sets Landlock")
+	}
+}
+
+// TS-15-34: for any capabilities and spec, CheckSpec agrees with TS-13-13's
+// oracle extended by the RequireLandlock rule, which is checked after 13's
+// fields. 15-REQ-6.3.
+func TestRequireLandlockProperty_TS15_34(t *testing.T) {
+	r := rand.New(rand.NewPCG(15, 34))
+	modes := []sandbox.NetworkMode{sandbox.NetworkNone, sandbox.NetworkAllowlist, sandbox.NetworkUnrestricted}
+	for range 3000 {
+		caps := sandbox.Capabilities{Provider: "p", Landlock: r.IntN(2) == 0,
+			Resources: sandbox.ResourceCaps{CPUs: r.IntN(2) == 0, MemoryBytes: r.IntN(2) == 0, PIDs: r.IntN(2) == 0, DiskBytes: r.IntN(2) == 0}}
+		caps.Image, caps.Workdir = r.IntN(2) == 0, r.IntN(2) == 0
+		for _, m := range modes {
+			if r.IntN(2) == 0 {
+				caps.Network = append(caps.Network, m)
+			}
+		}
+		spec := sandbox.Spec{RequireLandlock: r.IntN(2) == 0}
+		spec.Network.Mode = modes[r.IntN(3)]
+		pick := func() int64 { return int64(r.IntN(3) / 2 * (1 + r.IntN(8))) }
+		spec.Resources = sandbox.Resources{CPUs: float64(pick()), MemoryBytes: pick(), PIDs: pick(), DiskBytes: pick()}
+		if r.IntN(3) == 0 {
+			spec.Image = "img"
+		}
+		if r.IntN(3) == 0 {
+			spec.Workdir = "/w"
+		}
+		valueErr := r.IntN(10) == 0 // a value 13 refuses whatever the capabilities
+		if valueErr {
+			spec.TTL = -time.Second
+		}
+		// The oracle: 13's checks in 13's order, then RequireLandlock.
+		field := ""
+		for _, c := range []struct {
+			name string
+			fail bool
+		}{
+			{"Network.Mode", !slices.Contains(caps.Network, spec.Network.Mode)},
+			{"Resources.CPUs", spec.Resources.CPUs != 0 && !caps.Resources.CPUs},
+			{"Resources.MemoryBytes", spec.Resources.MemoryBytes != 0 && !caps.Resources.MemoryBytes},
+			{"Resources.PIDs", spec.Resources.PIDs != 0 && !caps.Resources.PIDs},
+			{"Resources.DiskBytes", spec.Resources.DiskBytes != 0 && !caps.Resources.DiskBytes},
+			{"Image", spec.Image != "" && !caps.Image},
+			{"Workdir", spec.Workdir != "" && !caps.Workdir},
+			{"RequireLandlock", spec.RequireLandlock && !caps.Landlock},
+		} {
+			if c.fail {
+				field = c.name
+				break
+			}
+		}
+		eff, err := sandbox.CheckSpec(caps, spec)
+		var se *sandbox.SpecError
+		switch {
+		case valueErr:
+			if err == nil || (errors.As(err, &se) && se.Field == "RequireLandlock") {
+				t.Fatalf("a negative TTL gave %v, want 13's value error", err)
+			}
+		case field == "":
+			if err != nil || eff.RequireLandlock != spec.RequireLandlock {
+				t.Fatalf("caps %+v spec %+v: %+v, %v; want accepted", caps, spec, eff, err)
+			}
+		default:
+			if !errors.As(err, &se) || se.Field != field || !errors.Is(err, sandbox.ErrUnsupported) {
+				t.Fatalf("caps %+v spec %+v: %v, want a SpecError for %s", caps, spec, err, field)
 			}
 		}
 	}

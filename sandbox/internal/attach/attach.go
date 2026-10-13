@@ -34,6 +34,8 @@ type Config struct {
 	Destroy func(context.Context) error
 	// Metadata is sent with every RPC.
 	Metadata metadata.MD
+	// Provider is the provider's name, for the RequireLandlock refusal.
+	Provider string
 }
 
 // Dial opens a gRPC client over conn — insecure, because the channel is a
@@ -65,8 +67,9 @@ func oneShot(conn net.Conn) func(context.Context, string) (net.Conn, error) {
 }
 
 // New attaches to the agent behind cc: it calls Hello under ctx, refuses a
-// different protocol major with sandbox.ErrProtocol, and starts the TTL
-// timer. closer closes the client. On any failure the client is closed and
+// different protocol major with sandbox.ErrProtocol, refuses a spec with
+// RequireLandlock whose agent's Landlock report does not satisfy its network
+// mode with a *sandbox.SpecError, and starts the TTL timer. closer closes the client. On any failure the client is closed and
 // the destroy step runs. ctx bounds creation only.
 func New(ctx context.Context, cc grpc.ClientConnInterface, closer io.Closer, cfg Config) (sandbox.Sandbox, error) {
 	s := &sb{cc: cc, client: sandboxpb.NewAgentClient(cc), closer: closer, cfg: cfg}
@@ -82,6 +85,13 @@ func New(ctx context.Context, cc grpc.ClientConnInterface, closer io.Closer, cfg
 	}
 	s.agent = sandbox.AgentInfo{Version: h.Version, ProtocolMajor: h.ProtocolMajor, ProtocolMinor: h.ProtocolMinor,
 		Workdir: h.Workdir, OutlineBackend: h.OutlineBackend, Git: h.Git, Landlock: landlockInfo(h)}
+	if cfg.Spec.RequireLandlock && !s.agent.Landlock.Satisfies(cfg.Spec.Network.Mode) {
+		l := s.agent.Landlock
+		err := &sandbox.SpecError{Provider: cfg.Provider, Field: "RequireLandlock",
+			Reason: fmt.Sprintf("agent Landlock does not satisfy network mode %s: ABI %d, kernel ABI %d, TCP %t, note: %s",
+				cfg.Spec.Network.Mode, l.ABI, l.KernelABI, l.TCP, l.Note)}
+		return nil, errors.Join(err, s.teardown())
+	}
 	s.spec = cfg.Spec
 	s.spec.Workdir = h.Workdir
 	if ttl := s.spec.TTL; ttl > 0 {
