@@ -42,6 +42,8 @@ var approvedDeps = []string{
 	"google.golang.org/grpc",
 	// The protobuf runtime the generated sandbox protocol code uses.
 	"google.golang.org/protobuf",
+	// The in-process rsync protocol for sandbox LocalDir transfers (sandbox/internal/rsyncx).
+	"github.com/gokrazy/rsync",
 }
 
 // validateAllowlist returns an error naming every dependency in deps that no
@@ -329,6 +331,79 @@ func TestSandboxDepsPromoted_TS13_65(t *testing.T) {
 	}
 	if string(all) != string(snap) {
 		t.Errorf("go list -m all differs from the pre-spec snapshot:\n%s", all)
+	}
+}
+
+// d1Upgrades are the versions D-1 accepted: minimum version selection raises
+// these when gokrazy/rsync v0.3.8 enters the sandbox module's graph
+// (docs/errata/14_sandbox_rsync_sync.md).
+var d1Upgrades = map[string]string{
+	"github.com/BurntSushi/toml": "v1.6.0",
+	"golang.org/x/crypto":        "v0.46.0",
+	"golang.org/x/mod":           "v0.30.0",
+	"golang.org/x/net":           "v0.47.0",
+	"golang.org/x/text":          "v0.32.0",
+	"golang.org/x/tools":         "v0.39.0",
+}
+
+// TS-14-42: gokrazy/rsync v0.3.8 is the only new direct requirement,
+// approved with a reason; the sandbox module's graph gains only additions
+// and D-1's upgrades; x/net and go-landlock stay out of the direct set.
+// 14-REQ-9.1, 14-REQ-9.2. The requirement is the nested sandbox module's
+// (D-2), so the root module's go.mod and graph do not change at all.
+func TestRsyncDependency_TS14_42(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go is not on PATH")
+	}
+	root := repoRoot(t)
+	sb := filepath.Join(root, "sandbox")
+	reqs := parseGoMod(t, sb)
+	if r := reqs["github.com/gokrazy/rsync"]; r.version != "v0.3.8" || r.indirect {
+		t.Errorf("sandbox/go.mod requires gokrazy/rsync %+v, want v0.3.8 direct", r)
+	}
+	if _, ok := parseGoMod(t, root)["github.com/gokrazy/rsync"]; ok {
+		t.Error("the root go.mod requires gokrazy/rsync; only the sandbox module may")
+	}
+	for _, m := range []string{"golang.org/x/net", "github.com/landlock-lsm/go-landlock"} {
+		if r, ok := reqs[m]; ok && !r.indirect {
+			t.Errorf("sandbox/go.mod requires %s directly", m)
+		}
+	}
+	want := []string{"github.com/agent-fox-dev/agentkit-go", "github.com/agent-fox-dev/agentkit-go/sandbox",
+		"github.com/gokrazy/rsync", "google.golang.org/grpc", "google.golang.org/protobuf"}
+	if got := directSet(t, sb); !slices.Equal(got, want) {
+		t.Errorf("the sandbox module's direct set is %v, want %v", got, want)
+	}
+	if !slices.Contains(approvedDeps, "github.com/gokrazy/rsync") || !commentedDeps(t, root)["github.com/gokrazy/rsync"] {
+		t.Error("approvedDeps lacks github.com/gokrazy/rsync with a reason comment above it")
+	}
+
+	cmd := exec.Command("go", "list", "-m", "all")
+	cmd.Dir = sb
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list -m all: %v", err)
+	}
+	snap, err := os.ReadFile(filepath.Join(root, "internal", "policy", "testdata", "sandbox-go-list-m-all.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != string(snap) {
+		t.Errorf("the sandbox module's go list -m all differs from its snapshot:\n%s", out)
+	}
+	base, err := os.ReadFile(filepath.Join(root, "internal", "policy", "testdata", "sandbox-go-list-m-all.13.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := strings.Split(string(out), "\n")
+	for _, line := range strings.Split(strings.TrimSpace(string(base)), "\n") {
+		f := strings.Fields(line)
+		if v, up := d1Upgrades[f[0]]; up {
+			line = f[0] + " " + v
+		}
+		if !slices.Contains(now, line) {
+			t.Errorf("%q is missing from the graph: an existing version moved beyond D-1", line)
+		}
 	}
 }
 

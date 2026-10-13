@@ -92,3 +92,17 @@ What the delivered code does instead, as decided with the project owner:
   `rsyncclient.New` are each called in exactly one function of
   `sandbox/internal/rsyncx`, always with `DontRestrict()`; the AST test checks
   both.
+
+## 14-REQ-9.1: the version moves D-1 accepted
+
+`gokrazy/rsync` v0.3.1 to v0.3.8 all require `golang.org/x/crypto` v0.46.0,
+above the v0.40.0 already in the graph, so 14-REQ-9.1's "change the version
+of no module already in go.mod" cannot hold with the version the spec pins.
+The project owner accepted the moves (D-1). Because of D-2 they happen only
+in the sandbox module's graph: `x/crypto` v0.40.0→v0.46.0, `x/net`
+v0.41.0→v0.47.0, `x/text` v0.27.0→v0.32.0, `x/mod` v0.25.0→v0.30.0,
+`x/tools` v0.34.0→v0.39.0 and `BurntSushi/toml` v0.3.1→v1.6.0. All are
+indirect. TS-14-42 compares the sandbox module's graph with its pre-rsync
+snapshot (`internal/policy/testdata/sandbox-go-list-m-all.13.txt`): every
+line is unchanged except these six, and the root module's graph still equals
+spec 13's snapshot.

@@ -27,6 +27,7 @@ is not on it. An entry ending in `/` approves every module under that path.
 | `github.com/aws/aws-sdk-go-v2`, `github.com/aws/aws-sdk-go-v2/…` | AWS configuration and credentials for the Bedrock deployment |
 | `google.golang.org/grpc` | the sandbox agent protocol's transport |
 | `google.golang.org/protobuf` | the protobuf runtime of the generated sandbox protocol code |
+| `github.com/gokrazy/rsync` | the in-process rsync protocol for sandbox `LocalDir` transfers (sandbox module) |
 
 Adding a direct dependency means adding it there, with its reason, and a
 ruling here. The same list covers the nested `sandbox` module, whose direct
@@ -230,6 +231,57 @@ gRPC uses it to marshal every message.
 
 **What is pulled in.** Nothing that was not already in the graph.
 
+## `github.com/gokrazy/rsync`
+
+**Used by.** `sandbox/internal/rsyncx` only, in the nested `sandbox` module;
+the agent's `Rsync` service and the host's `attach` code reach it through
+that package. Files that import it are `//go:build !windows`; Windows gets
+stubs that refuse `LocalDir` at run time.
+
+**Version.** `v0.3.8`. Adding it raised, by minimum version selection and
+only in the sandbox module's graph, `golang.org/x/crypto` v0.40.0→v0.46.0,
+`golang.org/x/net` v0.41.0→v0.47.0, `golang.org/x/text` v0.27.0→v0.32.0,
+`golang.org/x/mod` v0.25.0→v0.30.0, `golang.org/x/tools` v0.34.0→v0.39.0 and
+`github.com/BurntSushi/toml` v0.3.1→v1.6.0: v0.3.1 to v0.3.8 all require
+`x/crypto` v0.46.0. The root module's graph does not change.
+`TestRsyncDependency_TS14_42` pins exactly these moves.
+
+**Why this module.** Both ends of a transfer run in-process, in the host's
+code and in the agent, so nothing has to be installed on either side; it
+moves only changed files (the quick check over size and modification time,
+and delta transfer); and the bytes travel over the agent protocol's own
+`Rsync` stream, so a gateway can relay them like any other stream.
+
+**How it is used, and why so narrowly.** v0.3.8's exclude rules are unusable
+here: a pattern with `*`, `?` or `[` panics, matching is not anchored, an
+excluded file drops its later siblings, and `--delete` ignores every rule
+(`docs/errata/14_sandbox_rsync_sync.md`). AgentKit therefore never passes it
+a rule or `--delete`: the sending side serves a filtered, read-only `fs.FS`
+through an `rsyncd` server, the receiving side runs an `rsyncclient`
+receiver, and AgentKit decides what to delete.
+
+**Every constructor restricts nothing.** `rsyncd.NewServer` applies Landlock
+to the whole process when it has modules, and `rsyncclient` does as a
+receiver, unless given `DontRestrict()`. In the local provider the process is
+the embedder. Each is called in exactly one function of `rsyncx`, always with
+`DontRestrict()`; `TestRsyncConstructorsDontRestrict_TS14_36` enforces it.
+
+**Protocol 27 limits.** No xattrs, no ACLs, MD4 checksums; owner, group,
+devices and hard links are not transferred (the options are `-r -l -t -p`).
+
+**What is pulled in** (`go mod why -m`; "linked" means in the agent's and
+host's binary through `rsyncx`):
+
+| Module | Why | Linked |
+|---|---|---|
+| `github.com/landlock-lsm/go-landlock` | `rsyncd` → `internal/restrict` | yes, never called (`DontRestrict`) |
+| `kernel.org/pub/linux/libs/security/libcap/psx` | go-landlock's syscalls | on Linux |
+| `github.com/mmcloughlin/md4` | the receiver's protocol-27 checksums | yes |
+| `github.com/google/renameio/v2` | the receiver's atomic writes | yes |
+| `github.com/google/shlex` | `rsyncclient` → `internal/maincmd` | yes |
+| `github.com/coreos/go-systemd` | `internal/maincmd` (socket activation) | on Linux |
+| `github.com/BurntSushi/toml` | `internal/rsyncdconfig` | yes |
+
 ## Rejected
 
 PRD 09 §4 records libraries that were considered and rejected, so they are not
@@ -240,6 +292,7 @@ name code that has since been deleted; they are kept as the record.
 
 | Area | Candidate | Why not |
 |---|---|---|
+| Sandbox `LocalDir` transfer | an external `rsync` binary | It must be installed on both sides, at compatible versions; it runs as a subprocess outside the agent protocol, so a gateway cannot relay it as a stream; and the agent would hand the embedder's environment to another program. |
 | Provider argument salvage | JSON-repair libraries | They close a truncated string; salvage drops the incomplete member, so `{"path":"/etc/pas` never becomes a valid call. |
 | Provider transport retry | `cenkalti/backoff`, `go-retryablehttp` | The code was the header policy, not the curve; savings under 60 lines. (The transport is now the SDK's.) |
 | Provider SSE / NDJSON readers | `r3labs/sse`, `launchdarkly/eventsource` | They reconnect and replay `Last-Event-ID`, which the streaming contract forbids. |

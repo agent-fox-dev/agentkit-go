@@ -112,7 +112,7 @@
         "every line of internal/policy/testdata/go-list-m-all.13.txt appears unchanged in `go list -m all`",
         "TS-09-15 and TS-09-16 pass"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
