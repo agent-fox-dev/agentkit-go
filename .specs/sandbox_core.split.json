@@ -5,7 +5,7 @@
     "sha256": "3fa5c1ac004cb152936a914b8b86a73ab97b660b43f7ce11478fc2dabcf20124"
   },
   "created_at": "2026-10-12T12:33:33Z",
-  "updated_at": "2026-10-12T15:25:29Z",
+  "updated_at": "2026-10-13T15:32:03Z",
   "scopes": [
     {
       "name": "sandbox_core",
@@ -33,11 +33,15 @@
     },
     {
       "name": "sandbox_podman",
-      "scope": "The sandbox/podman provider, driving the podman or docker CLI through tools.RunArgv. It covers podman.Args(Spec) as a pure function with the full hardening set, the workspace volume, the GitRepo source and its init step, resources, TTL on both sides, labels and Reap, the micro-VM runtime option, the missing-agent error naming AgentPath and the COPY --from line, and the guard documentation on when AllowAll is reasonable."
+      "scope": "The sandbox/podman provider, driving the podman or docker CLI through tools.RunArgv. It covers podman.Args(Spec) as a pure function with the full hardening set, the workspace volume, the GitRepo source and its init step, resources, TTL on both sides, labels and Reap, the micro-VM runtime option, the missing-agent error naming AgentPath and the COPY --from line, and the guard documentation on when AllowAll is reasonable.",
+      "spec_id": "17",
+      "dir": "17_sandbox_podman"
     },
     {
       "name": "sandbox_landlock_provider",
-      "scope": "The sandbox/landlock provider: the agent as a Landlock-confined child process on Linux (ABI v4 or later, probed with a test seam), with the sandbox directory and marker, the environment, ExtraRO and ExtraRW, refusals of Resources, Image and NetworkAllowlist, the GitRepo init-step clone as a second child, and TTL, Close and Reap."
+      "scope": "The sandbox/landlock provider: the agent as a Landlock-confined child process on Linux (ABI v4 or later, probed with a test seam), with the sandbox directory and marker, the environment, ExtraRO and ExtraRW, refusals of Resources, Image and NetworkAllowlist, the GitRepo init-step clone as a second child, and TTL, Close and Reap.",
+      "spec_id": "18",
+      "dir": "18_sandbox_landlock_provider"
     },
     {
       "name": "sandbox_gateway",

@@ -1,0 +1,805 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "17",
+  "spec_name": "sandbox_podman",
+  "schema_version": 2,
+  "introduction": "sandbox/podman is AgentKit's first sandbox provider that isolates. It runs each sandbox's agentkit-sandboxd as the only process of a hardened, ephemeral podman or docker container that holds one workspace volume, and it drives the engine's command line through pure, offline-checkable argument builders. It can fill the workspace from a public git repository through a separate init container that never opens the sandbox's own network. It bounds each sandbox's lifetime on both the host side and the container side, and it reaps what crashed hosts leave behind. This spec also adds sandbox.GitRepo, sandbox.ErrNoAgent, the sandbox/internal/gitclone helpers and two small changes to attach (a GitRepo refusal and a Live state accessor).",
+  "glossary": {
+    "GitRepo slot": "Per-sandbox state that allows exactly one GitRepo Sync, before anything else has written to the workspace and before the first Tools call.",
+    "destroy step": "The provider's teardown, handed to attach as Config.Destroy: wait for (or kill) the engine process, remove the containers, then remove the volume. attach runs it under a fresh 30-second context.",
+    "diagnostic run": "After a failed handshake, `<engine> run --rm … --entrypoint <AgentPath> <image> --version` without --init or a volume. Its exit status 126 or 127 identifies an image with no executable agent.",
+    "effective spec": "The Spec returned by sandbox.CheckSpec, with TTL 0 replaced by 1h and an empty Workdir replaced by /workspace, and with Image set to the image actually run.",
+    "engine": "The container command line the provider drives: podman, or docker (including a docker shim that runs podman, which counts as podman). It is resolved from Options.Binary and identified by Options.Engine or by `<Binary> --version`.",
+    "engine process": "The long-lived `<engine> run --rm -i …` child whose stdin and stdout carry the gRPC connection to the agent inside the container.",
+    "init step": "A short-lived `<engine> run --rm --init --name agentkit-<id>-init … --entrypoint git` container. It shares only the sandbox's volume and runs on the engine's default network, cloning a GitRepo into the workspace while the agent container sits idle beside it.",
+    "reserved labels": "`agentkit.sandbox=<id>` and `agentkit.sandbox.expires=<created+TTL in RFC 3339, UTC, whole seconds>`. They are written on the sandbox's container, init container and volume. The key prefix `agentkit.sandbox.` is reserved by this provider.",
+    "runner seam": "The provider's unexported command runner, with one method for short engine commands and one for starting the engine process. Offline tests replace it with a fake that records argv and serves an in-process agent over pipes.",
+    "short engine command": "Any other engine invocation (volume create, rm, volume rm, ps, volume ls, inspect, the diagnostic run, the init step). Each runs through tools.RunArgv with Options.EngineEnv."
+  },
+  "requirements": [
+    {
+      "id": "17-REQ-1",
+      "title": "GitRepo source, ErrNoAgent, clone helpers and attach support",
+      "rationale": "Providers need a shared, validated GitRepo source and clone argv, and every provider that cannot clone must refuse a GitRepo in the same way.",
+      "criteria": [
+        {
+          "id": "17-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "package sandbox",
+          "action": "declare `GitRepo{URL string; Ref string; Depth int}` as a type that satisfies the sealed Source interface, and declare the sentinel `ErrNoAgent = errors.New(\"sandbox: the image has no executable agent at sandbox.AgentPath\")`"
+        },
+        {
+          "id": "17-REQ-1.2",
+          "pattern": "unwanted",
+          "condition": "a GitRepo's URL has a scheme other than https, has no host, carries user information, has a fragment, or contains a whitespace or control character",
+          "system": "gitclone.Check",
+          "action": "refuse the repository",
+          "contract": "returns a non-nil error whose message names the URL field"
+        },
+        {
+          "id": "17-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "a GitRepo's Ref starts with '-' or '/', contains '..', or holds a character other than an ASCII letter, a digit, '.', '_', '-' or '/'",
+          "system": "gitclone.Check",
+          "action": "refuse the repository",
+          "contract": "returns a non-nil error whose message names the Ref field"
+        },
+        {
+          "id": "17-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "a GitRepo's Depth is negative",
+          "system": "gitclone.Check",
+          "action": "refuse the repository, while accepting an https URL with a host, an empty or valid Ref and a Depth of 0 or more",
+          "contract": "returns a non-nil error naming the Depth field for a negative Depth; returns nil for a repository with no defect listed in 17-REQ-1.2, 17-REQ-1.3 or this criterion"
+        },
+        {
+          "id": "17-REQ-1.5",
+          "pattern": "ubiquitous",
+          "system": "gitclone.Args",
+          "action": "return the argument list that follows `git`, in this order: `-c protocol.allow=never -c protocol.https.allow=always clone`, then `--depth N` only when Depth > 0, then `--branch REF` only when Ref is non-empty, then `--`, the URL and dir",
+          "contract": "Args(GitRepo{URL: u, Ref: \"main\", Depth: 1}, d) == [-c protocol.allow=never -c protocol.https.allow=always clone --depth 1 --branch main -- u d]; Args(GitRepo{URL: u}, d) == [-c protocol.allow=never -c protocol.https.allow=always clone -- u d]"
+        },
+        {
+          "id": "17-REQ-1.6",
+          "pattern": "ubiquitous",
+          "system": "gitclone.Args",
+          "action": "for any GitRepo that gitclone.Check accepts and any dir, return a list whose first five elements are `-c protocol.allow=never -c protocol.https.allow=always clone`, whose last three elements are `--`, the URL and dir, and in which every element before `--` is a fixed flag, the decimal Depth or the Ref"
+        },
+        {
+          "id": "17-REQ-1.7",
+          "pattern": "unwanted",
+          "condition": "attach's Sync receives a GitRepo",
+          "system": "attach",
+          "action": "refuse it without making any RPC to the agent and without changing the sandbox's state",
+          "contract": "returns an error matching sandbox.ErrUnsupported under errors.Is whose message names Config.Provider; local's Sync of a GitRepo therefore returns such an error naming \"local\", with no change to package local"
+        },
+        {
+          "id": "17-REQ-1.8",
+          "pattern": "ubiquitous",
+          "system": "attach.Live",
+          "action": "report the state of a sandbox that attach created, with the same result as attach's internal gate",
+          "contract": "returns nil while the sandbox is live, an error matching sandbox.ErrUnavailable once it is unavailable, and sandbox.ErrClosed once it is closed"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-2",
+      "title": "podman.New, options and capabilities",
+      "rationale": "An embedder must get a clear error for a missing or misconfigured engine, and capabilities that say exactly what the provider honours, without any container being started.",
+      "criteria": [
+        {
+          "id": "17-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "podman.New is called with valid Options",
+          "system": "podman.New",
+          "action": "resolve Options.Binary (\"podman\" when empty) through the PATH of Options.EngineEnv (os.Environ() when nil), and run no engine command other than a single `<Binary> --version`, and only when Options.Engine is empty",
+          "contract": "returns a non-nil sandbox.Provider and a nil error; the runner seam records zero commands when Engine is set, and exactly one `--version` command with a 30-second timeout when Engine is empty"
+        },
+        {
+          "id": "17-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "Options.Binary does not resolve on the PATH of Options.EngineEnv",
+          "system": "podman.New",
+          "action": "fail without running any command",
+          "contract": "returns a nil provider and an error that names the binary and says to install podman or docker, or to set Options.Binary"
+        },
+        {
+          "id": "17-REQ-2.3",
+          "pattern": "event_driven",
+          "condition": "the `--version` output begins with `podman version` or with `Docker version`",
+          "system": "version parser",
+          "action": "identify the engine as EnginePodman or EngineDocker respectively, so a docker shim that prints `podman version` counts as podman",
+          "contract": "the unexported parser returns (EnginePodman, nil) or (EngineDocker, nil)"
+        },
+        {
+          "id": "17-REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "the `--version` output begins with neither `podman version` nor `Docker version`",
+          "system": "podman.New",
+          "action": "refuse to create the provider",
+          "contract": "returns a nil provider and an error that quotes the output"
+        },
+        {
+          "id": "17-REQ-2.5",
+          "pattern": "unwanted",
+          "condition": "Options.Engine is non-empty and is neither EnginePodman nor EngineDocker, or Options.Runtime is neither \"\" nor \"krun\", or Options.Runtime is \"krun\" with EngineDocker",
+          "system": "podman.New",
+          "action": "refuse the options",
+          "contract": "returns a nil provider and an error naming the offending option; an unsupported Runtime's message names crun-vm as unsupported because it boots VM disk images, not OCI images with an entrypoint"
+        },
+        {
+          "id": "17-REQ-2.6",
+          "pattern": "ubiquitous",
+          "system": "Capabilities",
+          "action": "return Provider set to the engine name (\"podman\" or \"docker\"), Isolation IsolationMicroVM when Runtime is krun and IsolationContainer otherwise, Network [NetworkNone, NetworkUnrestricted], Resources {CPUs: true, MemoryBytes: true, PIDs: true, DiskBytes: false}, and Image, Workdir and Landlock all true"
+        },
+        {
+          "id": "17-REQ-2.7",
+          "pattern": "ubiquitous",
+          "system": "Capabilities",
+          "action": "return Notes stating that there is no host allowlist, that DiskBytes is not bounded, that a zero Resources field takes the engine's default, that /tmp is a memory-backed tmpfs counting against MemoryBytes, that Spec.Env values appear on the engine's command line on the host, and that the engine's default seccomp profile may withhold Landlock, which the agent then reports"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-3",
+      "title": "Spec checks before any engine command",
+      "rationale": "A spec the container cannot honour must be refused clearly at Create, before any volume or container exists, rather than failing later inside the container.",
+      "criteria": [
+        {
+          "id": "17-REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "Create is called",
+          "system": "podman provider",
+          "action": "call sandbox.CheckSpec(p.Capabilities(), spec) before anything else and return its error unchanged",
+          "contract": "a spec with Network.Mode NetworkAllowlist returns a *sandbox.SpecError matching sandbox.ErrUnsupported with Provider set to the engine name and Field Network.Mode; a non-zero Resources.DiskBytes returns one with Field Resources.DiskBytes; the runner seam records no command"
+        },
+        {
+          "id": "17-REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "Spec.Provider has any key",
+          "system": "podman provider",
+          "action": "refuse the spec",
+          "contract": "returns a *sandbox.SpecError matching sandbox.ErrUnsupported whose Field names Provider and the first key in sorted order; the runner seam records no command"
+        },
+        {
+          "id": "17-REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "a Spec.Labels key has the prefix `agentkit.sandbox.`, or is empty, or contains '=', whitespace or a control character, or a label value contains a control character",
+          "system": "podman provider",
+          "action": "refuse the spec",
+          "contract": "returns a *sandbox.SpecError with Field Labels that names the offending key; the runner seam records no command"
+        },
+        {
+          "id": "17-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "the effective Workdir is not absolute and clean, is `/`, is `/tmp` or beneath it, is beneath `/proc`, `/sys` or `/dev`, or contains ',' or a control character",
+          "system": "podman provider",
+          "action": "refuse the spec",
+          "contract": "returns a *sandbox.SpecError with Field Workdir; the runner seam records no command"
+        },
+        {
+          "id": "17-REQ-3.5",
+          "pattern": "unwanted",
+          "condition": "Spec.Image starts with '-' or contains whitespace or a control character",
+          "system": "podman provider",
+          "action": "refuse the spec",
+          "contract": "returns a *sandbox.SpecError with Field Image; the runner seam records no command"
+        },
+        {
+          "id": "17-REQ-3.6",
+          "pattern": "unwanted",
+          "condition": "Spec.Env sets HOME or TMPDIR to a value that is not absolute, or that is neither /tmp, nor beneath /tmp, nor the effective Workdir, nor beneath the effective Workdir",
+          "system": "podman provider",
+          "action": "refuse the spec, because nothing else is writable under --read-only",
+          "contract": "returns a *sandbox.SpecError whose Field names Env and the variable (HOME or TMPDIR); the runner seam records no command"
+        },
+        {
+          "id": "17-REQ-3.7",
+          "pattern": "event_driven",
+          "condition": "Spec.Image is empty",
+          "system": "podman provider",
+          "action": "run the image that sandbox.DefaultImage() returns, and report the image actually run in the effective spec",
+          "contract": "Sandbox.Spec().Image equals the image passed to the engine's `run`"
+        },
+        {
+          "id": "17-REQ-3.8",
+          "pattern": "unwanted",
+          "condition": "Spec.Image is empty and sandbox.DefaultImage() returns an error, as in a (devel) build",
+          "system": "podman provider",
+          "action": "return that error without running any engine command",
+          "contract": "the returned error matches sandbox.ErrNoPublishedImage under errors.Is; the runner seam records no command"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-4",
+      "title": "Args: the sandbox container's command line",
+      "rationale": "The hardening of every sandbox is decided by a single pure argv builder, which golden tests can check offline.",
+      "criteria": [
+        {
+          "id": "17-REQ-4.1",
+          "pattern": "ubiquitous",
+          "system": "podman.Args",
+          "action": "be a pure function of (Options, id, created, effective spec) and, for the zero effective spec with Image set under EnginePodman, return exactly, in order: `run --rm -i --init --name agentkit-<id> --label agentkit.sandbox=<id> --label agentkit.sandbox.expires=<created+TTL, RFC 3339, UTC, seconds> --log-driver none --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777 --mount type=volume,source=agentkit-<id>,target=<Workdir> --unsetenv-all --env HOME=/tmp --env LANG=C.UTF-8 --env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin --env TERM=dumb --env TMPDIR=/tmp --entrypoint /usr/local/libexec/agentkit-sandboxd <Image> <sandbox.AgentArgs(spec)...>`",
+          "contract": "equal inputs give equal []string results; the golden list matches element for element"
+        },
+        {
+          "id": "17-REQ-4.2",
+          "pattern": "event_driven",
+          "condition": "Options.Engine is EngineDocker",
+          "system": "podman.Args",
+          "action": "return the same list as for EnginePodman with `--unsetenv-all` omitted and no other difference"
+        },
+        {
+          "id": "17-REQ-4.3",
+          "pattern": "event_driven",
+          "condition": "the effective spec has Labels",
+          "system": "podman.Args",
+          "action": "emit each embedder label as `--label k=v` immediately after the two reserved labels, sorted by key"
+        },
+        {
+          "id": "17-REQ-4.4",
+          "pattern": "event_driven",
+          "condition": "the effective spec's Network.Mode is NetworkUnrestricted",
+          "system": "podman.Args",
+          "action": "omit `--network none`, leaving the engine's default network, and change nothing else"
+        },
+        {
+          "id": "17-REQ-4.5",
+          "pattern": "event_driven",
+          "condition": "a Resources field of the effective spec is non-zero",
+          "system": "podman.Args",
+          "action": "emit, directly after `--mount` and in this order, `--cpus <shortest decimal of CPUs>`, `--memory <n> --memory-swap <n>` with both equal to MemoryBytes, and `--pids-limit <PIDs>`, emitting each flag only for a non-zero field",
+          "contract": "Resources{CPUs: 1.5, MemoryBytes: 268435456, PIDs: 64} yields `--cpus 1.5 --memory 268435456 --memory-swap 268435456 --pids-limit 64`; a zero field yields no flag"
+        },
+        {
+          "id": "17-REQ-4.6",
+          "pattern": "event_driven",
+          "condition": "Options.Runtime is krun or Options.UserNS is non-empty",
+          "system": "podman.Args",
+          "action": "emit `--runtime krun`, then `--userns=<UserNS>`, after the resource flags, each only when set"
+        },
+        {
+          "id": "17-REQ-4.7",
+          "pattern": "ubiquitous",
+          "system": "podman.Args",
+          "action": "render the container environment as `--env NAME=value`, sorted by name, from every Spec.Env entry plus each of the defaults HOME=/tmp, LANG=C.UTF-8, PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin, TERM=dumb and TMPDIR=/tmp that Spec.Env does not set",
+          "contract": "Spec.Env{\"HOME\": \"/workspace/.home\", \"X\": \"1\"} yields --env HOME=/workspace/.home and --env X=1 in sorted position, and no --env HOME=/tmp"
+        },
+        {
+          "id": "17-REQ-4.8",
+          "pattern": "ubiquitous",
+          "system": "podman.Args",
+          "action": "for any valid Options, id, created time and effective spec, return a list that contains --init, --log-driver none, --cap-drop ALL, --security-opt no-new-privileges, --read-only, the /tmp tmpfs, exactly one --mount and that of type=volume targeting Workdir, and --entrypoint /usr/local/libexec/agentkit-sandboxd followed by the Image and sandbox.AgentArgs(spec), and that contains no -v, --volume, type=bind, --privileged, --cap-add, --security-opt seccomp=, host path or `--env` element without '='"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-5",
+      "title": "Create and the classification of its failures",
+      "rationale": "Create must leave either a working, attached sandbox or nothing at all, and its failures must say what to fix, especially an image without an agent.",
+      "criteria": [
+        {
+          "id": "17-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "Create is called with a spec that passes 17-REQ-3",
+          "system": "podman provider",
+          "action": "generate a 16-lowercase-hex-character random id and take created = time.Now(), run `volume create` with the reserved and embedder labels naming the volume agentkit-<id>, start the engine process with exactly Args(o, id, created, eff), and attach with attach.Dial over stdioconn.New(stdout, stdin) and attach.Config{ID: id, Spec: eff, Destroy: <the destroy step>, Provider: <engine name>}",
+          "contract": "returns a Sandbox whose ID() is the id and whose Hello succeeded; the runner seam records `volume create` before `run`, and `run`'s argv equals Args"
+        },
+        {
+          "id": "17-REQ-5.2",
+          "pattern": "ubiquitous",
+          "system": "podman provider",
+          "action": "start the engine process with Options.EngineEnv in its own process group (a no-op on Windows), with stdin a pipe, stdout a private os.Pipe, and stderr drained concurrently into a buffer that keeps only the last 8 KiB, and run every short engine command through tools.RunArgv with Options.EngineEnv, a 2-minute timeout and a bounded output tail",
+          "contract": "an engine process that writes 64 KiB to stderr never blocks, and the error it produces carries at most the last 8 KiB of stderr"
+        },
+        {
+          "id": "17-REQ-5.3",
+          "pattern": "unwanted",
+          "condition": "attach.Dial fails with an error matching sandbox.ErrProtocol or with the RequireLandlock *sandbox.SpecError, or fails after ctx is done",
+          "system": "podman provider",
+          "action": "return the protocol or RequireLandlock error unchanged, or an error wrapping ctx.Err() for a done ctx",
+          "contract": "errors.Is(err, sandbox.ErrProtocol), errors.As(err, *sandbox.SpecError) with Field RequireLandlock, or errors.Is(err, context.Canceled / context.DeadlineExceeded) respectively"
+        },
+        {
+          "id": "17-REQ-5.4",
+          "pattern": "unwanted",
+          "condition": "attach.Dial fails and the engine process exited with status 125",
+          "system": "podman provider",
+          "action": "return an engine error without running the diagnostic",
+          "contract": "the error names the engine and exit status 125 and carries the engine process's stderr tail"
+        },
+        {
+          "id": "17-REQ-5.5",
+          "pattern": "complex_event",
+          "condition": "attach.Dial fails and the engine process exited with a non-zero status other than 125",
+          "guard": "the diagnostic run, under a fresh 30-second context, exits 126 or 127",
+          "system": "podman provider",
+          "action": "report that the image has no executable agent",
+          "contract": "the error matches sandbox.ErrNoAgent under errors.Is, names the image and sandbox.AgentPath, includes sandbox.OverlayCopyLine(ref) with ref = sandbox.OverlayImage() (or, for a build with no published image, sandbox.OverlayImageRepo + \":<version>\" plus the hint to build one with make sandbox-images), and carries the engine's output; it is returned before any tool call is possible"
+        },
+        {
+          "id": "17-REQ-5.6",
+          "pattern": "complex_event",
+          "condition": "attach.Dial fails and the engine process exited with a non-zero status other than 125",
+          "guard": "the diagnostic run exits with a status other than 126 or 127",
+          "system": "podman provider",
+          "action": "return the handshake error",
+          "contract": "the error wraps the attach.Dial error and carries the original engine process's stderr tail"
+        },
+        {
+          "id": "17-REQ-5.7",
+          "pattern": "ubiquitous",
+          "system": "podman provider",
+          "action": "build the diagnostic run as `run --rm` of the same image with the reserved labels, --log-driver none, --network none, --cap-drop ALL, --security-opt no-new-privileges, --read-only, the runtime and userns flags, `--entrypoint <sandbox.AgentPath>` and the argument `--version`, with no --init, no -i, no --mount and no volume"
+        },
+        {
+          "id": "17-REQ-5.8",
+          "pattern": "unwanted",
+          "condition": "Create fails at any step after `volume create` succeeded",
+          "system": "podman provider",
+          "action": "remove the sandbox's container and volume before returning the error",
+          "contract": "the runner seam records `volume rm agentkit-<id>` on every such failure path; with a real engine, `ps -a` and `volume ls` filtered on label agentkit.sandbox=<id> list nothing after Create returns"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-6",
+      "title": "Destroy step, Close and the two-sided TTL",
+      "rationale": "A sandbox must disappear when it is closed, when its TTL passes, or when its host dies, with nothing left on the engine.",
+      "criteria": [
+        {
+          "id": "17-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "the destroy step runs (on Close, at the host-side TTL, or on a failure inside attach.Dial)",
+          "system": "destroy step",
+          "action": "in order, wait up to 5 seconds for the engine process to exit and then kill its process group if it has not, run `rm -f agentkit-<id>`, run `rm -f agentkit-<id>-init`, and run `volume rm agentkit-<id>`, executing every action even when an earlier one failed",
+          "contract": "the runner seam records the commands in that order; the returned error is errors.Join of every action's error and nil when all succeed; the step completes within attach's 30-second destroy budget"
+        },
+        {
+          "id": "17-REQ-6.2",
+          "pattern": "unwanted",
+          "condition": "`rm -f` or `volume rm` reports that the container or volume does not exist",
+          "system": "destroy step",
+          "action": "treat the removal as successful",
+          "contract": "no error is added to the destroy step's result for a missing container or volume"
+        },
+        {
+          "id": "17-REQ-6.3",
+          "pattern": "unwanted",
+          "condition": "`volume rm` reports that the volume is in use",
+          "system": "destroy step",
+          "action": "retry the removal for up to 10 seconds, and stop retrying after that",
+          "contract": "returns nil once a retry succeeds; returns an error naming agentkit-<id> when the volume is still in use after 10 seconds"
+        },
+        {
+          "id": "17-REQ-6.4",
+          "pattern": "event_driven",
+          "condition": "Close is called on a sandbox that is already closed",
+          "system": "podman sandbox",
+          "action": "return without running any engine command",
+          "contract": "the second Close returns nil and the runner seam records no new command"
+        },
+        {
+          "id": "17-REQ-6.5",
+          "pattern": "event_driven",
+          "condition": "Close returns on a sandbox created against a real engine",
+          "system": "podman sandbox",
+          "action": "leave no container and no volume of that sandbox on the engine",
+          "contract": "`ps -a --filter label=agentkit.sandbox=<id>` and `volume ls --filter label=agentkit.sandbox=<id>` list nothing"
+        },
+        {
+          "id": "17-REQ-6.6",
+          "pattern": "event_driven",
+          "condition": "a sandbox created with TTL 5s is never closed",
+          "system": "podman sandbox",
+          "action": "destroy the sandbox through attach's host-side TTL timer",
+          "contract": "within 35 seconds of creation, ps -a and volume ls filtered on its label list nothing, and its Tools, Sync and Export return an error matching sandbox.ErrUnavailable or sandbox.ErrClosed"
+        },
+        {
+          "id": "17-REQ-6.7",
+          "pattern": "ubiquitous",
+          "system": "podman provider",
+          "action": "enforce the TTL without the host by starting the container with --rm and the agent's --ttl equal to the effective TTL, and by labelling the volume with agentkit.sandbox.expires = created + TTL, so that Reap can remove the volume of a host that died",
+          "contract": "the recorded `run` argv contains --rm and AgentArgs' `--ttl <TTL>`; the recorded `volume create` argv contains `--label agentkit.sandbox.expires=<created+TTL, RFC 3339 UTC seconds>`"
+        },
+        {
+          "id": "17-REQ-6.8",
+          "pattern": "event_driven",
+          "condition": "the agent or the engine process ends before Close",
+          "system": "podman sandbox",
+          "action": "become unavailable through attach, and keep the volume until Close, the TTL or Reap",
+          "contract": "Tools, Sync and Export return an error matching sandbox.ErrUnavailable; the runner seam records no `volume rm` until Close or the TTL runs the destroy step"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-7",
+      "title": "GitRepo sync through the init step",
+      "rationale": "A public repository can be cloned into the workspace without ever giving the sandbox's own container network access, and only while the workspace is still untouched.",
+      "criteria": [
+        {
+          "id": "17-REQ-7.1",
+          "pattern": "ubiquitous",
+          "system": "podman sandbox",
+          "action": "forward ID, Spec, Agent, Export, Close, every Tools call and every Sync of a source other than GitRepo to the attached sandbox, and take the GitRepo slot on each successful non-GitRepo Sync and on the first Tools call whatever its outcome"
+        },
+        {
+          "id": "17-REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "Sync receives a GitRepo while the GitRepo slot is free and the checks of 17-REQ-7.5 pass",
+          "system": "podman sandbox",
+          "action": "run the init step with InitArgs through tools.RunArgv, bounded by the Sync context and by the sandbox's expiry (created + TTL), beside the idle agent container, and take the slot when it exits 0",
+          "contract": "returns a zero SyncResult and a nil error; the clone's files are visible to the sandbox's tools under Workdir"
+        },
+        {
+          "id": "17-REQ-7.3",
+          "pattern": "unwanted",
+          "condition": "Sync receives a GitRepo after a successful GitRepo Sync, after any other successful Sync, or after the first Tools call",
+          "system": "podman sandbox",
+          "action": "refuse it without running any engine command",
+          "contract": "returns an error whose message contains \"GitRepo must be the first Sync and come before Tools\"; the runner seam records no command"
+        },
+        {
+          "id": "17-REQ-7.4",
+          "pattern": "state_driven",
+          "condition": "a GitRepo Sync is in flight on a sandbox",
+          "system": "podman sandbox",
+          "action": "hold every Tools and Sync call on the same sandbox until that GitRepo Sync returns",
+          "contract": "a Tools call started during the init step returns only after the GitRepo Sync has returned"
+        },
+        {
+          "id": "17-REQ-7.5",
+          "pattern": "unwanted",
+          "condition": "for a GitRepo Sync, attach.Live returns an error, gitclone.Check refuses the repository, or Agent().Git is false",
+          "system": "podman sandbox",
+          "action": "return the first such failure in that order without running any engine command and leave the GitRepo slot free",
+          "contract": "a closed or unavailable sandbox returns attach.Live's error (sandbox.ErrClosed or one matching sandbox.ErrUnavailable); a refused repository returns gitclone.Check's error; Agent().Git false returns an error saying the image needs git on its PATH for a GitRepo"
+        },
+        {
+          "id": "17-REQ-7.6",
+          "pattern": "ubiquitous",
+          "system": "podman.InitArgs",
+          "action": "be a pure function and, under EnginePodman, return exactly, in order: `run --rm --init --name agentkit-<id>-init`, the same reserved and embedder labels as Args, `--log-driver none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777 --mount type=volume,source=agentkit-<id>,target=<Workdir>`, the same resource, runtime and userns flags as Args, `--unsetenv-all --env GIT_TERMINAL_PROMPT=0 --env HOME=/tmp --env LANG=C.UTF-8 --env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin --entrypoint git <Image>`, then gitclone.Args(repo, Workdir); under EngineDocker the same list with `--unsetenv-all` omitted",
+          "contract": "the list contains no --network none, no -i and no Spec.Env value"
+        },
+        {
+          "id": "17-REQ-7.7",
+          "pattern": "unwanted",
+          "condition": "the init step exits with a non-zero status",
+          "system": "podman sandbox",
+          "action": "fail the Sync and leave the GitRepo slot free",
+          "contract": "exit 126 or 127 returns an error saying the image cannot run git; any other status returns an error naming the URL and carrying the init step's output tail"
+        },
+        {
+          "id": "17-REQ-7.8",
+          "pattern": "unwanted",
+          "condition": "the init step is cancelled through the Sync context, times out at the sandbox's expiry, or fails to start",
+          "system": "podman sandbox",
+          "action": "run `rm -f agentkit-<id>-init` before returning",
+          "contract": "returns an error (wrapping ctx.Err() on cancellation); the runner seam records `rm -f agentkit-<id>-init` after the init command and before Sync returns; the slot stays free"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-8",
+      "title": "Reap by expiry label",
+      "rationale": "Leftovers of crashed hosts must be removable without ever touching a sandbox that a live process on any host may still own.",
+      "criteria": [
+        {
+          "id": "17-REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "Reap is called",
+          "system": "podman provider",
+          "action": "list the containers (`ps -a --filter label=agentkit.sandbox`) and volumes (`volume ls --filter label=agentkit.sandbox`) that carry the label key agentkit.sandbox, and read each one's labels from the engine's inspect output decoded as JSON"
+        },
+        {
+          "id": "17-REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "a listed container or volume has an agentkit.sandbox.expires label that parses as RFC 3339 and is not after the current time",
+          "system": "podman provider",
+          "action": "remove it, all containers with `rm -f` before any volume with `volume rm`",
+          "contract": "returns the distinct agentkit.sandbox ids it removed something for, sorted, and a nil error when every removal succeeded"
+        },
+        {
+          "id": "17-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "podman provider",
+          "action": "leave untouched in Reap every container or volume whose expiry is after the current time, whose expiry label is missing or unparsable, or whose labels could not be read",
+          "contract": "no removal command is recorded for such an entry and its id is not returned"
+        },
+        {
+          "id": "17-REQ-8.4",
+          "pattern": "unwanted",
+          "condition": "some of Reap's removal commands fail",
+          "system": "podman provider",
+          "action": "continue with the remaining removals",
+          "contract": "returns the sorted ids it did remove something for, together with errors.Join of the failures"
+        },
+        {
+          "id": "17-REQ-8.5",
+          "pattern": "ubiquitous",
+          "system": "podman provider",
+          "action": "for any set of labelled containers and volumes with arbitrary expiry labels and a fixed current time, return from Reap exactly the sorted, distinct ids of entries whose expiry parses and is not after that time, and issue every container removal before the first volume removal"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-9",
+      "title": "Isolation observed with a real engine",
+      "rationale": "The isolation claims must hold against a real podman or docker, not only in argv goldens.",
+      "criteria": [
+        {
+          "id": "17-REQ-9.1",
+          "pattern": "unwanted",
+          "condition": "the tests run under -short, no engine resolves from AGENTKIT_CONTAINER, podman or docker (tried in that order), or AGENTKIT_SANDBOX_BASE_IMAGE is unset",
+          "system": "podman integration tests",
+          "action": "skip instead of failing",
+          "contract": "each such test reports SKIP with a message naming the missing prerequisite, and go test exits 0"
+        },
+        {
+          "id": "17-REQ-9.2",
+          "pattern": "event_driven",
+          "condition": "an embedder runs Create, then Sync of a LocalDir, then the proxy read_file, write_file and execute tools, then Export to a temporary LocalDir",
+          "system": "podman sandbox",
+          "action": "complete each call against the container's workspace",
+          "contract": "every call returns a nil error or a successful tool result; the export directory contains the file written by write_file and no file the source's .gitignore excludes"
+        },
+        {
+          "id": "17-REQ-9.3",
+          "pattern": "event_driven",
+          "condition": "after a first LocalDir Sync, the embedder edits one host file and runs a second LocalDir Sync",
+          "system": "podman sandbox",
+          "action": "transfer only the changed file, and bring the model's edits back on Export",
+          "contract": "the second SyncResult has Files == 1; Export writes the file content produced by the in-sandbox edit"
+        },
+        {
+          "id": "17-REQ-9.4",
+          "pattern": "event_driven",
+          "condition": "under NetworkNone, a GitRepo Sync of AGENTKIT_SANDBOX_GIT_URL (default https://github.com/agent-fox-dev/agentkit-go) at Depth 1 completes",
+          "system": "podman sandbox",
+          "action": "place the clone in the workspace while keeping the sandbox container without network",
+          "contract": "the clone's files are readable through read_file, and a later execute of a TCP connect to any host fails"
+        },
+        {
+          "id": "17-REQ-9.5",
+          "pattern": "ubiquitous",
+          "system": "podman sandbox",
+          "action": "expose inside the container exactly the environment of Spec.Env plus the unset defaults among PATH, HOME, LANG, TMPDIR and TERM (and on Docker also HOSTNAME), and no host path",
+          "contract": "`env` lists exactly those variables; a marker variable set only in Options.EngineEnv is absent; no tool result of the run contains the host's working directory or home directory path"
+        },
+        {
+          "id": "17-REQ-9.6",
+          "pattern": "event_driven",
+          "condition": "in a sandbox with Resources.MemoryBytes 256 << 20, a command run through execute tries to allocate 1 GiB",
+          "system": "podman sandbox",
+          "action": "have the command killed while the sandbox stays live",
+          "contract": "the execute result reports a non-zero or signal outcome, and the next proxy call on the same sandbox succeeds"
+        },
+        {
+          "id": "17-REQ-9.7",
+          "pattern": "event_driven",
+          "condition": "on podman, the agent reports an applied Landlock ABI of 2 or more",
+          "system": "podman sandbox",
+          "action": "deny writes outside the Landlock-writable roots, and accept a RequireLandlock spec when the kernel offers ABI 4",
+          "contract": "a write to /var/tmp fails with a permission error, not a read-only-filesystem error; Create with RequireLandlock under NetworkNone succeeds when the reported KernelABI is 4 or more"
+        },
+        {
+          "id": "17-REQ-9.8",
+          "pattern": "optional",
+          "condition": "AGENTKIT_SANDBOX_RUNTIME is krun on a podman host",
+          "system": "podman provider",
+          "action": "run the sandbox in a libkrun micro-VM through `--runtime krun`",
+          "contract": "Capabilities().Isolation is IsolationMicroVM, and Create, a proxy execute and Close succeed"
+        }
+      ]
+    },
+    {
+      "id": "17-REQ-10",
+      "title": "Offline build, unchanged surfaces, make target and example",
+      "rationale": "The provider must not make the default check depend on a container engine, add dependencies or change the root module's API.",
+      "criteria": [
+        {
+          "id": "17-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "podman package tests",
+          "action": "run every offline test under make check with no container engine installed, by substituting the runner seam with a fake that records argv and serves an in-process agent.New over pipes",
+          "contract": "make check passes on a host where neither podman nor docker resolves on PATH"
+        },
+        {
+          "id": "17-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "sandbox module",
+          "action": "add no Go module dependency for sandbox/podman or sandbox/internal/gitclone",
+          "contract": "the direct requirement set of sandbox/go.mod is unchanged and internal/policy/deps_test.go passes"
+        },
+        {
+          "id": "17-REQ-10.3",
+          "pattern": "ubiquitous",
+          "system": "root module",
+          "action": "keep the exported surfaces of agentkit, core, tools and codemode unchanged, and change only doc comments in guard",
+          "contract": "internal/policy/testdata/exported-api.golden is unchanged and its policy test passes"
+        },
+        {
+          "id": "17-REQ-10.4",
+          "pattern": "ubiquitous",
+          "system": "sandbox module",
+          "action": "keep sandbox/podman and sandbox/internal/gitclone free of imports of sandbox/internal/confine, and build them for windows/amd64 with the process-group helpers as no-ops",
+          "contract": "internal/policy/landlock_policy_test.go and the cross-target build gate pass"
+        },
+        {
+          "id": "17-REQ-10.5",
+          "pattern": "ubiquitous",
+          "system": "Makefile",
+          "action": "provide a `sandbox-podman-test` target that depends on `sandbox-images` and runs `go test -count=1 -v ./podman/` in sandbox/ with the image and engine variables the sandbox-images-test target sets, and keep it out of `make check`"
+        },
+        {
+          "id": "17-REQ-10.6",
+          "pattern": "optional",
+          "condition": "examples/sandbox is run with --podman (and optionally --image)",
+          "system": "examples/sandbox",
+          "action": "run the same program on the podman provider under NetworkNone, while a run without --podman stays offline on local",
+          "contract": "the existing examples/sandbox/main_test.go passes unchanged; with --podman the program exits 0 against a real engine"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "17-PATH-1",
+      "title": "An embedder runs a model's tools in a podman sandbox and gets the edits back",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls podman.New(podman.Options{}) and then Create(ctx, Spec{Image: base image, Resources: {MemoryBytes: 256 << 20}})"
+        },
+        {
+          "actor": "podman provider",
+          "action": "resolves the binary, detects the engine from `--version`, runs CheckSpec and its own checks, then `volume create` agentkit-<id> with the reserved labels"
+        },
+        {
+          "actor": "podman provider",
+          "action": "starts `<engine> run --rm -i --init … --entrypoint /usr/local/libexec/agentkit-sandboxd <image> <AgentArgs>` with private stdio pipes"
+        },
+        {
+          "actor": "agentkit-sandboxd",
+          "action": "applies Landlock inside the container and answers Hello over stdio"
+        },
+        {
+          "actor": "attach",
+          "action": "checks the protocol major, starts the host-side TTL timer and returns the sandbox wrapped by the podman sandbox type"
+        },
+        {
+          "actor": "embedder",
+          "action": "runs Sync(LocalDir), Tools, and the model's write_file and execute calls through the proxy tools"
+        },
+        {
+          "actor": "embedder",
+          "action": "runs Export to a temporary LocalDir, then Close"
+        },
+        {
+          "actor": "destroy step",
+          "action": "waits for the engine process, runs `rm -f` on both container names and `volume rm agentkit-<id>`, so ps -a and volume ls filtered on the label are empty"
+        }
+      ]
+    },
+    {
+      "id": "17-PATH-2",
+      "title": "A GitRepo is cloned through the init step without opening the sandbox's network",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "creates a sandbox under NetworkNone and calls Sync(ctx, GitRepo{URL: public https URL, Depth: 1}) before any Tools call"
+        },
+        {
+          "actor": "podman sandbox",
+          "action": "checks attach.Live, gitclone.Check and Agent().Git, and confirms the GitRepo slot is free"
+        },
+        {
+          "actor": "podman provider",
+          "action": "runs the init container `run --rm --init --name agentkit-<id>-init … --entrypoint git <image> -c protocol.allow=never -c protocol.https.allow=always clone --depth 1 -- URL /workspace` on the engine's default network"
+        },
+        {
+          "actor": "git",
+          "action": "clones the repository into the shared workspace volume while the agent container sits idle with no network"
+        },
+        {
+          "actor": "podman sandbox",
+          "action": "returns a zero SyncResult and takes the GitRepo slot"
+        },
+        {
+          "actor": "embedder",
+          "action": "calls Tools; the model reads the clone with read_file, and an execute of a TCP connect fails"
+        },
+        {
+          "actor": "podman sandbox",
+          "action": "refuses a second GitRepo Sync with \"GitRepo must be the first Sync and come before Tools\""
+        }
+      ]
+    },
+    {
+      "id": "17-PATH-3",
+      "title": "Create with an image that has no agent reports ErrNoAgent and leaves nothing behind",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls Create with Spec.Image naming an image derived as FROM base, RUN rm <AgentPath>"
+        },
+        {
+          "actor": "podman provider",
+          "action": "runs `volume create` and starts the engine process with Args"
+        },
+        {
+          "actor": "engine",
+          "action": "cannot execute the entrypoint, and the engine process exits non-zero, so attach.Dial's handshake fails"
+        },
+        {
+          "actor": "attach",
+          "action": "runs the destroy step, which removes the container name and the volume"
+        },
+        {
+          "actor": "podman provider",
+          "action": "runs the diagnostic `run --rm … --entrypoint <AgentPath> <image> --version` without --init, which exits 126 or 127"
+        },
+        {
+          "actor": "podman provider",
+          "action": "returns an error matching sandbox.ErrNoAgent naming AgentPath and the OverlayCopyLine COPY --from line, and ps -a and volume ls filtered on the label list nothing"
+        }
+      ]
+    },
+    {
+      "id": "17-PATH-4",
+      "title": "A never-closed sandbox ends at its TTL",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls Create with Spec{TTL: 5s} and never calls Close"
+        },
+        {
+          "actor": "attach",
+          "action": "fires the host-side TTL timer after 5 seconds, marks the sandbox unavailable and runs the destroy step"
+        },
+        {
+          "actor": "agentkit-sandboxd",
+          "action": "reaches its own --ttl and exits, so --rm removes the container even without the host"
+        },
+        {
+          "actor": "destroy step",
+          "action": "removes the containers and the volume agentkit-<id>"
+        },
+        {
+          "actor": "embedder",
+          "action": "observes that Tools returns an error matching ErrUnavailable or ErrClosed, and that ps -a and volume ls filtered on the label list nothing"
+        }
+      ]
+    },
+    {
+      "id": "17-PATH-5",
+      "title": "Reap removes a crashed host's expired volume and spares a live one",
+      "steps": [
+        {
+          "actor": "crashed host",
+          "action": "leaves behind a volume labelled agentkit.sandbox=<id1> whose agentkit.sandbox.expires is in the past, while another host owns volume <id2>, which expires in the future"
+        },
+        {
+          "actor": "embedder",
+          "action": "calls Reap(ctx) on a podman provider"
+        },
+        {
+          "actor": "podman provider",
+          "action": "lists `ps -a` and `volume ls` filtered on label agentkit.sandbox and reads each entry's labels from inspect JSON"
+        },
+        {
+          "actor": "podman provider",
+          "action": "runs `rm -f` for the expired containers, then `volume rm` for the expired volume of <id1>"
+        },
+        {
+          "actor": "embedder",
+          "action": "receives [<id1>] and a nil error, and volume <id2> is still listed by the engine"
+        }
+      ]
+    }
+  ]
+}
