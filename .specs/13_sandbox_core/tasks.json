@@ -125,7 +125,7 @@
         "sandbox/internal/tooldigest/digest_test.go",
         "sandbox/internal/buildver/buildver.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
