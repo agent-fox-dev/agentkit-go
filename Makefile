@@ -3,6 +3,16 @@ DOC_DIR ?= build/docs
 # MODULES are the repository's Go modules: the root and its nested modules.
 MODULES := . codesearch sandbox examples/sandbox
 
+# The sandbox images (sandbox/images/Containerfile). CONTAINER is podman when
+# it is on PATH, else docker; SANDBOX_PLATFORM empty means the host platform.
+CONTAINER ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo docker)
+SANDBOX_BASE_IMAGE ?= ghcr.io/agent-fox-dev/agentkit-sandbox
+SANDBOX_OVERLAY_IMAGE ?= ghcr.io/agent-fox-dev/agentkit-sandboxd
+SANDBOX_IMAGE_TAG ?= dev
+SANDBOX_PLATFORM ?=
+AGENTKIT_VERSION ?=
+AGENTKIT_REVISION ?= $(shell git rev-parse HEAD 2>/dev/null)
+
 .PHONY: help
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*##"}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -76,6 +86,17 @@ proto: ## Regenerate the sandbox agent protocol's Go code (needs protoc)
 .PHONY: tidy
 tidy: ## go mod tidy the root module and the nested modules
 	@set -e; for m in $(MODULES); do (cd $$m && go mod tidy); done
+
+.PHONY: sandbox-images
+sandbox-images: ## Build the sandbox base and overlay images for the host platform
+	@command -v "$(CONTAINER)" >/dev/null 2>&1 || { echo "sandbox-images: container engine '$(CONTAINER)' not found on PATH; install podman or docker, or set CONTAINER=<engine>" >&2; exit 1; }
+	$(CONTAINER) build -f sandbox/images/Containerfile --target base $(if $(SANDBOX_PLATFORM),--platform $(SANDBOX_PLATFORM) )--build-arg AGENTKIT_VERSION=$(AGENTKIT_VERSION) --build-arg AGENTKIT_REVISION=$(AGENTKIT_REVISION) -t $(SANDBOX_BASE_IMAGE):$(SANDBOX_IMAGE_TAG) .
+	$(CONTAINER) build -f sandbox/images/Containerfile --target overlay $(if $(SANDBOX_PLATFORM),--platform $(SANDBOX_PLATFORM) )--build-arg AGENTKIT_VERSION=$(AGENTKIT_VERSION) --build-arg AGENTKIT_REVISION=$(AGENTKIT_REVISION) -t $(SANDBOX_OVERLAY_IMAGE):$(SANDBOX_IMAGE_TAG) .
+
+# The image tests live in the nested sandbox module, so they run there.
+.PHONY: sandbox-images-test
+sandbox-images-test: sandbox-images ## Build the sandbox images and run the end-to-end image tests against them
+	cd sandbox && AGENTKIT_SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE):$(SANDBOX_IMAGE_TAG) AGENTKIT_SANDBOX_OVERLAY_IMAGE=$(SANDBOX_OVERLAY_IMAGE):$(SANDBOX_IMAGE_TAG) AGENTKIT_SANDBOX_IMAGE_VERSION=$(AGENTKIT_VERSION) AGENTKIT_CONTAINER=$(CONTAINER) go test -count=1 -v ./images/
 
 .PHONY: check
 check: fmt vet lint test ## Run fmt, vet, lint and test - use before committing
