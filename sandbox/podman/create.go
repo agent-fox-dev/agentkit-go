@@ -52,7 +52,7 @@ func (p *provider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandb
 	inner, err := attach.Dial(ctx, stdioconn.New(proc.Stdout(), proc.Stdin()),
 		attach.Config{ID: id, Spec: eff, Destroy: p.destroy(id, proc), Provider: string(p.engine)})
 	if err != nil {
-		return nil, fmt.Errorf("podman: create: %w; engine stderr: %s", err, proc.StderrTail())
+		return nil, p.createFailed(ctx, err, proc, id, created, eff)
 	}
 	return &podSandbox{inner: inner, p: p, id: id, created: created, eff: eff}, nil
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/agent"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/fakeagent"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/stdioconn"
 	"github.com/agent-fox-dev/agentkit-go/tools"
 )
@@ -126,12 +127,20 @@ func (f *fakeRunner) lastProc() *fakeProc {
 	return f.procs[len(f.procs)-1]
 }
 
+// fullLandlock is the Landlock report of the default fake agent: ABI 4,
+// which satisfies every network mode.
+var fullLandlock = sandbox.LandlockInfo{ABI: 4, KernelABI: 4, TCP: true, Note: "fake"}
+
 // serveAgent starts an in-process agent over two pipe pairs. It exits 0
 // when the host closes its stdin, unless ignoreEOF, in which case only a
 // group kill ends it.
 func (f *fakeRunner) serveAgent(ignoreEOF bool) (process, error) {
-	a, err := agent.New(agent.Config{Workdir: f.workdir, Env: f.agentEnv, TTL: time.Hour,
-		Landlock: sandbox.LandlockInfo{ABI: 4, KernelABI: 4, TCP: true, Note: "fake"}})
+	return f.serveAgentWith(ignoreEOF, fullLandlock)
+}
+
+// serveAgentWith is serveAgent with the agent's Landlock report.
+func (f *fakeRunner) serveAgentWith(ignoreEOF bool, landlock sandbox.LandlockInfo) (process, error) {
+	a, err := agent.New(agent.Config{Workdir: f.workdir, Env: f.agentEnv, TTL: time.Hour, Landlock: landlock})
 	if err != nil {
 		return nil, err
 	}
@@ -142,6 +151,36 @@ func (f *fakeRunner) serveAgent(ignoreEOF bool) (process, error) {
 			p.exit(0)
 		}
 	}()
+	f.track(p)
+	return p, nil
+}
+
+// exitWith starts a process that writes stderr and exits with code without
+// serving anything.
+func (f *fakeRunner) exitWith(code int, stderr string) (process, error) {
+	p := newFakeProc()
+	_, _ = p.stderr.Write([]byte(stderr))
+	f.track(p)
+	p.exit(code)
+	return p, nil
+}
+
+// serveFakeAgent starts a process that relays its stdio to fa, and exits 0
+// when the host closes its stdin.
+func (f *fakeRunner) serveFakeAgent(fa *fakeagent.Agent) (process, error) {
+	p := newFakeProc()
+	conn := fa.Serve()
+	go func() { _, _ = io.Copy(p.agentOut, conn); p.exit(0) }()
+	go func() { _, _ = io.Copy(conn, p.agentIn); _ = conn.Close(); p.exit(0) }()
+	f.track(p)
+	return p, nil
+}
+
+// silent starts a process that never answers: it reads its stdin until the
+// host closes it, then exits 0.
+func (f *fakeRunner) silent() (process, error) {
+	p := newFakeProc()
+	go func() { _, _ = io.Copy(io.Discard, p.agentIn); p.exit(0) }()
 	f.track(p)
 	return p, nil
 }
