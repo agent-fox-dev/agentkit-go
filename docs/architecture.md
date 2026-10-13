@@ -15,15 +15,17 @@ dependencies are an allowlist ([`DEPS.md`](DEPS.md)).
 
 AgentKit is two parts:
 
-- **The hands**: `tools`, `outline`, `codesearch`, `codemode`, `mcp` and
-  `guard`. Each is usable without the driver.
+- **The hands**: `tools`, `outline`, `codesearch`, `codemode`, `mcp`,
+  `guard`, and `sandbox`, which runs the built-in tools somewhere else. Each
+  is usable without the driver.
 - **One driver**: the root package, `agentkit`. It holds `Config`, `New`, the
   `Agent`, the loop, the batch executor and nested calls, and nothing else.
 
 AgentKit serves no network API. It is a library: it has no MCP server and
-nothing in it listens on a socket. Its only network traffic is outbound: the
-Anthropic provider's requests, and the MCP client's connections to servers an
-embedder configures.
+the library listens on no socket; `agentkit-sandboxd` serves the agent
+service on its stdio. Its only network traffic is outbound: the Anthropic
+provider's requests, and the MCP client's connections to servers an embedder
+configures.
 
 ## Package graph
 
@@ -49,6 +51,18 @@ First-party imports, from
 | `prompt` | `core`, `guard`, `tools` | |
 | `.` (root, `agentkit`) | `core`, `catalog`, `guard`, `prompt`, `provider`, `provider/anthropic` | `github.com/anthropics/anthropic-sdk-go` |
 | `codesearch` (nested module) | `core`, `outline`, `schema`, `tools` | `github.com/sourcegraph/zoekt` |
+| `sandbox` | `core`, `tools` | |
+| `sandbox/internal/sandboxpb` | none (generated) | `google.golang.org/grpc`, `google.golang.org/protobuf` |
+| `sandbox/internal/tooldigest` | `core`, `schema` | |
+| `sandbox/internal/buildver` | none | |
+| `sandbox/internal/tarsafe` | none | |
+| `sandbox/internal/stdioconn` | none | |
+| `sandbox/internal/agent` | `core`, `sandbox`, `sandbox/internal/{buildver,sandboxpb,tarsafe,tooldigest}`, `tools` | `google.golang.org/grpc` |
+| `sandbox/internal/attach` | `core`, `sandbox`, `sandbox/internal/{buildver,sandboxpb,tarsafe,tooldigest}`, `tools`, `wire` | `google.golang.org/grpc`, `google.golang.org/protobuf` |
+| `sandbox/internal/localtest` | `sandbox` | |
+| `sandbox/local` | `sandbox`, `sandbox/internal/{agent,attach,localtest,stdioconn}` | |
+| `sandbox/cmd/agentkit-sandboxd` | `sandbox`, `sandbox/internal/{agent,buildver,stdioconn}` | |
+| `sandbox/internal/fakeagent` (tests only) | `sandbox/internal/{sandboxpb,tooldigest}`, `tools` | `google.golang.org/grpc` |
 
 What follows from it:
 
@@ -65,6 +79,11 @@ What follows from it:
   SDK because `Config.Client` is an SDK client; `New` builds the provider
   over it.
 - Nothing imports the root package except `examples/`.
+- The sandbox tree imports `core`, `schema`, `tools` and `wire`, and nothing outside it
+  imports the sandbox tree except `examples/sandbox` and test helpers under
+  `internal/` (`internal/policy` checks this, and that no non-test file
+  outside it imports gRPC). `core`, `tools`, `codemode` and the driver do not
+  know a sandbox exists.
 
 ## Packages
 
@@ -88,6 +107,16 @@ What follows from it:
 | `internal/diag` | The shared non-fatal `Diagnostic`. |
 | `internal/policy` | Tests only: the build gates and the dependency allowlist. |
 | `internal/testkit` | Shared test helpers. |
+| `internal/toolconformance` | Tests only: the spec 06 conformance case table, run against `tools.All` and against sandbox proxy tools. |
+| `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `CheckSpec`, `Tar`/`TarOut`, the protocol version, `MaxMessageBytes` and the errors (below). |
+| `sandbox/internal/sandboxpb` | The `agentkit.sandbox.v1` protocol (`sandbox.proto`) and its checked-in generated code; `make proto` regenerates it. |
+| `sandbox/internal/agent` | The agent service: runs `tools.All` against one workspace with an explicit environment. |
+| `sandbox/internal/attach` | The one `Sandbox` implementation, for every provider: handshake, state machine, failure classification, proxy tools, tar transfer. |
+| `sandbox/internal/tarsafe` | The tar entry rules both directions share, the `os.Root` extractor, the export validator and the archiver. |
+| `sandbox/internal/tooldigest`, `sandbox/internal/buildver` | The definition digest host and agent share; the module version from the build info. |
+| `sandbox/internal/stdioconn` | A `net.Conn` over a reader and a writer: stdin/stdout, or two `os.Pipe` pairs. |
+| `sandbox/local` | The in-process provider with no isolation. |
+| `sandbox/cmd/agentkit-sandboxd` | The agent command. |
 
 ## Data flow of one run
 
@@ -361,6 +390,108 @@ as the `find_references` tool does. It always uses the default
 calls. `PackagesChecked` counts the Go package type-checks the pass used, and
 `Errors` the parse and type errors they collected; both are 0 when no Go code
 was checked.
+
+## Sandboxes
+
+`sandbox` lets an embedder run the built-in tools inside a sandbox: an
+ephemeral environment that holds exactly one workspace and one agent
+process. Containment comes from where the tools run; the driver does not
+change. PRD 11 (`docs/prd/11-run-tools-in-an-isolated-sandbox.md`) holds the
+design; spec 13 built the foundation, and later scopes add the providers that
+isolate.
+
+```
+Provider.Create   CheckSpec(Capabilities, Spec): every field the provider does
+                  not honour is refused (*SpecError, ErrUnsupported); then the
+                  provider starts an agent and hands attach a connection
+attach            gRPC client over that connection (one-shot dialer, never
+                  redialled); Hello: a different protocol major is refused
+                  (ErrProtocol), any minor accepted; TTL timer started
+Sandbox.Sync      a TarStart chunk, then the tar in chunks of at most 1 MiB;
+                  the agent extracts through tarsafe as the bytes arrive
+Sandbox.Tools     Tools RPC; the host builds its own tools.All and compares
+                  names, order and definition digests (ErrToolMismatch);
+                  returns one proxy per tool
+proxy Execute     Call RPC with the model's bytes verbatim; the agent runs the
+                  tool with the RPC context; Data and Metadata come back as
+                  JSON bytes and pass wire.Guard
+Sandbox.Export    ExportTar; the host re-validates every entry before the
+                  destination sees it
+Sandbox.Close     timer stopped, connection closed, the provider's destroy step
+```
+
+**The agent service.** `agentkit.sandbox.v1` has one service, `Agent`, with
+`Hello`, `Tools`, `Call`, client-streaming `SyncTar` and server-streaming
+`ExportTar`. Tool input, result data and metadata travel as JSON bytes, so
+schemas stay the `tools` package's own and new `ToolMetadata` fields need no
+proto change; `CallRequest` and `CallResponse` are self-contained. Every
+message is bounded by `sandbox.MaxMessageBytes` (16 MiB, the same number as
+`wire.Defaults`). The agent builds `tools.All` with its explicit environment
+(never its process's own), `NoGlobalExcludes`, and a spill directory under
+that environment's `TMPDIR`; the options are fixed by the first `Tools` RPC,
+and a successful sync rebuilds the tool set so the symbol table sees the new
+files. At its TTL it cancels every in-flight call, which kills the process
+groups those calls started, and stops. `agentkit-sandboxd` serves it on stdin
+and stdout; `local` runs it in-process over two `os.Pipe` pairs through the
+same adapter.
+
+**What a proxy guarantees.** A proxy carries the host's own definition
+(`Name`, `Description`, both schemas, `PromptGuidelines`, `Builtin`,
+`ExecutionMode`, `PrepareArguments`, `Label`), so the model sees exactly what
+`tools.All` would show; it keeps no local `Execute`. Its result looks to the
+driver like a local one:
+
+- a cancelled host context returns `aborted` / `Operation aborted`, the batch
+  executor's own result, and the sandbox stays live;
+- an input over `MaxMessageBytes` returns `arguments_too_large` without an
+  RPC, and the sandbox stays live;
+- a transport failure, or `Data`/`Metadata` that fail `wire.Guard` or do not
+  decode, returns `sandbox_unavailable` — for that call and every later one;
+- an agent's `unknown_tool` is passed through.
+
+Proxies are safe for concurrent use and serialise nothing on the host; the
+batch executor decides what runs in sequence. `checkShellGuard` sees a proxy
+`execute` by name, so `New` refuses proxy shell tools with no `Guard`, and
+`codemode.New` binds proxies unchanged.
+
+**The state machine.** A sandbox is live, then unavailable, then closed.
+
+| From | To | When |
+|---|---|---|
+| live | unavailable | an RPC error other than the agent's deliberate refusals (`InvalidArgument`, `FailedPrecondition`, `NotFound`, `Unimplemented`) while the host context is live; a malformed response; the agent's connection ending; the TTL |
+| live, unavailable | closed | `Close` (idempotent; a later `Close` returns nil) |
+
+A failing `TarOut` destination is the caller's error and changes nothing.
+Once unavailable or closed, `Tools`, `Sync` and `Export` return
+`ErrUnavailable` or `ErrClosed` without an RPC, and proxies return
+`sandbox_unavailable` (detail `sandbox closed` after `Close`). There is no
+retry and no reconnect. A refusal — an unsafe tar entry, a missing export
+path, differing tool options — never changes the state. The context given to
+`Create` bounds creation only.
+
+**Tar transfer.** One function, `tarsafe.Validator.Check`, applies the entry
+rules on both sides: only regular files, directories and symlinks that
+resolve inside the target; absolute names, `..` components, hard links,
+devices, FIFOs, other types, escaping symlinks and paths through them are
+refused; setuid, setgid and sticky bits are cleared. Extraction writes through
+an `os.Root`, so no write follows a symlink out. A refused entry ends a sync
+with `ErrUnsafeArchive`, and entries already extracted stay. A transfer has no
+ordering guarantee with tool calls running at the same time.
+
+**D3: the script runs on the host.** PRD 11's decision D3 (a) is what spec 13
+implements: a code-mode script over proxy tools runs in the host's Starlark
+interpreter, and each call it makes goes through the host's nested-call
+pipeline and `Config.Guard` before it becomes a `Call` RPC. The guard
+therefore sees every call a script makes, inside a sandbox or not. Running the
+interpreter in the sandbox with authorization called back to the host
+(D3 (c)) is deferred to the second release; only the self-contained `Call`
+messages are designed for it.
+
+**`local` is not isolation.** Its capabilities say so (`IsolationNone`, only
+`NetworkUnrestricted`, nothing else honoured), and it refuses the zero
+`Spec` because the zero network is `none`. It keeps its files under
+`<os.TempDir()>/agentkit-sandbox-local/<id>/` with private `home/` and
+`tmp/`, and `Reap` removes directories whose creating process has gone.
 
 ## Testing layout
 

@@ -3,11 +3,13 @@
 AgentKit is two things. **The hands**: workspace mechanics any agent can use —
 the file, search, navigation and shell tools (`tools`), source outlines
 (`outline`), indexed code search (`codesearch`, a separate module), code mode
-(`codemode`), the MCP client pool (`mcp`) and the shell guard (`guard`).
+(`codemode`), the MCP client pool (`mcp`), the shell guard (`guard`), and
+sandboxes that run those tools somewhere else (`sandbox`).
 **One driver**: `agentkit.Config` and `agentkit.New`, a minimal agent loop over
 the Anthropic Messages API (`provider/anthropic`, on the official Go SDK),
 with a scripted provider (`provider/faux`) for offline tests. It serves no
-network API and listens on no socket.
+network API: the library listens on no socket; `agentkit-sandboxd` serves the
+agent service on its stdio.
 
 ## Quickstart
 
@@ -82,6 +84,49 @@ No shell tool is bound, so no `Guard` is needed. Bind `execute` or
 is as unguarded as one called directly. [`examples/codemode`](examples/codemode)
 runs this offline, with an MCP tool bound beside the built-ins.
 
+### Sandboxes
+
+A sandbox is an ephemeral environment that holds one workspace. A
+`sandbox.Provider` creates one, `Sync` puts files into it, and `Tools`
+returns a drop-in replacement for `tools.All`: one proxy per built-in, with
+the same definition, whose every call runs in the AgentKit agent
+(`agentkit-sandboxd`) inside the sandbox over the `agentkit.sandbox.v1` gRPC
+protocol. The driver does not change and does not know a tool is remote.
+
+```go
+sb, err := local.Unisolated().Create(ctx, sandbox.Spec{
+	Network: sandbox.Network{Mode: sandbox.NetworkUnrestricted},
+})
+if err != nil {
+	return err // a Spec the provider cannot honour is refused, naming the field
+}
+defer sb.Close(ctx)
+if _, err := sb.Sync(ctx, sandbox.Tar{R: projectTar}); err != nil {
+	return err
+}
+proxies, err := sb.Tools(ctx, sandbox.ToolOptions{})
+if err != nil {
+	return err
+}
+agent, err := agentkit.New(agentkit.Config{
+	Client: client,
+	Model:  "claude-opus-5-5",
+	Tools:  proxies,
+	Guard:  guard.Restricted(guard.Options{AllowedPrograms: []string{"go"}}),
+})
+```
+
+`local` is the only provider so far, and it is **not isolation**: it runs the
+agent in the embedder's process with its privileges, for tests and
+development. It speaks the same protocol, over the same transport, as the
+providers that will contain `execute`, so a proxy shell tool still needs a
+`Guard`. A cancelled call returns `aborted` and kills the process it started
+in the sandbox; a broken connection makes every later call return
+`sandbox_unavailable`. `Export` takes a subtree out as a tar, every entry
+checked before it is written. [`examples/sandbox`](examples/sandbox) runs a
+code-mode script over proxy tools offline; [`docs/cli.md`](docs/cli.md)
+covers the agent command.
+
 ## Consumer contract
 
 The identifiers an embedder such as agent-fox builds on.
@@ -107,6 +152,10 @@ The identifiers an embedder such as agent-fox builds on.
 | `codemode.New` | `New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error)` |
 | `mcp` | `ParseConfig`, `NewPool`, `Pool.Connect`, `Pool.Tools`, `Pool.Close`, `Connect` |
 | `tools.All` | `All(opts Options) ([]core.Tool, error)` |
+| `sandbox.Provider` | `Capabilities()`, `Create(ctx, Spec) (Sandbox, error)`, `Reap(ctx) ([]string, error)` |
+| `sandbox.Sandbox` | `ID`, `Spec`, `Agent`, `Sync(ctx, Source)`, `Tools(ctx, ToolOptions) ([]core.Tool, error)`, `Export(ctx, path, Destination)`, `Close` |
+| `sandbox.CheckSpec` | `CheckSpec(caps Capabilities, spec Spec) (Spec, error)` |
+| `local.Unisolated` | `Unisolated() sandbox.Provider` |
 
 ## Packages
 
@@ -126,6 +175,9 @@ The identifiers an embedder such as agent-fox builds on.
 | `provider/anthropic` | The Anthropic wire (direct, Vertex AI, Bedrock) over the official SDK. |
 | `provider/faux` | A scripted provider for offline tests and demos. |
 | `wire` | Bounded, strict parsing of untrusted JSON, and frame readers. |
+| `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `CheckSpec`, `Tar`/`TarOut`, the protocol version and the errors. Its internal packages hold the protocol, the agent service, the attach and proxy code and the tar entry rules. |
+| `sandbox/local` | `local.Unisolated()`: an in-process provider with no isolation, for tests and development. |
+| `sandbox/cmd/agentkit-sandboxd` | The agent command a sandbox image installs at `sandbox.AgentPath`; serves the protocol on its stdio. |
 | `codesearch` | Separate module: zoekt-backed `code_search`, opted in with `tools.Options{Index: idx}`. |
 
 ## Make targets
@@ -139,15 +191,17 @@ The identifiers an embedder such as agent-fox builds on.
 | `make fmt` | `gofmt -l -w .` |
 | `make tidy` | `go mod tidy` in both modules |
 | `make doc` | `go doc -all` for every public package in both modules, written as text to `build/doc/` (git-ignored) |
+| `make proto` | Regenerate the sandbox protocol's Go code and its recorded hash; needs `protoc`, installs the pinned plugins into `build/bin` |
 
 ## Documentation
 
 | Document | Covers |
 |---|---|
-| [`docs/architecture.md`](docs/architecture.md) | Package graph, the data flow of a run, invariants, nested calls, code mode, the MCP client, `Workspace.References`. |
-| [`docs/configuration.md`](docs/configuration.md) | `agentkit.Config`, environment variables, provider, tool, code-mode and MCP options, the model catalog. |
+| [`docs/architecture.md`](docs/architecture.md) | Package graph, the data flow of a run, invariants, nested calls, code mode, the MCP client, `Workspace.References`, sandboxes. |
+| [`docs/configuration.md`](docs/configuration.md) | `agentkit.Config`, environment variables, provider, tool, code-mode, MCP and sandbox options, the model catalog. |
+| [`docs/cli.md`](docs/cli.md) | The `agentkit-sandboxd` command: flags, transport and exit codes. |
 | [`docs/DEPS.md`](docs/DEPS.md) | Why each direct dependency is allowed, and the libraries considered and rejected. |
-| [`examples/README.md`](examples/README.md) | The five example programs and how to configure an application. |
+| [`examples/README.md`](examples/README.md) | The six example programs and how to configure an application. |
 | [`docs/prd/`](docs/prd) | Product requirements. |
 | [`docs/errata/`](docs/errata) | Where the code diverges from a spec, and why. |
 | [`docs/archive/`](docs/archive) | The superseded 0.4.2 PRD and findings from the deleted provider wires. |

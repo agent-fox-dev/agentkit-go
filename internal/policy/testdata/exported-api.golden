@@ -1,0 +1,418 @@
+== .
+const DefaultMaxTokens
+const EffortHigh
+const EffortLow
+const EffortMax
+const EffortMedium
+const EffortXHigh
+func (a *Agent) Messages() core.Messages
+func (a *Agent) ReachableTools() []core.Tool
+func (a *Agent) Run(ctx context.Context, prompt string) (core.RunResult, error)
+func (a *Agent) Stream(ctx context.Context, prompt string) (*core.EventStream, error)
+func (a *Agent) Usage() core.Usage
+func New(cfg Config) (*Agent, error)
+type Agent struct { }
+type Config struct { Client *sdk.Client Provider core.ProviderClient Model string Effort Effort System string Prefix []core.Message Tools []core.Tool Policy core.ToolPolicy Guard core.BeforeToolCall After core.AfterToolCall MaxTurns int MaxCostUSD float64 Timeout time.Duration Prune PruneOptions MaxTokens int }
+type Effort = core.Effort
+type PruneOptions struct { Threshold float64 KeepTurns int }
+== core
+const APIAnthropicMessages API
+const APIFaux API
+const APIGoogleGenerative API
+const APIOllamaChat API
+const APIOpenAICompletions API
+const APIOpenAIResponses API
+const BlockErrorCode
+const BlockText BlockType
+const BlockThinking BlockType
+const BlockToolUse BlockType
+const CacheRetentionLong CacheRetention
+const CacheRetentionNone CacheRetention
+const CacheRetentionShort CacheRetention
+const ClassAuthoritative
+const ClassIncremental EventClass
+const ClassSnapshot
+const EffortHigh Effort
+const EffortLow Effort
+const EffortMax Effort
+const EffortMedium Effort
+const EffortXHigh Effort
+const EvAgentDone EventType
+const EvAgentStart EventType
+const EvError EventType
+const EvMessageEnd EventType
+const EvMessageStart EventType
+const EvMessageUpdate EventType
+const EvTextDelta EventType
+const EvTextEnd EventType
+const EvTextStart EventType
+const EvThinkingDelta EventType
+const EvThinkingEnd EventType
+const EvThinkingStart EventType
+const EvToolCallEnd EventType
+const EvToolCallStart EventType
+const EvToolExecutionEnd EventType
+const EvToolExecutionStart EventType
+const EvToolExecutionUpdate EventType
+const EvToolInputDelta EventType
+const EvToolResult EventType
+const EvTurnEnd EventType
+const EvTurnStart EventType
+const MinMaxPendingBytes int64
+const NoToolsAll NoToolsMode
+const NoToolsBuiltin NoToolsMode
+const NoToolsNone NoToolsMode
+const Parallel ExecutionMode
+const RoleAssistant Role
+const RoleToolResult Role
+const RoleUser Role
+const RunStopAborted RunStopReason
+const RunStopBudgetExceeded RunStopReason
+const RunStopEndTurn RunStopReason
+const RunStopError RunStopReason
+const RunStopMaxTurns RunStopReason
+const RunStopPolicy RunStopReason
+const RunStopRefusal RunStopReason
+const RunStopTimeout RunStopReason
+const RunStopToolTerminate RunStopReason
+const Sequential
+const StopReasonAborted StopReason
+const StopReasonError StopReason
+const StopReasonLength StopReason
+const StopReasonRefusal StopReason
+const StopReasonStop StopReason
+const StopReasonStopSequence StopReason
+const StopReasonToolUse StopReason
+const ThinkingKindAdaptive ThinkingKind
+const ThinkingKindBudget ThinkingKind
+const ThinkingKindNone ThinkingKind
+const ToolChoiceAuto ToolChoice
+const ToolChoiceNone ToolChoice
+const ToolChoiceUnset ToolChoice
+const UsageCacheReadTokens
+const UsageCacheWrite1hTokens
+const UsageCacheWriteTokens
+const UsageCostUSD
+const UsageInputTokens UsageField
+const UsageOutputTokens
+const UsageReasoningTokens
+const UsageTotalTokens
+func (AgentDoneEvent) Class() EventClass
+func (AgentDoneEvent) EventType() EventType
+func (AgentStartEvent) Class() EventClass
+func (AgentStartEvent) EventType() EventType
+func (AssistantMessage) Role() Role
+func (ErrorEvent) Class() EventClass
+func (ErrorEvent) EventType() EventType
+func (MessageEndEvent) Class() EventClass
+func (MessageEndEvent) EventType() EventType
+func (MessageStartEvent) Class() EventClass
+func (MessageStartEvent) EventType() EventType
+func (MessageUpdateEvent) Class() EventClass
+func (MessageUpdateEvent) EventType() EventType
+func (TextBlock) BlockType() BlockType
+func (TextDeltaEvent) Class() EventClass
+func (TextDeltaEvent) EventType() EventType
+func (TextEndEvent) Class() EventClass
+func (TextEndEvent) EventType() EventType
+func (TextStartEvent) Class() EventClass
+func (TextStartEvent) EventType() EventType
+func (ThinkingBlock) BlockType() BlockType
+func (ThinkingDeltaEvent) Class() EventClass
+func (ThinkingDeltaEvent) EventType() EventType
+func (ThinkingEndEvent) Class() EventClass
+func (ThinkingEndEvent) EventType() EventType
+func (ThinkingStartEvent) Class() EventClass
+func (ThinkingStartEvent) EventType() EventType
+func (ToolCallEndEvent) Class() EventClass
+func (ToolCallEndEvent) EventType() EventType
+func (ToolCallStartEvent) Class() EventClass
+func (ToolCallStartEvent) EventType() EventType
+func (ToolExecutionEndEvent) Class() EventClass
+func (ToolExecutionEndEvent) EventType() EventType
+func (ToolExecutionStartEvent) Class() EventClass
+func (ToolExecutionStartEvent) EventType() EventType
+func (ToolExecutionUpdateEvent) Class() EventClass
+func (ToolExecutionUpdateEvent) EventType() EventType
+func (ToolInputDeltaEvent) Class() EventClass
+func (ToolInputDeltaEvent) EventType() EventType
+func (ToolResultEvent) Class() EventClass
+func (ToolResultEvent) EventType() EventType
+func (ToolResultMessage) Role() Role
+func (ToolUseBlock) BlockType() BlockType
+func (TurnEndEvent) Class() EventClass
+func (TurnEndEvent) EventType() EventType
+func (TurnStartEvent) Class() EventClass
+func (TurnStartEvent) EventType() EventType
+func (UserMessage) Role() Role
+func (b TextBlock) CloneBlock() ContentBlock
+func (b ThinkingBlock) CloneBlock() ContentBlock
+func (b ToolUseBlock) CloneBlock() ContentBlock
+func (b ToolUseBlock) InputMap() map[string]any
+func (c Content) Clone() Content
+func (c Content) Text() string
+func (c ToolChoice) IsSet() bool
+func (m *ToolMetadata) Clone() *ToolMetadata
+func (m *ToolMetadata) IsEmpty() bool
+func (m AssistantMessage) Clone() Message
+func (m ToolResultMessage) Clone() Message
+func (m UserMessage) Clone() Message
+func (ms Messages) Clone() Messages
+func (p PreparedArguments) TryWithArgs(args map[string]any) (PreparedArguments, error)
+func (p PreparedArguments) WithArgs(args map[string]any) PreparedArguments
+func (p ToolPolicy) Resolve(registered []Tool) []Tool
+func (r RunResult) FinalText() string
+func (r StopReason) ShortCircuits() bool
+func (r ToolResult) LLMText() string
+func (r ToolResult) ToLLMMap() map[string]any
+func (s *EventStream) End(res StreamResult)
+func (s *EventStream) Err() error
+func (s *EventStream) Events() iter.Seq[Event]
+func (s *EventStream) Next() (Event, bool)
+func (s *EventStream) Push(e Event)
+func (s *EventStream) Result() *AssistantMessage
+func (s *EventStream) RunResult() (RunResult, error)
+func (s *EventStream) Wait() StreamResult
+func (t Tool) Wire() ToolWire
+func (u *Usage) SetCost(v float64)
+func (u *Usage) SetField(f UsageField, v int64)
+func (u Usage) Add(o Usage) Usage
+func (u Usage) ContextTokens() int64
+func (u Usage) Has(f UsageField) bool
+func (u Usage) IsZero() bool
+func (u Usage) Reported() bool
+func (w UsageWire) Into(u *Usage)
+func BatchTerminates(votes []bool) bool
+func CallNested(ctx context.Context, calls ...ToolUseBlock) ([]ToolResult, error)
+func ErrResult(code, detail string) ToolResult
+func ErrorStream(msg *AssistantMessage, err error) *EventStream
+func EventStreamOf(ch <-chan StreamEvent, err error) *EventStream
+func ExtractToolUse(m *AssistantMessage) []ToolUseBlock
+func MarshalEvent(e Event, enc MessageEncoder) ([]byte, error)
+func NewEventStream(opts StreamOptions) *EventStream
+func NewToolUse(id, name string, raw json.RawMessage) (ToolUseBlock, error)
+func OKResult(data map[string]any) ToolResult
+func PrepareArguments(t Tool, c ToolUseBlock) (PreparedArguments, error)
+func ReachableTools(tools []Tool) []Tool
+func ReportUsage(ctx context.Context, u Usage)
+func ShouldIterate(m *AssistantMessage) bool
+func StreamChannel(s *EventStream) <-chan StreamEvent
+func ToolWires(ts []Tool) []ToolWire
+func WithNestedCaller(ctx context.Context, c NestedCaller) context.Context
+func WithUsageReporter(ctx context.Context, report func(Usage)) context.Context
+type API string
+type AfterToolCall func(ctx context.Context, in AfterToolCallContext) AfterToolCallDecision
+type AfterToolCallContext struct { ToolName string ToolUseID string ParentToolUseID string ParentToolName string Arguments map[string]any Result *ToolResultMessage Elapsed time.Duration ToolResult ToolResult }
+type AfterToolCallDecision struct { Terminate *bool }
+type AgentDoneEvent struct { Result RunResult Usage Usage }
+type AgentStartEvent struct { SessionID string Provider string API API Model string }
+type AssistantMessage struct { Content Content StopReason StopReason RawStopReason string StopDetail string ErrorMessage string Usage Usage Timestamp time.Time Model string ResponseModel string ResponseID string Effort Effort }
+type BeforeToolCall func(ctx context.Context, in BeforeToolCallContext) BeforeToolCallDecision
+type BeforeToolCallContext struct { ToolName string ToolUseID string ParentToolUseID string ParentToolName string Tool Tool Arguments map[string]any RawInput json.RawMessage Assistant *AssistantMessage Batch []ToolUseBlock Index int TurnCount int }
+type BeforeToolCallDecision struct { Block bool Terminate bool Reason string Arguments map[string]any }
+type BlockType string
+type CacheRetention string
+type Content []ContentBlock
+type ContentBlock interface { BlockType() BlockType CloneBlock() ContentBlock }
+type Effort string
+type ErrorEvent struct { Message string Err error Terminal bool }
+type Event interface { EventType() EventType Class() EventClass }
+type EventClass uint8
+type EventStream struct { }
+type EventType string
+type ExecutionMode uint8
+type Message interface { Role() Role Clone() Message }
+type MessageEncoder func(Message) (json.RawMessage, error)
+type MessageEndEvent struct { Message AssistantMessage }
+type MessageStartEvent struct { Message AssistantMessage }
+type MessageUpdateEvent struct { Message AssistantMessage }
+type Messages []Message
+type Model struct { ID string ContextWindow int MaxOutputTokens int InputCostPerMillion float64 OutputCostPerMillion float64 CacheReadCostPerMillion float64 CacheWriteCostPerMillion float64 ThinkingKind ThinkingKind Efforts map[Effort]*string Compat json.RawMessage }
+type NestedCaller interface { Call(ctx context.Context, calls ...ToolUseBlock) ([]ToolResult, error) }
+type NoToolsMode string
+type PreparedArguments struct { Raw json.RawMessage Args map[string]any Coercions []schema.Coercion }
+type ProviderClient interface { Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) }
+type Request struct { System []ContentBlock Prefix Messages Messages Messages Tools []ToolWire ToolChoice ToolChoice MaxTokens *int Temperature *float64 TopP *float64 StopSequences []string Effort Effort }
+type ResultHandler func(ctx context.Context, input json.RawMessage) ToolResult
+type Role string
+type RunResult struct { Messages Messages StopReason RunStopReason LastReason StopReason Usage Usage TurnCount int Error error }
+type RunStopReason string
+type StopReason string
+type StreamEvent struct { Event Event Err error }
+type StreamOptions struct { MaxPendingBytes int64 }
+type StreamResult struct { Message *AssistantMessage Result *RunResult Err error }
+type TextBlock struct { Text string }
+type TextDeltaEvent struct { BlockIndex int Delta string }
+type TextEndEvent struct { BlockIndex int Text string }
+type TextStartEvent struct { BlockIndex int }
+type ThinkingBlock struct { Thinking string Signature string Redacted bool }
+type ThinkingDeltaEvent struct { BlockIndex int Delta string }
+type ThinkingEndEvent struct { BlockIndex int Thinking string Signature string Redacted bool }
+type ThinkingKind string
+type ThinkingStartEvent struct { BlockIndex int }
+type Tool struct { Name string Description string InputSchema *schema.Schema OutputSchema *schema.Schema ReachableTools []Tool Terminating bool Handler ToolHandler Execute ResultHandler Label string Builtin bool ExecutionMode ExecutionMode PrepareArguments func(map[string]any) map[string]any PromptGuidelines []string }
+type ToolCallEndEvent struct { BlockIndex int Block ToolUseBlock }
+type ToolCallStartEvent struct { BlockIndex int ToolUseID string Name string }
+type ToolChoice string
+type ToolExecutionEndEvent struct { ToolUseID string Name string Result Content IsError bool ElapsedMS int64 ParentToolUseID string }
+type ToolExecutionStartEvent struct { ToolUseID string Name string ParentToolUseID string }
+type ToolExecutionUpdateEvent struct { ToolUseID string Name string Chunk string ParentToolUseID string }
+type ToolHandler func(ctx context.Context, input json.RawMessage) (json.RawMessage, error)
+type ToolInputDeltaEvent struct { BlockIndex int ToolUseID string Delta string }
+type ToolMetadata struct { Truncated bool TruncatedBy string TotalBytes int64 TotalLines int64 SpillPath string DurationMS int64 ExitCode *int Outcome string LineEnding string }
+type ToolPolicy struct { Tools []Tool ToolNames []string ExcludeTools []string NoTools NoToolsMode CustomTools []Tool }
+type ToolResult struct { OK bool Data map[string]any Error string Detail string Terminate bool Metadata *ToolMetadata Blocks []ContentBlock Text string }
+type ToolResultEvent struct { Message ToolResultMessage }
+type ToolResultMessage struct { ToolUseID string ToolName string Content Content IsError bool Timestamp time.Time AddedToolNames []string Usage *Usage Metadata *ToolMetadata }
+type ToolUseBlock struct { ID string Name string Input json.RawMessage ThoughtSignature string }
+type ToolWire struct { Name string Description string InputSchema *schema.Schema }
+type TurnEndEvent struct { TurnIndex int Message AssistantMessage ToolResults []ToolResultMessage Usage Usage }
+type TurnStartEvent struct { TurnIndex int }
+type Usage struct { InputTokens int64 OutputTokens int64 ReasoningTokens int64 CacheReadTokens int64 CacheWriteTokens int64 CacheWrite1hTokens int64 TotalTokens int64 Requests int64 CostUSD float64 BilledModel string Set UsageField }
+type UsageField uint32
+type UsageJSON struct { InputTokens int64 OutputTokens int64 ReasoningTokens int64 CacheReadTokens int64 CacheWriteTokens int64 CacheWrite1hTokens int64 TotalTokens int64 CostUSD float64 BilledModel string Reported bool }
+type UsageWire struct { InputTokens *int64 OutputTokens *int64 ReasoningTokens *int64 CacheReadTokens *int64 CacheWriteTokens *int64 CacheWrite1hTokens *int64 TotalTokens *int64 }
+type UserMessage struct { Content Content Timestamp time.Time }
+var ErrAborted
+var ErrBudgetExceeded
+var ErrBusy
+var ErrMaxTurns
+var ErrNoNestedCaller
+var ErrNotContinuable
+var ErrRefusal
+var ErrSessionExists
+var ErrSessionNotEmpty
+var ErrStreamOverrun
+var ErrTerminated
+var ErrToolRejected
+var ErrUnguardedExecute
+== tools
+const CRLF LineEnding
+const DefaultByteLimit
+const EditFileMaxBytes
+const ExecuteFallbackGuideline
+const FindResultCap
+const FindResultDefault
+const LF LineEnding
+const ListEntryCap
+const ListEntryDefault
+const MaxSearchContextLines
+const OutcomeAbort Outcome
+const OutcomeExit Outcome
+const OutcomeOK Outcome
+const OutcomeSignal Outcome
+const OutcomeTimeout Outcome
+const ReadLineLimit
+const SearchLineChars
+const SearchMatchCap
+const SearchOverExecuteGuideline
+const SymbolResultCap
+const SymbolResultDefault
+const TruncateHead TruncateMode
+const TruncateMiddle
+const TruncateTail
+const TruncatedByBytes TruncatedBy
+const TruncatedByLines TruncatedBy
+func (a *Accumulator) Close() error
+func (a *Accumulator) SpillPath() string
+func (a *Accumulator) String() string
+func (a *Accumulator) Total() int64
+func (a *Accumulator) Truncated() bool
+func (a *Accumulator) Write(p []byte) (int, error)
+func (e *EditError) Error() string
+func (e *SearchPatternError) Error() string
+func (e *SearchPatternError) Unwrap() error
+func (m SymbolMatch) Decl() outline.Decl
+func (w *Workspace) CheckWriteTarget(abs string) error
+func (w *Workspace) References(ctx context.Context, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error)
+func (w *Workspace) Rel(abs string) string
+func (w *Workspace) Resolve(p string) (string, error)
+func All(opts Options) ([]core.Tool, error)
+func ApplyEdits(content string, edits []Edit) (string, int, error)
+func CapMarker(noun, param string, limit, max int, alternative string) string
+func ClampLimit(n, def, cap int) int
+func ClassifyOutcome(aborted, timedOut bool, exitCode int, signaled bool) Outcome
+func CountCandidates(ctx context.Context, root string, p SearchParams) (int, error)
+func ExpandBraces(p string) []string
+func FileNavigationTools() []string
+func FindMarker(limit int) string
+func FoldConfusables(s string) string
+func FoldLine(s string) string
+func InvalidUTF8Marker(path string) string
+func ListMarker(limit int) string
+func LongLineMarker(line int, size int64, limit int, path string) string
+func MatchGlob(pattern, path string) bool
+func NewAccumulator(capBytes int, mode TruncateMode) *Accumulator
+func NewWorkspace(root string) (*Workspace, error)
+func NoGlobalExcludes() IgnoreOptions
+func Normalize(p string) (string, error)
+func NormalizeForEdit(s string) (normalized string, bom bool, ending LineEnding)
+func ReadMarker(shown, total int) string
+func ReadOffsetMarker(from, to, total int) string
+func ReducedEnv(base []string, extraPrefixes ...string) []string
+func RenderSearchText(res SearchResult, marker string) string
+func ResolveShell() (string, []string, error)
+func Restore(s string, bom bool, ending LineEnding) string
+func Run(ctx context.Context, command string, opts ExecOptions) (ExecResult, error)
+func RunArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, error)
+func Search(ctx context.Context, root string, p SearchParams) (SearchResult, error)
+func SearchBytesMarker(shown int, limit int) string
+func SearchIn(ctx context.Context, root string, p SearchParams, ig IgnoreOptions) (SearchResult, error)
+func SearchMarker(limit int) string
+func ShellQuote(s string) string
+func SymbolMarker(limit int) string
+func SymbolPartialMarker(reason string) string
+func Walk(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(rel string, d fs.DirEntry) error) error
+type Accumulator struct { Cap int Mode TruncateMode SpillDir string SpillPrefix string }
+type Edit struct { OldString string NewString string }
+type EditError struct { Phase string Index int Text string }
+type ExecOptions struct { Dir string Timeout time.Duration MaxBytes int KeepHead bool SpillDir string LogPath string Stdin io.Reader Env []string DrainIdle time.Duration DrainCeiling time.Duration }
+type ExecResult struct { Output string Outcome Outcome ExitCode int Truncated bool TotalBytes int64 SpillPath string Duration time.Duration IOErr error }
+type IgnoreOptions struct { Getenv func(string) string Home func() (string, error) GitConfig func() string }
+type Index interface { Symbols(ctx context.Context, q SymbolQuery) (SymbolAnswer, bool, error) Tools() []core.Tool Invalidate(rel string) Close() error }
+type LineEnding string
+type Options struct { Workspace *Workspace SpillDir string DisableSpill bool Env []string Ignore IgnoreOptions Symbols SymbolOptions Index Index }
+type Outcome string
+type ReferenceOptions struct { Path string IncludeTests bool MaxResults int }
+type ReferenceResult struct { Target outline.Decl Sites []ReferenceSite Backend string Partial bool PackagesChecked int Errors int Truncated bool }
+type ReferenceSite struct { Path string Line int Column int Confidence string Enclosing outline.Decl Source string }
+type SearchMatch struct { File string Line int Text string Before []string After []string }
+type SearchParams struct { Pattern string Path string ContextLines int FileGlob string CaseSensitive *bool MaxMatches int }
+type SearchPatternError struct { Err error }
+type SearchResult struct { Matches []SearchMatch Truncated bool FilesSearched int TruncatedBy TruncatedBy }
+type SymbolAnswer struct { Matches []SymbolMatch FilesIndexed int Backends map[string]int }
+type SymbolMatch struct { Path string Backend string Kind string Name string Container string Signature string Exported bool StartLine int EndLine int }
+type SymbolOptions struct { MaxFiles int MaxDuration time.Duration }
+type SymbolQuery struct { Name string Kind string Path string Exact bool }
+type TruncateMode int
+type TruncatedBy string
+type WalkOptions struct { Ignore IgnoreOptions IncludeHidden bool }
+type Workspace struct { Root string }
+var ErrNoHome
+var ErrPathMalformed
+var ErrPathNotAllowed
+== codemode
+const DefaultDescriptionTemplate
+const DefaultMaxCalls
+const DefaultMaxConcurrentCalls
+const DefaultMaxOutputBytes
+const DefaultMaxSteps uint64
+const DefaultMaxTimeout
+const DefaultName
+func (e *ToolError) Attr(name string) (starlark.Value, error)
+func (e *ToolError) AttrNames() []string
+func (e *ToolError) Freeze()
+func (e *ToolError) Get(k starlark.Value) (starlark.Value, bool, error)
+func (e *ToolError) Hash() (uint32, error)
+func (e *ToolError) String() string
+func (e *ToolError) Truth() starlark.Bool
+func (e *ToolError) Type() string
+func DefaultOptions() Options
+func FormatResultText(printed string, returnValue any) string
+func New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error)
+func NewToolError(res core.ToolResult) *ToolError
+func RenderSignature(t core.Tool) string
+type BuildInfo struct { DescriptionBytes int DescriptionChars int BoundToolsCount int }
+type DescriptionData struct { Name string ToolCount int ToolNames []string MaxTimeout string MaxSteps uint64 MaxCalls int MaxConcurrentCalls int MaxOutputBytes int }
+type Options struct { Name string Description string DescriptionTemplate string Guidelines []string MaxTimeout time.Duration MaxSteps uint64 MaxCalls int MaxConcurrentCalls int MaxOutputBytes int SpillDir string DisableSpill bool }
+type ToolError struct { }
