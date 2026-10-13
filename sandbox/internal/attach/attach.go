@@ -84,10 +84,10 @@ func New(ctx context.Context, cc grpc.ClientConnInterface, closer io.Closer, cfg
 	s.spec = cfg.Spec
 	s.spec.Workdir = h.Workdir
 	if ttl := s.spec.TTL; ttl > 0 {
-		s.timer = time.AfterFunc(ttl, func() {
+		s.timer.Store(time.AfterFunc(ttl, func() {
 			s.fail(fmt.Sprintf("TTL %v expired", ttl))
 			_ = s.teardown()
-		})
+		}))
 	}
 	if c, ok := cc.(*grpc.ClientConn); ok {
 		go s.watch(c)
@@ -102,7 +102,8 @@ type sb struct {
 	cfg    Config
 	spec   sandbox.Spec
 	agent  sandbox.AgentInfo
-	timer  *time.Timer
+	// timer is the TTL timer; atomic because its own callback reads it.
+	timer atomic.Pointer[time.Timer]
 
 	state
 	down    sync.Once
@@ -136,8 +137,8 @@ func (s *sb) Close(context.Context) error {
 // once; every caller gets the first error.
 func (s *sb) teardown() error {
 	s.down.Do(func() {
-		if s.timer != nil {
-			s.timer.Stop()
+		if t := s.timer.Load(); t != nil {
+			t.Stop()
 		}
 		s.downErr = errors.Join(s.closer.Close(), destroy(s.cfg))
 	})
