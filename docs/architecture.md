@@ -624,6 +624,36 @@ interpreter in the sandbox with authorization called back to the host
 (D3 (c)) is deferred to the second release; only the self-contained `Call`
 messages are designed for it.
 
+**Sandbox images.** One Containerfile, `sandbox/images/Containerfile`, builds
+both published images from the repository root:
+
+```
+agent-cgo     FROM --platform=$BUILDPLATFORM golang:1.27-trixie, GOTOOLCHAIN=local;
+              cross-compiles with crossbuild-essential-$TARGETARCH when the
+              target differs; CGO_ENABLED=1 (tree-sitter, psx's cgo variant)
+agent-static  the same, CGO_ENABLED=0
+base          debian:trixie-slim + git, bash, ca-certificates + agent-cgo's agent
+overlay       FROM scratch + agent-static's agent, one layer
+```
+
+The build stages run on the build platform and cross-compile, so nothing is
+emulated; only linux/amd64 and linux/arm64 are built. Both agents are built
+in the nested `sandbox` module with `-trimpath`, `-buildvcs=false` and
+`-ldflags -X …/sandbox/internal/buildver.stamp=$AGENTKIT_VERSION`:
+`buildver.Version()` returns the stamp when it is set, so a published agent
+reports its release version, and an unstamped build `(devel)`. The agent is
+owned by root with mode 0755 and the tools run as uid 1000, which cannot
+replace the binary that confines it (14's trust model). The layout lines up
+with the agent's Landlock roots: `/workspace` (the workspace), `/home/agentkit`
+(`HOME`) and `/tmp` (the temporary directory) are writable, and `git`,
+`bash` and the CA bundle sit under the read-only system directories. Neither
+image declares `ENV`, since Docker cannot unset an image's variables and the
+agent hands its environment to every tool verbatim, nor `VOLUME`, which
+would make anonymous volumes no provider reaps. Providers pass
+`--entrypoint sandbox.AgentPath` (an overlay-based image keeps its own
+entrypoint) and `--init` for zombie reaping. The release workflow tests the
+images before it publishes them; [`releasing.md`](releasing.md) describes it.
+
 **`local` is not isolation.** Its capabilities say so (`IsolationNone`, only
 `NetworkUnrestricted`, nothing else honoured), and it refuses the zero
 `Spec` because the zero network is `none`. It applies no Landlock ruleset
