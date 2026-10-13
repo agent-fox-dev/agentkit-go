@@ -1,0 +1,116 @@
+# Builds, tests and publishes the AgentKit sandbox images
+# (sandbox/images/Containerfile) to GHCR when a version tag vX.Y.Z is pushed.
+# A workflow_dispatch run builds and tests only: it never logs in or pushes.
+#
+# GHCR creates new packages as private, so on the first release the verify
+# job, which pulls anonymously, fails until a maintainer makes both
+# packages public; it can then be re-run alone (docs/releasing.md).
+
+name: sandbox-images
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  images:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tags: ${{ steps.version.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Version and tags
+        id: version
+        run: |
+          version=""
+          tags=""
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'
+            if [[ ! "$GITHUB_REF_NAME" =~ $pattern ]]; then
+              echo "::error::the tag $GITHUB_REF_NAME is not a version vMAJOR.MINOR.PATCH[-PRERELEASE]"
+              exit 1
+            fi
+            version="$GITHUB_REF_NAME"
+            tags="${version#v}"
+            if [ -z "${BASH_REMATCH[4]}" ]; then
+              tags="$tags ${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+      - name: Build and test the images on the default docker builder
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          make sandbox-images-test CONTAINER=docker SANDBOX_IMAGE_TAG=ci AGENTKIT_VERSION="$VERSION" AGENTKIT_REVISION="$GITHUB_SHA"
+      - uses: docker/setup-qemu-action@v3
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+      - uses: docker/setup-buildx-action@v3
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+      - uses: docker/login-action@v3
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish both images for linux/amd64 and linux/arm64
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAGS: ${{ steps.version.outputs.tags }}
+        run: |
+          for pair in "base ghcr.io/agent-fox-dev/agentkit-sandbox" "overlay ghcr.io/agent-fox-dev/agentkit-sandboxd"; do
+            set -- $pair
+            args=()
+            for tag in $TAGS; do
+              args+=(-t "$2:$tag")
+            done
+            docker buildx build --platform linux/amd64,linux/arm64 -f sandbox/images/Containerfile --target "$1" \
+              --build-arg AGENTKIT_VERSION="$VERSION" --build-arg AGENTKIT_REVISION="$GITHUB_SHA" "${args[@]}" --push .
+          done
+
+  verify:
+    needs: images
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: docker/setup-qemu-action@v3
+      - name: Pull every published tag anonymously and check --version
+        env:
+          VERSION: ${{ needs.images.outputs.version }}
+          TAGS: ${{ needs.images.outputs.tags }}
+        run: |
+          for repo in ghcr.io/agent-fox-dev/agentkit-sandbox ghcr.io/agent-fox-dev/agentkit-sandboxd; do
+            for tag in $TAGS; do
+              for platform in linux/amd64 linux/arm64; do
+                ref="$repo:$tag"
+                if ! docker pull --platform "$platform" "$ref"; then
+                  echo "::error::cannot pull $ref for $platform anonymously; is the package public?"
+                  exit 1
+                fi
+                out="$(docker run --rm --platform "$platform" --entrypoint /usr/local/libexec/agentkit-sandboxd "$ref" --version)"
+                case "$out" in
+                  "agentkit-sandboxd $VERSION "*) ;;
+                  *)
+                    echo "::error::$ref ($platform): --version printed '$out', want 'agentkit-sandboxd $VERSION ...'"
+                    exit 1
+                    ;;
+                esac
+              done
+            done
+          done
