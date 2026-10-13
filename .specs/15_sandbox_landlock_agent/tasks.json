@@ -402,7 +402,7 @@
         "`make check` exits 0",
         "On a Linux kernel offering Landlock ABI 4 or later, TS-15-43 and TS-15-46 pass without skipping"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
