@@ -101,6 +101,8 @@ func (v *Validator) Check(hdr *tar.Header) (*tar.Header, error) {
 			return refuse("empty symlink target")
 		case isAbs(target):
 			return refuse("symlink target %q is absolute", target)
+		case SymlinkEscapes(clean, target):
+			return refuse("symlink target %q leaves the target directory", target)
 		}
 		if _, ok := v.resolve(strings.Split(path.Dir(clean), "/"), target, 0); !ok {
 			return refuse("symlink target %q leaves the target directory", target)
@@ -115,6 +117,18 @@ func (v *Validator) Check(hdr *tar.Header) (*tar.Header, error) {
 		out.Typeflag = tar.TypeReg
 	}
 	return &out, nil
+}
+
+// SymlinkEscapes reports whether a symlink named name (slash-separated,
+// relative to a root) with the given target leaves the root: the target is
+// absolute, or, resolved lexically against the link's own directory, it
+// climbs above the root. Tar and rsync transfers share this predicate.
+func SymlinkEscapes(name, target string) bool {
+	if isAbs(target) {
+		return true
+	}
+	p := path.Join(path.Dir(path.Clean(name)), target)
+	return p == ".." || strings.HasPrefix(p, "../")
 }
 
 // resolve walks rel from the directory base (components relative to the
