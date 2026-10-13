@@ -23,6 +23,9 @@ func (s *sb) Sync(ctx context.Context, src sandbox.Source) (sandbox.SyncResult, 
 	if err := s.gate(); err != nil {
 		return sandbox.SyncResult{}, err
 	}
+	if ld, ok := src.(sandbox.LocalDir); ok {
+		return s.syncLocalDir(ctx, ld)
+	}
 	t, ok := src.(sandbox.Tar)
 	if !ok || t.R == nil {
 		return sandbox.SyncResult{}, fmt.Errorf("sandbox: unsupported source %T or a Tar with no reader", src)
@@ -37,8 +40,9 @@ func (s *sb) Sync(ctx context.Context, src sandbox.Source) (sandbox.SyncResult, 
 	if err != nil {
 		return sandbox.SyncResult{}, s.classify(ctx, "SyncTar", err)
 	}
+	var sent int64
 	if err := stream.Send(&sandboxpb.TarChunk{Body: &sandboxpb.TarChunk_Start{Start: &sandboxpb.TarStart{Path: rel, Replace: t.Replace}}}); err == nil {
-		if err := sendChunks(ctx, stream, readChunks(sctx, t.R)); err != nil {
+		if sent, err = sendChunks(ctx, stream, readChunks(sctx, t.R)); err != nil {
 			return sandbox.SyncResult{}, err
 		}
 	}
@@ -49,7 +53,7 @@ func (s *sb) Sync(ctx context.Context, src sandbox.Source) (sandbox.SyncResult, 
 	if err != nil {
 		return sandbox.SyncResult{}, s.classify(ctx, "SyncTar", err)
 	}
-	return sandbox.SyncResult{Files: int(resp.Files), Bytes: resp.Bytes}, nil
+	return sandbox.SyncResult{Files: int(resp.Files), Bytes: resp.Bytes, Sent: sent}, nil
 }
 
 // chunk is one read from a tar source.
@@ -80,25 +84,28 @@ func readChunks(ctx context.Context, r io.Reader) <-chan chunk {
 	return out
 }
 
-// sendChunks sends each read as one data chunk until the source ends. It
-// returns the read error or ctx's error; a send that fails ends the loop
-// quietly, since CloseAndRecv then reports why the stream ended.
-func sendChunks(ctx context.Context, stream sandboxpb.Agent_SyncTarClient, reads <-chan chunk) error {
+// sendChunks sends each read as one data chunk until the source ends, and
+// returns the bytes sent. It returns the read error or ctx's error; a send
+// that fails ends the loop quietly, since CloseAndRecv then reports why the
+// stream ended.
+func sendChunks(ctx context.Context, stream sandboxpb.Agent_SyncTarClient, reads <-chan chunk) (int64, error) {
+	var sent int64
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("sandbox: sync: %w", ctx.Err())
+			return sent, fmt.Errorf("sandbox: sync: %w", ctx.Err())
 		case c := <-reads:
 			if len(c.data) > 0 {
 				if err := stream.Send(&sandboxpb.TarChunk{Body: &sandboxpb.TarChunk_Data{Data: c.data}}); err != nil {
-					return nil
+					return sent, nil
 				}
+				sent += int64(len(c.data))
 			}
 			if c.err == io.EOF {
-				return nil
+				return sent, nil
 			}
 			if c.err != nil {
-				return fmt.Errorf("sandbox: sync: reading the tar: %w", c.err)
+				return sent, fmt.Errorf("sandbox: sync: reading the tar: %w", c.err)
 			}
 		}
 	}
@@ -112,6 +119,9 @@ func sendChunks(ctx context.Context, stream sandboxpb.Agent_SyncTarClient, reads
 func (s *sb) Export(ctx context.Context, path string, dst sandbox.Destination) error {
 	if err := s.gate(); err != nil {
 		return err
+	}
+	if ld, ok := dst.(sandbox.LocalDir); ok {
+		return s.exportLocalDir(ctx, path, ld)
 	}
 	out, ok := dst.(sandbox.TarOut)
 	if !ok {

@@ -27,8 +27,6 @@ require (
 	github.com/tree-sitter/tree-sitter-typescript v0.23.2
 	go.starlark.net v0.0.0-20261005163335-bcb1a1a55bf9
 	golang.org/x/oauth2 v0.35.0
-	google.golang.org/grpc v1.64.1
-	google.golang.org/protobuf v1.36.11
 )
 
 require (
@@ -82,4 +80,6 @@ require (
 	golang.org/x/time v0.16.0 // indirect
 	google.golang.org/api v0.189.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240722135656-d784300faade // indirect
+	google.golang.org/grpc v1.64.1 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 )

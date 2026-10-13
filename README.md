@@ -101,7 +101,8 @@ if err != nil {
 	return err // a Spec the provider cannot honour is refused, naming the field
 }
 defer sb.Close(ctx)
-if _, err := sb.Sync(ctx, sandbox.Tar{R: projectTar}); err != nil {
+// Only what changed moves; the same ignore rules as the file tools apply.
+if _, err := sb.Sync(ctx, sandbox.LocalDir{Path: "./project"}); err != nil {
 	return err
 }
 proxies, err := sb.Tools(ctx, sandbox.ToolOptions{})
@@ -114,6 +115,10 @@ agent, err := agentkit.New(agentkit.Config{
 	Tools:  proxies,
 	Guard:  guard.Restricted(guard.Options{AllowedPrograms: []string{"go"}}),
 })
+// ... run the agent, then bring its edits back into a host directory.
+if err := sb.Export(ctx, ".", sandbox.LocalDir{Path: "./result"}); err != nil {
+	return err
+}
 ```
 
 `local` is the only provider so far, and it is **not isolation**: it runs the
@@ -122,8 +127,11 @@ development. It speaks the same protocol, over the same transport, as the
 providers that will contain `execute`, so a proxy shell tool still needs a
 `Guard`. A cancelled call returns `aborted` and kills the process it started
 in the sandbox; a broken connection makes every later call return
-`sandbox_unavailable`. `Export` takes a subtree out as a tar, every entry
-checked before it is written. [`examples/sandbox`](examples/sandbox) runs a
+`sandbox_unavailable`. `sandbox.LocalDir` moves a host directory in or out
+over the rsync protocol: never an escaping symlink, never `.git` on export,
+and never the destination's ignored files, `.git` or escaping symlinks
+touched. `sandbox.Tar` and `sandbox.TarOut` move a tar stream instead, every
+entry checked before it is written. [`examples/sandbox`](examples/sandbox) runs a
 code-mode script over proxy tools offline; [`docs/cli.md`](docs/cli.md)
 covers the agent command.
 
@@ -175,7 +183,7 @@ The identifiers an embedder such as agent-fox builds on.
 | `provider/anthropic` | The Anthropic wire (direct, Vertex AI, Bedrock) over the official SDK. |
 | `provider/faux` | A scripted provider for offline tests and demos. |
 | `wire` | Bounded, strict parsing of untrusted JSON, and frame readers. |
-| `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `CheckSpec`, `Tar`/`TarOut`, the protocol version and the errors. Its internal packages hold the protocol, the agent service, the attach and proxy code and the tar entry rules. |
+| `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `CheckSpec`, `LocalDir`, `Tar`/`TarOut`, the protocol version and the errors. Its internal packages hold the protocol, the agent service, the attach and proxy code, the tar entry rules and the rsync adapter. |
 | `sandbox/local` | `local.Unisolated()`: an in-process provider with no isolation, for tests and development. |
 | `sandbox/cmd/agentkit-sandboxd` | The agent command a sandbox image installs at `sandbox.AgentPath`; serves the protocol on its stdio. |
 | `codesearch` | Separate module: zoekt-backed `code_search`, opted in with `tools.Options{Index: idx}`. |
@@ -185,12 +193,12 @@ The identifiers an embedder such as agent-fox builds on.
 | Target | Does |
 |---|---|
 | `make check` | `fmt`, `vet`, `lint`, `test`; run before committing |
-| `make test` | `go test ./...` in the root and `codesearch` modules |
-| `make vet` | `go vet` in the root and `codesearch` modules |
-| `make lint` | `golangci-lint` in both modules; skipped when not installed |
+| `make test` | `go test ./...` in every module: the root, `codesearch`, `sandbox` and `examples/sandbox` |
+| `make vet` | `go vet` in every module |
+| `make lint` | `golangci-lint` in every module; skipped when not installed |
 | `make fmt` | `gofmt -l -w .` |
-| `make tidy` | `go mod tidy` in both modules |
-| `make doc` | `go doc -all` for every public package in both modules, written as text to `build/doc/` (git-ignored) |
+| `make tidy` | `go mod tidy` in every module |
+| `make doc` | `go doc -all` for every public package of the root, `codesearch` and `sandbox` modules, written as text to `build/docs/` (git-ignored) |
 | `make proto` | Regenerate the sandbox protocol's Go code and its recorded hash; needs `protoc`, installs the pinned plugins into `build/bin` |
 
 ## Documentation

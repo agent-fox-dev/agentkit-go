@@ -42,6 +42,9 @@ type Agent struct {
 
 	mu  sync.RWMutex
 	set *toolSet // nil until the first successful Tools RPC
+
+	// rsync is the one Rsync stream slot.
+	rsync rsyncSlot
 }
 
 // New checks cfg and returns an agent. The workspace must already exist and

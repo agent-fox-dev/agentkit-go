@@ -128,8 +128,8 @@ func TestHello_TS13_15(t *testing.T) {
 	}
 	h := hello(link, gitDir)
 	want, _ := filepath.EvalSymlinks(link)
-	if h.ProtocolMajor != 1 || h.ProtocolMinor != 0 || h.Workdir != want {
-		t.Errorf("Hello = %v, want protocol 1.0 and workdir %s", h, want)
+	if h.ProtocolMajor != 1 || h.ProtocolMinor != 1 || h.Workdir != want {
+		t.Errorf("Hello = %v, want protocol 1.1 and workdir %s", h, want)
 	}
 	if h.Version != expectedVersion() {
 		t.Errorf("Version %q, want %q", h.Version, expectedVersion())

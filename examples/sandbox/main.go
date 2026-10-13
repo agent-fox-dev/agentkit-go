@@ -3,7 +3,10 @@
 // drop-in replacement for tools.All whose every call runs in the AgentKit
 // agent inside the sandbox; the driver does not change.
 //
-//	go run ./examples/sandbox
+//	cd examples/sandbox && go run .
+//
+// The project goes in from a host directory with sandbox.LocalDir, and the
+// result comes back out into another, over the rsync protocol.
 //
 // It runs offline, with no API key: the "model" is provider/faux replaying
 // one scripted code_mode call, and the sandbox comes from local, the
@@ -13,13 +16,12 @@
 package main
 
 import (
-	"archive/tar"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	agentkit "github.com/agent-fox-dev/agentkit-go"
@@ -32,7 +34,12 @@ import (
 )
 
 func main() {
-	if err := run(context.Background(), os.Stdout); err != nil {
+	dir, err := os.MkdirTemp("", "agentkit-sandbox-example-")
+	if err == nil {
+		err = run(context.Background(), os.Stdout, dir)
+		_ = os.RemoveAll(dir)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "sandbox:", err)
 		os.Exit(1)
 	}
@@ -59,7 +66,9 @@ if is_error(removed):
     print("rm:", removed.error)
 `
 
-func run(ctx context.Context, w io.Writer) error {
+// run works in dir: the project is written to dir/project and the result
+// exported to dir/out.
+func run(ctx context.Context, w io.Writer, dir string) error {
 	// 1. Create a sandbox. local refuses a Spec it cannot honour, and the
 	// zero Network means "none", which it cannot: say what you accept.
 	sb, err := local.Unisolated().Create(ctx, sandbox.Spec{Network: sandbox.Network{Mode: sandbox.NetworkUnrestricted}})
@@ -69,8 +78,19 @@ func run(ctx context.Context, w io.Writer) error {
 	defer sb.Close(ctx)
 	fmt.Fprintf(w, "sandbox %s: agent %s, protocol %d.%d\n", sb.ID(), sb.Agent().Version, sb.Agent().ProtocolMajor, sb.Agent().ProtocolMinor)
 
-	// 2. Put the project in, as a tar stream.
-	res, err := sb.Sync(ctx, sandbox.Tar{R: bytes.NewReader(tarOf(project))})
+	// 2. Put the project in from a host directory. Only what changed moves,
+	// and the same ignore rules as the file tools apply.
+	src := filepath.Join(dir, "project")
+	for _, f := range project {
+		p := filepath.Join(src, filepath.FromSlash(f[0]))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(p, []byte(f[1]), 0o644); err != nil {
+			return err
+		}
+	}
+	res, err := sb.Sync(ctx, sandbox.LocalDir{Path: src})
 	if err != nil {
 		return err
 	}
@@ -118,28 +138,19 @@ func run(ctx context.Context, w io.Writer) error {
 	}
 	fmt.Fprintf(w, "\nmodel: %s\n", run.FinalText())
 
-	// 5. Take files out again: Export validates every entry before W sees it.
-	var out bytes.Buffer
-	if err := sb.Export(ctx, "src", sandbox.TarOut{W: &out}); err != nil {
+	// 5. Take files out again, into a host directory Export creates.
+	out := filepath.Join(dir, "out")
+	if err := sb.Export(ctx, "src", sandbox.LocalDir{Path: out}); err != nil {
 		return err
 	}
-	tr := tar.NewReader(&out)
+	ents, err := os.ReadDir(out)
+	if err != nil {
+		return err
+	}
 	var names []string
-	for h, err := tr.Next(); err == nil; h, err = tr.Next() {
-		names = append(names, h.Name)
+	for _, e := range ents {
+		names = append(names, e.Name())
 	}
 	fmt.Fprintf(w, "exported src: %s\n\nSandbox example completed successfully\n", strings.Join(names, ", "))
 	return nil
-}
-
-// tarOf builds a tar stream of files; writes to a bytes.Buffer do not fail.
-func tarOf(files [][2]string) []byte {
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	for _, f := range files {
-		_ = tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: f[0], Mode: 0o644, Size: int64(len(f[1]))})
-		_, _ = tw.Write([]byte(f[1]))
-	}
-	_ = tw.Close()
-	return buf.Bytes()
 }

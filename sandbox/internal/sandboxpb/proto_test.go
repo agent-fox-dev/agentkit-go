@@ -14,8 +14,8 @@ import (
 )
 
 // TS-13-1: the generated descriptor declares agentkit.sandbox.v1 with one
-// Agent service of five RPCs, JSON payloads as bytes, and self-contained Call
-// messages. 13-REQ-1.1, 13-REQ-1.7.
+// Agent service of six RPCs (spec 14 added Rsync), JSON payloads as bytes,
+// and self-contained Call messages. 13-REQ-1.1, 13-REQ-1.7.
 func TestProtocolShape_TS13_1(t *testing.T) {
 	fd := File_sandbox_proto
 	if fd == nil {
@@ -37,7 +37,7 @@ func TestProtocolShape_TS13_1(t *testing.T) {
 		names = append(names, string(svc.Methods().Get(i).Name()))
 	}
 	slices.Sort(names)
-	if want := []string{"Call", "ExportTar", "Hello", "SyncTar", "Tools"}; !slices.Equal(names, want) {
+	if want := []string{"Call", "ExportTar", "Hello", "Rsync", "SyncTar", "Tools"}; !slices.Equal(names, want) {
 		t.Fatalf("methods %v, want %v", names, want)
 	}
 	shape := func(name string) string {
@@ -50,6 +50,7 @@ func TestProtocolShape_TS13_1(t *testing.T) {
 		"Call":      "false/false CallRequest->CallResponse",
 		"SyncTar":   "true/false TarChunk->SyncResponse",
 		"ExportTar": "false/true ExportRequest->TarChunk",
+		"Rsync":     "true/true RsyncFrame->RsyncFrame",
 	} {
 		if got := shape(name); got != want {
 			t.Errorf("%s is %s, want %s", name, got, want)

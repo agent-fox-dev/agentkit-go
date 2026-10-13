@@ -1,14 +1,15 @@
 .DEFAULT_GOAL := help
 DOC_DIR ?= build/docs
+# MODULES are the repository's Go modules: the root and its nested modules.
+MODULES := . codesearch sandbox examples/sandbox
 
 .PHONY: help
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*##"}; {printf "  %-16s %s\n", $$1, $$2}'
 
 .PHONY: test
-test: ## Run all Go tests (root module and the codesearch submodule)
-	go test ./...
-	cd codesearch && go test ./...
+test: ## Run all Go tests (root module and the nested modules)
+	@rc=0; for m in $(MODULES); do echo "go test ./... ($$m)"; (cd $$m && go test ./...) || rc=1; done; exit $$rc
 
 .PHONY: coverage
 coverage:
@@ -20,14 +21,13 @@ fmt: ## gofmt all source files in place
 	gofmt -l -w .
 
 .PHONY: vet
-vet: ## go vet the root module and the codesearch submodule
-	go vet ./...
-	cd codesearch && go vet ./...
+vet: ## go vet the root module and the nested modules
+	@rc=0; for m in $(MODULES); do echo "go vet ./... ($$m)"; (cd $$m && go vet ./...) || rc=1; done; exit $$rc
 
 .PHONY: lint
 lint: ## Run golangci-lint if installed, otherwise skip
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run ./... && (cd codesearch && golangci-lint run ./...); \
+		set -e; for m in $(MODULES); do (cd $$m && golangci-lint run ./...); done; \
 	else \
 		echo "golangci-lint not installed; skipping (see https://golangci-lint.run)"; \
 	fi
@@ -36,7 +36,7 @@ lint: ## Run golangci-lint if installed, otherwise skip
 doc: ## Generate Go package reference (go doc -all) as text files under build/doc
 	@rm -rf $(DOC_DIR)
 	@mkdir -p $(DOC_DIR)
-	@for m in . codesearch; do \
+	@for m in . codesearch sandbox; do \
 		( cd $$m && mod=$$(go list -m) && pkgs=$$(go list ./...) && \
 		for p in $$(printf '%s\n' "$$pkgs" | grep -v -e /internal/ -e /examples/); do \
 			rel=$${p#$$mod}; rel=$${rel#/}; out="$(CURDIR)/$(DOC_DIR)/$${rel:-$$(basename $$mod)}.txt"; \
@@ -74,9 +74,8 @@ proto: ## Regenerate the sandbox agent protocol's Go code (needs protoc)
 	@echo "generated code and hash written to $(PROTO_DIR)"
 
 .PHONY: tidy
-tidy: ## go mod tidy the root module and submodules
-	go mod tidy
-	cd codesearch && go mod tidy
+tidy: ## go mod tidy the root module and the nested modules
+	@set -e; for m in $(MODULES); do (cd $$m && go mod tidy); done
 
 .PHONY: check
 check: fmt vet lint test ## Run fmt, vet, lint and test - use before committing

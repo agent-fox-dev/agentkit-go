@@ -11,6 +11,7 @@ package policy
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -22,6 +23,21 @@ func repoRoot(t *testing.T) string {
 		t.Fatalf("locating module root: %v", err)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// gateModules are the modules the build gates cover, relative to the
+// repository root: the root module and the nested sandbox modules. codesearch
+// keeps its own gate.
+var gateModules = []string{".", "sandbox", "examples/sandbox"}
+
+// gateArgs is the go command for a gate step over ./... . A build writes its
+// output to a temporary directory: in a module whose ./... is a single main
+// package, a plain `go build ./...` writes the binary into the source tree.
+func gateArgs(t *testing.T, verb string) []string {
+	if verb == "build" {
+		return []string{"build", "-o", t.TempDir(), "./..."}
+	}
+	return []string{verb, "./..."}
 }
 
 // crossTargets is the supported matrix of NFR-COMPAT-06. It is a list in a
@@ -61,25 +77,27 @@ func TestCrossTargetBuildAndVet(t *testing.T) {
 	for _, target := range crossTargets {
 		target := target
 		t.Run(target.goos+"/"+target.goarch, func(t *testing.T) {
-			for _, verb := range []string{"build", "vet"} {
-				cmd := exec.Command("go", verb, "./...")
-				cmd.Dir = root
-				cmd.Env = append(os.Environ(),
-					"GOOS="+target.goos,
-					"GOARCH="+target.goarch,
-					"CGO_ENABLED=0",
-				)
-				out, err := cmd.CombinedOutput()
-				if err != nil {
-					t.Errorf(`go %s ./... failed for %s/%s: %v
+			for _, mod := range gateModules {
+				for _, verb := range []string{"build", "vet"} {
+					cmd := exec.Command("go", gateArgs(t, verb)...)
+					cmd.Dir = filepath.Join(root, mod)
+					cmd.Env = append(os.Environ(),
+						"GOOS="+target.goos,
+						"GOARCH="+target.goarch,
+						"CGO_ENABLED=0",
+					)
+					out, err := cmd.CombinedOutput()
+					if err != nil {
+						t.Errorf(`go %s ./... failed in %s for %s/%s: %v
 %s
 NFR-COMPAT-06 requires every release gate to build and vet all four supported
 targets. This target is broken on the host's green suite, which is exactly the
 failure the requirement names: platform-constrained files are called from
 unconstrained code, so the host build cannot see a break in another target.
-Fix the target; do not narrow the matrix.`, verb, target.goos, target.goarch, err,
-						strings.TrimSpace(string(out)))
-					return
+Fix the target; do not narrow the matrix.`, verb, mod, target.goos, target.goarch, err,
+							strings.TrimSpace(string(out)))
+						return
+					}
 				}
 			}
 		})
@@ -95,13 +113,15 @@ func TestHostCgoBuildAndVet(t *testing.T) {
 		t.Skip("host cgo build gate skipped under -short")
 	}
 	root := repoRoot(t)
-	for _, verb := range []string{"build", "vet"} {
-		cmd := exec.Command("go", verb, "./...")
-		cmd.Dir = root
-		cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Errorf("go %s ./... with CGO_ENABLED=1 failed: %v\n%s", verb, err,
-				strings.TrimSpace(string(out)))
+	for _, mod := range gateModules {
+		for _, verb := range []string{"build", "vet"} {
+			cmd := exec.Command("go", gateArgs(t, verb)...)
+			cmd.Dir = filepath.Join(root, mod)
+			cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Errorf("go %s ./... in %s with CGO_ENABLED=1 failed: %v\n%s", verb, mod, err,
+					strings.TrimSpace(string(out)))
+			}
 		}
 	}
 }

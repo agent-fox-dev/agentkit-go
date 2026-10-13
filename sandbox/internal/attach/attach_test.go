@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"slices"
 	"strings"
@@ -94,8 +95,9 @@ func TestProtocolMajorRefused_TS13_29(t *testing.T) {
 	calls := 0
 	sb, err := Dial(context.Background(), f.Serve(), Config{Spec: sandbox.Spec{TTL: time.Hour},
 		Destroy: func(context.Context) error { calls++; return nil }})
-	if sb != nil || !errors.Is(err, sandbox.ErrProtocol) || !strings.Contains(err.Error(), "2.0") || !strings.Contains(err.Error(), "1.0") {
-		t.Fatalf("Dial = %v, %v; want nil and ErrProtocol naming 2.0 and 1.0", sb, err)
+	host := fmt.Sprintf("%d.%d", sandbox.ProtocolMajor, sandbox.ProtocolMinor)
+	if sb != nil || !errors.Is(err, sandbox.ErrProtocol) || !strings.Contains(err.Error(), "2.0") || !strings.Contains(err.Error(), host) {
+		t.Fatalf("Dial = %v, %v; want nil and ErrProtocol naming 2.0 and %s", sb, err, host)
 	}
 	if calls != 1 {
 		t.Errorf("destroy ran %d times, want 1", calls)

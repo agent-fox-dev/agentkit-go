@@ -70,11 +70,16 @@ func TestBuildNeedsNoProtoc_TS13_2(t *testing.T) {
 			t.Fatalf("%s sits beside the go binary; the test cannot hide it", tool)
 		}
 	}
-	for _, args := range [][]string{{"build", "./..."}, {"vet", "./sandbox/..."}} {
-		cmd := exec.Command(goBin, args...)
-		cmd.Dir, cmd.Env = root, env
+	// The sandbox tree is its own module (docs/errata/14_sandbox_rsync_sync.md),
+	// so its build and vet run there.
+	for _, c := range []struct {
+		dir  string
+		args []string
+	}{{".", []string{"build", "./..."}}, {"sandbox", []string{"build", "./..."}}, {"sandbox", []string{"vet", "./..."}}} {
+		cmd := exec.Command(goBin, c.args...)
+		cmd.Dir, cmd.Env = filepath.Join(root, c.dir), env
 		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("go %s with no protoc on PATH: %v\n%s", strings.Join(args, " "), err, out)
+			t.Fatalf("go %s in %s with no protoc on PATH: %v\n%s", strings.Join(c.args, " "), c.dir, err, out)
 		}
 	}
 	for _, f := range protoFiles[1:3] {

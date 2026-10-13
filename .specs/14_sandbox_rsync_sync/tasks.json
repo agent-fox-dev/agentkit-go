@@ -62,7 +62,7 @@
       "done_when": [
         "`go build ./...` succeeds with no protoc on PATH"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -112,7 +112,7 @@
         "every line of internal/policy/testdata/go-list-m-all.13.txt appears unchanged in `go list -m all`",
         "TS-09-15 and TS-09-16 pass"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -145,7 +145,7 @@
         "sandbox/localdir_api_test.go",
         "sandbox/tar_sent_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -192,7 +192,7 @@
       "done_when": [
         "`go test -race ./sandbox/internal/rsyncx/... -count=1` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -237,7 +237,7 @@
         2,
         4
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -289,7 +289,7 @@
       "done_when": [
         "`go test -race ./sandbox/... -count=1` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -338,7 +338,7 @@
       "depends_on": [
         6
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -388,7 +388,7 @@
       "done_when": [
         "`go test -race ./sandbox/... -count=1` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -435,7 +435,7 @@
       "depends_on": [
         7
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -484,7 +484,7 @@
       "done_when": [
         "`make check` exits 0"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,
@@ -516,7 +516,7 @@
         "`make check` exits 0",
         "`go test -race ./sandbox/... -count=1` passes with the four smoke tests running against real components"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
