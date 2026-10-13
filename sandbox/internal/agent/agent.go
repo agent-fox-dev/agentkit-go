@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 	"github.com/agent-fox-dev/agentkit-go/tools"
 )
@@ -27,6 +28,10 @@ type Config struct {
 	Env []string
 	// TTL is how long the agent serves, measured from New.
 	TTL time.Duration
+	// Landlock is the outcome of the caller's Landlock confinement, which
+	// Hello reports. It is data: this package never applies Landlock, since
+	// the local provider runs it inside the embedder's process.
+	Landlock sandbox.LandlockInfo
 }
 
 // Agent serves the Agent service. Build one with New.
@@ -39,6 +44,8 @@ type Agent struct {
 	start time.Time
 	// build makes the tool set; tests replace it.
 	build func(tools.Options) ([]core.Tool, error)
+
+	landlock sandbox.LandlockInfo
 
 	mu  sync.RWMutex
 	set *toolSet // nil until the first successful Tools RPC
@@ -65,7 +72,7 @@ func New(cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("agent: workspace %s: %w", cfg.Workdir, err)
 	}
 	env := append([]string{}, cfg.Env...) // non-nil: nil would mean the process's environment
-	return &Agent{root: root, env: env, ttl: cfg.TTL, start: time.Now(), build: tools.All}, nil
+	return &Agent{root: root, env: env, ttl: cfg.TTL, start: time.Now(), build: tools.All, landlock: cfg.Landlock}, nil
 }
 
 // envValue is the last value of key in env, as exec resolves duplicates.

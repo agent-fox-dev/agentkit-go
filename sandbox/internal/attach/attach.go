@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -80,7 +81,7 @@ func New(ctx context.Context, cc grpc.ClientConnInterface, closer io.Closer, cfg
 		return nil, errors.Join(err, s.teardown())
 	}
 	s.agent = sandbox.AgentInfo{Version: h.Version, ProtocolMajor: h.ProtocolMajor, ProtocolMinor: h.ProtocolMinor,
-		Workdir: h.Workdir, OutlineBackend: h.OutlineBackend, Git: h.Git}
+		Workdir: h.Workdir, OutlineBackend: h.OutlineBackend, Git: h.Git, Landlock: landlockInfo(h)}
 	s.spec = cfg.Spec
 	s.spec.Workdir = h.Workdir
 	if ttl := s.spec.TTL; ttl > 0 {
@@ -93,6 +94,24 @@ func New(ctx context.Context, cc grpc.ClientConnInterface, closer io.Closer, cfg
 		go s.watch(c)
 	}
 	return s, nil
+}
+
+// landlockInfo is the Landlock report of h as a LandlockInfo, field for
+// field. An agent older than protocol 1.2, or one that sends no report, gets
+// ABI 0 and a note naming its protocol version.
+func landlockInfo(h *sandboxpb.HelloResponse) sandbox.LandlockInfo {
+	r := h.GetLandlock()
+	if r == nil || (h.ProtocolMajor == 1 && h.ProtocolMinor <= 1) {
+		return sandbox.LandlockInfo{Note: fmt.Sprintf("agent protocol %d.%d does not report Landlock", h.ProtocolMajor, h.ProtocolMinor)}
+	}
+	nilIfEmpty := func(s []string) []string {
+		if len(s) == 0 {
+			return nil
+		}
+		return slices.Clone(s)
+	}
+	return sandbox.LandlockInfo{ABI: int(r.Abi), KernelABI: int(r.KernelAbi), TCP: r.Tcp, Note: r.Note,
+		Writable: nilIfEmpty(r.Writable), ReadOnly: nilIfEmpty(r.ReadOnly)}
 }
 
 // sb is the one Sandbox implementation.

@@ -150,7 +150,7 @@ func expectedVersion(t *testing.T) string {
 // 13-REQ-4.2, 13-REQ-4.3.
 func TestVersionAndUsageErrors_TS13_24(t *testing.T) {
 	so, _, code := runBinary(t, "--version")
-	if code != 0 || !strings.Contains(so, expectedVersion(t)) || !strings.Contains(so, "1.1") {
+	if code != 0 || !strings.Contains(so, expectedVersion(t)) || !strings.Contains(so, "(protocol 1.2)") {
 		t.Errorf("--version: exit %d, stdout %q", code, so)
 	}
 	for _, args := range [][]string{{"--ttl", "0"}, {"--ttl", "-1s"}, {"--ttl", "bogus"}, {"--nosuchflag"}} {

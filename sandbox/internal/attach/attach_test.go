@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -124,8 +125,11 @@ func TestHandshakeAccepted_TS13_30(t *testing.T) {
 	if sb.Spec().TTL != time.Hour || sb.Spec().Workdir != "/real/ws" {
 		t.Errorf("Spec() = %+v", sb.Spec())
 	}
-	want := sandbox.AgentInfo{Version: "v9.0.0", ProtocolMajor: 1, ProtocolMinor: 7, Workdir: "/real/ws", OutlineBackend: "none", Git: true}
-	if sb.Agent() != want {
+	// A 1.7 agent that sends no Landlock report gets the protocol note
+	// (15-REQ-4.6).
+	want := sandbox.AgentInfo{Version: "v9.0.0", ProtocolMajor: 1, ProtocolMinor: 7, Workdir: "/real/ws", OutlineBackend: "none", Git: true,
+		Landlock: sandbox.LandlockInfo{Note: "agent protocol 1.7 does not report Landlock"}}
+	if !reflect.DeepEqual(sb.Agent(), want) {
 		t.Errorf("Agent() = %+v, want %+v", sb.Agent(), want)
 	}
 }

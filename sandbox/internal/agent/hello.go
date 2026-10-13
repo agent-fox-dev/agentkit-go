@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver"
@@ -12,7 +13,8 @@ import (
 )
 
 // Hello reports the protocol and agent versions, the workspace root, the
-// outline backend and whether git is on the tools' PATH.
+// outline backend, whether git is on the tools' PATH, and the Landlock
+// ruleset the caller applied.
 func (a *Agent) Hello(context.Context, *sandboxpb.HelloRequest) (*sandboxpb.HelloResponse, error) {
 	return &sandboxpb.HelloResponse{
 		ProtocolMajor:  sandbox.ProtocolMajor,
@@ -21,7 +23,14 @@ func (a *Agent) Hello(context.Context, *sandboxpb.HelloRequest) (*sandboxpb.Hell
 		Workdir:        a.root,
 		OutlineBackend: outlineBackend,
 		Git:            lookPathIn(a.env, "git"),
+		Landlock:       landlockReport(a.landlock),
 	}, nil
+}
+
+// landlockReport is l as the protocol's LandlockReport, field for field.
+func landlockReport(l sandbox.LandlockInfo) *sandboxpb.LandlockReport {
+	return &sandboxpb.LandlockReport{Abi: uint32(l.ABI), KernelAbi: uint32(l.KernelABI), Tcp: l.TCP, Note: l.Note,
+		Writable: slices.Clone(l.Writable), ReadOnly: slices.Clone(l.ReadOnly)}
 }
 
 // lookPathIn reports whether file is an executable on the PATH of env. It
