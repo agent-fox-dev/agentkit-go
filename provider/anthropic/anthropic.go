@@ -9,7 +9,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -139,10 +141,11 @@ type tool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitzero"`
 	InputSchema json.RawMessage `json:"input_schema"`
-	// Strict is always true: the API then guarantees the model's arguments
-	// match the input schema (10-REQ-5.1). A tool's output schema, reachable
-	// tools and terminating flag are not on core.ToolWire, so they cannot
-	// reach this struct (10-REQ-5.2).
+	// Strict is true for every tool that fits strict mode's limits: the API
+	// then guarantees the model's arguments match the input schema
+	// (10-REQ-5.1; see strictTools for the limits). A tool's output schema,
+	// reachable tools and terminating flag are not on core.ToolWire, so they
+	// cannot reach this struct (10-REQ-5.2).
 	Strict       bool          `json:"strict"`
 	CacheControl *cacheControl `json:"cache_control,omitzero"`
 	// There is deliberately no defer_loading here. REQ-CACHE-10's Anthropic
@@ -155,17 +158,90 @@ type tool struct {
 	// every late-added tool invisible for the rest of the session.
 }
 
-// strictSchema marshals a tool's schema in the strict subset. Every tool is
-// declared strict, and the API refuses a strict tool whose object schemas do
-// not set additionalProperties to false and list every property as required.
-// StrictSubset works on a clone, so the schema the validator reads is intact.
-func strictSchema(s *schema.Schema) (json.RawMessage, error) {
+// wireSchema marshals a tool's schema for the wire: in the strict subset
+// when the schema has one, since the API refuses a strict tool whose object
+// schemas do not set additionalProperties to false and list every property
+// as required, and as written when it has none. The rewritten form is also
+// what a tool strictTools leaves non-strict is sent with, so whether a tool
+// is strict never changes its schema bytes. StrictSubset works on a clone, so
+// the schema the validator reads is intact.
+func wireSchema(s *schema.Schema) (json.RawMessage, error) {
 	c, err := schema.StrictSubset(s)
 	if err != nil {
+		var rw *schema.StrictRewriteError
+		if errors.As(err, &rw) {
+			return json.Marshal(s)
+		}
 		return nil, err
 	}
 	dropUnsupportedBounds(c)
 	return json.Marshal(c)
+}
+
+// Strict mode's limits, totalled over every strict tool in one request. A
+// request over any of them is refused with a 400, whatever the tools are.
+// There is no optional-parameter count to keep: the strict rewrite lists
+// every property as required, and widens each formerly optional one into a
+// union with null, which maxStrictUnions counts.
+const (
+	maxStrictTools  = 20
+	maxStrictUnions = 16
+)
+
+// strictTools decides which tools are declared strict: each, in the order
+// they are sent, whose schema has a strict form and still fits the limits
+// beside the tools before it. A tool that does not is sent without the flag;
+// its arguments are still validated against its schema when they arrive, so
+// what it loses is the API's guarantee that the first attempt is valid, not
+// the validation. The order makes the choice stable from turn to turn, which
+// keeps the cached tool prefix byte-identical, and puts an embedder's own
+// tools, declared first, ahead of the built-in ones.
+func strictTools(ts []core.ToolWire) map[string]bool {
+	strict := make(map[string]bool, len(ts))
+	unions := 0
+	for _, t := range ts {
+		if len(strict) == maxStrictTools {
+			break
+		}
+		if !schema.StrictSubsetOK(t.InputSchema) {
+			continue
+		}
+		n := strictUnions(t.InputSchema)
+		if unions+n > maxStrictUnions {
+			continue
+		}
+		unions += n
+		strict[t.Name] = true
+	}
+	return strict
+}
+
+// strictUnions counts the parameters of s that are a union once s is in the
+// strict subset: every anyOf and every nullable type, and every optional
+// property the rewrite widens into a union with null. It reads s as written,
+// mirroring the rewrite instead of running it, so a turn does not pay for a
+// clone of every schema to learn a number that did not change.
+func strictUnions(s *schema.Schema) int {
+	if s == nil {
+		return 0
+	}
+	n := 0
+	if s.Nullable || len(s.AnyOf) > 0 {
+		n++
+	}
+	object := s.Type == schema.TypeObject || (s.Type == schema.TypeNone && len(s.Properties) > 0)
+	for _, name := range s.PropertyList() {
+		p := s.Properties[name]
+		if object && p != nil && !p.Nullable && !s.IsRequired(name) {
+			n++
+		}
+		n += strictUnions(p)
+	}
+	n += strictUnions(s.Items)
+	for _, a := range s.AnyOf {
+		n += strictUnions(a)
+	}
+	return n
 }
 
 // supportedFormats is the closed list of string formats strict mode accepts.
@@ -230,11 +306,11 @@ func dropUnsupportedBounds(s *schema.Schema) {
 	}
 }
 
-// nameStrictFailure says which tool's schema the strict subset refused, which
+// nameSchemaFailure says which tool's schema could not be marshalled, which
 // the marshaller, given only a schema, cannot.
-func nameStrictFailure(tools []core.ToolWire, err error) error {
+func nameSchemaFailure(tools []core.ToolWire, err error) error {
 	for _, t := range tools {
-		if _, serr := schema.StrictSubset(t.InputSchema); serr != nil {
+		if _, serr := wireSchema(t.InputSchema); serr != nil {
 			return fmt.Errorf("anthropic: tool %q: %w", t.Name, serr)
 		}
 	}
@@ -400,9 +476,9 @@ func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRet
 	// halves separately would make each call see the other half as removed —
 	// reporting a prefix invalidation on every turn and evicting the very
 	// entries the cache exists to keep.
-	schemas, srep, err := prefix.SyncWith(req.Tools, strictSchema)
+	schemas, srep, err := prefix.SyncWith(req.Tools, wireSchema)
 	if err != nil {
-		return nil, rep, sync, nameStrictFailure(req.Tools, err)
+		return nil, rep, sync, nameSchemaFailure(req.Tools, err)
 	}
 	sync = srep
 	byName := make(map[string]json.RawMessage, len(req.Tools))
@@ -412,10 +488,11 @@ func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRet
 	// Both halves are declared as ordinary, model-visible tools. The deferred
 	// half differs only in POSITION (after the prefix) and in carrying no
 	// breakpoint; see the tool struct for why it is not marked defer_loading.
+	strict := strictTools(append(slices.Clone(split.Immediate), split.Deferred...))
 	appendTools := func(ts []core.ToolWire) {
 		for _, tw := range ts {
 			out.Tools = append(out.Tools, tool{Name: tw.Name, Description: tw.Description,
-				InputSchema: byName[tw.Name], Strict: true})
+				InputSchema: byName[tw.Name], Strict: strict[tw.Name]})
 		}
 	}
 	appendTools(split.Immediate)

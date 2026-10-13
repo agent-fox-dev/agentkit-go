@@ -200,3 +200,25 @@ an embedder (or a test) supply credentials explicitly.
 - `core.Request.Prefix` is encoded and cached, but the loop does not fill it
   yet; spec 11's `Config.Prefix` does. 10-REQ-6.4 is conditional on a prefix
   being provided, and no execution path of this spec provides one.
+
+## 10-REQ-5.1: a tool is strict only while the request stays within the limits
+
+**Spec.** Every tool declaration carries `"strict": true`, and a schema the
+strict subset cannot express is refused before the request is sent.
+
+**Code.** The API totals its strict-mode limits over the whole request — at
+most 20 strict tools and 16 parameters that are a union (`anyOf`, or a type
+array such as `["string", "null"]`) — and answers 400 to a request past
+either, however valid each tool is alone. The strict rewrite widens every
+optional property into a union with null, so the read-only file tools alone
+carry 21 of them: an agent given `tools.All` could not make a single request.
+
+`provider/anthropic` (`strictTools`) therefore declares tools strict in the
+order they are sent, while they fit; a tool that does not fit is sent with
+`"strict": false` and the same rewritten schema, and later tools that fit are
+still strict. The order keeps the choice the same on every turn, so the cached
+tool prefix does not change, and puts an embedder's own tools — declared
+before the built-in ones — first. A schema with no strict form (a dictionary
+object) is sent as written, non-strict, instead of failing the request. A
+non-strict tool's arguments are still validated against its schema before it
+runs; what it gives up is the API's guarantee that the first call is valid.
