@@ -3,12 +3,13 @@ package anthropic_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
 func wireTools(t *testing.T, w map[string]any) []map[string]any {
@@ -106,17 +107,141 @@ func TestToolSchemaIsProjectedIntoStrictSubset(t *testing.T) {
 	}
 }
 
-// A schema the strict subset cannot express is refused by name, not sent to
-// be rejected by the API.
-func TestUnconvertibleToolSchemaNamesTheTool(t *testing.T) {
+// A schema the strict subset cannot express is sent as written, without the
+// strict flag, rather than refused: the API takes it as an ordinary tool, and
+// the tool's arguments are still validated when they arrive.
+func TestUnconvertibleToolSchemaIsSentNonStrict(t *testing.T) {
 	m := *testModel()
 	dict := core.Tool{Name: "tally", InputSchema: &schema.Schema{Type: schema.TypeObject,
 		AdditionalProperties: &schema.AdditionalProperties{Allowed: true, Schema: schema.Int()}},
 		Execute: func(context.Context, json.RawMessage) core.ToolResult { return core.OKResult(nil) }}
-	_, _, err := anthropic.BuildRequest(&m, core.Request{Messages: userTurn(), Tools: core.ToolWires([]core.Tool{dict})}, core.CacheRetentionNone)
-	if err == nil || !strings.Contains(err.Error(), "tally") {
-		t.Fatalf("err = %v, want one naming the tool \"tally\"", err)
+	plain := sampleTools()[0]
+	tools := wireTools(t, wireOf(t, m, core.Request{Messages: userTurn(), Tools: core.ToolWires([]core.Tool{dict, plain})}))
+	if len(tools) != 2 {
+		t.Fatalf("%d tools on the wire, want 2", len(tools))
 	}
+	if tools[0]["strict"] != false {
+		t.Errorf("tally: strict = %v, want false", tools[0]["strict"])
+	}
+	in, _ := tools[0]["input_schema"].(map[string]any)
+	if ap, _ := in["additionalProperties"].(map[string]any); ap["type"] != "integer" {
+		t.Errorf("tally's schema was not sent as written: %v", in)
+	}
+	if tools[1]["strict"] != true {
+		t.Errorf("search: strict = %v, want true", tools[1]["strict"])
+	}
+}
+
+// optionalTool has n optional parameters, each a union once in the strict
+// subset.
+func optionalTool(name string, n int) core.Tool {
+	var props []schema.Field
+	for i := range n {
+		props = append(props, schema.Opt("p"+string(rune('a'+i)), schema.String()))
+	}
+	return core.Tool{Name: name, InputSchema: schema.Object(props...),
+		Execute: func(context.Context, json.RawMessage) core.ToolResult { return core.OKResult(nil) }}
+}
+
+// Strict mode allows at most 16 union parameters across a request's strict
+// tools, and refuses the whole request past it. Tools are declared strict in
+// the order they are sent while they fit; one that does not is sent without
+// the flag, and a later one that fits is still strict.
+func TestStrictToolsStayWithinTheUnionLimit(t *testing.T) {
+	m := *testModel()
+	ts := []core.Tool{optionalTool("a", 7), optionalTool("b", 7), optionalTool("c", 7),
+		optionalTool("d", 2), optionalTool("e", 0)}
+	tools := wireTools(t, wireOf(t, m, core.Request{Messages: userTurn(), Tools: core.ToolWires(ts)}))
+	want := map[string]bool{"a": true, "b": true, "c": false, "d": true, "e": true}
+	for _, tl := range tools {
+		if tl["strict"] != want[tl["name"].(string)] {
+			t.Errorf("tool %v: strict = %v, want %v", tl["name"], tl["strict"], want[tl["name"].(string)])
+		}
+	}
+	// The non-strict tool's schema is the same rewritten one it would have
+	// been sent with as a strict tool.
+	in, _ := tools[2]["input_schema"].(map[string]any)
+	if in["additionalProperties"] != false {
+		t.Errorf("c's schema = %v, want the strict rewrite", in)
+	}
+}
+
+// At most 20 tools of a request may be strict.
+func TestStrictToolsStayWithinTheToolLimit(t *testing.T) {
+	m := *testModel()
+	var ts []core.Tool
+	for i := range 25 {
+		ts = append(ts, optionalTool(fmt.Sprintf("t%02d", i), 0))
+	}
+	tools := wireTools(t, wireOf(t, m, core.Request{Messages: userTurn(), Tools: core.ToolWires(ts)}))
+	strict := 0
+	for i, tl := range tools {
+		if tl["strict"] == true {
+			strict++
+		} else if i < 20 {
+			t.Errorf("tool %v is not strict, but the first 20 fit", tl["name"])
+		}
+	}
+	if strict != 20 {
+		t.Errorf("%d strict tools, want 20", strict)
+	}
+}
+
+// The file tools an agent is commonly given carry more optional parameters
+// than strict mode allows in one request; the request still goes out within
+// the limit.
+func TestTheBuiltinToolsFitTheStrictLimits(t *testing.T) {
+	m := *testModel()
+	ws, err := tools.NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	built, err := tools.All(tools.Options{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := wireTools(t, wireOf(t, m, core.Request{Messages: userTurn(), Tools: core.ToolWires(built)}))
+	unions, strict := 0, 0
+	for _, tl := range wire {
+		if tl["strict"] != true {
+			continue
+		}
+		strict++
+		unions += countUnions(tl["input_schema"])
+	}
+	if unions > 16 || strict > 20 {
+		t.Errorf("%d strict tools with %d unions, over the limits", strict, unions)
+	}
+	if strict == 0 {
+		t.Error("no tool is strict")
+	}
+}
+
+// countUnions counts the anyOf and type-array nodes of a wire schema: what
+// the API counts against its union limit.
+func countUnions(v any) int {
+	n := 0
+	switch x := v.(type) {
+	case map[string]any:
+		if _, ok := x["anyOf"]; ok {
+			n++
+		}
+		if _, ok := x["type"].([]any); ok {
+			n++
+		}
+		if props, ok := x["properties"].(map[string]any); ok {
+			for _, p := range props {
+				n += countUnions(p)
+			}
+		}
+		n += countUnions(x["items"])
+		if as, ok := x["anyOf"].([]any); ok {
+			for _, a := range as {
+				n += countUnions(a)
+			}
+		}
+	}
+	return n
 }
 
 // The strict subset has no numeric, string-length or array-size bounds: the
