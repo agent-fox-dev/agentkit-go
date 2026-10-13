@@ -18,8 +18,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
@@ -119,6 +121,11 @@ func run(args []string) int {
 		fail(fmt.Errorf("landlock: %w", err))
 		return 1
 	}
+	// The host may close first. Go kills a process that writes to a broken
+	// pipe on fd 1, which here is the protocol stream; handling SIGPIPE
+	// turns that write into EPIPE, so the agent exits 0. Notify, not Ignore:
+	// an ignored SIGPIPE would be inherited by the processes tools start.
+	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
 	out := redirectStdout()
 	a, err := agent.New(agent.Config{Workdir: cfg.workdir, Env: os.Environ(), TTL: cfg.ttl, Landlock: info})
 	if err != nil {
