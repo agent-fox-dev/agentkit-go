@@ -73,7 +73,7 @@
         "sandbox/internal/gitclone/gitclone_test.go",
         "sandbox/internal/gitclone/gitclone_property_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
