@@ -41,6 +41,7 @@ func testSeams(abi int, versionRuns *int) seams {
 		executable: func() (string, error) { return "/nonexistent/test.binary", nil },
 		lookPath:   func(string) (string, error) { return "", os.ErrNotExist },
 		resolver:   func(string) string { return "" },
+		remove:     removeTree,
 	}
 }
 

@@ -56,6 +56,7 @@ type seams struct {
 	resolver func(path string) string
 	procs    procTable
 	start    func(req startReq) (*agentProc, net.Conn, error)
+	remove   func(dir string) error
 }
 
 // startReq is what the starter starts: bin with args and env in dir.

@@ -43,21 +43,19 @@ type procTable interface {
 // agentProc is a started agent: its pid, its exit once recorded, its stderr
 // tail, and how to kill its process group.
 type agentProc struct {
-	pid  int
-	done chan struct{}
-	tail *tailBuffer
-	// stopping is set when the destroy step begins, so an exit after it is
-	// the provider's own doing.
-	stopping atomic.Bool
-	killFn   func() error
+	pid    int
+	done   chan struct{}
+	tail   *tailBuffer
+	killFn func() error
+
+	// killed is set when the provider kills the agent's group.
+	killed atomic.Bool
 
 	once     sync.Once
 	mu       sync.Mutex
 	code     int
 	signaled bool
 	sig      syscall.Signal
-	// early: the agent exited before the destroy step began.
-	early bool
 }
 
 func newAgentProc(pid int, kill func() error) *agentProc {
@@ -68,7 +66,7 @@ func newAgentProc(pid int, kill func() error) *agentProc {
 func (h *agentProc) setExit(code int, signaled bool, sig syscall.Signal) {
 	h.once.Do(func() {
 		h.mu.Lock()
-		h.code, h.signaled, h.sig, h.early = code, signaled, sig, !h.stopping.Load()
+		h.code, h.signaled, h.sig = code, signaled, sig
 		h.mu.Unlock()
 		close(h.done)
 	})
@@ -81,15 +79,28 @@ func (h *agentProc) exit() (code int, signaled bool, sig syscall.Signal) {
 	return h.code, h.signaled, h.sig
 }
 
+// exitedOnItsOwn reports whether the agent has exited and the provider did
+// not cause it: a non-zero status or a signal it did not send. An agent
+// exits 0 on EOF, which is how the destroy step stops it.
+func (h *agentProc) exitedOnItsOwn() bool {
+	select {
+	case <-h.done:
+	default:
+		return false
+	}
+	code, signaled, _ := h.exit()
+	return !h.killed.Load() && (code != 0 || signaled)
+}
+
 // stopAgent waits up to wait for h to exit (its connection is closed, and the
 // agent exits 0 on EOF), then kills its process group and waits for that.
 func stopAgent(h *agentProc, wait time.Duration) error {
-	h.stopping.Store(true)
 	select {
 	case <-h.done:
 		return nil
 	case <-time.After(wait):
 	}
+	h.killed.Store(true)
 	err := h.killFn()
 	select {
 	case <-h.done:

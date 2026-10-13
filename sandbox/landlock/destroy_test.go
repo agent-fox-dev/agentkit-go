@@ -2,13 +2,19 @@ package landlock
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/agent-fox-dev/agentkit-go/sandbox"
 )
 
 // fakeTable is a fake process table: processes by pid, a boot id, and the
@@ -104,3 +110,72 @@ func TestSessionKill_TS18_44(t *testing.T) {
 		t.Errorf("a survivor: %v after %v, want an error naming 105 after about 5s", err, d)
 	}
 }
+
+// TS-18-42: the destroy step runs once, performs its three actions in order
+// even after a failure, joins their errors and fits the 30-second budget.
+// 18-REQ-7.1.
+func TestDestroyStep_TS18_42(t *testing.T) {
+	ctx := context.Background()
+	f := newInProc(t)
+	var mu sync.Mutex
+	var order []string
+	record := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
+	ot := &orderTable{fakeTable: f.table, record: record}
+	var removes atomic.Int32
+	p := newTestProvider(t, Options{}, f.with, func(s *seams) {
+		s.procs = ot
+		s.remove = func(dir string) error { removes.Add(1); record("remove"); return removeTree(dir) }
+	})
+	sb, err := p.Create(ctx, sandbox.Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := sb.(*landlockSandbox)
+	go func() { <-h.agentDone(); record("stop") }()
+	if err := sb.Close(ctx); err != nil {
+		t.Errorf("Close = %v", err)
+	}
+	_ = sb.Close(ctx)
+	mu.Lock()
+	got := slices.Clone(order)
+	mu.Unlock()
+	if want := []string{"stop", "session", "remove"}; !slices.Equal(compact(got), want) || removes.Load() != 1 {
+		t.Errorf("order %v after %d removals, want %v once", got, removes.Load(), want)
+	}
+
+	errWait, errScan := errors.New("wait failed"), errors.New("scan failed")
+	oldStop, oldSession := stopWait, sessionWait
+	stopWait, sessionWait = 200*time.Millisecond, 200*time.Millisecond
+	t.Cleanup(func() { stopWait, sessionWait = oldStop, oldSession })
+	f2 := newInProc(t)
+	f2.ignoreEOF, f2.killErr = true, errWait
+	p2 := newTestProvider(t, Options{}, f2.with)
+	sb2, err := p2.Create(ctx, sandbox.Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f2.table.listErr = errScan
+	dir := filepath.Join(p2.root, sb2.ID())
+	err = sb2.Close(ctx)
+	if !errors.Is(err, errWait) || !errors.Is(err, errScan) {
+		t.Errorf("failing Close = %v, want both errors joined", err)
+	}
+	if _, serr := os.Stat(dir); !errors.Is(serr, os.ErrNotExist) {
+		t.Errorf("the directory remains after a failing destroy: %v", serr)
+	}
+	stopWait, sessionWait = oldStop, oldSession
+	if stopWait != 5*time.Second || sessionWait != 5*time.Second || stopWait+sessionWait >= 30*time.Second {
+		t.Errorf("stopWait %v, sessionWait %v", stopWait, sessionWait)
+	}
+}
+
+// orderTable records "session" on each scan.
+type orderTable struct {
+	*fakeTable
+	record func(string)
+}
+
+func (o *orderTable) list() ([]procEntry, error) { o.record("session"); return o.fakeTable.list() }
+
+// compact drops adjacent repeats.
+func compact(s []string) []string { return slices.Compact(slices.Clone(s)) }

@@ -13,6 +13,7 @@ import (
 type landlockSandbox struct {
 	inner     sandbox.Sandbox
 	p         *provider
+	h         *agentProc // the sandbox's agent
 	dir, ws   string
 	created   time.Time
 	agentPATH string // the PATH the sandbox's agent got
@@ -35,3 +36,6 @@ func (s *landlockSandbox) Export(ctx context.Context, path string, dst sandbox.D
 }
 
 func (s *landlockSandbox) Close(ctx context.Context) error { return s.inner.Close(ctx) }
+
+// agentDone is closed once the sandbox's agent has exited.
+func (s *landlockSandbox) agentDone() <-chan struct{} { return s.h.done }

@@ -2,16 +2,20 @@ package landlock
 
 import (
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/agent"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/fakeagent"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/stdioconn"
 )
 
@@ -62,6 +66,10 @@ type inProc struct {
 	pid    func() int
 	// fail makes every start fail.
 	fail error
+	// ignoreEOF keeps the agent's process alive after the host leaves, and
+	// killErr is what killing its group returns.
+	ignoreEOF bool
+	killErr   error
 }
 
 func newInProc(t *testing.T) *inProc {
@@ -117,10 +125,13 @@ func (f *inProc) start(req startReq) (*agentProc, net.Conn, error) {
 	r2, w2, _ := os.Pipe()
 	host, agentConn := stdioconn.New(r2, w1), stdioconn.New(r1, w2)
 	f.table.add(procEntry{PID: pid, Session: pid, State: 'S', Start: uint64(pid) * 10})
-	h := newAgentProc(pid, func() error { return agentConn.Close() })
+	h := newAgentProc(pid, func() error { _ = agentConn.Close(); return f.killErr })
 	go func() {
 		_ = a.Serve(agentConn)
 		_ = agentConn.Close()
+		if f.ignoreEOF {
+			return
+		}
 		f.table.mu.Lock()
 		delete(f.table.procs, pid)
 		f.table.mu.Unlock()
@@ -151,3 +162,85 @@ func entries(t *testing.T, dir string) []string {
 	slices.Sort(names)
 	return names
 }
+
+// fakeAgentStarter starts fa, served over net.Pipe, as the agent; it
+// "exits" 0 when the host closes the connection.
+func (f *inProc) fakeAgentStarter(fa *fakeagent.Agent) func(startReq) (*agentProc, net.Conn, error) {
+	return func(req startReq) (*agentProc, net.Conn, error) {
+		f.mu.Lock()
+		f.recs = append(f.recs, startRec{args: slices.Clone(req.args), env: slices.Clone(req.env), dir: req.dir})
+		pid := f.nextPID
+		f.nextPID++
+		f.mu.Unlock()
+		conn := fa.Serve()
+		f.table.add(procEntry{PID: pid, Session: pid, State: 'S', Start: uint64(pid) * 10})
+		h := newAgentProc(pid, func() error { fa.Stop(); return nil })
+		go func() {
+			<-fa.Closed()
+			fa.Stop()
+			f.forget(pid)
+			h.setExit(0, false, 0)
+		}()
+		return h, conn, nil
+	}
+}
+
+// silentStarter starts an agent that never answers Hello and exits 0 when
+// the host closes its stdin.
+func (f *inProc) silentStarter(entered chan<- struct{}) func(startReq) (*agentProc, net.Conn, error) {
+	return func(req startReq) (*agentProc, net.Conn, error) {
+		f.mu.Lock()
+		pid := f.nextPID
+		f.nextPID++
+		f.mu.Unlock()
+		r1, w1, _ := os.Pipe()
+		r2, w2, _ := os.Pipe()
+		f.table.add(procEntry{PID: pid, Session: pid, State: 'S', Start: uint64(pid) * 10})
+		h := newAgentProc(pid, func() error { return r1.Close() })
+		go func() {
+			close(entered)
+			_, _ = io.Copy(io.Discard, r1)
+			_ = w2.Close()
+			f.forget(pid)
+			h.setExit(0, false, 0)
+		}()
+		return h, stdioconn.New(r2, w1), nil
+	}
+}
+
+// forget removes pid from the fake table: the process is gone.
+func (f *inProc) forget(pid int) {
+	f.table.mu.Lock()
+	delete(f.table.procs, pid)
+	f.table.mu.Unlock()
+}
+
+// session is the live pids in session sid.
+func (f *fakeTable) session(sid int) []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []int
+	for _, e := range f.procs {
+		if e.Session == sid && e.State != 'Z' {
+			out = append(out, e.PID)
+		}
+	}
+	return out
+}
+
+// countRemove counts the destroy step's removals (one per run) around the
+// real removal.
+func countRemove(n *atomic.Int32) func(*seams) {
+	return func(s *seams) {
+		s.remove = func(dir string) error { n.Add(1); return removeTree(dir) }
+	}
+}
+
+// anyPID is a process table that knows every pid (start time pid*10, boot
+// B1) and lists none: for tests that start real processes on any platform.
+type anyPID struct{}
+
+func (anyPID) list() ([]procEntry, error)           { return nil, nil }
+func (anyPID) lookup(pid int) (uint64, bool, error) { return uint64(pid) * 10, true, nil }
+func (anyPID) bootID() (string, error)              { return "B1", nil }
+func (anyPID) kill(int, syscall.Signal) error       { return nil }

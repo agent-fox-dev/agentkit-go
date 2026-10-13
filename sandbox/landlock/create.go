@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
@@ -48,19 +50,19 @@ func (p *provider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandb
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("landlock: starting agentkit-sandboxd: %w", err), removeTree(dir))
 	}
-	destroy := newDestroy(h, p.seams.procs, dir, removeTree)
+	destroy := newDestroy(h, p.seams.procs, dir, p.seams.remove)
 	if err := p.markAgent(dir, h.pid, eff, created); err != nil {
 		_ = conn.Close()
 		return nil, errors.Join(err, destroy(context.Background()))
 	}
 	inner, err := attach.Dial(ctx, conn, attach.Config{ID: id, Spec: eff, Destroy: destroy, Provider: "landlock"})
 	if err != nil {
-		return nil, err
+		return nil, classifyDial(ctx, err, h)
 	}
 	if err := p.checkReport(inner.Agent().Landlock, dir, eff.Network.Mode); err != nil {
 		return nil, errors.Join(err, inner.Close(context.Background()))
 	}
-	return &landlockSandbox{inner: inner, p: p, dir: dir, ws: ws, created: created, agentPATH: envValue(env, "PATH")}, nil
+	return &landlockSandbox{inner: inner, p: p, h: h, dir: dir, ws: ws, created: created, agentPATH: envValue(env, "PATH")}, nil
 }
 
 // checkSpec refuses what CheckSpec allows but this provider does not
@@ -154,12 +156,36 @@ func (p *provider) checkReport(l sandbox.LandlockInfo, dir string, mode sandbox.
 		}
 	}
 	if !ok {
-		return errors.New("landlock: the agent's Landlock report falls short")
+		return fmt.Errorf("%w: agentkit-sandboxd reported Landlock ABI %d (kernel ABI %d), TCP %t, note %q", ErrNoLandlock, l.ABI, l.KernelABI, l.TCP, l.Note)
 	}
 	for _, root := range append(slices.Clone(l.Writable), l.ReadOnly...) {
 		if within(root, p.root) && !within(dir, root) {
-			return errors.New("landlock: a ruleset root contains Options.Root")
+			return fmt.Errorf("landlock: the agent's ruleset root %s contains Options.Root %s, so one sandbox could read another; choose a Root outside the system directories", root, p.root)
 		}
 	}
 	return nil
+}
+
+// classifyDial is the error Create returns for a failed attach.Dial, which
+// has already run the destroy step: a protocol or RequireLandlock refusal as
+// is, a done context's error, or the status and stderr tail of an agent that
+// exited on its own (status 2 is a refused flag value, such as an ExtraRW
+// containing a system directory).
+func classifyDial(ctx context.Context, err error, h *agentProc) error {
+	var se *sandbox.SpecError
+	if errors.Is(err, sandbox.ErrProtocol) || errors.As(err, &se) && se.Field == "RequireLandlock" {
+		return err
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("landlock: creating sandbox: %w (%v)", ctx.Err(), err)
+	}
+	if h.exitedOnItsOwn() {
+		code, signaled, sig := h.exit()
+		status := strconv.Itoa(code)
+		if signaled {
+			status = "signal " + sig.String()
+		}
+		return fmt.Errorf("landlock: agentkit-sandboxd exited with status %s: %s", status, strings.TrimSpace(h.tail.String()))
+	}
+	return fmt.Errorf("landlock: %w", err)
 }
