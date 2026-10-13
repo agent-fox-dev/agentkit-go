@@ -164,8 +164,3 @@ func (p *provider) Capabilities() sandbox.Capabilities {
 			"the engine's default seccomp profile may withhold Landlock, which the agent then reports",
 	}
 }
-
-// Reap is not implemented yet.
-func (p *provider) Reap(context.Context) ([]string, error) {
-	return nil, fmt.Errorf("podman: Reap: not yet implemented: %w", sandbox.ErrUnsupported)
-}
