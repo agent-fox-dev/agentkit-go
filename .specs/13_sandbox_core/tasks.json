@@ -305,7 +305,7 @@
       "done_when": [
         "`go test -race ./sandbox/internal/attach/... -count=1` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
