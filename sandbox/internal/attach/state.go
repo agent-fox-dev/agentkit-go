@@ -79,3 +79,16 @@ func (s *sb) classify(ctx context.Context, rpc string, err error) error {
 	s.fail(fmt.Sprintf("%s: %v", rpc, err))
 	return fmt.Errorf("%w: %s: %v", sandbox.ErrUnavailable, rpc, err)
 }
+
+// Live is the state of a sandbox this package attached, as its own gate
+// reports it: nil while live, an error matching sandbox.ErrUnavailable once
+// unavailable, and sandbox.ErrClosed once closed. A provider that wraps an
+// attached sandbox uses it to refuse work on a dead one before running
+// anything. A Sandbox this package did not create is an error.
+func Live(s sandbox.Sandbox) error {
+	x, ok := s.(*sb)
+	if !ok {
+		return fmt.Errorf("sandbox: %T was not attached by this package", s)
+	}
+	return x.gate()
+}
