@@ -144,7 +144,7 @@
       "done_when": [
         "With an engine available, `--target base` and `--target overlay` builds from the repository root exit 0, or docs/errata/16_sandbox_images.md records the psx link failure"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
