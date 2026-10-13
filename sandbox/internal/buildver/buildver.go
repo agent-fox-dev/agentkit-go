@@ -1,6 +1,8 @@
 // Package buildver reports the AgentKit sandbox module version a binary was
 // built from. The agent's Hello and the host's tool-mismatch message both use
-// it.
+// it. The answer is, in order: the link-time stamp, when the build set one;
+// the module version from the build info; (devel). A host binary never sets
+// the stamp, so it is unaffected by it.
 package buildver
 
 import "runtime/debug"
@@ -9,10 +11,19 @@ import "runtime/debug"
 // live in it.
 const modulePath = "github.com/agent-fox-dev/agentkit-go/sandbox"
 
-// Version is the sandbox module's version from the build info: the main
+// stamp is the version a build sets at link time, with
+// -ldflags "-X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=vX.Y.Z"
+// (the sandbox image build passes AGENTKIT_VERSION). No source assigns it.
+var stamp string
+
+// Version is the link-time stamp when one was set, else the sandbox module's
+// version from the build info: the main
 // module's when the binary is built from it, otherwise the dependency's (its
 // replacement's, when replaced). It is (devel) when there is none.
 func Version() string {
+	if stamp != "" {
+		return stamp
+	}
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
 		return "(devel)"

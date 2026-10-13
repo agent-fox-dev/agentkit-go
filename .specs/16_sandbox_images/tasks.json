@@ -62,7 +62,7 @@
         "sandbox/internal/buildver/api_test.go",
         "sandbox/cmd/agentkit-sandboxd/stamp_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
