@@ -15,8 +15,17 @@ image installs it at `sandbox.AgentPath`
 
 ```bash
 go build -o agentkit-sandboxd ./sandbox/cmd/agentkit-sandboxd
-agentkit-sandboxd --workdir /workspace --ttl 1h
+agentkit-sandboxd --workdir /workspace --ttl 1h --network none
 ```
+
+On Linux it confines itself with Landlock before any other work: before it
+redirects stdout, builds the agent or serves. Every process a tool starts
+inherits the ruleset, which cannot be lifted, and `Hello` reports what was
+applied (`sandbox.AgentInfo.Landlock`). The ruleset and the ABI it chooses
+are described in
+[`configuration.md`](configuration.md#the-agents-landlock-ruleset). There is
+no flag that turns it off; elsewhere the agent applies nothing and reports
+ABI 0 with the note `Landlock is Linux-only (GOOS=<os>)`.
 
 It builds with `CGO_ENABLED=0` for linux/amd64, linux/arm64, darwin/arm64 and
 windows/amd64, and with cgo on the host; with cgo, non-Go files get
@@ -29,9 +38,12 @@ The standard `flag` package: `-flag` and `--flag` are equivalent.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--workdir` | `/workspace` | The workspace directory. It must exist and be a directory. |
+| `--workdir` | `/workspace` | The workspace directory. It must exist and be a directory, and may not be `/` or equal to or an ancestor of a system directory. |
 | `--ttl` | `1h` | How long to serve, as a Go duration. Zero or negative is a usage error. At the TTL the agent cancels every in-flight call, which kills the processes those calls started, and exits. |
-| `--version` | | Print `agentkit-sandboxd <module version> (protocol <major>.<minor>)` to stdout and exit 0 without serving. The module version comes from the build info, or is `(devel)`. |
+| `--network` | `none` | The sandbox's network mode: exactly `none`, `allowlist` or `unrestricted`; anything else is a usage error. Under `none`, at Landlock ABI 4, the ruleset denies every TCP bind and connect, loopback included; under the other two it handles no network right. `sandbox.AgentArgs` passes the effective spec's mode. |
+| `--landlock-ro PATH` | | An extra read-and-execute root, repeatable. It must be absolute; a missing one is skipped with a note. |
+| `--landlock-rw PATH` | | An extra writable root, repeatable. It must be absolute, and may not be `/` or equal to or an ancestor of a system directory; a missing one is skipped with a note. |
+| `--version` | | Print `agentkit-sandboxd <module version> (protocol <major>.<minor>)` to stdout (currently `(protocol 1.2)`) and exit 0 without serving or probing Landlock. The module version comes from the build info, or is `(devel)`. |
 
 ### Environment
 
@@ -47,8 +59,8 @@ line on stderr, `agentkit-sandboxd: <cause>`.
 | Exit | When |
 |---|---|
 | 0 | The host closed the connection, or `--version`. |
-| 1 | A startup failure (for example, `--workdir` does not exist), or the TTL expired (`agent: TTL <d> expired`). |
-| 2 | A usage error: an unknown flag, a malformed or non-positive `--ttl`, or an extra argument. |
+| 1 | A startup failure (for example, `--workdir` does not exist), a Landlock ruleset that cannot be built or applied after the kernel reported Landlock (`agentkit-sandboxd: landlock: <cause>`; the agent never serves unconfined then), or the TTL expired (`agent: TTL <d> expired`). A kernel without Landlock is not a failure: the agent serves and reports ABI 0. |
+| 2 | A usage error: an unknown flag, a malformed or non-positive `--ttl`, a `--network` value other than `none`, `allowlist` or `unrestricted`, a `--workdir` or `--landlock-rw` that is `/` or contains a system directory, a relative `--landlock-ro` or `--landlock-rw`, or an extra argument. The line names the flag. |
 
 ## Make targets
 

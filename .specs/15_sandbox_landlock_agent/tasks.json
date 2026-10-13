@@ -366,7 +366,7 @@
         "`make check` exits 0",
         "`make doc` was run before the documentation edits"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,

@@ -66,12 +66,14 @@ First-party imports, from
 | `sandbox/internal/buildver` | none | |
 | `sandbox/internal/tarsafe` | none | |
 | `sandbox/internal/stdioconn` | none | |
+| `sandbox/internal/agentenv` | none | |
+| `sandbox/internal/confine` | `sandbox`, `sandbox/internal/agentenv` | `github.com/landlock-lsm/go-landlock/landlock{,/syscall}`, in `//go:build linux` files |
 | `sandbox/internal/rsyncx` | `sandbox/internal/{sandboxpb,tarsafe}`, `tools`; `sandbox` in its Windows stubs | `github.com/gokrazy/rsync/{rsyncclient,rsyncd}`, in `//go:build !windows` files |
-| `sandbox/internal/agent` | `core`, `sandbox`, `sandbox/internal/{buildver,rsyncx,sandboxpb,tarsafe,tooldigest}`, `tools` | `google.golang.org/grpc` |
+| `sandbox/internal/agent` | `core`, `sandbox`, `sandbox/internal/{agentenv,buildver,rsyncx,sandboxpb,tarsafe,tooldigest}`, `tools` | `google.golang.org/grpc` |
 | `sandbox/internal/attach` | `core`, `sandbox`, `sandbox/internal/{buildver,rsyncx,sandboxpb,tarsafe,tooldigest}`, `tools`, `wire` | `google.golang.org/grpc`, `google.golang.org/protobuf` |
 | `sandbox/internal/localtest` | `sandbox`, `sandbox/internal/{attach,sandboxpb}` | |
 | `sandbox/local` | `sandbox`, `sandbox/internal/{agent,attach,localtest,stdioconn}` | |
-| `sandbox/cmd/agentkit-sandboxd` | `sandbox`, `sandbox/internal/{agent,buildver,stdioconn}` | |
+| `sandbox/cmd/agentkit-sandboxd` | `sandbox`, `sandbox/internal/{agent,buildver,confine,stdioconn}` | |
 | `sandbox/internal/fakeagent` (tests only) | `sandbox/internal/{sandboxpb,tooldigest}`, `tools` | `google.golang.org/grpc` |
 | `sandbox/internal/relaytest` (tests only) | `sandbox`, `sandbox/internal/{agent,attach,rsyncx,sandboxpb}` | `google.golang.org/grpc` |
 | `sandbox/internal/treegen` (tests only) | `sandbox/internal/tarsafe`, `tools` | |
@@ -120,13 +122,15 @@ What follows from it:
 | `internal/policy` | Tests only: the build gates and the dependency allowlist. |
 | `internal/testkit` | Shared test helpers. |
 | `internal/toolconformance` | Tests only: the spec 06 conformance case table, run against `tools.All` and against sandbox proxy tools. |
-| `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `CheckSpec`, `Tar`/`TarOut`, the protocol version, `MaxMessageBytes` and the errors (below). |
+| `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `CheckSpec`, `LocalDir`, `Tar`/`TarOut`, `LandlockInfo`, `AgentArgs`, the protocol version, `MaxMessageBytes` and the errors (below). |
 | `sandbox/internal/sandboxpb` | The `agentkit.sandbox.v1` protocol (`sandbox.proto`) and its checked-in generated code; `make proto` regenerates it. |
 | `sandbox/internal/agent` | The agent service: runs `tools.All` against one workspace with an explicit environment. |
 | `sandbox/internal/attach` | The one `Sandbox` implementation, for every provider: handshake, state machine, failure classification, proxy tools, tar transfer. |
 | `sandbox/internal/tarsafe` | The tar entry rules both directions share, the `os.Root` extractor, the export validator and the archiver. |
 | `sandbox/internal/tooldigest`, `sandbox/internal/buildver` | The definition digest host and agent share; the module version from the build info. |
 | `sandbox/internal/stdioconn` | A `net.Conn` over a reader and a writer: stdin/stdout, or two `os.Pipe` pairs. |
+| `sandbox/internal/confine` | The agent's Landlock confinement: `Plan`, the ruleset, `Setup`. Only `agentkit-sandboxd` imports it. |
+| `sandbox/internal/agentenv` | Reads the agent's explicit environment: a variable, the temporary directory. |
 | `sandbox/local` | The in-process provider with no isolation. |
 | `sandbox/cmd/agentkit-sandboxd` | The agent command. |
 
@@ -435,7 +439,8 @@ Sandbox.Close     timer stopped, connection closed, the provider's destroy step
 
 **The agent service.** `agentkit.sandbox.v1` has one service, `Agent`, with
 `Hello`, `Tools`, `Call`, client-streaming `SyncTar`, server-streaming
-`ExportTar` and, since protocol 1.1, bidirectional `Rsync`. Tool input, result data and metadata travel as JSON bytes, so
+`ExportTar` and, since protocol 1.1, bidirectional `Rsync`; since protocol
+1.2 `HelloResponse` carries the agent's `LandlockReport`. Tool input, result data and metadata travel as JSON bytes, so
 schemas stay the `tools` package's own and new `ToolMetadata` fields need no
 proto change; `CallRequest` and `CallResponse` are self-contained. Every
 message is bounded by `sandbox.MaxMessageBytes` (16 MiB, the same number as
@@ -559,6 +564,44 @@ overwritten, written through or deleted. The agent serves each stream with
 exactly one module over the workspace root, writable only for SYNC
 (`rsyncx.ModulesFor`), so an EXPORT stream cannot change the workspace.
 
+**Kernel confinement inside the agent.** The containment of a sandbox is
+the provider's; on Linux the agent adds a second boundary underneath it, a
+Landlock ruleset on its own process that every process a tool starts
+inherits and none can lift. `agentkit-sandboxd` is the only code that
+applies it, through `sandbox/internal/confine`, which nothing else imports:
+
+```
+main      parse flags; --version answers without probing
+confine   validate the flag roots (a refused value: exit 2)
+          probe the kernel's ABI once; Plan picks the ABI (0, 2, 3 or 4)
+          and whether TCP is handled (only at 4, under --network none)
+          resolve the roots; apply landlock.V2/V3/V4 strictly (Restrict
+          with TCP, RestrictPaths without; never BestEffort); no_new_privs
+          on every thread (a failure after a good probe: exit 1)
+main      redirect stdout, agent.New(Config{Landlock: outcome}), serve
+Hello     the outcome as LandlockReport; attach fills AgentInfo.Landlock
+attach    RequireLandlock: refuse unless Landlock.Satisfies(network mode),
+          closing the client and destroying the sandbox once
+```
+
+The ruleset grants every right beneath the workspace, `HOME`, the
+temporary directory and each `--landlock-rw`; read and execute beneath the
+system directories and each `--landlock-ro`; read beneath `/proc`; and read
+and write on five device nodes (`/dev/null` above all: every shell tool's
+stdin is the null device). Under `--network none` at ABI 4 it denies every
+TCP bind and connect, **loopback included**: Landlock rules are by port and
+cannot tell local from remote. `docs/configuration.md` has the full table.
+Landlock does not reach resources (memory, CPU, processes stay the
+container's job), UDP or Unix sockets, Multipath TCP (which Go's
+`net.Listen` uses by default, so a test that wants a denial disables it), or
+host allowlists (`NetworkAllowlist` gets no TCP rule from the agent).
+
+*The agent's Landlock ruleset is applied before any other work.* "Before"
+cannot be observed from outside, so an AST test over the command pins it:
+`confine.Setup` precedes every `redirectStdout`, `agent.New` and `go`
+statement. The agent package never applies Landlock; it receives the outcome
+as data, because `local` runs it inside the embedder's process.
+
 *No code in this module confines the process that embeds it.* Both library
 constructors, `rsyncd.NewServer` and `rsyncclient.New`, are called in exactly
 one `rsyncx` function each, always with `DontRestrict()`: without it the
@@ -583,7 +626,10 @@ messages are designed for it.
 
 **`local` is not isolation.** Its capabilities say so (`IsolationNone`, only
 `NetworkUnrestricted`, nothing else honoured), and it refuses the zero
-`Spec` because the zero network is `none`. It keeps its files under
+`Spec` because the zero network is `none`. It applies no Landlock ruleset
+(`Capabilities.Landlock` is false, so `RequireLandlock` is refused before
+anything is made) and its agent reports ABI 0 with the note
+`in-process agent (local provider): no confinement`. It keeps its files under
 `<os.TempDir()>/agentkit-sandbox-local/<id>/` with private `home/` and
 `tmp/`, and `Reap` removes directories whose creating process has gone.
 
