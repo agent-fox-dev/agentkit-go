@@ -1,7 +1,6 @@
 package landlock
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"runtime"
@@ -13,5 +12,3 @@ func defaultSeams() seams {
 		resolver: resolverDir, procs: defaultProcTable(), start: defaultStart, remove: removeTree,
 		initCommand: defaultInitCommand}
 }
-
-func (p *provider) Reap(context.Context) ([]string, error) { panic("not implemented") }
