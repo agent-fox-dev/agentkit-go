@@ -44,6 +44,8 @@ var approvedDeps = []string{
 	"google.golang.org/protobuf",
 	// The in-process rsync protocol for sandbox LocalDir transfers (sandbox/internal/rsyncx).
 	"github.com/gokrazy/rsync",
+	// The sandbox agent's own Landlock confinement (sandbox/internal/confine).
+	"github.com/landlock-lsm/go-landlock",
 }
 
 // validateAllowlist returns an error naming every dependency in deps that no
@@ -348,7 +350,8 @@ var d1Upgrades = map[string]string{
 
 // TS-14-42: gokrazy/rsync v0.3.8 is the only new direct requirement,
 // approved with a reason; the sandbox module's graph gains only additions
-// and D-1's upgrades; x/net and go-landlock stay out of the direct set.
+// and D-1's upgrades; x/net stays out of the direct set. Spec 15 made
+// go-landlock direct (TS-15-40).
 // 14-REQ-9.1, 14-REQ-9.2. The requirement is the nested sandbox module's
 // (D-2), so the root module's go.mod and graph do not change at all.
 func TestRsyncDependency_TS14_42(t *testing.T) {
@@ -364,13 +367,13 @@ func TestRsyncDependency_TS14_42(t *testing.T) {
 	if _, ok := parseGoMod(t, root)["github.com/gokrazy/rsync"]; ok {
 		t.Error("the root go.mod requires gokrazy/rsync; only the sandbox module may")
 	}
-	for _, m := range []string{"golang.org/x/net", "github.com/landlock-lsm/go-landlock"} {
+	for _, m := range []string{"golang.org/x/net"} {
 		if r, ok := reqs[m]; ok && !r.indirect {
 			t.Errorf("sandbox/go.mod requires %s directly", m)
 		}
 	}
 	want := []string{"github.com/agent-fox-dev/agentkit-go", "github.com/agent-fox-dev/agentkit-go/sandbox",
-		"github.com/gokrazy/rsync", "google.golang.org/grpc", "google.golang.org/protobuf"}
+		"github.com/gokrazy/rsync", "github.com/landlock-lsm/go-landlock", "google.golang.org/grpc", "google.golang.org/protobuf"}
 	if got := directSet(t, sb); !slices.Equal(got, want) {
 		t.Errorf("the sandbox module's direct set is %v, want %v", got, want)
 	}

@@ -173,7 +173,7 @@
         "go.mod requires github.com/landlock-lsm/go-landlock without `// indirect` and psx only with `// indirect`",
         "`go list -m all` output equals internal/policy/testdata/go-list-m-all.txt byte for byte"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
