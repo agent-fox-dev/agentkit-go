@@ -19,7 +19,8 @@ import (
 // the destroy step itself.
 const destroyBudget = 30 * time.Second
 
-// Create checks spec, creates the sandbox's labelled volume, starts the
+// Create checks spec, with CheckSpec and then the provider's own checks,
+// creates the sandbox's labelled volume, starts the
 // engine process with Args and attaches to the agent over its stdio. When
 // Spec.Image is empty the image is sandbox.DefaultImage(). Whatever fails
 // after the volume exists, the container and the volume are removed before
@@ -27,6 +28,9 @@ const destroyBudget = 30 * time.Second
 func (p *provider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandbox, error) {
 	eff, err := sandbox.CheckSpec(p.Capabilities(), spec)
 	if err != nil {
+		return nil, err
+	}
+	if err := p.checkSpec(eff); err != nil {
 		return nil, err
 	}
 	if eff.Image == "" {
