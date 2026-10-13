@@ -33,6 +33,55 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type RsyncStart_Direction int32
+
+const (
+	RsyncStart_DIRECTION_UNSPECIFIED RsyncStart_Direction = 0
+	RsyncStart_SYNC                  RsyncStart_Direction = 1
+	RsyncStart_EXPORT                RsyncStart_Direction = 2
+)
+
+// Enum value maps for RsyncStart_Direction.
+var (
+	RsyncStart_Direction_name = map[int32]string{
+		0: "DIRECTION_UNSPECIFIED",
+		1: "SYNC",
+		2: "EXPORT",
+	}
+	RsyncStart_Direction_value = map[string]int32{
+		"DIRECTION_UNSPECIFIED": 0,
+		"SYNC":                  1,
+		"EXPORT":                2,
+	}
+)
+
+func (x RsyncStart_Direction) Enum() *RsyncStart_Direction {
+	p := new(RsyncStart_Direction)
+	*p = x
+	return p
+}
+
+func (x RsyncStart_Direction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RsyncStart_Direction) Descriptor() protoreflect.EnumDescriptor {
+	return file_sandbox_proto_enumTypes[0].Descriptor()
+}
+
+func (RsyncStart_Direction) Type() protoreflect.EnumType {
+	return &file_sandbox_proto_enumTypes[0]
+}
+
+func (x RsyncStart_Direction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RsyncStart_Direction.Descriptor instead.
+func (RsyncStart_Direction) EnumDescriptor() ([]byte, []int) {
+	return file_sandbox_proto_rawDescGZIP(), []int{11, 0}
+}
+
 type HelloRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -683,6 +732,399 @@ func (x *ExportRequest) GetPath() string {
 	return ""
 }
 
+type RsyncStart struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Direction      RsyncStart_Direction   `protobuf:"varint,1,opt,name=direction,proto3,enum=agentkit.sandbox.v1.RsyncStart_Direction" json:"direction,omitempty"`
+	Path           string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
+	IncludeIgnored bool                   `protobuf:"varint,3,opt,name=include_ignored,json=includeIgnored,proto3" json:"include_ignored,omitempty"`
+	ExcludeGit     bool                   `protobuf:"varint,4,opt,name=exclude_git,json=excludeGit,proto3" json:"exclude_git,omitempty"`
+	Delete         bool                   `protobuf:"varint,5,opt,name=delete,proto3" json:"delete,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *RsyncStart) Reset() {
+	*x = RsyncStart{}
+	mi := &file_sandbox_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RsyncStart) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RsyncStart) ProtoMessage() {}
+
+func (x *RsyncStart) ProtoReflect() protoreflect.Message {
+	mi := &file_sandbox_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RsyncStart.ProtoReflect.Descriptor instead.
+func (*RsyncStart) Descriptor() ([]byte, []int) {
+	return file_sandbox_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *RsyncStart) GetDirection() RsyncStart_Direction {
+	if x != nil {
+		return x.Direction
+	}
+	return RsyncStart_DIRECTION_UNSPECIFIED
+}
+
+func (x *RsyncStart) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *RsyncStart) GetIncludeIgnored() bool {
+	if x != nil {
+		return x.IncludeIgnored
+	}
+	return false
+}
+
+func (x *RsyncStart) GetExcludeGit() bool {
+	if x != nil {
+		return x.ExcludeGit
+	}
+	return false
+}
+
+func (x *RsyncStart) GetDelete() bool {
+	if x != nil {
+		return x.Delete
+	}
+	return false
+}
+
+type RsyncPlan struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Rules         []string               `protobuf:"bytes,1,rep,name=rules,proto3" json:"rules,omitempty"` // the agent's exclude rules, workspace-relative
+	File          bool                   `protobuf:"varint,2,opt,name=file,proto3" json:"file,omitempty"`  // the export path names a regular file
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RsyncPlan) Reset() {
+	*x = RsyncPlan{}
+	mi := &file_sandbox_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RsyncPlan) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RsyncPlan) ProtoMessage() {}
+
+func (x *RsyncPlan) ProtoReflect() protoreflect.Message {
+	mi := &file_sandbox_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RsyncPlan.ProtoReflect.Descriptor instead.
+func (*RsyncPlan) Descriptor() ([]byte, []int) {
+	return file_sandbox_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *RsyncPlan) GetRules() []string {
+	if x != nil {
+		return x.Rules
+	}
+	return nil
+}
+
+func (x *RsyncPlan) GetFile() bool {
+	if x != nil {
+		return x.File
+	}
+	return false
+}
+
+type RsyncArgs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The agent's side of the transfer in rsync server-argument form.
+	Args []string `protobuf:"bytes,1,rep,name=args,proto3" json:"args,omitempty"`
+	// The combined exclude rules, applied by AgentKit on both sides; the rsync
+	// library never sees them.
+	Rules []string `protobuf:"bytes,2,rep,name=rules,proto3" json:"rules,omitempty"`
+	// On SYNC with delete: the host sender's transfer set, from which the
+	// agent decides what to delete.
+	Present       []string `protobuf:"bytes,3,rep,name=present,proto3" json:"present,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RsyncArgs) Reset() {
+	*x = RsyncArgs{}
+	mi := &file_sandbox_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RsyncArgs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RsyncArgs) ProtoMessage() {}
+
+func (x *RsyncArgs) ProtoReflect() protoreflect.Message {
+	mi := &file_sandbox_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RsyncArgs.ProtoReflect.Descriptor instead.
+func (*RsyncArgs) Descriptor() ([]byte, []int) {
+	return file_sandbox_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *RsyncArgs) GetArgs() []string {
+	if x != nil {
+		return x.Args
+	}
+	return nil
+}
+
+func (x *RsyncArgs) GetRules() []string {
+	if x != nil {
+		return x.Rules
+	}
+	return nil
+}
+
+func (x *RsyncArgs) GetPresent() []string {
+	if x != nil {
+		return x.Present
+	}
+	return nil
+}
+
+type RsyncDone struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Files   int64                  `protobuf:"varint,1,opt,name=files,proto3" json:"files,omitempty"`
+	Bytes   int64                  `protobuf:"varint,2,opt,name=bytes,proto3" json:"bytes,omitempty"`
+	Deleted int64                  `protobuf:"varint,3,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	// On EXPORT with delete: the agent sender's transfer set, from which the
+	// host decides what to delete.
+	Present       []string `protobuf:"bytes,4,rep,name=present,proto3" json:"present,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RsyncDone) Reset() {
+	*x = RsyncDone{}
+	mi := &file_sandbox_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RsyncDone) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RsyncDone) ProtoMessage() {}
+
+func (x *RsyncDone) ProtoReflect() protoreflect.Message {
+	mi := &file_sandbox_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RsyncDone.ProtoReflect.Descriptor instead.
+func (*RsyncDone) Descriptor() ([]byte, []int) {
+	return file_sandbox_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *RsyncDone) GetFiles() int64 {
+	if x != nil {
+		return x.Files
+	}
+	return 0
+}
+
+func (x *RsyncDone) GetBytes() int64 {
+	if x != nil {
+		return x.Bytes
+	}
+	return 0
+}
+
+func (x *RsyncDone) GetDeleted() int64 {
+	if x != nil {
+		return x.Deleted
+	}
+	return 0
+}
+
+func (x *RsyncDone) GetPresent() []string {
+	if x != nil {
+		return x.Present
+	}
+	return nil
+}
+
+type RsyncFrame struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Frame:
+	//
+	//	*RsyncFrame_Start
+	//	*RsyncFrame_Plan
+	//	*RsyncFrame_Args
+	//	*RsyncFrame_Data
+	//	*RsyncFrame_Done
+	Frame         isRsyncFrame_Frame `protobuf_oneof:"frame"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RsyncFrame) Reset() {
+	*x = RsyncFrame{}
+	mi := &file_sandbox_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RsyncFrame) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RsyncFrame) ProtoMessage() {}
+
+func (x *RsyncFrame) ProtoReflect() protoreflect.Message {
+	mi := &file_sandbox_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RsyncFrame.ProtoReflect.Descriptor instead.
+func (*RsyncFrame) Descriptor() ([]byte, []int) {
+	return file_sandbox_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *RsyncFrame) GetFrame() isRsyncFrame_Frame {
+	if x != nil {
+		return x.Frame
+	}
+	return nil
+}
+
+func (x *RsyncFrame) GetStart() *RsyncStart {
+	if x != nil {
+		if x, ok := x.Frame.(*RsyncFrame_Start); ok {
+			return x.Start
+		}
+	}
+	return nil
+}
+
+func (x *RsyncFrame) GetPlan() *RsyncPlan {
+	if x != nil {
+		if x, ok := x.Frame.(*RsyncFrame_Plan); ok {
+			return x.Plan
+		}
+	}
+	return nil
+}
+
+func (x *RsyncFrame) GetArgs() *RsyncArgs {
+	if x != nil {
+		if x, ok := x.Frame.(*RsyncFrame_Args); ok {
+			return x.Args
+		}
+	}
+	return nil
+}
+
+func (x *RsyncFrame) GetData() []byte {
+	if x != nil {
+		if x, ok := x.Frame.(*RsyncFrame_Data); ok {
+			return x.Data
+		}
+	}
+	return nil
+}
+
+func (x *RsyncFrame) GetDone() *RsyncDone {
+	if x != nil {
+		if x, ok := x.Frame.(*RsyncFrame_Done); ok {
+			return x.Done
+		}
+	}
+	return nil
+}
+
+type isRsyncFrame_Frame interface {
+	isRsyncFrame_Frame()
+}
+
+type RsyncFrame_Start struct {
+	Start *RsyncStart `protobuf:"bytes,1,opt,name=start,proto3,oneof"`
+}
+
+type RsyncFrame_Plan struct {
+	Plan *RsyncPlan `protobuf:"bytes,2,opt,name=plan,proto3,oneof"`
+}
+
+type RsyncFrame_Args struct {
+	Args *RsyncArgs `protobuf:"bytes,3,opt,name=args,proto3,oneof"`
+}
+
+type RsyncFrame_Data struct {
+	Data []byte `protobuf:"bytes,4,opt,name=data,proto3,oneof"` // at most 1 MiB
+}
+
+type RsyncFrame_Done struct {
+	Done *RsyncDone `protobuf:"bytes,5,opt,name=done,proto3,oneof"`
+}
+
+func (*RsyncFrame_Start) isRsyncFrame_Frame() {}
+
+func (*RsyncFrame_Plan) isRsyncFrame_Frame() {}
+
+func (*RsyncFrame_Args) isRsyncFrame_Frame() {}
+
+func (*RsyncFrame_Data) isRsyncFrame_Frame() {}
+
+func (*RsyncFrame_Done) isRsyncFrame_Frame() {}
+
 var File_sandbox_proto protoreflect.FileDescriptor
 
 const file_sandbox_proto_rawDesc = "" +
@@ -727,13 +1169,47 @@ const file_sandbox_proto_rawDesc = "" +
 	"\x05files\x18\x01 \x01(\x03R\x05files\x12\x14\n" +
 	"\x05bytes\x18\x02 \x01(\x03R\x05bytes\"#\n" +
 	"\rExportRequest\x12\x12\n" +
-	"\x04path\x18\x01 \x01(\tR\x04path2\x95\x03\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\"\x89\x02\n" +
+	"\n" +
+	"RsyncStart\x12G\n" +
+	"\tdirection\x18\x01 \x01(\x0e2).agentkit.sandbox.v1.RsyncStart.DirectionR\tdirection\x12\x12\n" +
+	"\x04path\x18\x02 \x01(\tR\x04path\x12'\n" +
+	"\x0finclude_ignored\x18\x03 \x01(\bR\x0eincludeIgnored\x12\x1f\n" +
+	"\vexclude_git\x18\x04 \x01(\bR\n" +
+	"excludeGit\x12\x16\n" +
+	"\x06delete\x18\x05 \x01(\bR\x06delete\"<\n" +
+	"\tDirection\x12\x19\n" +
+	"\x15DIRECTION_UNSPECIFIED\x10\x00\x12\b\n" +
+	"\x04SYNC\x10\x01\x12\n" +
+	"\n" +
+	"\x06EXPORT\x10\x02\"5\n" +
+	"\tRsyncPlan\x12\x14\n" +
+	"\x05rules\x18\x01 \x03(\tR\x05rules\x12\x12\n" +
+	"\x04file\x18\x02 \x01(\bR\x04file\"O\n" +
+	"\tRsyncArgs\x12\x12\n" +
+	"\x04args\x18\x01 \x03(\tR\x04args\x12\x14\n" +
+	"\x05rules\x18\x02 \x03(\tR\x05rules\x12\x18\n" +
+	"\apresent\x18\x03 \x03(\tR\apresent\"k\n" +
+	"\tRsyncDone\x12\x14\n" +
+	"\x05files\x18\x01 \x01(\x03R\x05files\x12\x14\n" +
+	"\x05bytes\x18\x02 \x01(\x03R\x05bytes\x12\x18\n" +
+	"\adeleted\x18\x03 \x01(\x03R\adeleted\x12\x18\n" +
+	"\apresent\x18\x04 \x03(\tR\apresent\"\x86\x02\n" +
+	"\n" +
+	"RsyncFrame\x127\n" +
+	"\x05start\x18\x01 \x01(\v2\x1f.agentkit.sandbox.v1.RsyncStartH\x00R\x05start\x124\n" +
+	"\x04plan\x18\x02 \x01(\v2\x1e.agentkit.sandbox.v1.RsyncPlanH\x00R\x04plan\x124\n" +
+	"\x04args\x18\x03 \x01(\v2\x1e.agentkit.sandbox.v1.RsyncArgsH\x00R\x04args\x12\x14\n" +
+	"\x04data\x18\x04 \x01(\fH\x00R\x04data\x124\n" +
+	"\x04done\x18\x05 \x01(\v2\x1e.agentkit.sandbox.v1.RsyncDoneH\x00R\x04doneB\a\n" +
+	"\x05frame2\xe4\x03\n" +
 	"\x05Agent\x12N\n" +
 	"\x05Hello\x12!.agentkit.sandbox.v1.HelloRequest\x1a\".agentkit.sandbox.v1.HelloResponse\x12N\n" +
 	"\x05Tools\x12!.agentkit.sandbox.v1.ToolsRequest\x1a\".agentkit.sandbox.v1.ToolsResponse\x12K\n" +
 	"\x04Call\x12 .agentkit.sandbox.v1.CallRequest\x1a!.agentkit.sandbox.v1.CallResponse\x12M\n" +
 	"\aSyncTar\x12\x1d.agentkit.sandbox.v1.TarChunk\x1a!.agentkit.sandbox.v1.SyncResponse(\x01\x12P\n" +
-	"\tExportTar\x12\".agentkit.sandbox.v1.ExportRequest\x1a\x1d.agentkit.sandbox.v1.TarChunk0\x01BKZIgithub.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb;sandboxpbb\x06proto3"
+	"\tExportTar\x12\".agentkit.sandbox.v1.ExportRequest\x1a\x1d.agentkit.sandbox.v1.TarChunk0\x01\x12M\n" +
+	"\x05Rsync\x12\x1f.agentkit.sandbox.v1.RsyncFrame\x1a\x1f.agentkit.sandbox.v1.RsyncFrame(\x010\x01BKZIgithub.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb;sandboxpbb\x06proto3"
 
 var (
 	file_sandbox_proto_rawDescOnce sync.Once
@@ -747,38 +1223,52 @@ func file_sandbox_proto_rawDescGZIP() []byte {
 	return file_sandbox_proto_rawDescData
 }
 
-var file_sandbox_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_sandbox_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_sandbox_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_sandbox_proto_goTypes = []any{
-	(*HelloRequest)(nil),  // 0: agentkit.sandbox.v1.HelloRequest
-	(*HelloResponse)(nil), // 1: agentkit.sandbox.v1.HelloResponse
-	(*ToolsRequest)(nil),  // 2: agentkit.sandbox.v1.ToolsRequest
-	(*ToolInfo)(nil),      // 3: agentkit.sandbox.v1.ToolInfo
-	(*ToolsResponse)(nil), // 4: agentkit.sandbox.v1.ToolsResponse
-	(*CallRequest)(nil),   // 5: agentkit.sandbox.v1.CallRequest
-	(*CallResponse)(nil),  // 6: agentkit.sandbox.v1.CallResponse
-	(*TarStart)(nil),      // 7: agentkit.sandbox.v1.TarStart
-	(*TarChunk)(nil),      // 8: agentkit.sandbox.v1.TarChunk
-	(*SyncResponse)(nil),  // 9: agentkit.sandbox.v1.SyncResponse
-	(*ExportRequest)(nil), // 10: agentkit.sandbox.v1.ExportRequest
+	(RsyncStart_Direction)(0), // 0: agentkit.sandbox.v1.RsyncStart.Direction
+	(*HelloRequest)(nil),      // 1: agentkit.sandbox.v1.HelloRequest
+	(*HelloResponse)(nil),     // 2: agentkit.sandbox.v1.HelloResponse
+	(*ToolsRequest)(nil),      // 3: agentkit.sandbox.v1.ToolsRequest
+	(*ToolInfo)(nil),          // 4: agentkit.sandbox.v1.ToolInfo
+	(*ToolsResponse)(nil),     // 5: agentkit.sandbox.v1.ToolsResponse
+	(*CallRequest)(nil),       // 6: agentkit.sandbox.v1.CallRequest
+	(*CallResponse)(nil),      // 7: agentkit.sandbox.v1.CallResponse
+	(*TarStart)(nil),          // 8: agentkit.sandbox.v1.TarStart
+	(*TarChunk)(nil),          // 9: agentkit.sandbox.v1.TarChunk
+	(*SyncResponse)(nil),      // 10: agentkit.sandbox.v1.SyncResponse
+	(*ExportRequest)(nil),     // 11: agentkit.sandbox.v1.ExportRequest
+	(*RsyncStart)(nil),        // 12: agentkit.sandbox.v1.RsyncStart
+	(*RsyncPlan)(nil),         // 13: agentkit.sandbox.v1.RsyncPlan
+	(*RsyncArgs)(nil),         // 14: agentkit.sandbox.v1.RsyncArgs
+	(*RsyncDone)(nil),         // 15: agentkit.sandbox.v1.RsyncDone
+	(*RsyncFrame)(nil),        // 16: agentkit.sandbox.v1.RsyncFrame
 }
 var file_sandbox_proto_depIdxs = []int32{
-	3,  // 0: agentkit.sandbox.v1.ToolsResponse.tools:type_name -> agentkit.sandbox.v1.ToolInfo
-	7,  // 1: agentkit.sandbox.v1.TarChunk.start:type_name -> agentkit.sandbox.v1.TarStart
-	0,  // 2: agentkit.sandbox.v1.Agent.Hello:input_type -> agentkit.sandbox.v1.HelloRequest
-	2,  // 3: agentkit.sandbox.v1.Agent.Tools:input_type -> agentkit.sandbox.v1.ToolsRequest
-	5,  // 4: agentkit.sandbox.v1.Agent.Call:input_type -> agentkit.sandbox.v1.CallRequest
-	8,  // 5: agentkit.sandbox.v1.Agent.SyncTar:input_type -> agentkit.sandbox.v1.TarChunk
-	10, // 6: agentkit.sandbox.v1.Agent.ExportTar:input_type -> agentkit.sandbox.v1.ExportRequest
-	1,  // 7: agentkit.sandbox.v1.Agent.Hello:output_type -> agentkit.sandbox.v1.HelloResponse
-	4,  // 8: agentkit.sandbox.v1.Agent.Tools:output_type -> agentkit.sandbox.v1.ToolsResponse
-	6,  // 9: agentkit.sandbox.v1.Agent.Call:output_type -> agentkit.sandbox.v1.CallResponse
-	9,  // 10: agentkit.sandbox.v1.Agent.SyncTar:output_type -> agentkit.sandbox.v1.SyncResponse
-	8,  // 11: agentkit.sandbox.v1.Agent.ExportTar:output_type -> agentkit.sandbox.v1.TarChunk
-	7,  // [7:12] is the sub-list for method output_type
-	2,  // [2:7] is the sub-list for method input_type
-	2,  // [2:2] is the sub-list for extension type_name
-	2,  // [2:2] is the sub-list for extension extendee
-	0,  // [0:2] is the sub-list for field type_name
+	4,  // 0: agentkit.sandbox.v1.ToolsResponse.tools:type_name -> agentkit.sandbox.v1.ToolInfo
+	8,  // 1: agentkit.sandbox.v1.TarChunk.start:type_name -> agentkit.sandbox.v1.TarStart
+	0,  // 2: agentkit.sandbox.v1.RsyncStart.direction:type_name -> agentkit.sandbox.v1.RsyncStart.Direction
+	12, // 3: agentkit.sandbox.v1.RsyncFrame.start:type_name -> agentkit.sandbox.v1.RsyncStart
+	13, // 4: agentkit.sandbox.v1.RsyncFrame.plan:type_name -> agentkit.sandbox.v1.RsyncPlan
+	14, // 5: agentkit.sandbox.v1.RsyncFrame.args:type_name -> agentkit.sandbox.v1.RsyncArgs
+	15, // 6: agentkit.sandbox.v1.RsyncFrame.done:type_name -> agentkit.sandbox.v1.RsyncDone
+	1,  // 7: agentkit.sandbox.v1.Agent.Hello:input_type -> agentkit.sandbox.v1.HelloRequest
+	3,  // 8: agentkit.sandbox.v1.Agent.Tools:input_type -> agentkit.sandbox.v1.ToolsRequest
+	6,  // 9: agentkit.sandbox.v1.Agent.Call:input_type -> agentkit.sandbox.v1.CallRequest
+	9,  // 10: agentkit.sandbox.v1.Agent.SyncTar:input_type -> agentkit.sandbox.v1.TarChunk
+	11, // 11: agentkit.sandbox.v1.Agent.ExportTar:input_type -> agentkit.sandbox.v1.ExportRequest
+	16, // 12: agentkit.sandbox.v1.Agent.Rsync:input_type -> agentkit.sandbox.v1.RsyncFrame
+	2,  // 13: agentkit.sandbox.v1.Agent.Hello:output_type -> agentkit.sandbox.v1.HelloResponse
+	5,  // 14: agentkit.sandbox.v1.Agent.Tools:output_type -> agentkit.sandbox.v1.ToolsResponse
+	7,  // 15: agentkit.sandbox.v1.Agent.Call:output_type -> agentkit.sandbox.v1.CallResponse
+	10, // 16: agentkit.sandbox.v1.Agent.SyncTar:output_type -> agentkit.sandbox.v1.SyncResponse
+	9,  // 17: agentkit.sandbox.v1.Agent.ExportTar:output_type -> agentkit.sandbox.v1.TarChunk
+	16, // 18: agentkit.sandbox.v1.Agent.Rsync:output_type -> agentkit.sandbox.v1.RsyncFrame
+	13, // [13:19] is the sub-list for method output_type
+	7,  // [7:13] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_sandbox_proto_init() }
@@ -790,18 +1280,26 @@ func file_sandbox_proto_init() {
 		(*TarChunk_Start)(nil),
 		(*TarChunk_Data)(nil),
 	}
+	file_sandbox_proto_msgTypes[15].OneofWrappers = []any{
+		(*RsyncFrame_Start)(nil),
+		(*RsyncFrame_Plan)(nil),
+		(*RsyncFrame_Args)(nil),
+		(*RsyncFrame_Data)(nil),
+		(*RsyncFrame_Done)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sandbox_proto_rawDesc), len(file_sandbox_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   11,
+			NumEnums:      1,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_sandbox_proto_goTypes,
 		DependencyIndexes: file_sandbox_proto_depIdxs,
+		EnumInfos:         file_sandbox_proto_enumTypes,
 		MessageInfos:      file_sandbox_proto_msgTypes,
 	}.Build()
 	File_sandbox_proto = out.File

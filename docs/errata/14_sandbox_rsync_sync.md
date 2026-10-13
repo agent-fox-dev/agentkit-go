@@ -35,3 +35,60 @@ Spec 13's tests that encoded one module change with it:
   budget. 13-REQ-10.6's "no go.mod under sandbox/" no longer holds.
 - TS-13-67's layout walk skips nested modules, as it always did, so the
   sandbox tree is outside it; the exported-API golden is unchanged.
+
+## The rsync library cannot filter or protect: the transfer is redesigned (D-3)
+
+The spec's external API section marks `gokrazy/rsync`'s filter and delete
+behaviour as unverified. Reading v0.3.8 showed it cannot carry the spec's
+design (14-REQ-3.6, 4.2, 5.3; design decisions 1–3):
+
+- A rule containing `*`, `?` or `[`, escaped or not, makes the sender panic:
+  `wildcard filter rules not yet implemented` (`internal/sender/exclude.go`,
+  `filterRule.matches`). In `local` that panic would take down the
+  embedder's process.
+- Rule matching is string equality: the whole relative name when the pattern
+  contains `/`, else the base name. There is no anchoring, and file-list names
+  carry no leading `/`, so the spec's `/rule` form never matches.
+- On a match the sender returns `filepath.SkipDir` (`internal/sender/flist.go`),
+  which for a file skips the rest of its directory: its later siblings are
+  silently not sent.
+- The receiver's `--delete` removes every path missing from the sender's file
+  list and consults no filter (`internal/receiver/do.go`, `deleteFiles`; the
+  server discards the exclusion list it reads). Export with `Delete` would
+  wipe `dst/.git` and a host `.env`.
+- `rsyncclient`, as receiver, applies Landlock to the whole process unless
+  built with `rsyncclient.DontRestrict()` (`internal/maincmd/clientmaincmd.go`);
+  the spec only knows the server's option.
+- The receiver sets the process umask to 0 and back during a transfer
+  (`internal/receiver/permissionsumask.go`), and `Client.Run` ignores its
+  context.
+
+What the delivered code does instead, as decided with the project owner:
+
+- **The sender always serves a filtered tree.** The sending side runs an
+  `rsyncd` server whose one module is a read-only `fs.FS` over its tree in
+  which every excluded path does not exist; the receiving side runs an
+  `rsyncclient` receiver writing through the library's `os.Root`. On Sync the
+  host serves `LocalDir.Path` and the agent's client receives into the
+  workspace; on Export the agent serves the export root and the host's client
+  receives into the destination. This swaps the rsync roles 14-REQ-4.2 gives
+  Sync (the host is not an `rsyncclient` sender).
+- **The library never sees a rule or `--delete`.** Rules are workspace- or
+  destination-relative paths matched exactly, as the path or an ancestor of
+  it, plus the `.git` rule, which matches a `.git` path component at any
+  depth; wildcard characters in names are literal. `Combine` returns the
+  sorted, deduplicated union in that raw form, with no anchoring or escaping.
+- **The protocol carries what the library cannot.** The `args` frame keeps its
+  form — the agent's side in rsync server-argument syntax, with the sender
+  flag exactly for EXPORT and `--delete` as the declared intent — and gains
+  `rules` (the combined rules) and, on SYNC with delete, `present` (the host
+  sender's transfer set). `RsyncDone` gains `present` for EXPORT with delete.
+  These are additions to 14-REQ-2.1's frame contents; the oneof members are
+  unchanged.
+- **Deletion is AgentKit's own code** on the receiving side: after the
+  transfer it removes the entries no combined rule covers and the sender's set
+  lacks, through an `os.Root`, never following a symlink.
+- **Both constructors restrict nothing.** `rsyncd.NewServer` and
+  `rsyncclient.New` are each called in exactly one function of
+  `sandbox/internal/rsyncx`, always with `DontRestrict()`; the AST test checks
+  both.

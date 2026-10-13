@@ -27,6 +27,11 @@ service Agent {
   rpc SyncTar(stream TarChunk) returns (SyncResponse);
   // A tar stream of a workspace subtree.
   rpc ExportTar(ExportRequest) returns (stream TarChunk);
+  // One LocalDir transfer over the rsync protocol. Frame order: the host
+  // sends start, the agent answers plan, the host sends args, data frames
+  // flow both ways, the agent sends done and ends the RPC with status OK.
+  // One stream carries all state of one transfer.
+  rpc Rsync(stream RsyncFrame) returns (stream RsyncFrame);
 }
 
 message HelloRequest {}
@@ -89,4 +94,52 @@ message SyncResponse {
 
 message ExportRequest {
   string path = 1;
+}
+
+message RsyncStart {
+  enum Direction {
+    DIRECTION_UNSPECIFIED = 0;
+    SYNC = 1;
+    EXPORT = 2;
+  }
+  Direction direction = 1;
+  string path = 2;
+  bool include_ignored = 3;
+  bool exclude_git = 4;
+  bool delete = 5;
+}
+
+message RsyncPlan {
+  repeated string rules = 1;  // the agent's exclude rules, workspace-relative
+  bool file = 2;              // the export path names a regular file
+}
+
+message RsyncArgs {
+  // The agent's side of the transfer in rsync server-argument form.
+  repeated string args = 1;
+  // The combined exclude rules, applied by AgentKit on both sides; the rsync
+  // library never sees them.
+  repeated string rules = 2;
+  // On SYNC with delete: the host sender's transfer set, from which the
+  // agent decides what to delete.
+  repeated string present = 3;
+}
+
+message RsyncDone {
+  int64 files = 1;
+  int64 bytes = 2;
+  int64 deleted = 3;
+  // On EXPORT with delete: the agent sender's transfer set, from which the
+  // host decides what to delete.
+  repeated string present = 4;
+}
+
+message RsyncFrame {
+  oneof frame {
+    RsyncStart start = 1;
+    RsyncPlan plan = 2;
+    RsyncArgs args = 3;
+    bytes data = 4;  // at most 1 MiB
+    RsyncDone done = 5;
+  }
 }

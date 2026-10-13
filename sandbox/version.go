@@ -8,7 +8,7 @@ const AgentPath = "/usr/local/libexec/agentkit-sandboxd"
 // refuses an agent with a different ProtocolMajor and accepts any minor.
 const (
 	ProtocolMajor = 1
-	ProtocolMinor = 0
+	ProtocolMinor = 1
 )
 
 // MaxMessageBytes bounds every gRPC message in both directions, on the agent

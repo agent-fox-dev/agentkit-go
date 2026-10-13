@@ -36,6 +36,7 @@ const (
 	Agent_Call_FullMethodName      = "/agentkit.sandbox.v1.Agent/Call"
 	Agent_SyncTar_FullMethodName   = "/agentkit.sandbox.v1.Agent/SyncTar"
 	Agent_ExportTar_FullMethodName = "/agentkit.sandbox.v1.Agent/ExportTar"
+	Agent_Rsync_FullMethodName     = "/agentkit.sandbox.v1.Agent/Rsync"
 )
 
 // AgentClient is the client API for Agent service.
@@ -52,6 +53,11 @@ type AgentClient interface {
 	SyncTar(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[TarChunk, SyncResponse], error)
 	// A tar stream of a workspace subtree.
 	ExportTar(ctx context.Context, in *ExportRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[TarChunk], error)
+	// One LocalDir transfer over the rsync protocol. Frame order: the host
+	// sends start, the agent answers plan, the host sends args, data frames
+	// flow both ways, the agent sends done and ends the RPC with status OK.
+	// One stream carries all state of one transfer.
+	Rsync(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[RsyncFrame, RsyncFrame], error)
 }
 
 type agentClient struct {
@@ -124,6 +130,19 @@ func (c *agentClient) ExportTar(ctx context.Context, in *ExportRequest, opts ...
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Agent_ExportTarClient = grpc.ServerStreamingClient[TarChunk]
 
+func (c *agentClient) Rsync(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[RsyncFrame, RsyncFrame], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Agent_ServiceDesc.Streams[2], Agent_Rsync_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[RsyncFrame, RsyncFrame]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Agent_RsyncClient = grpc.BidiStreamingClient[RsyncFrame, RsyncFrame]
+
 // AgentServer is the server API for Agent service.
 // All implementations must embed UnimplementedAgentServer
 // for forward compatibility.
@@ -138,6 +157,11 @@ type AgentServer interface {
 	SyncTar(grpc.ClientStreamingServer[TarChunk, SyncResponse]) error
 	// A tar stream of a workspace subtree.
 	ExportTar(*ExportRequest, grpc.ServerStreamingServer[TarChunk]) error
+	// One LocalDir transfer over the rsync protocol. Frame order: the host
+	// sends start, the agent answers plan, the host sends args, data frames
+	// flow both ways, the agent sends done and ends the RPC with status OK.
+	// One stream carries all state of one transfer.
+	Rsync(grpc.BidiStreamingServer[RsyncFrame, RsyncFrame]) error
 	mustEmbedUnimplementedAgentServer()
 }
 
@@ -162,6 +186,9 @@ func (UnimplementedAgentServer) SyncTar(grpc.ClientStreamingServer[TarChunk, Syn
 }
 func (UnimplementedAgentServer) ExportTar(*ExportRequest, grpc.ServerStreamingServer[TarChunk]) error {
 	return status.Errorf(codes.Unimplemented, "method ExportTar not implemented")
+}
+func (UnimplementedAgentServer) Rsync(grpc.BidiStreamingServer[RsyncFrame, RsyncFrame]) error {
+	return status.Errorf(codes.Unimplemented, "method Rsync not implemented")
 }
 func (UnimplementedAgentServer) mustEmbedUnimplementedAgentServer() {}
 func (UnimplementedAgentServer) testEmbeddedByValue()               {}
@@ -256,6 +283,13 @@ func _Agent_ExportTar_Handler(srv interface{}, stream grpc.ServerStream) error {
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Agent_ExportTarServer = grpc.ServerStreamingServer[TarChunk]
 
+func _Agent_Rsync_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(AgentServer).Rsync(&grpc.GenericServerStream[RsyncFrame, RsyncFrame]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Agent_RsyncServer = grpc.BidiStreamingServer[RsyncFrame, RsyncFrame]
+
 // Agent_ServiceDesc is the grpc.ServiceDesc for Agent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -286,6 +320,12 @@ var Agent_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "ExportTar",
 			Handler:       _Agent_ExportTar_Handler,
 			ServerStreams: true,
+		},
+		{
+			StreamName:    "Rsync",
+			Handler:       _Agent_Rsync_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
 		},
 	},
 	Metadata: "sandbox.proto",

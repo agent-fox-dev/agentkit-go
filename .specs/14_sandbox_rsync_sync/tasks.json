@@ -62,7 +62,7 @@
       "done_when": [
         "`go build ./...` succeeds with no protoc on PATH"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,

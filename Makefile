@@ -9,7 +9,7 @@ help: ## Show this help
 
 .PHONY: test
 test: ## Run all Go tests (root module and the nested modules)
-	@set -e; for m in $(MODULES); do echo "go test ./... ($$m)"; (cd $$m && go test ./...); done
+	@rc=0; for m in $(MODULES); do echo "go test ./... ($$m)"; (cd $$m && go test ./...) || rc=1; done; exit $$rc
 
 .PHONY: coverage
 coverage:
@@ -22,7 +22,7 @@ fmt: ## gofmt all source files in place
 
 .PHONY: vet
 vet: ## go vet the root module and the nested modules
-	@set -e; for m in $(MODULES); do echo "go vet ./... ($$m)"; (cd $$m && go vet ./...); done
+	@rc=0; for m in $(MODULES); do echo "go vet ./... ($$m)"; (cd $$m && go vet ./...) || rc=1; done; exit $$rc
 
 .PHONY: lint
 lint: ## Run golangci-lint if installed, otherwise skip

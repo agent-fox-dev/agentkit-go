@@ -41,10 +41,10 @@ func rawAgent(t *testing.T, ws string) sandboxpb.AgentClient {
 	return sandboxpb.NewAgentClient(cc)
 }
 
-// TS-13-6: the protocol constants are 1.0 and 16 MiB, and both ends raise
+// TS-13-6: the protocol constants are 1.1 (minor 1 since spec 14) and 16 MiB, and both ends raise
 // their send and receive limits to MaxMessageBytes. 13-REQ-1.6.
 func TestMessageLimits_TS13_6(t *testing.T) {
-	if sandbox.ProtocolMajor != 1 || sandbox.ProtocolMinor != 0 || sandbox.MaxMessageBytes != 16<<20 ||
+	if sandbox.ProtocolMajor != 1 || sandbox.ProtocolMinor != 1 || sandbox.MaxMessageBytes != 16<<20 ||
 		int64(sandbox.MaxMessageBytes) != wire.Defaults().MaxMessageBytes {
 		t.Fatalf("constants %d.%d, %d", sandbox.ProtocolMajor, sandbox.ProtocolMinor, sandbox.MaxMessageBytes)
 	}
