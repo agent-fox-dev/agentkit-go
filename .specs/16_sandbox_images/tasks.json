@@ -95,7 +95,7 @@
         "sandbox/image_test.go",
         "sandbox/image_internal_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
