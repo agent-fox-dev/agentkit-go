@@ -1,0 +1,47 @@
+{
+  "input": {
+    "kind": "file",
+    "origin": "docs/prd/11-run-tools-in-an-isolated-sandbox.md",
+    "sha256": "3fa5c1ac004cb152936a914b8b86a73ab97b660b43f7ce11478fc2dabcf20124"
+  },
+  "created_at": "2026-10-12T12:33:33Z",
+  "updated_at": "2026-10-12T15:25:29Z",
+  "scopes": [
+    {
+      "name": "sandbox_core",
+      "scope": "The sandbox package API and CheckSpec, the agentkit.sandbox.v1 Agent protocol (Hello, Tools, Call, SyncTar, ExportTar) with checked-in generated code and make proto, the in-sandbox agent and sandbox/cmd/agentkit-sandboxd over stdio, proxy tools with their definition and execution guarantees, tar sync and export with validation, and the unisolated in-process local provider.",
+      "spec_id": "13",
+      "dir": "13_sandbox_core"
+    },
+    {
+      "name": "sandbox_rsync_sync",
+      "scope": "LocalDir Sync and Export over a new Agent.Rsync stream, with github.com/gokrazy/rsync on both ends: the .gitignore dir-merge filter, ExcludeGit, IncludeIgnored, Delete and transfer statistics. Also the agent's refusal of unknown options and of paths outside the workspace, rsyncd.DontRestrict() on every server with a test that the host process stays unconfined, and the gokrazy/rsync ruling.",
+      "spec_id": "14",
+      "dir": "14_sandbox_rsync_sync"
+    },
+    {
+      "name": "sandbox_landlock_agent",
+      "scope": "agentkit-sandboxd applies its own go-landlock ruleset first thing in main: workspace, spill and HOME read-write, system directories read and execute, TCP denied under NetworkNone, never BestEffort. It reports the applied ABI in Hello and Sandbox.Agent(). Spec.RequireLandlock is enforced through CheckSpec by every provider, no host-side code path confines its own process, and go-landlock gets its ruling and a Linux-only build constraint.",
+      "spec_id": "15",
+      "dir": "15_sandbox_landlock_agent"
+    },
+    {
+      "name": "sandbox_images",
+      "scope": "The Debian-based base image and the FROM-scratch overlay image carrying agentkit-sandboxd at AgentPath, make targets to build them locally, and the release workflow that publishes ghcr.io/agent-fox-dev/agentkit-sandbox and agentkit-sandboxd for each version.",
+      "spec_id": "16",
+      "dir": "16_sandbox_images"
+    },
+    {
+      "name": "sandbox_podman",
+      "scope": "The sandbox/podman provider, driving the podman or docker CLI through tools.RunArgv. It covers podman.Args(Spec) as a pure function with the full hardening set, the workspace volume, the GitRepo source and its init step, resources, TTL on both sides, labels and Reap, the micro-VM runtime option, the missing-agent error naming AgentPath and the COPY --from line, and the guard documentation on when AllowAll is reasonable."
+    },
+    {
+      "name": "sandbox_landlock_provider",
+      "scope": "The sandbox/landlock provider: the agent as a Landlock-confined child process on Linux (ABI v4 or later, probed with a test seam), with the sandbox directory and marker, the environment, ExtraRO and ExtraRW, refusals of Resources, Image and NetworkAllowlist, the GitRepo init-step clone as a second child, and TTL, Close and Reap."
+    },
+    {
+      "name": "sandbox_gateway",
+      "scope": "The Gateway gRPC service and the proxied Agent service, with the sandbox id carried in metadata. It covers the root-module client sandbox/gateway (gateway.Dial), and the server in a nested module at sandbox/gatewayd with cmd/agentkit-gateway, bearer-token authentication and a Podman backend, tested with client and server in one process over local."
+    }
+  ]
+}

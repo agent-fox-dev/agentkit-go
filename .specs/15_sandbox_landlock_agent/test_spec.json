@@ -1,0 +1,953 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "15",
+  "spec_name": "sandbox_landlock_agent",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-15-1",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-1.1",
+        "15-REQ-1.2"
+      ],
+      "title": "The rule builder grants every right beneath the writable roots, read and execute on the system and --landlock-ro roots, read only on /proc, read and write on the device files, and nothing else",
+      "given": [
+        "directories W, H, T, R and O created under t.TempDir()",
+        "inputs: workdir W, explicit env HOME=H and TMPDIR=T, --landlock-rw R, --landlock-ro O, --network unrestricted",
+        "the confine package's rule-building step, called directly from its own tests without applying anything, for applied ABI 2, 3 and 4"
+      ],
+      "when": "the rules and the report lists are built for each applied ABI",
+      "then": [
+        "Writable contains exactly the resolved W, H, T and R plus those of /dev/null, /dev/zero, /dev/full, /dev/random and /dev/urandom that exist on the host",
+        "ReadOnly contains exactly the existing members of /usr, /bin, /sbin, /lib, /lib32, /lib64, /libx32, /etc and /opt, plus O and /proc",
+        "each writable-root rule carries every filesystem right the ABI defines: execute and refer at ABI 2, and truncate as well at ABI 3 and 4",
+        "each system and --landlock-ro rule carries exactly read-file, read-dir and execute; the /proc rule carries exactly read-file and read-dir; each device rule carries read-file and write-file and no execute or directory right; no rule names any other path"
+      ],
+      "pseudocode": "for abi in [2,3,4]:\n  r = buildRules(inputs{Workdir:W, Env:['HOME='+H,'TMPDIR='+T], RW:[R], RO:[O], Mode:Unrestricted}, abi)\n  assert set(r.Writable) == {W,H,T,R} ∪ existing(devices)\n  assert set(r.ReadOnly) == existing(systemDirs) ∪ {O,'/proc'}\n  for rule in r.rules where rule.root in {W,H,T,R}: assert rule.access == fullFS(abi)  // refer from 2, truncate from 3\n  for rule in system ∪ {O}: assert rule.access == {ReadFile,ReadDir,Execute}\n  assert rule('/proc').access == {ReadFile,ReadDir}; for d in devices: assert {ReadFile,WriteFile} ⊆ rule(d).access && Execute ∉ rule(d).access && no dir right"
+    },
+    {
+      "id": "TS-15-2",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-1.1",
+        "15-REQ-1.2"
+      ],
+      "title": "In a re-executed child under the applied ruleset, the writable roots accept create, cross-directory rename, truncate and execute, and everything outside is denied with EACCES",
+      "given": [
+        "Linux; the test's independent probe (syscall 444 with LANDLOCK_CREATE_RULESET_VERSION) reports kernel ABI 2 or later, else the test skips naming the ABI or error it found",
+        "directories W, H, T, R and O, a sibling directory S outside all of them holding S/secret, and O/ro.txt, all created by the parent",
+        "the test binary re-executed as a child with an environment marker selecting this case, so that the ruleset confines only the child"
+      ],
+      "when": "the child applies the ruleset through confine's entry point with workdir W, HOME=H, TMPDIR=T, --landlock-rw R, --landlock-ro O and --network unrestricted, then performs the file operations below",
+      "then": [
+        "creating a file under each of W, H, T and R succeeds; renaming W/a/f to W/b/f succeeds; at an applied ABI of 3 or more truncate(2) on W/b/f succeeds; a shell script written into W and executed exits 0",
+        "creating S/new, creating O/new and writing /proc/self/comm each fail with an error for which errors.Is(err, syscall.EACCES) is true; reading S/secret fails with EACCES",
+        "reading O/ro.txt and /etc/passwd, running /bin/sh -c true, reading /proc/self/status and running /bin/sh -c 'echo x > /dev/null' (an O_TRUNC open of a device file) all succeed",
+        "the child prints its completion marker and exits 0, and the parent asserts both so a silently skipped child fails"
+      ],
+      "pseudocode": "if probeKernel() < 2: t.Skipf('kernel Landlock ABI %d < 2', k)\nchild(case='fs'):\n  info,err = confine.Setup(W, env, rw=[R], ro=[O], Unrestricted); assert err==nil && info.ABI>=2\n  for d in [W,H,T,R]: assert create(d+'/x')==nil\n  assert rename(W+'/a/f', W+'/b/f')==nil; if info.ABI>=3: assert truncate(W+'/b/f',0)==nil\n  writeExec(W+'/s.sh'); assert run(W+'/s.sh')==0\n  for p in [S+'/new', O+'/new']: assert errors.Is(create(p), EACCES)\n  assert errors.Is(writeFile('/proc/self/comm','x'), EACCES); assert errors.Is(readFile(S+'/secret'), EACCES)\n  assert readFile(O+'/ro.txt')==nil && run('/bin/sh','-c','true')==0 && readFile('/proc/self/status')==nil && run('/bin/sh','-c','echo x > /dev/null')==0\n  print(marker); exit 0\nparent: assert exit==0 && contains(out, marker)"
+    },
+    {
+      "id": "TS-15-3",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-1.3",
+        "15-REQ-1.4"
+      ],
+      "title": "At applied ABI 4 the ruleset denies TCP bind and connect under none, loopback included, and leaves TCP alone under allowlist and unrestricted",
+      "given": [
+        "Linux with kernel Landlock ABI 4 or later by the test's independent probe, else a skip naming the ABI found",
+        "a TCP listener the parent opened on 127.0.0.1:0, its address passed to the child",
+        "one re-executed child per network mode"
+      ],
+      "when": "each child applies the ruleset with --network none, allowlist or unrestricted, then dials the parent's listener with a net.Dialer whose Multipath TCP is disabled and binds 127.0.0.1:0 through a net.ListenConfig whose Multipath TCP is disabled",
+      "then": [
+        "under none, the report's TCP is true, the dial fails with EACCES and the bind fails with EACCES",
+        "under allowlist and under unrestricted, the report's TCP is false, the dial succeeds and the parent's listener accepts the connection, and the bind succeeds",
+        "each child exits 0 with its completion marker"
+      ],
+      "pseudocode": "if probeKernel() < 4: t.Skipf(...)\nln = net.Listen('tcp','127.0.0.1:0')\nfor mode in [none, allowlist, unrestricted]: child(mode):\n  info,_ = confine.Setup(..., mode)\n  d = net.Dialer{}; d.SetMultipathTCP(false); _,derr = d.Dial('tcp', ln.Addr())\n  lc = net.ListenConfig{}; lc.SetMultipathTCP(false); _,lerr = lc.Listen(ctx,'tcp','127.0.0.1:0')\n  if mode==none: assert info.TCP && errors.Is(derr,EACCES) && errors.Is(lerr,EACCES)\n  else: assert !info.TCP && derr==nil && lerr==nil\nparent: assert exit==0 && marker; if mode!=none: assert accepted(ln)"
+    },
+    {
+      "id": "TS-15-4",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-1.5"
+      ],
+      "title": "Missing system, device and flag paths are skipped, only the flag paths are noted, and the rest of the ruleset still applies",
+      "given": [
+        "the system-directory and device-file lists, replaceable in the confine package's own tests, extended with /nonexistent-agentkit-sys and /dev/nonexistent-agentkit",
+        "absolute paths M1 and M2 under t.TempDir() that do not exist, passed as --landlock-ro M1 and --landlock-rw M2, with a valid workdir W"
+      ],
+      "when": "the report is built, and on Linux with kernel ABI 2 or later a re-executed child applies the same inputs",
+      "then": [
+        "none of the four missing paths appears in Writable or ReadOnly, and every existing root still does",
+        "Note contains M1 and M2 and contains neither /nonexistent-agentkit-sys nor /dev/nonexistent-agentkit",
+        "building returns no error, and the child's apply returns nil after which creating a file under W succeeds"
+      ],
+      "pseudocode": "withSystemDirs(append(sys,'/nonexistent-agentkit-sys')); withDevices(append(dev,'/dev/nonexistent-agentkit'))\nr,err = buildRules(inputs{Workdir:W, RO:[M1], RW:[M2]}, 4); assert err==nil\nfor p in [M1,M2,'/nonexistent-agentkit-sys','/dev/nonexistent-agentkit']: assert p ∉ r.Writable ∪ r.ReadOnly\nassert contains(r.Note,M1) && contains(r.Note,M2) && !contains(r.Note,'nonexistent-agentkit-sys') && !contains(r.Note,'/dev/nonexistent-agentkit')\nif linux && probeKernel()>=2: child: _,err = confine.Setup(same); assert err==nil && create(W+'/x')==nil"
+    },
+    {
+      "id": "TS-15-5",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-1.6"
+      ],
+      "title": "An unset, relative, missing, root or system-directory HOME or temporary directory is skipped with a note while the agent still starts and serves",
+      "given": [
+        "a valid workdir W, a symlink L under t.TempDir() pointing to /usr, and a missing path X under t.TempDir()",
+        "the confine package's report-building step, and for the last case the built agentkit-sandboxd"
+      ],
+      "when": "the report is built for HOME unset, HOME=rel/home, HOME=X, HOME=/, HOME=/etc and HOME=L, and for TMPDIR=rel/tmp, TMPDIR=X, TMPDIR=/, TMPDIR=/usr and TMPDIR unset with TEMP=X (13's fall-through order); then, on Linux with kernel ABI 2 or later, the binary is started with HOME=/ and TMPDIR=X",
+      "then": [
+        "in every case the skipped root and its resolved path are absent from Writable, while W and the other, valid root remain",
+        "in every case Note names the variable that supplied the value (HOME, TMPDIR or TEMP) together with the offending value, or says it is unset, and building returns no error",
+        "the started binary answers Hello; its Agent().Landlock.ABI is above 0, Writable contains neither / nor X, and Note names both HOME and TMPDIR"
+      ],
+      "pseudocode": "for c in cases: r,err = buildRules(inputs{Workdir:W, Env:c.env}, 4); assert err==nil\n  assert c.root ∉ r.Writable && resolved(c.root) ∉ r.Writable && W ∈ r.Writable\n  assert contains(r.Note, c.var) && (c.unset ? contains(r.Note,'unset') : contains(r.Note, c.value))\nif linux && probeKernel()>=2: p = start(bin,'--workdir',W, env=['HOME=/','TMPDIR='+X,'PATH=/usr/bin:/bin']); sb = attachTo(p)\n  l = sb.Agent().Landlock; assert l.ABI>0 && '/' ∉ l.Writable && X ∉ l.Writable && contains(l.Note,'HOME') && contains(l.Note,'TMPDIR')"
+    },
+    {
+      "id": "TS-15-6",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-1.7"
+      ],
+      "title": "A root or system-ancestor --workdir or --landlock-rw, or a relative --landlock-ro or --landlock-rw, exits 2 with one stderr line naming the flag",
+      "given": [
+        "the agentkit-sandboxd binary built into t.TempDir(), run on Linux and macOS",
+        "a symlink L under t.TempDir() that points to /usr"
+      ],
+      "when": "the binary is run, with stdin closed, with each of: --workdir /, --workdir /usr, --workdir L, --landlock-rw /, --landlock-rw /opt, --landlock-rw rel/dir, --landlock-ro rel/dir",
+      "then": [
+        "each run exits with status 2",
+        "each run writes exactly one non-empty line to stderr containing the offending flag's name (--workdir, --landlock-rw or --landlock-ro)",
+        "each run writes nothing to stdout, so no Hello is ever served"
+      ],
+      "pseudocode": "for (args, flag) in [(['--workdir','/'],'--workdir'), (['--workdir','/usr'],'--workdir'), (['--workdir',L],'--workdir'), (['--landlock-rw','/'],'--landlock-rw'), (['--landlock-rw','/opt'],'--landlock-rw'), (['--landlock-rw','rel/dir'],'--landlock-rw'), (['--landlock-ro','rel/dir'],'--landlock-ro')]:\n  so,se,code = run(bin, args...); assert code==2 && countLines(trim(se))==1 && contains(se, flag) && so==''"
+    },
+    {
+      "id": "TS-15-7",
+      "kind": "property",
+      "verifies": [
+        "15-REQ-1.8"
+      ],
+      "title": "For any set of roots, the report lists resolved, duplicate-free paths in the order their rules were added",
+      "given": [
+        "a seeded generator of directory trees under t.TempDir() with real directories, symlinks to them, chains of symlinks, trailing slashes and .. components",
+        "the confine package's report-building step"
+      ],
+      "when": "for any generated tree and any lists of --landlock-rw and --landlock-ro paths drawn from it (each root possibly repeated or named through different symlinks, with the resolved rw and ro sets kept disjoint), together with W, HOME and TMPDIR drawn from it, the report is built",
+      "then": [
+        "Writable and ReadOnly each contain no duplicate",
+        "every entry e satisfies filepath.EvalSymlinks(e) == e",
+        "Writable equals the first-occurrence order of the resolved writable inputs in rule-addition order, followed or preceded only by the existing device files; ReadOnly likewise for read-only inputs, with /proc present in ReadOnly and absent from Writable",
+        "the number of rules equals the number of distinct resolved roots"
+      ],
+      "pseudocode": "for seed in 1..200: tree = genTree(seed); in = genInputs(tree, seed)\n  r,err = buildRules(in, 4); assert err==nil\n  assert noDup(r.Writable) && noDup(r.ReadOnly)\n  for e in r.Writable ∪ r.ReadOnly: assert evalSymlinks(e)==e\n  assert without(r.Writable, devices) == dedupFirst(map(resolve, rwOrder(in)))\n  assert without(r.ReadOnly, systemDirs ∪ {'/proc'}) == dedupFirst(map(resolve, in.RO)) && '/proc' ∈ r.ReadOnly && '/proc' ∉ r.Writable\n  assert len(r.rules) == len(distinct(resolved roots))"
+    },
+    {
+      "id": "TS-15-8",
+      "kind": "property",
+      "verifies": [
+        "15-REQ-2.1",
+        "15-REQ-2.2"
+      ],
+      "title": "Plan returns the ABI, TCP flag and note of the decision table for every kernel ABI from 0 to 8, a probe error and every network mode",
+      "given": [
+        "confine.Plan, called from a test file with no build constraint so that it runs on every platform"
+      ],
+      "when": "for every input in {kernel ABI 0..8} ∪ {probe error errors.New(\"boom\")} crossed with {none, allowlist, unrestricted}, Plan(kernelABI, probeErr, mode) is called",
+      "then": [
+        "probe error: ABI 0, TCP false, note `Landlock unavailable: boom`; kernel 0: ABI 0, TCP false, note `kernel reports no Landlock support`; kernel 1: ABI 0, TCP false, note `kernel Landlock ABI 1 cannot permit cross-directory renames (needs ABI 2, Linux 5.19); not applied` (all three in every mode)",
+        "kernel 2 or 3: ABI equals the kernel ABI and TCP is false; under none the note is exactly `kernel Landlock ABI k cannot restrict TCP (needs ABI 4, Linux 6.7)` with k the kernel ABI",
+        "kernel 4 to 8: ABI 4; TCP is true under none and false otherwise; the note is empty under none and under unrestricted",
+        "under allowlist at every input whose applied ABI is above 0 (kernel 2 to 8), TCP is false and the note states that Landlock cannot express a host allowlist and that TCP is left to the provider (it contains `allowlist` and `provider`)"
+      ],
+      "pseudocode": "for mode in modes: p = Plan(0, errors.New('boom'), mode); assert p=={0,false,'Landlock unavailable: boom'}\n  assert Plan(0,nil,mode)=={0,false,'kernel reports no Landlock support'}\n  assert Plan(1,nil,mode)=={0,false,'kernel Landlock ABI 1 cannot permit cross-directory renames (needs ABI 2, Linux 5.19); not applied'}\n  for k in [2,3]: p=Plan(k,nil,mode); assert p.ABI==k && !p.TCP; if mode==none: assert p.Note==fmt.Sprintf('kernel Landlock ABI %d cannot restrict TCP (needs ABI 4, Linux 6.7)',k)\n  for k in 4..8: p=Plan(k,nil,mode); assert p.ABI==4 && p.TCP==(mode==none); if mode!=allowlist: assert p.Note==''\n  if mode==allowlist: for k in 2..8: p=Plan(k,nil,mode); assert !p.TCP && contains(p.Note,'allowlist') && contains(p.Note,'provider')"
+    },
+    {
+      "id": "TS-15-9",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-2.3"
+      ],
+      "title": "Plan lives in an unconstrained file and the kernel is probed exactly once per entry-point call through a replaceable seam",
+      "given": [
+        "the confine package's source files parsed with go/parser and go/build/constraint",
+        "the unexported probe seam replaced by a counting fake in the package's tests"
+      ],
+      "when": "the test finds the file declaring Plan and its test file, then calls confine's entry point with the fake returning 1, 2, 3 and a probe error",
+      "then": [
+        "the file declaring Plan has no //go:build line and no GOOS or GOARCH file-name suffix, and neither does the test file exercising it",
+        "each call of the entry point invokes the fake exactly once, although both Plan and the report need its value",
+        "with the fake returning 1 or an error the outcome has ABI 0 and no ruleset is applied: the re-executed child performing those calls can still create a file outside every root afterwards; with 2 or 3 the outcome's ABI equals the simulated value (applied in a re-executed child on a kernel of at least that ABI, skipped otherwise)"
+      ],
+      "pseudocode": "f = fileDeclaring('Plan'); assert buildConstraint(f)==nil && !hasGOOSSuffix(f) && buildConstraint(testFileOf(f))==nil\nchild: n=0; withProbe(func(){n++; return v, e})\n  for (v,e) in [(1,nil),(0,ENOSYS)]: n=0; info,_ = Setup(...); assert n==1 && info.ABI==0; assert create(outside)==nil\nif probeKernel()>=3: child: for v in [2,3]: n=0; info,_=Setup(...); assert n==1 && info.ABI==v"
+    },
+    {
+      "id": "TS-15-10",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-2.4"
+      ],
+      "title": "Applying sets no_new_privs, reaches every thread and every later process, and uses exactly the chosen version rather than the kernel's best",
+      "given": [
+        "Linux with kernel Landlock ABI 2 or later by the test's independent probe, else a skip naming the ABI",
+        "re-executed children, a sibling directory S outside every root, a --landlock-ro root O holding O/f, and a loopback listener opened by the parent"
+      ],
+      "when": "a child starts a goroutine pinned with runtime.LockOSThread that waits on a channel, applies the ruleset, then signals the goroutine; further children apply with the probe seam simulating ABI 2 on a kernel of ABI 3 or later and ABI 3 on a kernel of ABI 4 or later under none",
+      "then": [
+        "prctl(PR_GET_NO_NEW_PRIVS) returns 1 after the apply returns nil",
+        "the pinned goroutine, on its own OS thread, fails to create S/x with EACCES, and a grandchild `/bin/sh -c 'touch S/y'` exits non-zero with S/y absent",
+        "with ABI 2 simulated, truncate(2) on O/f succeeds (truncate is not handled by V2) while creating O/new fails; with ABI 3 simulated, truncate(2) on O/f fails with EACCES",
+        "with ABI 3 simulated under none, the dial to the parent's loopback listener succeeds and the report's TCP is false, showing RestrictPaths at V3 rather than Restrict at V4"
+      ],
+      "pseudocode": "child(threads): ch=make(chan struct{}); res=make(chan error); go func(){runtime.LockOSThread(); <-ch; res <- create(S+'/x')}()\n  info,err = Setup(...); assert err==nil && prctl(PR_GET_NO_NEW_PRIVS)==1\n  close(ch); assert errors.Is(<-res, EACCES); assert run('/bin/sh','-c','touch '+S+'/y')!=0 && !exists(S+'/y')\nif k>=3: child: withProbe(2); Setup(ro=[O]); assert truncate(O+'/f',0)==nil && errors.Is(create(O+'/new'),EACCES)\n  child: withProbe(3); Setup(ro=[O]); assert errors.Is(truncate(O+'/f',0),EACCES)\nif k>=4: child: withProbe(3); info,_=Setup(mode=none); assert !info.TCP && dial(ln.Addr())==nil"
+    },
+    {
+      "id": "TS-15-11",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-2.5"
+      ],
+      "title": "A probe failure is not fatal: the outcome is ABI 0 with the unavailable note, nothing is applied, and an agent given that outcome serves and reports it",
+      "given": [
+        "the probe seam replaced by a fake returning syscall.ENOSYS, syscall.EOPNOTSUPP and syscall.EPERM in turn, inside a re-executed child",
+        "an agent.Agent served over net.Pipe and reached through attach.Dial"
+      ],
+      "when": "the child calls confine's entry point for each error, and the parent builds an agent with Config.Landlock set to the outcome the child printed",
+      "then": [
+        "each call returns a nil error and LandlockInfo{ABI: 0, KernelABI: 0, TCP: false, Note: \"Landlock unavailable: \" + err.Error()} with empty Writable and ReadOnly",
+        "after the calls the child can still create a file outside every root and connect to a loopback listener, so nothing was applied",
+        "the agent built with that outcome answers Hello and Agent().Landlock equals it"
+      ],
+      "pseudocode": "child: for e in [ENOSYS, EOPNOTSUPP, EPERM]: withProbe(0, e); info,err = Setup(...)\n  assert err==nil && info.ABI==0 && info.KernelABI==0 && !info.TCP && info.Note=='Landlock unavailable: '+e.Error() && len(info.Writable)==0 && len(info.ReadOnly)==0\n  assert create(outside)==nil && dial(loopback)==nil; printJSON(info)\nparent: a = agent.New(agent.Config{Workdir:t.TempDir(), TTL:time.Hour, Landlock:info}); sb = attachOverPipe(a); assert reflect.DeepEqual(sb.Agent().Landlock, info)"
+    },
+    {
+      "id": "TS-15-12",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-2.6"
+      ],
+      "title": "A ruleset that cannot be built after a successful probe ends the command with one landlock line on stderr and exit status 1, serving nothing",
+      "given": [
+        "Linux with kernel Landlock ABI 2 or later, the test not running as root (else a skip naming the reason)",
+        "the built agentkit-sandboxd and a directory P with mode 000 so that the absolute path P/sub cannot be resolved (EACCES, not ENOENT)",
+        "in the confine package, on a kernel offering exactly ABI 2 or 3, a re-executed child with the probe seam reporting 4"
+      ],
+      "when": "the binary is started over pipes with --workdir W --landlock-ro P/sub and the test tries to attach; on an ABI 2 or 3 kernel the child calls confine's entry point",
+      "then": [
+        "the process exits with status 1",
+        "stderr holds exactly one line, beginning `agentkit-sandboxd: landlock: ` and naming P/sub or the cause",
+        "nothing is written to stdout and the attach attempt fails without a Hello response",
+        "on an ABI 2 or 3 kernel, the entry point with the probe reporting 4 returns a non-nil error (V4 unsupported) instead of a weaker ruleset"
+      ],
+      "pseudocode": "if os.Getuid()==0: t.Skip('root bypasses the mode-000 directory'); mkdir(P,0o000)\np = start(bin,'--workdir',W,'--landlock-ro',P+'/sub'); _,err = attachTo(p); assert err!=nil\nassert p.Wait().ExitCode()==1; se=stderr(p); assert countLines(trim(se))==1 && strings.HasPrefix(se,'agentkit-sandboxd: landlock: ') && stdout(p)==''\nif k in [2,3]: child: withProbe(4); _,err = Setup(...); assert err!=nil"
+    },
+    {
+      "id": "TS-15-13",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-2.7"
+      ],
+      "title": "On a non-Linux build the confine stub applies nothing and reports ABI 0 with the Linux-only note",
+      "given": [
+        "the confine package's non-test files parsed with go/parser and go/build/constraint",
+        "a `//go:build !linux` test file run on a macOS or Windows host, and the cross-target vet for darwin/arm64 and windows/amd64"
+      ],
+      "when": "the test locates the stub file and, on a non-Linux host, calls confine's entry point with --network none",
+      "then": [
+        "the stub file's constraint is satisfied for darwin and windows and not for linux, and it imports no package under github.com/landlock-lsm/go-landlock",
+        "the entry point returns a nil error and LandlockInfo{ABI: 0, KernelABI: 0, TCP: false, Note: \"Landlock is Linux-only (GOOS=\" + runtime.GOOS + \")\"}",
+        "the cross-target build and vet for darwin/arm64 and windows/amd64 compile the stub"
+      ],
+      "pseudocode": "s = stubFile(confineDir); c = buildConstraint(s); assert c.Eval(darwin) && c.Eval(windows) && !c.Eval(linux)\nassert !any(imports(s), hasPrefix('github.com/landlock-lsm/go-landlock'))\n//go:build !linux\ninfo,err = confine.Setup(..., NetworkNone); assert err==nil && info=={0,0,false,'Landlock is Linux-only (GOOS='+runtime.GOOS+')'}"
+    },
+    {
+      "id": "TS-15-14",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-2.8"
+      ],
+      "title": "The report's KernelABI is the probe's value, unchanged by the cap at 4, and 0 after a probe error",
+      "given": [
+        "the confine package's step that combines the probe result with Plan into a LandlockInfo before applying, with the probe seam replaced by a fake"
+      ],
+      "when": "the outcome is computed for probe values 6 under none, 8 under unrestricted, 3 under none, 1 under none and a probe error under none",
+      "then": [
+        "6 under none gives ABI 4, KernelABI 6 and TCP true",
+        "8 under unrestricted gives ABI 4, KernelABI 8 and TCP false",
+        "3 gives ABI 3 and KernelABI 3; 1 gives ABI 0 and KernelABI 1; a probe error gives ABI 0 and KernelABI 0"
+      ],
+      "pseudocode": "for (v,e,mode,want) in [(6,nil,none,{4,6,true}), (8,nil,unrestricted,{4,8,false}), (3,nil,none,{3,3,false}), (1,nil,none,{0,1,false}), (0,ENOSYS,none,{0,0,false})]:\n  withProbe(v,e); info = outcome(inputs, mode); assert (info.ABI,info.KernelABI,info.TCP)==want"
+    },
+    {
+      "id": "TS-15-15",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-3.1"
+      ],
+      "title": "parseFlags accepts --network with default none and repeatable --landlock-ro and --landlock-rw in order, and defines no flag that disables confinement",
+      "given": [
+        "the command's parseFlags exercised in-package"
+      ],
+      "when": "parseFlags runs on no arguments, on --network allowlist, on --network unrestricted, and on --landlock-ro /a --landlock-rw /x --landlock-ro /b --landlock-rw /y, and the test lists every flag the command's flag set defines",
+      "then": [
+        "with no --network the parsed mode is none; allowlist and unrestricted parse to their modes",
+        "the parsed --landlock-ro values are [/a, /b] and the --landlock-rw values are [/x, /y], in command-line order",
+        "the flag set defines exactly workdir, ttl, version, network, landlock-ro and landlock-rw"
+      ],
+      "pseudocode": "cfg,_ = parseFlags([]); assert cfg.Network==sandbox.NetworkNone\nfor m in ['allowlist','unrestricted']: cfg,_ = parseFlags(['--network',m]); assert cfg.Network.String()==m\ncfg,err = parseFlags(['--landlock-ro','/a','--landlock-rw','/x','--landlock-ro','/b','--landlock-rw','/y']); assert err==nil && cfg.LandlockRO==['/a','/b'] && cfg.LandlockRW==['/x','/y']\nassert flagNames(newFlagSet()) == {'workdir','ttl','version','network','landlock-ro','landlock-rw'}"
+    },
+    {
+      "id": "TS-15-16",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-3.2"
+      ],
+      "title": "An unknown --network value exits 2 with one stderr line naming --network and serves nothing",
+      "given": [
+        "the agentkit-sandboxd binary built into t.TempDir()"
+      ],
+      "when": "the binary is run with stdin closed and --network bogus, then with --network '' and with --network NONE",
+      "then": [
+        "each run exits with status 2",
+        "each run writes exactly one non-empty line to stderr containing --network",
+        "each run writes nothing to stdout"
+      ],
+      "pseudocode": "for v in ['bogus','','NONE']: so,se,code = run(bin,'--network',v); assert code==2 && countLines(trim(se))==1 && contains(se,'--network') && so==''"
+    },
+    {
+      "id": "TS-15-17",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-3.3"
+      ],
+      "title": "--version prints protocol 1.2 and exits 0 without serving",
+      "given": [
+        "the agentkit-sandboxd binary built into t.TempDir(); TS-13-24 updated to expect `1.2`"
+      ],
+      "when": "the binary is run with --version and stdin closed, alone and together with --network none --landlock-ro /usr",
+      "then": [
+        "each run exits 0",
+        "stdout contains the agent version and `(protocol 1.2)`",
+        "stderr is empty"
+      ],
+      "pseudocode": "for args in [['--version'], ['--version','--network','none','--landlock-ro','/usr']]: so,se,code = run(bin,args...); assert code==0 && contains(so,'(protocol 1.2)') && contains(so, expectedVersion) && se==''"
+    },
+    {
+      "id": "TS-15-18",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-3.4",
+        "15-REQ-3.3"
+      ],
+      "title": "An AST test pins main's order: flags, then --version, then confinement, then redirectStdout, agent.New, goroutines and serving",
+      "given": [
+        "the non-test Go files of sandbox/cmd/agentkit-sandboxd parsed with go/parser",
+        "synthetic sources in which agent.New, redirectStdout or a go statement precedes the confinement call, or the confinement call precedes the --version return"
+      ],
+      "when": "the checker walks main and the package-local functions main calls directly, recording the source positions of the parseFlags call, the --version branch's return or exit, the call into sandbox/internal/confine, redirectStdout, agent.New and every go statement",
+      "then": [
+        "on the real source, parseFlags precedes the --version branch, the --version branch returns before the confinement call, and the confinement call precedes every redirectStdout call, every agent.New call and every go statement",
+        "on each synthetic source the checker fails with a message naming the file and line of the offending call or statement",
+        "the real source contains exactly one confinement call, so the test is not vacuous"
+      ],
+      "pseudocode": "pos = positions(parse(cmdDir), roots=['main'])\nassert pos.parseFlags < pos.versionReturn < pos.confine\nfor p in pos.redirectStdout ∪ pos.agentNew ∪ pos.goStmts: assert pos.confine < p\nassert len(pos.confineCalls)==1\nfor src in badSources: err = checkOrder(src); assert err!=nil && matches(err, file+':'+line)"
+    },
+    {
+      "id": "TS-15-19",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-3.5"
+      ],
+      "title": "The command hands its confinement outcome to the agent, Hello reflects it, and processes started by tools inherit the ruleset",
+      "given": [
+        "the agentkit-sandboxd binary built into t.TempDir(), started over pipes with --workdir W and HOME, TMPDIR and PATH=/usr/bin:/bin in cmd.Env",
+        "the test's independent probe of the kernel ABI k, and a sibling directory S outside every root"
+      ],
+      "when": "the test attaches with attach.Dial over stdioconn, reads Agent().Landlock, and on an applied ABI above 0 runs a proxy execute of /bin/sh -c '/bin/sh -c \"echo x > S/f\"'",
+      "then": [
+        "on Linux with k >= 2: ABI == min(k, 4), KernelABI == k and Writable contains the resolved W; with k < 2 or a probe error: ABI 0 and Plan's note; on macOS: ABI 0 and `Landlock is Linux-only (GOOS=darwin)`",
+        "when ABI is above 0 the grandchild's write fails, the execute result reports a non-zero exit, and S/f does not exist on the host",
+        "the agent.Config literal in the command's source sets the Landlock field from the confinement outcome (AST check)"
+      ],
+      "pseudocode": "p = start(bin,'--workdir',W, env); sb = attachTo(p); l = sb.Agent().Landlock\nif linux && k>=2: assert l.ABI==min(k,4) && l.KernelABI==k && resolve(W) ∈ l.Writable\nelif linux: assert l.ABI==0 && l.Note==Plan(k,perr,none).Note\nelse: assert l.ABI==0 && l.Note=='Landlock is Linux-only (GOOS='+runtime.GOOS+')'\nif l.ABI>0: r = execute(sb,`/bin/sh -c '/bin/sh -c \"echo x > S/f\"'`); assert r.exit!=0 && !exists(S+'/f')\nassert agentConfigLiteralSets(cmdSrc,'Landlock')"
+    },
+    {
+      "id": "TS-15-20",
+      "kind": "property",
+      "verifies": [
+        "15-REQ-3.6"
+      ],
+      "title": "For any effective spec, AgentArgs produces flags that the command's parseFlags reads back as the spec's TTL, network mode and workdir",
+      "given": [
+        "a test in the command's package with access to parseFlags and sandbox.AgentArgs",
+        "a seeded generator of effective specs: TTL a positive duration from 1s to 48h (including non-round values), Mode one of none, allowlist and unrestricted, Workdir empty or an absolute path under t.TempDir()"
+      ],
+      "when": "for any generated effective spec, args = sandbox.AgentArgs(spec) is parsed with parseFlags",
+      "then": [
+        "parseFlags returns no error, cfg.TTL == spec.TTL and cfg.Network == spec.Network.Mode",
+        "cfg.Workdir == spec.Workdir when Workdir is set, else the command's default /workspace",
+        "args contains --ttl followed by spec.TTL.String() and --network followed by spec.Network.Mode.String(), and contains --workdir exactly when spec.Workdir is non-empty"
+      ],
+      "pseudocode": "for seed in 1..500: spec = genEffective(seed); args = sandbox.AgentArgs(spec)\n  cfg,err = parseFlags(args); assert err==nil && cfg.TTL==spec.TTL && cfg.Network==spec.Network.Mode\n  assert cfg.Workdir == (spec.Workdir!='' ? spec.Workdir : '/workspace')\n  assert follows(args,'--ttl',spec.TTL.String()) && follows(args,'--network',spec.Network.Mode.String()) && contains(args,'--workdir')==(spec.Workdir!='')"
+    },
+    {
+      "id": "TS-15-21",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-4.1"
+      ],
+      "title": "HelloResponse carries LandlockReport landlock = 7 with the six specified fields, and the regenerated code passes the staleness check offline",
+      "given": [
+        "the checked-in sandbox/internal/sandboxpb generated code and its hash file"
+      ],
+      "when": "the test inspects sandboxpb.File_sandbox_proto through protoreflect and runs 13's staleness check with PATH emptied",
+      "then": [
+        "HelloResponse has field 7 named landlock of message type LandlockReport, and its fields 1 to 6 are unchanged",
+        "LandlockReport has exactly abi = 1 (uint32), kernel_abi = 2 (uint32), tcp = 3 (bool), note = 4 (string), writable = 5 (repeated string) and read_only = 6 (repeated string)",
+        "the staleness check passes for the checked-in sandbox.proto and hash file without running protoc"
+      ],
+      "pseudocode": "h = msg('HelloResponse'); f = h.Fields().ByNumber(7); assert f.Name()=='landlock' && f.Message().Name()=='LandlockReport'\nlr = msg('LandlockReport'); assert fields(lr) == [(abi,1,uint32,single),(kernel_abi,2,uint32,single),(tcp,3,bool,single),(note,4,string,single),(writable,5,string,repeated),(read_only,6,string,repeated)]\nt.Setenv('PATH',''); assert checkProtoHash(read('sandbox.proto'), read(hashFile))==nil"
+    },
+    {
+      "id": "TS-15-22",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-4.2"
+      ],
+      "title": "ProtocolMinor is 2 with major unchanged, and a fresh sandbox reports protocol 1.2",
+      "given": [
+        "a local.Unisolated() sandbox; TS-14-5 and every test that pinned minor 1 updated to pin 2"
+      ],
+      "when": "the test reads sandbox.ProtocolMajor and sandbox.ProtocolMinor and the Agent() of a fresh local sandbox",
+      "then": [
+        "sandbox.ProtocolMajor == 1 and sandbox.ProtocolMinor == 2",
+        "sb.Agent() reports ProtocolMajor 1 and ProtocolMinor 2",
+        "attach still accepts a fakeagent answering 1.0 or 1.1 (same major)"
+      ],
+      "pseudocode": "assert sandbox.ProtocolMajor==1 && sandbox.ProtocolMinor==2\nsb = local.Unisolated().Create(ctx, Spec{Network:{Mode:NetworkUnrestricted}}); assert sb.Agent().ProtocolMajor==1 && sb.Agent().ProtocolMinor==2\nfor minor in [0,1]: _,err = attach.New(ctx, cfgOver(fakeagent.WithHello(1,minor))); assert err==nil"
+    },
+    {
+      "id": "TS-15-23",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-4.3"
+      ],
+      "title": "Package sandbox exports LandlockInfo with its six fields, LandlockMinABI 2, LandlockTCPABI 4 and AgentInfo.Landlock",
+      "given": [
+        "package sandbox inspected with reflect"
+      ],
+      "when": "the test reflects on sandbox.LandlockInfo and sandbox.AgentInfo and reads the two constants",
+      "then": [
+        "LandlockInfo's fields are, in order, ABI int, KernelABI int, TCP bool, Note string, Writable []string and ReadOnly []string",
+        "sandbox.LandlockMinABI == 2 and sandbox.LandlockTCPABI == 4",
+        "AgentInfo has a field Landlock of type sandbox.LandlockInfo"
+      ],
+      "pseudocode": "rt = reflect.TypeOf(sandbox.LandlockInfo{}); assert fieldsOf(rt)==[('ABI',int),('KernelABI',int),('TCP',bool),('Note',string),('Writable',[]string),('ReadOnly',[]string)]\nassert sandbox.LandlockMinABI==2 && sandbox.LandlockTCPABI==4\nf,ok = reflect.TypeOf(sandbox.AgentInfo{}).FieldByName('Landlock'); assert ok && f.Type==rt"
+    },
+    {
+      "id": "TS-15-24",
+      "kind": "property",
+      "verifies": [
+        "15-REQ-4.4"
+      ],
+      "title": "For any LandlockInfo and network mode, Satisfies holds exactly when ABI is at least 2 and, under none, TCP is set",
+      "given": [
+        "a seeded generator of LandlockInfo values (ABI from -1 to 10, KernelABI from 0 to 10, random TCP, Note, Writable and ReadOnly) and of NetworkModes"
+      ],
+      "when": "for any generated l and mode in {NetworkNone, NetworkAllowlist, NetworkUnrestricted}, l.Satisfies(mode) is called",
+      "then": [
+        "the result equals l.ABI >= LandlockMinABI && (mode != NetworkNone || l.TCP)",
+        "KernelABI, Note, Writable and ReadOnly never change the result",
+        "the boundaries hold: {ABI 4, TCP false} fails under none, {ABI 2, TCP false} passes under unrestricted and allowlist, {ABI 1, TCP true} fails under every mode"
+      ],
+      "pseudocode": "for i in 0..5000: l = genInfo(r); for m in modes: assert l.Satisfies(m) == (l.ABI>=sandbox.LandlockMinABI && (m!=NetworkNone || l.TCP))\n  l2 = l; l2.KernelABI,l2.Note,l2.Writable,l2.ReadOnly = rand...; assert l2.Satisfies(m)==l.Satisfies(m)\nassert !LandlockInfo{ABI:4}.Satisfies(None) && LandlockInfo{ABI:2}.Satisfies(Unrestricted) && LandlockInfo{ABI:2}.Satisfies(Allowlist)\nfor m in modes: assert !LandlockInfo{ABI:1,TCP:true}.Satisfies(m)"
+    },
+    {
+      "id": "TS-15-25",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-4.5"
+      ],
+      "title": "The agent returns Config.Landlock in Hello field for field and attach fills AgentInfo.Landlock from it",
+      "given": [
+        "agent.New with Config{Workdir: t.TempDir(), TTL: time.Hour, Landlock: L} served over net.Pipe, with L = {ABI 3, KernelABI 5, TCP false, Note \"n\", Writable [/w1, /w2, /dev/null], ReadOnly [/usr, /proc]}",
+        "a second agent built with the zero LandlockInfo",
+        "a raw sandboxpb.AgentClient and attach.Dial over the same kind of pipe"
+      ],
+      "when": "the raw client calls Hello and the sandbox's Agent() is read for both agents",
+      "then": [
+        "the raw HelloResponse.landlock has abi 3, kernel_abi 5, tcp false, note \"n\", writable [/w1, /w2, /dev/null] and read_only [/usr, /proc]",
+        "sb.Agent().Landlock deep-equals L",
+        "for the zero-value agent, which speaks 1.2, Agent().Landlock has ABI 0 and an empty note, not the `does not report Landlock` note"
+      ],
+      "pseudocode": "a = agent.New(agent.Config{..., Landlock:L}); raw = clientOver(a); h = raw.Hello(ctx,{})\nassert (h.Landlock.Abi,h.Landlock.KernelAbi,h.Landlock.Tcp,h.Landlock.Note,h.Landlock.Writable,h.Landlock.ReadOnly)==(3,5,false,'n',L.Writable,L.ReadOnly)\nsb = attach.Dial(...a...); assert reflect.DeepEqual(sb.Agent().Landlock, L)\nz = attachOver(agent.New(agent.Config{...})); assert z.Agent().Landlock.ABI==0 && z.Agent().Landlock.Note==''"
+    },
+    {
+      "id": "TS-15-26",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-4.6"
+      ],
+      "title": "An agent of protocol 1.1 or 1.0 sends no report and attach fills ABI 0 with the protocol note",
+      "given": [
+        "fakeagent configured to answer Hello with protocol 1.1 and no LandlockReport, and another with protocol 1.0",
+        "attach.Config with a spec that does not set RequireLandlock and a counting destroy step"
+      ],
+      "when": "attach.New runs against each fakeagent and Agent().Landlock is read",
+      "then": [
+        "for 1.1, Agent().Landlock.ABI is 0 and Note is exactly `agent protocol 1.1 does not report Landlock`",
+        "for 1.0, Note is exactly `agent protocol 1.0 does not report Landlock`",
+        "both sandboxes are live and the destroy step has not run"
+      ],
+      "pseudocode": "for minor in [1,0]: fa = fakeagent.New(WithHello(1,minor), WithoutLandlock()); sb,err = attach.New(ctx, Config{Spec:{Network:{Mode:NetworkUnrestricted}}, Destroy:count})\n  assert err==nil && sb.Agent().Landlock.ABI==0 && sb.Agent().Landlock.Note==fmt.Sprintf('agent protocol 1.%d does not report Landlock',minor) && destroys==0"
+    },
+    {
+      "id": "TS-15-27",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-4.7",
+        "15-REQ-6.1"
+      ],
+      "title": "local reports Capabilities.Landlock false and its in-process agent reports ABI 0 with the no-confinement note",
+      "given": [
+        "TMPDIR set to a fresh t.TempDir() and local.Unisolated(); TS-13-56 updated for Capabilities.Landlock"
+      ],
+      "when": "Capabilities() is read and a sandbox is created with Spec{Network: {Mode: NetworkUnrestricted}}",
+      "then": [
+        "Capabilities().Landlock is false",
+        "Agent().Landlock is LandlockInfo{ABI: 0, KernelABI: 0, TCP: false, Note: \"in-process agent (local provider): no confinement\"} with empty Writable and ReadOnly",
+        "the zero Spec has RequireLandlock false"
+      ],
+      "pseudocode": "p = local.Unisolated(); assert !p.Capabilities().Landlock\nsb,_ = p.Create(ctx, Spec{Network:{Mode:NetworkUnrestricted}}); l = sb.Agent().Landlock\nassert l.ABI==0 && l.KernelABI==0 && !l.TCP && l.Note=='in-process agent (local provider): no confinement' && len(l.Writable)==0 && len(l.ReadOnly)==0\nassert !(Spec{}).RequireLandlock"
+    },
+    {
+      "id": "TS-15-28",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-5.1"
+      ],
+      "title": "Every agent RPC works against the confined agent and writes only beneath the workspace and the temporary directory",
+      "given": [
+        "Linux with kernel Landlock ABI 2 or later, else a skip naming the ABI",
+        "the built agentkit-sandboxd started over pipes with --workdir W, HOME=H, TMPDIR=T and PATH=/usr/bin:/bin, attached with attach.Dial over stdioconn",
+        "a host project directory P with nested files, and a sibling directory S outside every root"
+      ],
+      "when": "the test calls Hello, Tools, a proxy write_file and read_file, Sync with a Tar of nested files, Sync with LocalDir{Path: P} (14's Rsync), an execute whose output exceeds the byte limit, Export to a TarOut buffer and Export to LocalDir{Path: dst}",
+      "then": [
+        "every call returns a nil error; the synced files exist under W with their contents, the exported tar and dst hold the expected files",
+        "the oversized execute result reports a spill file beneath T/agentkit-spill",
+        "the entries of H and S are unchanged after all calls"
+      ],
+      "pseudocode": "if probeKernel()<2: t.Skipf(...)\nsb = attachTo(start(bin,'--workdir',W, env=['HOME='+H,'TMPDIR='+T,'PATH=/usr/bin:/bin'])); assert sb.Agent().Landlock.ABI>=2\nsnapH,snapS = snapshot(H),snapshot(S); tl = sb.Tools(ctx,{})\nassert call(tl,'write_file',{'path':'a.txt',...}).ok && call(tl,'read_file',{'path':'a.txt'}).ok\nassert sb.Sync(ctx,Tar{R:tarOf(tree)})==nil && sb.Sync(ctx,LocalDir{Path:P})==nil && filesUnder(W) ⊇ tree ∪ P\nr = execute(tl,'head -c 200000 /dev/zero | od'); assert hasPrefix(r.SpillPath, T+'/agentkit-spill')\nassert sb.Export(ctx,'',TarOut{W:&buf})==nil && sb.Export(ctx,'.',LocalDir{Path:dst})==nil && filesOf(buf)⊇tree && filesUnder(dst)⊇tree\nassert snapshot(H)==snapH && snapshot(S)==snapS"
+    },
+    {
+      "id": "TS-15-29",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-5.2",
+        "15-REQ-5.3"
+      ],
+      "title": "Under a ruleset, a Tools SpillDir outside the writable directory roots is InvalidArgument naming the path and the roots, while the default spill directory always qualifies",
+      "given": [
+        "agent.New with Config.Landlock{ABI: 4, TCP: true, Writable: [W, T, /dev/null]} served over net.Pipe, reached by a raw client and by attach.Dial",
+        "a second agent with Config.Landlock{ABI: 4, Writable: [W]} whose temporary directory was skipped",
+        "a third agent with Config.Landlock{ABI: 0}"
+      ],
+      "when": "Tools is requested with SpillDir set to an outside directory O, to W + \"-evil\", to /dev/null/spill, to W/spill, and with no SpillDir; the second and third agents receive no SpillDir and O respectively",
+      "then": [
+        "SpillDir O, W-evil and /dev/null/spill each end with gRPC status InvalidArgument whose message contains the SpillDir and both W and T",
+        "after a refusal the sandbox stays live: a following Tools call with no SpillDir returns the tool definitions",
+        "SpillDir W/spill and no SpillDir both succeed on the first agent, no SpillDir succeeds on the second agent, and SpillDir O succeeds on the ABI 0 agent"
+      ],
+      "pseudocode": "raw = clientOver(agentWith({ABI:4,TCP:true,Writable:[W,T,'/dev/null']}))\nfor d in [O, W+'-evil', '/dev/null/spill']: _,err = raw.Tools(ctx,{SpillDir:d}); assert status.Code(err)==InvalidArgument && contains(msg(err),d) && contains(msg(err),W) && contains(msg(err),T)\nr,err = raw.Tools(ctx,{}); assert err==nil && len(r.Tools)>0\n_,err = raw.Tools(ctx,{SpillDir:W+'/spill'}); assert err==nil\n_,err = clientOver(agentWith({ABI:4,Writable:[W]})).Tools(ctx,{}); assert err==nil\n_,err = clientOver(agentWith({ABI:0})).Tools(ctx,{SpillDir:O}); assert err==nil"
+    },
+    {
+      "id": "TS-15-30",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-5.5",
+        "15-REQ-1.4",
+        "15-REQ-2.2"
+      ],
+      "title": "Under unrestricted and allowlist the confined agent's tools reach a loopback listener while the filesystem stays confined",
+      "given": [
+        "Linux with kernel Landlock ABI 4 or later, else a skip naming the ABI",
+        "a helper binary built into W that dials an address with Multipath TCP disabled and exits 0 on success, 3 printing the error otherwise",
+        "a listener the test opened on 127.0.0.1, and a sibling directory S"
+      ],
+      "when": "the built agentkit-sandboxd is started with --network unrestricted and then with --network allowlist, and a proxy execute runs W/dialtcp <addr> and touch S/x in each",
+      "then": [
+        "under both modes the dial exits 0 and the listener accepts",
+        "under unrestricted Agent().Landlock has ABI 4, TCP false and an empty note; under allowlist ABI 4, TCP false and a note containing `allowlist` and `provider`",
+        "under both modes touch S/x fails with a permission error and S/x is absent"
+      ],
+      "pseudocode": "for mode in ['unrestricted','allowlist']: sb = attachTo(start(bin,'--network',mode,'--workdir',W, env))\n  assert execute(sb, W+'/dialtcp '+ln.Addr()).exit==0 && accepted(ln)\n  l = sb.Agent().Landlock; assert l.ABI==4 && !l.TCP\n  if mode=='unrestricted': assert l.Note=='' else: assert contains(l.Note,'allowlist') && contains(l.Note,'provider')\n  r = execute(sb,'touch '+S+'/x'); assert r.exit!=0 && contains(r.out,'Permission denied') && !exists(S+'/x')"
+    },
+    {
+      "id": "TS-15-31",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-5.6"
+      ],
+      "title": "At kernel ABI 2 or 3 the filesystem ruleset applies at the kernel's ABI, TCP stays open and the note names the missing TCP support",
+      "given": [
+        "for the binary half, Linux whose kernel offers exactly ABI 2 or 3, else a skip naming the ABI found",
+        "for the simulated half, re-executed children with the probe seam reporting 2 and 3 on a kernel offering at least that ABI",
+        "W, HOME=H, TMPDIR=T, a sibling S with S/secret, and a loopback listener"
+      ],
+      "when": "the binary is started with --network none and proxy execute calls touch W/a, touch S/x, cat S/secret and W/dialtcp <addr>; each simulated child applies with --network none and performs the same operations directly",
+      "then": [
+        "Agent().Landlock.ABI (or the child's report ABI) equals the kernel's (or simulated) ABI, TCP is false and Note is `kernel Landlock ABI k cannot restrict TCP (needs ABI 4, Linux 6.7)`",
+        "creating under W succeeds; creating under S and reading S/secret fail with a permission error",
+        "the loopback dial succeeds"
+      ],
+      "pseudocode": "if k in [2,3]: sb = attachTo(start(bin,'--network','none','--workdir',W, env)); l=sb.Agent().Landlock\n  assert l.ABI==k && !l.TCP && l.Note==fmt.Sprintf('kernel Landlock ABI %d cannot restrict TCP (needs ABI 4, Linux 6.7)',k)\n  assert execute(sb,'touch '+W+'/a').exit==0 && execute(sb,'touch '+S+'/x').exit!=0 && execute(sb,'cat '+S+'/secret').exit!=0 && execute(sb,W+'/dialtcp '+addr).exit==0\nfor v in [2,3] where probeKernel()>=v: child: withProbe(v); info,_=Setup(...,none); assert info.ABI==v && !info.TCP && info.Note==note(v)\n  assert create(W+'/a')==nil && errors.Is(create(S+'/x'),EACCES) && errors.Is(readFile(S+'/secret'),EACCES) && dial(addr)==nil"
+    },
+    {
+      "id": "TS-15-32",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-5.7"
+      ],
+      "title": "Under the ruleset, execute sees the agent's explicit environment unchanged and binaries under the system directories run",
+      "given": [
+        "Linux with kernel Landlock ABI 2 or later, else a skip naming the ABI",
+        "the built agentkit-sandboxd started with cmd.Env = [PATH=/usr/bin:/bin:<dir of go>, HOME=H, TMPDIR=T, LANG=C.UTF-8, MARKER=landlock-env] and --workdir W"
+      ],
+      "when": "proxy execute runs env, then /bin/sh -c true, then go version",
+      "then": [
+        "the env output's variables equal cmd.Env exactly, apart from PWD, OLDPWD, SHLVL and _ that the shell sets itself, and include no variable set only in the test process",
+        "/bin/sh -c true exits 0",
+        "go version exits 0 when exec.LookPath(\"go\") resolves beneath a system directory; otherwise that check skips naming the path it found"
+      ],
+      "pseudocode": "t.Setenv('HOST_ONLY_VAR','1'); sb = attachTo(start(bin,'--workdir',W, env=cmdEnv)); assert sb.Agent().Landlock.ABI>=2\nout = execute(sb,'env').out; assert set(lines(out)) - shellVars == set(cmdEnv) && !contains(out,'HOST_ONLY_VAR')\nassert execute(sb,'/bin/sh -c true').exit==0\ngo = resolve(lookPath('go')); if underSystemDir(go): assert execute(sb,'go version').exit==0 else: t.Logf('skip go version: %s', go)"
+    },
+    {
+      "id": "TS-15-33",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-6.1",
+        "15-REQ-6.2"
+      ],
+      "title": "CheckSpec refuses RequireLandlock against capabilities without Landlock with a RequireLandlock SpecError matching ErrUnsupported",
+      "given": [
+        "Capabilities{Provider: \"p\", Network: [NetworkNone, NetworkUnrestricted]} with Landlock false and a copy with Landlock true"
+      ],
+      "when": "CheckSpec is called with Spec{Network: {Mode: NetworkNone}, RequireLandlock: true} against both, and with RequireLandlock false against the Landlock-false capabilities",
+      "then": [
+        "against Landlock false: errors.As yields a *SpecError with Field \"RequireLandlock\" and Provider \"p\", and errors.Is(err, ErrUnsupported) is true",
+        "against Landlock true: err is nil and the effective spec keeps RequireLandlock true",
+        "with RequireLandlock false: err is nil; the zero Capabilities and zero Spec have Landlock and RequireLandlock false"
+      ],
+      "pseudocode": "caps = Capabilities{Provider:'p', Network:[None,Unrestricted]}\n_,err = CheckSpec(caps, Spec{Network:{Mode:None}, RequireLandlock:true}); var se *SpecError; assert errors.As(err,&se) && se.Field=='RequireLandlock' && se.Provider=='p' && errors.Is(err,ErrUnsupported)\ncaps.Landlock=true; out,err = CheckSpec(caps, sameSpec); assert err==nil && out.RequireLandlock\ncaps.Landlock=false; _,err = CheckSpec(caps, Spec{Network:{Mode:None}}); assert err==nil\nassert !(Capabilities{}).Landlock && !(Spec{}).RequireLandlock"
+    },
+    {
+      "id": "TS-15-34",
+      "kind": "property",
+      "verifies": [
+        "15-REQ-6.3"
+      ],
+      "title": "For any capabilities and spec, CheckSpec agrees with TS-13-13's oracle extended by the RequireLandlock rule, which is checked after 13's fields",
+      "given": [
+        "TS-13-13's seeded generators extended with random Capabilities.Landlock and Spec.RequireLandlock, including specs that fail one of 13's checks",
+        "the oracle extended: the first failing field among 13's checks in 13's order, else RequireLandlock when RequireLandlock is true and caps.Landlock false, else none"
+      ],
+      "when": "for any generated Capabilities and Spec, CheckSpec(caps, spec) is called",
+      "then": [
+        "err is nil exactly when the oracle finds no failing field",
+        "otherwise errors.As yields a *SpecError whose Field equals the oracle's field, so a spec failing one of 13's checks never reports RequireLandlock",
+        "errors.Is(err, ErrUnsupported) is true for every RequireLandlock refusal, and when err is nil the effective spec carries the input's RequireLandlock"
+      ],
+      "pseudocode": "for i in 0..2000: caps = genCaps(r) with Landlock=r.bool(); spec = genSpec(r) with RequireLandlock=r.bool()\n  out,err = CheckSpec(caps,spec); want = oracle13(caps,spec) ?? (spec.RequireLandlock && !caps.Landlock ? 'RequireLandlock' : '')\n  if want=='': assert err==nil && out.RequireLandlock==spec.RequireLandlock\n  else: var se *SpecError; assert errors.As(err,&se) && se.Field==want; if want=='RequireLandlock': assert errors.Is(err,ErrUnsupported)"
+    },
+    {
+      "id": "TS-15-35",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-6.4"
+      ],
+      "title": "local refuses RequireLandlock with an error naming it that matches ErrUnsupported and creates no sandbox directory",
+      "given": [
+        "TMPDIR set to a fresh t.TempDir() so local's root is isolated",
+        "local.Unisolated()"
+      ],
+      "when": "Create is called with Spec{Network: {Mode: NetworkUnrestricted}, RequireLandlock: true}",
+      "then": [
+        "Create returns a nil Sandbox",
+        "the error's message contains RequireLandlock and errors.Is(err, ErrUnsupported) is true",
+        "<TMPDIR>/agentkit-sandbox-local does not exist or has no entries, and no agent goroutine remains"
+      ],
+      "pseudocode": "t.Setenv('TMPDIR', t.TempDir()); sb,err = local.Unisolated().Create(ctx, Spec{Network:{Mode:NetworkUnrestricted}, RequireLandlock:true})\nassert sb==nil && contains(err.Error(),'RequireLandlock') && errors.Is(err,ErrUnsupported)\nassert entries(filepath.Join(os.TempDir(),'agentkit-sandbox-local'))==0"
+    },
+    {
+      "id": "TS-15-36",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-6.5",
+        "15-REQ-6.8"
+      ],
+      "title": "attach refuses a RequireLandlock sandbox whose agent reports ABI 0, or ABI 4 without TCP under none, closing the client and destroying it exactly once",
+      "given": [
+        "fakeagent answering Hello with protocol 1.2 and LandlockReport{abi 0, kernel_abi 1, tcp false, note \"kernel Landlock ABI 1 cannot permit cross-directory renames (needs ABI 2, Linux 5.19); not applied\"}",
+        "a second fakeagent reporting {abi 4, kernel_abi 6, tcp false, note \"x\"}",
+        "attach.Config{Provider: \"fake\", Spec: effective Spec{RequireLandlock: true, Network: {Mode: NetworkNone}}, Destroy: a counting step}"
+      ],
+      "when": "attach.New runs against each fakeagent",
+      "then": [
+        "each call returns a nil Sandbox and an error for which errors.Is(err, ErrUnsupported) is true and errors.As yields a *SpecError with Provider \"fake\" and Field \"RequireLandlock\"",
+        "the first Reason contains ABI 0, kernel ABI 1, TCP false and the note verbatim; the second contains 4, 6, false and x",
+        "the destroy step ran exactly once per call, and the fakeagent observed its connection closed after Hello"
+      ],
+      "pseudocode": "for (rep, want) in [({0,1,false,note1},['0','1','false',note1]), ({4,6,false,'x'},['4','6','false','x'])]:\n  fa = fakeagent.New(WithHello(1,2), WithLandlock(rep)); n=0\n  sb,err = attach.New(ctx, attach.Config{Provider:'fake', Spec:eff, Destroy:func(){n++}, ...fa})\n  var se *SpecError; assert sb==nil && errors.Is(err,ErrUnsupported) && errors.As(err,&se) && se.Provider=='fake' && se.Field=='RequireLandlock'\n  for w in want: assert contains(se.Reason,w); assert n==1 && fa.ConnClosed()"
+    },
+    {
+      "id": "TS-15-37",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-6.6"
+      ],
+      "title": "attach accepts a RequireLandlock sandbox whose agent's report satisfies the effective network mode",
+      "given": [
+        "fakeagents answering protocol 1.2 with LandlockReport {abi 3, tcp false}, {abi 4, kernel_abi 6, tcp true} and {abi 2, tcp false}",
+        "effective specs with RequireLandlock and, respectively, NetworkUnrestricted, NetworkNone and NetworkAllowlist, and a counting destroy step"
+      ],
+      "when": "attach.New runs for each pair",
+      "then": [
+        "each call returns a live Sandbox and a nil error",
+        "a following Tools call reaches the fakeagent, and the destroy step has not run",
+        "Agent().Landlock equals the reported values in each case"
+      ],
+      "pseudocode": "for (rep, mode) in [({ABI:3},Unrestricted), ({ABI:4,KernelABI:6,TCP:true},None), ({ABI:2},Allowlist)]:\n  sb,err = attach.New(ctx, cfg(fakeagent.WithLandlock(rep), Spec{RequireLandlock:true, Network:{Mode:mode}}))\n  assert err==nil && sb!=nil && sb.Tools(ctx,{})reachesFake && destroys==0 && sb.Agent().Landlock==info(rep)"
+    },
+    {
+      "id": "TS-15-38",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-6.7",
+        "15-REQ-6.8"
+      ],
+      "title": "attach refuses RequireLandlock against an agent of protocol 1.1 or 1.0 with an error naming its protocol version and destroys it once",
+      "given": [
+        "fakeagents answering Hello with protocol 1.1 and with protocol 1.0, carrying no LandlockReport",
+        "attach.Config{Provider: \"fake\", Spec: effective Spec{RequireLandlock: true, Network: {Mode: NetworkUnrestricted}}, Destroy: a counting step}"
+      ],
+      "when": "attach.New runs against each fakeagent",
+      "then": [
+        "each call returns a nil Sandbox and an error matching ErrUnsupported whose *SpecError has Provider \"fake\" and Field \"RequireLandlock\"",
+        "the error's message contains 1.1 (respectively 1.0)",
+        "the destroy step ran exactly once per call"
+      ],
+      "pseudocode": "for minor in [1,0]: n=0; sb,err = attach.New(ctx, attach.Config{Provider:'fake', Spec:eff, Destroy:func(){n++}, ...fakeagent.New(WithHello(1,minor), WithoutLandlock())})\n  var se *SpecError; assert sb==nil && errors.Is(err,ErrUnsupported) && errors.As(err,&se) && se.Provider=='fake' && se.Field=='RequireLandlock'\n  assert contains(err.Error(), fmt.Sprintf('1.%d',minor)) && n==1"
+    },
+    {
+      "id": "TS-15-39",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-7.1",
+        "15-REQ-7.2",
+        "15-REQ-7.3"
+      ],
+      "title": "An internal/policy AST test confines go-landlock to Linux-only confine files, confine to the command, and forbids every BestEffort call",
+      "given": [
+        "an internal/policy test walking every non-test Go file of the root module (excluding nested modules) with go/parser and go/build/constraint",
+        "synthetic file trees, each holding one violation: a go-landlock import outside confine, a confine file importing go-landlock without a linux constraint, sandbox/internal/agent importing confine, and a call x.BestEffort()"
+      ],
+      "when": "the checker runs over the real tree and over each synthetic tree",
+      "then": [
+        "on the real tree, every file importing github.com/landlock-lsm/go-landlock or a subpackage lies under sandbox/internal/confine and its constraint (or file-name suffix) is satisfied for linux and not for darwin or windows, and at least one such file exists",
+        "on the real tree, the only importer of <module>/sandbox/internal/confine is sandbox/cmd/agentkit-sandboxd, and that importer exists",
+        "on the real tree, no call expression selects a method named BestEffort",
+        "on each synthetic tree the checker fails with a message naming the offending file, and for BestEffort its line"
+      ],
+      "pseudocode": "files = nonTestGoFiles(root)\nll = [f for f in files if importsPrefix(f,'github.com/landlock-lsm/go-landlock')]; assert len(ll)>0\nfor f in ll: assert under(f,'sandbox/internal/confine/') && linuxOnly(f)\nimp = [f for f in files if imports(f, mod+'/sandbox/internal/confine')]; assert len(imp)>0 && all(under(f,'sandbox/cmd/agentkit-sandboxd/') for f in imp)\nfor f in files: ast.Inspect(f, func(n){ if call(n).Sel.Name=='BestEffort': fail(pos) })\nfor tree in synthetic: err = check(tree); assert err!=nil && contains(err, tree.badFile)"
+    },
+    {
+      "id": "TS-15-40",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-8.1",
+        "15-REQ-8.2"
+      ],
+      "title": "go-landlock is promoted to a direct requirement at its existing version, approved with a reason, psx stays indirect and the module graph is unchanged",
+      "given": [
+        "internal/policy tests reading go.mod, deps_test.go, the committed snapshot internal/policy/testdata/go-list-m-all.txt and 14's direct set, with the go toolchain",
+        "TS-14-42 and TS-13-65's direct-set literal updated to expect go-landlock as direct"
+      ],
+      "when": "the tests parse go.mod, parse approvedDeps with comments via go/parser, and run `go list -m all` and the direct-set listing of TS-13-65",
+      "then": [
+        "go.mod requires github.com/landlock-lsm/go-landlock without `// indirect`, at the version the snapshot records (v0.10.1 expected), and kernel.org/pub/linux/libs/security/libcap/psx only as `// indirect`",
+        "the direct set equals 14's direct set plus exactly github.com/landlock-lsm/go-landlock",
+        "`go list -m all` equals the snapshot, and the snapshot file is byte-identical to the one 14 committed",
+        "approvedDeps contains github.com/landlock-lsm/go-landlock preceded by a non-empty comment, validateAllowlist passes on the direct set, and TS-09-15 and TS-09-16 pass"
+      ],
+      "pseudocode": "req = parseGoMod(); v = snapshotVersion('github.com/landlock-lsm/go-landlock'); assert req[gl]=={v, direct} && req[psx].indirect\nassert set(directSet()) == set14 ∪ {gl}\nassert goList('-m','all') == read(snapshot) && read(snapshot) == snapshotAt14\nassert precedingComment(approvedDeps, gl)!='' && validateAllowlist(directSet(), approvedDeps)==nil; run(TS_09_15, TS_09_16)"
+    },
+    {
+      "id": "TS-15-41",
+      "kind": "integration",
+      "verifies": [
+        "15-REQ-8.3"
+      ],
+      "title": "The cross-target gate, the host-cgo gate and the 20,000-line budget pass with no new environment variable and no raised budget",
+      "given": [
+        "internal/policy/crosstarget_test.go's TestCrossTargetBuildAndVet and TestHostCgoBuildAndVet, and core/size_test.go (TS-12-14)",
+        "the gates' environment lists as they stood before this spec"
+      ],
+      "when": "the gates and the size test run, and `make check` runs",
+      "then": [
+        "build and vet pass for linux/amd64, linux/arm64, darwin/arm64 and windows/amd64 with CGO_ENABLED=0, compiling the confine package's Linux files and stub",
+        "the host-cgo build and vet pass, linking psx's cgo variant on a Linux host, with the gate's environment unchanged (no CGO_LDFLAGS_ALLOW or other new variable)",
+        "the root module's non-test Go lines are at most 20,000 and the budget constant is still 20,000",
+        "`make check` exits 0"
+      ],
+      "pseudocode": "run(TestCrossTargetBuildAndVet); run(TestHostCgoBuildAndVet); assert gateEnv() == gateEnvBefore && !contains(gateEnv(),'CGO_LDFLAGS_ALLOW')\nassert codeLines(root) <= 20000 && budgetConst == 20000\nassert exec('make','check').ExitCode()==0"
+    },
+    {
+      "id": "TS-15-42",
+      "kind": "unit",
+      "verifies": [
+        "15-REQ-8.4"
+      ],
+      "title": "The exported identifiers and signatures of agentkit, core, tools and codemode still equal the pre-spec golden",
+      "given": [
+        "internal/policy/testdata/exported-api.golden from 13 (TS-13-67), which records declarations and signatures but not doc comments"
+      ],
+      "when": "the TS-13-67 walker prints every exported declaration and signature of the root package, core, tools and codemode",
+      "then": [
+        "the output equals the golden byte for byte",
+        "the golden file is unchanged relative to 14's version"
+      ],
+      "pseudocode": "for pkg in ['.','core','tools','codemode']: assert exportedAPI(pkg) == golden[pkg]\nassert read(golden) == goldenAt14"
+    },
+    {
+      "id": "TS-15-43",
+      "kind": "smoke",
+      "verifies": [
+        "15-PATH-1",
+        "15-REQ-5.4",
+        "15-REQ-1.3"
+      ],
+      "title": "A confined agent started with --network none lets execute write under W, H and T and denies the sibling write, the outside read and the loopback connect",
+      "given": [
+        "Linux with kernel Landlock ABI 4 or later by the test's independent probe, else a skip naming the ABI found",
+        "the built agentkit-sandboxd, directories W, H and T, a sibling directory S holding S/secret, and a helper binary built into W that dials with Multipath TCP disabled",
+        "a TCP listener the test opened on 127.0.0.1"
+      ],
+      "when": "the test starts the binary over pipes with --network none --workdir W and cmd.Env HOME=H, TMPDIR=T, PATH=/usr/bin:/bin, attaches with attach.Dial over stdioconn, and runs proxy execute calls: touch W/a, touch H/b, touch T/c, touch S/x, cat S/secret and W/dialtcp <addr>",
+      "then": [
+        "the three creations exit 0 and W/a, H/b and T/c exist on the host",
+        "touch S/x and cat S/secret exit non-zero with output containing `Permission denied`, and S/x is absent",
+        "W/dialtcp exits non-zero and the listener accepts nothing",
+        "Agent().Landlock has ABI 4, TCP true and the resolved W, H and T among Writable; after Close the agent exits 0"
+      ],
+      "pseudocode": "if probeKernel()<4: t.Skipf('kernel Landlock ABI %d < 4', k)\np = start(bin,'--network','none','--workdir',W, env=['HOME='+H,'TMPDIR='+T,'PATH=/usr/bin:/bin']); sb = attach.Dial(stdioconn.New(p.stdout,p.stdin))\nfor f in [W+'/a',H+'/b',T+'/c']: assert execute(sb,'touch '+f).exit==0 && exists(f)\nfor c in ['touch '+S+'/x','cat '+S+'/secret']: r=execute(sb,c); assert r.exit!=0 && contains(r.out,'Permission denied')\nassert !exists(S+'/x') && execute(sb, W+'/dialtcp '+ln.Addr()).exit!=0 && !accepted(ln)\nl = sb.Agent().Landlock; assert l.ABI==4 && l.TCP && {resolve(W),resolve(H),resolve(T)} ⊆ set(l.Writable)\nsb.Close(); assert p.Wait().ExitCode()==0",
+      "real_components": [
+        "built agentkit-sandboxd binary",
+        "confine package with go-landlock and the running kernel's Landlock",
+        "agent service",
+        "stdioconn",
+        "attach Sandbox",
+        "proxy execute and tools.Run",
+        "/bin/sh and coreutils"
+      ]
+    },
+    {
+      "id": "TS-15-44",
+      "kind": "smoke",
+      "verifies": [
+        "15-PATH-2",
+        "15-REQ-6.5",
+        "15-REQ-6.8"
+      ],
+      "title": "RequireLandlock refuses an agent reporting ABI 3 without TCP under NetworkNone, destroys it once and returns a SpecError from the fake provider",
+      "given": [
+        "fakeagent served over an in-memory pipe, answering Hello with protocol 1.2 and LandlockReport{abi 3, kernel_abi 3, tcp false, note \"kernel Landlock ABI 3 cannot restrict TCP (needs ABI 4, Linux 6.7)\"}",
+        "an effective spec from CheckSpec with RequireLandlock and NetworkNone against capabilities with Landlock true",
+        "attach.Config{Provider: \"fake\", Spec: that effective spec, Destroy: a counting step}"
+      ],
+      "when": "attach.New runs the handshake against the fakeagent",
+      "then": [
+        "attach.New returns a nil Sandbox and an error matching ErrUnsupported",
+        "errors.As yields a *SpecError with Provider \"fake\" and Field \"RequireLandlock\" whose Reason contains ABI 3, kernel ABI 3, TCP false and the note verbatim",
+        "the destroy step ran exactly once and the fakeagent saw its connection closed"
+      ],
+      "pseudocode": "eff,_ = CheckSpec(Capabilities{Provider:'fake', Network:[None], Landlock:true}, Spec{RequireLandlock:true, Network:{Mode:None}})\nfa = fakeagent.New(WithHello(1,2), WithLandlock({3,3,false,note})); n=0\nsb,err = attach.New(ctx, attach.Config{Provider:'fake', Spec:eff, Destroy:func(){n++}, ...fa})\nvar se *SpecError; assert sb==nil && errors.Is(err,ErrUnsupported) && errors.As(err,&se) && se.Provider=='fake' && se.Field=='RequireLandlock'\nassert contains(se.Reason,'3') && contains(se.Reason,'false') && contains(se.Reason,note) && n==1 && fa.ConnClosed()",
+      "real_components": [
+        "attach.New handshake",
+        "fakeagent gRPC server",
+        "sandbox.CheckSpec",
+        "LandlockInfo.Satisfies",
+        "sandbox.SpecError"
+      ]
+    },
+    {
+      "id": "TS-15-45",
+      "kind": "smoke",
+      "verifies": [
+        "15-PATH-3",
+        "15-REQ-7.4",
+        "15-REQ-4.7",
+        "15-REQ-6.4"
+      ],
+      "title": "A re-executed child runs a local sandbox end to end and afterwards can still write outside the workspace and connect on loopback",
+      "given": [
+        "the test binary re-executed as a child with an environment marker selecting the child role and TMPDIR set to a fresh directory",
+        "local.Unisolated() inside the child"
+      ],
+      "when": "the child calls Create with RequireLandlock, then Create without it, reads Agent().Landlock, syncs a tar, gets the tools, runs a proxy execute of echo ok, closes the sandbox, creates a file in a fresh os.MkdirTemp directory outside the workspace, and dials a TCP listener it opened on loopback",
+      "then": [
+        "the RequireLandlock Create returned a nil Sandbox and an error naming RequireLandlock that matches ErrUnsupported, and <TMPDIR>/agentkit-sandbox-local had no entries afterwards",
+        "Agent().Landlock had ABI 0 and the note `in-process agent (local provider): no confinement`, the sync and Tools returned nil errors and execute printed ok",
+        "after Close the file creation and the loopback dial both succeeded, and on Linux PR_GET_NO_NEW_PRIVS still equals the value read before the first Create",
+        "the child printed its completion marker and exited 0, which the parent asserts together with the marker"
+      ],
+      "pseudocode": "child: nnp0 = prctl(PR_GET_NO_NEW_PRIVS)\n  sb,err = local.Unisolated().Create(ctx, Spec{Network:{Mode:Unrestricted}, RequireLandlock:true}); check(sb==nil && contains(err,'RequireLandlock') && errors.Is(err,ErrUnsupported) && entries(localRoot)==0)\n  sb,_ = Create(ctx, Spec{Network:{Mode:Unrestricted}}); l=sb.Agent().Landlock; check(l.ABI==0 && l.Note=='in-process agent (local provider): no confinement')\n  check(sb.Sync(ctx,Tar{R:tarOf(tree)})==nil); tl,_=sb.Tools(ctx,{}); check(execute(tl,'echo ok').out=='ok\\n'); sb.Close()\n  d = os.MkdirTemp('', 'outside'); check(create(d+'/f')==nil); ln = net.Listen('tcp','127.0.0.1:0'); check(dial(ln.Addr())==nil)\n  if linux: check(prctl(PR_GET_NO_NEW_PRIVS)==nnp0); print(marker); exit 0\nparent: assert exit==0 && contains(out,marker)",
+      "real_components": [
+        "re-executed test binary",
+        "local.Unisolated provider",
+        "sandbox.CheckSpec",
+        "in-process agent service",
+        "attach Sandbox",
+        "proxy execute and tools.Run",
+        "host filesystem and loopback TCP"
+      ]
+    },
+    {
+      "id": "TS-15-46",
+      "kind": "smoke",
+      "verifies": [
+        "15-PATH-4",
+        "15-REQ-3.6",
+        "15-REQ-6.6",
+        "15-REQ-5.1"
+      ],
+      "title": "An embedder requiring Landlock starts the confined agent with AgentArgs, syncs a project over Rsync, runs a shell tool and exports the result",
+      "given": [
+        "Linux with kernel Landlock ABI 4 or later, else a skip naming the ABI found",
+        "the built agentkit-sandboxd, a workspace directory W, HOME=H, TMPDIR=T, a host project directory P and an empty host directory D",
+        "Capabilities{Provider: \"test\", Network: [NetworkNone], Workdir: true, Landlock: true}"
+      ],
+      "when": "the test computes eff = CheckSpec(caps, Spec{RequireLandlock: true, Network: {Mode: NetworkNone}, Workdir: W}), starts the binary with sandbox.AgentArgs(eff) over pipes, calls attach.New with Provider \"test\", Spec eff and a destroy step that waits for the process, then calls Sync(LocalDir{Path: P}), a proxy execute of /bin/sh -c 'mkdir -p out && echo hello > out/result.txt', and Export(\"out\", LocalDir{Path: D})",
+      "then": [
+        "attach.New returns a live Sandbox with Agent().ProtocolMinor 2 and Agent().Landlock ABI 4 and TCP true",
+        "Sync returns nil and P's files exist under W; the execute exits 0",
+        "Export returns nil and D holds result.txt containing `hello\\n`",
+        "Close runs the destroy step once and the agent exits 0"
+      ],
+      "pseudocode": "if probeKernel()<4: t.Skipf(...)\neff,err = CheckSpec(caps, Spec{RequireLandlock:true, Network:{Mode:None}, Workdir:W}); assert err==nil\np = start(bin, sandbox.AgentArgs(eff)..., env=['HOME='+H,'TMPDIR='+T,'PATH=/usr/bin:/bin'])\nsb,err = attach.New(ctx, attach.Config{Provider:'test', Spec:eff, Destroy:waitFor(p), conn:stdioconn.New(p.stdout,p.stdin)}); assert err==nil && sb.Agent().ProtocolMinor==2 && sb.Agent().Landlock.ABI==4 && sb.Agent().Landlock.TCP\nassert sb.Sync(ctx,LocalDir{Path:P})==nil && filesUnder(W) ⊇ files(P)\nassert execute(sb,`/bin/sh -c 'mkdir -p out && echo hello > out/result.txt'`).exit==0\nassert sb.Export(ctx,'out',LocalDir{Path:D})==nil && read(D+'/result.txt')=='hello\\n'\nsb.Close(); assert destroys==1 && p.ExitCode()==0",
+      "real_components": [
+        "sandbox.CheckSpec and sandbox.AgentArgs",
+        "built agentkit-sandboxd binary with its flag parser",
+        "confine package with go-landlock and the running kernel's Landlock",
+        "attach.New handshake and RequireLandlock check",
+        "agent Rsync service and gokrazy/rsync",
+        "proxy execute and /bin/sh",
+        "stdioconn"
+      ]
+    }
+  ]
+}

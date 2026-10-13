@@ -1,0 +1,408 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "15",
+  "spec_name": "sandbox_landlock_agent",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./sandbox/... ./internal/policy/... ./tools/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "13_sandbox_core",
+      "reason": "Builds on and modifies Spec, Capabilities, CheckSpec, SpecError/ErrUnsupported, AgentInfo, ProtocolMajor/Minor, the sandboxpb proto with make proto and its hash file, agent.Config and the agent's Hello and Tools (default spill directory), the agentkit-sandboxd command (parseFlags, redirectStdout, exit codes and its binary-build test helper), attach.New's handshake and destroy-on-failure, fakeagent, stdioconn, local.Unisolated and localtest; updates TS-13-13's oracle, TS-13-24's version string, TS-13-56's capabilities, TS-13-65's direct set and reuses TS-13-67's exported-API golden."
+    },
+    {
+      "spec": "14_sandbox_rsync_sync",
+      "reason": "go-landlock enters the module graph through gokrazy/rsync and DontRestrict() on every rsyncd server keeps confinement in this spec's single place; the Rsync RPC must work under the ruleset; this spec bumps ProtocolMinor from 1 to 2 (TS-14-5), makes go-landlock direct (TS-14-42) and reuses the go-list-m-all snapshot, the policy AST conventions and the re-executed-child pattern of TS-14-49."
+    },
+    {
+      "spec": "09_repository_cut",
+      "reason": "approvedDeps in internal/policy/deps_test.go (TS-09-16) gains github.com/landlock-lsm/go-landlock, and TS-09-15 must stay green."
+    },
+    {
+      "spec": "12_core_schema_guard",
+      "reason": "TS-12-14's 20,000 non-test line budget in core/size_test.go, regenerated sandboxpb code included, constrains every file this spec adds."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Report the applied ruleset in Hello: LandlockReport proto, ProtocolMinor 2, sandbox.LandlockInfo with Satisfies, agent.Config.Landlock and AgentInfo.Landlock",
+      "criteria": [
+        "15-REQ-4.1",
+        "15-REQ-4.2",
+        "15-REQ-4.3",
+        "15-REQ-4.4",
+        "15-REQ-4.5",
+        "15-REQ-4.6"
+      ],
+      "tests": [
+        "TS-15-21",
+        "TS-15-22",
+        "TS-15-23",
+        "TS-15-24",
+        "TS-15-25",
+        "TS-15-26"
+      ],
+      "steps": [
+        "Write TS-15-21 in sandbox/internal/sandboxpb/landlock_proto_test.go, TS-15-22, TS-15-23 and TS-15-24 in sandbox/landlock_test.go, TS-15-25 in sandbox/internal/agent/landlock_test.go and TS-15-26 in sandbox/internal/attach/landlock_test.go, and confirm they fail",
+        "In sandbox/internal/sandboxpb/sandbox.proto add `message LandlockReport { uint32 abi = 1; uint32 kernel_abi = 2; bool tcp = 3; string note = 4; repeated string writable = 5; repeated string read_only = 6; }` and `LandlockReport landlock = 7;` to HelloResponse with a comment that protocol 1.2 added it, renumbering nothing; run `make proto` to regenerate sandbox.pb.go, sandbox_grpc.pb.go and sandbox.proto.sha256, and confirm a second `make proto` leaves no diff",
+        "Set ProtocolMinor to 2 in sandbox/version.go with ProtocolMajor unchanged; update TS-14-5 (sandbox/internal/sandboxpb/version_test.go), every other test that pins minor 1 (search the sandbox tree for ProtocolMinor, `1.1` and `protocol 1.1`) and TS-13-24 in sandbox/cmd/agentkit-sandboxd/main_test.go to expect `(protocol 1.2)`",
+        "Add sandbox/landlock.go: `type LandlockInfo struct { ABI int; KernelABI int; TCP bool; Note string; Writable []string; ReadOnly []string }` in exactly that field order with a doc comment per field, `const LandlockMinABI = 2` and `const LandlockTCPABI = 4`, and `func (l LandlockInfo) Satisfies(mode NetworkMode) bool` returning `l.ABI >= LandlockMinABI && (mode != NetworkNone || l.TCP)`",
+        "Add `Landlock LandlockInfo` to AgentInfo, replacing 13's 'Later scopes add the Landlock ABI there' remark with a doc comment that says it is filled from Hello and carries the protocol note for agents older than 1.2",
+        "Add `Landlock sandbox.LandlockInfo` to agent.Config in sandbox/internal/agent/agent.go, documented as data handed in by the caller (the agent package never applies Landlock); in Hello always set HelloResponse.Landlock to a non-nil *sandboxpb.LandlockReport copied field for field from it (int to uint32, slices copied)",
+        "In sandbox/internal/attach/attach.go, after the major-version check, fill AgentInfo.Landlock: when the agent's minor is 1 or lower or the report is nil use `LandlockInfo{Note: fmt.Sprintf(\"agent protocol %d.%d does not report Landlock\", major, minor)}`; otherwise convert field for field (uint32 to int), turning an empty repeated field into a nil slice so a round trip deep-equals the agent's input",
+        "Extend sandbox/internal/fakeagent with options that set Hello's protocol version and its LandlockReport (e.g. WithHello(major, minor), WithLandlock(report), WithoutLandlock()) and a way to observe that the client closed its connection; the default answers protocol 1.2 with an empty report so existing fakeagent-based tests stay green",
+        "Run `go test ./sandbox/... -count=1` and `make lint`"
+      ],
+      "touches": [
+        "sandbox/internal/sandboxpb/sandbox.proto",
+        "sandbox/internal/sandboxpb/sandbox.pb.go",
+        "sandbox/internal/sandboxpb/sandbox_grpc.pb.go",
+        "sandbox/internal/sandboxpb/sandbox.proto.sha256",
+        "sandbox/internal/sandboxpb/landlock_proto_test.go",
+        "sandbox/internal/sandboxpb/version_test.go",
+        "sandbox/version.go",
+        "sandbox/landlock.go",
+        "sandbox/sandbox.go",
+        "sandbox/landlock_test.go",
+        "sandbox/internal/agent/agent.go",
+        "sandbox/internal/agent/hello.go",
+        "sandbox/internal/agent/landlock_test.go",
+        "sandbox/internal/attach/attach.go",
+        "sandbox/internal/attach/landlock_test.go",
+        "sandbox/internal/fakeagent/fakeagent.go",
+        "sandbox/cmd/agentkit-sandboxd/main_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Add Spec.RequireLandlock and Capabilities.Landlock, enforce them in CheckSpec and after Hello in attach.New, and make local report no confinement",
+      "criteria": [
+        "15-REQ-4.7",
+        "15-REQ-6"
+      ],
+      "tests": [
+        "TS-15-27",
+        "TS-15-33",
+        "TS-15-34",
+        "TS-15-35",
+        "TS-15-36",
+        "TS-15-37",
+        "TS-15-38"
+      ],
+      "steps": [
+        "Write TS-15-33 and TS-15-34 in sandbox/check_test.go (TS-15-34 extends TS-13-13's seeded generators with random Capabilities.Landlock and Spec.RequireLandlock), TS-15-27 and TS-15-35 in sandbox/local/landlock_test.go with TMPDIR set to t.TempDir(), and TS-15-36, TS-15-37 and TS-15-38 in sandbox/internal/attach/require_landlock_test.go over fakeagent; confirm they fail",
+        "Add `RequireLandlock bool` to Spec and `Landlock bool` to Capabilities in sandbox/spec.go with doc comments: RequireLandlock is off by default, is checked against Capabilities.Landlock by CheckSpec and against AgentInfo.Landlock.Satisfies after Hello; Landlock true means the provider starts agentkit-sandboxd in a way that lets it apply its ruleset",
+        "In sandbox/check.go, after every check 13 performs, return `&SpecError{Provider: caps.Provider, Field: \"RequireLandlock\", Reason: ...}` when spec.RequireLandlock is true and caps.Landlock is false; make sure the effective spec carries RequireLandlock through unchanged",
+        "Update TS-13-13's oracle in sandbox/check_test.go to the first failing field among 13's checks in 13's order, else RequireLandlock under the new rule, else none; update TS-13-56 for Capabilities.Landlock false",
+        "Add `Provider string` to attach.Config in sandbox/internal/attach/attach.go and copy it into SpecError.Provider of every RequireLandlock refusal",
+        "In attach.New, after filling AgentInfo.Landlock, when cfg.Spec.RequireLandlock is true and `!info.Landlock.Satisfies(cfg.Spec.Network.Mode)`: close the gRPC client, run cfg.Destroy exactly once (reuse 13's handshake-failure cleanup and guard it so no deferred path runs it again), start no TTL timer, and return an untyped nil Sandbox with `&sandbox.SpecError{Provider: cfg.Provider, Field: \"RequireLandlock\", Reason: fmt.Sprintf(\"agent Landlock does not satisfy network mode %s: ABI %d, kernel ABI %d, TCP %t, note: %s\", ...)}` so the note (which carries `agent protocol 1.N` for old agents) appears verbatim",
+        "In sandbox/local/local.go report Capabilities().Landlock false, set attach.Config.Provider to local's provider name, and pass `agent.Config.Landlock = sandbox.LandlockInfo{Note: \"in-process agent (local provider): no confinement\"}` to the in-process agent",
+        "Confirm local.Create calls CheckSpec before creating any directory, marker or goroutine, so a RequireLandlock spec leaves <TMPDIR>/agentkit-sandbox-local absent or empty and the error matches ErrUnsupported through SpecError's Is method",
+        "Run `go test ./sandbox/... -count=1` and `make lint`"
+      ],
+      "touches": [
+        "sandbox/spec.go",
+        "sandbox/check.go",
+        "sandbox/check_test.go",
+        "sandbox/local/local.go",
+        "sandbox/local/local_test.go",
+        "sandbox/local/landlock_test.go",
+        "sandbox/internal/attach/attach.go",
+        "sandbox/internal/attach/require_landlock_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Create sandbox/internal/confine with Plan, the probe seam and the outcome, and promote go-landlock to a direct requirement with its ruling",
+      "criteria": [
+        "15-REQ-2.1",
+        "15-REQ-2.2",
+        "15-REQ-2.8",
+        "15-REQ-8.1",
+        "15-REQ-8.2"
+      ],
+      "tests": [
+        "TS-15-8",
+        "TS-15-14",
+        "TS-15-40"
+      ],
+      "steps": [
+        "Before touching go.mod, copy internal/policy/testdata/go-list-m-all.txt to internal/policy/testdata/go-list-m-all.14.txt, record 14's direct set, and read the selected go-landlock version from the snapshot (v0.10.1 expected)",
+        "Verify in the module cache (`go doc github.com/landlock-lsm/go-landlock/landlock` and `go doc github.com/landlock-lsm/go-landlock/landlock/syscall`) that Config with V2, V3 and V4, Config.Restrict, Config.RestrictPaths, RODirs, RWDirs, ROFiles, RWFiles, PathAccess with the AccessFS rights, FSRule.WithRefer and syscall.LandlockGetABIVersion exist; if one is missing and cannot be replaced (the probe alone may fall back to syscall.Syscall(444, 0, 0, 1)), write docs/errata/sandbox_landlock_agent.md naming the symbol and version and stop",
+        "Write sandbox/internal/confine/plan_test.go (no build constraint) for TS-15-8 and sandbox/internal/confine/outcome_test.go for TS-15-14 and internal/policy/landlock_dep_test.go for TS-15-40, and confirm they fail",
+        "Add sandbox/internal/confine/doc.go with the package doc: the only package that builds and applies a Landlock ruleset, imported only by agentkit-sandboxd, never calls BestEffort",
+        "Add sandbox/internal/confine/plan.go with no build constraint: `type Decision struct { ABI int; TCP bool; Note string }` and `func Plan(kernelABI int, probeErr error, mode sandbox.NetworkMode) Decision` implementing the decision table with the exact notes (`Landlock unavailable: <error>`, `kernel reports no Landlock support`, the ABI 1 cross-directory-rename note, `kernel Landlock ABI k cannot restrict TCP (needs ABI 4, Linux 6.7)` under none at 2 or 3), capping ABI at sandbox.LandlockTCPABI, TCP only under none at 4, and under allowlist with ABI above 0 a note saying Landlock cannot express a host allowlist and TCP is left to the provider",
+        "In an unconstrained file add the unexported seam `var probeABI = kernelProbe` and `func decide(mode sandbox.NetworkMode) (sandbox.LandlockInfo, Decision)` that calls probeABI exactly once and returns KernelABI as the probed value (0 after an error, never capped) with ABI, TCP and Note from Plan",
+        "Add sandbox/internal/confine/probe_linux.go with `//go:build linux` defining kernelProbe through go-landlock's syscall.LandlockGetABIVersion, and probe_other.go with `//go:build !linux` defining kernelProbe as an error naming runtime.GOOS; use only the standard syscall package elsewhere so golang.org/x/sys stays indirect",
+        "Run `go mod tidy`; confirm go-landlock moves to the direct require block at the unchanged version, kernel.org/pub/linux/libs/security/libcap/psx and golang.org/x/sys stay `// indirect`, and `go list -m all` equals the snapshot; if any version would move, revert, write docs/errata/sandbox_landlock_agent.md and stop",
+        "Add github.com/landlock-lsm/go-landlock to approvedDeps in internal/policy/deps_test.go with a one-line reason comment (the sandbox agent's own Landlock confinement), update TS-14-42 to expect it direct and extend TS-13-65's direct-set literal with it",
+        "Add the go-landlock ruling to docs/DEPS.md in the existing format (confine directly and rsyncd indirectly, always with DontRestrict(); the version; all-thread application through psx in cgo and non-cgo builds; pulls in psx and x/sys; BestEffort never used because it succeeds silently without Landlock) and a Rejected row for raw Landlock syscalls through x/sys/unix",
+        "Run `go test ./sandbox/internal/confine/... ./internal/policy/... -count=1` and `make lint`"
+      ],
+      "touches": [
+        "sandbox/internal/confine/doc.go",
+        "sandbox/internal/confine/plan.go",
+        "sandbox/internal/confine/outcome.go",
+        "sandbox/internal/confine/probe_linux.go",
+        "sandbox/internal/confine/probe_other.go",
+        "sandbox/internal/confine/plan_test.go",
+        "sandbox/internal/confine/outcome_test.go",
+        "go.mod",
+        "go.sum",
+        "internal/policy/deps_test.go",
+        "internal/policy/landlock_dep_test.go",
+        "internal/policy/testdata/go-list-m-all.14.txt",
+        "docs/DEPS.md"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "go.mod requires github.com/landlock-lsm/go-landlock without `// indirect` and psx only with `// indirect`",
+        "`go list -m all` output equals internal/policy/testdata/go-list-m-all.txt byte for byte"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Build the ruleset's roots and apply it through Setup with a strict V2–V4 configuration on Linux, with a non-Linux stub",
+      "criteria": [
+        "15-REQ-1.1",
+        "15-REQ-1.2",
+        "15-REQ-1.3",
+        "15-REQ-1.4",
+        "15-REQ-1.5",
+        "15-REQ-1.6",
+        "15-REQ-1.8",
+        "15-REQ-2.3",
+        "15-REQ-2.4",
+        "15-REQ-2.7"
+      ],
+      "tests": [
+        "TS-15-1",
+        "TS-15-2",
+        "TS-15-3",
+        "TS-15-4",
+        "TS-15-7",
+        "TS-15-9",
+        "TS-15-10",
+        "TS-15-13"
+      ],
+      "steps": [
+        "Write TS-15-1, TS-15-4 and TS-15-7 in sandbox/internal/confine/rules_test.go (no build constraint, expectations filtered by what exists on the host), TS-15-2, TS-15-3, TS-15-10 and TS-15-9's child halves in sandbox/internal/confine/setup_linux_test.go, TS-15-9's file checks in plan_test.go and TS-15-13 in stub_test.go (constraint check, every platform) plus setup_other_test.go (`//go:build !linux`); confirm they fail",
+        "Move the agent's temporary-directory resolution (TMPDIR of the explicit env, else TEMP, TMP, /tmp) into one helper, sandbox/internal/agentenv.TempDir(env []string) (dir, source string) with source naming the supplying variable, and make the agent's default spill directory use it with no behaviour change",
+        "In sandbox/internal/confine/rules.go (no build constraint) define `Inputs{Workdir string; Env []string; RO, RW []string; Mode sandbox.NetworkMode}`, an own access-right bit set mirroring Landlock's filesystem rights with fullFS(abi) (refer from 2, truncate from 3), replaceable package vars systemDirs (/usr, /bin, /sbin, /lib, /lib32, /lib64, /libx32, /etc, /opt) and deviceFiles (/dev/null, /dev/zero, /dev/full, /dev/random, /dev/urandom), and `buildRules(in Inputs, abi int) (plan, error)` returning rules, Writable, ReadOnly and notes",
+        "Add rules in this order: writable roots workdir, HOME, temporary directory and each --landlock-rw with fullFS(abi); system dirs and each --landlock-ro with ReadFile|ReadDir|Execute; /proc with ReadFile|ReadDir; device files as file rules with ReadFile|WriteFile plus Truncate at ABI 3 and later (tools/exec.go opens /dev/null and shells open devices with O_TRUNC); Writable lists writable roots then device files, ReadOnly lists system dirs, --landlock-ro paths and /proc",
+        "Resolve every root with filepath.EvalSymlinks before adding it and collapse roots resolving to an already-added path; a missing (ENOENT) system or device path is skipped silently, a missing --landlock-ro or --landlock-rw path is skipped with a note naming it, and any other resolution error (e.g. EACCES) is returned as an error naming the path",
+        "Skip HOME or the temporary directory with a note naming the supplying variable and the reason when it is unset or empty, relative, missing, resolves to `/`, or resolves to a path equal to or an ancestor of a system directory (compare against both the literal and the resolved system paths)",
+        "Add sandbox/internal/confine/setup_linux.go with `//go:build linux`: `func Setup(in Inputs) (sandbox.LandlockInfo, error)` calls decide once; at applied ABI 0 it returns the outcome with nil lists and applies nothing; otherwise it builds the rules, maps them to go-landlock (RWDirs(...).WithRefer() or PathAccess with the exact set, RODirs, PathAccess(ReadFile|ReadDir) for /proc, file rules for devices), picks landlock.V2, V3 or V4 by the applied ABI, calls Restrict when the Decision's TCP is true and RestrictPaths otherwise, never BestEffort, and returns Writable, ReadOnly and the Plan note joined with the skip notes by `; `",
+        "Add sandbox/internal/confine/setup_other.go with `//go:build !linux` and no go-landlock import: Setup returns `sandbox.LandlockInfo{Note: \"Landlock is Linux-only (GOOS=\" + runtime.GOOS + \")\"}` and nil",
+        "Write a re-exec helper for the Linux tests: the parent runs os.Args[0] with -test.run=^Name$ and an environment marker, the child applies and prints a completion marker, the parent asserts exit 0 and the marker; probe the kernel independently with syscall.Syscall(444, 0, 0, 1) and t.Skipf naming the ABI found",
+        "Use only the standard syscall package in tests (PR_GET_NO_NEW_PRIVS = 39 through syscall.SYS_PRCTL, syscall.EACCES) so golang.org/x/sys stays indirect; in TS-15-3 dial through net.Dialer and bind through net.ListenConfig, both with SetMultipathTCP(false), because Landlock's TCP rules do not cover Multipath TCP",
+        "Run `go test ./sandbox/internal/confine/... ./sandbox/internal/agent/... -count=1` on Linux, `GOOS=darwin go vet ./sandbox/...` and `make lint`"
+      ],
+      "touches": [
+        "sandbox/internal/agentenv/agentenv.go",
+        "sandbox/internal/agent/tools.go",
+        "sandbox/internal/confine/rules.go",
+        "sandbox/internal/confine/setup_linux.go",
+        "sandbox/internal/confine/setup_other.go",
+        "sandbox/internal/confine/rules_test.go",
+        "sandbox/internal/confine/setup_linux_test.go",
+        "sandbox/internal/confine/setup_other_test.go",
+        "sandbox/internal/confine/stub_test.go",
+        "sandbox/internal/confine/reexec_linux_test.go",
+        "sandbox/internal/confine/plan_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Add --network, --landlock-ro and --landlock-rw to agentkit-sandboxd, refuse dangerous flag values, apply the ruleset before any other work, and add sandbox.AgentArgs",
+      "criteria": [
+        "15-REQ-1.7",
+        "15-REQ-2.5",
+        "15-REQ-2.6",
+        "15-REQ-3"
+      ],
+      "tests": [
+        "TS-15-5",
+        "TS-15-6",
+        "TS-15-11",
+        "TS-15-12",
+        "TS-15-15",
+        "TS-15-16",
+        "TS-15-17",
+        "TS-15-18",
+        "TS-15-19",
+        "TS-15-20"
+      ],
+      "steps": [
+        "Write TS-15-15 and TS-15-20 in sandbox/cmd/agentkit-sandboxd/flags_test.go, TS-15-18 in order_test.go, TS-15-6, TS-15-16 and TS-15-17 in flags_binary_test.go (Linux and macOS, 13's binary-build helper), TS-15-12's binary half and TS-15-19 and TS-15-5's binary case in landlock_linux_test.go, TS-15-5's report cases in sandbox/internal/confine/home_tmp_test.go, and TS-15-11 plus TS-15-12's probe-reports-4 child in sandbox/internal/confine/failures_linux_test.go; confirm they fail",
+        "Extend parseFlags' config with Network sandbox.NetworkMode, LandlockRO and LandlockRW []string: --network is a string flag defaulting to `none`, checked after Parse against exactly none, allowlist and unrestricted (case-sensitive, empty refused) with the error `--network: invalid value %q (want none, allowlist or unrestricted)`; --landlock-ro and --landlock-rw use flag.Func appending in command-line order; add no other flag",
+        "Add sandbox/internal/confine/validate.go (no build constraint): `type UsageError struct { Flag, Reason string }` whose Error starts with the flag name, and `validate(in Inputs) error` refusing --workdir or any --landlock-rw that, after EvalSymlinks when it exists (filepath.Clean otherwise), is `/` or equal to or an ancestor of a system directory, and any relative --landlock-ro or --landlock-rw; call it first in both Setup variants, before probing",
+        "Rewrite main in this order: parseFlags (usage error: one line `agentkit-sandboxd: <err>`, exit 2); --version prints `agentkit-sandboxd <version> (protocol 1.2)` from the sandbox constants and exits 0 without probing; exactly one `confine.Setup(confine.Inputs{Workdir, Env: os.Environ(), RO, RW, Mode})` call directly in main",
+        "Map Setup's result in main: a *confine.UsageError takes the usage path (one line naming the flag, exit 2); any other error writes exactly one line `agentkit-sandboxd: landlock: <cause>` (newlines replaced) to stderr and exits 1 without serving; a probe failure already yields a nil error and ABI 0, so the agent continues",
+        "Only after Setup: redirectStdout, `agent.New(agent.Config{Workdir, Env: os.Environ(), TTL, Landlock: info})`, any goroutine of the command's own and Serve; keep every go statement and every redirectStdout and agent.New call after the Setup call",
+        "Implement TS-15-18's checker as a function over parsed files that walks main and the package-local functions main calls directly, records the positions of parseFlags, the --version return or exit, confine.Setup, redirectStdout, agent.New and go statements, and fails with file:line; exercise it on the real source and on synthetic bad sources",
+        "Add sandbox/agentargs.go: `func AgentArgs(spec Spec) []string` returning `--ttl`, spec.TTL.String(), `--network`, spec.Network.Mode.String() and, only when spec.Workdir is non-empty, `--workdir`, spec.Workdir, with a doc comment that providers start agentkit-sandboxd with it",
+        "In TS-15-11 the parent builds agent.New with the child's printed outcome and attaches over net.Pipe with attach.Dial; in TS-15-12 the binary gets --landlock-ro under a mode-000 directory (skip as root) and must exit 1 with the single landlock line and empty stdout",
+        "Run `go test ./sandbox/... -count=1` and `make lint`"
+      ],
+      "touches": [
+        "sandbox/cmd/agentkit-sandboxd/main.go",
+        "sandbox/cmd/agentkit-sandboxd/flags_test.go",
+        "sandbox/cmd/agentkit-sandboxd/order_test.go",
+        "sandbox/cmd/agentkit-sandboxd/flags_binary_test.go",
+        "sandbox/cmd/agentkit-sandboxd/landlock_linux_test.go",
+        "sandbox/internal/confine/validate.go",
+        "sandbox/internal/confine/setup_linux.go",
+        "sandbox/internal/confine/setup_other.go",
+        "sandbox/internal/confine/home_tmp_test.go",
+        "sandbox/internal/confine/failures_linux_test.go",
+        "sandbox/agentargs.go"
+      ],
+      "depends_on": [
+        2,
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Keep every agent RPC working under the ruleset, refuse a SpillDir outside the writable roots, and prove the confined agent end to end on Linux",
+      "criteria": [
+        "15-REQ-5"
+      ],
+      "tests": [
+        "TS-15-28",
+        "TS-15-29",
+        "TS-15-30",
+        "TS-15-31",
+        "TS-15-32"
+      ],
+      "steps": [
+        "Write TS-15-29 in sandbox/internal/agent/spill_landlock_test.go over net.Pipe, TS-15-28, TS-15-30, TS-15-31's binary half and TS-15-32 in sandbox/cmd/agentkit-sandboxd/confined_linux_test.go (`//go:build linux`, 13's binary-build helper, stdioconn and attach.Dial, an independent syscall(444, 0, 0, 1) probe with t.Skipf naming the ABI), and TS-15-31's simulated half in sandbox/internal/confine/abi23_linux_test.go through the probe seam; confirm they fail",
+        "Add the helper sandbox/cmd/agentkit-sandboxd/testdata/dialtcp/main.go: dial the address argument with a net.Dialer whose SetMultipathTCP(false), exit 0 on success and 3 printing the error otherwise; the tests build it into W with CGO_ENABLED=0",
+        "In the agent's Tools handler, after 13's relative-path refusal: when cfg.Landlock.ABI > 0 and the request's spill_dir is non-empty, compute the writable directory roots (Writable entries os.Stat reports as directories, which excludes the device files) and refuse with codes.InvalidArgument and a message naming the spill_dir and every writable directory root unless filepath.Clean(spill_dir) equals or lies beneath one of them by path components (filepath.Rel without a leading `..`)",
+        "On that refusal build no tool set and store no options, so a following Tools call with no spill_dir succeeds; never check the default spill directory, even when the temporary directory was skipped",
+        "Audit SyncTar, ExportTar, Rsync, Call and the TTL path for writes outside the workspace and the temporary directory (e.g. a process os.TempDir() use or a scratch file beside the binary) and route any such write to the workspace or agentenv.TempDir of the explicit environment",
+        "Confirm the confined agent serves over the stdio descriptors it already holds and opens no new path for its transport, and that `env` under execute prints exactly the explicit environment (the confine step must not alter os.Environ)",
+        "Run the Linux tests on a kernel with Landlock ABI 4 and with ABI 2 or 3 where available, `go test ./sandbox/... -count=1` and `make lint`; 15-REQ-5.4's full outcome set is asserted by the smoke test TS-15-43 written in the integration task"
+      ],
+      "touches": [
+        "sandbox/internal/agent/tools.go",
+        "sandbox/internal/agent/rsync.go",
+        "sandbox/internal/agent/transfer.go",
+        "sandbox/internal/agent/spill_landlock_test.go",
+        "sandbox/cmd/agentkit-sandboxd/testdata/dialtcp/main.go",
+        "sandbox/cmd/agentkit-sandboxd/confined_linux_test.go",
+        "sandbox/internal/confine/abi23_linux_test.go"
+      ],
+      "depends_on": [
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Pin that the host is never confined, hold the build, size and API gates, and update the documentation",
+      "criteria": [
+        "15-REQ-7",
+        "15-REQ-8.3",
+        "15-REQ-8.4"
+      ],
+      "tests": [
+        "TS-15-39",
+        "TS-15-41",
+        "TS-15-42"
+      ],
+      "steps": [
+        "Write TS-15-39 in internal/policy/landlock_policy_test.go: walk every non-test .go file of the root module (skip testdata and directories with their own go.mod such as codesearch) with go/parser and go/build/constraint; require every importer of github.com/landlock-lsm/go-landlock or a subpackage to sit under sandbox/internal/confine with a constraint true for linux and false for darwin and windows, require the only importer of <module>/sandbox/internal/confine to be sandbox/cmd/agentkit-sandboxd, and fail with file:line on any CallExpr selecting a method named BestEffort",
+        "Make TS-15-39's checker a function over a file tree, assert the real tree has at least one go-landlock importer and one confine importer, and run it on synthetic trees under t.TempDir() for each violation",
+        "Confirm sandbox/internal/agent, attach, local and sandbox import neither confine nor go-landlock, so the local provider (15-REQ-7.4) cannot confine the embedder; its re-executed-child smoke test TS-15-45 is written in the integration task",
+        "Write TS-15-41 in internal/policy/gates_15_test.go: parse crosstarget_test.go and assert the gates' cmd.Env additions are still exactly GOOS, GOARCH and CGO_ENABLED=0, and CGO_ENABLED=1, with no CGO_LDFLAGS_ALLOW; parse core/size_test.go and assert the budget is still 20,000; the gates themselves run in `make test`",
+        "If the host-cgo gate cannot link psx's cgo variant without a new environment variable, write docs/errata/sandbox_landlock_agent.md and stop instead of editing the gate; if TS-12-14's budget is exceeded, shrink the new code rather than raise the constant",
+        "Write TS-15-42 in internal/policy/exported_api_15_test.go: run TS-13-67's walker over the root package, core, tools and codemode against internal/policy/testdata/exported-api.golden and pin the golden's SHA-256 recorded before this spec's changes",
+        "Run `make doc`, then rewrite the tools.Workspace doc comment in tools/path.go (text only): on a host execute is still not contained; inside a sandbox whose agent reports a Landlock ABI the agent's kernel ruleset confines execute and every process it starts to the writable roots; under local or on a kernel without Landlock it does not",
+        "Update docs/configuration.md: the tools.Options Workspace row with the same qualification, Spec.RequireLandlock, Capabilities.Landlock, AgentInfo.Landlock, LandlockInfo and Satisfies, the ruleset, the ABI table and the provider table's RequireLandlock row",
+        "Update docs/architecture.md with a 'Kernel confinement inside the agent' part of the Sandboxes section, the invariant 'the agent's Landlock ruleset is applied before any other work' beside 14's 'no code in this module confines the process that embeds it', what Landlock does not reach (resources, UDP and Unix sockets, Multipath TCP which Go's net.Listen uses by default, host allowlists) and that loopback TCP is denied under none",
+        "Update docs/cli.md with --network, --landlock-ro and --landlock-rw, exit status 2 for refused values, exit status 1 on an apply failure and `(protocol 1.2)` from --version; add one sentence to README.md's Sandboxes section on the agent's own confinement and RequireLandlock",
+        "Run `make check`"
+      ],
+      "touches": [
+        "internal/policy/landlock_policy_test.go",
+        "internal/policy/gates_15_test.go",
+        "internal/policy/exported_api_15_test.go",
+        "tools/path.go",
+        "docs/configuration.md",
+        "docs/architecture.md",
+        "docs/cli.md",
+        "README.md"
+      ],
+      "depends_on": [
+        6
+      ],
+      "done_when": [
+        "`make check` exits 0",
+        "`make doc` was run before the documentation edits"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "integration",
+      "title": "Verify every Landlock execution path end to end through the real code",
+      "tests": [
+        "TS-15-43",
+        "TS-15-44",
+        "TS-15-45",
+        "TS-15-46"
+      ],
+      "steps": [
+        "Write TS-15-43 and TS-15-46 in sandbox/cmd/agentkit-sandboxd/landlock_smoke_linux_test.go (`//go:build linux`) with the built binary, the dialtcp helper, a loopback listener and the independent kernel probe, skipping with the ABI named below 4; TS-15-46 starts the binary with sandbox.AgentArgs(eff) and attaches through attach.New with Provider \"test\"",
+        "Write TS-15-44 in sandbox/internal/attach/landlock_smoke_test.go over fakeagent with an effective spec from sandbox.CheckSpec, and TS-15-45 in sandbox/landlock_unconfined_smoke_test.go as a re-executed child following TS-14-49's pattern, reading PR_GET_NO_NEW_PRIVS through the standard syscall package in a Linux-only helper",
+        "Trace 15-PATH-1 through the code: main → parseFlags → confine.Setup → decide/probeABI → Plan → buildRules → landlock.V4.Restrict → redirectStdout → agent.New with Config.Landlock → Serve → Hello's LandlockReport → attach fills AgentInfo.Landlock; confirm each step calls the next",
+        "Trace 15-PATH-2: attach.New → Hello → AgentInfo.Landlock → Satisfies → client close, Destroy once and the RequireLandlock SpecError with Provider; confirm no other path returns a live Sandbox for a RequireLandlock spec",
+        "Trace 15-PATH-3: local.Create → CheckSpec's RequireLandlock refusal before any directory, then the in-process agent built with the no-confinement LandlockInfo; confirm local reaches neither confine nor go-landlock",
+        "Trace 15-PATH-4: CheckSpec with Capabilities.Landlock → AgentArgs → the real parseFlags → Setup → attach.New's RequireLandlock check → Sync through 14's Rsync → proxy execute → Export; AgentArgs' production consumers are the later provider specs, so confirm it is exported from package sandbox and its output is accepted by the command's real parseFlags",
+        "Confirm every contract is consumed in production code: Setup's *UsageError and apply error drive main's exit 2 and exit 1; Plan's Decision selects the configuration version and Restrict versus RestrictPaths; the LandlockInfo returned by Setup reaches agent.Config and Hello; Satisfies is called by attach.New; CheckSpec's RequireLandlock refusal is returned by local.Create; the Tools SpillDir refusal is returned to the client",
+        "Search every file in the earlier tasks' touches, especially sandbox/internal/confine, sandbox/cmd/agentkit-sandboxd/main.go, sandbox/internal/attach/attach.go and sandbox/local/local.go, for TODO, panic(\"not implemented\"), NotImplementedError, todo!() and a bare `return sandbox.LandlockInfo{}, nil` or `return nil` on a non-trivial path, and remove any that remain; confirm the Linux Setup never returns without probing",
+        "Run `make check` on a Linux host with Landlock ABI 4 and confirm TS-15-43 and TS-15-46 ran rather than skipped"
+      ],
+      "touches": [
+        "sandbox/cmd/agentkit-sandboxd/landlock_smoke_linux_test.go",
+        "sandbox/internal/attach/landlock_smoke_test.go",
+        "sandbox/landlock_unconfined_smoke_test.go",
+        "sandbox/landlock_unconfined_linux_test.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "done_when": [
+        "`make check` exits 0",
+        "On a Linux kernel offering Landlock ABI 4 or later, TS-15-43 and TS-15-46 pass without skipping"
+      ],
+      "state": "pending"
+    }
+  ]
+}
