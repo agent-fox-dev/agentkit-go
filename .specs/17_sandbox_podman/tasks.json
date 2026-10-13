@@ -538,7 +538,7 @@
         "`make sandbox-podman-test` passes on a host with podman or docker, including TS-17-65 to TS-17-69",
         "No stub marker remains in any touched file"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
