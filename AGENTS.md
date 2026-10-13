@@ -71,7 +71,7 @@ make check
   `refactor:`, `docs:`, `test:`, `chore:`).
 - **Commit discipline:** only commit files relevant to the current change.
 - **Never add `Co-Authored-By` lines.** No AI attribution in commits — ever.
-- **Feature branches are local-only** — do not push them to origin. Only `main` is pushed to the remote.
+- **Feature branches are pushed to origin** — push and create a pull request, then switch back to main.
 
 ## Scope Discipline
 
