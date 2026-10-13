@@ -458,8 +458,9 @@ system or device path is skipped silently; a missing `--landlock-ro` or
 `--landlock-rw` is skipped with a note. `HOME` or the temporary directory is
 skipped, with a note naming the variable and why, when it is unset,
 relative, missing, `/`, or equal to or an ancestor of a system directory. A
-`--workdir` or `--landlock-rw` that is `/` or contains a system directory,
-and a relative `--landlock-ro` or `--landlock-rw`, are usage errors (exit 2).
+`--workdir` or `--landlock-rw` that is `/` or contains a system directory
+(a relative `--workdir` is judged by the absolute directory it names), and
+a relative `--landlock-ro` or `--landlock-rw`, are usage errors (exit 2).
 With a ruleset applied, a `ToolOptions.SpillDir` outside the writable
 directory roots is refused at `Tools` with `InvalidArgument`; the default
 spill directory always qualifies.

@@ -20,8 +20,9 @@ type LandlockInfo struct {
 	TCP bool
 	// Note says why nothing, or only part, was applied.
 	Note string
-	// Writable lists the resolved roots, and device files, the ruleset
-	// grants every right beneath, in the order their rules were added.
+	// Writable lists the resolved roots the ruleset grants every right
+	// beneath, then the device files it grants read and write (and, from
+	// ABI 3, truncate), in the order their rules were added.
 	Writable []string
 	// ReadOnly lists the resolved roots the ruleset grants read (and, for
 	// all but /proc, execute) beneath, in the order their rules were added.

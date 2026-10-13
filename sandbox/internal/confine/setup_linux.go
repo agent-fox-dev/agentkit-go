@@ -3,6 +3,7 @@
 package confine
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/landlock-lsm/go-landlock/landlock"
@@ -33,7 +34,12 @@ func Setup(in Inputs) (sandbox.LandlockInfo, error) {
 	for i, r := range p.rules {
 		rules[i] = landlock.PathAccess(landlock.AccessFSSet(r.access), r.path)
 	}
-	cfg := map[int]landlock.Config{2: landlock.V2, 3: landlock.V3, 4: landlock.V4}[d.ABI]
+	cfg, ok := map[int]landlock.Config{2: landlock.V2, 3: landlock.V3, 4: landlock.V4}[d.ABI]
+	if !ok {
+		// The zero Config restricts nothing; never report a ruleset that
+		// was not applied.
+		return sandbox.LandlockInfo{}, fmt.Errorf("no Landlock configuration for ABI %d", d.ABI)
+	}
 	if d.TCP {
 		err = cfg.Restrict(rules...)
 	} else {

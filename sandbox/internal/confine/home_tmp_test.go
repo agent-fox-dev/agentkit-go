@@ -1,6 +1,7 @@
 package confine
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -65,5 +66,34 @@ func TestHomeTmpSkipped_TS15_5(t *testing.T) {
 				t.Errorf("%v: %s is not writable: %v", c.env, keep, p.writable)
 			}
 		}
+	}
+}
+
+// A relative --workdir is judged by the directory it names: from / the
+// workspace "." is / and is refused (15-REQ-1.7), and an accepted relative
+// workspace is reported, and ruled, by its absolute resolved path
+// (15-REQ-1.8).
+func TestRelativeWorkdir_TS15_6(t *testing.T) {
+	t.Chdir("/")
+	for _, wd := range []string{".", "usr"} {
+		var ue *UsageError
+		if err := validate(Inputs{Workdir: wd}); !errors.As(err, &ue) || ue.Flag != "--workdir" {
+			t.Errorf("--workdir %q from /: %v, want a usage error naming --workdir", wd, err)
+		}
+	}
+	base := t.TempDir()
+	if err := os.Mkdir(filepath.Join(base, "w"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(base)
+	if err := validate(Inputs{Workdir: "w"}); err != nil {
+		t.Fatalf("--workdir w: %v", err)
+	}
+	p, err := buildRules(Inputs{Workdir: "w"}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := resolvedOr(filepath.Join(base, "w")); p.writable[0] != want || p.rules[0].path != want {
+		t.Errorf("the workspace is listed as %q and ruled as %q, want %q", p.writable[0], p.rules[0].path, want)
 	}
 }

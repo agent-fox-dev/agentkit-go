@@ -1,8 +1,23 @@
 # Erratum: spec 15 `sandbox_landlock_agent`
 
 The spec was written before spec 14 made the sandbox tree a nested module,
-and before the go-landlock version gokrazy/rsync selects was known. These are
-the places the delivered code differs from its text, and why.
+and before the go-landlock version gokrazy/rsync selects was known. The
+sections below are the places the delivered code differs from its text, and
+why. Smaller divergences, each declared in its task's commit:
+
+- `fakeagent` keeps answering protocol 1.0 by default (task 1 asks for
+  1.2): TS-14-37 relies on it as the old agent, and tests that need 1.2 set
+  it with `SetHello`.
+- `LandlockInfo`'s slices make `AgentInfo` incomparable, so TS-13-30
+  compares with `reflect.DeepEqual`.
+- `SpecError.Error` omits `= value` when the error was built outside
+  `CheckSpec` (attach's `RequireLandlock` refusal), since the value is
+  unexported there.
+- TS-15-32's `go version` check skips when `exec.LookPath("go")` does not
+  resolve beneath a system directory, as the test allows.
+- A relative `--workdir` is made absolute against the working directory
+  before it is checked and ruled, so `--workdir .` from `/` is refused like
+  `--workdir /` (found by the conformance review).
 
 ## The sandbox tree is a nested module (D-1)
 

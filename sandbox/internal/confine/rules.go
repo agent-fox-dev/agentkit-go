@@ -70,11 +70,11 @@ var (
 	deviceFiles = []string{"/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom"}
 )
 
-// rule grants access beneath path, a directory, or on path, a file.
+// rule grants access beneath path, a directory, or on path, a file (the
+// device files carry only file rights).
 type rule struct {
 	path   string
 	access access
-	dir    bool
 }
 
 // plan is a built ruleset: its rules in the order they were added, the
@@ -96,12 +96,12 @@ type plan struct {
 func buildRules(in Inputs, abi int) (plan, error) {
 	var p plan
 	seen := map[string]bool{}
-	add := func(path string, acc access, dir bool, list *[]string) {
+	add := func(path string, acc access, list *[]string) {
 		if seen[path] {
 			return
 		}
 		seen[path] = true
-		p.rules = append(p.rules, rule{path: path, access: acc, dir: dir})
+		p.rules = append(p.rules, rule{path: path, access: acc})
 		*list = append(*list, path)
 	}
 	// resolve is path with symlinks resolved; ok is false when it is missing.
@@ -117,14 +117,18 @@ func buildRules(in Inputs, abi int) (plan, error) {
 	}
 	full := fullFS(abi)
 
-	w, ok, err := resolve(in.Workdir)
+	absW, err := filepath.Abs(in.Workdir)
+	if err != nil {
+		return plan{}, fmt.Errorf("the workspace %s: %w", in.Workdir, err)
+	}
+	w, ok, err := resolve(absW)
 	if err != nil {
 		return plan{}, err
 	}
 	if !ok {
 		return plan{}, fmt.Errorf("the workspace %s does not exist", in.Workdir)
 	}
-	add(w, full, true, &p.writable)
+	add(w, full, &p.writable)
 	tmp, tmpSource := agentenv.TempDir(in.Env)
 	if tmpSource == "" {
 		tmpSource = "the default temporary directory"
@@ -138,7 +142,7 @@ func buildRules(in Inputs, abi int) (plan, error) {
 			p.notes = append(p.notes, fmt.Sprintf("%s=%q %s; not writable", v.name, v.value, why))
 			continue
 		}
-		add(r, full, true, &p.writable)
+		add(r, full, &p.writable)
 	}
 	flagRoots := func(flag string, paths []string, acc access, list *[]string) error {
 		for _, path := range paths {
@@ -150,7 +154,7 @@ func buildRules(in Inputs, abi int) (plan, error) {
 				p.notes = append(p.notes, fmt.Sprintf("%s %s does not exist; skipped", flag, path))
 				continue
 			}
-			add(r, acc, true, list)
+			add(r, acc, list)
 		}
 		return nil
 	}
@@ -158,32 +162,32 @@ func buildRules(in Inputs, abi int) (plan, error) {
 		return plan{}, err
 	}
 	var devices []string
-	silent := func(paths []string, acc access, dir bool, list *[]string) error {
+	silent := func(paths []string, acc access, list *[]string) error {
 		for _, path := range paths {
 			r, ok, err := resolve(path)
 			if err != nil {
 				return err
 			}
 			if ok {
-				add(r, acc, dir, list)
+				add(r, acc, list)
 			}
 		}
 		return nil
 	}
-	if err := silent(systemDirs, readExec, true, &p.readOnly); err != nil {
+	if err := silent(systemDirs, readExec, &p.readOnly); err != nil {
 		return plan{}, err
 	}
 	if err := flagRoots("--landlock-ro", in.RO, readExec, &p.readOnly); err != nil {
 		return plan{}, err
 	}
-	if err := silent([]string{"/proc"}, readOnly, true, &p.readOnly); err != nil {
+	if err := silent([]string{"/proc"}, readOnly, &p.readOnly); err != nil {
 		return plan{}, err
 	}
 	dev := deviceRW
 	if abi >= 3 {
 		dev |= accTruncate // shells open devices with O_TRUNC
 	}
-	if err := silent(deviceFiles, dev, false, &devices); err != nil {
+	if err := silent(deviceFiles, dev, &devices); err != nil {
 		return plan{}, err
 	}
 	p.writable = append(p.writable, devices...)

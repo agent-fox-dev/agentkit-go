@@ -31,8 +31,13 @@ func validate(in Inputs) error {
 			if !f.rw {
 				continue
 			}
-			r := filepath.Clean(p)
-			if e, err := filepath.EvalSymlinks(p); err == nil {
+			// A relative --workdir is judged by the directory it names:
+			// from /, "." is / itself.
+			r, err := filepath.Abs(p)
+			if err != nil {
+				return &UsageError{Flag: f.flag, Reason: fmt.Sprintf("%q: %v", p, err)}
+			}
+			if e, err := filepath.EvalSymlinks(r); err == nil {
 				r = e
 			}
 			if d := systemAncestor(r); d != "" {

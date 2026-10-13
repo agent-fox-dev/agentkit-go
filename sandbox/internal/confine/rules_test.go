@@ -100,9 +100,8 @@ func TestRuleRights_TS15_1(t *testing.T) {
 				t.Errorf("ABI %d: a rule names %s", abi, ru.path)
 				continue
 			}
-			isDev := slices.Contains(devices, ru.path)
-			if ru.access != acc || ru.dir == isDev {
-				t.Errorf("ABI %d: rule %s grants %#x (dir %v), want %#x (dir %v)", abi, ru.path, ru.access, ru.dir, acc, !isDev)
+			if ru.access != acc {
+				t.Errorf("ABI %d: rule %s grants %#x, want %#x", abi, ru.path, ru.access, acc)
 			}
 		}
 		if fullFS(abi) != full {

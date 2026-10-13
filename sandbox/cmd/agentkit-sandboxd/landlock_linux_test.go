@@ -20,6 +20,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/attach"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/confine"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/stdioconn"
 )
 
@@ -75,8 +76,8 @@ func TestHandOff_TS15_19(t *testing.T) {
 			t.Errorf("Agent().Landlock = %+v, want ABI %d, KernelABI %d and %s writable", l, min(k, 4), k, w)
 		}
 	default:
-		if l.ABI != 0 || l.Note == "" {
-			t.Errorf("Agent().Landlock = %+v, want ABI 0 and Plan's note", l)
+		if want := confine.Plan(k, kerr, sandbox.NetworkNone).Note; l.ABI != 0 || l.Note != want {
+			t.Errorf("Agent().Landlock = %+v, want ABI 0 and Plan's note %q", l, want)
 		}
 	}
 	if l.ABI > 0 {

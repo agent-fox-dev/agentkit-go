@@ -38,7 +38,7 @@ The standard `flag` package: `-flag` and `--flag` are equivalent.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--workdir` | `/workspace` | The workspace directory. It must exist and be a directory, and may not be `/` or equal to or an ancestor of a system directory. |
+| `--workdir` | `/workspace` | The workspace directory. It must exist and be a directory, and may not be `/` or equal to or an ancestor of a system directory; a relative path is judged by the directory it names from the working directory, so `--workdir .` from `/` is refused. |
 | `--ttl` | `1h` | How long to serve, as a Go duration. Zero or negative is a usage error. At the TTL the agent cancels every in-flight call, which kills the processes those calls started, and exits. |
 | `--network` | `none` | The sandbox's network mode: exactly `none`, `allowlist` or `unrestricted`; anything else is a usage error. Under `none`, at Landlock ABI 4, the ruleset denies every TCP bind and connect, loopback included; under the other two it handles no network right. `sandbox.AgentArgs` passes the effective spec's mode. |
 | `--landlock-ro PATH` | | An extra read-and-execute root, repeatable. It must be absolute; a missing one is skipped with a note. |

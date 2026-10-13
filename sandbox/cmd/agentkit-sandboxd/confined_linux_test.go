@@ -147,8 +147,21 @@ func TestConfinedRPCs_TS15_28(t *testing.T) {
 		t.Errorf("the oversized execute spilled to %+v, want beneath T/agentkit-spill (agent stderr %q)", r.Metadata, p.stderr.String())
 	}
 	var out bytes.Buffer
-	if err := sb.Export(ctx, "tar", sandbox.TarOut{W: &out}); err != nil || out.Len() == 0 {
+	if err := sb.Export(ctx, "tar", sandbox.TarOut{W: &out}); err != nil {
 		t.Errorf("tar export: %v", err)
+	}
+	var names []string
+	for tr := tar.NewReader(&out); ; {
+		h, err := tr.Next()
+		if err != nil {
+			break
+		}
+		names = append(names, h.Name)
+	}
+	for _, want := range []string{"x.txt", "sub/y.txt"} {
+		if !slices.Contains(names, want) {
+			t.Errorf("the exported tar %v lacks %s", names, want)
+		}
 	}
 	dst := filepath.Join(t.TempDir(), "dst")
 	if err := sb.Export(ctx, "pkg", sandbox.LocalDir{Path: dst, Ignore: tools.NoGlobalExcludes()}); err != nil {
@@ -263,7 +276,7 @@ func TestConfinedEnvironment_TS15_32(t *testing.T) {
 	}
 	real, _ := filepath.EvalSymlinks(goPath)
 	beneath := false
-	for _, d := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt"} {
+	for _, d := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt"} {
 		if strings.HasPrefix(real, d+"/") {
 			beneath = true
 		}
