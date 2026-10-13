@@ -30,3 +30,11 @@ version moved. Every symbol the spec assumes exists at it: `Config` with
 `RWDirs`, `ROFiles`, `RWFiles`, `PathAccess`, `FSRule.WithRefer`,
 `FSRule.IgnoreIfMissing` and `syscall.LandlockGetABIVersion`, so the probe
 needs no `syscall.Syscall(444, …)` fallback.
+
+## Tests that need a kernel offering exactly ABI 2 or 3
+
+TS-15-12's probe half and TS-15-31's binary half need a kernel whose
+Landlock ABI is exactly 2 or 3. The Linux runs of this branch were on a
+kernel offering ABI 9, so those halves skip there, naming the ABI they
+found. The simulated halves (TS-15-31 through the probe seam, and TS-15-10
+at V2 and V3) ran.
