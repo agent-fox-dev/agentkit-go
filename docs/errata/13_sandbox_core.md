@@ -42,3 +42,16 @@ workspace's `.gitignore` is not. The test also points `GIT_CONFIG_GLOBAL` at
 a config naming the planted global excludes file, because git's own
 `core.excludesFile` takes precedence over `XDG_CONFIG_HOME` and would make
 the check depend on the developer's configuration.
+
+## 13-REQ-10.4: one case of the shared conformance table compares by value
+
+The spec 06 cases moved into `internal/toolconformance` unchanged but for
+one assertion. TS-06-33 checked `res.Data["exit_code"] != 2`, which holds for
+a local tool's `int` but not for a proxy's `json.Number` — proxy `Data` is
+decoded from the agent's JSON with `UseNumber` (13-REQ-7.1), so that it
+re-encodes to the agent's bytes. The case now compares
+`fmt.Sprint(res.Data["exit_code"])` with `"2"`: the same value for both, and
+the outcome against `tools.All` is unchanged. Each case group also carries
+its own workspace tree, so the files TS-06-22 and TS-06-29 used to add after
+the tools were built (`empty/`, the mode-0 `locked.go`) are in the tree the
+builder receives — for proxies, in the tar synced into the sandbox.
