@@ -2,6 +2,7 @@ package landlock
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -39,6 +40,7 @@ func testSeams(abi int, versionRuns *int) seams {
 		},
 		executable: func() (string, error) { return "/nonexistent/test.binary", nil },
 		lookPath:   func(string) (string, error) { return "", os.ErrNotExist },
+		resolver:   func(string) string { return "" },
 	}
 }
 
@@ -138,8 +140,11 @@ func TestNewOrder_TS18_2(t *testing.T) {
 	if runs != 0 {
 		t.Errorf("the version ran %d times before the agent step", runs)
 	}
-	if p, err := newProvider(Options{Root: t.TempDir(), AgentBinary: placeholderAgent(t)}, testSeams(4, &runs)); err != nil || p == nil || runs != 1 {
-		t.Errorf("(d) = %v, %v after %d version runs; want a provider after 1", p, err, runs)
+	starts := 0
+	s := testSeams(4, &runs)
+	s.start = func(startReq) (*agentProc, net.Conn, error) { starts++; return nil, nil, errors.New("not started") }
+	if p, err := newProvider(Options{Root: t.TempDir(), AgentBinary: placeholderAgent(t)}, s); err != nil || p == nil || runs != 1 || starts != 0 {
+		t.Errorf("(d) = %v, %v after %d version runs and %d starts; want a provider after 1 and 0", p, err, runs, starts)
 	}
 }
 

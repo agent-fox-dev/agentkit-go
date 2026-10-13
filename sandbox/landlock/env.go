@@ -4,6 +4,7 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
+	"strings"
 )
 
 // defaultPATH is the tools' PATH unless Spec.Env sets one.
@@ -32,4 +33,14 @@ func render(vars map[string]string) []string {
 		out = append(out, k+"="+vars[k])
 	}
 	return out
+}
+
+// envValue is the value of name in env.
+func envValue(env []string, name string) string {
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == name {
+			return v
+		}
+	}
+	return ""
 }

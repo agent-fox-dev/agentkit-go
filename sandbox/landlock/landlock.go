@@ -16,6 +16,7 @@ package landlock
 import (
 	"errors"
 	"fmt"
+	"net"
 	"syscall"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
@@ -54,6 +55,14 @@ type seams struct {
 	// resolver is the resolver directory for the resolv.conf path given.
 	resolver func(path string) string
 	procs    procTable
+	start    func(req startReq) (*agentProc, net.Conn, error)
+}
+
+// startReq is what the starter starts: bin with args and env in dir.
+type startReq struct {
+	bin       string
+	args, env []string
+	dir       string
 }
 
 // provider is the landlock provider.

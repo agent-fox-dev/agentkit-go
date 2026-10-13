@@ -10,16 +10,23 @@ import (
 	"testing"
 )
 
-// TS-18-62: sandbox/landlock depends on neither go-landlock nor confine, for
-// the host GOOS and for linux, and the TS-15-39 import policy holds.
-// 18-REQ-10.1.
+// restrictPkg is the one package outside confine allowed to import
+// go-landlock in sandbox/landlock's graph: gokrazy/rsync's rsyncd, which
+// every provider reaches through attach and rsyncx, applies it only when an
+// rsync module asks, and nothing on the host does
+// (docs/errata/18_sandbox_landlock_provider.md).
+const restrictPkg = "github.com/gokrazy/rsync/internal/restrict"
+
+// TS-18-62: sandbox/landlock never reaches confine, no package in its graph
+// but gokrazy/rsync's restrict imports go-landlock, for the host GOOS and
+// for linux, and the TS-15-39 import policy holds. 18-REQ-10.1.
 func TestLandlockProviderImports_TS18_62(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go is not on PATH")
 	}
 	root := repoRoot(t)
 	for _, goos := range []string{"", "linux"} {
-		cmd := exec.Command("go", "list", "-deps", "./landlock")
+		cmd := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}} {{join .Imports \" \"}}", "./landlock")
 		cmd.Dir = filepath.Join(root, "sandbox")
 		cmd.Env = os.Environ()
 		if goos != "" {
@@ -29,9 +36,19 @@ func TestLandlockProviderImports_TS18_62(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GOOS=%s go list -deps ./landlock: %v", goos, err)
 		}
-		for _, dep := range strings.Fields(string(out)) {
-			if strings.HasPrefix(dep, "github.com/landlock-lsm/go-landlock") || dep == confinePkg {
-				t.Errorf("GOOS=%s: sandbox/landlock depends on %s", goos, dep)
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			f := strings.Fields(line)
+			pkg, imports := f[0], f[1:]
+			if pkg == confinePkg {
+				t.Errorf("GOOS=%s: sandbox/landlock depends on %s", goos, confinePkg)
+			}
+			if strings.HasPrefix(pkg, "github.com/landlock-lsm/go-landlock") {
+				continue
+			}
+			for _, imp := range imports {
+				if strings.HasPrefix(imp, "github.com/landlock-lsm/go-landlock") && pkg != restrictPkg {
+					t.Errorf("GOOS=%s: %s imports %s in sandbox/landlock's graph", goos, pkg, imp)
+				}
 			}
 		}
 	}

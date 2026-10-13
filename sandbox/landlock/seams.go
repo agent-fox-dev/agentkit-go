@@ -5,18 +5,12 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-
-	"github.com/agent-fox-dev/agentkit-go/sandbox"
 )
 
 // defaultSeams are the real platform, probe and helpers.
 func defaultSeams() seams {
 	return seams{goos: runtime.GOOS, probe: defaultProbe, runVersion: runVersion, executable: os.Executable, lookPath: exec.LookPath,
-		resolver: resolverDir, procs: defaultProcTable()}
-}
-
-func (p *provider) Create(context.Context, sandbox.Spec) (sandbox.Sandbox, error) {
-	panic("not implemented")
+		resolver: resolverDir, procs: defaultProcTable(), start: defaultStart}
 }
 
 func (p *provider) Reap(context.Context) ([]string, error) { panic("not implemented") }
