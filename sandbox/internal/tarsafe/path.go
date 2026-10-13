@@ -32,3 +32,6 @@ func CleanRel(p string) (string, error) {
 func isAbs(p string) bool {
 	return strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) || filepath.IsAbs(p) || filepath.VolumeName(p) != ""
 }
+
+// ChunkBytes is the most tar data one protocol chunk carries.
+const ChunkBytes = 1 << 20

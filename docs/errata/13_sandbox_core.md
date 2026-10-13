@@ -29,3 +29,16 @@ than raise the number or split the module:
 - Core's own 1,600-line budget is unchanged.
 
 `internal/testkit`, which only tests import, is now outside the budget too.
+
+## TS-13-16: ignore layers are observed through `find_files`
+
+TS-13-16 expects `list_files` to hide a file the workspace's `.gitignore`
+lists. `list_files` never applies `.gitignore` — its description says "Does
+not apply .gitignore." (`tools/tools.go`, `listFiles`) — so no correct agent
+passes that check. The test observes both ignore layers through `find_files`,
+which applies them: a file listed only in the global excludes is found
+(the agent uses `tools.NoGlobalExcludes()`), and one listed in the
+workspace's `.gitignore` is not. The test also points `GIT_CONFIG_GLOBAL` at
+a config naming the planted global excludes file, because git's own
+`core.excludesFile` takes precedence over `XDG_CONFIG_HOME` and would make
+the check depend on the developer's configuration.
