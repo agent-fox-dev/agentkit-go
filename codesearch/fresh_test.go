@@ -151,8 +151,10 @@ func TestFreshnessAfterWriteAndEdit_TS03_41(t *testing.T) {
 	}
 
 	// Simulate edit_file: change oldToken to newToken and call Invalidate.
-	os.WriteFile(filepath.Join(root, "a.go"),
-		[]byte("package pkg\n// newToken unique123\nfunc A() {}\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(root, "a.go"),
+		[]byte("package pkg\n// newToken unique123\nfunc A() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	idx.Invalidate("a.go")
 
 	// Search for newToken: should find it.
@@ -176,8 +178,10 @@ func TestFreshnessAfterWriteAndEdit_TS03_41(t *testing.T) {
 	}
 
 	// Simulate write_file: create a new file and call Invalidate.
-	os.WriteFile(filepath.Join(root, "new.go"),
-		[]byte("package pkg\n// freshWord\nfunc New() {}\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(root, "new.go"),
+		[]byte("package pkg\n// freshWord\nfunc New() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	idx.Invalidate("new.go")
 
 	in, _ = json.Marshal(map[string]any{"query": "freshWord"})
@@ -198,7 +202,9 @@ func TestFreshnessAfterWriteAndEdit_TS03_41(t *testing.T) {
 	}
 
 	// Simulate delete: remove b.go and call Invalidate.
-	os.Remove(filepath.Join(root, "b.go"))
+	if err := os.Remove(filepath.Join(root, "b.go")); err != nil {
+		t.Fatal(err)
+	}
 	idx.Invalidate("b.go")
 
 	in, _ = json.Marshal(map[string]any{"query": "keepToken"})
@@ -245,11 +251,17 @@ func TestRevalidationSeesSameSizeEdit_TS03_42(t *testing.T) {
 	}
 
 	// Simulate execute: same-size edit, delete, and create.
-	os.WriteFile(filepath.Join(root, "f.txt"),
-		[]byte("bbbb content here\n"), 0o644)
-	os.Remove(filepath.Join(root, "gone.txt"))
-	os.WriteFile(filepath.Join(root, "n.txt"),
-		[]byte("newFileToken\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(root, "f.txt"),
+		[]byte("bbbb content here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "n.txt"),
+		[]byte("newFileToken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Invalidate("") triggers revalidation.
 	idx.Invalidate("")
@@ -334,8 +346,10 @@ func TestDirtyPathForcesRevalidation_TS03_43(t *testing.T) {
 	revalsBefore := idx.RevalCount()
 
 	// Invalidate an unknown path (not in the index) — should force revalidation.
-	os.WriteFile(filepath.Join(root, "unknown.go"),
-		[]byte("package pkg\n// unknownToken\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(root, "unknown.go"),
+		[]byte("package pkg\n// unknownToken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	idx.Invalidate("unknown.go")
 
 	in, _ = json.Marshal(map[string]any{"query": "unknownToken"})
@@ -351,8 +365,10 @@ func TestDirtyPathForcesRevalidation_TS03_43(t *testing.T) {
 	}
 
 	// Invalidate a known non-.gitignore path — should NOT force revalidation.
-	os.WriteFile(filepath.Join(root, "a.go"),
-		[]byte("package pkg\n// aTokenUpdated\nfunc A() {}\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(root, "a.go"),
+		[]byte("package pkg\n// aTokenUpdated\nfunc A() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	idx.Invalidate("a.go")
 
 	revalsBefore2 := idx.RevalCount()
@@ -369,8 +385,10 @@ func TestDirtyPathForcesRevalidation_TS03_43(t *testing.T) {
 	}
 
 	// Invalidate a .gitignore change — should force revalidation.
-	os.WriteFile(filepath.Join(root, ".gitignore"),
-		[]byte("b.go\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"),
+		[]byte("b.go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	idx.Invalidate(".gitignore")
 
 	revalsBefore3 := idx.RevalCount()
@@ -467,8 +485,10 @@ func TestDirtyMarkDuringBuildSurvives_TS03_47(t *testing.T) {
 	}
 
 	// While the revalidation is running, write a.go with new content.
-	os.WriteFile(filepath.Join(root, "a.go"),
-		[]byte("package pkg\n// midBuildToken\nfunc A() {}\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(root, "a.go"),
+		[]byte("package pkg\n// midBuildToken\nfunc A() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	idx.Invalidate("a.go")
 	close(markDone)
 

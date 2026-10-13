@@ -213,10 +213,8 @@ func TestCancelledBuildAbortsAndRebuilds_TS03_40(t *testing.T) {
 	}
 
 	// No partial index should remain.
-	if idx.BuildCount() != 0 {
-		// The build was cancelled, so it should not count.
-		// Actually, the spec says "discard the partial build" - the build
-		// counter should not have incremented.
+	if n := idx.BuildCount(); n != 0 {
+		t.Errorf("BuildCount = %d after a cancelled build, want 0: the partial build is discarded", n)
 	}
 
 	// Second call: should build again successfully.

@@ -694,7 +694,7 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 		}
 		buf := make([]byte, binarySniffSize)
 		n, _ := f.Read(buf)
-		f.Close()
+		_ = f.Close()
 		if bytes.IndexByte(buf[:n], 0) >= 0 {
 			stats.BinarySkipped++
 			return nil

@@ -44,7 +44,7 @@ func (a *Agent) SyncTar(stream sandboxpb.Agent_SyncTarServer) error {
 		for {
 			c, err := stream.Recv()
 			if err == io.EOF {
-				pw.Close()
+				_ = pw.Close()
 				return
 			}
 			if err == nil && c.GetData() == nil {

@@ -75,9 +75,6 @@ type symbolTable struct {
 	// generation is advanced by every mark; a pass clears only marks that
 	// predate its start. 02-REQ-6.8.
 	generation uint64
-
-	// totalWalked counts the total regular files seen across all passes.
-	totalWalked int
 }
 
 // newSymbolTable creates an empty symbol table. No walk, subprocess or file

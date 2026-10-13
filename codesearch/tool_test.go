@@ -166,7 +166,7 @@ func TestContextLinesAndMaxFilesDefaultAndClamp_TS03_18(t *testing.T) {
 
 	// Create 40 files that all contain "matchword"
 	for i := 0; i < 40; i++ {
-		content := fmt.Sprintf("package pkg\n// line2\n// line3\n// matchword here\n// line5\n// line6\n// line7\n")
+		content := "package pkg\n// line2\n// line3\n// matchword here\n// line5\n// line6\n// line7\n"
 		mkFile(t, root, fmt.Sprintf("pkg/file%03d.go", i), content)
 	}
 

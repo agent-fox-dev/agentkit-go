@@ -366,14 +366,14 @@ func samplingServer(t *testing.T) *testServer {
 	s := newTestServer("")
 	s.AddTool(&mcp.Tool{Name: "ask", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		func(_ context.Context, req *sdk.CallToolRequest) (*mcp.CallToolResult, error) {
-			if r, ok := req.Params.InputResponses["s1"].(*sdk.CreateMessageWithToolsResult); ok {
+			if r, ok := req.Params.InputResponses["s1"].(*sdk.CreateMessageWithToolsResult); ok { //nolint:staticcheck // tests the deprecated sampling round trip
 				if req.Params.RequestState != "asked-once" {
 					t.Errorf("requestState must come back verbatim; got %q", req.Params.RequestState)
 				}
 				return &mcp.CallToolResult{Content: r.Content}, nil
 			}
 			return &mcp.CallToolResult{RequestState: "asked-once", InputRequests: sdk.InputRequestMap{
-				"s1": &mcp.CreateMessageParams{MaxTokens: 16, Messages: []*sdk.SamplingMessage{
+				"s1": &mcp.CreateMessageParams{MaxTokens: 16, Messages: []*sdk.SamplingMessage{ //nolint:staticcheck // tests the deprecated sampling round trip
 					{Role: "user", Content: &mcp.TextContent{Text: "hi"}}}},
 			}}, nil
 		})

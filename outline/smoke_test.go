@@ -303,22 +303,3 @@ func TestWalkAndOutlineMatchesSearchFiles_TS_01_75(t *testing.T) {
 		}
 	}
 }
-
-// --- helpers ---
-
-func declNames(decls []outline.Decl) []string {
-	names := make([]string, len(decls))
-	for i, d := range decls {
-		names[i] = d.Name
-	}
-	return names
-}
-
-func sliceContains(ss []string, s string) bool {
-	for _, v := range ss {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}

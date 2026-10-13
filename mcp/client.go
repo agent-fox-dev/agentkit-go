@@ -23,8 +23,8 @@ type (
 	Content             = sdk.Content
 	TextContent         = sdk.TextContent
 	CallToolResult      = sdk.CallToolResult
-	CreateMessageParams = sdk.CreateMessageParams
-	CreateMessageResult = sdk.CreateMessageResult
+	CreateMessageParams = sdk.CreateMessageParams //nolint:staticcheck // sampling is deprecated by SEP-2577 but still offered through AllowSampling
+	CreateMessageResult = sdk.CreateMessageResult //nolint:staticcheck // as above
 )
 
 // ResultCharCap is REQ-MCP-CLIENT-09: 50K characters per tool result.
@@ -191,7 +191,7 @@ func newConnection(cfg ServerConfig, opts ConnectionOptions) *ServerConnection {
 	// whenever a handler is installed.
 	co := &sdk.ClientOptions{Capabilities: &sdk.ClientCapabilities{}}
 	if cfg.AllowSampling {
-		co.CreateMessageHandler = c.sample
+		co.CreateMessageHandler = c.sample //nolint:staticcheck // sampling is deprecated by SEP-2577 but still offered through AllowSampling
 	}
 	if cfg.Command != "" {
 		// A handler is what makes the SDK hold a tools/list_changed

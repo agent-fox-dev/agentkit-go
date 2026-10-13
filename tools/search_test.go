@@ -317,11 +317,6 @@ func runNative(t *testing.T, root string, p tools.SearchParams) (tools.SearchRes
 	return tools.SearchIn(context.Background(), root, p, tools.NoGlobalExcludes())
 }
 
-func dump(r tools.SearchResult) string {
-	b, _ := json.Marshal(r.Matches)
-	return string(b)
-}
-
 func asPatternError(err error, target **tools.SearchPatternError) bool {
 	for err != nil {
 		if p, ok := err.(*tools.SearchPatternError); ok {

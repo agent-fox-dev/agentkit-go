@@ -150,7 +150,9 @@ func TestIndexedFileSetEqualsWalkSet_TS03_33(t *testing.T) {
 	// Exactly 1 MiB file (should be included).
 	mkFile(t, root, "exact1m.txt", strings.Repeat("y", 1<<20))
 	// Symlink (should be skipped by Walk since it uses WalkDir).
-	os.Symlink(filepath.Join(root, "main.go"), filepath.Join(root, "link.go"))
+	if err := os.Symlink(filepath.Join(root, "main.go"), filepath.Join(root, "link.go")); err != nil {
+		t.Fatal(err)
+	}
 	// Nested repository.
 	mkFile(t, root, "nested/.git/HEAD", "ref: refs/heads/main\n")
 	mkFile(t, root, "nested/lib.go", "package nested\n")
@@ -431,16 +433,13 @@ func TestShardDirectoryStructure_TS03_37(t *testing.T) {
 		t.Errorf("hash part %q does not match sha256 prefix %q of root %q", hashPart, wantPrefix, absRoot)
 	}
 
-	// Verify directory mode is 0700 (on platforms that support it).
-	if runtime.GOOS != "windows" {
-		fi, err := os.Stat(d1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mode := fi.Mode().Perm()
-		if mode != 0o700 {
-			t.Errorf("run dir mode = %o, want 700", mode)
-		}
+	// Verify directory mode is 0700 (the file builds only off Windows).
+	fi, err := os.Stat(d1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := fi.Mode().Perm(); mode != 0o700 {
+		t.Errorf("run dir mode = %o, want 700", mode)
 	}
 }
 

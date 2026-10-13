@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"runtime"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -331,7 +330,6 @@ func TestTS_04_5_BlockedStdinReaderDoesNotBlockReturn(t *testing.T) {
 // recordingReader wraps an io.Reader and counts Read calls.
 type recordingReader struct {
 	r     io.Reader
-	mu    sync.Mutex
 	count int64
 }
 

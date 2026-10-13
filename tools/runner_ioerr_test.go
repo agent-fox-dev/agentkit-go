@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -262,7 +261,7 @@ func TestTS_04_27_CleanCallsHaveNilIOErr(t *testing.T) {
 	t.Run("logpath", func(t *testing.T) {
 		tmp := t.TempDir()
 		logFile := filepath.Join(tmp, "run.log")
-		res, err := RunArgv(ctx, []string{"sh", "-c", fmt.Sprintf("echo ok")}, ExecOptions{
+		res, err := RunArgv(ctx, []string{"sh", "-c", "echo ok"}, ExecOptions{
 			LogPath: logFile,
 			Timeout: 5 * time.Second,
 		})

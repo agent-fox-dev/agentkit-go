@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -419,12 +418,18 @@ func TestDirtyPathReoutlineOrDrop_TS02_42(t *testing.T) {
 	}
 
 	// Remove b.go from disk and mark it dirty.
-	os.Remove(filepath.Join(root, "b.go"))
+	if err := os.Remove(filepath.Join(root, "b.go")); err != nil {
+		t.Fatal(err)
+	}
 	ft.table.markDirty("b.go")
 
 	// Replace c.go with a directory and mark it dirty.
-	os.Remove(filepath.Join(root, "c.go"))
-	os.MkdirAll(filepath.Join(root, "c.go"), 0o755)
+	if err := os.Remove(filepath.Join(root, "c.go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "c.go"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	ft.table.markDirty("c.go")
 
 	// Track walks to verify no whole-workspace walk happens.
@@ -594,56 +599,6 @@ func TestNewFileOrGitignoreEscalatesToRevalidation_TS02_43(t *testing.T) {
 	}
 }
 
-// helper: makeAllToolsWithFT creates All() tools and returns the fileTools for inspection.
-// This is needed because All() creates fileTools internally.
-func makeAllToolsWithFT(t *testing.T, root string, symOpts SymbolOptions) ([]core.Tool, *fileTools) {
-	t.Helper()
-	ws, err := NewWorkspace(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   symOpts,
-	}.withDefaults())
-	// Build the tools the same way All() does, but we keep ft.
-	tools := []core.Tool{
-		ft.readFile(),
-		ft.writeFile(),
-		ft.editFile(),
-		ft.listFiles(),
-		ft.findFiles(),
-		ft.searchFiles(),
-		ft.findSymbolTool(),
-	}
-	return tools, ft
-}
-
-// lockHeldChecker is a test helper that records whether the per-path lock
-// is held when markDirty is called.
-type lockHeldChecker struct {
-	mu       sync.Mutex
-	lockHeld map[string]bool
-}
-
-func newLockHeldChecker() *lockHeldChecker {
-	return &lockHeldChecker{lockHeld: make(map[string]bool)}
-}
-
-func (c *lockHeldChecker) record(rel string, held bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.lockHeld[rel] = held
-}
-
-func (c *lockHeldChecker) wasHeld(rel string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.lockHeld[rel]
-}
-
 // TS-02-40 variant: verify lock is held at mark time
 func TestWriteFileMarkUnderLock_TS02_40_lock(t *testing.T) {
 	root := t.TempDir()
@@ -803,7 +758,9 @@ func TestDirtyPathOnlyReoutlinesDirty_TS02_42_selective(t *testing.T) {
 	ft.table.unlock()
 
 	// Edit a.go and mark it dirty.
-	os.WriteFile(filepath.Join(root, "a.go"), []byte("package main\n\nfunc AEdited() {}\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package main\n\nfunc AEdited() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	ft.table.markDirty("a.go")
 
 	// Wait a moment so indexedAt would differ if b.go were re-outlined.

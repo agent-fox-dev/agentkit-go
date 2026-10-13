@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 
@@ -772,14 +771,4 @@ func rankLessOrEqual(a, b SymbolMatch, query string, qualified, caseSensitive bo
 		return a.Path < b.Path
 	}
 	return a.StartLine <= b.StartLine
-}
-
-// sortedBackendKeys returns sorted keys from a backends map.
-func sortedBackendKeys(backends map[string]int) []string {
-	keys := make([]string, 0, len(backends))
-	for k := range backends {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

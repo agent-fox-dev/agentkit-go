@@ -151,7 +151,7 @@ func (s *sb) Export(ctx context.Context, path string, dst sandbox.Destination) e
 		}
 	}()
 	err = tarsafe.ValidateStream(pr, out.W)
-	pr.Close()
+	_ = pr.Close()
 	var ee *tarsafe.EntryError
 	switch {
 	case err == nil:

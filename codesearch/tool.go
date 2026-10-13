@@ -597,15 +597,6 @@ func (idx *Index) filterAndSearchDirty(
 	return capped(), totalFiles, note
 }
 
-// sortResultLines sorts result lines by line number.
-func sortResultLines(lines []resultLine) {
-	for i := 1; i < len(lines); i++ {
-		for j := i; j > 0 && lines[j].lineNo < lines[j-1].lineNo; j-- {
-			lines[j], lines[j-1] = lines[j-1], lines[j]
-		}
-	}
-}
-
 // searchZoekt performs the actual zoekt search and returns the total number
 // of files that matched (which may exceed maxFiles).
 //
