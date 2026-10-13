@@ -297,7 +297,7 @@
       "done_when": [
         "With podman or docker available, TestOverlayImage, TestOverlayImageDerived, TestBaseImageCrossArchBuild and TestBaseImageUnsupportedArch report PASS in `make sandbox-images-test`"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,

@@ -51,3 +51,14 @@ labelled with the previous commit while the base carried the current one.
 The command-line labels apply to the final image whatever the cache
 holds; the Containerfile's labels are unchanged, and the release workflow's
 BuildKit builds recompute them anyway.
+
+## TS-16-49 finds the stamp in the binary, not in its build info
+
+TS-16-49 expects `debug/buildinfo` to report `-ldflags` containing
+`buildver.stamp=v9.8.7`. With `-trimpath`, Go leaves `-ldflags` out of the
+build info (go.dev/issue/52372); a Go 1.27.1 build of the agent with both
+flags records `-trimpath=true` and no `-ldflags`. The test still checks
+GOOS, GOARCH, CGO_ENABLED and -trimpath through the build info, and asserts
+the stamp by finding `v9.8.7` in the cross-built binary itself
+(`sandbox/images/overlay_image_test.go`). It would use the build-info
+setting if a future Go recorded it.
