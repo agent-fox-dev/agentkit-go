@@ -10,13 +10,17 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 )
 
-// Setup probes the kernel once, and when Plan chooses an ABI applies a
+// Setup refuses dangerous flag values with a *UsageError, then probes the
+// kernel once, and when Plan chooses an ABI applies a
 // ruleset of exactly that version to the whole process: Restrict when it
 // handles TCP, RestrictPaths otherwise, never BestEffort. Applying sets
 // no_new_privs on every thread. A failed probe is no error: the outcome is
 // ABI 0 with Plan's note. A ruleset that cannot be built or applied after a
 // good probe is an error, and the caller must not serve.
 func Setup(in Inputs) (sandbox.LandlockInfo, error) {
+	if err := validate(in); err != nil {
+		return sandbox.LandlockInfo{}, err
+	}
 	info, d := decide(in.Mode)
 	if d.ABI == 0 {
 		return info, nil
