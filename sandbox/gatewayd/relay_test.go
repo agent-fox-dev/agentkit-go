@@ -200,6 +200,16 @@ func TestRelayRouting_TS19_47(t *testing.T) {
 			t.Errorf("no id: %q does not say the id is missing", status.Convert(err).Message())
 		}
 	}
+	long := strings.Repeat("x", 300)
+	for name, ctx := range map[string]context.Context{
+		"malformed": gwtest.Ctx(context.Background(), gwtest.Token, gateway.SandboxIDKey, long),
+		"repeated":  gwtest.Ctx(context.Background(), gwtest.Token, gateway.SandboxIDKey, id, gateway.SandboxIDKey, id),
+	} {
+		_, err := ag.Hello(ctx, &sandboxpb.HelloRequest{})
+		if status.Code(err) != codes.Unavailable {
+			t.Errorf("a %s id: %v, want Unavailable", name, err)
+		}
+	}
 	if got := rec.Count("Hello"); got != n {
 		t.Errorf("the agent received %d Hellos from refused RPCs", got-n)
 	}
@@ -282,7 +292,7 @@ func TestRelayErrors_TS19_49(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = sb.Export(ctx, "missing/path", sandbox.LocalDir{Path: filepath.Join(t.TempDir(), "dst")})
-	if err == nil || errors.Is(err, sandbox.ErrUnavailable) {
+	if err == nil || errors.Is(err, sandbox.ErrUnavailable) || !strings.Contains(err.Error(), "agent refused") {
 		t.Errorf("Export of a missing path: %v, want the agent's refusal", err)
 	}
 	if r := readFile(t, sb, "x"); r["ok"] != true {

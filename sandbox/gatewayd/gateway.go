@@ -78,7 +78,12 @@ func (g *gatewayService) Create(ctx context.Context, req *sandboxpb.CreateReques
 		}
 		return nil, err
 	}
-	defer s.reg.unreserve()
+	added := false
+	defer func() {
+		if !added {
+			s.reg.unreserve()
+		}
+	}()
 	created := time.Now()
 	bsb, err := s.backend.Create(ctx, spec)
 	if err != nil {
@@ -94,7 +99,9 @@ func (g *gatewayService) Create(ctx context.Context, req *sandboxpb.CreateReques
 	}
 	if ctx.Err() != nil {
 		// The caller has gone: nobody will learn the id.
-		_ = bsb.Close(context.Background())
+		if err := bsb.Close(context.Background()); err != nil {
+			s.log.Warn("closing an abandoned sandbox failed", "id", bsb.ID(), "error", err.Error())
+		}
 		return nil, status.FromContextError(ctx.Err()).Err()
 	}
 	eff := bsb.Spec()
@@ -109,6 +116,7 @@ func (g *gatewayService) Create(ctx context.Context, req *sandboxpb.CreateReques
 	if err := s.reg.add(e); err != nil {
 		return nil, errors.Join(err, bsb.Close(context.Background()))
 	}
+	added = true
 	s.logCreate(e.id, e.owner, ttl, eff.Network.Mode)
 	return &sandboxpb.CreateResponse{Id: e.id, Spec: effPB,
 		CreatedUnixNanos: gatewaywire.Nanos(e.created), ExpiresUnixNanos: gatewaywire.Nanos(e.expires)}, nil

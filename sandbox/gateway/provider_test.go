@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -52,8 +53,14 @@ func TestList_TS19_16(t *testing.T) {
 	if !slices.Equal(ids, []string{"z", "a", "b"}) {
 		t.Fatalf("List ids %v, want [z a b]", ids)
 	}
-	a := infos[1]
-	if a.Labels["k"] != "v" || len(a.Labels) != 1 || !a.Created.Equal(time.Unix(0, t2)) || !a.Expires.Equal(time.Unix(0, e2)) {
-		t.Errorf("Info %+v does not carry the entry's labels and times", a)
+	for _, c := range []struct {
+		labels           map[string]string
+		created, expires int64
+	}{{nil, t1, t1 + 1}, {map[string]string{"k": "v"}, t2, e2}, {map[string]string{"k": "w"}, t2, e2}} {
+		i := infos[0]
+		infos = infos[1:]
+		if !maps.Equal(i.Labels, c.labels) || !i.Created.Equal(time.Unix(0, c.created)) || !i.Expires.Equal(time.Unix(0, c.expires)) {
+			t.Errorf("Info %+v does not carry the entry's labels and times", i)
+		}
 	}
 }

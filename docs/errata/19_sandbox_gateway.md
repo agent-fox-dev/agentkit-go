@@ -55,13 +55,16 @@ that decodes but is malformed is answered `InvalidArgument`: an unknown
 network mode, or provider bytes that are not a JSON object or that
 `wire.Guard` rejects (TS-19-38).
 
-## An Agent method the gateway does not know skips authentication
+## Authentication runs in gRPC's tap handle as well
 
-gRPC answers a method its server has no handler for with `Unimplemented`
-before any interceptor runs. So an unauthenticated call to an unknown Agent
-or Gateway method gets `Unimplemented`, not `Unauthenticated`. It reaches
-nothing: no handler, no backend and no agent. Every method of both services
-is authenticated (TS-19-34).
+19-REQ-5.4 says an unauthenticated RPC is refused before anything else in
+the request is read. A generated unary handler decodes its request before
+any interceptor runs. So the server authenticates every RPC from its headers
+in a tap handle (`grpc.InTapHandle`), before gRPC reads a message, and then
+again in the unary and stream interceptors 19-REQ-5.3 names
+(`sandbox/gatewayd/auth.go`). The tap also covers a method no handler
+serves: an unauthenticated call to one is answered `Unauthenticated`, an
+authenticated one `Unimplemented` (TS-19-49).
 
 ## The plaintext warning names the --listen address
 

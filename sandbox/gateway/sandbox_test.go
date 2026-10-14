@@ -127,3 +127,30 @@ func TestCloseDestroyFails_TS19_29(t *testing.T) {
 		t.Error("the fake no longer holds the sandbox")
 	}
 }
+
+// A SyncGit that fails as a transport failure (the gateway no longer holds
+// the sandbox, or the connection broke) makes the sandbox unavailable, as
+// attach's own RPCs do: the Sync matches sandbox.ErrUnavailable, names the
+// gateway, and later calls fail without an RPC. 19-REQ-10.4, 19-REQ-4.3.
+func TestGitRepoSyncUnavailable(t *testing.T) {
+	f := newFakeGW(t, nil)
+	p := f.dial(t)
+	ctx := context.Background()
+	sb := mustCreate(t, p)
+	read := tool(t, sb, "read_file")
+	f.set(func() { f.syncGit = fakeCreate{err: status.Error(codes.Unavailable, "gatewayd: no sandbox")} })
+	_, err := sb.Sync(ctx, sandbox.GitRepo{URL: "https://example.test/r.git"})
+	if !errors.Is(err, sandbox.ErrUnavailable) || !strings.Contains(err.Error(), "http://127.0.0.1") {
+		t.Fatalf("Sync(GitRepo) = %v, want ErrUnavailable naming the gateway", err)
+	}
+	n := f.rpcCount()
+	if r := read.Execute(ctx, []byte(`{"path":"x"}`)); r.Error != "sandbox_unavailable" {
+		t.Errorf("read_file after the failed SyncGit: %+v, want sandbox_unavailable", r)
+	}
+	if _, err := sb.Sync(ctx, sandbox.GitRepo{URL: "https://example.test/r.git"}); !errors.Is(err, sandbox.ErrUnavailable) {
+		t.Errorf("a second Sync(GitRepo) = %v, want ErrUnavailable", err)
+	}
+	if got := f.rpcCount(); got != n {
+		t.Errorf("%d RPCs were sent after the sandbox became unavailable", got-n)
+	}
+}

@@ -2,7 +2,6 @@ package gatewayd
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 
@@ -58,13 +57,11 @@ func (g *gatewayService) SyncGit(ctx context.Context, req *sandboxpb.SyncGitRequ
 		if ctx.Err() != nil {
 			return nil, status.FromContextError(ctx.Err()).Err()
 		}
-		r := &sandboxpb.Refusal{Kind: sandboxpb.Refusal_REFUSED, Message: err.Error()}
-		var se *sandbox.SpecError
-		switch {
-		case errors.As(err, &se):
-			r.Kind, r.Field, r.Reason = sandboxpb.Refusal_UNSUPPORTED, se.Field, se.Reason
-		case errors.Is(err, sandbox.ErrUnsupported):
-			r.Kind = sandboxpb.Refusal_UNSUPPORTED
+		// ErrUnsupported is UNSUPPORTED, as from Create; anything else is
+		// the clone's own failure.
+		r := backendRefusal(err)
+		if r == nil || r.Kind != sandboxpb.Refusal_UNSUPPORTED {
+			r = &sandboxpb.Refusal{Kind: sandboxpb.Refusal_REFUSED, Message: err.Error()}
 		}
 		return &sandboxpb.SyncGitResponse{Refusal: r}, nil
 	}

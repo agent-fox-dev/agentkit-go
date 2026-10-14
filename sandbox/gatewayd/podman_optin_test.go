@@ -160,8 +160,10 @@ func TestPodmanSmoke_TS19_77(t *testing.T) {
 	if r := call("execute", `{"command":"cat written.txt"}`); !r.OK || !strings.Contains(r.Text+fmt.Sprint(r.Data), "written") {
 		t.Errorf("execute: %+v", r)
 	}
-	if r := call("execute", `{"command":"exec 3<>/dev/tcp/1.1.1.1/443 && echo connected"}`); r.OK && strings.Contains(r.Text+fmt.Sprint(r.Data), "connected") {
-		t.Errorf("TCP from execute succeeded under NetworkNone: %+v", r)
+	// execute reports a failing command as "[exit N]"; the connect must fail.
+	if r := call("execute", `{"command":"exec 3<>/dev/tcp/1.1.1.1/443 && echo connected"}`); !strings.Contains(r.Text, "[exit ") ||
+		strings.Contains(r.Text+fmt.Sprint(r.Data), "connected") {
+		t.Errorf("TCP from execute did not fail under NetworkNone: %+v", r)
 	}
 	out := filepath.Join(t.TempDir(), "out")
 	if err := sb.Export(ctx, ".", sandbox.LocalDir{Path: out}); err != nil {

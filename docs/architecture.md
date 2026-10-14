@@ -767,7 +767,8 @@ proxies, state machine and errors.
 ```
 embedder   gateway.Dial: URL and token rules, one gRPC connection, Capabilities
            Provider.Create: CheckSpec, MaxTTL, Provider JSON → Gateway.Create
-gatewayd   authenticate (SHA-256 of the token, constant time) → ceiling, TTL,
+gatewayd   authenticate from the headers, before any message is read (SHA-256
+           of the token, constant time) → ceiling, TTL,
            capacity → Backend.Create → entry {owner, created, expires}
 embedder   attach.New over the shared connection, agentkit-sandbox-id metadata
 gatewayd   relay: route by id and owner → the backend sandbox's own agent

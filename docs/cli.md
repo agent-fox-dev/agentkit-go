@@ -128,8 +128,9 @@ agentkit-gateway: listening on <bound address> (<tls|plaintext>), backend <name>
 It then logs structured lines (`log/slog` text) to stderr: one per create,
 destroy (with the reason `client`, `expired`, `unavailable` or `shutdown`),
 refused authentication (with the peer address) and backend reap. SIGINT or
-SIGTERM runs a shutdown with a 60-second budget. Every failure is one line,
-`agentkit-gateway: <cause>`, and never contains a token.
+SIGTERM runs a shutdown with a 60-second budget. A failure ends the run with
+one line, `agentkit-gateway: <cause>`, that never contains a token; a startup
+or usage failure prints nothing else.
 
 | Exit | When |
 |---|---|

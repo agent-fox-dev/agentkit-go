@@ -80,6 +80,17 @@ func (s *sb) classify(ctx context.Context, rpc string, err error) error {
 	return fmt.Errorf("%w: %s: %v", sandbox.ErrUnavailable, rpc, err)
 }
 
+// Fail makes the sandbox this package attached that s is, or that s's
+// Unwrap chain reaches, unavailable for good with cause, as a transport
+// failure of one of its own RPCs would. A provider whose sandbox operation
+// travels outside the agent connection (a gateway's SyncGit) reports such
+// a failure with it. A Sandbox whose chain reaches none is left alone.
+func Fail(s sandbox.Sandbox, cause string) {
+	if x := unwrapAttached(s); x != nil {
+		x.fail(cause)
+	}
+}
+
 // Live is the state of a sandbox this package attached, as its own gate
 // reports it: nil while live, an error matching sandbox.ErrUnavailable once
 // unavailable, and sandbox.ErrClosed once closed. A provider that wraps an

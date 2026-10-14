@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -81,15 +82,19 @@ func run(args []string, stdout, stderr io.Writer, d deps) int {
 	}
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(l) }()
+	var serveErr error
 	select {
-	case err := <-served:
-		return fail(1, "serve: %v", err)
+	case serveErr = <-served:
 	case <-d.signals:
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownBudget)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
-		return fail(1, "shutdown: %v", err)
+	shutdownErr := srv.Shutdown(ctx)
+	switch {
+	case serveErr != nil:
+		return fail(1, "serve: %v", errors.Join(serveErr, shutdownErr))
+	case shutdownErr != nil:
+		return fail(1, "shutdown: %v", shutdownErr)
 	}
 	<-served
 	return 0

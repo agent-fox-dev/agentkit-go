@@ -2,6 +2,10 @@ package gateway
 
 import (
 	"context"
+	"fmt"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
@@ -41,7 +45,9 @@ func (s *gwSandbox) Unwrap() sandbox.Sandbox { return s.inner }
 
 // Sync forwards a Tar or LocalDir to attach's sandbox. A GitRepo is cloned
 // by the gateway's backend: the sandbox must be live and the repository
-// valid before any RPC, and success reports a SyncResult of zeros.
+// valid before any RPC, and success reports a SyncResult of zeros. A
+// transport failure of the SyncGit RPC makes the sandbox unavailable, as
+// one of attach's own RPCs would.
 func (s *gwSandbox) Sync(ctx context.Context, src sandbox.Source) (sandbox.SyncResult, error) {
 	repo, ok := src.(sandbox.GitRepo)
 	if !ok {
@@ -54,8 +60,18 @@ func (s *gwSandbox) Sync(ctx context.Context, src sandbox.Source) (sandbox.SyncR
 		return sandbox.SyncResult{}, err
 	}
 	resp, err := s.p.gw.SyncGit(ctx, &sandboxpb.SyncGitRequest{Id: s.id, Url: repo.URL, Ref: repo.Ref, Depth: int32(repo.Depth)})
-	if err != nil {
+	switch {
+	case err == nil:
+	case status.Code(err) == codes.Unauthenticated:
 		return sandbox.SyncResult{}, s.p.rpcErr("sync git", err)
+	case ctx.Err() != nil:
+		return sandbox.SyncResult{}, fmt.Errorf("sandbox: SyncGit: %w", ctx.Err())
+	default:
+		// The gateway answers a sandbox it no longer holds, and the
+		// connection fails, with a non-refusal status: the sandbox is gone,
+		// as attach decides for its own RPCs.
+		attach.Fail(s.inner, fmt.Sprintf("SyncGit: %v", err))
+		return sandbox.SyncResult{}, fmt.Errorf("%w: gateway %s: sync git: %v", sandbox.ErrUnavailable, s.p.url, err)
 	}
 	if r := resp.GetRefusal(); r != nil {
 		return sandbox.SyncResult{}, refusalErr(s.p.caps.Provider, r)

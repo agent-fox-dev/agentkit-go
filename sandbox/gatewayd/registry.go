@@ -45,7 +45,8 @@ func newRegistry(s *Server) *registry { return &registry{s: s, entries: map[stri
 // reserve counts a create in progress, after pruning entries whose backend
 // sandbox is no longer live. It refuses with errFull when recorded entries
 // plus creates in progress reach the maximum, and with Unavailable once the
-// registry is closed. Each successful reserve is matched by unreserve.
+// registry is closed. Each successful reserve is ended by add, which turns
+// it into an entry, or by unreserve.
 func (r *registry) reserve() error {
 	r.prune()
 	r.mu.Lock()
@@ -82,14 +83,15 @@ func (r *registry) prune() {
 	}
 }
 
-// add records e and arms its expiry, or refuses once the registry is
-// closed.
+// add turns a reservation into the entry e and arms its expiry, or refuses
+// once the registry is closed, leaving the reservation to unreserve.
 func (r *registry) add(e *entry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
 		return unavailable("gatewayd: the gateway is shutting down")
 	}
+	r.pending--
 	r.entries[e.id] = e
 	e.timer = time.AfterFunc(time.Until(e.expires), func() { _ = r.remove(e, reasonExpired) })
 	return nil

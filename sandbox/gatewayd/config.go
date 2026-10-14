@@ -126,7 +126,7 @@ func New(cfg Config) (*Server, error) {
 	s.reg = newRegistry(s)
 	opts := []grpc.ServerOption{
 		grpc.MaxRecvMsgSize(sandbox.MaxMessageBytes), grpc.MaxSendMsgSize(sandbox.MaxMessageBytes),
-		grpc.ChainUnaryInterceptor(s.unaryAuth), grpc.ChainStreamInterceptor(s.streamAuth),
+		grpc.InTapHandle(s.tap), grpc.ChainUnaryInterceptor(s.unaryAuth), grpc.ChainStreamInterceptor(s.streamAuth),
 	}
 	if cfg.TLS != nil {
 		opts = append(opts, grpc.Creds(credentials.NewTLS(cfg.TLS.Clone())))

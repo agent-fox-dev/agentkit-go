@@ -68,7 +68,11 @@ func TestLogging_TS19_35(t *testing.T) {
 
 	sum := sha256.Sum256([]byte(gwtest.Token))
 	full := hex.EncodeToString(sum[:])
-	for _, m := range logs.Messages("sandbox created") {
+	creates := logs.Messages("sandbox created")
+	if len(creates) != 4 {
+		t.Errorf("%d create lines, want 4", len(creates))
+	}
+	for _, m := range creates {
 		if m["owner"] != full[:8] || m["id"] == "" || m["ttl"] == nil || m["network"] == nil {
 			t.Errorf("create line %v lacks id, owner %s, ttl or network", m, full[:8])
 		}

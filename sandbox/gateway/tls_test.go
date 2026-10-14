@@ -1,10 +1,12 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -32,8 +34,17 @@ func TestTLS_TS19_11(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = tool(t, sb, "write_file").Execute(context.Background(), in)
-	if n := len(f.agent.LastInput()); n < 12<<20 {
-		t.Errorf("the agent received %d input bytes, want the 12 MiB input", n)
+	if got := f.agent.LastInput(); !bytes.Equal(got, in) {
+		t.Errorf("the agent received %d input bytes, want the %d-byte input intact", len(got), len(in))
+	}
+	authorized := false
+	for _, r := range f.recorded() {
+		if r.method == "/agentkit.sandbox.v1.Agent/Call" && slices.Equal(r.md.Get("authorization"), []string{"Bearer " + testToken}) {
+			authorized = true
+		}
+	}
+	if !authorized {
+		t.Error("the Call did not carry the authorization metadata")
 	}
 	var v uint16
 	f.set(func() { v = f.tlsVersion })

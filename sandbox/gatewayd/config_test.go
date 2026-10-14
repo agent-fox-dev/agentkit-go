@@ -2,6 +2,8 @@ package gatewayd_test
 
 import (
 	"context"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +55,13 @@ func TestNewRefuses_TS19_30(t *testing.T) {
 func TestDefaults_TS19_31(t *testing.T) {
 	be := gwtest.NewCounting()
 	be.SetCaps(sandbox.Capabilities{Provider: "stub", Network: []sandbox.NetworkMode{sandbox.NetworkNone, sandbox.NetworkUnrestricted}})
+	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stderr
+	os.Stderr = stderr
+	defer func() { os.Stderr = saved }()
 	env := gwtest.Start(t, gatewayd.Config{Backend: be, Tokens: []string{gwtest.Token}})
 	p := env.Dial(t, gwtest.Token)
 	if n := p.Capabilities().Network; len(n) != 1 || n[0] != sandbox.NetworkNone {
@@ -64,6 +73,9 @@ func TestDefaults_TS19_31(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if n := be.Reaps(); n != 1 {
 		t.Errorf("the backend was reaped %d times in 300 ms, want 1 (a 10m interval)", n)
+	}
+	if fi, err := stderr.Stat(); err != nil || fi.Size() != 0 {
+		t.Errorf("serving with a nil Logger wrote %v bytes to stderr (%v)", fi.Size(), err)
 	}
 }
 
@@ -96,7 +108,7 @@ func TestCapabilitiesOverLocal_TS19_14(t *testing.T) {
 	if err := env.Server.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if again := p.Capabilities(); again.Provider != c.Provider || again.Notes != c.Notes || len(again.Network) != len(c.Network) {
+	if again := p.Capabilities(); !reflect.DeepEqual(again, c) {
 		t.Errorf("Capabilities() changed with the server gone: %+v, was %+v", again, c)
 	}
 }

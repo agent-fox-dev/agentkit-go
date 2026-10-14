@@ -39,11 +39,16 @@ func TestGatewayLeavesTheBuild_TS19_64(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not on PATH")
 	}
+	head := exec.Command("git", "rev-parse", "--verify", "HEAD")
+	head.Dir = root
+	if err := head.Run(); err != nil {
+		t.Skipf("no commit to compare internal/policy/testdata with: %v", err)
+	}
 	cmd := exec.Command("git", "status", "--porcelain", "--", "internal/policy/testdata")
 	cmd.Dir = root
 	out, err := cmd.Output()
 	if err != nil {
-		t.Skipf("not a git checkout: %v", err)
+		t.Fatalf("git status: %v", err)
 	}
 	if len(out) > 0 {
 		t.Errorf("internal/policy/testdata has changes:\n%s", out)
