@@ -566,7 +566,7 @@
       "depends_on": [
         10
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 12,

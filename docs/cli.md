@@ -1,8 +1,10 @@
 # Command-line programs
 
-AgentKit is a library. Its one command is `agentkit-sandboxd`, the agent that
-runs inside a sandbox. The programs under `examples/` are runnable too; each
-documents its own flags in its `README.md`.
+AgentKit is a library. It has two commands: `agentkit-sandboxd`, the agent
+that runs inside a sandbox, and `agentkit-gateway`, the sandbox gateway, the
+one network service, built from its own nested module. The programs under
+`examples/` are runnable too; each documents its own flags in its
+`README.md`.
 
 ## `agentkit-sandboxd`
 
@@ -62,11 +64,88 @@ line on stderr, `agentkit-sandboxd: <cause>`.
 | 1 | A startup failure (for example, `--workdir` does not exist), a Landlock ruleset that cannot be built or applied after the kernel reported Landlock (`agentkit-sandboxd: landlock: <cause>`; the agent never serves unconfined then), or the TTL expired (`agent: TTL <d> expired`). A kernel without Landlock is not a failure: the agent serves and reports ABI 0. |
 | 2 | A usage error: an unknown flag, a malformed or non-positive `--ttl`, a `--network` value other than `none`, `allowlist` or `unrestricted`, a `--workdir` or `--landlock-rw` that is `/` or contains a system directory, a relative `--landlock-ro` or `--landlock-rw`, or an extra argument. The line names the flag. |
 
+## `agentkit-gateway`
+
+The sandbox gateway: a gRPC server on TCP that lets clients
+(`gateway.Dial`, package `sandbox/gateway`) create, use and destroy sandboxes
+on this host with a bearer token. Its backend is the Podman or Docker
+provider (`podman.New`), given the command's own environment as the engine's
+environment. It is not published; build it from a checkout:
+
+```bash
+make sandbox-gateway                          # build/bin/agentkit-gateway
+make sandbox-gateway AGENTKIT_VERSION=v0.19.0 # stamps the version it reports
+build/bin/agentkit-gateway --token-file /etc/agentkit/tokens \
+  --tls-cert server.pem --tls-key server-key.pem --listen 0.0.0.0:8443
+```
+
+It listens on loopback by default and needs TLS or an explicit
+`--plaintext`; behind a TLS-terminating proxy on the same host, use
+`--plaintext` on a loopback address, the only place a client accepts
+`http://`. Each sandbox belongs to the token that created it, and no other
+token can see or reach it. The gateway destroys every sandbox it holds when
+it shuts down.
+
+### Flags
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--listen` | `127.0.0.1:8443` | The address to listen on. |
+| `--token-file` | none; required | The file holding the accepted tokens (below). |
+| `--tls-cert`, `--tls-key` | | The server's PEM certificate and key; both or neither. |
+| `--plaintext` | | Serve without TLS. Required when the TLS flags are absent, and refused together with them. On a non-loopback address the command also logs a warning. |
+| `--engine-binary` | `podman` | The engine command (`podman.Options.Binary`). |
+| `--engine` | empty | `podman` or `docker`; empty means detected from `<engine-binary> --version`. |
+| `--runtime` | empty | Empty (the engine's default OCI runtime), or `krun`. |
+| `--userns` | | The user-namespace setting passed to the engine as `--userns`. |
+| `--network` | `none` | The network ceiling: a comma-separated list drawn from `none` and `unrestricted`. Clients may request only these modes. |
+| `--max-sandboxes` | `16` | The most sandboxes held at once; a `Create` beyond it is refused (`gateway.ErrCapacity`). |
+| `--max-ttl` | `24h` | The longest TTL accepted; a longer one is refused, naming `TTL`. |
+| `--reap-interval` | `10m` | How often the backend's `Reap` runs; it also runs once at start. |
+| `--version` | | Print `agentkit-gateway <version> (gateway protocol 1.0, agent protocol 1.2)` and exit 0. The version is the link-time stamp, else the build info's sandbox-module version, else `(devel)`. |
+
+### The token file
+
+One token per line. Blank lines and lines starting with `#` are ignored, and
+surrounding whitespace is trimmed. Each token must be at least 32 characters
+of printable ASCII without whitespace, and no token may repeat. Tokens are
+never accepted from a flag or the environment. The server keeps only each
+token's SHA-256 and logs only its first 8 hex characters.
+
+```
+# one line per embedder
+3f9c2b7e8a1d4c6f0b5e9a2d7c4f1e8b3a6d9c2f5e8b1a4d
+```
+
+### Output and exit codes
+
+After binding, the command prints one line to stderr:
+
+```
+agentkit-gateway: listening on <bound address> (<tls|plaintext>), backend <name>, version <v>
+```
+
+It then logs structured lines (`log/slog` text) to stderr: one per create,
+destroy (with the reason `client`, `expired`, `unavailable` or `shutdown`),
+refused authentication (with the peer address) and backend reap. SIGINT or
+SIGTERM runs a shutdown with a 60-second budget. Every failure is one line,
+`agentkit-gateway: <cause>`, and never contains a token.
+
+| Exit | When |
+|---|---|
+| 0 | A clean shutdown, or `--version`. |
+| 1 | A startup failure (a token file that cannot be read or holds an invalid token, invalid TLS files, an error from the backend's `podman.New`, a failure to listen), a serving failure, or a shutdown that failed to destroy a sandbox. |
+| 2 | A usage error: an unknown flag, no `--token-file`, half a TLS pair, `--plaintext` together with TLS or neither of them, an `--engine` other than `podman` or `docker`, a `--runtime` other than `krun`, a `--network` entry other than `none` or `unrestricted`, a non-positive `--max-sandboxes`, `--max-ttl` or `--reap-interval`, or an extra argument. Nothing is read or run first. |
+
+A `GitRepo` sync through the gateway runs the backend's init step on this
+host, with the engine's default network: it reaches whatever HTTPS URL the
+client names, as on a local Podman host.
+
 ## Make targets
 
 The targets are listed in [`README.md`](../README.md#make-targets). `make
-proto` regenerates the agent protocol's Go code: it needs `protoc` on `PATH`,
-installs `protoc-gen-go` v1.36.11 and `protoc-gen-go-grpc` v1.5.1 into
-`build/bin`, and records the SHA-256 of `sandbox.proto` in
-`sandbox/internal/sandboxpb/sandbox.proto.sha256`, which a test checks
-offline.
+proto` regenerates the agent and gateway protocols' Go code: it needs `protoc`
+on `PATH`, installs `protoc-gen-go` v1.36.11 and `protoc-gen-go-grpc` v1.5.1
+into `build/bin`, and records the SHA-256 of `sandbox.proto` and
+`gateway.proto` in `sandbox/internal/sandboxpb/sandbox.proto.sha256` and
+`gateway.proto.sha256`, which tests check offline.

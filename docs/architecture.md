@@ -7,20 +7,28 @@ disagree, fix this file.
 ## Shape
 
 One Go module, `github.com/agent-fox-dev/agentkit-go` (`go 1.27`), plus
-three nested modules with their own `go.mod`, none of them in the root build
+four nested modules with their own `go.mod`, none of them in the root build
 graph:
 
 - [`codesearch/`](../codesearch), the zoekt-backed index;
 - [`sandbox/`](../sandbox) (`…/sandbox`), the sandbox API, protocol, agent and
-  providers, with their dependencies (gRPC, protobuf, the rsync protocol). It
-  requires the root module through a `replace`; import paths are unchanged;
-- [`examples/sandbox/`](../examples/sandbox), the example program that uses it.
+  providers, the gateway client among them, with their dependencies (gRPC,
+  protobuf, the rsync protocol). It requires the root module through a
+  `replace`; import paths are unchanged;
+- [`sandbox/gatewayd/`](../sandbox/gatewayd) (`…/sandbox/gatewayd`), the
+  gateway server and its `agentkit-gateway` command. It requires the root and
+  sandbox modules through `replace ../../` and `replace ../`, directly
+  requires nothing else but gRPC, and its graph holds no module the sandbox
+  module's lacks. Go's `internal` rule goes by import path, so it uses the
+  sandbox module's `internal/sandboxpb` and `internal/attach`;
+- [`examples/sandbox/`](../examples/sandbox), the example program that uses
+  the sandbox module.
 
 cgo is allowed only in `//go:build cgo` files, each with a pure-Go fallback;
 `internal/policy` builds the four supported targets with cgo off and the host
-with cgo on, for the root and the two sandbox modules. Direct dependencies are
-an allowlist ([`DEPS.md`](DEPS.md)), checked for the root and the sandbox
-module.
+with cgo on, for the root, the sandbox module, the gatewayd module and the
+example. Direct dependencies are an allowlist ([`DEPS.md`](DEPS.md)), checked
+for the root, the sandbox module and the gatewayd module.
 
 AgentKit is two parts:
 
@@ -32,9 +40,14 @@ AgentKit is two parts:
 
 AgentKit serves no network API. It is a library: it has no MCP server and
 the library listens on no socket; `agentkit-sandboxd` serves the agent
-service on its stdio. Its only network traffic is outbound: the Anthropic
-provider's requests, and the MCP client's connections to servers an embedder
-configures.
+service on its stdio, and `agentkit-gateway`, a separate module, is the one
+network service. `internal/policy` keeps that a checked invariant: no non-test
+file of the root or the sandbox module refers to `net.Listen`,
+`net.ListenTCP`, `net.ListenUnix`, `net.ListenPacket`, `net.ListenConfig`,
+`tls.Listen` or `http.ListenAndServe*`. The library's only network traffic is
+outbound: the Anthropic provider's requests, the MCP client's connections to
+servers an embedder configures, and a gateway client's connection to its
+gateway.
 
 ## Package graph
 
@@ -76,10 +89,16 @@ First-party imports, from
 | `sandbox/internal/gitclone` | `sandbox` | |
 | `sandbox/podman` | `core`, `sandbox`, `sandbox/internal/{attach,gitclone,stdioconn}`, `tools` | |
 | `sandbox/landlock` | `core`, `sandbox`, `sandbox/internal/{attach,buildver,gitclone,stdioconn}` | |
+| `sandbox/internal/gatewaywire` | `sandbox`, `sandbox/internal/sandboxpb` | |
+| `sandbox/gateway` | `core`, `sandbox`, `sandbox/internal/{attach,gatewaywire,gitclone,sandboxpb}` | `google.golang.org/grpc` |
+| `sandbox/gatewayd` (nested module; so are the two rows below) | `sandbox`, `sandbox/gateway`, `sandbox/gatewayd/internal/token`, `sandbox/internal/{attach,buildver,gatewaywire,sandboxpb}`, `wire` | `google.golang.org/grpc` |
+| `sandbox/gatewayd/internal/token` | none | |
+| `sandbox/gatewayd/cmd/agentkit-gateway` | `sandbox`, `sandbox/gateway`, `sandbox/gatewayd`, `sandbox/gatewayd/internal/token`, `sandbox/internal/buildver`, `sandbox/podman` | |
 | `sandbox/cmd/agentkit-sandboxd` | `sandbox`, `sandbox/internal/{agent,buildver,confine,stdioconn}` | |
 | `sandbox/internal/fakeagent` (tests only) | `sandbox/internal/{sandboxpb,tooldigest}`, `tools` | `google.golang.org/grpc` |
 | `sandbox/internal/relaytest` (tests only) | `sandbox`, `sandbox/internal/{agent,attach,rsyncx,sandboxpb}` | `google.golang.org/grpc` |
 | `sandbox/internal/treegen` (tests only) | `sandbox/internal/tarsafe`, `tools` | |
+| `sandbox/gatewayd/internal/gwtest` (tests only) | `sandbox`, `sandbox/gateway`, `sandbox/gatewayd`, `sandbox/internal/{attach,fakeagent,sandboxpb}`, `sandbox/local` | `google.golang.org/grpc` |
 
 What follows from it:
 
@@ -126,7 +145,7 @@ What follows from it:
 | `internal/testkit` | Shared test helpers. |
 | `internal/toolconformance` | Tests only: the spec 06 conformance case table, run against `tools.All` and against sandbox proxy tools. |
 | `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `CheckSpec`, `LocalDir`, `Tar`/`TarOut`, `LandlockInfo`, `AgentArgs`, the protocol version, `MaxMessageBytes` and the errors (below). |
-| `sandbox/internal/sandboxpb` | The `agentkit.sandbox.v1` protocol (`sandbox.proto`) and its checked-in generated code; `make proto` regenerates it. |
+| `sandbox/internal/sandboxpb` | The `agentkit.sandbox.v1` protocols, the agent's (`sandbox.proto`) and the gateway's (`gateway.proto`), and their checked-in generated code; `make proto` regenerates both. |
 | `sandbox/internal/agent` | The agent service: runs `tools.All` against one workspace with an explicit environment. |
 | `sandbox/internal/attach` | The one `Sandbox` implementation, for every provider: handshake, state machine, failure classification, proxy tools, tar transfer. |
 | `sandbox/internal/tarsafe` | The tar entry rules both directions share, the `os.Root` extractor, the export validator and the archiver. |
@@ -138,6 +157,10 @@ What follows from it:
 | `sandbox/podman` | The Podman and Docker provider: a hardened container per sandbox, driven through the engine's command line. |
 | `sandbox/landlock` | The Landlock provider: `agentkit-sandboxd` as a confined child process on Linux with Landlock ABI 4. |
 | `sandbox/internal/gitclone` | `GitRepo` validation and the `git clone` argument list. |
+| `sandbox/internal/gatewaywire` | The conversions between `Spec` and `Capabilities` and the gateway's wire messages, shared by its client and its server. |
+| `sandbox/gateway` | The gateway client: `Dial` returns a `sandbox.Provider` whose sandboxes live on a remote gateway. |
+| `sandbox/gatewayd` | The gateway server (nested module): authentication, ownership, the sandbox lifecycle and the Agent relay over one backend provider. |
+| `sandbox/gatewayd/cmd/agentkit-gateway` | The gateway command: a TCP server over the Podman or Docker provider. |
 | `sandbox/cmd/agentkit-sandboxd` | The agent command. |
 
 ## Data flow of one run
@@ -733,6 +756,98 @@ UDP; Multipath TCP; signals to the user's processes; host paths in tool
 results; and file descriptors the embedder opened without close-on-exec.
 Landlock at the agent's ABI cap of 4 cannot express those, so the provider
 reports `IsolationConfinement` and its `Notes` say so.
+
+**The gateway.** A gateway lets an embedder create and use sandboxes on
+another host. `sandbox/gatewayd` holds one backend provider and that
+provider's credentials; the embedder holds only the gateway's URL and bearer
+token (`gateway.Dial`), and the sandbox holds neither. To the embedder and the
+model a gateway sandbox is attach's sandbox like any other: the same
+proxies, state machine and errors.
+
+```
+embedder   gateway.Dial: URL and token rules, one gRPC connection, Capabilities
+           Provider.Create: CheckSpec, MaxTTL, Provider JSON → Gateway.Create
+gatewayd   authenticate (SHA-256 of the token, constant time) → ceiling, TTL,
+           capacity → Backend.Create → entry {owner, created, expires}
+embedder   attach.New over the shared connection, agentkit-sandbox-id metadata
+gatewayd   relay: route by id and owner → the backend sandbox's own agent
+           connection (attach.ClientConn through Unwrap), no incoming metadata
+agent      the backend's agent, unaware of the gateway
+```
+
+*Two services, one package.* `gateway.proto` is a second file of
+`agentkit.sandbox.v1` with its own version (`gateway.ProtocolMajor` 1,
+`ProtocolMinor` 0) and its own recorded hash; the Agent service, its file and
+`sandbox.ProtocolMinor` are untouched, so agents need no rebuild. Its six
+unary RPCs (`Capabilities`, `Create`, `SyncGit`, `List`, `Destroy`, `Reap`)
+carry the sandbox id in their messages; Agent RPCs carry it in the
+`agentkit-sandbox-id` metadata key, which `attach.Config.Metadata` adds to
+every call. A refusal travels as a typed `Refusal` in the response, which the
+client turns back into `*sandbox.SpecError`, `ErrNoAgent`,
+`ErrNoPublishedImage`, `ErrProtocol` or `gateway.ErrCapacity`.
+
+*The typed relay.* The gateway serves an `Agent` implementation that forwards
+`Hello`, `Tools`, `Call`, `SyncTar`, `ExportTar` and `Rsync` message by
+message, unknown fields included, under the incoming RPC's context, so
+cancellation and deadlines reach the agent. It reads what it must: the
+`Rsync` start frame's direction and the outcome of each slot-taking RPC. An
+Agent RPC the gateway's build does not know answers `Unimplemented` until the
+gateway is upgraded.
+
+*Metadata hygiene.* The relay calls the agent with an empty outgoing
+metadata set: the agent never sees `authorization` or `agentkit-sandbox-id`.
+The server keeps only each token's SHA-256 as its owner identity and logs only
+the first 8 hex characters; no log line carries a token, an `Env` value, a
+tool input or a tool result.
+
+*Ownership.* A sandbox belongs to the token that created it. The relay,
+`SyncGit`, `Destroy` and `List` key every lookup by owner and id, so another
+token's id behaves exactly like one that does not exist: `List` omits it,
+`Destroy` answers OK and does nothing, the relay answers `Unavailable`. No
+existence oracle leaks.
+
+*The `GitRepo` slot.* A `GitRepo` is the backend's provider-side init step,
+so it is the Gateway RPC `SyncGit`, and the server keeps spec 17's slot rules
+itself: relayed RPCs bypass the backend wrapper's own bookkeeping. A
+successful `SyncGit`, the first relayed `Tools`, a relayed `SyncTar` that
+succeeds and a relayed `SYNC` `Rsync` that ends OK take the slot; while it is
+free, `SyncGit` holds a write lock and those relays a read lock, so the two
+never interleave. A later `SyncGit` is refused with "GitRepo must be the
+first Sync and come before Tools".
+
+*Transport failures and the state machine.* attach decides liveness by status
+code, and the client hides its shared connection from attach's watcher
+(`noWatch`), so liveness is decided per RPC: a network blip with no call in
+flight loses nothing. Every condition on the gateway's side (a missing,
+malformed, unknown or foreign id, a backend sandbox no longer live) answers
+`Unavailable`, never one of the four codes attach reads as the agent's own
+refusal, so a gone sandbox becomes `sandbox_unavailable` rather than a "live"
+sandbox that cannot work. Upstream, the agent's `InvalidArgument`,
+`FailedPrecondition`, `NotFound` and `Unimplemented` pass through, and every
+other error becomes `Unavailable`. A cut client connection, a cut backend
+connection and a gateway-side destroy all end the call in flight and every
+later call with `sandbox_unavailable`.
+
+*Lifecycle.* `Create` prunes entries whose backend sandbox is no longer live,
+then refuses with `CAPACITY` when recorded sandboxes plus creates in progress
+reach `MaxSandboxes`. A sandbox whose caller has gone by the time the backend
+returns is closed and never recorded, as is one whose backend exposes no
+agent connection. Each entry expires by its own timer at
+`created + TTL`; any access that finds the backend sandbox dead removes it;
+`Destroy` and `Shutdown` remove the rest. Each removal closes the backend
+sandbox and logs the reason (`client`, `expired`, `unavailable`,
+`shutdown`). `Serve` also runs the backend's own `Reap` at start and every
+`ReapInterval`, which catches what a crashed gateway left behind. On the
+client, a handshake that fails after `Gateway.Create` runs attach's destroy
+step, a context that ends before `Create` returns destroys the sandbox, and
+`Provider.Close` destroys every sandbox it created before closing the
+connection. Nothing reattaches: a crashed embedder's sandboxes live until their
+TTL unless it lists and destroys them.
+
+*No socket in the library.* The client package is in the sandbox module,
+which listens on nothing; only the gatewayd module calls `net.Listen`, in the
+command. `internal/policy` fails when a non-test file of the root or the
+sandbox module refers to a listening API.
 
 **`local` is not isolation.** Its capabilities say so (`IsolationNone`, only
 `NetworkUnrestricted`, nothing else honoured), and it refuses the zero
