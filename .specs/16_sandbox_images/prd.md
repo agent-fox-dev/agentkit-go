@@ -15,7 +15,7 @@ Give every container-based sandbox provider one trustworthy, versioned source fo
 
 ## Goals
 
-1. **Local build.** On a Linux or macOS host with `podman` or `docker`, `make sandbox-images` builds `quay.io/agent-fox-dev/agentkit-sandbox:dev` and `quay.io/agent-fox-dev/agentkit-sandboxd:dev` for the host platform. `make sandbox-images-test` then passes against them.
+1. **Local build.** On a Linux or macOS host with `podman` or `docker`, `make sandbox-images` builds `quay.io/agent-fox-dev/agentkit-sandbox:latest` and `quay.io/agent-fox-dev/agentkit-sandboxd:latest` for the host platform. `make sandbox-images-test` then passes against them.
 2. **Base image check.** An agent started from the base image over `run -i` and reached with `attach.Dial` reports:
    - `OutlineBackend == "tree-sitter"`, `Git == true` and `Workdir == "/workspace"`;
    - the expected version, which is `(devel)` when no version was stamped.

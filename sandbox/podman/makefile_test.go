@@ -86,8 +86,8 @@ func TestMakeSandboxPodmanTest_TS17_63(t *testing.T) {
 	if testAt < 0 || lastBuild < 0 || testAt < lastBuild {
 		t.Fatalf("make -n sandbox-podman-test does not build the images and then run the podman tests:\n%s", out)
 	}
-	for _, want := range []string{"cd sandbox && ", "AGENTKIT_SANDBOX_BASE_IMAGE=quay.io/agent-fox-dev/agentkit-sandbox:dev ",
-		"AGENTKIT_SANDBOX_OVERLAY_IMAGE=quay.io/agent-fox-dev/agentkit-sandboxd:dev ", "AGENTKIT_SANDBOX_IMAGE_VERSION=", "AGENTKIT_CONTAINER=podman "} {
+	for _, want := range []string{"cd sandbox && ", "AGENTKIT_SANDBOX_BASE_IMAGE=quay.io/agent-fox-dev/agentkit-sandbox:latest ",
+		"AGENTKIT_SANDBOX_OVERLAY_IMAGE=quay.io/agent-fox-dev/agentkit-sandboxd:latest ", "AGENTKIT_SANDBOX_IMAGE_VERSION=", "AGENTKIT_CONTAINER=podman "} {
 		if !strings.Contains(test, want) {
 			t.Errorf("the test line %q lacks %q", test, want)
 		}

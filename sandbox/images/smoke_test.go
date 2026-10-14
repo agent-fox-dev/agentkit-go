@@ -78,7 +78,7 @@ func TestMakeImagesSmoke_TS16_51(t *testing.T) {
 	if !strings.Contains(out, "--- PASS: TestBaseImage ") {
 		t.Errorf("make output has no PASS for TestBaseImage:\n%s", out)
 	}
-	for _, ref := range []string{"quay.io/agent-fox-dev/agentkit-sandbox:dev", "quay.io/agent-fox-dev/agentkit-sandboxd:dev"} {
+	for _, ref := range []string{"quay.io/agent-fox-dev/agentkit-sandbox:latest", "quay.io/agent-fox-dev/agentkit-sandboxd:latest"} {
 		if _, se, code := runEngine(t, engine, "image", "inspect", ref); code != 0 {
 			t.Errorf("%s is not in the image store: %s", ref, se)
 			continue
