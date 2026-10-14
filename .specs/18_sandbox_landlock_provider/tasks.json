@@ -78,7 +78,7 @@
         "internal/policy/landlock_provider_test.go",
         "internal/policy/testdata/sandbox-direct-requires.18.txt"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -124,7 +124,7 @@
       "depends_on": [
         1
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -167,7 +167,7 @@
       "depends_on": [
         2
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -215,7 +215,7 @@
       "depends_on": [
         1
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -272,7 +272,7 @@
         3,
         4
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -314,7 +314,7 @@
       "depends_on": [
         5
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -366,7 +366,7 @@
       "depends_on": [
         6
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -409,7 +409,7 @@
       "depends_on": [
         6
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -444,7 +444,7 @@
         4,
         5
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -482,7 +482,7 @@
         8,
         9
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,
@@ -523,7 +523,7 @@
         "`make sandbox-landlock-test` passes on a Linux host with Landlock ABI 4, git beneath a system directory and network access",
         "`make check` passes offline on Linux and macOS"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

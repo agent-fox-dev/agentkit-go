@@ -18,6 +18,19 @@ provider. **`local` is not isolation**: it runs the agent in this process with
 its privileges, and exists for tests and development. It speaks the same
 protocol, over the same transport, as the providers that isolate.
 
+## On a confined child process: `--landlock`
+
+```bash
+go install github.com/agent-fox-dev/agentkit-go/sandbox/cmd/agentkit-sandboxd@vX.Y.Z   # or, in a checkout: cd sandbox && go install ./cmd/agentkit-sandboxd
+cd examples/sandbox && go run . --landlock --agent "$(go env GOPATH)/bin/agentkit-sandboxd"
+```
+
+`--landlock` runs the same program on `sandbox/landlock`:
+`landlock.New(landlock.Options{AgentBinary: <--agent>})` and the zero `Spec`
+(`NetworkNone`). The agent runs as a child process confined by its own
+Landlock ruleset. It needs Linux with Landlock ABI 4 (Linux 6.7); elsewhere
+the run fails with `landlock: this host cannot confine a sandbox with Landlock ABI 4`.
+
 ## On a real container: `--podman`
 
 ```bash
