@@ -34,8 +34,8 @@ the run fails with `landlock: this host cannot confine a sandbox with Landlock A
 ## On a real container: `--podman`
 
 ```bash
-make sandbox-images   # from the repository root: builds ghcr.io/agent-fox-dev/agentkit-sandbox:dev
-cd examples/sandbox && go run . --podman --image ghcr.io/agent-fox-dev/agentkit-sandbox:dev
+make build-containers    # from the repository root: builds quay.io/agent-fox-dev/agentkit-sandbox:dev
+cd examples/sandbox && go run . --podman --image quay.io/agent-fox-dev/agentkit-sandbox:dev
 ```
 
 `--podman` runs the same program on `sandbox/podman`: `podman.New(podman.Options{})`

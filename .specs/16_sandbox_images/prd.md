@@ -15,7 +15,7 @@ Give every container-based sandbox provider one trustworthy, versioned source fo
 
 ## Goals
 
-1. **Local build.** On a Linux or macOS host with `podman` or `docker`, `make sandbox-images` builds `ghcr.io/agent-fox-dev/agentkit-sandbox:dev` and `ghcr.io/agent-fox-dev/agentkit-sandboxd:dev` for the host platform. `make sandbox-images-test` then passes against them.
+1. **Local build.** On a Linux or macOS host with `podman` or `docker`, `make sandbox-images` builds `quay.io/agent-fox-dev/agentkit-sandbox:dev` and `quay.io/agent-fox-dev/agentkit-sandboxd:dev` for the host platform. `make sandbox-images-test` then passes against them.
 2. **Base image check.** An agent started from the base image over `run -i` and reached with `attach.Dial` reports:
    - `OutlineBackend == "tree-sitter"`, `Git == true` and `Workdir == "/workspace"`;
    - the expected version, which is `(devel)` when no version was stamped.
@@ -28,7 +28,7 @@ Give every container-based sandbox provider one trustworthy, versioned source fo
    - only after the image tests passed on the runner.
 
    An anonymous pull of each published tag works on each platform, and the agent's `--version` prints `agentkit-sandboxd vX.Y.Z (protocol M.N)`.
-5. **Default image reference.** In a binary that depends on agentkit-go `vX.Y.Z`, `sandbox.DefaultImage()` returns `ghcr.io/agent-fox-dev/agentkit-sandbox:X.Y.Z` and `sandbox.OverlayImage()` returns `ghcr.io/agent-fox-dev/agentkit-sandboxd:X.Y.Z`. For a pseudo-version, `(devel)`, or a version with build metadata, both return `ErrNoPublishedImage`.
+5. **Default image reference.** In a binary that depends on agentkit-go `vX.Y.Z`, `sandbox.DefaultImage()` returns `quay.io/agent-fox-dev/agentkit-sandbox:X.Y.Z` and `sandbox.OverlayImage()` returns `quay.io/agent-fox-dev/agentkit-sandboxd:X.Y.Z`. For a pseudo-version, `(devel)`, or a version with build metadata, both return `ErrNoPublishedImage`.
 6. **`make check` stays offline.** It builds no image, needs no container engine and touches no network. The cross-target gate, the host-cgo gate, TS-09-20 and TS-12-14 pass. The root module gains no Go dependency. The exported surfaces of `agentkit`, `core`, `tools` and `codemode` do not change.
 
 ## Non-goals
@@ -177,8 +177,8 @@ Two tests cover it:
 
 ```go
 const (
-    BaseImageRepo    = "ghcr.io/agent-fox-dev/agentkit-sandbox"
-    OverlayImageRepo = "ghcr.io/agent-fox-dev/agentkit-sandboxd"
+    BaseImageRepo    = "quay.io/agent-fox-dev/agentkit-sandbox"
+    OverlayImageRepo = "quay.io/agent-fox-dev/agentkit-sandboxd"
 )
 var ErrNoPublishedImage = errors.New("sandbox: no published image for this agentkit-go version")
 func ImageTag(version string) (tag string, ok bool)
@@ -206,8 +206,8 @@ The `Makefile` gains two targets, each with a `## ` help line, and these variabl
 | Variable | Default |
 |---|---|
 | `CONTAINER` | `podman` when on `PATH`, else `docker` |
-| `SANDBOX_BASE_IMAGE` | `ghcr.io/agent-fox-dev/agentkit-sandbox` |
-| `SANDBOX_OVERLAY_IMAGE` | `ghcr.io/agent-fox-dev/agentkit-sandboxd` |
+| `SANDBOX_BASE_IMAGE` | `quay.io/agent-fox-dev/agentkit-sandbox` |
+| `SANDBOX_OVERLAY_IMAGE` | `quay.io/agent-fox-dev/agentkit-sandboxd` |
 | `SANDBOX_IMAGE_TAG` | `dev` |
 | `SANDBOX_PLATFORM` | empty, meaning the host platform; when set, passed as `--platform` |
 | `AGENTKIT_VERSION` | empty |

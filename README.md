@@ -156,17 +156,17 @@ covers the agent command.
 The agent ships in two images, built from `sandbox/images/Containerfile` and
 published for linux/amd64 and linux/arm64 on each release:
 
-- `ghcr.io/agent-fox-dev/agentkit-sandbox:X.Y.Z` (`sandbox.BaseImageRepo`) is
+- `quay.io/agent-fox-dev/agentkit-sandbox:X.Y.Z` (`sandbox.BaseImageRepo`) is
   Debian trixie-slim with `git`, `bash` and `ca-certificates`, a uid-1000
   user `agentkit`, and the cgo-built agent (tree-sitter outlines) at
   `sandbox.AgentPath`. It runs as is; `sandbox.DefaultImage()` names it for
   the build's version.
-- `ghcr.io/agent-fox-dev/agentkit-sandboxd:X.Y.Z` (`sandbox.OverlayImageRepo`)
+- `quay.io/agent-fox-dev/agentkit-sandboxd:X.Y.Z` (`sandbox.OverlayImageRepo`)
   holds one static file, the agent, for an embedder's own toolchain image,
   which adds it with the line `sandbox.OverlayCopyLine` returns:
 
   ```dockerfile
-  COPY --from=ghcr.io/agent-fox-dev/agentkit-sandboxd:X.Y.Z /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/
+  COPY --from=quay.io/agent-fox-dev/agentkit-sandboxd:X.Y.Z /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/
   ```
 
 `make sandbox-images` builds both locally, and

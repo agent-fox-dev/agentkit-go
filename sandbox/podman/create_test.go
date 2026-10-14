@@ -45,7 +45,7 @@ func TestCreateRefusesUncovered_TS17_16(t *testing.T) {
 func TestCreateDefaultImage_TS17_22(t *testing.T) {
 	f := newFake(t)
 	p := testProvider(f, Options{})
-	const img = "ghcr.io/agent-fox-dev/agentkit-sandbox:1.2.3"
+	const img = "quay.io/agent-fox-dev/agentkit-sandbox:1.2.3"
 	p.defaultImage = func() (string, error) { return img, nil }
 	s, err := p.Create(context.Background(), sandbox.Spec{})
 	if err != nil {

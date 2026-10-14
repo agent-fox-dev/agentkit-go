@@ -404,14 +404,14 @@
       "title": "With an empty Spec.Image the default image is run and reported in the effective spec",
       "given": [
         "a podman provider over a fake runner seam serving an in-process agent",
-        "the provider's default-image lookup substituted (internal test hook) to return ghcr.io/agent-fox-dev/agentkit-sandbox:1.2.3, as a release build's sandbox.DefaultImage would"
+        "the provider's default-image lookup substituted (internal test hook) to return quay.io/agent-fox-dev/agentkit-sandbox:1.2.3, as a release build's sandbox.DefaultImage would"
       ],
       "when": "Create is called with Spec{Image: \"\"}",
       "then": [
-        "the recorded run argv has ghcr.io/agent-fox-dev/agentkit-sandbox:1.2.3 immediately after --entrypoint /usr/local/libexec/agentkit-sandboxd",
-        "Sandbox.Spec().Image equals ghcr.io/agent-fox-dev/agentkit-sandbox:1.2.3"
+        "the recorded run argv has quay.io/agent-fox-dev/agentkit-sandbox:1.2.3 immediately after --entrypoint /usr/local/libexec/agentkit-sandboxd",
+        "Sandbox.Spec().Image equals quay.io/agent-fox-dev/agentkit-sandbox:1.2.3"
       ],
-      "pseudocode": "setDefaultImage(func() (string, error) { return \"ghcr.io/agent-fox-dev/agentkit-sandbox:1.2.3\", nil })\ns = p.Create(ctx, Spec{}); run = fake.find(\"run\", \"-i\")\nassert run.argv[indexOf(run.argv, AgentPath)+1] == s.Spec().Image == \"ghcr.io/agent-fox-dev/agentkit-sandbox:1.2.3\""
+      "pseudocode": "setDefaultImage(func() (string, error) { return \"quay.io/agent-fox-dev/agentkit-sandbox:1.2.3\", nil })\ns = p.Create(ctx, Spec{}); run = fake.find(\"run\", \"-i\")\nassert run.argv[indexOf(run.argv, AgentPath)+1] == s.Spec().Image == \"quay.io/agent-fox-dev/agentkit-sandbox:1.2.3\""
     },
     {
       "id": "TS-17-23",

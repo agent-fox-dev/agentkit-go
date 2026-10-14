@@ -108,7 +108,7 @@ func TestMakeVariables_TS16_18(t *testing.T) {
 				t.Errorf("build line %q lacks AGENTKIT_REVISION=%s", l, rev)
 			}
 		}
-		if !strings.Contains(lines[0], "-t ghcr.io/agent-fox-dev/agentkit-sandbox:dev") || !strings.Contains(lines[1], "-t ghcr.io/agent-fox-dev/agentkit-sandboxd:dev") {
+		if !strings.Contains(lines[0], "-t quay.io/agent-fox-dev/agentkit-sandbox:dev") || !strings.Contains(lines[1], "-t quay.io/agent-fox-dev/agentkit-sandboxd:dev") {
 			t.Errorf("default tags: %q", lines)
 		}
 	}
@@ -167,7 +167,7 @@ func TestMakeSandboxImages_TS16_19(t *testing.T) {
 				t.Errorf("line %q", l)
 			}
 			tags := regexp.MustCompile(`-t (\S+)`).FindAllStringSubmatch(l, -1)
-			want := []string{"ghcr.io/agent-fox-dev/agentkit-sandbox:dev", "ghcr.io/agent-fox-dev/agentkit-sandboxd:dev"}[i]
+			want := []string{"quay.io/agent-fox-dev/agentkit-sandbox:dev", "quay.io/agent-fox-dev/agentkit-sandboxd:dev"}[i]
 			if len(tags) != 1 || tags[0][1] != want {
 				t.Errorf("line %q tags %v, want only %s", l, tags, want)
 			}
@@ -221,8 +221,8 @@ func TestMakeImagesTest_TS16_21(t *testing.T) {
 		if testAt < 0 || testAt < lastBuild {
 			t.Fatalf("version %q: no go test line after the builds:\n%s", version, out)
 		}
-		for _, want := range []string{"cd sandbox && ", "AGENTKIT_SANDBOX_BASE_IMAGE=ghcr.io/agent-fox-dev/agentkit-sandbox:dev ",
-			"AGENTKIT_SANDBOX_OVERLAY_IMAGE=ghcr.io/agent-fox-dev/agentkit-sandboxd:dev ",
+		for _, want := range []string{"cd sandbox && ", "AGENTKIT_SANDBOX_BASE_IMAGE=quay.io/agent-fox-dev/agentkit-sandbox:dev ",
+			"AGENTKIT_SANDBOX_OVERLAY_IMAGE=quay.io/agent-fox-dev/agentkit-sandboxd:dev ",
 			"AGENTKIT_SANDBOX_IMAGE_VERSION=" + version + " ", "AGENTKIT_CONTAINER=podman "} {
 			if !strings.Contains(test, want) {
 				t.Errorf("the test line %q lacks %q", test, want)

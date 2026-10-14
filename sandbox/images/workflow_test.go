@@ -500,11 +500,11 @@ func TestPublishStep_TS16_34(t *testing.T) {
 	for _, c := range calls {
 		switch {
 		case strings.Contains(c, "--target base"):
-			if got := tagsOf(c); !slices.Equal(got, []string{"ghcr.io/agent-fox-dev/agentkit-sandbox:1.2", "ghcr.io/agent-fox-dev/agentkit-sandbox:1.2.3"}) {
+			if got := tagsOf(c); !slices.Equal(got, []string{"quay.io/agent-fox-dev/agentkit-sandbox:1.2", "quay.io/agent-fox-dev/agentkit-sandbox:1.2.3"}) {
 				t.Errorf("base tags %v", got)
 			}
 		case strings.Contains(c, "--target overlay"):
-			if got := tagsOf(c); !slices.Equal(got, []string{"ghcr.io/agent-fox-dev/agentkit-sandboxd:1.2", "ghcr.io/agent-fox-dev/agentkit-sandboxd:1.2.3"}) {
+			if got := tagsOf(c); !slices.Equal(got, []string{"quay.io/agent-fox-dev/agentkit-sandboxd:1.2", "quay.io/agent-fox-dev/agentkit-sandboxd:1.2.3"}) {
 				t.Errorf("overlay tags %v", got)
 			}
 		default:
@@ -581,7 +581,7 @@ func TestVerifyJob_TS16_36(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
-	for _, repo := range []string{"ghcr.io/agent-fox-dev/agentkit-sandbox", "ghcr.io/agent-fox-dev/agentkit-sandboxd"} {
+	for _, repo := range []string{"quay.io/agent-fox-dev/agentkit-sandbox", "quay.io/agent-fox-dev/agentkit-sandboxd"} {
 		for _, tag := range []string{"1.2.3", "1.2"} {
 			for _, p := range []string{"linux/amd64", "linux/arm64"} {
 				ref := repo + ":" + tag
@@ -613,9 +613,9 @@ func TestVerifyJobFails_TS16_37(t *testing.T) {
 		env  []string
 		name string
 	}{
-		{[]string{"FAKE_PULL_FAIL=pull --platform linux/arm64 ghcr.io/agent-fox-dev/agentkit-sandboxd:1.2"}, "ghcr.io/agent-fox-dev/agentkit-sandboxd:1.2"},
-		{[]string{"FAKE_RUN_OUT=agentkit-sandboxd v1.2.2 (protocol 1.0)"}, "ghcr.io/agent-fox-dev/agentkit-sandbox:1.2.3"},
-		{[]string{"FAKE_RUN_OUT=agentkit-sandboxd v1.2.30 (protocol 1.0)"}, "ghcr.io/agent-fox-dev/agentkit-sandbox:1.2.3"},
+		{[]string{"FAKE_PULL_FAIL=pull --platform linux/arm64 quay.io/agent-fox-dev/agentkit-sandboxd:1.2"}, "quay.io/agent-fox-dev/agentkit-sandboxd:1.2"},
+		{[]string{"FAKE_RUN_OUT=agentkit-sandboxd v1.2.2 (protocol 1.0)"}, "quay.io/agent-fox-dev/agentkit-sandbox:1.2.3"},
+		{[]string{"FAKE_RUN_OUT=agentkit-sandboxd v1.2.30 (protocol 1.0)"}, "quay.io/agent-fox-dev/agentkit-sandbox:1.2.3"},
 	} {
 		out, calls, code := runBash(t, block, append([]string{"VERSION=v1.2.3", "TAGS=1.2.3 1.2"}, c.env...)...)
 		if code == 0 || !strings.Contains(out, c.name) {

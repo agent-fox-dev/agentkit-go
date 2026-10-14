@@ -952,8 +952,8 @@ providers start the agent with `--entrypoint sandbox.AgentPath` and
 
 | Identifier | Value or behaviour |
 |---|---|
-| `sandbox.BaseImageRepo` | `ghcr.io/agent-fox-dev/agentkit-sandbox` |
-| `sandbox.OverlayImageRepo` | `ghcr.io/agent-fox-dev/agentkit-sandboxd` |
+| `sandbox.BaseImageRepo` | `quay.io/agent-fox-dev/agentkit-sandbox` |
+| `sandbox.OverlayImageRepo` | `quay.io/agent-fox-dev/agentkit-sandboxd` |
 | `sandbox.ImageTag(version)` | The tag of a release version: `version` without its `v`. Only `vMAJOR.MINOR.PATCH` with no leading zeros and an optional `-prerelease` is accepted; `(devel)`, build metadata (`+dirty`, `+incompatible`) and Go pseudo-versions give `("", false)`. |
 | `sandbox.DefaultImage()` | `BaseImageRepo:<tag>` for the build's version (`buildver`: the link-time stamp, else the sandbox module's version, else `(devel)`). |
 | `sandbox.OverlayImage()` | `OverlayImageRepo:<tag>` for the build's version. |
@@ -990,8 +990,8 @@ each overridable on the command line:
 | Variable | Default |
 |---|---|
 | `CONTAINER` | `podman` when on `PATH`, else `docker` |
-| `SANDBOX_BASE_IMAGE` | `ghcr.io/agent-fox-dev/agentkit-sandbox` |
-| `SANDBOX_OVERLAY_IMAGE` | `ghcr.io/agent-fox-dev/agentkit-sandboxd` |
+| `SANDBOX_BASE_IMAGE` | `quay.io/agent-fox-dev/agentkit-sandbox` |
+| `SANDBOX_OVERLAY_IMAGE` | `quay.io/agent-fox-dev/agentkit-sandboxd` |
 | `SANDBOX_IMAGE_TAG` | `dev` |
 | `SANDBOX_PLATFORM` | empty: the host platform; when set, passed as `--platform` |
 | `AGENTKIT_VERSION` | empty: the agent reports `(devel)` |

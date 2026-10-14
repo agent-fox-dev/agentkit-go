@@ -425,9 +425,9 @@
         "a fake gateway whose capabilities honour Image",
         "the test binary's own build version, (devel), for which sandbox.DefaultImage fails"
       ],
-      "when": "Create(Spec{}) runs once with the package-internal default-image hook stubbed to \"ghcr.io/agent-fox-dev/agentkit-sandbox:0.19.0\", once with the real DefaultImage, once with Image \"mine\", and once against capabilities that do not honour Image",
+      "when": "Create(Spec{}) runs once with the package-internal default-image hook stubbed to \"quay.io/agent-fox-dev/agentkit-sandbox:0.19.0\", once with the real DefaultImage, once with Image \"mine\", and once against capabilities that do not honour Image",
       "then": [
-        "with the stub, the CreateRequest's spec carries image ghcr.io/agent-fox-dev/agentkit-sandbox:0.19.0",
+        "with the stub, the CreateRequest's spec carries image quay.io/agent-fox-dev/agentkit-sandbox:0.19.0",
         "with the real DefaultImage, Create returns an error matching sandbox.ErrNoPublishedImage whose text equals DefaultImage()'s error, and 0 Create RPCs are sent",
         "Image \"mine\" is sent unchanged, and without Image support the image is sent empty"
       ],

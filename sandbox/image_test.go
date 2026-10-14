@@ -101,7 +101,7 @@ func TestOverlayCopyLine_TS16_9(t *testing.T) {
 	if got := sandbox.OverlayCopyLine("x:1"); got != "COPY --from=x:1 /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/" {
 		t.Errorf("OverlayCopyLine(x:1) = %q", got)
 	}
-	ref := "ghcr.io/agent-fox-dev/agentkit-sandboxd:0.6.0"
+	ref := "quay.io/agent-fox-dev/agentkit-sandboxd:0.6.0"
 	got := sandbox.OverlayCopyLine(ref)
 	if want := "COPY --from=" + ref + " " + sandbox.AgentPath + " " + path.Dir(sandbox.AgentPath) + "/"; got != want || strings.Contains(got, "\n") {
 		t.Errorf("OverlayCopyLine(%s) = %q, want %q", ref, got, want)
