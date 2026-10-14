@@ -73,43 +73,39 @@ func TestBaseImage(t *testing.T) {
 		}
 	})
 
-	// TS-16-39: git, bash and the CA bundle are present, rsync, curl and
-	// tini are absent, the apt lists are gone, and git trusts every
-	// directory. 16-REQ-2.1, 16-REQ-2.4.
+	// TS-16-39: git, bash and the CA bundle are present, tini is absent,
+	// and git trusts every directory. 16-REQ-2.1, 16-REQ-2.4. The UBI base
+	// ships rsync and curl, so their absence is not checked
+	// (docs/errata/16_sandbox_images.md).
 	t.Run("packages_TS16_39", func(t *testing.T) {
 		if rc, out := mustExec(t, h, "git --version"); rc != 0 || !strings.HasPrefix(out, "git version") {
 			t.Errorf("git --version: rc %d, %q", rc, out)
 		}
-		for _, c := range []string{"test -x /bin/bash", "test -s /etc/ssl/certs/ca-certificates.crt"} {
+		for _, c := range []string{"test -x /bin/bash", "test -s /etc/pki/tls/certs/ca-bundle.crt"} {
 			if rc, out := mustExec(t, h, c); rc != 0 {
 				t.Errorf("%s: rc %d, %q", c, rc, out)
 			}
 		}
-		for _, tool := range []string{"rsync", "curl", "tini"} {
-			if rc, out := mustExec(t, h, "command -v "+tool); rc == 0 {
-				t.Errorf("%s is present: %q", tool, out)
-			}
-		}
-		if _, out := mustExec(t, h, "ls /var/lib/apt/lists"); strings.Contains(out, "_Packages") {
-			t.Errorf("/var/lib/apt/lists holds package indexes: %q", out)
+		if rc, out := mustExec(t, h, "command -v tini"); rc == 0 {
+			t.Errorf("tini is present: %q", out)
 		}
 		if rc, out := mustExec(t, h, "git config --system --get-all safe.directory"); rc != 0 || out != "*" {
 			t.Errorf("safe.directory: rc %d, %q", rc, out)
 		}
 	})
 
-	// TS-16-40: the image runs as agentkit 1000:1000, owns /workspace and
-	// its home, accepts a workspace write, and cannot replace the
-	// root-owned agent. 16-REQ-2.2, 16-REQ-2.3, 16-REQ-2.5.
+	// TS-16-40: the image runs as UBI's arbitrary-UID-friendly 1001:0, owns
+	// /workspace and its home with group write, accepts a workspace write,
+	// and cannot replace the root-owned agent. 16-REQ-2.2, 16-REQ-2.3,
+	// 16-REQ-2.5, as the UBI base changed them
+	// (docs/errata/16_sandbox_images.md).
 	t.Run("user_TS16_40", func(t *testing.T) {
 		for c, want := range map[string]string{
-			"id -u": "1000", "id -g": "1000",
-			"getent passwd agentkit | cut -d: -f3,4,6,7": "1000:1000:/home/agentkit:/bin/bash",
-			"getent group agentkit | cut -d: -f3":        "1000",
-			"stat -c '%u %g %a' /workspace":              "1000 1000 755",
-			"stat -c %u /workspace /home/agentkit":       "1000\n1000",
-			"stat -c '%u %g' /home/agentkit":             "1000 1000",
-			"stat -c '%u %a' " + sandbox.AgentPath:       "0 755",
+			"id -u": "1001", "id -g": "0",
+			"echo $HOME":                           "/home/agentkit",
+			"stat -c '%u %g %a' /workspace":        "1001 0 775",
+			"stat -c '%u %g %a' /home/agentkit":    "1001 0 775",
+			"stat -c '%u %a' " + sandbox.AgentPath: "0 755",
 		} {
 			if rc, out := mustExec(t, h, c); rc != 0 || out != want {
 				t.Errorf("%s: rc %d, %q, want %q", c, rc, out, want)
@@ -122,7 +118,7 @@ func TestBaseImage(t *testing.T) {
 		if err != nil || r.Error != "" {
 			t.Fatalf("write_file: %+v, %v", r, err)
 		}
-		if rc, out := mustExec(t, h, "cat /workspace/probe.txt; echo; stat -c %u /workspace/probe.txt"); rc != 0 || out != "x\n1000" {
+		if rc, out := mustExec(t, h, "cat /workspace/probe.txt; echo; stat -c %u /workspace/probe.txt"); rc != 0 || out != "x\n1001" {
 			t.Errorf("probe.txt: rc %d, %q", rc, out)
 		}
 	})
@@ -137,9 +133,15 @@ func TestBaseImage(t *testing.T) {
 	})
 }
 
+// ubiEnv is the environment the UBI s2i-core base sets; the image adds
+// only HOME.
+var ubiEnv = []string{"container", "SUMMARY", "DESCRIPTION", "NAME", "VERSION", "STI_SCRIPTS_URL",
+	"STI_SCRIPTS_PATH", "APP_ROOT", "PATH", "PLATFORM", "HOME"}
+
 // TS-16-41: image inspect shows the base image's numeric user, agent
-// entrypoint, workspace workdir, no volumes and no added environment.
-// 16-REQ-2.2, 16-REQ-2.3, 16-REQ-2.5, 16-REQ-2.6.
+// entrypoint, workspace workdir, no volumes and no environment beyond the
+// UBI base's and HOME. 16-REQ-2.2, 16-REQ-2.3, 16-REQ-2.5, 16-REQ-2.6, as
+// the UBI base changed them (docs/errata/16_sandbox_images.md).
 func TestBaseImageConfig(t *testing.T) {
 	engine, base := requireImage(t, "AGENTKIT_SANDBOX_BASE_IMAGE")
 	var cfg struct {
@@ -150,12 +152,16 @@ func TestBaseImageConfig(t *testing.T) {
 		Env        []string
 	}
 	inspectJSON(t, engine, base, ".Config", &cfg)
-	if cfg.User != "1000:1000" || !slices.Equal(cfg.Entrypoint, []string{sandbox.AgentPath}) || cfg.WorkingDir != "/workspace" || len(cfg.Volumes) != 0 {
+	if cfg.User != "1001:0" || !slices.Equal(cfg.Entrypoint, []string{sandbox.AgentPath}) || cfg.WorkingDir != "/workspace" || len(cfg.Volumes) != 0 {
 		t.Errorf("Config %+v", cfg)
 	}
 	for _, kv := range cfg.Env {
-		if k, _, _ := strings.Cut(kv, "="); k != "PATH" {
+		k, v, _ := strings.Cut(kv, "=")
+		if !slices.Contains(ubiEnv, k) {
 			t.Errorf("the image sets %s", k)
+		}
+		if k == "HOME" && v != "/home/agentkit" {
+			t.Errorf("HOME=%s", v)
 		}
 	}
 }
@@ -199,7 +205,7 @@ func TestBaseImageUnstamped(t *testing.T) {
 	engine, base := requireImage(t, "AGENTKIT_SANDBOX_BASE_IMAGE")
 	_, overlay := requireImage(t, "AGENTKIT_SANDBOX_OVERLAY_IMAGE")
 	if v := os.Getenv("AGENTKIT_SANDBOX_IMAGE_VERSION"); v != "" {
-		t.Skipf("the images are stamped %s; this test needs an unstamped build (make build-containers with VERSION empty)", v)
+		t.Skipf("the images are stamped %s; this test needs an unstamped build (podman build -f containers/<image>/Containerfile with no AGENTKIT_VERSION)", v)
 	}
 	h := startT(t, engine, base)
 	if v := h.sb.Agent().Version; v != "(devel)" {

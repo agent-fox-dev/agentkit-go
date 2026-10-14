@@ -4,7 +4,10 @@
 MODULES := . codesearch sandbox sandbox/gatewayd examples/sandbox
 DOC_DIR ?= build/docs
 
-VERSION    := $(shell git describe --tags 2>/dev/null || echo "0.1.0")
+# VERSION is stamped into the agent as is, so a release tag keeps its v
+# (vX.Y.Z, the form sandbox.ImageTag reads); dev outside a tagged checkout.
+# The match skips the sandbox/vX.Y.Z module tags at the same commit.
+VERSION    := $(shell git describe --tags --match 'v[0-9]*' 2>/dev/null || echo "dev")
 COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -105,9 +108,9 @@ build-containers: build-sandbox-container build-sandboxd-container
 .PHONY: build-sandbox-container
 build-sandbox-container:
 	podman build \
-		--build-arg VERSION=$(VERSION) \
-		--build-arg BUILD=$(COMMIT) \
-		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		--build-arg AGENTKIT_VERSION=$(VERSION) \
+		--build-arg AGENTKIT_REVISION=$(COMMIT) \
+		--build-arg AGENTKIT_BUILD_TIME=$(BUILD_TIME) \
 		-t $(CONTAINER_REGISTRY)/$(SANDBOX_IMAGE):$(SANDBOX_IMAGE_TAG) \
 		-t $(CONTAINER_REGISTRY)/$(SANDBOX_IMAGE):latest \
 		-f containers/agentkit-sandbox/Containerfile .
@@ -115,9 +118,9 @@ build-sandbox-container:
 .PHONY: build-sandboxd-container
 build-sandboxd-container:
 	podman build \
-		--build-arg VERSION=$(VERSION) \
-		--build-arg BUILD=$(COMMIT) \
-		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		--build-arg AGENTKIT_VERSION=$(VERSION) \
+		--build-arg AGENTKIT_REVISION=$(COMMIT) \
+		--build-arg AGENTKIT_BUILD_TIME=$(BUILD_TIME) \
 		-t $(CONTAINER_REGISTRY)/$(SANDBOXD_IMAGE):$(SANDBOXD_IMAGE_TAG) \
 		-t $(CONTAINER_REGISTRY)/$(SANDBOXD_IMAGE):latest \
 		-f containers/agentkit-sandboxd/Containerfile .

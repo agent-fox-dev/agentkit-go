@@ -963,26 +963,27 @@ providers start the agent with `--entrypoint sandbox.AgentPath` and
 The default is the exact `X.Y.Z` tag, never `X.Y`: the `Tools` digest check
 fails when the host and the agent are at different versions.
 
-**The base image** (`--target base`):
+**The base image** (`containers/agentkit-sandbox/Containerfile`):
 
 | Content | Value |
 |---|---|
-| Base | `debian:trixie-slim` |
-| Packages | `git`, `bash`, `ca-certificates`; nothing else (the agent carries rsync itself; zombie reaping is the provider's `--init`) |
-| User | `agentkit`, uid 1000, gid 1000, home `/home/agentkit`, shell `/bin/bash`; `USER 1000:1000` |
-| Workspace | `/workspace`, owned 1000:1000, mode 0755, `WORKDIR`; not a `VOLUME` |
+| Base | `registry.redhat.io/ubi10/s2i-core` |
+| Packages | `git-core`, `bash`, `ca-certificates` added to the UBI base, which also ships `rsync` and `curl`; no `tini` (zombie reaping is the provider's `--init`) |
+| User | UBI's `default` user, uid 1001, gid 0 (OpenShift's arbitrary-UID convention); `USER 1001:0`; `HOME=/home/agentkit` |
+| Workspace | `/workspace` and `/home/agentkit`, owned 1001:0, mode 0775, `/workspace` the `WORKDIR`; not a `VOLUME` |
 | git | `safe.directory = *` in the system config |
 | Agent | cgo-built (tree-sitter outlines), at `sandbox.AgentPath` |
-| Environment | none beyond the Debian image's `PATH` |
+| Environment | the UBI base's (`PATH`, `APP_ROOT`, `STI_SCRIPTS_*`, …) plus `HOME` |
 | Labels | `org.opencontainers.image.source` (`https://github.com/agent-fox-dev/agentkit-go`), `licenses` (`Apache-2.0`), `title`, `description`, `version`, `revision` |
 
-**The overlay image** (`--target overlay`) is `FROM scratch` with one layer:
-the static agent (`OutlineBackend` `none`) and the same labels.
+**The overlay image** (`containers/agentkit-sandboxd/Containerfile`) is
+`FROM scratch` with one layer: the static agent (`OutlineBackend` `none`)
+and the same labels, titled `agentkit-sandboxd`.
 
-**Tags.** A release `vX.Y.Z` publishes `X.Y.Z`, plus a moving `X.Y` when there
-is no prerelease part, for linux/amd64 and linux/arm64; there is no
-`latest`. A re-run rebuilds a tag, so an embedder who needs an immutable
-image pins its digest. [`releasing.md`](releasing.md) has the details.
+**Tags.** A release `vX.Y.Z` publishes `X.Y.Z` for linux/amd64 and
+linux/arm64; a build of `main` also moves `latest`. There is no `X.Y` tag. A
+re-run rebuilds a tag, so an embedder who needs an immutable image pins its
+digest. [`releasing.md`](releasing.md) has the details.
 
 **Make variables** for `make build-containers`, each overridable on the
 command line:
@@ -993,9 +994,12 @@ command line:
 | `SANDBOX_IMAGE` | `agentkit-sandbox` |
 | `SANDBOXD_IMAGE` | `agentkit-sandboxd` |
 | `SANDBOX_IMAGE_TAG`, `SANDBOXD_IMAGE_TAG` | `VERSION`; each image is also tagged `latest` |
-| `VERSION` | `git describe --tags`, or `0.1.0` outside a tagged checkout |
+| `VERSION` | `git describe --tags --match 'v[0-9]*'`, or `dev` outside a tagged checkout |
 
-The build stamps `VERSION`, the short commit and the UTC build time into
+The build passes `VERSION`, the short commit and the UTC build time as the
+build arguments `AGENTKIT_VERSION`, `AGENTKIT_REVISION` and
+`AGENTKIT_BUILD_TIME` (prefixed, because the UBI images set an `ENV VERSION`
+that would override an argument of that name), and stamps them into
 the agent (`-ldflags -X …/sandbox/internal/buildver.stamp`, `.commit` and
 `.buildTime`); `agentkit-sandboxd --version` prints
 `agentkit-sandboxd <version> (protocol M.N) commit <commit> built <time>`,

@@ -3,7 +3,8 @@
 A release publishes the two sandbox images: `quay.io/agentfox/agentkit-sandbox`
 (the base image) and `quay.io/agentfox/agentkit-sandboxd` (the overlay
 image). Nothing else is released by automation: no binaries, archives or
-formulae. The workflow is `.github/workflows/sandbox-images.yml`.
+formulae. The workflow is `.github/workflows/build-sandbox-containers.yaml`,
+which runs the reusable `.github/workflows/inc-build.yaml` once per image.
 
 The sandbox gateway, `agentkit-gateway`, is not published: no binary, image
 or chart. An operator builds it from a checkout with
@@ -15,7 +16,7 @@ gateway's.
 
 ## Cutting a release
 
-Push the version tag at the release commit:
+Push the version tags at the release commit:
 
 ```bash
 git tag v0.6.0
@@ -23,70 +24,70 @@ git tag sandbox/v0.6.0
 git push origin v0.6.0 sandbox/v0.6.0
 ```
 
-`vX.Y.Z` triggers the workflow. `sandbox/vX.Y.Z` is the tag Go resolves for
-the nested module `github.com/agent-fox-dev/agentkit-go/sandbox` at
-`vX.Y.Z`; an embedder's binary reports that version, and
-`sandbox.DefaultImage()` and `sandbox.OverlayImage()` turn it into the
-image references, so both tags are pushed together
-(`docs/errata/16_sandbox_images.md`). The workflow's `v*` trigger does not
-match `sandbox/v*`, so the second tag starts nothing.
+`sandbox/vX.Y.Z` is the tag Go resolves for the nested module
+`github.com/agent-fox-dev/agentkit-go/sandbox` at `vX.Y.Z`; an embedder's
+binary reports that version, and `sandbox.DefaultImage()` and
+`sandbox.OverlayImage()` turn it into the image references, so both tags
+are pushed together (`docs/errata/16_sandbox_images.md`).
 
-Only tags starting with `v` start the workflow, and such a tag must match
-`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$`;
-any other `v*` tag fails the workflow before it builds.
+Then start **agentkit sandbox containers build** from the Actions page
+(`workflow_dispatch`) with the `vX.Y.Z` tag as the ref. The tag-push
+trigger is commented out, so pushing the tags alone builds nothing.
 
 ## What the workflow does
 
-1. The `images` job builds both images on the runner's default docker
-   builder with `AGENTKIT_VERSION` set to the tag, and runs
-   `make sandbox-images-test` against them. A failing test ends the run
-   before anything is published.
-2. It then sets up QEMU and buildx, logs in to `ghcr.io` with the workflow's
-   `GITHUB_TOKEN`, and pushes both targets for linux/amd64 and linux/arm64.
-3. The `verify` job pulls every published tag for both platforms without
-   logging in, and checks that `--version` prints a line starting with
-   `agentkit-sandboxd vX.Y.Z ` (followed by `(protocol M.N)`).
+For each image, `inc-build.yaml` runs three jobs:
+
+1. **prepare** reads the version with `git describe --tags --match 'v[0-9]*'`,
+   which skips the `sandbox/v*` module tags. On a `vX.Y.Z` tag it yields
+   `vX.Y.Z`; between tags it yields `vX.Y.Z-N-g<commit>`; with no tag at
+   all, the short commit. The agent is stamped with that version as is
+   (`dev` when there is no tag); the image tag is the version without its
+   `v`.
+2. **build** builds the image natively on an amd64 and an arm64 runner,
+   after logging in to `registry.redhat.io` (for the UBI base images) and
+   to the target registry, and pushes `<version>-amd64` and
+   `<version>-arm64`. It passes `AGENTKIT_VERSION`, `AGENTKIT_REVISION`
+   (the short commit) and `AGENTKIT_BUILD_TIME` as build arguments: they
+   are stamped into the agent and fill the `version` and `revision`
+   labels. The Containerfile's labels are the image's labels.
+3. **manifest** joins the two into a multi-arch `<version>` manifest, adds
+   the extra tags below, and attaches a build-provenance attestation.
+
+The repository variables `REGISTRY` and `REGISTRY_ORG` name the target
+(`quay.io` and `agentfox`); the secrets `RH_ACCOUNT_USERNAME`,
+`RH_ACCOUNT_PASSWORD`, `REGISTRY_USERNAME` and `REGISTRY_TOKEN` hold the
+credentials.
+
+The workflow runs no tests against the images. Build and test them locally
+first (below).
 
 ## Tags
 
-| Version | Tags on each repository |
+| Run on | Tags on each repository |
 |---|---|
-| `v1.2.3` | `1.2.3` and `1.2` |
-| `v1.2.3-rc.1` | `1.2.3-rc.1` only |
+| the tag `v1.2.3` | `1.2.3` |
+| the tag `v1.2.3-rc.1` | `1.2.3-rc.1` |
+| `main` | `<version>` and `latest` |
+| a `release-*` branch | `<version>` and the branch name |
 
-There is no `latest`. `X.Y` moves with each patch release. A re-run of the
-workflow for a tag rebuilds and re-pushes that tag, picking up the base
-images' security updates, so an embedder who needs an immutable image pins
-its digest (`…@sha256:…`).
-
-## The first release: making the packages public
-
-GHCR creates each new package as private, linked to the repository through
-the `org.opencontainers.image.source` label. On the first release the
-`verify` job therefore fails with a pull error naming the reference. A
-maintainer then opens each package's settings on GitHub
-(`agentkit-sandbox` and `agentkit-sandboxd`), changes its visibility to
-public, and re-runs the `verify` job alone; it takes its inputs from the
-`images` job's outputs, so nothing is rebuilt.
-
-## Re-runs and dry runs
-
-- **Re-run** the whole workflow from the Actions page to rebuild a tag; re-run
-  only `verify` to re-check what was published.
-- **Dry run:** start the workflow by hand (`workflow_dispatch`) on any branch.
-  It builds the images and runs the image tests with an empty version, and
-  never logs in, pushes or verifies.
+There is no moving `X.Y` tag. A re-run rebuilds and re-pushes its tags, so
+an embedder who needs an immutable image pins its digest (`…@sha256:…`).
 
 ## Local builds
 
 ```bash
 make build-containers                        # tags VERSION (git describe) and latest
 make build-containers VERSION=v0.6.0
+make sandbox-podman-test                     # build, then the podman provider's tests
 ```
 
 `make build-containers` uses podman and builds
 `containers/agentkit-sandbox/Containerfile` and
-`containers/agentkit-sandboxd/Containerfile`; it needs network access to
-pull the UBI base images from `registry.redhat.io`. The make variables are
-listed in [`configuration.md`](configuration.md#sandbox-images). It is not
-part of `make check`, which builds no image.
+`containers/agentkit-sandboxd/Containerfile`; it needs a `podman login` to
+`registry.redhat.io` to pull the UBI base images. The image tests in
+`sandbox/images` run against the built images when
+`AGENTKIT_SANDBOX_BASE_IMAGE` and `AGENTKIT_SANDBOX_OVERLAY_IMAGE` name them.
+The make variables are listed in
+[`configuration.md`](configuration.md#sandbox-images). None of these targets
+is part of `make check`, which builds no image.

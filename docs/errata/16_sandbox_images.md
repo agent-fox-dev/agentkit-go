@@ -103,3 +103,28 @@ them, so buildver's exported API is `Version` and `Build`, not `Version`
 alone (TS-16-2). `Version()` is unchanged: it still selects the image tag.
 `agentkit-sandboxd --version` appends `commit <commit>` and
 `built <time>` when they are set; an unstamped line is unchanged.
+
+## The base image is UBI, not Debian
+
+`containers/agentkit-sandbox/Containerfile` builds on
+`registry.redhat.io/ubi10/s2i-core`, so 16-REQ-2.1 to 16-REQ-2.6 hold as
+follows, and TS-16-39 to TS-16-41 check this instead:
+
+- the image runs as UBI's `default` user, 1001:0, with no `agentkit`
+  account, following OpenShift's arbitrary-UID convention; `/workspace` and
+  `HOME=/home/agentkit` are owned 1001:0 with mode 0775;
+- the CA bundle is RHEL's `/etc/pki/tls/certs/ca-bundle.crt`;
+- the UBI base ships `rsync` and `curl`; only `tini` is still checked
+  absent, and the apt-index check has no counterpart;
+- the environment is the UBI base's plus `HOME`; TS-16-41 fails on any
+  other variable.
+
+## The build arguments are prefixed AGENTKIT_
+
+Both UBI images set `ENV VERSION` (the Go toolset's Go version, the base's
+UBI release), and an inherited `ENV` overrides a build `ARG` of the same
+name: the agent was stamped `1.26.7` and the base labelled `10`. The
+arguments are `AGENTKIT_VERSION`, `AGENTKIT_REVISION` and
+`AGENTKIT_BUILD_TIME`. The first two default to empty, so a plain
+`podman build` reports `(devel)` with an empty version label (TS-16-44);
+`make build-containers` passes `VERSION` (`dev` outside a tagged checkout).

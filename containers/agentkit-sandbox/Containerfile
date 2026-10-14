@@ -1,8 +1,10 @@
 FROM registry.redhat.io/ubi10/go-toolset:latest AS build
 
-ARG VERSION=dev
-ARG BUILD=dev
-ARG BUILD_TIME=
+# The AGENTKIT_ prefix keeps these clear of the UBI images' own ENV
+# VERSION, which would override an ARG of the same name.
+ARG AGENTKIT_VERSION=
+ARG AGENTKIT_REVISION=
+ARG AGENTKIT_BUILD_TIME=
 
 USER root
 WORKDIR /build
@@ -18,15 +20,15 @@ COPY . .
 RUN cd sandbox && \
   CGO_ENABLED=1 GOOS=linux go build -trimpath -buildvcs=false \
   -ldflags "-s -w \
-    -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=${VERSION} \
-    -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.commit=${BUILD} \
-    -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.buildTime=${BUILD_TIME}" \
+    -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=${AGENTKIT_VERSION} \
+    -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.commit=${AGENTKIT_REVISION} \
+    -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.buildTime=${AGENTKIT_BUILD_TIME}" \
   -o /out/agentkit-sandboxd ./cmd/agentkit-sandboxd
 
 FROM registry.redhat.io/ubi10/s2i-core:10.2 as base
 
-ARG VERSION=dev
-ARG BUILD=dev
+ARG AGENTKIT_VERSION=
+ARG AGENTKIT_REVISION=
 
 # based on https://catalog.redhat.com/en/software/containers/ubi10/s2i-core/677cf9b05fdd0fab2f79ec5b#containerfile
 USER root
@@ -44,8 +46,8 @@ LABEL org.opencontainers.image.source="https://github.com/agent-fox-dev/agentkit
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.title="agentkit-sandbox" \
       org.opencontainers.image.description="The AgentKit sandbox agent, agentkit-sandboxd, at /usr/local/libexec/agentkit-sandboxd" \
-      org.opencontainers.image.version="${VERSION}" \
-      org.opencontainers.image.revision="${BUILD}"
+      org.opencontainers.image.version="${AGENTKIT_VERSION}" \
+      org.opencontainers.image.revision="${AGENTKIT_REVISION}"
 
 WORKDIR /workspace
 USER 1001:0

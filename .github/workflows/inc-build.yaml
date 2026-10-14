@@ -16,6 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      stamp: ${{ steps.version.outputs.stamp }}
+      commit: ${{ steps.version.outputs.commit }}
+      build_time: ${{ steps.version.outputs.build_time }}
       is_release: ${{ steps.version.outputs.is_release }}
     steps:
       - name: checkout repository
@@ -26,18 +29,27 @@ jobs:
       - name: get version
         id: version
         run: |
-          if git describe --tags --exact-match HEAD 2>/dev/null; then
-            VERSION=$(git describe --tags --exact-match HEAD)
+          if git describe --tags --match 'v[0-9]*' --exact-match HEAD 2>/dev/null; then
+            VERSION=$(git describe --tags --match 'v[0-9]*' --exact-match HEAD)
             IS_RELEASE=true
-          elif git describe --tags 2>/dev/null; then
-            VERSION=$(git describe --tags)
+          elif git describe --tags --match 'v[0-9]*' 2>/dev/null; then
+            VERSION=$(git describe --tags --match 'v[0-9]*')
             IS_RELEASE=false
           else
             VERSION="$(git rev-parse --short HEAD)"
             IS_RELEASE=false
           fi
+          # The agent is stamped with the tag as is (vX.Y.Z, what
+          # sandbox.ImageTag reads); the image tag drops the v.
+          case "$VERSION" in
+            v*) STAMP=$VERSION ;;
+            *) STAMP=dev ;;
+          esac
           VERSION=${VERSION#v}
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "stamp=${STAMP}" >> $GITHUB_OUTPUT
+          echo "commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "is_release=${IS_RELEASE}" >> $GITHUB_OUTPUT
 
   build:
@@ -75,11 +87,6 @@ jobs:
       - name: setup buildx
         uses: docker/setup-buildx-action@v3
 
-      - id: metadata
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-
       - name: build and push
         id: push
         uses: docker/build-push-action@v6
@@ -87,7 +94,12 @@ jobs:
           context: "."
           file: "containers/${{ inputs.container_name }}/Containerfile"
           tags: ${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}-${{ matrix.suffix }}
-          labels: ${{ steps.metadata.outputs.labels }}
+          # The Containerfile's LABELs carry the title, description, version
+          # and revision; these arguments fill the last two.
+          build-args: |
+            AGENTKIT_VERSION=${{ needs.prepare.outputs.stamp }}
+            AGENTKIT_REVISION=${{ needs.prepare.outputs.commit }}
+            AGENTKIT_BUILD_TIME=${{ needs.prepare.outputs.build_time }}
           platforms: ${{ matrix.platform }}
           cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:cache-${{ matrix.suffix }}
           cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:cache-${{ matrix.suffix }},mode=max
