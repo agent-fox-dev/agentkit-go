@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 DOC_DIR ?= build/docs
 # MODULES are the repository's Go modules: the root and its nested modules.
-MODULES := . codesearch sandbox examples/sandbox
+MODULES := . codesearch sandbox sandbox/gatewayd examples/sandbox
 
 # The sandbox images (sandbox/images/Containerfile). CONTAINER is podman when
 # it is on PATH, else docker; SANDBOX_PLATFORM empty means the host platform.
@@ -46,7 +46,7 @@ lint: ## Run golangci-lint if installed, otherwise skip
 doc: ## Generate Go package reference (go doc -all) as text files under build/doc
 	@rm -rf $(DOC_DIR)
 	@mkdir -p $(DOC_DIR)
-	@for m in . codesearch sandbox; do \
+	@for m in . codesearch sandbox sandbox/gatewayd; do \
 		( cd $$m && mod=$$(go list -m) && pkgs=$$(go list ./...) && \
 		for p in $$(printf '%s\n' "$$pkgs" | grep -v -e /internal/ -e /examples/); do \
 			rel=$${p#$$mod}; rel=$${rel#/}; out="$(CURDIR)/$(DOC_DIR)/$${rel:-$$(basename $$mod)}.txt"; \
