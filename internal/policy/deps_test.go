@@ -269,6 +269,7 @@ func commentedDeps(t *testing.T, root string) map[string]bool {
 // own module paths are allowed in their direct sets.
 var sandboxModules = []string{
 	"github.com/agent-fox-dev/agentkit-go/sandbox",
+	"github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd",
 	"github.com/agent-fox-dev/agentkit-go/examples/sandbox",
 }
 

@@ -1,0 +1,65 @@
+package attach
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/fakeagent"
+)
+
+// wrapper is a provider-style wrapper around another sandbox.
+type wrapper struct{ sandbox.Sandbox }
+
+func (w wrapper) Unwrap() sandbox.Sandbox { return w.Sandbox }
+
+// plain is a sandbox attach did not create, with no Unwrap.
+type plain struct{}
+
+func (plain) ID() string               { return "plain" }
+func (plain) Spec() sandbox.Spec       { return sandbox.Spec{} }
+func (plain) Agent() sandbox.AgentInfo { return sandbox.AgentInfo{} }
+func (plain) Sync(context.Context, sandbox.Source) (sandbox.SyncResult, error) {
+	return sandbox.SyncResult{}, nil
+}
+func (plain) Tools(context.Context, sandbox.ToolOptions) ([]core.Tool, error) { return nil, nil }
+func (plain) Export(context.Context, string, sandbox.Destination) error       { return nil }
+func (plain) Close(context.Context) error                                     { return nil }
+
+// cyclic unwraps to itself.
+type cyclic struct{ plain }
+
+func (c *cyclic) Unwrap() sandbox.Sandbox { return c }
+
+// TS-19-53: ClientConn and Live follow an Unwrap chain to the sandbox attach
+// created. 19-REQ-7.8.
+func TestUnwrapChain_TS19_53(t *testing.T) {
+	sb := attachFake(t, fakeagent.New(), Config{})
+	w2 := wrapper{wrapper{sb}}
+	if cc := ClientConn(w2); cc == nil || cc != ClientConn(sb) {
+		t.Fatalf("ClientConn(w2) = %v, want ClientConn(sb) = %v", cc, ClientConn(sb))
+	}
+	if err := Live(w2); err != nil {
+		t.Fatalf("Live(w2) on a live sandbox: %v", err)
+	}
+	if cc := ClientConn(plain{}); cc != nil {
+		t.Errorf("ClientConn of a non-attach sandbox = %v, want nil", cc)
+	}
+	if err := Live(plain{}); err == nil {
+		t.Error("Live of a non-attach sandbox is nil, want an error")
+	}
+	if cc := ClientConn(&cyclic{}); cc != nil {
+		t.Errorf("ClientConn of a cyclic chain = %v, want nil", cc)
+	}
+	if cc := ClientConn(wrapper{}); cc != nil {
+		t.Errorf("ClientConn of a wrapper around nil = %v, want nil", cc)
+	}
+	if err := sb.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := Live(w2); !errors.Is(err, sandbox.ErrClosed) {
+		t.Fatalf("Live(w2) after Close = %v, want ErrClosed", err)
+	}
+}

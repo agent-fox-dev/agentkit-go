@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -28,7 +29,15 @@ func repoRoot(t *testing.T) string {
 // gateModules are the modules the build gates cover, relative to the
 // repository root: the root module and the nested sandbox modules. codesearch
 // keeps its own gate.
-var gateModules = []string{".", "sandbox", "examples/sandbox"}
+var gateModules = []string{".", "sandbox", "sandbox/gatewayd", "examples/sandbox"}
+
+// TS-19-62: the cross-target and host cgo gates cover sandbox/gatewayd.
+// 19-REQ-9.3.
+func TestGatesCoverGatewayd_TS19_62(t *testing.T) {
+	if !slices.Contains(gateModules, "sandbox/gatewayd") {
+		t.Errorf("gateModules %v does not list sandbox/gatewayd", gateModules)
+	}
+}
 
 // gateArgs is the go command for a gate step over ./... . A build writes its
 // output to a temporary directory: in a module whose ./... is a single main

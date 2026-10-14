@@ -380,7 +380,7 @@ ignored. A server with no `name`, with neither `command` nor `url`, with an
 unknown `transport`, or with a duplicate name is dropped with an error
 diagnostic.
 
-## Sandboxes (`sandbox.Spec`, `sandbox.ToolOptions`, `local`)
+## Sandboxes (`sandbox.Spec`, `sandbox.ToolOptions`, `local`, the gateway)
 
 A `sandbox.Provider` creates a sandbox from a `sandbox.Spec`. Every provider
 checks it with `sandbox.CheckSpec` first: a field the provider's
@@ -408,17 +408,17 @@ lifetime.
 
 ### Which provider honours which field
 
-| Field | `local` | `podman` / `docker` | `landlock` |
-|---|---|---|---|
-| `Image` | refused | yes; empty means `sandbox.DefaultImage()`; refused when it starts with `-` or holds whitespace or a control character | refused |
-| `Workdir` | refused (the workspace is `<dir>/workspace`) | yes (default `/workspace`); must be absolute and clean, not `/`, `/tmp` or beneath it, not beneath `/proc`, `/sys` or `/dev`, and hold no `,` or control character | refused (the workspace is `<Root>/<id>/workspace`) |
-| `Env` | yes | yes, plus the defaults below; `HOME` and `TMPDIR` must be `/tmp`, the workspace, or beneath either | yes, plus `HOME`, `TMPDIR` and a default `PATH`; `HOME` and `TMPDIR` in `Spec.Env` are refused |
-| `Resources.*` | refused | `CPUs`, `MemoryBytes`, `PIDs`; `DiskBytes` is refused; a zero field takes the engine's default | refused (no resource is bounded) |
-| `Network.Mode` | `NetworkUnrestricted` only; the zero `Spec` is refused | `NetworkNone` (`--network none`) or `NetworkUnrestricted` (the engine's default network); `NetworkAllowlist` is refused | `NetworkNone` (TCP denied by the agent's Landlock ruleset) or `NetworkUnrestricted`; `NetworkAllowlist` is refused |
-| `TTL` | yes | yes, twice: attach's host timer and the agent's `--ttl`; the volume carries the expiry | yes, twice: attach's host timer and the agent's `--ttl` |
-| `Labels` | yes (recorded in the marker) | yes, on the container, the init container and the volume; the key prefix `agentkit.sandbox.` is reserved, and a key may not be empty or hold `=`, whitespace or a control character, nor a value a control character | yes (recorded in the marker only) |
-| `Provider` | no keys defined; any key is refused | no keys defined; any key is refused with a `*SpecError` | no keys defined; any key is refused with a `*SpecError` |
-| `RequireLandlock` | refused (`Capabilities.Landlock` is false: its agent runs in the embedder's process, which nothing may confine) | yes; the engine's default seccomp profile may withhold Landlock, which the agent then reports | yes; the provider's ABI 4 floor applies whether it is set or not |
+| Field | `local` | `podman` / `docker` | `landlock` | `gateway` |
+|---|---|---|---|---|
+| `Image` | refused | yes; empty means `sandbox.DefaultImage()`; refused when it starts with `-` or holds whitespace or a control character | refused | the backend's; an empty `Image` becomes the client's own `sandbox.DefaultImage()` when the backend honours `Image` |
+| `Workdir` | refused (the workspace is `<dir>/workspace`) | yes (default `/workspace`); must be absolute and clean, not `/`, `/tmp` or beneath it, not beneath `/proc`, `/sys` or `/dev`, and hold no `,` or control character | refused (the workspace is `<Root>/<id>/workspace`) | the backend's |
+| `Env` | yes | yes, plus the defaults below; `HOME` and `TMPDIR` must be `/tmp`, the workspace, or beneath either | yes, plus `HOME`, `TMPDIR` and a default `PATH`; `HOME` and `TMPDIR` in `Spec.Env` are refused | the backend's; never logged by the gateway |
+| `Resources.*` | refused | `CPUs`, `MemoryBytes`, `PIDs`; `DiskBytes` is refused; a zero field takes the engine's default | refused (no resource is bounded) | the backend's |
+| `Network.Mode` | `NetworkUnrestricted` only; the zero `Spec` is refused | `NetworkNone` (`--network none`) or `NetworkUnrestricted` (the engine's default network); `NetworkAllowlist` is refused | `NetworkNone` (TCP denied by the agent's Landlock ruleset) or `NetworkUnrestricted`; `NetworkAllowlist` is refused | the backend's modes within the gateway's ceiling (`gatewayd.Config.NetworkModes`, default `NetworkNone`); others are refused, naming `Network.Mode` |
+| `TTL` | yes | yes, twice: attach's host timer and the agent's `--ttl`; the volume carries the expiry | yes, twice: attach's host timer and the agent's `--ttl` | the backend's, at most the gateway's `MaxTTL` (default 24h); a longer one is refused, naming `TTL`; the gateway also removes the sandbox at `created + TTL` |
+| `Labels` | yes (recorded in the marker) | yes, on the container, the init container and the volume; the key prefix `agentkit.sandbox.` is reserved, and a key may not be empty or hold `=`, whitespace or a control character, nor a value a control character | yes (recorded in the marker only) | the backend's; `Provider.List` reports them |
+| `Provider` | no keys defined; any key is refused | no keys defined; any key is refused with a `*SpecError` | no keys defined; any key is refused with a `*SpecError` | sent as JSON: it must encode as JSON and pass `wire.Guard`; the backend decides |
+| `RequireLandlock` | refused (`Capabilities.Landlock` is false: its agent runs in the embedder's process, which nothing may confine) | yes; the engine's default seccomp profile may withhold Landlock, which the agent then reports | yes; the provider's ABI 4 floor applies whether it is set or not | the backend's |
 
 ### Landlock: `RequireLandlock`, `Capabilities.Landlock`, `AgentInfo.Landlock`
 
@@ -859,6 +859,87 @@ below it. `make sandbox-landlock-test` runs `go test -count=1 -v ./landlock/`
 in `sandbox/` with `AGENTKIT_SANDBOX_GIT_URL` (default
 `https://github.com/agent-fox-dev/agentkit-go`), which turns on the real
 public clone; it is not part of `make check`.
+
+### The gateway (`sandbox/gateway`, `sandbox/gatewayd`)
+
+A gateway runs sandboxes on another host. The client, `sandbox/gateway`,
+returns a `sandbox.Provider` whose sandboxes behave like local ones. The
+server, `sandbox/gatewayd` (a separate module), holds one backend provider;
+[`cli.md`](cli.md#agentkit-gateway) covers its command.
+
+**`gateway.Dial(ctx, rawURL, gateway.Options)`** checks the URL and the token,
+connects, and calls the gateway's `Capabilities` under `ctx`.
+
+| URL | Transport |
+|---|---|
+| `https://host[:port]` | TLS; port 443 by default |
+| `http://host[:port]` | plaintext; port 80 by default; only when the host is `localhost` or a loopback IP literal |
+
+A URL with user information, a query, a fragment, a path other than empty or
+`/`, or any other scheme is refused, naming the problem, before any
+connection. A refused token returns an error matching
+`gateway.ErrUnauthenticated`; a gateway of another protocol major one
+wrapping `sandbox.ErrProtocol` that names both versions; any other failure
+an error naming the URL.
+
+| `gateway.Options` field | Meaning | Default |
+|---|---|---|
+| `Token` | The bearer token: non-empty printable ASCII without whitespace, sent on every RPC as `authorization: Bearer <token>`; for `https`, only over TLS. | required |
+| `TLSConfig` | Cloned for `https`; an empty `ServerName` becomes the URL's host. The caller's value is never changed. | the system roots, TLS 1.2 at least |
+| `Dialer` | Replaces TCP; it is given `host:port`. The URL rules still apply. | `net.Dialer` |
+
+Every message is bounded by `sandbox.MaxMessageBytes` (16 MiB).
+
+| `*gateway.Provider` | Does |
+|---|---|
+| `Capabilities()` | The answer cached at `Dial`: `Provider` is `gateway/<backend>`, `Network` the backend's modes within the ceiling, `Isolation`, `Resources`, `Image`, `Workdir` and `Landlock` the backend's, and `Notes` the backend's notes followed by a sentence naming the gateway's host, `MaxTTL` and `MaxSandboxes`. |
+| `Gateway()` | `GatewayInfo{URL, Version, Backend, ProtocolMajor, ProtocolMinor, MaxTTL, MaxSandboxes}` as reported at `Dial`. |
+| `Create(ctx, spec)` | Checks the spec first, with no RPC: `CheckSpec`, the gateway's `MaxTTL` (a `*SpecError` naming `TTL`) and that `Spec.Provider` encodes as JSON (naming `Provider`). An empty `Image` becomes the client's `sandbox.DefaultImage()` when the backend honours `Image`, whose `ErrNoPublishedImage` is returned unchanged. A gateway refusal keeps its type: a `*SpecError` naming `gateway/<backend>` and the field, or an error matching `ErrUnsupported`, `ErrNoAgent`, `ErrNoPublishedImage`, `ErrProtocol` or `gateway.ErrCapacity`. |
+| `Reap(ctx)` | Runs the backend's `Reap` on the gateway; the removed ids, sorted, and an error carrying the gateway's text when a removal failed. For `podman` the rule is "expired". |
+| `List(ctx)` | The caller's sandboxes as `Info{ID, Labels, Created, Expires}`, by creation time and then id. |
+| `Destroy(ctx, id)` | Destroys the caller's sandbox `id`; an unknown id returns nil. |
+| `Close()` | Closes every sandbox it created that is still open, which destroys each on the gateway, then the connection; the joined errors. Later `Create`, `Reap`, `List` and `Destroy` return `gateway.ErrClosed`. |
+
+A gateway sandbox's `Sync(GitRepo)` checks that the sandbox is live and the
+repository valid before any RPC, then runs the backend's init step with
+`SyncGit`. The slot rules are those of `sandbox.GitRepo`, kept by the
+gateway. Its `Close` destroys it on the gateway with a fresh 30-second
+context; a failed destroy is returned, and the sandbox then lives on the
+gateway until its expiry. Calls fail with `sandbox_unavailable` when the
+connection to the gateway, or the gateway's connection to the agent, breaks
+mid-call, and when the gateway destroys the sandbox (its expiry, another
+client with the same token, a shutdown). Nothing reconnects.
+
+**`gatewayd.New(gatewayd.Config)`** checks the configuration and returns a
+server; `Serve(net.Listener)` serves it once, and `Shutdown(ctx)` stops
+accepting RPCs, destroys every sandbox it holds and waits for the handlers
+until `ctx` is done.
+
+| `gatewayd.Config` field | Meaning | Default |
+|---|---|---|
+| `Backend` | The one provider that creates the sandboxes. | required |
+| `Tokens` | The accepted tokens: at least one, each at least 32 characters of printable ASCII without whitespace, none repeated. Only their SHA-256 sums are kept. | required |
+| `TLS` | Serve TLS with this config; nil serves plaintext. | nil |
+| `NetworkModes` | The network ceiling: the modes clients may request, intersected with the backend's; an empty intersection is refused, naming both lists. | `[NetworkNone]` |
+| `MaxSandboxes` | The most sandboxes held at once, counting creates in progress; beyond it `Create` is refused with `CAPACITY`. | 16 |
+| `MaxTTL` | The longest TTL accepted; a zero TTL counts as 1h. | 24h |
+| `ReapInterval` | How often `Backend.Reap` runs; it also runs once when `Serve` starts. A failure is logged, never fatal. | 10m |
+| `Logger` | Receives one line per create, destroy, refused authentication and backend reap; never a token, an `Env` value, a tool input or a tool result. | discards |
+
+Negative limits are refused. The ceiling defaults to `none` because a token
+holder on a shared host should not get unrestricted egress unless the
+operator chose it; the command's `--network` sets it. The server checks every
+request again, whatever the client checked. It is the trust boundary, and
+a client may be older, newer or not AgentKit at all.
+
+**Testing it.** The gateway's offline tests run in `make check`: an
+in-process server over `local` with a client in the same process. `make
+sandbox-gateway-test` builds the images and runs the opt-in Podman tests in
+`sandbox/gatewayd` with `AGENTKIT_SANDBOX_BASE_IMAGE` and
+`AGENTKIT_CONTAINER` set. They skip without an engine, without
+`AGENTKIT_SANDBOX_BASE_IMAGE` or under `-short`. The `GitRepo` test clones
+`AGENTKIT_SANDBOX_GIT_URL` (default
+`https://github.com/agent-fox-dev/agentkit-go`).
 
 ### Sandbox images
 

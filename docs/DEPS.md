@@ -25,7 +25,7 @@ is not on it. An entry ending in `/` approves every module under that path.
 | `github.com/pelletier/go-toml/v2` | TOML parsing for MCP configuration (`internal/toml`) |
 | `golang.org/x/oauth2` | Google credentials for the Vertex AI deployment |
 | `github.com/aws/aws-sdk-go-v2`, `github.com/aws/aws-sdk-go-v2/…` | AWS configuration and credentials for the Bedrock deployment |
-| `google.golang.org/grpc` | the sandbox agent protocol's transport |
+| `google.golang.org/grpc` | the sandbox agent and gateway protocols' transport (sandbox and gatewayd modules) |
 | `google.golang.org/protobuf` | the protobuf runtime of the generated sandbox protocol code |
 | `github.com/gokrazy/rsync` | the in-process rsync protocol for sandbox `LocalDir` transfers (sandbox module) |
 | `github.com/landlock-lsm/go-landlock` | the sandbox agent's own Landlock confinement (sandbox module) |
@@ -33,7 +33,12 @@ is not on it. An entry ending in `/` approves every module under that path.
 Adding a direct dependency means adding it there, with its reason, and a
 ruling here. The same list covers the nested `sandbox` module, whose direct
 dependencies (grpc, protobuf and, since spec 14, the rsync protocol) stay out
-of the root module's graph; `TestSandboxDepsPromoted_TS13_65` checks both. The
+of the root module's graph; `TestSandboxDepsPromoted_TS13_65` checks both.
+It also covers the nested `sandbox/gatewayd` module (spec 19), which adds no
+module: it requires only the root and sandbox modules and grpc directly
+(protobuf only if a hand-written file imported it), and its graph holds
+nothing the sandbox module's lacks (`TestGatewaydModule_TS19_60`,
+`TestGatewaydGraph_TS19_61`). The
 `codesearch` module is separate and not covered: its zoekt graph stays out of
 the root module's.
 
@@ -194,12 +199,15 @@ SSO, SSO-OIDC and STS modules, which `config` needs for the credential chain.
 
 ## `google.golang.org/grpc`
 
-**Used by.** The sandbox packages: the generated client and server in
-`sandbox/internal/sandboxpb`, the agent service in `sandbox/internal/agent`
-and the host side in `sandbox/internal/attach`. Nothing outside `sandbox/`
-imports it. Since spec 14 the sandbox tree is a nested module, and grpc is a
-direct requirement of `sandbox/go.mod`; in the root module it is indirect
-again, as it was before spec 13.
+**Used by.** The sandbox packages: the generated clients and servers of both
+protocols in `sandbox/internal/sandboxpb`, the agent service in
+`sandbox/internal/agent`, the host side in `sandbox/internal/attach`, and the
+gateway client in `sandbox/gateway`. Since spec 19 also the gateway server,
+`sandbox/gatewayd` and its `agentkit-gateway` command, a nested module of its
+own that requires grpc directly at the sandbox module's version. Nothing
+outside `sandbox/` imports it. Since spec 14 the sandbox tree is a nested
+module, and grpc is a direct requirement of `sandbox/go.mod`; in the root
+module it is indirect again, as it was before spec 13.
 
 **Version.** `v1.64.1`, promoted from an indirect requirement at the version
 already in `go.sum`, so `go list -m all` did not change. Upgrading it is a
@@ -220,8 +228,11 @@ indirect (TS-09-15).
 
 ## `google.golang.org/protobuf`
 
-**Used by.** The generated code in `sandbox/internal/sandboxpb`; a direct
-requirement of the nested `sandbox` module.
+**Used by.** The generated code of both protocols in
+`sandbox/internal/sandboxpb`, which the gateway client and the gatewayd
+module reach through it; a direct requirement of the nested `sandbox`
+module, and only an indirect one of `sandbox/gatewayd`, whose hand-written
+files do not import it.
 
 **Version.** `v1.36.11`, promoted from an indirect requirement at the version
 already in `go.sum`. `make proto` pins `protoc-gen-go` to the same version.

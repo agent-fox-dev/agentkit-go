@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 DOC_DIR ?= build/docs
 # MODULES are the repository's Go modules: the root and its nested modules.
-MODULES := . codesearch sandbox examples/sandbox
+MODULES := . codesearch sandbox sandbox/gatewayd examples/sandbox
 
 # The sandbox images (sandbox/images/Containerfile). CONTAINER is podman when
 # it is on PATH, else docker; SANDBOX_PLATFORM empty means the host platform.
@@ -46,7 +46,7 @@ lint: ## Run golangci-lint if installed, otherwise skip
 doc: ## Generate Go package reference (go doc -all) as text files under build/doc
 	@rm -rf $(DOC_DIR)
 	@mkdir -p $(DOC_DIR)
-	@for m in . codesearch sandbox; do \
+	@for m in . codesearch sandbox sandbox/gatewayd; do \
 		( cd $$m && mod=$$(go list -m) && pkgs=$$(go list ./...) && \
 		for p in $$(printf '%s\n' "$$pkgs" | grep -v -e /internal/ -e /examples/); do \
 			rel=$${p#$$mod}; rel=$${rel#/}; out="$(CURDIR)/$(DOC_DIR)/$${rel:-$$(basename $$mod)}.txt"; \
@@ -64,7 +64,7 @@ PROTOC_GEN_GO_GRPC := google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
 # a half-written file. The protoc release in the generated headers is pinned
 # to "(unknown)" so the output does not depend on which protoc is installed.
 .PHONY: proto
-proto: ## Regenerate the sandbox agent protocol's Go code (needs protoc)
+proto: ## Regenerate the sandbox agent and gateway protocols' Go code (needs protoc)
 	@command -v protoc >/dev/null 2>&1 || { echo "make proto: protoc not found on PATH; install protoc" >&2; exit 1; }
 	GOBIN=$(CURDIR)/build/bin go install $(PROTOC_GEN_GO)
 	GOBIN=$(CURDIR)/build/bin go install $(PROTOC_GEN_GO_GRPC)
@@ -72,14 +72,16 @@ proto: ## Regenerate the sandbox agent protocol's Go code (needs protoc)
 	protoc -I $(PROTO_DIR) --plugin=protoc-gen-go=build/bin/protoc-gen-go --plugin=protoc-gen-go-grpc=build/bin/protoc-gen-go-grpc \
 		--go_out=build/.proto --go_opt=paths=source_relative \
 		--go-grpc_out=build/.proto --go-grpc_opt=paths=source_relative \
-		$(PROTO_DIR)/sandbox.proto
-	@for f in sandbox.pb.go sandbox_grpc.pb.go; do \
+		$(PROTO_DIR)/sandbox.proto $(PROTO_DIR)/gateway.proto
+	@for f in sandbox.pb.go sandbox_grpc.pb.go gateway.pb.go gateway_grpc.pb.go; do \
 		sed -E 's#^(//[[:space:]-]+protoc[[:space:]]+)v.*$$#\1(unknown)#' build/.proto/$$f > build/.proto/$$f.tmp && \
 		mv build/.proto/$$f.tmp $(PROTO_DIR)/$$f || exit 1; \
 	done
-	@if command -v sha256sum >/dev/null 2>&1; then sha256sum $(PROTO_DIR)/sandbox.proto; \
-		else shasum -a 256 $(PROTO_DIR)/sandbox.proto; fi | cut -d' ' -f1 > build/.proto/sandbox.proto.sha256 && \
-		mv build/.proto/sandbox.proto.sha256 $(PROTO_DIR)/sandbox.proto.sha256
+	@for p in sandbox.proto gateway.proto; do \
+		if command -v sha256sum >/dev/null 2>&1; then sha256sum $(PROTO_DIR)/$$p; \
+		else shasum -a 256 $(PROTO_DIR)/$$p; fi | cut -d' ' -f1 > build/.proto/$$p.sha256 && \
+		mv build/.proto/$$p.sha256 $(PROTO_DIR)/$$p.sha256 || exit 1; \
+	done
 	@rm -rf build/.proto
 	@echo "generated code and hash written to $(PROTO_DIR)"
 
@@ -115,6 +117,18 @@ AGENTKIT_SANDBOX_GIT_URL ?= https://github.com/agent-fox-dev/agentkit-go
 .PHONY: sandbox-landlock-test
 sandbox-landlock-test: ## Run the landlock provider's tests verbosely, including the public GitRepo clone
 	cd sandbox && AGENTKIT_SANDBOX_GIT_URL=$(AGENTKIT_SANDBOX_GIT_URL) go test -count=1 -v ./landlock/
+
+# The gateway command lives in its own nested module; AGENTKIT_VERSION, when
+# set, stamps the version it reports.
+.PHONY: sandbox-gateway
+sandbox-gateway: ## Build build/bin/agentkit-gateway (AGENTKIT_VERSION stamps its version)
+	cd sandbox/gatewayd && go build -trimpath $(if $(AGENTKIT_VERSION),-ldflags "-X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=$(AGENTKIT_VERSION)" )-o $(CURDIR)/build/bin/agentkit-gateway ./cmd/agentkit-gateway
+
+# The gateway's opt-in Podman tests run against the locally built base image.
+# Not part of check: they need an engine.
+.PHONY: sandbox-gateway-test
+sandbox-gateway-test: sandbox-images ## Build the sandbox images and run the gateway's opt-in Podman tests
+	cd sandbox/gatewayd && AGENTKIT_SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE):$(SANDBOX_IMAGE_TAG) AGENTKIT_CONTAINER=$(CONTAINER) go test -count=1 -v -run Podman .
 
 .PHONY: check
 check: fmt vet lint test ## Run fmt, vet, lint and test - use before committing

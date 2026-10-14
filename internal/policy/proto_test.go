@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -14,13 +16,38 @@ import (
 // protoDir is where the agent protocol and its generated code live.
 const protoDir = "sandbox/internal/sandboxpb"
 
-// protoFiles are the protocol, its two generated files and the recorded hash,
-// relative to the repository root.
+// protoFiles are the agent and gateway protocols, their generated files and
+// their recorded hashes, relative to the repository root.
 var protoFiles = []string{
 	protoDir + "/sandbox.proto",
 	protoDir + "/sandbox.pb.go",
 	protoDir + "/sandbox_grpc.pb.go",
 	protoDir + "/sandbox.proto.sha256",
+	protoDir + "/gateway.proto",
+	protoDir + "/gateway.pb.go",
+	protoDir + "/gateway_grpc.pb.go",
+	protoDir + "/gateway.proto.sha256",
+}
+
+// generatedProtoFiles are the files make proto generates from protoFiles'
+// .proto files.
+var generatedProtoFiles = []string{
+	protoDir + "/sandbox.pb.go",
+	protoDir + "/sandbox_grpc.pb.go",
+	protoDir + "/gateway.pb.go",
+	protoDir + "/gateway_grpc.pb.go",
+}
+
+// checkRecordedHashes fails t for each .proto in files whose recorded
+// .sha256 is not its hex SHA-256.
+func checkRecordedHashes(t *testing.T, files map[string][]byte) {
+	t.Helper()
+	for _, name := range []string{"sandbox.proto", "gateway.proto"} {
+		sum := sha256.Sum256(files[protoDir+"/"+name])
+		if got := strings.TrimSpace(string(files[protoDir+"/"+name+".sha256"])); got != hex.EncodeToString(sum[:]) {
+			t.Errorf("%s.sha256 holds %q, want %x", name, got, sum)
+		}
+	}
 }
 
 // withPath returns the process environment with PATH replaced.
@@ -82,7 +109,7 @@ func TestBuildNeedsNoProtoc_TS13_2(t *testing.T) {
 			t.Fatalf("go %s in %s with no protoc on PATH: %v\n%s", strings.Join(c.args, " "), c.dir, err, out)
 		}
 	}
-	for _, f := range protoFiles[1:3] {
+	for _, f := range generatedProtoFiles {
 		if _, err := os.Stat(filepath.Join(root, f)); err != nil {
 			t.Errorf("generated file missing: %v", err)
 		}
@@ -108,7 +135,7 @@ func TestMakeProtoRegenerates_TS13_3(t *testing.T) {
 	for _, want := range []string{
 		"google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11",
 		"google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1",
-		"build/bin", "protoc ", protoDir + "/sandbox.proto",
+		"build/bin", "protoc ", protoDir + "/sandbox.proto", protoDir + "/gateway.proto",
 	} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("make -n proto does not mention %q:\n%s", want, out)
@@ -134,10 +161,7 @@ func TestMakeProtoRegenerates_TS13_3(t *testing.T) {
 			t.Errorf("make proto changed %s: the checked-in file is stale", f)
 		}
 	}
-	sum := sha256.Sum256(after[protoDir+"/sandbox.proto"])
-	if got := strings.TrimSpace(string(after[protoDir+"/sandbox.proto.sha256"])); got != hex.EncodeToString(sum[:]) {
-		t.Errorf("sandbox.proto.sha256 holds %q, want %x", got, sum)
-	}
+	checkRecordedHashes(t, after)
 }
 
 // TS-13-4: make proto without protoc fails, names protoc, and modifies no
@@ -173,4 +197,26 @@ func TestMakeProtoWithoutProtoc_TS13_4(t *testing.T) {
 			t.Errorf("make proto without protoc modified %s", f)
 		}
 	}
+}
+
+// unknownProtoc matches make proto's rewritten protoc release header.
+var unknownProtoc = regexp.MustCompile(`(?m)^//[[:space:]-]+protoc[[:space:]]+\(unknown\)$`)
+
+// TS-19-6: the policy proto tests list the gateway protocol's four files,
+// each generated file carries the (unknown) protoc header, and both recorded
+// hashes match their .proto (TS-13-3 regenerates them all with make proto).
+// 19-REQ-1.6.
+func TestGatewayProtoFiles_TS19_6(t *testing.T) {
+	for _, f := range []string{"gateway.proto", "gateway.pb.go", "gateway_grpc.pb.go", "gateway.proto.sha256"} {
+		if !slices.Contains(protoFiles, protoDir+"/"+f) {
+			t.Errorf("protoFiles does not list %s", f)
+		}
+	}
+	files := readProtoFiles(t, repoRoot(t))
+	for _, f := range generatedProtoFiles {
+		if !unknownProtoc.Match(files[f]) {
+			t.Errorf("%s lacks the (unknown) protoc header", f)
+		}
+	}
+	checkRecordedHashes(t, files)
 }

@@ -144,11 +144,32 @@ type sb struct {
 	toolOpts sandbox.ToolOptions
 }
 
-// ClientConn is the gRPC connection of a sandbox this package attached, or
-// nil; tests open raw streams on it.
+// ClientConn is the gRPC connection of the sandbox this package attached
+// that s is, or that s's Unwrap chain reaches, or nil. Tests open raw
+// streams on it, and a gateway relays agent RPCs over it.
 func ClientConn(s sandbox.Sandbox) grpc.ClientConnInterface {
-	if x, ok := s.(*sb); ok {
+	if x := unwrapAttached(s); x != nil {
 		return x.cc
+	}
+	return nil
+}
+
+// maxUnwrap bounds an Unwrap chain, so a cyclic one cannot loop.
+const maxUnwrap = 32
+
+// unwrapAttached is the sandbox this package attached that s is, or that
+// following `Unwrap() sandbox.Sandbox` from s reaches, or nil when the chain
+// ends, holds a nil, or is longer than maxUnwrap.
+func unwrapAttached(s sandbox.Sandbox) *sb {
+	for range maxUnwrap {
+		switch x := s.(type) {
+		case *sb:
+			return x
+		case interface{ Unwrap() sandbox.Sandbox }:
+			s = x.Unwrap()
+		default:
+			return nil
+		}
 	}
 	return nil
 }

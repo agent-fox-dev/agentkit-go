@@ -71,3 +71,7 @@ func (s *podSandbox) Export(ctx context.Context, path string, dst sandbox.Destin
 }
 
 func (s *podSandbox) Close(ctx context.Context) error { return s.inner.Close(ctx) }
+
+// Unwrap is the attached sandbox; attach.ClientConn and attach.Live follow
+// it, so a gateway can relay to this sandbox's agent.
+func (s *podSandbox) Unwrap() sandbox.Sandbox { return s.inner }

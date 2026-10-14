@@ -9,7 +9,8 @@ sandboxes that run those tools somewhere else (`sandbox`).
 the Anthropic Messages API (`provider/anthropic`, on the official Go SDK),
 with a scripted provider (`provider/faux`) for offline tests. It serves no
 network API: the library listens on no socket; `agentkit-sandboxd` serves the
-agent service on its stdio.
+agent service on its stdio, and `agentkit-gateway`, a separate module, is the
+one network service.
 
 ## Quickstart
 
@@ -171,6 +172,29 @@ published for linux/amd64 and linux/arm64 on each release:
 `make sandbox-images` builds both locally, and
 [`docs/releasing.md`](docs/releasing.md) covers publishing them.
 
+A sandbox can also run on another host, behind a gateway. `sandbox/gateway`
+is the client: `gateway.Dial` returns a `sandbox.Provider` whose sandboxes
+behave like local ones, with the same proxies, state machine and errors.
+The gateway holds the backend provider and its credentials. The embedder
+holds only the gateway's URL and bearer token, and the sandbox holds
+neither.
+
+```go
+p, err := gateway.Dial(ctx, "https://gateway.example.com", gateway.Options{Token: token})
+if err != nil {
+	return err // a refused token matches gateway.ErrUnauthenticated
+}
+defer p.Close() // destroys the sandboxes p created, then disconnects
+sb, err := p.Create(ctx, sandbox.Spec{}) // NetworkNone; Image defaults to this build's
+```
+
+The server is `agentkit-gateway`, built with `make sandbox-gateway` from the
+nested `sandbox/gatewayd` module over the Podman or Docker provider. It
+authenticates every RPC, gives each token only its own sandboxes, bounds TTL,
+count and network modes, and relays the agent protocol to each sandbox. Its
+flags and token file are in [`docs/cli.md`](docs/cli.md). `http://` is
+accepted only on loopback, so a token never crosses a network in clear text.
+
 ## Consumer contract
 
 The identifiers an embedder such as agent-fox builds on.
@@ -223,6 +247,8 @@ The identifiers an embedder such as agent-fox builds on.
 | `sandbox/local` | `local.Unisolated()`: an in-process provider with no isolation, for tests and development. |
 | `sandbox/podman` | `podman.New(Options)`: the first isolating provider, a hardened podman or docker container per sandbox. |
 | `sandbox/landlock` | `landlock.New(Options)`: the agent as a child process confined by Landlock, on Linux with ABI 4. |
+| `sandbox/gateway` | `gateway.Dial(ctx, url, Options)`: a provider whose sandboxes live on a remote gateway. |
+| `sandbox/gatewayd` | Separate module: the gateway server library (`gatewayd.New`, `Serve`, `Shutdown`) and its `agentkit-gateway` command. |
 | `sandbox/cmd/agentkit-sandboxd` | The agent command a sandbox image installs at `sandbox.AgentPath`; serves the protocol on its stdio. |
 | `codesearch` | Separate module: zoekt-backed `code_search`, opted in with `tools.Options{Index: idx}`. |
 
@@ -231,17 +257,19 @@ The identifiers an embedder such as agent-fox builds on.
 | Target | Does |
 |---|---|
 | `make check` | `fmt`, `vet`, `lint`, `test`; run before committing |
-| `make test` | `go test ./...` in every module: the root, `codesearch`, `sandbox` and `examples/sandbox` |
+| `make test` | `go test ./...` in every module: the root, `codesearch`, `sandbox`, `sandbox/gatewayd` and `examples/sandbox` |
 | `make vet` | `go vet` in every module |
 | `make lint` | `golangci-lint` in every module; skipped when not installed |
 | `make fmt` | `gofmt -l -w .` |
 | `make tidy` | `go mod tidy` in every module |
-| `make doc` | `go doc -all` for every public package of the root, `codesearch` and `sandbox` modules, written as text to `build/docs/` (git-ignored) |
-| `make proto` | Regenerate the sandbox protocol's Go code and its recorded hash; needs `protoc`, installs the pinned plugins into `build/bin` |
+| `make doc` | `go doc -all` for every public package of the root, `codesearch`, `sandbox` and `sandbox/gatewayd` modules, written as text to `build/docs/` (git-ignored) |
+| `make proto` | Regenerate the sandbox agent and gateway protocols' Go code and their recorded hashes; needs `protoc`, installs the pinned plugins into `build/bin` |
 | `make sandbox-images` | Build the sandbox base and overlay images for the host platform with podman (or docker); not part of `check` |
 | `make sandbox-images-test` | Build the sandbox images and run the end-to-end image tests against them; not part of `check` |
 | `make sandbox-podman-test` | Build the sandbox images and run the podman provider's integration tests against them; not part of `check` |
 | `make sandbox-landlock-test` | Run the landlock provider's tests verbosely, with the public `GitRepo` clone of `AGENTKIT_SANDBOX_GIT_URL`; not part of `check` |
+| `make sandbox-gateway` | Build `build/bin/agentkit-gateway` with `-trimpath`; `AGENTKIT_VERSION=…` stamps its version |
+| `make sandbox-gateway-test` | Build the sandbox images and run the gateway's opt-in Podman tests against them; not part of `check` |
 
 ## Documentation
 
@@ -249,7 +277,7 @@ The identifiers an embedder such as agent-fox builds on.
 |---|---|
 | [`docs/architecture.md`](docs/architecture.md) | Package graph, the data flow of a run, invariants, nested calls, code mode, the MCP client, `Workspace.References`, sandboxes. |
 | [`docs/configuration.md`](docs/configuration.md) | `agentkit.Config`, environment variables, provider, tool, code-mode, MCP and sandbox options, the model catalog. |
-| [`docs/cli.md`](docs/cli.md) | The `agentkit-sandboxd` command: flags, transport and exit codes. |
+| [`docs/cli.md`](docs/cli.md) | The `agentkit-sandboxd` and `agentkit-gateway` commands: flags, transport, the token file and exit codes. |
 | [`docs/releasing.md`](docs/releasing.md) | Publishing the sandbox images: the version tags, GHCR visibility, re-runs and local builds. |
 | [`docs/DEPS.md`](docs/DEPS.md) | Why each direct dependency is allowed, and the libraries considered and rejected. |
 | [`examples/README.md`](examples/README.md) | The six example programs and how to configure an application. |

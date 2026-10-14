@@ -5,6 +5,14 @@ A release publishes the two sandbox images: `ghcr.io/agent-fox-dev/agentkit-sand
 image). Nothing else is released by automation: no binaries, archives or
 formulae. The workflow is `.github/workflows/sandbox-images.yml`.
 
+The sandbox gateway, `agentkit-gateway`, is not published: no binary, image
+or chart. An operator builds it from a checkout with
+`make sandbox-gateway AGENTKIT_VERSION=vX.Y.Z`, which stamps the version
+its `--version` reports (`-ldflags -X …/sandbox/internal/buildver.stamp`);
+without `AGENTKIT_VERSION` it reports `(devel)`. The version is
+informational: a client picks the sandbox image by its own version, not the
+gateway's.
+
 ## Cutting a release
 
 Push the version tag at the release commit:

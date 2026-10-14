@@ -89,7 +89,7 @@
       "done_when": [
         "TestProtocolShape_TS13_1 and TestProtoNotStale_TS13_5 pass unmodified"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -118,7 +118,7 @@
         "sandbox/landlock/sandbox.go",
         "sandbox/landlock/unwrap_internal_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -169,7 +169,7 @@
       "depends_on": [
         1
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -223,7 +223,7 @@
       "depends_on": [
         3
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -289,7 +289,7 @@
         2,
         4
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -341,7 +341,7 @@
       "depends_on": [
         5
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -397,7 +397,7 @@
       "depends_on": [
         6
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -440,7 +440,7 @@
       "depends_on": [
         7
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -490,7 +490,7 @@
       "depends_on": [
         7
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -533,7 +533,7 @@
       "done_when": [
         "internal/policy/testdata is unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,
@@ -566,7 +566,7 @@
       "depends_on": [
         10
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 12,
@@ -602,7 +602,7 @@
         "`make check` passes offline with no container engine and no protoc on PATH",
         "every execution path 19-PATH-1 to 19-PATH-6 is traced through production code with no stub left"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
