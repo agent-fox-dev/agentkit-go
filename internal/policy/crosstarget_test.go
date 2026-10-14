@@ -29,7 +29,7 @@ func repoRoot(t *testing.T) string {
 // gateModules are the modules the build gates cover, relative to the
 // repository root: the root module, the nested sandbox modules and the
 // examples that use them. codesearch keeps its own gate.
-var gateModules = []string{".", "sandbox", "sandbox/gatewayd", "examples/sandbox", "examples/gateway"}
+var gateModules = []string{".", "sandbox", "sandbox/gatewayd", "examples/sandbox", "examples/gateway", "examples/harness"}
 
 // TS-19-62: the cross-target and host cgo gates cover sandbox/gatewayd.
 // 19-REQ-9.3.

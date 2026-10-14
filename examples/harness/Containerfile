@@ -1,0 +1,33 @@
+# A toolchain image for the harness example: Go, git, specr (the spec
+# package renderer from github.com/agent-fox-dev/spec) and the AgentKit
+# sandbox agent, which sandbox/podman starts as the container's process.
+#
+#   podman build -t agentkit-harness:latest -f Containerfile .
+#
+# SANDBOXD is the overlay image that holds the agent (sandbox.OverlayImageRepo).
+# The host and the agent must be the same AgentKit version — Sandbox.Tools
+# checks the tool definitions' digest — so a development checkout builds its
+# own with `make build-sandboxd-container` (tagged latest) and a release pins
+# the release's tag, as sandbox.OverlayImage() names it.
+ARG SANDBOXD=quay.io/agentfox/agentkit-sandboxd:latest
+ARG SPEC_VERSION=latest
+
+FROM docker.io/library/golang:1.25-trixie AS tools
+ARG SPEC_VERSION
+RUN GOBIN=/out CGO_ENABLED=0 go install github.com/agent-fox-dev/spec/cmd/specr@${SPEC_VERSION}
+
+FROM ${SANDBOXD} AS sandboxd
+
+FROM docker.io/library/golang:1.25-trixie
+# The agent, at sandbox.AgentPath; sandbox/podman always starts it with
+# --entrypoint, whatever this image's own entrypoint is.
+COPY --from=sandboxd /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/
+COPY --from=tools /out/specr /usr/local/bin/specr
+# The workspace, owned by the sandbox user: the provider mounts the workspace
+# volume here. The root filesystem is read-only at run time and /tmp is a
+# tmpfs; the example points GOPATH, GOCACHE and GOMODCACHE under /tmp through
+# Spec.Env, because podman drops this image's ENV (--unsetenv-all).
+RUN useradd --uid 1000 --create-home agentkit \
+ && install -d -o agentkit -g agentkit /workspace
+USER agentkit
+WORKDIR /workspace
