@@ -533,7 +533,7 @@
       "done_when": [
         "internal/policy/testdata is unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,
