@@ -198,6 +198,15 @@ accepted only on loopback, so a token never crosses a network in clear text.
 loopback port, over `local`, and drives it as an embedder would, offline;
 with `--url` it dials an `agentkit-gateway` already running.
 
+The driver is optional. Another harness — Claude Code, Pi, any MCP client —
+can work in a sandbox with code mode and the built-in tools as its only
+tools: the embedder serves them over MCP and keeps the sandbox, the guard
+and the policy on its side. [`examples/harness`](examples/harness) does that
+for one task of a spec package: it clones a repository into a sandbox, runs
+`specr` inside it, measures the spec's checks, starts the harness with its
+own tools off, and measures again. Offline it runs on `local` with a
+scripted stand-in for the harness.
+
 ## Consumer contract
 
 The identifiers an embedder such as agent-fox builds on.
@@ -260,7 +269,7 @@ The identifiers an embedder such as agent-fox builds on.
 | Target | Does |
 |---|---|
 | `make check` | `fmt`, `vet`, `lint`, `test`; run before committing |
-| `make test` | `go test ./...` in every module: the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `examples/sandbox` and `examples/gateway` |
+| `make test` | `go test ./...` in every module: the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `examples/sandbox`, `examples/gateway` and `examples/harness` |
 | `make vet` | `go vet` in every module |
 | `make lint` | `golangci-lint` in every module; skipped when not installed |
 | `make fmt` | `gofmt -l -w .` |

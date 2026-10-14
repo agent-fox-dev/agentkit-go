@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 # MODULES are the repository's Go modules: the root and its nested modules.
-MODULES := . codesearch sandbox sandbox/gatewayd examples/sandbox examples/gateway
+MODULES := . codesearch sandbox sandbox/gatewayd examples/sandbox examples/gateway examples/harness
 DOC_DIR ?= build/docs
 
 VERSION    := $(shell git describe --tags 2>/dev/null || echo "0.1.0")

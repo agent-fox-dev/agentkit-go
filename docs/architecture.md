@@ -25,7 +25,11 @@ graph:
   the sandbox module;
 - [`examples/gateway/`](../examples/gateway), the example program that runs a
   gateway in process on a loopback port and dials it. It requires the root,
-  sandbox and gatewayd modules through `replace`.
+  sandbox and gatewayd modules through `replace`;
+- [`examples/harness/`](../examples/harness), the example program that serves
+  code mode and a sandbox's proxy tools to another harness (Claude Code, Pi)
+  over MCP on a loopback port. It requires the root and sandbox modules
+  through `replace`.
 
 cgo is allowed only in `//go:build cgo` files, each with a pure-Go fallback;
 `internal/policy` builds the four supported targets with cgo off and the host
@@ -119,8 +123,8 @@ What follows from it:
   over it.
 - Nothing imports the root package except `examples/`.
 - The sandbox tree imports `core`, `schema`, `tools` and `wire`, and nothing outside it
-  imports the sandbox tree except `examples/sandbox`, `examples/gateway` (a
-  nested module, outside the root's check) and test helpers under
+  imports the sandbox tree except `examples/sandbox`, `examples/gateway` and
+  `examples/harness` (nested modules, outside the root's check) and test helpers under
   `internal/` (`internal/policy` checks this, and that no non-test file
   outside it imports gRPC). `core`, `tools`, `codemode` and the driver do not
   know a sandbox exists.
@@ -335,7 +339,12 @@ A run:
 
 Calling code mode outside an agent run fails the script's first tool call
 with `ErrNoNestedCaller`: code mode never runs a tool around the agent's
-pipeline.
+pipeline. An embedder that is its own driver — one that serves the tools to
+another harness over MCP, say — supplies the pipeline itself: it implements
+`core.NestedCaller` (prepare the arguments, run the guard, run the handler)
+and attaches it with `core.WithNestedCaller` before calling the tool.
+[`examples/harness`](../examples/harness) does exactly that, and nothing
+else of the driver.
 
 ## MCP client
 
@@ -874,5 +883,5 @@ anything is made) and its agent reports ABI 0 with the note
   against it.
 
 Run everything with `make check` (fmt, vet, lint, test for every module:
-the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `examples/sandbox` and
-`examples/gateway`).
+the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `examples/sandbox`,
+`examples/gateway` and `examples/harness`).
