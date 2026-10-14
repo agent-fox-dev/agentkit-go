@@ -64,6 +64,10 @@ func (s *landlockSandbox) Export(ctx context.Context, path string, dst sandbox.D
 
 func (s *landlockSandbox) Close(ctx context.Context) error { return s.inner.Close(ctx) }
 
+// Unwrap is the attached sandbox; attach.ClientConn and attach.Live follow
+// it, so a gateway can relay to this sandbox's agent.
+func (s *landlockSandbox) Unwrap() sandbox.Sandbox { return s.inner }
+
 // agentDone is closed once the sandbox's agent has exited.
 func (s *landlockSandbox) agentDone() <-chan struct{} { return s.h.done }
 

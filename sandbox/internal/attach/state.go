@@ -84,10 +84,11 @@ func (s *sb) classify(ctx context.Context, rpc string, err error) error {
 // reports it: nil while live, an error matching sandbox.ErrUnavailable once
 // unavailable, and sandbox.ErrClosed once closed. A provider that wraps an
 // attached sandbox uses it to refuse work on a dead one before running
-// anything. A Sandbox this package did not create is an error.
+// anything. It follows s's Unwrap chain as ClientConn does; a Sandbox whose
+// chain reaches no sandbox this package created is an error.
 func Live(s sandbox.Sandbox) error {
-	x, ok := s.(*sb)
-	if !ok {
+	x := unwrapAttached(s)
+	if x == nil {
 		return fmt.Errorf("sandbox: %T was not attached by this package", s)
 	}
 	return x.gate()
