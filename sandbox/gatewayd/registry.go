@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/attach"
 )
 
 // entry is one sandbox the gateway holds.
@@ -18,6 +19,7 @@ type entry struct {
 	expires time.Time
 	spec    sandbox.Spec
 	sb      sandbox.Sandbox
+	slot    slot
 }
 
 // registry is the gateway's sandboxes by id.
@@ -44,6 +46,21 @@ func (r *registry) lookup(o owner, id string) *entry {
 		return e
 	}
 	return nil
+}
+
+// access is o's live sandbox id. An unknown id and another owner's are
+// answered Unavailable alike; a sandbox whose backend is no longer live is
+// removed and answered Unavailable too.
+func (r *registry) access(o owner, id string) (*entry, error) {
+	e := r.lookup(o, id)
+	if e == nil {
+		return nil, unavailable("gatewayd: no sandbox %q", id)
+	}
+	if err := attach.Live(e.sb); err != nil {
+		_ = r.remove(e, reasonUnavailable)
+		return nil, unavailable("gatewayd: sandbox %q is no longer available: %v", id, err)
+	}
+	return e, nil
 }
 
 // list is o's sandboxes, by creation time and then id.
