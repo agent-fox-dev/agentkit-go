@@ -124,7 +124,7 @@ func TestCreateNoAgent_TS17_34(t *testing.T) {
 		t.Fatalf("Create = %v, want ErrNoAgent", err)
 	}
 	for _, want := range []string{"missing:1", sandbox.AgentPath, "exec: no such file or directory",
-		sandbox.OverlayCopyLine(sandbox.OverlayImageRepo + ":<version>"), "make sandbox-images"} {
+		sandbox.OverlayCopyLine(sandbox.OverlayImageRepo + ":<version>"), "make build-containers"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the error lacks %q:\n%v", want, err)
 		}

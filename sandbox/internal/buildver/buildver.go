@@ -13,8 +13,13 @@ const modulePath = "github.com/agent-fox-dev/agentkit-go/sandbox"
 
 // stamp is the version a build sets at link time, with
 // -ldflags "-X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=vX.Y.Z"
-// (the sandbox image build passes AGENTKIT_VERSION). No source assigns it.
+// (the sandbox image build passes VERSION). No source assigns it.
 var stamp string
+
+// commit and buildTime are the source revision and the UTC build time a build
+// sets at link time, like stamp (the sandbox image build passes BUILD and
+// BUILD_TIME). No source assigns them.
+var commit, buildTime string
 
 // Version is the link-time stamp when one was set, else the sandbox module's
 // version from the build info: the main
@@ -47,3 +52,7 @@ func Version() string {
 	}
 	return v
 }
+
+// Build is the source revision and the build time stamped at link time; each
+// is empty when the build set none.
+func Build() (string, string) { return commit, buildTime }

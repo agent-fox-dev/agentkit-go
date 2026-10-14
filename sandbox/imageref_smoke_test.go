@@ -61,7 +61,7 @@ func TestEmbedderImageRefs_TS16_54(t *testing.T) {
 		if code != 1 || so != "" {
 			t.Errorf("%s: exit %d, stdout %q, want exit 1 and no stdout", c.name, code, so)
 		}
-		for _, want := range []string{"sandbox: no published image for this agentkit-go version", c.version, "Spec.Image", "make sandbox-images"} {
+		for _, want := range []string{"sandbox: no published image for this agentkit-go version", c.version, "Spec.Image", "make build-containers"} {
 			if !strings.Contains(se, want) {
 				t.Errorf("%s: stderr %q does not contain %q", c.name, se, want)
 			}

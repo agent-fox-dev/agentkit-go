@@ -16,7 +16,7 @@
 //
 // With --podman the same program runs on sandbox/podman, a hardened
 // container with no network, from the base image --image names (build one
-// with make sandbox-images):
+// with make build-containers):
 //
 //	go run . --podman --image quay.io/agentfox/agentkit-sandbox:latest
 //

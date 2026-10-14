@@ -16,7 +16,7 @@ func TestExampleRunsOnPodman_TS17_64(t *testing.T) {
 	}
 	image := os.Getenv("AGENTKIT_SANDBOX_BASE_IMAGE")
 	if image == "" {
-		t.Skip("AGENTKIT_SANDBOX_BASE_IMAGE is not set; run make sandbox-images and set it to the base image")
+		t.Skip("AGENTKIT_SANDBOX_BASE_IMAGE is not set; run make build-containers and set it to the base image")
 	}
 	if _, err := exec.LookPath("podman"); err != nil {
 		t.Skip("podman is not on PATH; the example's --podman uses podman.Options{}, whose engine is podman")

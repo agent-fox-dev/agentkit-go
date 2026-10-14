@@ -105,7 +105,15 @@ func run(args []string) int {
 		return 2
 	}
 	if cfg.version {
-		fmt.Printf("agentkit-sandboxd %s (protocol %d.%d)\n", buildver.Version(), sandbox.ProtocolMajor, sandbox.ProtocolMinor)
+		fmt.Printf("agentkit-sandboxd %s (protocol %d.%d)", buildver.Version(), sandbox.ProtocolMajor, sandbox.ProtocolMinor)
+		commit, built := buildver.Build()
+		if commit != "" {
+			fmt.Printf(" commit %s", commit)
+		}
+		if built != "" {
+			fmt.Printf(" built %s", built)
+		}
+		fmt.Println()
 		return 0
 	}
 	// Confinement comes before any other work: before stdout is redirected,

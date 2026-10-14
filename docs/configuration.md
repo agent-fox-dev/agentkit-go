@@ -727,7 +727,7 @@ its files are then visible to the tools. A private repository is cloned on
 the host and synced as a `LocalDir`.
 
 **Testing it.** `make sandbox-podman-test` builds the images (`make
-sandbox-images`) and runs the provider's integration tests in
+build-containers`) and runs the provider's integration tests in
 `sandbox/podman` with `AGENTKIT_SANDBOX_BASE_IMAGE`,
 `AGENTKIT_SANDBOX_OVERLAY_IMAGE`, `AGENTKIT_SANDBOX_IMAGE_VERSION` and
 `AGENTKIT_CONTAINER` set; it is not part of `make check`. Without an engine,
@@ -957,7 +957,7 @@ providers start the agent with `--entrypoint sandbox.AgentPath` and
 | `sandbox.ImageTag(version)` | The tag of a release version: `version` without its `v`. Only `vMAJOR.MINOR.PATCH` with no leading zeros and an optional `-prerelease` is accepted; `(devel)`, build metadata (`+dirty`, `+incompatible`) and Go pseudo-versions give `("", false)`. |
 | `sandbox.DefaultImage()` | `BaseImageRepo:<tag>` for the build's version (`buildver`: the link-time stamp, else the sandbox module's version, else `(devel)`). |
 | `sandbox.OverlayImage()` | `OverlayImageRepo:<tag>` for the build's version. |
-| `sandbox.ErrNoPublishedImage` | `sandbox: no published image for this agentkit-go version`. `DefaultImage` and `OverlayImage` wrap it when the version has no published image; the message names the version and says to set `Spec.Image` or build an image with `make sandbox-images`. |
+| `sandbox.ErrNoPublishedImage` | `sandbox: no published image for this agentkit-go version`. `DefaultImage` and `OverlayImage` wrap it when the version has no published image; the message names the version and says to set `Spec.Image` or build an image with `make build-containers`. |
 | `sandbox.OverlayCopyLine(ref)` | `COPY --from=<ref> /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/`: the one line an embedder adds to its own Containerfile. |
 
 The default is the exact `X.Y.Z` tag, never `X.Y`: the `Tools` digest check
@@ -984,23 +984,27 @@ is no prerelease part, for linux/amd64 and linux/arm64; there is no
 `latest`. A re-run rebuilds a tag, so an embedder who needs an immutable
 image pins its digest. [`releasing.md`](releasing.md) has the details.
 
-**Make variables** for `make sandbox-images` and `make sandbox-images-test`,
-each overridable on the command line:
+**Make variables** for `make build-containers`, each overridable on the
+command line:
 
 | Variable | Default |
 |---|---|
-| `CONTAINER` | `podman` when on `PATH`, else `docker` |
-| `SANDBOX_BASE_IMAGE` | `quay.io/agentfox/agentkit-sandbox` |
-| `SANDBOX_OVERLAY_IMAGE` | `quay.io/agentfox/agentkit-sandboxd` |
-| `SANDBOX_IMAGE_TAG` | `dev` |
-| `SANDBOX_PLATFORM` | empty: the host platform; when set, passed as `--platform` |
-| `AGENTKIT_VERSION` | empty: the agent reports `(devel)` |
-| `AGENTKIT_REVISION` | `git rev-parse HEAD`, or empty outside a checkout |
+| `CONTAINER_REGISTRY` | `quay.io/agentfox` |
+| `SANDBOX_IMAGE` | `agentkit-sandbox` |
+| `SANDBOXD_IMAGE` | `agentkit-sandboxd` |
+| `SANDBOX_IMAGE_TAG`, `SANDBOXD_IMAGE_TAG` | `VERSION`; each image is also tagged `latest` |
+| `VERSION` | `git describe --tags`, or `0.1.0` outside a tagged checkout |
 
-`make sandbox-images-test` runs the image tests in `sandbox/images` with
-`AGENTKIT_SANDBOX_BASE_IMAGE`, `AGENTKIT_SANDBOX_OVERLAY_IMAGE`,
-`AGENTKIT_SANDBOX_IMAGE_VERSION` and `AGENTKIT_CONTAINER` set; without those
-variables, a container engine, or under `-short`, the image tests skip.
+The build stamps `VERSION`, the short commit and the UTC build time into
+the agent (`-ldflags -X …/sandbox/internal/buildver.stamp`, `.commit` and
+`.buildTime`); `agentkit-sandboxd --version` prints
+`agentkit-sandboxd <version> (protocol M.N) commit <commit> built <time>`,
+leaving out the commit and build time when a build stamps none.
+
+The image tests in `sandbox/images` run against images named by
+`AGENTKIT_SANDBOX_BASE_IMAGE` and `AGENTKIT_SANDBOX_OVERLAY_IMAGE`, with
+`AGENTKIT_SANDBOX_IMAGE_VERSION` and `AGENTKIT_CONTAINER` optional; without
+those variables, a container engine, or under `-short`, they skip.
 
 ## Limits on untrusted input
 

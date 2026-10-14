@@ -55,7 +55,7 @@ func TestNoPublishedImage_TS16_8(t *testing.T) {
 				t.Errorf("imageRef(%s, %q) = %q, %v", repo, v, ref, err)
 				continue
 			}
-			for _, want := range []string{v, "Spec.Image", "make sandbox-images"} {
+			for _, want := range []string{v, "Spec.Image", "make build-containers"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("imageRef(%s, %q): %q lacks %q", repo, v, err, want)
 				}

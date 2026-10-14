@@ -24,9 +24,16 @@ func inspectJSON(t *testing.T, engine, ref, format string, v any) {
 	}
 }
 
-// versionLine is what --version prints for version.
+// versionLine is what --version prints for version, before the commit and
+// build time an image build stamps.
 func versionLine(version string) string {
-	return fmt.Sprintf("agentkit-sandboxd %s (protocol %d.%d)\n", version, sandbox.ProtocolMajor, sandbox.ProtocolMinor)
+	return fmt.Sprintf("agentkit-sandboxd %s (protocol %d.%d)", version, sandbox.ProtocolMajor, sandbox.ProtocolMinor)
+}
+
+// isVersionLine reports whether out is the --version output for version.
+func isVersionLine(out, version string) bool {
+	rest, ok := strings.CutPrefix(out, versionLine(version))
+	return ok && (rest == "\n" || strings.HasPrefix(rest, " ") && strings.HasSuffix(rest, "\n"))
 }
 
 // mustExec runs command through proxy execute and fails t on a transport
@@ -192,7 +199,7 @@ func TestBaseImageUnstamped(t *testing.T) {
 	engine, base := requireImage(t, "AGENTKIT_SANDBOX_BASE_IMAGE")
 	_, overlay := requireImage(t, "AGENTKIT_SANDBOX_OVERLAY_IMAGE")
 	if v := os.Getenv("AGENTKIT_SANDBOX_IMAGE_VERSION"); v != "" {
-		t.Skipf("the images are stamped %s; this test needs an unstamped build (make sandbox-images-test with AGENTKIT_VERSION empty)", v)
+		t.Skipf("the images are stamped %s; this test needs an unstamped build (make build-containers with VERSION empty)", v)
 	}
 	h := startT(t, engine, base)
 	if v := h.sb.Agent().Version; v != "(devel)" {
@@ -200,7 +207,7 @@ func TestBaseImageUnstamped(t *testing.T) {
 	}
 	for _, ref := range []string{base, overlay} {
 		out, se, code := runEngine(t, engine, "run", "--rm", "--entrypoint", sandbox.AgentPath, ref, "--version")
-		if code != 0 || out != versionLine("(devel)") {
+		if code != 0 || !isVersionLine(out, "(devel)") {
 			t.Errorf("%s --version: exit %d, %q (stderr %q)", ref, code, out, se)
 		}
 		var l map[string]string

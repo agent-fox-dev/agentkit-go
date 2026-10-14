@@ -32,7 +32,7 @@ func repoRoot(t *testing.T) string {
 	}
 }
 
-// TS-17-63: make sandbox-podman-test depends on sandbox-images, runs the
+// TS-17-63: make sandbox-podman-test depends on build-containers, runs the
 // podman tests with the image variables, and is not part of make check.
 // 17-REQ-10.5.
 func TestMakeSandboxPodmanTest_TS17_63(t *testing.T) {
@@ -68,15 +68,15 @@ func TestMakeSandboxPodmanTest_TS17_63(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !regexp.MustCompile(`(?m)^sandbox-podman-test:[^\n#]*\bsandbox-images\b`).Match(mf) {
-		t.Error("sandbox-podman-test does not list sandbox-images as a prerequisite")
+	if !regexp.MustCompile(`(?m)^sandbox-podman-test:[^\n#]*\bbuild-containers\b`).Match(mf) {
+		t.Error("sandbox-podman-test does not list build-containers as a prerequisite")
 	}
 	out := makeN("sandbox-podman-test")
 	lines := strings.Split(out, "\n")
 	lastBuild, testAt := -1, -1
 	var test string
 	for i, l := range lines {
-		if strings.Contains(l, "build -f sandbox/images/Containerfile") {
+		if strings.Contains(l, "-f containers/agentkit-sandbox") {
 			lastBuild = i
 		}
 		if strings.Contains(l, "go test -count=1 -v ./podman/") {

@@ -18,9 +18,9 @@ COPY . .
 RUN cd sandbox && \
   CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false \
   -ldflags "-s -w \
-    -X github.com/agent-fox-dev/agentkit.Version=${VERSION} \
-    -X github.com/agent-fox-dev/agentkit.Commit=${BUILD} \
-    -X github.com/agent-fox-dev/agentkit.BuildTime=${BUILD_TIME}" \
+    -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=${VERSION} \
+    -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.commit=${BUILD} \
+    -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.buildTime=${BUILD_TIME}" \
   -o /out/agentkit-sandboxd ./cmd/agentkit-sandboxd
 
 FROM scratch AS overlay

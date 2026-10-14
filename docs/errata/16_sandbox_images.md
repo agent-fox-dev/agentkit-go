@@ -72,3 +72,34 @@ GOOS, GOARCH, CGO_ENABLED and -trimpath through the build info, and asserts
 the stamp by finding `v9.8.7` in the cross-built binary itself
 (`sandbox/images/overlay_image_test.go`). It would use the build-info
 setting if a future Go recorded it.
+
+## The images moved to containers/ and the build-artefact tests were retired
+
+The single multi-stage `sandbox/images/Containerfile`, the
+`sandbox-images` and `sandbox-images-test` make targets and the
+`.github/workflows/sandbox-images.yml` workflow were replaced by one UBI
+based Containerfile per image (`containers/agentkit-sandbox/` and
+`containers/agentkit-sandboxd/`), `make build-containers` (podman, tagged
+with `VERSION` and `latest`) and the `build-sandbox-containers.yaml` /
+`inc-build.yaml` workflows. The tests that checked the replaced artefacts
+were deleted without replacement: TS-16-10 to TS-16-14, TS-16-16 to
+TS-16-21 and TS-16-30 to TS-16-37 (Containerfile, Makefile and workflow
+shape), TS-16-49 and TS-16-50 (cross-arch builds of the old
+Containerfile), TS-16-51 and TS-16-52 (smoke runs of
+`make sandbox-images-test`) and TS-16-53 (the old release's `X.Y` tags).
+
+The engine-gated image tests (TS-16-38 onwards in `sandbox/images`) remain;
+their skip message names `make build-containers`, and they accept the
+commit and build time after the version on the `--version` line.
+`sandbox-podman-test` (TS-17-63) and `sandbox-gateway-test` (TS-19-65) now
+build the images with `build-containers` and `build-sandbox-container`.
+
+## buildver also carries the commit and build time
+
+The image build stamps `buildver.stamp` with `VERSION`, and two more
+unexported link-time strings, `buildver.commit` and `buildver.buildTime`,
+with the short commit and the UTC build time. `buildver.Build()` returns
+them, so buildver's exported API is `Version` and `Build`, not `Version`
+alone (TS-16-2). `Version()` is unchanged: it still selects the image tag.
+`agentkit-sandboxd --version` appends `commit <commit>` and
+`built <time>` when they are set; an unstamped line is unchanged.
