@@ -118,6 +118,18 @@ AGENTKIT_SANDBOX_GIT_URL ?= https://github.com/agent-fox-dev/agentkit-go
 sandbox-landlock-test: ## Run the landlock provider's tests verbosely, including the public GitRepo clone
 	cd sandbox && AGENTKIT_SANDBOX_GIT_URL=$(AGENTKIT_SANDBOX_GIT_URL) go test -count=1 -v ./landlock/
 
+# The gateway command lives in its own nested module; AGENTKIT_VERSION, when
+# set, stamps the version it reports.
+.PHONY: sandbox-gateway
+sandbox-gateway: ## Build build/bin/agentkit-gateway (AGENTKIT_VERSION stamps its version)
+	cd sandbox/gatewayd && go build -trimpath $(if $(AGENTKIT_VERSION),-ldflags "-X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=$(AGENTKIT_VERSION)" )-o $(CURDIR)/build/bin/agentkit-gateway ./cmd/agentkit-gateway
+
+# The gateway's opt-in Podman tests run against the locally built base image.
+# Not part of check: they need an engine.
+.PHONY: sandbox-gateway-test
+sandbox-gateway-test: sandbox-images ## Build the sandbox images and run the gateway's opt-in Podman tests
+	cd sandbox/gatewayd && AGENTKIT_SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE):$(SANDBOX_IMAGE_TAG) AGENTKIT_CONTAINER=$(CONTAINER) go test -count=1 -v -run Podman .
+
 .PHONY: check
 check: fmt vet lint test ## Run fmt, vet, lint and test - use before committing
 
