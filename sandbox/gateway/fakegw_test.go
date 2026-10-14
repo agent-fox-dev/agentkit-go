@@ -8,15 +8,21 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"fmt"
 	"math/big"
 	"net"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/fakeagent"
@@ -40,16 +46,26 @@ type fakeGW struct {
 	sandboxpb.UnimplementedGatewayServer
 	agent *fakeagent.Agent
 
-	mu        sync.Mutex
-	caps      *sandboxpb.CapabilitiesResponse
-	capsErr   error
-	capsBlock bool
-	list      *sandboxpb.ListResponse
-	reaps     []*sandboxpb.ReapResponse
-	records   []rpcRecord
-	counts    map[string]int
-	open      int
-	dials     []string
+	mu          sync.Mutex
+	caps        *sandboxpb.CapabilitiesResponse
+	capsErr     error
+	capsBlock   bool
+	list        *sandboxpb.ListResponse
+	reaps       []*sandboxpb.ReapResponse
+	create      fakeCreate
+	lastCreate  *sandboxpb.CreateRequest
+	syncGit     fakeCreate
+	lastSyncGit *sandboxpb.SyncGitRequest
+	seq         int
+	live        map[string]bool
+	destroys    []destroyed
+	destroyErr  map[string]error
+	denyAll     bool
+	tlsVersion  uint16
+	records     []rpcRecord
+	counts      map[string]int
+	open        int
+	dials       []string
 
 	srv   *grpc.Server
 	conns chan net.Conn
@@ -69,12 +85,14 @@ func defaultCaps() *sandboxpb.CapabilitiesResponse {
 // newFakeGW starts a plaintext fake gateway; tlsCfg, when set, serves TLS.
 func newFakeGW(t *testing.T, tlsCfg *tls.Config) *fakeGW {
 	t.Helper()
-	f := &fakeGW{agent: fakeagent.New(), caps: defaultCaps(), counts: map[string]int{},
-		conns: make(chan net.Conn), done: make(chan struct{})}
+	f := &fakeGW{agent: fakeagent.New(), caps: defaultCaps(), counts: map[string]int{}, live: map[string]bool{},
+		destroyErr: map[string]error{}, conns: make(chan net.Conn), done: make(chan struct{})}
 	opts := []grpc.ServerOption{
 		grpc.MaxRecvMsgSize(sandbox.MaxMessageBytes), grpc.MaxSendMsgSize(sandbox.MaxMessageBytes),
 		grpc.ChainUnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
-			f.record(ctx, info.FullMethod)
+			if f.record(ctx, info.FullMethod) {
+				return nil, status.Error(codes.Unauthenticated, "denied")
+			}
 			return h(ctx, req)
 		}),
 		grpc.ChainStreamInterceptor(func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, h grpc.StreamHandler) error {
@@ -93,11 +111,19 @@ func newFakeGW(t *testing.T, tlsCfg *tls.Config) *fakeGW {
 	return f
 }
 
-func (f *fakeGW) record(ctx context.Context, method string) {
+// record notes an RPC and the TLS version it arrived over, and reports
+// whether the fake denies it: in deny-all mode, every Gateway RPC.
+func (f *fakeGW) record(ctx context.Context, method string) bool {
 	md, _ := metadata.FromIncomingContext(ctx)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.records = append(f.records, rpcRecord{method, md.Copy()})
+	if p, ok := peer.FromContext(ctx); ok {
+		if ti, ok := p.AuthInfo.(credentials.TLSInfo); ok {
+			f.tlsVersion = ti.State.Version
+		}
+	}
+	return f.denyAll && strings.HasPrefix(method, "/agentkit.sandbox.v1.Gateway/")
 }
 
 // count notes one call of a Gateway RPC.
@@ -121,6 +147,27 @@ func (f *fakeGW) dialled() []string {
 	return append([]string(nil), f.dials...)
 }
 
+// n is how many times the named Gateway RPC was served.
+func (f *fakeGW) n(name string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.counts[name]
+}
+
+// rpcCount is how many RPCs of either service were served.
+func (f *fakeGW) rpcCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.records)
+}
+
+// recorded is a copy of the records so far.
+func (f *fakeGW) recorded() []rpcRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]rpcRecord(nil), f.records...)
+}
+
 // set runs fn under the fake's lock.
 func (f *fakeGW) set(fn func()) {
 	f.mu.Lock()
@@ -134,7 +181,7 @@ func (f *fakeGW) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	client, server := net.Pipe()
 	f.set(func() { f.dials = append(f.dials, addr) })
 	select {
-	case f.conns <- &countedConn{Conn: server, f: f}:
+	case f.conns <- &countedConn{Conn: newAsyncConn(server), f: f}:
 		return client, nil
 	case <-f.done:
 		return nil, net.ErrClosed
@@ -164,6 +211,50 @@ type memAddr struct{}
 
 func (memAddr) Network() string { return "mem" }
 func (memAddr) String() string  { return "fakegw" }
+
+// asyncConn is a net.Conn whose writes never wait for the reader. A
+// net.Pipe write blocks until the other end reads it all, which deadlocks a
+// TLS handshake the client abandons mid-flight: the server waits to finish
+// writing its flight while the client waits to write its alert. TCP's
+// buffers break that cycle; this does the same.
+type asyncConn struct {
+	net.Conn
+	writes chan []byte
+	done   chan struct{}
+	once   sync.Once
+}
+
+func newAsyncConn(c net.Conn) *asyncConn {
+	a := &asyncConn{Conn: c, writes: make(chan []byte, 1024), done: make(chan struct{})}
+	go func() {
+		for {
+			select {
+			case b := <-a.writes:
+				if _, err := a.Conn.Write(b); err != nil {
+					_ = a.Close()
+					return
+				}
+			case <-a.done:
+				return
+			}
+		}
+	}()
+	return a
+}
+
+func (a *asyncConn) Write(p []byte) (int, error) {
+	select {
+	case a.writes <- slices.Clone(p):
+		return len(p), nil
+	case <-a.done:
+		return 0, net.ErrClosed
+	}
+}
+
+func (a *asyncConn) Close() error {
+	a.once.Do(func() { close(a.done) })
+	return a.Conn.Close()
+}
 
 // countedConn is a server-side connection that counts itself closed once.
 type countedConn struct {
@@ -209,11 +300,6 @@ func (f *fakeGW) Reap(context.Context, *sandboxpb.ReapRequest) (*sandboxpb.ReapR
 	r := f.reaps[0]
 	f.reaps = f.reaps[1:]
 	return r, nil
-}
-
-func (f *fakeGW) Destroy(context.Context, *sandboxpb.DestroyRequest) (*sandboxpb.DestroyResponse, error) {
-	f.count("Destroy")
-	return &sandboxpb.DestroyResponse{}, nil
 }
 
 // dial is Dial against f over http://127.0.0.1, closed at the end of the
@@ -268,4 +354,98 @@ func newTestPKI(t *testing.T) testPKI {
 	pool.AddCert(ca)
 	return testPKI{pool: pool, server: &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{leafDER}, PrivateKey: leafKey}},
 		MinVersion: tls.VersionTLS12}}
+}
+
+// fakeCreate is how the fake answers Create.
+type fakeCreate struct {
+	refusal *sandboxpb.Refusal
+	err     error
+}
+
+// destroyed is one Destroy the fake received.
+type destroyed struct {
+	id         string
+	deadlineIn time.Duration
+}
+
+func (f *fakeGW) Create(_ context.Context, req *sandboxpb.CreateRequest) (*sandboxpb.CreateResponse, error) {
+	f.count("Create")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastCreate = req
+	if f.create.err != nil || f.create.refusal != nil {
+		return &sandboxpb.CreateResponse{Refusal: f.create.refusal}, f.create.err
+	}
+	f.seq++
+	id := fmt.Sprintf("sb-%d", f.seq)
+	f.live[id] = true
+	now := time.Now()
+	return &sandboxpb.CreateResponse{Id: id, Spec: req.GetSpec(), CreatedUnixNanos: now.UnixNano(),
+		ExpiresUnixNanos: now.Add(time.Hour).UnixNano()}, nil
+}
+
+func (f *fakeGW) SyncGit(_ context.Context, req *sandboxpb.SyncGitRequest) (*sandboxpb.SyncGitResponse, error) {
+	f.count("SyncGit")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastSyncGit = req
+	return &sandboxpb.SyncGitResponse{Refusal: f.syncGit.refusal}, f.syncGit.err
+}
+
+func (f *fakeGW) Destroy(ctx context.Context, req *sandboxpb.DestroyRequest) (*sandboxpb.DestroyResponse, error) {
+	f.count("Destroy")
+	var in time.Duration
+	if d, ok := ctx.Deadline(); ok {
+		in = time.Until(d)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.destroys = append(f.destroys, destroyed{req.GetId(), in})
+	if err := f.destroyErr[req.GetId()]; err != nil {
+		return nil, err
+	}
+	delete(f.live, req.GetId())
+	return &sandboxpb.DestroyResponse{}, nil
+}
+
+// lastImage is the image of the last Create the fake received.
+func (f *fakeGW) lastImage() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastCreate.GetSpec().GetImage()
+}
+
+// lastSyncGitRequest is the last SyncGit the fake received.
+func (f *fakeGW) lastSyncGitRequest() *sandboxpb.SyncGitRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastSyncGit
+}
+
+// has reports whether the fake still holds id.
+func (f *fakeGW) has(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.live[id]
+}
+
+// lastDestroy is the last Destroy the fake received.
+func (f *fakeGW) lastDestroy() destroyed {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.destroys) == 0 {
+		return destroyed{}
+	}
+	return f.destroys[len(f.destroys)-1]
+}
+
+// destroyedIDs is the ids of every Destroy received.
+func (f *fakeGW) destroyedIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var ids []string
+	for _, d := range f.destroys {
+		ids = append(ids, d.id)
+	}
+	return ids
 }

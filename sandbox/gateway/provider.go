@@ -3,7 +3,9 @@ package gateway
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 
@@ -25,10 +27,15 @@ type Provider struct {
 
 	mu     sync.Mutex
 	closed bool
+	// open is every sandbox created through the provider and not yet
+	// destroyed, by id.
+	open map[string]*gwSandbox
 
 	closeOnce sync.Once
 	closeErr  error
 }
+
+var _ sandbox.Provider = (*Provider)(nil)
 
 // Capabilities is the answer cached at Dial: named "gateway/<backend>", the
 // network modes within the gateway's ceiling, the backend's isolation,
@@ -103,14 +110,48 @@ func (p *Provider) destroyRPC(ctx context.Context, id string) error {
 	return nil
 }
 
-// Close closes the connection to the gateway. Later calls return nil, and
-// Create, Reap, List and Destroy return ErrClosed without an RPC.
+// remember records sb as open, or reports false when the provider has been
+// closed meanwhile.
+func (p *Provider) remember(sb *gwSandbox) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return false
+	}
+	if p.open == nil {
+		p.open = map[string]*gwSandbox{}
+	}
+	p.open[sb.id] = sb
+	return true
+}
+
+// forget drops id from the open sandboxes.
+func (p *Provider) forget(id string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.open, id)
+}
+
+// Close closes every sandbox created through the provider that is still
+// open, which destroys each on the gateway, and then the connection. It
+// returns the joined errors. Later calls return nil, and Create, Reap, List
+// and Destroy return ErrClosed without an RPC.
 func (p *Provider) Close() error {
+	first := false
 	p.closeOnce.Do(func() {
+		first = true
 		p.mu.Lock()
 		p.closed = true
+		open := slices.Collect(maps.Values(p.open))
 		p.mu.Unlock()
-		p.closeErr = p.cc.Close()
+		var errs []error
+		for _, sb := range open {
+			errs = append(errs, sb.Close(context.Background()))
+		}
+		p.closeErr = errors.Join(append(errs, p.cc.Close())...)
 	})
+	if !first {
+		return nil
+	}
 	return p.closeErr
 }
