@@ -12,7 +12,7 @@ import (
 // reference builder joins repository and tag for a release version.
 // 16-REQ-5.1, 16-REQ-5.5.
 func TestImageRefs_TS16_7(t *testing.T) {
-	if BaseImageRepo != "quay.io/agent-fox-dev/agentkit-sandbox" || OverlayImageRepo != "quay.io/agent-fox-dev/agentkit-sandboxd" {
+	if BaseImageRepo != "quay.io/agentfox/agentkit-sandbox" || OverlayImageRepo != "quay.io/agentfox/agentkit-sandboxd" {
 		t.Errorf("repositories %q, %q", BaseImageRepo, OverlayImageRepo)
 	}
 	if ErrNoPublishedImage.Error() != "sandbox: no published image for this agentkit-go version" {

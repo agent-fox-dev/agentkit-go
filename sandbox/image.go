@@ -12,12 +12,12 @@ import (
 
 // BaseImageRepo is the published base image: Debian with git, bash and
 // ca-certificates, a uid-1000 user and the cgo-built agent at AgentPath.
-const BaseImageRepo = "quay.io/agent-fox-dev/agentkit-sandbox"
+const BaseImageRepo = "quay.io/agentfox/agentkit-sandbox"
 
 // OverlayImageRepo is the published overlay image: a single static agent at
 // AgentPath, for an embedder to copy into its own image with
 // OverlayCopyLine.
-const OverlayImageRepo = "quay.io/agent-fox-dev/agentkit-sandboxd"
+const OverlayImageRepo = "quay.io/agentfox/agentkit-sandboxd"
 
 // ErrNoPublishedImage is returned by DefaultImage and OverlayImage when the
 // build's version has no published image: (devel), a pseudo-version, or a

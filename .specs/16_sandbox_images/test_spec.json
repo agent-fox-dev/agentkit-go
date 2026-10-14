@@ -129,11 +129,11 @@
       ],
       "when": "the constants are read, and the builder is called with each repository and the versions v1.2.3 and v1.2.3-rc.1; DefaultImage and OverlayImage are called in the test binary",
       "then": [
-        "BaseImageRepo == \"quay.io/agent-fox-dev/agentkit-sandbox\", OverlayImageRepo == \"quay.io/agent-fox-dev/agentkit-sandboxd\" and ErrNoPublishedImage.Error() == \"sandbox: no published image for this agentkit-go version\"",
-        "for v1.2.3 the builder yields (\"quay.io/agent-fox-dev/agentkit-sandbox:1.2.3\", nil) and (\"quay.io/agent-fox-dev/agentkit-sandboxd:1.2.3\", nil); for v1.2.3-rc.1 the tags are 1.2.3-rc.1",
+        "BaseImageRepo == \"quay.io/agentfox/agentkit-sandbox\", OverlayImageRepo == \"quay.io/agentfox/agentkit-sandboxd\" and ErrNoPublishedImage.Error() == \"sandbox: no published image for this agentkit-go version\"",
+        "for v1.2.3 the builder yields (\"quay.io/agentfox/agentkit-sandbox:1.2.3\", nil) and (\"quay.io/agentfox/agentkit-sandboxd:1.2.3\", nil); for v1.2.3-rc.1 the tags are 1.2.3-rc.1",
         "DefaultImage() and OverlayImage() return exactly what the builder returns for buildver.Version() with BaseImageRepo and OverlayImageRepo respectively, reference and error alike"
       ],
-      "pseudocode": "assert BaseImageRepo == 'quay.io/agent-fox-dev/agentkit-sandbox' && OverlayImageRepo == 'quay.io/agent-fox-dev/agentkit-sandboxd'\nassert ErrNoPublishedImage.Error() == 'sandbox: no published image for this agentkit-go version'\nassert build(BaseImageRepo,'v1.2.3') == ('quay.io/agent-fox-dev/agentkit-sandbox:1.2.3', nil)\nassert build(OverlayImageRepo,'v1.2.3') == ('quay.io/agent-fox-dev/agentkit-sandboxd:1.2.3', nil)\nref, err = DefaultImage(); wref, werr = build(BaseImageRepo, buildver.Version()); assert ref == wref && (err == nil) == (werr == nil)"
+      "pseudocode": "assert BaseImageRepo == 'quay.io/agentfox/agentkit-sandbox' && OverlayImageRepo == 'quay.io/agentfox/agentkit-sandboxd'\nassert ErrNoPublishedImage.Error() == 'sandbox: no published image for this agentkit-go version'\nassert build(BaseImageRepo,'v1.2.3') == ('quay.io/agentfox/agentkit-sandbox:1.2.3', nil)\nassert build(OverlayImageRepo,'v1.2.3') == ('quay.io/agentfox/agentkit-sandboxd:1.2.3', nil)\nref, err = DefaultImage(); wref, werr = build(BaseImageRepo, buildver.Version()); assert ref == wref && (err == nil) == (werr == nil)"
     },
     {
       "id": "TS-16-8",
@@ -163,13 +163,13 @@
       "given": [
         "sandbox.AgentPath == \"/usr/local/libexec/agentkit-sandboxd\""
       ],
-      "when": "OverlayCopyLine is called with \"x:1\" and with \"quay.io/agent-fox-dev/agentkit-sandboxd:0.6.0\"",
+      "when": "OverlayCopyLine is called with \"x:1\" and with \"quay.io/agentfox/agentkit-sandboxd:0.6.0\"",
       "then": [
         "OverlayCopyLine(\"x:1\") == \"COPY --from=x:1 /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/\"",
         "for the ghcr reference the result equals \"COPY --from=\" + ref + \" \" + AgentPath + \" \" + path.Dir(AgentPath) + \"/\"",
         "neither result contains a newline"
       ],
-      "pseudocode": "assert OverlayCopyLine('x:1') == 'COPY --from=x:1 /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/'\nref = 'quay.io/agent-fox-dev/agentkit-sandboxd:0.6.0'\nassert OverlayCopyLine(ref) == 'COPY --from='+ref+' '+AgentPath+' '+path.Dir(AgentPath)+'/' && !contains(OverlayCopyLine(ref), '\\n')"
+      "pseudocode": "assert OverlayCopyLine('x:1') == 'COPY --from=x:1 /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/'\nref = 'quay.io/agentfox/agentkit-sandboxd:0.6.0'\nassert OverlayCopyLine(ref) == 'COPY --from='+ref+' '+AgentPath+' '+path.Dir(AgentPath)+'/' && !contains(OverlayCopyLine(ref), '\\n')"
     },
     {
       "id": "TS-16-10",
@@ -348,11 +348,11 @@
       "when": "`make -n sandbox-images` runs from the repository root with PATH=A, then with PATH=B, then with PATH=A and CONTAINER=docker SANDBOX_BASE_IMAGE=example.com/b SANDBOX_OVERLAY_IMAGE=example.com/o SANDBOX_IMAGE_TAG=t1 SANDBOX_PLATFORM=linux/arm64 AGENTKIT_VERSION=v1.0.0 AGENTKIT_REVISION=abc, and finally in the temp directory with PATH=A",
       "then": [
         "with PATH=A the build commands start with podman; with PATH=B they start with docker",
-        "by default the tags are quay.io/agent-fox-dev/agentkit-sandbox:latest and quay.io/agent-fox-dev/agentkit-sandboxd:latest, no --platform is passed, AGENTKIT_VERSION is passed empty, and AGENTKIT_REVISION is passed as the output of `git rev-parse HEAD` (checked only when git is found)",
+        "by default the tags are quay.io/agentfox/agentkit-sandbox:latest and quay.io/agentfox/agentkit-sandboxd:latest, no --platform is passed, AGENTKIT_VERSION is passed empty, and AGENTKIT_REVISION is passed as the output of `git rev-parse HEAD` (checked only when git is found)",
         "with the overrides the commands use docker, example.com/b:t1, example.com/o:t1, --platform linux/arm64, AGENTKIT_VERSION=v1.0.0 and AGENTKIT_REVISION=abc",
         "in the temp directory outside a checkout, AGENTKIT_REVISION is passed empty"
       ],
-      "pseudocode": "out = makeN('sandbox-images', PATH=A); assert all(buildLines(out) startswith 'podman ')\nout = makeN('sandbox-images', PATH=B); assert all(buildLines(out) startswith 'docker ')\nassert has(out,'-t quay.io/agent-fox-dev/agentkit-sandbox:latest') && has(out,'-t quay.io/agent-fox-dev/agentkit-sandboxd:latest') && !has(out,'--platform') && buildArg(out,'AGENTKIT_VERSION') == '' && buildArg(out,'AGENTKIT_REVISION') == gitRevParseHEAD()\nout = makeN('sandbox-images', PATH=A, overrides); assert uses docker, example.com/b:t1, example.com/o:t1, --platform linux/arm64, v1.0.0, abc\nout = makeN('sandbox-images', dir=tmpCopy, PATH=A); assert buildArg(out,'AGENTKIT_REVISION') == ''"
+      "pseudocode": "out = makeN('sandbox-images', PATH=A); assert all(buildLines(out) startswith 'podman ')\nout = makeN('sandbox-images', PATH=B); assert all(buildLines(out) startswith 'docker ')\nassert has(out,'-t quay.io/agentfox/agentkit-sandbox:latest') && has(out,'-t quay.io/agentfox/agentkit-sandboxd:latest') && !has(out,'--platform') && buildArg(out,'AGENTKIT_VERSION') == '' && buildArg(out,'AGENTKIT_REVISION') == gitRevParseHEAD()\nout = makeN('sandbox-images', PATH=A, overrides); assert uses docker, example.com/b:t1, example.com/o:t1, --platform linux/arm64, v1.0.0, abc\nout = makeN('sandbox-images', dir=tmpCopy, PATH=A); assert buildArg(out,'AGENTKIT_REVISION') == ''"
     },
     {
       "id": "TS-16-19",
@@ -368,10 +368,10 @@
       "then": [
         "the output has exactly two build lines and the --target base line comes before the --target overlay line",
         "each line is `podman build` with -f sandbox/images/Containerfile, --build-arg AGENTKIT_VERSION=..., --build-arg AGENTKIT_REVISION=... and the context . (or the repository root), with no cd to another directory",
-        "the base line tags only quay.io/agent-fox-dev/agentkit-sandbox:latest and the overlay line only quay.io/agent-fox-dev/agentkit-sandboxd:latest",
+        "the base line tags only quay.io/agentfox/agentkit-sandbox:latest and the overlay line only quay.io/agentfox/agentkit-sandboxd:latest",
         "neither line has --platform by default; with SANDBOX_PLATFORM=linux/amd64 both carry --platform linux/amd64"
       ],
-      "pseudocode": "L = buildLines(makeN('sandbox-images', PATH=A)); assert len(L) == 2 && has(L[0],'--target base') && has(L[1],'--target overlay')\nfor l in L: assert has(l,'podman build') && has(l,'-f sandbox/images/Containerfile') && has(l,'--build-arg AGENTKIT_VERSION=') && has(l,'--build-arg AGENTKIT_REVISION=') && contextIsRoot(l) && !has(l,'--platform')\nassert tags(L[0]) == ['quay.io/agent-fox-dev/agentkit-sandbox:latest'] && tags(L[1]) == ['quay.io/agent-fox-dev/agentkit-sandboxd:latest']\nL = buildLines(makeN('sandbox-images', PATH=A, SANDBOX_PLATFORM='linux/amd64')); assert all(has(l,'--platform linux/amd64') or has(l,'--platform=linux/amd64'))"
+      "pseudocode": "L = buildLines(makeN('sandbox-images', PATH=A)); assert len(L) == 2 && has(L[0],'--target base') && has(L[1],'--target overlay')\nfor l in L: assert has(l,'podman build') && has(l,'-f sandbox/images/Containerfile') && has(l,'--build-arg AGENTKIT_VERSION=') && has(l,'--build-arg AGENTKIT_REVISION=') && contextIsRoot(l) && !has(l,'--platform')\nassert tags(L[0]) == ['quay.io/agentfox/agentkit-sandbox:latest'] && tags(L[1]) == ['quay.io/agentfox/agentkit-sandboxd:latest']\nL = buildLines(makeN('sandbox-images', PATH=A, SANDBOX_PLATFORM='linux/amd64')); assert all(has(l,'--platform linux/amd64') or has(l,'--platform=linux/amd64'))"
     },
     {
       "id": "TS-16-20",
@@ -405,12 +405,12 @@
       ],
       "when": "`make -n sandbox-images-test` runs with defaults and with AGENTKIT_VERSION=v0.6.0; `make help` and `make -n check` run; the check target's prerequisite line is read from the Makefile",
       "then": [
-        "after both build lines the output has a line running `go test -count=1 -v ./sandbox/images/` with AGENTKIT_SANDBOX_BASE_IMAGE=quay.io/agent-fox-dev/agentkit-sandbox:latest, AGENTKIT_SANDBOX_OVERLAY_IMAGE=quay.io/agent-fox-dev/agentkit-sandboxd:latest, AGENTKIT_SANDBOX_IMAGE_VERSION empty (v0.6.0 in the second run) and AGENTKIT_CONTAINER=podman",
+        "after both build lines the output has a line running `go test -count=1 -v ./sandbox/images/` with AGENTKIT_SANDBOX_BASE_IMAGE=quay.io/agentfox/agentkit-sandbox:latest, AGENTKIT_SANDBOX_OVERLAY_IMAGE=quay.io/agentfox/agentkit-sandboxd:latest, AGENTKIT_SANDBOX_IMAGE_VERSION empty (v0.6.0 in the second run) and AGENTKIT_CONTAINER=podman",
         "the go test line has no leading - ignore marker and no `|| true` or `; true`, so make exits with go test's status",
         "`make help` prints a line for sandbox-images and one for sandbox-images-test, each with a description",
         "check's prerequisites are fmt vet lint test with no sandbox-images target, `make -n check` prints no podman, docker or `build -f sandbox/images` command, and the marker file is absent"
       ],
-      "pseudocode": "out = makeN('sandbox-images-test', PATH=A); g = lineWith(out,'go test -count=1 -v ./sandbox/images/')\nassert idx(g) > idx(buildLines(out)[1]) && env(g) == {BASE:'quay.io/agent-fox-dev/agentkit-sandbox:latest', OVERLAY:'quay.io/agent-fox-dev/agentkit-sandboxd:latest', VERSION:'', AGENTKIT_CONTAINER:'podman'}\nassert !startsWith(recipe(g),'-') && !has(g,'|| true') && !has(g,'; true')\nassert envOf(lineWith(makeN('sandbox-images-test', PATH=A, AGENTKIT_VERSION='v0.6.0'),'go test'))['AGENTKIT_SANDBOX_IMAGE_VERSION'] == 'v0.6.0'\nh = make('help'); assert describedLine(h,'sandbox-images') && describedLine(h,'sandbox-images-test')\nassert prereqs('check') == ['fmt','vet','lint','test']; c = makeN('check', PATH=A); assert !has(c,'podman') && !has(c,'docker') && !has(c,'build -f sandbox/images') && !exists(marker)"
+      "pseudocode": "out = makeN('sandbox-images-test', PATH=A); g = lineWith(out,'go test -count=1 -v ./sandbox/images/')\nassert idx(g) > idx(buildLines(out)[1]) && env(g) == {BASE:'quay.io/agentfox/agentkit-sandbox:latest', OVERLAY:'quay.io/agentfox/agentkit-sandboxd:latest', VERSION:'', AGENTKIT_CONTAINER:'podman'}\nassert !startsWith(recipe(g),'-') && !has(g,'|| true') && !has(g,'; true')\nassert envOf(lineWith(makeN('sandbox-images-test', PATH=A, AGENTKIT_VERSION='v0.6.0'),'go test'))['AGENTKIT_SANDBOX_IMAGE_VERSION'] == 'v0.6.0'\nh = make('help'); assert describedLine(h,'sandbox-images') && describedLine(h,'sandbox-images-test')\nassert prereqs('check') == ['fmt','vet','lint','test']; c = makeN('check', PATH=A); assert !has(c,'podman') && !has(c,'docker') && !has(c,'build -f sandbox/images') && !exists(marker)"
     },
     {
       "id": "TS-16-22",
@@ -652,7 +652,7 @@
       "then": [
         "setup-qemu-action and setup-buildx-action steps precede a docker/login-action step with registry: ghcr.io, username from github.actor and password ${{ secrets.GITHUB_TOKEN }}, which precedes the push step",
         "the fake docker logs exactly two `buildx build` invocations, each with --platform linux/amd64,linux/arm64, -f sandbox/images/Containerfile, --push, --build-arg AGENTKIT_VERSION=v1.2.3 and --build-arg AGENTKIT_REVISION=abc",
-        "the --target base invocation tags exactly quay.io/agent-fox-dev/agentkit-sandbox:1.2.3 and :1.2, and the --target overlay invocation exactly quay.io/agent-fox-dev/agentkit-sandboxd:1.2.3 and :1.2"
+        "the --target base invocation tags exactly quay.io/agentfox/agentkit-sandbox:1.2.3 and :1.2, and the --target overlay invocation exactly quay.io/agentfox/agentkit-sandboxd:1.2.3 and :1.2"
       ],
       "pseudocode": "j = wf.jobs.images; l = uses(j,'docker/login-action'); assert l.with.registry == 'ghcr.io' && has(l.with.username,'github.actor') && has(l.with.password,'secrets.GITHUB_TOKEN')\nassert idx(uses(j,'docker/setup-qemu-action')) < idx(l) && idx(uses(j,'docker/setup-buildx-action')) < idx(l) < idx(pushStep)\nassert !has(pushStep.run,'${{'); log = bashWithFakeDocker(pushStep.run, envFor(pushStep, version='v1.2.3', tags='1.2.3 1.2'), GITHUB_SHA='abc')\nb = [a for a in log if a[0:2] == ['buildx','build']]; assert len(b) == 2\nfor a in b: assert flag(a,'--platform') == 'linux/amd64,linux/arm64' && flag(a,'-f') == 'sandbox/images/Containerfile' && '--push' in a && buildArgs(a) == {AGENTKIT_VERSION:'v1.2.3', AGENTKIT_REVISION:'abc'}\nassert tags(target(b,'base')) == {BaseImageRepo+':1.2.3', BaseImageRepo+':1.2'} && tags(target(b,'overlay')) == {OverlayImageRepo+':1.2.3', OverlayImageRepo+':1.2'}"
     },
@@ -707,10 +707,10 @@
         "bash on PATH, else the test skips; the verify job's run block and env mapping as in TS-16-36, with version v1.2.3 and tags \"1.2.3 1.2\"",
         "a fake docker on PATH that logs each argv and is scripted per case"
       ],
-      "when": "the block runs three times: pull of quay.io/agent-fox-dev/agentkit-sandboxd:1.2 for linux/arm64 exits 1 printing `denied`; run prints `agentkit-sandboxd v1.2.2 (protocol 1.0)`; run prints `agentkit-sandboxd v1.2.30 (protocol 1.0)`",
+      "when": "the block runs three times: pull of quay.io/agentfox/agentkit-sandboxd:1.2 for linux/arm64 exits 1 printing `denied`; run prints `agentkit-sandboxd v1.2.2 (protocol 1.0)`; run prints `agentkit-sandboxd v1.2.30 (protocol 1.0)`",
       "then": [
         "every run of the block exits non-zero",
-        "the first run's output names quay.io/agent-fox-dev/agentkit-sandboxd:1.2; the second and third name the reference whose output failed the check, the third proving the prefix includes the trailing space",
+        "the first run's output names quay.io/agentfox/agentkit-sandboxd:1.2; the second and third name the reference whose output failed the check, the third proving the prefix includes the trailing space",
         "no logged docker invocation is push, tag, rmi, login or buildx",
         "the verify job takes its inputs only from needs.images.outputs and downloads no artifact, so re-running it alone gets the same inputs"
       ],
@@ -995,7 +995,7 @@
       ],
       "when": "`make sandbox-images-test AGENTKIT_VERSION=v0.6.0` runs from the repository root",
       "then": [
-        "make exits 0, and quay.io/agent-fox-dev/agentkit-sandbox:latest and quay.io/agent-fox-dev/agentkit-sandboxd:latest both exist in the engine's image store",
+        "make exits 0, and quay.io/agentfox/agentkit-sandbox:latest and quay.io/agentfox/agentkit-sandboxd:latest both exist in the engine's image store",
         "the go test output reports PASS, not SKIP, for the base image test, whose agent answered Hello with Version v0.6.0, Workdir /workspace, OutlineBackend tree-sitter and Git true, and whose Tools call and proxy execute and write_file probes succeeded",
         "`run --rm --entrypoint /usr/local/libexec/agentkit-sandboxd <image> --version` prints `agentkit-sandboxd v0.6.0 (protocol M.N)` for both :dev images",
         "`ps -a` lists no container named agentkit-imgtest-*"
@@ -1052,7 +1052,7 @@
       "when": "a maintainer pushes the tag vX.Y.Z and the workflow runs to completion",
       "then": [
         "the images job's test step passed on the default docker builder before the QEMU, buildx, login and push steps ran, and the job succeeded",
-        "`docker buildx imagetools inspect` of quay.io/agent-fox-dev/agentkit-sandbox and quay.io/agent-fox-dev/agentkit-sandboxd at X.Y.Z and X.Y lists linux/amd64 and linux/arm64, the arm64 cgo agent having been cross-compiled on the amd64 runner",
+        "`docker buildx imagetools inspect` of quay.io/agentfox/agentkit-sandbox and quay.io/agentfox/agentkit-sandboxd at X.Y.Z and X.Y lists linux/amd64 and linux/arm64, the arm64 cgo agent having been cross-compiled on the amd64 runner",
         "the verify job succeeded without logging in, and an anonymous `docker pull --platform linux/arm64` of each tag followed by `--entrypoint /usr/local/libexec/agentkit-sandboxd … --version` prints `agentkit-sandboxd vX.Y.Z (protocol M.N)`"
       ],
       "real_components": [
@@ -1079,7 +1079,7 @@
       ],
       "when": "the program is built with -buildvcs=false into a temp dir three times: with -ldflags \"-X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=v1.2.3\", with no stamp, and with the stamp v1.2.4-0.20240102150405-abcdefabcdef; each binary is run",
       "then": [
-        "the v1.2.3 binary exits 0 and prints quay.io/agent-fox-dev/agentkit-sandbox:1.2.3 then quay.io/agent-fox-dev/agentkit-sandboxd:1.2.3",
+        "the v1.2.3 binary exits 0 and prints quay.io/agentfox/agentkit-sandbox:1.2.3 then quay.io/agentfox/agentkit-sandboxd:1.2.3",
         "the unstamped binary exits 1 and its stderr contains \"sandbox: no published image for this agentkit-go version\", \"(devel)\", \"Spec.Image\" and \"make sandbox-images\"",
         "the pseudo-version binary exits 1 and its stderr contains the same error text and v1.2.4-0.20240102150405-abcdefabcdef"
       ],

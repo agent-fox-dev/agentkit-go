@@ -7,7 +7,7 @@
   "glossary": {
     "CA bundle": "The Debian CA certificate bundle at /etc/ssl/certs/ca-certificates.crt, installed by the ca-certificates package.",
     "Landlock check": "The probe run through proxy execute when Agent().Landlock.ABI is 2 or more: `touch /var/tmp/agentkit-probe` must exit non-zero and `touch \"$HOME/p\" /tmp/p /workspace/p` must exit 0.",
-    "base image": "quay.io/agent-fox-dev/agentkit-sandbox, built by `--target base`. It is FROM debian:trixie-slim and holds the cgo-built agent, git, bash, ca-certificates and the uid-1000 user agentkit.",
+    "base image": "quay.io/agentfox/agentkit-sandbox, built by `--target base`. It is FROM debian:trixie-slim and holds the cgo-built agent, git, bash, ca-certificates and the uid-1000 user agentkit.",
     "canonical release version": "`v` followed by MAJOR.MINOR.PATCH with no leading zeros and an optional `-prerelease`. It carries no `+` build metadata and is not a pseudo-version.",
     "consistency test": "sandbox/images/consistency_test.go. It reads the Containerfile, the Makefile and the release workflow, needs no container engine, and runs in make check.",
     "container engine": "podman or docker. make chooses it with the CONTAINER variable; the image tests choose it with AGENTKIT_CONTAINER, falling back to podman and then docker on PATH.",
@@ -15,7 +15,7 @@
     "digest check": "13's Tools RPC comparison of the agent's tool-definition digests with the host's. It fails with sandbox.ErrToolMismatch on any difference.",
     "expected version": "The agent version the image tests require: the value of AGENTKIT_SANDBOX_IMAGE_VERSION, or `(devel)` when that variable is empty.",
     "harness": "The helper in the test-only package sandbox/images. It starts an agent container with `run --rm -i`, wraps the child's pipes with stdioconn.New and attaches with attach.Dial.",
-    "overlay image": "quay.io/agent-fox-dev/agentkit-sandboxd, built by `--target overlay`. It is a FROM scratch image with one layer, holding only the statically linked agent at sandbox.AgentPath.",
+    "overlay image": "quay.io/agentfox/agentkit-sandboxd, built by `--target overlay`. It is a FROM scratch image with one layer, holding only the statically linked agent at sandbox.AgentPath.",
     "proxy tool": "A core.Tool returned by Sandbox.Tools whose handler runs the named tool (execute, write_file) inside the sandbox.",
     "pseudo-version": "A Go module version whose prerelease ends, at its start or after a `.`, in a 14-digit timestamp, a `-` and 12 lowercase hex digits. The three forms are vX.0.0-yyyymmddhhmmss-abcdefabcdef, vX.Y.Z-0.yyyymmddhhmmss-abcdefabcdef and vX.Y.Z-pre.0.yyyymmddhhmmss-abcdefabcdef.",
     "release workflow": ".github/workflows/sandbox-images.yml. Its images job builds, tests and publishes; its verify job pulls anonymously and runs the published agents.",
@@ -244,7 +244,7 @@
           "id": "16-REQ-5.1",
           "pattern": "ubiquitous",
           "system": "sandbox package",
-          "action": "export from sandbox/image.go the constants BaseImageRepo = \"quay.io/agent-fox-dev/agentkit-sandbox\" and OverlayImageRepo = \"quay.io/agent-fox-dev/agentkit-sandboxd\", and the variable ErrNoPublishedImage = errors.New(\"sandbox: no published image for this agentkit-go version\")"
+          "action": "export from sandbox/image.go the constants BaseImageRepo = \"quay.io/agentfox/agentkit-sandbox\" and OverlayImageRepo = \"quay.io/agentfox/agentkit-sandboxd\", and the variable ErrNoPublishedImage = errors.New(\"sandbox: no published image for this agentkit-go version\")"
         },
         {
           "id": "16-REQ-5.2",
@@ -276,7 +276,7 @@
           "condition": "ImageTag accepts the version that buildver.Version() reports",
           "system": "sandbox package",
           "action": "return BaseImageRepo + \":\" + tag from DefaultImage and OverlayImageRepo + \":\" + tag from OverlayImage, both thin wrappers over one unexported function that takes the version as a parameter",
-          "contract": "for version v1.2.3 the unexported builder yields (\"quay.io/agent-fox-dev/agentkit-sandbox:1.2.3\", nil) and (\"quay.io/agent-fox-dev/agentkit-sandboxd:1.2.3\", nil)"
+          "contract": "for version v1.2.3 the unexported builder yields (\"quay.io/agentfox/agentkit-sandbox:1.2.3\", nil) and (\"quay.io/agentfox/agentkit-sandboxd:1.2.3\", nil)"
         },
         {
           "id": "16-REQ-5.6",
@@ -310,7 +310,7 @@
           "id": "16-REQ-6.1",
           "pattern": "ubiquitous",
           "system": "Makefile",
-          "action": "define these variables, each overridable on the make command line: CONTAINER (podman when on PATH, else docker); SANDBOX_BASE_IMAGE (quay.io/agent-fox-dev/agentkit-sandbox); SANDBOX_OVERLAY_IMAGE (quay.io/agent-fox-dev/agentkit-sandboxd); SANDBOX_IMAGE_TAG (dev); SANDBOX_PLATFORM (empty); AGENTKIT_VERSION (empty); AGENTKIT_REVISION (`git rev-parse HEAD`, or empty outside a checkout)"
+          "action": "define these variables, each overridable on the make command line: CONTAINER (podman when on PATH, else docker); SANDBOX_BASE_IMAGE (quay.io/agentfox/agentkit-sandbox); SANDBOX_OVERLAY_IMAGE (quay.io/agentfox/agentkit-sandboxd); SANDBOX_IMAGE_TAG (dev); SANDBOX_PLATFORM (empty); AGENTKIT_VERSION (empty); AGENTKIT_REVISION (`git rev-parse HEAD`, or empty outside a checkout)"
         },
         {
           "id": "16-REQ-6.2",
@@ -667,7 +667,7 @@
         },
         {
           "actor": "sandbox package",
-          "action": "returns quay.io/agent-fox-dev/agentkit-sandbox:X.Y.Z and quay.io/agent-fox-dev/agentkit-sandboxd:X.Y.Z, or an error wrapping ErrNoPublishedImage that names the version, Spec.Image and `make sandbox-images`"
+          "action": "returns quay.io/agentfox/agentkit-sandbox:X.Y.Z and quay.io/agentfox/agentkit-sandboxd:X.Y.Z, or an error wrapping ErrNoPublishedImage that names the version, Spec.Image and `make sandbox-images`"
         }
       ]
     }

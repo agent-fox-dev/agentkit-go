@@ -149,20 +149,20 @@ which is also how OpenShell works.
 **Decided: the image carries the agent.** The provider never copies a
 binary into a running container. Two images are published per release:
 
-- `quay.io/agent-fox-dev/agentkit-sandbox:<version>`, the **base image**:
+- `quay.io/agentfox/agentkit-sandbox:<version>`, the **base image**:
   a small Debian-based image with the agent at
   `/usr/local/libexec/agentkit-sandboxd`, built with cgo so `outline` has
   its tree-sitter grammars, plus `git`, `bash`, `ca-certificates` and a
   non-root user. `Spec.Image` defaults to it. No `rsync`: the agent
   carries the rsync protocol itself (D7).
-- `quay.io/agent-fox-dev/agentkit-sandboxd:<version>`, the **overlay
+- `quay.io/agentfox/agentkit-sandboxd:<version>`, the **overlay
   image**: `FROM scratch`, holding only a statically linked agent
   (`CGO_ENABLED=0`, so `outline` is `go/ast` for Go and `none` for the
   rest) at the same path. An embedder with its own toolchain image adds
   one line to its Containerfile:
 
   ```dockerfile
-  COPY --from=quay.io/agent-fox-dev/agentkit-sandboxd:0.6 /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/
+  COPY --from=quay.io/agentfox/agentkit-sandboxd:0.6 /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/
   ```
 
 The agent's path is a constant of the protocol (`sandbox.AgentPath`). A

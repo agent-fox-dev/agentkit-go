@@ -1,7 +1,7 @@
 # Releasing
 
-A release publishes the two sandbox images: `quay.io/agent-fox-dev/agentkit-sandbox`
-(the base image) and `quay.io/agent-fox-dev/agentkit-sandboxd` (the overlay
+A release publishes the two sandbox images: `quay.io/agentfox/agentkit-sandbox`
+(the base image) and `quay.io/agentfox/agentkit-sandboxd` (the overlay
 image). Nothing else is released by automation: no binaries, archives or
 formulae. The workflow is `.github/workflows/sandbox-images.yml`.
 

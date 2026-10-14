@@ -18,7 +18,7 @@
 // container with no network, from the base image --image names (build one
 // with make sandbox-images):
 //
-//	go run . --podman --image quay.io/agent-fox-dev/agentkit-sandbox:latest
+//	go run . --podman --image quay.io/agentfox/agentkit-sandbox:latest
 //
 // With --landlock it runs on sandbox/landlock, the agent as a child process
 // confined by its own Landlock ruleset under NetworkNone; --agent names the

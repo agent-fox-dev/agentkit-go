@@ -49,7 +49,7 @@ func TestEmbedderImageRefs_TS16_54(t *testing.T) {
 	}
 
 	so, se, code := run(build("stamped", "v1.2.3"))
-	if want := "quay.io/agent-fox-dev/agentkit-sandbox:1.2.3\nquay.io/agent-fox-dev/agentkit-sandboxd:1.2.3\n"; code != 0 || so != want {
+	if want := "quay.io/agentfox/agentkit-sandbox:1.2.3\nquay.io/agentfox/agentkit-sandboxd:1.2.3\n"; code != 0 || so != want {
 		t.Errorf("stamped v1.2.3: exit %d, stdout %q, want exit 0 and %q; stderr %q", code, so, want, se)
 	}
 

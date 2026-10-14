@@ -104,7 +104,7 @@ func TestDefaultImage_TS19_23(t *testing.T) {
 	f := newFakeGW(t, nil)
 	p := f.dial(t)
 	ctx := context.Background()
-	const ref = "quay.io/agent-fox-dev/agentkit-sandbox:0.19.0"
+	const ref = "quay.io/agentfox/agentkit-sandbox:0.19.0"
 	defaultImage = func() (string, error) { return ref, nil }
 	t.Cleanup(func() { defaultImage = sandbox.DefaultImage })
 	sb, err := p.Create(ctx, sandbox.Spec{})
