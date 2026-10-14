@@ -89,7 +89,7 @@
       "done_when": [
         "TestProtocolShape_TS13_1 and TestProtoNotStale_TS13_5 pass unmodified"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,

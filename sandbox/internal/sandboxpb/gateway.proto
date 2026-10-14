@@ -1,0 +1,183 @@
+syntax = "proto3";
+
+// The agentkit.sandbox.v1 gateway protocol, version 1.0: an embedder's
+// gateway client asks a gateway on another host to create, list and destroy
+// sandboxes, and reaches each sandbox's agent through the gateway's relay of
+// the Agent service (sandbox.proto), which this file leaves untouched.
+//
+// Every RPC of both services carries `authorization: Bearer <token>`. Every
+// Agent RPC sent to a gateway carries `agentkit-sandbox-id: <id>`; the RPCs
+// here carry the id in their messages, never in metadata. Times are Unix
+// nanoseconds, durations nanoseconds, and Spec.Provider JSON bytes. A
+// refusal travels as a Refusal in the response, not as a status.
+//
+// Fields are added, never renumbered, and any addition bumps
+// gateway.ProtocolMinor. After an edit, run `make proto`: it regenerates the
+// Go code beside this file and records this file's SHA-256 in
+// gateway.proto.sha256.
+
+package agentkit.sandbox.v1;
+
+option go_package = "github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb;sandboxpb";
+
+service Gateway {
+  // The gateway's protocol and build versions, the backend's capabilities
+  // within the network ceiling, and the gateway's limits.
+  rpc Capabilities(CapabilitiesRequest) returns (CapabilitiesResponse);
+  // Create a sandbox owned by the caller's token.
+  rpc Create(CreateRequest) returns (CreateResponse);
+  // Clone a public git repository into a sandbox's workspace: the
+  // backend's provider-side init step.
+  rpc SyncGit(SyncGitRequest) returns (SyncGitResponse);
+  // The caller's sandboxes.
+  rpc List(ListRequest) returns (ListResponse);
+  // Destroy one of the caller's sandboxes; an unknown id is a no-op.
+  rpc Destroy(DestroyRequest) returns (DestroyResponse);
+  // Run the backend's Reap.
+  rpc Reap(ReapRequest) returns (ReapResponse);
+}
+
+// NetworkMode is numbered like sandbox.NetworkMode.
+enum NetworkMode {
+  NONE = 0;
+  ALLOWLIST = 1;
+  UNRESTRICTED = 2;
+}
+
+// Isolation is numbered like sandbox.Isolation.
+enum Isolation {
+  ISOLATION_NONE = 0;
+  ISOLATION_CONFINEMENT = 1;
+  ISOLATION_CONTAINER = 2;
+  ISOLATION_MICRO_VM = 3;
+}
+
+// Resources mirrors sandbox.Resources.
+message Resources {
+  double cpus = 1;
+  int64 memory_bytes = 2;
+  int64 pids = 3;
+  int64 disk_bytes = 4;
+}
+
+// Endpoint mirrors sandbox.Endpoint.
+message Endpoint {
+  string host = 1;
+  int32 port = 2;
+}
+
+// Network mirrors sandbox.Network.
+message Network {
+  NetworkMode mode = 1;
+  repeated Endpoint allow = 2;
+}
+
+// SandboxSpec mirrors sandbox.Spec field for field.
+message SandboxSpec {
+  string image = 1;
+  string workdir = 2;
+  map<string, string> env = 3;
+  Resources resources = 4;
+  Network network = 5;
+  int64 ttl_nanos = 6;
+  map<string, string> labels = 7;
+  // Spec.Provider as JSON; empty when it has no keys.
+  bytes provider = 8;
+  bool require_landlock = 9;
+}
+
+// Refusal is a Create or SyncGit the gateway or its backend declined. The
+// client turns each kind into the matching sandbox or gateway sentinel.
+message Refusal {
+  enum Kind {
+    UNSUPPORTED = 0;
+    NO_AGENT = 1;
+    NO_PUBLISHED_IMAGE = 2;
+    PROTOCOL = 3;
+    CAPACITY = 4;
+    REFUSED = 5;
+  }
+  Kind kind = 1;
+  // The refused Spec field, such as Network.Mode or TTL; may be empty.
+  string field = 2;
+  string reason = 3;
+  string message = 4;
+}
+
+message CapabilitiesRequest {}
+
+// CapabilitiesResponse carries sandbox.Capabilities field for field, its
+// network modes already limited to the gateway's ceiling.
+message CapabilitiesResponse {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  // The gateway's build version.
+  string version = 3;
+  string provider = 4;
+  Isolation isolation = 5;
+  repeated NetworkMode network = 6;
+  bool cpus = 7;
+  bool memory_bytes = 8;
+  bool pids = 9;
+  bool disk_bytes = 10;
+  bool image = 11;
+  bool workdir = 12;
+  bool landlock = 13;
+  string notes = 14;
+  int64 max_ttl_nanos = 15;
+  int32 max_sandboxes = 16;
+}
+
+message CreateRequest {
+  SandboxSpec spec = 1;
+}
+
+// CreateResponse is a refusal, or the sandbox the gateway created.
+message CreateResponse {
+  Refusal refusal = 1;
+  string id = 2;
+  // The effective spec.
+  SandboxSpec spec = 3;
+  int64 created_unix_nanos = 4;
+  int64 expires_unix_nanos = 5;
+}
+
+message SyncGitRequest {
+  string id = 1;
+  string url = 2;
+  string ref = 3;
+  int32 depth = 4;
+}
+
+message SyncGitResponse {
+  Refusal refusal = 1;
+}
+
+message ListRequest {}
+
+// SandboxEntry is one sandbox of the caller.
+message SandboxEntry {
+  string id = 1;
+  map<string, string> labels = 2;
+  int64 created_unix_nanos = 3;
+  int64 expires_unix_nanos = 4;
+}
+
+message ListResponse {
+  repeated SandboxEntry sandboxes = 1;
+}
+
+message DestroyRequest {
+  string id = 1;
+}
+
+message DestroyResponse {}
+
+message ReapRequest {}
+
+// ReapResponse carries the removed ids and, when a removal failed, the
+// joined error text.
+message ReapResponse {
+  repeated string ids = 1;
+  string error = 2;
+}

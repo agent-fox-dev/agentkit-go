@@ -97,9 +97,15 @@ func TestProtocolShape_TS13_1(t *testing.T) {
 // checkProtoHash reports whether recorded is the hex SHA-256 of proto, the
 // offline staleness check behind TS-13-5.
 func checkProtoHash(proto, recorded []byte) error {
+	return checkProtoHashFor("sandbox.proto", proto, recorded)
+}
+
+// checkProtoHashFor is checkProtoHash for the .proto file name, whose hash
+// is recorded in name.sha256 (TS-13-5, TS-19-7).
+func checkProtoHashFor(name string, proto, recorded []byte) error {
 	sum := sha256.Sum256(proto)
 	if got := strings.TrimSpace(string(recorded)); got != hex.EncodeToString(sum[:]) {
-		return fmt.Errorf("sandbox.proto hashes to %x but sandbox.proto.sha256 records %q: the generated code is stale; run make proto", sum, got)
+		return fmt.Errorf("%s hashes to %x but %s.sha256 records %q: the generated code is stale; run make proto", name, sum, name, got)
 	}
 	return nil
 }
