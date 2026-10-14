@@ -1,18 +1,24 @@
 .DEFAULT_GOAL := help
-DOC_DIR ?= build/docs
+
 # MODULES are the repository's Go modules: the root and its nested modules.
 MODULES := . codesearch sandbox sandbox/gatewayd examples/sandbox
+DOC_DIR ?= build/docs
 
-# The sandbox images (sandbox/images/Containerfile). CONTAINER is podman when
-# it is on PATH, else docker; SANDBOX_PLATFORM empty means the host platform.
-CONTAINER ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo docker)
-SANDBOX_BASE_IMAGE ?= ghcr.io/agent-fox-dev/agentkit-sandbox
-SANDBOX_OVERLAY_IMAGE ?= ghcr.io/agent-fox-dev/agentkit-sandboxd
-SANDBOX_IMAGE_TAG ?= dev
-SANDBOX_PLATFORM ?=
+VERSION    := $(shell git describe --tags 2>/dev/null || echo "0.1.0")
+COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
+BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
-AGENTKIT_VERSION ?=
-AGENTKIT_REVISION ?= $(shell git rev-parse HEAD 2>/dev/null)
+LDFLAGS := -ldflags "\
+  -X github.com/agent-fox-dev/agentfox.Version=$(VERSION) \
+  -X github.com/agent-fox-dev/agentfox.Commit=$(COMMIT) \
+  -X github.com/agent-fox-dev/agentfox.BuildTime=$(BUILD_TIME)"
+
+CONTAINER_REGISTRY ?= quay.io/agentfox
+
+SANDBOX_IMAGE ?= agentkit-sandbox
+SANDBOX_IMAGE_TAG ?= $(VERSION)
+SANDBOXD_IMAGE ?= agentkit-sandboxd
+SANDBOXD_IMAGE_TAG ?= $(VERSION)
 
 .PHONY: help
 help: ## Show this help
@@ -42,6 +48,9 @@ lint: ## Run golangci-lint if installed, otherwise skip
 	else \
 		echo "golangci-lint not installed; skipping (see https://golangci-lint.run)"; \
 	fi
+
+.PHONY: check
+check: fmt vet lint test ## Run fmt, vet, lint and test - use before committing
 
 .PHONY: doc
 doc: ## Generate Go package reference (go doc -all) as text files under build/doc
@@ -90,49 +99,28 @@ proto: ## Regenerate the sandbox agent and gateway protocols' Go code (needs pro
 tidy: ## go mod tidy the root module and the nested modules
 	@set -e; for m in $(MODULES); do (cd $$m && go mod tidy); done
 
-.PHONY: sandbox-images
-sandbox-images: ## Build the sandbox base and overlay images for the host platform
-	@command -v "$(CONTAINER)" >/dev/null 2>&1 || { echo "sandbox-images: container engine '$(CONTAINER)' not found on PATH; install podman or docker, or set CONTAINER=<engine>" >&2; exit 1; }
-	$(CONTAINER) build -f sandbox/images/Containerfile --target base $(if $(SANDBOX_PLATFORM),--platform $(SANDBOX_PLATFORM) )--build-arg AGENTKIT_VERSION=$(AGENTKIT_VERSION) --build-arg AGENTKIT_REVISION=$(AGENTKIT_REVISION) $(SANDBOX_LABELS) -t $(SANDBOX_BASE_IMAGE):$(SANDBOX_IMAGE_TAG) .
-	$(CONTAINER) build -f sandbox/images/Containerfile --target overlay $(if $(SANDBOX_PLATFORM),--platform $(SANDBOX_PLATFORM) )--build-arg AGENTKIT_VERSION=$(AGENTKIT_VERSION) --build-arg AGENTKIT_REVISION=$(AGENTKIT_REVISION) $(SANDBOX_LABELS) -t $(SANDBOX_OVERLAY_IMAGE):$(SANDBOX_IMAGE_TAG) .
+.PHONY: build-containers
+build-containers: build-sandbox-container build-sandboxd-container
 
-# SANDBOX_LABELS restates the version and revision labels on the command
-# line: buildah's layer cache keeps a stale LABEL in the overlay stage, which
-# has no RUN to carry the build arguments into its cache key.
-SANDBOX_LABELS = --label org.opencontainers.image.version=$(AGENTKIT_VERSION) --label org.opencontainers.image.revision=$(AGENTKIT_REVISION)
+.PHONY: build-sandbox-container
+build-sandbox-container:
+	podman build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg BUILD=$(COMMIT) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		-t $(CONTAINER_REGISTRY)/$(SANDBOX_IMAGE):$(SANDBOX_IMAGE_TAG) \
+		-t $(CONTAINER_REGISTRY)/$(SANDBOX_IMAGE):latest \
+		-f containers/agentkit-sandbox/Containerfile .
 
-# The image tests live in the nested sandbox module, so they run there.
-.PHONY: sandbox-images-test
-sandbox-images-test: sandbox-images ## Build the sandbox images and run the end-to-end image tests against them
-	cd sandbox && AGENTKIT_SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE):$(SANDBOX_IMAGE_TAG) AGENTKIT_SANDBOX_OVERLAY_IMAGE=$(SANDBOX_OVERLAY_IMAGE):$(SANDBOX_IMAGE_TAG) AGENTKIT_SANDBOX_IMAGE_VERSION=$(AGENTKIT_VERSION) AGENTKIT_CONTAINER=$(CONTAINER) go test -count=1 -v ./images/
-
-# The podman provider's integration tests run against the locally built
-# images, in the nested sandbox module. Not part of check: they need an engine.
-.PHONY: sandbox-podman-test
-sandbox-podman-test: sandbox-images ## Build the sandbox images and run the podman provider's integration tests
-	cd sandbox && AGENTKIT_SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE):$(SANDBOX_IMAGE_TAG) AGENTKIT_SANDBOX_OVERLAY_IMAGE=$(SANDBOX_OVERLAY_IMAGE):$(SANDBOX_IMAGE_TAG) AGENTKIT_SANDBOX_IMAGE_VERSION=$(AGENTKIT_VERSION) AGENTKIT_CONTAINER=$(CONTAINER) go test -count=1 -v ./podman/
-
-# The landlock provider's tests, verbose, with the opt-in public clone; its
-# offline and kernel-gated tests already run in check.
-AGENTKIT_SANDBOX_GIT_URL ?= https://github.com/agent-fox-dev/agentkit-go
-.PHONY: sandbox-landlock-test
-sandbox-landlock-test: ## Run the landlock provider's tests verbosely, including the public GitRepo clone
-	cd sandbox && AGENTKIT_SANDBOX_GIT_URL=$(AGENTKIT_SANDBOX_GIT_URL) go test -count=1 -v ./landlock/
-
-# The gateway command lives in its own nested module; AGENTKIT_VERSION, when
-# set, stamps the version it reports.
-.PHONY: sandbox-gateway
-sandbox-gateway: ## Build build/bin/agentkit-gateway (AGENTKIT_VERSION stamps its version)
-	cd sandbox/gatewayd && go build -trimpath $(if $(AGENTKIT_VERSION),-ldflags "-X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=$(AGENTKIT_VERSION)" )-o $(CURDIR)/build/bin/agentkit-gateway ./cmd/agentkit-gateway
-
-# The gateway's opt-in Podman tests run against the locally built base image.
-# Not part of check: they need an engine.
-.PHONY: sandbox-gateway-test
-sandbox-gateway-test: sandbox-images ## Build the sandbox images and run the gateway's opt-in Podman tests
-	cd sandbox/gatewayd && AGENTKIT_SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE):$(SANDBOX_IMAGE_TAG) AGENTKIT_CONTAINER=$(CONTAINER) go test -count=1 -v -run Podman .
-
-.PHONY: check
-check: fmt vet lint test ## Run fmt, vet, lint and test - use before committing
+.PHONY: build-sandboxd-container
+build-sandboxd-container:
+	podman build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg BUILD=$(COMMIT) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		-t $(CONTAINER_REGISTRY)/$(SANDBOXD_IMAGE):$(SANDBOXD_IMAGE_TAG) \
+		-t $(CONTAINER_REGISTRY)/$(SANDBOXD_IMAGE):latest \
+		-f containers/agentkit-sandboxd/Containerfile .
 
 .PHONY: clean-branches
 clean-branches:

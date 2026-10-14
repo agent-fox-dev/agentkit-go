@@ -1,0 +1,142 @@
+name: multi-arch generic build workflow
+
+on:
+  workflow_call:
+    inputs:
+      container_name:
+        description: 'Name of the container to build (e.g. hub, sandbox, agents)'
+        required: true
+        type: string
+
+env:
+  IMAGE_NAME: ${{ vars.REGISTRY }}/${{ vars.REGISTRY_ORG }}/${{ inputs.container_name }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_release: ${{ steps.version.outputs.is_release }}
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: get version
+        id: version
+        run: |
+          if git describe --tags --exact-match HEAD 2>/dev/null; then
+            VERSION=$(git describe --tags --exact-match HEAD)
+            IS_RELEASE=true
+          elif git describe --tags 2>/dev/null; then
+            VERSION=$(git describe --tags)
+            IS_RELEASE=false
+          else
+            VERSION="$(git rev-parse --short HEAD)"
+            IS_RELEASE=false
+          fi
+          VERSION=${VERSION#v}
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "is_release=${IS_RELEASE}" >> $GITHUB_OUTPUT
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            suffix: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            suffix: arm64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v4
+
+      - name: login to RH registry
+        uses: docker/login-action@v3
+        with:
+          registry: "registry.redhat.io"
+          username: ${{ secrets.RH_ACCOUNT_USERNAME }}
+          password: ${{ secrets.RH_ACCOUNT_PASSWORD }}
+
+      - name: login to Quay.io registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_TOKEN }}   # GitHub PAT
+
+      - name: setup buildx
+        uses: docker/setup-buildx-action@v3
+
+      - id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+
+      - name: build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: "."
+          file: "containers/${{ inputs.container_name }}/Containerfile"
+          tags: ${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}-${{ matrix.suffix }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          platforms: ${{ matrix.platform }}
+          cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:cache-${{ matrix.suffix }}
+          cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:cache-${{ matrix.suffix }},mode=max
+          push: true
+
+  manifest:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: login to Quay.io registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: set image tags
+        id: set-tags
+        run: |
+          TAGS="${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}"
+
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAGS="$TAGS,${{ env.IMAGE_NAME }}:latest"
+          fi
+
+          if [[ "${{ github.ref }}" == refs/heads/release-* ]]; then
+            RELEASE_BRANCH_NAME=$(basename "${{ github.ref }}")
+            TAGS="$TAGS,${{ env.IMAGE_NAME }}:${RELEASE_BRANCH_NAME}"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+      - name: create and push manifest
+        id: manifest
+        run: |
+          IFS=',' read -ra TAG_ARRAY <<< "${{ steps.set-tags.outputs.tags }}"
+          for TAG in "${TAG_ARRAY[@]}"; do
+            docker buildx imagetools create -t "${TAG}" \
+              ${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}-amd64 \
+              ${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}-arm64
+          done
+          # get digest from the version tag
+          DIGEST=$(docker buildx imagetools inspect ${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }} --format '{{json .Manifest}}' | jq -r '.digest')
+          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+
+      - name: generate artifact attestation
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
+          push-to-registry: true

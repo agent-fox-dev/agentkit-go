@@ -1,0 +1,30 @@
+name: agentkit sandbox containers build
+
+on:
+  #push:
+  #  tags:
+  #    - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-sandbox-container:
+    uses: ./.github/workflows/inc-build.yaml
+    with:
+      container_name: agentkit-sandbox
+    secrets: inherit
+    permissions:
+      packages: write
+      contents: read
+      id-token: write
+      attestations: write
+
+  build-sandboxd-container:
+    uses: ./.github/workflows/inc-build.yaml
+    with:
+      container_name: agentkit-sandboxd
+    secrets: inherit
+    permissions:
+      packages: write
+      contents: read
+      id-token: write
+      attestations: write

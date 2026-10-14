@@ -1,0 +1,8 @@
+FROM registry.redhat.io/ubi10/go-toolset:latest AS build
+
+ARG VERSION=dev
+ARG BUILD=dev
+ARG BUILD_TIME=
+
+USER root
+WORKDIR /build
