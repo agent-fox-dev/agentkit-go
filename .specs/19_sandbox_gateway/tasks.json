@@ -602,7 +602,7 @@
         "`make check` passes offline with no container engine and no protoc on PATH",
         "every execution path 19-PATH-1 to 19-PATH-6 is traced through production code with no stub left"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
