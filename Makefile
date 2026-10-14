@@ -10,6 +10,7 @@ SANDBOX_BASE_IMAGE ?= ghcr.io/agent-fox-dev/agentkit-sandbox
 SANDBOX_OVERLAY_IMAGE ?= ghcr.io/agent-fox-dev/agentkit-sandboxd
 SANDBOX_IMAGE_TAG ?= dev
 SANDBOX_PLATFORM ?=
+
 AGENTKIT_VERSION ?=
 AGENTKIT_REVISION ?= $(shell git rev-parse HEAD 2>/dev/null)
 
