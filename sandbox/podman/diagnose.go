@@ -73,7 +73,7 @@ func noAgentErr(image, output string) error {
 	hint := ""
 	if err != nil {
 		ref = sandbox.OverlayImageRepo + ":<version>"
-		hint = " (this build's version has no published overlay image: build one with make sandbox-images, or use a release's X.Y.Z tag)"
+		hint = " (this build's version has no published overlay image: build one with make build-containers, or use a release's X.Y.Z tag)"
 	}
 	return fmt.Errorf("podman: %w: image %q cannot execute %s; add the agent to the image with this Containerfile line%s:\n\t%s\nengine output: %s",
 		sandbox.ErrNoAgent, image, sandbox.AgentPath, hint, sandbox.OverlayCopyLine(ref), strings.TrimSpace(output))

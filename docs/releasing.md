@@ -80,12 +80,13 @@ public, and re-runs the `verify` job alone; it takes its inputs from the
 ## Local builds
 
 ```bash
-make sandbox-images                          # :dev tags, host platform, (devel) version
-make sandbox-images-test AGENTKIT_VERSION=v0.6.0
+make build-containers                        # tags VERSION (git describe) and latest
+make build-containers VERSION=v0.6.0
 ```
 
-`make sandbox-images` uses podman when it is on `PATH`, else docker
-(`CONTAINER=` overrides it), and needs network access to pull
-`golang:1.27-trixie` and `debian:trixie-slim`. The make variables are listed
-in [`configuration.md`](configuration.md#sandbox-images). Neither target is
+`make build-containers` uses podman and builds
+`containers/agentkit-sandbox/Containerfile` and
+`containers/agentkit-sandboxd/Containerfile`; it needs network access to
+pull the UBI base images from `registry.redhat.io`. The make variables are
+listed in [`configuration.md`](configuration.md#sandbox-images). It is not
 part of `make check`, which builds no image.

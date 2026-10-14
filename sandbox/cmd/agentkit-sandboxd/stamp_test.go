@@ -27,12 +27,40 @@ func TestStampedVersion_TS16_3(t *testing.T) {
 	if path != "github.com/agent-fox-dev/agentkit-go/sandbox" {
 		t.Fatalf("the module is %s", path)
 	}
+	so := stampedVersion(t, root, "-X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=v9.8.7")
+	if want := fmt.Sprintf("agentkit-sandboxd v9.8.7 (protocol %d.%d)\n", sandbox.ProtocolMajor, sandbox.ProtocolMinor); so != want {
+		t.Errorf("--version printed %q, want %q", so, want)
+	}
+}
+
+// The commit and build time stamped with -X follow the version in
+// --version.
+func TestStampedBuild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the agent; skipped under -short")
+	}
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pkg = "github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver"
+	so := stampedVersion(t, strings.TrimSpace(string(out)),
+		"-X "+pkg+".stamp=v9.8.7 -X "+pkg+".commit=abc1234 -X "+pkg+".buildTime=2026-10-14T00:00:00Z")
+	if want := fmt.Sprintf("agentkit-sandboxd v9.8.7 (protocol %d.%d) commit abc1234 built 2026-10-14T00:00:00Z\n",
+		sandbox.ProtocolMajor, sandbox.ProtocolMinor); so != want {
+		t.Errorf("--version printed %q, want %q", so, want)
+	}
+}
+
+// stampedVersion builds the agent in the module at root with ldflags and
+// returns what its --version prints, failing t on any stderr output.
+func stampedVersion(t *testing.T, root, ldflags string) string {
+	t.Helper()
 	bin := filepath.Join(t.TempDir(), "agentkit-sandboxd")
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
 	}
-	build := exec.Command("go", "build", "-ldflags", "-X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=v9.8.7",
-		"-o", bin, "./cmd/agentkit-sandboxd")
+	build := exec.Command("go", "build", "-ldflags", ldflags, "-o", bin, "./cmd/agentkit-sandboxd")
 	build.Dir = root
 	if b, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, b)
@@ -40,10 +68,8 @@ func TestStampedVersion_TS16_3(t *testing.T) {
 	cmd := exec.Command(bin, "--version")
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil || se.Len() != 0 {
 		t.Fatalf("--version: %v (stderr %q)", err, se.String())
 	}
-	if want := fmt.Sprintf("agentkit-sandboxd v9.8.7 (protocol %d.%d)\n", sandbox.ProtocolMajor, sandbox.ProtocolMinor); so.String() != want || se.Len() != 0 {
-		t.Errorf("--version printed %q (stderr %q), want %q", so.String(), se.String(), want)
-	}
+	return so.String()
 }

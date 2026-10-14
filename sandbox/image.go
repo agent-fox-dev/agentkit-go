@@ -60,7 +60,7 @@ func ImageTag(version string) (tag string, ok bool) {
 func imageRef(repo, version string) (string, error) {
 	tag, ok := ImageTag(version)
 	if !ok {
-		return "", fmt.Errorf("%w: agentkit-go version %q has no published sandbox image; set Spec.Image, or build an image with make sandbox-images",
+		return "", fmt.Errorf("%w: agentkit-go version %q has no published sandbox image; set Spec.Image, or build an image with make build-containers",
 			ErrNoPublishedImage, version)
 	}
 	return repo + ":" + tag, nil

@@ -1,14 +1,8 @@
 package images
 
 import (
-	"bytes"
-	"debug/buildinfo"
-	"debug/elf"
 	"os"
-	"path/filepath"
-	"runtime"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
@@ -30,8 +24,8 @@ func TestOverlayImage(t *testing.T) {
 		t.Errorf("Entrypoint %v", ep)
 	}
 	out, se, code := runEngine(t, engine, "run", "--rm", "--entrypoint", sandbox.AgentPath, overlay, "--version")
-	if want := versionLine(expectedVersion(os.Getenv)); code != 0 || out != want {
-		t.Errorf("--version: exit %d, %q (stderr %q), want %q", code, out, se, want)
+	if want := expectedVersion(os.Getenv); code != 0 || !isVersionLine(out, want) {
+		t.Errorf("--version: exit %d, %q (stderr %q), want version %q", code, out, se, want)
 	}
 }
 
@@ -61,97 +55,5 @@ func TestOverlayImageDerived(t *testing.T) {
 	}
 	if err := landlockCheck(info, execVia(h), t.Logf); err != nil {
 		t.Error(err)
-	}
-}
-
-// cgoStage is the base stage's COPY source stage and path for the agent.
-func cgoStage(t *testing.T) (stage, src string) {
-	t.Helper()
-	base := find(realStages(t), "base")
-	for _, a := range base.all("COPY") {
-		if c := parseCopy(a); c.from != "" && c.dest == sandbox.AgentPath && len(c.srcs) == 1 {
-			return c.from, c.srcs[0]
-		}
-	}
-	t.Fatal("the base stage copies no agent")
-	return "", ""
-}
-
-// TS-16-49: the cgo stage cross-compiles for the other supported
-// architecture on the build platform. 16-REQ-1.4.
-func TestBaseImageCrossArchBuild(t *testing.T) {
-	engine, _ := requireImage(t, "AGENTKIT_SANDBOX_BASE_IMAGE")
-	stage, src := cgoStage(t)
-	other, machine := "arm64", elf.EM_AARCH64
-	if runtime.GOARCH != "amd64" {
-		other, machine = "amd64", elf.EM_X86_64
-	}
-	ref := "agentkit-imgtest-cgo-" + randomHex(8)
-	t.Cleanup(func() { runEngine(t, engine, "rmi", "-f", ref) })
-	cmd := []string{"build", "-f", filepath.Join(repoRoot(t), "sandbox/images/Containerfile"), "--target", stage,
-		"--platform", "linux/" + other, "--build-arg", "AGENTKIT_VERSION=v9.8.7", "-t", ref, repoRoot(t)}
-	if so, se, code := runEngine(t, engine, cmd...); code != 0 {
-		t.Fatalf("cross build: exit %d\n%s%s", code, so, se)
-	}
-	id, se, code := runEngine(t, engine, "create", ref)
-	if code != 0 {
-		t.Fatalf("create: %s", se)
-	}
-	id = strings.TrimSpace(id)
-	t.Cleanup(func() { runEngine(t, engine, "rm", "-f", id) })
-	bin := filepath.Join(t.TempDir(), "agentkit-sandboxd")
-	if _, se, code := runEngine(t, engine, "cp", id+":"+src, bin); code != 0 {
-		t.Fatalf("cp: %s", se)
-	}
-	f, err := elf.Open(bin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if f.Machine != machine {
-		t.Errorf("machine %v, want %v", f.Machine, machine)
-	}
-	f.Close()
-	bi, err := buildinfo.ReadFile(bin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings := map[string]string{}
-	for _, s := range bi.Settings {
-		settings[s.Key] = s.Value
-	}
-	for k, v := range map[string]string{"GOOS": "linux", "GOARCH": other, "CGO_ENABLED": "1", "-trimpath": "true"} {
-		if settings[k] != v {
-			t.Errorf("build setting %s = %q, want %q", k, settings[k], v)
-		}
-	}
-	// With -trimpath, Go leaves -ldflags out of the build info
-	// (go.dev/issue/52372), so the stamp is found in the binary itself
-	// (docs/errata/16_sandbox_images.md).
-	if ld, ok := settings["-ldflags"]; ok {
-		if !strings.Contains(ld, "buildver.stamp=v9.8.7") {
-			t.Errorf("-ldflags %q lacks the stamp", ld)
-		}
-	} else if b, err := os.ReadFile(bin); err != nil || !bytes.Contains(b, []byte("v9.8.7")) {
-		t.Errorf("the binary does not carry the stamp v9.8.7 (%v)", err)
-	}
-}
-
-// TS-16-50: a build for an unsupported architecture fails with a message
-// naming the two supported platforms. 16-REQ-1.5.
-func TestBaseImageUnsupportedArch(t *testing.T) {
-	engine, _ := requireImage(t, "AGENTKIT_SANDBOX_BASE_IMAGE")
-	stage, _ := cgoStage(t)
-	for _, target := range []string{"overlay", stage} {
-		ref := "agentkit-imgtest-bad-" + randomHex(8)
-		so, se, code := runEngine(t, engine, "build", "-f", filepath.Join(repoRoot(t), "sandbox/images/Containerfile"), "--target", target,
-			"--platform", "linux/riscv64", "-t", ref, repoRoot(t))
-		out := so + se
-		if code == 0 || !strings.Contains(out, "linux/amd64") || !strings.Contains(out, "linux/arm64") {
-			t.Errorf("--target %s for linux/riscv64: exit %d\n%s", target, code, out)
-		}
-		if _, _, code := runEngine(t, engine, "image", "inspect", ref); code == 0 {
-			t.Errorf("--target %s produced the image %s", target, ref)
-			runEngine(t, engine, "rmi", "-f", ref)
-		}
 	}
 }

@@ -45,3 +45,18 @@ func TestStamp_TS16_1(t *testing.T) {
 		t.Errorf("with no stamp, Version() = %q, want the build-info answer %q", got, want)
 	}
 }
+
+// Build returns the link-time commit and build time, and empty strings when
+// the build set none.
+func TestBuild(t *testing.T) {
+	savedCommit, savedTime := commit, buildTime
+	t.Cleanup(func() { commit, buildTime = savedCommit, savedTime })
+	commit, buildTime = "abc1234", "2026-10-14T00:00:00Z"
+	if c, bt := Build(); c != "abc1234" || bt != "2026-10-14T00:00:00Z" {
+		t.Errorf("Build() = %q, %q", c, bt)
+	}
+	commit, buildTime = "", ""
+	if c, bt := Build(); c != "" || bt != "" {
+		t.Errorf("with nothing stamped, Build() = %q, %q", c, bt)
+	}
+}

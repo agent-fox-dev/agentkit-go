@@ -169,7 +169,7 @@ published for linux/amd64 and linux/arm64 on each release:
   COPY --from=quay.io/agentfox/agentkit-sandboxd:X.Y.Z /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/
   ```
 
-`make sandbox-images` builds both locally, and
+`make build-containers` builds both locally, and
 [`docs/releasing.md`](docs/releasing.md) covers publishing them.
 
 A sandbox can also run on another host, behind a gateway. `sandbox/gateway`
@@ -264,12 +264,11 @@ The identifiers an embedder such as agent-fox builds on.
 | `make tidy` | `go mod tidy` in every module |
 | `make doc` | `go doc -all` for every public package of the root, `codesearch`, `sandbox` and `sandbox/gatewayd` modules, written as text to `build/docs/` (git-ignored) |
 | `make proto` | Regenerate the sandbox agent and gateway protocols' Go code and their recorded hashes; needs `protoc`, installs the pinned plugins into `build/bin` |
-| `make sandbox-images` | Build the sandbox base and overlay images for the host platform with podman (or docker); not part of `check` |
-| `make sandbox-images-test` | Build the sandbox images and run the end-to-end image tests against them; not part of `check` |
+| `make build-containers` | Build the sandbox base and overlay images (`containers/*/Containerfile`) with podman, tagged with the version and `latest`; not part of `check` |
 | `make sandbox-podman-test` | Build the sandbox images and run the podman provider's integration tests against them; not part of `check` |
 | `make sandbox-landlock-test` | Run the landlock provider's tests verbosely, with the public `GitRepo` clone of `AGENTKIT_SANDBOX_GIT_URL`; not part of `check` |
 | `make sandbox-gateway` | Build `build/bin/agentkit-gateway` with `-trimpath`; `AGENTKIT_VERSION=…` stamps its version |
-| `make sandbox-gateway-test` | Build the sandbox images and run the gateway's opt-in Podman tests against them; not part of `check` |
+| `make sandbox-gateway-test` | Build the sandbox base image and run the gateway's opt-in Podman tests against it; not part of `check` |
 
 ## Documentation
 

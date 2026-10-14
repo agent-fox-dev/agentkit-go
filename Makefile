@@ -9,9 +9,9 @@ COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 LDFLAGS := -ldflags "\
-  -X github.com/agent-fox-dev/agentfox.Version=$(VERSION) \
-  -X github.com/agent-fox-dev/agentfox.Commit=$(COMMIT) \
-  -X github.com/agent-fox-dev/agentfox.BuildTime=$(BUILD_TIME)"
+  -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=$(VERSION) \
+  -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.commit=$(COMMIT) \
+  -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.buildTime=$(BUILD_TIME)"
 
 CONTAINER_REGISTRY ?= quay.io/agentfox
 
@@ -121,6 +121,35 @@ build-sandboxd-container:
 		-t $(CONTAINER_REGISTRY)/$(SANDBOXD_IMAGE):$(SANDBOXD_IMAGE_TAG) \
 		-t $(CONTAINER_REGISTRY)/$(SANDBOXD_IMAGE):latest \
 		-f containers/agentkit-sandboxd/Containerfile .
+
+# The image variables the opt-in integration tests read: the images
+# build-containers tags as latest.
+SANDBOX_TEST_ENV = AGENTKIT_SANDBOX_BASE_IMAGE=$(CONTAINER_REGISTRY)/$(SANDBOX_IMAGE):latest AGENTKIT_SANDBOX_OVERLAY_IMAGE=$(CONTAINER_REGISTRY)/$(SANDBOXD_IMAGE):latest AGENTKIT_SANDBOX_IMAGE_VERSION=$(VERSION) AGENTKIT_CONTAINER=podman
+
+# The podman provider's integration tests run against the locally built
+# images, in the nested sandbox module. Not part of check: they need an engine.
+.PHONY: sandbox-podman-test
+sandbox-podman-test: build-containers ## Build the sandbox images and run the podman provider's integration tests
+	cd sandbox && $(SANDBOX_TEST_ENV) go test -count=1 -v ./podman/
+
+# The landlock provider's tests, verbose, with the opt-in public clone; its
+# offline and kernel-gated tests already run in check.
+AGENTKIT_SANDBOX_GIT_URL ?= https://github.com/agent-fox-dev/agentkit-go
+.PHONY: sandbox-landlock-test
+sandbox-landlock-test: ## Run the landlock provider's tests verbosely, including the public GitRepo clone
+	cd sandbox && AGENTKIT_SANDBOX_GIT_URL=$(AGENTKIT_SANDBOX_GIT_URL) go test -count=1 -v ./landlock/
+
+# The gateway command lives in its own nested module; AGENTKIT_VERSION, when
+# set, stamps the version it reports.
+.PHONY: sandbox-gateway
+sandbox-gateway: ## Build build/bin/agentkit-gateway (AGENTKIT_VERSION stamps its version)
+	cd sandbox/gatewayd && go build -trimpath $(if $(AGENTKIT_VERSION),-ldflags "-X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=$(AGENTKIT_VERSION)" )-o $(CURDIR)/build/bin/agentkit-gateway ./cmd/agentkit-gateway
+
+# The gateway's opt-in Podman tests run against the locally built base image.
+# Not part of check: they need an engine.
+.PHONY: sandbox-gateway-test
+sandbox-gateway-test: build-sandbox-container ## Build the sandbox base image and run the gateway's opt-in Podman tests
+	cd sandbox/gatewayd && AGENTKIT_SANDBOX_BASE_IMAGE=$(CONTAINER_REGISTRY)/$(SANDBOX_IMAGE):latest AGENTKIT_CONTAINER=podman go test -count=1 -v -run Podman .
 
 .PHONY: clean-branches
 clean-branches:

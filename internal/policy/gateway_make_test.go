@@ -57,7 +57,7 @@ func TestSandboxGatewayMake_TS19_65(t *testing.T) {
 		t.Errorf("MODULES lists sandbox/gatewayd: %v; the doc loop does: %v", modules, docLoop)
 	}
 	dry := makeIn("-n", "sandbox-gateway-test", "CONTAINER=podman")
-	images, tests := strings.Index(dry, "--target base"), strings.Index(dry, "cd sandbox/gatewayd")
+	images, tests := strings.Index(dry, "-f containers/agentkit-sandbox/Containerfile"), strings.Index(dry, "cd sandbox/gatewayd")
 	if images < 0 || tests < 0 || images > tests {
 		t.Errorf("make -n sandbox-gateway-test does not run the image build before the gateway tests:\n%s", dry)
 	}

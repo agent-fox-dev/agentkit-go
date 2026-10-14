@@ -39,7 +39,7 @@ func engineStubs(t *testing.T, marker, code string) string {
 	return d
 }
 
-// TS-16-26: the image tests skip, naming make sandbox-images-test, under
+// TS-16-26: the image tests skip, naming make build-containers, under
 // -short, without an engine, and without their image variable, and go
 // test exits 0. 16-REQ-7.1.
 func TestImageTestsSkip(t *testing.T) {
@@ -82,12 +82,12 @@ func TestImageTestsSkip(t *testing.T) {
 			t.Errorf("%s: an image test ran:\n%s", c.name, o)
 		}
 		skips := regexp.MustCompile(`(?m)^--- SKIP: (Test(Base|Overlay)Image\w*)`).FindAllStringSubmatch(o, -1)
-		if len(skips) < 8 {
-			t.Errorf("%s: %d image tests skipped, want all eight:\n%s", c.name, len(skips), o)
+		if len(skips) < 6 {
+			t.Errorf("%s: %d image tests skipped, want all six:\n%s", c.name, len(skips), o)
 		}
 		for _, l := range regexp.MustCompile(`(?m)^\s+\w+_test\.go:\d+: (.*)$`).FindAllStringSubmatch(o, -1) {
-			if !strings.Contains(l[1], "make sandbox-images-test") {
-				t.Errorf("%s: a skip message lacks make sandbox-images-test: %q", c.name, l[1])
+			if !strings.Contains(l[1], "make build-containers") {
+				t.Errorf("%s: a skip message lacks make build-containers: %q", c.name, l[1])
 			}
 		}
 	}

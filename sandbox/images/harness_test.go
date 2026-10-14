@@ -27,9 +27,9 @@ import (
 // The image-test harness: it starts an agent from an image with the
 // container engine, attaches to it over the engine's stdio, and cleans up
 // whatever a test started or built. The tests in this package are opt-in:
-// make sandbox-images-test builds the images and sets the variables.
+// make build-containers builds the images; the variables name them.
 
-const skipHint = "; run make sandbox-images-test to build the images and run these tests"
+const skipHint = "; run make build-containers and set AGENTKIT_SANDBOX_BASE_IMAGE and AGENTKIT_SANDBOX_OVERLAY_IMAGE to run these tests"
 
 // pickEngine is AGENTKIT_CONTAINER when it is set and found, else the first
 // of podman and docker found.
@@ -513,4 +513,34 @@ func TestHarnessCleanup_TS16_48(t *testing.T) {
 			t.Errorf("the image under test %s is gone", img)
 		}
 	}
+}
+
+// repoRoot is the repository root, found from the test's directory.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "sandbox", "images")); err == nil {
+			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+				return dir
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("no repository root above the test")
+		}
+		dir = parent
+	}
+}
+
+func readRepo(t *testing.T, rel string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
