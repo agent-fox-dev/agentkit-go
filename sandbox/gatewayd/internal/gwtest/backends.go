@@ -33,6 +33,10 @@ type Counting struct {
 	createErr error
 	reaps     []Reaped
 	closeErr  error
+	block     <-chan struct{}
+	unrelay   bool
+	ctxWait   bool
+	after     func(context.Context)
 	creates   int
 	reapsN    int
 	closes    int
@@ -62,6 +66,22 @@ func (c *Counting) SetReaps(r ...Reaped) { c.with(func() { c.reaps = r }) }
 // SetCloseErr makes every sandbox's Close return err after closing it.
 func (c *Counting) SetCloseErr(err error) { c.with(func() { c.closeErr = err }) }
 
+// SetBlock makes Create wait until release is closed (or its context ends)
+// before creating.
+func (c *Counting) SetBlock(release <-chan struct{}) { c.with(func() { c.block = release }) }
+
+// SetUnrelayable makes Create return each sandbox inside a wrapper with no
+// Unwrap, so attach's accessors cannot reach its agent.
+func (c *Counting) SetUnrelayable(b bool) { c.with(func() { c.unrelay = b }) }
+
+// SetCtxWait makes Create wait for its context to end and then create
+// anyway, as a backend that returns after its caller has gone.
+func (c *Counting) SetCtxWait(b bool) { c.with(func() { c.ctxWait = b }) }
+
+// SetAfterCreate makes Create call fn with its context after creating and
+// before returning.
+func (c *Counting) SetAfterCreate(fn func(context.Context)) { c.with(func() { c.after = fn }) }
+
 func (c *Counting) with(fn func()) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -80,22 +100,43 @@ func (c *Counting) Capabilities() sandbox.Capabilities {
 func (c *Counting) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandbox, error) {
 	c.mu.Lock()
 	c.creates++
-	err, stub := c.createErr, c.caps != nil
+	err, stub, block, unrelay, ctxWait, after := c.createErr, c.caps != nil, c.block, c.unrelay, c.ctxWait, c.after
 	c.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	createCtx := ctx
+	if ctxWait {
+		<-ctx.Done()
+		createCtx = context.Background()
+	}
 	if stub {
 		spec.Network = sandbox.Network{Mode: sandbox.NetworkUnrestricted}
 	}
-	sb, err := c.inner.Create(ctx, spec)
+	sb, err := c.inner.Create(createCtx, spec)
 	if err != nil {
 		return nil, err
 	}
 	w := &Sandbox{Sandbox: sb, c: c}
 	c.with(func() { c.sbs = append(c.sbs, w) })
+	if after != nil {
+		after(ctx)
+	}
+	if unrelay {
+		return opaque{w}, nil
+	}
 	return w, nil
 }
+
+// opaque hides a sandbox's Unwrap.
+type opaque struct{ sandbox.Sandbox }
 
 func (c *Counting) Reap(ctx context.Context) ([]string, error) {
 	c.mu.Lock()

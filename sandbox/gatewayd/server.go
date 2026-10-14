@@ -57,9 +57,10 @@ func (s *Server) reapBackend(ctx context.Context) ([]string, error) {
 	return ids, err
 }
 
-// Shutdown stops the gateway: it stops accepting RPCs, waits for the
+// Shutdown stops the gateway: it stops accepting RPCs, closes every backend
+// sandbox it holds (which ends the relayed calls in flight), waits for the
 // handlers until ctx is done, and then forces the server to stop. It
-// returns the joined errors, and nil on later calls.
+// returns the joined Close errors, and nil on later calls.
 func (s *Server) Shutdown(ctx context.Context) error {
 	first := false
 	s.shutdownOnce.Do(func() {
@@ -70,6 +71,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			s.srv.GracefulStop()
 			close(done)
 		}()
+		// Closing every sandbox ends the relayed calls GracefulStop waits for.
+		s.shutdownErr = s.reg.closeAll(reasonShutdown)
 		select {
 		case <-done:
 		case <-ctx.Done():

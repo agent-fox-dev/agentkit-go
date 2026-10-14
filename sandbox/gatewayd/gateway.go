@@ -71,6 +71,14 @@ func (g *gatewayService) Create(ctx context.Context, req *sandboxpb.CreateReques
 	if ttl > s.maxTTL {
 		return unsupported("TTL", fmt.Sprintf("TTL %v is above the gateway's maximum of %v", ttl, s.maxTTL)), nil
 	}
+	if err := s.reg.reserve(); err != nil {
+		if errors.Is(err, errFull) {
+			return &sandboxpb.CreateResponse{Refusal: &sandboxpb.Refusal{Kind: sandboxpb.Refusal_CAPACITY,
+				Message: fmt.Sprintf("gatewayd: the gateway holds its maximum of %d sandboxes", s.maxSandboxes)}}, nil
+		}
+		return nil, err
+	}
+	defer s.reg.unreserve()
 	created := time.Now()
 	bsb, err := s.backend.Create(ctx, spec)
 	if err != nil {
@@ -84,6 +92,11 @@ func (g *gatewayService) Create(ctx context.Context, req *sandboxpb.CreateReques
 		return nil, status.Errorf(codes.Internal, "gatewayd: backend %q returned a sandbox with no agent connection to relay to%s",
 			s.caps.Provider, closeNote(err))
 	}
+	if ctx.Err() != nil {
+		// The caller has gone: nobody will learn the id.
+		_ = bsb.Close(context.Background())
+		return nil, status.FromContextError(ctx.Err()).Err()
+	}
 	eff := bsb.Spec()
 	if eff.TTL > 0 {
 		ttl = eff.TTL
@@ -93,7 +106,9 @@ func (g *gatewayService) Create(ctx context.Context, req *sandboxpb.CreateReques
 		return nil, errors.Join(status.Error(codes.Internal, "gatewayd: "+err.Error()), bsb.Close(context.Background()))
 	}
 	e := &entry{id: bsb.ID(), owner: ownerOf(ctx), created: created, expires: created.Add(ttl), spec: eff, sb: bsb}
-	s.reg.add(e)
+	if err := s.reg.add(e); err != nil {
+		return nil, errors.Join(err, bsb.Close(context.Background()))
+	}
 	s.logCreate(e.id, e.owner, ttl, eff.Network.Mode)
 	return &sandboxpb.CreateResponse{Id: e.id, Spec: effPB,
 		CreatedUnixNanos: gatewaywire.Nanos(e.created), ExpiresUnixNanos: gatewaywire.Nanos(e.expires)}, nil

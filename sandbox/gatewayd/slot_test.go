@@ -238,5 +238,8 @@ func TestSlotSerialised_TS19_52(t *testing.T) {
 		} else if !isSlotRefusal(gitErr) || len(clones) != 0 {
 			t.Fatalf("seed %d: SyncGit %v with %d clones, want the slot refusal and none", seed, gitErr, len(clones))
 		}
+		if err := sb.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
