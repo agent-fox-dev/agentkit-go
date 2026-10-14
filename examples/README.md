@@ -6,7 +6,7 @@ feature is, how to run it, and the code an embedder copies. Each is a single
 rather than sharing a helper package, so nothing you need is in a file you
 have not opened.
 
-`agentdemo`, `codemode` and `sandbox` need **no API key and no network**:
+`agentdemo`, `codemode`, `sandbox` and `gateway` need **no API key and no network**:
 they run against the scripted provider `provider/faux`. The others call a model and
 need an Anthropic credential (below).
 
@@ -18,6 +18,7 @@ need an Anthropic credential (below).
 | [`mcp`](mcp) | `go run ./examples/mcp` · `--external CMD` | The MCP client: consuming a server's tools under qualified names, with the pool refusing a server tool that would shadow one of yours. |
 | [`codemode`](codemode) | `go run ./examples/codemode` | Code mode: one tool that runs a model-written Starlark script over other tools — chained and parallel calls, errors as values, filtering before anything reaches the conversation — through the agent's own nested-call pipeline. |
 | [`sandbox`](sandbox) | `cd examples/sandbox && go run .` (its own module) | Sandboxes: syncing a project into one, proxy tools that are drop-in replacements for `tools.All`, a guarded code-mode script over them, and exporting files back out — against `local`, which is not isolation. |
+| [`gateway`](gateway) | `cd examples/gateway && go run .` (its own module) · `--url URL --token-file FILE` | The sandbox gateway: a `gatewayd.Server` started in process on a loopback port, and an embedder that holds only its URL and token — `gateway.Dial`, a refused token, `Create`, `List`, and the same sandbox work through the relay. Or dial an `agentkit-gateway` already running. |
 
 ## Configuring an application
 

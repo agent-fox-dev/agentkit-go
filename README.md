@@ -194,6 +194,9 @@ authenticates every RPC, gives each token only its own sandboxes, bounds TTL,
 count and network modes, and relays the agent protocol to each sandbox. Its
 flags and token file are in [`docs/cli.md`](docs/cli.md). `http://` is
 accepted only on loopback, so a token never crosses a network in clear text.
+[`examples/gateway`](examples/gateway) runs a gateway in process on a
+loopback port, over `local`, and drives it as an embedder would, offline;
+with `--url` it dials an `agentkit-gateway` already running.
 
 ## Consumer contract
 
@@ -257,7 +260,7 @@ The identifiers an embedder such as agent-fox builds on.
 | Target | Does |
 |---|---|
 | `make check` | `fmt`, `vet`, `lint`, `test`; run before committing |
-| `make test` | `go test ./...` in every module: the root, `codesearch`, `sandbox`, `sandbox/gatewayd` and `examples/sandbox` |
+| `make test` | `go test ./...` in every module: the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `examples/sandbox` and `examples/gateway` |
 | `make vet` | `go vet` in every module |
 | `make lint` | `golangci-lint` in every module; skipped when not installed |
 | `make fmt` | `gofmt -l -w .` |
@@ -279,7 +282,7 @@ The identifiers an embedder such as agent-fox builds on.
 | [`docs/cli.md`](docs/cli.md) | The `agentkit-sandboxd` and `agentkit-gateway` commands: flags, transport, the token file and exit codes. |
 | [`docs/releasing.md`](docs/releasing.md) | Publishing the sandbox images: the version tags, GHCR visibility, re-runs and local builds. |
 | [`docs/DEPS.md`](docs/DEPS.md) | Why each direct dependency is allowed, and the libraries considered and rejected. |
-| [`examples/README.md`](examples/README.md) | The six example programs and how to configure an application. |
+| [`examples/README.md`](examples/README.md) | The seven example programs and how to configure an application. |
 | [`docs/prd/`](docs/prd) | Product requirements. |
 | [`docs/errata/`](docs/errata) | Where the code diverges from a spec, and why. |
 | [`docs/archive/`](docs/archive) | The superseded 0.4.2 PRD and findings from the deleted provider wires. |

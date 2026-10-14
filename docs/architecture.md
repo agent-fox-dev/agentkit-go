@@ -7,7 +7,7 @@ disagree, fix this file.
 ## Shape
 
 One Go module, `github.com/agent-fox-dev/agentkit-go` (`go 1.27`), plus
-four nested modules with their own `go.mod`, none of them in the root build
+five nested modules with their own `go.mod`, none of them in the root build
 graph:
 
 - [`codesearch/`](../codesearch), the zoekt-backed index;
@@ -22,12 +22,15 @@ graph:
   module's lacks. Go's `internal` rule goes by import path, so it uses the
   sandbox module's `internal/sandboxpb` and `internal/attach`;
 - [`examples/sandbox/`](../examples/sandbox), the example program that uses
-  the sandbox module.
+  the sandbox module;
+- [`examples/gateway/`](../examples/gateway), the example program that runs a
+  gateway in process on a loopback port and dials it. It requires the root,
+  sandbox and gatewayd modules through `replace`.
 
 cgo is allowed only in `//go:build cgo` files, each with a pure-Go fallback;
 `internal/policy` builds the four supported targets with cgo off and the host
 with cgo on, for the root, the sandbox module, the gatewayd module and the
-example. Direct dependencies are an allowlist ([`DEPS.md`](DEPS.md)), checked
+two sandbox examples. Direct dependencies are an allowlist ([`DEPS.md`](DEPS.md)), checked
 for the root, the sandbox module and the gatewayd module.
 
 AgentKit is two parts:
@@ -116,7 +119,8 @@ What follows from it:
   over it.
 - Nothing imports the root package except `examples/`.
 - The sandbox tree imports `core`, `schema`, `tools` and `wire`, and nothing outside it
-  imports the sandbox tree except `examples/sandbox` and test helpers under
+  imports the sandbox tree except `examples/sandbox`, `examples/gateway` (a
+  nested module, outside the root's check) and test helpers under
   `internal/` (`internal/policy` checks this, and that no non-test file
   outside it imports gRPC). `core`, `tools`, `codemode` and the driver do not
   know a sandbox exists.
@@ -870,4 +874,5 @@ anything is made) and its agent reports ABI 0 with the note
   against it.
 
 Run everything with `make check` (fmt, vet, lint, test for every module:
-the root, `codesearch`, `sandbox` and `examples/sandbox`).
+the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `examples/sandbox` and
+`examples/gateway`).

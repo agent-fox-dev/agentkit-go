@@ -86,6 +86,19 @@ It listens on loopback by default and needs TLS or an explicit
 token can see or reach it. The gateway destroys every sandbox it holds when
 it shuts down.
 
+To try it on one machine, run it on loopback with a token of your own and
+point [`examples/gateway`](../examples/gateway) at it:
+
+```bash
+openssl rand -hex 24 > tokens
+build/bin/agentkit-gateway --token-file tokens --plaintext --listen 127.0.0.1:8443
+cd examples/gateway && go run . --url http://127.0.0.1:8443 --token-file ../../tokens \
+  --image quay.io/agentfox/agentkit-sandbox:latest
+```
+
+Without `--url`, the example starts a `gatewayd.Server` in its own process
+over `local` instead, and needs no engine.
+
 ### Flags
 
 | Flag | Default | Meaning |
