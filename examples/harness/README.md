@@ -97,7 +97,8 @@ exported the workspace to …/out: .specs, README.md, go.mod, greeter.go, greete
 
 The sandbox needs an image with Go, git and `specr` beside the agent. The
 base image has none of them, so `Containerfile` builds one from the official
-Go image, adds `specr` from the spec repository and copies the agent in from
+Go image, builds `specr` from a clone of the spec repository (`--build-arg
+SPEC_VERSION=<branch or tag>`, default `main`) and copies the agent in from
 the overlay image (`sandbox.OverlayCopyLine`):
 
 ```bash
