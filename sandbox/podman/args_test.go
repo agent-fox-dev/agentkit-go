@@ -44,7 +44,7 @@ var goldenPodmanZero = []string{
 	"--mount", "type=volume,source=agentkit-0123456789abcdef,target=/workspace",
 	"--unsetenv-all",
 	"--env", "HOME=/tmp", "--env", "LANG=C.UTF-8", "--env", defaultPath, "--env", "TERM=dumb", "--env", "TMPDIR=/tmp",
-	"--entrypoint", "/usr/local/libexec/agentkit-sandboxd",
+	"--entrypoint", "/usr/local/bin/agentkit-sandboxd",
 	"img:1",
 	"--ttl", "1h0m0s", "--network", "none", "--workdir", "/workspace",
 }

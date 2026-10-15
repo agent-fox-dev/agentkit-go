@@ -1,41 +1,42 @@
-# A toolchain image for the harness example: Go, git, specr (the spec
-# package renderer from github.com/agent-fox-dev/spec) and the AgentKit
-# sandbox agent, which sandbox/podman starts as the container's process.
+# A toolchain image for the harness example: specr (the spec package renderer
+# from github.com/agent-fox-dev/spec) on top of the AgentKit sandbox image,
+# which holds git and the sandbox agent that sandbox/podman starts as the
+# container's process (at sandbox.AgentPath).
 #
 #   podman build -t agentkit-harness:latest -f Containerfile .
 #
-# SANDBOXD is the overlay image that holds the agent (sandbox.OverlayImageRepo).
 # The host and the agent must be the same AgentKit version — Sandbox.Tools
 # checks the tool definitions' digest — so a development checkout builds its
-# own with `make build-sandboxd-container` (tagged latest) and a release pins
-# the release's tag, as sandbox.OverlayImage() names it.
-ARG SANDBOXD=quay.io/agentfox/agentkit-sandboxd:latest
+# own base image with `make build-sandbox-container` (tagged latest) and a
+# release builds with --build-arg SANDBOX_IMAGE=quay.io/agentfox/agentkit-sandbox:X.Y.Z.
+
 ARG SPEC_VERSION=main
+ARG SANDBOX_IMAGE=quay.io/agentfox/agentkit-sandbox:latest
 
 # specr is built from a clone, not with `go install …/cmd/specr@version`: the
 # spec module carries a replace for agentkit-go, which go install rejects, and
 # no release tag has cmd/specr yet (v1.4.1 predates it). SPEC_VERSION is any
 # branch or tag of the spec repository.
-FROM docker.io/library/golang:1.27-trixie AS tools
+FROM registry.redhat.io/ubi10/go-toolset:latest AS build
+
+USER root
+
 ARG SPEC_VERSION
-RUN git clone --depth 1 --branch ${SPEC_VERSION} https://github.com/agent-fox-dev/spec /src/spec \
- && cd /src/spec \
+WORKDIR /build
+
+ENV GOTOOLCHAIN=auto
+
+RUN git clone --depth 1 --branch ${SPEC_VERSION} https://github.com/agent-fox-dev/spec /build \
+ && cd /build \
  && GOBIN=/out CGO_ENABLED=0 go install \
       -ldflags "-X github.com/agent-fox-dev/spec.Version=${SPEC_VERSION} -X github.com/agent-fox-dev/spec.Commit=$(git rev-parse --short HEAD)" \
       ./cmd/specr
 
-FROM ${SANDBOXD} AS sandboxd
+FROM ${SANDBOX_IMAGE}
 
-FROM docker.io/library/golang:1.27-trixie
-# The agent, at sandbox.AgentPath; sandbox/podman always starts it with
-# --entrypoint, whatever this image's own entrypoint is.
-COPY --from=sandboxd /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/
-COPY --from=tools /out/specr /usr/local/bin/specr
-# The workspace, owned by the sandbox user: the provider mounts the workspace
-# volume here. The root filesystem is read-only at run time and /tmp is a
-# tmpfs; the example points GOPATH, GOCACHE and GOMODCACHE under /tmp through
-# Spec.Env, because podman drops this image's ENV (--unsetenv-all).
-RUN useradd --uid 1000 --create-home agentkit \
- && install -d -o agentkit -g agentkit /workspace
-USER agentkit
+USER root
+
+COPY --from=build /out/specr /usr/local/bin/specr
+
 WORKDIR /workspace
+USER 1001:0

@@ -66,15 +66,15 @@ func (p *provider) createFailed(ctx context.Context, err error, proc process, id
 	return errors.Join(noAgentErr(eff.Image, strings.TrimSpace(res.Output)+"\n"+tail), err)
 }
 
-// noAgentErr is ErrNoAgent for image, with the Containerfile line that adds
-// the agent from the overlay image of this build's version.
+// noAgentErr is ErrNoAgent for image, with the fix: build the image FROM the
+// base image of this build's version, which has the agent at AgentPath.
 func noAgentErr(image, output string) error {
-	ref, err := sandbox.OverlayImage()
+	ref, err := sandbox.DefaultImage()
 	hint := ""
 	if err != nil {
-		ref = sandbox.OverlayImageRepo + ":<version>"
-		hint = " (this build's version has no published overlay image: build one with make build-containers, or use a release's X.Y.Z tag)"
+		ref = sandbox.BaseImageRepo + ":<version>"
+		hint = " (this build's version has no published base image: build one with make build-containers, or use a release's X.Y.Z tag)"
 	}
-	return fmt.Errorf("podman: %w: image %q cannot execute %s; add the agent to the image with this Containerfile line%s:\n\t%s\nengine output: %s",
-		sandbox.ErrNoAgent, image, sandbox.AgentPath, hint, sandbox.OverlayCopyLine(ref), strings.TrimSpace(output))
+	return fmt.Errorf("podman: %w: image %q cannot execute %s; build the image FROM %s%s, which has the agent there, or install the agent in it\nengine output: %s",
+		sandbox.ErrNoAgent, image, sandbox.AgentPath, ref, hint, strings.TrimSpace(output))
 }

@@ -153,24 +153,16 @@ too-weak ruleset a `Create` failure (`local` never confines and refuses it).
 code-mode script over proxy tools offline; [`docs/cli.md`](docs/cli.md)
 covers the agent command.
 
-The agent ships in two images, built from `sandbox/images/Containerfile` and
-published for linux/amd64 and linux/arm64 on each release:
+The agent ships in one image, `containers/agentkit-sandbox/Containerfile`,
+published as `quay.io/agentfox/agentkit-sandbox:X.Y.Z`
+(`sandbox.BaseImageRepo`): UBI 10 with `git`, `bash` and `ca-certificates`,
+a uid-1001 user, and the cgo-built agent (tree-sitter outlines) at
+`sandbox.AgentPath` (`/usr/local/bin/agentkit-sandboxd`). It runs as is;
+`sandbox.DefaultImage()` names it for the build's version. An embedder's own
+toolchain image is built `FROM` it.
 
-- `quay.io/agentfox/agentkit-sandbox:X.Y.Z` (`sandbox.BaseImageRepo`) is
-  Debian trixie-slim with `git`, `bash` and `ca-certificates`, a uid-1000
-  user `agentkit`, and the cgo-built agent (tree-sitter outlines) at
-  `sandbox.AgentPath`. It runs as is; `sandbox.DefaultImage()` names it for
-  the build's version.
-- `quay.io/agentfox/agentkit-sandboxd:X.Y.Z` (`sandbox.OverlayImageRepo`)
-  holds one static file, the agent, for an embedder's own toolchain image,
-  which adds it with the line `sandbox.OverlayCopyLine` returns:
-
-  ```dockerfile
-  COPY --from=quay.io/agentfox/agentkit-sandboxd:X.Y.Z /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/
-  ```
-
-`make build-containers` builds both locally, and
-[`docs/releasing.md`](docs/releasing.md) covers publishing them.
+`make build-containers` builds it locally, and
+[`docs/releasing.md`](docs/releasing.md) covers publishing it.
 
 A sandbox can also run on another host, behind a gateway. `sandbox/gateway`
 is the client: `gateway.Dial` returns a `sandbox.Provider` whose sandboxes
@@ -279,8 +271,8 @@ The identifiers an embedder such as agent-fox builds on.
 | `make tidy` | `go mod tidy` in every module |
 | `make doc` | `go doc -all` for every public package of the root, `codesearch`, `sandbox` and `sandbox/gatewayd` modules, written as text to `docs/generated/` (committed; an orientation aid for agents) |
 | `make proto` | Regenerate the sandbox agent and gateway protocols' Go code and their recorded hashes; needs `protoc`, installs the pinned plugins into `build/bin` |
-| `make build-containers` | Build the sandbox base and overlay images (`containers/*/Containerfile`) with podman, tagged with the version and `latest`; not part of `check` |
-| `make sandbox-podman-test` | Build the sandbox images and run the podman provider's integration tests against them; not part of `check` |
+| `make build-containers` | Build the sandbox image (`containers/agentkit-sandbox/Containerfile`) with podman, tagged with the version and `latest`; not part of `check` |
+| `make sandbox-podman-test` | Build the sandbox image and run the podman provider's integration tests against them; not part of `check` |
 | `make sandbox-landlock-test` | Run the landlock provider's tests verbosely, with the public `GitRepo` clone of `AGENTKIT_SANDBOX_GIT_URL`; not part of `check` |
 | `make sandbox-gateway` | Build `build/bin/agentkit-gateway` with `-trimpath`; `AGENTKIT_VERSION=…` stamps its version |
 | `make sandbox-gateway-test` | Build the sandbox base image and run the gateway's opt-in Podman tests against it; not part of `check` |

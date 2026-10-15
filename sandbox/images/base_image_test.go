@@ -160,36 +160,20 @@ func TestBaseImageConfig(t *testing.T) {
 	}
 }
 
-// TS-16-42: both images carry the OCI source and licenses values, non-empty
-// title and description, and matching version and revision labels.
+// TS-16-42: the image carries the OCI source and licenses values, non-empty
+// title and description, and version and revision labels.
 // 16-REQ-2.7, 16-REQ-3.2.
 func TestBaseImageLabels(t *testing.T) {
 	engine, base := requireImage(t, "AGENTKIT_SANDBOX_BASE_IMAGE")
-	refs := []string{base}
-	if overlay := os.Getenv("AGENTKIT_SANDBOX_OVERLAY_IMAGE"); overlay != "" {
-		refs = append(refs, overlay)
+	var l map[string]string
+	inspectJSON(t, engine, base, ".Config.Labels", &l)
+	if l["org.opencontainers.image.source"] != "https://github.com/agent-fox-dev/agentkit-go" || l["org.opencontainers.image.licenses"] != "Apache-2.0" ||
+		l["org.opencontainers.image.title"] == "" || l["org.opencontainers.image.description"] == "" ||
+		l["org.opencontainers.image.version"] != os.Getenv("AGENTKIT_SANDBOX_IMAGE_VERSION") {
+		t.Errorf("%s labels %v", base, l)
 	}
-	var sets []map[string]string
-	for _, ref := range refs {
-		var l map[string]string
-		inspectJSON(t, engine, ref, ".Config.Labels", &l)
-		if l["org.opencontainers.image.source"] != "https://github.com/agent-fox-dev/agentkit-go" || l["org.opencontainers.image.licenses"] != "Apache-2.0" ||
-			l["org.opencontainers.image.title"] == "" || l["org.opencontainers.image.description"] == "" ||
-			l["org.opencontainers.image.version"] != os.Getenv("AGENTKIT_SANDBOX_IMAGE_VERSION") {
-			t.Errorf("%s labels %v", ref, l)
-		}
-		if _, ok := l["org.opencontainers.image.revision"]; !ok {
-			t.Errorf("%s has no revision label", ref)
-		}
-		sets = append(sets, l)
-	}
-	if len(sets) == 2 {
-		for _, k := range []string{"source", "licenses", "version", "revision"} {
-			k = "org.opencontainers.image." + k
-			if sets[0][k] != sets[1][k] {
-				t.Errorf("%s: base %q, overlay %q", k, sets[0][k], sets[1][k])
-			}
-		}
+	if _, ok := l["org.opencontainers.image.revision"]; !ok {
+		t.Errorf("%s has no revision label", base)
 	}
 }
 
@@ -197,7 +181,6 @@ func TestBaseImageLabels(t *testing.T) {
 // --version, and carry an empty version label. 16-REQ-4.5, 16-REQ-1.6.
 func TestBaseImageUnstamped(t *testing.T) {
 	engine, base := requireImage(t, "AGENTKIT_SANDBOX_BASE_IMAGE")
-	_, overlay := requireImage(t, "AGENTKIT_SANDBOX_OVERLAY_IMAGE")
 	if v := os.Getenv("AGENTKIT_SANDBOX_IMAGE_VERSION"); v != "" {
 		t.Skipf("the images are stamped %s; this test needs an unstamped build (make build-containers with VERSION empty)", v)
 	}
@@ -205,15 +188,13 @@ func TestBaseImageUnstamped(t *testing.T) {
 	if v := h.sb.Agent().Version; v != "(devel)" {
 		t.Errorf("Agent().Version = %q", v)
 	}
-	for _, ref := range []string{base, overlay} {
-		out, se, code := runEngine(t, engine, "run", "--rm", "--entrypoint", sandbox.AgentPath, ref, "--version")
-		if code != 0 || !isVersionLine(out, "(devel)") {
-			t.Errorf("%s --version: exit %d, %q (stderr %q)", ref, code, out, se)
-		}
-		var l map[string]string
-		inspectJSON(t, engine, ref, ".Config.Labels", &l)
-		if l["org.opencontainers.image.version"] != "" {
-			t.Errorf("%s version label %q", ref, l["org.opencontainers.image.version"])
-		}
+	out, se, code := runEngine(t, engine, "run", "--rm", "--entrypoint", sandbox.AgentPath, base, "--version")
+	if code != 0 || !isVersionLine(out, "(devel)") {
+		t.Errorf("%s --version: exit %d, %q (stderr %q)", base, code, out, se)
+	}
+	var l map[string]string
+	inspectJSON(t, engine, base, ".Config.Labels", &l)
+	if l["org.opencontainers.image.version"] != "" {
+		t.Errorf("%s version label %q", base, l["org.opencontainers.image.version"])
 	}
 }

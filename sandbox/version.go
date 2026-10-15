@@ -1,7 +1,7 @@
 package sandbox
 
 // AgentPath is where a sandbox image installs the agent binary.
-const AgentPath = "/usr/local/libexec/agentkit-sandboxd"
+const AgentPath = "/usr/local/bin/agentkit-sandboxd"
 
 // The agentkit.sandbox.v1 protocol version. Fields are added, never
 // renumbered; a scope that adds an RPC or a field bumps ProtocolMinor. A host

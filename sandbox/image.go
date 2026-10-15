@@ -3,25 +3,20 @@ package sandbox
 import (
 	"errors"
 	"fmt"
-	"path"
 	"regexp"
 	"strings"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver"
 )
 
-// BaseImageRepo is the published base image: Debian with git, bash and
-// ca-certificates, a uid-1000 user and the cgo-built agent at AgentPath.
+// BaseImageRepo is the published base image: UBI with git, bash and
+// ca-certificates, a uid-1001 user and the cgo-built agent at AgentPath. An
+// embedder's own image is built FROM it.
 const BaseImageRepo = "quay.io/agentfox/agentkit-sandbox"
 
-// OverlayImageRepo is the published overlay image: a single static agent at
-// AgentPath, for an embedder to copy into its own image with
-// OverlayCopyLine.
-const OverlayImageRepo = "quay.io/agentfox/agentkit-sandboxd"
-
-// ErrNoPublishedImage is returned by DefaultImage and OverlayImage when the
-// build's version has no published image: (devel), a pseudo-version, or a
-// version with build metadata.
+// ErrNoPublishedImage is returned by DefaultImage when the build's version
+// has no published image: (devel), a pseudo-version, or a version with build
+// metadata.
 var ErrNoPublishedImage = errors.New("sandbox: no published image for this agentkit-go version")
 
 var (
@@ -70,15 +65,3 @@ func imageRef(repo, version string) (string, error) {
 // exact X.Y.Z tag (never latest or X.Y): the Tools digest check needs the
 // host and the agent at the same version.
 func DefaultImage() (string, error) { return imageRef(BaseImageRepo, buildver.Version()) }
-
-// OverlayImage is the overlay image published for this build's version, at
-// the exact X.Y.Z tag.
-func OverlayImage() (string, error) { return imageRef(OverlayImageRepo, buildver.Version()) }
-
-// OverlayCopyLine is the single Containerfile line that copies the agent
-// from the overlay image ref into an embedder's own image, at AgentPath.
-// Such an image keeps its own entrypoint, so providers always start the
-// agent with --entrypoint AgentPath.
-func OverlayCopyLine(ref string) string {
-	return "COPY --from=" + ref + " " + AgentPath + " " + path.Dir(AgentPath) + "/"
-}

@@ -13,7 +13,7 @@ The AgentKit agent inside a sandbox. It serves the `agentkit.sandbox.v1`
 built-in tools (`tools.All`) against one workspace. It opens no listening
 socket. A provider starts it, holding pipes to its stdin and stdout; a sandbox
 image installs it at `sandbox.AgentPath`
-(`/usr/local/libexec/agentkit-sandboxd`).
+(`/usr/local/bin/agentkit-sandboxd`).
 
 ```bash
 (cd sandbox && go build -o ../agentkit-sandboxd ./cmd/agentkit-sandboxd)
