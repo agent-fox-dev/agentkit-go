@@ -26,13 +26,17 @@ help: ## Show this help
 
 .PHONY: test
 test: ## Run all Go tests (root module and the nested modules)
-	@rc=0; for m in $(MODULES); do echo "go test ./... ($$m)"; (cd $$m && go test ./...) || rc=1; done; exit $$rc
+	@rc=0; for m in $(MODULES); do echo "go test ./... ($$m)"; (cd $$m && go test ./... -count=1) || rc=1; done; exit $$rc
+
+.PHONY: build
+build: ## Build all packages of the root module and the nested modules
+	@rc=0; for m in $(MODULES); do echo "go build ./... ($$m)"; (cd $$m && go build ./...) || rc=1; done; exit $$rc
 
 .PHONY: coverage
-coverage:
+coverage: ## Run the root module's tests with a coverage report
 	go test ./... -coverprofile=coverage.txt -covermode=atomic
 	go tool cover -func=coverage.txt
-	
+
 .PHONY: fmt
 fmt: ## gofmt all source files in place
 	gofmt -l -w .
@@ -53,7 +57,7 @@ lint: ## Run golangci-lint if installed, otherwise skip
 check: fmt vet lint test ## Run fmt, vet, lint and test - use before committing
 
 .PHONY: doc
-doc: ## Generate Go package reference (go doc -all) as text files under build/doc
+doc: ## Generate Go package reference (go doc -all) as text files under build/docs
 	@rm -rf $(DOC_DIR)
 	@mkdir -p $(DOC_DIR)
 	@for m in . codesearch sandbox sandbox/gatewayd; do \
@@ -98,6 +102,14 @@ proto: ## Regenerate the sandbox agent and gateway protocols' Go code (needs pro
 .PHONY: tidy
 tidy: ## go mod tidy the root module and the nested modules
 	@set -e; for m in $(MODULES); do (cd $$m && go mod tidy); done
+
+# ---------------------------------------------------------------------------
+# Repository-specific targets
+# ---------------------------------------------------------------------------
+
+.PHONY: clean
+clean: ## Remove build output and the coverage profile
+	rm -rf build coverage.txt
 
 .PHONY: build-containers
 build-containers: build-sandbox-container build-sandboxd-container
