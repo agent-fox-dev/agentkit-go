@@ -1,0 +1,168 @@
+package codemode // import "github.com/agent-fox-dev/agentkit-go/codemode"
+
+Package codemode provides a tool that runs a model-written Starlark script whose
+functions are other tools. The model can chain calls, run them concurrently and
+filter their results inside one tool call, and only what the script prints and
+returns reaches the conversation.
+
+The script is sandboxed: it has no file system, network, environment, processes
+or clock, only the tools bound to it. Every call it makes goes through the
+agent's own nested-call pipeline (core.CallNested), so interceptors and events
+see each one as they see a call the model makes directly.
+
+CONSTANTS
+
+const (
+	DefaultName                      = "code_mode"
+	DefaultMaxTimeout                = 30 * time.Second
+	DefaultMaxSteps           uint64 = 100_000
+	DefaultMaxCalls                  = 50
+	DefaultMaxConcurrentCalls        = 8
+	DefaultMaxOutputBytes            = 100 * 1024
+)
+    Defaults for Options' zero fields.
+
+const DefaultDescriptionTemplate = `Run a Starlark script that calls tools as functions. Use it to chain tool calls, run independent calls concurrently, and filter large results down to what you need: only what the script prints and returns comes back to you.
+
+Starlark is a Python 3 dialect without exceptions, classes or imports. Write functions with def; top-level for, if and while are allowed.
+
+Rules:
+- The script has no file system, network, environment, processes or clock. It can reach the outside world only through the {{.ToolCount}} tools declared below. load(...) is refused.
+- Call a tool with keyword arguments only, matching its declaration: read_file(path="a.txt"). Positional arguments are an error.
+- A call returns the tool's result (a dict) on success. On failure it returns a ToolError instead of raising: check is_error(r), r.ok or r.is_error, then read r.error (the code) and r.detail. A call an interceptor blocked is a ToolError too.
+- Run independent calls concurrently with parallel([call(tool, arg=value), ...]); results come back as a list in the order given, at most {{.MaxConcurrentCalls}} in flight at a time.
+- Output: print(...) what you want to read, and return a value from def main() or assign it to a global named result.
+- Side effects are not undone: a tool call that completed stays done even if the script fails later.
+- Limits: {{.MaxCalls}} tool calls, {{.MaxSteps}} execution steps, {{.MaxTimeout}} wall time and {{.MaxOutputBytes}} bytes of output per script. Hitting one ends the script with an error that names it, the partial output and the calls that completed.`
+    DefaultDescriptionTemplate is the instructions section of a code-mode
+    tool's description: the runtime's rules, which a model that knows Python
+    but not Starlark needs spelled out. Options.DescriptionTemplate replaces it.
+    The bound tools' declarations always follow it.
+
+    The template's data is DescriptionData.
+
+
+FUNCTIONS
+
+func FormatResultText(printed string, returnValue any) string
+    FormatResultText is the text the model reads for a script that finished:
+    what it printed, then "Return value: <value>" when it returned one,
+    or a note that there was neither (08-REQ-8.3). A Starlark value is rendered
+    as Starlark writes it; any other value as JSON.
+
+func RenderSignature(t core.Tool) string
+    RenderSignature declares t as the Starlark function a script calls:
+    its keyword parameters from InputSchema (required first, optional ones
+    defaulting to None), its return shape from OutputSchema (Any when it has
+    none), and its description and parameter descriptions as a docstring.
+    It is generated from the tool's own schemas, so the declaration cannot drift
+    from what the tool accepts and returns.
+
+
+TYPES
+
+type BuildInfo struct {
+	// DescriptionBytes is the description's length in bytes.
+	DescriptionBytes int
+	// DescriptionChars is its length in Unicode characters.
+	DescriptionChars int
+	// BoundToolsCount is the number of tools bound to the tool.
+	BoundToolsCount int
+}
+    BuildInfo reports what a code-mode tool costs in the model's context before
+    it is sent: the size of its generated description, which grows with every
+    tool bound to it.
+
+func New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error)
+    New returns a tool that runs a Starlark script over tools. The tool declares
+    tools as its ReachableTools, so the agent's tool policy and shell guard look
+    through it, and its description declares each tool as a typed function,
+    generated from the tools' own schemas.
+
+    New refuses a tool set that contains a code-mode tool (by opts.Name, or any
+    tool New built, under any name and at any depth) and one with two tools of
+    the same name.
+
+type DescriptionData struct {
+	// Name is the code-mode tool's name.
+	Name string
+	// ToolCount is the number of bound tools; ToolNames are their names.
+	ToolCount int
+	ToolNames []string
+	// The limits a script runs under.
+	MaxTimeout         string
+	MaxSteps           uint64
+	MaxCalls           int
+	MaxConcurrentCalls int
+	MaxOutputBytes     int
+}
+    DescriptionData is what a description template can use.
+
+type Options struct {
+	// Name is the tool's name. Default "code_mode".
+	Name string
+	// Description, when set, is the tool's description verbatim, and nothing
+	// is generated.
+	Description string
+	// DescriptionTemplate, when set, is a text/template that replaces the
+	// default instructions section of the generated description.
+	DescriptionTemplate string
+	// Guidelines become the tool's PromptGuidelines. Default: the built-in
+	// code-mode guidance.
+	Guidelines []string
+
+	// MaxTimeout bounds a script's wall time. Default 30s.
+	MaxTimeout time.Duration
+	// MaxSteps bounds a script's Starlark execution steps. Default 100,000.
+	MaxSteps uint64
+	// MaxCalls bounds the nested tool calls one script makes. Default 50.
+	MaxCalls int
+	// MaxConcurrentCalls bounds the calls one parallel(...) has in flight at
+	// once. Default 8.
+	MaxConcurrentCalls int
+	// MaxOutputBytes bounds what a script prints and returns. Default
+	// 102,400 (100 KB).
+	MaxOutputBytes int
+	// SpillDir receives the complete output of a script whose output was
+	// truncated. Default: agentkit-codemode under the OS temp directory.
+	SpillDir string
+	// DisableSpill turns spill files off.
+	DisableSpill bool
+}
+    Options configures a code-mode tool. The zero value is valid: every zero
+    field takes the default DefaultOptions documents.
+
+func DefaultOptions() Options
+    DefaultOptions returns Options with every default filled in.
+
+type ToolError struct {
+	// Has unexported fields.
+}
+    ToolError is what a bound tool returns to a script when the call failed:
+    the tool's error, a block by an interceptor, an unknown or invalid call.
+    Starlark has no exceptions, so a failure is a value the script checks —
+    is_error(r), r.ok, r.is_error — and reads: r.error is the code, r.detail
+    the message, r.data any structured payload the tool returned. It can also be
+    indexed like a dict: r["error"].
+
+func NewToolError(res core.ToolResult) *ToolError
+    NewToolError is the ToolError for a failed result.
+
+func (e *ToolError) Attr(name string) (starlark.Value, error)
+
+func (e *ToolError) AttrNames() []string
+
+func (e *ToolError) Freeze()
+
+func (e *ToolError) Get(k starlark.Value) (starlark.Value, bool, error)
+    Get is dict-style access to the same fields.
+
+func (e *ToolError) Hash() (uint32, error)
+
+func (e *ToolError) String() string
+
+func (e *ToolError) Truth() starlark.Bool
+    Truth is False, so `if not r:` reads as "the call failed".
+
+func (e *ToolError) Type() string
+

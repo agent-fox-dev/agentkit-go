@@ -35,5 +35,5 @@ testdata/fuzz/
 prompts.md
 
 
-# `make doc` output.
+# Build output.
 /build/

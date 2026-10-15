@@ -1,0 +1,126 @@
+package agentkit // import "github.com/agent-fox-dev/agentkit-go"
+
+Package agentkit is a Go agent SDK.
+
+The loop, the tool system and the provider abstraction are ordinary Go you can
+read and step through. Nothing is hidden inside a subprocess or a graph engine.
+
+The canonical vocabulary — messages, content blocks, events, Tool and every
+interface seam — lives in the core package and is used directly. What lives here
+is the driver: Config, New, the Agent, the loop and the tool batch executor.
+The prompt assembler and the execute guard are each their own package beneath
+this one.
+
+CONSTANTS
+
+const (
+	EffortLow    = core.EffortLow
+	EffortMedium = core.EffortMedium
+	EffortHigh   = core.EffortHigh
+	EffortXHigh  = core.EffortXHigh
+	EffortMax    = core.EffortMax
+)
+    The efforts a Config can ask for.
+
+const DefaultMaxTokens = 32768
+    DefaultMaxTokens is the output bound sent when Config.MaxTokens is zero.
+    It is still capped at the model's own output cap; a caller who wants the
+    whole cap says so. Providers size rate-limit reservations from max_tokens at
+    request start, so defaulting to a 128K cap costs 128K of output-per-minute
+    budget per turn and removes the only bound on a runaway turn. 32K is
+    generous for tool-call-shaped output.
+
+
+TYPES
+
+type Agent struct {
+	// Has unexported fields.
+}
+    Agent runs prompts against one model with one tool set. It has no global
+    state: a second agent is a second value.
+
+    Its surface is five methods. Run and Stream execute a prompt to a stop
+    condition; Messages, Usage and ReachableTools read its state and are safe
+    from any goroutine while a run is in flight. A Run or Stream that overlaps
+    another fails with core.ErrBusy rather than queueing: a prompt queued
+    behind a running one was written against a transcript the caller could see,
+    and by the time it ran the transcript would have changed underneath it.
+
+func New(cfg Config) (*Agent, error)
+    New builds an Agent from cfg. It refuses a config the agent could not run
+    safely: no way to reach a model, no model, an invalid tool hierarchy, or a
+    shell tool reachable with no Guard to authorize it — a returned error here,
+    rather than an unrestricted shell discovered on the first run.
+
+func (a *Agent) Messages() core.Messages
+    Messages returns the agent's transcript: every message of every run,
+    as recorded. It is a copy, safe to read while a run is in flight.
+
+func (a *Agent) ReachableTools() []core.Tool
+    ReachableTools returns every tool a run of this agent can call: the tools
+    Config.Policy resolved, and everything those reach through wrappers
+    (07-REQ-2.2). A check that a run is read-only, say, has to look at this set
+    rather than at the top-level tools.
+
+func (a *Agent) Run(ctx context.Context, prompt string) (core.RunResult, error)
+    Run sends prompt and runs the loop to a stop condition. The error is the
+    result's own Error: a run that stopped on a limit, a refusal or a failure
+    returns both the result and why.
+
+func (a *Agent) Stream(ctx context.Context, prompt string) (*core.EventStream, error)
+    Stream runs the loop and returns its event stream. The producer never blocks
+    on the consumer, so abandoning the stream is safe and the result stays
+    available through RunResult.
+
+    It returns an error rather than only a pre-closed stream for the one case a
+    caller most often gets wrong — a second run while one is in flight — because
+    a silent ErrBusy inside a stream nobody reads is indistinguishable from a
+    run that produced nothing.
+
+func (a *Agent) Usage() core.Usage
+    Usage returns cumulative usage for the agent's lifetime.
+
+type Config struct {
+	// Client is an Anthropic SDK client, built by anthropic.Resolve or by the
+	// caller.
+	Client *sdk.Client
+	// Provider, when set, is used instead of Client: a test double or a
+	// custom provider.
+	Provider core.ProviderClient
+	// Model is the catalog id; catalog.Lookup supplies its limits and prices.
+	Model  string
+	Effort Effort
+	System string
+	// Prefix is sent after the system prompt on every request, with a cache
+	// breakpoint on its last block.
+	Prefix []core.Message
+	Tools  []core.Tool
+	// Policy selects from Tools, and from what they reach through wrappers.
+	Policy core.ToolPolicy
+	// Guard authorizes every call. It is required when a shell tool is
+	// reachable.
+	Guard core.BeforeToolCall
+	After core.AfterToolCall
+	// MaxTurns, MaxCostUSD and Timeout bound a run; zero means unbounded.
+	MaxTurns   int
+	MaxCostUSD float64
+	Timeout    time.Duration
+	// Prune ages old tool results out of the request; the zero value is off.
+	Prune PruneOptions
+	// MaxTokens caps each response; zero means DefaultMaxTokens.
+	MaxTokens int
+}
+    Config is everything an Agent is built from.
+
+type Effort = core.Effort
+    Effort is how much thinking a model puts into a turn.
+
+type PruneOptions struct {
+	// Threshold is the fraction of the model's context window the estimated
+	// request must reach before pruning; zero or less disables it.
+	Threshold float64
+	// KeepTurns is how many recent turns keep their tool results whole.
+	KeepTurns int
+}
+    PruneOptions controls how old tool results leave the request.
+

@@ -1,0 +1,301 @@
+package mcp // import "github.com/agent-fox-dev/agentkit-go/mcp"
+
+
+CONSTANTS
+
+const (
+	DefaultCallLimit      = 1000
+	DefaultTimeout        = 30 * time.Second
+	DefaultReconnectLimit = 3
+)
+    DefaultCallLimit and DefaultTimeout are REQ-MCP-CLIENT-07's defaults;
+    DefaultReconnectLimit is NFR-REL-03's.
+
+const ResultCharCap = 50_000
+    ResultCharCap is REQ-MCP-CLIENT-09: 50K characters per tool result.
+
+    It is counted in RUNES, not bytes. "Characters" in a requirement about model
+    context means what the model sees, and a byte cap truncates a CJK result to
+    a third of the length an ASCII one gets.
+
+
+VARIABLES
+
+var (
+	// ErrNameCollision is REQ-MCP-CLIENT-06's MCPNameCollisionError, raised at
+	// CONNECTION time rather than call time.
+	ErrNameCollision = errors.New("mcp: tool name collides with an existing tool")
+	// ErrCallLimit is REQ-MCP-CLIENT-07's per-session cap (REQ-SEC-08).
+	ErrCallLimit = errors.New("mcp: per-session call limit reached")
+	// ErrSamplingNotAllowed is REQ-MCP-CLIENT-08's gate.
+	ErrSamplingNotAllowed = errors.New("mcp: sampling is not enabled for this server")
+	// ErrReconnectLimit is NFR-REL-03's bound: the transport died more times
+	// than per_session_reconnect_limit allows, and the connection is dead for
+	// the rest of the session. Every later call fails with it immediately.
+	ErrReconnectLimit = errors.New("mcp: per-session reconnect limit reached; the connection is dead")
+	// ErrClosed is returned by a connection after Close.
+	ErrClosed = errors.New("mcp: connection is closed")
+)
+    Errors a connection can raise.
+
+
+FUNCTIONS
+
+func NewPipeTransport(r io.Reader, w io.Writer, limits wire.Limits) sdk.Transport
+    NewPipeTransport speaks strict NDJSON over a reader/writer pair: the
+    server's stdio mode, and an in-process client/server pair with no subprocess
+    and no port. Close closes both ends that are io.Closers, the reader first,
+    because that is what unblocks a read loop waiting on it.
+
+func ParseConfig(path string, src []byte) (Config, []Diagnostic, error)
+    ParseConfig reads the `[mcp]` section.
+
+    Config is LOCALLY AUTHORED, so it decodes leniently (REQ-SEC-12.5):
+    an unknown key is a diagnostic. The opposite of the wire package's rule,
+    and the difference is who wrote the bytes.
+
+func QualifiedName(cfg ServerConfig, tool string) string
+    QualifiedName is REQ-MCP-CLIENT-05's `server_name__tool_name`.
+
+func SplitQualified(cfg ServerConfig, qualified string) (string, bool)
+    SplitQualified is the inverse, given the prefix.
+
+
+TYPES
+
+type CallToolResult = sdk.CallToolResult
+    The protocol types a host meets through this package's API, re-exported so a
+    host does not have to import two packages both named mcp. Everything else is
+    the SDK's (github.com/modelcontextprotocol/go-sdk/mcp).
+
+type Config struct {
+	Servers []ServerConfig
+}
+    Config is the `[mcp]` section (REQ-MCP-CLIENT-07).
+
+type ConnectionOptions struct {
+	// Sampling answers server-initiated sampling. Nil refuses.
+	Sampling SamplingHandler
+	// Warnf reports non-fatal trouble: reconnects, a child's stderr. Nil
+	// discards.
+	Warnf  func(format string, args ...any)
+	Limits wire.Limits
+	// ClientInfo identifies us to the server.
+	ClientInfo Implementation
+}
+    ConnectionOptions are the runtime hooks a connection needs.
+
+type Content = sdk.Content
+    The protocol types a host meets through this package's API, re-exported so a
+    host does not have to import two packages both named mcp. Everything else is
+    the SDK's (github.com/modelcontextprotocol/go-sdk/mcp).
+
+func CapContent(items []Content) []Content
+    CapContent applies REQ-MCP-CLIENT-09's 50K cap across the whole result.
+
+    The budget is spent ACROSS the content items, not per item: two hundred
+    blocks of 49K each would otherwise pass a per-item cap. A non-text block is
+    charged by its encoded size and is never SLICED — half a base64 image is a
+    corrupt image — but one that does not fit is dropped whole, and the note
+    says so. The note is addressed to the model, which has to decide whether to
+    ask for less next time.
+
+type CreateMessageParams = sdk.CreateMessageParams //nolint:staticcheck // sampling is deprecated by SEP-2577 but still offered through AllowSampling
+    The protocol types a host meets through this package's API, re-exported so a
+    host does not have to import two packages both named mcp. Everything else is
+    the SDK's (github.com/modelcontextprotocol/go-sdk/mcp).
+
+type CreateMessageResult = sdk.CreateMessageResult //nolint:staticcheck // as above
+    The protocol types a host meets through this package's API, re-exported so a
+    host does not have to import two packages both named mcp. Everything else is
+    the SDK's (github.com/modelcontextprotocol/go-sdk/mcp).
+
+type Diagnostic = diag.Diagnostic
+    Diagnostic is the shared non-fatal report.
+
+type Implementation = sdk.Implementation
+    The protocol types a host meets through this package's API, re-exported so a
+    host does not have to import two packages both named mcp. Everything else is
+    the SDK's (github.com/modelcontextprotocol/go-sdk/mcp).
+
+type Pool struct {
+	// NativeTools names the host's OWN tools, which no MCP server may shadow
+	// (REQ-MCP-CLIENT-06). The embedder populates it before connecting —
+	// it is the only party that knows what its native tool set is called.
+	//
+	// It exists because the check in Tools is not enough on its own: a host
+	// that connects its servers and never calls Tools would ship a server
+	// whose `read_file` silently stands in front of the SDK's. With this set,
+	// the same misconfiguration is a refused connection at startup.
+	NativeTools []string
+
+	// Has unexported fields.
+}
+    Pool is REQ-MCP-CLIENT-04: server_name -> connection, built during session
+    initialization and torn down when the session ends.
+
+func NewPool(opts ConnectionOptions) *Pool
+
+func (p *Pool) Add(c *ServerConnection) error
+    Add registers an already-connected server.
+
+func (p *Pool) Close() error
+    Close tears down every connection (REQ-MCP-CLIENT-04).
+
+    It closes ALL of them even when one fails, and returns the failures joined.
+    Stopping at the first error would leave the remaining subprocesses running
+    for the life of the host — a leaked MCP server is a leaked process tree.
+
+func (p *Pool) Connect(ctx context.Context, cfg ServerConfig, env []string, secrets func(string) string) (*ServerConnection, error)
+    Connect opens a server and initializes it (REQ-MCP-CLIENT-02).
+
+    A `command` server is spawned as a subprocess over stdio; a `url` server
+    is opened over Streamable HTTP (or HTTP+SSE, see ServerConfig.Transport),
+    and the protocol version is negotiated either way. env is the reduced
+    environment for a child (REQ-MCP-CLIENT-10), and secrets resolves
+    ${VAR} references at CONNECT time — so a credential lives in the child's
+    environment or in a request header, and never in the config file, the
+    process table, or a log of the command line. A reference that resolves to
+    nothing is an *UnresolvedVariableError and nothing is spawned (NFR-SEC-03).
+
+    The connection it returns reconnects on its own (NFR-REL-03):
+    a server that died is re-spawned or re-opened at the next call, at most
+    PerSessionReconnectLimit times.
+
+func (p *Pool) Diagnostics() []Diagnostic
+    Diagnostics returns the non-fatal reports collected so far across every
+    connection and tool import, such as an output schema a server declared that
+    could not be read (06-REQ-2.4). The slice is a copy.
+
+func (p *Pool) Get(name string) (*ServerConnection, bool)
+    Get returns a connection by server name.
+
+func (p *Pool) Names() []string
+    Names returns the server names in connection order.
+
+func (p *Pool) Tools(ctx context.Context, existing []core.Tool) ([]core.Tool, error)
+    Tools adapts every connected server's tools into core.Tools with qualified
+    names (REQ-MCP-CLIENT-05).
+
+    existing is the native tool set. A qualified name that collides with
+    one — or with a name in NativeTools, or with another server's — is
+    ErrNameCollision (REQ-MCP-CLIENT-06). This is the BACKSTOP for the native
+    tools a host registers after connecting and the tools a server grows during
+    the session, neither of which a connect-time check can see.
+
+type SamplingHandler func(ctx context.Context, p *CreateMessageParams) (*CreateMessageResult, error)
+    SamplingHandler answers a server's sampling request. It is consulted only
+    for a server with AllowSampling set.
+
+type ServerConfig struct {
+	Name    string
+	Command string
+	Args    []string
+	// URL selects a remote server. Transport picks the HTTP binding:
+	// "streamable-http" (the default) or "sse", the 2024-11-05 HTTP+SSE
+	// transport. Protocol versions are negotiated either way. A url server
+	// is not subscribed to tools/list_changed — that is a request held open
+	// for the life of the session against a remote; a command server is
+	// (REQ-CACHE-07).
+	URL       string
+	Transport string
+	Dir       string
+	// Headers are sent on every request to a URL server. Values may carry
+	// ${VAR} references, resolved from the secrets store exactly like Env.
+	Headers map[string]string
+	// Env values may carry ${VAR} references, resolved at spawn time against
+	// the secrets store (REQ-MCP-CLIENT-10).
+	Env map[string]string
+	// ToolPrefix overrides the default `<name>__`. An empty string in the
+	// config file means the default; DisablePrefix is how a caller asks for
+	// none, because "" cannot mean both.
+	ToolPrefix    string
+	DisablePrefix bool
+	AllowSampling bool
+	// PerSessionCallLimit is 0 for the default. A NEGATIVE value disables the
+	// limit, so "unlimited" is something a caller has to write down.
+	PerSessionCallLimit int
+	// PerSessionReconnectLimit is NFR-REL-03's bound on re-spawning (stdio) or
+	// re-opening (HTTP) a transport that died, per session. 0 means
+	// DefaultReconnectLimit; a NEGATIVE value means never reconnect.
+	PerSessionReconnectLimit int
+	Timeout                  time.Duration
+}
+    ServerConfig is one `[[mcp.servers]]` entry (REQ-MCP-CLIENT-07).
+
+type ServerConnection struct {
+	// Has unexported fields.
+}
+    ServerConnection is REQ-MCP-CLIENT-03: one server, over an SDK session that
+    is replaced when it dies (NFR-REL-03).
+
+func Connect(ctx context.Context, cfg ServerConfig, t sdk.Transport, opts ConnectionOptions) (*ServerConnection, error)
+    Connect opens a connection over a transport the caller built — an in-process
+    pipe, an SDK transport. It is never re-dialled; Pool.Connect is the path
+    that reconnects.
+
+func (c *ServerConnection) Alive() bool
+    Alive reports whether the current session is still open.
+
+func (c *ServerConnection) Call(ctx context.Context, toolName string, args map[string]any) (*CallToolResult, error)
+    Call invokes a tool by its UNQUALIFIED name (REQ-MCP-CLIENT-03).
+
+func (c *ServerConnection) CallRaw(ctx context.Context, toolName string, args json.RawMessage) (*CallToolResult, error)
+    CallRaw is Call with the arguments as the JSON the caller already holds.
+
+    The pool uses it to pass the model's argument bytes through VERBATIM.
+    Going through map[string]any would launder every number through a float64:
+    9007199254740993 arrives at the server as 9007199254740992.
+
+func (c *ServerConnection) Close() error
+    Close tears the connection down.
+
+func (c *ServerConnection) Dead() bool
+    Dead reports whether the reconnect budget is exhausted (NFR-REL-03).
+
+func (c *ServerConnection) ListTools(ctx context.Context) ([]*Tool, error)
+    ListTools lists every tool the server exposes, across pages. The SDK
+    caches the list for as long as the server's ttlMs allows, and drops it on
+    tools/list_changed.
+
+func (c *ServerConnection) Name() string
+    Name is the configured server name.
+
+func (c *ServerConnection) Reconnects() int
+    Reconnects is how many reconnect attempts this session has spent.
+
+func (c *ServerConnection) Session(ctx context.Context) (*sdk.ClientSession, error)
+    Session returns the live SDK session, reconnecting first if the last one
+    died. It is the way to everything this package does not wrap — resources,
+    prompts, the negotiated InitializeResult.
+
+type TextContent = sdk.TextContent
+    The protocol types a host meets through this package's API, re-exported so a
+    host does not have to import two packages both named mcp. Everything else is
+    the SDK's (github.com/modelcontextprotocol/go-sdk/mcp).
+
+type Tool = sdk.Tool
+    The protocol types a host meets through this package's API, re-exported so a
+    host does not have to import two packages both named mcp. Everything else is
+    the SDK's (github.com/modelcontextprotocol/go-sdk/mcp).
+
+type UnresolvedVariableError struct {
+	Server    string
+	Variables []string
+}
+    UnresolvedVariableError is NFR-SEC-03's configuration error: a server's env
+    or headers referenced a ${VAR} that resolved to nothing.
+
+    It is an ERROR, not a warning with a blank substituted, because the
+    two outcomes of substituting a blank are both worse than refusing.
+    The child starts with an empty credential and fails authentication with a
+    message about a bad token, which sends the reader looking at the token;
+    or the header is dropped and the 401 explains nothing at all. Neither names
+    the variable. This does, and it names every one at once so the operator
+    fixes them in one pass rather than one per restart.
+
+    A variable set to the EMPTY STRING is not unresolved: that is a value the
+    operator chose. Only an absent one is.
+
+func (e *UnresolvedVariableError) Error() string
+

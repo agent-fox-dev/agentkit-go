@@ -1,0 +1,822 @@
+package tools // import "github.com/agent-fox-dev/agentkit-go/tools"
+
+Package tools provides AgentKit's built-in tool set.
+
+The file tool set is deliberately minimal (REQ-TOOL-04): read, write, edit,
+find and list. A tool earns a slot only when it has semantics `execute` cannot
+express — truncation, unique-match editing, deterministic ignore handling.
+Deletion, renaming, appending and stat are one shell word each and ship no tool.
+Their absence is the requirement.
+
+CONSTANTS
+
+const (
+	DefaultByteLimit = 50 * 1024 // 50 KB, every tool
+
+	ReadLineLimit   = 2000
+	SearchMatchCap  = 100
+	SearchLineChars = 500
+	FindResultCap   = 1000
+	ListEntryCap    = 500
+
+	// SymbolResultDefault is the default max_results for find_symbol.
+	SymbolResultDefault = 20
+	// SymbolResultCap is the maximum max_results for find_symbol.
+	SymbolResultCap = 50
+
+	// The DEFAULTS for find_files and list_files sit well under their caps.
+	// A model that asks for "everything" almost never wants a thousand paths
+	// in its context; it wants enough to orient and a marker that names the
+	// call for more. The PRD's table puts the default at the cap; the cap is
+	// kept, and a caller that wants it asks for it (limit=1000 / limit=500).
+	FindResultDefault = 200
+	ListEntryDefault  = 200
+)
+    REQ-TOOL-09's two-limit table. Two limits compose on every result — a
+    line/entry limit and a byte limit — and the result records WHICH one fired,
+    because "truncated" alone does not tell the model what to change.
+
+const EditFileMaxBytes = 16 << 20
+    EditFileMaxBytes is the largest file edit_file will load. The tool holds
+    the whole file plus its normalised copy plus the result; a 500 MB log is not
+    what exact-match editing is for, and the message names what is.
+
+const ExecuteFallbackGuideline = "Use execute for file operations like ls, rg, find."
+    ExecuteFallbackGuideline is REQ-TOOL-04e's sentence, verbatim.
+
+    It is not a PromptGuidelines entry on any tool, because its condition is
+    that those tools are MISSING — a per-tool field can only fire when its
+    tool is present, which is the opposite of what the requirement asks for.
+    The prompt builder emits it.
+
+const MaxSearchContextLines = 20
+    MaxSearchContextLines bounds context_lines.
+
+    Context multiplies the result: 100 matches with 50 lines either side is
+    10,000 lines the model pays for and did not ask for.
+
+const SearchOverExecuteGuideline = "Prefer search_files over execute+grep: it respects .gitignore and returns structured matches."
+    SearchOverExecuteGuideline compares search_files with execute, so it is only
+    sound when both are present. Like ExecuteFallbackGuideline it cannot be a
+    PromptGuidelines entry on a tool, because a per-tool field fires whenever
+    its tool is present, execute or not; the prompt builder emits it.
+
+
+VARIABLES
+
+var (
+	ErrPathNotAllowed = errors.New("tools: path_not_allowed")
+	ErrPathMalformed  = errors.New("tools: path_malformed")
+	ErrNoHome         = errors.New("tools: home directory could not be resolved")
+)
+    Errors returned by the path guard. They are sentinels so a policy can tell
+    "outside the workspace" from "malformed" without matching on strings.
+
+
+FUNCTIONS
+
+func All(opts Options) ([]core.Tool, error)
+    All returns the default built-in tool set.
+
+func ApplyEdits(content string, edits []Edit) (string, int, error)
+    ApplyEdits applies a batch of edits to content, or rejects the whole batch.
+
+    The contract, from REQ-TOOL-04a-d:
+
+      - Every old_string matches against the ORIGINAL content, never against the
+        result of an earlier edit in the same call. This is what makes a batch
+        reviewable: the model reasoned about one file, not about a moving one.
+      - A non-unique old_string is a REJECTION, not a replace-all
+        (REQ-TOOL-04c). Multiplicity means the model has not identified a site;
+        replacing all of them is how an agent corrupts a file it was asked to
+        touch once. There is deliberately no {replaced: N} success shape.
+      - Rejections are evaluated in GLOBAL PHASE ORDER, not per edit (ruling
+        P-22). Phases 4 and 5 are inherently global, and per-edit ordering
+        is a real behavioural fork: it would report "not found" for edit 2
+        while a phase-ordered implementation reports "not unique" for edit 1,
+        showing the model a different problem to fix.
+
+    Returns the new content and the number of edits applied.
+
+func CapMarker(noun, param string, limit, max int, alternative string) string
+    CapMarker is the exported wrapper of capMarker. It produces the shared
+    truncation-marker wording so that codesearch and the built-in tools use
+    identical text.
+
+func ClampLimit(n, def, cap int) int
+    ClampLimit is the exported wrapper of clampLimit. It applies a tool's
+    default and cap to a model-supplied limit.
+
+func CountCandidates(ctx context.Context, root string, p SearchParams) (int, error)
+    CountCandidates counts the files a search would select: everything left
+    after the ignore rules, the hidden-entry rule and file_glob.
+
+func ExpandBraces(p string) []string
+    ExpandBraces expands {a,b} alternations, including nested ones.
+
+func FileNavigationTools() []string
+    FileNavigationTools names REQ-TOOL-04e's opt-in set of six.
+
+    They are in All() because All() is the DEFAULT set, and the requirement's
+    "opt-in" is about the tool policy of REQ-TOOL-10 rather than about this
+    constructor: an embedder scopes a run down with ToolPolicy, and a set that
+    omitted them by default would make the common case the one you have to
+    remember. What the requirement actually turns on is their ABSENCE from the
+    resolved set, which is the prompt builder's business, not this list's.
+
+func FindMarker(limit int) string
+    FindMarker is emitted when a find hits its result cap.
+
+    REQ-TOOL-09b: the marker must name a call that WORKS. The tool clamps
+    `limit` to FindResultCap, so "Use limit=2000" at a limit of 1000 names a
+    call the tool would clamp straight back to the same result — a truncation
+    the model cannot act on, which is the thing the requirement exists to
+    prevent. At the cap the marker says so and advises narrowing instead.
+
+func FoldConfusables(s string) string
+    FoldConfusables rewrites a string to its ASCII fold.
+
+    Exported because the same key has to be computed on both sides of a match,
+    and a caller assembling its own diff wants the identical function rather
+    than an approximation of it.
+
+func FoldLine(s string) string
+    FoldLine is the per-line match key: confusables folded, then TRAILING
+    whitespace trimmed. A trailing CR counts as whitespace: a needle copied from
+    a CRLF file that reached the tool with its CRs intact is the same line,
+    and this is the last place the difference can be forgiven.
+
+    Trailing only. Leading whitespace is indentation and is semantic in Go,
+    Python, YAML and Makefiles alike; trimming it would let an edit match a
+    line at the wrong nesting level, which is precisely the kind of silent
+    mis-application REQ-TOOL-04c's uniqueness rule exists to prevent.
+
+func InvalidUTF8Marker(path string) string
+    InvalidUTF8Marker is read_file's note on a page that is not valid UTF-8.
+
+func ListMarker(limit int) string
+    ListMarker is emitted when a listing hits its entry cap.
+
+func LongLineMarker(line int, size int64, limit int, path string) string
+    LongLineMarker names a shell workaround for a single line too large to
+    return, rather than failing opaquely (REQ-TOOL-09c).
+
+    It names `execute` deliberately: `execute` is not path-contained
+    (REQ-SEC-01), so it can reach a line — or a spill file — that the file tools
+    cannot (ruling P-45).
+
+    The path is single-quoted for the shell: a file called `my file.txt` or
+    `$HOME.txt` would otherwise name a command that does not read that file.
+
+func MatchGlob(pattern, path string) bool
+    MatchGlob matches a path against a glob pattern.
+
+    Matching is github.com/bmatcuk/doublestar/v4: `**` crosses separators (and
+    matches zero segments), `*` and `?` stay within one, `[abc]` / `[!abc]`
+    classes, `{a,b}` alternation. filepath.Match alone cannot cross `/` with
+    `**`, and a find tool that silently returned node_modules would be worse
+    than no find tool. On top of it, two rules of AgentKit's own:
+
+      - smart-case: an all-lowercase pattern matches case-insensitively;
+      - a bare alternative with no separator also matches by basename, which is
+        what a user typing `*.go` means.
+
+func Normalize(p string) (string, error)
+    Normalize applies the pre-canonicalization rewrites.
+
+    `~user` expands to that user's home directory via os/user; an unknown user
+    is malformed rather than left as a literal `~user` path.
+
+    An unresolvable HOME is also a rejection, not a fallback to a relative path.
+    A relative path resolves against the process working directory — whatever
+    repository the agent happens to be run in — so falling back would let a
+    hostile repo's files stand in for the user's own. Fail closed.
+
+func ReadMarker(shown, total int) string
+    ReadMarker is emitted when a read is line-truncated.
+
+    The offsets are 1-BASED (ruling P-21). The PRD's parameter table says
+    "offset int (default 0)" while its own example marker says "Use offset=2001"
+    after showing lines 1-2000 — which is only correct if offsets are 1-based.
+    A 0-based reading re-reads line 2000 on every continuation.
+
+func ReadOffsetMarker(from, to, total int) string
+    ReadOffsetMarker is the continuation form.
+
+func ReducedEnv(base []string, extraPrefixes ...string) []string
+    ReducedEnv strips credentials from the inherited environment while KEEPING
+    PATH verbatim (ruling P-47).
+
+    Dropping PATH is the obvious reading of "reduced environment" and it breaks
+    every command, so it is not what this does. What it removes is credentials,
+    which a subprocess has no business reading and which would otherwise be one
+    `env` away from any command the model writes (REQ-SEC-08). Three rules,
+    all matched on the UPPER-CASED name so `anthropic_api_key` is as gone as
+    `ANTHROPIC_API_KEY`:
+
+      - provider PREFIXES, for the keys the SDK itself knows about;
+      - generic SUFFIXES — *_TOKEN, *_SECRET, *_KEY, *_PASSWORD, *_PASS, *_PWD,
+        *_PAT, *_AUTH, *_CREDENTIALS, *_PRIVATE_KEY — because a provider list
+        is only ever the providers someone thought of, and GITHUB_TOKEN or
+        NPM_TOKEN in a developer's shell is at least as valuable to exfiltrate
+        as an Anthropic key;
+      - the bare names TOKEN, API_KEY, SECRET and PASSWORD, which no suffix rule
+        reaches.
+
+    A short list is kept unconditionally, checked BEFORE the prefix rule: PATH,
+    HOME, LANG, TMPDIR and TERM, which a command needs to run at all, and the
+    non-secret provider settings — AWS_PROFILE, AWS_REGION, AWS_DEFAULT_REGION,
+    GOOGLE_CLOUD_PROJECT — without which a cloud CLI in the workspace stops
+    working while gaining no protection, since they name where to look and not
+    what to say.
+
+    This is a real but LIMITED protection, and the limit is worth stating:
+    a command can still read the keys from any file the agent can read.
+    The boundary is the interceptor, not this function.
+
+func RenderSearchText(res SearchResult, marker string) string
+    RenderSearchText is the model-facing rendering of a search result: grep
+    style, grouped by file.
+
+        path/to/file.go
+          12- context before
+          13: the matched line
+          14- context after
+
+        other/file.go
+          7: another match
+        [marker]
+
+    It replaces the JSON envelope for the model (core.ToolResult.Text).
+    Per match the envelope repeats the file name and the four keys, and every
+    line of code inside it is JSON-escaped; grep's shape says the file once per
+    group and the line once, unescaped, which for a typical result is a third
+    fewer bytes and a better tokenization of the code itself. Data keeps the
+    structured form for programmatic consumers.
+
+    Within a file each line number is printed once: a line that is both a match
+    and another match's context is shown as the match.
+
+func ResolveShell() (string, []string, error)
+    ResolveShell is REQ-TOOL-06's fixed ladder.
+
+    It never consults $SHELL and never falls back to cmd.exe. $SHELL is the
+    user's INTERACTIVE shell — fish, nushell, zsh with a custom rc — and a
+    command written for bash is not portable to it. A silent fallback to a
+    different dialect produces failures that look like the model wrote bad
+    shell.
+
+    On Windows the ladder ends in a HARD ERROR naming the paths searched,
+    rather than falling through to cmd.
+
+func Restore(s string, bom bool, ending LineEnding) string
+    Restore re-applies what NormalizeForEdit removed.
+
+func SearchBytesMarker(shown int, limit int) string
+    SearchBytesMarker is emitted when a search hits the 50 KB byte cap before
+    its match cap (REQ-TOOL-09). There is no offset to continue from, so the
+    call it names is a narrower one.
+
+func SearchMarker(limit int) string
+    SearchMarker is emitted when a search hits its match cap. It names the
+    parameter search_files actually takes, `max_matches`, not find_files'
+    `limit` (REQ-TOOL-09b).
+
+func ShellQuote(s string) string
+    ShellQuote wraps s in single quotes, the one quoting form under which a
+    POSIX shell interprets nothing. An embedded single quote is spelled '\”,
+    which closes the quote, escapes one quote, and reopens it.
+
+func SymbolMarker(limit int) string
+    SymbolMarker is emitted when find_symbol hits its result cap.
+
+func SymbolPartialMarker(reason string) string
+    SymbolPartialMarker is emitted when a symbol-table build or refresh pass
+    stopped at a bound. It tells the model to narrow with path or fall back to
+    search_files.
+
+func Walk(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(rel string, d fs.DirEntry) error) error
+    Walk is the workspace-confined entry point for the shared directory walk.
+    It returns an error wrapping ErrPathNotAllowed when ws is nil, root is
+    not absolute, or root lies outside ws.Root, before any entry is visited.
+    It does not follow symlinks, because it uses filepath.WalkDir.
+
+
+TYPES
+
+type Accumulator struct {
+	// Cap is the byte budget for the retained window.
+	Cap int
+	// Mode selects which end survives.
+	Mode TruncateMode
+	// SpillDir, when non-empty, enables the spill file.
+	SpillDir string
+	// SpillPrefix names the spill file.
+	SpillPrefix string
+
+	// Has unexported fields.
+}
+    Accumulator is REQ-TOOL-15's bounded rolling accumulator.
+
+    It retains a bounded HEAD and a bounded TAIL, discarding the middle as bytes
+    arrive, so peak memory is roughly 2×cap regardless of how much a subprocess
+    writes. The obvious alternative — buffer everything, truncate at the end —
+    is quadratic in output size and out-of-memories on precisely the runaway
+    command the cap exists to contain.
+
+    It also lazily spills the COMPLETE output to a file on first overflow,
+    so the full text stays available to the caller and the audit trail while
+    only the bounded window reaches the model (REQ-TOOL-15.2).
+
+func NewAccumulator(capBytes int, mode TruncateMode) *Accumulator
+    NewAccumulator returns an accumulator with the given budget and mode.
+
+func (a *Accumulator) Close() error
+    Close releases the spill file handle.
+
+func (a *Accumulator) SpillPath() string
+    SpillPath returns the spill file path, or "" if nothing spilled. When a
+    file was installed via useFile, the path is always returned (even for empty
+    output).
+
+func (a *Accumulator) String() string
+    String renders the retained window, with a marker naming what was elided.
+
+    REQ-TOOL-09b: a truncation the model cannot act on costs a turn. Every
+    marker therefore names the number of bytes elided and, where one exists,
+    the spill path — which is reachable through `execute`, because `execute` is
+    not path-contained (ruling P-45).
+
+func (a *Accumulator) Total() int64
+    Total reports every byte written, including discarded ones.
+
+func (a *Accumulator) Truncated() bool
+    Truncated reports whether anything was discarded.
+
+func (a *Accumulator) Write(p []byte) (int, error)
+    Write implements io.Writer, so an Accumulator can be handed straight to
+    exec.Cmd as its combined output sink.
+
+type Edit struct {
+	OldString string `json:"old_string"`
+	NewString string `json:"new_string"`
+}
+    Edit is one requested replacement.
+
+type EditError struct {
+	Phase string
+	Index int
+	Text  string
+}
+    EditError is a rejection with the exact model-visible text the PRD pins.
+    The strings are part of the contract: two conforming implementations that
+    worded them differently would show the model different messages and get
+    different self-correction behaviour.
+
+func (e *EditError) Error() string
+
+type ExecOptions struct {
+	Dir string
+	// Timeout of zero means no timeout. REQ-TOOL-06 makes timeout_s optional
+	// with NO default: a default wall clock silently kills long builds, and
+	// safety comes from process control rather than from a clock.
+	Timeout time.Duration
+	// MaxBytes bounds the window that reaches the model.
+	MaxBytes int
+	// KeepHead, when true, keeps the first MaxBytes bytes of the output
+	// (head truncation) instead of the last MaxBytes bytes (tail truncation,
+	// the default when false).
+	KeepHead bool
+	// SpillDir enables the full-output spill file.
+	SpillDir string
+	// LogPath, when set, writes the complete interleaved output to the named
+	// file as it arrives, independent of truncation. A relative path is
+	// resolved against Dir (or the process working directory when Dir is
+	// empty). Missing parent directories are created with mode 0o700 and the
+	// file is created or truncated with mode 0o600 before the process starts.
+	// When set, LogPath replaces SpillDir for that call: no temporary spill
+	// file is created, and ExecResult.SpillPath reports the absolute log path.
+	// The SDK never deletes the file.
+	LogPath string
+	// Stdin, when non-nil, is copied into the child's standard input through
+	// a pipe the runner owns. The child's stdin is closed when the reader
+	// returns io.EOF. Nil keeps the null device (REQ-TOOL-06).
+	Stdin io.Reader
+	// Env sets the child's environment. Nil means ReducedEnv(nil)
+	// (REQ-SEC-08, same rule as tools.Options.Env): credentials are stripped
+	// and PATH, HOME, LANG, TMPDIR and TERM are kept verbatim. A non-nil
+	// slice, including an empty one, is used verbatim with no variable added
+	// or removed. Pass os.Environ() for the full inherited environment.
+	Env []string
+	// DrainIdle is how long the output pipe must stay QUIET after the child
+	// has exited before draining stops (REQ-TOOL-17.5). Zero means
+	// defaultDrainIdle. It is an idle interval, not a deadline: every read
+	// re-arms it, so a descendant that keeps writing keeps being drained.
+	DrainIdle time.Duration
+	// DrainCeiling bounds the whole post-exit drain, so a descendant writing
+	// forever cannot hold the tool open forever. Zero means
+	// defaultDrainCeiling.
+	DrainCeiling time.Duration
+}
+    ExecOptions configures Run.
+
+type ExecResult struct {
+	Output     string
+	Outcome    Outcome
+	ExitCode   int
+	Truncated  bool
+	TotalBytes int64
+	SpillPath  string
+	Duration   time.Duration
+	// IOErr is a byte-moving failure that did not stop the process: a Stdin
+	// read error, a log or spill write error, or Wait reporting an I/O
+	// completion failure. Outcome is still classified from the exit status.
+	IOErr error
+}
+    ExecResult is the outcome of one command.
+
+func Run(ctx context.Context, command string, opts ExecOptions) (ExecResult, error)
+    Run executes a command through a bash-family shell with full process-group
+    lifecycle control.
+
+    The pieces that are not obvious, each from REQ-TOOL-17:
+
+      - The command runs in its OWN PROCESS GROUP, and both timeout and context
+        cancellation kill the whole group. Killing only the direct child leaves
+        every grandchild running — a background server, a watch process — long
+        after the agent believes the command is over.
+      - stdout and stderr share ONE PIPE, so they interleave in true write
+        order. Separate captures are prohibited: they produce a transcript in
+        which the error appears before the line that caused it.
+      - The pipe is OURS (os.Pipe), not one exec created, and after the child
+        exits output is drained on a RE-ARMING idle timer rather than a fixed
+        post-exit deadline (REQ-TOOL-17.5). exec closes the pipes it made as
+        soon as Wait returns, which truncates a detached descendant's output at
+        a constant — losing precisely the tail of a background job's log.
+      - Output is truncated from the TAIL unless KeepHead is set (REQ-TOOL-09a).
+
+    When ExecOptions.Stdin is non-nil, the reader is copied into the child's
+    standard input through a pipe the runner owns. The child's stdin is closed
+    when the reader returns io.EOF. A read error other than io.EOF is recorded
+    in ExecResult.IOErr. Nil keeps the null device.
+
+func RunArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, error)
+    RunArgv is REQ-TOOL-06's structured variant: an argv vector, executed with
+    NO SHELL between the caller and the program.
+
+    The difference is the entire point. `Run` hands a string to bash, so `;`,
+    `$(…)`, backticks, globs and redirection all mean something. Here they do
+    not: every element is one argument, verbatim, and a filename containing
+    a space or a semicolon reaches the program as itself. A caller that has
+    already got its arguments as separate values should never have to quote them
+    back into a shell string and hope the quoting is right.
+
+    Everything else — process group, timeout, group kill, interleaved output,
+    tail truncation (unless KeepHead), spill — is identical, because those are
+    properties of running a subprocess and not of how the command was spelled.
+
+    When ExecOptions.Stdin is non-nil, the reader is copied into the child's
+    standard input through a pipe the runner owns. The child's stdin is closed
+    when the reader returns io.EOF. A read error other than io.EOF is recorded
+    in ExecResult.IOErr. Nil keeps the null device.
+
+type IgnoreOptions struct {
+	Getenv func(string) string
+	Home   func() (string, error)
+	// GitConfig returns core.excludesFile. Nil runs `git config`.
+	GitConfig func() string
+}
+    IgnoreOptions injects the environment the ignore engine reads, so the whole
+    thing is testable without mutating process state or requiring a git binary
+    (NFR-TEST-04). The zero value reads the real environment.
+
+    It is threaded through Options so a TOOL-level test can pin an empty global
+    layer: without it find_files and search_files read the developer's own
+    global excludes, and a test passes or fails depending on whose machine runs
+    it.
+
+func NoGlobalExcludes() IgnoreOptions
+    NoGlobalExcludes returns options with an EMPTY global layer — no
+    core.excludesFile, no XDG path, no home directory — so a scan honours only
+    the ignore files found in the tree. It is what tests use; an embedder that
+    wants a hermetic tool set can use it too.
+
+type Index interface {
+	// Symbols answers a find_symbol query from the index. It returns
+	// ok=true only when the index can answer authoritatively; ok=false
+	// means the caller should fall back to its own table.
+	Symbols(ctx context.Context, q SymbolQuery) (SymbolAnswer, bool, error)
+
+	// Tools returns the tools the index provides (e.g. code_search).
+	Tools() []core.Tool
+
+	// Invalidate records rel as dirty. An empty rel marks the whole index
+	// for revalidation. It must not block on a build or query in progress
+	// for longer than it takes to set a flag; it never returns an error
+	// and never panics on a closed index.
+	Invalidate(rel string)
+
+	// Close releases resources. It is idempotent.
+	Close() error
+}
+    Index is the standard-library-only seam through which a codesearch index
+    plugs into the root tools package. An embedder sets Options.Index to an
+    implementation; nil means no index.
+
+type LineEnding string
+    LineEnding describes the convention a file uses.
+
+const (
+	LF   LineEnding = "lf"
+	CRLF LineEnding = "crlf"
+)
+func NormalizeForEdit(s string) (normalized string, bom bool, ending LineEnding)
+    NormalizeForEdit strips a leading BOM and converts CRLF to LF so matching
+    works against what the model actually saw, and reports what it removed so
+    Restore can put it back (REQ-TOOL-04d).
+
+    The CRLF restoration is LOSSY for a mixed-ending file: if the original
+    contains ANY CRLF the output is CRLF throughout (ruling P-24). That is a
+    deliberate, reported choice — preserving per-line endings would require
+    tracking them through every splice, and a file with mixed endings is already
+    in a state no editor preserves faithfully.
+
+type Options struct {
+	Workspace *Workspace
+	// SpillDir is where oversized subprocess output is streamed in full
+	// (REQ-TOOL-09d). Empty means a per-workspace subdirectory of
+	// os.TempDir(), created on first spill. Spill files are the EMBEDDER'S to
+	// clean up: the SDK never deletes one, because the path is handed to the
+	// model and to the audit trail, and either may still need it after the
+	// call that produced it has returned.
+	SpillDir string
+	// DisableSpill turns spilling off entirely, for a caller that wants no
+	// file left behind. Without it the requirement's "additionally streamed
+	// to a temp file" is on by default, since a default that silently
+	// dropped the full output would make the marker name a file that does
+	// not exist.
+	DisableSpill bool
+	// Env replaces the subprocess environment. Nil means ReducedEnv(nil)
+	// (REQ-SEC-08) — for every constructor here, not only All(): a tool built
+	// by hand with a nil Env must not inherit the parent's credentials just
+	// because it skipped the aggregate.
+	Env []string
+	// Ignore injects the environment the ignore engine reads. The zero value
+	// reads the real one; NoGlobalExcludes() pins an empty global layer
+	// (NFR-TEST-04).
+	Ignore IgnoreOptions
+	// Symbols configures the symbol table.
+	Symbols SymbolOptions
+	// Index is the optional codesearch index. When set, All() appends
+	// Index.Tools() after the built-in tools, and write_file, edit_file
+	// and the shell tools call Index.Invalidate on every write. Nil means
+	// no index.
+	Index Index
+}
+    Options configures the built-in tool set.
+
+type Outcome string
+    Outcome classifies how a command ended. It is a distinct type because the
+    classification is a PURE FUNCTION with a pinned precedence, unit-tested on
+    its own (REQ-TOOL-17.6): mixing it into the run path is how "the command
+    timed out" ends up reported as "exit status 1".
+
+const (
+	OutcomeOK      Outcome = "ok"
+	OutcomeExit    Outcome = "exit"
+	OutcomeSignal  Outcome = "signal"
+	OutcomeTimeout Outcome = "timeout"
+	OutcomeAbort   Outcome = "abort"
+)
+func ClassifyOutcome(aborted, timedOut bool, exitCode int, signaled bool) Outcome
+    ClassifyOutcome is REQ-TOOL-17.6's pure function. Precedence is part of the
+    contract and is deliberately NOT the order the events happened in:
+
+        abort > timeout > exit status
+
+    A timed-out command is also a killed command with a non-zero exit status,
+    and an aborted one is both. Reporting the exit status would tell the model
+    the build failed when in fact the user pressed Ctrl-C.
+
+type ReferenceOptions struct {
+	Path         string // Subdirectory filter ("" for entire workspace)
+	IncludeTests bool   // Whether to include test files (default false in struct, tool defaults to true)
+	MaxResults   int    // 0 or negative defaults to 30; capped at 100
+}
+    ReferenceOptions configures reference lookup on a Workspace.
+
+type ReferenceResult struct {
+	Target          outline.Decl
+	Sites           []ReferenceSite
+	Backend         string
+	Partial         bool
+	PackagesChecked int
+	Errors          int
+	Truncated       bool
+
+	// Has unexported fields.
+}
+    ReferenceResult is the outcome of a reference search.
+
+type ReferenceSite struct {
+	Path       string       // Slash-separated workspace-relative path
+	Line       int          // 1-based line number
+	Column     int          // 1-based byte column
+	Confidence string       // "resolved", "lexical", or "text"
+	Enclosing  outline.Decl // Enclosing declaration, or Kind "file" at top-level
+	Source     string       // Trimmed source line, max 200 bytes, no control chars
+}
+    ReferenceSite is one source location where a declaration is referenced.
+
+type SearchMatch struct {
+	File   string   `json:"file"`
+	Line   int      `json:"line"`
+	Text   string   `json:"text"`
+	Before []string `json:"before,omitzero"`
+	After  []string `json:"after,omitzero"`
+}
+    SearchMatch is one hit (REQ-TOOL-05).
+
+type SearchParams struct {
+	Pattern      string `json:"pattern"`
+	Path         string `json:"path"`
+	ContextLines int    `json:"context_lines"`
+	FileGlob     string `json:"file_glob"`
+	// CaseSensitive is a POINTER because absent and false are different
+	// answers. Absent means smart-case; false means explicitly insensitive.
+	// A plain bool would make "the caller said nothing" indistinguishable
+	// from "the caller asked for insensitive", and smart-case is the
+	// behaviour a user typing a lowercase pattern expects.
+	CaseSensitive *bool `json:"case_sensitive"`
+	MaxMatches    int   `json:"max_matches"`
+}
+    SearchParams is the declared parameter set.
+
+type SearchPatternError struct{ Err error }
+    SearchPatternError is a bad regular expression, separated so the tool can
+    report it as invalid arguments rather than as a failed search — the caller
+    has to change the pattern, not retry.
+
+func (e *SearchPatternError) Error() string
+
+func (e *SearchPatternError) Unwrap() error
+
+type SearchResult struct {
+	Matches       []SearchMatch `json:"matches"`
+	Truncated     bool          `json:"truncated"`
+	FilesSearched int           `json:"files_searched"`
+	// TruncatedBy names which limit fired when Truncated is set: the match
+	// cap ("lines") or the 50 KB byte cap ("bytes") (REQ-TOOL-09).
+	TruncatedBy TruncatedBy `json:"truncated_by,omitzero"`
+}
+    SearchResult is the returned envelope.
+
+func Search(ctx context.Context, root string, p SearchParams) (SearchResult, error)
+    Search runs the search.
+
+    It is exported so an embedder can search without going through the tool
+    envelope. It reads the real ignore environment; SearchIn takes an explicit
+    one.
+
+func SearchIn(ctx context.Context, root string, p SearchParams, ig IgnoreOptions) (SearchResult, error)
+    SearchIn is Search with an injected ignore environment (NFR-TEST-04),
+    so a test can pin an empty global excludes layer instead of inheriting the
+    developer's.
+
+type SymbolAnswer struct {
+	Matches      []SymbolMatch
+	FilesIndexed int
+	Backends     map[string]int
+}
+    SymbolAnswer is the response from Index.Symbols.
+
+    FilesIndexed and Backends describe the queried scope, as they do for the
+    table-based find_symbol: FilesIndexed is the number of indexed files under
+    SymbolQuery.Path (the whole workspace when it is empty), and Backends maps
+    each outline backend name to its number of those files. A nil Backends means
+    the Index does not report them, and find_symbol counts the backends of the
+    matches instead.
+
+type SymbolMatch struct {
+	Path      string `json:"path"`
+	Backend   string `json:"backend"`
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	Container string `json:"container"`
+	Signature string `json:"signature"`
+	Exported  bool   `json:"exported"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+}
+    SymbolMatch is one match from find_symbol.
+
+func (m SymbolMatch) Decl() outline.Decl
+    Decl converts SymbolMatch to an outline.Decl.
+
+type SymbolOptions struct {
+	// MaxFiles is the file-count bound for a symbol-table build or refresh
+	// pass. Zero or negative means 50 000.
+	MaxFiles int
+	// MaxDuration is the wall-time bound for a symbol-table build or refresh
+	// pass. Zero or negative means 2 s.
+	MaxDuration time.Duration
+}
+    SymbolOptions configures the symbol table behind find_symbol.
+
+type SymbolQuery struct {
+	Name  string
+	Kind  string
+	Path  string
+	Exact bool
+}
+    SymbolQuery carries find_symbol's validated arguments for the Index.Symbols
+    method. Path is a slash-separated workspace-relative directory (empty for
+    the whole workspace) and Kind is already lower-cased.
+
+type TruncateMode int
+    TruncateMode selects which end of the stream survives truncation.
+
+const (
+	// TruncateHead keeps the BEGINNING. Right for a file read or a listing,
+	// where the interesting part is at the top.
+	TruncateHead TruncateMode = iota
+	// TruncateTail keeps the END. Right for `execute` (REQ-TOOL-09a): a
+	// failing build puts its error at the end of the log, and head-truncation
+	// preserves the banner and discards the failure.
+	TruncateTail
+	// TruncateMiddle keeps both ends and elides the centre.
+	TruncateMiddle
+)
+type TruncatedBy string
+    TruncatedBy names which limit fired. It is a closed enum: the 500-char
+    per-line cap in search gets its OWN marker rather than a third value,
+    so the enum stays closed and a consumer switching on it cannot miss a case
+    (ruling P-44).
+
+const (
+	TruncatedByLines TruncatedBy = "lines"
+	TruncatedByBytes TruncatedBy = "bytes"
+)
+type WalkOptions struct {
+	Ignore        IgnoreOptions
+	IncludeHidden bool
+}
+    WalkOptions configures the exported Walk.
+
+type Workspace struct {
+	// Root is the absolute, symlink-resolved workspace root.
+	Root string
+}
+    Workspace is the containment boundary for the built-in FILE tools
+    (REQ-SEC-01).
+
+    On a host it does NOT constrain `execute`. That is not an oversight,
+    and it is stated here rather than left to be discovered: a shell command can
+    read and write anything the process can, and pretending otherwise would be
+    worse than admitting it. The boundary for `execute` is the BeforeToolCall
+    interceptor (REQ-SEC-03). See TestExecuteIsNotPathContained, whose name is
+    the documentation.
+
+    Inside a sandbox whose agent reports a Landlock ABI
+    (sandbox.AgentInfo.Landlock), the agent's kernel ruleset confines `execute`,
+    and every process it starts, to the ruleset's writable roots. Under the
+    local provider, or on a kernel without Landlock, it does not.
+
+func NewWorkspace(root string) (*Workspace, error)
+    NewWorkspace resolves root to its absolute canonical form.
+
+func (w *Workspace) CheckWriteTarget(abs string) error
+    CheckWriteTarget re-checks abs IMMEDIATELY before a write touches it
+    (REQ-SEC-01). Resolve already returned a contained path, but a link created
+    between the check and the open — by a concurrent command, or by a hostile
+    repository's own build step — would be followed by the open.
+
+    The WHOLE path is re-resolved, not only its last component.
+    An earlier version looked at the leaf alone, and the leaf is not where
+    the swap happens: `ws/sub` replaced by `ws/sub -> /elsewhere` leaves
+    `ws/sub/file.txt` looking like a plain file (or an absent one) while the
+    write lands in /elsewhere — and the MkdirAll that precedes a write would
+    build the missing directories there too. So the callers run this BEFORE
+    MkdirAll, and it walks the existing prefix exactly as Resolve did.
+
+func (w *Workspace) References(ctx context.Context, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error)
+    References finds usages and callers of target across the workspace, bounded
+    by the default SymbolOptions.
+
+func (w *Workspace) Rel(abs string) string
+    Rel renders an absolute path relative to the workspace for display. It never
+    fails: an unrelatable path is shown as-is.
+
+func (w *Workspace) Resolve(p string) (string, error)
+    Resolve normalizes and then contains a model-supplied path.
+
+    ORDER IS LOAD-BEARING. Normalization — `~` expansion, `file://` unwrapping,
+    stripping a leading `@` or quote the model sometimes emits — happens BEFORE
+    canonicalization, never after (REQ-SEC-01). A guard that canonicalizes first
+    and expands later checks a string that is not the string it will open.
+
+    Symlinks are resolved against the deepest existing ancestor, so a path whose
+    final component does not exist yet is still contained by its parent — the
+    case a naive EvalSymlinks-the-whole-path guard gets wrong for every file the
+    agent is about to create.
+

@@ -1,0 +1,8 @@
+Command agentkit-gateway serves the AgentKit sandbox gateway over TCP with a
+Podman or Docker backend: clients (sandbox/gateway) create, use and destroy
+sandboxes on this host with a bearer token read from --token-file. It listens
+on loopback by default and needs TLS (--tls-cert and --tls-key) or an explicit
+--plaintext.
+
+Exit codes: 0 after a clean shutdown or --version; 1 for a startup failure or a
+failed shutdown; 2 for a usage error.

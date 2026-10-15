@@ -1,0 +1,64 @@
+package gatewayd // import "github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd"
+
+Package gatewayd is the AgentKit sandbox gateway: a gRPC server that holds
+one backend sandbox.Provider and lets authenticated clients (sandbox/gateway)
+create, list and destroy sandboxes with it, relaying the Agent protocol to each
+sandbox it manages.
+
+Every RPC must carry `authorization: Bearer <token>` matching a configured
+token. A sandbox belongs to the token that created it; another token sees it as
+an id that does not exist. The server keeps only each token's SHA-256 and logs
+only its first 8 hex characters.
+
+It is a separate module so the library itself listens on no socket; the
+agentkit-gateway command (cmd/agentkit-gateway) serves it over TCP with a Podman
+or Docker backend.
+
+TYPES
+
+type Config struct {
+	// Backend creates the sandboxes. Required.
+	Backend sandbox.Provider
+	// Tokens are the accepted bearer tokens: at least one, each at least 32
+	// characters of printable ASCII without whitespace, none repeated.
+	Tokens []string
+	// TLS, when set, serves TLS with it; nil serves plaintext (behind a TLS
+	// proxy, or on loopback).
+	TLS *tls.Config
+	// NetworkModes is the network ceiling: the modes clients may request,
+	// intersected with the backend's. Nil means [NetworkNone].
+	NetworkModes []sandbox.NetworkMode
+	// MaxSandboxes is the most sandboxes held at once; zero means 16.
+	MaxSandboxes int
+	// MaxTTL is the longest TTL accepted; zero means 24h.
+	MaxTTL time.Duration
+	// ReapInterval is how often Backend.Reap runs; zero means 10m.
+	ReapInterval time.Duration
+	// Logger receives one structured line per create, destroy, refused
+	// authentication and backend reap; nil discards.
+	Logger *slog.Logger
+}
+    Config configures a Server.
+
+type Server struct {
+	// Has unexported fields.
+}
+    Server is a gateway. Serve it once; Shutdown stops it.
+
+func New(cfg Config) (*Server, error)
+    New checks cfg, applies its defaults and returns a Server that is not yet
+    serving.
+
+func (s *Server) Serve(l net.Listener) error
+    Serve serves the gateway on l until Shutdown: TLS when Config.TLS was set,
+    plaintext otherwise, with sandbox.MaxMessageBytes as the message limits and
+    every RPC authenticated. It runs Backend.Reap once at start and then every
+    ReapInterval; a failed reap is logged, never fatal. It returns nil after
+    Shutdown and the listener's error otherwise. Serve is called once.
+
+func (s *Server) Shutdown(ctx context.Context) error
+    Shutdown stops the gateway: it stops accepting RPCs, closes every backend
+    sandbox it holds (which ends the relayed calls in flight), waits for the
+    handlers until ctx is done, and then forces the server to stop. It returns
+    the joined Close errors, and nil on later calls.
+

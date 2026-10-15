@@ -6,7 +6,7 @@ is the set of public Go packages below. The one network service,
 [`cli.md`](cli.md) and the `sandbox/gatewayd` package documentation.
 
 The authoritative reference is the package documentation: run `make doc` to
-write `go doc -all` output for every public package to `build/docs/`, or read
+write `go doc -all` output for every public package to `docs/generated/` (committed), or read
 it with `go doc -all <import path>`. This file is the map.
 
 ## Root module — `github.com/agent-fox-dev/agentkit-go`
