@@ -29,6 +29,7 @@ test: ## Run all Go tests (root module and the nested modules)
 .PHONY: build
 build: ## Build all packages of the root module and the nested modules
 	@rc=0; for m in $(MODULES); do echo "go build ./... ($$m)"; (cd $$m && go build ./...) || rc=1; done; exit $$rc
+	rm examples/gateway/gateway examples/harness/harness examples/sandbox/sandbox
 
 .PHONY: coverage
 coverage: ## Run the root module's tests with a coverage report
