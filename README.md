@@ -287,7 +287,7 @@ The identifiers an embedder such as agent-fox builds on.
 | [`docs/cli.md`](docs/cli.md) | The `agentkit-sandboxd` and `agentkit-gateway` commands: flags, transport, the token file and exit codes. |
 | [`docs/releasing.md`](docs/releasing.md) | Publishing the sandbox images: the version tags, GHCR visibility, re-runs and local builds. |
 | [`docs/DEPS.md`](docs/DEPS.md) | Why each direct dependency is allowed, and the libraries considered and rejected. |
-| [`examples/README.md`](examples/README.md) | The seven example programs and how to configure an application. |
+| [`examples/README.md`](examples/README.md) | The eight example programs and how to configure an application. |
 | [`docs/prd/`](docs/prd) | Product requirements. |
 | [`docs/errata/`](docs/errata) | Where the code diverges from a spec, and why. |
 | [`docs/archive/`](docs/archive) | The superseded 0.4.2 PRD and findings from the deleted provider wires. |
