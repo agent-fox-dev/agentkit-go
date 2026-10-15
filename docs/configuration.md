@@ -180,6 +180,7 @@ channel as a `core.EventStream`.
 | `ToolPrefix`, `OnToolPrefixSync` | The per-session tool-schema cache (`*provider.ToolPrefix`; nil means the provider owns one) and its reconciliation reports. |
 | `Now` | Injectable clock for timestamps. |
 | `CacheRetention` | `core.CacheRetentionNone`, `CacheRetentionShort` (empty means short) or `CacheRetentionLong` (1-hour TTL on the system and tool breakpoints). |
+| `NonStrictTools` | Names of tools never declared strict (`strict: true`), however well they fit. The API totals its strict-mode limits over a request (20 tools, 16 union parameters, and a compiled-grammar size it does not publish) and refuses the whole request past any. Name the simple tools, a file read, to leave the budget to the complex ones; a named tool spends none of it, and its arguments are still validated before it runs. See errata 10. |
 | `Headers` | `map[string]*string` merged into every request; a nil value deletes that header. |
 | `Timeout` | Bounds each request, independently of the caller's context; zero is none. |
 | `Env` | `map[string]string` consulted before `Getenv` when resolving the deployment. |
