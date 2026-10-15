@@ -1,0 +1,176 @@
+package wire // import "github.com/agent-fox-dev/agentkit-go/wire"
+
+Package wire is REQ-SEC-11 and REQ-SEC-12: the bounded, strict decoder for bytes
+AgentKit did not produce.
+
+Every other decoder in this module reads data we or the model authored — a
+tool's arguments, a catalog file — and can afford to be lenient. This one reads
+what a peer sent: an MCP server we spawned, or a gateway in front of a provider.
+The difference is not tone. A lenient decoder on that surface turns a malformed
+message into an allocation the peer chose, a duplicate key into a value the peer
+chose, and a deep nest into a stack the peer chose.
+
+WHY encoding/json/v2, NOT v1. REQ-SEC-11.5 states it plainly: encoding/json
+satisfies none of rules 1-4 and silently accepts duplicate keys, and it matches
+field names case-insensitively. jsontext rejects duplicate names itself and
+exposes a token stream, so the bounds are a loop over it, each checked before
+the token that would exceed it is read.
+
+VARIABLES
+
+var ErrRejected = errors.New("wire: message rejected")
+    ErrRejected matches every rejection this package produces, so a transport
+    can implement REQ-SEC-11.4's poisoning without enumerating rules.
+
+
+FUNCTIONS
+
+func Guard(data []byte, l Limits) error
+    Guard validates a message against REQ-SEC-11's bounds WITHOUT building a
+    tree.
+
+    It exists because the bounds and the strict binding have different scopes.
+    Every untrusted surface needs the bounds — a provider response included —
+    but a provider response must stay tolerant of fields a vendor added last
+    week, so it is guarded and then decoded with the ordinary lenient path.
+    One extra linear scan is the whole cost, and it buys duplicate-key rejection
+    on a surface where last-wins would let a compromised gateway choose which of
+    two stop_reasons AgentKit sees.
+
+
+TYPES
+
+type Error struct {
+	Rule Rule
+	Path string
+	Msg  string
+	Err  error
+}
+    Error is a rejection. It names the rule and the path, because "invalid JSON"
+    from a peer is not something an operator can act on.
+
+func (e *Error) Error() string
+
+func (e *Error) Is(target error) bool
+
+func (e *Error) Unwrap() error
+
+type FrameReader struct {
+	// Has unexported fields.
+}
+    FrameReader reads one untrusted message at a time, bounded before it
+    allocates (REQ-SEC-11).
+
+    It is POISONED by its first malformed message (REQ-SEC-11.4): once a frame
+    is rejected, every later call returns the same error and no attempt is made
+    to resynchronize. Resynchronizing a framed stream after a parse error means
+    guessing where the next frame starts, using framing that has already proved
+    untrustworthy — and a peer that can desynchronize the framing can then
+    choose what AgentKit reads as a message boundary.
+
+func NewContentLength(r io.Reader, l Limits) *FrameReader
+    NewContentLength reads LSP-style `Content-Length: N` framing.
+
+func NewNDJSON(r io.Reader, l Limits) *FrameReader
+    NewNDJSON reads newline-delimited JSON: MCP stdio's framing and Ollama's
+    native streaming shape.
+
+func (f *FrameReader) Next() ([]byte, error)
+    Next returns the next frame's bytes, or io.EOF at a clean end of stream.
+
+func (f *FrameReader) Poisoned() bool
+    Poisoned reports whether a malformed frame has torn the reader down.
+
+type Kind uint8
+    Kind is a JSON value's type.
+
+const (
+	KindNull Kind = iota
+	KindBool
+	KindNumber
+	KindString
+	KindArray
+	KindObject
+)
+func (k Kind) String() string
+
+type Limits struct {
+	// MaxMessageBytes rejects the whole message. Default 16 MiB.
+	MaxMessageBytes int64
+	// MaxContainerLen bounds array elements and object members. Default 1e6.
+	MaxContainerLen int
+	// MaxDepth bounds nesting. Default 64.
+	MaxDepth int
+	// MaxNodes bounds the TOTAL number of values in one message, across every
+	// container. Default 2e6.
+	//
+	// The other three bounds do not imply it. A decoded Value is 96 bytes
+	// and its shortest encoding is two, so a 16 MiB message of `[[],[],…]`
+	// that respects MaxContainerLen and MaxDepth still materializes as a
+	// tree sixty-four times its own size. This is the bound on that
+	// amplification: 2e6 nodes is under 200 MiB of tree at the worst case,
+	// and a legitimate message that needs more is not one this protocol has.
+	MaxNodes int
+}
+    Limits are REQ-SEC-11's bounds. The zero value means Defaults.
+
+func Defaults() Limits
+    Defaults are the table in REQ-SEC-11.
+
+func (l Limits) WithDefaults() Limits
+    WithDefaults fills the zero fields. It is exported because a caller that
+    bounds a read BEFORE handing bytes to Parse — an SSE event, an HTTP body —
+    needs the same number Parse will use, and re-deriving it is how two bounds
+    drift apart.
+
+type Rule string
+    Rule names which contract a rejection violated. It is a closed set so a
+    caller can branch on it without matching on message text.
+
+const (
+	RuleMessageBytes Rule = "message_bytes"
+	RuleContainerLen Rule = "container_len"
+	RuleDepth        Rule = "depth"
+	RuleNodes        Rule = "nodes"
+	RuleDuplicateKey Rule = "duplicate_key"
+	RuleSyntax       Rule = "syntax"
+	RuleType         Rule = "type"
+)
+type Value struct {
+	Kind   Kind
+	Bool   bool
+	Number json.Number
+	String string
+	Array  []Value
+	// Object holds members. Duplicate keys are REJECTED at decode
+	// (REQ-SEC-11.3), so a map is safe here: there is never a second value to
+	// lose.
+	Object map[string]Value
+	// Keys is insertion order, for deterministic error messages and for a
+	// caller that needs to know what the peer actually sent.
+	Keys []string
+}
+    Value is one decoded JSON value.
+
+    Numbers are held as json.Number — the VERBATIM literal — so 1, 1.0 and 1e3
+    stay distinguishable. REQ-SEC-12.2 needs that distinction to implement
+    cross-language number semantics correctly, and NFR-TEST-06.4 needs it to
+    diff a request body without laundering it through a float64.
+
+func Parse(data []byte, l Limits) (Value, error)
+    Parse decodes a bounded tree. It is the REQ-SEC-12 entry point.
+
+func (v Value) Any() (any, error)
+    Any materializes the tree as ordinary Go values: map[string]any, []any,
+    json.Number, string, bool, nil.
+
+    Numbers come back as json.Number, never float64. A tool argument of
+    9007199254740993 that round-trips through a float64 comes back as
+    9007199254740992, and nothing downstream can tell.
+
+func (v Value) Get(key string) (Value, bool)
+    Get returns a member.
+
+func (v Value) JSON() ([]byte, error)
+    JSON re-encodes the tree, preserving member order and number literals.
+

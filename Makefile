@@ -2,7 +2,7 @@
 
 # MODULES are the repository's Go modules: the root and its nested modules.
 MODULES := . codesearch sandbox sandbox/gatewayd examples/sandbox examples/gateway examples/harness
-DOC_DIR ?= build/docs
+DOC_DIR ?= docs/generated
 
 VERSION    := $(shell git describe --tags 2>/dev/null || echo "0.1.0")
 COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
@@ -57,13 +57,14 @@ lint: ## Run golangci-lint if installed, otherwise skip
 check: fmt vet lint test ## Run fmt, vet, lint and test - use before committing
 
 .PHONY: doc
-doc: ## Generate Go package reference (go doc -all) as text files under build/docs
+doc: ## Generate Go package reference (go doc -all) as text files under docs/generated
 	@rm -rf $(DOC_DIR)
 	@mkdir -p $(DOC_DIR)
 	@for m in . codesearch sandbox sandbox/gatewayd; do \
-		( cd $$m && mod=$$(go list -m) && pkgs=$$(go list ./...) && \
+		( cd $$m && mod=$$(go list -m) && pkgs=$$(go list -f '{{if .GoFiles}}{{.ImportPath}}{{end}}' ./...) && \
 		for p in $$(printf '%s\n' "$$pkgs" | grep -v -e /internal/ -e /examples/); do \
-			rel=$${p#$$mod}; rel=$${rel#/}; out="$(CURDIR)/$(DOC_DIR)/$${rel:-$$(basename $$mod)}.txt"; \
+			rel=$${p#$$mod}; rel=$${rel#/}; pre=$$m/; [ "$$m" = . ] && pre=; \
+			out="$(CURDIR)/$(DOC_DIR)/$$pre$${rel:-$$(basename $$mod)}.txt"; \
 			mkdir -p "$$(dirname "$$out")" && go doc -all "$$p" > "$$out" || exit 1; \
 		done ) || exit 1; \
 	done

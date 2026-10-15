@@ -21,7 +21,7 @@ After implementing any spec, you **must** update all affected documentation
 before the session is considered complete. Outdated docs are treated as
 regressions.
 
-Before updating the documentation, run `make doc` first, to refresh the Go docs.
+Before updating the documentation, run `make doc` first, to refresh the generated Go docs (see below).
 
 **When to update:** Every time a spec implementation adds, changes, or removes
 any of the items listed below, update the corresponding document in the same
@@ -48,6 +48,24 @@ session — not as a follow-up task.
    content rather than skipping the update. A repository without a REST API or
    CLI keeps the file anyway and says in one line that it has none.
 4. Run `make check` after doc updates to ensure nothing is broken.
+
+## Generated Docs
+
+`make doc` writes `go doc -all` output for every publicly accessible package of
+the repository (no `internal/` packages, no `examples/`) to `docs/generated/`,
+one text file per package. The files are committed to git.
+
+Their purpose is orientation: **when you start working on this repository, use
+`docs/generated/` to find your way around.** It is the cheapest way to see which
+packages exist, what each one is for and which types, functions and constants
+it exports, before reading any source. Prefer it to scanning directories or
+grepping for declarations.
+
+- Never edit these files by hand; they are overwritten by `make doc`.
+- Treat them as possibly stale: the code is authoritative. If a file disagrees
+  with the source, regenerate it.
+- Run `make doc` and commit the result whenever a change adds, removes or
+  alters an exported identifier or a package doc comment.
 
 ## Repository Specifics
 

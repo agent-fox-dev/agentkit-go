@@ -1,0 +1,66 @@
+package prompt // import "github.com/agent-fox-dev/agentkit-go/prompt"
+
+Package prompt assembles the system prompt the loop sends (NFR-TEST-08a,
+REQ-TOOL-04e).
+
+Until this existed, core.Tool.PromptGuidelines was a field nothing read and
+the loop sent the system prompt verbatim — so a tool could declare guidance the
+model never saw. NFR-TEST-08(a) asks for a golden of the assembled prompt "built
+through the real tool resolver", which needs a real assembler to build it.
+Build is that assembler.
+
+CONSTANTS
+
+const BaseInstructions = `You are an AI assistant with access to tools.
+
+Work from evidence: read before you edit, and verify a change rather than
+assuming it worked. When a tool reports an error, read the error — it names
+what to do differently. Prefer one correct call to several speculative ones.`
+    BaseInstructions is the built-in opening section.
+
+    Deliberately short. Everything specific to what the agent can actually
+    do comes from the resolved tool set, which is the part that changes;
+    a long fixed preamble is tokens paid on every request to say things the tool
+    descriptions already say.
+
+
+VARIABLES
+
+var UniversalGuidelines = []string{
+	"Do not guess at file contents or APIs; read them.",
+	"Report what you actually did, including what failed.",
+}
+    UniversalGuidelines are appended after the per-tool ones (NFR-TEST-08a:
+    "appends the universal guidelines last").
+
+    Last because they are the weakest: a per-tool guideline is specific
+    advice about a tool the model is looking at, and burying it under general
+    exhortations is how it stops being read.
+
+
+FUNCTIONS
+
+func Build(system string, active []core.Tool) string
+    Build assembles the prompt from the base prompt and the tools that are
+    active — after the policy resolved them, never the registry: the guidelines
+    the model sees must describe the tools it has.
+
+    A non-empty system prompt replaces the built-in base and the built-in
+    UNIVERSAL guidelines, and nothing else. The tools' guidelines are not
+    built-in text: they travel with the tool (NFR-TEST-08a) and describe how to
+    use what the model has been given, so they follow a custom prompt as they
+    follow the built-in one — otherwise every embedder with its own prompt has
+    to re-render them by hand.
+
+
+TYPES
+
+type Section string
+    Section names a block of the assembled prompt. The order of this declaration
+    is the order they appear, and the golden pins it.
+
+const (
+	SectionBase       Section = "base"
+	SectionTools      Section = "tools"
+	SectionGuidelines Section = "guidelines"
+)

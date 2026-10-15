@@ -1,0 +1,102 @@
+package faux // import "github.com/agent-fox-dev/agentkit-go/provider/faux"
+
+Package faux is a deterministic provider that replays a scripted sequence of
+assistant turns.
+
+It ships as exported, supported API in the same place as the real providers,
+not as test-only code inside the module (NFR-TEST-05). That placement is
+the requirement, not a convenience: consumers use it to test their own tool
+handlers, middleware and interceptors, and an SDK whose double is internal
+forces every consumer to write one against their own guesses about the loop.
+
+It is also the EXECUTABLE SPECIFICATION of the streaming protocol. The event
+order it emits is normative — a real provider that disagrees with it is the one
+that is wrong — so its golden test is the protocol's conformance test.
+
+It is a functional double for the loop only. It does not substitute for
+wire-level differential testing (NFR-TEST-06).
+
+CONSTANTS
+
+const API core.API = "faux"
+    API is the wire API id faux registers under.
+
+
+FUNCTIONS
+
+func EventNames(events []core.Event) string
+    EventNames renders an event sequence as a comma-separated list of type
+    names. It exists so a golden test of the protocol reads as a sentence rather
+    than as a struct dump.
+
+func FauxText(s string) core.ContentBlock
+    FauxText scripts a text block.
+
+func FauxThinking(thinking, signature string) core.ContentBlock
+    FauxThinking scripts a thinking block. A signature is required for the block
+    to survive REQ-PROV-11 rule 4 on replay; passing "" is the deliberate way to
+    script the residue of an aborted stream.
+
+func FauxToolCall(id, name, args string) core.ContentBlock
+    FauxToolCall scripts a tool call. args must be a JSON object; it panics
+    otherwise, because a malformed script is a test bug and surfacing it at the
+    call site is more useful than a confusing failure three layers down.
+
+func Model() *core.Model
+    Model returns a model descriptor pointing at this provider.
+
+
+TYPES
+
+type Provider struct {
+
+	// ChunkSize splits text and tool arguments into deltas of this many bytes.
+	// Zero means one delta per block. Setting it small is how a test exercises
+	// a consumer's delta accumulator.
+	ChunkSize int
+	// ModelID is stamped on every message as the model that answered. Empty
+	// leaves it to the consumer, which knows what it asked for.
+	ModelID string
+	// Has unexported fields.
+}
+    Provider is a scripted provider. The zero value is usable and answers every
+    request with an empty "stop" turn.
+
+func New(turns ...Turn) *Provider
+    New returns a provider that replays turns in order. Once the script is
+    exhausted every further request answers with an empty "stop" turn, so a test
+    that under-scripts fails on its assertion rather than by deadlocking.
+
+func (p *Provider) Calls() int
+    Calls reports how many requests were made.
+
+func (p *Provider) Requests() []core.Request
+    Requests returns the requests the provider was asked to complete, in order.
+    Tests use it to assert what the loop actually sent, and when.
+
+func (p *Provider) Stream(ctx context.Context, req core.Request) (<-chan core.StreamEvent, error)
+    Stream implements core.ProviderClient. A context already done is refused
+    before the request counts as made.
+
+type Turn struct {
+	Blocks     []core.ContentBlock
+	StopReason core.StopReason
+	// RawStopReason is the provider's own finish string. Scripting it lets a
+	// test reproduce the case REQ-LOOP-01 exists for: a STOP-family canonical
+	// reason arriving alongside tool calls.
+	RawStopReason string
+	ErrorMessage  string
+	Usage         core.Usage
+	// Err, when set, ends the stream with an error after emitting whatever
+	// blocks were produced — the half-a-message-then-fail case REQ-PROV-04
+	// requires to be representable in one value.
+	Err error
+	// Delay is inserted before the turn is produced, for tests that need a
+	// window in which to Steer, Abort or observe a Phase.
+	Delay time.Duration
+}
+    Turn is one scripted assistant response.
+
+func FauxAssistantMessage(reason core.StopReason, blocks ...core.ContentBlock) Turn
+    FauxAssistantMessage builds a whole turn in one call.
+
