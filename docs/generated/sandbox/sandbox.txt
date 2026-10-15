@@ -1,0 +1,433 @@
+package sandbox // import "github.com/agent-fox-dev/agentkit-go/sandbox"
+
+Package sandbox runs AgentKit's built-in tools inside a sandbox: an ephemeral
+execution environment that holds exactly one workspace.
+
+A Provider creates a Sandbox from a Spec. Sandbox.Sync puts files into its
+workspace, and Sandbox.Tools returns a []core.Tool that is a drop-in replacement
+for tools.All: one proxy for each built-in, with the same definition,
+whose Execute runs the call in the AgentKit agent (agentkit-sandboxd) inside the
+sandbox over the agentkit.sandbox.v1 gRPC protocol. The driver does not change
+and does not know a tool is remote; containment comes from where the tools run.
+
+CheckSpec is the one place a Spec is checked against a provider's Capabilities;
+every provider calls it first in Create.
+
+The local provider (sandbox/local) runs the agent in the embedder's own process.
+It is for tests and development and is not isolation of any kind.
+
+CONSTANTS
+
+const (
+	ProtocolMajor = 1
+	ProtocolMinor = 2
+)
+    The agentkit.sandbox.v1 protocol version. Fields are added, never
+    renumbered; a scope that adds an RPC or a field bumps ProtocolMinor. A host
+    refuses an agent with a different ProtocolMajor and accepts any minor.
+
+const AgentPath = "/usr/local/libexec/agentkit-sandboxd"
+    AgentPath is where a sandbox image installs the agent binary.
+
+const BaseImageRepo = "quay.io/agentfox/agentkit-sandbox"
+    BaseImageRepo is the published base image: Debian with git, bash and
+    ca-certificates, a uid-1000 user and the cgo-built agent at AgentPath.
+
+const LandlockMinABI = 2
+    LandlockMinABI is the lowest Landlock ABI an agent applies: under ABI 1
+    every cross-directory rename or link is denied, which breaks git and other
+    ordinary tools, so a kernel offering only ABI 1 gets no ruleset.
+
+const LandlockTCPABI = 4
+    LandlockTCPABI is the Landlock ABI that restricts TCP bind and connect,
+    and the highest an agent applies.
+
+const MaxMessageBytes = 16 << 20
+    MaxMessageBytes bounds every gRPC message in both directions, on the agent
+    and on the host. It equals wire.Defaults().MaxMessageBytes.
+
+const OverlayImageRepo = "quay.io/agentfox/agentkit-sandboxd"
+    OverlayImageRepo is the published overlay image: a single static agent at
+    AgentPath, for an embedder to copy into its own image with OverlayCopyLine.
+
+
+VARIABLES
+
+var (
+	// ErrUnsupported: the spec sets a field the provider does not honour.
+	ErrUnsupported = errors.New("sandbox: unsupported spec")
+	// ErrProtocol: the agent speaks a different protocol major version.
+	ErrProtocol = errors.New("sandbox: incompatible agent protocol")
+	// ErrUnavailable: the sandbox met a transport failure, its agent ended,
+	// or its TTL expired.
+	ErrUnavailable = errors.New("sandbox: unavailable")
+	// ErrClosed: the sandbox has been closed.
+	ErrClosed = errors.New("sandbox: closed")
+	// ErrToolMismatch: the agent's tool definitions differ from the host's.
+	ErrToolMismatch = errors.New("sandbox: agent tool definitions differ from the host's")
+	// ErrToolsConfigured: Tools was called again with different options.
+	ErrToolsConfigured = errors.New("sandbox: tools already configured with different options")
+	// ErrUnsafeArchive: a tar entry broke the entry rules.
+	ErrUnsafeArchive = errors.New("sandbox: unsafe archive")
+	// ErrNoAgent: the image has no executable agent at AgentPath. Container
+	// providers return it, wrapped, after their missing-agent diagnostic.
+	ErrNoAgent = errors.New("sandbox: the image has no executable agent at sandbox.AgentPath")
+)
+var ErrNoPublishedImage = errors.New("sandbox: no published image for this agentkit-go version")
+    ErrNoPublishedImage is returned by DefaultImage and OverlayImage when
+    the build's version has no published image: (devel), a pseudo-version,
+    or a version with build metadata.
+
+
+FUNCTIONS
+
+func AgentArgs(spec Spec) []string
+    AgentArgs are agentkit-sandboxd's flags for the effective spec: --ttl,
+    --network, and --workdir when Workdir is set. Providers start the agent with
+    them, so its Landlock ruleset matches the spec's network mode.
+
+func DefaultImage() (string, error)
+    DefaultImage is the base image published for this build's version, at the
+    exact X.Y.Z tag (never latest or X.Y): the Tools digest check needs the host
+    and the agent at the same version.
+
+func ImageTag(version string) (tag string, ok bool)
+    ImageTag is the image tag of a release version: version without its
+    leading v. It accepts only v MAJOR.MINOR.PATCH with no leading zeros and
+    an optional -prerelease of dot-separated identifiers, and refuses (devel),
+    build metadata, Go pseudo-versions and anything else, with ("", false).
+
+func OverlayCopyLine(ref string) string
+    OverlayCopyLine is the single Containerfile line that copies the agent
+    from the overlay image ref into an embedder's own image, at AgentPath.
+    Such an image keeps its own entrypoint, so providers always start the agent
+    with --entrypoint AgentPath.
+
+func OverlayImage() (string, error)
+    OverlayImage is the overlay image published for this build's version,
+    at the exact X.Y.Z tag.
+
+
+TYPES
+
+type AgentInfo struct {
+	// Version is the agent's module version, or (devel).
+	Version       string
+	ProtocolMajor uint32
+	ProtocolMinor uint32
+	// Workdir is the workspace root, symlinks resolved.
+	Workdir string
+	// OutlineBackend is the outline backend for non-Go files: tree-sitter
+	// or none.
+	OutlineBackend string
+	// Git reports whether git resolves on the tools' PATH.
+	Git bool
+	// Landlock is the Landlock ruleset the agent applied to itself, from
+	// Hello. An agent older than protocol 1.2 reports none: ABI 0 and the
+	// note "agent protocol 1.N does not report Landlock".
+	Landlock LandlockInfo
+}
+    AgentInfo is what the agent reports in its Hello.
+
+type Capabilities struct {
+	// Provider is the provider's name.
+	Provider  string
+	Isolation Isolation
+	// Network lists the modes the provider honours.
+	Network   []NetworkMode
+	Resources ResourceCaps
+	// Image and Workdir say whether the provider honours those fields.
+	Image   bool
+	Workdir bool
+	// Notes is a plain statement of what the provider does not do.
+	Notes string
+	// Landlock says the provider starts agentkit-sandboxd in a way that lets
+	// it apply its Landlock ruleset.
+	Landlock bool
+}
+    Capabilities describes a provider before any sandbox exists: what it
+    isolates and which Spec fields it honours.
+
+type Destination interface {
+	// Has unexported methods.
+}
+    Destination is what Export writes to. This package provides TarOut and
+    LocalDir.
+
+type Endpoint struct {
+	Host string
+	Port int
+}
+    Endpoint is one host and port an allowlist reaches.
+
+type GitRepo struct {
+	URL   string // https only
+	Ref   string // a branch or tag; empty means the remote's default branch
+	Depth int    // > 0: shallow clone of that depth; 0: full history
+}
+    GitRepo is a public git repository cloned into the workspace by the
+    provider's init step. It is a Source. A provider with an init step accepts
+    it only as the first Sync and before the first Tools call, and reports
+    a SyncResult of zeros; a provider without one refuses it with an error
+    matching ErrUnsupported. A private repository is cloned on the host and
+    synced as a LocalDir.
+
+type Isolation int
+    Isolation is the kind of boundary a provider puts around the tools.
+
+const (
+	// IsolationNone: the tools run with the embedder's privileges.
+	IsolationNone Isolation = iota
+	// IsolationConfinement: a confined process on the host.
+	IsolationConfinement
+	// IsolationContainer: a container.
+	IsolationContainer
+	// IsolationMicroVM: a micro virtual machine.
+	IsolationMicroVM
+)
+type LandlockInfo struct {
+	// ABI is the ABI of the ruleset applied; 0 means none.
+	ABI int
+	// KernelABI is the ABI the kernel offered; 0 means none or unknown.
+	KernelABI int
+	// TCP reports that TCP bind and connect are denied.
+	TCP bool
+	// Note says why nothing, or only part, was applied.
+	Note string
+	// Writable lists the resolved roots the ruleset grants every right
+	// beneath, then the device files it grants read and write (and, from
+	// ABI 3, truncate), in the order their rules were added.
+	Writable []string
+	// ReadOnly lists the resolved roots the ruleset grants read (and, for
+	// all but /proc, execute) beneath, in the order their rules were added.
+	ReadOnly []string
+}
+    LandlockInfo is what the agent's Landlock confinement applied to its own
+    process, and so to every process a tool starts.
+
+func (l LandlockInfo) Satisfies(mode NetworkMode) bool
+    Satisfies reports whether the ruleset is enough for a Spec with
+    RequireLandlock under network mode mode: an ABI of at least LandlockMinABI
+    and, under NetworkNone, TCP denied.
+
+type LocalDir struct {
+	// Path is the host directory. A relative path resolves against the
+	// working directory at call time, and symlinks in it are resolved once.
+	// On Sync it must be an existing directory; on Export it must be one, or
+	// be missing with an existing parent, and is then created.
+	Path string
+	// Ignore configures the host's ignore engine. The zero value reads the
+	// real environment, global excludes included, exactly as
+	// tools.Options.Ignore does; tools.NoGlobalExcludes() is hermetic. The
+	// agent always uses tools.NoGlobalExcludes().
+	Ignore tools.IgnoreOptions
+	// IncludeIgnored turns ignore rules off on both sides.
+	IncludeIgnored bool
+	// ExcludeGit leaves .git behind on Sync. Export always leaves .git
+	// behind.
+	ExcludeGit bool
+	// Delete removes, on the receiving side, the entries the sending side
+	// does not have, except what either side's rules exclude.
+	Delete bool
+}
+    LocalDir is a host directory: a Source that Sync fills the workspace from,
+    and a Destination that Export writes into. The bytes travel over the rsync
+    protocol, and only what changed moves. Both directions apply the same ignore
+    rules AgentKit's own file tools do, never transfer a symlink whose target
+    leaves the transfer root, and never export .git. Windows refuses LocalDir
+    with ErrUnsupported.
+
+    Trust model: workspace content is untrusted and the agent binary is trusted.
+    On Export the host's safety rests on two things: the agent never sends an
+    escaping symlink, and the host's own rules over the destination keep its
+    ignored files, its .git and its escaping symlinks from being overwritten,
+    written through or deleted.
+
+type Network struct {
+	Mode  NetworkMode
+	Allow []Endpoint
+}
+    Network is a sandbox's network policy. Allow is set only with
+    NetworkAllowlist.
+
+type NetworkMode int
+    NetworkMode is what the sandbox's network may reach.
+
+const (
+	// NetworkNone is no network. It is the zero value, so a Spec that says
+	// nothing asks for no network.
+	NetworkNone NetworkMode = iota
+	// NetworkAllowlist reaches only Network.Allow.
+	NetworkAllowlist
+	// NetworkUnrestricted reaches anything the host can.
+	NetworkUnrestricted
+)
+func (m NetworkMode) String() string
+
+type Provider interface {
+	// Capabilities describes what the provider isolates and honours.
+	Capabilities() Capabilities
+	// Create checks spec with CheckSpec, then creates and attaches to a
+	// sandbox. ctx bounds creation only, not the sandbox's lifetime.
+	Create(ctx context.Context, spec Spec) (Sandbox, error)
+	// Reap removes sandboxes left behind by processes that have gone, and
+	// returns their ids.
+	Reap(ctx context.Context) ([]string, error)
+}
+    Provider creates sandboxes.
+
+type ResourceCaps struct {
+	CPUs        bool
+	MemoryBytes bool
+	PIDs        bool
+	DiskBytes   bool
+}
+    ResourceCaps says which Resources fields a provider can bound.
+
+type Resources struct {
+	CPUs        float64
+	MemoryBytes int64
+	PIDs        int64
+	DiskBytes   int64
+}
+    Resources bounds what a sandbox may use. Zero means no bound.
+
+type Sandbox interface {
+	ID() string
+	// Spec is the effective spec: defaults applied, and Workdir the
+	// workspace root the agent reported.
+	Spec() Spec
+	// Agent is what the agent reported when the sandbox was created.
+	Agent() AgentInfo
+	// Sync puts files into the workspace. A refused or malformed tar entry
+	// ends the sync with ErrUnsafeArchive; entries extracted before it stay
+	// in the workspace. A sync has no ordering guarantee with tool calls
+	// running at the same time.
+	Sync(ctx context.Context, src Source) (SyncResult, error)
+	// Tools configures the agent's tool set and returns one proxy tool for
+	// each tool tools.All returns, in the same order. The options are fixed
+	// by the first call: a later call with different options fails with
+	// ErrToolsConfigured. Tools fails with ErrToolMismatch when the agent's
+	// tool definitions differ from the host's.
+	Tools(ctx context.Context, opts ToolOptions) ([]core.Tool, error)
+	// Export writes a workspace subtree to dst. For a TarOut, every entry is
+	// checked with the same rules as Sync; the first refused entry stops it
+	// with ErrUnsafeArchive. For a LocalDir, path is a workspace directory,
+	// whose contents map onto dst, or a regular file, written as
+	// dst/<base name>. Workspace content is untrusted and the agent binary
+	// trusted: the agent never sends an escaping symlink or .git, and the
+	// host's own rules over dst keep dst's ignored files, its .git and its
+	// escaping symlinks from being overwritten, written through or deleted.
+	// An export has no ordering guarantee with tool calls running at the same
+	// time.
+	Export(ctx context.Context, path string, dst Destination) error
+	// Close destroys the sandbox. It is idempotent: a later Close returns
+	// nil.
+	Close(ctx context.Context) error
+}
+    Sandbox is one live sandbox: one workspace and one agent. It is live, then
+    unavailable (after a transport failure, when the agent ends, or at the TTL),
+    then closed. Once unavailable or closed, Tools, Sync and Export return
+    ErrUnavailable or ErrClosed without contacting the agent, and every proxy
+    tool returns sandbox_unavailable.
+
+type Source interface {
+	// Has unexported methods.
+}
+    Source is what Sync reads from. This package provides Tar, LocalDir
+    and GitRepo; a provider without an init step refuses a GitRepo with
+    ErrUnsupported.
+
+type Spec struct {
+	// Image is the container or VM image. Empty means the provider's default.
+	Image string
+	// Workdir is the workspace path inside the sandbox. Empty means
+	// /workspace for a provider that honours it.
+	Workdir string
+	// Env is the tools' environment, beyond what the provider sets itself.
+	Env       map[string]string
+	Resources Resources
+	Network   Network
+	// TTL bounds the sandbox's lifetime. Zero means one hour.
+	TTL time.Duration
+	// Labels tag the sandbox for the provider. The key agentkit.sandbox is
+	// reserved.
+	Labels map[string]string
+	// Provider holds provider-specific options. Each provider refuses a key
+	// it does not define.
+	Provider map[string]any
+	// RequireLandlock makes Create fail unless the sandbox's agent confines
+	// itself with Landlock: CheckSpec refuses it when Capabilities.Landlock
+	// is false, and after Hello the agent's report must satisfy the network
+	// mode (LandlockInfo.Satisfies). Off by default.
+	RequireLandlock bool
+}
+    Spec describes the sandbox an embedder asks a Provider for. A provider
+    refuses, through CheckSpec, every field its Capabilities do not cover.
+
+func CheckSpec(caps Capabilities, spec Spec) (Spec, error)
+    CheckSpec checks spec against caps and returns the effective spec:
+    a TTL of 0 becomes one hour, and an empty Workdir becomes /workspace when
+    caps honours Workdir. It refuses values no provider accepts, and refuses
+    with a *SpecError (matching ErrUnsupported) every field caps does not cover.
+    Every error returns the zero Spec. Every provider calls it first in Create.
+
+type SpecError struct {
+	Provider string
+	// Field is the Spec field, such as Network.Mode or Resources.CPUs.
+	Field  string
+	Reason string
+	// Has unexported fields.
+}
+    SpecError is CheckSpec's refusal of a Spec field the provider's Capabilities
+    do not cover. It matches ErrUnsupported.
+
+func (e *SpecError) Error() string
+
+func (e *SpecError) Is(target error) bool
+    Is reports whether target is ErrUnsupported.
+
+type SyncResult struct {
+	Files   int
+	Bytes   int64
+	Deleted int
+	Sent    int64
+}
+    SyncResult reports what a Sync did.
+
+    For a LocalDir, Files counts the regular files the transfer created or
+    changed in the workspace and Bytes their content bytes, from the agent
+    comparing size and modification time before and after (a tool writing in
+    the same window may be counted); Deleted counts the entries removed under
+    Delete; Sent is the rsync data bytes the host wrote to the stream.
+
+    For a Tar, Files and Bytes are the regular files written and their content
+    bytes, Deleted is 0 even when Replace removed entries, and Sent is the tar
+    bytes read from R and sent.
+
+type Tar struct {
+	R       io.Reader
+	Path    string
+	Replace bool
+}
+    Tar is a tar stream to extract into the workspace. Path is the
+    workspace-relative, slash-separated directory to extract into; "" and
+    "." mean the workspace root. With Replace, the existing contents of Path
+    are removed first and Path itself is kept, or created. Entries are moved
+    verbatim: no ignore filtering.
+
+type TarOut struct {
+	W io.Writer
+}
+    TarOut receives a tar stream of an exported subtree, with entry names
+    relative to the exported path.
+
+type ToolOptions struct {
+	Symbols tools.SymbolOptions
+	// SpillDir is an absolute path inside the sandbox. Empty means
+	// agentkit-spill under the TMPDIR of the tools' environment.
+	SpillDir     string
+	DisableSpill bool
+}
+    ToolOptions configures the agent's tool set; see tools.Options.
+

@@ -1,0 +1,112 @@
+package outline // import "github.com/agent-fox-dev/agentkit-go/outline"
+
+
+CONSTANTS
+
+const (
+	LangGo         = "Go"
+	LangPython     = "Python"
+	LangJavaScript = "JavaScript"
+	LangTypeScript = "TypeScript"
+	LangRust       = "Rust"
+	LangJava       = "Java"
+	LangKotlin     = "Kotlin"
+	LangCSharp     = "C#"
+	LangRuby       = "Ruby"
+	LangC          = "C"
+	LangCPP        = "C++"
+	LangPHP        = "PHP"
+	LangScala      = "Scala"
+	LangLua        = "Lua"
+	LangShell      = "Shell"
+)
+    Language names returned by langForExt.
+
+
+FUNCTIONS
+
+func CommentAndStringSpans(ctx context.Context, path string, src []byte) (spans [][2]int, ok bool)
+    CommentAndStringSpans returns the byte ranges [start, end) of the comments
+    and string literals in src, in order, as the language's tree-sitter grammar
+    parses them. ok is false when the language has no grammar or ctx ended.
+
+func LangFor(path string, src []byte) string
+    LangFor returns the language of the file at path, whose content is src: the
+    extension table's answer, except that a `.h` header containing C++ is C++.
+    src may be nil, in which case the extension alone decides.
+
+func LangForExt(ext string) string
+    LangForExt returns the language name for a file extension (with the leading
+    dot, in any case), or "" if the extension is not in the table. It is the
+    exported form of the table's lookup, so a package that names languages can
+    use the table instead of keeping a copy.
+
+
+TYPES
+
+type Backend string
+    Backend names the mechanism that produced a File's declarations.
+
+const (
+	BackendGoAST      Backend = "go/ast"
+	BackendTreeSitter Backend = "tree-sitter"
+	BackendNone       Backend = "none"
+)
+type Decl struct {
+	Kind      Kind
+	Name      string
+	Container string
+	Signature string
+	Exported  bool
+	StartLine int // 1-based, inclusive
+	EndLine   int // 1-based, inclusive; 0 when unknown
+}
+    Decl is one declaration in a source file.
+
+type File struct {
+	Path    string  // slash-separated, relative to Options.Root or absolute
+	Lang    string  // language name from the extension table
+	Backend Backend // which backend produced the declarations
+	Decls   []Decl  // sorted by StartLine, ties broken by Name; never nil
+}
+    File is the outline of one source file.
+
+func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, error)
+    Outline returns the outline of a single file: Go files from go/ast, the
+    other languages in the extension table from their tree-sitter grammar (when
+    built with cgo), anything else as none. An unreadable file is an error;
+    a cancelled context returns ctx.Err().
+
+func OutlineMany(ctx context.Context, srcs []Source, opts Options) ([]File, error)
+    OutlineMany outlines many files, returning one File per input in order.
+    A file that cannot be read is returned as none; a cancelled context returns
+    ctx.Err().
+
+type Kind string
+    Kind is the closed set of declaration kinds.
+
+const (
+	KindFunc      Kind = "func"
+	KindMethod    Kind = "method"
+	KindType      Kind = "type"
+	KindClass     Kind = "class"
+	KindInterface Kind = "interface"
+	KindEnum      Kind = "enum"
+	KindTrait     Kind = "trait"
+	KindConst     Kind = "const"
+	KindVar       Kind = "var"
+	KindModule    Kind = "module"
+	KindMacro     Kind = "macro"
+)
+type Options struct {
+	Root         string // when non-empty, File.Path is relative to this
+	MaxFileBytes int64  // 0 means 1 MiB
+}
+    Options configures outlining.
+
+type Source struct {
+	Abs string // absolute path
+	Src []byte // optional; when nil the file is read from disk
+}
+    Source identifies a file to outline.
+

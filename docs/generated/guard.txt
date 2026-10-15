@@ -1,0 +1,126 @@
+package guard // import "github.com/agent-fox-dev/agentkit-go/guard"
+
+Package guard is OQ-8's resolution: the `execute` boundary in non-interactive
+deployments.
+
+REQ-SEC-03 replaced the command allowlist with a per-call interceptor on the
+grounds that a static allowlist is both trivially escaped and too narrow to
+run a build. That reasoning assumes an embedder that can answer a permission
+question. A daemon triaging issues overnight cannot, and "allow" by default is
+strictly worse than the allowlist it replaced. So, per OQ-8's recommendation (b)
+plus (a):
+
+  - agentkit.New refuses LOUDLY an agent whose tool set reaches a shell tool
+    with no Guard configured (core.ErrUnguardedExecute), and
+  - Check is the pure decision — may this argv run? — and Restricted ships
+    as an importable, REPLACEABLE interceptor over it, kept out of the SDK's
+    enforcement path so it can be swapped rather than only narrowed.
+
+Restricted is a floor for unattended safety, not a sandbox: an allowlist
+wide enough to run a build is escapable through the allowed programs' own
+configuration and subprocess surfaces. It remains that floor whatever runs the
+tools.
+
+A sandbox is the boundary the guard never claimed to be. AllowAll is a
+reasonable choice only when every shell tool the agent can reach is a
+proxy from a sandbox whose provider reports sandbox.IsolationContainer or
+sandbox.IsolationMicroVM (sandbox/podman), under sandbox.NetworkNone (or with
+egress the embedder accepts), with Spec.Resources set, and with the files
+exported from it treated as untrusted. It is never reasonable with the local
+provider (sandbox/local), which isolates nothing, or with any local shell tool
+in the set. agentkit.New still requires a Guard either way.
+
+VARIABLES
+
+var ShellToolNames = []string{"execute", "run_command"}
+    ShellToolNames are the tools the guard treats as a shell. A caller-supplied
+    tool of the same name counts: the name is what the model calls, and a custom
+    `execute` is no less a shell for being custom.
+
+
+FUNCTIONS
+
+func AllowAll(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision
+    AllowAll is the explicit opt-out from the guard: an interceptor that never
+    blocks. Passing it is the affirmative act OQ-8 asks for — the embedder has
+    said, in code, that this agent runs an unrestricted shell.
+
+    It is reasonable only when every shell tool the agent can reach is
+    a proxy from a sandbox whose provider reports IsolationContainer or
+    IsolationMicroVM, under NetworkNone (or egress the embedder accepts),
+    with Resources set and exported files treated as untrusted; never with the
+    local provider or with a local shell tool in the set.
+
+func IsShellTool(name string) bool
+    IsShellTool reports whether name is one of ShellToolNames.
+
+func Restricted(o Options) core.BeforeToolCall
+    Restricted is the reference interceptor for headless embedders: an allowlist
+    of programs plus shell-operator rejection.
+
+    It is a FLOOR, not a sandbox. REQ-SEC-03's argument still holds — an
+    allowlist wide enough to run a build is escapable through the allowed
+    programs' own configuration and subprocess surfaces — and this policy does
+    nothing about that. What it does is make the unattended default "no" instead
+    of "yes", which is the difference OQ-8 exists to close. Embedders with real
+    context should replace it, not extend it.
+
+    What it does check, it checks against what will actually run: the program
+    is matched as spelled, not by basename, and an assignment prefix that
+    would change which binary a listed name resolves to, or load code into it,
+    is refused.
+
+
+TYPES
+
+type Decision struct {
+	Block     bool
+	Reason    string
+	Terminate bool
+}
+    Decision is Check's verdict on one command.
+
+func Check(argv []string, o Options) Decision
+    Check decides whether the command argv may run under o: whether argv[0] is
+    on o.AllowedPrograms. It is a pure function — no environment, no filesystem,
+    no PATH lookup — so a host can ask it about a command before running it as
+    well as through Restricted.
+
+    A program with a path separator matches only a listed path, compared after
+    cleaning: `./go` names a file in the workspace, not the go on PATH. A bare
+    name matches a listed bare name only. A block carries o.TerminateOnBlock.
+
+type Options struct {
+	// AllowedPrograms are the programs (argv[0], or the first word of an
+	// `execute` command after any assignments) that may run. A bare name
+	// ("go") admits only that bare name, resolved through PATH. A path
+	// ("/usr/bin/git") admits that exact path only — not a bare git found
+	// through PATH, which may be another binary. A
+	// program word containing a path separator is refused unless that path
+	// itself is listed: `./go` names a file in the workspace, not the go on
+	// PATH. Empty means every shell call is blocked, which is the safe
+	// default for a policy whose only purpose is to say no.
+	AllowedPrograms []string
+	// AllowShellOperators permits pipes, `;`, `&&`, `||`, redirection,
+	// subshells, command substitution and variable expansion in `execute`
+	// commands. Off by default. The grammar this filter understands is POSIX
+	// sh / bash quoting — single quotes literal, double quotes expanding —
+	// and it is declared here because REQ-SEC-04 requires a filter to say
+	// which grammar it filters.
+	AllowShellOperators bool
+	// AllowEnvPrefixes permits `NAME=value` assignments in front of the
+	// program in `execute` commands (`GOFLAGS=-mod=mod go build`). Off by
+	// default: an assignment configures the program it precedes, and an
+	// allowlist of names says nothing about how those programs are
+	// configured. Even when on, a name that changes which binary runs or
+	// what is loaded into it — PATH, LD_*, DYLD_*, BASH_ENV, interpreter
+	// injection variables, see envDenied — is refused.
+	AllowEnvPrefixes bool
+	// BlockedTools are refused by name, shell or not.
+	BlockedTools []string
+	// TerminateOnBlock casts the REQ-TOOL-13.2 vote so that a refusal ends
+	// the run instead of looping the model into retrying.
+	TerminateOnBlock bool
+}
+    Options configures Restricted.
+

@@ -277,7 +277,7 @@ The identifiers an embedder such as agent-fox builds on.
 | `make lint` | `golangci-lint` in every module; skipped when not installed |
 | `make fmt` | `gofmt -l -w .` |
 | `make tidy` | `go mod tidy` in every module |
-| `make doc` | `go doc -all` for every public package of the root, `codesearch`, `sandbox` and `sandbox/gatewayd` modules, written as text to `build/docs/` (git-ignored) |
+| `make doc` | `go doc -all` for every public package of the root, `codesearch`, `sandbox` and `sandbox/gatewayd` modules, written as text to `docs/generated/` (committed; an orientation aid for agents) |
 | `make proto` | Regenerate the sandbox agent and gateway protocols' Go code and their recorded hashes; needs `protoc`, installs the pinned plugins into `build/bin` |
 | `make build-containers` | Build the sandbox base and overlay images (`containers/*/Containerfile`) with podman, tagged with the version and `latest`; not part of `check` |
 | `make sandbox-podman-test` | Build the sandbox images and run the podman provider's integration tests against them; not part of `check` |

@@ -1,0 +1,122 @@
+package codesearch // import "github.com/agent-fox-dev/agentkit-go/codesearch"
+
+
+VARIABLES
+
+var ErrUnsupported = errors.New("codesearch: unsupported platform")
+    ErrUnsupported is returned by New on platforms where zoekt cannot build or
+    run (currently windows/amd64). An embedder should fall back to Options.Index
+    == nil when errors.Is(err, ErrUnsupported) is true.
+
+
+FUNCTIONS
+
+func New(ws *tools.Workspace, opts Options) (tools.Index, error)
+    New creates a codesearch index for the given workspace. It returns a
+    tools.Index without starting a goroutine, running a process, walking the
+    workspace or touching the disk. It returns an error if ws is nil.
+
+    On error the result is a nil interface, never a nil *Index inside one,
+    so an embedder that stores it in Options.Index without checking err gets no
+    index instead of one whose methods run on a nil receiver. An embedder that
+    wants the build counters and statistics asserts the result to *Index.
+
+
+TYPES
+
+type BuildStatsResult struct {
+	BinarySkipped    int
+	OversizedSkipped int
+	// TooManyTrigramsSkipped counts files zoekt would store as "not
+	// indexed" for having more distinct trigrams than it indexes per file
+	// (minified bundles, lock files, source maps).
+	TooManyTrigramsSkipped int
+	// TooSmallSkipped counts files under three bytes, which hold no trigram.
+	TooSmallSkipped int
+	FilesIndexed    int
+}
+    BuildStatsResult holds statistics from a build. It is declared without a
+    build constraint: the Windows stub returns the zero value.
+
+type Index struct {
+	// Has unexported fields.
+}
+    Index is the codesearch index. It implements tools.Index.
+
+func (idx *Index) Build(ctx context.Context) error
+    Build triggers the index build. It walks the workspace, collects files,
+    outlines them, and builds a zoekt index. Three bounds apply: MaxFiles,
+    MaxBytes and MaxBuildTime. When one stops the build, the index keeps what it
+    has and marks itself partial. A partial index is not retried by later calls.
+    A cancelled call context discards the partial build and leaves the next call
+    free to build again.
+
+    A call arriving while another build is running waits for it, abandonably:
+    when ctx ends first it returns an "aborted" error without waiting for the
+    build to finish. The lock is not held during the build.
+
+func (idx *Index) BuildCount() int
+    BuildCount returns the number of times the index has been built.
+
+func (idx *Index) BuildStats() BuildStatsResult
+    BuildStats returns statistics from the last build.
+
+func (idx *Index) Close() error
+    Close releases resources. It waits for a build and in-flight queries to
+    finish, then releases the zoekt searcher and deletes the run directory.
+    It is idempotent: every call after the first returns nil immediately.
+
+func (idx *Index) IndexedFiles() map[string]bool
+    IndexedFiles returns the set of slash-separated workspace-relative paths
+    that are in the index.
+
+func (idx *Index) Invalidate(rel string)
+    Invalidate implements tools.Index. It never blocks on a build or query in
+    progress for longer than it takes to set a flag, never returns an error and
+    never panics on a closed index.
+
+func (idx *Index) OverlayBuildCount() int
+    OverlayBuildCount returns the number of times the overlay shard has been
+    built.
+
+func (idx *Index) RevalCount() int
+    RevalCount returns the number of revalidation walks performed.
+
+func (idx *Index) RunDir() string
+    RunDir returns the run directory path.
+
+func (idx *Index) Symbols(ctx context.Context, q tools.SymbolQuery) (tools.SymbolAnswer, bool, error)
+    Symbols implements tools.Index. It answers from the per-file
+    outline.File data collected by the build, using the matching rules of
+    02_symbol_navigation_tools Requirement 2 (smart-case prefix, exact,
+    qualified names, kind, path). It returns ok=true only when the index has
+    been built by an earlier code_search, is not partial and not closed, and the
+    matches number at most 1000. It never starts a build.
+
+func (idx *Index) Tools() []core.Tool
+    Tools implements tools.Index. It returns the code_search tool.
+
+type Options struct {
+	// Ignore is the ignore configuration, typically the same value the
+	// embedder passes to tools.Options.
+	Ignore tools.IgnoreOptions
+
+	// MaxFiles is the file-count bound for a build. Zero or negative means
+	// 100 000.
+	MaxFiles int
+
+	// MaxBytes is the byte-count bound for indexed content. Zero or negative
+	// means 1 GiB.
+	MaxBytes int64
+
+	// MaxBuildTime is the wall-time bound for a build. Zero or negative means
+	// 60 s. When it fires, the files already walked are still added, without
+	// symbols, for a grace window of a quarter of it, so a build is never
+	// left empty by a slow walk; it can therefore run up to 1.25 times this.
+	MaxBuildTime time.Duration
+
+	// TempDir is the directory for shard files. Empty means os.TempDir().
+	TempDir string
+}
+    Options configures the codesearch index.
+

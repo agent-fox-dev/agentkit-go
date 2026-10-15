@@ -1,0 +1,76 @@
+package podman // import "github.com/agent-fox-dev/agentkit-go/sandbox/podman"
+
+Package podman is AgentKit's first sandbox provider that isolates. Each
+sandbox's agentkit-sandboxd runs as the only process of a hardened, ephemeral
+podman or docker container that holds one workspace volume: no host mount, a
+read-only root, no capabilities, no new privileges, an explicit environment and,
+by default, no network. The provider drives the engine's command line (never
+the Docker or Podman Go API clients), and the argument lists it runs are pure
+functions, Args and InitArgs, that can be checked offline.
+
+A sandbox's lifetime is bounded twice: attach's host-side timer destroys it at
+its TTL, and the agent's own --ttl ends the container, which --rm removes, even
+when the host is gone. The volume of a host that died carries an expiry label,
+and Reap removes it once expired.
+
+FUNCTIONS
+
+func Args(o Options, id string, created time.Time, spec sandbox.Spec) []string
+    Args is the argument list after the engine binary that runs the sandbox's
+    agent: `run --rm -i --init`, the name, the reserved and embedder labels,
+    `--log-driver none` (the agent's stdout is the protocol stream),
+    `--network none` unless the spec is NetworkUnrestricted, `--cap-drop ALL`,
+    `--security-opt no-new-privileges`, `--read-only`, a tmpfs at /tmp,
+    the workspace volume at Workdir, the resource flags, `--runtime krun` and
+    `--userns`, `--unsetenv-all` on podman, the environment, and `--entrypoint
+    sandbox.AgentPath` followed by the image and sandbox.AgentArgs. spec is
+    the effective spec, with Image set. An empty Engine counts as podman.
+    It is pure, and no other flag is ever emitted: no host mount, no privilege,
+    no seccomp override.
+
+func InitArgs(o Options, id string, created time.Time, spec sandbox.Spec, repo sandbox.GitRepo) []string
+    InitArgs is the argument list after the engine binary for the init
+    step that clones repo into the workspace volume: `run --rm --init`,
+    the init container's name, the same labels, hardening, tmpfs, volume,
+    resource, runtime and userns flags as Args, `--unsetenv-all` on podman, an
+    environment of GIT_TERMINAL_PROMPT=0 and the HOME, LANG and PATH defaults,
+    and `--entrypoint git` followed by the image and gitclone.Args. It runs
+    on the engine's default network, never the sandbox's, and has no -i and no
+    Spec.Env value. spec is the effective spec, with Image set. It is pure.
+
+func New(o Options) (sandbox.Provider, error)
+    New returns the provider. It resolves Options.Binary through EngineEnv's
+    PATH, refuses unsupported options, and runs no engine command other than one
+    `<Binary> --version`, and that only when Options.Engine is empty.
+
+
+TYPES
+
+type Engine string
+    Engine is the flavour of container command line the provider drives.
+
+const (
+	// EnginePodman is podman, including a docker shim that runs podman.
+	EnginePodman Engine = "podman"
+	// EngineDocker is docker.
+	EngineDocker Engine = "docker"
+)
+type Options struct {
+	// Binary is the engine command; empty means "podman". A bare name is
+	// resolved through EngineEnv's PATH.
+	Binary string
+	// Engine is the engine's flavour; empty means detected once from
+	// `<Binary> --version`.
+	Engine Engine
+	// Runtime is "" (the engine's default OCI runtime) or "krun" (a libkrun
+	// micro-VM; podman only).
+	Runtime string
+	// UserNS is passed as --userns=<UserNS> when set.
+	UserNS string
+	// EngineEnv is the environment of every engine command; nil means
+	// os.Environ(). Nothing in it reaches a container: only explicit
+	// --env NAME=value does.
+	EngineEnv []string
+}
+    Options configures the provider.
+

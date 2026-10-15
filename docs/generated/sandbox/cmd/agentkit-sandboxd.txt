@@ -1,0 +1,11 @@
+Command agentkit-sandboxd is the AgentKit agent inside a sandbox. It serves
+the agentkit.sandbox.v1 Agent service as one HTTP/2 connection on its stdin and
+stdout, opens no listening socket, and runs the built-in tools against --workdir
+with its own environment, verbatim. On Linux it first confines itself, and so
+every process a tool starts, with a Landlock ruleset (sandbox/internal/confine);
+--network, --landlock-ro and --landlock-rw shape it, and no flag turns it off.
+
+It exits 0 when the host closes the connection, 2 on a usage error (including
+a refused --workdir, --network, --landlock-ro or --landlock-rw value), and 1
+on a startup failure, a ruleset that cannot be applied, or when --ttl expires,
+with one line on stderr.

@@ -1,0 +1,14 @@
+package local // import "github.com/agent-fox-dev/agentkit-go/sandbox/local"
+
+Package local is a sandbox provider with no isolation, for tests and
+development. It runs the agent service in the embedder's own process, with
+the embedder's privileges, on the host filesystem and network, over the same
+stdio connection adapter agentkit-sandboxd uses, so the production protocol and
+transport are exercised. It is not a sandbox.
+
+FUNCTIONS
+
+func Unisolated() sandbox.Provider
+    Unisolated returns the local provider. Its name says what it is: tools run
+    in the embedder's process with its privileges.
+

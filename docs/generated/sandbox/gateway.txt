@@ -1,0 +1,135 @@
+package gateway // import "github.com/agent-fox-dev/agentkit-go/sandbox/gateway"
+
+Package gateway is the client of a remote AgentKit sandbox gateway: Dial
+connects to a gateway (the agentkit-gateway command, or a gatewayd.Server) and
+returns a sandbox.Provider whose sandboxes run on the gateway's host. To the
+embedder and to the model such a sandbox behaves like one created locally:
+the same proxy tools, the same state machine and the same errors.
+
+The gateway holds the backend provider and its credentials; the embedder holds
+only the gateway's URL and bearer token, and the sandbox neither.
+
+CONSTANTS
+
+const (
+	ProtocolMajor = 1
+	ProtocolMinor = 0
+)
+    The gateway protocol version (sandbox/internal/sandboxpb/gateway.proto),
+    separate from the Agent protocol's sandbox.ProtocolMajor and ProtocolMinor.
+    Fields are added, never renumbered, and any addition bumps ProtocolMinor.
+    A client refuses a gateway with a different ProtocolMajor and accepts any
+    minor.
+
+const SandboxIDKey = "agentkit-sandbox-id"
+    SandboxIDKey is the metadata key that names the sandbox on every Agent RPC
+    sent to a gateway. Gateway RPCs carry the id in their messages instead.
+
+
+VARIABLES
+
+var (
+	// ErrUnauthenticated: the gateway refused the token.
+	ErrUnauthenticated = errors.New("gateway: unauthenticated")
+	// ErrCapacity: the gateway holds as many sandboxes as it allows.
+	ErrCapacity = errors.New("gateway: at capacity")
+	// ErrClosed: the Provider has been closed.
+	ErrClosed = errors.New("gateway: provider closed")
+)
+
+TYPES
+
+type GatewayInfo struct {
+	// URL is the URL Dial was given.
+	URL string
+	// Version is the gateway's build version.
+	Version string
+	// Backend is the backend provider's name.
+	Backend string
+	// ProtocolMajor and ProtocolMinor are the gateway's protocol version.
+	ProtocolMajor uint32
+	ProtocolMinor uint32
+	// MaxTTL is the longest TTL the gateway accepts.
+	MaxTTL time.Duration
+	// MaxSandboxes is the most sandboxes the gateway holds at once.
+	MaxSandboxes int
+}
+    GatewayInfo is what the gateway reported at Dial.
+
+type Info struct {
+	ID      string
+	Labels  map[string]string
+	Created time.Time
+	Expires time.Time
+}
+    Info is one sandbox the caller holds on the gateway.
+
+type Options struct {
+	// Token is the gateway's bearer token: non-empty printable ASCII without
+	// whitespace. It is sent on every RPC, and for https only over TLS.
+	Token string
+	// TLSConfig is cloned for an https URL; nil means the system roots with
+	// a minimum of TLS 1.2. An empty ServerName becomes the URL's host.
+	TLSConfig *tls.Config
+	// Dialer, when set, replaces TCP; it is given host:port. The URL rules
+	// still apply.
+	Dialer func(context.Context, string) (net.Conn, error)
+}
+    Options configures Dial.
+
+type Provider struct {
+	// Has unexported fields.
+}
+    Provider is a sandbox.Provider whose sandboxes live on a gateway. It holds
+    one connection to the gateway, shared by every sandbox it creates.
+
+func Dial(ctx context.Context, rawURL string, o Options) (*Provider, error)
+    Dial connects to the gateway at rawURL and returns a Provider for it. The
+    URL is https://host[:port] (TLS, port 443 by default), or http://host[:port]
+    (plaintext, port 80 by default) only when the host is localhost or a
+    loopback IP literal; it carries no user information, query, fragment or path
+    other than "/". The URL and the token are checked before any connection is
+    attempted.
+
+    Dial calls the gateway's Capabilities under ctx and caches the answer.
+    A refused token returns an error matching ErrUnauthenticated, a gateway
+    of another protocol major one wrapping sandbox.ErrProtocol, and any other
+    failure an error naming the URL.
+
+func (p *Provider) Capabilities() sandbox.Capabilities
+    Capabilities is the answer cached at Dial: named "gateway/<backend>",
+    the network modes within the gateway's ceiling, the backend's isolation,
+    resources, image, workdir and Landlock, and the backend's notes followed by
+    a sentence naming the gateway's host and limits.
+
+func (p *Provider) Close() error
+    Close closes every sandbox created through the provider that is still open,
+    which destroys each on the gateway, and then the connection. It returns the
+    joined errors. Later calls return nil, and Create, Reap, List and Destroy
+    return ErrClosed without an RPC.
+
+func (p *Provider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandbox, error)
+    Create creates a sandbox on the gateway. The spec is checked first on
+    the client, with no RPC: CheckSpec against the cached capabilities,
+    the gateway's MaxTTL, and that Spec.Provider encodes as JSON; an empty Image
+    becomes the client's sandbox.DefaultImage when the backend honours Image.
+    The gateway checks everything again. A refusal is returned as the matching
+    sandbox or gateway error; a sandbox the gateway created but the client could
+    not attach to is destroyed.
+
+func (p *Provider) Destroy(ctx context.Context, id string) error
+    Destroy destroys the caller's sandbox id on the gateway. An unknown id
+    returns nil, so Destroy is idempotent.
+
+func (p *Provider) Gateway() GatewayInfo
+    Gateway is what the gateway reported at Dial.
+
+func (p *Provider) List(ctx context.Context) ([]Info, error)
+    List returns the caller's sandboxes on the gateway, sorted by creation time
+    and then id.
+
+func (p *Provider) Reap(ctx context.Context) ([]string, error)
+    Reap runs the backend's Reap on the gateway and returns the removed ids,
+    sorted, with an error carrying the gateway's error text when a removal
+    failed.
+

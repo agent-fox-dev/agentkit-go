@@ -1,0 +1,249 @@
+package schema // import "github.com/agent-fox-dev/agentkit-go/schema"
+
+Package schema is the structured, transformable tool-schema value type of
+REQ-TOOL-02 / REQ-GO-07. It contains no runtime reflection and no generated
+code; internal/policy asserts both.
+
+VARIABLES
+
+var ErrArgumentValidation = errors.New("agentkit: tool arguments failed validation")
+var ErrInvalidSchema = errors.New("agentkit: schema cannot be converted")
+
+FUNCTIONS
+
+func DeleteOptionalNulls(s *Schema, in map[string]any) map[string]any
+    DeleteOptionalNulls is REQ-TOOL-11 step 2. Constrained sampling forces the
+    model to emit every declared property, so optional fields arrive as explicit
+    nulls; treating them as present is a validation failure on well-formed
+    output. Returns a copy.
+
+func StrictSubsetOK(s *Schema) bool
+    StrictSubsetOK is the pre-send probe REQ-TOOL-03 requires.
+
+func Validate(s *Schema, v any) error
+    Validate is REQ-TOOL-11 step 4. It reports ALL issues, not the first, so
+    one round trip fixes the whole call. v is a value as encoding/json decodes
+    it (an object is a map[string]any); numbers may be json.Number or any Go
+    number.
+
+
+TYPES
+
+type AdditionalProperties struct {
+	Allowed bool
+	Schema  *Schema // nil => a bare boolean
+}
+
+type Coercion struct {
+	Path string
+	From Type
+	To   Type
+}
+
+func Coerce(s *Schema, in map[string]any) (map[string]any, []Coercion)
+    Coerce is REQ-TOOL-11 step 3: string->number, string->bool, number->string,
+    against the declared schema only. Never guesses without a declared type.
+    A string becomes a number only when it is a JSON number literal ("NaN",
+    "+5", ".5", "5." and "1_0" stay strings for Validate to refuse); a number
+    coerced to integer is an int64, to number a float64.
+
+type Extra []Keyword
+    Extra is a schema's passthrough keywords, in authored order.
+
+func (e Extra) Get(key string) (any, bool)
+    Get returns the value of key, decoded, and whether it is present.
+
+type Field struct {
+	Name     string
+	Schema   *Schema
+	Required bool
+}
+    Field is one entry of an Object(...) call.
+
+func Opt(name string, s *Schema) Field
+
+func Prop(name string, s *Schema) Field
+
+type Issue struct {
+	Path    string
+	Message string
+}
+
+type Keyword struct {
+	Key   string
+	Value json.RawMessage
+}
+    Keyword is one passthrough keyword: its name and its value as JSON.
+
+type Schema struct {
+	Type        Type
+	Description string
+	Title       string
+
+	Properties    map[string]*Schema
+	PropertyOrder []string
+	Required      []string
+	// AdditionalProperties is nil for absent; non-nil distinguishes
+	// false / true / a subschema.
+	AdditionalProperties *AdditionalProperties
+
+	Items *Schema
+
+	// Enum values are verbatim bytes in declaration order.
+	Enum []json.RawMessage
+	// Const + HasConst distinguish `const: null` from an absent const. This is
+	// the case reflection cannot express, and it is REQ-TOOL-02's stated
+	// reason for rejecting reflection.
+	Const    json.RawMessage
+	HasConst bool
+
+	// Nullable on a concrete type marshals as a type array, e.g.
+	// "type":["string","null"]. JSON Schema has no `nullable` keyword (that is
+	// OpenAPI 3.0) and the PRD does not pin this; it is pinned by a golden.
+	Nullable bool
+
+	AnyOf []*Schema
+	OneOf []*Schema
+	AllOf []*Schema
+
+	Minimum          *float64
+	Maximum          *float64
+	ExclusiveMinimum *float64
+	ExclusiveMaximum *float64
+	MultipleOf       *float64
+
+	MinLength *int
+	MaxLength *int
+	Pattern   string
+	Format    string
+
+	MinItems    *int
+	MaxItems    *int
+	UniqueItems *bool
+
+	// Extra carries passthrough keywords in authored order — the other case
+	// reflection cannot express. It is also how a forbidden keyword such as
+	// $ref sneaks past a strict rewrite that only inspects modelled fields,
+	// which is why StrictSubset scans it.
+	Extra Extra
+}
+    Schema is a JSON Schema value AgentKit can rewrite, not a blob it can only
+    forward. PropertyOrder is authoritative for emission order: a bare map
+    cannot carry it because Go marshals maps with sorted keys unconditionally
+    (REQ-PROV-16.5), and property order is model-visible.
+
+func AnyOf(alts ...*Schema) *Schema
+
+func Array(items *Schema, desc ...string) *Schema
+
+func Bool(desc ...string) *Schema
+
+func Const(v any) *Schema
+
+func ConstNull() *Schema
+    ConstNull is the case a bool cannot express.
+
+func Enum(desc string, values ...string) *Schema
+
+func Int(desc ...string) *Schema
+
+func Number(desc ...string) *Schema
+
+func Object(fields ...Field) *Schema
+
+func OneOf(alts ...*Schema) *Schema
+
+func Parse(data []byte) (*Schema, error)
+    Parse decodes a JSON Schema document. It reads the document token by token
+    with encoding/json/jsontext, so the order the author declared properties in
+    becomes PropertyOrder, and a keyword Schema does not model is kept in Extra,
+    in their authored order. Malformed JSON, trailing data, a duplicate key,
+    or a modelled keyword holding the wrong kind of value is an error and no
+    schema.
+
+func StrictSubset(s *Schema) (*Schema, error)
+    StrictSubset rewrites s into the target API's strict subset, on a Clone,
+    so a probe never mutates the tool's shared schema.
+
+func String(desc ...string) *Schema
+    desc is variadic so both String() and String("...") read well; the §7
+    sketches use both spellings. Only the first element is used.
+
+func (s *Schema) Clone() *Schema
+    Clone is a full deep copy. It is mandatory rather than convenient: the
+    strict rewrite, per-provider dialect translation and the REQ-CACHE-06 schema
+    cache all operate on a copy, and a Tool's schema is shared across turns and
+    across agents.
+
+func (s *Schema) Closed() *Schema
+
+func (s *Schema) Describe(d string) *Schema
+
+func (s *Schema) IsRequired(name string) bool
+
+func (s *Schema) MarshalJSON() ([]byte, error)
+    MarshalJSON emits a fixed keyword order with `properties` written in
+    PropertyList order, then Extra in authored order. Pinned by a golden.
+
+func (s *Schema) Max(v float64) *Schema
+
+func (s *Schema) Min(v float64) *Schema
+
+func (s *Schema) MinItemsN(n int) *Schema
+
+func (s *Schema) Nullable_() *Schema
+    Modifiers mutate and return the receiver. That is safe because every
+    combinator above returns a freshly allocated Schema.
+
+func (s *Schema) PropertyList() []string
+    PropertyList returns PropertyOrder completed with any property absent
+    from it (appended in sorted order) so a hand-built Schema still marshals
+    deterministically.
+
+func (s *Schema) WithExtra(key string, v any) *Schema
+    WithExtra sets a passthrough keyword. It panics on a value JSON cannot
+    carry: a schema is the caller's own code, and NaN in it is a bug.
+
+type StrictRewriteError struct {
+	Path    string
+	Keyword string
+	// Reason, when set, replaces the default "uses <Keyword>, which the
+	// strict subset forbids" wording: some rejections are about a keyword
+	// being ABSENT (an array with no items) or carrying a shape the subset
+	// cannot express (additionalProperties as a schema), and "uses items,
+	// which the strict subset forbids" would send the author the wrong way.
+	Reason string
+}
+    StrictRewriteError names the keyword that made a schema unconvertible.
+    REQ-TOOL-03's "require" mode must fail the request WITH the specific
+    rejection reason, so the reason is a value, not a log line.
+
+func (e *StrictRewriteError) Error() string
+
+func (e *StrictRewriteError) Is(target error) bool
+
+type Type string
+
+const (
+	TypeNone    Type = ""
+	TypeObject  Type = "object"
+	TypeArray   Type = "array"
+	TypeString  Type = "string"
+	TypeInteger Type = "integer"
+	TypeNumber  Type = "number"
+	TypeBoolean Type = "boolean"
+	TypeNull    Type = "null"
+)
+type ValidationError struct {
+	Issues []Issue
+	Args   json.RawMessage
+}
+    ValidationError carries the arguments as JSON so Error() can echo them and
+    the message is self-correcting (REQ-TOOL-11.4). Validate fills Args from
+    the value; a caller holding the model's own bytes (core.PrepareArguments)
+    replaces them, so the echo is in the order the model wrote.
+
+func (e *ValidationError) Error() string
+
+func (e *ValidationError) Is(target error) bool
+
