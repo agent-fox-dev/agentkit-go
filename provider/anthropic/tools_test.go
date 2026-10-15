@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/tools"
 )
@@ -163,6 +164,72 @@ func TestStrictToolsStayWithinTheUnionLimit(t *testing.T) {
 	in, _ := tools[2]["input_schema"].(map[string]any)
 	if in["additionalProperties"] != false {
 		t.Errorf("c's schema = %v, want the strict rewrite", in)
+	}
+}
+
+// wireWith is the request body for req on m with the provider options opts,
+// as the provider would send it.
+func wireWith(t *testing.T, m core.Model, req core.Request, opts anthropic.Options) []map[string]any {
+	t.Helper()
+	body, err := anthropic.BuildRequestJSONWith(req, m, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w map[string]any
+	if err := json.Unmarshal(body, &w); err != nil {
+		t.Fatal(err)
+	}
+	return wireTools(t, w)
+}
+
+// A tool named in Options.NonStrictTools is never declared strict, however
+// well it would fit, and spends none of the strict budget: the tools after it
+// are strict where they would not have been. Its schema is still the strict
+// rewrite, so whether a tool is strict never changes its schema bytes.
+func TestANonStrictToolSpendsNoStrictBudget(t *testing.T) {
+	m := *testModel()
+	ts := []core.Tool{optionalTool("a", 7), optionalTool("b", 7), optionalTool("c", 7), optionalTool("d", 2), optionalTool("e", 0)}
+	req := core.Request{Messages: userTurn(), Tools: core.ToolWires(ts)}
+
+	// Without the option the third tool does not fit.
+	for _, tl := range wireWith(t, m, req, anthropic.Options{}) {
+		if want := tl["name"] != "c"; tl["strict"] != want {
+			t.Errorf("default: tool %v: strict = %v, want %v", tl["name"], tl["strict"], want)
+		}
+	}
+	tools := wireWith(t, m, req, anthropic.Options{NonStrictTools: []string{"a", "not_a_tool"}})
+	want := map[string]bool{"a": false, "b": true, "c": true, "d": true, "e": true}
+	for _, tl := range tools {
+		if tl["strict"] != want[tl["name"].(string)] {
+			t.Errorf("tool %v: strict = %v, want %v", tl["name"], tl["strict"], want[tl["name"].(string)])
+		}
+	}
+	in, _ := tools[0]["input_schema"].(map[string]any)
+	if in["additionalProperties"] != false {
+		t.Errorf("a's schema = %v, want the strict rewrite", in)
+	}
+}
+
+// The option reaches the request the provider really sends, not only the
+// builder the tests call.
+func TestNonStrictToolsAreHonouredByTheProvider(t *testing.T) {
+	ts := []core.Tool{optionalTool("a", 7), optionalTool("b", 7), optionalTool("c", 7)}
+	var got map[string]any
+	run(t, testModel(), core.Request{Messages: userTurn(), Tools: core.ToolWires(ts)},
+		anthropic.Options{NonStrictTools: []string{"a"}, OnPayload: func(p any, _ *core.Model) (any, error) {
+			b, _ := json.Marshal(p)
+			_ = json.Unmarshal(b, &got)
+			return nil, nil
+		}}, 200, streamFixture())
+	want := map[string]bool{"a": false, "b": true, "c": true}
+	tools := wireTools(t, got)
+	if len(tools) != 3 {
+		t.Fatalf("%d tools sent, want 3", len(tools))
+	}
+	for _, tl := range tools {
+		if tl["strict"] != want[tl["name"].(string)] {
+			t.Errorf("tool %v: strict = %v, want %v", tl["name"], tl["strict"], want[tl["name"].(string)])
+		}
 	}
 }
 

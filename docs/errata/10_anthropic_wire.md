@@ -222,3 +222,28 @@ before the built-in ones — first. A schema with no strict form (a dictionary
 object) is sent as written, non-strict, instead of failing the request. A
 non-strict tool's arguments are still validated against its schema before it
 runs; what it gives up is the API's guarantee that the first call is valid.
+
+## `anthropic.Options.NonStrictTools`: the strict limits are not all countable
+
+**Spec.** Every tool declaration carries `"strict": true`.
+
+**Code.** The limits `strictTools` counts (20 tools, 16 unions) are not the
+only ones. The API also refuses a request whose strict tools compile to too
+large a grammar ("The compiled grammar is too large, which would cause
+performance issues"), and publishes no figure for it. It is totalled over the
+request like the others, and a complex schema can be refused beside tools that
+are small alone: a tool with three levels of nested arrays and eight unions
+was accepted alone and with one file tool, and refused beside four, while a
+request with the same 16 unions in simpler tools was accepted. No count can
+predict it.
+
+`anthropic.Options.NonStrictTools` lets the embedder choose. A tool it names
+is sent without the flag and spends none of the limits, whatever it would
+have fitted, so the budget goes to the tools whose arguments are worth the
+API's guarantee and the simple ones, a file read, give it up. Its schema is the
+same strict rewrite it would have been sent with, and its arguments are still
+validated before it runs. The default is unchanged: every tool that fits is
+strict. The option lives on the provider and not on `core.Tool`: strict mode
+is Anthropic's, and the exported API of `core` is held to the golden in
+`internal/policy`.
+

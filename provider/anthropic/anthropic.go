@@ -141,7 +141,8 @@ type tool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitzero"`
 	InputSchema json.RawMessage `json:"input_schema"`
-	// Strict is true for every tool that fits strict mode's limits: the API
+	// Strict is true for every tool that fits strict mode's limits and is not
+	// named in Options.NonStrictTools: the API
 	// then guarantees the model's arguments match the input schema
 	// (10-REQ-5.1; see strictTools for the limits). A tool's output schema,
 	// reachable tools and terminating flag are not on core.ToolWire, so they
@@ -189,21 +190,32 @@ const (
 )
 
 // strictTools decides which tools are declared strict: each, in the order
-// they are sent, whose schema has a strict form and still fits the limits
-// beside the tools before it. A tool that does not is sent without the flag;
-// its arguments are still validated against its schema when they arrive, so
-// what it loses is the API's guarantee that the first attempt is valid, not
-// the validation. The order makes the choice stable from turn to turn, which
-// keeps the cached tool prefix byte-identical, and puts an embedder's own
-// tools, declared first, ahead of the built-in ones.
-func strictTools(ts []core.ToolWire) map[string]bool {
+// they are sent, whose schema has a strict form, that is not named in
+// nonStrict (Options.NonStrictTools), and that still fits the limits beside
+// the tools before it. A tool that does not is sent without the flag, and one
+// named in nonStrict spends none of the limits.
+//
+// The limits counted here are the API's tool and union limits. The API also
+// refuses a request whose strict tools compile to too large a grammar, and
+// publishes no number for that: a complex schema can be refused beside tools
+// that are small alone. An embedder whose request is refused for it names the
+// simple tools in Options.NonStrictTools, to leave the budget to the complex
+// ones.
+//
+// A tool sent without the flag still has its arguments validated against its
+// schema when they arrive, so what it loses is the API's guarantee that the
+// first attempt is valid, not the validation. The order makes the choice
+// stable from turn to turn, which keeps the cached tool prefix
+// byte-identical, and puts an embedder's own tools, declared first, ahead of
+// the built-in ones.
+func strictTools(ts []core.ToolWire, nonStrict []string) map[string]bool {
 	strict := make(map[string]bool, len(ts))
 	unions := 0
 	for _, t := range ts {
 		if len(strict) == maxStrictTools {
 			break
 		}
-		if !schema.StrictSubsetOK(t.InputSchema) {
+		if slices.Contains(nonStrict, t.Name) || !schema.StrictSubsetOK(t.InputSchema) {
 			continue
 		}
 		n := strictUnions(t.InputSchema)
@@ -358,7 +370,18 @@ func NormalizeToolCallID(s string) string {
 // raw blocks keep the exact bytes they arrived with; json.Marshal of a
 // BuildRequest result would compact them.
 func BuildRequestJSON(req core.Request, m core.Model) ([]byte, error) {
-	body, _, err := BuildRequest(&m, req, core.CacheRetentionShort)
+	return BuildRequestJSONWith(req, m, Options{})
+}
+
+// BuildRequestJSONWith is BuildRequestJSON for a provider configured with
+// opts: the options that shape the request body (CacheRetention,
+// NonStrictTools) apply, and the rest are not read.
+func BuildRequestJSONWith(req core.Request, m core.Model, opts Options) ([]byte, error) {
+	retention := core.CacheRetentionShort
+	if opts.CacheRetention != "" {
+		retention = opts.CacheRetention
+	}
+	body, _, _, err := buildRequest(&m, req, retention, nil, opts.NonStrictTools)
 	if err != nil {
 		return nil, err
 	}
@@ -416,6 +439,13 @@ func BuildRequest(m *core.Model, req core.Request, retention core.CacheRetention
 // on every turn, for bytes that did not change.
 func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRetention,
 	prefix *provider.ToolPrefix) (*request, RepairReport, provider.SyncReport, error) {
+	return buildRequest(m, req, retention, prefix, nil)
+}
+
+// buildRequest is BuildRequestCached for a provider that keeps the tools named
+// in nonStrict out of strict mode.
+func buildRequest(m *core.Model, req core.Request, retention core.CacheRetention,
+	prefix *provider.ToolPrefix, nonStrict []string) (*request, RepairReport, provider.SyncReport, error) {
 	var sync provider.SyncReport
 	repaired, rep := RepairTranscript(req.Messages, TargetFor(m, NormalizeToolCallID))
 	messages, prefixEnd := encodeWithPrefix(req.Prefix, repaired, m)
@@ -488,7 +518,7 @@ func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRet
 	// Both halves are declared as ordinary, model-visible tools. The deferred
 	// half differs only in POSITION (after the prefix) and in carrying no
 	// breakpoint; see the tool struct for why it is not marked defer_loading.
-	strict := strictTools(append(slices.Clone(split.Immediate), split.Deferred...))
+	strict := strictTools(append(slices.Clone(split.Immediate), split.Deferred...), nonStrict)
 	appendTools := func(ts []core.ToolWire) {
 		for _, tw := range ts {
 			out.Tools = append(out.Tools, tool{Name: tw.Name, Description: tw.Description,

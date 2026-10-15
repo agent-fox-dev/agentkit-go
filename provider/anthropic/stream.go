@@ -65,6 +65,17 @@ type Options struct {
 
 	// CacheRetention places the prompt-cache breakpoints; empty is short.
 	CacheRetention core.CacheRetention
+	// NonStrictTools names tools that are never declared strict (`strict:
+	// true`), however well they would fit. The API totals its strict-mode
+	// limits over a request: at most 20 strict tools and 16 union parameters,
+	// and a compiled grammar it will not say the size of. A request past any
+	// is refused whole, so an embedder whose request is refused for the
+	// grammar names its simple tools here and leaves the budget to the
+	// complex ones. A named tool spends none of the budget; its schema is
+	// sent as it would have been sent strict, and its arguments are still
+	// validated before it runs. A name that is no tool of the request is
+	// ignored.
+	NonStrictTools []string
 	// Headers merge into every request. A present-nil value is a DELETION
 	// MARKER suppressing a default of that name (REQ-AUTH-02); no string
 	// value can express that.
@@ -127,7 +138,7 @@ func (c *client) stream(ctx context.Context, m *core.Model, req core.Request) *c
 		retention = c.opts.CacheRetention
 	}
 
-	body, rep, sync, err := BuildRequestCached(m, req, retention, c.prefix)
+	body, rep, sync, err := buildRequest(m, req, retention, c.prefix, c.opts.NonStrictTools)
 	if err != nil {
 		return core.ErrorStream(nil, fmt.Errorf("anthropic: building request: %w", err))
 	}
