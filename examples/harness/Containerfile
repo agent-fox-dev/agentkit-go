@@ -11,7 +11,6 @@
 # release builds with --build-arg SANDBOX_IMAGE=quay.io/agentfox/agentkit-sandbox:X.Y.Z.
 
 ARG SPEC_VERSION=main
-ARG SANDBOX_IMAGE=quay.io/agentfox/agentkit-sandbox:latest
 
 # specr is built from a clone, not with `go install …/cmd/specr@version`: the
 # spec module carries a replace for agentkit-go, which go install rejects, and
@@ -32,7 +31,7 @@ RUN git clone --depth 1 --branch ${SPEC_VERSION} https://github.com/agent-fox-de
       -ldflags "-X github.com/agent-fox-dev/spec.Version=${SPEC_VERSION} -X github.com/agent-fox-dev/spec.Commit=$(git rev-parse --short HEAD)" \
       ./cmd/specr
 
-FROM ${SANDBOX_IMAGE}
+FROM quay.io/agentfox/agentkit-sandbox:latest
 
 USER root
 

@@ -23,7 +23,7 @@ RUN cd sandbox && \
     -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.buildTime=${BUILD_TIME}" \
   -o /out/agentkit-sandboxd ./cmd/agentkit-sandboxd
 
-FROM registry.redhat.io/ubi10/s2i-core:10.2 as base
+FROM registry.redhat.io/ubi10/s2i-core:10.2
 
 ARG VERSION=dev
 ARG BUILD=dev
