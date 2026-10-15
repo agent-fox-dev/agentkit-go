@@ -270,6 +270,9 @@ The identifiers an embedder such as agent-fox builds on.
 |---|---|
 | `make check` | `fmt`, `vet`, `lint`, `test`; run before committing |
 | `make test` | `go test ./...` in every module: the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `examples/sandbox`, `examples/gateway` and `examples/harness` |
+| `make build` | `go build ./...` in every module |
+| `make coverage` | The root module's tests with a coverage report |
+| `make clean` | Remove `build/` and the coverage profile |
 | `make vet` | `go vet` in every module |
 | `make lint` | `golangci-lint` in every module; skipped when not installed |
 | `make fmt` | `gofmt -l -w .` |
@@ -286,6 +289,7 @@ The identifiers an embedder such as agent-fox builds on.
 
 | Document | Covers |
 |---|---|
+| [`docs/api.md`](docs/api.md) | The public Go packages and where their reference lives (the library has no REST API). |
 | [`docs/architecture.md`](docs/architecture.md) | Package graph, the data flow of a run, invariants, nested calls, code mode, the MCP client, `Workspace.References`, sandboxes. |
 | [`docs/configuration.md`](docs/configuration.md) | `agentkit.Config`, environment variables, provider, tool, code-mode, MCP and sandbox options, the model catalog. |
 | [`docs/cli.md`](docs/cli.md) | The `agentkit-sandboxd` and `agentkit-gateway` commands: flags, transport, the token file and exit codes. |
