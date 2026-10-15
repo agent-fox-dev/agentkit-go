@@ -56,7 +56,7 @@ func TestImageTestsSkip(t *testing.T) {
 	if err := os.Symlink(goBin, filepath.Join(onlyGo, "go")); err != nil {
 		t.Fatal(err)
 	}
-	images := []string{"AGENTKIT_SANDBOX_BASE_IMAGE=example.com/base:x", "AGENTKIT_SANDBOX_OVERLAY_IMAGE=example.com/overlay:x"}
+	images := []string{"AGENTKIT_SANDBOX_BASE_IMAGE=example.com/base:x"}
 	for _, c := range []struct {
 		name  string
 		short bool
@@ -66,7 +66,7 @@ func TestImageTestsSkip(t *testing.T) {
 		{"no engine", false, append([]string{"PATH=" + onlyGo, "CGO_ENABLED=0"}, images...)},
 		{"no image variable", false, []string{"PATH=" + stubs + ":" + os.Getenv("PATH")}},
 	} {
-		args := []string{"test", "-count=1", "-v", "-run", "^Test(Base|Overlay)Image"}
+		args := []string{"test", "-count=1", "-v", "-run", "^TestBaseImage"}
 		if c.short {
 			args = append(args, "-short")
 		}
@@ -78,12 +78,12 @@ func TestImageTestsSkip(t *testing.T) {
 			t.Fatalf("%s: %v\n%s", c.name, err, out.String())
 		}
 		o := out.String()
-		if regexp.MustCompile(`--- (PASS|FAIL): Test(Base|Overlay)Image`).MatchString(o) {
+		if regexp.MustCompile(`--- (PASS|FAIL): TestBaseImage`).MatchString(o) {
 			t.Errorf("%s: an image test ran:\n%s", c.name, o)
 		}
-		skips := regexp.MustCompile(`(?m)^--- SKIP: (Test(Base|Overlay)Image\w*)`).FindAllStringSubmatch(o, -1)
-		if len(skips) < 6 {
-			t.Errorf("%s: %d image tests skipped, want all six:\n%s", c.name, len(skips), o)
+		skips := regexp.MustCompile(`(?m)^--- SKIP: (TestBaseImage\w*)`).FindAllStringSubmatch(o, -1)
+		if len(skips) < 4 {
+			t.Errorf("%s: %d image tests skipped, want all four:\n%s", c.name, len(skips), o)
 		}
 		for _, l := range regexp.MustCompile(`(?m)^\s+\w+_test\.go:\d+: (.*)$`).FindAllStringSubmatch(o, -1) {
 			if !strings.Contains(l[1], "make build-containers") {

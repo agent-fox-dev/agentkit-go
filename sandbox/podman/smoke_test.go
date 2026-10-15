@@ -128,7 +128,7 @@ func TestSmokeGitRepo_TS17_66(t *testing.T) {
 }
 
 // TS-17-67: Create with an image that has no agent reports ErrNoAgent with
-// the copy line and leaves nothing behind. 17-PATH-3, 17-REQ-5.5,
+// the fix and leaves nothing behind. 17-PATH-3, 17-REQ-5.5,
 // 17-REQ-5.8.
 func TestSmokeNoAgent_TS17_67(t *testing.T) {
 	engine, image := realEngine(t)

@@ -666,37 +666,28 @@ interpreter in the sandbox with authorization called back to the host
 (D3 (c)) is deferred to the second release; only the self-contained `Call`
 messages are designed for it.
 
-**Sandbox images.** One Containerfile, `sandbox/images/Containerfile`, builds
-both published images from the repository root:
+**Sandbox image.** One Containerfile, `containers/agentkit-sandbox/Containerfile`,
+builds the published image from the repository root, in two stages:
 
 ```
-agent-cgo     FROM --platform=$BUILDPLATFORM golang:1.27-trixie, GOTOOLCHAIN=local;
-              cross-compiles with crossbuild-essential-$TARGETARCH when the
-              target differs; CGO_ENABLED=1 (tree-sitter, psx's cgo variant)
-agent-static  the same, CGO_ENABLED=0
-base          debian:trixie-slim + git, bash, ca-certificates + agent-cgo's agent
-overlay       FROM scratch + agent-static's agent, one layer
+build   ubi10/go-toolset, GOTOOLCHAIN=auto; CGO_ENABLED=1 (tree-sitter, psx's cgo variant)
+base    ubi10/s2i-core + git-core, bash, ca-certificates + build's agent at AgentPath
 ```
 
-The build stages run on the build platform and cross-compile, so the Go
-builds are never emulated; only the base stage's package install and user
-setup run under QEMU when it is built for a foreign platform, as in the
-release's multi-arch push. Only linux/amd64 and linux/arm64 are built. Both agents are built
-in the nested `sandbox` module with `-trimpath`, `-buildvcs=false` and
-`-ldflags -X …/sandbox/internal/buildver.stamp=$AGENTKIT_VERSION`:
+The agent is built in the nested `sandbox` module with `-trimpath`,
+`-buildvcs=false` and `-ldflags -X …/sandbox/internal/buildver.stamp=$VERSION`:
 `buildver.Version()` returns the stamp when it is set, so a published agent
 reports its release version, and an unstamped build `(devel)`. The agent is
-owned by root with mode 0755 and the tools run as uid 1000, which cannot
-replace the binary that confines it (14's trust model). The layout lines up
-with the agent's Landlock roots: `/workspace` (the workspace), `/home/agentkit`
-(`HOME`) and `/tmp` (the temporary directory) are writable, and `git`,
-`bash` and the CA bundle sit under the read-only system directories. Neither
-image declares `ENV`, since Docker cannot unset an image's variables and the
-agent hands its environment to every tool verbatim, nor `VOLUME`, which
-would make anonymous volumes no provider reaps. Providers pass
-`--entrypoint sandbox.AgentPath` (an overlay-based image keeps its own
-entrypoint) and `--init` for zombie reaping. The release workflow tests the
-images before it publishes them; [`releasing.md`](releasing.md) describes it.
+`/usr/local/bin/agentkit-sandboxd`, owned by root with mode 0755, and the
+tools run as uid 1001, which cannot replace the binary that confines it (14's
+trust model). The layout lines up with the agent's Landlock roots:
+`/workspace` (the workspace), `/home/agentkit` (`HOME`) and `/tmp` (the
+temporary directory) are writable, and `git`, `bash` and the CA bundle sit
+under the read-only system directories. The image declares no `VOLUME`, which
+would make anonymous volumes no provider reaps, and only `HOME` as `ENV`.
+Providers pass `--entrypoint sandbox.AgentPath` (an embedder's image built
+`FROM` the base may set its own entrypoint) and `--init` for zombie reaping.
+[`releasing.md`](releasing.md) describes publishing it.
 
 **The Podman and Docker provider.** `sandbox/podman` runs each sandbox's
 agent as the only process of a container that holds one named volume, with

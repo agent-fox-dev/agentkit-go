@@ -15,7 +15,7 @@ import (
 // specified field names, constants, sealed interfaces and errors.
 // 13-REQ-2.1.
 func TestHostAPI_TS13_8(t *testing.T) {
-	if sandbox.AgentPath != "/usr/local/libexec/agentkit-sandboxd" {
+	if sandbox.AgentPath != "/usr/local/bin/agentkit-sandboxd" {
 		t.Errorf("AgentPath = %q", sandbox.AgentPath)
 	}
 	_ = sandbox.Spec{

@@ -17,8 +17,6 @@ CONTAINER_REGISTRY ?= quay.io/agentfox
 
 SANDBOX_IMAGE ?= agentkit-sandbox
 SANDBOX_IMAGE_TAG ?= $(VERSION)
-SANDBOXD_IMAGE ?= agentkit-sandboxd
-SANDBOXD_IMAGE_TAG ?= $(VERSION)
 
 .PHONY: help
 help: ## Show this help
@@ -113,7 +111,7 @@ clean: ## Remove build output and the coverage profile
 	rm -rf build coverage.txt
 
 .PHONY: build-containers
-build-containers: build-sandbox-container build-sandboxd-container
+build-containers: build-sandbox-container
 
 .PHONY: build-sandbox-container
 build-sandbox-container:
@@ -125,24 +123,14 @@ build-sandbox-container:
 		-t $(CONTAINER_REGISTRY)/$(SANDBOX_IMAGE):latest \
 		-f containers/agentkit-sandbox/Containerfile .
 
-.PHONY: build-sandboxd-container
-build-sandboxd-container:
-	podman build \
-		--build-arg VERSION=$(VERSION) \
-		--build-arg BUILD=$(COMMIT) \
-		--build-arg BUILD_TIME=$(BUILD_TIME) \
-		-t $(CONTAINER_REGISTRY)/$(SANDBOXD_IMAGE):$(SANDBOXD_IMAGE_TAG) \
-		-t $(CONTAINER_REGISTRY)/$(SANDBOXD_IMAGE):latest \
-		-f containers/agentkit-sandboxd/Containerfile .
-
-# The image variables the opt-in integration tests read: the images
+# The image variables the opt-in integration tests read: the image
 # build-containers tags as latest.
-SANDBOX_TEST_ENV = AGENTKIT_SANDBOX_BASE_IMAGE=$(CONTAINER_REGISTRY)/$(SANDBOX_IMAGE):latest AGENTKIT_SANDBOX_OVERLAY_IMAGE=$(CONTAINER_REGISTRY)/$(SANDBOXD_IMAGE):latest AGENTKIT_SANDBOX_IMAGE_VERSION=$(VERSION) AGENTKIT_CONTAINER=podman
+SANDBOX_TEST_ENV = AGENTKIT_SANDBOX_BASE_IMAGE=$(CONTAINER_REGISTRY)/$(SANDBOX_IMAGE):latest AGENTKIT_SANDBOX_IMAGE_VERSION=$(VERSION) AGENTKIT_CONTAINER=podman
 
 # The podman provider's integration tests run against the locally built
-# images, in the nested sandbox module. Not part of check: they need an engine.
+# image, in the nested sandbox module. Not part of check: they need an engine.
 .PHONY: sandbox-podman-test
-sandbox-podman-test: build-containers ## Build the sandbox images and run the podman provider's integration tests
+sandbox-podman-test: build-containers ## Build the sandbox image and run the podman provider's integration tests
 	cd sandbox && $(SANDBOX_TEST_ENV) go test -count=1 -v ./podman/
 
 # The landlock provider's tests, verbose, with the opt-in public clone; its

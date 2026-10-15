@@ -102,3 +102,13 @@ processes needs the agent to raise their `oom_score_adj` (an unprivileged
 process may raise it), which is an agent change this spec excludes; the
 provider's flag list has no `--oom-score-adj`. TS-17-56 is left unweakened,
 and the limitation is open for a later spec.
+
+## The missing-agent error names the base image, not the overlay (17-REQ-5.7)
+
+The overlay image and `sandbox.OverlayCopyLine` are gone (see the erratum of
+spec 16), so the `ErrNoAgent` message no longer carries a `COPY --from` line.
+It names the image and `sandbox.AgentPath` (now
+`/usr/local/bin/agentkit-sandboxd`) and says to build the image `FROM`
+`sandbox.DefaultImage()`, or `sandbox.BaseImageRepo + ":<version>"` with the
+hint to run `make build-containers` for a build with no published image.
+TS-17-34 and TS-17-67 check that text.

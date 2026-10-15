@@ -3,7 +3,6 @@ package sandbox_test
 import (
 	"fmt"
 	"math/rand/v2"
-	"path"
 	"regexp"
 	"strings"
 	"testing"
@@ -92,18 +91,5 @@ func TestImageTagProperty_TS16_6(t *testing.T) {
 		if _, pre, found := strings.Cut(tag, "-"); found && pseudo.MatchString(pre) {
 			t.Fatalf("ImageTag accepted the pseudo-version %q", v)
 		}
-	}
-}
-
-// TS-16-9: OverlayCopyLine returns the single COPY --from line that installs
-// the agent at AgentPath. 16-REQ-5.7.
-func TestOverlayCopyLine_TS16_9(t *testing.T) {
-	if got := sandbox.OverlayCopyLine("x:1"); got != "COPY --from=x:1 /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/" {
-		t.Errorf("OverlayCopyLine(x:1) = %q", got)
-	}
-	ref := "quay.io/agentfox/agentkit-sandboxd:0.6.0"
-	got := sandbox.OverlayCopyLine(ref)
-	if want := "COPY --from=" + ref + " " + sandbox.AgentPath + " " + path.Dir(sandbox.AgentPath) + "/"; got != want || strings.Contains(got, "\n") {
-		t.Errorf("OverlayCopyLine(%s) = %q, want %q", ref, got, want)
 	}
 }

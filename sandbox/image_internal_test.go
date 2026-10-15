@@ -12,17 +12,15 @@ import (
 // reference builder joins repository and tag for a release version.
 // 16-REQ-5.1, 16-REQ-5.5.
 func TestImageRefs_TS16_7(t *testing.T) {
-	if BaseImageRepo != "quay.io/agentfox/agentkit-sandbox" || OverlayImageRepo != "quay.io/agentfox/agentkit-sandboxd" {
-		t.Errorf("repositories %q, %q", BaseImageRepo, OverlayImageRepo)
+	if BaseImageRepo != "quay.io/agentfox/agentkit-sandbox" {
+		t.Errorf("repository %q", BaseImageRepo)
 	}
 	if ErrNoPublishedImage.Error() != "sandbox: no published image for this agentkit-go version" {
 		t.Errorf("ErrNoPublishedImage = %q", ErrNoPublishedImage)
 	}
 	for _, c := range []struct{ version, tag string }{{"v1.2.3", "1.2.3"}, {"v1.2.3-rc.1", "1.2.3-rc.1"}} {
-		for _, repo := range []string{BaseImageRepo, OverlayImageRepo} {
-			if ref, err := imageRef(repo, c.version); ref != repo+":"+c.tag || err != nil {
-				t.Errorf("imageRef(%s, %s) = %q, %v", repo, c.version, ref, err)
-			}
+		if ref, err := imageRef(BaseImageRepo, c.version); ref != BaseImageRepo+":"+c.tag || err != nil {
+			t.Errorf("imageRef(%s, %s) = %q, %v", BaseImageRepo, c.version, ref, err)
 		}
 	}
 	type result struct {
@@ -39,9 +37,6 @@ func TestImageRefs_TS16_7(t *testing.T) {
 	if got, want := of(DefaultImage()), of(imageRef(BaseImageRepo, v)); got != want {
 		t.Errorf("DefaultImage() = %+v, want %+v", got, want)
 	}
-	if got, want := of(OverlayImage()), of(imageRef(OverlayImageRepo, v)); got != want {
-		t.Errorf("OverlayImage() = %+v, want %+v", got, want)
-	}
 }
 
 // TS-16-8: a version with no published image yields an empty reference and
@@ -49,16 +44,14 @@ func TestImageRefs_TS16_7(t *testing.T) {
 // 16-REQ-5.6.
 func TestNoPublishedImage_TS16_8(t *testing.T) {
 	for _, v := range []string{"(devel)", "", "v1.2.4-0.20240102150405-abcdefabcdef", "v1.2.3+dirty"} {
-		for _, repo := range []string{BaseImageRepo, OverlayImageRepo} {
-			ref, err := imageRef(repo, v)
-			if ref != "" || !errors.Is(err, ErrNoPublishedImage) {
-				t.Errorf("imageRef(%s, %q) = %q, %v", repo, v, ref, err)
-				continue
-			}
-			for _, want := range []string{v, "Spec.Image", "make build-containers"} {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("imageRef(%s, %q): %q lacks %q", repo, v, err, want)
-				}
+		ref, err := imageRef(BaseImageRepo, v)
+		if ref != "" || !errors.Is(err, ErrNoPublishedImage) {
+			t.Errorf("imageRef(%s, %q) = %q, %v", BaseImageRepo, v, ref, err)
+			continue
+		}
+		for _, want := range []string{v, "Spec.Image", "make build-containers"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("imageRef(%s, %q): %q lacks %q", BaseImageRepo, v, err, want)
 			}
 		}
 	}

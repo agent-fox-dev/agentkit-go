@@ -647,7 +647,7 @@ lists the provider runs after the binary, for the effective spec with
 | `--runtime krun`, `--userns=<v>` | When set in `Options`. |
 | `--unsetenv-all` | Podman only: drop the image's environment. |
 | `--env NAME=value`, sorted | The environment, below. |
-| `--entrypoint /usr/local/libexec/agentkit-sandboxd <image> <sandbox.AgentArgs…>` | Always the agent at `sandbox.AgentPath`, whatever the image's own entrypoint. |
+| `--entrypoint /usr/local/bin/agentkit-sandboxd <image> <sandbox.AgentArgs…>` | Always the agent at `sandbox.AgentPath`, whatever the image's own entrypoint. |
 
 No other flag is emitted: no `-v`/`--volume`, bind mount, `--privileged`,
 `--cap-add` or seccomp override; the engine's default seccomp profile
@@ -680,7 +680,8 @@ runs `run --rm … --entrypoint <AgentPath> <image> --version` without
 `--init` or a volume: exit 126 or 127 means the image has no agent, and the
 error wraps `sandbox.ErrNoAgent`
 (`sandbox: the image has no executable agent at sandbox.AgentPath`), names
-the image and gives the fix, the line `sandbox.OverlayCopyLine` returns.
+the image and gives the fix: build the image `FROM` the base image of this
+build's version (`sandbox.DefaultImage()`), which has the agent there.
 
 **`Close`** (also at the TTL) waits up to 5 seconds for the engine process
 and then kills its group, runs `rm -f agentkit-<id>` and
@@ -726,11 +727,10 @@ nothing. `Tools` and `Sync` wait for a clone in progress. The image needs
 its files are then visible to the tools. A private repository is cloned on
 the host and synced as a `LocalDir`.
 
-**Testing it.** `make sandbox-podman-test` builds the images (`make
+**Testing it.** `make sandbox-podman-test` builds the image (`make
 build-containers`) and runs the provider's integration tests in
 `sandbox/podman` with `AGENTKIT_SANDBOX_BASE_IMAGE`,
-`AGENTKIT_SANDBOX_OVERLAY_IMAGE`, `AGENTKIT_SANDBOX_IMAGE_VERSION` and
-`AGENTKIT_CONTAINER` set; it is not part of `make check`. Without an engine,
+`AGENTKIT_SANDBOX_IMAGE_VERSION` and `AGENTKIT_CONTAINER` set; it is not part of `make check`. Without an engine,
 without `AGENTKIT_SANDBOX_BASE_IMAGE` or under `-short`, those tests skip.
 The `GitRepo` test clones `AGENTKIT_SANDBOX_GIT_URL` (default
 `https://github.com/agent-fox-dev/agentkit-go`) at depth 1, and the
@@ -934,7 +934,7 @@ a client may be older, newer or not AgentKit at all.
 
 **Testing it.** The gateway's offline tests run in `make check`: an
 in-process server over `local` with a client in the same process. `make
-sandbox-gateway-test` builds the images and runs the opt-in Podman tests in
+sandbox-gateway-test` builds the image and runs the opt-in Podman tests in
 `sandbox/gatewayd` with `AGENTKIT_SANDBOX_BASE_IMAGE` and
 `AGENTKIT_CONTAINER` set. They skip without an engine, without
 `AGENTKIT_SANDBOX_BASE_IMAGE` or under `-short`. The `GitRepo` test clones
@@ -943,41 +943,34 @@ sandbox-gateway-test` builds the images and runs the opt-in Podman tests in
 
 ### Sandbox images
 
-The agent is published in two images, both with the agent at
-`sandbox.AgentPath` (`/usr/local/libexec/agentkit-sandboxd`), owned by root
-with mode 0755, and `ENTRYPOINT` set to it. A provider must not rely on that
-entrypoint: an embedder's image built with the overlay keeps its own, so
-providers start the agent with `--entrypoint sandbox.AgentPath` and
-`sandbox.AgentArgs(spec)`.
+The agent is published in one image, with the agent at `sandbox.AgentPath`
+(`/usr/local/bin/agentkit-sandboxd`), owned by root with mode 0755, and
+`ENTRYPOINT` set to it. A provider must not rely on that entrypoint: an
+embedder's image built `FROM` it may set its own, so providers start the
+agent with `--entrypoint sandbox.AgentPath` and `sandbox.AgentArgs(spec)`.
 
 | Identifier | Value or behaviour |
 |---|---|
 | `sandbox.BaseImageRepo` | `quay.io/agentfox/agentkit-sandbox` |
-| `sandbox.OverlayImageRepo` | `quay.io/agentfox/agentkit-sandboxd` |
 | `sandbox.ImageTag(version)` | The tag of a release version: `version` without its `v`. Only `vMAJOR.MINOR.PATCH` with no leading zeros and an optional `-prerelease` is accepted; `(devel)`, build metadata (`+dirty`, `+incompatible`) and Go pseudo-versions give `("", false)`. |
 | `sandbox.DefaultImage()` | `BaseImageRepo:<tag>` for the build's version (`buildver`: the link-time stamp, else the sandbox module's version, else `(devel)`). |
-| `sandbox.OverlayImage()` | `OverlayImageRepo:<tag>` for the build's version. |
-| `sandbox.ErrNoPublishedImage` | `sandbox: no published image for this agentkit-go version`. `DefaultImage` and `OverlayImage` wrap it when the version has no published image; the message names the version and says to set `Spec.Image` or build an image with `make build-containers`. |
-| `sandbox.OverlayCopyLine(ref)` | `COPY --from=<ref> /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/`: the one line an embedder adds to its own Containerfile. |
+| `sandbox.ErrNoPublishedImage` | `sandbox: no published image for this agentkit-go version`. `DefaultImage` wraps it when the version has no published image; the message names the version and says to set `Spec.Image` or build an image with `make build-containers`. |
 
 The default is the exact `X.Y.Z` tag, never `X.Y`: the `Tools` digest check
 fails when the host and the agent are at different versions.
 
-**The base image** (`--target base`):
+**The image** (`containers/agentkit-sandbox/Containerfile`):
 
 | Content | Value |
 |---|---|
-| Base | `debian:trixie-slim` |
-| Packages | `git`, `bash`, `ca-certificates`; nothing else (the agent carries rsync itself; zombie reaping is the provider's `--init`) |
-| User | `agentkit`, uid 1000, gid 1000, home `/home/agentkit`, shell `/bin/bash`; `USER 1000:1000` |
-| Workspace | `/workspace`, owned 1000:1000, mode 0755, `WORKDIR`; not a `VOLUME` |
+| Base | `registry.redhat.io/ubi10/s2i-core` |
+| Packages | `git-core`, `bash`, `ca-certificates`; nothing else (the agent carries rsync itself; zombie reaping is the provider's `--init`) |
+| User | uid 1001, gid 0, home `/home/agentkit` (`ENV HOME`); `USER 1001:0` |
+| Workspace | `/workspace`, owned 1001:0, mode 0775, `WORKDIR`; not a `VOLUME` |
 | git | `safe.directory = *` in the system config |
 | Agent | cgo-built (tree-sitter outlines), at `sandbox.AgentPath` |
-| Environment | none beyond the Debian image's `PATH` |
+| Environment | `HOME`, beyond the base image's `PATH` |
 | Labels | `org.opencontainers.image.source` (`https://github.com/agent-fox-dev/agentkit-go`), `licenses` (`Apache-2.0`), `title`, `description`, `version`, `revision` |
-
-**The overlay image** (`--target overlay`) is `FROM scratch` with one layer:
-the static agent (`OutlineBackend` `none`) and the same labels.
 
 **Tags.** A release `vX.Y.Z` publishes `X.Y.Z`, plus a moving `X.Y` when there
 is no prerelease part, for linux/amd64 and linux/arm64; there is no
@@ -991,8 +984,7 @@ command line:
 |---|---|
 | `CONTAINER_REGISTRY` | `quay.io/agentfox` |
 | `SANDBOX_IMAGE` | `agentkit-sandbox` |
-| `SANDBOXD_IMAGE` | `agentkit-sandboxd` |
-| `SANDBOX_IMAGE_TAG`, `SANDBOXD_IMAGE_TAG` | `VERSION`; each image is also tagged `latest` |
+| `SANDBOX_IMAGE_TAG` | `VERSION`; the image is also tagged `latest` |
 | `VERSION` | `git describe --tags`, or `0.1.0` outside a tagged checkout |
 
 The build stamps `VERSION`, the short commit and the UTC build time into
@@ -1001,10 +993,10 @@ the agent (`-ldflags -X …/sandbox/internal/buildver.stamp`, `.commit` and
 `agentkit-sandboxd <version> (protocol M.N) commit <commit> built <time>`,
 leaving out the commit and build time when a build stamps none.
 
-The image tests in `sandbox/images` run against images named by
-`AGENTKIT_SANDBOX_BASE_IMAGE` and `AGENTKIT_SANDBOX_OVERLAY_IMAGE`, with
-`AGENTKIT_SANDBOX_IMAGE_VERSION` and `AGENTKIT_CONTAINER` optional; without
-those variables, a container engine, or under `-short`, they skip.
+The image tests in `sandbox/images` run against the image named by
+`AGENTKIT_SANDBOX_BASE_IMAGE`, with `AGENTKIT_SANDBOX_IMAGE_VERSION` and
+`AGENTKIT_CONTAINER` optional; without that variable, a container engine, or
+under `-short`, they skip.
 
 ## Limits on untrusted input
 

@@ -114,7 +114,7 @@ func TestCreateEngineError_TS17_33(t *testing.T) {
 }
 
 // TS-17-34: a diagnostic exit of 127 gives ErrNoAgent with AgentPath and
-// the copy line, and the diagnostic argv is exact. 17-REQ-5.5, 17-REQ-5.7.
+// the fix, and the diagnostic argv is exact. 17-REQ-5.5, 17-REQ-5.7.
 func TestCreateNoAgent_TS17_34(t *testing.T) {
 	f := newFake(t)
 	f.startFn = func([]string) (process, error) { return f.exitWith(127, "") }
@@ -124,7 +124,7 @@ func TestCreateNoAgent_TS17_34(t *testing.T) {
 		t.Fatalf("Create = %v, want ErrNoAgent", err)
 	}
 	for _, want := range []string{"missing:1", sandbox.AgentPath, "exec: no such file or directory",
-		sandbox.OverlayCopyLine(sandbox.OverlayImageRepo + ":<version>"), "make build-containers"} {
+		"FROM " + sandbox.BaseImageRepo + ":<version>", "make build-containers"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the error lacks %q:\n%v", want, err)
 		}

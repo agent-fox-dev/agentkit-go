@@ -70,7 +70,7 @@ build info (go.dev/issue/52372); a Go 1.27.1 build of the agent with both
 flags records `-trimpath=true` and no `-ldflags`. The test still checks
 GOOS, GOARCH, CGO_ENABLED and -trimpath through the build info, and asserts
 the stamp by finding `v9.8.7` in the cross-built binary itself
-(`sandbox/images/overlay_image_test.go`). It would use the build-info
+(`sandbox/cmd/agentkit-sandboxd/stamp_test.go`). It would use the build-info
 setting if a future Go recorded it.
 
 ## The images moved to containers/ and the build-artefact tests were retired
@@ -103,3 +103,20 @@ them, so buildver's exported API is `Version` and `Build`, not `Version`
 alone (TS-16-2). `Version()` is unchanged: it still selects the image tag.
 `agentkit-sandboxd --version` appends `commit <commit>` and
 `built <time>` when they are set; an unstamped line is unchanged.
+
+## The overlay image is gone and the agent lives at /usr/local/bin
+
+The `agentkit-sandboxd` overlay image (`containers/agentkit-sandboxd/`, the
+`build-sandboxd-container` make target, its job in
+`build-sandbox-containers.yaml` and `AGENTKIT_SANDBOX_OVERLAY_IMAGE`) was
+removed: an embedder builds its own image `FROM` the base image instead of
+copying the agent in. `sandbox.OverlayImageRepo`, `OverlayImage` and
+`OverlayCopyLine` were removed with it, so 16-REQ-3.\*, 16-REQ-5.7, TS-16-9,
+TS-16-45 and TS-16-46 no longer apply; `ErrNoPublishedImage` is returned by
+`DefaultImage` alone. TS-16-42 and TS-16-44 check the base image alone, and
+TS-16-48's derived image is `FROM <base>` plus a label.
+
+`sandbox.AgentPath` is `/usr/local/bin/agentkit-sandboxd`, not
+`/usr/local/libexec/agentkit-sandboxd`: the UBI base image installs the
+agent there. Every reference to the old path in this spec reads as the new
+one.

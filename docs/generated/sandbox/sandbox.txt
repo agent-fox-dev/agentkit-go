@@ -26,12 +26,13 @@ const (
     renumbered; a scope that adds an RPC or a field bumps ProtocolMinor. A host
     refuses an agent with a different ProtocolMajor and accepts any minor.
 
-const AgentPath = "/usr/local/libexec/agentkit-sandboxd"
+const AgentPath = "/usr/local/bin/agentkit-sandboxd"
     AgentPath is where a sandbox image installs the agent binary.
 
 const BaseImageRepo = "quay.io/agentfox/agentkit-sandbox"
-    BaseImageRepo is the published base image: Debian with git, bash and
-    ca-certificates, a uid-1000 user and the cgo-built agent at AgentPath.
+    BaseImageRepo is the published base image: UBI with git, bash and
+    ca-certificates, a uid-1001 user and the cgo-built agent at AgentPath.
+    An embedder's own image is built FROM it.
 
 const LandlockMinABI = 2
     LandlockMinABI is the lowest Landlock ABI an agent applies: under ABI 1
@@ -45,10 +46,6 @@ const LandlockTCPABI = 4
 const MaxMessageBytes = 16 << 20
     MaxMessageBytes bounds every gRPC message in both directions, on the agent
     and on the host. It equals wire.Defaults().MaxMessageBytes.
-
-const OverlayImageRepo = "quay.io/agentfox/agentkit-sandboxd"
-    OverlayImageRepo is the published overlay image: a single static agent at
-    AgentPath, for an embedder to copy into its own image with OverlayCopyLine.
 
 
 VARIABLES
@@ -74,9 +71,9 @@ var (
 	ErrNoAgent = errors.New("sandbox: the image has no executable agent at sandbox.AgentPath")
 )
 var ErrNoPublishedImage = errors.New("sandbox: no published image for this agentkit-go version")
-    ErrNoPublishedImage is returned by DefaultImage and OverlayImage when
-    the build's version has no published image: (devel), a pseudo-version,
-    or a version with build metadata.
+    ErrNoPublishedImage is returned by DefaultImage when the build's version
+    has no published image: (devel), a pseudo-version, or a version with build
+    metadata.
 
 
 FUNCTIONS
@@ -96,16 +93,6 @@ func ImageTag(version string) (tag string, ok bool)
     leading v. It accepts only v MAJOR.MINOR.PATCH with no leading zeros and
     an optional -prerelease of dot-separated identifiers, and refuses (devel),
     build metadata, Go pseudo-versions and anything else, with ("", false).
-
-func OverlayCopyLine(ref string) string
-    OverlayCopyLine is the single Containerfile line that copies the agent
-    from the overlay image ref into an embedder's own image, at AgentPath.
-    Such an image keeps its own entrypoint, so providers always start the agent
-    with --entrypoint AgentPath.
-
-func OverlayImage() (string, error)
-    OverlayImage is the overlay image published for this build's version,
-    at the exact X.Y.Z tag.
 
 
 TYPES

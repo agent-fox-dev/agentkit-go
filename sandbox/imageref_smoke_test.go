@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TS-16-54: an embedder binary resolves the published image references from
+// TS-16-54: an embedder binary resolves the published image reference from
 // its stamped version, and gets ErrNoPublishedImage for (devel) and
 // pseudo-versions. 16-PATH-4, 16-REQ-5.5, 16-REQ-5.6.
 func TestEmbedderImageRefs_TS16_54(t *testing.T) {
@@ -49,7 +49,7 @@ func TestEmbedderImageRefs_TS16_54(t *testing.T) {
 	}
 
 	so, se, code := run(build("stamped", "v1.2.3"))
-	if want := "quay.io/agentfox/agentkit-sandbox:1.2.3\nquay.io/agentfox/agentkit-sandboxd:1.2.3\n"; code != 0 || so != want {
+	if want := "quay.io/agentfox/agentkit-sandbox:1.2.3\n"; code != 0 || so != want {
 		t.Errorf("stamped v1.2.3: exit %d, stdout %q, want exit 0 and %q; stderr %q", code, so, want, se)
 	}
 

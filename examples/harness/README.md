@@ -95,24 +95,25 @@ exported the workspace to …/out: .specs, README.md, go.mod, greeter.go, greete
 
 ## The real run: `--podman`
 
-The sandbox needs an image with Go, git and `specr` beside the agent. The
-base image has none of them, so `Containerfile` builds one from the official
-Go image, builds `specr` from a clone of the spec repository (`--build-arg
-SPEC_VERSION=<branch or tag>`, default `main`) and copies the agent in from
-the overlay image (`sandbox.OverlayCopyLine`):
+The sandbox needs an image with `specr` beside the agent. `Containerfile`
+builds `specr` from a clone of the spec repository (`--build-arg
+SPEC_VERSION=<branch or tag>`, default `main`) and adds it to the sandbox
+image, which holds the agent at `sandbox.AgentPath`:
 
 ```bash
-# from the repository root: the agent, at this checkout's version
-make build-sandboxd-container
+# from the repository root: the sandbox image, at this checkout's version
+make build-sandbox-container
 cd examples/harness
 podman build -t agentkit-harness:latest -f Containerfile .
 go run . --podman --image agentkit-harness:latest \
-	--repo https://github.com/you/project --spec 16 --task 3 --harness claude
+	--repo https://github.com/agent-fox-dev/forked-repo \
+   --spec 1 --task 1 --harness claude
 ```
 
 The host and the agent must be the same AgentKit version — `Sandbox.Tools`
-checks the definitions' digest — so a checkout builds its own overlay and a
-release passes `--build-arg SANDBOXD=quay.io/agentfox/agentkit-sandboxd:X.Y.Z`.
+checks the definitions' digest — so a checkout builds its own sandbox image
+and a release passes
+`--build-arg SANDBOX_IMAGE=quay.io/agentfox/agentkit-sandbox:X.Y.Z`.
 
 The container has a read-only root and a tmpfs `/tmp`; the program points
 `GOPATH`, `GOCACHE` and `GOMODCACHE` under `/tmp` through `Spec.Env` (podman

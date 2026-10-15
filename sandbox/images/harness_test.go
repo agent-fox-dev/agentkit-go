@@ -29,7 +29,7 @@ import (
 // whatever a test started or built. The tests in this package are opt-in:
 // make build-containers builds the images; the variables name them.
 
-const skipHint = "; run make build-containers and set AGENTKIT_SANDBOX_BASE_IMAGE and AGENTKIT_SANDBOX_OVERLAY_IMAGE to run these tests"
+const skipHint = "; run make build-containers and set AGENTKIT_SANDBOX_BASE_IMAGE to run these tests"
 
 // pickEngine is AGENTKIT_CONTAINER when it is set and found, else the first
 // of podman and docker found.
@@ -311,13 +311,12 @@ func runEngine(t *testing.T, engine string, args ...string) (string, string, int
 	return so.String(), se.String(), code
 }
 
-// buildDerived builds an image of FROM base plus OverlayCopyLine(overlay)
-// and returns its reference and an idempotent cleanup that removes it, also
-// registered with t.
-func buildDerived(t *testing.T, engine, base, overlay string) (string, func()) {
+// buildDerived builds an image of FROM base plus a label and returns its
+// reference and an idempotent cleanup that removes it, also registered with t.
+func buildDerived(t *testing.T, engine, base string) (string, func()) {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte("FROM "+base+"\n"+sandbox.OverlayCopyLine(overlay)+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte("FROM "+base+"\nLABEL agentkit.imgtest=derived\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	ref := "agentkit-imgtest-derived-" + randomHex(8)
@@ -383,7 +382,7 @@ func TestRunArgs_TS16_23(t *testing.T) {
 			t.Errorf("spec %+v", spec)
 		}
 		exp := append([]string{"podman", "run", "--rm", "-i", "--name", name, "--network", "none", "--env", "HOME=/home/agentkit",
-			"--env", "TMPDIR=/tmp", "--entrypoint", "/usr/local/libexec/agentkit-sandboxd", "img:1"}, sandbox.AgentArgs(want)...)
+			"--env", "TMPDIR=/tmp", "--entrypoint", "/usr/local/bin/agentkit-sandboxd", "img:1"}, sandbox.AgentArgs(want)...)
 		if fmt.Sprint(argv) != fmt.Sprint(exp) {
 			t.Errorf("argv %q, want %q", argv, exp)
 		}
@@ -486,7 +485,6 @@ func TestHarnessStartFailure_TS16_47(t *testing.T) {
 // every image the test built. 16-REQ-7.6.
 func TestHarnessCleanup_TS16_48(t *testing.T) {
 	engine, base := requireImage(t, "AGENTKIT_SANDBOX_BASE_IMAGE")
-	_, overlay := requireImage(t, "AGENTKIT_SANDBOX_OVERLAY_IMAGE")
 	h := startT(t, engine, base)
 	h.cleanup()
 	if _, _, err := execIn(context.Background(), h.tools, "true"); err == nil {
@@ -503,15 +501,13 @@ func TestHarnessCleanup_TS16_48(t *testing.T) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	ref, cleanup := buildDerived(t, engine, base, overlay)
+	ref, cleanup := buildDerived(t, engine, base)
 	cleanup()
 	if _, _, code := runEngine(t, engine, "image", "inspect", ref); code == 0 {
 		t.Errorf("the derived image %s remains", ref)
 	}
-	for _, img := range []string{base, overlay} {
-		if _, _, code := runEngine(t, engine, "image", "inspect", img); code != 0 {
-			t.Errorf("the image under test %s is gone", img)
-		}
+	if _, _, code := runEngine(t, engine, "image", "inspect", base); code != 0 {
+		t.Errorf("the image under test %s is gone", base)
 	}
 }
 
