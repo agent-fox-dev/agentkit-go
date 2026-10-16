@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -122,13 +123,15 @@ func TestExampleUsesLocalDir_TS14_45(t *testing.T) {
 // with one core.Named and guards the shell with one guard.Allow("ls"), so it
 // holds none of the wiring they replace: no Create, Sync or Tools method call,
 // no faux.Turn literal, no guard.Restricted call and no switch over a tool's
-// Name. 22-REQ-7.3.
+// Name. Its core.Named call picks read_file, search_files and execute, in that
+// order. 22-REQ-7.3.
 func TestExampleUsesTheHelpers_TS22_30(t *testing.T) {
 	f, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	calls := map[string]int{}
+	var namedArgs []string
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.CompositeLit:
@@ -145,6 +148,9 @@ func TestExampleUsesTheHelpers_TS22_30(t *testing.T) {
 				calls["sandbox.Open"]++
 			case selectorIs(sel, "core", "Named"):
 				calls["core.Named"]++
+				if len(n.Args) > 0 {
+					namedArgs = stringLiterals(n.Args[1:])
+				}
 			case selectorIs(sel, "guard", "Allow"):
 				if len(n.Args) == 1 {
 					if lit, ok := n.Args[0].(*ast.BasicLit); ok {
@@ -170,6 +176,9 @@ func TestExampleUsesTheHelpers_TS22_30(t *testing.T) {
 			t.Errorf("main.go has %d %s calls, want 1", calls[c], c)
 		}
 	}
+	if want := []string{"read_file", "search_files", "execute"}; !slices.Equal(namedArgs, want) {
+		t.Errorf("core.Named picks %q, want %q", namedArgs, want)
+	}
 }
 
 // selectorIs reports whether sel is pkg.name.
@@ -181,4 +190,19 @@ func selectorIs(sel *ast.SelectorExpr, pkg, name string) bool {
 func asExpr(n ast.Node) ast.Expr {
 	e, _ := n.(ast.Expr)
 	return e
+}
+
+// stringLiterals returns the string literals among args, and "?" for any
+// argument that is not one.
+func stringLiterals(args []ast.Expr) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = "?"
+		if lit, ok := a.(*ast.BasicLit); ok {
+			if s, err := strconv.Unquote(lit.Value); err == nil {
+				out[i] = s
+			}
+		}
+	}
+	return out
 }

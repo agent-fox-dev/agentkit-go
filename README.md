@@ -94,8 +94,8 @@ the same definition, whose every call runs in the AgentKit agent
 (`agentkit-sandboxd`) inside the sandbox over the `agentkit.sandbox.v1` gRPC
 protocol. The driver does not change and does not know a tool is remote.
 `sandbox.Open` does `Create`, `Sync` and `Tools` in one call and closes the
-sandbox if a step fails; the three methods stay for a second `Sync` or for none
-at all.
+sandbox if a step fails; a nil source skips the `Sync`, and the three methods
+stay for a second `Sync` and for the `SyncResult`, which `Open` discards.
 
 ```go
 // Only what changed moves; the same ignore rules as the file tools apply.
