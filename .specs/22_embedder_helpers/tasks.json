@@ -265,7 +265,7 @@
       "done_when": [
         "`go test ./examples/codemode/...` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
