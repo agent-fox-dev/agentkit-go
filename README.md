@@ -16,7 +16,8 @@ one network service.
 
 ```bash
 go test ./...          # everything, offline, no API key
-make check             # fmt, vet, lint and test, root and codesearch modules
+make check             # fast: fmt, vet, lint and the short tests, every module
+make check-release     # full: adds the slow gates (cross-target builds, nested make runs)
 go run ./examples/agentdemo
 ```
 
@@ -260,7 +261,9 @@ The identifiers an embedder such as agent-fox builds on.
 
 | Target | Does |
 |---|---|
-| `make check` | `fmt`, `vet`, `lint`, `test`; run before committing |
+| `make check` | `fmt`, `vet`, `lint`, `test-short`: the fast check, run while working |
+| `make check-release` | `fmt`, `vet`, `lint`, `test`: adds the slow gates (cross-target build and vet, host cgo build, nested `make` runs); run before a release or merge |
+| `make test-short` | `go test -short ./...` in every module |
 | `make test` | `go test ./...` in every module: the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `examples/sandbox`, `examples/gateway` and `examples/harness` |
 | `make build` | `go build ./...` in every module |
 | `make coverage` | The root module's tests with a coverage report |

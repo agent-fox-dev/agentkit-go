@@ -75,7 +75,8 @@ The Go version is **1.27** (`go 1.27` in every `go.mod`).
 | `make fmt` | `gofmt` all source files in place |
 | `make vet` | `go vet ./...` |
 | `make lint` | `golangci-lint` if installed (config in `.golangci.yml`) |
-| `make check` | `fmt`, `vet`, `lint` and `test` — use before committing |
+| `make check` | `fmt`, `vet`, `lint` and `test-short` — the fast check, use before committing |
+| `make check-release` | `fmt`, `vet`, `lint` and the full `test`, slow gates included — use before a release or merge |
 | `make doc` | Regenerate the Go package docs in `docs/generated/` (committed) |
 | `make tidy` | `go mod tidy` |
 | `make clean` | Remove build output |
