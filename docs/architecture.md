@@ -73,7 +73,7 @@ First-party imports, from
 | `guard` | `core` | |
 | `provider/faux` | `core` | |
 | `provider` | `core`, `schema` | |
-| `provider/anthropic` | `core`, `provider`, `wire` | `github.com/anthropics/anthropic-sdk-go`, `golang.org/x/oauth2`, `github.com/aws/aws-sdk-go-v2` |
+| `provider/anthropic` | `core`, `provider`, `schema`, `wire` | `github.com/anthropics/anthropic-sdk-go`, `golang.org/x/oauth2`, `github.com/aws/aws-sdk-go-v2` |
 | `workspace` | none | `github.com/bmatcuk/doublestar/v4` |
 | `tools` | `core`, `outline`, `schema`, `workspace` | `github.com/bmatcuk/doublestar/v4` |
 | `codemode` | `core`, `schema`, `tools` | `go.starlark.net` |
@@ -116,7 +116,7 @@ What follows from it:
   seams: `Tool`, `ProviderClient`, `NestedCaller`, the interceptor types.
 - `workspace` imports nothing of the module: only the standard library and
   doublestar, so every package can depend on it (`internal/policy` checks it).
-- `tools` imports `outline`, `schema` and `workspace`. `codemode` imports `core` and
+- `tools` imports `core`, `outline`, `schema` and `workspace`. `codemode` imports `core` and
   `schema`, and `tools` for its output buffer (`tools.Accumulator`). `mcp`
   imports `core` and `schema`, and `wire` for its strict boundary.
 - The root does not import `tools` directly. It reaches it only through
@@ -144,7 +144,7 @@ What follows from it:
 | `provider/anthropic` | The Anthropic Messages wire over the official SDK, direct, on Vertex AI or on Bedrock, chosen by `Resolve`; send-time transcript repair (`RepairTranscript`) and partial-JSON salvage of streamed tool arguments (`SalvageJSON`). |
 | `provider/faux` | A scripted provider for offline tests and demos. |
 | `outline` | Declarations of a source file with line ranges. Go uses `go/ast` in every build. With cgo, Python, JavaScript, TypeScript/TSX, Java, Kotlin, C#, Scala, Rust, C, C++, PHP, Ruby, Lua and shell are parsed by tree-sitter grammars; without cgo they are `none`. |
-| `workspace` | The workspace: the containment boundary (`Open`, `Resolve`, `Rel`, `CheckWriteTarget`), the layered ignore engine (`IgnoreOptions`, `NoGlobalExcludes`, `Ignore`, `Ignored`) and the directory walk (`Walk`), opened once and shared by the tools, the index and the sandbox tree. It imports only the standard library and doublestar. |
+| `workspace` | The workspace: the containment boundary (`Open`, `Resolve`, `Rel`, `CheckWriteTarget`), the layered ignore engine (`IgnoreOptions`, `NoGlobalExcludes`, `Ignore`, `Ignored`) and the directory walk (`Walk`), opened once and handed to the tools and the index; the sandbox tree opens its own over a root it owns and takes a workspace's `Ignore()` options. It imports only the standard library and doublestar. |
 | `tools` | The built-in tools (`For`), the output accumulator, process control and the runner (`Run`, `RunArgv`), glob, the symbol table behind `find_symbol` and the reference engine behind `find_references` (`References`). |
 | `guard` | The shell boundary: `Check` (a pure decision on an argv), `Restricted` (the interceptor over it), `AllowAll`. |
 | `codemode` | The code-mode tool (below). |

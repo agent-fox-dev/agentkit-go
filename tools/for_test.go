@@ -225,8 +225,8 @@ func TestShellToolsRunInTheWorkspaceRoot_TS20_38(t *testing.T) {
 			t.Errorf("%s: %s %s", name, res.Error, res.Detail)
 			continue
 		}
-		if !strings.Contains(res.Text, ws.Root()) {
-			t.Errorf("%s printed %q, want the workspace root %q", name, res.Text, ws.Root())
+		if !slices.Contains(strings.Split(strings.ReplaceAll(res.Text, "\r", ""), "\n"), ws.Root()) {
+			t.Errorf("%s printed %q, want a line that is exactly the workspace root %q", name, res.Text, ws.Root())
 		}
 	}
 }

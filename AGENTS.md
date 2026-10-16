@@ -28,7 +28,8 @@ Do not implement anything before completing these steps.
 ```
 *.go                    # Root package: the driver (agentkit.Config, agentkit.New), tests alongside
 core/ provider/ wire/   # Core types, providers (anthropic, faux) and wire formats
-tools/ guard/ outline/  # The hands: workspace tools, shell guard, source outlines
+workspace/              # The workspace every scenario opens first: containment, ignore rules, the walk
+tools/ guard/ outline/  # The hands: the tools built for a workspace (tools.For), shell guard, source outlines
 codemode/ mcp/ prompt/  # Code mode, MCP client pool, prompt building
 catalog/ schema/        # Model catalog, schema helpers
 sandbox/                # Nested module: sandbox API, protocol, agent, providers

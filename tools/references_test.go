@@ -58,14 +58,14 @@ func TestWorkspaceReferences_Exports_TS_05_45(t *testing.T) {
 	}
 	res, err := References(context.Background(), ws, target, ReferenceOptions{})
 	if err != nil {
-		t.Fatalf("ws.References returned unexpected error: %v", err)
+		t.Fatalf("References returned unexpected error: %v", err)
 	}
 	if res.Target.Name != "Run" {
 		t.Errorf("expected res.Target.Name == 'Run', got %q", res.Target.Name)
 	}
 }
 
-// TS-05-47 (unit): Workspace.References returns workspace.ErrPathNotAllowed and empty ReferenceResult when path escapes workspace
+// TS-05-47 (unit): tools.References returns workspace.ErrPathNotAllowed and empty ReferenceResult when path escapes workspace
 // Verifies: 05-REQ-9.3
 func TestWorkspaceReferences_PathEscape_TS_05_47(t *testing.T) {
 	dir := t.TempDir()
@@ -87,7 +87,7 @@ func TestWorkspaceReferences_PathEscape_TS_05_47(t *testing.T) {
 	}
 }
 
-// TS-05-48 (unit): Workspace.References returns non-nil error when path does not exist or is not a directory
+// TS-05-48 (unit): tools.References returns non-nil error when path does not exist or is not a directory
 // Verifies: 05-REQ-9.4
 func TestWorkspaceReferences_PathNotExistOrNotDir_TS_05_48(t *testing.T) {
 	dir := t.TempDir()
@@ -126,7 +126,7 @@ func TestWorkspaceReferences_PathNotExistOrNotDir_TS_05_48(t *testing.T) {
 	}
 }
 
-// TS-05-49 (unit): Workspace.References returns ctx.Err() and empty ReferenceResult when context is cancelled
+// TS-05-49 (unit): tools.References returns ctx.Err() and empty ReferenceResult when context is cancelled
 // Verifies: 05-REQ-9.5
 func TestWorkspaceReferences_ContextCancelled_TS_05_49(t *testing.T) {
 	dir := t.TempDir()
@@ -153,7 +153,7 @@ func TestWorkspaceReferences_ContextCancelled_TS_05_49(t *testing.T) {
 }
 
 // TS-05-34 (property): find_references clamps max_results between 1 and 100 with default 30
-// TS-05-50 (property): Workspace.References clamps MaxResults the same way (it shares clampMaxResults)
+// TS-05-50 (property): tools.References clamps MaxResults the same way (it shares clampMaxResults)
 // Verifies: 05-REQ-6.5, 05-REQ-9.6
 func TestWorkspaceReferences_ClampMaxResults_TS_05_34(t *testing.T) {
 	genInts := []int{-500, -10, -1, 0, 1, 5, 25, 30, 35, 95, 100, 101, 500, 1000}

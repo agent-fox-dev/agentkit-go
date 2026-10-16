@@ -265,7 +265,7 @@ func TestReferencesSmoke_UndeclaredText_TS05_57(t *testing.T) {
 }
 
 // TS-05-58 (smoke): End-to-end programmatic caller analysis via the
-// Workspace.References embedder seam.
+// tools.References embedder seam.
 // Verifies: 05-PATH-4, 05-REQ-9.2
 func TestReferencesSmoke_WorkspaceReferences_TS05_58(t *testing.T) {
 	ws := smokeWorkspace(t, goRunnerFixture)
@@ -277,7 +277,7 @@ func TestReferencesSmoke_WorkspaceReferences_TS05_58(t *testing.T) {
 		t.Fatalf("References: %v", err)
 	}
 	if got.Target != viaTool.Target || got.Backend != viaTool.Backend || !reflect.DeepEqual(got.Sites, viaTool.Sites) {
-		t.Fatalf("Workspace.References differs from find_references:\nseam: %+v\ntool: %+v", got, viaTool)
+		t.Fatalf("tools.References differs from find_references:\nseam: %+v\ntool: %+v", got, viaTool)
 	}
 	if len(got.Sites) < 2 {
 		t.Fatalf("sites = %+v, want the main.go and test callers", got.Sites)

@@ -16,7 +16,7 @@ one network service.
 
 ```bash
 go test ./...          # everything, offline, no API key
-make check             # fmt, vet, lint and test, root and codesearch modules
+make check             # fmt, vet, lint and test, in every module
 go run ./examples/agentdemo
 ```
 

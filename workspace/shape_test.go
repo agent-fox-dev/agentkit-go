@@ -34,6 +34,11 @@ func TestWorkspaceAndOptionsShape_TS20_6(t *testing.T) {
 	if ws == nil {
 		t.Fatal("Open with the zero Options returned no workspace")
 	}
+	// The zero options set no hook: the engine reads the real environment.
+	// (GitConfig is the one the workspace memoizes, so it is set, not run.)
+	if ig := ws.Ignore(); ig.Getenv != nil || ig.Home != nil {
+		t.Error("Open with the zero Options set a Getenv or Home hook")
+	}
 }
 
 const doublestarPath = "github.com/bmatcuk/doublestar/v4"

@@ -265,8 +265,9 @@ precedence first, the global excludes file, `.git/info/exclude` and the
 `.gitignore` files from the scan root down; the last matching pattern wins; a
 directory containing `.git` starts a new ignore root; a `.git` path is always
 excluded; `.ignore` files are not read. `ws.Walk(ctx, sub, WalkOptions{IncludeHidden}, fn)`
-visits what those rules leave under `sub`, and `ws.Ignored(rel, isDir)` answers
-the same question for one path.
+visits what those rules leave under `sub`, with the engine rooted at `sub`, and
+`ws.Ignored(rel, isDir)` answers the question for one path as a walk from the
+workspace root would.
 
 ## Built-in tools (`tools.Options`)
 
@@ -562,7 +563,7 @@ agent speaks 1.0`) before any walk or stream.
 | Field | On `Sync` | On `Export` |
 |---|---|---|
 | `Path` | An existing host directory whose contents map onto the workspace root. | A host directory, or a missing one whose parent exists, created once the agent accepts the transfer. A workspace directory's contents map onto it; a regular file lands as `Path/<base name>`. |
-| `Ignore workspace.IgnoreOptions` | The host's ignore environment. The zero value reads the real environment, global excludes included, as `workspace.Options.Ignore` does; `workspace.NoGlobalExcludes()` is hermetic. The agent always uses `tools.NoGlobalExcludes()`. | The same, for the host's rules over the destination. |
+| `Ignore workspace.IgnoreOptions` | The host's ignore environment. The zero value reads the real environment, global excludes included, as `workspace.Options.Ignore` does; `workspace.NoGlobalExcludes()` is hermetic. The agent always uses `workspace.NoGlobalExcludes()`. | The same, for the host's rules over the destination. |
 | `IncludeIgnored` | Turns ignore rules off on both sides. | The same. |
 | `ExcludeGit` | Leaves `.git` behind. Without it `.git` content transfers whole. | No effect: an export always leaves `.git` behind. |
 | `Delete` | Removes workspace entries the host directory lacks, except what either side's rules exclude. | Removes destination entries the exported directory lacks, except what either side's rules exclude. Refused for a regular-file export path. |

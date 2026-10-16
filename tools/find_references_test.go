@@ -306,7 +306,7 @@ func TestFindReferencesTool_ContextCancelled_TS05_7(t *testing.T) {
 	}
 }
 
-// TS-05-46 (integration): Workspace.References returns ReferenceResult matching find_references tool output with deterministic ranking.
+// TS-05-46 (integration): tools.References returns ReferenceResult matching find_references tool output with deterministic ranking.
 // Verifies 05-REQ-9.2.
 func TestFindReferencesTool_WorkspaceReferencesParity_TS05_46(t *testing.T) {
 	wsDir := t.TempDir()
@@ -353,7 +353,7 @@ func CallGo() int {
 
 	wsRes, err := References(ctx, ws, targetDecl, ReferenceOptions{IncludeTests: true, MaxResults: 30})
 	if err != nil {
-		t.Fatalf("ws.References failed: %v", err)
+		t.Fatalf("References failed: %v", err)
 	}
 
 	var toolResult ReferenceResult

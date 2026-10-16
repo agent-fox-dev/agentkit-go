@@ -193,7 +193,7 @@ func TestAttribution_TopLevel_TS_05_27(t *testing.T) {
 	}
 }
 
-// TS-05-25, TS-05-26 (wiring): reference sites returned by Workspace.References
+// TS-05-25, TS-05-26 (wiring): reference sites returned by tools.References
 // carry the enclosing declaration from the file's outline, with its signature
 // and line range, for Go and (where an outline backend exists) Python.
 // Verifies: 05-REQ-5.1, 05-REQ-5.2

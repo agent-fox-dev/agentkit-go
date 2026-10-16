@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -42,24 +43,15 @@ func importsOf(t *testing.T, dir string) []string {
 	return out
 }
 
-func contains(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
-}
-
 // TS-20-51: tools imports workspace, MatchGlob and ExpandBraces stay in tools,
 // and the root agentkit package imports neither in non-test code. 20-REQ-8.5.
 func TestWorkspaceImportGraph_TS20_51(t *testing.T) {
-	if !contains(importsOf(t, "tools"), modulePath+"/workspace") {
+	if !slices.Contains(importsOf(t, "tools"), modulePath+"/workspace") {
 		t.Error("tools does not import workspace")
 	}
 	root := importsOf(t, ".")
 	for _, banned := range []string{modulePath + "/tools", modulePath + "/workspace"} {
-		if contains(root, banned) {
+		if slices.Contains(root, banned) {
 			t.Errorf("the root agentkit package imports %s in non-test code", banned)
 		}
 	}
@@ -138,7 +130,7 @@ func TestProtoFilesAndProtocolMinorAreUnchanged_TS20_59(t *testing.T) {
 // the new surfaces of tools and workspace. 20-REQ-10.1. (TS-13-67 compares the
 // current API to the golden.)
 func TestAPIGoldenRecordsWorkspace_TS20_60(t *testing.T) {
-	if !contains(apiPackages, "workspace") {
+	if !slices.Contains(apiPackages, "workspace") {
 		t.Errorf("apiPackages is %v: it lacks workspace", apiPackages)
 	}
 	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "internal", "policy", "testdata", "exported-api.golden"))
@@ -171,34 +163,62 @@ func TestAPIGoldenRecordsWorkspace_TS20_60(t *testing.T) {
 }
 
 // TS-20-61: the goldenSHA13 comparisons are gone from TS-14-44, TS-15-42 and
-// TS-17-61, while the golden comparison and TS-17-61's guard check remain.
-// 20-REQ-10.2. (Those tests, run with everything else, are the comparison.)
+// TS-17-61, while each of them still compares the current API to the golden
+// (it calls exportedAPI) and TS-17-61 still runs its guard API check against
+// preSpec17Guard. 20-REQ-10.2. (Those tests, run with everything else, are the
+// comparison.)
 func TestGoldenHashPinsAreRetired_TS20_61(t *testing.T) {
-	for _, name := range []string{"exported_api_14_test.go", "exported_api_15_test.go", "exported_api_17_test.go"} {
-		src, err := os.ReadFile(filepath.Join(repoRoot(t), "internal", "policy", name))
+	for file, test := range map[string]string{
+		"exported_api_14_test.go": "TestExportedAPIUnchanged_TS14_44",
+		"exported_api_15_test.go": "TestExportedAPIUnchanged_TS15_42",
+		"exported_api_17_test.go": "TestExportedAPIUnchanged_TS17_61",
+	} {
+		pf, err := parser.ParseFile(token.NewFileSet(), filepath.Join(repoRoot(t), "internal", "policy", file), nil, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		pf, err := parser.ParseFile(token.NewFileSet(), name, src, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
+		uses := map[string]bool{}
 		ast.Inspect(pf, func(n ast.Node) bool {
 			if id, ok := n.(*ast.Ident); ok && id.Name == "goldenSHA13" {
-				t.Errorf("%s still refers to goldenSHA13", name)
+				t.Errorf("%s still refers to goldenSHA13", file)
 			}
 			return true
 		})
-		if !strings.Contains(string(src), "exported-api.golden") {
-			t.Errorf("%s no longer compares the current API to the golden", name)
+		found := false
+		for _, d := range pf.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Name.Name != test {
+				continue
+			}
+			found = true
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				if id, ok := n.(*ast.Ident); ok {
+					uses[id.Name] = true
+				}
+				// The guard list must be an argument of the comparison, not
+				// only of the failure message.
+				if call, ok := n.(*ast.CallExpr); ok {
+					if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Equal" {
+						for _, arg := range call.Args {
+							if id, ok := arg.(*ast.Ident); ok && id.Name == "preSpec17Guard" {
+								uses["preSpec17Guard compared"] = true
+							}
+						}
+					}
+				}
+				return true
+			})
 		}
-	}
-	src, err := os.ReadFile(filepath.Join(repoRoot(t), "internal", "policy", "exported_api_17_test.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(src), "preSpec17Guard") {
-		t.Error("TS-17-61 lost its guard API check")
+		if !found {
+			t.Errorf("%s no longer declares %s", file, test)
+			continue
+		}
+		if !uses["exportedAPI"] {
+			t.Errorf("%s no longer compares the current API to the golden", test)
+		}
+		if test == "TestExportedAPIUnchanged_TS17_61" && !uses["preSpec17Guard compared"] {
+			t.Errorf("%s lost its guard API check: guard's exported API is no longer compared with preSpec17Guard", test)
+		}
 	}
 }
 
@@ -223,9 +243,14 @@ func TestPolicyTestdataIsCommitted_TS20_62(t *testing.T) {
 // TS-20-63: the root module stays within TS-12-14's 20,000-line budget, which
 // core's TestLineBudgets_TS12_14 measures. 20-REQ-10.4.
 func TestRootModuleStaysWithinItsLineBudget_TS20_63(t *testing.T) {
-	cmd := exec.Command("go", "test", "./core", "-run", "TestLineBudgets_TS12_14", "-count=1")
+	cmd := exec.Command("go", "test", "./core", "-run", "TestLineBudgets_TS12_14", "-count=1", "-v")
 	cmd.Dir = repoRoot(t)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("TS-12-14: %v\n%s", err, out)
+	}
+	// A -run pattern that matches no test exits 0 too: require that it ran.
+	if !strings.Contains(string(out), "--- PASS: TestLineBudgets_TS12_14") {
+		t.Fatalf("TestLineBudgets_TS12_14 did not run and pass:\n%s", out)
 	}
 }
