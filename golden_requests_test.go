@@ -17,6 +17,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // NFR-TEST-08(b) and 10-REQ-8: the Anthropic request body, byte for byte.
@@ -250,15 +251,16 @@ func TestOutputSchemaNeverChangesRequestBodies_TS06_3(t *testing.T) {
 	}
 }
 
-// TS-06-32 (smoke, 06-PATH-3): the canonical request's tool carries the real
-// find_files OutputSchema from tools.All, is projected through
-// core.ToolWires, and every provider's body still equals its golden.
+// TS-06-32 (smoke, 06-PATH-3), and TS-20-33's golden clause: the canonical
+// request's tool carries the real find_files OutputSchema from tools.For, is
+// projected through core.ToolWires, and every provider's body still equals its
+// golden.
 func TestSmokeOutputSchemaToolsKeepGoldens_TS06_32(t *testing.T) {
-	ws, err := tools.NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

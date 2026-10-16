@@ -1,0 +1,740 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "22",
+  "spec_name": "embedder_helpers",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-22-1",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-1.1"
+      ],
+      "title": "Named returns the requested tools in names order, matches only top-level tools and prefers the first of two same-named tools",
+      "given": [
+        "a set ts of tools read_file, write_file, list_files in that order",
+        "a wrapper tool in ts whose ReachableTools hold a tool named hidden",
+        "two tools in a second set both named dup, with different Descriptions"
+      ],
+      "when": "Named(ts, \"list_files\", \"read_file\") is called, then Named(ts, \"hidden\"), then Named(dupSet, \"dup\")",
+      "then": [
+        "the first call returns exactly two tools with Names list_files, read_file in that order and a nil error",
+        "the second call returns a nil slice and a non-nil error because ReachableTools are not searched",
+        "the third call returns the first dup tool (its Description matches the first)"
+      ],
+      "pseudocode": "got, err = core.Named(ts, 'list_files', 'read_file'); assert err == nil; assert names(got) == ['list_files','read_file']; _, err = core.Named(ts, 'hidden'); assert err != nil; d, _ = core.Named(dupSet, 'dup'); assert d[0].Description == first.Description"
+    },
+    {
+      "id": "TS-22-2",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-1.2"
+      ],
+      "title": "Named returns a fresh slice of value copies that does not alias ts",
+      "given": [
+        "a set ts of three tools with distinct Descriptions"
+      ],
+      "when": "Named(ts, \"read_file\") is called and the result's element Description and the result slice are then overwritten",
+      "then": [
+        "ts[i].Description is unchanged for every i",
+        "appending to the result does not change ts",
+        "the result's backing array differs from ts's (&got[0] != &ts[idx])"
+      ],
+      "pseudocode": "got,_ = Named(ts,'read_file'); got[0].Description='x'; assert ts[0].Description == orig; assert &got[0] != &ts[0]"
+    },
+    {
+      "id": "TS-22-3",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-1.3"
+      ],
+      "title": "Named with no names returns an empty non-nil slice and a nil error",
+      "given": [
+        "a non-empty tool set, and separately a nil tool set"
+      ],
+      "when": "Named(ts) and Named(nil) are called with no names",
+      "then": [
+        "each result is non-nil with length 0",
+        "each error is nil"
+      ],
+      "pseudocode": "got, err = Named(ts); assert got != nil && len(got)==0 && err == nil; got, err = Named(nil); assert got != nil && len(got)==0 && err == nil"
+    },
+    {
+      "id": "TS-22-4",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-1.4"
+      ],
+      "title": "Named reports every missing name and the names the set holds",
+      "given": [
+        "a set ts of read_file and write_file in that order",
+        "an empty tool set"
+      ],
+      "when": "Named(ts, \"no_such_tool\") is called; then Named(ts, \"write_file\", \"b_missing\", \"a_missing\"); then Named(empty, \"x\")",
+      "then": [
+        "the first error text equals `core: no tool named \"no_such_tool\"; the set holds: read_file, write_file` and the tools are nil",
+        "the second error begins \"core: \", quotes \"b_missing\" before \"a_missing\" (names order) and lists read_file before write_file",
+        "the third error begins \"core: \", quotes \"x\" and states that the set is empty",
+        "the returned tools are nil in all three calls"
+      ],
+      "pseudocode": "got, err = Named(ts,'no_such_tool'); assert got == nil; assert err.Error() == 'core: no tool named \"no_such_tool\"; the set holds: read_file, write_file'; assert index(err2,'\"b_missing\"') < index(err2,'\"a_missing\"')"
+    },
+    {
+      "id": "TS-22-5",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-1.5"
+      ],
+      "title": "Named rejects a name repeated in names and quotes the first repeated name",
+      "given": [
+        "a set ts holding read_file, write_file and list_files"
+      ],
+      "when": "Named(ts, \"read_file\", \"write_file\", \"write_file\", \"read_file\") is called",
+      "then": [
+        "the tools are nil",
+        "the error is non-nil, begins \"core: \" and quotes \"write_file\" (the first repeated name), not \"read_file\""
+      ],
+      "pseudocode": "got, err = Named(ts,'read_file','write_file','write_file','read_file'); assert got == nil; assert hasPrefix(err,'core: ') && contains(err,'\"write_file\"')"
+    },
+    {
+      "id": "TS-22-6",
+      "kind": "property",
+      "verifies": [
+        "22-REQ-1.6"
+      ],
+      "title": "Named returns tools matching any sequence of distinct names from ts, and is race-free under concurrent calls",
+      "given": [
+        "a generated tool set ts with distinct names"
+      ],
+      "when": "for any ts and any sequence of distinct names drawn from ts's Names, Named is called once sequentially and then concurrently from several goroutines on the same ts",
+      "then": [
+        "the returned Names equal the requested sequence",
+        "every concurrent result equals the sequential result",
+        "the race detector reports nothing (go test -race)"
+      ],
+      "pseudocode": "for ts, picks in gen(): got,_ = Named(ts,picks...); assert names(got)==picks; parallel(8): assert names(Named(ts,picks...))==picks"
+    },
+    {
+      "id": "TS-22-7",
+      "kind": "property",
+      "verifies": [
+        "22-REQ-2.1"
+      ],
+      "title": "Allow decides exactly as Restricted with AllowedPrograms for any programs and any context",
+      "given": [
+        "guard.Restricted(Options{AllowedPrograms: programs}) as the oracle"
+      ],
+      "when": "for any program list (including empty) and any tool-call context (execute or run_command with a generated command string, or a non-shell tool), both guards are called",
+      "then": [
+        "Block, Reason and Terminate are equal field by field",
+        "every blocked Reason begins \"guard.Restricted: \""
+      ],
+      "pseudocode": "a = Allow(progs...); r = Restricted(Options{AllowedPrograms: progs}); for ctx in gen(): da=a(ctx); dr=r(ctx); assert da == dr"
+    },
+    {
+      "id": "TS-22-8",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-2.2"
+      ],
+      "title": "Mutating the caller's slice after Allow returns does not change decisions",
+      "given": [
+        "programs := []string{\"ls\", \"cat\"} with spare capacity",
+        "a guard built by Allow(programs...)"
+      ],
+      "when": "the caller overwrites programs[1] with \"rm\", appends \"curl\" and reorders, then the guard is called for rm, curl, ls and cat commands via execute",
+      "then": [
+        "rm and curl remain blocked",
+        "ls and cat remain allowed"
+      ],
+      "pseudocode": "g = Allow(progs...); progs[1]='rm'; progs = append(progs,'curl'); assert g(exec('rm x')).Block; assert g(exec('curl u')).Block; assert !g(exec('ls')).Block; assert !g(exec('cat f')).Block"
+    },
+    {
+      "id": "TS-22-9",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-2.3"
+      ],
+      "title": "Allow with no programs blocks every shell call and allows other tools",
+      "given": [
+        "g := guard.Allow()"
+      ],
+      "when": "g is called for execute and run_command with benign commands, and for read_file and an unknown tool name",
+      "then": [
+        "execute and run_command decisions have Block=true",
+        "read_file and the unknown tool have Block=false"
+      ],
+      "pseudocode": "g=Allow(); assert g(ctx('execute','ls')).Block; assert g(ctx('run_command','ls')).Block; assert !g(ctx('read_file',...)).Block"
+    },
+    {
+      "id": "TS-22-10",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-3.1"
+      ],
+      "title": "faux.ToolCall equals the one-block tool_use literal it replaces",
+      "given": [
+        "id \"c1\", name \"read_file\", args `{\"path\":\"a\"}`"
+      ],
+      "when": "faux.ToolCall(id, name, args) is called",
+      "then": [
+        "reflect.DeepEqual with faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall(id,name,args)}, StopReason: core.StopReasonToolUse}",
+        "RawStopReason, ErrorMessage, Usage, Err and Delay are zero"
+      ],
+      "pseudocode": "assert DeepEqual(faux.ToolCall(id,name,args), faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall(id,name,args)}, StopReason: core.StopReasonToolUse})"
+    },
+    {
+      "id": "TS-22-11",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-3.2"
+      ],
+      "title": "faux.Text equals the one-block text literal it replaces",
+      "given": [
+        "strings \"\", \"hello\" and a multi-line string"
+      ],
+      "when": "faux.Text(s) is called for each",
+      "then": [
+        "reflect.DeepEqual with faux.Turn{Blocks: []core.ContentBlock{core.TextBlock{Text: s}}, StopReason: core.StopReasonStop}",
+        "every other Turn field is zero"
+      ],
+      "pseudocode": "for s in cases: assert DeepEqual(faux.Text(s), faux.Turn{Blocks: []core.ContentBlock{core.TextBlock{Text: s}}, StopReason: core.StopReasonStop})"
+    },
+    {
+      "id": "TS-22-12",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-3.3"
+      ],
+      "title": "faux.ToolCall turns empty or whitespace args into the object {}",
+      "given": [
+        "args values \"\", \"  \" and \"\\n\\t\""
+      ],
+      "when": "faux.ToolCall(\"c\", \"t\", args) is called for each",
+      "then": [
+        "the single block is a core.ToolUseBlock",
+        "its input JSON text is {}"
+      ],
+      "pseudocode": "for a in ['',' ','\\n\\t']: b = faux.ToolCall('c','t',a).Blocks[0].(core.ToolUseBlock); assert string(b.Input)=='{}'"
+    },
+    {
+      "id": "TS-22-13",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-3.4"
+      ],
+      "title": "faux.ToolCall panics with a message naming faux.ToolCall, id and tool name when args is not an object",
+      "given": [
+        "args values `[1]`, `\"s\"`, `12` and `{bad`"
+      ],
+      "when": "faux.ToolCall(\"id7\", \"my_tool\", args) is called inside a recover",
+      "then": [
+        "each call panics with a string value",
+        "the string contains \"faux.ToolCall\", `\"id7\"` and `\"my_tool\"`"
+      ],
+      "pseudocode": "for a in bad: msg = recoverString(func(){faux.ToolCall('id7','my_tool',a)}); assert contains(msg,'faux.ToolCall') && contains(msg,'\"id7\"') && contains(msg,'\"my_tool\"')"
+    },
+    {
+      "id": "TS-22-14",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-3.5"
+      ],
+      "title": "A faux.Provider scripted with the helpers emits the same events as with the literals",
+      "given": [
+        "a real faux.Provider A scripted with faux.ToolCall(...) then faux.Text(...)",
+        "a real faux.Provider B scripted with the equivalent one-block Turn literals"
+      ],
+      "when": "each provider is streamed twice with the same request and its events are collected",
+      "then": [
+        "the collected core events of A are reflect.DeepEqual to those of B for both turns"
+      ],
+      "pseudocode": "evA = collect(faux.New(ToolCall(..),Text(..))) per call; evB = collect(faux.New(literal1, literal2)); assert DeepEqual(evA, evB)"
+    },
+    {
+      "id": "TS-22-15",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-4.1",
+        "22-REQ-4.3"
+      ],
+      "title": "Open calls Create, Sync, Tools once each in order, returns the unwrapped sandbox and never closes it",
+      "given": [
+        "a test double Provider and Sandbox in package sandbox_test that records calls and their contexts",
+        "a non-nil Source (LocalDir) and ToolOptions{SpillDir: \"/abs\"}",
+        "a ctx carrying a value"
+      ],
+      "when": "sandbox.Open(ctx, p, spec, src, opts) is called",
+      "then": [
+        "the recorded order is Create, Sync, Tools, each once",
+        "Create received spec and ctx; Sync received src; Tools received opts",
+        "the returned Sandbox is identical (==) to the one Create returned",
+        "the returned proxies are the slice Tools returned",
+        "the error is nil",
+        "Close was called zero times"
+      ],
+      "pseudocode": "sb, tools, err = Open(ctx,p,spec,src,opts); assert p.calls==['Create','Sync','Tools']; assert sb == p.created; assert p.created.closeCalls == 0"
+    },
+    {
+      "id": "TS-22-16",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-4.2"
+      ],
+      "title": "Open with a nil src skips Sync",
+      "given": [
+        "a recording test double Provider and Sandbox"
+      ],
+      "when": "sandbox.Open(ctx, p, spec, nil, opts) is called",
+      "then": [
+        "the recorded calls are Create then Tools, with no Sync",
+        "the returned sandbox and proxies are those the double produced and the error is nil"
+      ],
+      "pseudocode": "Open(ctx,p,spec,nil,opts); assert p.calls==['Create','Tools']"
+    },
+    {
+      "id": "TS-22-17",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-4.4"
+      ],
+      "title": "Open on local with a LocalDir returns a live sandbox whose proxies match Sandbox.Tools",
+      "given": [
+        "the local provider (local.Unisolated) with TMPDIR set to a temp dir (skipped on Windows)",
+        "a host directory with src/main.go containing known text"
+      ],
+      "when": "sandbox.Open(ctx, p, spec, sandbox.LocalDir{Path: dir}, sandbox.ToolOptions{}) is called, then the read_file proxy is executed, then Tools with equal options, a second Sync, Export and Close are called",
+      "then": [
+        "Open returns a nil error and a non-nil sandbox",
+        "the proxy Names equal the Names a later sb.Tools call with equal options returns, in the same order",
+        "the read_file proxy output contains the synced file's content",
+        "the second Sync, Export to a host dir and Close all succeed"
+      ],
+      "pseudocode": "sb, tl, err = Open(...); assert err==nil; assert names(tl)==names(sb.Tools(ctx,ToolOptions{})); out = find(tl,'read_file').Execute(ctx,{path:'src/main.go'}); assert contains(out, text); assert sb.Sync(...)==nil; assert sb.Export(...)==nil; assert sb.Close(ctx)==nil"
+    },
+    {
+      "id": "TS-22-18",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-5.1"
+      ],
+      "title": "Open with a nil Provider returns a sandbox-prefixed error without panicking",
+      "given": [
+        "a nil sandbox.Provider interface value"
+      ],
+      "when": "sandbox.Open(ctx, nil, spec, src, opts) is called",
+      "then": [
+        "the sandbox is nil and the tools are nil",
+        "the error is non-nil and its text begins \"sandbox: \"",
+        "no panic occurs"
+      ],
+      "pseudocode": "sb,tl,err = Open(ctx,nil,spec,src,opts); assert sb==nil && tl==nil && hasPrefix(err.Error(),'sandbox: ')"
+    },
+    {
+      "id": "TS-22-19",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-5.2"
+      ],
+      "title": "Open returns Create's error unchanged and calls no Sandbox method",
+      "given": [
+        "a test double Provider whose Create returns a distinct error E"
+      ],
+      "when": "sandbox.Open(ctx, p, spec, src, opts) is called",
+      "then": [
+        "the returned sandbox and tools are nil",
+        "the returned error == E (identity)",
+        "no Sync, Tools or Close call was recorded"
+      ],
+      "pseudocode": "sb,tl,err = Open(...); assert err == E; assert p.sandboxCalls == 0"
+    },
+    {
+      "id": "TS-22-20",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-5.3"
+      ],
+      "title": "A failing Sync or Tools closes the sandbox once and returns the step error unchanged",
+      "given": [
+        "a test double whose Sync fails with error S in one case and whose Tools fails with error T in another",
+        "Close succeeds in both"
+      ],
+      "when": "sandbox.Open is called in each case",
+      "then": [
+        "Close was called exactly once",
+        "the result is (nil, nil, err) with err == S in the Sync case and err == T in the Tools case",
+        "in the Sync case Tools was never called"
+      ],
+      "pseudocode": "for step in [Sync,Tools]: sb,tl,err = Open(...); assert sb==nil && tl==nil; assert err == stepErr; assert double.closeCalls == 1"
+    },
+    {
+      "id": "TS-22-21",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-5.4"
+      ],
+      "title": "A step failure plus a Close failure returns errors.Join matching both",
+      "given": [
+        "a test double whose Sync (or Tools) fails with S and whose Close fails with C"
+      ],
+      "when": "sandbox.Open is called",
+      "then": [
+        "sandbox and tools are nil",
+        "errors.Is(err, S) is true",
+        "errors.Is(err, C) is true",
+        "Close was called once"
+      ],
+      "pseudocode": "sb,tl,err = Open(...); assert errors.Is(err,S) && errors.Is(err,C); assert closeCalls==1"
+    },
+    {
+      "id": "TS-22-22",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-5.5"
+      ],
+      "title": "Cleanup runs with an uncancelled context carrying the original values when ctx is already cancelled",
+      "given": [
+        "a ctx with a value under a private key, then cancelled (also tested with an expired deadline)",
+        "a test double whose Sync fails and whose Close records ctx.Err() and ctx.Value(key)"
+      ],
+      "when": "sandbox.Open(ctx, p, spec, src, opts) is called",
+      "then": [
+        "Close was called",
+        "Close observed ctx.Err() == nil",
+        "Close observed the original context value",
+        "the step error is returned (errors.Is matches it)"
+      ],
+      "pseudocode": "ctx,cancel = WithCancel(WithValue(bg,k,'v')); cancel(); _,_,err = Open(ctx,...); assert double.closeErr == nil && double.closeVal=='v'; assert errors.Is(err, S)"
+    },
+    {
+      "id": "TS-22-23",
+      "kind": "property",
+      "verifies": [
+        "22-REQ-5.6"
+      ],
+      "title": "Open's error matches every sentinel the failing step matches, with or without a Close failure",
+      "given": [
+        "a test double with a configurable failing step (Sync or Tools), a step error wrapping a sentinel, and a Close that succeeds or fails"
+      ],
+      "when": "for any failing step, any sentinel X from {ErrUnsupported, ErrToolMismatch, ErrUnsafeArchive, ErrProtocol, ErrUnavailable} wrapped by fmt.Errorf %w, and any Close outcome, Open is called",
+      "then": [
+        "the returned sandbox and tools are nil",
+        "errors.Is(err, X) is true",
+        "when Close failed, errors.Is(err, closeErr) is also true"
+      ],
+      "pseudocode": "for step,X,closeFails in gen(): stepErr = fmt.Errorf('ctx: %w',X); _,_,err = Open(...); assert errors.Is(err,X)"
+    },
+    {
+      "id": "TS-22-24",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-5.7"
+      ],
+      "title": "Open on local with a GitRepo source fails with ErrUnsupported and leaves no sandbox directory",
+      "given": [
+        "the local provider with TMPDIR set to t.TempDir() (skipped on Windows)"
+      ],
+      "when": "sandbox.Open(ctx, p, spec, sandbox.GitRepo{...}, sandbox.ToolOptions{}) is called",
+      "then": [
+        "the sandbox and tools are nil",
+        "errors.Is(err, sandbox.ErrUnsupported) is true",
+        "TMPDIR/agentkit-sandbox-local is absent or has no entries"
+      ],
+      "pseudocode": "_,_,err = Open(ctx, local, spec, GitRepo{URL:'x'}, ToolOptions{}); assert errors.Is(err, ErrUnsupported); assert entries(TMPDIR+'/agentkit-sandbox-local') == []"
+    },
+    {
+      "id": "TS-22-25",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-5.8"
+      ],
+      "title": "Open on local with a relative SpillDir fails at Tools and leaves no sandbox directory",
+      "given": [
+        "the local provider with TMPDIR set to t.TempDir() (skipped on Windows)",
+        "a host directory with one file"
+      ],
+      "when": "sandbox.Open(ctx, p, spec, sandbox.LocalDir{Path: dir}, sandbox.ToolOptions{SpillDir: \"rel\"}) is called",
+      "then": [
+        "the sandbox and tools are nil",
+        "the error text contains \"sandbox: agent refused Tools\"",
+        "TMPDIR/agentkit-sandbox-local is absent or has no entries"
+      ],
+      "pseudocode": "_,_,err = Open(..., ToolOptions{SpillDir:'rel'}); assert contains(err.Error(),'sandbox: agent refused Tools'); assert entries(root)==[]"
+    },
+    {
+      "id": "TS-22-26",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-6.1"
+      ],
+      "title": "The rewritten codemode example prints the same output as before",
+      "given": [
+        "examples/codemode rewritten on core.Named, faux.ToolCall and faux.Text"
+      ],
+      "when": "the existing TS-08-49 test runs the example offline",
+      "then": [
+        "stdout contains \"Go files: main.go, util.go\"",
+        "stdout contains \"CHANGELOG.md: read_failed\"",
+        "stdout contains `Return value: {\"apples\": 12, \"pears\": 0}`",
+        "stdout contains \"called inventory__stock\"",
+        "TS-08-49 is unmodified and passes"
+      ],
+      "pseudocode": "out = run(); for line in expected: assert contains(out,line)"
+    },
+    {
+      "id": "TS-22-27",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-6.2"
+      ],
+      "title": "Structural test: examples/codemode/main.go has no forbidden node and uses core.Named",
+      "given": [
+        "examples/codemode/main.go parsed with go/parser"
+      ],
+      "when": "the AST is walked",
+      "then": [
+        "no composite literal of type faux.Turn",
+        "no call to guard.Restricted",
+        "no switch statement whose tag is a selector ending in .Name",
+        "no function declaration named turn",
+        "exactly one call to core.Named"
+      ],
+      "pseudocode": "f = parse('main.go'); ast.Inspect: assert no CompositeLit{faux.Turn}, no Call{guard.Restricted}, no Switch{Tag: *.Name}, no FuncDecl 'turn'; assert count(Call core.Named)==1"
+    },
+    {
+      "id": "TS-22-28",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-7.1"
+      ],
+      "title": "The sandbox example prints every TS-13-68 line except the removed synced line",
+      "given": [
+        "examples/sandbox rewritten on sandbox.Open, core.Named and guard.Allow, run offline on the local provider"
+      ],
+      "when": "the updated TS-13-68 runs the example",
+      "then": [
+        "stdout contains \"read_file src/main.go in the sandbox: ok=true\"",
+        "stdout contains \"README: Says hello from inside the sandbox.\" and \"TODOs: 2\" and \"src: main.go, util.go\"",
+        "stdout contains \"rm: blocked_by_policy\" and \"exported src: main.go, util.go\" and \"Sandbox example completed successfully\"",
+        "no output line begins \"synced \""
+      ],
+      "pseudocode": "out = run(); for l in expected: assert contains(out,l); for line in lines(out): assert !hasPrefix(line,'synced ')"
+    },
+    {
+      "id": "TS-22-29",
+      "kind": "integration",
+      "verifies": [
+        "22-REQ-7.2"
+      ],
+      "title": "The rewritten gateway example prints the same lines and passes its unmodified offline test",
+      "given": [
+        "examples/gateway rewritten on sandbox.Open, core.Named, guard.Allow and the faux helpers"
+      ],
+      "when": "the existing TestExampleRunsOffline runs",
+      "then": [
+        "stdout contains \"backend local\", \"a wrong token: refused\", \"on gateway/local\"",
+        "stdout contains \"labels map[example:gateway], expires in 10m0s\", \"TODOs: 2\", \"src: main.go, util.go\"",
+        "stdout contains \"rm: blocked_by_policy\", \"exported src: main.go, util.go\" and \"the gateway holds 0 sandboxes\""
+      ],
+      "pseudocode": "out = run(); for l in expected: assert contains(out,l)"
+    },
+    {
+      "id": "TS-22-30",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-7.3"
+      ],
+      "title": "Structural test: the sandbox and gateway examples use the helpers and contain no forbidden node",
+      "given": [
+        "examples/sandbox/main.go and examples/gateway/main.go parsed with go/parser, one test per example"
+      ],
+      "when": "each AST is walked",
+      "then": [
+        "exactly one sandbox.Open call",
+        "exactly one core.Named call and exactly one guard.Allow(\"ls\") call",
+        "no Create, Sync or Tools method call",
+        "no faux.Turn composite literal and no guard.Restricted call",
+        "no switch whose tag is a selector ending in .Name"
+      ],
+      "pseudocode": "for f in [sandbox,gateway]: ast.Inspect; assert count(sandbox.Open)==1; assert count(Named)==1; assert count(Allow)==1; assert 0 == count(Call sel in {Create,Sync,Tools}) + count(faux.Turn lit) + count(guard.Restricted) + count(Switch Tag *.Name)"
+    },
+    {
+      "id": "TS-22-31",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-7.4"
+      ],
+      "title": "Updated TS-14-45: the sandbox.Open and Export calls each take exactly one LocalDir literal and no Tar or TarOut literal appears",
+      "given": [
+        "examples/sandbox/main.go parsed with go/parser"
+      ],
+      "when": "TS-14-45 walks the AST",
+      "then": [
+        "the sandbox.Open call has exactly one sandbox.LocalDir composite-literal argument",
+        "the Export call has exactly one sandbox.LocalDir composite-literal argument",
+        "no sandbox.Tar or sandbox.TarOut composite literal appears"
+      ],
+      "pseudocode": "for call in calls(f): if sel=='Open' (pkg sandbox) or sel=='Export': assert count(LocalDir literal args)==1; assert none(Tar|TarOut literals)"
+    },
+    {
+      "id": "TS-22-32",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-8.1"
+      ],
+      "title": "The exported-API golden records core.Named and is committed",
+      "given": [
+        "internal/policy/testdata/exported-api.golden regenerated with AGENTKIT_UPDATE_API_GOLDEN=1 and committed"
+      ],
+      "when": "TestSandboxLayoutAndAPI_TS13_67 and TS-19-64's testdata check run without AGENTKIT_UPDATE_API_GOLDEN",
+      "then": [
+        "the golden contains the line `func Named(ts []Tool, names ...string) ([]Tool, error)` under core",
+        "TS-13-67 passes",
+        "TS-19-64 finds no testdata difference from HEAD"
+      ],
+      "pseudocode": "assert contains(golden,'func Named(ts []Tool, names ...string) ([]Tool, error)'); assert exportedAPI(core) == golden section"
+    },
+    {
+      "id": "TS-22-33",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-8.2"
+      ],
+      "title": "TS-17-61 pins guard's exported declarations including Allow in sorted position",
+      "given": [
+        "preSpec17Guard extended with `func Allow(programs ...string) core.BeforeToolCall` as its first element, before `func AllowAll(`"
+      ],
+      "when": "TestExportedAPIUnchanged_TS17_61 compares the guard package's exported declarations to the pin",
+      "then": [
+        "the test passes",
+        "it still fails if any other guard declaration is added, removed or changed"
+      ],
+      "pseudocode": "assert exportedDecls(guard) == preSpec17Guard; assert preSpec17Guard[0]=='func Allow(programs ...string) core.BeforeToolCall' && sorted(preSpec17Guard)"
+    },
+    {
+      "id": "TS-22-34",
+      "kind": "unit",
+      "verifies": [
+        "22-REQ-8.3"
+      ],
+      "title": "Line budgets still hold after adding the helpers",
+      "given": [
+        "core.Named added to core/tool.go and the other helpers added"
+      ],
+      "when": "TestLineBudgets_TS12_14 runs",
+      "then": [
+        "core has at most 1,600 code lines",
+        "the root module has at most 20,000 budget lines"
+      ],
+      "pseudocode": "assert codeLines(core) <= 1600; assert budgetLines(root) <= 20000"
+    },
+    {
+      "id": "TS-22-35",
+      "kind": "smoke",
+      "verifies": [
+        "22-PATH-1",
+        "22-REQ-1.1",
+        "22-REQ-3.5"
+      ],
+      "title": "The codemode example builds a code-mode agent from named workspace tools and a scripted model",
+      "given": [
+        "the real examples/codemode main with its temp workspace and mocked inventory tool, offline"
+      ],
+      "when": "the example's run function executes the scripted code_mode calls end to end",
+      "then": [
+        "core.Named picks list_files, find_files, read_file in that order",
+        "the agent runs the faux.ToolCall/faux.Text script against the workspace",
+        "output includes the Go file list, the read_failed marker, the return value and the inventory__stock call"
+      ],
+      "real_components": [
+        "workspace",
+        "tools.For",
+        "core.Named",
+        "codemode",
+        "faux.Provider",
+        "agentkit agent"
+      ]
+    },
+    {
+      "id": "TS-22-36",
+      "kind": "smoke",
+      "verifies": [
+        "22-PATH-2",
+        "22-REQ-4.4",
+        "22-REQ-2.1"
+      ],
+      "title": "The sandbox example opens a local sandbox, runs a guarded agent in it and exports the result",
+      "given": [
+        "a host temp dir with project files and the local provider (skipped on Windows)"
+      ],
+      "when": "the example's runOn runs with sandbox.Open, core.Named, guard.Allow(\"ls\") and the faux script",
+      "then": [
+        "the agent reads and searches inside the sandbox",
+        "rm is blocked with blocked_by_policy",
+        "src is exported to a host directory containing main.go and util.go",
+        "the deferred Close removes the sandbox directory under agentkit-sandbox-local"
+      ],
+      "real_components": [
+        "sandbox.Open",
+        "local provider",
+        "sandbox agent",
+        "core.Named",
+        "guard.Allow",
+        "codemode",
+        "faux.Provider",
+        "agentkit agent"
+      ]
+    },
+    {
+      "id": "TS-22-37",
+      "kind": "smoke",
+      "verifies": [
+        "22-PATH-3",
+        "22-REQ-5.7"
+      ],
+      "title": "Open fails after Create on local with a GitRepo source and leaves nothing behind",
+      "given": [
+        "the real local provider with TMPDIR set to a temp dir (skipped on Windows)"
+      ],
+      "when": "sandbox.Open is called with a sandbox.GitRepo source",
+      "then": [
+        "the call returns (nil, nil, err) with errors.Is(err, sandbox.ErrUnsupported)",
+        "the sandbox directory under agentkit-sandbox-local is gone"
+      ],
+      "real_components": [
+        "sandbox.Open",
+        "local provider",
+        "sandbox agent",
+        "internal/attach"
+      ]
+    },
+    {
+      "id": "TS-22-38",
+      "kind": "smoke",
+      "verifies": [
+        "22-PATH-4",
+        "22-REQ-7.2"
+      ],
+      "title": "The gateway example opens a sandbox through an in-process gateway and lists it empty after closing",
+      "given": [
+        "an in-process gateway with a local backend and a gateway.Dial provider"
+      ],
+      "when": "the example's runOn calls sandbox.Open with a LocalDir, runs the scripted turns with core.Named tools and guard.Allow(\"ls\"), exports src, closes the sandbox and lists sandboxes",
+      "then": [
+        "rm is blocked with blocked_by_policy",
+        "src is exported with main.go and util.go",
+        "the example prints \"the gateway holds 0 sandboxes\""
+      ],
+      "real_components": [
+        "gateway.Dial",
+        "in-process gateway (gatewayd)",
+        "local backend",
+        "sandbox.Open",
+        "core.Named",
+        "guard.Allow",
+        "faux.Provider",
+        "agentkit agent"
+      ]
+    }
+  ]
+}

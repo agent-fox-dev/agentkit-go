@@ -15,9 +15,12 @@ import (
 
 const modulePath = "github.com/agent-fox-dev/agentkit-go"
 
-// apiPackages are the packages whose exported surface spec 13 must not
-// change, relative to the repository root.
-var apiPackages = []string{".", "core", "tools", "codemode"}
+// apiPackages are the packages whose exported surface TS-13-67 records in
+// testdata/exported-api.golden, relative to the repository root. The golden is
+// a change detector: a change to one of these surfaces is deliberate, made with
+// AGENTKIT_UPDATE_API_GOLDEN=1 and reviewed in the diff of the golden
+// (docs/errata/13_sandbox_core.md says why it is no longer a freeze).
+var apiPackages = []string{".", "core", "tools", "codemode", "workspace"}
 
 // moduleGoFiles returns every Go file of the root module, relative to root:
 // nested modules, testdata, build output and dot-directories are skipped.

@@ -3,6 +3,7 @@ package tools
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // candidateIndex is the optional Index extension that answers which files
@@ -31,46 +33,31 @@ func isBinary(data []byte) bool {
 	return bytes.IndexByte(data[:min(len(data), 512)], 0) >= 0
 }
 
-// isPathIgnored checks if the path or any of its parent directories are ignored.
-func isPathIgnored(ig *ignoreEngine, rel string) bool {
-	if ig.match(rel, false) {
-		return true
-	}
-	parts := strings.Split(rel, "/")
-	for i := 1; i < len(parts); i++ {
-		if ig.match(strings.Join(parts[:i], "/"), true) {
-			return true
-		}
-	}
-	return false
-}
-
 // findCandidateFiles finds workspace-relative file paths that mention name,
 // respecting .gitignore and hidden entry exclusion. An idx implementing
 // candidateIndex answers instead of a walk; its answer is filtered by the
-// same rules. Each file inspected is taken from budget; when it refuses,
+// same rules, ws's. Each file inspected is taken from budget; when it refuses,
 // the files found so far are returned.
-func findCandidateFiles(ctx context.Context, ws *Workspace, name string, idx Index, budget *refBudget) ([]string, error) {
+func findCandidateFiles(ctx context.Context, ws *workspace.Workspace, name string, idx Index, budget *refBudget) ([]string, error) {
 	if ws == nil {
-		return nil, ErrPathNotAllowed
+		return nil, errors.New("tools: nil workspace")
 	}
 
 	if cIdx, ok := idx.(candidateIndex); ok {
 		if fromIndex, err := cIdx.CandidateFiles(ctx, name); err == nil && fromIndex != nil {
-			ig := newIgnoreEngine(ws.Root, IgnoreOptions{})
 			var candidates []string
 			for _, rel := range fromIndex {
 				rel = filepath.ToSlash(filepath.Clean(rel))
 				if strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "../") || rel == ".." {
 					continue
 				}
-				if isAnyComponentHidden(rel) || isPathIgnored(ig, rel) {
+				if isAnyComponentHidden(rel) || ws.Ignored(rel, false) {
 					continue
 				}
 				if !budget.take() {
 					break
 				}
-				fi, err := os.Stat(filepath.Join(ws.Root, filepath.FromSlash(rel)))
+				fi, err := os.Stat(filepath.Join(ws.Root(), filepath.FromSlash(rel)))
 				if err != nil || fi.IsDir() {
 					continue
 				}
@@ -82,14 +69,14 @@ func findCandidateFiles(ctx context.Context, ws *Workspace, name string, idx Ind
 
 	var candidates []string
 	nameBytes := []byte(name)
-	err := Walk(ctx, ws, ws.Root, WalkOptions{}, func(rel string, d fs.DirEntry) error {
+	err := ws.Walk(ctx, "", workspace.WalkOptions{}, func(rel string, d fs.DirEntry) error {
 		if d.IsDir() {
 			return nil
 		}
 		if !budget.take() {
 			return filepath.SkipAll
 		}
-		content, err := os.ReadFile(filepath.Join(ws.Root, filepath.FromSlash(rel)))
+		content, err := os.ReadFile(filepath.Join(ws.Root(), filepath.FromSlash(rel)))
 		if err != nil || isBinary(content) {
 			return nil
 		}

@@ -15,6 +15,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/outline"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-03-32: The index is built lazily on the first code_search and never by
@@ -24,14 +25,13 @@ func TestIndexBuiltLazilyOnCodeSearch_TS03_32(t *testing.T) {
 	mkFile(t, root, "a.go", "package pkg\n\nfunc Runner() {}\n")
 	mkFile(t, root, "b.go", "package pkg\n\nfunc Helper() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -85,14 +85,13 @@ func TestSymbolsMatchingRules_TS03_50(t *testing.T) {
 	mkFile(t, root, "a/server.go", "package a\n\ntype Server struct{}\nfunc (s Server) Run() {}\n")
 	mkFile(t, root, "b/helper.go", "package b\n\nfunc RunHelper() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -219,14 +218,13 @@ func TestSymbolsOkTrueAfterBuild_TS03_51(t *testing.T) {
 	mkFile(t, root, "main.go", "package main\n\nfunc Main() {}\nfunc Helper() {}\n")
 	mkFile(t, root, "lib.go", "package main\n\nfunc Lib() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -265,13 +263,12 @@ func TestSymbolsOkFalseStates_TS03_52(t *testing.T) {
 	t.Run("unbuilt", func(t *testing.T) {
 		root := t.TempDir()
 		mkFile(t, root, "a.go", "package a\nfunc A() {}\n")
-		ws, err := tools.NewWorkspace(root)
+		ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 		if err != nil {
 			t.Fatal(err)
 		}
 		idx, err := newIndex(ws, Options{
 			TempDir: t.TempDir(),
-			Ignore:  tools.NoGlobalExcludes(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -296,13 +293,12 @@ func TestSymbolsOkFalseStates_TS03_52(t *testing.T) {
 			mkFile(t, root, fmt.Sprintf("f%d.go", i),
 				fmt.Sprintf("package pkg\nfunc F%d() {}\n", i))
 		}
-		ws, err := tools.NewWorkspace(root)
+		ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 		if err != nil {
 			t.Fatal(err)
 		}
 		idx, err := newIndex(ws, Options{
 			TempDir:  t.TempDir(),
-			Ignore:   tools.NoGlobalExcludes(),
 			MaxFiles: 5, // partial build
 		})
 		if err != nil {
@@ -330,13 +326,12 @@ func TestSymbolsOkFalseStates_TS03_52(t *testing.T) {
 	t.Run("closed", func(t *testing.T) {
 		root := t.TempDir()
 		mkFile(t, root, "a.go", "package a\nfunc A() {}\n")
-		ws, err := tools.NewWorkspace(root)
+		ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 		if err != nil {
 			t.Fatal(err)
 		}
 		idx, err := newIndex(ws, Options{
 			TempDir: t.TempDir(),
-			Ignore:  tools.NoGlobalExcludes(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -367,13 +362,12 @@ func TestSymbolsOkFalseStates_TS03_52(t *testing.T) {
 		}
 		mkFile(t, root, "big.go", content.String())
 
-		ws, err := tools.NewWorkspace(root)
+		ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 		if err != nil {
 			t.Fatal(err)
 		}
 		idx, err := newIndex(ws, Options{
 			TempDir: t.TempDir(),
-			Ignore:  tools.NoGlobalExcludes(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -403,14 +397,13 @@ func TestSymbolsRevalidatesAndReoutlines_TS03_53(t *testing.T) {
 	mkFile(t, root, "a.go", "package pkg\n\nfunc Original() {}\n")
 	mkFile(t, root, "x.go", "package pkg\n\nfunc InX() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -474,14 +467,13 @@ func TestSymbolsCancelledContext_TS03_54(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "a.go", "package pkg\n\nfunc A() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -517,7 +509,6 @@ func TestSymbolsCancelledContext_TS03_54(t *testing.T) {
 	// Unbuilt:
 	idx2, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -531,7 +522,6 @@ func TestSymbolsCancelledContext_TS03_54(t *testing.T) {
 	// Closed:
 	idx3, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -554,7 +544,7 @@ func TestFindSymbolSameMatchesThroughIndex_TS03_55(t *testing.T) {
 	mkFile(t, root, "pkg/util.go", "package pkg\n\nfunc Util() {}\nvar UtilVar int\n")
 	mkFile(t, root, "test/t_test.go", "package test\n\nfunc TestSomething() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +552,6 @@ func TestFindSymbolSameMatchesThroughIndex_TS03_55(t *testing.T) {
 	// Build the codesearch index.
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -578,11 +567,9 @@ func TestFindSymbolSameMatchesThroughIndex_TS03_55(t *testing.T) {
 	}
 
 	// Build find_symbol with the index.
-	withIdxAll, err := tools.All(tools.Options{
-		Workspace: ws,
-		Ignore:    tools.NoGlobalExcludes(),
-		Symbols:   tools.SymbolOptions{},
-		Index:     idx,
+	withIdxAll, err := tools.For(ws, tools.Options{
+		Symbols: tools.SymbolOptions{},
+		Index:   idx,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -596,10 +583,8 @@ func TestFindSymbolSameMatchesThroughIndex_TS03_55(t *testing.T) {
 	}
 
 	// Build find_symbol without the index.
-	noIdxAll, err := tools.All(tools.Options{
-		Workspace: ws,
-		Ignore:    tools.NoGlobalExcludes(),
-		Symbols:   tools.SymbolOptions{},
+	noIdxAll, err := tools.For(ws, tools.Options{
+		Symbols: tools.SymbolOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)

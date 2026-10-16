@@ -13,6 +13,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-03-69 (smoke): An embedder opts in and the model's first sym: search
@@ -20,7 +21,7 @@ import (
 //
 // Verifies: 03-PATH-1, 03-REQ-5.1, 03-REQ-4.3
 //
-// Real components: codesearch.New and index, tools.All, tools.Walk,
+// Real components: codesearch.New and index, tools.For, ws.Walk,
 // outline.OutlineMany, zoekt builder and searcher, code_search tool, file system.
 func TestSmokeFirstSymSearch_TS03_69(t *testing.T) {
 	// Given: a fixture workspace with Go files and a nested .gitignore.
@@ -32,7 +33,7 @@ func TestSmokeFirstSymSearch_TS03_69(t *testing.T) {
 	mkFile(t, root, "pkg/sub/code.go", "package sub\n\nfunc SubFunc() {}\n")
 	mkFile(t, root, "pkg/sub/debug.log", "should be ignored\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,19 +41,16 @@ func TestSmokeFirstSymSearch_TS03_69(t *testing.T) {
 	// Create a real codesearch index.
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer idx.Close()
 
-	// Wire through tools.All with Options.Index.
-	allTools, err := tools.All(tools.Options{
-		Workspace: ws,
-		Ignore:    tools.NoGlobalExcludes(),
-		Symbols:   tools.SymbolOptions{},
-		Index:     idx,
+	// Wire through tools.For with Options.Index.
+	allTools, err := tools.For(ws, tools.Options{
+		Symbols: tools.SymbolOptions{},
+		Index:   idx,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -191,26 +189,23 @@ func TestSmokeEditFileFreshness_TS03_70(t *testing.T) {
 			fmt.Sprintf("package pkg\n\nfunc Filler%02d() {}\n", i))
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer idx.Close()
 
-	// Wire real tools through tools.All.
-	allTools, err := tools.All(tools.Options{
-		Workspace: ws,
-		Ignore:    tools.NoGlobalExcludes(),
-		Symbols:   tools.SymbolOptions{},
-		Index:     idx,
+	// Wire real tools through tools.For.
+	allTools, err := tools.For(ws, tools.Options{
+		Symbols: tools.SymbolOptions{},
+		Index:   idx,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -296,7 +291,7 @@ func TestSmokeEditFileFreshness_TS03_70(t *testing.T) {
 //
 // Verifies: 03-PATH-3, 03-REQ-6.2, 03-REQ-2.7
 //
-// Real components: execute tool, codesearch index, tools.Walk, zoekt searcher,
+// Real components: execute tool, codesearch index, ws.Walk, zoekt searcher,
 // code_search tool, file system.
 func TestSmokeShellDeleteFreshness_TS03_71(t *testing.T) {
 	// Given: a built real index over a fixture workspace.
@@ -304,27 +299,24 @@ func TestSmokeShellDeleteFreshness_TS03_71(t *testing.T) {
 	mkFile(t, root, "keep.go", "package pkg\n\n// keepMarker stays.\nfunc Keep() {}\n")
 	mkFile(t, root, "victim.go", "package pkg\n\n// victimOnlyToken is unique to this file.\nfunc Victim() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer idx.Close()
 
-	// Wire real tools through tools.All.
-	allTools, err := tools.All(tools.Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    tools.NoGlobalExcludes(),
-		Symbols:   tools.SymbolOptions{},
-		Index:     idx,
+	// Wire real tools through tools.For.
+	allTools, err := tools.For(ws, tools.Options{
+		Env:     os.Environ(),
+		Symbols: tools.SymbolOptions{},
+		Index:   idx,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -403,7 +395,7 @@ func TestSmokeFindSymbolThroughIndex_TS03_72(t *testing.T) {
 	mkFile(t, root, "lib.go", "package main\n\nfunc Lib() {}\n")
 	mkFile(t, root, "pkg/server.go", "package pkg\n\ntype Server struct{}\nfunc NewServer() *Server { return nil }\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +403,6 @@ func TestSmokeFindSymbolThroughIndex_TS03_72(t *testing.T) {
 	// Create a real codesearch index.
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -419,11 +410,9 @@ func TestSmokeFindSymbolThroughIndex_TS03_72(t *testing.T) {
 	defer idx.Close()
 
 	// Build find_symbol WITH the index.
-	withIdxAll, err := tools.All(tools.Options{
-		Workspace: ws,
-		Ignore:    tools.NoGlobalExcludes(),
-		Symbols:   tools.SymbolOptions{},
-		Index:     idx,
+	withIdxAll, err := tools.For(ws, tools.Options{
+		Symbols: tools.SymbolOptions{},
+		Index:   idx,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -440,10 +429,8 @@ func TestSmokeFindSymbolThroughIndex_TS03_72(t *testing.T) {
 	}
 
 	// Build find_symbol WITHOUT the index.
-	noIdxAll, err := tools.All(tools.Options{
-		Workspace: ws,
-		Ignore:    tools.NoGlobalExcludes(),
-		Symbols:   tools.SymbolOptions{},
+	noIdxAll, err := tools.For(ws, tools.Options{
+		Symbols: tools.SymbolOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -516,7 +503,7 @@ func TestSmokeFindSymbolThroughIndex_TS03_72(t *testing.T) {
 //
 // Verifies: 03-PATH-5, 03-REQ-5.7
 //
-// Real components: codesearch index, tools.Walk, zoekt builder and searcher,
+// Real components: codesearch index, ws.Walk, zoekt builder and searcher,
 // code_search tool, file system.
 func TestSmokePartialBound_TS03_73(t *testing.T) {
 	// Given: a fixture workspace larger than a scaled-down MaxFiles bound.
@@ -526,7 +513,7 @@ func TestSmokePartialBound_TS03_73(t *testing.T) {
 			fmt.Sprintf("package pkg\n// searchable content %d\nfunc F%d() {}\n", i, i))
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +521,6 @@ func TestSmokePartialBound_TS03_73(t *testing.T) {
 	// Create a real index with a very low MaxFiles bound.
 	idx, err := newIndex(ws, Options{
 		TempDir:  t.TempDir(),
-		Ignore:   tools.NoGlobalExcludes(),
 		MaxFiles: 5, // only 5 files allowed
 	})
 	if err != nil {
@@ -595,14 +581,13 @@ func TestSmokeCloseAndIndexClosed_TS03_74(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\n\n// searchword\nfunc main() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)

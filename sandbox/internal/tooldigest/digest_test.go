@@ -12,6 +12,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 func randString(r *rand.Rand) string {
@@ -109,13 +110,13 @@ func TestDigestProperty_TS13_37(t *testing.T) {
 		t.Error("the encoding is not injective across field boundaries")
 	}
 
-	// The host and the agent build tools.All separately; the digests agree.
+	// The host and the agent build tools.For separately; the digests agree.
 	build := func() []core.Tool {
-		ws, err := tools.NewWorkspace(t.TempDir())
+		ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 		if err != nil {
 			t.Fatal(err)
 		}
-		all, err := tools.All(tools.Options{Workspace: ws, Ignore: tools.NoGlobalExcludes()})
+		all, err := tools.For(ws, tools.Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -124,7 +125,7 @@ func TestDigestProperty_TS13_37(t *testing.T) {
 	h, g := build(), build()
 	for i := range h {
 		if !bytes.Equal(Digest(h[i]), Digest(g[i])) {
-			t.Errorf("%s: digest differs between two tools.All builds", h[i].Name)
+			t.Errorf("%s: digest differs between two tools.For builds", h[i].Name)
 		}
 	}
 }

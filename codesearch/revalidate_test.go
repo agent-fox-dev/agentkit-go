@@ -14,6 +14,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // revalFixture builds an index over n small Go files, runs the first search to
@@ -37,13 +38,12 @@ func revalFixture(t *testing.T, n int, oldFiles bool) (root string, idx *Index, 
 		}
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	idx, err = newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -239,11 +239,11 @@ func TestVerifiedRacyFileIsNotReadAgain(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	idx, err := newIndex(ws, Options{TempDir: t.TempDir(), Ignore: tools.NoGlobalExcludes()})
+	idx, err := newIndex(ws, Options{TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

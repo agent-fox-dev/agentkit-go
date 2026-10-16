@@ -12,17 +12,18 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/codesearch"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 func main() {
-	ws, err := tools.NewWorkspace(".")
+	ws, err := workspace.Open(".", workspace.Options{})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
-	opts := tools.Options{Workspace: ws}
-	idx, err := codesearch.New(ws, codesearch.Options{Ignore: opts.Ignore})
+	opts := tools.Options{}
+	idx, err := codesearch.New(ws, codesearch.Options{})
 	switch {
 	case errors.Is(err, codesearch.ErrUnsupported):
 		// Run without code search: Options.Index stays nil.
@@ -42,7 +43,7 @@ func main() {
 		}
 	}
 
-	if _, err := tools.All(opts); err != nil {
+	if _, err := tools.For(ws, opts); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

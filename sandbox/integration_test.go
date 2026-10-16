@@ -20,6 +20,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 func mustJSON(t *testing.T, v any) string {
@@ -48,7 +49,7 @@ func sameDefinition(t *testing.T, p, h core.Tool) string {
 	return ""
 }
 
-// TS-13-36: proxy tools over local match tools.All one for one in order,
+// TS-13-36: proxy tools over local match tools.For one for one in order,
 // with equal definition fields, byte-identical schemas and a remote-only
 // execution. 13-REQ-6.1, 13-REQ-6.4.
 func TestProxiesMatchToolsAll_TS13_36(t *testing.T) {
@@ -61,18 +62,18 @@ func TestProxiesMatchToolsAll_TS13_36(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ws, _ := tools.NewWorkspace(t.TempDir())
-	host, err := tools.All(tools.Options{Workspace: ws, Ignore: tools.NoGlobalExcludes()})
+	ws, _ := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
+	host, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(proxies) != len(host) {
-		t.Fatalf("%d proxies, %d tools.All tools", len(proxies), len(host))
+		t.Fatalf("%d proxies, %d tools.For tools", len(proxies), len(host))
 	}
 	for i, p := range proxies {
 		h := host[i]
 		if d := sameDefinition(t, p, h); d != "" {
-			t.Errorf("%s (position %d) differs from tools.All's %s in %s", p.Name, i, h.Name, d)
+			t.Errorf("%s (position %d) differs from tools.For's %s in %s", p.Name, i, h.Name, d)
 		}
 		if (p.PrepareArguments != nil) != (p.Name == "search_files" || p.Name == "edit_file") {
 			t.Errorf("%s: PrepareArguments set = %v", p.Name, p.PrepareArguments != nil)

@@ -13,19 +13,20 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/guard"
 	"github.com/agent-fox-dev/agentkit-go/outline"
 	"github.com/agent-fox-dev/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// TS-05-1 (unit): find_references is registered in tools.All() following find_symbol
+// TS-05-1 (unit): find_references is registered in tools.For() following find_symbol
 // and in FileNavigationTools() with correct metadata.
 // Verifies 05-REQ-1.1.
 func TestFindReferencesTool_Registration_TS05_1(t *testing.T) {
 	wsDir := t.TempDir()
-	ws, err := NewWorkspace(wsDir)
+	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
-	opts := Options{Workspace: ws}
-	ft := newFileTools(opts)
+	opts := Options{}
+	ft := newFileTools(ws, opts)
 	fr := ft.findReferencesTool()
 
 	if fr.Name != "find_references" {
@@ -58,9 +59,9 @@ func TestFindReferencesTool_Registration_TS05_1(t *testing.T) {
 		t.Errorf("expected PromptGuidelines to contain %q, got %v", expectedGuideline, fr.PromptGuidelines)
 	}
 
-	// In Task 10, find_references is wired into All() and FileNavigationTools().
-	// If already present in All(), verify the wiring criteria.
-	all, _ := All(opts)
+	// In Task 10, find_references is wired into For() and FileNavigationTools().
+	// If already present in For(), verify the wiring criteria.
+	all, _ := For(ws, opts)
 	idxFS := -1
 	idxFR := -1
 	for i, tool := range all {
@@ -86,12 +87,12 @@ func TestFindReferencesTool_Registration_TS05_1(t *testing.T) {
 // Verifies 05-REQ-1.2.
 func TestFindReferencesTool_InputSchema_TS05_2(t *testing.T) {
 	wsDir := t.TempDir()
-	ws, err := NewWorkspace(wsDir)
+	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
-	opts := Options{Workspace: ws}
-	ft := newFileTools(opts)
+	opts := Options{}
+	ft := newFileTools(ws, opts)
 	fr := ft.findReferencesTool()
 
 	s := fr.InputSchema
@@ -148,12 +149,12 @@ func TestFindReferencesTool_InputSchema_TS05_2(t *testing.T) {
 // Verifies 05-REQ-1.3.
 func TestFindReferencesTool_InvalidName_TS05_3(t *testing.T) {
 	wsDir := t.TempDir()
-	ws, err := NewWorkspace(wsDir)
+	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
-	opts := Options{Workspace: ws}
-	ft := newFileTools(opts)
+	opts := Options{}
+	ft := newFileTools(ws, opts)
 	fr := ft.findReferencesTool()
 	ctx := context.Background()
 
@@ -183,12 +184,12 @@ func TestFindReferencesTool_InvalidName_TS05_3(t *testing.T) {
 // Verifies 05-REQ-1.4.
 func TestFindReferencesTool_InvalidKind_TS05_4(t *testing.T) {
 	wsDir := t.TempDir()
-	ws, err := NewWorkspace(wsDir)
+	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
-	opts := Options{Workspace: ws}
-	ft := newFileTools(opts)
+	opts := Options{}
+	ft := newFileTools(ws, opts)
 	fr := ft.findReferencesTool()
 	ctx := context.Background()
 
@@ -219,12 +220,12 @@ func TestFindReferencesTool_InvalidKind_TS05_4(t *testing.T) {
 // Verifies 05-REQ-1.5.
 func TestFindReferencesTool_PathOutsideWorkspace_TS05_5(t *testing.T) {
 	wsDir := t.TempDir()
-	ws, err := NewWorkspace(wsDir)
+	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
-	opts := Options{Workspace: ws}
-	ft := newFileTools(opts)
+	opts := Options{}
+	ft := newFileTools(ws, opts)
 	fr := ft.findReferencesTool()
 	ctx := context.Background()
 
@@ -246,12 +247,12 @@ func TestFindReferencesTool_InvalidPath_TS05_6(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	ws, err := NewWorkspace(wsDir)
+	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
-	opts := Options{Workspace: ws}
-	ft := newFileTools(opts)
+	opts := Options{}
+	ft := newFileTools(ws, opts)
 	fr := ft.findReferencesTool()
 	ctx := context.Background()
 
@@ -282,12 +283,12 @@ func TestFindReferencesTool_InvalidPath_TS05_6(t *testing.T) {
 // Verifies 05-REQ-1.7.
 func TestFindReferencesTool_ContextCancelled_TS05_7(t *testing.T) {
 	wsDir := t.TempDir()
-	ws, err := NewWorkspace(wsDir)
+	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
-	opts := Options{Workspace: ws}
-	ft := newFileTools(opts)
+	opts := Options{}
+	ft := newFileTools(ws, opts)
 	fr := ft.findReferencesTool()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -305,7 +306,7 @@ func TestFindReferencesTool_ContextCancelled_TS05_7(t *testing.T) {
 	}
 }
 
-// TS-05-46 (integration): Workspace.References returns ReferenceResult matching find_references tool output with deterministic ranking.
+// TS-05-46 (integration): tools.References returns ReferenceResult matching find_references tool output with deterministic ranking.
 // Verifies 05-REQ-9.2.
 func TestFindReferencesTool_WorkspaceReferencesParity_TS05_46(t *testing.T) {
 	wsDir := t.TempDir()
@@ -330,12 +331,12 @@ func CallGo() int {
 		t.Fatalf("WriteFile script.py: %v", err)
 	}
 
-	ws, err := NewWorkspace(wsDir)
+	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
-	opts := Options{Workspace: ws}
-	ft := newFileTools(opts)
+	opts := Options{}
+	ft := newFileTools(ws, opts)
 	fr := ft.findReferencesTool()
 	ctx := context.Background()
 
@@ -350,9 +351,9 @@ func CallGo() int {
 		StartLine: 3,
 	}
 
-	wsRes, err := ws.References(ctx, targetDecl, ReferenceOptions{IncludeTests: true, MaxResults: 30})
+	wsRes, err := References(ctx, ws, targetDecl, ReferenceOptions{IncludeTests: true, MaxResults: 30})
 	if err != nil {
-		t.Fatalf("ws.References failed: %v", err)
+		t.Fatalf("References failed: %v", err)
 	}
 
 	var toolResult ReferenceResult

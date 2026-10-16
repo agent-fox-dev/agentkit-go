@@ -24,11 +24,11 @@ go run ./examples/agentdemo
 Run a prompt to completion with the built-in tools:
 
 ```go
-ws, err := tools.NewWorkspace(".")
+ws, err := workspace.Open(".", workspace.Options{})
 if err != nil {
 	return err
 }
-ts, err := tools.All(tools.Options{Workspace: ws})
+ts, err := tools.For(ws, tools.Options{})
 if err != nil {
 	return err
 }
@@ -90,7 +90,7 @@ runs this offline, with an MCP tool bound beside the built-ins.
 
 A sandbox is an ephemeral environment that holds one workspace. A
 `sandbox.Provider` creates one, `Sync` puts files into it, and `Tools`
-returns a drop-in replacement for `tools.All`: one proxy per built-in, with
+returns a drop-in replacement for `tools.For`: one proxy per built-in, with
 the same definition, whose every call runs in the AgentKit agent
 (`agentkit-sandboxd`) inside the sandbox over the `agentkit.sandbox.v1` gRPC
 protocol. The driver does not change and does not know a tool is remote.
@@ -224,7 +224,8 @@ The identifiers an embedder such as agent-fox builds on.
 | `anthropic.Resolve` | `Resolve(env Env) (*sdk.Client, Source, error)` |
 | `codemode.New` | `New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error)` |
 | `mcp` | `ParseConfig`, `NewPool`, `Pool.Connect`, `Pool.Tools`, `Pool.Close`, `Connect` |
-| `tools.All` | `All(opts Options) ([]core.Tool, error)` |
+| `workspace.Open` | `Open(root string, opts Options) (*Workspace, error)`; `Workspace`: `Root`, `Resolve`, `Rel`, `CheckWriteTarget`, `Ignore`, `Walk`, `Ignored` |
+| `tools.For` | `For(ws *workspace.Workspace, opts Options) ([]core.Tool, error)` |
 | `sandbox.Provider` | `Capabilities()`, `Create(ctx, Spec) (Sandbox, error)`, `Reap(ctx) ([]string, error)` |
 | `sandbox.Sandbox` | `ID`, `Spec`, `Agent`, `Sync(ctx, Source)`, `Tools(ctx, ToolOptions) ([]core.Tool, error)`, `Export(ctx, path, Destination)`, `Close` |
 | `sandbox.CheckSpec` | `CheckSpec(caps Capabilities, spec Spec) (Spec, error)` |
@@ -237,7 +238,8 @@ The identifiers an embedder such as agent-fox builds on.
 | `.` (root) | The driver: `Config`, `New`, the `Agent`, the loop, the tool batch executor, nested tool calls. |
 | `core` | The vocabulary and the seams: messages, content blocks, events, `EventStream`, `Tool`, `ToolPolicy`, interceptors, `ProviderClient`, `Model`, `Usage`, stop reasons, errors. |
 | `schema` | JSON Schema values, typed combinators, `Parse`, `Validate`, `Coerce`. |
-| `tools` | The built-in tools, workspace containment, `Walk`, the ignore engine, the subprocess runner, the symbol table and the reference engine. |
+| `workspace` | The workspace every scenario opens first: containment (`Resolve`, `CheckWriteTarget`), the ignore rules (`IgnoreOptions`, `Ignore`, `Ignored`) and the directory walk (`Walk`). It imports nothing of the module. |
+| `tools` | The built-in tools (`For`), the subprocess runner, glob matching, the symbol table and the reference engine (`References`). |
 | `outline` | Declarations of a source file: `go/ast` for Go, tree-sitter for fourteen more languages with cgo. |
 | `codemode` | The code-mode tool, on `go.starlark.net`. |
 | `mcp` | MCP client and tool pool on the official MCP Go SDK. |
@@ -255,7 +257,7 @@ The identifiers an embedder such as agent-fox builds on.
 | `sandbox/gateway` | `gateway.Dial(ctx, url, Options)`: a provider whose sandboxes live on a remote gateway. |
 | `sandbox/gatewayd` | Separate module: the gateway server library (`gatewayd.New`, `Serve`, `Shutdown`) and its `agentkit-gateway` command. |
 | `sandbox/cmd/agentkit-sandboxd` | The agent command a sandbox image installs at `sandbox.AgentPath`; serves the protocol on its stdio. |
-| `codesearch` | Separate module: zoekt-backed `code_search`, opted in with `tools.Options{Index: idx}`. |
+| `codesearch` | Separate module: zoekt-backed `code_search`, built for a workspace (`codesearch.New(ws, opts)`) and opted in with `tools.Options{Index: idx}`. |
 
 ## Make targets
 
@@ -285,7 +287,7 @@ The identifiers an embedder such as agent-fox builds on.
 | Document | Covers |
 |---|---|
 | [`docs/api.md`](docs/api.md) | The public Go packages and where their reference lives (the library has no REST API). |
-| [`docs/architecture.md`](docs/architecture.md) | Package graph, the data flow of a run, invariants, nested calls, code mode, the MCP client, `Workspace.References`, sandboxes. |
+| [`docs/architecture.md`](docs/architecture.md) | Package graph, the data flow of a run, invariants, nested calls, code mode, the MCP client, `tools.References`, sandboxes. |
 | [`docs/configuration.md`](docs/configuration.md) | `agentkit.Config`, environment variables, provider, tool, code-mode, MCP and sandbox options, the model catalog. |
 | [`docs/cli.md`](docs/cli.md) | The `agentkit-sandboxd` and `agentkit-gateway` commands: flags, transport, the token file and exit codes. |
 | [`docs/releasing.md`](docs/releasing.md) | Publishing the sandbox images: the version tags, GHCR visibility, re-runs and local builds. |

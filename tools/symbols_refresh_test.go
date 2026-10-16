@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // refreshFixture builds a complete symbol table over a.go, b.go and c.go.
@@ -18,16 +20,14 @@ func refreshFixture(t *testing.T) (*fileTools, string) {
 	mkSymFile(t, root, "a.go", "package main\n\nfunc AFunc() {}\n")
 	mkSymFile(t, root, "b.go", "package main\n\nfunc BFunc() {}\n")
 	mkSymFile(t, root, "c.go", "package main\n\nfunc CFunc() {}\n")
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+	}.withDefaults(ws))
 	r := ft.findSymbolTool().Execute(context.Background(), json.RawMessage(`{"name":"Func"}`))
 	if !r.OK {
 		t.Fatalf("initial build failed: error=%s detail=%s", r.Error, r.Detail)
@@ -45,9 +45,9 @@ func countWalks(t *testing.T) *atomic.Int32 {
 	t.Helper()
 	var n atomic.Int32
 	orig := walkFn
-	walkFn = func(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(string, fs.DirEntry) error) error {
+	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(string, fs.DirEntry) error) error {
 		n.Add(1)
-		return orig(ctx, ws, root, opts, fn)
+		return orig(ctx, ws, sub, opts, fn)
 	}
 	t.Cleanup(func() { walkFn = orig })
 	return &n

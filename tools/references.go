@@ -10,9 +10,11 @@ import (
 	"strings"
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// ReferenceOptions configures reference lookup on a Workspace.
+// ReferenceOptions configures a reference lookup, For's find_references or
+// References.
 type ReferenceOptions struct {
 	Path         string // Subdirectory filter ("" for entire workspace)
 	IncludeTests bool   // Whether to include test files (default false in struct, tool defaults to true)
@@ -50,12 +52,6 @@ func clampMaxResults(maxResults int) int {
 	return min(maxResults, 100)
 }
 
-// References finds usages and callers of target across the workspace,
-// bounded by the default SymbolOptions.
-func (w *Workspace) References(ctx context.Context, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error) {
-	return executeReferenceSearch(ctx, w, target, "", "", opts, SymbolOptions{}, nil)
-}
-
 // executeReferenceSearch runs reference discovery and ranking across
 // workspace files. targetPath, when known, is the workspace-relative file
 // that declares target. An empty backend is chosen from the target: "go/types"
@@ -63,7 +59,7 @@ func (w *Workspace) References(ctx context.Context, target outline.Decl, opts Re
 // name. The pass is bounded by bounds (05-REQ-6.4). rc, when non-nil,
 // supplies the checked Go packages, outlines and candidate files it has
 // cached (05-REQ-8.1).
-func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.Decl, targetPath, backend string, opts ReferenceOptions, bounds SymbolOptions, rc *referenceCache) (ReferenceResult, error) {
+func executeReferenceSearch(ctx context.Context, ws *workspace.Workspace, target outline.Decl, targetPath, backend string, opts ReferenceOptions, bounds SymbolOptions, rc *referenceCache) (ReferenceResult, error) {
 	if err := ctx.Err(); err != nil {
 		return ReferenceResult{}, err
 	}
@@ -135,7 +131,7 @@ func executeReferenceSearch(ctx context.Context, ws *Workspace, target outline.D
 // referenceScope validates path, a directory inside ws, and returns it as
 // a slash-separated workspace-relative prefix ending in "/", or "" for the
 // whole workspace.
-func referenceScope(ws *Workspace, path string) (string, error) {
+func referenceScope(ws *workspace.Workspace, path string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
@@ -163,7 +159,7 @@ func referenceScope(ws *Workspace, path string) (string, error) {
 // scanCandidates scans the files under scopePrefix that mention target's
 // name for whole-identifier matches, all labelled text when allText, until
 // budget runs out or ctx ends.
-func scanCandidates(ctx context.Context, ws *Workspace, rc *referenceCache, target outline.Decl, scopePrefix string, allText bool, budget *refBudget) ([]ReferenceSite, error) {
+func scanCandidates(ctx context.Context, ws *workspace.Workspace, rc *referenceCache, target outline.Decl, scopePrefix string, allText bool, budget *refBudget) ([]ReferenceSite, error) {
 	var candFiles []string
 	var err error
 	if rc != nil {
@@ -182,7 +178,7 @@ func scanCandidates(ctx context.Context, ws *Workspace, rc *referenceCache, targ
 		if ctx.Err() != nil || budget.expired() {
 			break
 		}
-		content, err := os.ReadFile(filepath.Join(ws.Root, filepath.FromSlash(rel)))
+		content, err := os.ReadFile(filepath.Join(ws.Root(), filepath.FromSlash(rel)))
 		if err != nil {
 			continue
 		}

@@ -1,0 +1,497 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "23",
+  "spec_name": "mcp_serve",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "cd mcpserve && go test ./... -count=1 -race"
+  },
+  "dependencies": [
+    {
+      "spec": "19",
+      "reason": "modifies TS-19-63's no-listen message and fixtures and TS-19-62's gateModules list; TS-19-64 and TS-19-66 must still pass; its erratum gets an entry"
+    },
+    {
+      "spec": "20",
+      "reason": "mcpserve's tests build code_mode and the built-in tools with workspace.Open and tools.For"
+    },
+    {
+      "spec": "21",
+      "reason": "mcpserve.New takes *agentkit.Runner, serves Runner.Tools() and runs every call through Runner.Call; the harness hooks moved to calls.go are spec 21's"
+    },
+    {
+      "spec": "22",
+      "reason": "the harness rewrite uses sandbox.Open, guard.Allow, faux.ToolCall and faux.Text"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Create the mcpserve module with New, tool definitions and server info",
+      "criteria": [
+        "23-REQ-1.3",
+        "23-REQ-2.1",
+        "23-REQ-2.2",
+        "23-REQ-2.3",
+        "23-REQ-2.4",
+        "23-REQ-2.5",
+        "23-REQ-2.6",
+        "23-REQ-2.7"
+      ],
+      "tests": [
+        "TS-23-3",
+        "TS-23-5",
+        "TS-23-6",
+        "TS-23-7",
+        "TS-23-8",
+        "TS-23-9",
+        "TS-23-10",
+        "TS-23-11"
+      ],
+      "steps": [
+        "Write TS-23-3, 5, 6, 7, 8, 9, 10 and 11 as Go tests in mcpserve/ and confirm they fail (TS-23-3 shells out to `go list ./...` and parses non-test imports with go/parser)",
+        "Create mcpserve/go.mod: module github.com/agent-fox-dev/agentkit-go/mcpserve, go 1.27, require the root v0.0.0 with `replace github.com/agent-fox-dev/agentkit-go => ../`, and github.com/modelcontextprotocol/go-sdk at the root go.mod's version (v1.8.0); produce go.sum with `GOFLAGS=-mod=mod GOPROXY=off go mod tidy` (copy the needed lines from the root go.sum if tidy cannot run offline)",
+        "Add mcpserve/doc.go: package doc saying this is the one AgentKit module that serves MCP, serves one runner's tools to a harness on the same machine, over stdio or loopback HTTP behind a bearer token",
+        "Add mcpserve/options.go: `type Options struct{ Name, Version, Instructions string; Logger *slog.Logger }`; nil Logger becomes slog.New(slog.DiscardHandler)",
+        "Add mcpserve/buildinfo.go: copy the algorithm of sandbox/internal/buildver (debug.ReadBuildInfo; Main.Path match else Deps entry, Replace.Version when replaced; \"(devel)\" when empty) for the module path github.com/agent-fox-dev/agentkit-go/mcpserve",
+        "Add mcpserve/server.go: `type Server struct` (immutable) and `New(r *agentkit.Runner, opts Options) (*Server, error)`: nil r -> `mcpserve: Runner is nil`; call r.Tools() exactly once; for each tool marshal t.InputSchema (nil -> `{\"type\":\"object\"}`), verify the top level is a JSON object with \"type\":\"object\", otherwise return nil and `mcpserve: tool %q: input schema ...` before touching the SDK",
+        "Build the sdk.Server with sdk.NewServer(&sdk.Implementation{Name (default \"agentkit\"), Version (default build-info)}, &sdk.ServerOptions{Instructions}) and AddTool each tool with sdk.Tool{Name, Description, InputSchema: json.RawMessage}; the handler delegates to an unexported callTool method that, for now, runs r.Call(ctx, name, req.Params.Arguments) and returns one TextContent of LLMText() with IsError=!OK (task 2 completes it)",
+        "Add an unexported test helper that connects an sdk client to the Server over sdk in-memory or io.Pipe transports so the tests can list tools and read the initialize result",
+        "Run `cd mcpserve && go vet ./... && go test ./... -count=1` and make the tests pass"
+      ],
+      "touches": [
+        "mcpserve/go.mod",
+        "mcpserve/go.sum",
+        "mcpserve/doc.go",
+        "mcpserve/options.go",
+        "mcpserve/buildinfo.go",
+        "mcpserve/server.go",
+        "mcpserve/server_test.go"
+      ],
+      "done_when": [
+        "`cd mcpserve && go test ./... -count=1` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Run every tools/call through Runner.Call with result mapping and call logging",
+      "criteria": [
+        "23-REQ-3.1",
+        "23-REQ-3.2",
+        "23-REQ-3.3",
+        "23-REQ-3.4",
+        "23-REQ-3.5",
+        "23-REQ-3.6",
+        "23-REQ-8.2"
+      ],
+      "tests": [
+        "TS-23-13",
+        "TS-23-14",
+        "TS-23-15",
+        "TS-23-16",
+        "TS-23-17",
+        "TS-23-18",
+        "TS-23-45"
+      ],
+      "steps": [
+        "Write TS-23-13 to 18 and TS-23-45 (TS-23-14 as a property test with testing/quick or a seeded generator over core.ToolResult incl. TextBlock/ThinkingBlock/ToolUseBlock) and confirm they fail",
+        "In mcpserve/call.go finish callTool: pass req.Params.Arguments bytes verbatim (empty when absent) to r.Call(ctx, name, input) exactly once; add no validation or preparation",
+        "Map the result: Content = [TextContent(res.LLMText())] followed by one TextContent per core.TextBlock in res.Blocks in order; drop other blocks; IsError = !res.OK; set no StructuredContent; never return a Go error",
+        "Use the request context so client cancellation and session end reach Runner.Call (result code `aborted`)",
+        "Do not serialise calls; unserved names are left to the SDK (protocol error, runner untouched)",
+        "After each call emit one Info record `tool call` with attributes tool, ok, duration and, on failure, the error code (attribute `error`); never log arguments, text or Detail",
+        "Make the tests pass with -race"
+      ],
+      "touches": [
+        "mcpserve/call.go",
+        "mcpserve/server.go",
+        "mcpserve/call_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`cd mcpserve && go test ./... -count=1 -race` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Implement ServeStdio over the strict NDJSON pipe transport",
+      "criteria": [
+        "23-REQ-4.1",
+        "23-REQ-4.2",
+        "23-REQ-4.3",
+        "23-REQ-4.4",
+        "23-REQ-4.5",
+        "23-REQ-4.6",
+        "23-REQ-8.4"
+      ],
+      "tests": [
+        "TS-23-20",
+        "TS-23-21",
+        "TS-23-22",
+        "TS-23-23",
+        "TS-23-24",
+        "TS-23-25",
+        "TS-23-26",
+        "TS-23-47"
+      ],
+      "steps": [
+        "Write TS-23-20 to 26 and TS-23-47 and confirm they fail; the child-process test (TS-23-21) re-executes the test binary via TestMain with a marker env var plus PATH/HOME and connects with mcp.Pool ServerConfig.Command; skip it on Windows",
+        "Add mcpserve/stdio.go: `(*Server).ServeStdio(ctx) error`; if ctx is already done return ctx.Err() before reading anything",
+        "Build the transport with mcp.NewPipeTransport(os.Stdin, struct{ io.Writer }{os.Stdout}, wire.Defaults()) so stdout is never closed; wrap the sdk.Connection (Read/Write/Close/SessionID, jsonrpc types) to record the first Read error",
+        "Run the SDK server session (Server.Connect + Wait, or Run); on ctx end close the session and os.Stdin and return ctx.Err(); on client EOF return nil after every owed reply is written; any other end returns an error prefixed `mcpserve: ` (e.g. wire-limit violation), the offending frame never reaching the SDK or runner",
+        "Ensure os.Stdin is closed and os.Stdout left open on return, nothing except protocol frames is written to stdout, and exactly one Warn record is logged only when the session ends with an error other than ctx.Err()",
+        "Document in the doc comment that ServeStdio is callable once per process (not enforced)",
+        "Make the tests pass with -race"
+      ],
+      "touches": [
+        "mcpserve/stdio.go",
+        "mcpserve/stdio_test.go",
+        "mcpserve/main_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "`cd mcpserve && go test ./... -count=1 -race` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Implement ServeLoopback listener, authentication and body guard",
+      "criteria": [
+        "23-REQ-1.4",
+        "23-REQ-5.1",
+        "23-REQ-5.2",
+        "23-REQ-5.3",
+        "23-REQ-5.4",
+        "23-REQ-5.5",
+        "23-REQ-5.6",
+        "23-REQ-5.7",
+        "23-REQ-5.8",
+        "23-REQ-8.3"
+      ],
+      "tests": [
+        "TS-23-4",
+        "TS-23-27",
+        "TS-23-28",
+        "TS-23-29",
+        "TS-23-30",
+        "TS-23-31",
+        "TS-23-32",
+        "TS-23-33",
+        "TS-23-34",
+        "TS-23-46"
+      ],
+      "steps": [
+        "Write TS-23-4, 27 to 34 and 46 and confirm they fail; add package-level test seams in loopback.go (listen func and random reader vars) so listen/rand failures and `no listen when ctx done` are testable",
+        "Add mcpserve/endpoint.go: `type Endpoint struct{ URL, Token string; ... unexported close state }` with a Close method that for now shuts the http.Server down (task 5 makes it bounded and idempotent)",
+        "Add mcpserve/loopback.go: `(*Server).ServeLoopback(ctx) (*Endpoint, error)`: done ctx -> nil, ctx.Err() with no listen; listen tcp 127.0.0.1:0; token = 24 crypto/rand bytes as 48 lowercase hex; any failure releases the listener and returns `mcpserve: ...`",
+        "Build the handler chain: check `Authorization` against \"Bearer \"+token with subtle.ConstantTimeCompare on every path/method first -> 401, header `WWW-Authenticate: Bearer`, body `unauthorized`, before reading the body; then path != /mcp -> 404; then read the body through http.MaxBytesReader at wire.Defaults().MaxMessageBytes (over -> 413), wire.Guard(body, wire.Defaults()) failing -> 400, empty body passed through; replay the bytes as a fresh r.Body to sdk.NewStreamableHTTPHandler(func(*http.Request)*sdk.Server{return srv}, nil)",
+        "Serve with http.Server{ReadHeaderTimeout: 10s, BaseContext derived from ctx}; return &Endpoint{URL: \"http://127.0.0.1:<port>/mcp\", Token}",
+        "Log one Warn per refusal with `peer` (r.RemoteAddr) and a `reason` of distinct values for bad token, body too large, body rejected; never log the header value",
+        "Make the tests pass with -race"
+      ],
+      "touches": [
+        "mcpserve/endpoint.go",
+        "mcpserve/loopback.go",
+        "mcpserve/loopback_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "done_when": [
+        "`cd mcpserve && go test ./... -count=1 -race` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Bound the endpoint lifetime and prove end-to-end loopback use",
+      "criteria": [
+        "23-REQ-2.8",
+        "23-REQ-3.7",
+        "23-REQ-6.1",
+        "23-REQ-6.2",
+        "23-REQ-6.3",
+        "23-REQ-6.4",
+        "23-REQ-6.5"
+      ],
+      "tests": [
+        "TS-23-12",
+        "TS-23-19",
+        "TS-23-35",
+        "TS-23-36",
+        "TS-23-37",
+        "TS-23-38",
+        "TS-23-39"
+      ],
+      "steps": [
+        "Write TS-23-12, 19, 35, 36, 37, 38 and 39 and confirm the lifetime ones fail (TS-23-19 builds a workspace with workspace.Open, tools.For and code_mode, a Runner with a recording Guard, and connects mcp.Pool with URL and Authorization header)",
+        "Implement the stop sequence in Endpoint: stop accepting, http.Server.Shutdown with a 2 s timeout, then Close to force-close remaining connections (cancelling in-flight handler contexts so runner calls return `aborted`)",
+        "Run the stop sequence exactly once via sync.Once from both Endpoint.Close and a goroutine watching ctx.Done() so whichever comes first wins; Close always returns nil, is safe for concurrent use, and on a zero-value or foreign Endpoint does nothing and returns nil",
+        "Ensure two ServeLoopback calls produce independent listeners, ports, tokens and stop state",
+        "Verify one Server serves two loopback endpoints and one stdio session concurrently over identical tools under -race",
+        "Make the tests pass with -race"
+      ],
+      "touches": [
+        "mcpserve/endpoint.go",
+        "mcpserve/loopback.go",
+        "mcpserve/lifetime_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "`cd mcpserve && go test ./... -count=1 -race` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Add ClaudeConfig and PiConfig",
+      "criteria": [
+        "23-REQ-7.1",
+        "23-REQ-7.2",
+        "23-REQ-7.3",
+        "23-REQ-7.4"
+      ],
+      "tests": [
+        "TS-23-40",
+        "TS-23-41",
+        "TS-23-42",
+        "TS-23-43"
+      ],
+      "steps": [
+        "Write TS-23-40 to 43 (TS-23-43 as a property test over generated names, URLs and tokens) and confirm they fail",
+        "Add mcpserve/config.go: `(*Endpoint).ClaudeConfig(name string) string` building {\"mcpServers\":{name:{\"type\":\"http\",\"url\":URL,\"headers\":{\"Authorization\":\"Bearer \"+Token}}}} with encoding/json only (maps/structs, no string concatenation)",
+        "Add `(*Endpoint).PiConfig(name string) string`: the same object with \"exposure\":\"direct\" added to the server entry; share one unexported builder",
+        "Empty name means \"agentkit\"; read URL and Token at call time",
+        "Make the tests pass"
+      ],
+      "touches": [
+        "mcpserve/config.go",
+        "mcpserve/config_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "`cd mcpserve && go test ./... -count=1 -race` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Pin Options and the no-secret logging rule",
+      "criteria": [
+        "23-REQ-8.1",
+        "23-REQ-8.5"
+      ],
+      "tests": [
+        "TS-23-44",
+        "TS-23-48"
+      ],
+      "steps": [
+        "Write TS-23-44 (reflect on Options fields; run a call, a 401 refusal and a stdio session with Options{} and captured stdout/stderr) and TS-23-48 (property test with a capturing slog handler that records message and all attribute values) and confirm they fail or pass for the right reason",
+        "Audit every logger call in mcpserve/*.go (call.go, stdio.go, loopback.go): no record may carry the token, the Authorization value, tool arguments, result text or Detail; error text logged for a stdio failure must not include frame content",
+        "Fix any leak found; keep a nil Options.Logger as slog.New(slog.DiscardHandler)",
+        "Make the tests pass with -race"
+      ],
+      "touches": [
+        "mcpserve/call.go",
+        "mcpserve/stdio.go",
+        "mcpserve/loopback.go",
+        "mcpserve/log_test.go"
+      ],
+      "depends_on": [
+        5,
+        6
+      ],
+      "done_when": [
+        "`cd mcpserve && go test ./... -count=1 -race` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Wire mcpserve into the Makefile and the root module's policy tests",
+      "criteria": [
+        "23-REQ-1.1",
+        "23-REQ-1.2",
+        "23-REQ-9.1",
+        "23-REQ-9.2",
+        "23-REQ-9.3"
+      ],
+      "tests": [
+        "TS-23-1",
+        "TS-23-2",
+        "TS-23-49",
+        "TS-23-50",
+        "TS-23-51"
+      ],
+      "steps": [
+        "Write TS-23-1 and TS-23-2 in internal/policy/mcpserve_deps_test.go mirroring TS-19-60/61 in gatewayd_deps_test.go (module path, go 1.27, replace of the root at \"../\", direct set exactly the root and go-sdk, SDK version equal to the root's, validateAllowlist with approvedDeps plus the mcpserve path; `go list -m all` graph subset with the mcpserve path removed)",
+        "Write TS-23-49 in internal/policy mirroring gateway_make_test.go: MODULES and the `@for m in` doc loop both contain mcpserve, and docs/generated/mcpserve/mcpserve.txt exists",
+        "Edit Makefile: add mcpserve to `MODULES :=` and to the make doc module loop; run `make doc` and commit docs/generated/mcpserve/mcpserve.txt",
+        "Add \"mcpserve\" to gateModules in internal/policy/crosstarget_test.go and write TS-23-50 asserting it is present (covers test in the TS-19-62 style)",
+        "Update internal/policy/nolisten_test.go: doc comment and failure message say only nested modules (sandbox/gatewayd, mcpserve) may listen; keep the scan scope; add a fixture with a listener in mcpserve/x.go beside mcpserve/go.mod, a root-listener fixture asserting the message names gatewayd and mcpserve, and the delivered-tree case (TS-23-51)",
+        "Make the policy tests pass offline; do not touch internal/policy/testdata or the root go.mod"
+      ],
+      "touches": [
+        "Makefile",
+        "internal/policy/mcpserve_deps_test.go",
+        "internal/policy/mcpserve_make_test.go",
+        "internal/policy/crosstarget_test.go",
+        "internal/policy/nolisten_test.go",
+        "docs/generated/mcpserve/mcpserve.txt"
+      ],
+      "depends_on": [
+        7
+      ],
+      "done_when": [
+        "`go test ./internal/policy/... -count=1` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Move examples/harness onto mcpserve, sandbox.Open, guard.Allow and the faux helpers",
+      "criteria": [
+        "23-REQ-10.1",
+        "23-REQ-10.2",
+        "23-REQ-10.3",
+        "23-REQ-10.4",
+        "23-REQ-10.5",
+        "23-REQ-10.6",
+        "23-REQ-10.7"
+      ],
+      "tests": [
+        "TS-23-54",
+        "TS-23-55",
+        "TS-23-56",
+        "TS-23-57",
+        "TS-23-58",
+        "TS-23-59",
+        "TS-23-60"
+      ],
+      "steps": [
+        "Write TS-23-54, 57, 58 and 59 as structural tests in examples/harness/main_test.go (go/parser over non-test files: no server.go, no go-sdk or net import, no listen call, helpers declared in calls.go, exactly one sandbox.Open and no Create/Sync/Tools call, guard.Allow used, no `faux.Turn{` literal or guard.Restricted; go mod edit -json for go.mod); adapt TestHarnessArgs to `&mcpserve.Endpoint{}` and TestExampleRunsOffline to expect `filled the workspace from the sample project`; remove TestServeRequiresTheToken",
+        "Create examples/harness/calls.go holding, unchanged in behaviour, the per-call log, the call/blocked counters built from the toolset's hooks, summarize, firstLine, truncate and errShellBlocked, then delete examples/harness/server.go",
+        "In main.go choose the source first (sandbox.GitRepo{URL, Ref, Depth: 1} for --repo, sandbox.LocalDir{Path: dir, ExcludeGit: true} for --dir, else sandbox.LocalDir{Path: sample}), call sandbox.Open(ctx, p, spec, src, sandbox.ToolOptions{}) once with defer sb.Close(ctx), and print `filled the workspace from <the sample project | dir | repo>` replacing the per-source sync lines",
+        "Replace guard.Restricted(guard.Options{AllowedPrograms: allowed}) with guard.Allow(allowed...)",
+        "Serve with mcpserve.New(runner, mcpserve.Options{Instructions: ...}) and ServeLoopback(ctx), defer ep.Close(), print `MCP server at <ep.URL>`",
+        "In harness.go make runHarness, runClaude, runPi and runScripted take *mcpserve.Endpoint: claude passes ep.ClaudeConfig(\"agentkit\") to --mcp-config, pi writes ep.PiConfig(\"agentkit\") to .pi/mcp.json, scripted connects mcp.Pool to ep.URL with header Authorization: Bearer <ep.Token>; replace the two faux.Turn literals with faux.ToolCall(...) and faux.Text(...)",
+        "Update examples/harness/go.mod: require github.com/agent-fox-dev/agentkit-go/mcpserve v0.0.0 with `replace ... => ../../mcpserve`; run `go mod tidy` offline so go-sdk becomes indirect and go.sum is current",
+        "Run the example's tests and `make lint` for the module; the offline run must print `imported 12 tools over MCP: agentkit__code_mode, agentkit__edit_file, agentkit__execute`, `verdict: pass` and `Harness example completed successfully`"
+      ],
+      "touches": [
+        "examples/harness/server.go",
+        "examples/harness/calls.go",
+        "examples/harness/main.go",
+        "examples/harness/harness.go",
+        "examples/harness/prompt.go",
+        "examples/harness/main_test.go",
+        "examples/harness/go.mod",
+        "examples/harness/go.sum"
+      ],
+      "depends_on": [
+        8
+      ],
+      "done_when": [
+        "`cd examples/harness && go test ./... -count=1` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Update documentation, regenerate docs and confirm the root is unchanged and make check passes offline",
+      "criteria": [
+        "23-REQ-9.4",
+        "23-REQ-9.5"
+      ],
+      "tests": [
+        "TS-23-52",
+        "TS-23-53"
+      ],
+      "steps": [
+        "Run `make doc` and commit docs/generated/ (including docs/generated/mcpserve/mcpserve.txt)",
+        "docs/api.md: intro says the root and sandbox modules listen on no socket and two nested modules serve (sandbox/gatewayd, mcpserve); add an mcpserve row to the nested-modules table",
+        "docs/architecture.md: Shape (six nested modules, mcpserve/ entry, examples/harness requires mcpserve, gates and allowlist sentence), the `serves no network API` paragraph and `No socket in the library` section, a Package graph row for mcpserve (., core, mcp, wire, go-sdk) and the Testing layout module list",
+        "docs/configuration.md: add `## MCP serving (mcpserve.Options)` after the MCP client section (New refusals, the four options, ServeLoopback token/path/body limits/lifetime, ServeStdio streams, the two config strings) and one sentence on mcpserve's inbound bounds under `Limits on untrusted input`",
+        "docs/DEPS.md paragraph for mcpserve (no new module, the direct set, the graph tests); docs/releasing.md: push mcpserve/vX.Y.Z alongside vX.Y.Z and sandbox/vX.Y.Z",
+        "README.md: update the opening no-network-API sentence, add an mcpserve paragraph and snippet beside the gateway's, update `The driver is optional`, the packages table row and the make-targets module lists; AGENTS.md: add `mcpserve/  # Nested module: MCP serving of a Runner's tools` to the layout",
+        "examples/harness/README.md: replace `The code an embedder copies` with the sandbox.Open -> codemode.New -> agentkit.NewRunner -> mcpserve sequence, update step 5 and the sample output; examples/README.md: update the harness row",
+        "docs/errata/19_sandbox_gateway.md: add an entry naming PRD 12 and this spec: 19-REQ-9.4's `exempts only the gatewayd module` now reads `exempts nested modules, gatewayd and mcpserve`, and the gate list gained mcpserve",
+        "Write TS-23-52 (run TS-13-65 and TS-19-64 and check git diff of go.mod, internal/policy/testdata and exported-api.golden is empty) and TS-23-53 (`GOPROXY=off make check`, as TS-19-66) and make them pass; do not write tests for doc content"
+      ],
+      "touches": [
+        "docs/generated",
+        "docs/api.md",
+        "docs/architecture.md",
+        "docs/configuration.md",
+        "docs/DEPS.md",
+        "docs/releasing.md",
+        "docs/errata/19_sandbox_gateway.md",
+        "README.md",
+        "AGENTS.md",
+        "examples/README.md",
+        "examples/harness/README.md",
+        "internal/policy/mcpserve_unchanged_test.go"
+      ],
+      "depends_on": [
+        9
+      ],
+      "done_when": [
+        "`GOPROXY=off make check` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify the loopback, stdio, refusal and harness paths end to end",
+      "tests": [
+        "TS-23-61",
+        "TS-23-62",
+        "TS-23-63",
+        "TS-23-64"
+      ],
+      "steps": [
+        "Write TS-23-61 (workspace.Open + tools.For + code_mode, Runner with recording Guard, ServeLoopback, mcp.Pool with bearer header runs a read_file script, then Close and a refused TCP connect), TS-23-62 (re-executed test binary child over mcp.Pool Command, exits 0), TS-23-63 (401 without the token plus a blocked execute result with a capturing slog handler) and TS-23-64 (offline harness run) using real components, and confirm they pass",
+        "Trace 23-PATH-1 to 23-PATH-4 through the real code: New -> ServeLoopback/ServeStdio -> auth and body guard -> SDK handler -> callTool -> Runner.Call -> result mapping; confirm each step calls the next and no stub remains",
+        "Confirm every producer with a contract is consumed in production code: Endpoint.URL/Token/ClaudeConfig/PiConfig by examples/harness, Server.ServeLoopback by examples/harness main, and Runner.Tools()/Runner.Call from spec 21 by mcpserve",
+        "Confirm entry points owned by other specs (agentkit.NewRunner, sandbox.Open, guard.Allow, faux.ToolCall, faux.Text) are called from production code in examples/harness",
+        "Grep mcpserve/, examples/harness/ and internal/policy/ for panic(\"not implemented\"), TODO, and a bare `return nil` on a non-trivial path and remove any that remain",
+        "Run `make check` in every module and confirm it passes"
+      ],
+      "touches": [
+        "mcpserve/smoke_test.go",
+        "examples/harness/main_test.go"
+      ],
+      "depends_on": [
+        10
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass in every module"
+      ],
+      "state": "pending"
+    }
+  ]
+}

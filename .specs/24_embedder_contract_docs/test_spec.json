@@ -1,0 +1,346 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "24",
+  "spec_name": "embedder_contract_docs",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-24-1",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-1.1"
+      ],
+      "title": "apiPackages is exactly the ten expected entries in the expected order",
+      "given": [
+        "internal/policy/layout_test.go declares apiPackages"
+      ],
+      "when": "the test compares apiPackages with the literal list element by element",
+      "then": [
+        "len(apiPackages) is 10",
+        "entries are \".\", \"core\", \"tools\", \"codemode\", \"workspace\", \"guard\", \"provider/faux\", \"sandbox\", \"codesearch\", \"mcpserve\" in that order",
+        "a mismatch names the index and both values"
+      ],
+      "pseudocode": "want = [\".\",\"core\",\"tools\",\"codemode\",\"workspace\",\"guard\",\"provider/faux\",\"sandbox\",\"codesearch\",\"mcpserve\"]; assert len(apiPackages)==len(want); for i: assert apiPackages[i]==want[i]"
+    },
+    {
+      "id": "TS-24-2",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-2.1",
+        "24-REQ-2.2",
+        "24-REQ-2.3",
+        "24-REQ-2.5"
+      ],
+      "title": "exportedAPI returns the PRD 12 identifiers for guard, provider/faux, sandbox and mcpserve",
+      "given": [
+        "repoRoot(t) resolves the repository root",
+        "spec 22 and spec 23 have landed"
+      ],
+      "when": "exportedAPI is called on the guard, provider/faux, sandbox and mcpserve directories",
+      "then": [
+        "each returned list is non-empty",
+        "guard has a line beginning `func Allow(`",
+        "provider/faux has lines beginning `func ToolCall(` and `func Text(`",
+        "sandbox has a line beginning `func Open(`",
+        "mcpserve has a line beginning `func New(` and a line beginning `type Endpoint`"
+      ],
+      "pseudocode": "for pkg, prefixes in {guard:[\"func Allow(\"], provider/faux:[\"func ToolCall(\",\"func Text(\"], sandbox:[\"func Open(\"], mcpserve:[\"func New(\",\"type Endpoint\"]}: lines = exportedAPI(t, root/pkg); assert len(lines)>0; for p in prefixes: requireLine(t, pkg, lines, p)"
+    },
+    {
+      "id": "TS-24-3",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-2.4"
+      ],
+      "title": "codesearch's exported API shows New over *workspace.Workspace and lists the Windows stub beside the real declarations",
+      "given": [
+        "codesearch/index.go and codesearch/stub_windows.go both exist",
+        "spec 20 has changed New to take *workspace.Workspace"
+      ],
+      "when": "exportedAPI is called on the codesearch directory",
+      "then": [
+        "the list is non-empty",
+        "a line beginning `func New(` contains `*workspace.Workspace`",
+        "method lines with the real receiver name (idx) and lines with the stub's unnamed receiver `(*Index)` both appear, as separate lines",
+        "no line mentions `Ignore` as a field of Options"
+      ],
+      "pseudocode": "lines = exportedAPI(t, root/codesearch); assert any(l startswith 'func New(' and '*workspace.Workspace' in l); assert any('func (idx ' in l); assert any('func (*Index)' in l)"
+    },
+    {
+      "id": "TS-24-4",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-1.2"
+      ],
+      "title": "The golden's section headers equal apiPackages in order and nothing else",
+      "given": [
+        "internal/policy/testdata/exported-api.golden is committed"
+      ],
+      "when": "the test collects every line beginning `== ` from the golden file",
+      "then": [
+        "the header sequence equals apiPackages entry for entry",
+        "there is no duplicate header and no header for a package outside apiPackages"
+      ],
+      "pseudocode": "hdrs = [l[3:] for l in lines(golden) if l.startswith('== ')]; assert hdrs == apiPackages"
+    },
+    {
+      "id": "TS-24-5",
+      "kind": "integration",
+      "verifies": [
+        "24-REQ-1.3"
+      ],
+      "title": "The four golden comparison tests pass against the ten-section golden with the update variable unset",
+      "given": [
+        "AGENTKIT_UPDATE_API_GOLDEN is unset in the environment",
+        "the committed golden has ten sections"
+      ],
+      "when": "go test ./internal/policy -run 'TS13_67|TS14_44|TS15_42|TS17_61' -v is run in a subprocess",
+      "then": [
+        "the exit status is 0",
+        "the output shows PASS for each of the four tests",
+        "none of the four is reported SKIP"
+      ],
+      "pseudocode": "out = run('go test ./internal/policy -run ... -v', env minus AGENTKIT_UPDATE_API_GOLDEN); assert exit==0; for id in ids: assert '--- PASS: ' contains id; assert 'SKIP' not in out"
+    },
+    {
+      "id": "TS-24-6",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-1.4"
+      ],
+      "title": "A missing apiPackages directory fails the test with its path instead of skipping",
+      "given": [
+        "a re-executed child test process (selected by an environment variable) that calls exportedAPI on a directory path that does not exist under the repository root"
+      ],
+      "when": "the parent runs the child with go test and inspects its exit status and output",
+      "then": [
+        "the child exits non-zero and reports FAIL, not SKIP",
+        "the output contains the missing directory's full path"
+      ],
+      "pseudocode": "missing = root/'no-such-pkg'; out, err = runChild(env MISSING_DIR=missing); assert err != nil; assert 'FAIL' in out; assert 'SKIP' not in out; assert missing in out"
+    },
+    {
+      "id": "TS-24-7",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-1.5"
+      ],
+      "title": "TS-17-61 keeps its separate preSpec17Guard list and still compares guard against it",
+      "given": [
+        "preSpec17Guard in exported_api_17_test.go as spec 22 left it"
+      ],
+      "when": "the test compares preSpec17Guard with the expected entries and with guard's exported lines",
+      "then": [
+        "preSpec17Guard contains `func Allow(programs ...string) core.BeforeToolCall` first, followed by the pre-spec 22 entries unchanged",
+        "every entry of preSpec17Guard appears among exportedAPI(guard) lines",
+        "TS-17-61 itself passes"
+      ],
+      "pseudocode": "assert preSpec17Guard[0]=='func Allow(programs ...string) core.BeforeToolCall'; lines=set(exportedAPI(t, root/'guard')); for e in preSpec17Guard: assert e in lines"
+    },
+    {
+      "id": "TS-24-8",
+      "kind": "unit",
+      "verifies": [
+        "24-REQ-2.6"
+      ],
+      "title": "The prefix check fails and names the package and the missing prefix when the list is empty or lacks the line",
+      "given": [
+        "the requireLine helper used by TS-24-2",
+        "a child test process that calls it with an empty list for `guard` and prefix `func Allow(`"
+      ],
+      "when": "the parent runs the child and inspects its output",
+      "then": [
+        "the child exits non-zero and reports FAIL",
+        "the message contains `guard` and `func Allow(`"
+      ],
+      "pseudocode": "out, err = runChild(); assert err != nil; assert 'guard' in out and 'func Allow(' in out"
+    },
+    {
+      "id": "TS-24-9",
+      "kind": "integration",
+      "verifies": [
+        "24-REQ-3.1"
+      ],
+      "title": "The five existing golden sections are unchanged and the new sections are only appended",
+      "given": [
+        "the committed golden",
+        "git history is available with the spec 23 commit as an ancestor"
+      ],
+      "when": "the test extracts the sections for `.`, `core`, `tools`, `codemode` and `workspace` from the golden and compares them with the lines exportedAPI prints for those directories; it also diffs the golden against the version before spec 24 with git",
+      "then": [
+        "each of the five sections equals exportedAPI output for its directory, preceded by its `== <pkg>` header, in the first five positions",
+        "the git diff against the pre-spec-24 golden has no removed line (no line beginning with a single `-` other than the file header)",
+        "every added line lies after the workspace section"
+      ],
+      "pseudocode": "for pkg in first5: assert section(golden, pkg) == exportedAPI(t, pkg); diff = git diff <pre-spec-24> -- golden; assert no line startswith '-' and not '---'"
+    },
+    {
+      "id": "TS-24-10",
+      "kind": "property",
+      "verifies": [
+        "24-REQ-3.2"
+      ],
+      "title": "exportedAPI output is sorted, deduplicated and stable over repeated calls",
+      "given": [
+        "an unchanged working tree"
+      ],
+      "when": "for any entry of apiPackages, exportedAPI is called twice",
+      "then": [
+        "both calls return identical lists",
+        "each list is sorted ascending",
+        "no line appears twice",
+        "regenerating the golden twice in a row yields byte-identical files"
+      ],
+      "pseudocode": "for pkg in apiPackages: a = exportedAPI(t, pkg); b = exportedAPI(t, pkg); assert a == b; assert a == sorted(a); assert len(set(a)) == len(a)"
+    },
+    {
+      "id": "TS-24-11",
+      "kind": "integration",
+      "verifies": [
+        "24-REQ-3.3"
+      ],
+      "title": "TS-13-67 fails and lists the lines gained when a golden section differs from the code",
+      "given": [
+        "the golden is copied to a backup and restored by t.Cleanup",
+        "one line of the `core` section is removed from the golden (not run in parallel with other policy tests)"
+      ],
+      "when": "go test ./internal/policy -run TS13_67 is run in a subprocess with AGENTKIT_UPDATE_API_GOLDEN unset",
+      "then": [
+        "the subprocess exits non-zero and reports FAIL",
+        "the output contains `exported API gained:` followed by the removed line",
+        "the golden file is restored byte-identically afterwards"
+      ],
+      "pseudocode": "backup = read(golden); defer write(golden, backup); write(golden, drop_line(backup, core_section)); out, err = run(...); assert err != nil; assert 'exported API gained:' in out and dropped in out"
+    },
+    {
+      "id": "TS-24-12",
+      "kind": "integration",
+      "verifies": [
+        "24-REQ-3.4"
+      ],
+      "title": "TS-19-64 finds no uncommitted change under internal/policy/testdata",
+      "given": [
+        "the regenerated golden has been committed"
+      ],
+      "when": "git status --porcelain -- internal/policy/testdata is run and TS-19-64 is run",
+      "then": [
+        "the git status output is empty",
+        "TestGatewayLeavesTheBuild_TS19_64 passes"
+      ],
+      "pseudocode": "assert run('git status --porcelain -- internal/policy/testdata') == ''; assert run('go test ./internal/policy -run TS19_64').exit == 0"
+    },
+    {
+      "id": "TS-24-13",
+      "kind": "integration",
+      "verifies": [
+        "24-REQ-4.1"
+      ],
+      "title": "The Makefile's module loops cover every module in MODULES, mcpserve included",
+      "given": [
+        "the Makefile with spec 23's MODULES"
+      ],
+      "when": "make -n test, make -n vet and make -n lint are run and `make -pn` MODULES is read",
+      "then": [
+        "the expanded MODULES value contains mcpserve",
+        "each dry-run loop text mentions every module in MODULES",
+        "check depends on fmt, vet, lint and test"
+      ],
+      "pseudocode": "mods = parse(make -pn | grep '^MODULES'); assert 'mcpserve' in mods; for tgt in [test, vet, lint]: out = make -n tgt; for m in mods: assert m in out"
+    },
+    {
+      "id": "TS-24-14",
+      "kind": "integration",
+      "verifies": [
+        "24-REQ-4.2"
+      ],
+      "title": "make doc exits 0 and leaves docs/generated unchanged from the committed tree",
+      "given": [
+        "a committed tree",
+        "a git working directory"
+      ],
+      "when": "make doc is run, then git status --porcelain -- docs/generated",
+      "then": [
+        "make doc exits with status 0",
+        "the git status output is empty",
+        "docs/generated contains a file for mcpserve, guard and provider/faux"
+      ],
+      "pseudocode": "assert run('make doc').exit==0; assert run('git status --porcelain -- docs/generated')==''; assert exists docs/generated/mcpserve/*.txt or mcpserve.txt"
+    },
+    {
+      "id": "TS-24-15",
+      "kind": "integration",
+      "verifies": [
+        "24-REQ-4.3"
+      ],
+      "title": "make test reports the failing module and exits non-zero when a listed module fails",
+      "given": [
+        "a temporary Go module in a temp directory whose only test calls t.Fatal"
+      ],
+      "when": "make test MODULES=<tempdir> is run at the repository root",
+      "then": [
+        "the exit status is non-zero",
+        "the output contains `go test ./... (<tempdir>)` naming the failing module",
+        "the loop continues to completion (exits with rc 1, not partway)"
+      ],
+      "pseudocode": "out, code = run('make test MODULES='+tmp); assert code != 0; assert 'go test ./... ('+tmp+')' in out"
+    },
+    {
+      "id": "TS-24-16",
+      "kind": "smoke",
+      "verifies": [
+        "24-PATH-1",
+        "24-REQ-1.3",
+        "24-REQ-3.4"
+      ],
+      "title": "A maintainer regenerates the ten-section golden, commits it and every policy test passes",
+      "given": [
+        "spec 20 to 23 code is in the tree",
+        "the golden is in a temporary copy of the committed state so the original can be restored"
+      ],
+      "when": "AGENTKIT_UPDATE_API_GOLDEN=1 go test ./internal/policy -run TS13_67 is run, then go test ./internal/policy -count=1 is run with the variable unset",
+      "then": [
+        "the regeneration run skips and writes a golden with ten `== <pkg>` sections in apiPackages order",
+        "the existing five sections are unchanged",
+        "TS-13-67, TS-14-44, TS-15-42, TS-17-61, TS-19-64, TS-24-1 and TS-24-2 all pass",
+        "a second regeneration produces byte-identical bytes"
+      ],
+      "pseudocode": "run update; assert headers == apiPackages; cp golden g1; run update again; assert golden == g1; run all policy tests unset; assert exit 0",
+      "real_components": [
+        "internal/policy test package",
+        "exportedAPI parsing the real source directories of all ten packages",
+        "internal/policy/testdata/exported-api.golden",
+        "go toolchain",
+        "git"
+      ]
+    },
+    {
+      "id": "TS-24-17",
+      "kind": "smoke",
+      "verifies": [
+        "24-PATH-2",
+        "24-REQ-4.1",
+        "24-REQ-4.2"
+      ],
+      "title": "A maintainer runs make check in every module then make doc and finds no uncommitted generated docs",
+      "given": [
+        "a committed tree containing spec 24's changes",
+        "go and make installed"
+      ],
+      "when": "make check is run at the repository root, then make doc, then git status --porcelain -- docs/generated",
+      "then": [
+        "make check runs fmt, vet, lint and test in each module in MODULES including mcpserve and exits 0",
+        "make doc exits 0",
+        "git status for docs/generated prints nothing"
+      ],
+      "pseudocode": "assert run('make check').exit==0; assert run('make doc').exit==0; assert run('git status --porcelain -- docs/generated')==''",
+      "real_components": [
+        "Makefile",
+        "every module in MODULES",
+        "go toolchain",
+        "gofmt",
+        "go doc",
+        "git"
+      ]
+    }
+  ]
+}

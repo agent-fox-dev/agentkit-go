@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // referenceCache maintains in-memory reference analysis, parsed Go packages,
@@ -19,7 +20,7 @@ import (
 type referenceCache struct {
 	mu sync.Mutex
 
-	ws *Workspace
+	ws *workspace.Workspace
 	ft *fileTools
 
 	dirtyPaths           map[string]bool
@@ -42,7 +43,7 @@ type referenceCache struct {
 }
 
 // newReferenceCache creates an in-memory reference cache for a workspace.
-func newReferenceCache(ws *Workspace, ft *fileTools) *referenceCache {
+func newReferenceCache(ws *workspace.Workspace, ft *fileTools) *referenceCache {
 	return &referenceCache{
 		ws:            ws,
 		ft:            ft,
@@ -135,7 +136,7 @@ func (rc *referenceCache) hasFile(rel string) bool {
 
 // populateInitial scans workspace files to populate the initial file set.
 func (rc *referenceCache) populateInitial(ctx context.Context) {
-	_ = Walk(ctx, rc.ws, rc.ws.Root, WalkOptions{}, func(rel string, d fs.DirEntry) error {
+	_ = rc.ws.Walk(ctx, "", workspace.WalkOptions{}, func(rel string, d fs.DirEntry) error {
 		if !d.IsDir() {
 			rc.files[filepath.ToSlash(rel)] = true
 		}
@@ -173,7 +174,7 @@ func (rc *referenceCache) refresh(ctx context.Context) error {
 	}
 
 	for f := range rc.files {
-		abs := filepath.Join(rc.ws.Root, filepath.FromSlash(f))
+		abs := filepath.Join(rc.ws.Root(), filepath.FromSlash(f))
 		if fi, err := os.Stat(abs); err != nil || fi.IsDir() {
 			delete(rc.files, f)
 			delete(rc.outlines, f)
@@ -193,7 +194,7 @@ func (rc *referenceCache) refresh(ctx context.Context) error {
 
 	for pkgDir := range rc.dirtyPackages {
 		rc.importer = nil
-		absDir := filepath.Join(rc.ws.Root, filepath.FromSlash(pkgDir))
+		absDir := filepath.Join(rc.ws.Root(), filepath.FromSlash(pkgDir))
 		for path := range rc.parsed {
 			if filepath.Dir(path) == absDir {
 				delete(rc.parsed, path)
@@ -205,7 +206,7 @@ func (rc *referenceCache) refresh(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		abs := filepath.Join(rc.ws.Root, filepath.FromSlash(rel))
+		abs := filepath.Join(rc.ws.Root(), filepath.FromSlash(rel))
 		if fi, err := os.Stat(abs); err != nil || fi.IsDir() {
 			delete(rc.files, rel)
 			delete(rc.outlines, rel)
@@ -216,7 +217,7 @@ func (rc *referenceCache) refresh(ctx context.Context) error {
 			continue // outlined on first use
 		}
 		delete(rc.outlines, rel)
-		if ofile, err := outline.Outline(ctx, abs, nil, outline.Options{Root: rc.ws.Root}); err == nil {
+		if ofile, err := outline.Outline(ctx, abs, nil, outline.Options{Root: rc.ws.Root()}); err == nil {
 			rc.outlines[rel] = &ofile
 		}
 	}
@@ -259,7 +260,7 @@ func (rc *referenceCache) outlineDecls(ctx context.Context, rel string) []outlin
 	if ok {
 		return cached.Decls
 	}
-	ofile, err := outline.Outline(ctx, filepath.Join(rc.ws.Root, filepath.FromSlash(rel)), nil, outline.Options{Root: rc.ws.Root})
+	ofile, err := outline.Outline(ctx, filepath.Join(rc.ws.Root(), filepath.FromSlash(rel)), nil, outline.Options{Root: rc.ws.Root()})
 	if err != nil {
 		return nil
 	}

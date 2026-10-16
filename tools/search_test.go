@@ -14,6 +14,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 type coreTool = core.Tool
@@ -314,7 +315,7 @@ func runNative(t *testing.T, root string, p tools.SearchParams) (tools.SearchRes
 	t.Helper()
 	// The global excludes layer is pinned EMPTY (NFR-TEST-04): a developer's
 	// own ~/.config/git/ignore must not decide whether this test passes.
-	return tools.SearchIn(context.Background(), root, p, tools.NoGlobalExcludes())
+	return tools.SearchIn(context.Background(), root, p, workspace.NoGlobalExcludes())
 }
 
 func asPatternError(err error, target **tools.SearchPatternError) bool {
@@ -335,11 +336,11 @@ func asPatternError(err error, target **tools.SearchPatternError) bool {
 // searchTool builds the real tool against a workspace rooted at root.
 func searchTool(t *testing.T, root string) coreTool {
 	t.Helper()
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws, Ignore: tools.NoGlobalExcludes()})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,11 +357,11 @@ func searchTool(t *testing.T, root string) coreTool {
 
 func readTool(t *testing.T, root string) coreTool {
 	t.Helper()
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws, Ignore: tools.NoGlobalExcludes()})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

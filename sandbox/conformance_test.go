@@ -27,7 +27,7 @@ func proxyBuilder(t *testing.T, tree toolconformance.Tree) []core.Tool {
 }
 
 // TS-13-64: the shared internal/toolconformance case table passes against
-// proxy tools over local (the tools package runs it against tools.All).
+// proxy tools over local (the tools package runs it against tools.For).
 // 13-REQ-10.4.
 func TestProxyConformance_TS13_64(t *testing.T) {
 	isolate(t)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 type mockCandidateIndex struct {
@@ -87,9 +88,9 @@ func TestRefScanner_CandidatesTraversal_TS_05_19(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace failed: %v", err)
+		t.Fatalf("workspace.Open failed: %v", err)
 	}
 
 	// Case 1: Traversal without index
@@ -209,16 +210,16 @@ func TestRefScanner_CommentStringTextConfidence_TS_05_22(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace failed: %v", err)
+		t.Fatalf("workspace.Open failed: %v", err)
 	}
 	targetDecl := outline.Decl{
 		Kind: "func",
 		Name: "execute",
 	}
 
-	res, err := ws.References(context.Background(), targetDecl, ReferenceOptions{IncludeTests: true, MaxResults: 100})
+	res, err := References(context.Background(), ws, targetDecl, ReferenceOptions{IncludeTests: true, MaxResults: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,9 +257,9 @@ func TestRefScanner_UndeclaredTargetTextConfidence_TS_05_23(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace failed: %v", err)
+		t.Fatalf("workspace.Open failed: %v", err)
 	}
 	// Target declaration not found in symbol table: find_references searches
 	// for the bare name with the text backend.

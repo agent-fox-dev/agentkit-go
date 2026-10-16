@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // mkSymFile creates a file in root with the given relative path and content.
@@ -33,16 +34,14 @@ func mkSymFile(t *testing.T, root, rel, content string) {
 // makeFindSymbolTool builds a find_symbol tool's Execute function from a workspace root.
 func makeFindSymbolTool(t *testing.T, root string, symOpts SymbolOptions) func(ctx context.Context, in json.RawMessage) core.ToolResult {
 	t.Helper()
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   symOpts,
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: symOpts,
+	}.withDefaults(ws))
 	tl := ft.findSymbolTool()
 	return tl.Execute
 }
@@ -51,16 +50,14 @@ func makeFindSymbolTool(t *testing.T, root string, symOpts SymbolOptions) func(c
 // function and the fileTools, for tests that need to inspect the table.
 func makeFindSymbolToolWithFT(t *testing.T, root string, symOpts SymbolOptions) (func(ctx context.Context, in json.RawMessage) core.ToolResult, *fileTools) {
 	t.Helper()
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   symOpts,
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: symOpts,
+	}.withDefaults(ws))
 	tl := ft.findSymbolTool()
 	return tl.Execute, ft
 }
@@ -109,14 +106,14 @@ func TestIndexedFileSetEqualsSearchFiles_TS02_32(t *testing.T) {
 
 	// Get the set of files search_files would select (Walk with IncludeHidden=false,
 	// regular files only).
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var searchFiles []string
 	ctx := context.Background()
-	err = Walk(ctx, ws, ws.Root, WalkOptions{Ignore: NoGlobalExcludes(), IncludeHidden: false}, func(rel string, d fs.DirEntry) error {
+	err = ws.Walk(ctx, "", workspace.WalkOptions{IncludeHidden: false}, func(rel string, d fs.DirEntry) error {
 		if !d.IsDir() && d.Type().IsRegular() {
 			searchFiles = append(searchFiles, rel)
 		}
@@ -464,19 +461,17 @@ func TestRepeatedCallsAfterPartial_TS02_37(t *testing.T) {
 		mkSymFile(t, root, name, content)
 	}
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Track how many times OutlineMany is called via a counting runner.
 	// For Go files, outline uses go/ast, so we track via the symbol table.
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{MaxFiles: 15},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{MaxFiles: 15},
+	}.withDefaults(ws))
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
 
@@ -544,8 +539,8 @@ func TestPathScopedPruning_TS02_38(t *testing.T) {
 	var visitedFiles []string
 
 	origWalkFn := walkFn
-	walkFn = func(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(rel string, d fs.DirEntry) error) error {
-		return origWalkFn(ctx, ws, root, opts, func(rel string, d fs.DirEntry) error {
+	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(rel string, d fs.DirEntry) error) error {
+		return origWalkFn(ctx, ws, sub, opts, func(rel string, d fs.DirEntry) error {
 			mu.Lock()
 			if d.IsDir() {
 				visitedDirs = append(visitedDirs, rel)
@@ -558,17 +553,15 @@ func TestPathScopedPruning_TS02_38(t *testing.T) {
 	}
 	defer func() { walkFn = origWalkFn }()
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+	}.withDefaults(ws))
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
 
@@ -607,79 +600,77 @@ func TestPathScopedPruning_TS02_38(t *testing.T) {
 	}
 }
 
-// TS-02-57: Every table walk uses the memoized Options.Ignore from fileTools
-func TestTableWalkUsesMemoizedIgnore_TS02_57(t *testing.T) {
+// TS-02-57, re-expressed for the workspace package: every table walk goes
+// through the tool set's workspace, so its rules apply and its memoized
+// core.excludesFile lookup (one `git config` for the whole tool set) is the
+// only lookup.
+func TestTableWalkUsesTheWorkspace_TS02_57(t *testing.T) {
 	root := t.TempDir()
 	mkSymFile(t, root, "a.go", "package main\n\nfunc A() {}\n")
 	mkSymFile(t, root, ".gitignore", "ignored/\n")
 	mkSymFile(t, root, "ignored/b.go", "package ignored\n\nfunc B() {}\n")
+	mkSymFile(t, root, "globalonly/c.go", "package globalonly\n\nfunc C() {}\n")
 
-	// Track how many times the walk is called and what IgnoreOptions it receives.
-	var mu sync.Mutex
-	var walkCalls int
-	var walkIgnoreOpts []IgnoreOptions
-
-	origWalkFn := walkFn
-	walkFn = func(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(rel string, d fs.DirEntry) error) error {
-		mu.Lock()
-		walkCalls++
-		walkIgnoreOpts = append(walkIgnoreOpts, opts.Ignore)
-		mu.Unlock()
-		return origWalkFn(ctx, ws, root, opts, fn)
+	// A global excludes file, found through a counting hook, names globalonly/.
+	global := filepath.Join(t.TempDir(), "global-ignore")
+	if err := os.WriteFile(global, []byte("globalonly/\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	defer func() { walkFn = origWalkFn }()
-
-	ws, err := NewWorkspace(root)
+	var lookups atomic.Int32
+	ig := workspace.NoGlobalExcludes()
+	ig.GitConfig = func() string { lookups.Add(1); return global }
+	ws, err := workspace.Open(root, workspace.Options{Ignore: ig})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	igOpts := NoGlobalExcludes()
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    igOpts,
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	// Track how many walks the table makes and which workspace each goes through.
+	var mu sync.Mutex
+	var walkCalls int
+	var walkWorkspaces []*workspace.Workspace
+	origWalkFn := walkFn
+	walkFn = func(ctx context.Context, w *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(rel string, d fs.DirEntry) error) error {
+		mu.Lock()
+		walkCalls++
+		walkWorkspaces = append(walkWorkspaces, w)
+		mu.Unlock()
+		return origWalkFn(ctx, w, sub, opts, fn)
+	}
+	defer func() { walkFn = origWalkFn }()
 
-	// Call find_symbol twice to trigger build and a second pass.
+	ft := newFileTools(ws, Options{Env: os.Environ(), Symbols: SymbolOptions{}}.withDefaults(ws))
+
+	// Call find_symbol twice to trigger the build and a second pass.
 	tl := ft.findSymbolTool()
 	r1 := tl.Execute(context.Background(), json.RawMessage(`{"name":"A"}`))
 	if !r1.OK {
 		t.Fatalf("call 1 failed: error=%s detail=%s", r1.Error, r1.Detail)
 	}
-
-	// Force revalidation by marking the table.
-	// (In the full implementation, this would be done by write_file/edit_file.)
-	// For now, we just call find_symbol again.
 	r2 := tl.Execute(context.Background(), json.RawMessage(`{"name":"A"}`))
 	if !r2.OK {
 		t.Fatalf("call 2 failed: error=%s detail=%s", r2.Error, r2.Detail)
 	}
 
 	mu.Lock()
-	calls := walkCalls
-	opts := append([]IgnoreOptions{}, walkIgnoreOpts...)
+	calls, workspaces := walkCalls, append([]*workspace.Workspace{}, walkWorkspaces...)
 	mu.Unlock()
-
-	// At least one walk should have happened.
 	if calls == 0 {
 		t.Fatal("expected at least one walk call")
 	}
-
-	// Every walk should have received the configured, hermetic
-	// IgnoreOptions, not the zero value that reads the real environment.
-	for i, opt := range opts {
-		if opt.Getenv == nil || opt.GitConfig == nil || opt.Getenv("HOME") != "" || opt.GitConfig() != "" {
-			t.Errorf("walk %d did not receive the configured IgnoreOptions", i)
+	for i, w := range workspaces {
+		if w != ws {
+			t.Errorf("walk %d did not go through the tool set's workspace", i)
 		}
 	}
 
-	// The ignore configuration should be loaded once (memoized).
-	// We verify this by checking that the ignored directory's files are not indexed.
+	// The rules are the workspace's: .gitignore and the global excludes file.
 	filesIndexed, _ := r1.Data["files_indexed"].(int)
-	if filesIndexed != 1 { // only a.go, not ignored/b.go
-		t.Fatalf("files_indexed=%d, want 1 (ignored/b.go should be excluded)", filesIndexed)
+	if filesIndexed != 1 { // only a.go
+		t.Fatalf("files_indexed=%d, want 1 (ignored/b.go and globalonly/c.go are excluded)", filesIndexed)
+	}
+	// And the lookup behind them ran once for the whole tool set.
+	if n := lookups.Load(); n != 1 {
+		t.Errorf("the core.excludesFile lookup ran %d times across %d walks, want exactly 1", n, calls)
 	}
 }
 
@@ -693,16 +684,14 @@ func TestRevalidationReoutlinesChangedNewRacyDropsUnseen_TS02_44(t *testing.T) {
 	mkSymFile(t, root, "deleted.go", "package main\n\nfunc Deleted() {}\n")
 	mkSymFile(t, root, "racy.go", "package main\n\nfunc RacyOld() {}\n")
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+	}.withDefaults(ws))
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
 
@@ -871,16 +860,14 @@ func TestWholeTableMarkClearedOnlyByFullPass_TS02_45(t *testing.T) {
 	mkSymFile(t, root, "pkg/b.go", "package pkg\n\nfunc B() {}\n")
 	mkSymFile(t, root, "other/c.go", "package other\n\nfunc C() {}\n")
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+	}.withDefaults(ws))
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
 
@@ -980,9 +967,9 @@ func TestWholeTableMarkClearedOnlyByFullPass_TS02_45(t *testing.T) {
 	// --- Test 4: The next call after a cleared mark runs no walk ---
 	var walkCount atomic.Int32
 	origWalkFn := walkFn
-	walkFn = func(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(string, fs.DirEntry) error) error {
+	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(string, fs.DirEntry) error) error {
 		walkCount.Add(1)
-		return origWalkFn(ctx, ws, root, opts, fn)
+		return origWalkFn(ctx, ws, sub, opts, fn)
 	}
 	defer func() { walkFn = origWalkFn }()
 
@@ -1003,7 +990,7 @@ func TestMarkDuringPassNeverLost_TS02_46(t *testing.T) {
 	mkSymFile(t, root, "a.go", "package main\n\nfunc InitialA() {}\n")
 	mkSymFile(t, root, "b.go", "package main\n\nfunc InitialB() {}\n")
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1017,7 +1004,7 @@ func TestMarkDuringPassNeverLost_TS02_46(t *testing.T) {
 	// until we release it.
 	origWalkFn := walkFn
 	var walkBlocking atomic.Bool
-	walkFn = func(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(string, fs.DirEntry) error) error {
+	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(string, fs.DirEntry) error) error {
 		if walkBlocking.Load() {
 			select {
 			case buildStarted <- struct{}{}:
@@ -1030,16 +1017,14 @@ func TestMarkDuringPassNeverLost_TS02_46(t *testing.T) {
 				return ctx.Err()
 			}
 		}
-		return origWalkFn(ctx, ws, root, opts, fn)
+		return origWalkFn(ctx, ws, sub, opts, fn)
 	}
 	defer func() { walkFn = origWalkFn }()
 
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{MaxDuration: 10 * time.Second},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{MaxDuration: 10 * time.Second},
+	}.withDefaults(ws))
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
 

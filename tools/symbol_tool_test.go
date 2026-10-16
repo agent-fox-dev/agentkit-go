@@ -11,6 +11,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/outline"
 	"github.com/agent-fox-dev/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-02-14: find_symbol rejects empty, blank and 257-byte names but accepts a 256-byte name, before any walk
@@ -20,9 +21,9 @@ func TestFindSymbolNameValidation_TS02_14(t *testing.T) {
 
 	var walkCount int
 	origWalkFn := walkFn
-	walkFn = func(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(string, os.DirEntry) error) error {
+	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(string, os.DirEntry) error) error {
 		walkCount++
-		return origWalkFn(ctx, ws, root, opts, fn)
+		return origWalkFn(ctx, ws, sub, opts, fn)
 	}
 	defer func() { walkFn = origWalkFn }()
 
@@ -86,9 +87,9 @@ func TestFindSymbolKindValidation_TS02_15(t *testing.T) {
 
 	var walkCount int
 	origWalkFn := walkFn
-	walkFn = func(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(string, os.DirEntry) error) error {
+	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(string, os.DirEntry) error) error {
 		walkCount++
-		return origWalkFn(ctx, ws, root, opts, fn)
+		return origWalkFn(ctx, ws, sub, opts, fn)
 	}
 	defer func() { walkFn = origWalkFn }()
 
@@ -157,9 +158,9 @@ func TestFindSymbolPathOutsideWorkspace_TS02_16(t *testing.T) {
 
 	var walkCount int
 	origWalkFn := walkFn
-	walkFn = func(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(string, os.DirEntry) error) error {
+	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(string, os.DirEntry) error) error {
 		walkCount++
-		return origWalkFn(ctx, ws, root, opts, fn)
+		return origWalkFn(ctx, ws, sub, opts, fn)
 	}
 	defer func() { walkFn = origWalkFn }()
 
@@ -202,9 +203,9 @@ func TestFindSymbolPathNotExist_TS02_17(t *testing.T) {
 
 	var walkCount int
 	origWalkFn := walkFn
-	walkFn = func(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(string, os.DirEntry) error) error {
+	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(string, os.DirEntry) error) error {
 		walkCount++
-		return origWalkFn(ctx, ws, root, opts, fn)
+		return origWalkFn(ctx, ws, sub, opts, fn)
 	}
 	defer func() { walkFn = origWalkFn }()
 

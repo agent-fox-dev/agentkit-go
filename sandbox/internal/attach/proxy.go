@@ -16,7 +16,7 @@ import (
 )
 
 // proxy copies h's definition and runs its calls in the agent. No Execute
-// closure of the host's tools.All is kept.
+// closure of the host's tools.For is kept.
 func (s *sb) proxy(h core.Tool) core.Tool {
 	name := h.Name
 	return core.Tool{

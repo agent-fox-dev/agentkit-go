@@ -1,3 +1,14 @@
+// Package tools provides AgentKit's built-in tool set.
+//
+// The file tool set is deliberately minimal (REQ-TOOL-04): read, write, edit,
+// find and list. A tool earns a slot only when it has semantics `execute`
+// cannot express — truncation, unique-match editing, deterministic ignore
+// handling. Deletion, renaming, appending and stat are one shell word each and
+// ship no tool. Their absence is the requirement.
+//
+// The tools are built for a workspace: open one with workspace.Open, which owns
+// the containment boundary, the ignore rules and the directory walk, and pass
+// it to For.
 package tools
 
 import (
@@ -21,6 +32,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // SymbolOptions configures the symbol table behind find_symbol.
@@ -33,9 +45,9 @@ type SymbolOptions struct {
 	MaxDuration time.Duration
 }
 
-// Options configures the built-in tool set.
+// Options configures the built-in tool set. The workspace, and with it the
+// ignore rules, is the argument of For, not an option.
 type Options struct {
-	Workspace *Workspace
 	// SpillDir is where oversized subprocess output is streamed in full
 	// (REQ-TOOL-09d). Empty means a per-workspace subdirectory of
 	// os.TempDir(), created on first spill. Spill files are the EMBEDDER'S to
@@ -50,33 +62,30 @@ type Options struct {
 	// not exist.
 	DisableSpill bool
 	// Env replaces the subprocess environment. Nil means ReducedEnv(nil)
-	// (REQ-SEC-08) — for every constructor here, not only All(): a tool built
+	// (REQ-SEC-08) — for every constructor here, not only For(): a tool built
 	// by hand with a nil Env must not inherit the parent's credentials just
 	// because it skipped the aggregate.
 	Env []string
-	// Ignore injects the environment the ignore engine reads. The zero value
-	// reads the real one; NoGlobalExcludes() pins an empty global layer
-	// (NFR-TEST-04).
-	Ignore IgnoreOptions
 	// Symbols configures the symbol table.
 	Symbols SymbolOptions
-	// Index is the optional codesearch index. When set, All() appends
+	// Index is the optional codesearch index. When set, For() appends
 	// Index.Tools() after the built-in tools, and write_file, edit_file
 	// and the shell tools call Index.Invalidate on every write. Nil means
 	// no index.
 	Index Index
 }
 
-// withDefaults applies the documented zero-value meanings. Every constructor
-// calls it, so the defaults hold for a tool built outside All() too.
-func (o Options) withDefaults() Options {
+// withDefaults applies the documented zero-value meanings for a tool set over
+// ws. Every constructor's caller applies it, so the defaults hold for a tool
+// built outside For() too.
+func (o Options) withDefaults(ws *workspace.Workspace) Options {
 	if o.Env == nil {
 		o.Env = ReducedEnv(nil)
 	}
 	if o.DisableSpill {
 		o.SpillDir = ""
 	} else if o.SpillDir == "" {
-		o.SpillDir = defaultSpillDir(workspaceRoot(o))
+		o.SpillDir = defaultSpillDir(ws.Root())
 	}
 	return o
 }
@@ -91,76 +100,9 @@ func defaultSpillDir(root string) string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("agentkit-spill-%08x", h.Sum32()))
 }
 
-// workspaceRoot is the root a shell tool runs in, or "" with no workspace.
-func workspaceRoot(opts Options) string {
-	if opts.Workspace == nil {
-		return ""
-	}
-	return opts.Workspace.Root
-}
-
-// All returns the default built-in tool set.
-func All(opts Options) ([]core.Tool, error) {
-	if opts.Workspace == nil {
-		ws, err := NewWorkspace("")
-		if err != nil {
-			return nil, err
-		}
-		opts.Workspace = ws
-	}
-	opts = opts.withDefaults()
-	fs := newFileTools(opts)
-
-	// Wrap the shell tools so they mark the symbol table for revalidation
-	// after the command returns, whatever the outcome, and call
-	// Index.Invalidate("") when an index is set. 02-REQ-6.3, 03-REQ-2.7.
-	wrapShell := func(t core.Tool) core.Tool {
-		orig := t.Execute
-		t.Execute = func(ctx context.Context, in json.RawMessage) core.ToolResult {
-			r := orig(ctx, in)
-			fs.markTableRevalidateAll()
-			if fs.index != nil {
-				fs.index.Invalidate("")
-			}
-			return r
-		}
-		return t
-	}
-
-	builtins := []core.Tool{
-		fs.readFile(),
-		fs.writeFile(),
-		fs.editFile(),
-		fs.listFiles(),
-		fs.findFiles(),
-		fs.searchFiles(),
-		fs.fileOutlineTool(),
-		fs.findSymbolTool(),
-		fs.findReferencesTool(),
-		wrapShell(executeTool(opts)),
-		wrapShell(runCommandTool(opts)),
-	}
-
-	// Append index tools when an index is set. 03-REQ-2.3.
-	if opts.Index != nil {
-		names := make(map[string]bool, len(builtins))
-		for _, t := range builtins {
-			names[t.Name] = true
-		}
-		for _, t := range opts.Index.Tools() {
-			if names[t.Name] {
-				return nil, fmt.Errorf("tools: index tool %q duplicates a built-in tool name", t.Name)
-			}
-			builtins = append(builtins, t)
-		}
-	}
-
-	return builtins, nil
-}
-
 // FileNavigationTools names REQ-TOOL-04e's opt-in set of six.
 //
-// They are in All() because All() is the DEFAULT set, and the requirement's
+// They are in For() because For() is the DEFAULT set, and the requirement's
 // "opt-in" is about the tool policy of REQ-TOOL-10 rather than about this
 // constructor: an embedder scopes a run down with ToolPolicy, and a set that
 // omitted them by default would make the common case the one you have to
@@ -261,11 +203,8 @@ func lockKey(path string) (string, error) {
 // ---------------------------------------------------------------- file tools
 
 type fileTools struct {
-	ws    *Workspace
+	ws    *workspace.Workspace
 	locks *pathLocks
-	// ig carries the ignore environment with the `git config` lookup memoized
-	// per workspace, so find_files and search_files do not spawn git per call.
-	ig IgnoreOptions
 
 	// symOpts holds the symbol configuration from Options.Symbols.
 	symOpts SymbolOptions
@@ -290,11 +229,10 @@ type fileTools struct {
 	index Index
 }
 
-func newFileTools(opts Options) *fileTools {
+func newFileTools(ws *workspace.Workspace, opts Options) *fileTools {
 	return &fileTools{
-		ws:      opts.Workspace,
+		ws:      ws,
 		locks:   newPathLocks(),
-		ig:      opts.Ignore.cached(),
 		symOpts: opts.Symbols,
 		index:   opts.Index,
 	}
@@ -1059,7 +997,7 @@ func (f *fileTools) findFiles() core.Tool {
 			// Never nil: no match is "files": [], not null (06-REQ-4.5).
 			found := []string{}
 			truncated := false
-			err = Walk(ctx, f.ws, root, WalkOptions{Ignore: f.ig, IncludeHidden: true}, func(rel string, d fs.DirEntry) error {
+			err = f.ws.Walk(ctx, root, workspace.WalkOptions{IncludeHidden: true}, func(rel string, d fs.DirEntry) error {
 				if d.IsDir() {
 					if wantDirs && MatchGlob(a.Pattern, rel) {
 						// Suffixed like list_files, so a directory is
@@ -1127,8 +1065,8 @@ func renderList(entries []string, marker, empty string) string {
 
 // ------------------------------------------------------------------- execute
 
-func executeTool(opts Options) core.Tool {
-	opts = opts.withDefaults()
+func executeTool(ws *workspace.Workspace, opts Options) core.Tool {
+	opts = opts.withDefaults(ws)
 	return core.Tool{
 		Name:         "execute",
 		OutputSchema: execResultOutputSchema(),
@@ -1163,7 +1101,7 @@ func executeTool(opts Options) core.Tool {
 			// REQ-TOOL-06 null-device stdin, tail truncation at
 			// DefaultByteLimit, spill to SpillDir.
 			res, err := Run(ctx, a.Command, ExecOptions{
-				Dir:      workspaceRoot(opts),
+				Dir:      ws.Root(),
 				Timeout:  timeout,
 				MaxBytes: DefaultByteLimit,
 				SpillDir: opts.SpillDir,
@@ -1279,8 +1217,8 @@ func execStatusLine(res ExecResult, timeout time.Duration) string {
 // shell-features argument on one tool would be a choice the model gets wrong
 // silently. Here there is no shell at all, so a path with a space or a
 // semicolon in it is just an argument.
-func runCommandTool(opts Options) core.Tool {
-	opts = opts.withDefaults()
+func runCommandTool(ws *workspace.Workspace, opts Options) core.Tool {
+	opts = opts.withDefaults(ws)
 	return core.Tool{
 		Name:         "run_command",
 		OutputSchema: execResultOutputSchema(),
@@ -1318,7 +1256,7 @@ func runCommandTool(opts Options) core.Tool {
 			// REQ-TOOL-06 null-device stdin, tail truncation at
 			// DefaultByteLimit, spill to SpillDir.
 			res, err := RunArgv(ctx, a.Argv, ExecOptions{
-				Dir:      workspaceRoot(opts),
+				Dir:      ws.Root(),
 				Timeout:  timeout,
 				MaxBytes: DefaultByteLimit,
 				SpillDir: opts.SpillDir,

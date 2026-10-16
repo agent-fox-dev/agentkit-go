@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-03-15: Invalidate returns immediately during a blocked build and never
@@ -25,7 +25,7 @@ func TestInvalidateNonBlockingAndSafeOnClosed_TS03_15(t *testing.T) {
 			fmt.Sprintf("package pkg\n// word%d\nfunc F%d() {}\n", i, i))
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,6 @@ func TestInvalidateNonBlockingAndSafeOnClosed_TS03_15(t *testing.T) {
 	blockCh := make(chan struct{})
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +103,6 @@ func TestInvalidateNonBlockingAndSafeOnClosed_TS03_15(t *testing.T) {
 	// --- Part 2: Invalidate does not panic on a closed index ---
 	idx2, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -123,14 +121,13 @@ func TestFreshnessAfterWriteAndEdit_TS03_41(t *testing.T) {
 	mkFile(t, root, "a.go", "package pkg\n// oldToken unique123\nfunc A() {}\n")
 	mkFile(t, root, "b.go", "package pkg\n// keepToken\nfunc B() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -226,14 +223,13 @@ func TestRevalidationSeesSameSizeEdit_TS03_42(t *testing.T) {
 	mkFile(t, root, "f.txt", "aaaa content here\n")
 	mkFile(t, root, "gone.txt", "goneToken content\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -319,14 +315,13 @@ func TestDirtyPathForcesRevalidation_TS03_43(t *testing.T) {
 	mkFile(t, root, "a.go", "package pkg\n// aToken\nfunc A() {}\n")
 	mkFile(t, root, "b.go", "package pkg\n// bToken\nfunc B() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -418,14 +413,13 @@ func TestDirtyMarkDuringBuildSurvives_TS03_47(t *testing.T) {
 	mkFile(t, root, "a.go", "package pkg\n// originalContent\nfunc A() {}\n")
 	mkFile(t, root, "b.go", "package pkg\n// bContent\nfunc B() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -526,14 +520,13 @@ func TestNoInvalidateNeverRebuilds_TS03_48(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\n// searchword\nfunc main() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)

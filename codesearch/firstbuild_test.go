@@ -13,6 +13,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // blockedFirstBuild returns an index whose first build is parked inside the
@@ -27,13 +28,12 @@ func blockedFirstBuild(t *testing.T) (idx *Index, tool core.Tool, first <-chan c
 		mkFile(t, root, fmt.Sprintf("file%03d.go", i),
 			fmt.Sprintf("package pkg\n// searchword\nfunc F%d() {}\n", i))
 	}
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	idx, err = newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -192,13 +192,12 @@ func TestWaiterBuildsAgainAfterTheBuilderIsCancelled(t *testing.T) {
 		mkFile(t, root, fmt.Sprintf("file%03d.go", i),
 			fmt.Sprintf("package pkg\n// searchword\nfunc F%d() {}\n", i))
 	}
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)

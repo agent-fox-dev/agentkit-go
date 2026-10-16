@@ -86,7 +86,7 @@
       "done_when": [
         "`go test ./workspace/... -count=1` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -138,7 +138,7 @@
       "done_when": [
         "`go test ./workspace/... -count=1` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -188,7 +188,7 @@
       "done_when": [
         "`go test ./workspace/... -count=1` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -229,7 +229,7 @@
       "done_when": [
         "`go test ./workspace/... -count=1 -race` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -282,7 +282,7 @@
       "done_when": [
         "`make test` passes in every module (old API still present)"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -325,7 +325,7 @@
       "done_when": [
         "`make test` and `make lint` pass in codesearch; `GOOS=windows go vet ./...` compiles in codesearch"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -375,7 +375,7 @@
       "done_when": [
         "`make test` and `make lint` pass in the sandbox, gatewayd and podman modules"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -423,7 +423,7 @@
       "done_when": [
         "`make test` and `make lint` pass in every module in MODULES"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -482,7 +482,7 @@
         "`make test` and `make lint` pass in every module in MODULES",
         "go vet shows no remaining reference to the removed tools identifiers"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -535,7 +535,7 @@
       "done_when": [
         "`make check` passes in every module in MODULES"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -572,7 +572,7 @@
       "done_when": [
         "`make check` passes in every module in MODULES with all four smoke tests passing"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     }
   ]

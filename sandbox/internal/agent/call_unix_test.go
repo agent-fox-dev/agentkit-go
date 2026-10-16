@@ -21,6 +21,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // waitFile waits up to 5s for path to hold a line and returns it.
@@ -71,8 +72,8 @@ func TestCallConcurrentAndCancellable_TS13_19(t *testing.T) {
 
 	in := `{"path":"f.txt"}`
 	r := call(t, c, "read_file", in)
-	w, _ := tools.NewWorkspace(ws)
-	all, _ := tools.All(tools.Options{Workspace: w, Env: env, Ignore: tools.NoGlobalExcludes()})
+	w, _ := workspace.Open(ws, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
+	all, _ := tools.For(w, tools.Options{Env: env})
 	var local []byte
 	var localMD []byte
 	for _, tl := range all {

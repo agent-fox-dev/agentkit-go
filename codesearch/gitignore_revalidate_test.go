@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // gitignoreFixture builds an index over 100 filler Go files plus b.go, so a
@@ -29,13 +29,12 @@ func gitignoreFixture(t *testing.T) (root string, idx *Index, search func(q stri
 	}
 	mkFile(t, root, "b.go", "package pkg\n// bToken\nfunc B() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	idx, err = newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-02-39: A complete unmarked table is answered from memory with no walk or outlining
@@ -22,22 +23,20 @@ func TestCompleteUnmarkedTableNoWalkOrOutline_TS02_39(t *testing.T) {
 
 	var walkCount atomic.Int32
 	origWalkFn := walkFn
-	walkFn = func(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(string, fs.DirEntry) error) error {
+	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(string, fs.DirEntry) error) error {
 		walkCount.Add(1)
-		return origWalkFn(ctx, ws, root, opts, fn)
+		return origWalkFn(ctx, ws, sub, opts, fn)
 	}
 	defer func() { walkFn = origWalkFn }()
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+	}.withDefaults(ws))
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
 
@@ -98,16 +97,14 @@ func TestWriteAndEditMarkDirty_TS02_40(t *testing.T) {
 	root := t.TempDir()
 	mkSymFile(t, root, "a.go", "package main\n\nfunc Hello() {}\n")
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+	}.withDefaults(ws))
 
 	// Create the table so marking has something to mark.
 	ft.getTable()
@@ -239,20 +236,18 @@ func TestShellToolsMarkRevalidateAll_TS02_41(t *testing.T) {
 	root := t.TempDir()
 	mkSymFile(t, root, "a.go", "package main\n\nfunc Hello() {}\n")
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	opts := Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
 	}
 
-	// Build fileTools and the tools manually, mirroring All()'s wrapping.
-	ft := newFileTools(opts.withDefaults())
+	// Build fileTools and the tools manually, mirroring For()'s wrapping.
+	ft := newFileTools(ws, opts.withDefaults(ws))
 
 	// Build find_symbol and trigger table creation.
 	findTool := ft.findSymbolTool()
@@ -261,7 +256,7 @@ func TestShellToolsMarkRevalidateAll_TS02_41(t *testing.T) {
 		t.Fatalf("find_symbol failed: error=%s detail=%s", r.Error, r.Detail)
 	}
 
-	// Wrap shell tools the same way All() does.
+	// Wrap shell tools the same way For() does.
 	wrapShell := func(tl core.Tool) core.Tool {
 		orig := tl.Execute
 		tl.Execute = func(ctx context.Context, in json.RawMessage) core.ToolResult {
@@ -272,8 +267,8 @@ func TestShellToolsMarkRevalidateAll_TS02_41(t *testing.T) {
 		return tl
 	}
 
-	execTool := wrapShell(executeTool(opts))
-	rcTool := wrapShell(runCommandTool(opts))
+	execTool := wrapShell(executeTool(ws, opts))
+	rcTool := wrapShell(runCommandTool(ws, opts))
 
 	// --- Test execute ---
 	args, _ := json.Marshal(map[string]any{
@@ -293,9 +288,9 @@ func TestShellToolsMarkRevalidateAll_TS02_41(t *testing.T) {
 	// After execute, find_symbol should trigger a walk (revalidation).
 	var walkCount atomic.Int32
 	origWalkFn := walkFn
-	walkFn = func(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(string, fs.DirEntry) error) error {
+	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(string, fs.DirEntry) error) error {
 		walkCount.Add(1)
-		return origWalkFn(ctx, ws, root, opts, fn)
+		return origWalkFn(ctx, ws, sub, opts, fn)
 	}
 	defer func() { walkFn = origWalkFn }()
 
@@ -333,8 +328,8 @@ func TestShellToolsMarkRevalidateAll_TS02_41(t *testing.T) {
 	}
 
 	// --- Verify standalone constructors don't touch any table ---
-	standaloneExec := executeTool(opts)
-	standaloneRC := runCommandTool(opts)
+	standaloneExec := executeTool(ws, opts)
+	standaloneRC := runCommandTool(ws, opts)
 	// These should work without any table interaction.
 	args, _ = json.Marshal(map[string]any{
 		"command":   "echo standalone",
@@ -358,16 +353,14 @@ func TestDirtyPathReoutlineOrDrop_TS02_42(t *testing.T) {
 	mkSymFile(t, root, "b.go", "package main\n\nfunc BFunc() {}\n")
 	mkSymFile(t, root, "c.go", "package main\n\nfunc CFunc() {}\n")
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+	}.withDefaults(ws))
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
 
@@ -435,9 +428,9 @@ func TestDirtyPathReoutlineOrDrop_TS02_42(t *testing.T) {
 	// Track walks to verify no whole-workspace walk happens.
 	var walkCount atomic.Int32
 	origWalkFn := walkFn
-	walkFn = func(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(string, fs.DirEntry) error) error {
+	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(string, fs.DirEntry) error) error {
 		walkCount.Add(1)
-		return origWalkFn(ctx, ws, root, opts, fn)
+		return origWalkFn(ctx, ws, sub, opts, fn)
 	}
 	defer func() { walkFn = origWalkFn }()
 
@@ -488,16 +481,14 @@ func TestNewFileOrGitignoreEscalatesToRevalidation_TS02_43(t *testing.T) {
 	mkSymFile(t, root, "a.go", "package main\n\nfunc Hello() {}\n")
 	mkSymFile(t, root, "sub/visible.go", "package sub\n\nfunc Visible() {}\n")
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+	}.withDefaults(ws))
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
 
@@ -510,9 +501,9 @@ func TestNewFileOrGitignoreEscalatesToRevalidation_TS02_43(t *testing.T) {
 	// --- Test 1: New file created through write_file ---
 	var walkCount atomic.Int32
 	origWalkFn := walkFn
-	walkFn = func(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(string, fs.DirEntry) error) error {
+	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(string, fs.DirEntry) error) error {
 		walkCount.Add(1)
-		return origWalkFn(ctx, ws, root, opts, fn)
+		return origWalkFn(ctx, ws, sub, opts, fn)
 	}
 	defer func() { walkFn = origWalkFn }()
 
@@ -604,16 +595,14 @@ func TestWriteFileMarkUnderLock_TS02_40_lock(t *testing.T) {
 	root := t.TempDir()
 	mkSymFile(t, root, "a.go", "package main\n\nfunc Hello() {}\n")
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+	}.withDefaults(ws))
 
 	// Create the table.
 	ft.getTable()
@@ -680,16 +669,14 @@ func TestShellWrapperResultsPassThrough_TS02_41_passthrough(t *testing.T) {
 	root := t.TempDir()
 	mkSymFile(t, root, "a.go", "package main\n\nfunc Hello() {}\n")
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	allTools, err := All(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
+	allTools, err := For(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -729,16 +716,14 @@ func TestDirtyPathOnlyReoutlinesDirty_TS02_42_selective(t *testing.T) {
 	mkSymFile(t, root, "a.go", "package main\n\nfunc AFunc() {}\n")
 	mkSymFile(t, root, "b.go", "package main\n\nfunc BFunc() {}\n")
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+	}.withDefaults(ws))
 	tl := ft.findSymbolTool()
 	exec := tl.Execute
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-02-47: A call waiting behind a running build is abandoned immediately on cancel
@@ -41,16 +42,14 @@ func TestWaitingCallAbandonedOnCancel_TS02_47(t *testing.T) {
 		}
 	}
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{MaxDuration: 30 * time.Second},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{MaxDuration: 30 * time.Second},
+	}.withDefaults(ws))
 	ft.testOutlineHook = block
 	tl := ft.findSymbolTool()
 
@@ -135,16 +134,14 @@ func TestConcurrentCallsRaceFree_TS02_48(t *testing.T) {
 			fmt.Sprintf("package main\n\nfunc F%d() {}\n", i))
 	}
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+	}.withDefaults(ws))
 
 	findTool := ft.findSymbolTool()
 	writeTool := ft.writeFile()
@@ -237,16 +234,14 @@ func TestMarkingNeverBlocksOnBuild_TS02_49(t *testing.T) {
 		}
 	}
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{MaxDuration: 30 * time.Second},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{MaxDuration: 30 * time.Second},
+	}.withDefaults(ws))
 	ft.testOutlineHook = block
 
 	findTool := ft.findSymbolTool()
@@ -341,16 +336,14 @@ func TestCancellationDuringBuildReturnsAborted_TS02_50(t *testing.T) {
 		}
 	}
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{MaxDuration: 30 * time.Second},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{MaxDuration: 30 * time.Second},
+	}.withDefaults(ws))
 	ft.testOutlineHook = block
 	tl := ft.findSymbolTool()
 
@@ -471,16 +464,14 @@ func TestNoShellAndNoTermination_TS02_52(t *testing.T) {
 	root := t.TempDir()
 	mkSymFile(t, root, "a.go", "package main\n\nfunc Hello() {}\n")
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+	}.withDefaults(ws))
 
 	outlineTool := ft.fileOutlineTool()
 	findTool := ft.findSymbolTool()

@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // fieldList is a struct type's fields as (name, type) pairs, in order.
@@ -26,7 +26,7 @@ func fieldList(t reflect.Type) [][2]string {
 // gokrazy/rsync type reaches the sandbox package's exported API.
 // 14-REQ-1.1, 14-REQ-1.3.
 func TestLocalDirAPI_TS14_1(t *testing.T) {
-	want := [][2]string{{"Path", "string"}, {"Ignore", reflect.TypeFor[tools.IgnoreOptions]().String()},
+	want := [][2]string{{"Path", "string"}, {"Ignore", reflect.TypeFor[workspace.IgnoreOptions]().String()},
 		{"IncludeIgnored", "bool"}, {"ExcludeGit", "bool"}, {"Delete", "bool"}}
 	if got := fieldList(reflect.TypeFor[sandbox.LocalDir]()); !reflect.DeepEqual(got, want) {
 		t.Errorf("LocalDir fields %v, want %v", got, want)

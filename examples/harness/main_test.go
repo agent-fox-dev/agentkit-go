@@ -16,6 +16,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/guard"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // defaults are the flags' defaults, as main sets them.
@@ -99,14 +100,14 @@ func TestServerGuardsDirectAndNestedCalls(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the script runs POSIX commands")
 	}
-	ws, err := tools.NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ws.Root, "a.txt"), []byte("hello\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(ws.Root(), "a.txt"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws, Ignore: tools.NoGlobalExcludes()})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +162,7 @@ print("rm:", rm.error if is_error(rm) else "ran")
 	if got := srv.blocked.Load(); got != 3 {
 		t.Errorf("blocked %d calls, want 3", got)
 	}
-	if _, err := os.Stat(filepath.Join(ws.Root, "a.txt")); err != nil {
+	if _, err := os.Stat(filepath.Join(ws.Root(), "a.txt")); err != nil {
 		t.Errorf("a.txt is gone: the guard did not hold: %v", err)
 	}
 	for _, want := range []string{"  blocked  execute: guard.Restricted", "    run      read_file path=a.txt", "    blocked  execute: guard.Restricted"} {
@@ -174,11 +175,11 @@ print("rm:", rm.error if is_error(rm) else "ran")
 // The MCP server answers over HTTP only with the token, and serves the tool
 // definitions AgentKit's driver would send.
 func TestServeRequiresTheToken(t *testing.T) {
-	ws, err := tools.NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws, Ignore: tools.NoGlobalExcludes()})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

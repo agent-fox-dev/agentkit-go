@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // dirtyTracker tracks files that have been modified since the index was built.
@@ -244,8 +244,7 @@ func (dt *dirtyTracker) racyEdit(rel, abs string, info indexedFileInfo) bool {
 // files it saw: the whole-index mark stays set and the next call walks again.
 func (dt *dirtyTracker) revalidate(
 	ctx context.Context,
-	ws *tools.Workspace,
-	ig tools.IgnoreOptions,
+	ws *workspace.Workspace,
 	indexedFiles map[string]bool,
 	fileInfos map[string]indexedFileInfo,
 ) error {
@@ -257,13 +256,10 @@ func (dt *dirtyTracker) revalidate(
 	seen := make(map[string]bool)
 	var check skipCheck
 
-	_ = tools.Walk(
+	_ = ws.Walk(
 		ctx,
-		ws, ws.Root,
-		tools.WalkOptions{
-			Ignore:        ig,
-			IncludeHidden: false,
-		},
+		"",
+		workspace.WalkOptions{},
 		func(rel string, d fs.DirEntry) error {
 			if d.IsDir() {
 				return nil
@@ -272,7 +268,7 @@ func (dt *dirtyTracker) revalidate(
 				return nil
 			}
 
-			abs := filepath.Join(ws.Root, filepath.FromSlash(rel))
+			abs := filepath.Join(ws.Root(), filepath.FromSlash(rel))
 			fi, err := os.Stat(abs)
 			if err != nil {
 				return nil

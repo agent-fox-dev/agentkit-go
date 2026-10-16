@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-03-1: New with a workspace returns an index without goroutines, processes,
@@ -26,7 +26,7 @@ func TestNewReturnsIndexWithoutSideEffects_TS03_1(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "hello.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestOptionsDefaults_TS03_3(t *testing.T) {
 	}
 }
 
-// TS-03-33: The indexed file set equals the tools.Walk set with hidden off,
+// TS-03-33: The indexed file set equals the ws.Walk set with hidden off,
 // regular, non-binary and at most 1 MiB.
 func TestIndexedFileSetEqualsWalkSet_TS03_33(t *testing.T) {
 	root := t.TempDir()
@@ -157,15 +157,14 @@ func TestIndexedFileSetEqualsWalkSet_TS03_33(t *testing.T) {
 	mkFile(t, root, "nested/.git/HEAD", "ref: refs/heads/main\n")
 	mkFile(t, root, "nested/lib.go", "package nested\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Collect the expected set from tools.Walk.
+	// Collect the expected set from ws.Walk.
 	wantSet := map[string]bool{}
-	err = tools.Walk(context.Background(), ws, ws.Root, tools.WalkOptions{
-		Ignore:        tools.NoGlobalExcludes(),
+	err = ws.Walk(context.Background(), "", workspace.WalkOptions{
 		IncludeHidden: false,
 	}, func(rel string, d fs.DirEntry) error {
 		if d.IsDir() {
@@ -174,7 +173,7 @@ func TestIndexedFileSetEqualsWalkSet_TS03_33(t *testing.T) {
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		abs := filepath.Join(ws.Root, filepath.FromSlash(rel))
+		abs := filepath.Join(ws.Root(), filepath.FromSlash(rel))
 		fi, err := os.Stat(abs)
 		if err != nil || fi.Size() > 1<<20 {
 			return nil
@@ -201,7 +200,6 @@ func TestIndexedFileSetEqualsWalkSet_TS03_33(t *testing.T) {
 	tmpDir := t.TempDir()
 	idx, err := newIndex(ws, Options{
 		TempDir: tmpDir,
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -260,7 +258,7 @@ func TestSkippedFilesCountedAndNoCtagsProcess_TS03_34(t *testing.T) {
 	// Normal file.
 	mkFile(t, root, "main.go", "package main\nfunc main() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +266,6 @@ func TestSkippedFilesCountedAndNoCtagsProcess_TS03_34(t *testing.T) {
 	tmpDir := t.TempDir()
 	idx, err := newIndex(ws, Options{
 		TempDir: tmpDir,
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -304,7 +301,7 @@ func TestOutlineSymbolBatching_TS03_35(t *testing.T) {
 			fmt.Sprintf("line %d\n", i))
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +312,6 @@ func TestOutlineSymbolBatching_TS03_35(t *testing.T) {
 	tmpDir := t.TempDir()
 	idx, err := newIndex(ws, Options{
 		TempDir: tmpDir,
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -354,8 +350,8 @@ func TestOutlineSymbolBatching_TS03_35(t *testing.T) {
 
 	// Verify all roots are the workspace root.
 	for i, r := range batchRoots {
-		if r != ws.Root {
-			t.Errorf("batch %d root = %q, want %q", i, r, ws.Root)
+		if r != ws.Root() {
+			t.Errorf("batch %d root = %q, want %q", i, r, ws.Root())
 		}
 	}
 
@@ -367,7 +363,7 @@ func TestShardDirectoryStructure_TS03_37(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,13 +371,13 @@ func TestShardDirectoryStructure_TS03_37(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Build two indexes over the same root.
-	idx1, err := newIndex(ws, Options{TempDir: tmpDir, Ignore: tools.NoGlobalExcludes()})
+	idx1, err := newIndex(ws, Options{TempDir: tmpDir})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer idx1.Close()
 
-	idx2, err := newIndex(ws, Options{TempDir: tmpDir, Ignore: tools.NoGlobalExcludes()})
+	idx2, err := newIndex(ws, Options{TempDir: tmpDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +422,7 @@ func TestShardDirectoryStructure_TS03_37(t *testing.T) {
 	}
 
 	// Verify hash matches sha256 prefix of the absolute root.
-	absRoot := ws.Root
+	absRoot := ws.Root()
 	h := sha256.Sum256([]byte(absRoot))
 	wantPrefix := fmt.Sprintf("%x", h[:])[:len(hashPart)]
 	if hashPart != wantPrefix {
@@ -449,7 +445,7 @@ func TestBuildSweepsOldSiblings_TS03_38(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +453,7 @@ func TestBuildSweepsOldSiblings_TS03_38(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Compute the hash directory.
-	absRoot := ws.Root
+	absRoot := ws.Root()
 	h := sha256.Sum256([]byte(absRoot))
 	hashHex := fmt.Sprintf("%x", h[:])
 	hashDir := filepath.Join(tmpDir, "agentkit-codesearch-"+hashHex)
@@ -498,7 +494,6 @@ func TestBuildSweepsOldSiblings_TS03_38(t *testing.T) {
 	// Build the index.
 	idx, err := newIndex(ws, Options{
 		TempDir: tmpDir,
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)

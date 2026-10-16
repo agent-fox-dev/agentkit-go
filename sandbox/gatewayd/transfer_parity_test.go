@@ -17,12 +17,12 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd/internal/gwtest"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/treegen"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/local"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // hermetic ignores no global excludes, so a transfer depends on the tree
 // alone.
-var hermetic = tools.NoGlobalExcludes()
+var hermetic = workspace.NoGlobalExcludes()
 
 // tarDir is a tar stream of every directory and regular file under dir;
 // symlinks are left out, so the archive is one any sandbox accepts.

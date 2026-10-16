@@ -115,13 +115,13 @@ func (idx *Index) Symbols(ctx context.Context, q tools.SymbolQuery) (tools.Symbo
 				continue
 			}
 
-			abs := filepath.Join(idx.ws.Root, filepath.FromSlash(rel))
+			abs := filepath.Join(idx.ws.Root(), filepath.FromSlash(rel))
 			fi, err := os.Stat(abs)
 			if err != nil || !fi.Mode().IsRegular() {
 				continue
 			}
 
-			of, err := outline.Outline(ctx, abs, nil, outline.Options{Root: idx.ws.Root})
+			of, err := outline.Outline(ctx, abs, nil, outline.Options{Root: idx.ws.Root()})
 			if err != nil {
 				if ctx.Err() != nil {
 					return tools.SymbolAnswer{}, false, ctx.Err()
@@ -170,7 +170,7 @@ func (idx *Index) symbolsHandleDirty(ctx context.Context) error {
 		if idx.testRevalHook != nil {
 			idx.testRevalHook()
 		}
-		if err := idx.dirty.revalidate(ctx, idx.ws, idx.opts.Ignore, indexedFiles, fileInfos); err != nil {
+		if err := idx.dirty.revalidate(ctx, idx.ws, indexedFiles, fileInfos); err != nil {
 			return err
 		}
 		idx.revalCount.Add(1)

@@ -27,6 +27,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 	"github.com/agent-fox-dev/agentkit-go/tools"
 	"github.com/agent-fox-dev/agentkit-go/wire"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -63,14 +64,14 @@ def main():
 `
 
 func run(ctx context.Context, w io.Writer) error {
-	ws, err := workspace()
+	ws, err := exampleWorkspace()
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(ws.Root)
+	defer os.RemoveAll(ws.Root())
 
 	// The tools a script may call: three built-in navigation tools...
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		return err
 	}
@@ -95,7 +96,7 @@ func run(ctx context.Context, w io.Writer) error {
 	}
 	bound = append(bound, mcpTools...)
 
-	cm, info, err := codemode.New(bound, codemode.Options{SpillDir: filepath.Join(ws.Root, ".spill")})
+	cm, info, err := codemode.New(bound, codemode.Options{SpillDir: filepath.Join(ws.Root(), ".spill")})
 	if err != nil {
 		return err
 	}
@@ -154,8 +155,8 @@ func run(ctx context.Context, w io.Writer) error {
 	return nil
 }
 
-// workspace is a small directory for the scripts to explore.
-func workspace() (*tools.Workspace, error) {
+// exampleWorkspace is a small directory for the scripts to explore.
+func exampleWorkspace() (*workspace.Workspace, error) {
 	dir, err := os.MkdirTemp("", "codemode-example-")
 	if err != nil {
 		return nil, err
@@ -176,7 +177,7 @@ func workspace() (*tools.Workspace, error) {
 			return nil, err
 		}
 	}
-	return tools.NewWorkspace(dir)
+	return workspace.Open(dir, workspace.Options{})
 }
 
 // inventoryPool serves one MCP tool, stock, from the official SDK's server

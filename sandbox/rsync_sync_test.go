@@ -17,7 +17,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/relaytest"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/rsyncx"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // writeFiles writes path -> content under root; "->target" makes a symlink.
@@ -51,7 +51,7 @@ func readFile(t *testing.T, p string) string {
 	return string(b)
 }
 
-var hermetic = tools.NoGlobalExcludes()
+var hermetic = workspace.NoGlobalExcludes()
 
 // TS-14-14: the combined rules are the deduplicated, sorted union of both
 // sides' rules, they travel in the args frame (never as --exclude options;

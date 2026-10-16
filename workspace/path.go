@@ -1,11 +1,4 @@
-// Package tools provides AgentKit's built-in tool set.
-//
-// The file tool set is deliberately minimal (REQ-TOOL-04): read, write, edit,
-// find and list. A tool earns a slot only when it has semantics `execute`
-// cannot express — truncation, unique-match editing, deterministic ignore
-// handling. Deletion, renaming, appending and stat are one shell word each and
-// ship no tool. Their absence is the requirement.
-package tools
+package workspace
 
 import (
 	"errors"
@@ -23,50 +16,10 @@ const pathNextStep = "; use a path inside the workspace (a relative path is reso
 // Errors returned by the path guard. They are sentinels so a policy can tell
 // "outside the workspace" from "malformed" without matching on strings.
 var (
-	ErrPathNotAllowed = errors.New("tools: path_not_allowed")
-	ErrPathMalformed  = errors.New("tools: path_malformed")
-	ErrNoHome         = errors.New("tools: home directory could not be resolved")
+	ErrPathNotAllowed = errors.New("workspace: path_not_allowed")
+	ErrPathMalformed  = errors.New("workspace: path_malformed")
+	ErrNoHome         = errors.New("workspace: home directory could not be resolved")
 )
-
-// Workspace is the containment boundary for the built-in FILE tools
-// (REQ-SEC-01).
-//
-// On a host it does NOT constrain `execute`. That is not an oversight, and
-// it is stated here rather than left to be discovered: a shell command can
-// read and write anything the process can, and pretending otherwise would be
-// worse than admitting it. The boundary for `execute` is the BeforeToolCall
-// interceptor (REQ-SEC-03). See TestExecuteIsNotPathContained, whose name is
-// the documentation.
-//
-// Inside a sandbox whose agent reports a Landlock ABI
-// (sandbox.AgentInfo.Landlock), the agent's kernel ruleset confines
-// `execute`, and every process it starts, to the ruleset's writable roots.
-// Under the local provider, or on a kernel without Landlock, it does not.
-type Workspace struct {
-	// Root is the absolute, symlink-resolved workspace root.
-	Root string
-}
-
-// NewWorkspace resolves root to its absolute canonical form.
-func NewWorkspace(root string) (*Workspace, error) {
-	if root == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			return nil, err
-		}
-		root = wd
-	}
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		return nil, err
-	}
-	// Resolve the root once. If it does not exist yet that is fine; containment
-	// still works against the lexical form.
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = resolved
-	}
-	return &Workspace{Root: abs}, nil
-}
 
 // Resolve normalizes and then contains a model-supplied path.
 //
@@ -85,7 +38,7 @@ func (w *Workspace) Resolve(p string) (string, error) {
 		return "", err
 	}
 	if !filepath.IsAbs(n) {
-		n = filepath.Join(w.Root, n)
+		n = filepath.Join(w.Root(), n)
 	}
 	n = filepath.Clean(n)
 
@@ -93,9 +46,9 @@ func (w *Workspace) Resolve(p string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !within(w.Root, resolved) {
+	if !within(w.Root(), resolved) {
 		return "", fmt.Errorf("%w: %s resolves outside the workspace root %s"+pathNextStep,
-			ErrPathNotAllowed, p, w.Root)
+			ErrPathNotAllowed, p, w.Root())
 	}
 	return resolved, nil
 }
@@ -165,15 +118,15 @@ func (w *Workspace) CheckWriteTarget(abs string) error {
 	if err != nil {
 		return err
 	}
-	if within(w.Root, resolved) {
+	if within(w.Root(), resolved) {
 		return nil
 	}
 	if fi, lerr := os.Lstat(abs); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("%w: %s is a symlink whose target %s lies outside the workspace root %s"+pathNextStep,
-			ErrPathNotAllowed, w.Rel(abs), resolved, w.Root)
+			ErrPathNotAllowed, w.Rel(abs), resolved, w.Root())
 	}
 	return fmt.Errorf("%w: %s now resolves to %s, outside the workspace root %s"+pathNextStep,
-		ErrPathNotAllowed, w.Rel(abs), resolved, w.Root)
+		ErrPathNotAllowed, w.Rel(abs), resolved, w.Root())
 }
 
 // within reports whether target is root or is inside it. It compares path
@@ -259,7 +212,7 @@ func homeDir() (string, error) {
 // Rel renders an absolute path relative to the workspace for display. It never
 // fails: an unrelatable path is shown as-is.
 func (w *Workspace) Rel(abs string) string {
-	if rel, err := filepath.Rel(w.Root, abs); err == nil && !strings.HasPrefix(rel, "..") {
+	if rel, err := filepath.Rel(w.Root(), abs); err == nil && !strings.HasPrefix(rel, "..") {
 		return rel
 	}
 	return abs

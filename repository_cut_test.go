@@ -16,6 +16,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-09-10: the Agent carries no session recorder, middleware chain or cache
@@ -84,16 +85,16 @@ func TestProviderDefaults_TS09_11(t *testing.T) {
 // parent, the batch yields one result per call, and the dispatch code holds
 // no audit or tracer hooks.
 func TestBatchAndNestedWithoutHooks_TS09_12(t *testing.T) {
-	ws, err := tools.NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range []string{"test.txt", "a.txt", "b.txt"} {
-		if err := os.WriteFile(filepath.Join(ws.Root, f), []byte("hello "+f+"\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(ws.Root(), f), []byte("hello "+f+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

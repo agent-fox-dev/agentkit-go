@@ -22,7 +22,7 @@ func TestOverlayShardsLiveUnderTheRunDirectory(t *testing.T) {
 	if r := search("needle", nil); !r.OK {
 		t.Fatalf("first search: %s %s", r.Error, r.Detail)
 	}
-	if err := os.WriteFile(filepath.Join(idx.ws.Root, "a.go"), []byte("package p\n// needle two\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(idx.ws.Root(), "a.go"), []byte("package p\n// needle two\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	idx.Invalidate("a.go")

@@ -1,6 +1,6 @@
 // Package toolconformance holds the spec 06 conformance case table: every
 // built-in tool returns its documented error codes, and its Data conforms to
-// its declared OutputSchema. The tools package runs it against tools.All and
+// its declared OutputSchema. The tools package runs it against tools.For and
 // the sandbox package against proxy tools, so the two cannot drift. Only
 // tests import it.
 //

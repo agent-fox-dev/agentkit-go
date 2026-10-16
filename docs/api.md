@@ -20,7 +20,8 @@ it with `go doc -all <import path>`. This file is the map.
 | `catalog` | The embedded Claude model catalog; `catalog.Lookup` turns a model id into a `core.Model`. |
 | `prompt` | System prompt assembly. |
 | `schema` | The structured, transformable tool-schema value type. |
-| `tools` | The built-in tools: file, search, navigation and shell. |
+| `workspace` | The workspace every scenario opens first: containment, ignore rules and the directory walk (`workspace.Open`). |
+| `tools` | The built-in tools: file, search, navigation and shell, built for a workspace with `tools.For`. |
 | `guard` | The shell guard, the `execute` boundary in non-interactive deployments. |
 | `outline` | Source outlines. |
 | `codemode` | A tool that runs a model-written Starlark script whose functions are other tools. |

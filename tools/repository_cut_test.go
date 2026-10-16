@@ -14,16 +14,23 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// cutReadFile is read_file from tools.All over a fresh workspace at root.
-func cutReadFile(t *testing.T, root string) core.Tool {
+// cutOpen opens a workspace over dir with no global excludes.
+func cutOpen(t *testing.T, dir string) *workspace.Workspace {
 	t.Helper()
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws})
+	return ws
+}
+
+// cutReadFile is read_file from tools.For over a fresh workspace at root.
+func cutReadFile(t *testing.T, root string) core.Tool {
+	t.Helper()
+	all, err := tools.For(cutOpen(t, root), tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +39,7 @@ func cutReadFile(t *testing.T, root string) core.Tool {
 			return tl
 		}
 	}
-	t.Fatal("read_file is not in tools.All")
+	t.Fatal("read_file is not in tools.For")
 	return core.Tool{}
 }
 
@@ -94,10 +101,10 @@ func TestReadFileRefusesGIFAndWebP_TS09_7(t *testing.T) {
 	assertImageRefused(t, "sample.webp", append([]byte("RIFF\x00\x00\x00\x00WEBP"), []byte("VP8 ")...), "WebP")
 }
 
-// TS-09-8: tools.All registers none of the pruned tools, and the conformance
+// TS-09-8: tools.For registers none of the pruned tools, and the conformance
 // suite no longer names them.
 func TestPrunedToolsAbsent_TS09_8(t *testing.T) {
-	all, err := tools.All(tools.Options{})
+	all, err := tools.For(cutOpen(t, t.TempDir()), tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +118,7 @@ func TestPrunedToolsAbsent_TS09_8(t *testing.T) {
 	}
 	for _, pruned := range []string{"fetch_url", "powershell", "subagent"} {
 		if slices.Contains(names, pruned) {
-			t.Errorf("tools.All registers %s", pruned)
+			t.Errorf("tools.For registers %s", pruned)
 		}
 		if strings.Contains(string(src), pruned) {
 			t.Errorf("conformance_test.go still mentions %s", pruned)
@@ -119,7 +126,7 @@ func TestPrunedToolsAbsent_TS09_8(t *testing.T) {
 	}
 }
 
-// TS-09-9: every tool tools.All returns is one of the approved workspace and
+// TS-09-9: every tool tools.For returns is one of the approved workspace and
 // navigation tools.
 func TestAllToolsApproved_TS09_9(t *testing.T) {
 	approved := map[string]bool{
@@ -128,13 +135,13 @@ func TestAllToolsApproved_TS09_9(t *testing.T) {
 		"file_outline": true, "find_symbol": true, "find_references": true,
 		"execute": true, "run_command": true,
 	}
-	all, err := tools.All(tools.Options{})
+	all, err := tools.For(cutOpen(t, t.TempDir()), tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, tl := range all {
 		if !approved[tl.Name] {
-			t.Errorf("tools.All returns unapproved tool %q", tl.Name)
+			t.Errorf("tools.For returns unapproved tool %q", tl.Name)
 		}
 	}
 }

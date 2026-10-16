@@ -17,6 +17,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // Config is what an agent is built from.
@@ -43,7 +44,7 @@ type Agent struct {
 	ttl   time.Duration
 	start time.Time
 	// build makes the tool set; tests replace it.
-	build func(tools.Options) ([]core.Tool, error)
+	build func(*workspace.Workspace, tools.Options) ([]core.Tool, error)
 
 	landlock sandbox.LandlockInfo
 
@@ -72,5 +73,5 @@ func New(cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("agent: workspace %s: %w", cfg.Workdir, err)
 	}
 	env := append([]string{}, cfg.Env...) // non-nil: nil would mean the process's environment
-	return &Agent{root: root, env: env, ttl: cfg.TTL, start: time.Now(), build: tools.All, landlock: cfg.Landlock}, nil
+	return &Agent{root: root, env: env, ttl: cfg.TTL, start: time.Now(), build: tools.For, landlock: cfg.Landlock}, nil
 }

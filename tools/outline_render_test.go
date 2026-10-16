@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-02-9: file_outline header and declaration lines have the pinned format
@@ -229,18 +230,16 @@ func TopLevel() {}
 `
 	mkOutlineFile(t, root, "x.go", goSrc)
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Test Go file: go/ast backend sets Container for methods
-	goFS := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	goFS := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+	}.withDefaults(ws))
 	goTool := goFS.fileOutlineTool()
 	goR := goTool.Execute(context.Background(), json.RawMessage(`{"path":"x.go"}`))
 	if !goR.OK {
@@ -390,7 +389,7 @@ func TestOutlineNoDeclarations_TS02_12(t *testing.T) {
 
 	// Test 4: Oversized file — test via renderOutlineResult with crafted File
 	t.Run("oversized", func(t *testing.T) {
-		ws, err := NewWorkspace(root)
+		ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -508,7 +507,7 @@ func countDeclLines(lines []string) int {
 // leaving the model to guess (spec 02 §1: the line "says why").
 func TestANoneOutlineSaysThereIsNoBackend(t *testing.T) {
 	root := t.TempDir()
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}

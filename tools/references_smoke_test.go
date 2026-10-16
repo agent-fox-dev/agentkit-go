@@ -3,6 +3,7 @@ package tools_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,10 +14,11 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/outline"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // smokeWorkspace writes files under a fresh workspace root.
-func smokeWorkspace(t *testing.T, files map[string]string) *tools.Workspace {
+func smokeWorkspace(t *testing.T, files map[string]string) *workspace.Workspace {
 	t.Helper()
 	root := t.TempDir()
 	for rel, content := range files {
@@ -28,7 +30,7 @@ func smokeWorkspace(t *testing.T, files map[string]string) *tools.Workspace {
 			t.Fatal(err)
 		}
 	}
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,9 +38,9 @@ func smokeWorkspace(t *testing.T, files map[string]string) *tools.Workspace {
 }
 
 // smokeTool returns the named tool from the real default tool set.
-func smokeTool(t *testing.T, ws *tools.Workspace, name string) core.Tool {
+func smokeTool(t *testing.T, ws *workspace.Workspace, name string) core.Tool {
 	t.Helper()
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +49,7 @@ func smokeTool(t *testing.T, ws *tools.Workspace, name string) core.Tool {
 			return tl
 		}
 	}
-	t.Fatalf("tools.All has no %s", name)
+	t.Fatalf("tools.For has no %s", name)
 	return core.Tool{}
 }
 
@@ -76,9 +78,9 @@ func siteAt(sites []tools.ReferenceSite, path string, line int) (tools.Reference
 }
 
 // pythonOutlined reports whether this build outlines Python (tree-sitter, cgo).
-func pythonOutlined(t *testing.T, ws *tools.Workspace, rel string) bool {
+func pythonOutlined(t *testing.T, ws *workspace.Workspace, rel string) bool {
 	t.Helper()
-	f, err := outline.Outline(context.Background(), filepath.Join(ws.Root, rel), nil, outline.Options{})
+	f, err := outline.Outline(context.Background(), filepath.Join(ws.Root(), rel), nil, outline.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,19 +265,19 @@ func TestReferencesSmoke_UndeclaredText_TS05_57(t *testing.T) {
 }
 
 // TS-05-58 (smoke): End-to-end programmatic caller analysis via the
-// Workspace.References embedder seam.
+// tools.References embedder seam.
 // Verifies: 05-PATH-4, 05-REQ-9.2
 func TestReferencesSmoke_WorkspaceReferences_TS05_58(t *testing.T) {
 	ws := smokeWorkspace(t, goRunnerFixture)
 	fr := smokeTool(t, ws, "find_references")
 	_, viaTool := smokeRefs(t, fr, `{"name":"Runner.Run","include_tests":true}`)
 
-	got, err := ws.References(context.Background(), viaTool.Target, tools.ReferenceOptions{IncludeTests: true})
+	got, err := tools.References(context.Background(), ws, viaTool.Target, tools.ReferenceOptions{IncludeTests: true})
 	if err != nil {
 		t.Fatalf("References: %v", err)
 	}
 	if got.Target != viaTool.Target || got.Backend != viaTool.Backend || !reflect.DeepEqual(got.Sites, viaTool.Sites) {
-		t.Fatalf("Workspace.References differs from find_references:\nseam: %+v\ntool: %+v", got, viaTool)
+		t.Fatalf("tools.References differs from find_references:\nseam: %+v\ntool: %+v", got, viaTool)
 	}
 	if len(got.Sites) < 2 {
 		t.Fatalf("sites = %+v, want the main.go and test callers", got.Sites)
@@ -308,7 +310,7 @@ func TestReferencesSmoke_WorkspaceReferences_TS05_58(t *testing.T) {
 	}
 
 	// The struct default leaves test files out.
-	noTests, err := ws.References(context.Background(), viaTool.Target, tools.ReferenceOptions{})
+	noTests, err := tools.References(context.Background(), ws, viaTool.Target, tools.ReferenceOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +326,7 @@ func TestReferencesSmoke_WorkspaceReferences_TS05_58(t *testing.T) {
 // Verifies: 05-PATH-5, 05-REQ-8.2, 05-REQ-8.4
 func TestReferencesSmoke_WriteFileRevalidates_TS05_59(t *testing.T) {
 	ws := smokeWorkspace(t, goRunnerFixture)
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,5 +360,47 @@ func TestReferencesSmoke_WriteFileRevalidates_TS05_59(t *testing.T) {
 	}
 	if len(after.Sites) != len(before.Sites)+1 {
 		t.Fatalf("sites before %d, after %d, want one more", len(before.Sites), len(after.Sites))
+	}
+}
+
+// TS-20-67 (smoke, 20-PATH-4): an embedder opens a workspace, picks a
+// declaration as an outline.Decl and calls tools.References: the result lists
+// exactly the three non-ignored reference sites, and the use in an ignored
+// directory is absent. Every component is real: workspace, tools.References,
+// outline, the go/types package loader and the filesystem.
+func TestSmokeReferencesOverAWorkspace_TS20_67(t *testing.T) {
+	ws := smokeWorkspace(t, map[string]string{
+		"go.mod":             "module example.com/refs\n\ngo 1.27\n",
+		".gitignore":         "ignored/\n",
+		"lib/lib.go":         "package lib\n\n// Target is the declaration.\nfunc Target() int { return 1 }\n",
+		"lib/other.go":       "package lib\n\nfunc Other() int { return Target() }\n",
+		"main.go":            "package main\n\nimport \"example.com/refs/lib\"\n\nfunc main() {\n\t_ = lib.Target()\n\t_ = lib.Target()\n}\n",
+		"ignored/skipped.go": "package ignored\n\nimport \"example.com/refs/lib\"\n\nfunc Skipped() int { return lib.Target() }\n",
+	})
+
+	of, err := outline.Outline(context.Background(), filepath.Join(ws.Root(), "lib", "lib.go"), nil, outline.Options{Root: ws.Root()})
+	if err != nil {
+		t.Fatalf("outline: %v", err)
+	}
+	var target outline.Decl
+	for _, d := range of.Decls {
+		if d.Name == "Target" {
+			target = d
+		}
+	}
+	if target.Name != "Target" {
+		t.Fatalf("outline found no Target in %+v", of.Decls)
+	}
+
+	res, err := tools.References(context.Background(), ws, target, tools.ReferenceOptions{})
+	if err != nil {
+		t.Fatalf("References: %v", err)
+	}
+	var sites []string
+	for _, s := range res.Sites {
+		sites = append(sites, fmt.Sprintf("%s:%d", s.Path, s.Line))
+	}
+	if want := []string{"lib/other.go:3", "main.go:6", "main.go:7"}; !slices.Equal(sites, want) {
+		t.Errorf("References listed %v, want exactly the three non-ignored sites %v", sites, want)
 	}
 }

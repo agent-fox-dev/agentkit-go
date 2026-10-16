@@ -1,9 +1,10 @@
-package tools
+package workspace
 
 import (
 	"context"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -36,7 +37,7 @@ import (
 //     they are the user's and not the repository's.
 
 // ignorePattern is one parsed gitignore line, matched with the same
-// doublestar call as MatchGlob. go-git's plumbing/format/gitignore was
+// doublestar call as tools.MatchGlob. go-git's plumbing/format/gitignore was
 // considered (PRD 09) and rejected: its segment matcher is filepath.Match, so
 // `[!x]` stops negating, and its `**` does not backtrack (`a/**/b/c` misses
 // a/b/x/b/c).
@@ -63,10 +64,9 @@ type ignoreLayer struct {
 // thing is testable without mutating process state or requiring a git binary
 // (NFR-TEST-04). The zero value reads the real environment.
 //
-// It is threaded through Options so a TOOL-level test can pin an empty global
-// layer: without it find_files and search_files read the developer's own
-// global excludes, and a test passes or fails depending on whose machine runs
-// it.
+// It is given once, to Open: without it a tool-level test reads the
+// developer's own global excludes, and passes or fails depending on whose
+// machine runs it.
 type IgnoreOptions struct {
 	Getenv func(string) string
 	Home   func() (string, error)
@@ -86,11 +86,12 @@ func NoGlobalExcludes() IgnoreOptions {
 	}
 }
 
-// cached memoizes the `git config` lookup. The global excludes path does not
-// change within a session, and find_files/search_files used to spawn git on
-// EVERY call — a subprocess per tool call for a value that is the same each
-// time (NFR-TEST-04's hidden global dependency, paid over and over).
-func (o IgnoreOptions) cached() IgnoreOptions {
+// memoized returns o with the `git config` lookup memoized. The global
+// excludes path does not change within a session, and a walk used to spawn git
+// on EVERY call — a subprocess per tool call for a value that is the same each
+// time (NFR-TEST-04's hidden global dependency, paid over and over). The
+// lookup is lazy: nothing runs until the rules are first used.
+func (o IgnoreOptions) memoized() IgnoreOptions {
 	lookup := o.GitConfig
 	if lookup == nil {
 		lookup = func() string { return gitExcludesFile(IgnoreOptions{}) }
@@ -145,11 +146,10 @@ func (e *ignoreEngine) enter(rel, abs string) {
 	e.seen[rel] = true
 
 	layer := ignoreLayer{dir: rel}
-	if st, err := os.Stat(filepath.Join(abs, ".git")); err == nil {
+	if _, err := os.Stat(filepath.Join(abs, ".git")); err == nil {
 		// A repository root: its own .git/info/exclude applies here and
 		// nothing shallower does. A .git FILE (a worktree or submodule
 		// pointer) marks a repository just as a directory does.
-		_ = st
 		layer.repoStart = true
 		layer.pats = append(layer.pats, parseIgnoreFile(filepath.Join(abs, ".git", "info", "exclude"))...)
 	}
@@ -328,4 +328,49 @@ func gitExcludesFile(opts IgnoreOptions) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// Ignored reports whether rel, a workspace-relative path using either
+// separator, or any ancestor directory of rel, is excluded by the workspace's
+// rules, evaluated the way a walk from the root evaluates it: each ancestor
+// is matched with the ignore files of the directories above it, loaded from
+// the root down, nested-repository boundaries are honoured, and any .git
+// segment is excluded.
+//
+// "" and "." are the root and are not ignored. An absolute path, or one that
+// escapes the root after cleaning, is reported as ignored: the question is
+// about the workspace, and the safe answer for a path outside it is "leave it
+// alone". A dot-prefixed name is not ignored on account of its dot; hidden
+// entries are a walk option, not a rule.
+//
+// Ignored reads the relevant ignore files on every call and keeps no cache
+// between calls, so an edited .gitignore changes the next answer.
+func (w *Workspace) Ignored(rel string, isDir bool) bool {
+	rel = strings.ReplaceAll(rel, `\`, "/")
+	if rel == "" || rel == "." {
+		return false
+	}
+	if strings.HasPrefix(rel, "/") || filepath.IsAbs(rel) {
+		return true
+	}
+	rel = path.Clean(rel)
+	switch {
+	case rel == ".":
+		return false
+	case rel == ".." || strings.HasPrefix(rel, "../"):
+		return true
+	case hasGitComponent(rel):
+		return true
+	}
+
+	e := newIgnoreEngine(w.root, w.ignore)
+	parts := strings.Split(rel, "/")
+	for i := 1; i < len(parts); i++ {
+		dir := strings.Join(parts[:i], "/")
+		if e.match(dir, true) {
+			return true
+		}
+		e.enter(dir, filepath.Join(w.root, filepath.FromSlash(dir)))
+	}
+	return e.match(rel, isDir)
 }

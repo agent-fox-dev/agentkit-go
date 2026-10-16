@@ -354,7 +354,7 @@ func (idx *Index) handleDirty(ctx context.Context) error {
 		if idx.testRevalHook != nil {
 			idx.testRevalHook()
 		}
-		if err := idx.dirty.revalidate(ctx, idx.ws, idx.opts.Ignore, indexedFiles, fileInfos); err != nil {
+		if err := idx.dirty.revalidate(ctx, idx.ws, indexedFiles, fileInfos); err != nil {
 			return err
 		}
 		idx.revalCount.Add(1)

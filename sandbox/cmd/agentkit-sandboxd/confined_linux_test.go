@@ -18,7 +18,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // confinedDirs makes W, H, T and a sibling S holding S/secret.
@@ -133,7 +133,7 @@ func TestConfinedRPCs_TS15_28(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := sb.Sync(ctx, sandbox.LocalDir{Path: project, Ignore: tools.NoGlobalExcludes()}); err != nil {
+	if _, err := sb.Sync(ctx, sandbox.LocalDir{Path: project, Ignore: workspace.NoGlobalExcludes()}); err != nil {
 		t.Errorf("LocalDir sync: %v", err)
 	}
 	for name, want := range map[string]string{"tar/x.txt": "x", "tar/sub/y.txt": "y", "go.mod": "module p\n", "pkg/deep/z.go": "package deep\n"} {
@@ -164,7 +164,7 @@ func TestConfinedRPCs_TS15_28(t *testing.T) {
 		}
 	}
 	dst := filepath.Join(t.TempDir(), "dst")
-	if err := sb.Export(ctx, "pkg", sandbox.LocalDir{Path: dst, Ignore: tools.NoGlobalExcludes()}); err != nil {
+	if err := sb.Export(ctx, "pkg", sandbox.LocalDir{Path: dst, Ignore: workspace.NoGlobalExcludes()}); err != nil {
 		t.Errorf("LocalDir export: %v", err)
 	} else if _, err := os.Stat(filepath.Join(dst, "deep", "z.go")); err != nil {
 		t.Errorf("dst lacks deep/z.go: %v", err)

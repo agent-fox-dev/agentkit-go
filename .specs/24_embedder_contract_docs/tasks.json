@@ -1,0 +1,232 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "24",
+  "spec_name": "embedder_contract_docs",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/policy -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "20",
+      "reason": "adds workspace to apiPackages, retires the hash pins and writes the API-freeze erratum entry this spec completes; the docs use workspace.Open and tools.For"
+    },
+    {
+      "spec": "21",
+      "reason": "Toolset, NewRunner, Runner, the new Config and Agent.Runner are what the README contract and data-flow sections describe"
+    },
+    {
+      "spec": "22",
+      "reason": "guard.Allow, faux.ToolCall/Text and sandbox.Open are the reason three new golden sections exist; the examples it rewrote are measured"
+    },
+    {
+      "spec": "23",
+      "reason": "the mcpserve module must exist for its golden section, README rows and served-call flow; the harness example it rewrote is measured"
+    },
+    {
+      "spec": "13",
+      "reason": "TS-13-67, apiPackages and exported-api.golden grow by five sections; its API-freeze erratum entry is completed"
+    },
+    {
+      "spec": "14",
+      "reason": "TS-14-44 compares against the widened golden; only its doc comment changes"
+    },
+    {
+      "spec": "15",
+      "reason": "TS-15-42 compares against the widened golden; only its doc comment changes"
+    },
+    {
+      "spec": "17",
+      "reason": "TS-17-61 compares against the widened golden; its preSpec17Guard list stays; only its doc comment changes"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Widen apiPackages to ten entries and add the golden-coverage tests",
+      "criteria": [
+        "24-REQ-1.1",
+        "24-REQ-1.4",
+        "24-REQ-1.5",
+        "24-REQ-2"
+      ],
+      "tests": [
+        "TS-24-1",
+        "TS-24-2",
+        "TS-24-3",
+        "TS-24-6",
+        "TS-24-7",
+        "TS-24-8"
+      ],
+      "steps": [
+        "Write TS-24-1, TS-24-2, TS-24-3, TS-24-6, TS-24-7 and TS-24-8 in a new internal/policy/embedder_contract_24_test.go (package policy), named Test<What>_TS24_<n>, and confirm they fail",
+        "In internal/policy/layout_test.go set apiPackages to exactly \".\", \"core\", \"tools\", \"codemode\", \"workspace\", \"guard\", \"provider/faux\", \"sandbox\", \"codesearch\", \"mcpserve\" (new entries appended, existing ones not moved)",
+        "TS-24-1: compare apiPackages with the literal list element by element; a mismatch names the index and both values",
+        "Add a requireLine(t, pkg, lines, prefix) helper that fails naming the package directory and the prefix when the list is empty or lacks a line with that prefix; TS-24-2 uses it with repoRoot(t) and exportedAPI for guard (`func Allow(`), provider/faux (`func ToolCall(`, `func Text(`), sandbox (`func Open(`), mcpserve (`func New(`, `type Endpoint`)",
+        "TS-24-3: on codesearch assert a `func New(` line containing `*workspace.Workspace`, a line with `func (idx `, a line with `func (*Index)` (stub receiver) and no Options.Ignore field line",
+        "TS-24-6 and TS-24-8: re-exec the test binary as a child selected by an environment variable (child calls exportedAPI on a non-existent directory; child calls requireLine with an empty list for guard / `func Allow(`); parent asserts non-zero exit, FAIL (not SKIP) and that the output contains the missing path / `guard` and `func Allow(`",
+        "TS-24-7: assert preSpec17Guard[0] is `func Allow(programs ...string) core.BeforeToolCall` and every entry appears among exportedAPI(guard) lines; do NOT change preSpec17Guard",
+        "Rewrite the doc comments so none describes the golden as frozen at spec 13's hash: the apiPackages comment (currently 'whose exported surface spec 13 must not change'), TS-13-67's comment, and the comments of TS-14-44, TS-15-42 and TS-17-61 now say the golden is the change detector over apiPackages; change no logic",
+        "Make exportedAPI's missing-directory path keep failing with t.Fatal naming the path (no skip); do not change how exportedAPI prints declarations"
+      ],
+      "touches": [
+        "internal/policy/layout_test.go",
+        "internal/policy/exported_api_14_test.go",
+        "internal/policy/exported_api_15_test.go",
+        "internal/policy/exported_api_17_test.go",
+        "internal/policy/embedder_contract_24_test.go"
+      ],
+      "done_when": [
+        "go vet ./internal/policy passes (TS-13-67 may fail until the golden is regenerated in task 2)"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Regenerate and commit the ten-section exported-API golden",
+      "criteria": [
+        "24-REQ-1.2",
+        "24-REQ-1.3",
+        "24-REQ-3"
+      ],
+      "tests": [
+        "TS-24-4",
+        "TS-24-5",
+        "TS-24-9",
+        "TS-24-10",
+        "TS-24-11",
+        "TS-24-12"
+      ],
+      "steps": [
+        "Write TS-24-4 (golden `== ` header lines equal apiPackages in order), TS-24-10 (property: exportedAPI twice is identical, sorted, deduplicated for each apiPackages entry), TS-24-9 (first five sections equal exportedAPI output with headers; git diff against HEAD of the golden has no removed line), TS-24-5 (subprocess go test -run 'TS13_67|TS14_44|TS15_42|TS17_61' -v with AGENTKIT_UPDATE_API_GOLDEN removed from env; exit 0, PASS for each, no SKIP), TS-24-11 (back up the golden, restore via t.Cleanup, drop one core line, run TS13_67 in a subprocess, expect FAIL with `exported API gained:` and the line; do not run in parallel) and TS-24-12 (git status --porcelain -- internal/policy/testdata is empty and TS19_64 passes)",
+        "Run `AGENTKIT_UPDATE_API_GOLDEN=1 go test ./internal/policy -run TS13_67`, run it a second time and confirm byte-identical output",
+        "Inspect `git diff internal/policy/testdata/exported-api.golden`: it must contain only added lines after the workspace section (guard, provider/faux, sandbox, codesearch, mcpserve); codesearch's section lists the Windows stub declarations beside the real ones. If any existing section changed, stop and report a defect in the earlier spec instead of absorbing it",
+        "Commit the golden so TS-19-64 finds a clean internal/policy/testdata",
+        "Run `go test ./internal/policy -count=1` with the variable unset and confirm TS-13-67, TS-14-44, TS-15-42, TS-17-61, TS-19-64 and all TS-24 tests pass"
+      ],
+      "touches": [
+        "internal/policy/testdata/exported-api.golden",
+        "internal/policy/embedder_contract_24_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`go test ./internal/policy -count=1` passes with AGENTKIT_UPDATE_API_GOLDEN unset"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Complete the API-freeze erratum, README contract, architecture data flow and stale-identifier sweep",
+      "criteria": [
+        "24-REQ-4.1",
+        "24-REQ-4.3"
+      ],
+      "tests": [
+        "TS-24-13",
+        "TS-24-15"
+      ],
+      "steps": [
+        "Write TS-24-13 (make -n test/vet/lint loops mention every module in MODULES, mcpserve included; check depends on fmt, vet, lint, test) and TS-24-15 (make test MODULES=<temp failing module> exits non-zero and output contains `go test ./... (<tempdir>)`) in internal/policy and confirm they pass against the Makefile",
+        "Run `make doc` first so docs/generated reflects the code, then read it to check every shape you write",
+        "docs/errata/13_sandbox_core.md: extend the API-freeze entry (added by spec 20) in place: packages covered and why each was added with the spec that added it (workspace by 20; guard, provider/faux, sandbox, codesearch, mcpserve by 24); specs that regenerated the golden (20, 21, 22, 24) and what each added; that TS-14-44, TS-15-42, TS-17-61 compare the same golden over the same list, spec 20 retired their hash pins, TS-17-61 keeps its separate guard list; the rule: a change to the exported API of any apiPackages package regenerates the golden with AGENTKIT_UPDATE_API_GOLDEN=1 in the same change, committed (TS-19-64), with the change saying why in its own record; that codesearch's section lists the Windows stub declarations beside the real ones and that is expected. Change no other entry",
+        "README.md `## Consumer contract`: keep heading; open with one short paragraph naming the layers (workspace, tools, toolset, runner, and its consumers the agent loop and mcpserve); rows in embedder order: workspace, tools, guard, toolset and runner, agent, serving, sandboxes, model and provider, vocabulary, test doubles (### sub-tables allowed); include every required row from PRD R3 with shapes matching docs/generated (Toolset five fields, Config twelve fields, Runner methods, mcpserve.New/Options/ServeStdio/ServeLoopback/Endpoint, sandbox.Open, guard.Allow, faux.ToolCall/Text, workspace methods Root/Resolve/Rel/CheckWriteTarget/Ignore/Walk/Ignored); no row names a removed identifier (tools.All, tools.NewWorkspace, Config.Tools/Policy/Guard/After, etc.)",
+        "README.md elsewhere: opening paragraph describes the driver as the loop over a runner and says sandbox/gatewayd and mcpserve listen on a socket (root and sandbox modules do not); quickstart `make check` comment says every module in MODULES; Documentation index row for docs/architecture.md lists the document's sections as they are after this task",
+        "docs/architecture.md: add 'The embedder's path' section before the data-flow sections (workspace.Open, tools.For, shaping with core.Named/codemode.New/mcp Pool.Tools/sandbox.Open proxies, agentkit.Toolset, agentkit.NewRunner, three uses: Runner.Call/Batch, agentkit.New with Agent.Runner, mcpserve.New; a few words on what each layer owns)",
+        "docs/architecture.md: add 'Data flow of one call' (Runner.Call is a batch of one; prepare phase in call order: start event, lookup, argument preparation, Guard; abort decision once; handlers concurrent unless a Sequential tool is among the calls, nested caller for tools declaring ReachableTools; finalization under a batch-scoped mutex: After then end and result events; one core.ToolResult per call in call order with Terminate carrying the final vote; events go to Toolset.Events outside a run and the run's stream inside; runner does not own transcript, usage, turn count, run slot, stop reason)",
+        "docs/architecture.md: rewrite 'Data flow of one run' keeping its heading (agentkit.New checks the model side then NewRunner(cfg.Toolset); step 4 hands the turn's calls to the runner's batch with the run's stream as sink; max_tokens path stays in the loop; only interception is Toolset.Guard and Toolset.After); describe the served call once (transport, bearer check for HTTP, tools/list from Runner.Tools, tools/call to Runner.Call, result mapping) — if spec 23 already has an MCP serving section, align it and link, do not copy",
+        "docs/architecture.md: update Invariants (pipeline exists once, in the runner; calls through a runner are outside every run; Guard and After belong to the toolset), Nested tool calls (runner attaches the nested caller for runs, Runner.Call and Runner.Batch; core.ErrNoNestedCaller only when neither a runner nor an agent invoked the tool; remove executeBatch), Code mode (runs outside an agent via Runner.Call; no longer tells embedders to implement core.NestedCaller), Testing layout (internal/policy holds the exported-API golden over apiPackages), and the Shape text (no claim of no MCP server / no socket)",
+        "docs/architecture.md Package graph: regenerate the table from `go list -f '{{.ImportPath}}: {{join .Imports \" \"}}' ./...` (first-party imports, tests excluded) in the root, codesearch, sandbox, sandbox/gatewayd and mcpserve modules and re-derive the 'What follows from it' bullets (root imported by mcpserve and examples/; root still imports neither tools nor workspace in non-test code)",
+        "Stale-identifier sweep per PRD R5 over README.md, AGENTS.md (Repository Layout gains workspace/ and mcpserve/), docs/api.md (intro must be correct about mcpserve listening), docs/architecture.md, docs/configuration.md, docs/cli.md, docs/DEPS.md, docs/releasing.md, examples/**/README.md, codesearch/README.md and doc comments of non-test Go files in every module: search for tools.All, tools.NewWorkspace, tools.Workspace, tools.Walk/WalkOptions/IgnoreOptions/NoGlobalExcludes/Normalize, tools.ErrPath*/ErrNoHome, tools.Options.Workspace/Ignore, Workspace.References, `ws.Root` as a field, codesearch.Options.Ignore, Config.Tools/Policy/Guard/After, executeBatch, examples/harness/server.go, and 'no MCP server'/'listens on no socket' claims; fix each unless it is the old name in a migration note; skip docs/prd, docs/archive, other errata, .specs, docs/generated"
+      ],
+      "touches": [
+        "docs/errata/13_sandbox_core.md",
+        "README.md",
+        "AGENTS.md",
+        "docs/architecture.md",
+        "docs/api.md",
+        "docs/configuration.md",
+        "docs/cli.md",
+        "docs/DEPS.md",
+        "docs/releasing.md",
+        "examples/README.md",
+        "codesearch/README.md",
+        "internal/policy/embedder_contract_24_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "a search for each removed identifier in the sweep scope finds only migration-note mentions"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Measure PRD 12's examples again, write the spec 24 erratum and regenerate generated docs",
+      "criteria": [
+        "24-REQ-4.2"
+      ],
+      "tests": [
+        "TS-24-14"
+      ],
+      "steps": [
+        "Write TS-24-14 (make doc exits 0, git status --porcelain -- docs/generated is empty after it, and docs/generated has output for mcpserve, guard and provider/faux) in internal/policy and confirm it fails until generated docs are committed",
+        "Find the baseline commit with `git log --diff-filter=A --format=%H -- docs/prd/12-simplify-the-embedder-contract.md`; if git history is unavailable, use only PRD 12's published numbers (codemode 8/9/0/10/0, sandbox 5/5/30/12/0, gateway 5/5/30/12/0, harness 0/6/35/0/95) and say so",
+        "Measure by reading code, with the PRD R6 rule: counted line = non-blank, non-comment line as gofmt formats it; a line counts toward the innermost chore its statement/declaration serves (local helpers included) plus the `if err != nil` that immediately checks it; chores: 1 picking tools by name, 2 scripted turns and arguments, 3 sandbox lifecycle (Create/Sync/Tools/sandbox.Open/Export/Close), 4 guard plus the agentkit.New/NewRunner statement and its Config/Toolset literal, 5 running a tool call outside the loop. Cover examples/codemode/main.go, examples/sandbox/main.go, examples/gateway/main.go and every non-test .go file in examples/harness, on the baseline tree and the current tree; record per chore and example the counted lines and statement count (error checks excluded), plus total lines of each example on both trees. Change no example",
+        "Create docs/errata/24_embedder_contract_docs.md titled `# Erratum: spec 24 \\`embedder_contract_docs\\``, one intro line, then `##` entries in the format of docs/errata/17_sandbox_podman.md",
+        "Entry 'PRD 12 §Intent, measured again': the counting rule, the baseline commit hash, a table with one row per chore and per example giving published number, remeasured baseline, current lines and current statement count, then per-example totals before and after",
+        "Entry 'PRD 12's acceptance criteria as delivered': one line for each of criteria 1 to 12 (docs/prd/12-simplify-the-embedder-contract.md L514-557) marked met or naming how delivery differs and which spec/erratum explains it; criterion 10 assessed per statement (Design Decision 9) naming any chore above its bound with its count; criterion 12 not met as written because the golden was regenerated in specs 20, 21, 22 and 24, not once in 24",
+        "Entry 'Divergences from this PRD': any place where spec 24's own delivery differs from its PRD (write 'none' if none)",
+        "Run `make doc` and commit docs/generated; run `make check` and confirm it passes in every module in MODULES; confirm the golden's existing sections are unchanged"
+      ],
+      "touches": [
+        "docs/errata/24_embedder_contract_docs.md",
+        "docs/generated",
+        "internal/policy/embedder_contract_24_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "done_when": [
+        "`make doc` leaves no uncommitted change under docs/generated",
+        "`make check` passes in every module in MODULES"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "integration",
+      "title": "Verify the golden-regeneration and make-check paths end to end",
+      "tests": [
+        "TS-24-16",
+        "TS-24-17"
+      ],
+      "steps": [
+        "Write TS-24-16 (smoke; regenerate the golden with AGENTKIT_UPDATE_API_GOLDEN=1 go test ./internal/policy -run TS13_67 in a restorable copy, assert ten headers in apiPackages order, five existing sections unchanged, a second regeneration byte-identical, then all policy tests pass with the variable unset) and TS-24-17 (smoke; make check, make doc, git status --porcelain -- docs/generated empty) and confirm they pass",
+        "Trace 24-PATH-1: apiPackages -> exportedAPI parsing the real directories of all ten packages -> TS-13-67 writes/compares the golden -> TS-14-44, TS-15-42, TS-17-61, TS-19-64, TS-24-1 and TS-24-2 pass; confirm each step calls the next and no stub remains",
+        "Trace 24-PATH-2: make check runs fmt, vet, lint and test in every module in MODULES (mcpserve included), then make doc leaves docs/generated clean",
+        "Confirm exportedAPI and the apiPackages list are consumed by TS-13-67, TS-14-44, TS-15-42 and TS-17-61 in the committed tests, not only by the TS-24 tests; confirm mcpserve, guard and provider/faux exist (entry points owned by specs 22 and 23) and are reached by the golden",
+        "Search the files listed in every task's touches for panic(\"not implemented\"), TODO, TBD and placeholder text in the docs; remove any that remain",
+        "Run `make check` and `make doc` one last time and confirm git status is clean for internal/policy/testdata and docs/generated"
+      ],
+      "touches": [
+        "internal/policy/embedder_contract_24_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "`make check` passes in every module in MODULES and `git status --porcelain -- internal/policy/testdata docs/generated` prints nothing"
+      ],
+      "state": "pending"
+    }
+  ]
+}

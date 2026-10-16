@@ -21,6 +21,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 
 	zoekt "github.com/sourcegraph/zoekt"
 	zoektindex "github.com/sourcegraph/zoekt/index"
@@ -90,10 +91,6 @@ const touchInterval = time.Hour
 
 // Options configures the codesearch index.
 type Options struct {
-	// Ignore is the ignore configuration, typically the same value the
-	// embedder passes to tools.Options.
-	Ignore tools.IgnoreOptions
-
 	// MaxFiles is the file-count bound for a build. Zero or negative means
 	// 100 000.
 	MaxFiles int
@@ -140,7 +137,7 @@ var _ tools.Index = (*Index)(nil)
 // an embedder that stores it in Options.Index without checking err gets no
 // index instead of one whose methods run on a nil receiver. An embedder that
 // wants the build counters and statistics asserts the result to *Index.
-func New(ws *tools.Workspace, opts Options) (tools.Index, error) {
+func New(ws *workspace.Workspace, opts Options) (tools.Index, error) {
 	idx, err := newIndex(ws, opts)
 	if err != nil {
 		return nil, err
@@ -150,7 +147,7 @@ func New(ws *tools.Workspace, opts Options) (tools.Index, error) {
 
 // newIndex is New with the concrete type, for the tests in this package that
 // use the unexported hooks.
-func newIndex(ws *tools.Workspace, opts Options) (*Index, error) {
+func newIndex(ws *workspace.Workspace, opts Options) (*Index, error) {
 	if ws == nil {
 		return nil, errors.New("codesearch: workspace must not be nil")
 	}
@@ -183,7 +180,7 @@ type searchResultFile struct {
 
 // Index is the codesearch index. It implements tools.Index.
 type Index struct {
-	ws   *tools.Workspace
+	ws   *workspace.Workspace
 	opts Options
 
 	// runID is a unique identifier for this index instance.
@@ -462,7 +459,7 @@ func (idx *Index) retireOverlay(ov *overlayState) {
 
 // hashDir returns the hash directory name for the workspace root.
 func (idx *Index) hashDir() string {
-	h := sha256.Sum256([]byte(idx.ws.Root))
+	h := sha256.Sum256([]byte(idx.ws.Root()))
 	return fmt.Sprintf("agentkit-codesearch-%x", h[:])
 }
 
@@ -664,10 +661,7 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 	var stats BuildStatsResult
 	var partialReason string
 
-	err := tools.Walk(buildCtx, idx.ws, idx.ws.Root, tools.WalkOptions{
-		Ignore:        idx.opts.Ignore,
-		IncludeHidden: false,
-	}, func(rel string, d fs.DirEntry) error {
+	err := idx.ws.Walk(buildCtx, "", workspace.WalkOptions{}, func(rel string, d fs.DirEntry) error {
 		if d.IsDir() {
 			return nil
 		}
@@ -675,7 +669,7 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 			return nil
 		}
 
-		abs := filepath.Join(idx.ws.Root, filepath.FromSlash(rel))
+		abs := filepath.Join(idx.ws.Root(), filepath.FromSlash(rel))
 		fi, err := os.Stat(abs)
 		if err != nil {
 			return nil // skip unreadable
@@ -721,7 +715,7 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 	}
 
 	// Outline files in batches of at most outlineBatchSize.
-	outlineOpts := outline.Options{Root: idx.ws.Root}
+	outlineOpts := outline.Options{Root: idx.ws.Root()}
 	outlineResults := make(map[string]outline.File, len(files))
 	var totalBytes int64
 
@@ -755,7 +749,7 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 		batch := files[i:end]
 
 		if idx.testOutlineHook != nil {
-			idx.testOutlineHook(idx.ws.Root, len(batch))
+			idx.testOutlineHook(idx.ws.Root(), len(batch))
 		}
 
 		srcs := make([]outline.Source, len(batch))
@@ -883,7 +877,7 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 		if !indexedFiles[fe.rel] {
 			continue
 		}
-		abs := filepath.Join(idx.ws.Root, filepath.FromSlash(fe.rel))
+		abs := filepath.Join(idx.ws.Root(), filepath.FromSlash(fe.rel))
 		fi, err := os.Stat(abs)
 		if err != nil {
 			continue

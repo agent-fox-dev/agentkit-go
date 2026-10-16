@@ -9,6 +9,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // NFR-TEST-08(a): byte-for-byte goldens of the assembled system prompt.
@@ -51,11 +52,11 @@ func checkGolden(t *testing.T, name, got string) {
 // prompt diff in review.
 func defaultToolSet(t *testing.T) []core.Tool {
 	t.Helper()
-	ws, err := tools.NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +69,7 @@ func defaultToolSet(t *testing.T) []core.Tool {
 //
 //	golden:    testdata/golden/system_prompt_default.txt
 //	reference: AgentKit itself — BuildSystemPrompt over the real default tool
-//	           set, resolved through tools.All and ResolveToolPolicy. There is
+//	           set, resolved through tools.For and ResolveToolPolicy. There is
 //	           no external reference for this artifact and there cannot be:
 //	           the prompt IS ours, and NFR-TEST-08.2's "regenerate from the
 //	           reference" reduces here to "regenerate from the resolver, never

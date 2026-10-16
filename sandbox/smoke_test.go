@@ -12,13 +12,14 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/local"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-13-69 (smoke, 13-PATH-1): an embedder creates a local sandbox, syncs a
 // project, gets eleven proxy tools, reads a synced file and closes the
 // sandbox. Every component is real: local, attach, the agent, the gRPC
 // client and server, the stdio adapter over os.Pipe, the tar rules and
-// tools.All.
+// tools.For.
 func TestSmokeCreateSyncReadClose_TS13_69(t *testing.T) {
 	isolate(t)
 	ctx := context.Background()
@@ -40,14 +41,14 @@ func TestSmokeCreateSyncReadClose_TS13_69(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ws, _ := tools.NewWorkspace(t.TempDir())
-	host, _ := tools.All(tools.Options{Workspace: ws})
+	ws, _ := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
+	host, _ := tools.For(ws, tools.Options{})
 	if len(proxies) != 11 || len(host) != 11 {
-		t.Fatalf("%d proxies, %d tools.All tools; want 11", len(proxies), len(host))
+		t.Fatalf("%d proxies, %d tools.For tools; want 11", len(proxies), len(host))
 	}
 	for i := range host {
 		if proxies[i].Name != host[i].Name {
-			t.Errorf("proxy %d is %s, tools.All has %s", i, proxies[i].Name, host[i].Name)
+			t.Errorf("proxy %d is %s, tools.For has %s", i, proxies[i].Name, host[i].Name)
 		}
 	}
 	r := tool(t, sb, "read_file").Execute(ctx, []byte(`{"path":"hello.txt"}`))

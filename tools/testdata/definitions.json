@@ -1,0 +1,948 @@
+[
+  {
+    "name": "read_file",
+    "description": "Read a text file. At most 2000 lines or 50KB are returned, whichever comes first.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Path to the file (relative to the workspace, or absolute)"
+        },
+        "offset": {
+          "type": "integer",
+          "description": "1-based line to start from (default 1)"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Maximum lines to return"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "encoding": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "encoding"
+      ]
+    },
+    "prompt_guidelines": [
+      "Read a file before editing it."
+    ],
+    "builtin": true,
+    "execution_mode": 0
+  },
+  {
+    "name": "write_file",
+    "description": "Write a file, creating or replacing it.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Path to write"
+        },
+        "content": {
+          "type": "string",
+          "description": "Full file content"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "written": {
+          "type": "boolean"
+        },
+        "bytes": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "written",
+        "bytes"
+      ]
+    },
+    "prompt_guidelines": [
+      "Prefer edit_file for an existing file; write_file replaces the whole file."
+    ],
+    "builtin": true,
+    "execution_mode": 1
+  },
+  {
+    "name": "edit_file",
+    "description": "Apply one or more exact-match edits to a file. Every old_string is matched against the ORIGINAL file content, not against the result of an earlier edit in the same call. Each old_string must appear exactly once; if it appears more than once the call is rejected, so include enough surrounding context to make it unique.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Path to edit"
+        },
+        "edits": {
+          "type": "array",
+          "description": "Edits to apply, all matched against the original content",
+          "items": {
+            "type": "object",
+            "properties": {
+              "old_string": {
+                "type": "string",
+                "description": "Exact text to replace; must be unique in the file"
+              },
+              "new_string": {
+                "type": "string",
+                "description": "Replacement text"
+              }
+            },
+            "required": [
+              "old_string",
+              "new_string"
+            ]
+          }
+        }
+      },
+      "required": [
+        "path",
+        "edits"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "edits_applied": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "edits_applied"
+      ]
+    },
+    "prompt_guidelines": null,
+    "builtin": true,
+    "execution_mode": 1
+  },
+  {
+    "name": "list_files",
+    "description": "List the entries of a directory, directories with a trailing /. Does not apply .gitignore.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Directory to list (default the workspace root)"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Maximum entries (default 200, at most 500)"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "entries",
+        "truncated"
+      ]
+    },
+    "prompt_guidelines": null,
+    "builtin": true,
+    "execution_mode": 0
+  },
+  {
+    "name": "find_files",
+    "description": "Find files by glob pattern, skipping .gitignored paths.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Glob pattern, e.g. **/*.py or src/**/*.ts"
+        },
+        "path": {
+          "type": "string",
+          "description": "Directory to search from (default the workspace root)"
+        },
+        "file_type": {
+          "type": "string",
+          "description": "What to match: \"file\" (default), \"dir\" or \"any\""
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Maximum results (default 200, at most 1000)"
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "marker": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "files",
+        "truncated"
+      ]
+    },
+    "prompt_guidelines": null,
+    "builtin": true,
+    "execution_mode": 0
+  },
+  {
+    "name": "search_files",
+    "description": "Search file contents by regular expression, skipping .gitignored, hidden (dot-prefixed) and binary files. Returns at most max_matches (\u003c= 100) matches with context_lines (\u003c= 20) lines either side.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Regular expression (RE2 syntax)"
+        },
+        "path": {
+          "type": "string",
+          "description": "Directory to search from (default the workspace root)"
+        },
+        "context_lines": {
+          "type": "integer",
+          "description": "Lines of context either side of a match (0 to 20)",
+          "minimum": 0,
+          "maximum": 20
+        },
+        "file_glob": {
+          "type": "string",
+          "description": "Only search files matching this glob, e.g. **/*.py or src/**/*.ts"
+        },
+        "case_sensitive": {
+          "type": "boolean",
+          "description": "Omit for smart-case: a lowercase pattern matches any case"
+        },
+        "max_matches": {
+          "type": "integer",
+          "description": "Maximum matches to return (1 to 100; default 100)",
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "matches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer"
+              },
+              "text": {
+                "type": "string"
+              },
+              "before": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "after": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "file",
+              "line",
+              "text"
+            ]
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "files_searched": {
+          "type": "integer"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "matches",
+        "truncated",
+        "files_searched"
+      ]
+    },
+    "prompt_guidelines": null,
+    "builtin": true,
+    "execution_mode": 0
+  },
+  {
+    "name": "file_outline",
+    "description": "Show the declarations in a file with line ranges. Use include_private to also list unexported declarations.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Path to the file (relative to the workspace, or absolute)"
+        },
+        "include_private": {
+          "type": "boolean",
+          "description": "Include unexported declarations (default false)"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "object",
+          "properties": {
+            "Path": {
+              "type": "string"
+            },
+            "Lang": {
+              "type": "string"
+            },
+            "Backend": {
+              "type": "string"
+            },
+            "Decls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "Kind": {
+                    "type": "string"
+                  },
+                  "Name": {
+                    "type": "string"
+                  },
+                  "Container": {
+                    "type": "string"
+                  },
+                  "Signature": {
+                    "type": "string"
+                  },
+                  "Exported": {
+                    "type": "boolean"
+                  },
+                  "StartLine": {
+                    "type": "integer"
+                  },
+                  "EndLine": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "Kind",
+                  "Name",
+                  "Container",
+                  "Signature",
+                  "Exported",
+                  "StartLine",
+                  "EndLine"
+                ]
+              }
+            }
+          },
+          "required": [
+            "Path",
+            "Lang",
+            "Backend",
+            "Decls"
+          ]
+        },
+        "backend": {
+          "type": "string"
+        },
+        "declarations": {
+          "type": "integer"
+        },
+        "listed": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file",
+        "backend",
+        "declarations",
+        "listed"
+      ]
+    },
+    "prompt_guidelines": [
+      "Before reading a large file, outline it and read only the range you need."
+    ],
+    "builtin": true,
+    "execution_mode": 0
+  },
+  {
+    "name": "find_symbol",
+    "description": "Find declarations by name across the workspace. Returns matching symbols with file paths and line ranges.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Symbol name to search for"
+        },
+        "kind": {
+          "type": "string",
+          "description": "Declaration kind filter (func, method, type, class, interface, enum, trait, const, var, module, macro)"
+        },
+        "path": {
+          "type": "string",
+          "description": "Directory to search within"
+        },
+        "exact": {
+          "type": "boolean",
+          "description": "Require exact name match (default false)"
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Maximum results (default 20, at most 50)"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "symbols": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "container": {
+                "type": "string"
+              },
+              "signature": {
+                "type": "string"
+              },
+              "exported": {
+                "type": "boolean"
+              },
+              "start_line": {
+                "type": "integer"
+              },
+              "end_line": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "path",
+              "backend",
+              "kind",
+              "name",
+              "container",
+              "signature",
+              "exported",
+              "start_line",
+              "end_line"
+            ]
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "backends": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "files_indexed": {
+          "type": "integer"
+        },
+        "note": {
+          "type": "string"
+        },
+        "partial": {
+          "type": "boolean"
+        },
+        "partial_reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbols",
+        "truncated",
+        "backends",
+        "files_indexed"
+      ]
+    },
+    "prompt_guidelines": [
+      "Use find_symbol to locate a declaration; search_files for usages and text."
+    ],
+    "builtin": true,
+    "execution_mode": 0
+  },
+  {
+    "name": "find_references",
+    "description": "Find references and callers of a declaration across the workspace. Returns matching reference sites with file paths, line numbers, and enclosing declarations.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Declaration name to find references for. May be unqualified or qualified with container."
+        },
+        "path": {
+          "type": "string",
+          "description": "Directory path to scope the reference search within"
+        },
+        "kind": {
+          "type": "string",
+          "description": "Declaration kind filter (func, method, type, class, interface, enum, trait, const, var, module, macro)"
+        },
+        "include_tests": {
+          "type": "boolean",
+          "description": "When false, reference sites in test files are omitted (default true)"
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Maximum reference sites to return (default 30, cap 100)"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "object",
+          "properties": {
+            "Kind": {
+              "type": "string"
+            },
+            "Name": {
+              "type": "string"
+            },
+            "Container": {
+              "type": "string"
+            },
+            "Signature": {
+              "type": "string"
+            },
+            "Exported": {
+              "type": "boolean"
+            },
+            "StartLine": {
+              "type": "integer"
+            },
+            "EndLine": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "Kind",
+            "Name",
+            "Container",
+            "Signature",
+            "Exported",
+            "StartLine",
+            "EndLine"
+          ]
+        },
+        "sites": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "Path": {
+                "type": "string"
+              },
+              "Line": {
+                "type": "integer"
+              },
+              "Column": {
+                "type": "integer"
+              },
+              "Confidence": {
+                "type": "string"
+              },
+              "Enclosing": {
+                "type": "object",
+                "properties": {
+                  "Kind": {
+                    "type": "string"
+                  },
+                  "Name": {
+                    "type": "string"
+                  },
+                  "Container": {
+                    "type": "string"
+                  },
+                  "Signature": {
+                    "type": "string"
+                  },
+                  "Exported": {
+                    "type": "boolean"
+                  },
+                  "StartLine": {
+                    "type": "integer"
+                  },
+                  "EndLine": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "Kind",
+                  "Name",
+                  "Container",
+                  "Signature",
+                  "Exported",
+                  "StartLine",
+                  "EndLine"
+                ]
+              },
+              "Source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "Path",
+              "Line",
+              "Column",
+              "Confidence",
+              "Enclosing",
+              "Source"
+            ]
+          }
+        },
+        "backend": {
+          "type": "string"
+        },
+        "partial": {
+          "type": "boolean"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "packages_checked": {
+          "type": "integer"
+        },
+        "errors": {
+          "type": "integer"
+        },
+        "result": {
+          "type": "object",
+          "properties": {
+            "Target": {
+              "type": "object",
+              "properties": {
+                "Kind": {
+                  "type": "string"
+                },
+                "Name": {
+                  "type": "string"
+                },
+                "Container": {
+                  "type": "string"
+                },
+                "Signature": {
+                  "type": "string"
+                },
+                "Exported": {
+                  "type": "boolean"
+                },
+                "StartLine": {
+                  "type": "integer"
+                },
+                "EndLine": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "Kind",
+                "Name",
+                "Container",
+                "Signature",
+                "Exported",
+                "StartLine",
+                "EndLine"
+              ]
+            },
+            "Sites": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "Path": {
+                    "type": "string"
+                  },
+                  "Line": {
+                    "type": "integer"
+                  },
+                  "Column": {
+                    "type": "integer"
+                  },
+                  "Confidence": {
+                    "type": "string"
+                  },
+                  "Enclosing": {
+                    "type": "object",
+                    "properties": {
+                      "Kind": {
+                        "type": "string"
+                      },
+                      "Name": {
+                        "type": "string"
+                      },
+                      "Container": {
+                        "type": "string"
+                      },
+                      "Signature": {
+                        "type": "string"
+                      },
+                      "Exported": {
+                        "type": "boolean"
+                      },
+                      "StartLine": {
+                        "type": "integer"
+                      },
+                      "EndLine": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "Kind",
+                      "Name",
+                      "Container",
+                      "Signature",
+                      "Exported",
+                      "StartLine",
+                      "EndLine"
+                    ]
+                  },
+                  "Source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "Path",
+                  "Line",
+                  "Column",
+                  "Confidence",
+                  "Enclosing",
+                  "Source"
+                ]
+              }
+            },
+            "Backend": {
+              "type": "string"
+            },
+            "Partial": {
+              "type": "boolean"
+            },
+            "PackagesChecked": {
+              "type": "integer"
+            },
+            "Errors": {
+              "type": "integer"
+            },
+            "Truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "Target",
+            "Sites",
+            "Backend",
+            "Partial",
+            "PackagesChecked",
+            "Errors",
+            "Truncated"
+          ]
+        }
+      },
+      "required": [
+        "target",
+        "sites",
+        "backend",
+        "partial",
+        "truncated",
+        "packages_checked",
+        "errors",
+        "result"
+      ]
+    },
+    "prompt_guidelines": [
+      "Use find_symbol for where a name is declared, find_references for who uses it, and search_files for text."
+    ],
+    "builtin": true,
+    "execution_mode": 0
+  },
+  {
+    "name": "execute",
+    "description": "Run a shell command in the workspace root. Pipes, redirection, \u0026\u0026 and $() all work. Only the last 50 KB of output is kept, so the tail of a failing build is preserved. No default timeout; pass timeout_s for anything that may not exit. A background process must redirect its output (\u003e log 2\u003e\u00261 \u0026) or it is killed when the tool returns.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "The shell command to run"
+        },
+        "timeout_s": {
+          "type": "integer",
+          "description": "Seconds before the process tree is killed"
+        }
+      },
+      "required": [
+        "command"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "output": {
+          "type": "string"
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "exit",
+            "signal",
+            "timeout",
+            "abort"
+          ]
+        }
+      },
+      "required": [
+        "output",
+        "exit_code",
+        "outcome"
+      ]
+    },
+    "prompt_guidelines": null,
+    "builtin": true,
+    "execution_mode": 1
+  },
+  {
+    "name": "run_command",
+    "description": "Run a program with an explicit argument list and NO shell. Pipes, redirection, globs and $() do not work here — use execute for those. Prefer this when arguments come from data, since nothing is re-parsed.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "argv": {
+          "type": "array",
+          "description": "Program and arguments, e.g. [\"git\", \"commit\", \"-m\", \"a message\"]",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout_s": {
+          "type": "integer",
+          "description": "Seconds before the process tree is killed"
+        }
+      },
+      "required": [
+        "argv"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "output": {
+          "type": "string"
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "exit",
+            "signal",
+            "timeout",
+            "abort"
+          ]
+        }
+      },
+      "required": [
+        "output",
+        "exit_code",
+        "outcome"
+      ]
+    },
+    "prompt_guidelines": [
+      "Use run_command when an argument contains spaces or shell metacharacters; nothing is re-parsed by a shell."
+    ],
+    "builtin": true,
+    "execution_mode": 1
+  }
+]

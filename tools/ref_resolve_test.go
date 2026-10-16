@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-05-8 (unit): Declaration resolver queries shared symbol table for unqualified and container-qualified names
@@ -155,12 +156,12 @@ func TestSymbolResolution_DisambiguationRanking_TS_05_10(t *testing.T) {
 // Verifies: 05-REQ-2.4
 func TestSymbolResolution_FallbackTextSearch_TS_05_11(t *testing.T) {
 	dir := t.TempDir()
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
 
-	fr := newFileTools(Options{Workspace: ws}.withDefaults()).findReferencesTool()
+	fr := newFileTools(ws, Options{}.withDefaults(ws)).findReferencesTool()
 	res := fr.Execute(context.Background(), []byte(`{"name":"GOPHER_KEY"}`))
 	if !res.OK {
 		t.Fatalf("expected res.OK == true, got error: %s (%s)", res.Error, res.Text)
@@ -255,12 +256,12 @@ func TestSymbolResolution_AbsolutePathScope_TS05_9(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "go.mod", "module example.com/p\n\ngo 1.22\n")
 	writeFile(t, root, "svc/svc.go", "package svc\n\nfunc Handle() {}\n\nfunc call() { Handle() }\n")
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{Workspace: ws}.withDefaults())
-	args, _ := json.Marshal(map[string]string{"name": "Handle", "path": filepath.Join(ws.Root, "svc")})
+	ft := newFileTools(ws, Options{}.withDefaults(ws))
+	args, _ := json.Marshal(map[string]string{"name": "Handle", "path": filepath.Join(ws.Root(), "svc")})
 	res := ft.findReferencesTool().Execute(context.Background(), args)
 	if !res.OK {
 		t.Fatalf("find_references: %s", res.Text)

@@ -1,0 +1,442 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "22",
+  "spec_name": "embedder_helpers",
+  "schema_version": 2,
+  "introduction": "Spec 22 adds four thin helpers over existing AgentKit APIs — `core.Named` (pick tools by name), `guard.Allow` (an allowlist-only `guard.Restricted`), `faux.ToolCall`/`faux.Text` (single-block scripted turns) and `sandbox.Open` (Create, Sync and Tools in one call with close-on-failure) — and rewrites the `codemode`, `sandbox` and `gateway` examples on them. The README, docs/ and generated-doc updates the PRD lists under R8 are carried by the tasks per the steering's documentation-freshness rule and are not stated as tested criteria, because the steering forbids tests on documentation content.",
+  "glossary": {
+    "allowlist guard": "A core.BeforeToolCall that blocks shell tool calls (execute, run_command) whose programs are not in a given list, as guard.Restricted does with Options.AllowedPrograms.",
+    "proxy tool": "A core.Tool returned by Sandbox.Tools whose Execute forwards the call to the agent running inside the sandbox.",
+    "scripted turn": "A faux.Turn handed to faux.New; the faux provider replays it as one assistant response.",
+    "step error": "The error returned by the Sync or Tools call that made sandbox.Open fail after Create succeeded.",
+    "structural test": "A test that parses an example's main.go with go/parser and fails on forbidden AST shapes (composite literals, calls, switch tags) instead of running the example."
+  },
+  "requirements": [
+    {
+      "id": "22-REQ-1",
+      "title": "core.Named picks tools by name",
+      "rationale": "Every example filters a tool set by name with a switch or a map; one call with a precise error replaces that wiring.",
+      "criteria": [
+        {
+          "id": "22-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "core.Named(ts, names...) is called and every entry of names occurs once in names and is the Name of a top-level tool in ts",
+          "system": "core.Named",
+          "action": "return, for each entry of names in order, the first tool in ts whose Name equals that entry exactly, without searching any tool's ReachableTools",
+          "contract": "([]core.Tool with len(names) elements whose Names equal names in order, nil error)"
+        },
+        {
+          "id": "22-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "core.Named",
+          "action": "return a newly allocated slice of value copies, leave ts and its elements unmodified, and not share ts's backing array, so that writing to a result element leaves ts unchanged"
+        },
+        {
+          "id": "22-REQ-1.3",
+          "pattern": "event_driven",
+          "condition": "core.Named is called with no names",
+          "system": "core.Named",
+          "action": "return an empty slice",
+          "contract": "(non-nil []core.Tool of length 0, nil error)"
+        },
+        {
+          "id": "22-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "one or more entries of names are not the Name of any top-level tool in ts",
+          "system": "core.Named",
+          "action": "return no tools and an error whose text begins \"core: \", quotes every missing name in names order, and lists every Name in ts in ts order or states that the set is empty",
+          "contract": "(nil, error) e.g. `core: no tool named \"no_such_tool\"; the set holds: read_file, write_file`"
+        },
+        {
+          "id": "22-REQ-1.5",
+          "pattern": "unwanted",
+          "condition": "every entry of names is present in ts but at least one entry appears more than once in names",
+          "system": "core.Named",
+          "action": "return no tools and an error whose text begins \"core: \" and quotes the first repeated name",
+          "contract": "(nil, error) with the quoted first repeated name in its text"
+        },
+        {
+          "id": "22-REQ-1.6",
+          "pattern": "ubiquitous",
+          "system": "core.Named",
+          "action": "for any tool set ts and any sequence of distinct names drawn from ts's Names, return tools whose Names equal that sequence, and return identical results when called concurrently from multiple goroutines on the same ts (race detector reports nothing)"
+        }
+      ]
+    },
+    {
+      "id": "22-REQ-2",
+      "title": "guard.Allow is Restricted with only AllowedPrograms",
+      "rationale": "The allowlist guard is the common case and must be one call without opening a second code path or aliasing the caller's slice.",
+      "criteria": [
+        {
+          "id": "22-REQ-2.1",
+          "pattern": "ubiquitous",
+          "system": "guard.Allow",
+          "action": "for any program list and any tool-call context, return a decision whose Block, Reason and Terminate equal those returned by guard.Restricted(guard.Options{AllowedPrograms: programs}) for the same context, so block reasons keep the \"guard.Restricted: \" prefix",
+          "contract": "core.BeforeToolCall decision equal field-by-field to Restricted's"
+        },
+        {
+          "id": "22-REQ-2.2",
+          "pattern": "event_driven",
+          "condition": "the caller modifies, appends to or reorders the slice it passed to guard.Allow after Allow has returned",
+          "system": "guard.Allow",
+          "action": "keep making the decisions it made for the program list as it was when Allow was called",
+          "contract": "a program added to the caller's slice after Allow returns stays blocked"
+        },
+        {
+          "id": "22-REQ-2.3",
+          "pattern": "event_driven",
+          "condition": "guard.Allow is called with no programs",
+          "system": "guard.Allow",
+          "action": "block every execute and run_command call and allow every call to any other tool",
+          "contract": "Block=true for shell tools, Block=false for non-shell tools"
+        }
+      ]
+    },
+    {
+      "id": "22-REQ-3",
+      "title": "faux.ToolCall and faux.Text build single-block turns",
+      "rationale": "Offline examples script single-block turns with verbose literals; a helper per turn shape removes them without changing what the provider emits.",
+      "criteria": [
+        {
+          "id": "22-REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "faux.ToolCall(id, name, args) is called with args that is a JSON object",
+          "system": "faux.ToolCall",
+          "action": "return a Turn whose Blocks hold exactly the block faux.FauxToolCall(id, name, args) returns, whose StopReason is core.StopReasonToolUse, and whose other fields are zero",
+          "contract": "reflect.DeepEqual to faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall(id, name, args)}, StopReason: core.StopReasonToolUse}"
+        },
+        {
+          "id": "22-REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "faux.Text(s) is called",
+          "system": "faux.Text",
+          "action": "return a Turn whose Blocks hold exactly core.TextBlock{Text: s}, whose StopReason is core.StopReasonStop, and whose other fields are zero",
+          "contract": "reflect.DeepEqual to faux.Turn{Blocks: []core.ContentBlock{core.TextBlock{Text: s}}, StopReason: core.StopReasonStop}"
+        },
+        {
+          "id": "22-REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "faux.ToolCall is called with args that is empty or only whitespace",
+          "system": "faux.ToolCall",
+          "action": "build the tool-use block with the input {}, as core.NewToolUse does",
+          "contract": "the returned block's input is the JSON text {}"
+        },
+        {
+          "id": "22-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "faux.ToolCall is called with args that is not a JSON object",
+          "system": "faux.ToolCall",
+          "action": "panic with a message that names faux.ToolCall, the id and the tool name",
+          "contract": "panic value is a string containing \"faux.ToolCall\", the quoted id and the quoted name"
+        },
+        {
+          "id": "22-REQ-3.5",
+          "pattern": "event_driven",
+          "condition": "a faux.Provider is scripted with turns built by faux.ToolCall and faux.Text",
+          "system": "faux.Provider",
+          "action": "emit exactly the event sequence it emits when scripted with the equivalent one-block Turn literals",
+          "contract": "the collected core events are reflect.DeepEqual between the two scripts"
+        }
+      ]
+    },
+    {
+      "id": "22-REQ-4",
+      "title": "sandbox.Open creates, fills and equips a sandbox in one call",
+      "rationale": "Embedders repeat Create, Sync and Tools with separate error checks; one call in the order that satisfies GitRepo's slot rules removes the wiring.",
+      "criteria": [
+        {
+          "id": "22-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "sandbox.Open(ctx, p, spec, src, opts) is called with a non-nil p and a non-nil src",
+          "system": "sandbox.Open",
+          "action": "call p.Create(ctx, spec), then Sync(ctx, src) on the new sandbox, then Tools(ctx, opts), each once and in that order, and discard the SyncResult",
+          "contract": "(the Sandbox value Create returned, identical and not wrapped; the proxies Tools returned; nil error)"
+        },
+        {
+          "id": "22-REQ-4.2",
+          "pattern": "event_driven",
+          "condition": "sandbox.Open is called with a nil src",
+          "system": "sandbox.Open",
+          "action": "call p.Create(ctx, spec) and then Tools(ctx, opts) without calling Sync",
+          "contract": "(the Sandbox Create returned, the proxies Tools returned, nil error)"
+        },
+        {
+          "id": "22-REQ-4.3",
+          "pattern": "event_driven",
+          "condition": "sandbox.Open succeeds",
+          "system": "sandbox.Open",
+          "action": "return without calling Close on the sandbox and without retaining ctx, leaving the sandbox's lifetime to the caller",
+          "contract": "the returned sandbox's Close has been called zero times"
+        },
+        {
+          "id": "22-REQ-4.4",
+          "pattern": "event_driven",
+          "condition": "sandbox.Open is called on the local provider with a sandbox.LocalDir source holding project files",
+          "system": "sandbox.Open",
+          "action": "return a live sandbox whose returned proxies have the same Names, in the same order, as a later Sandbox.Tools call with equal options, and whose read_file proxy reads a synced file's content; a later Sync, Export and Close on the sandbox succeed",
+          "contract": "(live Sandbox, []core.Tool, nil error); the synced file's content is returned by read_file"
+        }
+      ]
+    },
+    {
+      "id": "22-REQ-5",
+      "title": "sandbox.Open fails cleanly",
+      "rationale": "A failure after Create must not leak a sandbox, and the caller must still be able to match the step's error.",
+      "criteria": [
+        {
+          "id": "22-REQ-5.1",
+          "pattern": "unwanted",
+          "condition": "sandbox.Open is called with a nil Provider",
+          "system": "sandbox.Open",
+          "action": "return an error without panicking and without calling anything",
+          "contract": "(nil, nil, error whose text begins \"sandbox: \")"
+        },
+        {
+          "id": "22-REQ-5.2",
+          "pattern": "unwanted",
+          "condition": "p.Create returns an error",
+          "system": "sandbox.Open",
+          "action": "return Create's error unchanged and call no Sandbox method",
+          "contract": "(nil, nil, err) where err == Create's error"
+        },
+        {
+          "id": "22-REQ-5.3",
+          "pattern": "unwanted",
+          "condition": "Sync or Tools returns an error and the sandbox's Close then succeeds",
+          "system": "sandbox.Open",
+          "action": "call Close exactly once on the sandbox with context.WithoutCancel(ctx) and return the step error unchanged",
+          "contract": "(nil, nil, err) where err == the step error; Close called once"
+        },
+        {
+          "id": "22-REQ-5.4",
+          "pattern": "unwanted",
+          "condition": "Sync or Tools returns an error and the sandbox's Close also returns an error",
+          "system": "sandbox.Open",
+          "action": "return errors.Join(stepErr, closeErr)",
+          "contract": "(nil, nil, err) where errors.Is(err, stepErr) and errors.Is(err, closeErr) both hold"
+        },
+        {
+          "id": "22-REQ-5.5",
+          "pattern": "unwanted",
+          "condition": "ctx is cancelled or past its deadline when Sync or Tools fails",
+          "system": "sandbox.Open",
+          "action": "still call Close, passing a context whose Err() is nil and whose values are those of ctx",
+          "contract": "Close observes ctx.Err() == nil; the step error is returned"
+        },
+        {
+          "id": "22-REQ-5.6",
+          "pattern": "ubiquitous",
+          "system": "sandbox.Open",
+          "action": "for any failing step (Sync or Tools) and any sentinel X that the step error matches under errors.Is (including ErrUnsupported, ErrToolMismatch and ErrUnsafeArchive), return an error that also matches X under errors.Is, whether or not Close failed",
+          "contract": "(nil, nil, err) with errors.Is(err, X) true for every X that errors.Is(stepErr, X) is true for"
+        },
+        {
+          "id": "22-REQ-5.7",
+          "pattern": "unwanted",
+          "condition": "sandbox.Open is called on the local provider with a sandbox.GitRepo source",
+          "system": "sandbox.Open",
+          "action": "close the sandbox and remove its directory under os.TempDir()/agentkit-sandbox-local/ before returning",
+          "contract": "(nil, nil, err) with errors.Is(err, sandbox.ErrUnsupported); no entry remains under agentkit-sandbox-local"
+        },
+        {
+          "id": "22-REQ-5.8",
+          "pattern": "unwanted",
+          "condition": "sandbox.Open is called on the local provider with a relative ToolOptions.SpillDir",
+          "system": "sandbox.Open",
+          "action": "close the sandbox after Tools is refused and remove its directory under os.TempDir()/agentkit-sandbox-local/ before returning",
+          "contract": "(nil, nil, err) whose text contains \"sandbox: agent refused Tools\"; no entry remains under agentkit-sandbox-local"
+        }
+      ]
+    },
+    {
+      "id": "22-REQ-6",
+      "title": "examples/codemode uses the helpers",
+      "rationale": "The code a reader copies should show the scenario, not the wiring.",
+      "criteria": [
+        {
+          "id": "22-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "the codemode example runs offline",
+          "system": "examples/codemode",
+          "action": "print the same output as before the rewrite, so TS-08-49 passes unmodified",
+          "contract": "stdout contains \"Go files: main.go, util.go\", \"CHANGELOG.md: read_failed\", `Return value: {\"apples\": 12, \"pears\": 0}` and \"called inventory__stock\""
+        },
+        {
+          "id": "22-REQ-6.2",
+          "pattern": "ubiquitous",
+          "system": "examples/codemode/main.go",
+          "action": "pick its tools with one core.Named(all, \"list_files\", \"find_files\", \"read_file\") call and script its turns with faux.ToolCall and faux.Text, containing no faux.Turn composite literal, no guard.Restricted call, no switch whose tag is a tool's .Name, and no function named turn",
+          "contract": "a structural test parsing main.go reports no forbidden node"
+        }
+      ]
+    },
+    {
+      "id": "22-REQ-7",
+      "title": "examples/sandbox and examples/gateway use the helpers",
+      "rationale": "Both sandbox examples repeat the Create/Sync/Tools sequence, a byName map and an allowlist literal that the helpers replace.",
+      "criteria": [
+        {
+          "id": "22-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "the sandbox example runs offline on the local provider",
+          "system": "examples/sandbox",
+          "action": "print every TS-13-68 line except the removed synced line, and print no line beginning \"synced \"",
+          "contract": "stdout contains \"read_file src/main.go in the sandbox: ok=true\", \"README: Says hello from inside the sandbox.\", \"TODOs: 2\", \"src: main.go, util.go\", \"rm: blocked_by_policy\", \"exported src: main.go, util.go\" and \"Sandbox example completed successfully\""
+        },
+        {
+          "id": "22-REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "the gateway example runs offline",
+          "system": "examples/gateway",
+          "action": "print the same lines as before the rewrite, so its TestExampleRunsOffline passes unmodified",
+          "contract": "stdout contains \"backend local\", \"a wrong token: refused\", \"on gateway/local\", \"labels map[example:gateway], expires in 10m0s\", \"TODOs: 2\", \"src: main.go, util.go\", \"rm: blocked_by_policy\", \"exported src: main.go, util.go\" and \"the gateway holds 0 sandboxes\""
+        },
+        {
+          "id": "22-REQ-7.3",
+          "pattern": "ubiquitous",
+          "system": "examples/sandbox/main.go and examples/gateway/main.go",
+          "action": "each contain exactly one sandbox.Open call, one core.Named(proxies, \"read_file\", \"search_files\", \"execute\") call and one guard.Allow(\"ls\") call, and no Create, Sync or Tools method call, no faux.Turn composite literal, no guard.Restricted call and no switch whose tag is a tool's .Name",
+          "contract": "a structural test parsing each main.go reports no forbidden node and exactly one sandbox.Open call"
+        },
+        {
+          "id": "22-REQ-7.4",
+          "pattern": "ubiquitous",
+          "system": "examples/sandbox/main.go",
+          "action": "pass the updated TS-14-45: the sandbox.Open call and the Export call each take exactly one sandbox.LocalDir composite literal, and no sandbox.Tar or sandbox.TarOut literal appears",
+          "contract": "TS-14-45 passes against the rewritten main.go"
+        }
+      ]
+    },
+    {
+      "id": "22-REQ-8",
+      "title": "API pins and budgets record the helpers",
+      "rationale": "The policy tests that pin core's and guard's exported API must be extended deliberately, and the line budgets must still hold.",
+      "criteria": [
+        {
+          "id": "22-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "internal/policy TS-13-67",
+          "action": "pass with a committed internal/policy/testdata/exported-api.golden that contains the line `func Named(ts []Tool, names ...string) ([]Tool, error)` under core, so TS-19-64's check for uncommitted testdata also passes",
+          "contract": "TestSandboxLayoutAndAPI_TS13_67 passes without AGENTKIT_UPDATE_API_GOLDEN set"
+        },
+        {
+          "id": "22-REQ-8.2",
+          "pattern": "ubiquitous",
+          "system": "internal/policy TS-17-61",
+          "action": "pin guard's exported declarations to a list that includes `func Allow(programs ...string) core.BeforeToolCall` in sorted position before `func AllowAll(` and keeps every other entry",
+          "contract": "TestExportedAPIUnchanged_TS17_61 passes and fails if any guard declaration other than the listed ones is added or changed"
+        },
+        {
+          "id": "22-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "core and the root module",
+          "action": "stay within TS-12-14's budgets of at most 1,600 code lines for core and at most 20,000 budget lines for the root module",
+          "contract": "TestLineBudgets_TS12_14 passes"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "22-PATH-1",
+      "title": "An embedder builds a code-mode agent from named workspace tools and a scripted model",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "opens a workspace with workspace.Open and builds its tools with tools.For(ws, tools.Options{})"
+        },
+        {
+          "actor": "core.Named",
+          "action": "returns list_files, find_files and read_file in that order"
+        },
+        {
+          "actor": "embedder",
+          "action": "wraps them with codemode.New and scripts a faux.Provider with faux.ToolCall and faux.Text turns"
+        },
+        {
+          "actor": "agentkit agent",
+          "action": "runs with agentkit.Config{Toolset: agentkit.Toolset{…}} and executes the scripted code_mode calls against the workspace"
+        },
+        {
+          "actor": "examples/codemode",
+          "action": "prints the Go file list, the read_failed marker, the return value and the inventory__stock call"
+        }
+      ]
+    },
+    {
+      "id": "22-PATH-2",
+      "title": "An embedder opens a local sandbox, runs a guarded agent in it and exports the result",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "writes project files to a host directory and calls sandbox.Open(ctx, localProvider, spec, sandbox.LocalDir{Path: src}, sandbox.ToolOptions{})"
+        },
+        {
+          "actor": "sandbox.Open",
+          "action": "creates the sandbox, syncs the directory into it and returns the sandbox with its proxy tools"
+        },
+        {
+          "actor": "embedder",
+          "action": "picks read_file, search_files and execute with core.Named and sets guard.Allow(\"ls\") as the guard"
+        },
+        {
+          "actor": "agentkit agent",
+          "action": "runs the faux.ToolCall/faux.Text script; the guard blocks rm with blocked_by_policy"
+        },
+        {
+          "actor": "sandbox",
+          "action": "exports src to a host directory and is closed by the deferred Close, removing its directory"
+        }
+      ]
+    },
+    {
+      "id": "22-PATH-3",
+      "title": "sandbox.Open fails after Create and leaves nothing behind",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls sandbox.Open on the local provider with a sandbox.GitRepo source"
+        },
+        {
+          "actor": "local sandbox",
+          "action": "refuses the GitRepo Sync with ErrUnsupported"
+        },
+        {
+          "actor": "sandbox.Open",
+          "action": "closes the sandbox with context.WithoutCancel(ctx), removing its directory under agentkit-sandbox-local"
+        },
+        {
+          "actor": "embedder",
+          "action": "receives (nil, nil, err) with errors.Is(err, sandbox.ErrUnsupported)"
+        }
+      ]
+    },
+    {
+      "id": "22-PATH-4",
+      "title": "An embedder opens a sandbox through a gateway and lists it empty after closing",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "dials an in-process gateway with gateway.Dial and calls sandbox.Open with a sandbox.LocalDir source"
+        },
+        {
+          "actor": "gateway",
+          "action": "creates a sandbox on its local backend, syncs the files and returns proxy tools"
+        },
+        {
+          "actor": "agentkit agent",
+          "action": "runs the scripted turns with core.Named tools and guard.Allow(\"ls\"), blocking rm"
+        },
+        {
+          "actor": "embedder",
+          "action": "exports src, closes the sandbox and lists the gateway's sandboxes"
+        },
+        {
+          "actor": "examples/gateway",
+          "action": "prints \"the gateway holds 0 sandboxes\""
+        }
+      ]
+    }
+  ]
+}

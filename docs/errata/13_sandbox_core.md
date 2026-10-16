@@ -55,3 +55,28 @@ the outcome against `tools.All` is unchanged. Each case group also carries
 its own workspace tree, so the files TS-06-22 and TS-06-29 used to add after
 the tools were built (`empty/`, the mode-0 `locked.go`) are in the tree the
 builder receives — for proxies, in the tar synced into the sandbox.
+
+## Spec 20: the frozen exported-API invariant is retired
+
+PRD 12 (`docs/prd/12-simplify-the-embedder-contract.md`) breaks the `tools` API
+on purpose, and spec 20 (`20_workspace_package`) does it. `tools.Workspace`,
+`NewWorkspace`, `Walk`, `WalkOptions`, `IgnoreOptions`, `NoGlobalExcludes`,
+`Normalize`, the three path sentinels, `All`, `(*Workspace).References` and
+`Options.Workspace` and `Options.Ignore` leave `tools`; `tools.For`,
+`tools.References` and the new package `workspace` arrive; and `SearchIn`'s
+ignore parameter changes type. Spec 13's invariant that the exported APIs of
+agentkit, core, tools and codemode do not change (13-REQ-10.7), and the hash
+pins that held `testdata/exported-api.golden` to spec 13's version
+(`goldenSHA13` in TS-14-44, TS-15-42 and TS-17-61), are retired. TS-17-61 keeps
+its check of `guard`'s exported API.
+
+The golden stays as a change detector. TS-13-67 still fails when the exported
+API of a package in `apiPackages` (now including `workspace`) differs from it,
+and TS-14-44, TS-15-42 and TS-17-61 still compare the current API with it. A
+deliberate change to one of those surfaces regenerates the golden in the same
+change, with `AGENTKIT_UPDATE_API_GOLDEN=1`, so that the diff of the golden is
+the review of the change; TS-19-64 then requires the regenerated file to be
+committed. The pins went in the task of spec 20 that first added an exported
+declaration to `tools` (`For` and `References`), because task 5's checks could
+not pass with them, and the golden was regenerated with each later change of
+the surface. The later spec `embedder_contract_docs` completes this entry.

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-05-35 (unit): Result renderer outputs header with declaration name, backend, counts, and partial advisory
@@ -255,11 +256,11 @@ func TestRefRender_CountsFromSearch_TS05_38(t *testing.T) {
 	writeFile(t, root, "go.mod", "module example.com/c\n\ngo 1.22\n")
 	writeFile(t, root, "a/a.go", "package a\n\nimport \"fmt\"\n\nfunc Hello() { fmt.Println(\"hi\") }\n")
 	writeFile(t, root, "b/b.go", "package b\n\nimport \"example.com/c/a\"\n\nfunc Use() { a.Hello() }\n")
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := ws.References(context.Background(), outline.Decl{Kind: outline.KindFunc, Name: "Hello", StartLine: 5}, ReferenceOptions{})
+	res, err := References(context.Background(), ws, outline.Decl{Kind: outline.KindFunc, Name: "Hello", StartLine: 5}, ReferenceOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,415 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "22",
+  "spec_name": "embedder_helpers",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./core/... ./guard/... ./provider/faux/... ./internal/policy/... -run 'TS22|TS_22|TestSmoke' -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "20_workspace_package",
+      "reason": "examples and README are rewritten on workspace.Open and tools.For; core.Named is applied to tools.For's result; spec 20 adds workspace to apiPackages"
+    },
+    {
+      "spec": "21_toolset_runner",
+      "reason": "rewritten examples put guard.Allow and the named tools into agentkit.Config{Toolset: agentkit.Toolset{…}}; the golden regenerated here already contains Toolset/NewRunner/Runner"
+    },
+    {
+      "spec": "08_code_mode",
+      "reason": "examples/codemode is rewritten and TS-08-49 must pass unmodified"
+    },
+    {
+      "spec": "12_core_schema_guard",
+      "reason": "core gains Named and guard gains Allow; TS-12-14 line budgets must hold"
+    },
+    {
+      "spec": "13_sandbox_core",
+      "reason": "sandbox gains Open; TS-13-68 drops 'synced 3 files'; TS-13-67 golden regenerated"
+    },
+    {
+      "spec": "14_sandbox_rsync_sync",
+      "reason": "TS-14-45 moves from Sync to sandbox.Open"
+    },
+    {
+      "spec": "17_sandbox_podman",
+      "reason": "TS-17-61 guard pin gains Allow; erratum recorded"
+    },
+    {
+      "spec": "19_sandbox_gateway",
+      "reason": "examples/gateway rewritten on sandbox.Open; TS-19-64 requires committed golden"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add core.Named",
+      "criteria": [
+        "22-REQ-1"
+      ],
+      "tests": [
+        "TS-22-1",
+        "TS-22-2",
+        "TS-22-3",
+        "TS-22-4",
+        "TS-22-5",
+        "TS-22-6"
+      ],
+      "steps": [
+        "Write TS-22-1..TS-22-6 in a new core/named_test.go (package core_test, or package core reusing the existing `names` helper from toolpolicy_test.go; never redeclare `names`) and confirm they fail. TS-22-6 is a property test (testing/quick or a seeded random generator) that also calls Named concurrently from several goroutines; run it under -race.",
+        "Declare `func Named(ts []Tool, names ...string) ([]Tool, error)` in core/tool.go next to ReachableTools, about 20 code lines, using only fmt, strings and slices.",
+        "Build the result as `make([]Tool, 0, len(names))` (non-nil, empty with no names); for each name find the FIRST top-level tool in ts with an exactly equal Name (never search ReachableTools) and append a value copy.",
+        "Collect all missing names in names order; if any, return nil and `core: no tool named \"a\", \"b\"; the set holds: x, y` (ts order; say the set is empty when ts is empty). Single-name format must equal `core: no tool named \"no_such_tool\"; the set holds: read_file, write_file`.",
+        "If all names are present but one repeats, return nil and an error beginning `core: ` quoting the first repeated name (first name whose second occurrence appears earliest in names).",
+        "Keep the function pure (no package state) so it is concurrency safe; add a doc comment."
+      ],
+      "touches": [
+        "core/tool.go",
+        "core/named_test.go"
+      ],
+      "done_when": [
+        "`go test -race ./core/...` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Add guard.Allow",
+      "criteria": [
+        "22-REQ-2"
+      ],
+      "tests": [
+        "TS-22-7",
+        "TS-22-8",
+        "TS-22-9"
+      ],
+      "steps": [
+        "Write TS-22-7 (property: Allow(progs...) vs Restricted(Options{AllowedPrograms: progs}) over generated program lists and execute/run_command/non-shell contexts; compare Block, Reason, Terminate; blocked reasons start `guard.Restricted: `), TS-22-8 (mutate/append/reorder the caller's slice after Allow; rm and curl stay blocked) and TS-22-9 (Allow() blocks execute and run_command, allows read_file and unknown tools) in guard/allow_test.go; confirm they fail.",
+        "Add `func Allow(programs ...string) core.BeforeToolCall` to guard/guard.go returning `Restricted(Options{AllowedPrograms: slices.Clone(programs)})` (the clone is required because Check rebuilds the allowlist from the slice on every call).",
+        "Doc comment: Allow is Restricted with only AllowedPrograms set; Restricted is the way to set the other options; in one sentence, the guard is a floor, not a sandbox.",
+        "Do not change Restricted, Options, Check or any other guard declaration."
+      ],
+      "touches": [
+        "guard/guard.go",
+        "guard/allow_test.go"
+      ],
+      "done_when": [
+        "`go test ./guard/...` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Add faux.ToolCall and faux.Text",
+      "criteria": [
+        "22-REQ-3"
+      ],
+      "tests": [
+        "TS-22-10",
+        "TS-22-11",
+        "TS-22-12",
+        "TS-22-13",
+        "TS-22-14"
+      ],
+      "steps": [
+        "Create provider/faux/faux_test.go (package faux_test) with TS-22-10 (reflect.DeepEqual with the one-block literal), TS-22-11 (cases \"\", \"hello\", multi-line), TS-22-12 (args \"\", \"  \", \"\\n\\t\" give ToolUseBlock whose Input text is {}), TS-22-13 (args `[1]`, `\"s\"`, `12`, `{bad` panic with a string containing `faux.ToolCall`, `\"id7\"`, `\"my_tool\"`) and TS-22-14 (two real faux.Providers, one scripted with the helpers, one with literals, streamed with the same request; collected core events are reflect.DeepEqual for both turns); confirm they fail. Read provider/faux/faux.go first for the New/Stream API used by TS-22-14.",
+        "Add `func ToolCall(id, name, args string) Turn` to provider/faux/faux.go: recover from FauxToolCall's panic is NOT needed—build the block with core.NewToolUse and panic with `fmt.Sprintf(\"faux.ToolCall(%q, %q): %v\", id, name, err)` on error (same block as FauxToolCall returns); StopReason core.StopReasonToolUse, other fields zero.",
+        "Add `func Text(s string) Turn` returning Turn{Blocks: []core.ContentBlock{core.TextBlock{Text: s}}, StopReason: core.StopReasonStop}.",
+        "Leave Turn, FauxText, FauxThinking, FauxToolCall and FauxAssistantMessage unchanged; add doc comments."
+      ],
+      "touches": [
+        "provider/faux/faux.go",
+        "provider/faux/faux_test.go"
+      ],
+      "done_when": [
+        "`go test ./provider/faux/...` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Add sandbox.Open: create, sync, tools, nil provider, Create failure",
+      "criteria": [
+        "22-REQ-4",
+        "22-REQ-5.1",
+        "22-REQ-5.2"
+      ],
+      "tests": [
+        "TS-22-15",
+        "TS-22-16",
+        "TS-22-17",
+        "TS-22-18",
+        "TS-22-19"
+      ],
+      "steps": [
+        "In the sandbox module, create sandbox/open_test.go (package sandbox_test) with a recording test double implementing sandbox.Provider and sandbox.Sandbox (records call order, ctx, args, Close count; configurable Create/Sync/Tools/Close errors). Write TS-22-15 (order Create,Sync,Tools once each; Create got spec; Sync got src; Tools got opts; returned sandbox == the one Create returned; proxies are Tools' slice; Close zero times; ctx value passes through), TS-22-16 (nil src skips Sync), TS-22-18 (nil Provider: nil,nil, error beginning `sandbox: `, no panic), TS-22-19 (Create error returned identically, no sandbox method called). Add TS-22-17 in a local-provider test file (skip on Windows; set TMPDIR to t.TempDir(); use local.Unisolated() and a spec with Network.Mode NetworkUnrestricted; host dir with src/main.go): Open with LocalDir, proxy Names equal a later sb.Tools call, read_file proxy returns the file text, then second Sync, Export to host dir and Close succeed. Confirm they fail.",
+        "Create sandbox/open.go with `func Open(ctx context.Context, p Provider, spec Spec, src Source, opts ToolOptions) (Sandbox, []core.Tool, error)`.",
+        "If p == nil return nil,nil,`fmt.Errorf(\"sandbox: Open needs a Provider\")`-style error. Call p.Create(ctx, spec); on error return nil,nil,err unchanged.",
+        "If src != nil call sb.Sync(ctx, src) and discard the SyncResult; then sb.Tools(ctx, opts). Return sb exactly as Create returned it (no wrapper) and the proxies.",
+        "For this task the failure path after Create may already do the minimal cleanup via a small helper `closeAfter(ctx, sb, stepErr)`; task 5 tests its full contract. Doc comment: ctx bounds the three calls only; the caller closes the sandbox; GitRepo works because Sync precedes Tools."
+      ],
+      "touches": [
+        "sandbox/open.go",
+        "sandbox/open_test.go",
+        "sandbox/open_local_test.go"
+      ],
+      "done_when": [
+        "`cd sandbox && go test ./... -run Open` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Make sandbox.Open close the sandbox on failure",
+      "criteria": [
+        "22-REQ-5.3",
+        "22-REQ-5.4",
+        "22-REQ-5.5",
+        "22-REQ-5.6",
+        "22-REQ-5.7",
+        "22-REQ-5.8"
+      ],
+      "tests": [
+        "TS-22-20",
+        "TS-22-21",
+        "TS-22-22",
+        "TS-22-23",
+        "TS-22-24",
+        "TS-22-25"
+      ],
+      "steps": [
+        "Extend sandbox/open_test.go (test double from task 4; make it record ctx.Err() and a ctx.Value seen by Close) with TS-22-20 (Sync fails with S / Tools fails with T, Close ok: (nil,nil,err==step error), Close called exactly once, Tools never called in the Sync case), TS-22-21 (step error plus Close error: errors.Is matches both, Close once), TS-22-22 (ctx carrying a value then cancelled, and an expired deadline: Close sees ctx.Err()==nil and the original value; errors.Is matches step error), TS-22-23 (property over step in {Sync,Tools}, sentinel in {ErrUnsupported, ErrToolMismatch, ErrUnsafeArchive, ErrProtocol, ErrUnavailable} wrapped with fmt.Errorf %w, Close ok or failing: errors.Is(err, X) and, if Close failed, errors.Is(err, closeErr)).",
+        "Add TS-22-24 and TS-22-25 in sandbox/open_local_test.go (skip on Windows; TMPDIR=t.TempDir(); local.Unisolated()): GitRepo source gives nil,nil, errors.Is ErrUnsupported; relative SpillDir \"rel\" with a LocalDir source gives an error containing `sandbox: agent refused Tools`; in both, TMPDIR/agentkit-sandbox-local is absent or has no entries. Confirm tests fail where behaviour is missing.",
+        "In sandbox/open.go, on a Sync or Tools error call sb.Close(context.WithoutCancel(ctx)) exactly once. If Close returns nil return (nil,nil,stepErr) unchanged (same value, not wrapped); otherwise return (nil,nil,errors.Join(stepErr, closeErr)).",
+        "Never call Close on success and do not retain ctx."
+      ],
+      "touches": [
+        "sandbox/open.go",
+        "sandbox/open_test.go",
+        "sandbox/open_local_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "`cd sandbox && go test -race ./... -run Open` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Extend the API pins: exported-API golden, guard pin, erratum, line budgets",
+      "criteria": [
+        "22-REQ-8"
+      ],
+      "tests": [
+        "TS-22-32",
+        "TS-22-33",
+        "TS-22-34"
+      ],
+      "steps": [
+        "In internal/policy/exported_api_17_test.go add `\"func Allow(programs ...string) core.BeforeToolCall\"` as the FIRST element of preSpec17Guard (sorted before `func AllowAll(`) and keep every other entry (TS-22-33).",
+        "Regenerate the golden: `AGENTKIT_UPDATE_API_GOLDEN=1 go test ./internal/policy/ -run TestSandboxLayoutAndAPI_TS13_67`; verify internal/policy/testdata/exported-api.golden now contains `func Named(ts []Tool, names ...string) ([]Tool, error)` under core and that the diff contains no unrelated change (TS-22-32). The file must be committed (git add) so TS-19-64 finds no testdata difference from HEAD.",
+        "Add an entry to docs/errata/17_sandbox_podman.md naming PRD 12 and spec 22 and stating that TS-17-61's guard pin was extended by `Allow` on purpose.",
+        "Run `go test ./internal/policy/ ./core/ -run 'TS13_67|TS17_61|TS12_14|TS19_64'` and confirm TS-12-14 line budgets (core <= 1,600 code lines, root <= 20,000) still hold (TS-22-34); if core is over budget, compact Named."
+      ],
+      "touches": [
+        "internal/policy/exported_api_17_test.go",
+        "internal/policy/testdata/exported-api.golden",
+        "docs/errata/17_sandbox_podman.md"
+      ],
+      "depends_on": [
+        1,
+        2
+      ],
+      "done_when": [
+        "`go test ./internal/policy/... ./core/...` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Rewrite examples/codemode on core.Named and the faux helpers",
+      "criteria": [
+        "22-REQ-6"
+      ],
+      "tests": [
+        "TS-22-26",
+        "TS-22-27"
+      ],
+      "steps": [
+        "Add examples/codemode/structure_test.go: parse main.go with go/parser and walk it (TS-22-27): fail on a composite literal of type faux.Turn, a call to guard.Restricted, a SwitchStmt whose Tag is a selector ending in .Name, or a FuncDecl named turn; assert exactly one core.Named call. Confirm it fails.",
+        "In examples/codemode/main.go replace the `switch t.Name` filter over the tools.For result with `core.Named(all, \"list_files\", \"find_files\", \"read_file\")` and handle the error.",
+        "Replace the two scripted code_mode calls with faux.ToolCall(...) and the final answer with faux.Text(...); delete the local `turn` helper and any now-unused import.",
+        "Do not modify examples/codemode/main_test.go (TS-08-49 must pass unmodified: output unchanged) — TS-22-26 is satisfied by it passing.",
+        "Update examples/codemode/README.md 'what it does'/'where to look' sections to match the new code."
+      ],
+      "touches": [
+        "examples/codemode/main.go",
+        "examples/codemode/structure_test.go",
+        "examples/codemode/README.md"
+      ],
+      "depends_on": [
+        1,
+        3
+      ],
+      "done_when": [
+        "`go test ./examples/codemode/...` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Rewrite examples/sandbox on sandbox.Open, core.Named, guard.Allow and faux helpers",
+      "criteria": [
+        "22-REQ-7.1",
+        "22-REQ-7.3",
+        "22-REQ-7.4"
+      ],
+      "tests": [
+        "TS-22-28",
+        "TS-22-30",
+        "TS-22-31"
+      ],
+      "steps": [
+        "examples/sandbox is its own module: confirm its go.mod resolves the root and sandbox modules to the local tree (replace directives) so core.Named, guard.Allow, faux helpers and sandbox.Open are visible.",
+        "Update examples/sandbox/main_test.go: TS-13-68 drops `synced 3 files` from its expected lines and asserts no output line begins `synced ` (TS-22-28); change TS-14-45 so the `sandbox.Open` call and the `Export` call each must take exactly one sandbox.LocalDir literal and no sandbox.Tar/TarOut literal appears (TS-22-31). Add a structural test (TS-22-30) parsing main.go (reuse the literal()/asExpr() helpers): exactly one sandbox.Open call, one core.Named call, one guard.Allow(\"ls\") call, no Create/Sync/Tools method call, no faux.Turn literal, no guard.Restricted call, no switch with a .Name tag. Confirm they fail.",
+        "In runOn: write the project files to the host dir first; then `sb, proxies, err := sandbox.Open(ctx, p, spec, sandbox.LocalDir{Path: src}, sandbox.ToolOptions{})` followed by `defer sb.Close(ctx)`; keep the 'sandbox %s on %s: agent …' line; drop the 'synced N files' print.",
+        "Replace the byName map with `core.Named(proxies, \"read_file\", \"search_files\", \"execute\")`; the direct read_file call uses the first returned tool.",
+        "Script turns with faux.ToolCall/faux.Text; guard becomes guard.Allow(\"ls\"). Keep the --podman/--landlock paths, Export and all other output lines.",
+        "Update examples/sandbox/README.md ('What it does', 'The code an embedder copies') to match; run `make check` in examples/sandbox."
+      ],
+      "touches": [
+        "examples/sandbox/main.go",
+        "examples/sandbox/main_test.go",
+        "examples/sandbox/README.md"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        5
+      ],
+      "done_when": [
+        "`cd examples/sandbox && go test ./...` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Rewrite examples/gateway on sandbox.Open, core.Named, guard.Allow and faux helpers",
+      "criteria": [
+        "22-REQ-7.2",
+        "22-REQ-7.3"
+      ],
+      "tests": [
+        "TS-22-29",
+        "TS-22-30"
+      ],
+      "steps": [
+        "examples/gateway is its own module: confirm its go.mod resolves root, sandbox and gatewayd modules to the local tree.",
+        "Add examples/gateway/structure_test.go: parse main.go and assert (TS-22-30) exactly one sandbox.Open call, one core.Named call, one guard.Allow(\"ls\") call, and no Create/Sync/Tools method call, no faux.Turn literal, no guard.Restricted call, no switch with a .Name tag. Confirm it fails.",
+        "In runOn: write project files first; replace Create/Sync/Tools with `sandbox.Open(ctx, p, spec, sandbox.LocalDir{Path: src}, sandbox.ToolOptions{})` then `defer sb.Close(ctx)` where the existing code defers; keep the gateway's `p.List` and its explicit Close, and the 'the gateway holds %d sandboxes' line.",
+        "Replace the byName map with core.Named(proxies, \"read_file\", \"search_files\", \"execute\"), the turns with faux.ToolCall/faux.Text, and the guard with guard.Allow(\"ls\").",
+        "Leave examples/gateway/main_test.go's TestExampleRunsOffline unmodified; it must pass (TS-22-29).",
+        "Update examples/gateway/README.md (steps 3-5 and the client snippet) to match; run `make check` in examples/gateway."
+      ],
+      "touches": [
+        "examples/gateway/main.go",
+        "examples/gateway/structure_test.go",
+        "examples/gateway/README.md"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        5
+      ],
+      "done_when": [
+        "`cd examples/gateway && go test ./...` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Update README, docs and generated docs for the helpers",
+      "criteria": [
+        "22-REQ-8"
+      ],
+      "tests": [
+        "TS-22-34"
+      ],
+      "steps": [
+        "README.md: quickstart guard becomes `guard.Allow(\"go\", \"git\")`; code-mode snippet uses core.Named; sandboxes snippet uses sandbox.Open and guard.Allow(\"go\"); sandboxes prose says sandbox.Open does Create, Sync and Tools in one call and closes the sandbox if a step fails; consumer-contract table gains rows for core.Named, faux.ToolCall/faux.Text and sandbox.Open and the guard row names guard.Allow. Add rows/sentences only for these identifiers.",
+        "docs/configuration.md: guard.Options section says guard.Allow(programs...) is Restricted with only AllowedPrograms; the guard row naming guard.Restricted(opts)/guard.AllowAll also names guard.Allow; the Sandboxes section gains a sandbox.Open paragraph (call order, nil src, discarded SyncResult, close-on-failure with context.WithoutCancel and the errors.Is / errors.Join contract).",
+        "docs/architecture.md: one sentence in the Sandboxes section placing sandbox.Open over Create, Sync and Tools. docs/api.md: guard, provider/faux, sandbox and core rows name Allow, ToolCall/Text, Open and Named. examples/README.md guard advice names guard.Allow.",
+        "Run `make doc` and commit docs/generated/core.txt, guard.txt, provider/faux.txt and sandbox/sandbox.txt. Do not write tests that check doc content.",
+        "Run `make check` (fmt, vet, lint, test) across every module in MODULES, and confirm TestLineBudgets_TS12_14 passes."
+      ],
+      "touches": [
+        "README.md",
+        "docs/configuration.md",
+        "docs/architecture.md",
+        "docs/api.md",
+        "examples/README.md",
+        "docs/generated/core.txt",
+        "docs/generated/guard.txt",
+        "docs/generated/provider/faux.txt",
+        "docs/generated/sandbox/sandbox.txt"
+      ],
+      "depends_on": [
+        6,
+        7,
+        8,
+        9
+      ],
+      "done_when": [
+        "`make check` passes in every module in MODULES"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify the helper paths end to end",
+      "tests": [
+        "TS-22-35",
+        "TS-22-36",
+        "TS-22-37",
+        "TS-22-38"
+      ],
+      "steps": [
+        "Write the smoke tests: TS-22-35 (codemode example run end to end), TS-22-36 (sandbox example runOn on local with sandbox.Open, core.Named, guard.Allow(\"ls\"), rm blocked, export, directory removed under agentkit-sandbox-local; skip on Windows), TS-22-37 (real local provider, GitRepo source: ErrUnsupported and sandbox directory gone) and TS-22-38 (gateway example runOn with an in-process gateway: 'the gateway holds 0 sandboxes'). Use real components only; confirm they pass.",
+        "Trace 22-PATH-1..4 through the real code: each step calls the next (workspace/tools.For -> core.Named -> codemode.New -> agent with Toolset; sandbox.Open -> local/gateway Create -> Sync -> Tools -> Named -> guard.Allow -> Export -> Close; Open failure -> Close with WithoutCancel -> provider empty).",
+        "Confirm core.Named, guard.Allow, faux.ToolCall/faux.Text and sandbox.Open are each called from production code (the three examples' main.go), not only from tests, and that examples/harness is untouched.",
+        "Grep every file in the tasks' touches for `panic(\"not implemented\")`, TODO and stubs; remove any; confirm the `faux.ToolCall` panic is the only intentional panic.",
+        "Confirm the exported-API golden and guard pin are committed, `make doc` output is current, and `make test` and `make lint` pass in every module in MODULES."
+      ],
+      "touches": [
+        "examples/codemode/smoke_test.go",
+        "examples/sandbox/smoke_test.go",
+        "examples/gateway/smoke_test.go",
+        "sandbox/open_smoke_test.go"
+      ],
+      "depends_on": [
+        10
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass in every module in MODULES"
+      ],
+      "state": "pending"
+    }
+  ]
+}

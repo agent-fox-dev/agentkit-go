@@ -28,6 +28,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/guard"
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 	sdk "github.com/anthropics/anthropic-sdk-go"
 )
 
@@ -59,17 +60,17 @@ func run() error {
 	// 1. The workspace is the containment boundary, not a convenience. Every
 	//    path a file tool is handed is resolved against this root — symlinks
 	//    included — so a model that asks for ../../etc/passwd is refused by
-	//    the tool rather than by a prompt asking it not to.
-	ws, err := tools.NewWorkspace(*dir)
+	//    the tool, not by a prompt asking it not to. Ignore rules go here too.
+	ws, err := workspace.Open(*dir, workspace.Options{})
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "workspace: %s\n", ws.Root)
+	fmt.Fprintf(os.Stderr, "workspace: %s\n", ws.Root())
 
-	// 2. All() is the default set: read, write, edit, list, find, search, the
+	// 2. For() is the default set: read, write, edit, list, find, search, the
 	//    three navigation tools (file_outline, find_symbol, find_references)
 	//    and the two shell tools.
-	built, err := tools.All(tools.Options{Workspace: ws})
+	built, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		return err
 	}

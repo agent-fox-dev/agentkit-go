@@ -9,14 +9,14 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-05-45 (unit): Workspace exports ReferenceOptions, ReferenceSite, ReferenceResult types and References method
 // Verifies: 05-REQ-9.1
 func TestWorkspaceReferences_Exports_TS_05_45(t *testing.T) {
-	// Compile-time check of (*Workspace).References signature.
-	var _ func(context.Context, outline.Decl, ReferenceOptions) (ReferenceResult, error) = (*Workspace)(nil).References
-	var _ func(*Workspace, context.Context, outline.Decl, ReferenceOptions) (ReferenceResult, error) = (*Workspace).References
+	// Compile-time check of References' signature.
+	var _ func(context.Context, *workspace.Workspace, outline.Decl, ReferenceOptions) (ReferenceResult, error) = References
 
 	// Verify ReferenceOptions fields.
 	optsType := reflect.TypeOf(ReferenceOptions{})
@@ -47,53 +47,53 @@ func TestWorkspaceReferences_Exports_TS_05_45(t *testing.T) {
 
 	// Test calling References on a valid workspace.
 	dir := t.TempDir()
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
 
 	target := outline.Decl{
 		Kind: outline.KindFunc,
 		Name: "Run",
 	}
-	res, err := ws.References(context.Background(), target, ReferenceOptions{})
+	res, err := References(context.Background(), ws, target, ReferenceOptions{})
 	if err != nil {
-		t.Fatalf("ws.References returned unexpected error: %v", err)
+		t.Fatalf("References returned unexpected error: %v", err)
 	}
 	if res.Target.Name != "Run" {
 		t.Errorf("expected res.Target.Name == 'Run', got %q", res.Target.Name)
 	}
 }
 
-// TS-05-47 (unit): Workspace.References returns ErrPathNotAllowed and empty ReferenceResult when path escapes workspace
+// TS-05-47 (unit): tools.References returns workspace.ErrPathNotAllowed and empty ReferenceResult when path escapes workspace
 // Verifies: 05-REQ-9.3
 func TestWorkspaceReferences_PathEscape_TS_05_47(t *testing.T) {
 	dir := t.TempDir()
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
 
 	target := outline.Decl{
 		Kind: outline.KindFunc,
 		Name: "Run",
 	}
-	res, err := ws.References(context.Background(), target, ReferenceOptions{Path: "../escape"})
-	if !errors.Is(err, ErrPathNotAllowed) {
-		t.Fatalf("expected ErrPathNotAllowed, got %v", err)
+	res, err := References(context.Background(), ws, target, ReferenceOptions{Path: "../escape"})
+	if !errors.Is(err, workspace.ErrPathNotAllowed) {
+		t.Fatalf("expected workspace.ErrPathNotAllowed, got %v", err)
 	}
 	if len(res.Sites) != 0 {
 		t.Fatalf("expected empty Sites slice, got %d sites", len(res.Sites))
 	}
 }
 
-// TS-05-48 (unit): Workspace.References returns non-nil error when path does not exist or is not a directory
+// TS-05-48 (unit): tools.References returns non-nil error when path does not exist or is not a directory
 // Verifies: 05-REQ-9.4
 func TestWorkspaceReferences_PathNotExistOrNotDir_TS_05_48(t *testing.T) {
 	dir := t.TempDir()
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
 
 	// Create a regular file 'main.go'.
@@ -108,7 +108,7 @@ func TestWorkspaceReferences_PathNotExistOrNotDir_TS_05_48(t *testing.T) {
 	}
 
 	// Case 1: non-existent directory.
-	res1, err1 := ws.References(context.Background(), target, ReferenceOptions{Path: "no_such_dir"})
+	res1, err1 := References(context.Background(), ws, target, ReferenceOptions{Path: "no_such_dir"})
 	if err1 == nil {
 		t.Fatalf("expected error for non-existent path, got nil")
 	}
@@ -117,7 +117,7 @@ func TestWorkspaceReferences_PathNotExistOrNotDir_TS_05_48(t *testing.T) {
 	}
 
 	// Case 2: existing path is a regular file, not a directory.
-	res2, err2 := ws.References(context.Background(), target, ReferenceOptions{Path: "main.go"})
+	res2, err2 := References(context.Background(), ws, target, ReferenceOptions{Path: "main.go"})
 	if err2 == nil {
 		t.Fatalf("expected error for file path, got nil")
 	}
@@ -126,13 +126,13 @@ func TestWorkspaceReferences_PathNotExistOrNotDir_TS_05_48(t *testing.T) {
 	}
 }
 
-// TS-05-49 (unit): Workspace.References returns ctx.Err() and empty ReferenceResult when context is cancelled
+// TS-05-49 (unit): tools.References returns ctx.Err() and empty ReferenceResult when context is cancelled
 // Verifies: 05-REQ-9.5
 func TestWorkspaceReferences_ContextCancelled_TS_05_49(t *testing.T) {
 	dir := t.TempDir()
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
 
 	target := outline.Decl{
@@ -143,7 +143,7 @@ func TestWorkspaceReferences_ContextCancelled_TS_05_49(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	res, err := ws.References(ctx, target, ReferenceOptions{})
+	res, err := References(ctx, ws, target, ReferenceOptions{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
@@ -153,7 +153,7 @@ func TestWorkspaceReferences_ContextCancelled_TS_05_49(t *testing.T) {
 }
 
 // TS-05-34 (property): find_references clamps max_results between 1 and 100 with default 30
-// TS-05-50 (property): Workspace.References clamps MaxResults the same way (it shares clampMaxResults)
+// TS-05-50 (property): tools.References clamps MaxResults the same way (it shares clampMaxResults)
 // Verifies: 05-REQ-6.5, 05-REQ-9.6
 func TestWorkspaceReferences_ClampMaxResults_TS_05_34(t *testing.T) {
 	genInts := []int{-500, -10, -1, 0, 1, 5, 25, 30, 35, 95, 100, 101, 500, 1000}

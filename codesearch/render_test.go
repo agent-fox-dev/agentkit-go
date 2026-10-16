@@ -15,6 +15,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-03-24: Results are score ordered by file with a sym: hit outranking a
@@ -38,14 +39,13 @@ func TestResultsScoreOrderedAndCapsHold_TS03_24(t *testing.T) {
 	longLine := "// matchword " + strings.Repeat("x", tools.SearchLineChars+100) + "\n"
 	mkFile(t, root, "longline.go", "package main\n"+longLine)
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -182,14 +182,13 @@ func (Server) Pause() {}
 	}
 	mkFile(t, root, "sevendecls.go", sevenDecls)
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -290,7 +289,7 @@ func TestFirstLineContent_TS03_26(t *testing.T) {
 	mkFile(t, root, "main.go", "package main\nfunc main() {}\n")
 	mkFile(t, root, "lib.py", "def hello():\n    pass\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +297,6 @@ func TestFirstLineContent_TS03_26(t *testing.T) {
 	t.Run("complete", func(t *testing.T) {
 		idx, err := newIndex(ws, Options{
 			TempDir: t.TempDir(),
-			Ignore:  tools.NoGlobalExcludes(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -336,14 +334,13 @@ func TestNoMatchIsSuccessful_TS03_27(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\nfunc main() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -389,14 +386,13 @@ func TestCapMarkerAndTruncatedByLines_TS03_28(t *testing.T) {
 			"package pkg\n// commonword here\n")
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -461,14 +457,13 @@ func TestByteLimitDropsFiles_TS03_29(t *testing.T) {
 		mkFile(t, root, fmt.Sprintf("big%03d.go", i), content)
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -517,14 +512,13 @@ func TestByteLimitDropsFiles_TS03_29(t *testing.T) {
 	}
 	mkFile(t, root2, "huge.go", bigContent)
 
-	ws2, err := tools.NewWorkspace(root2)
+	ws2, err := workspace.Open(root2, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx2, err := newIndex(ws2, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -561,14 +555,13 @@ func TestDataCarriesAllFields_TS03_30(t *testing.T) {
 	// Oversized file (skipped).
 	mkFile(t, root, "huge.txt", "searchterm\n"+strings.Repeat("x", 1<<20+1))
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -647,14 +640,13 @@ func TestPropertyMarkersAndByteLimit_TS03_31(t *testing.T) {
 		mkFile(t, root, fmt.Sprintf("prop%03d.go", i), content)
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)

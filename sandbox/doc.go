@@ -3,7 +3,7 @@
 //
 // A Provider creates a Sandbox from a Spec. Sandbox.Sync puts files into its
 // workspace, and Sandbox.Tools returns a []core.Tool that is a drop-in
-// replacement for tools.All: one proxy for each built-in, with the same
+// replacement for tools.For: one proxy for each built-in, with the same
 // definition, whose Execute runs the call in the AgentKit agent
 // (agentkit-sandboxd) inside the sandbox over the agentkit.sandbox.v1 gRPC
 // protocol. The driver does not change and does not know a tool is remote;

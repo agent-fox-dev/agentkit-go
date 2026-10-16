@@ -3,7 +3,7 @@ package tools_test
 // Spec 06 conformance: every built-in tool returns its documented error codes,
 // and its Data conforms to its declared OutputSchema. The case table lives in
 // internal/toolconformance, shared with the sandbox's proxy tools; here it
-// runs against tools.All.
+// runs against tools.For.
 //
 // code_search lives in its own module and is covered in codesearch/tool_test.go.
 
@@ -13,19 +13,20 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/internal/toolconformance"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// builtins writes tree to a fresh directory and returns tools.All over it,
+// builtins writes tree to a fresh directory and returns tools.For over it,
 // with no global git excludes.
 func builtins(t *testing.T, tree toolconformance.Tree) []core.Tool {
 	t.Helper()
 	root := t.TempDir()
 	tree.Write(t, root)
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws, Ignore: tools.NoGlobalExcludes()})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

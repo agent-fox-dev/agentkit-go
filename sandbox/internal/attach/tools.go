@@ -14,10 +14,11 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/tooldigest"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // Tools configures the agent's tool set and returns one proxy per
-// tools.All tool, in tools.All order, after checking that the agent's
+// tools.For tool, in tools.For order, after checking that the agent's
 // definitions are the host's. The options are fixed by the first success:
 // equal options return the same proxies, different ones ErrToolsConfigured.
 func (s *sb) Tools(ctx context.Context, opts sandbox.ToolOptions) ([]core.Tool, error) {
@@ -57,7 +58,7 @@ func (s *sb) Tools(ctx context.Context, opts sandbox.ToolOptions) ([]core.Tool, 
 	return slices.Clone(proxies), nil
 }
 
-// hostTools is the host's own tools.All for opts, built over a throwaway
+// hostTools is the host's own tools.For for opts, built over a throwaway
 // workspace: only the definitions are used.
 func hostTools(opts sandbox.ToolOptions) ([]core.Tool, error) {
 	dir, err := os.MkdirTemp("", "agentkit-sandbox-defs-")
@@ -65,11 +66,11 @@ func hostTools(opts sandbox.ToolOptions) ([]core.Tool, error) {
 		return nil, err
 	}
 	defer os.RemoveAll(dir)
-	ws, err := tools.NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		return nil, err
 	}
-	return tools.All(tools.Options{Workspace: ws, Env: []string{}, Ignore: tools.NoGlobalExcludes(),
+	return tools.For(ws, tools.Options{Env: []string{},
 		Symbols: opts.Symbols, SpillDir: opts.SpillDir, DisableSpill: opts.DisableSpill})
 }
 

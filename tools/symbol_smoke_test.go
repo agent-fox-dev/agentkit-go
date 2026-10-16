@@ -12,6 +12,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // ---------- helpers ----------
@@ -28,18 +29,16 @@ func mkSmokeFile(t *testing.T, root, rel, content string) {
 	}
 }
 
-// smokeTools builds All() tools and returns a map by name.
+// smokeTools builds For() tools and returns a map by name.
 func smokeTools(t *testing.T, root string, symOpts tools.SymbolOptions) map[string]core.Tool {
 	t.Helper()
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    tools.NoGlobalExcludes(),
-		Symbols:   symOpts,
+	all, err := tools.For(ws, tools.Options{
+		Env:     os.Environ(),
+		Symbols: symOpts,
 	})
 	if err != nil {
 		t.Fatal(err)
