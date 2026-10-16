@@ -73,7 +73,7 @@
       "done_when": [
         "`go test -race ./core/...` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,

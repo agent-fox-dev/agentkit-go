@@ -197,6 +197,7 @@ func ErrorStream(msg *AssistantMessage, err error) *EventStream
 func EventStreamOf(ch <-chan StreamEvent, err error) *EventStream
 func ExtractToolUse(m *AssistantMessage) []ToolUseBlock
 func MarshalEvent(e Event, enc MessageEncoder) ([]byte, error)
+func Named(ts []Tool, names ...string) ([]Tool, error)
 func NewEventStream(opts StreamOptions) *EventStream
 func NewToolUse(id, name string, raw json.RawMessage) (ToolUseBlock, error)
 func OKResult(data map[string]any) ToolResult
