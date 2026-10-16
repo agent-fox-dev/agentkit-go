@@ -1,14 +1,14 @@
 # codingagent — built-in tools, a workspace root, and a shell guard
 
 A coding agent is a model plus tools that read, search, edit and run things in
-a repository. AgentKit ships those tools (`tools.All`) and two boundaries
+a repository. AgentKit ships those tools (`tools.For`) and two boundaries
 around them, and this example wires up both:
 
 - **The workspace root** is the only directory the file tools can reach. Every
   path is resolved against it, symlinks included, before every read and again
   before every write — so `../../etc/passwd` is refused by the tool, not by a
   prompt asking nicely.
-- **The execute guard.** `tools.All` includes `execute` and `run_command`.
+- **The execute guard.** `tools.For` includes `execute` and `run_command`.
   Passing either of them in `Config.Tools` with a nil `Config.Guard` makes
   `agentkit.New` return an error wrapping `core.ErrUnguardedExecute`, so the
   agent is never built and no request is sent. You must supply an
@@ -58,8 +58,9 @@ error: anthropic: missing credentials: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_T
 
 The numbered comments in `run()` are the walkthrough:
 
-1. `tools.NewWorkspace(*dir)` — the containment boundary.
-2. `tools.All(tools.Options{Workspace: ws})` — the default set: `read_file`,
+1. `workspace.Open(*dir, workspace.Options{})` — the containment boundary, and
+   where ignore rules are configured, once.
+2. `tools.For(ws, tools.Options{})` — the default set: `read_file`,
    `write_file`, `edit_file`, `list_files`, `find_files`, `search_files`,
    `file_outline`, `find_symbol`, `find_references`, `execute`, `run_command`.
    There is no network tool.
@@ -95,7 +96,7 @@ The numbered comments in `run()` are the walkthrough:
 
 ## Related
 
-Packages: `agentkit` (`Config`, `New`), `tools` (`NewWorkspace`, `All`),
+Packages: `agentkit` (`Config`, `New`), `workspace` (`Open`), `tools` (`For`),
 `guard` (`Restricted`, `AllowAll`), `core` (`BeforeToolCallContext`,
 `BeforeToolCallDecision`, `ErrUnguardedExecute`, `ErrMaxTurns`,
 `ErrBudgetExceeded`), `provider/anthropic` (`Resolve`). The optional `code_search` index is the

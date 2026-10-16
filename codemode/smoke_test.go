@@ -17,10 +17,11 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // smokeWorkspace has two Go files and three text files.
-func smokeWorkspace(t *testing.T) *tools.Workspace {
+func smokeWorkspace(t *testing.T) *workspace.Workspace {
 	t.Helper()
 	dir := t.TempDir()
 	for name, body := range map[string]string{
@@ -31,17 +32,17 @@ func smokeWorkspace(t *testing.T) *tools.Workspace {
 			t.Fatal(err)
 		}
 	}
-	ws, err := tools.NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return ws
 }
 
-// builtin is the named tool from tools.All.
-func builtin(t *testing.T, ws *tools.Workspace, names ...string) []core.Tool {
+// builtin is the named tool from tools.For.
+func builtin(t *testing.T, ws *workspace.Workspace, names ...string) []core.Tool {
 	t.Helper()
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

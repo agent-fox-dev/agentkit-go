@@ -17,6 +17,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/guard"
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // ts0461Server creates an httptest.Server standing in for the Anthropic
@@ -74,13 +75,13 @@ type ts0461AfterRecord struct {
 // ts0461Tools builds the real tool set over a temp workspace.
 func ts0461Tools(t *testing.T) []core.Tool {
 	t.Helper()
-	ws, err := tools.NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatalf("NewWorkspace: %v", err)
 	}
-	allTools, err := tools.All(tools.Options{Workspace: ws})
+	allTools, err := tools.For(ws, tools.Options{})
 	if err != nil {
-		t.Fatalf("tools.All: %v", err)
+		t.Fatalf("tools.For: %v", err)
 	}
 	return allTools
 }

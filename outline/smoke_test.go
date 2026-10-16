@@ -13,6 +13,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-01-72 (smoke): An embedder outlines a Go file with no subprocess and gets
@@ -216,18 +217,17 @@ func TestWalkAndOutlineMatchesSearchFiles_TS_01_75(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolvedRoot := ws.Root
+	resolvedRoot := ws.Root()
 
 	ctx := context.Background()
 
 	// Walk with IncludeHidden=false, collecting regular files.
 	var walkPaths []string
-	err = tools.Walk(ctx, ws, resolvedRoot, tools.WalkOptions{
-		Ignore:        tools.NoGlobalExcludes(),
+	err = ws.Walk(ctx, "", workspace.WalkOptions{
 		IncludeHidden: false,
 	}, func(rel string, d os.DirEntry) error {
 		if d.Type().IsRegular() {

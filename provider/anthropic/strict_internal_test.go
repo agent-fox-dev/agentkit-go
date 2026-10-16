@@ -6,16 +6,17 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // strictUnions mirrors the strict rewrite rather than running it; it must
 // agree with what the rewrite actually sends, or the limit is miscounted.
 func TestStrictUnionsAgreesWithTheRewrite(t *testing.T) {
-	ws, err := tools.NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	built, err := tools.All(tools.Options{Workspace: ws})
+	built, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

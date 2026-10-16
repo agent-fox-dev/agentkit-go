@@ -11,6 +11,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/mcp"
 	"github.com/agent-fox-dev/agentkit-go/tools"
 	"github.com/agent-fox-dev/agentkit-go/wire"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -129,11 +130,11 @@ func TestMCPToolsAreGatedByQualifiedNameEverywhere(t *testing.T) {
 // (REQ-MCP-CLIENT-06).
 func builtinToolNames(t *testing.T) []string {
 	t.Helper()
-	ws, err := tools.NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
