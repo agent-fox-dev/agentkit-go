@@ -1,10 +1,13 @@
 package workspace
 
 import (
+	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -282,5 +285,153 @@ func TestIgnoredKeepsNoCache_TS20_31(t *testing.T) {
 	writeFile(t, root, ".git/info/exclude", "*.x\n")
 	if !ws.Ignored("a/f.x", false) {
 		t.Fatal("third call: not ignored after .git/info/exclude gained *.x")
+	}
+}
+
+// TS-20-16: At most one core.excludesFile lookup per workspace, none before
+// first use, including under concurrent first use.
+func TestOneLookupPerWorkspace_TS20_16(t *testing.T) {
+	root := t.TempDir()
+	tree(t, root, map[string]string{"a/f.txt": "", "b.txt": ""})
+	counting := &countingGit{}
+	ws, err := Open(root, Options{Ignore: counting.options()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := counting.gitConfig.Load(); n != 0 {
+		t.Fatalf("the lookup ran %d times by the end of Open, want 0", n)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if i%2 == 0 {
+				ws.Ignored("a/f.txt", false)
+				return
+			}
+			_ = ws.Walk(context.Background(), "", WalkOptions{}, func(string, fs.DirEntry) error { return nil })
+		}()
+	}
+	wg.Wait()
+	if n := counting.gitConfig.Load(); n != 1 {
+		t.Fatalf("the lookup ran %d times after 32 goroutines first used the rules at once, want exactly 1", n)
+	}
+
+	ws.Ignored("b.txt", false)
+	_ = ws.Walk(context.Background(), "a", WalkOptions{}, func(string, fs.DirEntry) error { return nil })
+	if n := counting.gitConfig.Load(); n != 1 {
+		t.Fatalf("the lookup ran %d times in total after further use, want 1", n)
+	}
+}
+
+// TS-20-18: Ignore sources apply in precedence order and the last match wins.
+func TestIgnoreSourcesApplyInPrecedenceOrder_TS20_18(t *testing.T) {
+	root := t.TempDir()
+	tree(t, root, map[string]string{
+		".git/info/exclude": "!keep.log\n",
+		".gitignore":        "build/\n",
+		"sub/.gitignore":    "!important.log\n*.tmp\n",
+		"a.log":             "",
+		"keep.log":          "",
+		"sub/important.log": "",
+		"build/out.o":       "",
+		"sub/x.tmp":         "",
+		"plain.txt":         "",
+	})
+	ws, err := Open(root, Options{Ignore: withGlobalExcludes(t, "*.log\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct {
+		rel   string
+		isDir bool
+		want  bool
+		why   string
+	}{
+		{"a.log", false, true, "ignored by the global layer"},
+		{"keep.log", false, false, "re-included by the repository exclude file"},
+		{"sub/important.log", false, false, "re-included by the later .gitignore"},
+		{"build", true, true, "ignored by the root .gitignore"},
+		{"sub/x.tmp", false, true, "ignored by sub/.gitignore"},
+		{"plain.txt", false, false, "matched by nothing"},
+	} {
+		if got := ws.Ignored(c.rel, c.isDir); got != c.want {
+			t.Errorf("Ignored(%q) = %v, want %v (%s)", c.rel, got, c.want, c.why)
+		}
+	}
+	assertWalkMatchesIgnored(t, ws)
+}
+
+// TS-20-19: Nested repositories start a new ignore root, .git is always
+// ignored and .ignore is not a source.
+func TestNestedRepositoriesAndGitAndDotIgnore_TS20_19(t *testing.T) {
+	root := t.TempDir()
+	tree(t, root, map[string]string{
+		".gitignore":      "*.dat\n!.git\n",
+		".ignore":         "*.txt\n",
+		"sub/repo/.git/":  "",
+		"sub/repo/f.dat":  "",
+		"sub/other/g.dat": "",
+		"a.txt":           "",
+	})
+	ws := openIgnoring(t, root)
+
+	for _, c := range []struct {
+		rel   string
+		isDir bool
+		want  bool
+		why   string
+	}{
+		{"sub/repo/f.dat", false, false, "the root .gitignore stops applying at the repository boundary"},
+		{"sub/other/g.dat", false, true, "outside the nested repository the root .gitignore applies"},
+		{"sub/repo/.git", true, true, "a .git directory is always ignored"},
+		{".git/config", false, true, "any .git segment is ignored, even with a !.git pattern"},
+		{"a.txt", false, false, ".ignore is not a source"},
+	} {
+		if got := ws.Ignored(c.rel, c.isDir); got != c.want {
+			t.Errorf("Ignored(%q) = %v, want %v (%s)", c.rel, got, c.want, c.why)
+		}
+	}
+
+	err := ws.Walk(context.Background(), "", WalkOptions{IncludeHidden: true}, func(rel string, _ fs.DirEntry) error {
+		if hasGitComponent(rel) {
+			t.Errorf("Walk called fn for %q", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertWalkMatchesIgnored(t, ws)
+}
+
+// assertWalkMatchesIgnored checks that Walk with IncludeHidden visits exactly
+// the entries Ignored reports as not ignored.
+func assertWalkMatchesIgnored(t *testing.T, ws *Workspace) {
+	t.Helper()
+	visited := map[string]bool{}
+	err := ws.Walk(context.Background(), "", WalkOptions{IncludeHidden: true}, func(rel string, _ fs.DirEntry) error {
+		visited[rel] = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = filepath.WalkDir(ws.Root(), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || p == ws.Root() {
+			return err
+		}
+		rel, _ := filepath.Rel(ws.Root(), p)
+		rel = filepath.ToSlash(rel)
+		if allowed := !ws.Ignored(rel, d.IsDir()); allowed != visited[rel] {
+			t.Errorf("%q: Walk visited it = %v, Ignored allows it = %v", rel, visited[rel], allowed)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

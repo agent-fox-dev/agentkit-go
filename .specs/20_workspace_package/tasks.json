@@ -229,7 +229,7 @@
       "done_when": [
         "`go test ./workspace/... -count=1 -race` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
