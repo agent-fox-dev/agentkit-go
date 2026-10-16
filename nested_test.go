@@ -83,7 +83,7 @@ func resultText(m core.ToolResultMessage) string {
 	return b.String()
 }
 
-// TS-07-16: executeBatch attaches a NestedCaller to a wrapper's context, and
+// TS-07-16: the batch engine attaches a NestedCaller to a wrapper's context, and
 // a nested call runs the declared child.
 func TestNestedDispatchInjectedForWrapper_TS07_16(t *testing.T) {
 	var got []core.ToolResult

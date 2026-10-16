@@ -65,7 +65,7 @@ func TestContentIdenticalWithAndWithoutMetadata_TS04_41(t *testing.T) {
 
 // TS-04-37 (partial): the no_result backstop produces a message with nil
 // Metadata. This is a package-internal test because it exercises the
-// no_result path in executeBatch's final assertion.
+// no_result path in the batch engine's final assertion.
 func TestNoResultBackstopNilMetadata_TS04_37(t *testing.T) {
 	c, err := core.NewToolUse("c1", "probe", json.RawMessage(`{}`))
 	if err != nil {
@@ -73,8 +73,8 @@ func TestNoResultBackstopNilMetadata_TS04_37(t *testing.T) {
 	}
 
 	// Simulate the no_result backstop: a call whose result slot was never
-	// filled. The batch executor fills it with errorResult("no_result", ...).
-	msg := errorResult(c, "no_result", "internal: the tool batch produced no result for this call")
+	// filled. The batch engine fills it with ErrResult("no_result", ...).
+	msg := toolResultMessage(c, core.ErrResult("no_result", "internal: the tool batch produced no result for this call"))
 	if msg.Metadata != nil {
 		t.Fatal("no_result backstop must produce nil Metadata")
 	}

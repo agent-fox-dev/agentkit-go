@@ -13,12 +13,11 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
-// runBatch runs one batch of calls through a real agent's executeBatch, the
-// way the loop does, and returns the results and the termination vote.
+// runBatch runs one batch of calls through the runner's batch engine, the way
+// the loop does, and returns the results and the termination vote.
 func runBatch(t *testing.T, ctx context.Context, cfg Config, calls ...core.ToolUseBlock) ([]core.ToolResultMessage, bool) {
 	t.Helper()
-	cfg.Provider, cfg.Model = faux.New(), testModelID
-	a, err := New(cfg)
+	r, err := NewRunner(cfg.Toolset)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +26,8 @@ func runBatch(t *testing.T, ctx context.Context, cfg Config, calls ...core.ToolU
 		blocks[i] = c
 	}
 	assistant := core.AssistantMessage{Content: blocks, StopReason: core.StopReasonToolUse}
-	return a.executeBatch(ctx, core.NewEventStream(core.StreamOptions{}), &assistant, calls, 0)
+	out := r.run(ctx, core.NewEventStream(core.StreamOptions{}).Push, &assistant, calls, 0)
+	return out.messages, out.terminate
 }
 
 // overlap is a handler that records how many calls run at once.

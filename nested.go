@@ -12,17 +12,17 @@ import (
 )
 
 // nestedEnv is what a nested call needs from the batch that runs its
-// wrapper. It is built once per batch from the same runner executeBatch
-// uses, so a nested call never reaches back through a.mu for configuration.
+// wrapper. It is built once per batch from the same runner the batch runs on,
+// so a nested call never reaches back through a.mu for configuration.
 type nestedEnv struct {
 	runner    *Runner
-	s         *core.EventStream
+	emit      func(core.Event)
 	assistant *core.AssistantMessage
 	turnCount int
 	report    func(error)
 }
 
-// nestedCaller is the core.NestedCaller executeBatch attaches to a wrapper's
+// nestedCaller is the core.NestedCaller a batch attaches to a wrapper's
 // context (07-REQ-4.3). It is bound to one wrapper call: its parent id and
 // name, and the wrapper's reachable tools as the policy resolved them. A
 // wrapper can call those tools and no others.
@@ -35,7 +35,7 @@ type nestedCaller struct {
 	// mu serializes finalization (AfterToolCall), as the batch mutex does
 	// for direct calls.
 	mu sync.Mutex
-	// eventMu serializes this caller's stream pushes. It is separate from mu
+	// eventMu serializes this caller's event emissions. It is separate from mu
 	// so an AfterToolCall that calls CallNested itself does not deadlock on
 	// the start event of its own call.
 	eventMu sync.Mutex
@@ -105,7 +105,7 @@ func (n *nestedCaller) Call(ctx context.Context, calls ...core.ToolUseBlock) ([]
 			// opened on the stream and never ran; they close as aborted,
 			// so every nested call that opened closes exactly once.
 			for _, q := range run {
-				n.closeInline(q.call, nestedAborted())
+				n.closeInline(q.call, abortedResult())
 			}
 			return nil, core.ErrTerminated
 		}
@@ -134,10 +134,6 @@ func (n *nestedCaller) Call(ctx context.Context, calls ...core.ToolUseBlock) ([]
 	return results, nil
 }
 
-// nestedAborted is the result of a nested call that was cancelled
-// (07-REQ-7.5).
-func nestedAborted() core.ToolResult { return core.ErrResult("aborted", "Operation aborted") }
-
 // prepare takes one nested call through the steps before its handler. ok is
 // false when the call ends here, and res is its result.
 func (n *nestedCaller) prepare(ctx context.Context, batch []core.ToolUseBlock, i int, c core.ToolUseBlock) (
@@ -153,7 +149,7 @@ func (n *nestedCaller) prepare(ctx context.Context, batch []core.ToolUseBlock, i
 
 	// A cancelled context starts nothing more.
 	if ctx.Err() != nil {
-		return prepared, tool, call, nestedAborted(), false
+		return prepared, tool, call, abortedResult(), false
 	}
 	tool, known := n.tools[c.Name]
 	if !known {
@@ -241,7 +237,7 @@ func (n *nestedCaller) execute(ctx context.Context, call core.ToolUseBlock, tool
 	// A call still running when the context was cancelled is aborted,
 	// whatever its handler made of the cancellation (07-REQ-7.5).
 	if ctx.Err() != nil {
-		out = nestedAborted()
+		out = abortedResult()
 	}
 	// A nested handler cannot end the run (07-REQ-6.1). No tool a wrapper
 	// reaches is Terminating — registration refuses that — so the vote is
@@ -281,7 +277,7 @@ func (n *nestedCaller) execute(ctx context.Context, call core.ToolUseBlock, tool
 }
 
 // closeInline ends a nested call that never reached its handler: it closes
-// on the stream, as a direct call finalized in prepare is.
+// on the event sink, as a direct call finalized in prepare is.
 func (n *nestedCaller) closeInline(call core.ToolUseBlock, res core.ToolResult) {
 	n.push(n.endEvent(call, res, 0))
 }
@@ -294,15 +290,15 @@ func annotate(detail, note string) string {
 	return detail + "; " + note
 }
 
-// push emits a nested call's execution event. Pushes are serialized so a
+// push emits a nested call's execution event. Emissions are serialized so a
 // nested call's events are ordered as a direct call's are.
 func (n *nestedCaller) push(e core.Event) {
 	n.eventMu.Lock()
 	defer n.eventMu.Unlock()
-	n.env.s.Push(e)
+	n.env.emit(e)
 }
 
-// endEvent closes a nested call on the stream. There is no ToolResultEvent:
+// endEvent closes a nested call on the event sink. There is no ToolResultEvent:
 // that event is the transcript's, and a nested result is the wrapper's
 // (07-REQ-8.3).
 func (n *nestedCaller) endEvent(call core.ToolUseBlock, out core.ToolResult, elapsed time.Duration) core.Event {

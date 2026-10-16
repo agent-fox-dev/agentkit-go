@@ -191,7 +191,12 @@ func (a *Agent) runTools(ctx context.Context, s *core.EventStream, assistant *co
 		// silently corrupts the file. Only the stop reason can catch this.
 		return synthesizeTruncated(s, calls), false
 	}
-	return a.executeBatch(ctx, s, assistant, calls, turn)
+	// A tool that spends on model calls of its own reports it through
+	// core.ReportUsage the moment it is spent, so the agent's usage (and a
+	// budget computed from it, by the next delegation in the same parallel
+	// batch) sees it at once rather than when the batch finalizes.
+	out := a.runner.run(core.WithUsageReporter(ctx, a.addUsage), s.Push, assistant, calls, turn)
+	return out.messages, out.terminate
 }
 
 // endRun builds the run's result and pushes the terminal events. A run that

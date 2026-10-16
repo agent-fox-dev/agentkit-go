@@ -13,11 +13,25 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
-// executeBatch runs one turn's tool calls (REQ-LOOP-05). It is three phases
-// with distinct concurrency rules, and each phase is where it is because the
+// batchOutcome is what one batch produced. The three slices hold one entry per
+// call, in call order.
+type batchOutcome struct {
+	// messages are the ToolResultMessages as After left them: what an agent
+	// run records in its transcript.
+	messages []core.ToolResultMessage
+	// results are the calls' core.ToolResults, with Terminate set to each
+	// call's final vote. After's in-place edits to a message do not reach
+	// them.
+	results []core.ToolResult
+	// terminate is the OR of the final votes (11-REQ-8.1).
+	terminate bool
+}
+
+// run runs one batch of tool calls (REQ-LOOP-05). It is three phases with
+// distinct concurrency rules, and each phase is where it is because the
 // natural Go answer is wrong:
 //
-//  1. Prepare  — strictly SEQUENTIAL, on the loop goroutine. Events,
+//  1. Prepare  — strictly SEQUENTIAL, on the calling goroutine. Events,
 //     argument preparation, validation and the authorization
 //     interceptor. A blocked call is finalized inline here, so the
 //     policy observes a deterministic order even though the
@@ -32,40 +46,37 @@ import (
 //     listener cannot leak it and deadlock the remaining tool
 //     goroutines at the join.
 //
-// Results are written by SLOT INDEX into a pre-sized slice and appended in
-// slot order after the join, so transcript order is independent of completion
-// order (REQ-LOOP-05).
+// Results are written by SLOT INDEX into pre-sized slices, so their order is
+// independent of completion order (REQ-LOOP-05).
 //
-// Returns the results and the termination vote: true when any call that ran
-// voted Terminate (11-REQ-8.1), or the Guard blocked a call and voted to
-// terminate. The vote is read only after every call in the
-// batch has finished, so a terminating call never cuts its siblings short.
-func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant *core.AssistantMessage, calls []core.ToolUseBlock, turnCount int) ([]core.ToolResultMessage, bool) {
-	// A tool that spends on model calls of its own reports it through core.ReportUsage the moment it is spent, so the
-	// agent's usage (and a budget computed from it, by the next delegation
-	// in the same parallel batch) sees it at once rather than when the batch
-	// finalizes.
-	ctx = core.WithUsageReporter(ctx, a.addUsage)
-	r := a.runner
-	tools := r.tools
+// emit receives every execution event of the batch, from the goroutines that
+// run the calls, and a nil emit discards them. assistant and turnCount are the
+// guard's context for a call a model made; a runner's own Call and Batch pass
+// nil and 0. run attaches no usage reporter: a context that carries one passes
+// it through to the handlers, and the agent loop attaches its own.
+//
+// The batch's termination vote is true when any call that ran voted Terminate
+// (11-REQ-8.1), or the Guard blocked a call and voted to terminate. The vote is
+// read only after every call in the batch has finished, so a terminating call
+// never cuts its siblings short.
+func (r *Runner) run(ctx context.Context, emit func(core.Event), assistant *core.AssistantMessage, calls []core.ToolUseBlock, turnCount int) batchOutcome {
+	if emit == nil {
+		emit = func(core.Event) {}
+	}
+	// report surfaces an error — a panicking interceptor — as an event. It
+	// takes no lock of the runner's, so it is safe inside the batch-scoped
+	// critical section.
+	report := func(err error) { emit(core.ErrorEvent{Message: err.Error(), Err: err}) }
+	byName := r.byName
 
-	// report surfaces an error — a panicking interceptor — as an event on
-	// the run's stream. It never touches a.mu, so it is safe inside the
-	// batch-scoped critical section, where the agent lock is never taken.
-	report := streamReporter(s)
-
-	// started marks calls whose ToolExecutionStartEvent has been pushed, so
+	// started marks calls whose ToolExecutionStartEvent has been emitted, so
 	// the abort path can open the calls the prepare loop never reached and
 	// every call closes exactly once (REQ-LOOP-11.3).
 	started := make([]bool, len(calls))
 
-	byName := make(map[string]core.Tool, len(tools))
-	for _, t := range tools {
-		byName[t.Name] = t
-	}
-
 	n := len(calls)
-	results := make([]core.ToolResultMessage, n)
+	msgs := make([]core.ToolResultMessage, n)
+	results := make([]core.ToolResult, n)
 	votes := make([]bool, n)
 	// filled marks the slots that hold a result. A call's id cannot: a
 	// provider may send an empty one.
@@ -73,11 +84,10 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	thunks := make([]func(), 0, n)
 
 	// env is what a wrapper's nested calls run with (07-REQ-4.3): the same
-	// runner, stream and reporter as this batch.
-	env := &nestedEnv{runner: r, s: s, assistant: assistant, turnCount: turnCount, report: report}
+	// runner, sink and reporter as this batch.
+	env := &nestedEnv{runner: r, emit: emit, assistant: assistant, turnCount: turnCount, report: report}
 
-	// batchMu is BATCH-SCOPED: created here, acquired by nothing else, and
-	// a.mu is never acquired while it is held.
+	// batchMu is BATCH-SCOPED: created here, acquired by nothing else.
 	//
 	// This is the reconciliation of REQ-LOOP-05 phase 3 ("under one mutex")
 	// with NFR-REL-02.1 ("no interceptor may run while an agent lock is
@@ -91,26 +101,26 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	// tool, bad arguments, a block. It still emits the execution end event
 	// and the result, so every call opens and closes exactly once on the
 	// stream whichever way it ended (REQ-LOOP-11.3), and a UI keyed on the
-	// start event never waits for an end that will not come.
-	finalizeInline := func(i int, m core.ToolResultMessage) {
-		results[i] = m
-		filled[i] = true
-		s.Push(core.ToolExecutionEndEvent{ToolUseID: m.ToolUseID, Name: m.ToolName, IsError: m.IsError})
-		s.Push(core.ToolResultEvent{Message: m})
+	// start event never waits for an end that will not come. res.Terminate is
+	// the call's vote.
+	finalizeInline := func(i int, c core.ToolUseBlock, res core.ToolResult) {
+		m := toolResultMessage(c, res)
+		msgs[i], results[i], votes[i], filled[i] = m, res, res.Terminate, true
+		emit(core.ToolExecutionEndEvent{ToolUseID: m.ToolUseID, Name: m.ToolName, IsError: m.IsError})
+		emit(core.ToolResultEvent{Message: m})
 	}
 
 	for i, c := range calls {
-		i, c := i, c
 		// REQ-LOOP-11.2: once the context is cancelled the prepare loop stops
 		// enqueuing further calls. The calls already prepared are still
-		// covered by the single decision below, and the ones never reached
-		// are closed there as aborted.
+		// covered by the single decision below, and the ones never reached are
+		// closed there as aborted.
 		if ctx.Err() != nil {
 			break
 		}
 
 		// No ToolCallStart/ToolCallEnd here. Those describe the MODEL emitting
-		// a tool call and are the provider's to push as it streams; the loop
+		// a tool call and are the provider's to push as it streams; the batch
 		// owns the EXECUTION triple (ToolExecutionStart/Update/End) and the
 		// finalized ToolResultEvent. REQ-LOOP-05 names the call events and
 		// REQ-OBS-06 names the execution ones — emitting both duplicates every
@@ -120,12 +130,12 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 		// phase, not inside the thunk: REQ-LOOP-05 phase 1 emits the start
 		// event for each call in order, and a call finalized inline (blocked,
 		// invalid) or aborted before its handler ran must still have opened.
-		s.Push(core.ToolExecutionStartEvent{ToolUseID: c.ID, Name: c.Name})
+		emit(core.ToolExecutionStartEvent{ToolUseID: c.ID, Name: c.Name})
 		started[i] = true
 
 		tool, known := byName[c.Name]
 		if !known {
-			finalizeInline(i, errorResult(c, "unknown_tool", unknownToolMessage(c.Name, byName)))
+			finalizeInline(i, c, core.ErrResult("unknown_tool", unknownToolMessage(c.Name, byName)))
 			continue
 		}
 
@@ -139,9 +149,9 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 		)
 		func() {
 			defer func() {
-				if r := recover(); r != nil {
-					perr = fmt.Errorf("argument preparation for %q panicked: %v", c.Name, r)
-					report(fmt.Errorf("agentkit: panic in PrepareArguments for %q: %v", c.Name, r))
+				if rec := recover(); rec != nil {
+					perr = fmt.Errorf("argument preparation for %q panicked: %v", c.Name, rec)
+					report(fmt.Errorf("agentkit: panic in PrepareArguments for %q: %v", c.Name, rec))
 				}
 			}()
 			prepared, perr = core.PrepareArguments(tool, c)
@@ -149,7 +159,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 		if perr != nil {
 			// The error text re-serializes the model's OWN key order, so the
 			// message is self-correcting (REQ-TOOL-11.4, REQ-TOOL-12.3).
-			finalizeInline(i, errorResult(c, "invalid_arguments", perr.Error()))
+			finalizeInline(i, c, core.ErrResult("invalid_arguments", perr.Error()))
 			continue
 		}
 
@@ -175,8 +185,9 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				// beside Block — what lets a permission denial end the run
 				// rather than loop the model into retrying, as it does for a
 				// nested call (11-REQ-9.5).
-				votes[i] = dec.Terminate
-				finalizeInline(i, errorResult(c, core.BlockErrorCode, reason))
+				blocked := core.ErrResult(core.BlockErrorCode, reason)
+				blocked.Terminate = dec.Terminate
+				finalizeInline(i, c, blocked)
 				continue
 			}
 			if dec.Arguments != nil {
@@ -185,7 +196,7 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				// alone, as any other invalid arguments do.
 				next, err := prepared.TryWithArgs(dec.Arguments)
 				if err != nil {
-					finalizeInline(i, errorResult(c, "invalid_arguments",
+					finalizeInline(i, c, core.ErrResult("invalid_arguments",
 						"BeforeToolCall returned arguments that are not JSON: "+err.Error()))
 					continue
 				}
@@ -236,19 +247,17 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 						out.Terminate = *dec.Terminate
 					}
 				}
-				results[i] = msg
-				filled[i] = true
-				votes[i] = out.Terminate
-				s.Push(core.ToolExecutionEndEvent{
+				msgs[i], results[i], votes[i], filled[i] = msg, out, out.Terminate, true
+				emit(core.ToolExecutionEndEvent{
 					ToolUseID: c.ID, Name: c.Name, IsError: msg.IsError,
 					ElapsedMS: time.Since(start).Milliseconds(),
 				})
-				s.Push(core.ToolResultEvent{Message: msg})
+				emit(core.ToolResultEvent{Message: msg})
 			}()
 		})
 	}
 
-	// ---- Phase 2: the abort decision, made ONCE, here, on the loop
+	// ---- Phase 2: the abort decision, made ONCE, here, on the calling
 	// goroutine, after prepare and BEFORE any handler starts (REQ-LOOP-11).
 	//
 	// It must not be re-checked inside each tool goroutine. Per-goroutine
@@ -270,15 +279,15 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 			// A call the prepare loop never reached still opens, so it can
 			// close (REQ-LOOP-11.3).
 			if !started[i] {
-				s.Push(core.ToolExecutionStartEvent{ToolUseID: c.ID, Name: c.Name})
+				emit(core.ToolExecutionStartEvent{ToolUseID: c.ID, Name: c.Name})
 				started[i] = true
 			}
-			finalizeInline(i, abortedResult(c))
+			finalizeInline(i, c, abortedResult())
 		}
 		// No handler ran, so no tool voted: an aborted batch does not end
 		// the run on a tool's say-so. A Guard's own vote, cast in prepare,
 		// stands.
-		return results, slices.Contains(votes, true)
+		return batchOutcome{messages: msgs, results: results, terminate: slices.Contains(votes, true)}
 	}
 
 	sequential := len(thunks) <= 1
@@ -317,11 +326,11 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	// invalid, so this is asserted rather than assumed.
 	for i, c := range calls {
 		if !filled[i] {
-			results[i] = errorResult(c, "no_result",
-				"internal: the tool batch produced no result for this call")
+			res := core.ErrResult("no_result", "internal: the tool batch produced no result for this call")
+			msgs[i], results[i] = toolResultMessage(c, res), res
 		}
 	}
-	return results, slices.Contains(votes, true)
+	return batchOutcome{messages: msgs, results: results, terminate: slices.Contains(votes, true)}
 }
 
 // invokeHandler calls the tool, converting every failure mode into a result.
@@ -378,7 +387,7 @@ func callBefore(ctx context.Context, report func(error), f core.BeforeToolCall, 
 // crash would end the run for the wrong reason.
 //
 // It reports through the batch's lock-free reporter: it runs inside the
-// batch-scoped critical section, and the agent lock is never taken there.
+// batch-scoped critical section, and no runner or agent lock is taken there.
 func callAfter(ctx context.Context, report func(error), f core.AfterToolCall, in core.AfterToolCallContext) (dec core.AfterToolCallDecision) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -409,17 +418,11 @@ func toolResultMessage(c core.ToolUseBlock, r core.ToolResult) core.ToolResultMe
 	return msg
 }
 
-func errorResult(c core.ToolUseBlock, code, detail string) core.ToolResultMessage {
-	return toolResultMessage(c, core.ErrResult(code, detail))
-}
-
-// abortedResult is the fixed shape of a call that did not run because the
-// batch was aborted. It still emits events and a result so the transcript
-// stays well-formed and resumable (REQ-LOOP-11.3).
-func abortedResult(c core.ToolUseBlock) core.ToolResultMessage {
-	m := toolResultMessage(c, core.ErrResult("aborted", "Operation aborted"))
-	return m
-}
+// abortedResult is the fixed shape of a call that did not run because its
+// batch, or the nested group it belonged to, was aborted. It still emits
+// events and a result so the transcript stays well-formed and resumable
+// (REQ-LOOP-11.3, 07-REQ-7.5).
+func abortedResult() core.ToolResult { return core.ErrResult("aborted", "Operation aborted") }
 
 // maxListedTools bounds the tool names an unknown-tool result lists, so a run
 // with hundreds of tools does not answer one wrong call with a page of names.

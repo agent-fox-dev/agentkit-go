@@ -194,7 +194,10 @@ func (a *Agent) ReachableTools() []core.Tool {
 }
 
 // Runner returns the agent's runner: the same pointer on every call, safe to
-// use while a run is in flight.
+// use while a run is in flight. The agent's own tool calls go through it, and
+// so can an embedder's. Calls an embedder makes through it are not part of any
+// run: they do not enter the transcript, they are not counted in Usage, they do
+// not claim the run slot, and their events go to Toolset.Events.
 func (a *Agent) Runner() *Runner { return a.runner }
 
 // claimSlot claims the run slot, or fails with ErrBusy.

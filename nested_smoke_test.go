@@ -1,7 +1,7 @@
 package agentkit
 
 // Spec 07 smoke tests: each execution path end to end through the real Agent,
-// executeBatch, nestedCaller and interceptors, with only the model scripted.
+// the batch engine, nestedCaller and interceptors, with only the model scripted.
 
 import (
 	"context"

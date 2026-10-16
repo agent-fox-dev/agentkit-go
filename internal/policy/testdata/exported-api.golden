@@ -11,6 +11,8 @@ func (a *Agent) Run(ctx context.Context, prompt string) (core.RunResult, error)
 func (a *Agent) Runner() *Runner
 func (a *Agent) Stream(ctx context.Context, prompt string) (*core.EventStream, error)
 func (a *Agent) Usage() core.Usage
+func (r *Runner) Batch(ctx context.Context, calls ...core.ToolUseBlock) []core.ToolResult
+func (r *Runner) Call(ctx context.Context, name string, input json.RawMessage) core.ToolResult
 func (r *Runner) Reachable() []core.Tool
 func (r *Runner) Tools() []core.Tool
 func New(cfg Config) (*Agent, error)
