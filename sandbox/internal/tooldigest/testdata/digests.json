@@ -1,0 +1,46 @@
+[
+  {
+    "name": "read_file",
+    "digest": "f3ed2f5b307e072435d90a161f665198044c97394deed7cf2d7aff82bd330098"
+  },
+  {
+    "name": "write_file",
+    "digest": "c57e1544cbcc9be1a8a100e2b13dd242c75fb648311764f51551c0e4e77037c9"
+  },
+  {
+    "name": "edit_file",
+    "digest": "01ca61ae9d3dc0e85f4554f43e7645f611de42800014264240d8e9257c4d2c84"
+  },
+  {
+    "name": "list_files",
+    "digest": "48e0f0dbf6d9cd6cb1c7bc022b47966e160d0130534b2dcb6adf0e26793b5a69"
+  },
+  {
+    "name": "find_files",
+    "digest": "8ffd2fd75379043b10604ab43d7e55778defe988f2e7f50323616c6c4888c537"
+  },
+  {
+    "name": "search_files",
+    "digest": "ee227c77e2ec70e88987c6ec55ffea21e3ae33d2e35c5de1b455efcedc06a392"
+  },
+  {
+    "name": "file_outline",
+    "digest": "c51deef7705eb86b96436b45ce8dede8bd25d4535ef18bb290b6cf78c06473f2"
+  },
+  {
+    "name": "find_symbol",
+    "digest": "f8c3adefd375bd3f7e672a12b1663cbb2658442d0d49034117da11d24d246577"
+  },
+  {
+    "name": "find_references",
+    "digest": "fbaeaacc4b698040b44526bd4acc8633fb046f2531a77ee0bbf9187142882915"
+  },
+  {
+    "name": "execute",
+    "digest": "5482b81efce8490527b31b6014925d17bb095f05ec42ce7a0250106d9d3d1943"
+  },
+  {
+    "name": "run_command",
+    "digest": "d1a0a9aa77ca81b8ce0e868fd55d90e24704d81194f63e203efc9f65e1335774"
+  }
+]

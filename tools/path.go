@@ -14,6 +14,8 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // pathNextStep ends every path_not_allowed message, so the model that reads one
@@ -45,6 +47,12 @@ var (
 type Workspace struct {
 	// Root is the absolute, symlink-resolved workspace root.
 	Root string
+
+	// ws, when set, answers Resolve, CheckWriteTarget and Rel: the Workspace
+	// is the bridge For and References give the tool code, over a
+	// workspace.Workspace. Deleted with the rest of this type when the tool
+	// code moves onto workspace.
+	ws *workspace.Workspace
 }
 
 // NewWorkspace resolves root to its absolute canonical form.
@@ -80,6 +88,9 @@ func NewWorkspace(root string) (*Workspace, error) {
 // case a naive EvalSymlinks-the-whole-path guard gets wrong for every file the
 // agent is about to create.
 func (w *Workspace) Resolve(p string) (string, error) {
+	if w.ws != nil {
+		return w.ws.Resolve(p)
+	}
 	n, err := Normalize(p)
 	if err != nil {
 		return "", err
@@ -161,6 +172,9 @@ const maxSymlinkHops = 40
 // build the missing directories there too. So the callers run this BEFORE
 // MkdirAll, and it walks the existing prefix exactly as Resolve did.
 func (w *Workspace) CheckWriteTarget(abs string) error {
+	if w.ws != nil {
+		return w.ws.CheckWriteTarget(abs)
+	}
 	resolved, err := resolveExistingPrefix(abs)
 	if err != nil {
 		return err
@@ -259,6 +273,9 @@ func homeDir() (string, error) {
 // Rel renders an absolute path relative to the workspace for display. It never
 // fails: an unrelatable path is shown as-is.
 func (w *Workspace) Rel(abs string) string {
+	if w.ws != nil {
+		return w.ws.Rel(abs)
+	}
 	if rel, err := filepath.Rel(w.Root, abs); err == nil && !strings.HasPrefix(rel, "..") {
 		return rel
 	}

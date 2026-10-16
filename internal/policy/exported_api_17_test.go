@@ -2,8 +2,6 @@ package policy
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,16 +21,14 @@ var preSpec17Guard = []string{
 }
 
 // TS-17-61: the exported surfaces of agentkit, core, tools and codemode
-// still equal the golden at spec 13's hash, and guard's exported
-// declarations are unchanged. 17-REQ-10.3.
+// still equal the golden, and guard's exported declarations are unchanged.
+// 17-REQ-10.3. The golden is no longer pinned to spec 13's hash (see
+// TS-14-44).
 func TestExportedAPIUnchanged_TS17_61(t *testing.T) {
 	root := repoRoot(t)
 	want, err := os.ReadFile(filepath.Join(root, "internal", "policy", "testdata", "exported-api.golden"))
 	if err != nil {
 		t.Fatal(err)
-	}
-	if sum := sha256.Sum256(want); hex.EncodeToString(sum[:]) != goldenSHA13 {
-		t.Fatalf("exported-api.golden hashes to %x, not the pre-spec %s", sum, goldenSHA13)
 	}
 	var got bytes.Buffer
 	for _, pkg := range apiPackages {

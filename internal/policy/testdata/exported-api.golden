@@ -338,6 +338,7 @@ func FileNavigationTools() []string
 func FindMarker(limit int) string
 func FoldConfusables(s string) string
 func FoldLine(s string) string
+func For(ws *workspace.Workspace, opts Options) ([]core.Tool, error)
 func InvalidUTF8Marker(path string) string
 func ListMarker(limit int) string
 func LongLineMarker(line int, size int64, limit int, path string) string
@@ -350,6 +351,7 @@ func NormalizeForEdit(s string) (normalized string, bom bool, ending LineEnding)
 func ReadMarker(shown, total int) string
 func ReadOffsetMarker(from, to, total int) string
 func ReducedEnv(base []string, extraPrefixes ...string) []string
+func References(ctx context.Context, ws *workspace.Workspace, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error)
 func RenderSearchText(res SearchResult, marker string) string
 func ResolveShell() (string, []string, error)
 func Restore(s string, bom bool, ending LineEnding) string

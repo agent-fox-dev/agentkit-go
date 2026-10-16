@@ -282,7 +282,7 @@
       "done_when": [
         "`make test` passes in every module (old API still present)"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
