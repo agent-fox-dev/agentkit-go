@@ -362,7 +362,7 @@
       "done_when": [
         "`make test` passes in examples/harness"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,

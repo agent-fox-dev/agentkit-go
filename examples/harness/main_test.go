@@ -3,18 +3,25 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/guard"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/tools"
 	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
@@ -93,9 +100,11 @@ func TestExampleRunsOffline(t *testing.T) {
 	}
 }
 
-// The server runs every call through the guard — direct calls and a
+// The runner runs every call through the guard — direct calls and a
 // script's nested calls alike — and answers an unknown tool, a refused
-// command and a bad argument with a result, never a Go error or a panic.
+// command and a bad argument with a result, never a Go error or a panic. The
+// call and blocked counts and the log come from the toolset's own hooks
+// (TS-21-53, 21-REQ-9.5).
 func TestServerGuardsDirectAndNestedCalls(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the script runs POSIX commands")
@@ -112,31 +121,31 @@ func TestServerGuardsDirectAndNestedCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	var log strings.Builder
-	srv, info, err := newToolServer(all, guard.Restricted(guard.Options{AllowedPrograms: []string{"cat"}}), &log)
+	runner, hk, info, err := buildRunner(all, guard.Restricted(guard.Options{AllowedPrograms: []string{"cat"}}), &log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.BoundToolsCount != len(all) || srv.served()[0].Name != "code_mode" || len(srv.served()) != len(all)+1 {
-		t.Fatalf("served %d tools (first %s), code_mode binds %d; want %d, code_mode, %d", len(srv.served()), srv.served()[0].Name, info.BoundToolsCount, len(all)+1, len(all))
+	if served := runner.Tools(); info.BoundToolsCount != len(all) || served[0].Name != "code_mode" || len(served) != len(all)+1 {
+		t.Fatalf("served %d tools (first %s), code_mode binds %d; want %d, code_mode, %d", len(served), served[0].Name, info.BoundToolsCount, len(all)+1, len(all))
 	}
 	ctx := context.Background()
 
-	if res := srv.direct(ctx, "execute", json.RawMessage(`{"command":"cat a.txt"}`)); !res.OK || !strings.Contains(res.LLMText(), "hello") {
+	if res := runner.Call(ctx, "execute", json.RawMessage(`{"command":"cat a.txt"}`)); !res.OK || !strings.Contains(res.LLMText(), "hello") {
 		t.Errorf("cat a.txt: %+v", res)
 	}
-	if res := srv.direct(ctx, "execute", json.RawMessage(`{"command":"cat a.txt | wc -l"}`)); res.OK || res.Error != core.BlockErrorCode {
+	if res := runner.Call(ctx, "execute", json.RawMessage(`{"command":"cat a.txt | wc -l"}`)); res.OK || res.Error != core.BlockErrorCode {
 		t.Errorf("a pipe was not blocked: %+v", res)
 	}
-	if res := srv.direct(ctx, "execute", json.RawMessage(`{"command":"rm a.txt"}`)); res.OK || res.Error != core.BlockErrorCode {
+	if res := runner.Call(ctx, "execute", json.RawMessage(`{"command":"rm a.txt"}`)); res.OK || res.Error != core.BlockErrorCode {
 		t.Errorf("rm was not blocked: %+v", res)
 	}
-	if res := srv.direct(ctx, "no_such_tool", json.RawMessage(`{}`)); res.OK || res.Error != "unknown_tool" {
+	if res := runner.Call(ctx, "no_such_tool", json.RawMessage(`{}`)); res.OK || res.Error != "unknown_tool" {
 		t.Errorf("unknown tool: %+v", res)
 	}
-	if res := srv.direct(ctx, "read_file", json.RawMessage(`{}`)); res.OK || res.Error != "invalid_arguments" {
+	if res := runner.Call(ctx, "read_file", json.RawMessage(`{}`)); res.OK || res.Error != "invalid_arguments" {
 		t.Errorf("a missing argument: %+v", res)
 	}
-	if res := srv.direct(ctx, "read_file", json.RawMessage(`not json`)); res.OK || res.Error != "invalid_arguments" {
+	if res := runner.Call(ctx, "read_file", json.RawMessage(`not json`)); res.OK || res.Error != "invalid_arguments" {
 		t.Errorf("non-JSON input: %+v", res)
 	}
 
@@ -145,7 +154,7 @@ print("a:", a["content"].strip())
 rm = execute(command="rm a.txt")
 print("rm:", rm.error if is_error(rm) else "ran")
 `})
-	res := srv.direct(ctx, "code_mode", script)
+	res := runner.Call(ctx, "code_mode", script)
 	if !res.OK {
 		t.Fatalf("code_mode: %+v", res)
 	}
@@ -156,11 +165,14 @@ print("rm:", rm.error if is_error(rm) else "ran")
 	}
 	// A script reaches the tools code_mode binds and no others: not code_mode.
 	self, _ := json.Marshal(map[string]string{"script": `code_mode(script="print(1)")`})
-	if res := srv.direct(ctx, "code_mode", self); res.OK || res.Error != "runtime_error" || !strings.Contains(res.Detail, "undefined: code_mode") {
+	if res := runner.Call(ctx, "code_mode", self); res.OK || res.Error != "runtime_error" || !strings.Contains(res.Detail, "undefined: code_mode") {
 		t.Errorf("code_mode calling itself: %+v", res)
 	}
-	if got := srv.blocked.Load(); got != 3 {
+	if got := hk.blocked.Load(); got != 3 {
 		t.Errorf("blocked %d calls, want 3", got)
+	}
+	if got := hk.calls.Load(); got < 9 {
+		t.Errorf("counted %d calls, want every one of the nine direct calls and the script's nested ones", got)
 	}
 	if _, err := os.Stat(filepath.Join(ws.Root(), "a.txt")); err != nil {
 		t.Errorf("a.txt is gone: the guard did not hold: %v", err)
@@ -183,10 +195,11 @@ func TestServeRequiresTheToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, _, err := newToolServer(all, guard.AllowAll, io.Discard)
+	runner, _, _, err := buildRunner(all, guard.AllowAll, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
+	srv := &toolServer{runner: runner}
 	m, err := srv.serve(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -347,4 +360,191 @@ func hasSeq(args, want []string) bool {
 		}
 	}
 	return false
+}
+
+// TS-21-51: server.go holds no tool-call pipeline. The runner owns
+// preparation, the guard, the handler and its recovery, and the nested caller;
+// server.go keeps the MCP server and calls Runner.Call.
+func TestServerGoHasNoToolCallPipeline_TS21_51(t *testing.T) {
+	f, err := parser.ParseFile(token.NewFileSet(), "server.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	banned := map[string]bool{"core.NewToolUse": true, "core.PrepareArguments": true, "core.WithNestedCaller": true}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.CallExpr:
+			switch fun := v.Fun.(type) {
+			case *ast.SelectorExpr:
+				if x, ok := fun.X.(*ast.Ident); ok && banned[x.Name+"."+fun.Sel.Name] {
+					t.Errorf("server.go calls %s.%s", x.Name, fun.Sel.Name)
+				}
+			case *ast.Ident:
+				if fun.Name == "recover" {
+					t.Error("server.go calls recover()")
+				}
+			}
+		case *ast.FuncDecl:
+			if v.Recv == nil {
+				break
+			}
+			if v.Name.Name == "call" {
+				t.Error("server.go declares a method named call")
+			}
+			// A core.NestedCaller: Call(ctx, ...core.ToolUseBlock).
+			if v.Name.Name == "Call" {
+				for _, p := range v.Type.Params.List {
+					if _, variadic := p.Type.(*ast.Ellipsis); variadic {
+						t.Error("server.go declares a Call method taking variadic tool-use blocks: a core.NestedCaller")
+					}
+				}
+			}
+		case *ast.TypeSpec:
+			if v.Name.Name == "nested" {
+				t.Error("server.go declares the type nested")
+			}
+		}
+		return true
+	})
+}
+
+var callIDRE = regexp.MustCompile(`^call_[0-9a-f]{16}$`)
+
+// TS-21-52: the program builds code_mode over the proxies and a runner over
+// code_mode and the proxies under a guard that wraps the configured one; the
+// spec steps run through Runner.Call, so the configured guard sees them; and
+// the system prompt is built from Runner.Tools().
+func TestHarnessStepsRunThroughTheRunner_TS21_52(t *testing.T) {
+	const envelope = `{"ok":true,"status":"ok","exit_code":0,"summary":"specr: rendered 01_x","result":{"spec_dir":".specs/01_x",` +
+		`"task":{"id":1,"title":"T","state":"pending"},"markdown":"# spec"},"next":[]}`
+	const tasksJSON = `{"test_commands":{"linter":"gofmt -l .","all_tests":"go test ./..."}}`
+	execute := core.Tool{Name: "execute", InputSchema: schema.Object(schema.Prop("command", schema.String()), schema.Opt("timeout_s", schema.Int())),
+		PromptGuidelines: []string{"Run one program per call."},
+		Execute: func(_ context.Context, in json.RawMessage) core.ToolResult {
+			var a struct{ Command string }
+			_ = json.Unmarshal(in, &a)
+			out := ""
+			if strings.HasPrefix(a.Command, "specr") {
+				out = envelope
+			}
+			return core.OKResult(map[string]any{"output": out, "outcome": "ok", "exit_code": 0})
+		}}
+	readFile := core.Tool{Name: "read_file", InputSchema: schema.Object(schema.Prop("path", schema.String())),
+		Execute: func(context.Context, json.RawMessage) core.ToolResult {
+			return core.OKResult(map[string]any{"content": tasksJSON})
+		}}
+
+	var seen []string
+	configured := func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		seen = append(seen, in.ToolName+" "+in.ToolUseID)
+		return core.BeforeToolCallDecision{}
+	}
+	runner, hk, _, err := buildRunner([]core.Tool{execute, readFile}, configured, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, tl := range runner.Tools() {
+		names = append(names, tl.Name)
+	}
+	if !slices.Equal(names, []string{"code_mode", "execute", "read_file"}) {
+		t.Fatalf("the runner serves %v, want code_mode and the proxies", names)
+	}
+
+	ctx := context.Background()
+	render, err := renderSpec(ctx, runner, "01", 1, 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tc, err := readTestCommands(ctx, runner, render.Result.SpecDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := runChecks(ctx, runner, tc)
+	if len(checks) != 2 || !checks[0].Green() || !checks[1].Green() {
+		t.Fatalf("checks = %v", checks)
+	}
+	// 1 specr, 1 read_file, 2 checks: each reached the configured guard, as a
+	// Runner.Call, which gives a call its id.
+	if len(seen) != 4 {
+		t.Fatalf("the configured guard saw %d calls (%v), want 4", len(seen), seen)
+	}
+	for _, s := range seen {
+		if id := strings.Fields(s)[1]; !callIDRE.MatchString(id) {
+			t.Errorf("the guard saw %q: not a Runner.Call id", s)
+		}
+	}
+	if got := hk.calls.Load(); got != 4 {
+		t.Errorf("the hooks counted %d calls, want 4", got)
+	}
+	system := systemPrompt(runner.Tools(), []string{"go", "git"})
+	if !strings.Contains(system, "Run one program per call.") || !strings.Contains(system, "The shell may run: go, git.") {
+		t.Errorf("the system prompt lacks the served tools' guidelines or the allowed programs:\n%s", system)
+	}
+}
+
+// bearer adds a bearer token to every request.
+type bearer struct{ token string }
+
+func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+b.token)
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// TS-21-54: an MCP client holding the token calls a served tool and gets one
+// text content holding the runner's LLMText, with IsError the negation of OK.
+func TestMCPHandlerAnswersThroughRunnerCall_TS21_54(t *testing.T) {
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.Root(), "a.txt"), []byte("hello mcp\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	all, err := tools.For(ws, tools.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, _, _, err := buildRunner(all, guard.AllowAll, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &toolServer{runner: runner}
+	ctx := context.Background()
+	m, err := srv.serve(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.stop()
+
+	client := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "1"}, nil)
+	session, err := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: m.URL, HTTPClient: &http.Client{Transport: bearer{m.Token}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	for _, c := range []struct {
+		name  string
+		input string
+	}{
+		{"read_file", `{"path":"a.txt"}`},
+		{"read_file", `{}`},
+	} {
+		want := runner.Call(ctx, c.name, json.RawMessage(c.input))
+		var args map[string]any
+		_ = json.Unmarshal([]byte(c.input), &args)
+		got, err := session.CallTool(ctx, &sdk.CallToolParams{Name: c.name, Arguments: args})
+		if err != nil {
+			t.Fatalf("%s %s: a protocol error: %v", c.name, c.input, err)
+		}
+		text, ok := got.Content[0].(*sdk.TextContent)
+		if len(got.Content) != 1 || !ok {
+			t.Fatalf("%s %s: content = %#v, want one text content", c.name, c.input, got.Content)
+		}
+		if text.Text != want.LLMText() || got.IsError != !want.OK {
+			t.Errorf("%s %s: MCP says %q (error %v), the runner says %q (ok %v)", c.name, c.input, text.Text, got.IsError, want.LLMText(), want.OK)
+		}
+	}
 }
