@@ -27,13 +27,13 @@ func skipHeavy(t *testing.T) string {
 	return goBin
 }
 
-// skipInMakeCheck skips a check that only repeats what make check already
+// skipInMakeCheck skips a check that only repeats what make check-release already
 // runs: the sandbox module's tests and the policy gates. It still runs under
 // a plain go test.
 func skipInMakeCheck(t *testing.T) {
 	t.Helper()
 	if os.Getenv("AGENTKIT_IN_MAKE_CHECK") != "" {
-		t.Skip("repeats a suite make check already runs")
+		t.Skip("repeats a suite make check-release already runs")
 	}
 }
 
