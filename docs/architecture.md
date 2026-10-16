@@ -146,7 +146,7 @@ What follows from it:
 | `outline` | Declarations of a source file with line ranges. Go uses `go/ast` in every build. With cgo, Python, JavaScript, TypeScript/TSX, Java, Kotlin, C#, Scala, Rust, C, C++, PHP, Ruby, Lua and shell are parsed by tree-sitter grammars; without cgo they are `none`. |
 | `workspace` | The workspace: the containment boundary (`Open`, `Resolve`, `Rel`, `CheckWriteTarget`), the layered ignore engine (`IgnoreOptions`, `NoGlobalExcludes`, `Ignore`, `Ignored`) and the directory walk (`Walk`), opened once and handed to the tools and the index; the sandbox tree opens its own over a root it owns and takes a workspace's `Ignore()` options. It imports only the standard library and doublestar. |
 | `tools` | The built-in tools (`For`), the output accumulator, process control and the runner (`Run`, `RunArgv`), glob, the symbol table behind `find_symbol` and the reference engine behind `find_references` (`References`). |
-| `guard` | The shell boundary: `Check` (a pure decision on an argv), `Restricted` (the interceptor over it), `AllowAll`. |
+| `guard` | The shell boundary: `Check` (a pure decision on an argv), `Restricted` (the interceptor over it), `Allow` (`Restricted` with only the allowlist), `AllowAll`. |
 | `codemode` | The code-mode tool (below). |
 | `prompt` | `Build(system, tools)`: the base prompt, then the active tools' guidelines, deduplicated in first-seen order. |
 | `mcp` | The MCP client over the official MCP Go SDK (below). There is no server. |
@@ -479,7 +479,9 @@ ephemeral environment that holds exactly one workspace and one agent
 process. Containment comes from where the tools run; the driver does not
 change. PRD 11 (`docs/prd/11-run-tools-in-an-isolated-sandbox.md`) holds the
 design; spec 13 built the foundation, and later scopes add the providers that
-isolate.
+isolate. `sandbox.Open` sits over `Provider.Create`, `Sandbox.Sync` and
+`Sandbox.Tools`, running them in that order and closing the sandbox if `Sync`
+or `Tools` fails; the steps below describe what each of them does.
 
 ```
 Provider.Create   CheckSpec(Capabilities, Spec): every field the provider does

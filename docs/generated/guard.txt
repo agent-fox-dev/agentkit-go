@@ -40,6 +40,18 @@ var ShellToolNames = []string{"execute", "run_command"}
 
 FUNCTIONS
 
+func Allow(programs ...string) core.BeforeToolCall
+    Allow is Restricted with only AllowedPrograms set: it admits the shell
+    calls whose program is in programs and blocks the rest, with Restricted's
+    decisions and its "guard.Restricted: " reasons. Restricted is the way to
+    set the other options (AllowShellOperators, AllowEnvPrefixes, BlockedTools,
+    TerminateOnBlock). With no programs every shell call is blocked.
+
+    Like Restricted, the guard is a floor, not a sandbox.
+
+    Allow copies programs, so a caller who later changes or appends to the slice
+    it passed does not widen the allowlist.
+
 func AllowAll(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision
     AllowAll is the explicit opt-out from the guard: an interceptor that never
     blocks. Passing it is the affirmative act OQ-8 asks for — the embedder has

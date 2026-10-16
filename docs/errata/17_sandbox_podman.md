@@ -112,3 +112,18 @@ It names the image and `sandbox.AgentPath` (now
 `sandbox.DefaultImage()`, or `sandbox.BaseImageRepo + ":<version>"` with the
 hint to run `make build-containers` for a build with no published image.
 TS-17-34 and TS-17-67 check that text.
+
+## TS-17-61's guard pin gains `Allow`, on purpose (PRD 12, spec 22)
+
+17-REQ-10.3 pins `guard`'s exported declarations to `preSpec17Guard`, so that
+a change to the package's API is always a deliberate one. PRD 12
+(`docs/prd/12-simplify-the-embedder-contract.md`, decision D5) and spec 22
+(`embedder_helpers`) add one on purpose: `guard.Allow(programs ...string)
+core.BeforeToolCall` (`guard/guard.go:214`), which is `Restricted` with only
+`AllowedPrograms` set.
+
+`internal/policy/exported_api_17_test.go` lists it first in `preSpec17Guard`,
+in sorted position before `AllowAll`, and keeps every other entry, so the pin
+still fails on any other change to `guard`.
+`TestExportedAPIUnchanged_TS17_61` checks the list; `guard/allow_test.go`
+(TS-22-7 to 9) checks that `Allow` decides as `Restricted` does.

@@ -69,6 +69,24 @@ func FauxToolCall(id, name, args string) core.ContentBlock {
 	return b
 }
 
+// ToolCall scripts a turn that calls one tool: the block FauxToolCall builds,
+// with the tool_use stop reason. Empty or whitespace args mean {}, as in
+// core.NewToolUse. It panics, as FauxToolCall does, when args is not a JSON
+// object.
+func ToolCall(id, name, args string) Turn {
+	b, err := core.NewToolUse(id, name, json.RawMessage(args))
+	if err != nil {
+		panic(fmt.Sprintf("faux.ToolCall(%q, %q): %v", id, name, err))
+	}
+	return Turn{Blocks: []core.ContentBlock{b}, StopReason: core.StopReasonToolUse}
+}
+
+// Text scripts a turn that answers with s and ends: one text block with the
+// stop reason "stop". A turn of several blocks takes FauxAssistantMessage.
+func Text(s string) Turn {
+	return Turn{Blocks: []core.ContentBlock{core.TextBlock{Text: s}}, StopReason: core.StopReasonStop}
+}
+
 // FauxAssistantMessage builds a whole turn in one call.
 func FauxAssistantMessage(reason core.StopReason, blocks ...core.ContentBlock) Turn {
 	return Turn{Blocks: blocks, StopReason: reason}

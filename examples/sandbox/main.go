@@ -123,57 +123,51 @@ func runLandlock(ctx context.Context, w io.Writer, dir, agent string) error {
 
 // runOn works in dir on a sandbox p creates from spec.
 func runOn(ctx context.Context, w io.Writer, dir string, p sandbox.Provider, spec sandbox.Spec) error {
-	// 1. Create a sandbox.
-	sb, err := p.Create(ctx, spec)
+	// 1. Write the project to a host directory.
+	src := filepath.Join(dir, "project")
+	for _, f := range project {
+		file := filepath.Join(src, filepath.FromSlash(f[0]))
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(file, []byte(f[1]), 0o644); err != nil {
+			return err
+		}
+	}
+
+	// 2. Open a sandbox: Open creates it, puts the project in from the host
+	// directory and returns the proxy tools. Only what changed moves, and the
+	// same ignore rules as the file tools apply. If a step fails, Open closes
+	// the sandbox itself.
+	sb, proxies, err := sandbox.Open(ctx, p, spec, sandbox.LocalDir{Path: src}, sandbox.ToolOptions{})
 	if err != nil {
 		return err
 	}
 	defer sb.Close(ctx)
 	fmt.Fprintf(w, "sandbox %s on %s: agent %s, protocol %d.%d\n", sb.ID(), p.Capabilities().Provider, sb.Agent().Version, sb.Agent().ProtocolMajor, sb.Agent().ProtocolMinor)
 
-	// 2. Put the project in from a host directory. Only what changed moves,
-	// and the same ignore rules as the file tools apply.
-	src := filepath.Join(dir, "project")
-	for _, f := range project {
-		p := filepath.Join(src, filepath.FromSlash(f[0]))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(p, []byte(f[1]), 0o644); err != nil {
-			return err
-		}
-	}
-	res, err := sb.Sync(ctx, sandbox.LocalDir{Path: src})
+	// 3. The proxy tools have the same definitions as tools.For and run
+	// remotely. Pick the three the script needs; read_file is called directly.
+	picked, err := core.Named(proxies, "read_file", "search_files", "execute")
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "synced %d files, %d bytes\n", res.Files, res.Bytes)
-
-	// 3. Get the proxy tools: the same definitions as tools.For, run remotely.
-	proxies, err := sb.Tools(ctx, sandbox.ToolOptions{})
-	if err != nil {
-		return err
-	}
-	byName := map[string]core.Tool{}
-	for _, t := range proxies {
-		byName[t.Name] = t
-	}
-	r := byName["read_file"].Execute(ctx, json.RawMessage(`{"path":"src/main.go"}`))
+	r := picked[0].Execute(ctx, json.RawMessage(`{"path":"src/main.go"}`))
 	fmt.Fprintf(w, "read_file src/main.go in the sandbox: ok=%v, %d bytes\n", r.OK, len(fmt.Sprint(r.Data["content"])))
 
 	// 4. Drive them as any tools: here through code mode, under a guard.
-	cm, _, err := codemode.New([]core.Tool{byName["read_file"], byName["search_files"], byName["execute"]}, codemode.Options{})
+	cm, _, err := codemode.New(picked, codemode.Options{})
 	if err != nil {
 		return err
 	}
 	args, _ := json.Marshal(map[string]string{"script": script})
 	agent, err := agentkit.New(agentkit.Config{
 		Provider: faux.New(
-			faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall("call_1", cm.Name, string(args))}, StopReason: core.StopReasonToolUse},
-			faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("Two TODOs, both in src/.")}, StopReason: core.StopReasonStop},
+			faux.ToolCall("call_1", cm.Name, string(args)),
+			faux.Text("Two TODOs, both in src/."),
 		),
 		Model:    faux.Model().ID,
-		Toolset:  agentkit.Toolset{Tools: []core.Tool{cm}, Guard: guard.Restricted(guard.Options{AllowedPrograms: []string{"ls"}})},
+		Toolset:  agentkit.Toolset{Tools: []core.Tool{cm}, Guard: guard.Allow("ls")},
 		MaxTurns: 4,
 	})
 	if err != nil {

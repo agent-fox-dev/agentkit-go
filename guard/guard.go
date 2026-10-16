@@ -34,6 +34,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
@@ -198,6 +199,20 @@ func Restricted(o Options) core.BeforeToolCall {
 		}
 		return core.BeforeToolCallDecision{}
 	}
+}
+
+// Allow is Restricted with only AllowedPrograms set: it admits the shell calls
+// whose program is in programs and blocks the rest, with Restricted's decisions
+// and its "guard.Restricted: " reasons. Restricted is the way to set the other
+// options (AllowShellOperators, AllowEnvPrefixes, BlockedTools,
+// TerminateOnBlock). With no programs every shell call is blocked.
+//
+// Like Restricted, the guard is a floor, not a sandbox.
+//
+// Allow copies programs, so a caller who later changes or appends to the slice
+// it passed does not widen the allowlist.
+func Allow(programs ...string) core.BeforeToolCall {
+	return Restricted(Options{AllowedPrograms: slices.Clone(programs)})
 }
 
 // firstShellOperator scans a POSIX-sh command for the first construct that

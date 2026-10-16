@@ -41,7 +41,7 @@ agent, err := agentkit.New(agentkit.Config{
 	Model:  "claude-opus-5-5",
 	Toolset: agentkit.Toolset{
 		Tools: ts,
-		Guard: guard.Restricted(guard.Options{AllowedPrograms: []string{"go", "git"}}),
+		Guard: guard.Allow("go", "git"),
 	},
 })
 if err != nil {
@@ -64,12 +64,9 @@ model sees only `code_mode`, and every call a script makes goes through the
 driver's guard and event pipeline as a nested call.
 
 ```go
-var bound []core.Tool
-for _, t := range ts {
-	switch t.Name {
-	case "list_files", "find_files", "read_file", "search_files":
-		bound = append(bound, t)
-	}
+bound, err := core.Named(ts, "list_files", "find_files", "read_file", "search_files")
+if err != nil {
+	return err // names what is missing and lists what ts holds
 }
 cm, info, err := codemode.New(bound, codemode.Options{})
 if err != nil {
@@ -96,29 +93,25 @@ returns a drop-in replacement for `tools.For`: one proxy per built-in, with
 the same definition, whose every call runs in the AgentKit agent
 (`agentkit-sandboxd`) inside the sandbox over the `agentkit.sandbox.v1` gRPC
 protocol. The driver does not change and does not know a tool is remote.
+`sandbox.Open` does `Create`, `Sync` and `Tools` in one call and closes the
+sandbox if a step fails; a nil source skips the `Sync`, and the three methods
+stay for a second `Sync` and for the `SyncResult`, which `Open` discards.
 
 ```go
-sb, err := local.Unisolated().Create(ctx, sandbox.Spec{
-	Network: sandbox.Network{Mode: sandbox.NetworkUnrestricted},
-})
+// Only what changed moves; the same ignore rules as the file tools apply.
+sb, proxies, err := sandbox.Open(ctx, local.Unisolated(),
+	sandbox.Spec{Network: sandbox.Network{Mode: sandbox.NetworkUnrestricted}},
+	sandbox.LocalDir{Path: "./project"}, sandbox.ToolOptions{})
 if err != nil {
 	return err // a Spec the provider cannot honour is refused, naming the field
 }
 defer sb.Close(ctx)
-// Only what changed moves; the same ignore rules as the file tools apply.
-if _, err := sb.Sync(ctx, sandbox.LocalDir{Path: "./project"}); err != nil {
-	return err
-}
-proxies, err := sb.Tools(ctx, sandbox.ToolOptions{})
-if err != nil {
-	return err
-}
 agent, err := agentkit.New(agentkit.Config{
 	Client: client,
 	Model:  "claude-opus-5-5",
 	Toolset: agentkit.Toolset{
 		Tools: proxies,
-		Guard: guard.Restricted(guard.Options{AllowedPrograms: []string{"go"}}),
+		Guard: guard.Allow("go"),
 	},
 })
 // ... run the agent, then bring its edits back into a host directory.
@@ -230,8 +223,10 @@ The identifiers an embedder such as agent-fox builds on.
 | `core.ToolResult` | `OK`, `Data`, `Error`, `Detail`, `Terminate`, `Metadata`, `Blocks`, `Text`; `core.OKResult`, `core.ErrResult` |
 | `core.ProviderClient` | `Stream(ctx, Request) (<-chan StreamEvent, error)` |
 | `core.BeforeToolCall` | `func(ctx, BeforeToolCallContext) BeforeToolCallDecision` |
+| `core.Named` | `Named(ts []Tool, names ...string) ([]Tool, error)`; value copies in `names` order, an error for a missing or repeated name |
+| `faux.ToolCall`, `faux.Text` | `ToolCall(id, name, args string) faux.Turn`, `Text(s string) faux.Turn`: one-block scripted turns |
 | `schema.Parse`, `schema.Validate` | `Parse(data []byte) (*Schema, error)`, `Validate(s *Schema, v any) error` |
-| `guard.Check`, `guard.Restricted` | `Check(argv []string, o Options) Decision`, `Restricted(o Options) core.BeforeToolCall` |
+| `guard.Allow`, `guard.Check`, `guard.Restricted` | `Allow(programs ...string) core.BeforeToolCall` (`Restricted` with only `AllowedPrograms`), `Check(argv []string, o Options) Decision`, `Restricted(o Options) core.BeforeToolCall` |
 | `catalog.Lookup` | `Lookup(id string) (core.Model, bool)` |
 | `anthropic.Resolve` | `Resolve(env Env) (*sdk.Client, Source, error)` |
 | `codemode.New` | `New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error)` |
@@ -240,6 +235,7 @@ The identifiers an embedder such as agent-fox builds on.
 | `tools.For` | `For(ws *workspace.Workspace, opts Options) ([]core.Tool, error)` |
 | `sandbox.Provider` | `Capabilities()`, `Create(ctx, Spec) (Sandbox, error)`, `Reap(ctx) ([]string, error)` |
 | `sandbox.Sandbox` | `ID`, `Spec`, `Agent`, `Sync(ctx, Source)`, `Tools(ctx, ToolOptions) ([]core.Tool, error)`, `Export(ctx, path, Destination)`, `Close` |
+| `sandbox.Open` | `Open(ctx, p Provider, spec Spec, src Source, opts ToolOptions) (Sandbox, []core.Tool, error)`; `Create`, `Sync` when `src` is not nil, then `Tools`; closes the sandbox if a step fails |
 | `sandbox.CheckSpec` | `CheckSpec(caps Capabilities, spec Spec) (Spec, error)` |
 | `local.Unisolated` | `Unisolated() sandbox.Provider` |
 
@@ -255,14 +251,14 @@ The identifiers an embedder such as agent-fox builds on.
 | `outline` | Declarations of a source file: `go/ast` for Go, tree-sitter for fourteen more languages with cgo. |
 | `codemode` | The code-mode tool, on `go.starlark.net`. |
 | `mcp` | MCP client and tool pool on the official MCP Go SDK. |
-| `guard` | The shell boundary: `Check`, `Restricted`, `AllowAll`. |
+| `guard` | The shell boundary: `Check`, `Restricted`, `Allow`, `AllowAll`. |
 | `prompt` | The assembled system prompt: base prompt plus the active tools' guidelines. |
 | `catalog` | The embedded Claude model catalog and `Lookup`. |
 | `provider` | Cost arithmetic, the per-session tool-schema cache, deferred-tool splitting. |
 | `provider/anthropic` | The Anthropic wire (direct, Vertex AI, Bedrock) over the official SDK. |
-| `provider/faux` | A scripted provider for offline tests and demos. |
+| `provider/faux` | A scripted provider for offline tests and demos; `ToolCall` and `Text` script a turn. |
 | `wire` | Bounded, strict parsing of untrusted JSON, and frame readers. |
-| `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `CheckSpec`, `LocalDir`, `Tar`/`TarOut`, the protocol version and the errors. Its internal packages hold the protocol, the agent service, the attach and proxy code, the tar entry rules and the rsync adapter. |
+| `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `Open`, `CheckSpec`, `LocalDir`, `Tar`/`TarOut`, the protocol version and the errors. Its internal packages hold the protocol, the agent service, the attach and proxy code, the tar entry rules and the rsync adapter. |
 | `sandbox/local` | `local.Unisolated()`: an in-process provider with no isolation, for tests and development. |
 | `sandbox/podman` | `podman.New(Options)`: the first isolating provider, a hardened podman or docker container per sandbox. |
 | `sandbox/landlock` | `landlock.New(Options)`: the agent as a child process confined by Landlock, on Linux with ABI 4. |

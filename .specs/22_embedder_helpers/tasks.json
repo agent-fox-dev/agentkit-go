@@ -73,7 +73,7 @@
       "done_when": [
         "`go test -race ./core/...` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -100,7 +100,7 @@
       "done_when": [
         "`go test ./guard/...` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -129,7 +129,7 @@
       "done_when": [
         "`go test ./provider/faux/...` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -162,7 +162,7 @@
       "done_when": [
         "`cd sandbox && go test ./... -run Open` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -201,7 +201,7 @@
       "done_when": [
         "`cd sandbox && go test -race ./... -run Open` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -233,7 +233,7 @@
       "done_when": [
         "`go test ./internal/policy/... ./core/...` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -265,7 +265,7 @@
       "done_when": [
         "`go test ./examples/codemode/...` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -303,7 +303,7 @@
       "done_when": [
         "`cd examples/sandbox && go test ./...` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -339,7 +339,7 @@
       "done_when": [
         "`cd examples/gateway && go test ./...` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -378,7 +378,7 @@
       "done_when": [
         "`make check` passes in every module in MODULES"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,
@@ -409,7 +409,7 @@
       "done_when": [
         "`make test` and `make lint` pass in every module in MODULES"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

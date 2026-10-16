@@ -3,6 +3,9 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/schema"
@@ -327,6 +330,50 @@ func ReachableTools(tools []Tool) []Tool {
 	}
 	walk(tools)
 	return out
+}
+
+// Named returns the tools of ts called names, in the order of names, each a
+// value copy: the result shares nothing with ts. It looks only at the
+// top-level entries of ts, never at ReachableTools, so a wrapper's tools are
+// reached through the wrapper and the policy that prunes them stays in force;
+// when ts holds a name twice, the first wins. With no names the result is
+// empty and non-nil.
+//
+// A name that ts does not hold, or one that names repeats, is an error and
+// the result is nil. The error for a missing name quotes every missing name,
+// in the order of names, and lists the names ts does hold, in ts order,
+// because the usual mistake is a typo or a qualified MCP name
+// (server__tool) and the set as given fixes it in one step.
+func Named(ts []Tool, names ...string) ([]Tool, error) {
+	out := make([]Tool, 0, len(names))
+	var missing []string
+	for _, n := range names {
+		i := slices.IndexFunc(ts, func(t Tool) bool { return t.Name == n })
+		if i < 0 {
+			missing = append(missing, fmt.Sprintf("%q", n))
+			continue
+		}
+		out = append(out, ts[i])
+	}
+	if len(missing) > 0 {
+		held := "the set is empty"
+		if len(ts) > 0 {
+			have := make([]string, len(ts))
+			for i, t := range ts {
+				have[i] = t.Name
+			}
+			held = "the set holds: " + strings.Join(have, ", ")
+		}
+		return nil, fmt.Errorf("core: no tool named %s; %s", strings.Join(missing, ", "), held)
+	}
+	seen := make(map[string]bool, len(names))
+	for _, n := range names {
+		if seen[n] {
+			return nil, fmt.Errorf("core: tool %q is named more than once", n)
+		}
+		seen[n] = true
+	}
+	return out, nil
 }
 
 // ------------------------------------------------------------ nested calls

@@ -89,7 +89,7 @@ The zero `Toolset` has no tools, which is valid.
 |---|---|
 | `Tools` | The tools registered. Each sets exactly one of `Handler` and `Execute`. |
 | `Policy` | `core.ToolPolicy`: `Tools`, `ToolNames`, `ExcludeTools`, `NoTools` (`builtin` / `all`), `CustomTools`. Resolved over `Tools` once, in `NewRunner`, and applied to what wrappers reach too. A non-nil empty `Policy.Tools` means no tools. |
-| `Guard` | `core.BeforeToolCall`, the authorization boundary for every call, nested ones included. Required when a shell tool (`execute`, `run_command`) is reachable. Use `guard.Restricted(opts)` or `guard.AllowAll`. |
+| `Guard` | `core.BeforeToolCall`, the authorization boundary for every call, nested ones included. Required when a shell tool (`execute`, `run_command`) is reachable. Use `guard.Allow(programs...)`, `guard.Restricted(opts)` or `guard.AllowAll`. |
 | `After` | `core.AfterToolCall`. Receives the handler's `ToolResult` by value and the mutable `Result *ToolResultMessage`; its `Terminate *bool` can set or clear a call's terminate vote. |
 | `Events` | `func(core.Event)`, the sink for the execution events of calls a `Runner` runs outside an agent run. Nil discards them. |
 
@@ -154,6 +154,13 @@ operators and environment prefixes, then asks `guard.Check(argv, opts)`
 whether the program is on `AllowedPrograms`. `Check` is a pure function
 returning a `guard.Decision{Block, Reason, Terminate}`. The guard is a floor
 for unattended safety, not a sandbox.
+
+`guard.Allow(programs...)` is `guard.Restricted` with only `AllowedPrograms`
+set: its decisions, reasons (the `guard.Restricted: ` prefix) and `Terminate`
+values are `Restricted`'s. It copies `programs`, so changing or appending to
+the caller's slice afterwards does not widen the allowlist. With no programs
+every `execute` and `run_command` call is blocked. `Restricted` is the way to
+set the other options.
 
 A sandbox is the boundary the guard never claimed to be. `guard.AllowAll`,
 the interceptor that never blocks, is a reasonable choice only when every
@@ -602,6 +609,31 @@ fails with `sandbox.ErrToolsConfigured`.
 
 The agent always uses `workspace.NoGlobalExcludes()` (the workspace's own ignore
 files still apply), its explicit environment, and no index.
+
+### `sandbox.Open`
+
+`sandbox.Open(ctx, p, spec, src, opts)` does `Create`, `Sync` and `Tools` in
+one call and returns the sandbox with its proxy tools. It calls
+`p.Create(ctx, spec)`, then `Sync(ctx, src)` when `src` is not nil, then
+`Tools(ctx, opts)`, each once and in that order, so a `GitRepo` source, which
+must be the first `Sync` and come before the first `Tools` call, works on every
+provider that accepts one. A nil `src` skips the `Sync`. The `SyncResult` is
+discarded: call `Create`, `Sync` and `Tools` yourself to read it. The sandbox
+is returned exactly as `Create` returned it and is live; `ctx` bounds the three
+calls only, and the caller closes the sandbox.
+
+`Open` leaves nothing behind when it fails. A nil `p` is an error beginning
+`sandbox: `, and nothing is called. A `Create` error is returned unchanged. If
+`Sync` or `Tools` fails, `Open` calls `Close` once on the sandbox with
+`context.WithoutCancel(ctx)`, so an expired or cancelled `ctx`, the commonest
+cause of the failure, does not stop the cleanup, and returns no sandbox, no
+tools and the step's error unchanged: `errors.Is` still matches
+`sandbox.ErrUnsupported`, `sandbox.ErrToolMismatch`, `sandbox.ErrUnsafeArchive`
+and whatever else the step's error matches. When `Close` fails too, the error
+is `errors.Join(stepErr, closeErr)`, which matches both. On `local`, a failed
+`Open` leaves no directory under `agentkit-sandbox-local`: a `GitRepo` source
+fails with `ErrUnsupported`, and a relative `ToolOptions.SpillDir` with
+`sandbox: agent refused Tools: …`.
 
 ### Transfer: `sandbox.Tar` and `sandbox.TarOut`
 

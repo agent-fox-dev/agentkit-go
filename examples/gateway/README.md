@@ -59,17 +59,19 @@ over `https://`, with `agentkit-gateway --tls-cert … --tls-key …`.
    capabilities (`Provider.Gateway()`: version, backend, limits). A second
    `Dial` with a token the gateway does not hold fails with
    `gateway.ErrUnauthenticated`.
-3. `Create` makes a sandbox on the gateway's host with a 10-minute TTL and a
-   label; `List` shows it, owned by this token only.
-4. `Sync` puts a small project in from a host directory with
-   `sandbox.LocalDir`; the gateway relays the rsync stream.
-5. `Tools` returns the proxy tools, and an agent runs a code-mode script over
-   `read_file`, `search_files` and `execute` under
-   `guard.Restricted(guard.Options{AllowedPrograms: []string{"ls"}})`. The
+3. The project is written to a host directory, and `sandbox.Open` does
+   `Create`, `Sync` and `Tools` in one call: it makes a sandbox on the
+   gateway's host with a 10-minute TTL and a label, puts the project in with
+   `sandbox.LocalDir` (the gateway relays the rsync stream) and returns the
+   proxy tools. If a step fails, `Open` closes the sandbox itself. `List` shows
+   the sandbox, owned by this token only.
+4. `core.Named` picks `read_file`, `search_files` and `execute`, and an agent
+   runs a code-mode script over them under `guard.Allow("ls")`. The "model" is
+   `faux.ToolCall` for the `code_mode` call and `faux.Text` for the answer. The
    guard runs in the embedder: the script's `ls src` is relayed to the
    sandbox, and its `rm -rf src` is refused before anything reaches the
    gateway, coming back to the script as `blocked_by_policy`.
-6. `Export` takes `src` back out into a host directory, and `Close` destroys
+5. `Export` takes `src` back out into a host directory, and `Close` destroys
    the sandbox on the gateway; `List` is empty again.
 
 ## The code an embedder copies
@@ -102,12 +104,13 @@ if err != nil {
 	return err // a refused token matches gateway.ErrUnauthenticated
 }
 defer p.Close() // destroys the sandboxes p created, then disconnects
-sb, err := p.Create(ctx, sandbox.Spec{TTL: 10 * time.Minute})
+sb, proxies, err := sandbox.Open(ctx, p, sandbox.Spec{TTL: 10 * time.Minute},
+	sandbox.LocalDir{Path: projectDir}, sandbox.ToolOptions{})
 if err != nil {
-	return err
+	return err // a failed step has already closed the sandbox
 }
 defer sb.Close(ctx)
-// From here on, sb is a sandbox.Sandbox like any other: Sync, Tools, Export.
+// From here on, sb is a sandbox.Sandbox like any other: Export, a second Sync.
 ```
 
 See [`examples/sandbox`](../sandbox) for the same sandbox work against a

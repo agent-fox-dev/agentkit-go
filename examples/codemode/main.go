@@ -75,12 +75,9 @@ func run(ctx context.Context, w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	var bound []core.Tool
-	for _, t := range all {
-		switch t.Name {
-		case "list_files", "find_files", "read_file":
-			bound = append(bound, t)
-		}
+	bound, err := core.Named(all, "list_files", "find_files", "read_file")
+	if err != nil {
+		return err
 	}
 	// ...and one from an MCP server, imported through a pool as any
 	// embedder would import a remote server's tools.
@@ -104,11 +101,9 @@ func run(ctx context.Context, w io.Writer) error {
 		info.BoundToolsCount, info.DescriptionBytes, info.DescriptionChars)
 
 	model := faux.New(
-		turn(faux.FauxToolCall("call_1", "code_mode", scriptArgs(listAndFilter))),
-		turn(faux.FauxToolCall("call_2", "code_mode", scriptArgs(fanOut))),
-		faux.Turn{Blocks: []core.ContentBlock{faux.FauxText(
-			"The workspace has two Go files, no CHANGELOG.md, and 12 apples and 0 pears in stock.")},
-			StopReason: core.StopReasonStop},
+		faux.ToolCall("call_1", "code_mode", scriptArgs(listAndFilter)),
+		faux.ToolCall("call_2", "code_mode", scriptArgs(fanOut)),
+		faux.Text("The workspace has two Go files, no CHANGELOG.md, and 12 apples and 0 pears in stock."),
 	)
 	// The agent is given code_mode alone. The four tools it binds are its
 	// ReachableTools: the model never sees them, and a script reaches them
@@ -221,10 +216,6 @@ func inventoryPool(ctx context.Context) (*mcp.Pool, func(), error) {
 		return nil, nil, err
 	}
 	return pool, func() { _ = ss.Close() }, nil
-}
-
-func turn(b core.ContentBlock) faux.Turn {
-	return faux.Turn{Blocks: []core.ContentBlock{b}, StopReason: core.StopReasonToolUse}
 }
 
 func scriptArgs(script string) string {

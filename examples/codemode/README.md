@@ -40,6 +40,12 @@ seven calls the scripts made. Those are on the event stream.
 
 ## Where to look
 
+- `core.Named(all, "list_files", "find_files", "read_file")` picks, from
+  `tools.For`'s result, the three built-in tools the scripts may call, in that
+  order. A name the set does not hold is an error that lists the names it
+  does.
+- `faux.ToolCall(id, name, args)` and `faux.Text(s)` script the model: two
+  `code_mode` calls, then the final answer. Each is one whole turn.
 - `agentkit.New(agentkit.Config{Provider: model, Model: faux.Model().ID,
   Toolset: agentkit.Toolset{Tools: []core.Tool{cm}}, MaxTurns: 5})` gives the agent `code_mode` alone;
   the tools it binds are its `ReachableTools`, which the model never sees

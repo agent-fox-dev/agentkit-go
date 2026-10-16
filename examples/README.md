@@ -17,8 +17,8 @@ need an Anthropic credential (below).
 | [`customtools`](customtools) | `go run ./examples/customtools` | Writing tools well: the schema combinators, `Handler` vs `Execute`, argument repair, sequential execution, per-tool prompt guidelines, and a tool that ends the run. |
 | [`mcp`](mcp) | `go run ./examples/mcp` · `--external CMD` | The MCP client: consuming a server's tools under qualified names, with the pool refusing a server tool that would shadow one of yours. |
 | [`codemode`](codemode) | `go run ./examples/codemode` | Code mode: one tool that runs a model-written Starlark script over other tools — chained and parallel calls, errors as values, filtering before anything reaches the conversation — through the agent's own nested-call pipeline. |
-| [`sandbox`](sandbox) | `cd examples/sandbox && go run .` (its own module) | Sandboxes: syncing a project into one, proxy tools that are drop-in replacements for `tools.For`, a guarded code-mode script over them, and exporting files back out — against `local`, which is not isolation. |
-| [`gateway`](gateway) | `cd examples/gateway && go run .` (its own module) · `--url URL --token-file FILE` | The sandbox gateway: a `gatewayd.Server` started in process on a loopback port, and an embedder that holds only its URL and token — `gateway.Dial`, a refused token, `Create`, `List`, and the same sandbox work through the relay. Or dial an `agentkit-gateway` already running. |
+| [`sandbox`](sandbox) | `cd examples/sandbox && go run .` (its own module) | Sandboxes: `sandbox.Open` creating one and syncing a project into it, proxy tools that are drop-in replacements for `tools.For`, a guarded code-mode script over them, and exporting files back out — against `local`, which is not isolation. |
+| [`gateway`](gateway) | `cd examples/gateway && go run .` (its own module) · `--url URL --token-file FILE` | The sandbox gateway: a `gatewayd.Server` started in process on a loopback port, and an embedder that holds only its URL and token — `gateway.Dial`, a refused token, `sandbox.Open`, `List`, and the same sandbox work through the relay. Or dial an `agentkit-gateway` already running. |
 | [`harness`](harness) | `cd examples/harness && go run .` (its own module) · `--podman --image IMG --repo URL --spec N --harness claude` | Another harness in an AgentKit sandbox: a repository cloned into a sandbox, `specr` run inside it over the proxy `execute`, the spec's checks as a baseline, then `code_mode` and the proxy tools served to Claude Code or Pi over MCP on loopback, under the guard, with the harness's own tools off — and the checks again as the gate. Offline, a scripted stand-in plays the harness over the same MCP server. |
 
 ## Configuring an application
@@ -151,8 +151,9 @@ These are not defaults you can ignore — the library will stop you.
 through a wrapper tool — with a nil `Config.Toolset.Guard` makes `agentkit.New`
 return an error wrapping `core.ErrUnguardedExecute`; no agent is built. A
 headless service would otherwise hand the model an unrestricted shell by
-omission. Supply an interceptor — `guard.Restricted` is a replaceable
-starting point — or pass `guard.AllowAll` to say in code that you meant it.
+omission. Supply an interceptor — `guard.Allow("go")` is an allowlist in one
+call, and `guard.Restricted` a replaceable starting point with more options —
+or pass `guard.AllowAll` to say in code that you meant it.
 See [`codingagent`](codingagent).
 
 **Bounds are how a runaway run ends.** `Config.MaxTurns` stops the run once
