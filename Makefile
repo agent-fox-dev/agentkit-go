@@ -52,7 +52,10 @@ lint: ## Run golangci-lint if installed, otherwise skip
 		echo "golangci-lint not installed; skipping (see https://golangci-lint.run)"; \
 	fi
 
+# AGENTKIT_IN_MAKE_CHECK tells the tests that run inside make check to skip the
+# checks that would start make check again or repeat a suite it already runs.
 .PHONY: check
+check: export AGENTKIT_IN_MAKE_CHECK := 1
 check: fmt vet lint test ## Run fmt, vet, lint and test - use before committing
 
 .PHONY: doc
