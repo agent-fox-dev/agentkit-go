@@ -16,6 +16,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-03-16: code_search is a Builtin parallel read-only tool with the pinned
@@ -23,14 +24,13 @@ import (
 func TestCodeSearchToolDefinition_TS03_16(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\n")
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -106,14 +106,13 @@ func TestCodeSearchToolDefinition_TS03_16(t *testing.T) {
 func TestInvalidArguments_TS03_17(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\n")
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -170,14 +169,13 @@ func TestContextLinesAndMaxFilesDefaultAndClamp_TS03_18(t *testing.T) {
 		mkFile(t, root, fmt.Sprintf("pkg/file%03d.go", i), content)
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -222,14 +220,13 @@ func TestContextLinesAndMaxFilesDefaultAndClamp_TS03_18(t *testing.T) {
 func TestPathValidation_TS03_19(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\n")
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -276,14 +273,13 @@ func TestPathConjunction_TS03_20(t *testing.T) {
 	mkFile(t, root, "other/z.go", "package other\n// retry fetch\n")
 	mkFile(t, root, "c++[1]/w.go", "package cplus\n// retry fetch\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -351,14 +347,13 @@ func TestPathConjunction_TS03_20(t *testing.T) {
 func TestCancelledContext_TS03_21(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\n")
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -387,7 +382,7 @@ func TestCancelledContext_TS03_21(t *testing.T) {
 func TestBuildFailureReturnsIndexFailed_TS03_22(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\n")
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +395,6 @@ func TestBuildFailureReturnsIndexFailed_TS03_22(t *testing.T) {
 
 	idx, err := newIndex(ws, Options{
 		TempDir: badTempFile,
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -428,7 +422,7 @@ func TestBuildFailureReturnsIndexFailed_TS03_22(t *testing.T) {
 func TestSearchFailedAndTimeout_TS03_23(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\nfunc main() {}\n")
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +430,6 @@ func TestSearchFailedAndTimeout_TS03_23(t *testing.T) {
 	t.Run("search error", func(t *testing.T) {
 		idx, err := newIndex(ws, Options{
 			TempDir: t.TempDir(),
-			Ignore:  tools.NoGlobalExcludes(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -464,7 +457,6 @@ func TestSearchFailedAndTimeout_TS03_23(t *testing.T) {
 	t.Run("search timeout", func(t *testing.T) {
 		idx, err := newIndex(ws, Options{
 			TempDir: t.TempDir(),
-			Ignore:  tools.NoGlobalExcludes(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -505,14 +497,13 @@ func TestSearchFailedAndTimeout_TS03_23(t *testing.T) {
 func TestLazyBuild_TS03_5_1(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\nfunc main() {}\n")
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -601,11 +592,11 @@ func getResultFilePaths(r core.ToolResult) []string {
 func TestOutputSchemaCodeSearch_TS06_20(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\n")
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	idx, err := newIndex(ws, Options{TempDir: t.TempDir(), Ignore: tools.NoGlobalExcludes()})
+	idx, err := newIndex(ws, Options{TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -664,11 +655,11 @@ func TestOutputSchemaCodeSearch_TS06_20(t *testing.T) {
 func TestErrorCodesInvalidArguments_TS06_23(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\n")
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	idx, err := newIndex(ws, Options{TempDir: t.TempDir(), Ignore: tools.NoGlobalExcludes()})
+	idx, err := newIndex(ws, Options{TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,11 +681,11 @@ func TestConformanceCodeSearchDataMatchesOutputSchema_TS06_22(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\n\n// Greet says hello.\nfunc Greet() string { return \"hi\" }\n\nfunc main() { _ = Greet() }\n")
 	mkFile(t, root, "notes.txt", "greeting notes\nanother line\n")
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	idx, err := newIndex(ws, Options{TempDir: t.TempDir(), Ignore: tools.NoGlobalExcludes()})
+	idx, err := newIndex(ws, Options{TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

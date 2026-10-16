@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/codesearch"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // moduleRoot returns the absolute path of the codesearch module directory.
@@ -171,7 +171,7 @@ func TestErrUnsupportedOnWindows(t *testing.T) {
 	}
 
 	if runtime.GOOS == "windows" {
-		ws, err := tools.NewWorkspace(t.TempDir())
+		ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -184,7 +184,7 @@ func TestErrUnsupportedOnWindows(t *testing.T) {
 		}
 	} else {
 		// On non-Windows, New should succeed with a valid workspace.
-		ws, err := tools.NewWorkspace(t.TempDir())
+		ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 		if err != nil {
 			t.Fatal(err)
 		}

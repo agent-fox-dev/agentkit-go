@@ -8,11 +8,11 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // Options configures the codesearch index.
 type Options struct {
-	Ignore       tools.IgnoreOptions
 	MaxFiles     int
 	MaxBytes     int64
 	MaxBuildTime time.Duration
@@ -65,6 +65,6 @@ func (*Index) RunDir() string { return "" }
 // New returns ErrUnsupported on Windows because zoekt does not build on this
 // platform. The result is a nil interface; an embedder falls back to
 // Options.Index == nil.
-func New(_ *tools.Workspace, _ Options) (tools.Index, error) {
+func New(_ *workspace.Workspace, _ Options) (tools.Index, error) {
 	return nil, ErrUnsupported
 }

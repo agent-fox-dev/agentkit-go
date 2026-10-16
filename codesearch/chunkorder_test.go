@@ -11,8 +11,8 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
-	"github.com/agent-fox-dev/agentkit-go/tools"
 
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 	zoekt "github.com/sourcegraph/zoekt"
 )
 
@@ -119,13 +119,12 @@ func TestCodeSearchShowsTheBestChunksNotTheEarliest(t *testing.T) {
 	src.WriteString("func needle() {}\n")
 	mkFile(t, root, "many.go", src.String())
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -35,10 +35,14 @@ learns about writes, and may serve `find_symbol`.
 ```go
 import "github.com/agent-fox-dev/agentkit-go/codesearch"
 
-opts := tools.Options{Workspace: ws /* ... */}
-idx, err := codesearch.New(ws, codesearch.Options{
-    Ignore: opts.Ignore, // same value as tools.Options.Ignore
-})
+// Ignore configuration is given once, to the workspace: the index, the
+// built-in tools and a sandbox's LocalDir all use its rules.
+ws, err := workspace.Open(".", workspace.Options{ /* Ignore: ... */ })
+if err != nil {
+    return err
+}
+opts := tools.Options{ /* ... */ }
+idx, err := codesearch.New(ws, codesearch.Options{})
 switch {
 case errors.Is(err, codesearch.ErrUnsupported):
     // Windows: run without code search. Options.Index stays nil.
@@ -49,7 +53,7 @@ default:
     opts.Index = idx
 }
 
-tools, err := tools.All(opts)
+tools, err := tools.For(ws, opts)
 ```
 
 `New` returns a `tools.Index`, the same on every platform, so this is one code
@@ -66,7 +70,7 @@ Add `"code_search"` to your embedder's tool allowlist.
 The index also works without an agent: build it, call the `code_search` tool's
 `Execute` and `Symbols` directly, and call `Invalidate` when files change.
 [`examples/codesearch`](../examples/codesearch) has runnable programs for both
-uses — `search` and `freshness` on their own, `agent` wired into `tools.All`.
+uses — `search` and `freshness` on their own, `agent` wired into `tools.For`.
 
 ## Known Differences from search_files
 

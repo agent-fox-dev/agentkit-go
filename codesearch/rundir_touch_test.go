@@ -11,16 +11,16 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // builtIndex returns an index over a small workspace, already built by a first
 // query, together with a function that runs another query on it.
-func builtIndex(t *testing.T, tempDir string, ws *tools.Workspace) (*Index, func() core.ToolResult) {
+func builtIndex(t *testing.T, tempDir string, ws *workspace.Workspace) (*Index, func() core.ToolResult) {
 	t.Helper()
 
 	idx, err := newIndex(ws, Options{
 		TempDir: tempDir,
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -38,11 +38,11 @@ func builtIndex(t *testing.T, tempDir string, ws *tools.Workspace) (*Index, func
 	return idx, query
 }
 
-func touchWorkspace(t *testing.T) *tools.Workspace {
+func touchWorkspace(t *testing.T) *workspace.Workspace {
 	t.Helper()
 	root := t.TempDir()
 	mkFile(t, root, "a.go", "package pkg\n// searchword\nfunc A() {}\n")
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}

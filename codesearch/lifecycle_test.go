@@ -16,6 +16,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-03-39: Hitting the file, byte or time bound gives a partial index that
@@ -28,7 +29,7 @@ func TestBoundsGivePartialNotRetried_TS03_39(t *testing.T) {
 			fmt.Sprintf("package pkg\n// searchword line %d\nfunc F%d() {}\n", i, i))
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +37,6 @@ func TestBoundsGivePartialNotRetried_TS03_39(t *testing.T) {
 	t.Run("files bound", func(t *testing.T) {
 		idx, err := newIndex(ws, Options{
 			TempDir:  t.TempDir(),
-			Ignore:   tools.NoGlobalExcludes(),
 			MaxFiles: 5, // only 5 files allowed
 		})
 		if err != nil {
@@ -73,7 +73,6 @@ func TestBoundsGivePartialNotRetried_TS03_39(t *testing.T) {
 	t.Run("bytes bound", func(t *testing.T) {
 		idx, err := newIndex(ws, Options{
 			TempDir:  t.TempDir(),
-			Ignore:   tools.NoGlobalExcludes(),
 			MaxBytes: 100, // very small byte limit
 		})
 		if err != nil {
@@ -113,7 +112,6 @@ func TestBoundsGivePartialNotRetried_TS03_39(t *testing.T) {
 
 		idx, err := newIndex(ws, Options{
 			TempDir:      t.TempDir(),
-			Ignore:       tools.NoGlobalExcludes(),
 			MaxBuildTime: 1 * time.Nanosecond, // extremely short
 		})
 		if err != nil {
@@ -164,7 +162,7 @@ func TestCancelledBuildAbortsAndRebuilds_TS03_40(t *testing.T) {
 			fmt.Sprintf("package pkg\n// searchword\nfunc F%d() {}\n", i))
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +172,6 @@ func TestCancelledBuildAbortsAndRebuilds_TS03_40(t *testing.T) {
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -247,14 +244,13 @@ func TestConcurrentQueries_TS03_56(t *testing.T) {
 			fmt.Sprintf("package pkg\n// searchword\nfunc F%d() {}\n", i))
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -316,14 +312,13 @@ func TestCloseWaitsAndDeletesAndIdempotent_TS03_57(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\n// searchword\nfunc main() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -419,14 +414,13 @@ func TestAfterCloseToolsRefuse_TS03_58(t *testing.T) {
 	root := t.TempDir()
 	mkFile(t, root, "main.go", "package main\n// searchword\nfunc main() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -476,15 +470,13 @@ func TestAllNoCloserAndSweepAbandoned_TS03_59(t *testing.T) {
 	// This is verified by the type signature itself. If All returned a closer,
 	// the code would not compile with this assignment:
 	root := t.TempDir()
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var tls []core.Tool
-	tls, err = tools.All(tools.Options{
-		Workspace: ws,
-		Ignore:    tools.NoGlobalExcludes(),
-		Symbols:   tools.SymbolOptions{},
+	tls, err = tools.For(ws, tools.Options{
+		Symbols: tools.SymbolOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -498,7 +490,7 @@ func TestAllNoCloserAndSweepAbandoned_TS03_59(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Compute the hash directory for this workspace.
-	absRoot := ws.Root
+	absRoot := ws.Root()
 	h := sha256.Sum256([]byte(absRoot))
 	hashHex := fmt.Sprintf("%x", h[:])
 	hashDir := filepath.Join(tmpDir, "agentkit-codesearch-"+hashHex)
@@ -525,7 +517,6 @@ func TestAllNoCloserAndSweepAbandoned_TS03_59(t *testing.T) {
 	// Build a new index (which triggers the sweep).
 	idx, err := newIndex(ws, Options{
 		TempDir: tmpDir,
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)

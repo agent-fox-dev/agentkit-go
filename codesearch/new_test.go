@@ -8,6 +8,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/codesearch"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // PRD §1: the single entry point is New(ws, opts) (tools.Index, error). A
@@ -25,11 +26,11 @@ func TestNewFailureYieldsANilInterface(t *testing.T) {
 		t.Fatalf("New returned %T(%v) with its error, want a nil interface", idx, idx)
 	}
 
-	ws, err := tools.NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws, Index: idx})
+	all, err := tools.For(ws, tools.Options{Index: idx})
 	if err != nil {
 		t.Fatalf("tools.All with the failed New's result: %v", err)
 	}

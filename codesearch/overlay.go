@@ -50,7 +50,7 @@ func (idx *Index) buildOverlayShard(ctx context.Context, dirtySet map[string]boo
 		if idx.dirty.isGone(rel) {
 			continue
 		}
-		abs := filepath.Join(idx.ws.Root, filepath.FromSlash(rel))
+		abs := filepath.Join(idx.ws.Root(), filepath.FromSlash(rel))
 		fi, err := os.Stat(abs)
 		if err != nil {
 			continue // file doesn't exist
@@ -78,7 +78,7 @@ func (idx *Index) buildOverlayShard(ctx context.Context, dirtySet map[string]boo
 	}
 
 	// Outline the dirty files.
-	outlineOpts := outline.Options{Root: idx.ws.Root}
+	outlineOpts := outline.Options{Root: idx.ws.Root()}
 
 	srcs := make([]outline.Source, len(files))
 	for i, fe := range files {

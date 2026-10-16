@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-03-44: Dirty files are searched through an overlay shard and merged by
@@ -33,14 +33,13 @@ func TestOverlayShardMergeByScore_TS03_44(t *testing.T) {
 	// Create one file that also matches but with lower initial score.
 	mkFile(t, root, "edited.go", "package pkg\n// nothing here\nfunc Edited() {}\n")
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -147,14 +146,13 @@ func TestRebuildThreshold_TS03_45(t *testing.T) {
 		mkFile(t, root, fmt.Sprintf("file%03d.go", i), content)
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -246,14 +244,13 @@ func TestRebuildWaitAndAbort_TS03_46(t *testing.T) {
 		mkFile(t, root, fmt.Sprintf("file%03d.go", i), content)
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx, err := newIndex(ws, Options{
 		TempDir: t.TempDir(),
-		Ignore:  tools.NoGlobalExcludes(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -380,14 +377,13 @@ func TestFreshnessPropertySequence_TS03_49(t *testing.T) {
 				model[rel] = content
 			}
 
-			ws, err := tools.NewWorkspace(root)
+			ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 			if err != nil {
 				t.Fatal(err)
 			}
 
 			idx, err := newIndex(ws, Options{
 				TempDir: t.TempDir(),
-				Ignore:  tools.NoGlobalExcludes(),
 			})
 			if err != nil {
 				t.Fatal(err)

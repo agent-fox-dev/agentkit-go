@@ -16,6 +16,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // devFixture builds an index over the files in the map (path to content).
@@ -25,12 +26,11 @@ func devFixture(t *testing.T, files map[string]string, opts Options) (*Index, fu
 	for rel, content := range files {
 		mkFile(t, root, rel, content)
 	}
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	opts.TempDir = t.TempDir()
-	opts.Ignore = tools.NoGlobalExcludes()
 	idx, err := newIndex(ws, opts)
 	if err != nil {
 		t.Fatal(err)

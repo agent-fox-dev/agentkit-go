@@ -16,7 +16,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/outline"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 	"github.com/sourcegraph/zoekt/query"
 )
 
@@ -25,14 +25,13 @@ import (
 
 func newTestIndex(t *testing.T, root string, o Options) *Index {
 	t.Helper()
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if o.TempDir == "" {
 		o.TempDir = t.TempDir()
 	}
-	o.Ignore = tools.NoGlobalExcludes()
 	idx, err := newIndex(ws, o)
 	if err != nil {
 		t.Fatal(err)
