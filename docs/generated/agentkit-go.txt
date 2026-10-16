@@ -232,9 +232,12 @@ type Toolset struct {
 	// Events receives the execution events of the calls a Runner runs outside
 	// an agent run; a nil Events discards them. It may be called from several
 	// goroutines at once, so it must be safe for concurrent use, and it should
-	// not block. (*core.EventStream).Push is a conforming sink. During an
-	// agent run the run's stream receives the events of the run's calls and
-	// Events is not called for them.
+	// not block: start events are emitted while a batch is prepared, and end
+	// and result events while a call is finalized, so a sink that waits for
+	// another call of the same batch to finish never returns. A sink may itself
+	// call Runner.Call. (*core.EventStream).Push is a
+	// conforming sink. During an agent run the run's stream receives the events
+	// of the run's calls and Events is not called for them.
 	Events func(core.Event)
 }
     Toolset is the tool side of an agent: the tools, the policy that selects

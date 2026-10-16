@@ -270,7 +270,7 @@ func TestAgentRunnerCallsStayOutsideTheRun_TS21_44(t *testing.T) {
 	t.Run("runner calls during a run add nothing to it", func(t *testing.T) {
 		started, release := make(chan struct{}, 1), make(chan struct{})
 		var events eventLog
-		fp := faux.New(callTurn(faux.FauxToolCall("c1", "hold", "{}")), finalTurn("done"))
+		fp := faux.New(callTurn(faux.FauxToolCall("c1", "hold", "{}")), finalTurn("done"), finalTurn("again"))
 		a, err := New(Config{Provider: fp, Model: testModelID, Toolset: Toolset{
 			Tools:  []core.Tool{holdTool("hold", started, release), echoTool("echo", nil)},
 			Events: events.add,
@@ -309,13 +309,35 @@ func TestAgentRunnerCallsStayOutsideTheRun_TS21_44(t *testing.T) {
 		if _, err := st.RunResult(); err != nil {
 			t.Fatal(err)
 		}
+
+		// And again once the run has finished: the same runner, still no
+		// effect on the transcript or Usage, and no run slot held.
+		after, usageAfter := len(a.Messages()), a.Usage()
+		if a.Runner() != r {
+			t.Error("Agent.Runner returned a different pointer after the run")
+		}
+		if res := r.Call(ctx, "echo", nil); !res.OK {
+			t.Errorf("Call after the run = %+v", res)
+		}
+		if res := r.Batch(ctx, toolUse(t, "b3", "echo", `{}`)); len(res) != 1 || !res[0].OK {
+			t.Errorf("Batch after the run = %+v", res)
+		}
+		if n := len(a.Messages()); n != after {
+			t.Errorf("the transcript grew from %d to %d messages after the run", after, n)
+		}
+		if u := a.Usage(); !reflect.DeepEqual(u, usageAfter) {
+			t.Errorf("Usage changed from %+v to %+v by calls made after the run", usageAfter, u)
+		}
+		if _, err := a.Run(ctx, "once more"); err != nil {
+			t.Errorf("a Run after runner calls = %v, want it to run", err)
+		}
 		var names []string
 		for _, e := range events.all() {
 			if s, ok := e.(core.ToolExecutionStartEvent); ok {
 				names = append(names, s.Name)
 			}
 		}
-		if want := []string{"echo", "echo", "echo"}; !slices.Equal(names, want) {
+		if want := []string{"echo", "echo", "echo", "echo", "echo"}; !slices.Equal(names, want) {
 			t.Errorf("Toolset.Events received start events for %v, want only the runner calls %v (the run's own hold call goes to the run's stream)", names, want)
 		}
 	})

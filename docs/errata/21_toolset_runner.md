@@ -30,9 +30,12 @@ where it now names them.
 ## A reachability cycle that enters only through `Policy.CustomTools` crashes construction (21-REQ-2.1)
 
 21-REQ-2.1 keeps today's order: check every registered tool, resolve the
-policy, check every resolved tool. `ToolPolicy.Resolve` always ends in
-`pruneReachable`, which recurses without bound on a cyclic tool
-(`core/toolpolicy.go:117`). A cycle in `Toolset.Tools` is refused by the first
+policy, check every resolved tool. `ToolPolicy.Resolve` ends in
+`pruneReachable` unless it returns early (for a non-nil `Policy.Tools`, which
+is used verbatim, and for `NoTools` set to all), and `pruneReachable` recurses
+without bound on a cyclic tool (`core/toolpolicy.go:117`). A cyclic tool in a
+non-nil `Policy.Tools` is therefore still refused, by the check on the resolved
+set. A cycle in `Toolset.Tools` is refused by the first
 check, before `Resolve` runs, with `agentkit: reachable tools cycle detected:
 …`. A cycle that is present only in `Policy.CustomTools` reaches `Resolve`
 unchecked, and the process dies with a stack overflow, which cannot be
@@ -59,3 +62,10 @@ arguments that fail validation) is counted and has no line, and a blocked call
 has its `blocked` line and no `error` line after it. The `blocked` and `run`
 lines and the nested `error` line keep their exact format, and the blocked count
 is 3 for the sequence TS-21-53 runs (`TestServerGuardsDirectAndNestedCalls`).
+
+Two more differences follow from the same move. The `run` line now prints a
+call's arguments as the guard received them, before any rewrite the guard
+returned (`examples/harness/main.go`, `hooks.guard`); the hand-rolled server
+printed them after. And an unknown tool's text is the runner's
+(`no tool named "NAME" is available in this run; available tools: …`), where the
+hand-rolled server said `"NAME" is not a tool the harness may call`.

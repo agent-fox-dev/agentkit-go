@@ -283,10 +283,8 @@ func run(ctx context.Context, w, log io.Writer, o options) error {
 	}
 	fmt.Fprintf(w, "verdict: %s\n", text)
 	if o.Repo != "" && sb.Agent().Git {
-		if res := runner.Call(ctx, "execute", json.RawMessage(`{"command":"git status --short","timeout_s":60}`)); res.OK && res.Data["outcome"] == "ok" {
-			if status, _ := res.Data["output"].(string); strings.TrimSpace(status) != "" {
-				fmt.Fprintf(w, "git status --short:\n%s\n", indent(strings.TrimSpace(status)))
-			}
+		if status := gitStatus(ctx, runner); status != "" {
+			fmt.Fprintf(w, "git status --short:\n%s\n", indent(status))
 		}
 	}
 
@@ -311,6 +309,18 @@ func run(ctx context.Context, w, log io.Writer, o options) error {
 	}
 	fmt.Fprintln(w, "\nHarness example completed successfully")
 	return nil
+}
+
+// gitStatus runs `git status --short` in the sandbox through the runner, under
+// the guard like every other call, and returns what it printed. It is empty
+// when the call did not run, failed or printed nothing.
+func gitStatus(ctx context.Context, r *agentkit.Runner) string {
+	res := r.Call(ctx, "execute", json.RawMessage(`{"command":"git status --short","timeout_s":60}`))
+	if !res.OK || res.Data["outcome"] != "ok" {
+		return ""
+	}
+	status, _ := res.Data["output"].(string)
+	return strings.TrimSpace(status)
 }
 
 // buildRunner binds the proxies into one code_mode tool and builds the runner

@@ -425,8 +425,11 @@ func TestHarnessStepsRunThroughTheRunner_TS21_52(t *testing.T) {
 			var a struct{ Command string }
 			_ = json.Unmarshal(in, &a)
 			out := ""
-			if strings.HasPrefix(a.Command, "specr") {
+			switch {
+			case strings.HasPrefix(a.Command, "specr"):
 				out = envelope
+			case strings.HasPrefix(a.Command, "git status"):
+				out = " M greeter.go\n"
 			}
 			return core.OKResult(map[string]any{"output": out, "outcome": "ok", "exit_code": 0})
 		}}
@@ -465,18 +468,21 @@ func TestHarnessStepsRunThroughTheRunner_TS21_52(t *testing.T) {
 	if len(checks) != 2 || !checks[0].Green() || !checks[1].Green() {
 		t.Fatalf("checks = %v", checks)
 	}
-	// 1 specr, 1 read_file, 2 checks: each reached the configured guard, as a
-	// Runner.Call, which gives a call its id.
-	if len(seen) != 4 {
-		t.Fatalf("the configured guard saw %d calls (%v), want 4", len(seen), seen)
+	if status := gitStatus(ctx, runner); status != "M greeter.go" {
+		t.Fatalf("gitStatus = %q, want what git printed, trimmed", status)
+	}
+	// 1 specr, 1 read_file, 2 checks and the final git status: each reached the
+	// configured guard, as a Runner.Call, which gives a call its id.
+	if len(seen) != 5 {
+		t.Fatalf("the configured guard saw %d calls (%v), want 5", len(seen), seen)
 	}
 	for _, s := range seen {
 		if id := strings.Fields(s)[1]; !callIDRE.MatchString(id) {
 			t.Errorf("the guard saw %q: not a Runner.Call id", s)
 		}
 	}
-	if got := hk.calls.Load(); got != 4 {
-		t.Errorf("the hooks counted %d calls, want 4", got)
+	if got := hk.calls.Load(); got != 5 {
+		t.Errorf("the hooks counted %d calls, want 5", got)
 	}
 	system := systemPrompt(runner.Tools(), []string{"go", "git"})
 	if !strings.Contains(system, "Run one program per call.") || !strings.Contains(system, "The shell may run: go, git.") {

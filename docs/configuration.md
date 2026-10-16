@@ -131,8 +131,12 @@ pipeline recovered. A call's start event precedes its end event, and a
 top-level call's end event precedes its result event.
 
 `Events` is called from the goroutines that run the calls, several at once, so
-it must be safe for concurrent use and should not block. No runner-wide lock is
-held while it runs, so a sink may itself call `Runner.Call`.
+it must be safe for concurrent use and should not block. Start events are
+emitted while a batch is prepared, and end and result events while a call is
+finalized, under a lock scoped to that batch (or to that wrapper's nested
+calls), so a sink that waits for another call of the same batch to finish never
+returns. No runner-wide lock is held while it runs, so a sink may itself call
+`Runner.Call`.
 `(*core.EventStream).Push` is a conforming sink. A panic in `Events` is
 recovered and the event is dropped; it is not reported again, because the sink
 that would receive the report is the one that panicked.

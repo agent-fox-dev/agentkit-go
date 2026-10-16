@@ -13,7 +13,8 @@ import (
 
 // nestedEnv is what a nested call needs from the batch that runs its
 // wrapper. It is built once per batch from the same runner the batch runs on,
-// so a nested call never reaches back through a.mu for configuration.
+// so a nested call takes its guard, interceptor and tools from that runner and
+// takes no lock to read them.
 type nestedEnv struct {
 	runner    *Runner
 	emit      func(core.Event)

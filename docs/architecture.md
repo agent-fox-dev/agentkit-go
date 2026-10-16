@@ -241,7 +241,9 @@ claim the run slot.
   user code runs while the agent mutex is held.
 - **Panics in third-party code are contained** (tool handlers, interceptors,
   argument preparation, the provider) and reported as `core.ErrorEvent`s. A
-  panicking `Guard` blocks the call.
+  panicking `Guard` blocks the call. A panic in the `Toolset.Events` sink is
+  contained too, but the event is dropped and not reported: the sink that would
+  receive the report is the one that panicked.
 - **A shell tool with no `Guard`** is refused by `NewRunner`, and so by `New`,
   with `core.ErrUnguardedExecute`; `guard.AllowAll` is the explicit opt-out. A
   shell tool reachable through a wrapper counts too:

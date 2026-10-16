@@ -117,6 +117,8 @@ func TestNewRunnerRefusesBadHandlers_TS21_5(t *testing.T) {
 		{"both", Toolset{Tools: []core.Tool{both}}, `agentkit: tool "u" sets both Handler and Execute; exactly one`},
 		{"neither via policy", Toolset{Policy: core.ToolPolicy{CustomTools: []core.Tool{neither}}}, `agentkit: tool "t" has neither Handler nor Execute`},
 		{"both via policy", Toolset{Policy: core.ToolPolicy{CustomTools: []core.Tool{both}}}, `agentkit: tool "u" sets both Handler and Execute; exactly one`},
+		{"neither behind a wrapper", Toolset{Tools: []core.Tool{{Name: "w", Handler: noopHandler, ReachableTools: []core.Tool{neither}}}}, `agentkit: tool "t" has neither Handler nor Execute`},
+		{"both behind a wrapper the policy adds", Toolset{Policy: core.ToolPolicy{CustomTools: []core.Tool{{Name: "w", Handler: noopHandler, ReachableTools: []core.Tool{both}}}}}, `agentkit: tool "u" sets both Handler and Execute; exactly one`},
 	}
 	for _, c := range cases {
 		r, err := NewRunner(c.ts)
