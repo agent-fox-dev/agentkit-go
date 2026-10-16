@@ -74,7 +74,7 @@
       "done_when": [
         "`cd mcpserve && go test ./... -count=1` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
