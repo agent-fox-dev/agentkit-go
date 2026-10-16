@@ -48,16 +48,20 @@ offline on `local`.
 
 ## What it does
 
-1. `local.Unisolated().Create` with `NetworkUnrestricted`. `local` cannot
-   honour the zero network (`none`), and refuses rather than pretend.
-2. The project is written to a temporary host directory, and `Sync` puts it
-   in with `sandbox.LocalDir`, over the rsync protocol.
-3. `Tools` returns the proxy tools; one `read_file` is called directly.
-4. `codemode.New` binds the proxy `read_file`, `search_files` and `execute`,
-   and an agent runs a script over them under
-   `guard.Restricted(guard.Options{AllowedPrograms: []string{"ls"}})`. The
-   script's `ls src` runs in the sandbox; its `rm -rf src` is refused by the
-   guard and comes back to the script as `blocked_by_policy`.
+1. The project is written to a temporary host directory.
+2. `sandbox.Open` does `Create`, `Sync` and `Tools` in one call: it creates a
+   sandbox on `local.Unisolated()` with `NetworkUnrestricted` (`local` cannot
+   honour the zero network, `none`, and refuses rather than pretend), puts the
+   project in from the host directory with `sandbox.LocalDir` over the rsync
+   protocol, and returns the proxy tools. If a step fails, `Open` closes the
+   sandbox itself. The program closes it with `defer sb.Close(ctx)`.
+3. `core.Named` picks the proxy `read_file`, `search_files` and `execute`;
+   `read_file` is called directly.
+4. `codemode.New` binds the three, and an agent runs a script over them under
+   `guard.Allow("ls")`. The script's `ls src` runs in the sandbox; its
+   `rm -rf src` is refused by the guard and comes back to the script as
+   `blocked_by_policy`. The "model" is `faux.ToolCall` for the `code_mode` call
+   and `faux.Text` for the answer.
 5. `Export` takes `src` out into a host output directory with
    `sandbox.LocalDir`, which creates it; the program prints the files it
    finds there.
@@ -65,17 +69,14 @@ offline on `local`.
 ## The code an embedder copies
 
 ```go
-sb, err := local.Unisolated().Create(ctx, sandbox.Spec{
-	Network: sandbox.Network{Mode: sandbox.NetworkUnrestricted},
-})
+sb, proxies, err := sandbox.Open(ctx, local.Unisolated(),
+	sandbox.Spec{Network: sandbox.Network{Mode: sandbox.NetworkUnrestricted}},
+	sandbox.LocalDir{Path: projectDir}, sandbox.ToolOptions{})
 if err != nil {
-	return err
+	return err // a failed step has already closed the sandbox
 }
 defer sb.Close(ctx)
-if _, err := sb.Sync(ctx, sandbox.LocalDir{Path: projectDir}); err != nil {
-	return err
-}
-proxies, err := sb.Tools(ctx, sandbox.ToolOptions{})
+picked, err := core.Named(proxies, "read_file", "search_files", "execute")
 if err != nil {
 	return err
 }
@@ -83,8 +84,8 @@ agent, err := agentkit.New(agentkit.Config{
 	Provider: provider,
 	Model:    model,
 	Toolset: agentkit.Toolset{
-		Tools: proxies, // execute and run_command among them: a Guard is required
-		Guard: guard.Restricted(guard.Options{AllowedPrograms: []string{"ls"}}),
+		Tools: picked, // execute among them: a Guard is required
+		Guard: guard.Allow("ls"),
 	},
 })
 // ... run it, then take the result out.
@@ -92,6 +93,11 @@ if err := sb.Export(ctx, "src", sandbox.LocalDir{Path: outDir}); err != nil {
 	return err
 }
 ```
+
+`Create`, `Sync` and `Tools` stay on `Provider` and `Sandbox` for a second
+`Sync`, for no `Sync` at all (pass a nil source) and for the `SyncResult`,
+which `Open` discards. `guard.Allow` is `guard.Restricted` with only
+`AllowedPrograms` set.
 
 A cancelled call returns `aborted` and kills the process it started in the
 sandbox; a broken connection makes every later call return

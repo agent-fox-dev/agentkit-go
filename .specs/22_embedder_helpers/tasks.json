@@ -303,7 +303,7 @@
       "done_when": [
         "`cd examples/sandbox && go test ./...` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
