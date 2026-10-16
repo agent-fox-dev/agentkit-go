@@ -9,36 +9,36 @@ import (
 	"testing"
 )
 
-// inMakeCheck marks a test binary that make check itself started, so the
-// smoke test below does not run make check again from inside it.
+// inMakeCheck marks a test binary that make check-release itself started, so the
+// smoke test below does not run make check-release again from inside it.
 const inMakeCheck = "AGENTKIT_IN_MAKE_CHECK"
 
-// TS-09-20 (smoke, 09-PATH-1): make check — gofmt, go vet, lint and the
+// TS-09-20 (smoke, 09-PATH-1): make check-release — gofmt, go vet, lint and the
 // tests of the root module and codesearch, this package's allowlist among
 // them — exits zero.
 //
 // It runs the real Makefile with the real toolchain, so it costs a whole
-// second suite run: skipped under -short, and skipped in the run make check
+// second suite run: skipped under -short, and skipped in the run make check-release
 // starts, which is the one already being measured.
 func TestMakeCheckSucceeds_TS09_20(t *testing.T) {
 	if testing.Short() {
-		t.Skip("make check is skipped under -short")
+		t.Skip("make check-release is skipped under -short")
 	}
 	if os.Getenv(inMakeCheck) != "" {
-		t.Skip("already running inside make check")
+		t.Skip("already running inside make check-release")
 	}
 	if _, err := exec.LookPath("make"); err != nil {
 		t.Skip("make is not on PATH")
 	}
-	cmd := exec.Command("make", "check")
+	cmd := exec.Command("make", "check-release")
 	cmd.Dir = repoRoot(t)
 	cmd.Env = append(os.Environ(), inMakeCheck+"=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("make check: %v\n%s", err, out)
+		t.Fatalf("make check-release: %v\n%s", err, out)
 	}
 	if code := cmd.ProcessState.ExitCode(); code != 0 {
-		t.Fatalf("make check exited %d\n%s", code, out)
+		t.Fatalf("make check-release exited %d\n%s", code, out)
 	}
 }
 
@@ -72,15 +72,15 @@ func strippedPath(t *testing.T, hide ...string) string {
 	return bin
 }
 
-// TS-19-66: make check, every gatewayd test included, passes with no
+// TS-19-66: make check-release, every gatewayd test included, passes with no
 // container engine, no protoc and no module download; the opt-in engine
 // tests skip. 19-REQ-9.7.
 func TestMakeCheckOffline_TS19_66(t *testing.T) {
 	if testing.Short() {
-		t.Skip("make check is skipped under -short")
+		t.Skip("make check-release is skipped under -short")
 	}
 	if os.Getenv(inMakeCheck) != "" {
-		t.Skip("already running inside make check")
+		t.Skip("already running inside make check-release")
 	}
 	if _, err := exec.LookPath("make"); err != nil {
 		t.Skip("make is not on PATH")
@@ -88,14 +88,14 @@ func TestMakeCheckOffline_TS19_66(t *testing.T) {
 	bin := strippedPath(t, "podman", "docker", "protoc")
 	root := repoRoot(t)
 	env := append(withPath(bin), "GOPROXY=off", inMakeCheck+"=1")
-	cmd := exec.Command(filepath.Join(bin, "make"), "check")
+	cmd := exec.Command(filepath.Join(bin, "make"), "check-release")
 	cmd.Dir, cmd.Env = root, env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("make check offline: %v\n%s", err, out)
+		t.Fatalf("make check-release offline: %v\n%s", err, out)
 	}
 	if !strings.Contains(string(out), "github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd") {
-		t.Errorf("make check did not run the gatewayd tests:\n%s", out)
+		t.Errorf("make check-release did not run the gatewayd tests:\n%s", out)
 	}
 	opt := exec.Command(filepath.Join(bin, "go"), "test", "-count=1", "-v", "-run", "Podman", ".")
 	opt.Dir, opt.Env = filepath.Join(root, "sandbox", "gatewayd"), env

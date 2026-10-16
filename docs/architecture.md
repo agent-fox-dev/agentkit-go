@@ -877,6 +877,8 @@ anything is made) and its agent reports ABI 0 with the note
 - `provider/faux` scripts a model offline; the root tests and the examples run
   against it.
 
-Run everything with `make check` (fmt, vet, lint, test for every module:
+Run the fast loop with `make check` (fmt, vet, lint, `go test -short` for every module:
 the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `examples/sandbox`,
-`examples/gateway` and `examples/harness`).
+`examples/gateway` and `examples/harness`). `make check-release` runs the full
+tests, including the slow `internal/policy` gates that `-short` skips: the
+cross-target build and vet, the host cgo build and the nested `make` runs.

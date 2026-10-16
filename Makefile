@@ -26,6 +26,10 @@ help: ## Show this help
 test: ## Run all Go tests (root module and the nested modules)
 	@rc=0; for m in $(MODULES); do echo "go test ./... ($$m)"; (cd $$m && go test ./... -count=1) || rc=1; done; exit $$rc
 
+.PHONY: test-short
+test-short: ## Run all Go tests with -short, skipping the slow gates
+	@rc=0; for m in $(MODULES); do echo "go test -short ./... ($$m)"; (cd $$m && go test -short ./... -count=1) || rc=1; done; exit $$rc
+
 .PHONY: build
 build: ## Build all packages of the root module and the nested modules
 	@rc=0; for m in $(MODULES); do echo "go build ./... ($$m)"; (cd $$m && go build ./...) || rc=1; done; exit $$rc
@@ -52,8 +56,19 @@ lint: ## Run golangci-lint if installed, otherwise skip
 		echo "golangci-lint not installed; skipping (see https://golangci-lint.run)"; \
 	fi
 
+# check is the fast loop for day-to-day work: it runs the tests with -short, so
+# the slow gates in internal/policy (the cross-target build and vet, the host
+# cgo build, the nested make runs) are skipped. Run check-release before a
+# release or a merge.
 .PHONY: check
-check: fmt vet lint test ## Run fmt, vet, lint and test - use before committing
+check: fmt vet lint test-short ## Run fmt, vet, lint and the short tests - the fast check
+
+# AGENTKIT_IN_MAKE_CHECK tells the tests that run inside make check-release to
+# skip the checks that would start make check-release again or repeat a suite
+# it already runs.
+.PHONY: check-release
+check-release: export AGENTKIT_IN_MAKE_CHECK := 1
+check-release: fmt vet lint test ## Run fmt, vet, lint and the full tests, slow gates included - use before a release
 
 .PHONY: doc
 doc: ## Generate Go package reference (go doc -all) as text files under docs/generated
