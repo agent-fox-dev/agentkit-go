@@ -129,7 +129,7 @@
       "done_when": [
         "`go test ./provider/faux/...` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
