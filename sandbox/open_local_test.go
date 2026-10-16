@@ -2,6 +2,7 @@ package sandbox_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -89,4 +90,58 @@ func proxyNames(tools []core.Tool) []string {
 		out[i] = t.Name
 	}
 	return out
+}
+
+// noLocalSandboxes fails the test when local left a sandbox directory under
+// os.TempDir(), which isolate points at the test's own directory.
+func noLocalSandboxes(t *testing.T) {
+	t.Helper()
+	root := filepath.Join(os.TempDir(), "agentkit-sandbox-local")
+	ents, err := os.ReadDir(root)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if len(ents) > 0 {
+		t.Errorf("%d sandbox directories remain under %s", len(ents), root)
+	}
+}
+
+// TS-22-24 (integration): Open on local with a GitRepo source fails with
+// ErrUnsupported and leaves no sandbox directory. 22-REQ-5.7.
+func TestOpenWithAGitRepoOnLocal_TS22_24(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("local's directories are the thing under test")
+	}
+	isolate(t)
+	sb, tools, err := sandbox.Open(context.Background(), local.Unisolated(), sandbox.Spec{Network: unrestricted},
+		sandbox.GitRepo{URL: "https://example.invalid/repo.git"}, sandbox.ToolOptions{})
+	if sb != nil || tools != nil {
+		t.Errorf("Open returned %v and %v, want nil and nil", sb, tools)
+	}
+	if !errors.Is(err, sandbox.ErrUnsupported) {
+		t.Errorf("error = %v, want one matching sandbox.ErrUnsupported", err)
+	}
+	noLocalSandboxes(t)
+}
+
+// TS-22-25 (integration): Open on local with a relative SpillDir fails at
+// Tools and leaves no sandbox directory. 22-REQ-5.8.
+func TestOpenWithARelativeSpillDirOnLocal_TS22_25(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("LocalDir is refused on Windows")
+	}
+	isolate(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sb, tools, err := sandbox.Open(context.Background(), local.Unisolated(), sandbox.Spec{Network: unrestricted},
+		sandbox.LocalDir{Path: dir}, sandbox.ToolOptions{SpillDir: "rel"})
+	if sb != nil || tools != nil {
+		t.Errorf("Open returned %v and %v, want nil and nil", sb, tools)
+	}
+	if err == nil || !strings.Contains(err.Error(), "sandbox: agent refused Tools") {
+		t.Errorf("error = %v, want one containing %q", err, "sandbox: agent refused Tools")
+	}
+	noLocalSandboxes(t)
 }

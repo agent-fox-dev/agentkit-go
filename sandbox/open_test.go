@@ -3,10 +3,12 @@ package sandbox_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
@@ -30,10 +32,16 @@ type openSandbox struct {
 	p     *openProvider
 	tools []core.Tool
 
+	syncErr, toolsErr, closeErr error
+
 	syncCtx   context.Context
 	syncSrc   sandbox.Source
 	toolsCtx  context.Context
 	toolsOpts sandbox.ToolOptions
+	// closeCtxErr and closeCtxVal are what Close saw on its context when it
+	// was called, since a context can be cancelled after the call returns.
+	closeCtxErr error
+	closeCtxVal any
 }
 
 func newOpenProvider() *openProvider {
@@ -64,20 +72,27 @@ func (s *openSandbox) Agent() sandbox.AgentInfo { return sandbox.AgentInfo{} }
 func (s *openSandbox) Sync(ctx context.Context, src sandbox.Source) (sandbox.SyncResult, error) {
 	s.p.calls = append(s.p.calls, "Sync")
 	s.syncCtx, s.syncSrc = ctx, src
+	if s.syncErr != nil {
+		return sandbox.SyncResult{}, s.syncErr
+	}
 	return sandbox.SyncResult{Files: 3, Bytes: 30}, nil
 }
 
 func (s *openSandbox) Tools(ctx context.Context, opts sandbox.ToolOptions) ([]core.Tool, error) {
 	s.p.calls = append(s.p.calls, "Tools")
 	s.toolsCtx, s.toolsOpts = ctx, opts
+	if s.toolsErr != nil {
+		return nil, s.toolsErr
+	}
 	return s.tools, nil
 }
 
 func (s *openSandbox) Export(context.Context, string, sandbox.Destination) error { return nil }
 
-func (s *openSandbox) Close(context.Context) error {
+func (s *openSandbox) Close(ctx context.Context) error {
 	s.p.calls = append(s.p.calls, "Close")
-	return nil
+	s.closeCtxErr, s.closeCtxVal = ctx.Err(), ctx.Value(openCtxKey{})
+	return s.closeErr
 }
 
 // TS-22-15: Open calls Create, Sync and Tools once each in order, returns the
@@ -159,5 +174,123 @@ func TestOpenReturnsCreateError_TS22_19(t *testing.T) {
 	}
 	if want := []string{"Create"}; !slices.Equal(p.calls, want) {
 		t.Errorf("calls = %v, want only %v: nothing to sync, equip or close", p.calls, want)
+	}
+}
+
+// openFailure fails the step ("Sync" or "Tools") of p's sandbox with err.
+func openFailure(p *openProvider, step string, err error) {
+	if step == "Sync" {
+		p.sb.syncErr = err
+	} else {
+		p.sb.toolsErr = err
+	}
+}
+
+// TS-22-20: a failing Sync or Tools closes the sandbox once and returns the
+// step error unchanged. 22-REQ-5.3.
+func TestOpenClosesOnAStepFailure_TS22_20(t *testing.T) {
+	for _, step := range []string{"Sync", "Tools"} {
+		p := newOpenProvider()
+		stepErr := errors.New(step + " failed")
+		openFailure(p, step, stepErr)
+		sb, tools, err := sandbox.Open(context.Background(), p, sandbox.Spec{}, sandbox.LocalDir{Path: "/x"}, sandbox.ToolOptions{})
+		if sb != nil || tools != nil {
+			t.Errorf("%s: Open returned %v and %v, want nil and nil", step, sb, tools)
+		}
+		if err != stepErr {
+			t.Errorf("%s: error = %v, want the step's own error", step, err)
+		}
+		want := []string{"Create", "Sync", "Close"}
+		if step == "Tools" {
+			want = []string{"Create", "Sync", "Tools", "Close"}
+		}
+		if !slices.Equal(p.calls, want) {
+			t.Errorf("%s: calls = %v, want %v", step, p.calls, want)
+		}
+	}
+}
+
+// TS-22-21: a step failure plus a Close failure returns an error that matches
+// both. 22-REQ-5.4.
+func TestOpenJoinsTheCloseError_TS22_21(t *testing.T) {
+	for _, step := range []string{"Sync", "Tools"} {
+		p := newOpenProvider()
+		stepErr, closeErr := errors.New(step+" failed"), errors.New("close failed")
+		openFailure(p, step, stepErr)
+		p.sb.closeErr = closeErr
+		sb, tools, err := sandbox.Open(context.Background(), p, sandbox.Spec{}, sandbox.LocalDir{Path: "/x"}, sandbox.ToolOptions{})
+		if sb != nil || tools != nil {
+			t.Errorf("%s: Open returned %v and %v, want nil and nil", step, sb, tools)
+		}
+		if !errors.Is(err, stepErr) || !errors.Is(err, closeErr) {
+			t.Errorf("%s: error = %v, want one matching the step error and the Close error", step, err)
+		}
+		if n := strings.Count(strings.Join(p.calls, ","), "Close"); n != 1 {
+			t.Errorf("%s: Close was called %d times, want 1 (calls %v)", step, n, p.calls)
+		}
+	}
+}
+
+// TS-22-22: cleanup runs with an uncancelled context that carries the
+// original values, even when ctx is already cancelled or expired. 22-REQ-5.5.
+func TestOpenCleansUpOnADeadContext_TS22_22(t *testing.T) {
+	dead := map[string]func() (context.Context, context.CancelFunc){
+		"cancelled": func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.WithValue(context.Background(), openCtxKey{}, "v"))
+			cancel()
+			return ctx, cancel
+		},
+		"expired": func() (context.Context, context.CancelFunc) {
+			return context.WithDeadline(context.WithValue(context.Background(), openCtxKey{}, "v"), time.Now().Add(-time.Second))
+		},
+	}
+	for name, mk := range dead {
+		ctx, cancel := mk()
+		defer cancel()
+		p := newOpenProvider()
+		stepErr := errors.New("sync failed")
+		p.sb.syncErr = stepErr
+		_, _, err := sandbox.Open(ctx, p, sandbox.Spec{}, sandbox.LocalDir{Path: "/x"}, sandbox.ToolOptions{})
+		if !slices.Contains(p.calls, "Close") {
+			t.Errorf("%s: the sandbox was not closed (calls %v)", name, p.calls)
+		}
+		if p.sb.closeCtxErr != nil {
+			t.Errorf("%s: Close got a context that was already done: %v", name, p.sb.closeCtxErr)
+		}
+		if p.sb.closeCtxVal != "v" {
+			t.Errorf("%s: Close got a context without the caller's values (%v)", name, p.sb.closeCtxVal)
+		}
+		if !errors.Is(err, stepErr) {
+			t.Errorf("%s: error = %v, want the step error", name, err)
+		}
+	}
+}
+
+// TS-22-23 (property): Open's error matches every sentinel the failing step
+// matches, with or without a Close failure. 22-REQ-5.6. The space is small,
+// so it is enumerated: both steps, five sentinels, Close ok or failing.
+func TestOpenKeepsTheStepSentinels_TS22_23(t *testing.T) {
+	sentinels := []error{sandbox.ErrUnsupported, sandbox.ErrToolMismatch, sandbox.ErrUnsafeArchive, sandbox.ErrProtocol, sandbox.ErrUnavailable}
+	for _, step := range []string{"Sync", "Tools"} {
+		for _, x := range sentinels {
+			for _, closeFails := range []bool{false, true} {
+				p := newOpenProvider()
+				openFailure(p, step, fmt.Errorf("while %s: %w", step, x))
+				closeErr := errors.New("close failed")
+				if closeFails {
+					p.sb.closeErr = closeErr
+				}
+				sb, tools, err := sandbox.Open(context.Background(), p, sandbox.Spec{}, sandbox.LocalDir{Path: "/x"}, sandbox.ToolOptions{})
+				if sb != nil || tools != nil {
+					t.Errorf("%s/%v/close fails %v: Open returned %v and %v", step, x, closeFails, sb, tools)
+				}
+				if !errors.Is(err, x) {
+					t.Errorf("%s/%v/close fails %v: error %v does not match the sentinel", step, x, closeFails, err)
+				}
+				if closeFails && !errors.Is(err, closeErr) {
+					t.Errorf("%s/%v: error %v does not match the Close error", step, x, err)
+				}
+			}
+		}
 	}
 }

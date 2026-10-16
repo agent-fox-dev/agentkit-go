@@ -201,7 +201,7 @@
       "done_when": [
         "`cd sandbox && go test -race ./... -run Open` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
