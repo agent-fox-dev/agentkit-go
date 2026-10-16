@@ -193,9 +193,23 @@ func runOn(ctx context.Context, w io.Writer, dir, url, token string, spec sandbo
 		return fmt.Errorf("a wrong token was not refused as unauthenticated: %v", err)
 	}
 
-	// 2. Create a sandbox on the gateway's host. From here on it is a
-	// sandbox.Sandbox like any other.
-	sb, err := p.Create(ctx, spec)
+	// 2. Write the project to a host directory.
+	src := filepath.Join(dir, "project")
+	for _, f := range project {
+		path := filepath.Join(src, filepath.FromSlash(f[0]))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, []byte(f[1]), 0o644); err != nil {
+			return err
+		}
+	}
+
+	// 3. Open a sandbox on the gateway's host: Open creates it, puts the
+	// project in from the host directory (the gateway relays the rsync stream)
+	// and returns the proxy tools. From here on it is a sandbox.Sandbox like
+	// any other. If a step fails, Open closes the sandbox itself.
+	sb, proxies, err := sandbox.Open(ctx, p, spec, sandbox.LocalDir{Path: src}, sandbox.ToolOptions{})
 	if err != nil {
 		return err
 	}
@@ -209,46 +223,25 @@ func runOn(ctx context.Context, w io.Writer, dir, url, token string, spec sandbo
 		fmt.Fprintf(w, "listed %s, labels %v, expires in %v\n", in.ID, in.Labels, in.Expires.Sub(in.Created).Round(time.Second))
 	}
 
-	// 3. Put the project in from a host directory; the rsync stream is relayed
-	// by the gateway.
-	src := filepath.Join(dir, "project")
-	for _, f := range project {
-		path := filepath.Join(src, filepath.FromSlash(f[0]))
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(path, []byte(f[1]), 0o644); err != nil {
-			return err
-		}
-	}
-	res, err := sb.Sync(ctx, sandbox.LocalDir{Path: src})
+	// 4. Pick the proxy tools the script needs and drive them through code
+	// mode under a guard. The guard runs here, in the embedder; the gateway
+	// only relays what it allows.
+	picked, err := core.Named(proxies, "read_file", "search_files", "execute")
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "synced %d files, %d bytes\n", res.Files, res.Bytes)
-
-	// 4. The proxy tools, driven through code mode under a guard. The guard
-	// runs here, in the embedder; the gateway only relays what it allows.
-	proxies, err := sb.Tools(ctx, sandbox.ToolOptions{})
-	if err != nil {
-		return err
-	}
-	byName := map[string]core.Tool{}
-	for _, t := range proxies {
-		byName[t.Name] = t
-	}
-	cm, _, err := codemode.New([]core.Tool{byName["read_file"], byName["search_files"], byName["execute"]}, codemode.Options{})
+	cm, _, err := codemode.New(picked, codemode.Options{})
 	if err != nil {
 		return err
 	}
 	args, _ := json.Marshal(map[string]string{"script": script})
 	agent, err := agentkit.New(agentkit.Config{
 		Provider: faux.New(
-			faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall("call_1", cm.Name, string(args))}, StopReason: core.StopReasonToolUse},
-			faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("Two TODOs, both in src/.")}, StopReason: core.StopReasonStop},
+			faux.ToolCall("call_1", cm.Name, string(args)),
+			faux.Text("Two TODOs, both in src/."),
 		),
 		Model:    faux.Model().ID,
-		Toolset:  agentkit.Toolset{Tools: []core.Tool{cm}, Guard: guard.Restricted(guard.Options{AllowedPrograms: []string{"ls"}})},
+		Toolset:  agentkit.Toolset{Tools: []core.Tool{cm}, Guard: guard.Allow("ls")},
 		MaxTurns: 4,
 	})
 	if err != nil {
