@@ -115,7 +115,7 @@ func TestEscapingSymlinkRules_TS14_11(t *testing.T) {
 	}
 }
 
-// TS-14-9: each side's ignore rules are exactly the entries tools.Walk does
+// TS-14-9: each side's ignore rules are exactly the entries workspace.Walk does
 // not visit, at their highest ignored level and never under .git; the host
 // uses LocalDir.Ignore and the agent NoGlobalExcludes. 14-REQ-3.1.
 func TestIgnoreRulesMatchWalk_TS14_9(t *testing.T) {

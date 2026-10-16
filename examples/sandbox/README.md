@@ -2,7 +2,7 @@
 
 AgentKit's built-in tools, running in a sandbox. A sandbox is an ephemeral
 environment that holds one workspace; `Sandbox.Tools` returns a drop-in
-replacement for `tools.All` whose every call runs in the AgentKit agent inside
+replacement for `tools.For` whose every call runs in the AgentKit agent inside
 it, over the `agentkit.sandbox.v1` protocol. The driver does not change.
 
 ```bash
