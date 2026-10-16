@@ -40,8 +40,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
+	agentkit "github.com/agent-fox-dev/agentkit-go"
+	"github.com/agent-fox-dev/agentkit-go/codemode"
+	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/guard"
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/local"
@@ -195,7 +200,7 @@ func run(ctx context.Context, w, log io.Writer, o options) error {
 		fmt.Fprintf(w, "synced the sample project: %d files, %d bytes\n", res.Files, res.Bytes)
 	}
 
-	// 4. The proxy tools, and the server that runs them under the guard.
+	// 4. The proxy tools, and the runner that runs them under the guard.
 	//    guard.Restricted is an allowlist of programs with shell operators
 	//    refused; under a podman sandbox with no network, guard.AllowAll is
 	//    a reasonable alternative, because then the container is the
@@ -204,10 +209,11 @@ func run(ctx context.Context, w, log io.Writer, o options) error {
 	if err != nil {
 		return err
 	}
-	srv, info, err := newToolServer(proxies, guard.Restricted(guard.Options{AllowedPrograms: allowed}), log)
+	runner, hk, info, err := buildRunner(proxies, guard.Restricted(guard.Options{AllowedPrograms: allowed}), log)
 	if err != nil {
 		return err
 	}
+	srv := &toolServer{runner: runner}
 	fmt.Fprintf(w, "serving code_mode over %d proxy tools (its description is %d bytes) and the %d tools themselves\n", info.BoundToolsCount, info.DescriptionBytes, len(proxies))
 
 	// 5. specr, inside the sandbox, through the proxy execute tool: the
@@ -218,7 +224,7 @@ func run(ctx context.Context, w, log io.Writer, o options) error {
 	if sample {
 		specRef, task = sampleSpec, sampleTask
 	}
-	render, err := renderSpec(ctx, srv, specRef, task, o.SpecTokens)
+	render, err := renderSpec(ctx, runner, specRef, task, o.SpecTokens)
 	if err != nil {
 		return err
 	}
@@ -229,11 +235,11 @@ func run(ctx context.Context, w, log io.Writer, o options) error {
 
 	// 6. The baseline: the spec's own checks on the unchanged tree. A red
 	//    baseline is a fact the prompt carries, not a blocker.
-	tc, err := readTestCommands(ctx, srv, render.Result.SpecDir)
+	tc, err := readTestCommands(ctx, runner, render.Result.SpecDir)
 	if err != nil {
 		return err
 	}
-	baseline := runChecks(ctx, srv, tc)
+	baseline := runChecks(ctx, runner, tc)
 	fmt.Fprintln(w, "baseline:")
 	for _, c := range baseline {
 		fmt.Fprintf(w, "  %s\n", c)
@@ -251,7 +257,7 @@ func run(ctx context.Context, w, log io.Writer, o options) error {
 	// 8. The harness, with the rules as its appended system prompt and the
 	//    task as its prompt. It holds the model credential; the sandbox and
 	//    this server never see it.
-	system := systemPrompt(srv.served(), allowed)
+	system := systemPrompt(runner.Tools(), allowed)
 	prompt := taskPrompt(render, baseline)
 	fmt.Fprintf(w, "starting harness %s on task %d of %s (%s): prompt %d bytes, system prompt %d bytes\n",
 		o.Harness, render.Result.Task.ID, render.Result.SpecDir, render.Result.Task.Title, len(prompt), len(system))
@@ -266,10 +272,10 @@ func run(ctx context.Context, w, log io.Writer, o options) error {
 	if hr.CostUSD > 0 {
 		fmt.Fprintf(w, ", $%.4f", hr.CostUSD)
 	}
-	fmt.Fprintf(w, "; %d tool calls, %d blocked\n\nharness said:\n%s\n", srv.calls.Load(), srv.blocked.Load(), indent(strings.TrimSpace(hr.Final)))
+	fmt.Fprintf(w, "; %d tool calls, %d blocked\n\nharness said:\n%s\n", hk.calls.Load(), hk.blocked.Load(), indent(strings.TrimSpace(hr.Final)))
 
 	// 9. Measure, do not assert: the checks again, and af-impl's verdict.
-	after := runChecks(ctx, srv, tc)
+	after := runChecks(ctx, runner, tc)
 	text, landable := verdict(baseline, after)
 	fmt.Fprintln(w, "\nafter the task:")
 	for _, c := range after {
@@ -277,10 +283,8 @@ func run(ctx context.Context, w, log io.Writer, o options) error {
 	}
 	fmt.Fprintf(w, "verdict: %s\n", text)
 	if o.Repo != "" && sb.Agent().Git {
-		if res := srv.direct(ctx, "execute", json.RawMessage(`{"command":"git status --short","timeout_s":60}`)); res.OK && res.Data["outcome"] == "ok" {
-			if status, _ := res.Data["output"].(string); strings.TrimSpace(status) != "" {
-				fmt.Fprintf(w, "git status --short:\n%s\n", indent(strings.TrimSpace(status)))
-			}
+		if status := gitStatus(ctx, runner); status != "" {
+			fmt.Fprintf(w, "git status --short:\n%s\n", indent(status))
 		}
 	}
 
@@ -305,6 +309,114 @@ func run(ctx context.Context, w, log io.Writer, o options) error {
 	}
 	fmt.Fprintln(w, "\nHarness example completed successfully")
 	return nil
+}
+
+// gitStatus runs `git status --short` in the sandbox through the runner, under
+// the guard like every other call, and returns what it printed. It is empty
+// when the call did not run, failed or printed nothing.
+func gitStatus(ctx context.Context, r *agentkit.Runner) string {
+	res := r.Call(ctx, "execute", json.RawMessage(`{"command":"git status --short","timeout_s":60}`))
+	if !res.OK || res.Data["outcome"] != "ok" {
+		return ""
+	}
+	status, _ := res.Data["output"].(string)
+	return strings.TrimSpace(status)
+}
+
+// buildRunner binds the proxies into one code_mode tool and builds the runner
+// that runs it beside them. The runner is the whole pipeline: it prepares and
+// checks each call's arguments, asks the guard, runs the handler with a nested
+// caller attached for code_mode, and calls the toolset's hooks. The guard it
+// asks is configured's, wrapped so the hooks can log and count what it
+// decides; configured sees every call, direct or from a script.
+func buildRunner(proxies []core.Tool, configured core.BeforeToolCall, log io.Writer) (*agentkit.Runner, *hooks, codemode.BuildInfo, error) {
+	if configured == nil {
+		return nil, nil, codemode.BuildInfo{}, errors.New("a guard is required: the proxies include a shell")
+	}
+	cm, info, err := codemode.New(proxies, codemode.Options{})
+	if err != nil {
+		return nil, nil, info, err
+	}
+	h := &hooks{w: log}
+	r, err := agentkit.NewRunner(agentkit.Toolset{
+		Tools:  append([]core.Tool{cm}, proxies...),
+		Guard:  h.guard(configured),
+		After:  h.after,
+		Events: h.event,
+	})
+	if err != nil {
+		return nil, nil, info, err
+	}
+	return r, h, info, nil
+}
+
+// hooks are the toolset's own hooks, and the account they keep: the log of
+// every call as it happens, and the counts the program prints. Calls arrive
+// from several goroutines — a script's nested calls run concurrently — so the
+// log is written under a lock and the counts are atomic.
+//
+// The log is what the hooks see. The guard wrapper sees a call before it runs
+// (run, blocked), After sees one that ran (error). A call that never reaches
+// the guard or After — an unknown tool, arguments that fail validation — is
+// counted and has no line.
+type hooks struct {
+	w              io.Writer
+	mu             sync.Mutex
+	calls, blocked atomic.Int64
+}
+
+func (h *hooks) printf(format string, args ...any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	fmt.Fprintf(h.w, format, args...)
+}
+
+// indentFor nests a script's calls under the code_mode call.
+func indentFor(parentID string) string {
+	if parentID != "" {
+		return "    "
+	}
+	return "  "
+}
+
+// guard decides with configured, then logs the call as run or blocked and
+// counts a block.
+func (h *hooks) guard(configured core.BeforeToolCall) core.BeforeToolCall {
+	return func(ctx context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		dec := configured(ctx, in)
+		indent := indentFor(in.ParentToolUseID)
+		if dec.Block {
+			h.blocked.Add(1)
+			reason := dec.Reason
+			if reason == "" {
+				reason = "blocked by policy"
+			}
+			h.printf("%s%-8s %s: %s\n", indent, "blocked", in.ToolName, firstLine(reason))
+			return dec
+		}
+		h.printf("%s%-8s %s %s\n", indent, "run", in.ToolName, summarize(in.Arguments))
+		return dec
+	}
+}
+
+// after logs a call that ran and failed.
+func (h *hooks) after(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+	if res := in.ToolResult; !res.OK {
+		detail := res.Detail
+		if code, ok := res.Data["exit_code"]; ok && detail == "" {
+			detail = fmt.Sprintf("exit %v", code)
+		}
+		h.printf("%s%-8s %s: %s\n", indentFor(in.ParentToolUseID), "error", in.ToolName, firstLine(res.Error+": "+detail))
+	}
+	return core.AfterToolCallDecision{}
+}
+
+// event counts every call: each one, direct or nested, opens with a start
+// event.
+func (h *hooks) event(e core.Event) {
+	if _, ok := e.(core.ToolExecutionStartEvent); ok {
+		h.calls.Add(1)
+	}
 }
 
 // goEnv reads one `go env` variable of this host, or "".

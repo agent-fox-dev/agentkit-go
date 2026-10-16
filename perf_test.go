@@ -26,7 +26,7 @@ func benchAgent(b *testing.B, tools int) *Agent {
 	s := &scripted{}
 	cfg := Config{Provider: streamFunc(s.stream), Model: testModelID}
 	for i := 0; i < tools; i++ {
-		cfg.Tools = append(cfg.Tools, echoTool(fmt.Sprintf("tool_%d", i), nil))
+		cfg.Toolset.Tools = append(cfg.Toolset.Tools, echoTool(fmt.Sprintf("tool_%d", i), nil))
 	}
 	a, err := New(cfg)
 	if err != nil {
@@ -96,7 +96,7 @@ func BenchmarkLoopTurnWithToolBatch(b *testing.B) {
 		}}
 		cfg := Config{Provider: streamFunc(s.stream), Model: testModelID}
 		for i := 0; i < 3; i++ {
-			cfg.Tools = append(cfg.Tools, echoTool(fmt.Sprintf("tool_%d", i), nil))
+			cfg.Toolset.Tools = append(cfg.Toolset.Tools, echoTool(fmt.Sprintf("tool_%d", i), nil))
 		}
 		a, err := New(cfg)
 		if err != nil {

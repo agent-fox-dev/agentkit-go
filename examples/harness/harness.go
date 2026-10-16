@@ -181,7 +181,7 @@ func runScripted(ctx context.Context, log io.Writer, m *servedMCP, system, task 
 		),
 		Model:    faux.Model().ID,
 		System:   system,
-		Tools:    imported,
+		Toolset:  agentkit.Toolset{Tools: imported},
 		MaxTurns: o.MaxTurns,
 	})
 	if err != nil {

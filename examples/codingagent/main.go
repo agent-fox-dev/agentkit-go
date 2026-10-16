@@ -76,7 +76,7 @@ func run() error {
 	}
 
 	// 3. The OQ-8 guard. `execute` and `run_command` are in the set above, so
-	//    a nil Config.Guard makes agentkit.New return an error wrapping
+	//    a nil Toolset.Guard makes agentkit.New return an error wrapping
 	//    core.ErrUnguardedExecute — the agent is never built, so no request is
 	//    sent, and an unrestricted shell never shows up on a bill. There are
 	//    exactly two ways past it: an interceptor, or guard.AllowAll, which is
@@ -127,8 +127,7 @@ func run() error {
 		Model:  model.ID,
 		System: "You are a careful coding assistant. Read before you write. " +
 			"Prefer the search and read tools over shell commands. Be concise.",
-		Tools:      built,
-		Guard:      logged,
+		Toolset:    agentkit.Toolset{Tools: built, Guard: logged},
 		MaxTurns:   20,
 		MaxCostUSD: 2.00, // dollars, cumulative for the run
 	})

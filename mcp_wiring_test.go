@@ -86,9 +86,9 @@ func TestMCPToolsAreGatedByQualifiedNameEverywhere(t *testing.T) {
 			{Content: core.Content{core.TextBlock{Text: "done"}}, StopReason: core.StopReasonStop},
 		}}
 		a := newTestAgent(t, s, func(c *Config) {
-			c.Tools = tools
+			c.Toolset.Tools = tools
 			// The UNQUALIFIED name is deliberately not in the list.
-			c.Policy.ToolNames = []string{"create_issue"}
+			c.Toolset.Policy.ToolNames = []string{"create_issue"}
 		})
 		res, err := a.Run(context.Background(), "go")
 		if err != nil {
@@ -109,8 +109,8 @@ func TestMCPToolsAreGatedByQualifiedNameEverywhere(t *testing.T) {
 			{Content: core.Content{core.TextBlock{Text: "done"}}, StopReason: core.StopReasonStop},
 		}}
 		a := newTestAgent(t, s, func(c *Config) {
-			c.Tools = tools
-			c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+			c.Toolset.Tools = tools
+			c.Toolset.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 				seen = append(seen, in.ToolName)
 				return core.BeforeToolCallDecision{}
 			}

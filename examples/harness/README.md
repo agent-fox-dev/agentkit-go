@@ -143,33 +143,48 @@ steps do around the task: it measures before and after, and it lands.
 
 ## The code an embedder copies
 
-The server is the one piece the library does not provide. AgentKit's driver
-runs a tool call through preparation, the guard, the handler and its events,
-but only for a call its own model made; outside a run, code mode's nested
-calls have no caller and fail with `core.ErrNoNestedCaller`. An embedder
-that is its own driver supplies that pipeline, which is the same steps and
-nothing exotic:
+A harness is its own driver, so what it needs from AgentKit is the pipeline
+that runs one tool call, with no model: `agentkit.NewRunner`. A `Runner` runs a
+call through preparation, the guard, the handler and its events, and attaches
+the nested caller a `code_mode` script's calls go through — the same steps a
+call from AgentKit's own model goes through, in the same place. `buildRunner`
+in `main.go` is the whole of it:
 
 ```go
-cm, _, err := codemode.New(proxies, codemode.Options{})           // one tool over the proxies
-use, err := core.NewToolUse(id, name, input)                       // the call, input checked
-prepared, err := core.PrepareArguments(tool, use)                  // repaired, coerced, validated
-dec := guard(ctx, core.BeforeToolCallContext{ToolName: name, Tool: tool, Arguments: prepared.Args, RawInput: use.Input, ParentToolName: parent})
-if dec.Block { return core.ErrResult(core.BlockErrorCode, dec.Reason) }
-ctx = core.WithNestedCaller(ctx, server)                           // for a tool with ReachableTools
-res := tool.Execute(ctx, prepared.Raw)                             // or Handler
+cm, _, err := codemode.New(proxies, codemode.Options{}) // one tool over the proxies
+runner, err := agentkit.NewRunner(agentkit.Toolset{
+	Tools:  append([]core.Tool{cm}, proxies...),
+	Guard:  guard, // sees every call, direct or from a script
+	After:  after, // sees every call that ran
+	Events: events,
+})
+res := runner.Call(ctx, name, input) // a core.ToolResult; never a Go error
 ```
 
-`server.go` is that, plus the MCP server (`sdk.NewServer`,
+`NewRunner` refuses what `agentkit.New` refuses — a reachable shell tool with no
+`Guard` among it — so the program cannot serve an unguarded shell by omission.
+`Runner.Call` takes the tool's name and the input bytes and returns a result
+for every outcome: `unknown_tool`, `invalid_arguments`, `blocked_by_policy`,
+`panic`, `handler_error`, `aborted`. `runner.Tools()` is the served set, which
+the system prompt and the MCP server both read.
+
+`server.go` is the MCP server around it (`sdk.NewServer`,
 `sdk.NewStreamableHTTPHandler` from the MCP Go SDK the `mcp` package already
 depends on) with one MCP tool per served tool — the tool's own name,
 description and input schema, so the harness's model reads the definition
 AgentKit's driver would send, and `core.ToolResult.LLMText()` as the result
-text, so it reads the result the same way too.
+text, so it reads the result the same way too. Its handler is one line:
+`runner.Call`.
 
-What the driver does that the server does not: `Config.After`, execution
-events on a stream, and the terminate vote. A harness has its own loop to
-end, and its own event stream to watch.
+The log and the counts come from the toolset's hooks, not from the pipeline: a
+`Guard` that wraps the configured one logs each call as `run` or `blocked` and
+counts the blocks, `After` logs a call that ran and failed, and `Events` counts
+every call from its start event. A call that never reaches the guard or `After`
+— an unknown tool, arguments that fail validation — is counted and has no line.
+
+What the runner leaves to the harness: a transcript, a stop condition and the
+terminate vote. A harness has its own loop to end, and its own event stream to
+watch.
 
 ## Flags
 

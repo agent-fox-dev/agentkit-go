@@ -97,7 +97,7 @@ func newTestAgent(t *testing.T, s *scripted, mutate func(*Config), tools ...core
 	cfg := Config{
 		Provider: streamFunc(s.stream),
 		Model:    testModelID,
-		Tools:    tools,
+		Toolset:  Toolset{Tools: tools},
 	}
 	if mutate != nil {
 		mutate(&cfg)
@@ -458,7 +458,7 @@ func TestPanickingAfterToolCallDoesNotDeadlockPeers(t *testing.T) {
 		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
 	}}
 	a := newTestAgent(t, s, func(c *Config) {
-		c.After = func(ctx context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+		c.Toolset.After = func(ctx context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			panic("interceptor exploded")
 		}
 	}, echoTool("echo", nil))
@@ -580,7 +580,7 @@ func TestBlockedCallProducesAnErrorResultAndTheLoopContinues(t *testing.T) {
 		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
 	}}
 	a := newTestAgent(t, s, func(c *Config) {
-		c.Guard = func(ctx context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		c.Toolset.Guard = func(ctx context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			return core.BeforeToolCallDecision{Block: true, Reason: "not allowed here"}
 		}
 	}, echoTool("echo", &ran))
@@ -612,7 +612,7 @@ func TestPanickingInterceptorFailsClosed(t *testing.T) {
 		{Content: core.Content{core.TextBlock{Text: "ok"}}, StopReason: core.StopReasonStop},
 	}}
 	a := newTestAgent(t, s, func(c *Config) {
-		c.Guard = func(ctx context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		c.Toolset.Guard = func(ctx context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			panic("policy exploded")
 		}
 	}, echoTool("echo", &ran))
@@ -682,7 +682,7 @@ func TestPrefixPrecedesThePrompt_TS11_15(t *testing.T) {
 		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "echo", `{}`)),
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("done")),
 	)
-	a, err := New(Config{Provider: fp, Model: testModelID, Prefix: prefix, Tools: []core.Tool{echoTool("echo", nil)}})
+	a, err := New(Config{Provider: fp, Model: testModelID, Prefix: prefix, Toolset: Toolset{Tools: []core.Tool{echoTool("echo", nil)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -716,7 +716,7 @@ func TestFourCacheBreakpoints_TS11_16(t *testing.T) {
 		Provider: fp,
 		Model:    "claude-opus-5-5",
 		System:   "System instructions",
-		Tools:    []core.Tool{echoTool("toolA", nil), echoTool("toolB", nil)},
+		Toolset:  Toolset{Tools: []core.Tool{echoTool("toolA", nil), echoTool("toolB", nil)}},
 		Prefix: []core.Message{
 			core.UserMessage{Content: core.Content{core.TextBlock{Text: "prefix text"}}},
 			core.AssistantMessage{Content: core.Content{core.TextBlock{Text: "noted"}}},
@@ -779,7 +779,7 @@ func TestSystemPromptDeduplicatesGuidelines_TS11_14(t *testing.T) {
 	}
 	// And it is what the provider is sent.
 	fp := faux.New()
-	ag, err := New(Config{Provider: fp, Model: testModelID, System: "Base instruction", Tools: []core.Tool{t1, t2}})
+	ag, err := New(Config{Provider: fp, Model: testModelID, System: "Base instruction", Toolset: Toolset{Tools: []core.Tool{t1, t2}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -832,7 +832,7 @@ func TestPruningElidesOldToolResults_TS11_18(t *testing.T) {
 		heavyTurn(400_000, faux.FauxToolCall("call_2", "toolA", `{}`)),
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("done")),
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{bigResult("toolA", 1500)},
+	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{bigResult("toolA", 1500)}},
 		Prune: PruneOptions{Threshold: 0.35, KeepTurns: 1}})
 	if err != nil {
 		t.Fatal(err)
@@ -872,7 +872,7 @@ func TestPruningKeepsToolUsePairing_TS11_19(t *testing.T) {
 			turns = append(turns, heavyTurn(400_000, calls...))
 		}
 		fp := faux.New(turns...)
-		a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{bigResult("toolA", 100+r.Intn(2000))},
+		a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{bigResult("toolA", 100+r.Intn(2000))}},
 			Prune: PruneOptions{Threshold: 0.35, KeepTurns: r.Intn(3)}})
 		if err != nil {
 			t.Fatal(err)
@@ -919,7 +919,7 @@ func TestPruningLeavesTheTranscriptIntact_TS11_20(t *testing.T) {
 		heavyTurn(400_000, faux.FauxToolCall("c3", "toolA", `{}`)),
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("done")),
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{bigResult("toolA", 800)},
+	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{bigResult("toolA", 800)}},
 		Prune: PruneOptions{Threshold: 0.35, KeepTurns: 1}})
 	if err != nil {
 		t.Fatal(err)
@@ -948,7 +948,7 @@ func TestContextOverflowEndsTheRun_TS11_21(t *testing.T) {
 		heavyTurn(2_000_000, faux.FauxToolCall("c1", "toolA", `{}`)),
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("never")),
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{bigResult("toolA", 10)},
+	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{bigResult("toolA", 10)}},
 		Prune: PruneOptions{Threshold: 0.35, KeepTurns: 1}})
 	if err != nil {
 		t.Fatal(err)
@@ -976,7 +976,7 @@ func TestContinuationIsToolUsePresence_TS11_22(t *testing.T) {
 		faux.FauxAssistantMessage(core.StopReasonLength, faux.FauxText("truncated text")),
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("never requested")),
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{echoTool("toolA", &ran)}})
+	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{echoTool("toolA", &ran)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -997,7 +997,7 @@ func TestTruncatedCallsGetTheNotice_TS11_23(t *testing.T) {
 		faux.FauxAssistantMessage(core.StopReasonLength, faux.FauxToolCall("call_1", "my_tool", `{"partial":1}`)),
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("finished")),
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{echoTool("my_tool", &ran)}})
+	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{echoTool("my_tool", &ran)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1072,7 +1072,7 @@ func TestMaxTurnsEndsTheRun_TS11_39(t *testing.T) {
 		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c2", "toolA", "{}")),
 		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c3", "toolA", "{}")),
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, MaxTurns: 2, Tools: []core.Tool{echoTool("toolA", nil)}})
+	a, err := New(Config{Provider: fp, Model: driverModel, MaxTurns: 2, Toolset: Toolset{Tools: []core.Tool{echoTool("toolA", nil)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1096,7 +1096,7 @@ func TestBudgetStopsBeforeTheRequest_TS11_40(t *testing.T) {
 			Usage: core.Usage{InputTokens: 100_000, OutputTokens: 100_000}},
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("t2")),
 	)
-	a, err := New(Config{Provider: fp, Model: "claude-opus-5-5", MaxCostUSD: 0.05, Tools: []core.Tool{echoTool("toolA", nil)}})
+	a, err := New(Config{Provider: fp, Model: "claude-opus-5-5", MaxCostUSD: 0.05, Toolset: Toolset{Tools: []core.Tool{echoTool("toolA", nil)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1122,7 +1122,7 @@ func TestExternalCancelAbortsTheRun_TS11_41(t *testing.T) {
 		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "cancelTool", "{}")),
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("should not reach")),
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{tool}})
+	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{tool}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1144,7 +1144,7 @@ func TestHandlerPanicIsContained_TS11_42(t *testing.T) {
 		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "panickyTool", "{}")),
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("recovered")),
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{tool}})
+	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{tool}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1181,7 +1181,7 @@ func TestUnreadStreamDoesNotBlockTheRun_TS11_43(t *testing.T) {
 	}
 	fp := faux.New(turns...)
 	fp.ChunkSize = 8
-	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{echoTool("toolA", nil)}})
+	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{echoTool("toolA", nil)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1210,7 +1210,7 @@ func TestSmokePruningUnderPressure_TS11_45(t *testing.T) {
 	}
 	turns = append(turns, faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("done")))
 	fp := faux.New(turns...)
-	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{bigResult("toolA", 3000)},
+	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{bigResult("toolA", 3000)}},
 		Prune: PruneOptions{Threshold: 0.35, KeepTurns: 1}})
 	if err != nil {
 		t.Fatal(err)
@@ -1250,7 +1250,7 @@ func TestSmokeTruncationRecovery_TS11_46(t *testing.T) {
 		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c2", "my_tool", `{"path":"/etc/hosts"}`)),
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("reissued and finished")),
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{tool}})
+	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{tool}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1310,7 +1310,7 @@ func elidedIn(msgs core.Messages) int {
 func TestPruningDoesNotOscillate(t *testing.T) {
 	var sent []core.Request
 	a, err := New(Config{Provider: sizedProvider(6, false, &sent), Model: "claude-opus-4-5",
-		Tools: []core.Tool{bigResult("toolA", 100_000)}, Prune: PruneOptions{Threshold: 0.35, KeepTurns: 1}})
+		Toolset: Toolset{Tools: []core.Tool{bigResult("toolA", 100_000)}}, Prune: PruneOptions{Threshold: 0.35, KeepTurns: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1341,7 +1341,7 @@ func TestPruningDoesNotOscillate(t *testing.T) {
 func TestPruningWithoutUsageLowersTheEstimate(t *testing.T) {
 	var sent []core.Request
 	a, err := New(Config{Provider: sizedProvider(3, true, &sent), Model: "claude-opus-4-5",
-		Tools: []core.Tool{bigResult("toolA", 300_000)}, Prune: PruneOptions{Threshold: 0.35, KeepTurns: 1}})
+		Toolset: Toolset{Tools: []core.Tool{bigResult("toolA", 300_000)}}, Prune: PruneOptions{Threshold: 0.35, KeepTurns: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}

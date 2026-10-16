@@ -135,9 +135,7 @@ func ts0461RunAgent(t *testing.T, srv *httptest.Server, requestBodies *[][]byte,
 			Getenv:  getenv,
 		}),
 		Model: model.ID,
-		Tools: ts0461Tools(t),
-		Guard: guard.AllowAll,
-		After: func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+		Toolset: Toolset{Tools: ts0461Tools(t), Guard: guard.AllowAll, After: func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			afterMu.Lock()
 			afterRecs = append(afterRecs, ts0461AfterRecord{
 				ToolResult: in.ToolResult,
@@ -145,7 +143,7 @@ func ts0461RunAgent(t *testing.T, srv *httptest.Server, requestBodies *[][]byte,
 			})
 			afterMu.Unlock()
 			return core.AfterToolCallDecision{}
-		},
+		}},
 	}
 
 	a, err := New(cfg)

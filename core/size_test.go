@@ -181,8 +181,8 @@ func countCode(t *testing.T, dir string, recurse bool, skip func(path string) bo
 	return n
 }
 
-// TS-12-14: core is at most 1,600 lines of code and the root module at most
-// 20,000. A line of code is a non-blank line that is not a comment. The
+// TS-12-14, TS-21-56: core is at most 1,600 lines of code and the root module
+// at most 20,000; spec 21 adds the runner and holds both budgets. A line of code is a non-blank line that is not a comment. The
 // module budget leaves out generated files and test-only internal packages
 // (budgetLines).
 func TestLineBudgets_TS12_14(t *testing.T) {

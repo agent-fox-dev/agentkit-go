@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	agentkit "github.com/agent-fox-dev/agentkit-go"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/prompt"
 )
@@ -92,7 +93,7 @@ type specrResult struct {
 // the whole package and takes the task its next entry names: the first task
 // not done. maxTokens bounds the render, because the shell tool keeps only
 // the last 50 KB of a command's output and a cut envelope is no envelope.
-func renderSpec(ctx context.Context, s *toolServer, spec string, task, maxTokens int) (specrResult, error) {
+func renderSpec(ctx context.Context, r *agentkit.Runner, spec string, task, maxTokens int) (specrResult, error) {
 	run := func(task int) (specrResult, error) {
 		cmd := "specr " + spec
 		if task > 0 {
@@ -101,7 +102,7 @@ func renderSpec(ctx context.Context, s *toolServer, spec string, task, maxTokens
 		if maxTokens > 0 {
 			cmd += " --max-tokens " + strconv.Itoa(maxTokens)
 		}
-		res := s.direct(ctx, "execute", json.RawMessage(fmt.Sprintf(`{"command":%q,"timeout_s":60}`, cmd)))
+		res := r.Call(ctx, "execute", json.RawMessage(fmt.Sprintf(`{"command":%q,"timeout_s":60}`, cmd)))
 		var out specrResult
 		// specr prints its envelope on every program-driven path, exit 1
 		// and 2 included, so the output is read before the exit status.
@@ -148,9 +149,9 @@ type testCommands struct {
 
 // readTestCommands reads them from the package's tasks.json through the
 // proxy read_file tool.
-func readTestCommands(ctx context.Context, s *toolServer, specDir string) (testCommands, error) {
+func readTestCommands(ctx context.Context, r *agentkit.Runner, specDir string) (testCommands, error) {
 	path := strings.TrimSuffix(specDir, "/") + "/tasks.json"
-	res := s.direct(ctx, "read_file", json.RawMessage(fmt.Sprintf(`{"path":%q}`, path)))
+	res := r.Call(ctx, "read_file", json.RawMessage(fmt.Sprintf(`{"path":%q}`, path)))
 	if !res.OK {
 		return testCommands{}, fmt.Errorf("read %s: %s: %s", path, res.Error, res.Detail)
 	}
@@ -194,10 +195,10 @@ func (c check) String() string {
 // guarded execute tool. A command the guard refuses (a shell operator, a
 // program not allowed) is a check that could not run, which the verdict
 // treats as a failed gate, never as a pass.
-func runChecks(ctx context.Context, s *toolServer, tc testCommands) []check {
+func runChecks(ctx context.Context, r *agentkit.Runner, tc testCommands) []check {
 	out := []check{{Name: "linter", Command: tc.Linter}, {Name: "all_tests", Command: tc.AllTests}}
 	for i := range out {
-		res := s.direct(ctx, "execute", json.RawMessage(fmt.Sprintf(`{"command":%q,"timeout_s":900}`, out[i].Command)))
+		res := r.Call(ctx, "execute", json.RawMessage(fmt.Sprintf(`{"command":%q,"timeout_s":900}`, out[i].Command)))
 		// A command that ran and failed is an error result (command_exit,
 		// command_timeout) whose Data still carries the outcome, the exit
 		// code and the output. A result with no outcome never ran.

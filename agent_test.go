@@ -27,7 +27,7 @@ func noopHandler(context.Context, json.RawMessage) (json.RawMessage, error) { re
 
 // agentCfg is a minimal valid config carrying tools.
 func agentCfg(tools ...core.Tool) Config {
-	return Config{Provider: faux.New(), Model: testModelID, Tools: tools}
+	return Config{Provider: faux.New(), Model: testModelID, Toolset: Toolset{Tools: tools}}
 }
 
 // cyclicPair builds toolA -> toolB -> toolA. Tools are values, so the cycle
@@ -161,19 +161,22 @@ func userText(s string) core.UserMessage {
 	return core.UserMessage{Content: core.Content{core.TextBlock{Text: s}}}
 }
 
-// TS-11-1: Config carries the fifteen driver fields.
+// TS-11-1: Config carries the twelve driver fields, the tool side among them
+// as one Toolset (21-REQ-1.2).
 func TestConfigDefinesTheDriverFields_TS11_1(t *testing.T) {
 	cfg := Config{
-		Client:     &sdk.Client{},
-		Provider:   faux.New(),
-		Model:      driverModel,
-		Effort:     EffortHigh,
-		System:     "system instruction",
-		Prefix:     []core.Message{userText("preamble")},
-		Tools:      []core.Tool{{Name: "toolA", Handler: noopHandler}},
-		Policy:     core.ToolPolicy{},
-		Guard:      allowAll,
-		After:      noopAfter,
+		Client:   &sdk.Client{},
+		Provider: faux.New(),
+		Model:    driverModel,
+		Effort:   EffortHigh,
+		System:   "system instruction",
+		Prefix:   []core.Message{userText("preamble")},
+		Toolset: Toolset{
+			Tools:  []core.Tool{{Name: "toolA", Handler: noopHandler}},
+			Policy: core.ToolPolicy{},
+			Guard:  allowAll,
+			After:  noopAfter,
+		},
 		MaxTurns:   10,
 		MaxCostUSD: 1.5,
 		Timeout:    30 * time.Second,
@@ -182,7 +185,7 @@ func TestConfigDefinesTheDriverFields_TS11_1(t *testing.T) {
 	}
 	if cfg.Model != driverModel || cfg.Effort != core.EffortHigh || cfg.MaxTurns != 10 ||
 		cfg.MaxCostUSD != 1.5 || cfg.Timeout != 30*time.Second || cfg.MaxTokens != 4096 ||
-		cfg.Prune.KeepTurns != 2 || len(cfg.Prefix) != 1 || len(cfg.Tools) != 1 {
+		cfg.Prune.KeepTurns != 2 || len(cfg.Prefix) != 1 || len(cfg.Toolset.Tools) != 1 {
 		t.Fatalf("config = %+v", cfg)
 	}
 }
@@ -214,7 +217,7 @@ func TestNewRefusesInvalidTools_TS11_4(t *testing.T) {
 		"wrapper": {done, {Name: "wrap", Handler: noopHandler, ReachableTools: []core.Tool{done}}},
 	}
 	for name, tools := range cases {
-		a, err := New(Config{Provider: faux.New(), Model: "m", Tools: tools})
+		a, err := New(Config{Provider: faux.New(), Model: "m", Toolset: Toolset{Tools: tools}})
 		if a != nil || err == nil {
 			t.Errorf("%s: New = %v, %v; want nil and an error", name, a, err)
 		}
@@ -234,8 +237,7 @@ func TestNewResolvesToolsAndPrefersProvider_TS11_5(t *testing.T) {
 		Client:   &client,
 		Provider: fp,
 		Model:    driverModel,
-		Tools:    []core.Tool{{Name: "toolA", Handler: noopHandler}, {Name: "toolB", Handler: noopHandler}},
-		Policy:   core.ToolPolicy{ToolNames: []string{"toolA"}},
+		Toolset:  Toolset{Tools: []core.Tool{{Name: "toolA", Handler: noopHandler}, {Name: "toolB", Handler: noopHandler}}, Policy: core.ToolPolicy{ToolNames: []string{"toolA"}}},
 	})
 	if err != nil || a == nil {
 		t.Fatalf("New = %v, %v", a, err)
@@ -254,7 +256,7 @@ func TestNewResolvesToolsAndPrefersProvider_TS11_5(t *testing.T) {
 // TS-11-6: a resolved shell tool with no Guard is refused at construction.
 func TestNewRefusesUnguardedShellTool_TS11_6(t *testing.T) {
 	a, err := New(Config{Provider: faux.New(), Model: driverModel,
-		Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}})
+		Toolset: Toolset{Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}}})
 	if a != nil || !errors.Is(err, core.ErrUnguardedExecute) || !strings.Contains(err.Error(), `"execute"`) {
 		t.Fatalf("New = %v, %v; want ErrUnguardedExecute naming execute", a, err)
 	}
@@ -265,7 +267,7 @@ func TestNewRefusesUnguardedShellTool_TS11_6(t *testing.T) {
 func TestNewRefusesUnguardedShellBehindWrapper_TS11_7(t *testing.T) {
 	shell := core.Tool{Name: "run_command", Handler: noopHandler}
 	wrapper := core.Tool{Name: "codemode", Handler: noopHandler, ReachableTools: []core.Tool{shell}}
-	a, err := New(Config{Provider: faux.New(), Model: driverModel, Tools: []core.Tool{wrapper}})
+	a, err := New(Config{Provider: faux.New(), Model: driverModel, Toolset: Toolset{Tools: []core.Tool{wrapper}}})
 	if a != nil || !errors.Is(err, core.ErrUnguardedExecute) ||
 		!strings.Contains(err.Error(), `wrapper "codemode"`) || !strings.Contains(err.Error(), `shell tool "run_command"`) {
 		t.Fatalf("New = %v, %v; want ErrUnguardedExecute naming codemode and run_command", a, err)
@@ -275,14 +277,15 @@ func TestNewRefusesUnguardedShellBehindWrapper_TS11_7(t *testing.T) {
 // TS-11-8: a Guard admits a reachable shell tool.
 func TestNewAcceptsGuardedShellTool_TS11_8(t *testing.T) {
 	a, err := New(Config{Provider: faux.New(), Model: driverModel,
-		Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}, Guard: guard.AllowAll})
+		Toolset: Toolset{Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}, Guard: guard.AllowAll}})
 	if err != nil || a == nil {
 		t.Fatalf("New = %v, %v; want an agent", a, err)
 	}
 }
 
-// TS-11-9: the Agent's exported methods are exactly the five.
-func TestAgentSurfaceIsFiveMethods_TS11_9(t *testing.T) {
+// TS-11-9: the Agent's exported methods are exactly the six: the five of
+// spec 11 and Runner (21-REQ-3.4).
+func TestAgentSurfaceIsSixMethods_TS11_9(t *testing.T) {
 	typ := reflect.TypeOf(&Agent{})
 	got := map[string]bool{}
 	for i := 0; i < typ.NumMethod(); i++ {
@@ -290,7 +293,7 @@ func TestAgentSurfaceIsFiveMethods_TS11_9(t *testing.T) {
 			got[m.Name] = true
 		}
 	}
-	want := map[string]bool{"Run": true, "Stream": true, "Messages": true, "Usage": true, "ReachableTools": true}
+	want := map[string]bool{"Run": true, "Stream": true, "Messages": true, "Usage": true, "ReachableTools": true, "Runner": true}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("exported methods = %v, want %v", got, want)
 	}
@@ -306,7 +309,7 @@ func TestRunReturnsAComprehensiveResult_TS11_10(t *testing.T) {
 		faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall("c1", "toolA", "{}")}, StopReason: core.StopReasonToolUse, Usage: fauxTurnUsage},
 		faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("all done")}, StopReason: core.StopReasonStop, Usage: fauxTurnUsage},
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{{Name: "toolA", Handler: noopHandler}}})
+	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{{Name: "toolA", Handler: noopHandler}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +382,7 @@ func TestStateIsReadableDuringARun_TS11_13(t *testing.T) {
 		turns = append(turns, faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall(fmt.Sprintf("c%d", i), "toolA", "{}")},
 			StopReason: core.StopReasonToolUse, Usage: fauxTurnUsage, Delay: time.Millisecond})
 	}
-	a, err := New(Config{Provider: faux.New(turns...), Model: driverModel, Tools: []core.Tool{{Name: "toolA", Handler: noopHandler}}})
+	a, err := New(Config{Provider: faux.New(turns...), Model: driverModel, Toolset: Toolset{Tools: []core.Tool{{Name: "toolA", Handler: noopHandler}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +442,7 @@ func TestSmokeMultiTurnWithParallelBatch_TS11_44(t *testing.T) {
 		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "toolA", "{}"), faux.FauxToolCall("c2", "toolB", "{}")),
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("finished")),
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, System: "be brief", Tools: []core.Tool{tool("toolA"), tool("toolB")}})
+	a, err := New(Config{Provider: fp, Model: driverModel, System: "be brief", Toolset: Toolset{Tools: []core.Tool{tool("toolA"), tool("toolB")}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +469,7 @@ func TestSmokeMultiTurnWithParallelBatch_TS11_44(t *testing.T) {
 // any request or stream exists.
 func TestSmokeUnguardedShellRefused_TS11_48(t *testing.T) {
 	fp := faux.New()
-	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}})
+	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}}})
 	if a != nil || !errors.Is(err, core.ErrUnguardedExecute) || !strings.Contains(err.Error(), `(tool "execute")`) {
 		t.Fatalf("New = %v, %v; want ErrUnguardedExecute naming execute", a, err)
 	}
@@ -485,10 +488,10 @@ func TestSmokeBudgetStopsTheRun_TS11_49(t *testing.T) {
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("t2")),
 	)
 	a, err := New(Config{Provider: fp, Model: "claude-opus-5-5", MaxCostUSD: 0.05,
-		Tools: []core.Tool{{Name: "toolA", InputSchema: schema.Object(), Handler: func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		Toolset: Toolset{Tools: []core.Tool{{Name: "toolA", InputSchema: schema.Object(), Handler: func(context.Context, json.RawMessage) (json.RawMessage, error) {
 			ran.Add(1)
 			return json.RawMessage(`{}`), nil
-		}}}})
+		}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -287,7 +287,7 @@ func newAgent(p *faux.Provider, tools ...core.Tool) *agentkit.Agent {
 		Provider:   p,
 		Model:      faux.Model().ID,
 		System:     "You are a helpful assistant.",
-		Tools:      tools,
+		Toolset:    agentkit.Toolset{Tools: tools},
 		MaxTurns:   8,
 		MaxCostUSD: 0.50,
 	})

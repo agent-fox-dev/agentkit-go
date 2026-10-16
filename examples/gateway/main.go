@@ -248,8 +248,7 @@ func runOn(ctx context.Context, w io.Writer, dir, url, token string, spec sandbo
 			faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("Two TODOs, both in src/.")}, StopReason: core.StopReasonStop},
 		),
 		Model:    faux.Model().ID,
-		Tools:    []core.Tool{cm},
-		Guard:    guard.Restricted(guard.Options{AllowedPrograms: []string{"ls"}}),
+		Toolset:  agentkit.Toolset{Tools: []core.Tool{cm}, Guard: guard.Restricted(guard.Options{AllowedPrograms: []string{"ls"}})},
 		MaxTurns: 4,
 	})
 	if err != nil {

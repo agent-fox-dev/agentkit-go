@@ -117,7 +117,7 @@ func run(ctx context.Context, w io.Writer) error {
 	agent, err := agentkit.New(agentkit.Config{
 		Provider: model,
 		Model:    faux.Model().ID,
-		Tools:    []core.Tool{cm},
+		Toolset:  agentkit.Toolset{Tools: []core.Tool{cm}},
 		MaxTurns: 5,
 	})
 	if err != nil {

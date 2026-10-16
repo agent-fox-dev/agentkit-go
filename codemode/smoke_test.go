@@ -75,13 +75,12 @@ func runAgent(t *testing.T, cm core.Tool, script string) (core.ToolResult, []cor
 		Provider: model,
 		Model:    faux.Model().ID,
 		MaxTurns: 4,
-		Tools:    []core.Tool{cm},
-		After: func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+		Toolset: agentkit.Toolset{Tools: []core.Tool{cm}, After: func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			if in.ToolName == cm.Name {
 				out = in.ToolResult
 			}
 			return core.AfterToolCallDecision{}
-		},
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)

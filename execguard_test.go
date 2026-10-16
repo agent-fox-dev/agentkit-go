@@ -21,7 +21,7 @@ func TestAgentReachableToolsResolvesPolicy_TS07_7(t *testing.T) {
 	wrap := core.Tool{Name: "wrap", ReachableTools: []core.Tool{sub1, sub2}, Handler: noopHandler}
 	leaf := core.Tool{Name: "leaf", Handler: noopHandler}
 	cfg := agentCfg(wrap, leaf)
-	cfg.Policy.ExcludeTools = []string{"sub2"}
+	cfg.Toolset.Policy.ExcludeTools = []string{"sub2"}
 	ag, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestExecuteGuardNamesWrapperAndShell_TS07_12(t *testing.T) {
 	}
 	// A wrapper the policy reduces to nothing reaches no shell tool.
 	cfg := agentCfg(shellWrapper())
-	cfg.Policy.ExcludeTools = []string{"execute"}
+	cfg.Toolset.Policy.ExcludeTools = []string{"execute"}
 	if _, err := New(cfg); err != nil {
 		t.Fatalf("an excluded shell tool still tripped the guard: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestExecuteGuardNamesWrapperAndShell_TS07_12(t *testing.T) {
 // TS-07-13: with a Guard, a reachable shell tool is allowed.
 func TestExecuteGuardAllowsInterceptedShell_TS07_13(t *testing.T) {
 	cfg := agentCfg(shellWrapper())
-	cfg.Guard = func(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
+	cfg.Toolset.Guard = func(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
 		return core.BeforeToolCallDecision{}
 	}
 	if _, err := New(cfg); err != nil {

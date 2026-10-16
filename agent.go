@@ -6,9 +6,14 @@
 //
 // The canonical vocabulary — messages, content blocks, events, Tool and
 // every interface seam — lives in the core package and is used directly.
-// What lives here is the driver: Config, New, the Agent, the loop and the
-// tool batch executor. The prompt assembler and the execute guard are each
-// their own package beneath this one.
+// What lives here is the driver — Config, New, the Agent and the loop — and
+// the tool side the driver is built on, which stands without a model. A
+// Toolset is the tools, the policy that selects among them, the guard, the
+// after-interceptor and the sink for execution events; NewRunner validates one
+// into a Runner, which runs tool calls (Call, Batch), code mode included,
+// through the pipeline an agent run uses. An Agent holds a Runner, and Config
+// takes a Toolset. The prompt assembler and the execute guard are each their
+// own package beneath this one.
 package agentkit
 
 import (
@@ -16,8 +21,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -56,13 +59,11 @@ type Config struct {
 	// Prefix is sent after the system prompt on every request, with a cache
 	// breakpoint on its last block.
 	Prefix []core.Message
-	Tools  []core.Tool
-	// Policy selects from Tools, and from what they reach through wrappers.
-	Policy core.ToolPolicy
-	// Guard authorizes every call. It is required when a shell tool is
-	// reachable.
-	Guard core.BeforeToolCall
-	After core.AfterToolCall
+	// Toolset is the agent's tools, the policy that selects among them, the
+	// guard that authorizes every call and the interceptor that sees every
+	// result. The zero Toolset is an agent with no tools. New refuses a
+	// Toolset that NewRunner refuses.
+	Toolset Toolset
 	// MaxTurns, MaxCostUSD and Timeout bound a run; zero means unbounded.
 	MaxTurns   int
 	MaxCostUSD float64
@@ -93,20 +94,21 @@ type PruneOptions struct {
 // Agent runs prompts against one model with one tool set. It has no global
 // state: a second agent is a second value.
 //
-// Its surface is five methods. Run and Stream execute a prompt to a stop
-// condition; Messages, Usage and ReachableTools read its state and are safe
-// from any goroutine while a run is in flight. A Run or Stream that overlaps
-// another fails with core.ErrBusy rather than queueing: a prompt queued
-// behind a running one was written against a transcript the caller could
-// see, and by the time it ran the transcript would have changed underneath
-// it.
+// Its surface is six methods. Run and Stream execute a prompt to a stop
+// condition; Messages, Usage and ReachableTools read its state and Runner
+// returns the runner its tool calls go through, all safe from any goroutine
+// while a run is in flight. A Run or Stream that overlaps another fails with
+// core.ErrBusy rather than queueing: a prompt queued behind a running one was
+// written against a transcript the caller could see, and by the time it ran
+// the transcript would have changed underneath it.
 type Agent struct {
 	cfg    Config
 	model  core.Model
 	client core.ProviderClient
-	// tools is the resolved set, fixed at construction: it is part of the
-	// cached prompt prefix, so it never changes under a run.
-	tools []core.Tool
+	// runner holds the resolved tool set, guard and interceptor, fixed at
+	// construction: the tool set is part of the cached prompt prefix, so it
+	// never changes under a run.
+	runner *Runner
 	// fixedTokens estimates what every request carries besides its
 	// messages: the system prompt and the tool definitions.
 	fixedTokens int64
@@ -128,9 +130,11 @@ type Agent struct {
 }
 
 // New builds an Agent from cfg. It refuses a config the agent could not run
-// safely: no way to reach a model, no model, an invalid tool hierarchy, or a
-// shell tool reachable with no Guard to authorize it — a returned error here,
-// rather than an unrestricted shell discovered on the first run.
+// safely: no way to reach a model, no model, or a Toolset that NewRunner
+// refuses — an invalid tool hierarchy, or a shell tool reachable with no
+// Guard to authorize it. That is a returned error here, rather than an
+// unrestricted shell discovered on the first run, and no request has been
+// sent.
 func New(cfg Config) (*Agent, error) {
 	if cfg.Client == nil && cfg.Provider == nil {
 		return nil, errors.New("agentkit: Config needs an Anthropic client or provider")
@@ -138,18 +142,8 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.Model == "" {
 		return nil, errors.New("agentkit: Config.Model is empty; a model identifier is required")
 	}
-	for _, t := range cfg.Tools {
-		if err := checkTool(t); err != nil {
-			return nil, err
-		}
-	}
-	resolved := cfg.Policy.Resolve(cfg.Tools)
-	for _, t := range resolved {
-		if err := checkTool(t); err != nil {
-			return nil, err
-		}
-	}
-	if err := checkShellGuard(cfg.Guard, resolved); err != nil {
+	runner, err := NewRunner(cfg.Toolset)
+	if err != nil {
 		return nil, err
 	}
 
@@ -160,64 +154,17 @@ func New(cfg Config) (*Agent, error) {
 	if client == nil {
 		client = anthropic.Provider(m, anthropic.Options{Client: cfg.Client})
 	}
-	cfg.Tools = append([]core.Tool(nil), cfg.Tools...)
+	// The runner owns the tool side now; the agent keeps no second copy of it.
+	cfg.Toolset = Toolset{}
 	cfg.Prefix = append([]core.Message(nil), cfg.Prefix...)
-	a := &Agent{cfg: cfg, model: m, client: client, tools: resolved}
-	fixed := len(prompt.Build(cfg.System, resolved))
-	if b, err := json.Marshal(core.ToolWires(resolved)); err == nil {
+	a := &Agent{cfg: cfg, model: m, client: client, runner: runner}
+	tools := runner.Tools()
+	fixed := len(prompt.Build(cfg.System, tools))
+	if b, err := json.Marshal(core.ToolWires(tools)); err == nil {
 		fixed += len(b)
 	}
 	a.fixedTokens = int64(fixed) / charsPerToken
 	return a, nil
-}
-
-// checkTool is REQ-TOOL-01's "exactly one of Handler and Execute", for every
-// way a tool enters the registry. A tool with neither otherwise registers and
-// fails only when the model first calls it, as a nil-func panic.
-//
-// It also validates the tool's ReachableTools hierarchy (07-REQ-1): every
-// reachable tool passes the same handler check, no tool reaches itself
-// directly or transitively, and no wrapper reaches a Terminating tool.
-// Failing here, at construction or registration, keeps a cycle from becoming
-// unbounded recursion and a wrapper from ending the run mid-run.
-func checkTool(t core.Tool) error {
-	return checkToolTree(t, nil, map[string]bool{})
-}
-
-// checkToolTree checks t and what it reaches. path is the chain of names
-// that led to t; a name already on it is a cycle. Tools are values, so a
-// cycle can only exist through shared slice storage, and it is detected by
-// name — the same name a nested call is dispatched by. done holds names
-// whose subtree has been checked: a diamond reaches the same tool along two
-// paths, and checking it once keeps a wide hierarchy from being walked once
-// per path.
-func checkToolTree(t core.Tool, path []string, done map[string]bool) error {
-	for i, name := range path {
-		if name == t.Name {
-			cycle := append(append([]string(nil), path[i:]...), t.Name)
-			return fmt.Errorf("agentkit: reachable tools cycle detected: %s", strings.Join(cycle, " -> "))
-		}
-	}
-	if done[t.Name] {
-		return nil
-	}
-	if t.Handler == nil && t.Execute == nil {
-		return fmt.Errorf("agentkit: tool %q has neither Handler nor Execute", t.Name)
-	}
-	if t.Handler != nil && t.Execute != nil {
-		return fmt.Errorf("agentkit: tool %q sets both Handler and Execute; exactly one", t.Name)
-	}
-	path = append(path[:len(path):len(path)], t.Name)
-	for _, r := range t.ReachableTools {
-		if r.Terminating {
-			return fmt.Errorf("agentkit: terminating tool %q cannot be reached through wrapper %q", r.Name, t.Name)
-		}
-		if err := checkToolTree(r, path, done); err != nil {
-			return err
-		}
-	}
-	done[t.Name] = true
-	return nil
 }
 
 func newID(prefix string) string {
@@ -244,12 +191,19 @@ func (a *Agent) Usage() core.Usage {
 }
 
 // ReachableTools returns every tool a run of this agent can call: the tools
-// Config.Policy resolved, and everything those reach through wrappers
+// Toolset.Policy resolved, and everything those reach through wrappers
 // (07-REQ-2.2). A check that a run is read-only, say, has to look at this set
-// rather than at the top-level tools.
+// rather than at the top-level tools. It is Runner().Reachable().
 func (a *Agent) ReachableTools() []core.Tool {
-	return core.ReachableTools(a.tools)
+	return a.Runner().Reachable()
 }
+
+// Runner returns the agent's runner: the same pointer on every call, safe to
+// use while a run is in flight. The agent's own tool calls go through it, and
+// so can an embedder's. Calls an embedder makes through it are not part of any
+// run: they do not enter the transcript, they are not counted in Usage, they do
+// not claim the run slot, and their events go to Toolset.Events.
+func (a *Agent) Runner() *Runner { return a.runner }
 
 // claimSlot claims the run slot, or fails with ErrBusy.
 func (a *Agent) claimSlot() error {

@@ -346,16 +346,17 @@ type NestedCaller interface {
 
 type nestedCallerKey struct{}
 
-// WithNestedCaller attaches c to ctx. The agent does this for every tool
-// that declares ReachableTools before calling it, so a tool implementation
-// never constructs a NestedCaller itself.
+// WithNestedCaller attaches c to ctx. An agent run or a Runner does this for
+// every tool that declares ReachableTools before calling it, so a tool
+// implementation never constructs a NestedCaller itself.
 func WithNestedCaller(ctx context.Context, c NestedCaller) context.Context {
 	return context.WithValue(ctx, nestedCallerKey{}, c)
 }
 
 // CallNested runs calls through the NestedCaller on ctx. With none attached
-// — the tool declares no ReachableTools, or runs outside an agent — it runs
-// nothing and returns ErrNoNestedCaller (07-REQ-4.2).
+// — the tool declares no ReachableTools, or is invoked by something that is
+// neither an agent run nor a Runner — it runs nothing and returns
+// ErrNoNestedCaller (07-REQ-4.2).
 func CallNested(ctx context.Context, calls ...ToolUseBlock) ([]ToolResult, error) {
 	c, ok := ctx.Value(nestedCallerKey{}).(NestedCaller)
 	if !ok || c == nil {

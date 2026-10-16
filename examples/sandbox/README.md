@@ -82,8 +82,10 @@ if err != nil {
 agent, err := agentkit.New(agentkit.Config{
 	Provider: provider,
 	Model:    model,
-	Tools:    proxies, // execute and run_command among them: a Guard is required
-	Guard:    guard.Restricted(guard.Options{AllowedPrograms: []string{"ls"}}),
+	Toolset: agentkit.Toolset{
+		Tools: proxies, // execute and run_command among them: a Guard is required
+		Guard: guard.Restricted(guard.Options{AllowedPrograms: []string{"ls"}}),
+	},
 })
 // ... run it, then take the result out.
 if err := sb.Export(ctx, "src", sandbox.LocalDir{Path: outDir}); err != nil {

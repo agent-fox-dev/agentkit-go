@@ -64,7 +64,7 @@ turns: 2, stop: end_turn
   deltas so streaming is visible; `p.Requests()` returns what the loop sent.
 - **The minimum config** — `newAgent`: `agentkit.New(agentkit.Config{…})`
   with `Provider: p` (the faux provider is a `core.ProviderClient` itself),
-  `Model: faux.Model().ID`, a `System` prompt, the `Tools`, and `MaxTurns` /
+  `Model: faux.Model().ID`, a `System` prompt, a `Toolset` holding the tools, and `MaxTurns` /
   `MaxCostUSD` bounding turns and spend. With a real model you set
   `Client` to the client `anthropic.Resolve(anthropic.OSEnv{})` returns
   instead of `Provider` (see [`codingagent`](../codingagent)).

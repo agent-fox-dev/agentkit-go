@@ -62,7 +62,7 @@ func runTS0442(t *testing.T) (map[string]ts0442Recorded, []core.ToolResultMessag
 		),
 	}}
 	a := newTestAgent(t, s, func(c *Config) {
-		c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+		c.Toolset.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			mu.Lock()
 			recs[in.ToolName] = ts0442Recorded{ToolResult: in.ToolResult, Result: in.Result}
 			mu.Unlock()
@@ -206,7 +206,7 @@ func ts0443Run(t *testing.T) (
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "probe", `{}`)),
 	}}
 	agent = newTestAgent(t, s, func(c *Config) {
-		c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+		c.Toolset.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			in.Result.Metadata.Outcome = "edited"
 			*in.Result.Metadata.ExitCode = 99
 			return core.AfterToolCallDecision{}
@@ -284,7 +284,7 @@ func TestToolResultCopyChangesDoNotAffectMessage_TS04_44(t *testing.T) {
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "probe", `{}`)),
 	}}
 	a := newTestAgent(t, s, func(c *Config) {
-		c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+		c.Toolset.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			snapshot = in.Result.Clone().(core.ToolResultMessage)
 			in.ToolResult.Text = "y"
 			in.ToolResult.Data["k"] = float64(2)
@@ -375,7 +375,7 @@ func TestPanicHandlerAfterToolCallNilMetadata_TS04_45(t *testing.T) {
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "c1", "panicker", `{}`)),
 	}}
 	a := newTestAgent(t, s, func(c *Config) {
-		c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+		c.Toolset.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			rec = recorded{ToolResult: in.ToolResult, Result: in.Result}
 			return core.AfterToolCallDecision{}
 		}
@@ -436,7 +436,7 @@ func TestTerminationVotesWithMetadata_TS04_46_NilAndFalseVote(t *testing.T) {
 			{Content: core.Content{core.TextBlock{Text: "should not reach"}}, StopReason: core.StopReasonStop},
 		}}
 		a := newTestAgent(t, s, func(c *Config) {
-			c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+			c.Toolset.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 				return core.AfterToolCallDecision{Terminate: nil}
 			}
 		}, terminatingTool)
@@ -463,7 +463,7 @@ func TestTerminationVotesWithMetadata_TS04_46_NilAndFalseVote(t *testing.T) {
 		}}
 		f := false
 		a := newTestAgent(t, s, func(c *Config) {
-			c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+			c.Toolset.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 				return core.AfterToolCallDecision{Terminate: &f}
 			}
 		}, terminatingTool)

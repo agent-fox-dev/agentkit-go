@@ -21,7 +21,9 @@ calls `cm.Execute` directly with real tools.
 **Code.** `core.CallNested` works only on a context the agent's batch prepared
 for a tool that declares `ReachableTools`. Called anywhere else, a script's
 first tool call fails naming `core.ErrNoNestedCaller`, rather than running
-the tool around the agent's interceptors. The smoke tests (TS-08-45 to
+the tool around the agent's interceptors. (Spec 21 adds a second place that
+prepares such a context: a `Runner`, which runs code mode with no agent. See
+`docs/errata/21_toolset_runner.md` and `docs/architecture.md`, "Code mode".) The smoke tests (TS-08-45 to
 TS-08-48, `codemode/smoke_test.go`) therefore run a real agent on
 `provider/faux`. Unit tests attach a stand-in dispatcher with
 `core.WithNestedCaller`. Test: `TestBindingWithoutDispatcherFails`.

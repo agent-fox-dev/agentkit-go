@@ -185,3 +185,30 @@ against `provider/faux`, nothing mocked. Where the pseudocode indexes
 `res.Messages[1]` for a tool result, the tests find the result by its call
 id: index 1 is the assistant message. TS-11-46 has the model re-issue the
 truncated call whole and checks the handler saw only that one.
+
+## Spec 21 (`toolset_runner`): the tool side is a `Toolset`, run by a `Runner`
+
+PRD 12 (`docs/prd/12-simplify-the-embedder-contract.md`, D1 and D2) and spec 21
+change three things this spec delivered:
+
+- **The tool fields moved out of `Config`.** `Tools`, `Policy`, `Guard` and
+  `After` are fields of `agentkit.Toolset` (`runner.go`), and `Config` has one
+  field, `Toolset`, in their place: twelve fields instead of fifteen. 11-REQ-1
+  and TS-11-1 now describe that shape, and `core.ErrUnguardedExecute`'s text
+  names `Toolset.Guard`. `New` still checks the client and the model first;
+  the tool checks it made inline (11-REQ-2 to 11-REQ-4) are `NewRunner`'s, in
+  the same order with the same errors, and `New` returns `NewRunner`'s error
+  unchanged.
+- **`Agent` gained `Runner`.** `(*Agent).Runner()` returns the runner the agent
+  was built on. TS-11-9 now expects six exported methods: `Run`, `Stream`,
+  `Messages`, `Usage`, `ReachableTools` and `Runner`. Calls made through the
+  runner are outside every run: not in the transcript, not in `Usage`, no run
+  slot.
+- **The batch executor and the nested caller are the runner's.** `executeBatch`
+  is `(*Runner).run` (`batch.go`), which takes an event sink, the assistant
+  message and the turn count instead of an agent and a stream; the agent loop
+  calls it with the run's stream and a context carrying its usage reporter
+  (`runTools`, `loop.go`). `nestedCaller` takes the runner and the same sink
+  (`nested.go`). TS-11-44..49 and the batch and nested tests that named
+  `executeBatch` drive that engine, through `runBatch` in `batch_test.go` or
+  through a run; their assertions are unchanged.

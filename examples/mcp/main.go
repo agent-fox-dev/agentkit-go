@@ -121,7 +121,7 @@ func clientMode(ctx context.Context, prompt, external string) error {
 	// 4. Tools adapts every connected server into core.Tools whose names are
 	//    QUALIFIED: `docs__search_docs`, not `search_docs`. The qualified name
 	//    is not cosmetic. It is the name the allowlist matches and the name a
-	//    Config.Guard is handed. A gate written against the unqualified name
+	//    Toolset.Guard is handed. A gate written against the unqualified name
 	//    does not merely fail to match — it fails OPEN: the policy never fires
 	//    and the call goes through.
 	mcpTools, err := pool.Tools(ctx, native)
@@ -163,8 +163,7 @@ func clientMode(ctx context.Context, prompt, external string) error {
 		Client:     client,
 		Model:      model.ID,
 		System:     "You are concise. Use the tools rather than guessing, and answer in plain prose.",
-		Tools:      all,
-		Policy:     core.ToolPolicy{ToolNames: toolNames(all)},
+		Toolset:    agentkit.Toolset{Tools: all, Policy: core.ToolPolicy{ToolNames: toolNames(all)}},
 		MaxTurns:   8,
 		MaxCostUSD: 1.00, // dollars, cumulative for the run
 	})

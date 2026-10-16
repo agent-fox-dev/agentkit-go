@@ -57,12 +57,12 @@ In `clientMode`:
    `pool.Connect(ctx, mcp.ServerConfig{Name, Command, Args, Env, Timeout}, env, secrets)`
    (`connectExternal`).
 4. **`pool.Tools(ctx, native)`** returns `core.Tool`s with **qualified names**,
-   `<server>__<tool>`. Write allowlists and `Config.Guard` checks against
+   `<server>__<tool>`. Write allowlists and `Config.Toolset.Guard` checks against
    the qualified name.
 5. **`smokeCall`** executes one adapted tool directly — a cheap way to prove
    the MCP side works before paying for a model turn.
 6. From there it is an ordinary agent: `agentkit.New(agentkit.Config{…})`
-   with `Tools` holding the native *and* MCP tools, and
+   with a `Toolset` whose `Tools` hold the native *and* MCP tools, and
    `Policy: core.ToolPolicy{ToolNames: …}` listing both (a non-nil allowlist
    covers the whole set). `MaxTurns: 8` and `MaxCostUSD: 1.00` bound the run.
 

@@ -66,7 +66,7 @@ func mdNewTestAgent(t *testing.T, s *mdScripted, mutate func(*agentkit.Config), 
 		Provider: streamFunc(s.stream),
 		Model:    "md-test-model",
 		MaxTurns: 10,
-		Tools:    tools,
+		Toolset:  agentkit.Toolset{Tools: tools},
 	}
 	if mutate != nil {
 		mutate(&cfg)
@@ -133,7 +133,7 @@ func TestNonEmptyHandlerMetadataCopiedOntoMessage_TS04_33(t *testing.T) {
 		mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
 	}}
 	a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
-		c.Guard = guard.AllowAll
+		c.Toolset.Guard = guard.AllowAll
 	}, probeTool)
 
 	res, events := mdCollectToolResultEvents(t, a, s, "go")
@@ -182,7 +182,7 @@ func TestNonEmptyHandlerMetadataCopiedOntoMessage_TS04_33(t *testing.T) {
 		mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
 	}}
 	a2 := mdNewTestAgent(t, s2, func(c *agentkit.Config) {
-		c.Guard = guard.AllowAll
+		c.Toolset.Guard = guard.AllowAll
 	}, probeTool2)
 	_, events2 := mdCollectToolResultEvents(t, a2, s2, "go")
 	if len(events2) == 0 {
@@ -246,7 +246,7 @@ func TestMetadataReuseDoesNotAlias_TS04_34(t *testing.T) {
 		),
 	}}
 	a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
-		c.Guard = guard.AllowAll
+		c.Toolset.Guard = guard.AllowAll
 	}, reusingTool)
 
 	res, events := mdCollectToolResultEvents(t, a, s, "go")
@@ -322,7 +322,7 @@ func TestNilOrZeroMetadataLeavesMessageNil_TS04_35(t *testing.T) {
 				mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
 			}}
 			a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
-				c.Guard = guard.AllowAll
+				c.Toolset.Guard = guard.AllowAll
 			}, probeTool)
 
 			_, events := mdCollectToolResultEvents(t, a, s, "go")
@@ -387,7 +387,7 @@ func runTS0436(t *testing.T) (core.RunResult, []core.ToolResultMessage) {
 		),
 	}}
 	a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
-		c.Guard = guard.AllowAll
+		c.Toolset.Guard = guard.AllowAll
 	}, handlerOK, handlerErr, panicTool, strictTool)
 	return mdCollectToolResultEvents(t, a, s, "go")
 }
@@ -488,7 +488,7 @@ func TestBlockedNilMetadata_TS04_37(t *testing.T) {
 		mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
 	}}
 	a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
-		c.Guard = func(_ context.Context, _ core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		c.Toolset.Guard = func(_ context.Context, _ core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			return core.BeforeToolCallDecision{Block: true, Reason: "no"}
 		}
 	}, metaTool)
@@ -522,7 +522,7 @@ func TestAbortedNilMetadata_TS04_37(t *testing.T) {
 	}}
 	ctx, cancel := context.WithCancel(context.Background())
 	a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
-		c.Guard = guard.AllowAll
+		c.Toolset.Guard = guard.AllowAll
 	}, metaTool)
 	// Cancelled before the run: the scripted provider ignores ctx, so the
 	// batch is reached and aborted.
@@ -575,7 +575,7 @@ func TestMaxTokensSynthesizedAndRepairSynthesizedNilMetadata_TS04_38(t *testing.
 		mdAssistantWithTools(core.StopReasonLength, mdToolUse(t, "c1", "probe", `{}`)),
 	}}
 	a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
-		c.Guard = guard.AllowAll
+		c.Toolset.Guard = guard.AllowAll
 	}, probeTool)
 
 	_, events := mdCollectToolResultEvents(t, a, s, "go")
@@ -656,7 +656,7 @@ func TestMetadataReachesEveryObserver_TS04_40(t *testing.T) {
 		mdAssistantWithTools(core.StopReasonToolUse, mdToolUse(t, "c1", "probe", `{}`)),
 	}}
 	a := mdNewTestAgent(t, s, func(c *agentkit.Config) {
-		c.Guard = guard.AllowAll
+		c.Toolset.Guard = guard.AllowAll
 	}, probeTool)
 
 	st, err := a.Stream(context.Background(), "go")

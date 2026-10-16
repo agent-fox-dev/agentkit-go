@@ -26,7 +26,7 @@ Do not implement anything before completing these steps.
 ## Repository Layout
 
 ```
-*.go                    # Root package: the driver (agentkit.Config, agentkit.New), tests alongside
+*.go                    # Root package: the driver (agentkit.Config, agentkit.New) and the runner (agentkit.Toolset, agentkit.NewRunner), tests alongside
 core/ provider/ wire/   # Core types, providers (anthropic, faux) and wire formats
 workspace/              # The workspace every scenario opens first: containment, ignore rules, the walk
 tools/ guard/ outline/  # The hands: the tools built for a workspace (tools.For), shell guard, source outlines
