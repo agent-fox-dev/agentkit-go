@@ -27,6 +27,16 @@ func skipHeavy(t *testing.T) string {
 	return goBin
 }
 
+// skipInMakeCheck skips a check that only repeats what make check already
+// runs: the sandbox module's tests and the policy gates. It still runs under
+// a plain go test.
+func skipInMakeCheck(t *testing.T) {
+	t.Helper()
+	if os.Getenv("AGENTKIT_IN_MAKE_CHECK") != "" {
+		t.Skip("repeats a suite make check already runs")
+	}
+}
+
 // goIn runs go with args in dir with env and returns its combined output
 // and error.
 func goIn(goBin, dir string, env []string, args ...string) (string, error) {
@@ -43,6 +53,7 @@ func goIn(goBin, dir string, env []string, args ...string) (string, error) {
 // record that no container engine was invoked. 16-REQ-8.4. They run in
 // the nested sandbox module (docs/errata/16_sandbox_images.md).
 func TestOfflineTestsInvokeNoEngine_TS16_27(t *testing.T) {
+	skipInMakeCheck(t)
 	goBin := skipHeavy(t)
 	marker := filepath.Join(t.TempDir(), "marker")
 	stubs := engineStubs(t, marker, "1")
@@ -59,6 +70,7 @@ func TestOfflineTestsInvokeNoEngine_TS16_27(t *testing.T) {
 // TS-16-28: sandbox/images holds only test files, and the cross-target and
 // host-cgo gates still pass. 16-REQ-8.5.
 func TestGatesWithImagesPackage_TS16_28(t *testing.T) {
+	skipInMakeCheck(t)
 	goBin := skipHeavy(t)
 	root := repoRoot(t)
 	env := subprocessEnv("PATH=" + os.Getenv("PATH"))
