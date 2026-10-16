@@ -45,8 +45,8 @@ func TestRunUsageIsPerRun(t *testing.T) {
 func TestNonJSONInterceptorArgumentsFailOneCall(t *testing.T) {
 	s := &scripted{turns: toolTurns(t)}
 	a := newTestAgent(t, s, func(c *Config) {
-		c.Tools = []core.Tool{echoTool("echo", nil)}
-		c.Guard = func(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		c.Toolset.Tools = []core.Tool{echoTool("echo", nil)}
+		c.Toolset.Guard = func(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			return core.BeforeToolCallDecision{Arguments: map[string]any{"v": math.NaN()}}
 		}
 	})

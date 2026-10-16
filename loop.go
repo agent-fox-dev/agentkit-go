@@ -434,16 +434,17 @@ func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.
 	if maxTokens <= 0 {
 		maxTokens = DefaultMaxTokens
 	}
+	tools := a.runner.Tools()
 	req := core.Request{
 		Prefix:    a.cfg.Prefix,
 		Messages:  view,
-		Tools:     core.ToolWires(a.tools),
+		Tools:     core.ToolWires(tools),
 		MaxTokens: &maxTokens,
 		Effort:    a.cfg.Effort,
 	}
 	// The assembled prompt, not the raw field: per-tool guidelines are only
 	// visible to the model if something assembles them.
-	if sys := prompt.Build(a.cfg.System, a.tools); sys != "" {
+	if sys := prompt.Build(a.cfg.System, tools); sys != "" {
 		req.System = []core.ContentBlock{core.TextBlock{Text: sys}}
 	}
 

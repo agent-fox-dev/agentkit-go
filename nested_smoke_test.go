@@ -53,7 +53,7 @@ func TestSmokeNestedParallelThroughWrapper_TS07_35(t *testing.T) {
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "parent_call_1", "wrapper", `{}`)),
 	}}
 	a := newTestAgent(t, s, func(c *Config) {
-		c.Tools = []core.Tool{wrapper}
+		c.Toolset.Tools = []core.Tool{wrapper}
 	})
 	st, err := a.Stream(context.Background(), "run wrapper")
 	if err != nil {
@@ -127,7 +127,7 @@ func TestSmokeNestedInterceptorTerminates_TS07_37(t *testing.T) {
 		return core.OKResult(nil)
 	}, childTool("child"))
 	res, s := runWrapper(t, "wrapper", func(c *Config) {
-		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		c.Toolset.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			mu.Lock()
 			seen = append(seen, in)
 			mu.Unlock()
@@ -152,7 +152,7 @@ func TestSmokeNestedInterceptorTerminates_TS07_37(t *testing.T) {
 // refused at construction, before any request to the model.
 func TestSmokeNestedUnguardedShellRefused_TS07_38(t *testing.T) {
 	s := &scripted{}
-	_, err := New(Config{Provider: streamFunc(s.stream), Model: testModelID, Tools: []core.Tool{shellWrapper()}})
+	_, err := New(Config{Provider: streamFunc(s.stream), Model: testModelID, Toolset: Toolset{Tools: []core.Tool{shellWrapper()}}})
 	if !errors.Is(err, core.ErrUnguardedExecute) || !strings.Contains(err.Error(), `wrapper "code_mode" reached shell tool "execute"`) {
 		t.Fatalf("New err = %v", err)
 	}

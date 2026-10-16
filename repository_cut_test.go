@@ -121,7 +121,7 @@ func TestBatchAndNestedWithoutHooks_TS09_12(t *testing.T) {
 			toolUse(t, "c2", "read_file", `{"path":"b.txt"}`)),
 	}}
 	a := newTestAgent(t, s, func(c *Config) {
-		c.Tools = []core.Tool{parent, readFile}
+		c.Toolset.Tools = []core.Tool{parent, readFile}
 	})
 	st, err := a.Stream(context.Background(), "go")
 	if err != nil {

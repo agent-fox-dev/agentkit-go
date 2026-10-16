@@ -35,14 +35,15 @@ var (
 	ErrSessionNotEmpty = errors.New(
 		"agentkit: session store is not empty; resume with LoadSession + NewAgentFromSession")
 
-	// ErrUnguardedExecute is OQ-8's resolution: an agent whose tool set
-	// reaches a shell tool (execute, run_command) with no Guard is refused by
-	// agentkit.New, before any request. A headless
-	// embedder with no policy would otherwise hand the model an unrestricted
-	// shell by omission. Supply an interceptor — RestrictedPolicy is the
-	// shipped starting point — or pass AllowAllToolCalls to say so explicitly.
+	// ErrUnguardedExecute is OQ-8's resolution: a toolset that reaches a shell
+	// tool (execute, run_command) with no Guard is refused by
+	// agentkit.NewRunner, and so by agentkit.New, before any request. A
+	// headless embedder with no policy would otherwise hand the model an
+	// unrestricted shell by omission. Supply an interceptor — RestrictedPolicy
+	// is the shipped starting point — or pass AllowAllToolCalls to say so
+	// explicitly.
 	ErrUnguardedExecute = errors.New(
-		"agentkit: a shell tool is reachable but Config.Guard is nil; " +
+		"agentkit: a shell tool is reachable but Toolset.Guard is nil; " +
 			"supply an interceptor (guard.Restricted is the shipped starting point) " +
 			"or guard.AllowAll to opt out explicitly (OQ-8)")
 )

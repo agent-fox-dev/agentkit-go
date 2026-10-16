@@ -241,7 +241,7 @@ func TestEveryCallOpensAndClosesExactlyOnce(t *testing.T) {
 				toolUse(t, "b3", "nope", `{}`)),
 		}}
 		a := newTestAgent(t, s, func(c *Config) {
-			c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+			c.Toolset.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 				return core.BeforeToolCallDecision{Block: in.ToolUseID == "b1", Reason: "no"}
 			}
 		}, echoTool("echo", nil))
@@ -293,13 +293,13 @@ func TestAShellToolWithNoInterceptorIsRefused(t *testing.T) {
 	}
 	// The explicit opt-out is an interceptor, so passing it is an act.
 	cfg := agentCfg(shell("execute"))
-	cfg.Guard = guard.AllowAll
+	cfg.Toolset.Guard = guard.AllowAll
 	if _, err := New(cfg); err != nil {
 		t.Fatalf("guard.AllowAll: %v", err)
 	}
 	// And a policy that excludes the shell tool from the run needs no guard.
 	cfg = agentCfg(shell("execute"))
-	cfg.Policy.ExcludeTools = []string{"execute"}
+	cfg.Toolset.Policy.ExcludeTools = []string{"execute"}
 	if _, err := New(cfg); err != nil {
 		t.Fatalf("excluded shell tool: %v", err)
 	}

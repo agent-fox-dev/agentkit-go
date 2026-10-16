@@ -101,7 +101,7 @@
       "done_when": [
         "`make test` passes in the root module with all Config literals migrated"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,

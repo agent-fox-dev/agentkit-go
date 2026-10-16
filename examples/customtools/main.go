@@ -84,12 +84,12 @@ func run() error {
 		Client: client,
 		Model:  model.ID,
 		System: "You are a parts-desk assistant. Use the tools rather than guessing part data.",
-		Tools: []core.Tool{
+		Toolset: agentkit.Toolset{Tools: []core.Tool{
 			lookupPartTool(),
 			convertUnitsTool(),
 			reserveStockTool(),
 			submitAnswerTool(&submitted),
-		},
+		}},
 		MaxTurns:   12,
 		MaxCostUSD: 1.00, // dollars, cumulative for the run
 	})

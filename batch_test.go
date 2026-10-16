@@ -63,7 +63,7 @@ func TestPrepareFinalizesInvalidAndBlockedCalls_TS11_26(t *testing.T) {
 		order = append(order, in.ToolUseID) // no lock: prepare is sequential
 		return core.BeforeToolCallDecision{Block: in.ToolName == "blockedTool", Reason: "disallowed"}
 	}
-	results, terminate := runBatch(t, context.Background(), Config{Tools: tools, Guard: guard},
+	results, terminate := runBatch(t, context.Background(), Config{Toolset: Toolset{Tools: tools, Guard: guard}},
 		toolUse(t, "c1", "schemaTool", `{"count":"not a number"}`),
 		toolUse(t, "c2", "blockedTool", `{}`),
 		toolUse(t, "c3", "blockedTool", `{}`))
@@ -88,7 +88,7 @@ func TestCancelledBatchRunsNothing_TS11_27(t *testing.T) {
 	var ran atomic.Int32
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	results, _ := runBatch(t, ctx, Config{Tools: []core.Tool{echoTool("testTool", &ran)}},
+	results, _ := runBatch(t, ctx, Config{Toolset: Toolset{Tools: []core.Tool{echoTool("testTool", &ran)}}},
 		toolUse(t, "c1", "testTool", `{}`), toolUse(t, "c2", "testTool", `{}`))
 	if ran.Load() != 0 {
 		t.Fatalf("%d handlers ran under a cancelled context", ran.Load())
@@ -113,7 +113,7 @@ func TestCancelDuringPrepareRunsNothing_TS11_27(t *testing.T) {
 		}
 		return core.BeforeToolCallDecision{}
 	}
-	results, _ := runBatch(t, ctx, Config{Tools: []core.Tool{echoTool("testTool", &ran)}, Guard: guard},
+	results, _ := runBatch(t, ctx, Config{Toolset: Toolset{Tools: []core.Tool{echoTool("testTool", &ran)}, Guard: guard}},
 		toolUse(t, "c1", "testTool", `{}`), toolUse(t, "c2", "testTool", `{}`), toolUse(t, "c3", "testTool", `{}`))
 	if ran.Load() != 0 {
 		t.Fatalf("%d handlers ran after the cancel", ran.Load())
@@ -129,7 +129,7 @@ func TestCancelDuringPrepareRunsNothing_TS11_27(t *testing.T) {
 func TestBatchRunsHandlersConcurrently_TS11_28(t *testing.T) {
 	var active, peak atomic.Int32
 	tool := core.Tool{Name: "parallelTool", InputSchema: schema.Object(), Handler: overlap(&active, &peak, 30*time.Millisecond)}
-	results, _ := runBatch(t, context.Background(), Config{Tools: []core.Tool{tool}},
+	results, _ := runBatch(t, context.Background(), Config{Toolset: Toolset{Tools: []core.Tool{tool}}},
 		toolUse(t, "c1", "parallelTool", `{}`), toolUse(t, "c2", "parallelTool", `{}`), toolUse(t, "c3", "parallelTool", `{}`))
 	if peak.Load() < 2 || len(results) != 3 {
 		t.Fatalf("peak concurrency %d with %d results; want more than 1 and 3", peak.Load(), len(results))
@@ -152,7 +152,7 @@ func TestSequentialToolSerializesTheBatch_TS11_29(t *testing.T) {
 			order = append(order, a.V) // no lock: sequential is the claim under test
 			return overlap(&active, &peak, 10*time.Millisecond)(ctx, in)
 		}}
-	runBatch(t, context.Background(), Config{Tools: []core.Tool{seq}},
+	runBatch(t, context.Background(), Config{Toolset: Toolset{Tools: []core.Tool{seq}}},
 		toolUse(t, "c1", "seqTool", `{"v":"1"}`), toolUse(t, "c2", "seqTool", `{"v":"2"}`), toolUse(t, "c3", "seqTool", `{"v":"3"}`))
 	if peak.Load() != 1 || strings.Join(order, "") != "123" {
 		t.Fatalf("peak %d, order %v; want 1 and call order", peak.Load(), order)
@@ -182,7 +182,7 @@ func TestFinalizeIsSerializedAndSlotOrdered_TS11_30(t *testing.T) {
 		return core.AfterToolCallDecision{}
 	}
 	results, _ := runBatch(t, context.Background(),
-		Config{Tools: []core.Tool{sleepy("slowTool", 50*time.Millisecond), sleepy("fastTool", 5*time.Millisecond)}, After: after},
+		Config{Toolset: Toolset{Tools: []core.Tool{sleepy("slowTool", 50*time.Millisecond), sleepy("fastTool", 5*time.Millisecond)}, After: after}},
 		toolUse(t, "slot0", "slowTool", `{}`), toolUse(t, "slot1", "fastTool", `{}`), toolUse(t, "slot2", "fastTool", `{}`))
 	if results[0].ToolUseID != "slot0" || results[1].ToolUseID != "slot1" || results[2].ToolUseID != "slot2" {
 		t.Fatalf("results out of call order: %s %s %s", results[0].ToolUseID, results[1].ToolUseID, results[2].ToolUseID)
@@ -217,7 +217,7 @@ func TestATerminateVoteEndsTheRunAfterTheBatch_TS11_31(t *testing.T) {
 		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "termTool", "{}"), faux.FauxToolCall("c2", "slowTool", "{}")),
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("never requested")),
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{terminating("termTool", 0), slow}})
+	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{terminating("termTool", 0), slow}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,10 +243,10 @@ func TestBlockedCallsDoNotTerminate_TS11_32(t *testing.T) {
 			faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "termTool", "{}")),
 			faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("continue")),
 		)
-		a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{terminating("termTool", 0)},
-			Guard: func(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
-				return core.BeforeToolCallDecision{Block: true, Terminate: terminate, Reason: "denied"}
-			}})
+		a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{terminating("termTool", 0)}, Guard: func(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
+			return core.BeforeToolCallDecision{Block: true, Terminate: terminate, Reason: "denied"}
+		}},
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -265,7 +265,7 @@ func TestBlockedCallsDoNotTerminate_TS11_32(t *testing.T) {
 	}
 	typed := terminating("termTool", 0)
 	typed.InputSchema = schema.Object(schema.Prop("n", schema.Int()))
-	results, vote := runBatch(t, context.Background(), Config{Tools: []core.Tool{typed}},
+	results, vote := runBatch(t, context.Background(), Config{Toolset: Toolset{Tools: []core.Tool{typed}}},
 		toolUse(t, "c1", "termTool", `{"n":"not a number"}`))
 	if !results[0].IsError || vote {
 		t.Fatalf("invalid call = %q, vote %v; want an error result and no vote", results[0].Content.Text(), vote)

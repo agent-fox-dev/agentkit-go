@@ -46,7 +46,8 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	// in the same parallel batch) sees it at once rather than when the batch
 	// finalizes.
 	ctx = core.WithUsageReporter(ctx, a.addUsage)
-	cfg, tools := a.cfg, a.tools
+	r := a.runner
+	tools := r.tools
 
 	// report surfaces an error — a panicking interceptor — as an event on
 	// the run's stream. It never touches a.mu, so it is safe inside the
@@ -72,8 +73,8 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 	thunks := make([]func(), 0, n)
 
 	// env is what a wrapper's nested calls run with (07-REQ-4.3): the same
-	// config copy, stream and reporter as this batch.
-	env := &nestedEnv{cfg: cfg, s: s, assistant: assistant, turnCount: turnCount, report: report}
+	// runner, stream and reporter as this batch.
+	env := &nestedEnv{runner: r, s: s, assistant: assistant, turnCount: turnCount, report: report}
 
 	// batchMu is BATCH-SCOPED: created here, acquired by nothing else, and
 	// a.mu is never acquired while it is held.
@@ -152,8 +153,8 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 			continue
 		}
 
-		if cfg.Guard != nil {
-			dec := callBefore(ctx, report, cfg.Guard, core.BeforeToolCallContext{
+		if r.guard != nil {
+			dec := callBefore(ctx, report, r.guard, core.BeforeToolCallContext{
 				ToolName:  c.Name,
 				ToolUseID: c.ID,
 				Tool:      tool,
@@ -219,8 +220,8 @@ func (a *Agent) executeBatch(ctx context.Context, s *core.EventStream, assistant
 				defer batchMu.Unlock()
 
 				msg := toolResultMessage(c, out)
-				if cfg.After != nil {
-					dec := callAfter(ctx, report, cfg.After, core.AfterToolCallContext{
+				if r.after != nil {
+					dec := callAfter(ctx, report, r.after, core.AfterToolCallContext{
 						ToolName:   c.Name,
 						ToolUseID:  c.ID,
 						Arguments:  prepared.Args,

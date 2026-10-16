@@ -49,7 +49,7 @@ func runWrapper(t *testing.T, call string, mutate func(*Config), tools ...core.T
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "parent_call_1", call, `{}`)),
 	}}
 	a := newTestAgent(t, s, func(c *Config) {
-		c.Tools = tools
+		c.Toolset.Tools = tools
 		if mutate != nil {
 			mutate(c)
 		}
@@ -144,13 +144,13 @@ func TestNestedInterceptorParentContext_TS07_18(t *testing.T) {
 		return core.OKResult(nil)
 	}, childTool("child"))
 	runWrapper(t, "parent", func(c *Config) {
-		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		c.Toolset.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			mu.Lock()
 			before[in.ToolName] = in
 			mu.Unlock()
 			return core.BeforeToolCallDecision{}
 		}
-		c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+		c.Toolset.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			mu.Lock()
 			after[in.ToolName] = in
 			mu.Unlock()
@@ -186,7 +186,7 @@ func TestNestedInterceptorBlock_TS07_19(t *testing.T) {
 		return core.OKResult(map[string]any{"recovered": true})
 	}, child)
 	res, _ := runWrapper(t, "wrap", func(c *Config) {
-		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		c.Toolset.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			if in.ParentToolUseID != "" {
 				return core.BeforeToolCallDecision{Block: true, Reason: "permission denied"}
 			}
@@ -218,7 +218,7 @@ func TestNestedInterceptorTerminate_TS07_20(t *testing.T) {
 		return core.OKResult(nil)
 	}, childTool("child"))
 	res, s := runWrapper(t, "wrap", func(c *Config) {
-		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		c.Toolset.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			if in.ParentToolUseID != "" {
 				return core.BeforeToolCallDecision{Block: true, Terminate: true, Reason: "critical violation"}
 			}
@@ -241,7 +241,7 @@ func TestNestedInterceptorRewritesArguments_TS07_21(t *testing.T) {
 		return core.OKResult(nil)
 	}, childTool("child"))
 	runWrapper(t, "wrap", func(c *Config) {
-		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		c.Toolset.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			if in.ParentToolUseID != "" {
 				return core.BeforeToolCallDecision{Arguments: map[string]any{"v": "rewritten"}}
 			}
@@ -271,7 +271,7 @@ func TestNestedTerminateVoteIgnored_TS07_22(t *testing.T) {
 	}, child)
 	var wrapperOut core.ToolResult
 	res, s := runWrapper(t, "wrap", func(c *Config) {
-		c.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+		c.Toolset.After = func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			if in.ToolName == "wrap" {
 				wrapperOut = in.ToolResult
 			}
@@ -467,7 +467,7 @@ func TestNestedEventsUniqueToolUseIDs_TS07_28(t *testing.T) {
 	seen := map[string]bool{}
 	for range 5 {
 		runWrapper(t, "parent", func(c *Config) {
-			c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+			c.Toolset.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 				if in.ParentToolUseID == "" {
 					return core.BeforeToolCallDecision{}
 				}
@@ -499,7 +499,7 @@ func TestNestedEvents_TS07_29(t *testing.T) {
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "parent_call_1", "parent", `{}`)),
 	}}
 	a := newTestAgent(t, s, func(c *Config) {
-		c.Tools = []core.Tool{fanOut(childTool("child"))}
+		c.Toolset.Tools = []core.Tool{fanOut(childTool("child"))}
 	})
 	st, err := a.Stream(context.Background(), "go")
 	if err != nil {
@@ -565,7 +565,7 @@ func TestNestedUsage_TS07_32(t *testing.T) {
 		assistantWithTools(core.StopReasonToolUse, toolUse(t, "parent_call_1", "parent", `{}`)),
 	}}
 	a = newTestAgent(t, s, func(c *Config) {
-		c.Tools = []core.Tool{wrapperTool("parent", func(ctx context.Context) core.ToolResult {
+		c.Toolset.Tools = []core.Tool{wrapperTool("parent", func(ctx context.Context) core.ToolResult {
 			_, _ = core.CallNested(ctx, core.ToolUseBlock{Name: "child"})
 			return core.OKResult(nil)
 		}, spender)}
@@ -621,8 +621,8 @@ func TestNestedTerminateClosesEveryOpenedCall(t *testing.T) {
 		return core.ErrResult("terminated", fmt.Sprint(err))
 	}, childTool("ok"), childTool("deny"))
 	a := newTestAgent(t, s, func(c *Config) {
-		c.Tools = []core.Tool{wrap}
-		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		c.Toolset.Tools = []core.Tool{wrap}
+		c.Toolset.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			if in.ToolName == "deny" {
 				return core.BeforeToolCallDecision{Block: true, Terminate: true, Reason: "no"}
 			}
@@ -674,7 +674,7 @@ func TestNestedAfterToolCallMayCallNested(t *testing.T) {
 			return core.OKResult(nil)
 		}, childTool("child"))
 		runWrapper(t, "parent", func(c *Config) {
-			c.After = func(ctx context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+			c.Toolset.After = func(ctx context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 				if in.ParentToolUseID != "" {
 					_, _ = core.CallNested(ctx, core.ToolUseBlock{Name: "nothing"})
 				}
@@ -780,7 +780,7 @@ func TestNestedBlockIsAValue_TS11_36(t *testing.T) {
 		return core.OKResult(map[string]any{"handled": true})
 	}, childTool("childA"))
 	res, _ := runWrapper(t, "wrapper", func(c *Config) {
-		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		c.Toolset.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			return core.BeforeToolCallDecision{Block: in.ParentToolUseID != "", Reason: "permission denied"}
 		}
 	}, wrapper)
@@ -802,7 +802,7 @@ func TestNestedTerminateVote_TS11_37(t *testing.T) {
 		return core.OKResult(map[string]any{"wrapper": "done"})
 	}, childTool("childA"))
 	res, s := runWrapper(t, "wrapper", func(c *Config) {
-		c.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		c.Toolset.Guard = func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			return core.BeforeToolCallDecision{Block: in.ParentToolUseID != "", Terminate: in.ParentToolUseID != "", Reason: "stop"}
 		}
 	}, wrapper)
@@ -833,7 +833,7 @@ func TestSmokeNestedThroughWrapper_TS11_47(t *testing.T) {
 		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "wrapperTool", "{}")),
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("done")),
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, Tools: []core.Tool{wrapper}, Guard: guard.AllowAll})
+	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{wrapper}, Guard: guard.AllowAll}})
 	if err != nil {
 		t.Fatal(err)
 	}

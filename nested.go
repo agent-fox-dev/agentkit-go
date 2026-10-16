@@ -12,10 +12,10 @@ import (
 )
 
 // nestedEnv is what a nested call needs from the batch that runs its
-// wrapper. It is built once per batch from the same cfg copy executeBatch
+// wrapper. It is built once per batch from the same runner executeBatch
 // uses, so a nested call never reaches back through a.mu for configuration.
 type nestedEnv struct {
-	cfg       Config
+	runner    *Runner
 	s         *core.EventStream
 	assistant *core.AssistantMessage
 	turnCount int
@@ -184,9 +184,8 @@ func (n *nestedCaller) prepare(ctx context.Context, batch []core.ToolUseBlock, i
 		return prepared, tool, call, core.ErrResult("invalid_arguments", perr.Error()), false
 	}
 
-	cfg := n.env.cfg
-	if cfg.Guard != nil {
-		dec := callBefore(ctx, n.env.report, cfg.Guard, core.BeforeToolCallContext{
+	if guard := n.env.runner.guard; guard != nil {
+		dec := callBefore(ctx, n.env.report, guard, core.BeforeToolCallContext{
 			ToolName:        call.Name,
 			ToolUseID:       call.ID,
 			ParentToolUseID: n.parentID,
@@ -259,7 +258,7 @@ func (n *nestedCaller) execute(ctx context.Context, call core.ToolUseBlock, tool
 	// deferred unlock so a panicking listener cannot leave it held.
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if after := n.env.cfg.After; after != nil {
+	if after := n.env.runner.after; after != nil {
 		msg := toolResultMessage(call, out)
 		dec := callAfter(ctx, n.env.report, after, core.AfterToolCallContext{
 			ToolName:        call.Name,

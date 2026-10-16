@@ -170,8 +170,8 @@ func TestConcurrentProxies_TS13_40(t *testing.T) {
 	}
 }
 
-// TS-13-62: agentkit.New refuses proxy shell tools with a nil Guard exactly
-// as it refuses local ones. 13-REQ-10.1.
+// TS-13-62, TS-21-50: agentkit.New refuses proxy shell tools with a nil
+// Toolset.Guard exactly as it refuses local ones. 13-REQ-10.1, 21-REQ-9.2.
 func TestUnguardedProxyShell_TS13_62(t *testing.T) {
 	isolate(t)
 	sb := newLocal(t)
@@ -180,7 +180,7 @@ func TestUnguardedProxyShell_TS13_62(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := func(ts []core.Tool, g core.BeforeToolCall) agentkit.Config {
-		return agentkit.Config{Provider: faux.New(), Model: faux.Model().ID, Tools: ts, Guard: g}
+		return agentkit.Config{Provider: faux.New(), Model: faux.Model().ID, Toolset: agentkit.Toolset{Tools: ts, Guard: g}}
 	}
 	if a, err := agentkit.New(cfg(proxies, nil)); a != nil || !errors.Is(err, core.ErrUnguardedExecute) {
 		t.Errorf("all proxies, nil Guard: %v, %v", a, err)
