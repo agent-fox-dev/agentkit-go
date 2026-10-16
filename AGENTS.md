@@ -77,16 +77,24 @@ The Go version is **1.27** (`go 1.27` in every `go.mod`).
 | `make vet` | `go vet ./...` |
 | `make lint` | `golangci-lint` if installed (config in `.golangci.yml`) |
 | `make check` | `fmt`, `vet`, `lint` and `test-short` — the fast check, use before committing |
-| `make check-release` | `fmt`, `vet`, `lint` and the full `test`, slow gates included — use before a release or merge |
+| `make check-release` | `fmt`, `vet`, `lint` and the full `test`, slow gates included — **manual, human-run only; agents never run it** |
 | `make doc` | Regenerate the Go package docs in `docs/generated/` (committed) |
 | `make tidy` | `go mod tidy` |
 | `make clean` | Remove build output |
 
-Run the full quality suite before committing:
+Run the quality suite before committing:
 
 ```
 make check
 ```
+
+**`make check` is the only gate you run while implementing.** Do NOT run
+`make check-release`, and do not run the full `make test` as a stand-in for it.
+`make check-release` is a manual action reserved for the user, before a release
+or a merge. Do not run it to "be thorough", to confirm a fix, or before opening
+a pull request. While you work, narrow `go test` runs on the packages you touch
+are fine. If you think a change needs the full gate, say so in the handoff note
+and leave the run to the user.
 
 ## Git Workflow
 
