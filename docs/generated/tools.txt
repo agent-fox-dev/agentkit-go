@@ -8,6 +8,10 @@ express — truncation, unique-match editing, deterministic ignore handling.
 Deletion, renaming, appending and stat are one shell word each and ship no tool.
 Their absence is the requirement.
 
+The tools are built for a workspace: open one with workspace.Open, which owns
+the containment boundary, the ignore rules and the directory walk, and pass it
+to For.
+
 CONSTANTS
 
 const (
@@ -62,21 +66,7 @@ const SearchOverExecuteGuideline = "Prefer search_files over execute+grep: it re
     its tool is present, execute or not; the prompt builder emits it.
 
 
-VARIABLES
-
-var (
-	ErrPathNotAllowed = errors.New("tools: path_not_allowed")
-	ErrPathMalformed  = errors.New("tools: path_malformed")
-	ErrNoHome         = errors.New("tools: home directory could not be resolved")
-)
-    Errors returned by the path guard. They are sentinels so a policy can tell
-    "outside the workspace" from "malformed" without matching on strings.
-
-
 FUNCTIONS
-
-func All(opts Options) ([]core.Tool, error)
-    All returns the default built-in tool set.
 
 func ApplyEdits(content string, edits []Edit) (string, int, error)
     ApplyEdits applies a batch of edits to content, or rejects the whole batch.
@@ -117,7 +107,7 @@ func ExpandBraces(p string) []string
 func FileNavigationTools() []string
     FileNavigationTools names REQ-TOOL-04e's opt-in set of six.
 
-    They are in All() because All() is the DEFAULT set, and the requirement's
+    They are in For() because For() is the DEFAULT set, and the requirement's
     "opt-in" is about the tool policy of REQ-TOOL-10 rather than about this
     constructor: an embedder scopes a run down with ToolPolicy, and a set that
     omitted them by default would make the common case the one you have to
@@ -151,6 +141,17 @@ func FoldLine(s string) string
     line at the wrong nesting level, which is precisely the kind of silent
     mis-application REQ-TOOL-04c's uniqueness rule exists to prevent.
 
+func For(ws *workspace.Workspace, opts Options) ([]core.Tool, error)
+    For returns the built-in tools for ws: read_file, write_file, edit_file,
+    list_files, find_files, search_files, file_outline, find_symbol,
+    find_references, execute and run_command, in that order, followed by
+    Options.Index's tools when an index is set. The shell tools run in
+    ws.Root(), and every directory walk the tools make uses ws's ignore rules.
+
+    A nil ws returns no tools and an error: there is no fallback to the working
+    directory, because a silent default is the kind of hidden choice taking the
+    workspace as an argument exists to remove.
+
 func InvalidUTF8Marker(path string) string
     InvalidUTF8Marker is read_file's note on a page that is not valid UTF-8.
 
@@ -180,17 +181,6 @@ func MatchGlob(pattern, path string) bool
       - smart-case: an all-lowercase pattern matches case-insensitively;
       - a bare alternative with no separator also matches by basename, which is
         what a user typing `*.go` means.
-
-func Normalize(p string) (string, error)
-    Normalize applies the pre-canonicalization rewrites.
-
-    `~user` expands to that user's home directory via os/user; an unknown user
-    is malformed rather than left as a literal `~user` path.
-
-    An unresolvable HOME is also a rejection, not a fallback to a relative path.
-    A relative path resolves against the process working directory — whatever
-    repository the agent happens to be run in — so falling back would let a
-    hostile repo's files stand in for the user's own. Fail closed.
 
 func ReadMarker(shown, total int) string
     ReadMarker is emitted when a read is line-truncated.
@@ -294,12 +284,6 @@ func SymbolPartialMarker(reason string) string
     SymbolPartialMarker is emitted when a symbol-table build or refresh pass
     stopped at a bound. It tells the model to narrow with path or fall back to
     search_files.
-
-func Walk(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(rel string, d fs.DirEntry) error) error
-    Walk is the workspace-confined entry point for the shared directory walk.
-    It returns an error wrapping ErrPathNotAllowed when ws is nil, root is
-    not absolute, or root lies outside ws.Root, before any entry is visited.
-    It does not follow symlinks, because it uses filepath.WalkDir.
 
 
 TYPES
@@ -480,27 +464,6 @@ func RunArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
     when the reader returns io.EOF. A read error other than io.EOF is recorded
     in ExecResult.IOErr. Nil keeps the null device.
 
-type IgnoreOptions struct {
-	Getenv func(string) string
-	Home   func() (string, error)
-	// GitConfig returns core.excludesFile. Nil runs `git config`.
-	GitConfig func() string
-}
-    IgnoreOptions injects the environment the ignore engine reads, so the whole
-    thing is testable without mutating process state or requiring a git binary
-    (NFR-TEST-04). The zero value reads the real environment.
-
-    It is threaded through Options so a TOOL-level test can pin an empty global
-    layer: without it find_files and search_files read the developer's own
-    global excludes, and a test passes or fails depending on whose machine runs
-    it.
-
-func NoGlobalExcludes() IgnoreOptions
-    NoGlobalExcludes returns options with an EMPTY global layer — no
-    core.excludesFile, no XDG path, no home directory — so a scan honours only
-    the ignore files found in the tree. It is what tests use; an embedder that
-    wants a hermetic tool set can use it too.
-
 type Index interface {
 	// Symbols answers a find_symbol query from the index. It returns
 	// ok=true only when the index can answer authoritatively; ok=false
@@ -542,7 +505,6 @@ func NormalizeForEdit(s string) (normalized string, bom bool, ending LineEnding)
     in a state no editor preserves faithfully.
 
 type Options struct {
-	Workspace *Workspace
 	// SpillDir is where oversized subprocess output is streamed in full
 	// (REQ-TOOL-09d). Empty means a per-workspace subdirectory of
 	// os.TempDir(), created on first spill. Spill files are the EMBEDDER'S to
@@ -557,23 +519,20 @@ type Options struct {
 	// not exist.
 	DisableSpill bool
 	// Env replaces the subprocess environment. Nil means ReducedEnv(nil)
-	// (REQ-SEC-08) — for every constructor here, not only All(): a tool built
+	// (REQ-SEC-08) — for every constructor here, not only For(): a tool built
 	// by hand with a nil Env must not inherit the parent's credentials just
 	// because it skipped the aggregate.
 	Env []string
-	// Ignore injects the environment the ignore engine reads. The zero value
-	// reads the real one; NoGlobalExcludes() pins an empty global layer
-	// (NFR-TEST-04).
-	Ignore IgnoreOptions
 	// Symbols configures the symbol table.
 	Symbols SymbolOptions
-	// Index is the optional codesearch index. When set, All() appends
+	// Index is the optional codesearch index. When set, For() appends
 	// Index.Tools() after the built-in tools, and write_file, edit_file
 	// and the shell tools call Index.Invalidate on every write. Nil means
 	// no index.
 	Index Index
 }
-    Options configures the built-in tool set.
+    Options configures the built-in tool set. The workspace, and with it the
+    ignore rules, is the argument of For, not an option.
 
 type Outcome string
     Outcome classifies how a command ended. It is a distinct type because the
@@ -603,7 +562,8 @@ type ReferenceOptions struct {
 	IncludeTests bool   // Whether to include test files (default false in struct, tool defaults to true)
 	MaxResults   int    // 0 or negative defaults to 30; capped at 100
 }
-    ReferenceOptions configures reference lookup on a Workspace.
+    ReferenceOptions configures a reference lookup, For's find_references or
+    References.
 
 type ReferenceResult struct {
 	Target          outline.Decl
@@ -617,6 +577,13 @@ type ReferenceResult struct {
 	// Has unexported fields.
 }
     ReferenceResult is the outcome of a reference search.
+
+func References(ctx context.Context, ws *workspace.Workspace, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error)
+    References finds usages and callers of target across ws, bounded by
+    the default SymbolOptions. It uses no reference cache and no index.
+    A nil ws returns an error, an opts.Path outside ws returns an error wrapping
+    workspace.ErrPathNotAllowed, and a cancelled context returns the context's
+    error; each with an empty result.
 
 type ReferenceSite struct {
 	Path       string       // Slash-separated workspace-relative path
@@ -678,7 +645,7 @@ func Search(ctx context.Context, root string, p SearchParams) (SearchResult, err
     envelope. It reads the real ignore environment; SearchIn takes an explicit
     one.
 
-func SearchIn(ctx context.Context, root string, p SearchParams, ig IgnoreOptions) (SearchResult, error)
+func SearchIn(ctx context.Context, root string, p SearchParams, ig workspace.IgnoreOptions) (SearchResult, error)
     SearchIn is Search with an injected ignore environment (NFR-TEST-04),
     so a test can pin an empty global excludes layer instead of inheriting the
     developer's.
@@ -757,66 +724,3 @@ const (
 	TruncatedByLines TruncatedBy = "lines"
 	TruncatedByBytes TruncatedBy = "bytes"
 )
-type WalkOptions struct {
-	Ignore        IgnoreOptions
-	IncludeHidden bool
-}
-    WalkOptions configures the exported Walk.
-
-type Workspace struct {
-	// Root is the absolute, symlink-resolved workspace root.
-	Root string
-}
-    Workspace is the containment boundary for the built-in FILE tools
-    (REQ-SEC-01).
-
-    On a host it does NOT constrain `execute`. That is not an oversight,
-    and it is stated here rather than left to be discovered: a shell command can
-    read and write anything the process can, and pretending otherwise would be
-    worse than admitting it. The boundary for `execute` is the BeforeToolCall
-    interceptor (REQ-SEC-03). See TestExecuteIsNotPathContained, whose name is
-    the documentation.
-
-    Inside a sandbox whose agent reports a Landlock ABI
-    (sandbox.AgentInfo.Landlock), the agent's kernel ruleset confines `execute`,
-    and every process it starts, to the ruleset's writable roots. Under the
-    local provider, or on a kernel without Landlock, it does not.
-
-func NewWorkspace(root string) (*Workspace, error)
-    NewWorkspace resolves root to its absolute canonical form.
-
-func (w *Workspace) CheckWriteTarget(abs string) error
-    CheckWriteTarget re-checks abs IMMEDIATELY before a write touches it
-    (REQ-SEC-01). Resolve already returned a contained path, but a link created
-    between the check and the open — by a concurrent command, or by a hostile
-    repository's own build step — would be followed by the open.
-
-    The WHOLE path is re-resolved, not only its last component.
-    An earlier version looked at the leaf alone, and the leaf is not where
-    the swap happens: `ws/sub` replaced by `ws/sub -> /elsewhere` leaves
-    `ws/sub/file.txt` looking like a plain file (or an absent one) while the
-    write lands in /elsewhere — and the MkdirAll that precedes a write would
-    build the missing directories there too. So the callers run this BEFORE
-    MkdirAll, and it walks the existing prefix exactly as Resolve did.
-
-func (w *Workspace) References(ctx context.Context, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error)
-    References finds usages and callers of target across the workspace, bounded
-    by the default SymbolOptions.
-
-func (w *Workspace) Rel(abs string) string
-    Rel renders an absolute path relative to the workspace for display. It never
-    fails: an unrelatable path is shown as-is.
-
-func (w *Workspace) Resolve(p string) (string, error)
-    Resolve normalizes and then contains a model-supplied path.
-
-    ORDER IS LOAD-BEARING. Normalization — `~` expansion, `file://` unwrapping,
-    stripping a leading `@` or quote the model sometimes emits — happens BEFORE
-    canonicalization, never after (REQ-SEC-01). A guard that canonicalizes first
-    and expands later checks a string that is not the string it will open.
-
-    Symlinks are resolved against the deepest existing ancestor, so a path whose
-    final component does not exist yet is still contained by its parent — the
-    case a naive EvalSymlinks-the-whole-path guard gets wrong for every file the
-    agent is about to create.
-

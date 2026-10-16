@@ -1,0 +1,190 @@
+package workspace // import "github.com/agent-fox-dev/agentkit-go/workspace"
+
+Package workspace is the root every AgentKit scenario opens first: the
+containment boundary for the file tools, the ignore rules that apply under it
+and the directory walk that honours them.
+
+Open turns a directory into a *Workspace. The built-in tools (tools.For),
+the code-search index and the sandbox tree are all built for one, so ignore
+configuration is given once, to Open.
+
+The package imports only the standard library and doublestar, so every other
+package of the module can depend on it.
+
+VARIABLES
+
+var (
+	ErrPathNotAllowed = errors.New("workspace: path_not_allowed")
+	ErrPathMalformed  = errors.New("workspace: path_malformed")
+	ErrNoHome         = errors.New("workspace: home directory could not be resolved")
+)
+    Errors returned by the path guard. They are sentinels so a policy can tell
+    "outside the workspace" from "malformed" without matching on strings.
+
+
+FUNCTIONS
+
+func Normalize(p string) (string, error)
+    Normalize applies the pre-canonicalization rewrites.
+
+    `~user` expands to that user's home directory via os/user; an unknown user
+    is malformed rather than left as a literal `~user` path.
+
+    An unresolvable HOME is also a rejection, not a fallback to a relative path.
+    A relative path resolves against the process working directory — whatever
+    repository the agent happens to be run in — so falling back would let a
+    hostile repo's files stand in for the user's own. Fail closed.
+
+
+TYPES
+
+type IgnoreOptions struct {
+	Getenv func(string) string
+	Home   func() (string, error)
+	// GitConfig returns core.excludesFile. Nil runs `git config`.
+	GitConfig func() string
+}
+    IgnoreOptions injects the environment the ignore engine reads, so the whole
+    thing is testable without mutating process state or requiring a git binary
+    (NFR-TEST-04). The zero value reads the real environment.
+
+    It is given once, to Open: without it a tool-level test reads the
+    developer's own global excludes, and passes or fails depending on whose
+    machine runs it.
+
+func NoGlobalExcludes() IgnoreOptions
+    NoGlobalExcludes returns options with an EMPTY global layer — no
+    core.excludesFile, no XDG path, no home directory — so a scan honours only
+    the ignore files found in the tree. It is what tests use; an embedder that
+    wants a hermetic tool set can use it too.
+
+type Options struct {
+	// Ignore injects the environment the ignore engine reads. The zero value
+	// reads the real one, global excludes included; NoGlobalExcludes() pins
+	// an empty global layer.
+	Ignore IgnoreOptions
+}
+    Options configures Open.
+
+type WalkOptions struct {
+	// IncludeHidden visits dot-prefixed entries too. They are skipped by
+	// default: hidden entries are a walk option, not an ignore rule.
+	IncludeHidden bool
+}
+    WalkOptions configures Walk.
+
+type Workspace struct {
+	// Has unexported fields.
+}
+    Workspace is the containment boundary for the built-in FILE tools
+    (REQ-SEC-01), with the ignore rules that apply under its root.
+
+    On a host it does NOT constrain `execute`. That is not an oversight,
+    and it is stated here rather than left to be discovered: a shell command can
+    read and write anything the process can, and pretending otherwise would be
+    worse than admitting it. The boundary for `execute` is the BeforeToolCall
+    interceptor (REQ-SEC-03). See TestExecuteIsNotPathContained in package
+    tools, whose name is the documentation.
+
+    Inside a sandbox whose agent reports a Landlock ABI
+    (sandbox.AgentInfo.Landlock), the agent's kernel ruleset confines `execute`,
+    and every process it starts, to the ruleset's writable roots. Under the
+    local provider, or on a kernel without Landlock, it does not.
+
+    A Workspace is immutable after Open and safe for concurrent use. One not
+    obtained from Open is unsupported.
+
+func Open(root string, opts Options) (*Workspace, error)
+    Open resolves root to its absolute canonical form. An empty root means the
+    process working directory. A root that does not exist yet is kept in its
+    lexical absolute form and is not an error: containment still works against
+    it, and the sandbox and the tests open roots that are created later.
+
+    Open reads no ignore file and starts no subprocess: the core.excludesFile
+    lookup is memoized and runs, at most once, when the rules are first used.
+    It fails only when the working directory or the absolute path cannot be
+    determined.
+
+func (w *Workspace) CheckWriteTarget(abs string) error
+    CheckWriteTarget re-checks abs IMMEDIATELY before a write touches it
+    (REQ-SEC-01). Resolve already returned a contained path, but a link created
+    between the check and the open — by a concurrent command, or by a hostile
+    repository's own build step — would be followed by the open.
+
+    The WHOLE path is re-resolved, not only its last component.
+    An earlier version looked at the leaf alone, and the leaf is not where
+    the swap happens: `ws/sub` replaced by `ws/sub -> /elsewhere` leaves
+    `ws/sub/file.txt` looking like a plain file (or an absent one) while the
+    write lands in /elsewhere — and the MkdirAll that precedes a write would
+    build the missing directories there too. So the callers run this BEFORE
+    MkdirAll, and it walks the existing prefix exactly as Resolve did.
+
+func (w *Workspace) Ignore() IgnoreOptions
+    Ignore returns the workspace's ignore options, with the core.excludesFile
+    lookup memoized, so they can be passed on (to sandbox.LocalDir.Ignore,
+    say) and used without paying for another lookup.
+
+func (w *Workspace) Ignored(rel string, isDir bool) bool
+    Ignored reports whether rel, a workspace-relative path using either
+    separator, or any ancestor directory of rel, is excluded by the workspace's
+    rules, evaluated the way a walk from the root evaluates it: each ancestor is
+    matched with the ignore files of the directories above it, loaded from the
+    root down, nested-repository boundaries are honoured, and any .git segment
+    is excluded.
+
+    "" and "." are the root and are not ignored. An absolute path, or one that
+    escapes the root after cleaning, is reported as ignored: the question is
+    about the workspace, and the safe answer for a path outside it is "leave
+    it alone". A dot-prefixed name is not ignored on account of its dot;
+    hidden entries are a walk option, not a rule.
+
+    Ignored reads the relevant ignore files on every call and keeps no cache
+    between calls, so an edited .gitignore changes the next answer.
+
+func (w *Workspace) Rel(abs string) string
+    Rel renders an absolute path relative to the workspace for display. It never
+    fails: an unrelatable path is shown as-is.
+
+func (w *Workspace) Resolve(p string) (string, error)
+    Resolve normalizes and then contains a model-supplied path.
+
+    ORDER IS LOAD-BEARING. Normalization — `~` expansion, `file://` unwrapping,
+    stripping a leading `@` or quote the model sometimes emits — happens BEFORE
+    canonicalization, never after (REQ-SEC-01). A guard that canonicalizes first
+    and expands later checks a string that is not the string it will open.
+
+    Symlinks are resolved against the deepest existing ancestor, so a path whose
+    final component does not exist yet is still contained by its parent — the
+    case a naive EvalSymlinks-the-whole-path guard gets wrong for every file the
+    agent is about to create.
+
+func (w *Workspace) Root() string
+    Root returns the absolute, symlink-resolved workspace root.
+
+func (w *Workspace) Walk(ctx context.Context, sub string, opts WalkOptions, fn func(rel string, d fs.DirEntry) error) error
+    Walk is the workspace's directory walk: the one place a directory tree is
+    listed for find_files, the search tools, the symbol table, the reference
+    engine and the code-search index. It always applies the workspace's own
+    ignore rules.
+
+    sub names where the walk starts. "" and "." mean the root, a relative sub
+    is joined to the root and an absolute one is taken as it is. sub is then
+    cleaned and must lie within the root, compared segment by segment; otherwise
+    Walk returns an error wrapping ErrPathNotAllowed before it calls fn, and
+    it returns the same error on a nil receiver. sub is neither normalized nor
+    symlink-resolved: a caller holding a model-supplied path passes it through
+    Resolve first, as find_files does.
+
+    fn is called for every file and directory under sub, with rel
+    slash-separated and relative to sub, except the entries the rules exclude
+    and, unless opts.IncludeHidden is set, dot-prefixed ones. The ignore engine
+    is rooted at sub: ignore files above sub do not apply, while the global
+    layer does, and so does the repository exclude file of sub when sub is
+    itself a repository root.
+
+    Symlinks are not followed, and unreadable entries are skipped without error.
+    A sub that does not exist, or that is a file, yields no calls and a nil
+    error. The context is checked for every entry, and its error is returned.
+    fn may return filepath.SkipDir to skip a directory and filepath.SkipAll to
+    stop the walk without error; any other error stops the walk and is returned.
+

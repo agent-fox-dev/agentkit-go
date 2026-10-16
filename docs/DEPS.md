@@ -21,7 +21,7 @@ is not on it. An entry ending in `/` approves every module under that path.
 | `go.starlark.net` | code mode's sandboxed Starlark runtime |
 | `github.com/modelcontextprotocol/go-sdk` | the MCP client and pool |
 | `github.com/tree-sitter/…`, `github.com/tree-sitter-grammars/…` | tree-sitter outlines: the runtime and its grammar modules |
-| `github.com/bmatcuk/doublestar/v4` | glob matching in `find_files` and the ignore engine |
+| `github.com/bmatcuk/doublestar/v4` | glob matching in `tools.MatchGlob` and in `workspace`'s ignore engine |
 | `github.com/pelletier/go-toml/v2` | TOML parsing for MCP configuration (`internal/toml`) |
 | `golang.org/x/oauth2` | Google credentials for the Vertex AI deployment |
 | `github.com/aws/aws-sdk-go-v2`, `github.com/aws/aws-sdk-go-v2/…` | AWS configuration and credentials for the Bedrock deployment |
@@ -139,7 +139,8 @@ each grammar. Each grammar adds to the binary size.
 
 ## `github.com/bmatcuk/doublestar/v4`
 
-**Used by.** `tools/glob.go` (`find_files`) and `tools/ignore.go`.
+**Used by.** `tools/glob.go` (`find_files`) and `workspace/glob.go` (the ignore engine, which keeps
+its own error-tolerant wrapper because `workspace` imports nothing of the module).
 
 **Version.** `v4.10.2`.
 
@@ -347,13 +348,13 @@ name code that has since been deleted; they are kept as the record.
 | `jsonx/` (now `schema.Parse`) | `wk8/go-ordered-map` | Replaces only the object case of a closed value tree. |
 | `session/` (deleted) | SQLite, bbolt | The JSONL format was the contract; a database adds locking and migrations. |
 | `tools/ref_gotypes.go` | `golang.org/x/tools/go/packages` | Needs the `go` tool on PATH and the network, inherits the environment, and type-checking dependencies blows the 2 s budget. |
-| `tools/walk.go` | `charlievieth/fastwalk` | Parallel and unordered; callers need lexical order and the ignore engine needs parent before child. |
+| `workspace/walk.go` | `charlievieth/fastwalk` | Parallel and unordered; callers need lexical order and the ignore engine needs parent before child. |
 | `guard/guard.go` | `mvdan.cc/sh/v3/syntax` | Saves about 50 lines; the over-conservative scanner is easy to audit. Revisit if false rejections become a complaint. |
 | Token estimate (compaction, deleted) | `pkoukk/tiktoken-go` | OpenAI's tokenizer is wrong for Claude and embeds about 1 MB. |
 | `tools/edit.go` | go-diff, difflib, udiff | It does exact and folded matching, not diffing. |
 | Middleware LRU (deleted) | `hashicorp/golang-lru/v2` | About 40 lines saved for a module; `container/list` fixed the same problem. |
 | `tools/fold.go` | `x/text/unicode/norm` | NFKC does not fold smart quotes to ASCII. |
-| `tools/ignore.go` matcher | go-git `plumbing/format/gitignore` | Matches segments with `filepath.Match`, so `[!x]` stops negating and `**` does not backtrack; and it pulls go-git, go-billy and gcfg into the root. |
+| `workspace/ignore.go` matcher | go-git `plumbing/format/gitignore` | Matches segments with `filepath.Match`, so `[!x]` stops negating and `**` does not backtrack; and it pulls go-git, go-billy and gcfg into the root. |
 | Swift outline | `alex-pinkus/tree-sitter-swift` | Its Go module is an untagged commit whose test imports a path that does not exist, so `go mod tidy` fails for every importer. |
 | `outline/lang.go` | `go-enry/go-enry/v2` | The extension table encodes deliberate per-backend exclusions. |
 | Tracing | OpenTelemetry | The tracer was an interface already; an adapter adds code. (Deleted; the event stream replaces it.) |

@@ -11,7 +11,7 @@ var ErrUnsupported = errors.New("codesearch: unsupported platform")
 
 FUNCTIONS
 
-func New(ws *tools.Workspace, opts Options) (tools.Index, error)
+func New(ws *workspace.Workspace, opts Options) (tools.Index, error)
     New creates a codesearch index for the given workspace. It returns a
     tools.Index without starting a goroutine, running a process, walking the
     workspace or touching the disk. It returns an error if ws is nil.
@@ -97,10 +97,6 @@ func (idx *Index) Tools() []core.Tool
     Tools implements tools.Index. It returns the code_search tool.
 
 type Options struct {
-	// Ignore is the ignore configuration, typically the same value the
-	// embedder passes to tools.Options.
-	Ignore tools.IgnoreOptions
-
 	// MaxFiles is the file-count bound for a build. Zero or negative means
 	// 100 000.
 	MaxFiles int

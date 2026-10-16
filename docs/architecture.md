@@ -74,13 +74,14 @@ First-party imports, from
 | `provider/faux` | `core` | |
 | `provider` | `core`, `schema` | |
 | `provider/anthropic` | `core`, `provider`, `wire` | `github.com/anthropics/anthropic-sdk-go`, `golang.org/x/oauth2`, `github.com/aws/aws-sdk-go-v2` |
-| `tools` | `core`, `outline`, `schema` | `github.com/bmatcuk/doublestar/v4` |
+| `workspace` | none | `github.com/bmatcuk/doublestar/v4` |
+| `tools` | `core`, `outline`, `schema`, `workspace` | `github.com/bmatcuk/doublestar/v4` |
 | `codemode` | `core`, `schema`, `tools` | `go.starlark.net` |
 | `mcp` | `core`, `schema`, `wire`, `internal/diag`, `internal/toml` | `github.com/modelcontextprotocol/go-sdk` |
 | `prompt` | `core`, `guard`, `tools` | |
 | `.` (root, `agentkit`) | `core`, `catalog`, `guard`, `prompt`, `provider`, `provider/anthropic` | `github.com/anthropics/anthropic-sdk-go` |
-| `codesearch` (nested module) | `core`, `outline`, `schema`, `tools` | `github.com/sourcegraph/zoekt` |
-| `sandbox` (nested module; so are the rows below) | `core`, `tools` | |
+| `codesearch` (nested module) | `core`, `outline`, `schema`, `tools`, `workspace` | `github.com/sourcegraph/zoekt` |
+| `sandbox` (nested module; so are the rows below) | `core`, `sandbox/internal/buildver`, `tools`, `workspace` | |
 | `sandbox/internal/sandboxpb` | none (generated) | `google.golang.org/grpc`, `google.golang.org/protobuf` |
 | `sandbox/internal/tooldigest` | `core`, `schema` | |
 | `sandbox/internal/buildver` | none | |
@@ -88,9 +89,9 @@ First-party imports, from
 | `sandbox/internal/stdioconn` | none | |
 | `sandbox/internal/agentenv` | none | |
 | `sandbox/internal/confine` | `sandbox`, `sandbox/internal/agentenv` | `github.com/landlock-lsm/go-landlock/landlock{,/syscall}`, in `//go:build linux` files |
-| `sandbox/internal/rsyncx` | `sandbox/internal/{sandboxpb,tarsafe}`, `tools`; `sandbox` in its Windows stubs | `github.com/gokrazy/rsync/{rsyncclient,rsyncd}`, in `//go:build !windows` files |
-| `sandbox/internal/agent` | `core`, `sandbox`, `sandbox/internal/{agentenv,buildver,rsyncx,sandboxpb,tarsafe,tooldigest}`, `tools` | `google.golang.org/grpc` |
-| `sandbox/internal/attach` | `core`, `sandbox`, `sandbox/internal/{buildver,rsyncx,sandboxpb,tarsafe,tooldigest}`, `tools`, `wire` | `google.golang.org/grpc`, `google.golang.org/protobuf` |
+| `sandbox/internal/rsyncx` | `sandbox/internal/{sandboxpb,tarsafe}`, `workspace`; `sandbox` in its Windows stubs | `github.com/gokrazy/rsync/{rsyncclient,rsyncd}`, in `//go:build !windows` files |
+| `sandbox/internal/agent` | `core`, `sandbox`, `sandbox/internal/{agentenv,buildver,rsyncx,sandboxpb,tarsafe,tooldigest}`, `tools`, `workspace` | `google.golang.org/grpc` |
+| `sandbox/internal/attach` | `core`, `sandbox`, `sandbox/internal/{buildver,rsyncx,sandboxpb,tarsafe,tooldigest}`, `tools`, `wire`, `workspace` | `google.golang.org/grpc`, `google.golang.org/protobuf` |
 | `sandbox/internal/localtest` | `sandbox`, `sandbox/internal/{attach,sandboxpb}` | |
 | `sandbox/local` | `sandbox`, `sandbox/internal/{agent,attach,localtest,stdioconn}` | |
 | `sandbox/internal/gitclone` | `sandbox` | |
@@ -102,9 +103,9 @@ First-party imports, from
 | `sandbox/gatewayd/internal/token` | none | |
 | `sandbox/gatewayd/cmd/agentkit-gateway` | `sandbox`, `sandbox/gateway`, `sandbox/gatewayd`, `sandbox/gatewayd/internal/token`, `sandbox/internal/buildver`, `sandbox/podman` | |
 | `sandbox/cmd/agentkit-sandboxd` | `sandbox`, `sandbox/internal/{agent,buildver,confine,stdioconn}` | |
-| `sandbox/internal/fakeagent` (tests only) | `sandbox/internal/{sandboxpb,tooldigest}`, `tools` | `google.golang.org/grpc` |
+| `sandbox/internal/fakeagent` (tests only) | `sandbox/internal/{sandboxpb,tooldigest}`, `tools`, `workspace` | `google.golang.org/grpc` |
 | `sandbox/internal/relaytest` (tests only) | `sandbox`, `sandbox/internal/{agent,attach,rsyncx,sandboxpb}` | `google.golang.org/grpc` |
-| `sandbox/internal/treegen` (tests only) | `sandbox/internal/tarsafe`, `tools` | |
+| `sandbox/internal/treegen` (tests only) | `sandbox/internal/tarsafe`, `workspace` | |
 | `sandbox/gatewayd/internal/gwtest` (tests only) | `sandbox`, `sandbox/gateway`, `sandbox/gatewayd`, `sandbox/internal/{attach,fakeagent,sandboxpb}`, `sandbox/local` | `google.golang.org/grpc` |
 
 What follows from it:
@@ -113,7 +114,9 @@ What follows from it:
   leaves `schema`, `outline`, `wire` and `internal/*` import none of it.
 - `core` imports only `schema`. It is the vocabulary and owns the interface
   seams: `Tool`, `ProviderClient`, `NestedCaller`, the interceptor types.
-- `tools` imports `outline` and `schema`. `codemode` imports `core` and
+- `workspace` imports nothing of the module: only the standard library and
+  doublestar, so every package can depend on it (`internal/policy` checks it).
+- `tools` imports `outline`, `schema` and `workspace`. `codemode` imports `core` and
   `schema`, and `tools` for its output buffer (`tools.Accumulator`). `mcp`
   imports `core` and `schema`, and `wire` for its strict boundary.
 - The root does not import `tools` directly. It reaches it only through
@@ -122,7 +125,7 @@ What follows from it:
   SDK because `Config.Client` is an SDK client; `New` builds the provider
   over it.
 - Nothing imports the root package except `examples/`.
-- The sandbox tree imports `core`, `schema`, `tools` and `wire`, and nothing outside it
+- The sandbox tree imports `core`, `schema`, `tools`, `workspace` and `wire`, and nothing outside it
   imports the sandbox tree except `examples/sandbox`, `examples/gateway` and
   `examples/harness` (nested modules, outside the root's check) and test helpers under
   `internal/` (`internal/policy` checks this, and that no non-test file
@@ -141,7 +144,8 @@ What follows from it:
 | `provider/anthropic` | The Anthropic Messages wire over the official SDK, direct, on Vertex AI or on Bedrock, chosen by `Resolve`; send-time transcript repair (`RepairTranscript`) and partial-JSON salvage of streamed tool arguments (`SalvageJSON`). |
 | `provider/faux` | A scripted provider for offline tests and demos. |
 | `outline` | Declarations of a source file with line ranges. Go uses `go/ast` in every build. With cgo, Python, JavaScript, TypeScript/TSX, Java, Kotlin, C#, Scala, Rust, C, C++, PHP, Ruby, Lua and shell are parsed by tree-sitter grammars; without cgo they are `none`. |
-| `tools` | The built-in tools, workspace containment, the output accumulator, process control and the runner (`Run`, `RunArgv`), glob, the layered ignore engine, `Walk`, the symbol table behind `find_symbol` and the reference engine behind `find_references`. |
+| `workspace` | The workspace: the containment boundary (`Open`, `Resolve`, `Rel`, `CheckWriteTarget`), the layered ignore engine (`IgnoreOptions`, `NoGlobalExcludes`, `Ignore`, `Ignored`) and the directory walk (`Walk`), opened once and shared by the tools, the index and the sandbox tree. It imports only the standard library and doublestar. |
+| `tools` | The built-in tools (`For`), the output accumulator, process control and the runner (`Run`, `RunArgv`), glob, the symbol table behind `find_symbol` and the reference engine behind `find_references` (`References`). |
 | `guard` | The shell boundary: `Check` (a pure decision on an argv), `Restricted` (the interceptor over it), `AllowAll`. |
 | `codemode` | The code-mode tool (below). |
 | `prompt` | `Build(system, tools)`: the base prompt, then the active tools' guidelines, deduplicated in first-seen order. |
@@ -151,10 +155,10 @@ What follows from it:
 | `internal/diag` | The shared non-fatal `Diagnostic`. |
 | `internal/policy` | Tests only: the build gates and the dependency allowlist. |
 | `internal/testkit` | Shared test helpers. |
-| `internal/toolconformance` | Tests only: the spec 06 conformance case table, run against `tools.All` and against sandbox proxy tools. |
+| `internal/toolconformance` | Tests only: the spec 06 conformance case table, run against `tools.For` and against sandbox proxy tools. |
 | `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `CheckSpec`, `LocalDir`, `Tar`/`TarOut`, `LandlockInfo`, `AgentArgs`, the protocol version, `MaxMessageBytes` and the errors (below). |
 | `sandbox/internal/sandboxpb` | The `agentkit.sandbox.v1` protocols, the agent's (`sandbox.proto`) and the gateway's (`gateway.proto`), and their checked-in generated code; `make proto` regenerates both. |
-| `sandbox/internal/agent` | The agent service: runs `tools.All` against one workspace with an explicit environment. |
+| `sandbox/internal/agent` | The agent service: runs `tools.For` over one workspace with an explicit environment. |
 | `sandbox/internal/attach` | The one `Sandbox` implementation, for every provider: handshake, state machine, failure classification, proxy tools, tar transfer. |
 | `sandbox/internal/tarsafe` | The tar entry rules both directions share, the `os.Root` extractor, the export validator and the archiver. |
 | `sandbox/internal/tooldigest`, `sandbox/internal/buildver` | The definition digest host and agent share; the agent's version: the link-time stamp, else the sandbox module's version from the build info, else `(devel)`. |
@@ -419,13 +423,13 @@ Constants: `DefaultCallLimit` 1000 per session, `DefaultReconnectLimit` 3,
   `SymbolOptions.MaxDuration` (50 000 files and 2 s by default). When the
   budget runs out the pass keeps the sites found so far and sets `Partial`.
 
-### `Workspace.References`
+### `tools.References`
 
 Embedders can search references without a model through
-`(*tools.Workspace).References`:
+`tools.References`:
 
 ```go
-func (w *Workspace) References(ctx context.Context, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error)
+func References(ctx context.Context, ws *workspace.Workspace, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error)
 
 type ReferenceOptions struct {
 	Path         string // subdirectory filter; "" for the whole workspace
@@ -468,7 +472,7 @@ attach            gRPC client over that connection (one-shot dialer, never
 Sandbox.Sync      Tar: a TarStart chunk, then the tar in chunks of at most
                   1 MiB; the agent extracts through tarsafe as the bytes
                   arrive. LocalDir: one Rsync stream (below)
-Sandbox.Tools     Tools RPC; the host builds its own tools.All and compares
+Sandbox.Tools     Tools RPC; the host builds its own tools.For and compares
                   names, order and definition digests (ErrToolMismatch);
                   returns one proxy per tool
 proxy Execute     Call RPC with the model's bytes verbatim; the agent runs the
@@ -486,8 +490,8 @@ Sandbox.Close     timer stopped, connection closed, the provider's destroy step
 schemas stay the `tools` package's own and new `ToolMetadata` fields need no
 proto change; `CallRequest` and `CallResponse` are self-contained. Every
 message is bounded by `sandbox.MaxMessageBytes` (16 MiB, the same number as
-`wire.Defaults`). The agent builds `tools.All` with its explicit environment
-(never its process's own), `NoGlobalExcludes`, and a spill directory under
+`wire.Defaults`). The agent builds `tools.For` over a workspace opened at its root, with its explicit
+environment (never its process's own), `workspace.NoGlobalExcludes()`, and a spill directory under
 that environment's `TMPDIR`; the options are fixed by the first `Tools` RPC,
 and a successful sync rebuilds the tool set so the symbol table sees the new
 files. At its TTL it cancels every in-flight call, which kills the process
@@ -498,7 +502,7 @@ same adapter.
 **What a proxy guarantees.** A proxy carries the host's own definition
 (`Name`, `Description`, both schemas, `PromptGuidelines`, `Builtin`,
 `ExecutionMode`, `PrepareArguments`, `Label`), so the model sees exactly what
-`tools.All` would show; it keeps no local `Execute`. Its result looks to the
+`tools.For` would show; it keeps no local `Execute`. Its result looks to the
 driver like a local one:
 
 - a cancelled host context returns `aborted` / `Operation aborted`, the batch
@@ -580,9 +584,9 @@ of the host's own side of the library cancels the stream and returns
 below protocol 1.1 and a Windows host are refused before any walk or stream.
 
 *The transfer set.* Each side computes rules over its own tree: the entries
-`tools.Walk` (hidden files included) does not visit, one rule per ignored
+`workspace.Walk` (hidden files included) does not visit, one rule per ignored
 directory at its highest level and none under `.git` (the host walks with
-`LocalDir.Ignore`, the agent with `tools.NoGlobalExcludes()`; an export of a
+`LocalDir.Ignore`, the agent with `workspace.NoGlobalExcludes()`; an export of a
 subdirectory honours the workspace's ignore files above it); every symlink
 `tarsafe.SymlinkEscapes` rejects, relative to the transfer root; every entry
 it cannot read; and `.git`, which excludes a `.git` component at any depth, on

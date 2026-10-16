@@ -403,3 +403,21 @@ type BuildInfo struct { DescriptionBytes int DescriptionChars int BoundToolsCoun
 type DescriptionData struct { Name string ToolCount int ToolNames []string MaxTimeout string MaxSteps uint64 MaxCalls int MaxConcurrentCalls int MaxOutputBytes int }
 type Options struct { Name string Description string DescriptionTemplate string Guidelines []string MaxTimeout time.Duration MaxSteps uint64 MaxCalls int MaxConcurrentCalls int MaxOutputBytes int SpillDir string DisableSpill bool }
 type ToolError struct { }
+== workspace
+func (w *Workspace) CheckWriteTarget(abs string) error
+func (w *Workspace) Ignore() IgnoreOptions
+func (w *Workspace) Ignored(rel string, isDir bool) bool
+func (w *Workspace) Rel(abs string) string
+func (w *Workspace) Resolve(p string) (string, error)
+func (w *Workspace) Root() string
+func (w *Workspace) Walk(ctx context.Context, sub string, opts WalkOptions, fn func(rel string, d fs.DirEntry) error) error
+func NoGlobalExcludes() IgnoreOptions
+func Normalize(p string) (string, error)
+func Open(root string, opts Options) (*Workspace, error)
+type IgnoreOptions struct { Getenv func(string) string Home func() (string, error) GitConfig func() string }
+type Options struct { Ignore IgnoreOptions }
+type WalkOptions struct { IncludeHidden bool }
+type Workspace struct { }
+var ErrNoHome
+var ErrPathMalformed
+var ErrPathNotAllowed

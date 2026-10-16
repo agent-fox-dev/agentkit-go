@@ -238,19 +238,50 @@ An id the catalog does not list still resolves, with `false`: a
 1,000,000-token window (`catalog.DefaultContextWindow`), a 128,000-token
 output cap (`catalog.DefaultMaxTokens`), adaptive thinking and no price.
 
-## Built-in tools (`tools.Options`)
+## Workspace (`workspace.Options`)
+
+`workspace.Open(root, opts)` opens the workspace every scenario starts from: the
+tools (`tools.For`), the code-search index (`codesearch.New`) and a sandbox's
+`LocalDir.Ignore` (`ws.Ignore()`) are all built for one, so the ignore
+configuration is given here, once.
 
 | Field | Default |
 |---|---|
-| `Workspace` | `tools.NewWorkspace("")`, the current directory. File tools cannot leave it. On a host `execute` can; inside a sandbox whose agent reports a Landlock ABI (`AgentInfo.Landlock`), the agent's kernel ruleset confines `execute` and every process it starts to the writable roots. Under `local`, or on a kernel without Landlock, it does not. |
+| `Ignore` | The zero `workspace.IgnoreOptions`: the real gitignore environment, global excludes included. `workspace.NoGlobalExcludes()` pins an empty global layer, for tests and hermetic tool sets. |
+
+An empty `root` is the current directory, and a root that does not exist yet is
+kept in its lexical absolute form and is not an error. File tools cannot leave
+the root. On a host `execute` can; inside a sandbox whose agent reports a
+Landlock ABI (`AgentInfo.Landlock`), the agent's kernel ruleset confines
+`execute` and every process it starts to the writable roots. Under `local`, or
+on a kernel without Landlock, it does not.
+
+`workspace.IgnoreOptions` has the hooks `Getenv func(string) string`,
+`Home func() (string, error)` and `GitConfig func() string` (nil runs
+`git config --path --get core.excludesFile`). A workspace runs at most one
+`GitConfig` lookup, when its rules are first used; `ws.Ignore()` returns the
+options with that lookup memoized, to pass on. The sources are, lowest
+precedence first, the global excludes file, `.git/info/exclude` and the
+`.gitignore` files from the scan root down; the last matching pattern wins; a
+directory containing `.git` starts a new ignore root; a `.git` path is always
+excluded; `.ignore` files are not read. `ws.Walk(ctx, sub, WalkOptions{IncludeHidden}, fn)`
+visits what those rules leave under `sub`, and `ws.Ignored(rel, isDir)` answers
+the same question for one path.
+
+## Built-in tools (`tools.Options`)
+
+`tools.For(ws, opts)` takes the workspace as its argument, and a nil workspace
+is an error: there is no fallback to the working directory.
+
+| Field | Default |
+|---|---|
 | `SpillDir` | A per-workspace directory under `os.TempDir()`. Spill files are the embedder's to clean. |
 | `DisableSpill` | false. |
 | `Env` | `tools.ReducedEnv(nil)`. |
-| `Ignore` | The real gitignore environment; `tools.NoGlobalExcludes()` pins an empty global layer for tests. |
 | `Symbols` | `tools.SymbolOptions{}`: `MaxFiles` (default 50 000) and `MaxDuration` (default 2 s) bound each symbol-table build or refresh. |
-| `Index` | nil. When set, `All` appends the index's tools after the built-ins, and `write_file`, `edit_file` and the shell tools call `Index.Invalidate`. |
+| `Index` | nil. When set, `For` appends the index's tools after the built-ins, and `write_file`, `edit_file` and the shell tools call `Index.Invalidate`. |
 
-`tools.All` returns `read_file`, `write_file`, `edit_file`, `list_files`,
+`tools.For` returns `read_file`, `write_file`, `edit_file`, `list_files`,
 `find_files`, `search_files`, `file_outline`, `find_symbol`, `find_references`,
 `execute` and `run_command`. `read_file` reads text; a file whose leading
 bytes are a PNG, JPEG, GIF or WebP signature is refused with
@@ -277,11 +308,11 @@ Subprocess tools run with `tools.ReducedEnv`: `PATH`, `HOME`, `LANG`,
 | query timeout | | 10 s |
 | result size | | 50 KB (`tools.DefaultByteLimit`) |
 
-`codesearch.Options`:
+`codesearch.New(ws, opts)` indexes the files `ws.Walk` visits, so the index uses the
+workspace's ignore rules; `codesearch.Options` has no ignore setting:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `Ignore` | | `tools.IgnoreOptions`; pass the same value as `tools.Options.Ignore`. |
 | `MaxFiles` | 100 000 | File-count bound for the index build. |
 | `MaxBytes` | 1 GiB | Total indexed content bound. |
 | `MaxBuildTime` | 60 s | Wall-time bound for the build; files already walked get a grace window of a quarter of it. |
@@ -502,7 +533,7 @@ fails with `sandbox.ErrToolsConfigured`.
 | `SpillDir` | `agentkit-spill` under the `TMPDIR` of the tools' environment inside the sandbox. A non-empty value must be absolute. |
 | `DisableSpill` | false. |
 
-The agent always uses `tools.NoGlobalExcludes()` (the workspace's own ignore
+The agent always uses `workspace.NoGlobalExcludes()` (the workspace's own ignore
 files still apply), its explicit environment, and no index.
 
 ### Transfer: `sandbox.Tar` and `sandbox.TarOut`
@@ -531,7 +562,7 @@ agent speaks 1.0`) before any walk or stream.
 | Field | On `Sync` | On `Export` |
 |---|---|---|
 | `Path` | An existing host directory whose contents map onto the workspace root. | A host directory, or a missing one whose parent exists, created once the agent accepts the transfer. A workspace directory's contents map onto it; a regular file lands as `Path/<base name>`. |
-| `Ignore tools.IgnoreOptions` | The host's ignore environment. The zero value reads the real environment, global excludes included, as `tools.Options.Ignore` does; `tools.NoGlobalExcludes()` is hermetic. The agent always uses `tools.NoGlobalExcludes()`. | The same, for the host's rules over the destination. |
+| `Ignore workspace.IgnoreOptions` | The host's ignore environment. The zero value reads the real environment, global excludes included, as `workspace.Options.Ignore` does; `workspace.NoGlobalExcludes()` is hermetic. The agent always uses `tools.NoGlobalExcludes()`. | The same, for the host's rules over the destination. |
 | `IncludeIgnored` | Turns ignore rules off on both sides. | The same. |
 | `ExcludeGit` | Leaves `.git` behind. Without it `.git` content transfers whole. | No effect: an export always leaves `.git` behind. |
 | `Delete` | Removes workspace entries the host directory lacks, except what either side's rules exclude. | Removes destination entries the exported directory lacks, except what either side's rules exclude. Refused for a regular-file export path. |
@@ -554,7 +585,7 @@ stream. `Export` returns only an error.
 either side's rules exclude is not sent, not overwritten, not written
 through and not deleted:
 
-- ignored entries: what `tools.Walk` with hidden files does not visit, at
+- ignored entries: what `workspace.Walk` with hidden files does not visit, at
   the highest ignored level, never under `.git`. An export of a
   subdirectory honours the workspace's ignore files above it; `IncludeIgnored`
   and a single-file export apply none;

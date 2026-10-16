@@ -10,7 +10,7 @@ one network service, built from its own nested module. The programs under
 
 The AgentKit agent inside a sandbox. It serves the `agentkit.sandbox.v1`
 `Agent` service as one HTTP/2 connection on its stdin and stdout, and runs the
-built-in tools (`tools.All`) against one workspace. It opens no listening
+built-in tools (`tools.For`) against one workspace. It opens no listening
 socket. A provider starts it, holding pipes to its stdin and stdout; a sandbox
 image installs it at `sandbox.AgentPath`
 (`/usr/local/bin/agentkit-sandboxd`).
