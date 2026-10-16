@@ -6,7 +6,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +23,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/tooldigest"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // testEnv is an explicit agent environment: the host's PATH and a private
@@ -145,9 +148,9 @@ func TestHello_TS13_15(t *testing.T) {
 	}
 }
 
-// TS-13-16: Tools builds tools.All with the explicit environment and
+// TS-13-16: Tools builds tools.For with the explicit environment and
 // NoGlobalExcludes and returns names and shared-function digests in
-// tools.All order. 13-REQ-3.3.
+// tools.For order. 13-REQ-3.3.
 func TestToolsExplicitEnv_TS13_16(t *testing.T) {
 	cfg := t.TempDir()
 	writeFile(t, cfg, "git/ignore", "secret.txt\n")
@@ -170,8 +173,8 @@ func TestToolsExplicitEnv_TS13_16(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, _ := tools.NewWorkspace(ws)
-	want, err := tools.All(tools.Options{Workspace: w, Env: env, Ignore: tools.NoGlobalExcludes()})
+	w, _ := workspace.Open(ws, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
+	want, err := tools.For(w, tools.Options{Env: env})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,5 +247,49 @@ func TestToolsRepeatAndRefusals_TS13_18(t *testing.T) {
 	}
 	if r := call(t, c, "read_file", `{"path":"f.txt"}`); !r.Ok {
 		t.Fatalf("read_file after the refusal: %s %s", r.Error, r.Detail)
+	}
+}
+
+// TS-20-56: the agent builds its tools with tools.For over a workspace opened
+// at its root with workspace.NoGlobalExcludes() and its explicit environment,
+// through a seam that takes the workspace and the options. 20-REQ-9.5.
+func TestAgentBuildsToolsWithForOverAWorkspace_TS20_56(t *testing.T) {
+	// A global excludes file in the environment must not reach the workspace.
+	cfg := t.TempDir()
+	writeFile(t, cfg, "git/ignore", "secret.txt\n")
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+
+	root := t.TempDir()
+	env := append(testEnv(t), "AGENT_ONLY=1")
+	a := newAgent(t, root, env, time.Hour)
+
+	if got, want := reflect.ValueOf(a.build).Pointer(), reflect.ValueOf(tools.For).Pointer(); got != want {
+		t.Error("the default build seam is not tools.For")
+	}
+
+	var gotWS *workspace.Workspace
+	var gotOpts tools.Options
+	a.build = func(ws *workspace.Workspace, o tools.Options) ([]core.Tool, error) {
+		gotWS, gotOpts = ws, o
+		return tools.For(ws, o)
+	}
+	c, _ := serveRaw(t, a)
+	if _, err := c.Tools(context.Background(), &sandboxpb.ToolsRequest{}); err != nil {
+		t.Fatal(err)
+	}
+
+	want, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotWS == nil || gotWS.Root() != want {
+		t.Fatalf("the seam got a workspace at %v, want one at the resolved root %q", gotWS, want)
+	}
+	if !slices.Equal(gotOpts.Env, env) {
+		t.Errorf("the seam got Env %v, want the agent's explicit environment %v", gotOpts.Env, env)
+	}
+	ig := gotWS.Ignore()
+	if ig.GitConfig() != "" || ig.Getenv("XDG_CONFIG_HOME") != "" {
+		t.Error("the workspace reads global excludes: it was not opened with workspace.NoGlobalExcludes()")
 	}
 }

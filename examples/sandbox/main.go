@@ -1,6 +1,6 @@
 // Command sandbox shows AgentKit's built-in tools running in a sandbox: an
 // ephemeral environment that holds one workspace. Sandbox.Tools returns a
-// drop-in replacement for tools.All whose every call runs in the AgentKit
+// drop-in replacement for tools.For whose every call runs in the AgentKit
 // agent inside the sandbox; the driver does not change.
 //
 //	cd examples/sandbox && go run .
@@ -149,7 +149,7 @@ func runOn(ctx context.Context, w io.Writer, dir string, p sandbox.Provider, spe
 	}
 	fmt.Fprintf(w, "synced %d files, %d bytes\n", res.Files, res.Bytes)
 
-	// 3. Get the proxy tools: the same definitions as tools.All, run remotely.
+	// 3. Get the proxy tools: the same definitions as tools.For, run remotely.
 	proxies, err := sb.Tools(ctx, sandbox.ToolOptions{})
 	if err != nil {
 		return err

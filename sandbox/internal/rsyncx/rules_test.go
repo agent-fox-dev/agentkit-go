@@ -6,11 +6,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // writeTree writes files (path -> content); a content starting with "->"
@@ -34,18 +35,24 @@ func writeTree(t *testing.T, root string, files map[string]string) {
 	}
 }
 
-// walkOracle is every entry filepath.WalkDir finds that tools.Walk does not
-// visit, whose parent Walk visits (or is the root), and that has no .git
-// component.
+// walkOracle is every entry filepath.WalkDir finds that workspace.Walk does
+// not visit, whose parent Walk visits (or is the root), and that has no .git
+// component, with no global excludes.
 func walkOracle(t *testing.T, root string) []string {
 	t.Helper()
+	return walkOracleWith(t, root, workspace.NoGlobalExcludes())
+}
+
+// walkOracleWith is walkOracle with ig as the workspace's ignore environment.
+func walkOracleWith(t *testing.T, root string, ig workspace.IgnoreOptions) []string {
+	t.Helper()
 	root, _ = filepath.EvalSymlinks(root)
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: ig})
 	if err != nil {
 		t.Fatal(err)
 	}
 	visited := map[string]bool{".": true}
-	if err := tools.Walk(context.Background(), ws, ws.Root, tools.WalkOptions{Ignore: tools.NoGlobalExcludes(), IncludeHidden: true},
+	if err := ws.Walk(context.Background(), "", workspace.WalkOptions{IncludeHidden: true},
 		func(rel string, _ fs.DirEntry) error { visited[rel] = true; return nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +95,7 @@ func ruleTree(t *testing.T) string {
 func TestComputeRules(t *testing.T) {
 	root := ruleTree(t)
 	ctx := context.Background()
-	rs, err := Compute(ctx, root, RuleOptions{Ignore: tools.NoGlobalExcludes()})
+	rs, err := Compute(ctx, root, RuleOptions{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +111,7 @@ func TestComputeRules(t *testing.T) {
 	if rs.Git || slices.Contains(rs.List(true), ".git") {
 		t.Error("a .git rule without ExcludeGit")
 	}
-	rs, _ = Compute(ctx, root, RuleOptions{Ignore: tools.NoGlobalExcludes(), ExcludeGit: true})
+	rs, _ = Compute(ctx, root, RuleOptions{Ignore: workspace.NoGlobalExcludes(), ExcludeGit: true})
 	if !rs.Git || !slices.Contains(rs.List(true), ".git") {
 		t.Error("no .git rule with ExcludeGit")
 	}
@@ -230,5 +237,47 @@ func TestDeleteAbsent(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outside, "keep")); err != nil {
 		t.Error("deleting a symlink removed its target")
+	}
+}
+
+// TS-20-55: RuleOptions.Ignore is a workspace.IgnoreOptions and rsyncx visits
+// the tree through workspace: the rules built with ws.Ignore() exclude exactly
+// what workspace.Walk excludes with those options, a global excludes file only
+// the options name included.
+func TestRuleOptionsTakeTheWorkspacesIgnore_TS20_55(t *testing.T) {
+	if got, want := reflect.TypeFor[RuleOptions]().Field(0), reflect.TypeFor[workspace.IgnoreOptions](); got.Name != "Ignore" || got.Type != want {
+		t.Fatalf("RuleOptions' first field is %s %v, want Ignore %v", got.Name, got.Type, want)
+	}
+
+	root := ruleTree(t)
+	writeTree(t, root, map[string]string{"a.glob": "g", "nested/b.glob": "g", "c.txt": "c"})
+	global := filepath.Join(t.TempDir(), "global-ignore")
+	if err := os.WriteFile(global, []byte("*.glob\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	custom := workspace.NoGlobalExcludes()
+	custom.GitConfig = func() string { return global }
+	ws, err := workspace.Open(root, workspace.Options{Ignore: custom})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rs, err := Compute(context.Background(), root, RuleOptions{Ignore: ws.Ignore()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := walkOracleWith(t, root, ws.Ignore()); !slices.Equal(rs.Ignored, want) {
+		t.Errorf("Ignored %v, want what workspace.Walk excludes with those options: %v", rs.Ignored, want)
+	}
+	if !slices.Contains(rs.Ignored, "a.glob") || slices.Contains(rs.Ignored, "c.txt") {
+		t.Errorf("Ignored %v: the options' global excludes file should name a.glob and not c.txt", rs.Ignored)
+	}
+	// Without the options the global layer is empty and a.glob is not excluded.
+	plain, err := Compute(context.Background(), root, RuleOptions{Ignore: workspace.NoGlobalExcludes()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(plain.Ignored, "a.glob") {
+		t.Errorf("NoGlobalExcludes() excluded a.glob: %v", plain.Ignored)
 	}
 }

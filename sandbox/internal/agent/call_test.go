@@ -10,6 +10,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-13-20: unknown tools, calls before Tools, marshal failures and panics
@@ -19,7 +20,7 @@ func TestCallFailuresAreResults_TS13_20(t *testing.T) {
 	stub := func(name string, run func() core.ToolResult) core.Tool {
 		return core.Tool{Name: name, Execute: func(context.Context, json.RawMessage) core.ToolResult { return run() }}
 	}
-	a.build = func(tools.Options) ([]core.Tool, error) {
+	a.build = func(*workspace.Workspace, tools.Options) ([]core.Tool, error) {
 		return []core.Tool{
 			stub("ok", func() core.ToolResult { return core.OKResult(map[string]any{"v": 1}) }),
 			stub("badjson", func() core.ToolResult { return core.OKResult(map[string]any{"ch": make(chan int)}) }),

@@ -14,6 +14,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd/internal/gwtest"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/local"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // mustJSON is v as JSON.
@@ -26,7 +27,7 @@ func mustJSON(t *testing.T, v any) string {
 	return string(b)
 }
 
-// TS-19-67: every proxy tool from a gateway sandbox matches tools.All and
+// TS-19-67: every proxy tool from a gateway sandbox matches tools.For and
 // passes the shared conformance table. 19-REQ-10.1.
 func TestParity_TS19_67(t *testing.T) {
 	env := gwtest.Start(t, gatewayd.Config{Backend: local.Unisolated(), NetworkModes: unrestricted})
@@ -36,25 +37,25 @@ func TestParity_TS19_67(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ws, err := tools.NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := tools.All(tools.Options{Workspace: ws, Ignore: tools.NoGlobalExcludes()})
+	host, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(proxies) != len(host) {
-		t.Fatalf("%d proxies, %d tools.All tools", len(proxies), len(host))
+		t.Fatalf("%d proxies, %d tools.For tools", len(proxies), len(host))
 	}
 	for i, px := range proxies {
 		h := host[i]
 		if px.Name != h.Name || px.Description != h.Description || !slices.Equal(px.PromptGuidelines, h.PromptGuidelines) ||
 			px.Builtin != h.Builtin || px.ExecutionMode != h.ExecutionMode || px.Label != h.Label {
-			t.Errorf("%s differs from tools.All's %s in a definition field", px.Name, h.Name)
+			t.Errorf("%s differs from tools.For's %s in a definition field", px.Name, h.Name)
 		}
 		if mustJSON(t, px.InputSchema) != mustJSON(t, h.InputSchema) || mustJSON(t, px.OutputSchema) != mustJSON(t, h.OutputSchema) {
-			t.Errorf("%s: the schemas differ from tools.All's", px.Name)
+			t.Errorf("%s: the schemas differ from tools.For's", px.Name)
 		}
 	}
 	builder := func(t *testing.T, tree toolconformance.Tree) []core.Tool {

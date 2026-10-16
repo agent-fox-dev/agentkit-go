@@ -15,6 +15,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/tooldigest"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // toolOptions are a Tools request's options, comparable.
@@ -32,8 +33,8 @@ type toolSet struct {
 	resp   *sandboxpb.ToolsResponse
 }
 
-// Tools configures the tool set: tools.All over the workspace with the
-// explicit environment and no global git excludes. A repeat with the same
+// Tools configures the tool set: tools.For over a workspace opened at the
+// agent's root with the explicit environment and no global git excludes. A repeat with the same
 // options returns the same answer; one with different options fails with
 // FailedPrecondition and leaves the set unchanged.
 func (a *Agent) Tools(_ context.Context, req *sandboxpb.ToolsRequest) (*sandboxpb.ToolsResponse, error) {
@@ -96,14 +97,12 @@ func (a *Agent) buildSet(opts toolOptions) (*toolSet, error) {
 		dir, _ := agentenv.TempDir(a.env)
 		spill = filepath.Join(dir, "agentkit-spill")
 	}
-	ws, err := tools.NewWorkspace(a.root)
+	ws, err := workspace.Open(a.root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		return nil, err
 	}
-	all, err := a.build(tools.Options{
-		Workspace:    ws,
+	all, err := a.build(ws, tools.Options{
 		Env:          a.env,
-		Ignore:       tools.NoGlobalExcludes(),
 		Symbols:      tools.SymbolOptions{MaxFiles: int(opts.maxFiles), MaxDuration: time.Duration(opts.maxDuration)},
 		SpillDir:     spill,
 		DisableSpill: opts.disableSpill,

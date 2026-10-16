@@ -19,7 +19,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/tarsafe"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/treegen"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // symlinkTree writes the TS-14-11 links (name -> target) and a.txt under
@@ -145,7 +145,7 @@ func TestIgnoreRulesMatchWalk_TS14_9(t *testing.T) {
 
 	g := t.TempDir()
 	writeFiles(t, g, map[string]string{"git/ignore": "*.global\n"})
-	withG := tools.IgnoreOptions{
+	withG := workspace.IgnoreOptions{
 		Getenv:    func(k string) string { return map[string]string{"XDG_CONFIG_HOME": g}[k] },
 		Home:      func() (string, error) { return "", os.ErrNotExist },
 		GitConfig: func() string { return "" },
@@ -157,7 +157,7 @@ func TestIgnoreRulesMatchWalk_TS14_9(t *testing.T) {
 	}
 	isolate(t)
 	for _, c := range []struct {
-		ig   tools.IgnoreOptions
+		ig   workspace.IgnoreOptions
 		want bool
 	}{{withG, false}, {hermetic, true}} {
 		sb := newLocal(t)

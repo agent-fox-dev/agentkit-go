@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/tarsafe"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // names are the file and directory names trees draw from: wildcard
@@ -182,16 +182,16 @@ func Pair(t *testing.T, seed uint64, src, recv, outside string) {
 	}
 }
 
-// visited is the set of entries tools.Walk visits under root with
+// visited is the set of entries workspace.Walk visits under root with
 // IncludeHidden and no global excludes.
 func visited(t *testing.T, root string) map[string]bool {
 	t.Helper()
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	out := map[string]bool{}
-	err = tools.Walk(context.Background(), ws, ws.Root, tools.WalkOptions{Ignore: tools.NoGlobalExcludes(), IncludeHidden: true},
+	err = ws.Walk(context.Background(), "", workspace.WalkOptions{IncludeHidden: true},
 		func(rel string, _ fs.DirEntry) error { out[rel] = true; return nil })
 	if err != nil {
 		t.Fatal(err)
@@ -199,7 +199,7 @@ func visited(t *testing.T, root string) map[string]bool {
 	return out
 }
 
-// WalkSet is every entry tools.Walk lists under root with IncludeHidden.
+// WalkSet is every entry workspace.Walk lists under root with IncludeHidden.
 func WalkSet(t *testing.T, root string) map[string]bool { return visited(t, root) }
 
 func hasGit(rel string) bool { return slices.Contains(strings.Split(rel, "/"), ".git") }
@@ -231,7 +231,7 @@ func GitTrees(t *testing.T, root string) map[string]bool {
 	return out
 }
 
-// Ignored is every entry filepath.WalkDir finds that tools.Walk does not
+// Ignored is every entry filepath.WalkDir finds that workspace.Walk does not
 // visit, whose parent Walk visits, and that has no .git component: one
 // entry per ignored directory, at its highest ignored level.
 func Ignored(t *testing.T, root string) map[string]bool {

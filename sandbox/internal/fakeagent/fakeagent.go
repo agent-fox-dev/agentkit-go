@@ -16,6 +16,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/tooldigest"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // Agent is a fake agent. Configure it with the Set methods, before or
@@ -62,18 +63,18 @@ func New() *Agent {
 }
 
 // HostTools is the Tools answer a real agent of this build gives: the names
-// and digests of tools.All.
+// and digests of tools.For.
 func HostTools() *sandboxpb.ToolsResponse {
 	dir, err := os.MkdirTemp("", "fakeagent-")
 	if err != nil {
 		panic(err)
 	}
 	defer os.RemoveAll(dir)
-	ws, err := tools.NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		panic(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws, Env: []string{}, Ignore: tools.NoGlobalExcludes()})
+	all, err := tools.For(ws, tools.Options{Env: []string{}})
 	if err != nil {
 		panic(err)
 	}

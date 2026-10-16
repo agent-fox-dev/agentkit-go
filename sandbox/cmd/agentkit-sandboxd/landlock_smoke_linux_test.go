@@ -15,7 +15,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/attach"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/stdioconn"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // waitExit waits for the agent to exit after Close and returns its status.
@@ -123,7 +123,7 @@ func TestSmokeRequireLandlock_TS15_46(t *testing.T) {
 	if a := sb.Agent(); a.ProtocolMinor != 2 || a.Landlock.ABI != 4 || !a.Landlock.TCP {
 		t.Errorf("Agent() = %+v", a)
 	}
-	if _, err := sb.Sync(ctx, sandbox.LocalDir{Path: project, Ignore: tools.NoGlobalExcludes()}); err != nil {
+	if _, err := sb.Sync(ctx, sandbox.LocalDir{Path: project, Ignore: workspace.NoGlobalExcludes()}); err != nil {
 		t.Errorf("Sync: %v", err)
 	} else if _, err := os.Stat(filepath.Join(w, "main.go")); err != nil {
 		t.Errorf("main.go is not in W: %v", err)
@@ -131,7 +131,7 @@ func TestSmokeRequireLandlock_TS15_46(t *testing.T) {
 	if code, out := execIn(t, sb, "/bin/sh -c 'mkdir -p out && echo hello > out/result.txt'"); code != "0" {
 		t.Errorf("execute: exit %s: %s", code, out)
 	}
-	if err := sb.Export(ctx, "out", sandbox.LocalDir{Path: dst, Ignore: tools.NoGlobalExcludes()}); err != nil {
+	if err := sb.Export(ctx, "out", sandbox.LocalDir{Path: dst, Ignore: workspace.NoGlobalExcludes()}); err != nil {
 		t.Errorf("Export: %v", err)
 	} else if b, err := os.ReadFile(filepath.Join(dst, "result.txt")); err != nil || string(b) != "hello\n" {
 		t.Errorf("D/result.txt = %q, %v", b, err)

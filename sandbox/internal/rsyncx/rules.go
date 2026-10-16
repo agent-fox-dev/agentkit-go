@@ -11,13 +11,13 @@ import (
 	"strings"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/tarsafe"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // RuleOptions configures one side's rule computation.
 type RuleOptions struct {
 	// Ignore is the ignore engine's environment for this side.
-	Ignore tools.IgnoreOptions
+	Ignore workspace.IgnoreOptions
 	// IncludeIgnored turns ignore rules off.
 	IncludeIgnored bool
 	// ExcludeGit adds the .git rule and skips .git subtrees.
@@ -34,7 +34,7 @@ type RuleOptions struct {
 // RuleSet is one side's exclude rules over its tree, as slash-separated
 // paths relative to the transfer root.
 type RuleSet struct {
-	// Ignored are the entries tools.Walk does not visit, at their highest
+	// Ignored are the entries workspace.Walk does not visit, at their highest
 	// ignored level, never under .git.
 	Ignored []string
 	// Unreadable are the entries the walk cannot read.
@@ -136,9 +136,9 @@ func Compute(ctx context.Context, root string, opts RuleOptions) (RuleSet, error
 }
 
 // visitFrom marks in visited, relative to root, every entry under root that
-// tools.Walk visits from base (root when base is empty or does not contain
+// workspace.Walk visits from base (root when base is empty or does not contain
 // root). It reports whether the walk reached root.
-func visitFrom(ctx context.Context, base, root string, ig tools.IgnoreOptions, visited map[string]bool) (bool, error) {
+func visitFrom(ctx context.Context, base, root string, ig workspace.IgnoreOptions, visited map[string]bool) (bool, error) {
 	prefix := ""
 	if base != "" {
 		b, err := filepath.EvalSymlinks(base)
@@ -152,12 +152,12 @@ func visitFrom(ctx context.Context, base, root string, ig tools.IgnoreOptions, v
 	if prefix == "" {
 		base = root
 	}
-	ws, err := tools.NewWorkspace(base)
+	ws, err := workspace.Open(base, workspace.Options{Ignore: ig})
 	if err != nil {
 		return false, err
 	}
 	reached := prefix == ""
-	err = tools.Walk(ctx, ws, ws.Root, tools.WalkOptions{Ignore: ig, IncludeHidden: true}, func(rel string, _ fs.DirEntry) error {
+	err = ws.Walk(ctx, "", workspace.WalkOptions{IncludeHidden: true}, func(rel string, _ fs.DirEntry) error {
 		switch {
 		case prefix == "":
 			visited[rel] = true

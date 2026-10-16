@@ -17,7 +17,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/rsyncx"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/tarsafe"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // Rsync serves one LocalDir transfer. Frames come in the order start, plan,
@@ -51,7 +51,7 @@ func (a *Agent) Rsync(stream sandboxpb.Agent_RsyncServer) error {
 	if err != nil {
 		return err
 	}
-	rs, err := rsyncx.Compute(ctx, t.root, rsyncx.RuleOptions{Ignore: tools.NoGlobalExcludes(),
+	rs, err := rsyncx.Compute(ctx, t.root, rsyncx.RuleOptions{Ignore: workspace.NoGlobalExcludes(),
 		IncludeIgnored: start.IncludeIgnored, ExcludeGit: start.ExcludeGit || t.dir == rsyncx.DirExport, File: t.file, Base: a.root})
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "computing the rules: %v", err)

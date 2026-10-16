@@ -6,6 +6,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // Provider creates sandboxes.
@@ -38,7 +39,7 @@ type Sandbox interface {
 	// running at the same time.
 	Sync(ctx context.Context, src Source) (SyncResult, error)
 	// Tools configures the agent's tool set and returns one proxy tool for
-	// each tool tools.All returns, in the same order. The options are fixed
+	// each tool tools.For returns, in the same order. The options are fixed
 	// by the first call: a later call with different options fails with
 	// ErrToolsConfigured. Tools fails with ErrToolMismatch when the agent's
 	// tool definitions differ from the host's.
@@ -160,10 +161,11 @@ type LocalDir struct {
 	// be missing with an existing parent, and is then created.
 	Path string
 	// Ignore configures the host's ignore engine. The zero value reads the
-	// real environment, global excludes included, exactly as
-	// tools.Options.Ignore does; tools.NoGlobalExcludes() is hermetic. The
-	// agent always uses tools.NoGlobalExcludes().
-	Ignore tools.IgnoreOptions
+	// real environment, global excludes included, exactly as the zero
+	// workspace.Options.Ignore does; workspace.NoGlobalExcludes() is hermetic,
+	// and ws.Ignore() passes a workspace's own, memoized options on. The agent
+	// always uses workspace.NoGlobalExcludes().
+	Ignore workspace.IgnoreOptions
 	// IncludeIgnored turns ignore rules off on both sides.
 	IncludeIgnored bool
 	// ExcludeGit leaves .git behind on Sync. Export always leaves .git
