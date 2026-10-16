@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // answerIndex is an Index whose Symbols answers with a fixed SymbolAnswer.
@@ -26,17 +27,15 @@ func findSymbolWith(t *testing.T, idx Index, args map[string]any) core.ToolResul
 	if err := os.Mkdir(filepath.Join(root, "a"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-		Index:     idx,
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+		Index:   idx,
+	}.withDefaults(ws))
 	in, _ := json.Marshal(args)
 	return ft.findSymbolTool().Execute(context.Background(), in)
 }

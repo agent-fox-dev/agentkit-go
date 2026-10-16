@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // ------------------------------------------------------------------ edit_file
@@ -161,90 +161,6 @@ func TestRepairEditArgsHandlesTheThreeObservedShapes(t *testing.T) {
 }
 
 // ------------------------------------------------------------------ path guard
-
-func TestNormalizationRunsBeforeCanonicalization(t *testing.T) {
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ws, err := NewWorkspace(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A file:// URL must be unwrapped BEFORE the path is canonicalized. A
-	// guard that canonicalizes first sees the literal string "file:/..." as a
-	// relative path and joins it to the root, checking a string it will never
-	// open.
-	target := filepath.Join(dir, "x.txt")
-	if err := os.WriteFile(target, []byte("hi"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got, err := ws.Resolve("file://" + target)
-	if err != nil {
-		t.Fatalf("file:// URL was not unwrapped before canonicalization: %v", err)
-	}
-	if got != target {
-		t.Fatalf("resolved to %q, want %q", got, target)
-	}
-}
-
-func TestPathContainmentRejectsEscapes(t *testing.T) {
-	dir := t.TempDir()
-	ws, _ := NewWorkspace(dir)
-	for _, p := range []string{"../outside.txt", "a/../../outside.txt", "/etc/passwd"} {
-		if _, err := ws.Resolve(p); !errors.Is(err, ErrPathNotAllowed) {
-			t.Errorf("Resolve(%q) err = %v, want ErrPathNotAllowed", p, err)
-		}
-	}
-}
-
-// TestContainmentComparesSegmentsNotStringPrefixes: a prefix test says
-// /work/space is inside /work/s.
-func TestContainmentComparesSegmentsNotStringPrefixes(t *testing.T) {
-	base := t.TempDir()
-	inside := filepath.Join(base, "s")
-	sibling := filepath.Join(base, "space")
-	for _, d := range []string{inside, sibling} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	ws, _ := NewWorkspace(inside)
-	if _, err := ws.Resolve(filepath.Join(sibling, "f.txt")); !errors.Is(err, ErrPathNotAllowed) {
-		t.Fatalf("a sibling directory sharing a string prefix was accepted: err = %v", err)
-	}
-}
-
-func TestNewFileUnderTheWorkspaceIsAllowed(t *testing.T) {
-	dir := t.TempDir()
-	ws, _ := NewWorkspace(dir)
-	// The file does not exist yet. A guard that EvalSymlinks the whole path
-	// fails here, which would make every file the agent creates unreachable.
-	if _, err := ws.Resolve("new/nested/file.txt"); err != nil {
-		t.Fatalf("a not-yet-created file inside the workspace must resolve: %v", err)
-	}
-}
-
-func TestTildeUserExpandsToThatUsersHome(t *testing.T) {
-	me, err := user.Current()
-	if err != nil || me.HomeDir == "" {
-		t.Skip("no current user to look up")
-	}
-	got, err := Normalize("~" + me.Username + "/secrets")
-	if err != nil {
-		t.Fatalf("Normalize(~%s/secrets): %v", me.Username, err)
-	}
-	if want := filepath.Join(me.HomeDir, "secrets"); got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-func TestTildeUnknownUserIsMalformed(t *testing.T) {
-	_, err := Normalize("~no-such-user-agentkit/secrets")
-	if !errors.Is(err, ErrPathMalformed) {
-		t.Fatalf("err = %v, want ErrPathMalformed", err)
-	}
-}
 
 // TestExecuteIsNotPathContained. The test name is the documentation
 // (REQ-SEC-01): path containment constrains the FILE tools and says nothing
@@ -531,39 +447,6 @@ func TestGlobDialect(t *testing.T) {
 	}
 }
 
-func TestGitignoreIsHonoured(t *testing.T) {
-	dir := t.TempDir()
-	write := func(p, s string) {
-		full := filepath.Join(dir, p)
-		_ = os.MkdirAll(filepath.Dir(full), 0o755)
-		if err := os.WriteFile(full, []byte(s), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(".gitignore", "node_modules/\n*.log\n!keep.log\n")
-	write("node_modules/dep/index.js", "")
-	write("app.log", "")
-	write("keep.log", "")
-	write("main.go", "")
-
-	ig := newIgnoreEngine(dir, NoGlobalExcludes())
-	if !ig.match("node_modules", true) {
-		t.Error("node_modules/ should be ignored")
-	}
-	if !ig.match("app.log", false) {
-		t.Error("*.log should be ignored")
-	}
-	if ig.match("keep.log", false) {
-		t.Error("!keep.log should re-include it: later patterns win")
-	}
-	if ig.match("main.go", false) {
-		t.Error("main.go should not be ignored")
-	}
-	if !ig.match(".git", true) {
-		t.Error(".git is always ignored")
-	}
-}
-
 // ------------------------------------------------------------------ locks
 
 // TestConcurrentEditsToOneFileSerialize pins REQ-LOOP-12 THROUGH THE TOOL.
@@ -590,11 +473,11 @@ func TestConcurrentEditsToOneFileSerialize(t *testing.T) {
 	if err := os.Symlink("real.txt", filepath.Join(dir, "link.txt")); err != nil {
 		t.Skipf("symlinks unavailable here: %v", err)
 	}
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fs := newFileTools(Options{Workspace: ws}.withDefaults())
+	fs := newFileTools(ws, Options{}.withDefaults(ws))
 	edit := fs.editFile()
 
 	// Hold the lock the way write_file/edit_file compute it.
@@ -680,11 +563,11 @@ func TestLockKeyPropagatesResolutionErrors(t *testing.T) {
 // ------------------------------------------------------------------ wiring
 
 func TestAllToolsHaveSchemasAndExactlyOneHandler(t *testing.T) {
-	ws, err := NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := All(Options{Workspace: ws})
+	all, err := For(ws, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,8 +595,8 @@ func TestAllToolsHaveSchemasAndExactlyOneHandler(t *testing.T) {
 // TestDeletedToolsAreAbsent: REQ-TOOL-04's minimality is the requirement.
 // Deletion, renaming, appending and stat are one shell word each.
 func TestDeletedToolsAreAbsent(t *testing.T) {
-	ws, _ := NewWorkspace(t.TempDir())
-	all, _ := All(Options{Workspace: ws})
+	ws, _ := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
+	all, _ := For(ws, Options{})
 	present := map[string]bool{}
 	for _, tl := range all {
 		present[tl.Name] = true
@@ -727,8 +610,8 @@ func TestDeletedToolsAreAbsent(t *testing.T) {
 }
 
 func TestWriteAndReadRoundTripThroughTheTools(t *testing.T) {
-	ws, _ := NewWorkspace(t.TempDir())
-	all, _ := All(Options{Workspace: ws})
+	ws, _ := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
+	all, _ := For(ws, Options{})
 	byName := map[string]core.Tool{}
 	for _, tl := range all {
 		byName[tl.Name] = tl
@@ -759,8 +642,8 @@ func TestWriteAndReadRoundTripThroughTheTools(t *testing.T) {
 }
 
 func TestFileToolsRefusePathsOutsideTheWorkspace(t *testing.T) {
-	ws, _ := NewWorkspace(t.TempDir())
-	all, _ := All(Options{Workspace: ws})
+	ws, _ := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
+	all, _ := For(ws, Options{})
 	for _, tl := range all {
 		if tl.Name == "execute" {
 			continue // deliberately not contained
@@ -778,16 +661,15 @@ func TestFileToolsRefusePathsOutsideTheWorkspace(t *testing.T) {
 // the global ignore layer pinned empty (NFR-TEST-04).
 func toolByName(t *testing.T, dir, name string, opts ...Options) core.Tool {
 	t.Helper()
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := Options{Workspace: ws, Ignore: NoGlobalExcludes()}
+	o := Options{}
 	if len(opts) > 0 {
 		o = opts[0]
-		o.Workspace = ws
 	}
-	all, err := All(o)
+	all, err := For(ws, o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -816,13 +698,13 @@ func mustSymlink(t *testing.T, target, link string) {
 func TestDanglingSymlinkCannotEscapeTheWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	outside := t.TempDir()
-	ws, _ := NewWorkspace(dir)
+	ws, _ := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	write := toolByName(t, dir, "write_file")
 
 	t.Run("dangling link to outside is rejected", func(t *testing.T) {
 		mustSymlink(t, filepath.Join(outside, "newfile"), filepath.Join(dir, "escape"))
-		if _, err := ws.Resolve("escape"); !errors.Is(err, ErrPathNotAllowed) {
-			t.Fatalf("Resolve(escape) err = %v, want ErrPathNotAllowed", err)
+		if _, err := ws.Resolve("escape"); !errors.Is(err, workspace.ErrPathNotAllowed) {
+			t.Fatalf("Resolve(escape) err = %v, want workspace.ErrPathNotAllowed", err)
 		}
 		res := write.Execute(context.Background(), json.RawMessage(`{"path":"escape","content":"pwned"}`))
 		if res.OK || res.Error != "path_not_allowed" {
@@ -841,7 +723,7 @@ func TestDanglingSymlinkCannotEscapeTheWorkspace(t *testing.T) {
 		if err != nil {
 			t.Fatalf("a dangling link whose target is inside must resolve: %v", err)
 		}
-		if got != filepath.Join(ws.Root, "inner", "newfile") {
+		if got != filepath.Join(ws.Root(), "inner", "newfile") {
 			t.Fatalf("resolved to %q, want the link TARGET", got)
 		}
 		res := write.Execute(context.Background(), json.RawMessage(`{"path":"stay","content":"ok"}`))
@@ -855,8 +737,8 @@ func TestDanglingSymlinkCannotEscapeTheWorkspace(t *testing.T) {
 	t.Run("chained dangling links are followed to the end", func(t *testing.T) {
 		mustSymlink(t, filepath.Join(outside, "deep"), filepath.Join(dir, "hop2"))
 		mustSymlink(t, "hop2", filepath.Join(dir, "hop1"))
-		if _, err := ws.Resolve("hop1"); !errors.Is(err, ErrPathNotAllowed) {
-			t.Fatalf("Resolve(hop1) err = %v, want ErrPathNotAllowed: hop1 -> hop2 -> outside", err)
+		if _, err := ws.Resolve("hop1"); !errors.Is(err, workspace.ErrPathNotAllowed) {
+			t.Fatalf("Resolve(hop1) err = %v, want workspace.ErrPathNotAllowed: hop1 -> hop2 -> outside", err)
 		}
 	})
 	t.Run("a link loop is malformed, not accepted", func(t *testing.T) {
@@ -865,22 +747,6 @@ func TestDanglingSymlinkCannotEscapeTheWorkspace(t *testing.T) {
 			t.Fatal("a symlink cycle must be rejected")
 		}
 	})
-}
-
-// TestCheckWriteTargetRefusesALinkPlantedAfterResolve pins the second half
-// of the fix: the final path is Lstat'ed immediately before the open.
-func TestCheckWriteTargetRefusesALinkPlantedAfterResolve(t *testing.T) {
-	dir := t.TempDir()
-	outside := t.TempDir()
-	ws, _ := NewWorkspace(dir)
-	abs := filepath.Join(ws.Root, "target.txt")
-	if err := ws.CheckWriteTarget(abs); err != nil {
-		t.Fatalf("an absent target is fine: %v", err)
-	}
-	mustSymlink(t, filepath.Join(outside, "x"), abs) // planted between Resolve and open
-	if err := ws.CheckWriteTarget(abs); !errors.Is(err, ErrPathNotAllowed) {
-		t.Fatalf("err = %v, want ErrPathNotAllowed for a link whose target is outside", err)
-	}
 }
 
 // TestCapMarkersNameACallThatWorks is REQ-TOOL-09b: a marker at the cap must
@@ -1173,8 +1039,7 @@ func TestExecuteSpillsByDefault(t *testing.T) {
 		t.Fatal("the marker must name the spill path")
 	}
 
-	ws, _ := NewWorkspace(dir)
-	off := toolByName(t, dir, "execute", Options{Workspace: ws, DisableSpill: true}).Execute(context.Background(), cmd)
+	off := toolByName(t, dir, "execute", Options{DisableSpill: true}).Execute(context.Background(), cmd)
 	if off.Metadata.SpillPath != "" {
 		t.Fatalf("DisableSpill must leave no file: %q", off.Metadata.SpillPath)
 	}
@@ -1254,16 +1119,16 @@ func TestReducedEnvStripsGenericCredentialSuffixes(t *testing.T) {
 }
 
 // TestExecuteBuiltOutsideAllReducesTheEnvironment: the nil-Env default must
-// hold for a tool built by hand, not only through All().
+// hold for a tool built by hand, not only through For().
 func TestExecuteBuiltOutsideAllReducesTheEnvironment(t *testing.T) {
 	if _, _, err := ResolveShell(); err != nil {
 		t.Skip("no shell available")
 	}
 	t.Setenv("GITHUB_TOKEN", "ghp_should_not_leak")
-	ws, _ := NewWorkspace(t.TempDir())
+	ws, _ := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	for name, tl := range map[string]core.Tool{
-		"execute":     executeTool(Options{Workspace: ws}),
-		"run_command": runCommandTool(Options{Workspace: ws}),
+		"execute":     executeTool(ws, Options{}),
+		"run_command": runCommandTool(ws, Options{}),
 	} {
 		in := `{"command":"env"}`
 		if name == "run_command" {
@@ -1274,7 +1139,7 @@ func TestExecuteBuiltOutsideAllReducesTheEnvironment(t *testing.T) {
 			t.Fatalf("%s: %+v", name, res)
 		}
 		if strings.Contains(res.Data["output"].(string), "ghp_should_not_leak") {
-			t.Fatalf("%s built outside All() leaked GITHUB_TOKEN to the child (REQ-SEC-08)", name)
+			t.Fatalf("%s built outside For() leaked GITHUB_TOKEN to the child (REQ-SEC-08)", name)
 		}
 	}
 }
@@ -1313,13 +1178,12 @@ func TestIgnoreOptionsAreThreadedAndGitConfigIsCached(t *testing.T) {
 		}
 	}
 	var calls atomic.Int32
-	ws, _ := NewWorkspace(dir)
-	opts := Options{Workspace: ws, Ignore: IgnoreOptions{
+	ws, _ := workspace.Open(dir, workspace.Options{Ignore: workspace.IgnoreOptions{
 		Getenv:    func(string) string { return "" },
 		Home:      func() (string, error) { return "", os.ErrNotExist },
 		GitConfig: func() string { calls.Add(1); return excludes },
-	}}
-	all, err := All(opts)
+	}})
+	all, err := For(ws, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1416,39 +1280,6 @@ func TestEditFileRefusesAFileOverItsSizeCeiling(t *testing.T) {
 	}
 }
 
-// TestCheckWriteTargetReResolvesTheWholePath. The leaf is not where the swap
-// happens: replace a PARENT directory with a link to outside and the leaf
-// looks like an ordinary (or absent) file while the write lands elsewhere.
-func TestCheckWriteTargetReResolvesTheWholePath(t *testing.T) {
-	dir := t.TempDir()
-	outside := t.TempDir()
-	ws, _ := NewWorkspace(dir)
-	sub := filepath.Join(ws.Root, "sub")
-	if err := os.Mkdir(sub, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	abs := filepath.Join(sub, "file.txt")
-	if err := os.WriteFile(abs, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := ws.CheckWriteTarget(abs); err != nil {
-		t.Fatalf("a plain file under a plain directory is fine: %v", err)
-	}
-	// The swap: sub becomes a link to outside, and outside holds a plain
-	// file.txt so the leaf Lstat's as a regular file.
-	if err := os.RemoveAll(sub); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(outside, "file.txt"), []byte("y"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mustSymlink(t, outside, sub)
-	if err := ws.CheckWriteTarget(abs); !errors.Is(err, ErrPathNotAllowed) {
-		t.Fatalf("err = %v, want ErrPathNotAllowed: the parent is now a link to outside, "+
-			"and a check that looks only at the leaf does not see it", err)
-	}
-}
-
 // TestWriteFileChecksContainmentBeforeMkdirAll pins the ORDER. The swap is
 // made while the tool is blocked on the path lock — after Resolve, before the
 // write — which is the race the check exists for. MkdirAll before the check
@@ -1457,12 +1288,12 @@ func TestCheckWriteTargetReResolvesTheWholePath(t *testing.T) {
 func TestWriteFileChecksContainmentBeforeMkdirAll(t *testing.T) {
 	dir := t.TempDir()
 	outside := t.TempDir()
-	ws, _ := NewWorkspace(dir)
-	sub := filepath.Join(ws.Root, "sub")
+	ws, _ := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
+	sub := filepath.Join(ws.Root(), "sub")
 	if err := os.Mkdir(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	fs := newFileTools(Options{Workspace: ws}.withDefaults())
+	fs := newFileTools(ws, Options{}.withDefaults(ws))
 	abs := filepath.Join(sub, "deeper", "file.txt")
 	key, err := lockKey(abs)
 	if err != nil {
@@ -1821,8 +1652,8 @@ func TestListAndFindTextIsOneEntryPerLine(t *testing.T) {
 // on every request, so each fact is one sentence, and the facts a model most
 // often gets wrong are present.
 func TestToolDescriptionsCarryTheOperativeFacts(t *testing.T) {
-	ws, _ := NewWorkspace(t.TempDir())
-	all, _ := All(Options{Workspace: ws})
+	ws, _ := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
+	all, _ := For(ws, Options{})
 	byName := map[string]core.Tool{}
 	for _, tl := range all {
 		byName[tl.Name] = tl
@@ -1886,11 +1717,11 @@ func TestRepairEditArgsRepairsCorruptedJSONStrings(t *testing.T) {
 // tools: each shape from the agent-fox run is either repaired or refused in
 // a short message.
 func TestIssue71ShapesThroughThePipeline(t *testing.T) {
-	ws, err := NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := All(Options{Workspace: ws, Ignore: NoGlobalExcludes()})
+	all, err := For(ws, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1948,11 +1779,11 @@ func TestRepairEditArgsEscapesRawControlCharacters(t *testing.T) {
 // (REQ-TOOL-11.1), not lost to the stricter validation: fetch_url's method is
 // case-insensitive, and search_files clamps max_matches to its cap.
 func TestBuiltinLeniencySurvivesStrictValidation(t *testing.T) {
-	ws, err := NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := All(Options{Workspace: ws, Ignore: NoGlobalExcludes()})
+	all, err := For(ws, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2070,18 +1901,18 @@ var declProps = map[string]prop{
 	"EndLine": {schema.TypeInteger, true},
 }
 
-// TS-09-21 (smoke, 09-PATH-2): read_file from tools.All, over a real
+// TS-09-21 (smoke, 09-PATH-2): read_file from tools.For, over a real
 // workspace, refuses a PNG by its magic bytes and names the format.
 func TestSmokeReadFileRefusesPNG_TS09_21(t *testing.T) {
-	ws, err := NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	png := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00}
-	if err := os.WriteFile(filepath.Join(ws.Root, "test.png"), png, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(ws.Root(), "test.png"), png, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	all, err := All(Options{Workspace: ws})
+	all, err := For(ws, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

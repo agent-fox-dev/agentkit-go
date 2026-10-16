@@ -13,10 +13,11 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/outline"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // smokeWorkspace writes files under a fresh workspace root.
-func smokeWorkspace(t *testing.T, files map[string]string) *tools.Workspace {
+func smokeWorkspace(t *testing.T, files map[string]string) *workspace.Workspace {
 	t.Helper()
 	root := t.TempDir()
 	for rel, content := range files {
@@ -28,7 +29,7 @@ func smokeWorkspace(t *testing.T, files map[string]string) *tools.Workspace {
 			t.Fatal(err)
 		}
 	}
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,9 +37,9 @@ func smokeWorkspace(t *testing.T, files map[string]string) *tools.Workspace {
 }
 
 // smokeTool returns the named tool from the real default tool set.
-func smokeTool(t *testing.T, ws *tools.Workspace, name string) core.Tool {
+func smokeTool(t *testing.T, ws *workspace.Workspace, name string) core.Tool {
 	t.Helper()
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +48,7 @@ func smokeTool(t *testing.T, ws *tools.Workspace, name string) core.Tool {
 			return tl
 		}
 	}
-	t.Fatalf("tools.All has no %s", name)
+	t.Fatalf("tools.For has no %s", name)
 	return core.Tool{}
 }
 
@@ -76,9 +77,9 @@ func siteAt(sites []tools.ReferenceSite, path string, line int) (tools.Reference
 }
 
 // pythonOutlined reports whether this build outlines Python (tree-sitter, cgo).
-func pythonOutlined(t *testing.T, ws *tools.Workspace, rel string) bool {
+func pythonOutlined(t *testing.T, ws *workspace.Workspace, rel string) bool {
 	t.Helper()
-	f, err := outline.Outline(context.Background(), filepath.Join(ws.Root, rel), nil, outline.Options{})
+	f, err := outline.Outline(context.Background(), filepath.Join(ws.Root(), rel), nil, outline.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +271,7 @@ func TestReferencesSmoke_WorkspaceReferences_TS05_58(t *testing.T) {
 	fr := smokeTool(t, ws, "find_references")
 	_, viaTool := smokeRefs(t, fr, `{"name":"Runner.Run","include_tests":true}`)
 
-	got, err := ws.References(context.Background(), viaTool.Target, tools.ReferenceOptions{IncludeTests: true})
+	got, err := tools.References(context.Background(), ws, viaTool.Target, tools.ReferenceOptions{IncludeTests: true})
 	if err != nil {
 		t.Fatalf("References: %v", err)
 	}
@@ -308,7 +309,7 @@ func TestReferencesSmoke_WorkspaceReferences_TS05_58(t *testing.T) {
 	}
 
 	// The struct default leaves test files out.
-	noTests, err := ws.References(context.Background(), viaTool.Target, tools.ReferenceOptions{})
+	noTests, err := tools.References(context.Background(), ws, viaTool.Target, tools.ReferenceOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +325,7 @@ func TestReferencesSmoke_WorkspaceReferences_TS05_58(t *testing.T) {
 // Verifies: 05-PATH-5, 05-REQ-8.2, 05-REQ-8.4
 func TestReferencesSmoke_WriteFileRevalidates_TS05_59(t *testing.T) {
 	ws := smokeWorkspace(t, goRunnerFixture)
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

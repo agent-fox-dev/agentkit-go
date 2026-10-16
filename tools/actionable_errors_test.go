@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // schemaProp returns one property of a tool's input schema as marshalled for
@@ -91,7 +92,7 @@ func TestPatternErrorHintsAtEscaping(t *testing.T) {
 // path_not_allowed names the root, as it did, and now says what to do next.
 func TestPathNotAllowedSaysWhatToDoNext(t *testing.T) {
 	root := searchTree(t)
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,15 +101,15 @@ func TestPathNotAllowedSaysWhatToDoNext(t *testing.T) {
 	if err == nil {
 		t.Fatal("Resolve of a path outside the workspace succeeded")
 	}
-	if !strings.Contains(err.Error(), ws.Root) {
-		t.Errorf("error %q does not name the workspace root %s", err, ws.Root)
+	if !strings.Contains(err.Error(), ws.Root()) {
+		t.Errorf("error %q does not name the workspace root %s", err, ws.Root())
 	}
 	if !strings.Contains(err.Error(), "inside the workspace") {
 		t.Errorf("error %q does not say to use a path inside the workspace", err)
 	}
 
 	// And through the tools that report it.
-	all, err := tools.All(tools.Options{Workspace: ws, Ignore: tools.NoGlobalExcludes()})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +131,7 @@ func TestPathNotAllowedSaysWhatToDoNext(t *testing.T) {
 		if res.OK || res.Error != "path_not_allowed" {
 			t.Fatalf("%s: got %+v, want path_not_allowed", name, res)
 		}
-		if !strings.Contains(res.Detail, ws.Root) || !strings.Contains(res.Detail, "inside the workspace") {
+		if !strings.Contains(res.Detail, ws.Root()) || !strings.Contains(res.Detail, "inside the workspace") {
 			t.Errorf("%s: detail %q does not name the root and the next step", name, res.Detail)
 		}
 	}

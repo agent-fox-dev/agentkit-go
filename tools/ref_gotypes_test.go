@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-05-13 (unit): Go type resolver parses workspace packages and type-checks with workspace-local importer without external processes
@@ -59,9 +60,9 @@ func Compute() int {
 		t.Fatal(err)
 	}
 
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace failed: %v", err)
+		t.Fatalf("workspace.Open failed: %v", err)
 	}
 
 	imp := newWorkspaceImporter(ws, "example.com/mod")
@@ -94,9 +95,9 @@ func Compute() int {
 // Verifies: 05-REQ-3.2
 func TestGoTypeResolver_SyntheticExternalStubs_TS_05_14(t *testing.T) {
 	dir := t.TempDir()
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace failed: %v", err)
+		t.Fatalf("workspace.Open failed: %v", err)
 	}
 
 	src := `package main
@@ -201,9 +202,9 @@ func Run() {
 		t.Fatal(err)
 	}
 
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace failed: %v", err)
+		t.Fatalf("workspace.Open failed: %v", err)
 	}
 
 	// 1. Target Ping: receiver method call through embedded Base
@@ -293,9 +294,9 @@ func Use() {
 		t.Fatal(err)
 	}
 
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace failed: %v", err)
+		t.Fatalf("workspace.Open failed: %v", err)
 	}
 
 	alphaClose := outline.Decl{
@@ -345,9 +346,9 @@ func Call(client external.Client) {
 		t.Fatal(err)
 	}
 
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace failed: %v", err)
+		t.Fatalf("workspace.Open failed: %v", err)
 	}
 
 	targetDo := outline.Decl{
@@ -416,13 +417,13 @@ func Compute() {
 	}
 
 	for _, pkgDir := range genGoPackages() {
-		ws, err := NewWorkspace(pkgDir)
+		ws, err := workspace.Open(pkgDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 		if err != nil {
 			t.Fatal(err)
 		}
 		imp := newWorkspaceImporter(ws, "")
 		fset := imp.fset
-		files, err := imp.parseDirFiles(pkgDir, false)
+		files, err := imp.parseDirFiles(ws.Root(), false)
 		if err != nil || len(imp.errors) > 0 {
 			t.Fatalf("parseDirFiles failed: %v %v", err, imp.errors)
 		}
@@ -456,7 +457,7 @@ func TestGoTypeResolver_ExcludeSameNameOtherPackages_TS_05_16(t *testing.T) {
 	writeFile(t, dir, "go.mod", "module example.com/x\n\ngo 1.22\n")
 	writeFile(t, dir, "a/a.go", "package a\n\ntype Alpha struct{}\n\nfunc (Alpha) Close() {}\n\nfunc Run() {}\n")
 	writeFile(t, dir, "b/b.go", "package b\n\nimport \"example.com/x/a\"\n\nfunc Run() {}\n\nfunc use() {\n\ta.Run()\n\tRun()\n\tClose := 3\n\t_ = Close\n\ta.Alpha{}.Close()\n}\n")
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}

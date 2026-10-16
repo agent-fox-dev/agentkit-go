@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-01-76 (smoke): A walk root outside the workspace is refused before any
@@ -20,7 +21,7 @@ func TestWalkOutsideWorkspaceRefused_TS_01_76(t *testing.T) {
 	wsDir := t.TempDir()
 	outsideDir := t.TempDir()
 
-	ws, err := tools.NewWorkspace(wsDir)
+	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,10 +45,10 @@ func TestWalkOutsideWorkspaceRefused_TS_01_76(t *testing.T) {
 		outsideResolved = outsideDir
 	}
 
-	err = tools.Walk(ctx, ws, outsideResolved, tools.WalkOptions{}, cb)
+	err = ws.Walk(ctx, outsideResolved, workspace.WalkOptions{}, cb)
 
 	// The returned error satisfies errors.Is(err, ErrPathNotAllowed).
-	if !errors.Is(err, tools.ErrPathNotAllowed) {
+	if !errors.Is(err, workspace.ErrPathNotAllowed) {
 		t.Fatalf("want ErrPathNotAllowed, got %v", err)
 	}
 
@@ -91,11 +92,11 @@ func TestFindFilesThroughSharedWalk_TS_01_77(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws, Ignore: tools.NoGlobalExcludes()})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +202,7 @@ func TestNativeSearchAndCountCandidates_TS_01_78(t *testing.T) {
 	res, err := tools.SearchIn(ctx, root, tools.SearchParams{
 		Pattern:  "needle",
 		FileGlob: "*.go",
-	}, tools.NoGlobalExcludes())
+	}, workspace.NoGlobalExcludes())
 	if err != nil {
 		t.Fatalf("SearchIn: %v", err)
 	}

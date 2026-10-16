@@ -17,5 +17,5 @@ func References(ctx context.Context, ws *workspace.Workspace, target outline.Dec
 	if ws == nil {
 		return ReferenceResult{}, errors.New("tools: References needs a workspace; open one with workspace.Open")
 	}
-	return executeReferenceSearch(ctx, bridge(ws), target, "", "", opts, SymbolOptions{}, nil)
+	return executeReferenceSearch(ctx, ws, target, "", "", opts, SymbolOptions{}, nil)
 }

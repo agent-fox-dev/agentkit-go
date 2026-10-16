@@ -463,10 +463,10 @@ func TestAfterCloseToolsRefuse_TS03_58(t *testing.T) {
 	idx.Invalidate("")
 }
 
-// TS-03-59: tools.All returns no closer and an abandoned run directory is
+// TS-03-59: tools.For returns no closer and an abandoned run directory is
 // removed by a later sweep after 24 hours.
 func TestAllNoCloserAndSweepAbandoned_TS03_59(t *testing.T) {
-	// Part 1: tools.All returns ([]core.Tool, error) — no closer.
+	// Part 1: tools.For returns ([]core.Tool, error) — no closer.
 	// This is verified by the type signature itself. If All returned a closer,
 	// the code would not compile with this assignment:
 	root := t.TempDir()

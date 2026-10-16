@@ -323,11 +323,6 @@ func (e *EditError) Error() string
 func (e *SearchPatternError) Error() string
 func (e *SearchPatternError) Unwrap() error
 func (m SymbolMatch) Decl() outline.Decl
-func (w *Workspace) CheckWriteTarget(abs string) error
-func (w *Workspace) References(ctx context.Context, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error)
-func (w *Workspace) Rel(abs string) string
-func (w *Workspace) Resolve(p string) (string, error)
-func All(opts Options) ([]core.Tool, error)
 func ApplyEdits(content string, edits []Edit) (string, int, error)
 func CapMarker(noun, param string, limit, max int, alternative string) string
 func ClampLimit(n, def, cap int) int
@@ -344,9 +339,6 @@ func ListMarker(limit int) string
 func LongLineMarker(line int, size int64, limit int, path string) string
 func MatchGlob(pattern, path string) bool
 func NewAccumulator(capBytes int, mode TruncateMode) *Accumulator
-func NewWorkspace(root string) (*Workspace, error)
-func NoGlobalExcludes() IgnoreOptions
-func Normalize(p string) (string, error)
 func NormalizeForEdit(s string) (normalized string, bom bool, ending LineEnding)
 func ReadMarker(shown, total int) string
 func ReadOffsetMarker(from, to, total int) string
@@ -359,21 +351,19 @@ func Run(ctx context.Context, command string, opts ExecOptions) (ExecResult, err
 func RunArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, error)
 func Search(ctx context.Context, root string, p SearchParams) (SearchResult, error)
 func SearchBytesMarker(shown int, limit int) string
-func SearchIn(ctx context.Context, root string, p SearchParams, ig IgnoreOptions) (SearchResult, error)
+func SearchIn(ctx context.Context, root string, p SearchParams, ig workspace.IgnoreOptions) (SearchResult, error)
 func SearchMarker(limit int) string
 func ShellQuote(s string) string
 func SymbolMarker(limit int) string
 func SymbolPartialMarker(reason string) string
-func Walk(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(rel string, d fs.DirEntry) error) error
 type Accumulator struct { Cap int Mode TruncateMode SpillDir string SpillPrefix string }
 type Edit struct { OldString string NewString string }
 type EditError struct { Phase string Index int Text string }
 type ExecOptions struct { Dir string Timeout time.Duration MaxBytes int KeepHead bool SpillDir string LogPath string Stdin io.Reader Env []string DrainIdle time.Duration DrainCeiling time.Duration }
 type ExecResult struct { Output string Outcome Outcome ExitCode int Truncated bool TotalBytes int64 SpillPath string Duration time.Duration IOErr error }
-type IgnoreOptions struct { Getenv func(string) string Home func() (string, error) GitConfig func() string }
 type Index interface { Symbols(ctx context.Context, q SymbolQuery) (SymbolAnswer, bool, error) Tools() []core.Tool Invalidate(rel string) Close() error }
 type LineEnding string
-type Options struct { Workspace *Workspace SpillDir string DisableSpill bool Env []string Ignore IgnoreOptions Symbols SymbolOptions Index Index }
+type Options struct { SpillDir string DisableSpill bool Env []string Symbols SymbolOptions Index Index }
 type Outcome string
 type ReferenceOptions struct { Path string IncludeTests bool MaxResults int }
 type ReferenceResult struct { Target outline.Decl Sites []ReferenceSite Backend string Partial bool PackagesChecked int Errors int Truncated bool }
@@ -388,11 +378,6 @@ type SymbolOptions struct { MaxFiles int MaxDuration time.Duration }
 type SymbolQuery struct { Name string Kind string Path string Exact bool }
 type TruncateMode int
 type TruncatedBy string
-type WalkOptions struct { Ignore IgnoreOptions IncludeHidden bool }
-type Workspace struct { Root string }
-var ErrNoHome
-var ErrPathMalformed
-var ErrPathNotAllowed
 == codemode
 const DefaultDescriptionTemplate
 const DefaultMaxCalls

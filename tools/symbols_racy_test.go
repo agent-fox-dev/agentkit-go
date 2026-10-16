@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // racyFixture builds the symbol table over one file and returns the tools,
@@ -15,16 +17,14 @@ func racyFixture(t *testing.T, content string) (ft *fileTools, root string, inde
 	t.Helper()
 	root = t.TempDir()
 	mkSymFile(t, root, "racy.go", content)
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft = newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	ft = newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+	}.withDefaults(ws))
 	r := ft.findSymbolTool().Execute(context.Background(), json.RawMessage(`{"name":"func"}`))
 	if !r.OK {
 		t.Fatalf("initial build failed: error=%s detail=%s", r.Error, r.Detail)

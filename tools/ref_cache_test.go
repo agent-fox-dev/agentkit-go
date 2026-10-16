@@ -9,18 +9,19 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-05-40 (unit): Reference cache initializes lazily on first query and persists across subsequent queries
 // Verifies: 05-REQ-8.1
 func TestRefCache_TS05_40(t *testing.T) {
 	tmp := t.TempDir()
-	ws, err := NewWorkspace(tmp)
+	ws, err := workspace.Open(tmp, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
 
-	ft := newFileTools(Options{Workspace: ws}.withDefaults())
+	ft := newFileTools(ws, Options{}.withDefaults(ws))
 
 	// Given: a newly created fileTools instance with no prior reference queries
 	if ft.refCache.Load() != nil {
@@ -49,12 +50,12 @@ func TestRefCache_TS05_40(t *testing.T) {
 // Verifies: 05-REQ-8.2
 func TestRefCache_TS05_41(t *testing.T) {
 	tmp := t.TempDir()
-	ws, err := NewWorkspace(tmp)
+	ws, err := workspace.Open(tmp, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
 
-	ft := newFileTools(Options{Workspace: ws}.withDefaults())
+	ft := newFileTools(ws, Options{}.withDefaults(ws))
 	refCache := ft.getRefCache()
 	if refCache == nil {
 		t.Fatal("refCache is nil")
@@ -130,16 +131,15 @@ func TestRefCache_TS05_41(t *testing.T) {
 // Verifies: 05-REQ-8.3
 func TestRefCache_TS05_42(t *testing.T) {
 	tmp := t.TempDir()
-	ws, err := NewWorkspace(tmp)
+	ws, err := workspace.Open(tmp, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
 
 	opts := Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-	}.withDefaults()
-	ft := newFileTools(opts)
+		Env: os.Environ(),
+	}.withDefaults(ws)
+	ft := newFileTools(ws, opts)
 	refCache := ft.getRefCache()
 	if refCache == nil {
 		t.Fatal("refCache is nil")
@@ -160,7 +160,7 @@ func TestRefCache_TS05_42(t *testing.T) {
 		return tl
 	}
 
-	execTool := wrapShell(executeTool(opts))
+	execTool := wrapShell(executeTool(ws, opts))
 	ctx := context.Background()
 	execArgs, err := json.Marshal(map[string]any{
 		"command":   "echo hello",
@@ -185,9 +185,9 @@ func TestRefCache_TS05_42(t *testing.T) {
 // Verifies: 05-REQ-8.4
 func TestRefCache_TS05_43(t *testing.T) {
 	tmp := t.TempDir()
-	ws, err := NewWorkspace(tmp)
+	ws, err := workspace.Open(tmp, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
 
 	// Create initial files:
@@ -207,7 +207,7 @@ func TestRefCache_TS05_43(t *testing.T) {
 		t.Fatalf("WriteFile deleted.go: %v", err)
 	}
 
-	ft := newFileTools(Options{Workspace: ws}.withDefaults())
+	ft := newFileTools(ws, Options{}.withDefaults(ws))
 	refCache := ft.getRefCache()
 	if refCache == nil {
 		t.Fatal("refCache is nil")
@@ -270,9 +270,9 @@ func TestRefCache_TS05_43(t *testing.T) {
 // Verifies: 05-REQ-8.5
 func TestRefCache_TS05_44(t *testing.T) {
 	tmp := t.TempDir()
-	ws, err := NewWorkspace(tmp)
+	ws, err := workspace.Open(tmp, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
 
 	// Given: a workspace where 'ignored_dir/' is unignored, then .gitignore is updated to ignore 'ignored_dir/'
@@ -291,7 +291,7 @@ func TestRefCache_TS05_44(t *testing.T) {
 		t.Fatalf("WriteFile pkg/keep_me.go: %v", err)
 	}
 
-	ft := newFileTools(Options{Workspace: ws}.withDefaults())
+	ft := newFileTools(ws, Options{}.withDefaults(ws))
 	refCache := ft.getRefCache()
 	if refCache == nil {
 		t.Fatal("refCache is nil")
@@ -307,7 +307,7 @@ func TestRefCache_TS05_44(t *testing.T) {
 	}
 
 	// Now update .gitignore to ignore ignored_dir/
-	if err := os.WriteFile(filepath.Join(ws.Root, ".gitignore"), []byte("ignored_dir/\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(ws.Root(), ".gitignore"), []byte("ignored_dir/\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile .gitignore: %v", err)
 	}
 	refCache.markDirty(".gitignore")
@@ -364,11 +364,11 @@ func TestRefCache_TS05_40_QueriesReadCache(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "go.mod", "module example.com/m\n\ngo 1.22\n")
 	writeFile(t, root, "lib.go", "package m\n\nfunc Target() int { return 1 }\n\nfunc Caller() int {\n\treturn Target()\n}\n")
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{Workspace: ws}.withDefaults())
+	ft := newFileTools(ws, Options{}.withDefaults(ws))
 
 	if got := refSites(t, ft, `{"name":"Target"}`); len(got) != 1 {
 		t.Fatalf("first query sites = %+v, want one", got)
@@ -411,11 +411,11 @@ func TestRefCache_TS05_40_QueriesReadCache(t *testing.T) {
 func TestRefCache_TS05_43_CandidatesFreshAfterWrite(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "calc.py", "def calc_total(x):\n    return x\n")
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{Workspace: ws}.withDefaults())
+	ft := newFileTools(ws, Options{}.withDefaults(ws))
 
 	for _, s := range refSites(t, ft, `{"name":"calc_total"}`) {
 		if s.Path == "shop.py" {

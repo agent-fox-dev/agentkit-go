@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // Issue #76 §1: a nested repository's .git directory is as private as the
@@ -39,12 +40,12 @@ func TestNestedGitDirectoriesAreNeverListed(t *testing.T) {
 
 func walkWorkspace(t *testing.T, dir string) []string {
 	t.Helper()
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var out []string
-	err = Walk(context.Background(), ws, ws.Root, WalkOptions{Ignore: NoGlobalExcludes(), IncludeHidden: true},
+	err = ws.Walk(context.Background(), "", workspace.WalkOptions{IncludeHidden: true},
 		func(rel string, _ fs.DirEntry) error { out = append(out, rel); return nil })
 	if err != nil {
 		t.Fatal(err)
@@ -134,12 +135,12 @@ func TestFoldedBatchKeepsExactEditsExact(t *testing.T) {
 // it marks nothing dirty.
 func TestEditFileOnAMissingPathMarksNothing(t *testing.T) {
 	root := t.TempDir()
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{Workspace: ws, Ignore: NoGlobalExcludes(),
-		Symbols: SymbolOptions{}}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Symbols: SymbolOptions{}}.withDefaults(ws))
 	ft.table = &symbolTable{}
 	args, _ := json.Marshal(map[string]any{"path": "nope.go",
 		"edits": []map[string]string{{"old_string": "a", "new_string": "b"}}})
@@ -173,7 +174,7 @@ func TestSearchReadsPastALongLine(t *testing.T) {
 			t.Fatalf("%s: matches on lines %v, want [1 3]", backend, lines)
 		}
 	}
-	res, err := searchNative(context.Background(), dir, p, NoGlobalExcludes())
+	res, err := searchNative(context.Background(), dir, p, workspace.NoGlobalExcludes())
 	check("native", res, err)
 }
 
@@ -185,14 +186,14 @@ func TestWritesAreAtomicAndKeepModeAndLinks(t *testing.T) {
 		t.Skip("mode bits and symlinks differ on Windows")
 	}
 	root := t.TempDir()
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ft := newFileTools(Options{Workspace: ws, Ignore: NoGlobalExcludes(),
-		Symbols: SymbolOptions{}}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Symbols: SymbolOptions{}}.withDefaults(ws))
 
-	script := filepath.Join(ws.Root, "run.sh")
+	script := filepath.Join(ws.Root(), "run.sh")
 	if err := os.WriteFile(script, []byte("echo old\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -211,11 +212,11 @@ func TestWritesAreAtomicAndKeepModeAndLinks(t *testing.T) {
 		t.Errorf("mode %v after edit_file, want 0755 kept", after.Mode().Perm())
 	}
 
-	target := filepath.Join(ws.Root, "real.txt")
+	target := filepath.Join(ws.Root(), "real.txt")
 	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(ws.Root, "link.txt")
+	link := filepath.Join(ws.Root(), "link.txt")
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
@@ -232,7 +233,7 @@ func TestWritesAreAtomicAndKeepModeAndLinks(t *testing.T) {
 	if fi, _ := os.Stat(target); fi.Mode().Perm() != 0o600 {
 		t.Errorf("target mode %v, want 0600 kept", fi.Mode().Perm())
 	}
-	entries, _ := os.ReadDir(ws.Root)
+	entries, _ := os.ReadDir(ws.Root())
 	for _, e := range entries {
 		if strings.Contains(e.Name(), ".agentkit-") {
 			t.Errorf("temporary file %s left behind", e.Name())

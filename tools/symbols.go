@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // symbolEntry is the per-file record in the symbol table.
@@ -233,7 +234,7 @@ func (st *symbolTable) refreshDirtyPaths(ctx context.Context, ft *fileTools, pat
 			return true
 		}
 
-		abs := filepath.Join(ft.ws.Root, filepath.FromSlash(rel))
+		abs := filepath.Join(ft.ws.Root(), filepath.FromSlash(rel))
 		fi, err := os.Stat(abs)
 		if err != nil || !fi.Mode().IsRegular() {
 			// File is gone or no longer regular: drop it.
@@ -243,7 +244,7 @@ func (st *symbolTable) refreshDirtyPaths(ctx context.Context, ft *fileTools, pat
 		}
 
 		// Re-outline the file.
-		ofile, err := outline.Outline(ctx, abs, nil, outline.Options{Root: ft.ws.Root})
+		ofile, err := outline.Outline(ctx, abs, nil, outline.Options{Root: ft.ws.Root()})
 		if err != nil {
 			if ctx.Err() != nil {
 				// The call ended, not the file: keep the entry and the mark.
@@ -310,9 +311,12 @@ const defaultMaxDuration = 2 * time.Second
 // outlineBatchSize is the maximum number of files passed to OutlineMany per call.
 const outlineBatchSize = 100
 
-// walkFn is the walk function used by the symbol table. It is a variable so
-// tests can replace it with a recording implementation.
-var walkFn = Walk
+// walkFn is the walk function used by the symbol table: the workspace's own
+// Walk. It is a variable so tests can replace it with a recording
+// implementation.
+var walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(rel string, d fs.DirEntry) error) error {
+	return ws.Walk(ctx, sub, opts, fn)
+}
 
 // buildOrRefresh builds or refreshes the symbol table. It is called under the
 // table's mu lock by find_symbol before answering.
@@ -366,8 +370,7 @@ func (st *symbolTable) buildOrRefresh(ctx context.Context, ft *fileTools, scopeP
 	// Track which files we see in this walk (for dropping stale entries).
 	seen := make(map[string]bool)
 
-	walkErr := walkFn(deadlineCtx, ft.ws, ft.ws.Root, WalkOptions{
-		Ignore:        ft.ig,
+	walkErr := walkFn(deadlineCtx, ft.ws, "", workspace.WalkOptions{
 		IncludeHidden: false,
 	}, func(rel string, d fs.DirEntry) error {
 		if deadlineCtx.Err() != nil {
@@ -406,7 +409,7 @@ func (st *symbolTable) buildOrRefresh(ctx context.Context, ft *fileTools, scopeP
 		seen[rel] = true
 
 		// Check if the file is already indexed and unchanged.
-		abs := filepath.Join(ft.ws.Root, filepath.FromSlash(rel))
+		abs := filepath.Join(ft.ws.Root(), filepath.FromSlash(rel))
 		fi, err := os.Stat(abs)
 		if err != nil {
 			return nil // skip unreadable files
@@ -475,7 +478,7 @@ func (st *symbolTable) buildOrRefresh(ctx context.Context, ft *fileTools, scopeP
 			ft.testOutlineHook(deadlineCtx)
 		}
 
-		files, err := outline.OutlineMany(deadlineCtx, srcs, outline.Options{Root: ft.ws.Root})
+		files, err := outline.OutlineMany(deadlineCtx, srcs, outline.Options{Root: ft.ws.Root()})
 		if err != nil {
 			// If the deadline caused the error, mark as partial.
 			if deadlineCtx.Err() != nil {

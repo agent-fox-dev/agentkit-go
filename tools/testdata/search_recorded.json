@@ -1,0 +1,30 @@
+{
+  "count_candidates_go": 1,
+  "count_candidates_real_env": 3,
+  "search_in_global": {
+    "files": [
+      "a.go",
+      "sub/d.txt"
+    ],
+    "files_searched": 2,
+    "truncated": false
+  },
+  "search_in_hermetic": {
+    "files": [
+      "a.go",
+      "b.glob",
+      "sub/d.txt"
+    ],
+    "files_searched": 3,
+    "truncated": false
+  },
+  "search_real_env": {
+    "files": [
+      "a.go",
+      "b.glob",
+      "sub/d.txt"
+    ],
+    "files_searched": 3,
+    "truncated": false
+  }
+}

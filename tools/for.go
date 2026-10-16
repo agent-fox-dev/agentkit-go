@@ -1,7 +1,10 @@
 package tools
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/workspace"
@@ -11,7 +14,7 @@ import (
 // list_files, find_files, search_files, file_outline, find_symbol,
 // find_references, execute and run_command, in that order, followed by
 // Options.Index's tools when an index is set. The shell tools run in
-// ws.Root(), and ignore configuration is whatever ws was opened with.
+// ws.Root(), and every directory walk the tools make uses ws's ignore rules.
 //
 // A nil ws returns no tools and an error: there is no fallback to the working
 // directory, because a silent default is the kind of hidden choice taking the
@@ -20,14 +23,52 @@ func For(ws *workspace.Workspace, opts Options) ([]core.Tool, error) {
 	if ws == nil {
 		return nil, errors.New("tools: For needs a workspace; open one with workspace.Open")
 	}
-	opts.Workspace = bridge(ws)
-	opts.Ignore = IgnoreOptions(ws.Ignore())
-	return All(opts)
-}
+	opts = opts.withDefaults(ws)
+	fs := newFileTools(ws, opts)
 
-// bridge is the Workspace the tool code still runs on, over ws: the same
-// root, with containment answered by ws itself so that the tools report
-// workspace's errors.
-func bridge(ws *workspace.Workspace) *Workspace {
-	return &Workspace{Root: ws.Root(), ws: ws}
+	// Wrap the shell tools so they mark the symbol table for revalidation
+	// after the command returns, whatever the outcome, and call
+	// Index.Invalidate("") when an index is set. 02-REQ-6.3, 03-REQ-2.7.
+	wrapShell := func(t core.Tool) core.Tool {
+		orig := t.Execute
+		t.Execute = func(ctx context.Context, in json.RawMessage) core.ToolResult {
+			r := orig(ctx, in)
+			fs.markTableRevalidateAll()
+			if fs.index != nil {
+				fs.index.Invalidate("")
+			}
+			return r
+		}
+		return t
+	}
+
+	builtins := []core.Tool{
+		fs.readFile(),
+		fs.writeFile(),
+		fs.editFile(),
+		fs.listFiles(),
+		fs.findFiles(),
+		fs.searchFiles(),
+		fs.fileOutlineTool(),
+		fs.findSymbolTool(),
+		fs.findReferencesTool(),
+		wrapShell(executeTool(ws, opts)),
+		wrapShell(runCommandTool(ws, opts)),
+	}
+
+	// Append index tools when an index is set. 03-REQ-2.3.
+	if opts.Index != nil {
+		names := make(map[string]bool, len(builtins))
+		for _, t := range builtins {
+			names[t.Name] = true
+		}
+		for _, t := range opts.Index.Tools() {
+			if names[t.Name] {
+				return nil, fmt.Errorf("tools: index tool %q duplicates a built-in tool name", t.Name)
+			}
+			builtins = append(builtins, t)
+		}
+	}
+
+	return builtins, nil
 }

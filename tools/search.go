@@ -20,6 +20,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // SearchMatch is one hit (REQ-TOOL-05).
@@ -187,7 +188,7 @@ func (f *fileTools) searchFiles() core.Tool {
 					MaxSearchContextLines, a.ContextLines, MaxSearchContextLines))
 			}
 
-			res, err := SearchIn(ctx, root, a, f.ig)
+			res, err := SearchIn(ctx, root, a, f.ws.Ignore())
 			if err != nil {
 				if ctx.Err() != nil {
 					return core.ErrResult("aborted", "Operation aborted")
@@ -331,13 +332,13 @@ func effectiveMax(n int) int {
 // envelope. It reads
 // the real ignore environment; SearchIn takes an explicit one.
 func Search(ctx context.Context, root string, p SearchParams) (SearchResult, error) {
-	return SearchIn(ctx, root, p, IgnoreOptions{})
+	return SearchIn(ctx, root, p, workspace.IgnoreOptions{})
 }
 
 // SearchIn is Search with an injected ignore environment (NFR-TEST-04), so a
 // test can pin an empty global excludes layer instead of inheriting the
 // developer's.
-func SearchIn(ctx context.Context, root string, p SearchParams, ig IgnoreOptions) (SearchResult, error) {
+func SearchIn(ctx context.Context, root string, p SearchParams, ig workspace.IgnoreOptions) (SearchResult, error) {
 	res, err := searchNative(ctx, root, p, ig)
 	if err != nil {
 		return res, err
@@ -446,9 +447,20 @@ func hasUppercaseLiteral(pat string) bool {
 	return false
 }
 
+// walkFrom walks root, the directory a search starts in, through a workspace
+// opened at root with ig's rules: the ignore engine is rooted at root, so the
+// ignore files above it do not apply. Hidden entries are skipped.
+func walkFrom(ctx context.Context, root string, ig workspace.IgnoreOptions, fn func(rel string, d fs.DirEntry) error) error {
+	ws, err := workspace.Open(root, workspace.Options{Ignore: ig})
+	if err != nil {
+		return err
+	}
+	return ws.Walk(ctx, "", workspace.WalkOptions{}, fn)
+}
+
 // ---------------------------------------------------------------- native
 
-func searchNative(ctx context.Context, root string, p SearchParams, igOpts IgnoreOptions) (SearchResult, error) {
+func searchNative(ctx context.Context, root string, p SearchParams, igOpts workspace.IgnoreOptions) (SearchResult, error) {
 	re, err := compilePattern(p)
 	if err != nil {
 		return SearchResult{}, err
@@ -457,7 +469,7 @@ func searchNative(ctx context.Context, root string, p SearchParams, igOpts Ignor
 
 	out := SearchResult{Matches: []SearchMatch{}}
 
-	walkErr := walk(ctx, root, igOpts, false, func(rel string, d fs.DirEntry) error {
+	walkErr := walkFrom(ctx, root, igOpts, func(rel string, d fs.DirEntry) error {
 		if d.IsDir() {
 			return nil
 		}
@@ -712,12 +724,12 @@ func capLine(s string) string {
 // CountCandidates counts the files a search would select: everything left
 // after the ignore rules, the hidden-entry rule and file_glob.
 func CountCandidates(ctx context.Context, root string, p SearchParams) (int, error) {
-	return countCandidates(ctx, root, p, IgnoreOptions{})
+	return countCandidates(ctx, root, p, workspace.IgnoreOptions{})
 }
 
-func countCandidates(ctx context.Context, root string, p SearchParams, igOpts IgnoreOptions) (int, error) {
+func countCandidates(ctx context.Context, root string, p SearchParams, igOpts workspace.IgnoreOptions) (int, error) {
 	n := 0
-	err := walk(ctx, root, igOpts, false, func(rel string, d fs.DirEntry) error {
+	err := walkFrom(ctx, root, igOpts, func(rel string, d fs.DirEntry) error {
 		if d.IsDir() {
 			return nil
 		}

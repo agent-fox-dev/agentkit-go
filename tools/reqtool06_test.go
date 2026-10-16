@@ -10,15 +10,16 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 func toolNamed(t *testing.T, root, name string) coreTool {
 	t.Helper()
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws, Env: os.Environ(), Ignore: tools.NoGlobalExcludes()})
+	all, err := tools.For(ws, tools.Options{Env: os.Environ()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,11 +118,11 @@ func TestRunCommandCarriesTheSameEnvelopeAsExecute(t *testing.T) {
 // everywhere.
 func TestTheDefaultToolSetIsPlatformStable(t *testing.T) {
 	root := t.TempDir()
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

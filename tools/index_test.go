@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // fakeIndex is a test double for tools.Index that records Invalidate calls.
@@ -152,7 +153,7 @@ func TestCapMarkerAndClampLimit_TS03_9(t *testing.T) {
 // and FileNavigationTools is unchanged.
 func TestAllAppendsIndexTools_TS03_10(t *testing.T) {
 	root := t.TempDir()
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,20 +161,16 @@ func TestAllAppendsIndexTools_TS03_10(t *testing.T) {
 	csTool := core.Tool{Name: "code_search", Description: "test", Builtin: true}
 	idx := &fakeIndex{tools: []core.Tool{csTool}}
 
-	withIdx, err := All(Options{
-		Workspace: ws,
-		Index:     idx,
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
+	withIdx, err := For(ws, Options{
+		Index:   idx,
+		Symbols: SymbolOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	baseTools, err := All(Options{
-		Workspace: ws,
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
+	baseTools, err := For(ws, Options{
+		Symbols: SymbolOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -206,15 +203,13 @@ func TestAllAppendsIndexTools_TS03_10(t *testing.T) {
 // TS-03-11: With Options.Index nil All returns the tool list pinned by spec 02.
 func TestAllNilIndexPinnedList_TS03_11(t *testing.T) {
 	root := t.TempDir()
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	all, err := All(Options{
-		Workspace: ws,
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
+	all, err := For(ws, Options{
+		Symbols: SymbolOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -232,7 +227,7 @@ func TestAllNilIndexPinnedList_TS03_11(t *testing.T) {
 		gotNames[i] = tl.Name
 	}
 	if strings.Join(gotNames, ",") != strings.Join(wantNames, ",") {
-		t.Fatalf("All() with nil Index:\ngot:  %v\nwant: %v", gotNames, wantNames)
+		t.Fatalf("For() with nil Index:\ngot:  %v\nwant: %v", gotNames, wantNames)
 	}
 }
 
@@ -240,7 +235,7 @@ func TestAllNilIndexPinnedList_TS03_11(t *testing.T) {
 // naming it.
 func TestAllDuplicateToolNameError_TS03_12(t *testing.T) {
 	root := t.TempDir()
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,11 +243,9 @@ func TestAllDuplicateToolNameError_TS03_12(t *testing.T) {
 	dup := core.Tool{Name: "search_files", Description: "dup"}
 	idx := &fakeIndex{tools: []core.Tool{dup}}
 
-	ts, err := All(Options{
-		Workspace: ws,
-		Index:     idx,
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
+	ts, err := For(ws, Options{
+		Index:   idx,
+		Symbols: SymbolOptions{},
 	})
 	if ts != nil {
 		t.Fatal("expected nil tool list on duplicate")
@@ -272,19 +265,17 @@ func TestWriteAndEditCallInvalidate_TS03_13(t *testing.T) {
 	// Create a file for editing.
 	mkSymFile(t, root, "sub/dir/a.txt", "hello world\n")
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx := &fakeIndex{}
-	ft := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-		Index:     idx,
-	}.withDefaults())
+	ft := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+		Index:   idx,
+	}.withDefaults(ws))
 
 	// --- write_file success ---
 	wt := ft.writeFile()
@@ -366,20 +357,18 @@ func TestWriteAndEditCallInvalidate_TS03_13(t *testing.T) {
 // string once per invocation whatever the outcome.
 func TestShellToolsCallInvalidate_TS03_14(t *testing.T) {
 	root := t.TempDir()
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	idx := &fakeIndex{}
 
-	// Use All() to get the real wired tools, so we test the actual wiring.
-	all, err := All(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-		Index:     idx,
+	// Use For() to get the real wired tools, so we test the actual wiring.
+	all, err := For(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+		Index:   idx,
 	})
 	if err != nil {
 		t.Fatal(err)

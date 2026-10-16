@@ -482,7 +482,7 @@
         "`make test` and `make lint` pass in every module in MODULES",
         "go vet shows no remaining reference to the removed tools identifiers"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {

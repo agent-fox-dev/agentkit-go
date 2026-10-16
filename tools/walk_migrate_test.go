@@ -12,18 +12,18 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// TS-01-56: tools contains exactly one directory-walk implementation.
-// Parses non-test Go sources of the tools package with go/parser and counts
-// calls to filepath.WalkDir, filepath.Walk and fs.WalkDir, expecting exactly
-// one such call inside walk.go.
-func TestToolsContainsExactlyOneWalkDirCall_TS0156(t *testing.T) {
+// TS-01-56: the repository contains exactly one directory-walk
+// implementation, and since spec 20 it is the workspace package's: tools
+// walks through workspace.Walk. Parses the non-test Go sources of tools and
+// workspace with go/parser and counts calls to filepath.WalkDir,
+// filepath.Walk and fs.WalkDir, expecting exactly one such call, inside
+// workspace/walk.go.
+func TestOnlyWorkspaceContainsAWalkDirCall_TS0156(t *testing.T) {
 	fset := token.NewFileSet()
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	type callInfo struct {
 		file string
@@ -31,49 +31,56 @@ func TestToolsContainsExactlyOneWalkDirCall_TS0156(t *testing.T) {
 	}
 	var calls []callInfo
 
-	for _, e := range entries {
-		name := e.Name()
-		// Only non-test Go source files
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		f, err := parser.ParseFile(fset, name, nil, 0)
+	for _, dir := range []string{".", "../workspace"} {
+		entries, err := os.ReadDir(dir)
 		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
+			t.Fatal(err)
 		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
+		for _, e := range entries {
+			name := e.Name()
+			// Only non-test Go source files
+			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			path := filepath.ToSlash(filepath.Join(dir, name))
+			f, err := parser.ParseFile(fset, path, nil, 0)
+			if err != nil {
+				t.Fatalf("parse %s: %v", path, err)
+			}
+			ast.Inspect(f, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				// Check for selector expressions like filepath.WalkDir, filepath.Walk, fs.WalkDir
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				ident, ok := sel.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				funcName := sel.Sel.Name
+				pkgName := ident.Name
+				if (pkgName == "filepath" && (funcName == "WalkDir" || funcName == "Walk")) ||
+					(pkgName == "fs" && funcName == "WalkDir") {
+					pos := fset.Position(call.Pos())
+					calls = append(calls, callInfo{file: pos.Filename, line: pos.Line})
+				}
 				return true
-			}
-			// Check for selector expressions like filepath.WalkDir, filepath.Walk, fs.WalkDir
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			ident, ok := sel.X.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			funcName := sel.Sel.Name
-			pkgName := ident.Name
-			if (pkgName == "filepath" && (funcName == "WalkDir" || funcName == "Walk")) ||
-				(pkgName == "fs" && funcName == "WalkDir") {
-				pos := fset.Position(call.Pos())
-				calls = append(calls, callInfo{file: pos.Filename, line: pos.Line})
-			}
-			return true
-		})
+			})
+		}
 	}
 
 	if len(calls) != 1 {
 		for _, c := range calls {
 			t.Logf("  WalkDir call at %s:%d", c.file, c.line)
 		}
-		t.Fatalf("expected exactly 1 filepath.WalkDir/Walk/fs.WalkDir call in non-test tools sources, got %d", len(calls))
+		t.Fatalf("expected exactly 1 filepath.WalkDir/Walk/fs.WalkDir call in non-test tools and workspace sources, got %d", len(calls))
 	}
-	if calls[0].file != "walk.go" {
-		t.Fatalf("the single WalkDir call should be in walk.go, but found in %s", calls[0].file)
+	if calls[0].file != "../workspace/walk.go" {
+		t.Fatalf("the single WalkDir call should be in workspace/walk.go, but found in %s", calls[0].file)
 	}
 }
 
@@ -96,7 +103,7 @@ func TestSearchAndCountWithoutWorkspace_TS0157(t *testing.T) {
 	}
 
 	// SearchIn
-	res2, err := SearchIn(ctx, root, SearchParams{Pattern: "needle"}, NoGlobalExcludes())
+	res2, err := SearchIn(ctx, root, SearchParams{Pattern: "needle"}, workspace.NoGlobalExcludes())
 	if err != nil {
 		t.Fatalf("SearchIn: %v", err)
 	}
@@ -140,11 +147,11 @@ func TestFindFilesReturnsDotPrefixedEntries_TS0158(t *testing.T) {
 // runFindFilesAny drives find_files with file_type=any.
 func runFindFilesAny(t *testing.T, dir, pattern string) []string {
 	t.Helper()
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := All(Options{Workspace: ws, Ignore: NoGlobalExcludes()})
+	all, err := For(ws, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,11 +182,11 @@ func TestFindFilesKeepsFiltersAndLimits_TS0159(t *testing.T) {
 	writeTestFile(t, dir, "b.txt", "")
 	writeTestFile(t, dir, "subdir/c.go", "")
 
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := All(Options{Workspace: ws, Ignore: NoGlobalExcludes()})
+	all, err := For(ws, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,19 +280,17 @@ func TestFindFilesMatchesWalkIncludeHidden_TS0160(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolvedDir := ws.Root
-
 	// Get find_files results (file_type=file, pattern=**)
 	findResult := runFindFiles(t, dir, "**")
 
 	// Get Walk results with IncludeHidden=true, collecting non-directory entries
 	ctx := context.Background()
 	var walkFiles []string
-	err = Walk(ctx, ws, resolvedDir, WalkOptions{Ignore: NoGlobalExcludes(), IncludeHidden: true}, func(rel string, d fs.DirEntry) error {
+	err = ws.Walk(ctx, "", workspace.WalkOptions{IncludeHidden: true}, func(rel string, d fs.DirEntry) error {
 		if !d.IsDir() {
 			walkFiles = append(walkFiles, rel)
 		}
@@ -336,7 +341,7 @@ func TestNativeSearchExcludesHiddenAndAppliesGlob_TS0161(t *testing.T) {
 	ctx := context.Background()
 
 	// Search with file_glob=*.go
-	res, err := SearchIn(ctx, dir, SearchParams{Pattern: "needle", FileGlob: "*.go"}, NoGlobalExcludes())
+	res, err := SearchIn(ctx, dir, SearchParams{Pattern: "needle", FileGlob: "*.go"}, workspace.NoGlobalExcludes())
 	if err != nil {
 		t.Fatalf("SearchIn: %v", err)
 	}
@@ -363,7 +368,7 @@ func TestNativeSearchExcludesHiddenAndAppliesGlob_TS0161(t *testing.T) {
 	}
 
 	// countCandidates with file_glob=*.go
-	n, err := countCandidates(ctx, dir, SearchParams{FileGlob: "*.go"}, NoGlobalExcludes())
+	n, err := countCandidates(ctx, dir, SearchParams{FileGlob: "*.go"}, workspace.NoGlobalExcludes())
 	if err != nil {
 		t.Fatalf("countCandidates: %v", err)
 	}
@@ -383,17 +388,15 @@ func TestWalkHiddenFalseMatchesSearchFiles_TS0162(t *testing.T) {
 	writeTestFile(t, dir, "sub/deep.go", "needle\n")
 	writeTestFile(t, dir, "ignored/skip.go", "needle\n")
 
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolvedDir := ws.Root
-
 	ctx := context.Background()
 
 	// Walk with IncludeHidden=false, collecting regular files
 	var walkRegular []string
-	err = Walk(ctx, ws, resolvedDir, WalkOptions{Ignore: NoGlobalExcludes(), IncludeHidden: false}, func(rel string, d fs.DirEntry) error {
+	err = ws.Walk(ctx, "", workspace.WalkOptions{IncludeHidden: false}, func(rel string, d fs.DirEntry) error {
 		if d.Type().IsRegular() {
 			walkRegular = append(walkRegular, rel)
 		}
@@ -404,7 +407,7 @@ func TestWalkHiddenFalseMatchesSearchFiles_TS0162(t *testing.T) {
 	}
 
 	// Search with a match-everything pattern to find all files searched
-	res, err := SearchIn(ctx, dir, SearchParams{Pattern: "."}, NoGlobalExcludes())
+	res, err := SearchIn(ctx, dir, SearchParams{Pattern: "."}, workspace.NoGlobalExcludes())
 	if err != nil {
 		t.Fatalf("SearchIn: %v", err)
 	}
@@ -439,11 +442,11 @@ func TestWalkHiddenFalseMatchesSearchFiles_TS0162(t *testing.T) {
 // to their expected values.
 func TestToolDescriptionsAndSchemasUnchanged_TS0163(t *testing.T) {
 	dir := t.TempDir()
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := All(Options{Workspace: ws, Ignore: NoGlobalExcludes()})
+	all, err := For(ws, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,13 +487,13 @@ func TestDefaultToolSetUnchanged_TS0168(t *testing.T) {
 		t.Fatalf("FileNavigationTools() changed.\ngot:  %v\nwant: %v", navTools, wantNav)
 	}
 
-	// Verify All() returns the pinned set
+	// Verify For() returns the pinned set
 	dir := t.TempDir()
-	ws, err := NewWorkspace(dir)
+	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := All(Options{Workspace: ws})
+	all, err := For(ws, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,6 +505,6 @@ func TestDefaultToolSetUnchanged_TS0168(t *testing.T) {
 		"find_files", "search_files", "file_outline", "find_symbol", "find_references",
 		"execute", "run_command"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("All() tool set changed.\ngot:  %v\nwant: %v", got, want)
+		t.Fatalf("For() tool set changed.\ngot:  %v\nwant: %v", got, want)
 	}
 }

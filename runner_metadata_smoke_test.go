@@ -77,7 +77,7 @@ func ts0461Tools(t *testing.T) []core.Tool {
 	t.Helper()
 	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
-		t.Fatalf("NewWorkspace: %v", err)
+		t.Fatalf("workspace.Open: %v", err)
 	}
 	allTools, err := tools.For(ws, tools.Options{})
 	if err != nil {

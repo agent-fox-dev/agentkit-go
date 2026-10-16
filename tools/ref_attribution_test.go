@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-05-28 (unit): Attribution engine renders signature or '<Kind> <Name>' for declarations and '<file>' for top level
@@ -201,12 +202,12 @@ func TestAttribution_WiredIntoReferences_TS_05_25(t *testing.T) {
 	writeFile(t, root, "go.mod", "module example.com/m\n\ngo 1.22\n")
 	writeFile(t, root, "lib.go", "package m\n\nfunc Target() int { return 1 }\n\nfunc Caller() int {\n\treturn Target()\n}\n")
 	writeFile(t, root, "calc.py", "def calculate_tax(x):\n    return x\n\n\nclass Shop:\n    def checkout(self, x):\n        return calculate_tax(x)\n")
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	goRes, err := ws.References(context.Background(), outline.Decl{Kind: outline.KindFunc, Name: "Target", StartLine: 3}, ReferenceOptions{IncludeTests: true})
+	goRes, err := References(context.Background(), ws, outline.Decl{Kind: outline.KindFunc, Name: "Target", StartLine: 3}, ReferenceOptions{IncludeTests: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +227,7 @@ func TestAttribution_WiredIntoReferences_TS_05_25(t *testing.T) {
 		t.Log("no Python outline backend in this build; Python attribution not checked")
 		return
 	}
-	pyRes, err := ws.References(context.Background(), outline.Decl{Kind: outline.KindFunc, Name: "calculate_tax", StartLine: 1}, ReferenceOptions{IncludeTests: true})
+	pyRes, err := References(context.Background(), ws, outline.Decl{Kind: outline.KindFunc, Name: "calculate_tax", StartLine: 1}, ReferenceOptions{IncludeTests: true})
 	if err != nil {
 		t.Fatal(err)
 	}

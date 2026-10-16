@@ -47,7 +47,7 @@ func TestSmokeFirstSymSearch_TS03_69(t *testing.T) {
 	}
 	defer idx.Close()
 
-	// Wire through tools.All with Options.Index.
+	// Wire through tools.For with Options.Index.
 	allTools, err := tools.For(ws, tools.Options{
 		Symbols: tools.SymbolOptions{},
 		Index:   idx,
@@ -202,7 +202,7 @@ func TestSmokeEditFileFreshness_TS03_70(t *testing.T) {
 	}
 	defer idx.Close()
 
-	// Wire real tools through tools.All.
+	// Wire real tools through tools.For.
 	allTools, err := tools.For(ws, tools.Options{
 		Symbols: tools.SymbolOptions{},
 		Index:   idx,
@@ -312,7 +312,7 @@ func TestSmokeShellDeleteFreshness_TS03_71(t *testing.T) {
 	}
 	defer idx.Close()
 
-	// Wire real tools through tools.All.
+	// Wire real tools through tools.For.
 	allTools, err := tools.For(ws, tools.Options{
 		Env:     os.Environ(),
 		Symbols: tools.SymbolOptions{},

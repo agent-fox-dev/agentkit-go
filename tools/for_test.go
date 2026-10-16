@@ -137,7 +137,7 @@ func TestFileToolsRefuseAPathTheWorkspaceRefuses_TS20_14(t *testing.T) {
 }
 
 // TS-20-33: tools.For returns the eleven built-ins in order with definitions
-// byte-identical to what tools.All returned before this change (recorded in
+// byte-identical to what tools.For returned before this change (recorded in
 // testdata/definitions.json).
 func TestForReturnsTheBuiltinsUnchanged_TS20_33(t *testing.T) {
 	ws := openForDir(t, t.TempDir())
@@ -156,7 +156,7 @@ func TestForReturnsTheBuiltinsUnchanged_TS20_33(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := definitionsOf(t, ts); string(got) != string(want) {
-		t.Errorf("the definitions differ from the ones tools.All returned before the change:\n got  %s\n want %s", got, want)
+		t.Errorf("the definitions differ from the ones tools.For returned before the change:\n got  %s\n want %s", got, want)
 	}
 }
 
@@ -187,7 +187,7 @@ func TestForAppendsIndexTools_TS20_35(t *testing.T) {
 	if ts != nil {
 		t.Errorf("a duplicate name returned %v tools, want none", namesOf(ts))
 	}
-	// The text recorded from tools.All before the change.
+	// The text recorded from tools.For before the change.
 	const want = `tools: index tool "read_file" duplicates a built-in tool name`
 	if err == nil || err.Error() != want {
 		t.Errorf("a duplicate name: err = %v, want %q", err, want)

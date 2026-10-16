@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // ------------------------------------------------------------------ TS-04-30
@@ -85,18 +86,16 @@ func ts0428Setup(t *testing.T) ([]core.Tool, func(string) core.Tool, string, int
 
 	t.Setenv("AGENTKIT_TEST_API_KEY", "should-be-stripped")
 
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	opts := Options{
-		Workspace: ws,
-		SpillDir:  spillDir,
-		Env:       []string{"PATH=" + os.Getenv("PATH"), "MARK04=1"},
-		Ignore:    NoGlobalExcludes(),
+		SpillDir: spillDir,
+		Env:      []string{"PATH=" + os.Getenv("PATH"), "MARK04=1"},
 	}
 
-	all, err := All(opts)
+	all, err := For(ws, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,16 +229,14 @@ func TestTS_04_29_ShellToolStdinSeesEOFAtOnce(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	opts := Options{
-		Workspace: ws,
-		Env:       []string{"PATH=" + os.Getenv("PATH")},
-		Ignore:    NoGlobalExcludes(),
+		Env: []string{"PATH=" + os.Getenv("PATH")},
 	}
-	all, err := All(opts)
+	all, err := For(ws, opts)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,11 +15,12 @@ import (
 	"strings"
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // workspaceImporter resolves imports within a workspace.
 type workspaceImporter struct {
-	ws          *Workspace
+	ws          *workspace.Workspace
 	modulePath  string
 	fset        *token.FileSet
 	imported    map[string]*types.Package
@@ -44,9 +45,9 @@ func readModulePath(root string) string {
 
 // newWorkspaceImporter creates a workspace-local Go importer. An empty
 // modulePath is read from the workspace's go.mod.
-func newWorkspaceImporter(ws *Workspace, modulePath string) *workspaceImporter {
+func newWorkspaceImporter(ws *workspace.Workspace, modulePath string) *workspaceImporter {
 	if modulePath == "" {
-		modulePath = readModulePath(ws.Root)
+		modulePath = readModulePath(ws.Root())
 	}
 	return &workspaceImporter{
 		ws:          ws,
@@ -86,14 +87,14 @@ func (imp *workspaceImporter) Import(path string) (*types.Package, error) {
 		}
 	}
 	if !isWorkspace {
-		if fi, err := os.Stat(filepath.Join(imp.ws.Root, path)); err == nil && fi.IsDir() {
+		if fi, err := os.Stat(filepath.Join(imp.ws.Root(), path)); err == nil && fi.IsDir() {
 			relDir = path
 			isWorkspace = true
 		}
 	}
 
 	if isWorkspace {
-		files, err := imp.parseDirFiles(filepath.Join(imp.ws.Root, relDir), true)
+		files, err := imp.parseDirFiles(filepath.Join(imp.ws.Root(), relDir), true)
 		if err == nil && len(files) > 0 {
 			info := newTypesInfo()
 			if pkg, _ := makeTypesConfig(imp).Check(path, imp.fset, files, info); pkg != nil {
@@ -111,7 +112,10 @@ func (imp *workspaceImporter) Import(path string) (*types.Package, error) {
 	return pkg, nil
 }
 
-// parseDirFiles parses .go files in dir. If nonTestOnly is true, _test.go files are excluded.
+// parseDirFiles parses .go files in dir, except the ones the workspace's ignore
+// rules exclude: the walk that found dir only says it holds Go files, and a
+// directory that is not ignored can hold files that are. If nonTestOnly is
+// true, _test.go files are excluded.
 func (imp *workspaceImporter) parseDirFiles(dir string, nonTestOnly bool) ([]*ast.File, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -126,6 +130,9 @@ func (imp *workspaceImporter) parseDirFiles(dir string, nonTestOnly bool) ([]*as
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
+		if imp.ws.Ignored(imp.ws.Rel(path), false) {
+			continue
+		}
 		if cached, ok := imp.parsedFiles[path]; ok {
 			files = append(files, cached)
 			continue
@@ -160,7 +167,7 @@ func checkPackage(imp *workspaceImporter, pkgPath string) (*types.Package, error
 		}
 	}
 
-	files, err := imp.parseDirFiles(filepath.Join(imp.ws.Root, relDir), false)
+	files, err := imp.parseDirFiles(filepath.Join(imp.ws.Root(), relDir), false)
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +200,7 @@ func makeTypesConfig(imp *workspaceImporter) *types.Config {
 
 // loadGoWorkspace parses and type-checks every directory of ws that holds
 // Go files, until budget runs out or ctx ends.
-func loadGoWorkspace(ctx context.Context, ws *Workspace, budget *refBudget) *workspaceImporter {
+func loadGoWorkspace(ctx context.Context, ws *workspace.Workspace, budget *refBudget) *workspaceImporter {
 	imp := newWorkspaceImporter(ws, "")
 	imp.load(ctx, budget)
 	return imp
@@ -206,12 +213,12 @@ func loadGoWorkspace(ctx context.Context, ws *Workspace, budget *refBudget) *wor
 func (imp *workspaceImporter) load(ctx context.Context, budget *refBudget) {
 	ws := imp.ws
 	dirs := make(map[string]bool)
-	_ = Walk(ctx, ws, ws.Root, WalkOptions{}, func(rel string, d fs.DirEntry) error {
+	_ = ws.Walk(ctx, "", workspace.WalkOptions{}, func(rel string, d fs.DirEntry) error {
 		if !d.IsDir() && strings.HasSuffix(d.Name(), ".go") {
 			if !budget.take() {
 				return filepath.SkipAll
 			}
-			dirs[filepath.Dir(filepath.Join(ws.Root, filepath.FromSlash(rel)))] = true
+			dirs[filepath.Dir(filepath.Join(ws.Root(), filepath.FromSlash(rel)))] = true
 		}
 		return nil
 	})
@@ -219,7 +226,7 @@ func (imp *workspaceImporter) load(ctx context.Context, budget *refBudget) {
 		if ctx.Err() != nil || budget.expired() {
 			return
 		}
-		relDir, err := filepath.Rel(ws.Root, dir)
+		relDir, err := filepath.Rel(ws.Root(), dir)
 		if err != nil {
 			relDir = dir
 		}
@@ -307,7 +314,7 @@ func isReceiverMatching(obj types.Object, container string) bool {
 func (imp *workspaceImporter) findTargetObject(target outline.Decl, targetPath string) types.Object {
 	var wantFile string
 	if targetPath != "" {
-		wantFile = filepath.Join(imp.ws.Root, filepath.FromSlash(targetPath))
+		wantFile = filepath.Join(imp.ws.Root(), filepath.FromSlash(targetPath))
 	}
 	var best types.Object
 	var bestPos token.Position
@@ -427,7 +434,7 @@ func resolveGoReferences(imp *workspaceImporter, target outline.Decl, targetPath
 	var sites []ReferenceSite
 	sources := make(map[string][]string)
 	for filePath, f := range imp.parsedFiles {
-		relPath, err := filepath.Rel(imp.ws.Root, filePath)
+		relPath, err := filepath.Rel(imp.ws.Root(), filePath)
 		if err != nil {
 			relPath = filePath
 		}

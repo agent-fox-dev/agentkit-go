@@ -11,6 +11,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // mkOutlineFile creates a file in root with the given relative path and content.
@@ -28,16 +29,14 @@ func mkOutlineFile(t *testing.T, root, rel, content string) {
 // makeOutlineTool builds a file_outline tool's Execute function from a workspace root.
 func makeOutlineTool(t *testing.T, root string) func(ctx context.Context, in json.RawMessage) core.ToolResult {
 	t.Helper()
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fs := newFileTools(Options{
-		Workspace: ws,
-		Env:       os.Environ(),
-		Ignore:    NoGlobalExcludes(),
-		Symbols:   SymbolOptions{},
-	}.withDefaults())
+	fs := newFileTools(ws, Options{
+		Env:     os.Environ(),
+		Symbols: SymbolOptions{},
+	}.withDefaults(ws))
 	tl := fs.fileOutlineTool()
 	return tl.Execute
 }

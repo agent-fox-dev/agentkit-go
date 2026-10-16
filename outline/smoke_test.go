@@ -240,7 +240,7 @@ func TestWalkAndOutlineMatchesSearchFiles_TS_01_75(t *testing.T) {
 	}
 
 	// Search with a match-everything pattern.
-	res, err := tools.SearchIn(ctx, resolvedRoot, tools.SearchParams{Pattern: "."}, tools.NoGlobalExcludes())
+	res, err := tools.SearchIn(ctx, resolvedRoot, tools.SearchParams{Pattern: "."}, workspace.NoGlobalExcludes())
 	if err != nil {
 		t.Fatalf("SearchIn: %v", err)
 	}

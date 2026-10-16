@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // renderEnclosingLabel renders the signature or '<Kind> <Name>' for a declaration,
@@ -83,8 +84,8 @@ func attributeSites(sites []ReferenceSite, outlineOf func(rel string) []outline.
 
 // outlineDecls outlines the workspace file rel, returning nil when it
 // cannot be outlined.
-func outlineDecls(ctx context.Context, ws *Workspace, rel string) []outline.Decl {
-	f, err := outline.Outline(ctx, filepath.Join(ws.Root, filepath.FromSlash(rel)), nil, outline.Options{Root: ws.Root})
+func outlineDecls(ctx context.Context, ws *workspace.Workspace, rel string) []outline.Decl {
+	f, err := outline.Outline(ctx, filepath.Join(ws.Root(), filepath.FromSlash(rel)), nil, outline.Options{Root: ws.Root()})
 	if err != nil {
 		return nil
 	}

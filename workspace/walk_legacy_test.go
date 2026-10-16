@@ -1,4 +1,4 @@
-package tools
+package workspace
 
 import (
 	"context"
@@ -281,73 +281,6 @@ func TestWalkSkipDirSkipAllError_TS0153(t *testing.T) {
 	}
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("sentinel: errors.Is failed")
-	}
-}
-
-// TS-01-54: Walk refuses a nil workspace, a relative root or a root outside
-// the workspace with ErrPathNotAllowed before any callback.
-func TestWalkRefusesInvalidRoots_TS0154(t *testing.T) {
-	dir := t.TempDir()
-	ws, err := NewWorkspace(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Use the resolved root so symlinks (e.g. /var -> /private/var on macOS)
-	// don't cause a mismatch.
-	resolvedDir := ws.Root
-
-	outside := t.TempDir() // a different temp dir, outside ws
-	ctx := context.Background()
-	var calls int
-	cb := func(rel string, d fs.DirEntry) error {
-		calls++
-		return nil
-	}
-
-	// nil workspace
-	calls = 0
-	err = Walk(ctx, nil, resolvedDir, WalkOptions{}, cb)
-	if !errors.Is(err, ErrPathNotAllowed) {
-		t.Fatalf("nil ws: want ErrPathNotAllowed, got %v", err)
-	}
-	if calls != 0 {
-		t.Fatalf("nil ws: callback should not be called, got %d calls", calls)
-	}
-
-	// relative root
-	calls = 0
-	err = Walk(ctx, ws, "relative/path", WalkOptions{}, cb)
-	if !errors.Is(err, ErrPathNotAllowed) {
-		t.Fatalf("relative root: want ErrPathNotAllowed, got %v", err)
-	}
-	if calls != 0 {
-		t.Fatalf("relative root: callback should not be called, got %d calls", calls)
-	}
-
-	// root outside workspace
-	calls = 0
-	// Resolve outside through symlinks too, so it's a valid absolute path
-	outsideResolved, _ := filepath.EvalSymlinks(outside)
-	if outsideResolved == "" {
-		outsideResolved = outside
-	}
-	err = Walk(ctx, ws, outsideResolved, WalkOptions{}, cb)
-	if !errors.Is(err, ErrPathNotAllowed) {
-		t.Fatalf("outside root: want ErrPathNotAllowed, got %v", err)
-	}
-	if calls != 0 {
-		t.Fatalf("outside root: callback should not be called, got %d calls", calls)
-	}
-
-	// Valid root inside workspace: should succeed
-	writeTestFile(t, resolvedDir, "hello.txt", "hi")
-	calls = 0
-	err = Walk(ctx, ws, resolvedDir, WalkOptions{Ignore: NoGlobalExcludes()}, cb)
-	if err != nil {
-		t.Fatalf("valid root: want nil, got %v", err)
-	}
-	if calls == 0 {
-		t.Fatal("valid root: expected at least one callback")
 	}
 }
 

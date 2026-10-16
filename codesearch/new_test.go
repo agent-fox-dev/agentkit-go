@@ -32,11 +32,11 @@ func TestNewFailureYieldsANilInterface(t *testing.T) {
 	}
 	all, err := tools.For(ws, tools.Options{Index: idx})
 	if err != nil {
-		t.Fatalf("tools.All with the failed New's result: %v", err)
+		t.Fatalf("tools.For with the failed New's result: %v", err)
 	}
 	for _, tl := range all {
 		if tl.Name == "code_search" {
-			t.Error("tools.All added code_search for an index that failed to construct")
+			t.Error("tools.For added code_search for an index that failed to construct")
 		}
 	}
 }

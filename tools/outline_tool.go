@@ -10,6 +10,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/outline"
 	"github.com/agent-fox-dev/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // declOutputSchema is outline.Decl as it marshals into a tool's Data.
@@ -92,7 +93,7 @@ func (f *fileTools) fileOutlineTool() core.Tool {
 				}
 			}
 
-			ofile, err := outline.Outline(ctx, abs, src, outline.Options{Root: f.ws.Root})
+			ofile, err := outline.Outline(ctx, abs, src, outline.Options{Root: f.ws.Root()})
 			if err != nil {
 				// A context cancellation during outline is aborted.
 				if ctx.Err() != nil {
@@ -108,7 +109,7 @@ func (f *fileTools) fileOutlineTool() core.Tool {
 }
 
 // renderOutlineResult builds the ToolResult for file_outline.
-func renderOutlineResult(ws *Workspace, abs string, ofile outline.File, includePrivate bool, src []byte, size int64) core.ToolResult {
+func renderOutlineResult(ws *workspace.Workspace, abs string, ofile outline.File, includePrivate bool, src []byte, size int64) core.ToolResult {
 	rel := ws.Rel(abs)
 	shown := filepath.ToSlash(rel)
 

@@ -14,21 +14,22 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/guard"
 	"github.com/agent-fox-dev/agentkit-go/prompt"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// TS-02-54: All() and FileNavigationTools() return the pinned names in order
+// TS-02-54: For() and FileNavigationTools() return the pinned names in order
 func TestAllAndFileNavigationToolsPinnedNames_TS02_54(t *testing.T) {
 	root := t.TempDir()
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// All() must return exactly 12 tools in this order.
+	// For() must return exactly 12 tools in this order.
 	wantAll := []string{
 		"read_file", "write_file", "edit_file",
 		"list_files", "find_files", "search_files",
@@ -40,7 +41,7 @@ func TestAllAndFileNavigationToolsPinnedNames_TS02_54(t *testing.T) {
 		gotAll = append(gotAll, tl.Name)
 	}
 	if strings.Join(gotAll, ",") != strings.Join(wantAll, ",") {
-		t.Fatalf("All() names:\ngot:  %v\nwant: %v", gotAll, wantAll)
+		t.Fatalf("For() names:\ngot:  %v\nwant: %v", gotAll, wantAll)
 	}
 
 	// FileNavigationTools() must return exactly 6 names.
@@ -54,11 +55,11 @@ func TestAllAndFileNavigationToolsPinnedNames_TS02_54(t *testing.T) {
 // TS-02-56: file_outline and find_symbol metadata: Builtin, Parallel, read-only, pinned guidelines
 func TestToolMetadata_TS02_56(t *testing.T) {
 	root := t.TempDir()
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func TestToolMetadata_TS02_56(t *testing.T) {
 	// file_outline checks.
 	fo, ok := toolMap["file_outline"]
 	if !ok {
-		t.Fatal("file_outline not found in All()")
+		t.Fatal("file_outline not found in For()")
 	}
 	if !fo.Builtin {
 		t.Error("file_outline must be Builtin")
@@ -91,7 +92,7 @@ func TestToolMetadata_TS02_56(t *testing.T) {
 	// find_symbol checks.
 	fs, ok := toolMap["find_symbol"]
 	if !ok {
-		t.Fatal("find_symbol not found in All()")
+		t.Fatal("find_symbol not found in For()")
 	}
 	if !fs.Builtin {
 		t.Error("find_symbol must be Builtin")
@@ -118,7 +119,7 @@ func TestToolMetadata_TS02_56(t *testing.T) {
 	}
 }
 
-// TS-02-31: All() and file_outline start no walk or subprocess
+// TS-02-31: For() and file_outline start no walk or subprocess
 func TestAllAndFileOutlineNoWalkOrSubprocess_TS02_31(t *testing.T) {
 	root := t.TempDir()
 	// Write a Go file so file_outline has something to outline.
@@ -126,14 +127,13 @@ func TestAllAndFileOutlineNoWalkOrSubprocess_TS02_31(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// All() should not start any walk or subprocess.
-	all, err := tools.All(tools.Options{
-		Workspace: ws,
-		Symbols:   tools.SymbolOptions{},
+	// For() should not start any walk or subprocess.
+	all, err := tools.For(ws, tools.Options{
+		Symbols: tools.SymbolOptions{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -148,7 +148,7 @@ func TestAllAndFileOutlineNoWalkOrSubprocess_TS02_31(t *testing.T) {
 		}
 	}
 	if foTool.Name == "" {
-		t.Fatal("file_outline not found in All()")
+		t.Fatal("file_outline not found in For()")
 	}
 
 	// Call file_outline — it reads from disk, not from the symbol table.
@@ -170,7 +170,7 @@ func TestAllAndFileOutlineNoWalkOrSubprocess_TS02_31(t *testing.T) {
 		}
 	}
 	if fsTool.Name == "" {
-		t.Fatal("find_symbol not found in All()")
+		t.Fatal("find_symbol not found in For()")
 	}
 
 	// Now call find_symbol — this should trigger the first build.
@@ -189,11 +189,11 @@ func TestRootModuleStdlibOnly_TS02_58(t *testing.T) {
 	// policy enforcement is done by internal/policy/deps_test.go which
 	// is run by `make test`.
 	root := t.TempDir()
-	ws, err := tools.NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,11 +221,11 @@ func TestRootModuleStdlibOnly_TS02_58(t *testing.T) {
 // 05-REQ-10.1 was lifted by PRD 09 D2.)
 func TestPolicyAndCrossTarget_TS05_51(t *testing.T) {
 	root := filepath.Clean("..")
-	ws, err := tools.NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestPolicyAndCrossTarget_TS05_51(t *testing.T) {
 		}
 	}
 	if !foundFR {
-		t.Fatalf("tools.All() must include find_references")
+		t.Fatalf("tools.For() must include find_references")
 	}
 
 	// Verify cross-target compilation for the matrix of NFR-COMPAT-06.
@@ -265,11 +265,11 @@ func TestPolicyAndCrossTarget_TS05_51(t *testing.T) {
 // TS-05-52 (unit): System prompt generation includes find_references guideline matching golden outputs.
 // Verifies 05-REQ-10.2.
 func TestSystemPromptFindReferencesGuideline_TS05_52(t *testing.T) {
-	ws, err := tools.NewWorkspace(t.TempDir())
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := tools.All(tools.Options{Workspace: ws})
+	all, err := tools.For(ws, tools.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

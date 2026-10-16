@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // TS-05-30: Reference ranker sorts sites deterministically by confidence tier, test status, path, line, and column.
@@ -175,7 +177,7 @@ func TestRefRanker_TS05_33(t *testing.T) {
 	writeFile(t, root, "b.py", "calc_total(1)\n")
 	writeFile(t, root, "c.py", "calc_total(2)\n")
 	writeFile(t, root, "d.py", "calc_total(3)\n")
-	ws, err := NewWorkspace(root)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +193,7 @@ func TestRefRanker_TS05_33(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Given: a find_references tool whose reference pass is bounded
-			ft := newFileTools(Options{Workspace: ws, Symbols: tc.opts}.withDefaults())
+			ft := newFileTools(ws, Options{Symbols: tc.opts}.withDefaults(ws))
 
 			// When: the bound triggers during candidate processing
 			res := ft.findReferencesTool().Execute(context.Background(), json.RawMessage(`{"name":"calc_total"}`))
@@ -218,7 +220,7 @@ func TestRefRanker_TS05_33(t *testing.T) {
 	}
 
 	// An unbounded pass over the same tree is complete.
-	ft := newFileTools(Options{Workspace: ws}.withDefaults())
+	ft := newFileTools(ws, Options{}.withDefaults(ws))
 	res := ft.findReferencesTool().Execute(context.Background(), json.RawMessage(`{"name":"calc_total"}`))
 	if data := res.Data["result"].(ReferenceResult); data.Partial || len(data.Sites) < 4 {
 		t.Fatalf("unbounded pass: Partial=%v sites=%d, want false and at least 4", data.Partial, len(data.Sites))
