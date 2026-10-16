@@ -9,8 +9,10 @@ import (
 )
 
 // preSpec17Guard is guard's exported API before spec 17, which changes only
-// its doc comments.
+// its doc comments, plus Allow, which spec 22 added on purpose
+// (docs/errata/17_sandbox_podman.md).
 var preSpec17Guard = []string{
+	"func Allow(programs ...string) core.BeforeToolCall",
 	"func AllowAll(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision",
 	"func Check(argv []string, o Options) Decision",
 	"func IsShellTool(name string) bool",

@@ -100,7 +100,7 @@
       "done_when": [
         "`go test ./guard/...` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
