@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"go/ast"
@@ -545,6 +546,37 @@ func TestMCPHandlerAnswersThroughRunnerCall_TS21_54(t *testing.T) {
 		}
 		if text.Text != want.LLMText() || got.IsError != !want.OK {
 			t.Errorf("%s %s: MCP says %q (error %v), the runner says %q (ok %v)", c.name, c.input, text.Text, got.IsError, want.LLMText(), want.OK)
+		}
+	}
+}
+
+// TS-21-60 (smoke, 21-PATH-4): the harness example runs offline through a
+// runner and prints its success line. The program is built and run, so the
+// runner, code mode, the MCP server and the scripted provider are the real
+// ones: the scripted harness's tool calls arrive over MCP and are answered by
+// Runner.Call, and the counts the program prints come from the toolset's hooks.
+func TestSmokeHarnessRunsOfflineThroughARunner_TS21_60(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in specr is a shell script")
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	cmd := exec.Command("go", "run", ".")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go run: %v\n%s\n%s", err, out, stderr.String())
+	}
+	if !strings.Contains(string(out), "Harness example completed successfully") {
+		t.Fatalf("output:\n%s", out)
+	}
+	m := regexp.MustCompile(`; (\d+) tool calls, (\d+) blocked`).FindStringSubmatch(string(out))
+	if m == nil || m[1] == "0" || m[2] != "0" {
+		t.Errorf("the printed counts are %v; want tool calls from the hooks and none blocked:\n%s", m, out)
+	}
+	for _, want := range []string{"run      code_mode script=", "    run      write_file"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("the log lacks %q: the MCP-served call and its nested calls ran through the runner's hooks:\n%s", want, stderr.String())
 		}
 	}
 }

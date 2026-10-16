@@ -195,7 +195,7 @@ func (a *Agent) Usage() core.Usage {
 // (07-REQ-2.2). A check that a run is read-only, say, has to look at this set
 // rather than at the top-level tools. It is Runner().Reachable().
 func (a *Agent) ReachableTools() []core.Tool {
-	return a.runner.Reachable()
+	return a.Runner().Reachable()
 }
 
 // Runner returns the agent's runner: the same pointer on every call, safe to
