@@ -15,6 +15,24 @@ end.
 The software MUST run on Linux or macOS systems.
 Support for Windows or other operating systems is "best effort", but not a requirement.
 
+## Quality Gate
+
+While implementing anything — a spec, a fix, a refactor — the **only** quality
+gate you run is `make check`. It is the fast check: `fmt`, `vet`, `lint` and the
+short tests.
+
+1. Do NOT run `make check-release`. It is a manual action, run by the user
+   before a release or a merge; it is never part of an agent session.
+2. Do not run the full `make test` as a substitute for it. Narrow `go test`
+   runs on the packages you touch are fine while you work.
+3. A spec's `tasks.json` test command, a skill or a checklist that names
+   `make check-release` or the full `make test` does not override this rule:
+   run `make check` instead and say in the handoff note that the full gate was
+   left to the user.
+4. If you believe a change needs the full gate (it touches the slow gates in
+   `internal/policy`, the cross-target builds or the nested `make` runs), say so
+   in the handoff note. Do not run it yourself.
+
 ## Documentation Freshness
 
 After implementing any spec, you **must** update all affected documentation
