@@ -1,0 +1,236 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "24",
+  "spec_name": "embedder_contract_docs",
+  "schema_version": 2,
+  "introduction": "Spec 24 closes PRD 12's embedder-contract work. The exported-API change detector in internal/policy is widened so its golden covers every package PRD 12 changed or added. The record is then brought in line with the code: the API-freeze erratum, the README consumer contract, the architecture data flow, a sweep for stale identifiers, and a re-measurement of the examples. No exported identifier or behaviour changes. Only the golden coverage and the module checks are tested. The documentation work (PRD R2–R7) is done as task steps and checked in review, because the steering forbids tests of document content.",
+  "glossary": {
+    "MODULES": "The Makefile variable listing every Go module that make check, make test, make vet and make lint run in.",
+    "apiPackages": "The ordered list of package directories, relative to the repository root, declared in internal/policy/layout_test.go. The exported-API golden is built from it.",
+    "change detector": "The role the golden plays after spec 20 retired the API freeze. A change to an exported API fails TS-13-67 until the golden is regenerated with AGENTKIT_UPDATE_API_GOLDEN=1 and committed.",
+    "existing sections": "The golden sections for ., core, tools, codemode and workspace as spec 23 left them.",
+    "exported-API golden": "internal/policy/testdata/exported-api.golden: one `== <pkg>` header per apiPackages entry, followed by that package's sorted, deduplicated exported declaration lines as printed by exportedAPI.",
+    "exportedAPI": "The test helper exportedAPI(t, dir) in internal/policy. It parses every non-test .go file in a directory, whatever its build tags, and returns the package's exported declarations as text lines.",
+    "golden comparison tests": "TS-13-67, TS-14-44, TS-15-42 and TS-17-61. Each compares the exported API of every apiPackages entry against the same golden.",
+    "new sections": "The golden sections for guard, provider/faux, sandbox, codesearch and mcpserve, which this spec appends."
+  },
+  "requirements": [
+    {
+      "id": "24-REQ-1",
+      "title": "apiPackages lists every package PRD 12 changed or added",
+      "rationale": "The change detector must cover each package whose exported surface PRD 12 changed or added, and must keep the existing sections where they are.",
+      "criteria": [
+        {
+          "id": "24-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "internal/policy test package",
+          "action": "declare apiPackages as exactly the ten entries \".\", \"core\", \"tools\", \"codemode\", \"workspace\", \"guard\", \"provider/faux\", \"sandbox\", \"codesearch\", \"mcpserve\", in that order",
+          "contract": "TS-24-1 compares apiPackages element by element with this list and passes"
+        },
+        {
+          "id": "24-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "exported-API golden",
+          "action": "contain exactly one `== <pkg>` header for each apiPackages entry, in apiPackages order, with no header for any other package",
+          "contract": "the sequence of header lines in internal/policy/testdata/exported-api.golden equals apiPackages"
+        },
+        {
+          "id": "24-REQ-1.3",
+          "pattern": "event_driven",
+          "condition": "go test ./internal/policy runs with AGENTKIT_UPDATE_API_GOLDEN unset",
+          "system": "golden comparison tests",
+          "action": "compare the exported API of all ten apiPackages entries with the committed golden and pass without skipping",
+          "contract": "TS-13-67, TS-14-44, TS-15-42 and TS-17-61 each report PASS"
+        },
+        {
+          "id": "24-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "a directory listed in apiPackages does not exist in the repository",
+          "system": "TS-13-67",
+          "action": "fail the test instead of skipping the entry",
+          "contract": "the test reports FAIL with an error message that contains the missing directory's path"
+        },
+        {
+          "id": "24-REQ-1.5",
+          "pattern": "ubiquitous",
+          "system": "TS-17-61",
+          "action": "keep its separate preSpec17Guard list unchanged from spec 22 and keep comparing guard's exported lines against it, in addition to the golden comparison over apiPackages",
+          "contract": "preSpec17Guard holds the same entries as after spec 22, and TS-17-61 passes"
+        }
+      ]
+    },
+    {
+      "id": "24-REQ-2",
+      "title": "The new golden sections record the PRD 12 additions",
+      "rationale": "Each new section has to show the identifiers that made the package join the golden, as exportedAPI prints them.",
+      "criteria": [
+        {
+          "id": "24-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "exportedAPI is called on the guard directory",
+          "system": "exportedAPI",
+          "action": "return a non-empty list that contains a line beginning `func Allow(`",
+          "contract": "TS-24-2 finds the line in the returned []string"
+        },
+        {
+          "id": "24-REQ-2.2",
+          "pattern": "event_driven",
+          "condition": "exportedAPI is called on the provider/faux directory",
+          "system": "exportedAPI",
+          "action": "return a non-empty list that contains a line beginning `func ToolCall(` and a line beginning `func Text(`",
+          "contract": "TS-24-2 finds both lines in the returned []string"
+        },
+        {
+          "id": "24-REQ-2.3",
+          "pattern": "event_driven",
+          "condition": "exportedAPI is called on the sandbox directory",
+          "system": "exportedAPI",
+          "action": "return a non-empty list that contains a line beginning `func Open(`",
+          "contract": "TS-24-2 finds the line in the returned []string"
+        },
+        {
+          "id": "24-REQ-2.4",
+          "pattern": "event_driven",
+          "condition": "exportedAPI is called on the codesearch directory",
+          "system": "exportedAPI",
+          "action": "return a non-empty list that contains a `func New(` line whose parameter list includes `*workspace.Workspace`, and that keeps the Windows-stub declarations from stub_windows.go as separate lines beside the real ones",
+          "contract": "TS-24-2 finds a `func New(` line containing `*workspace.Workspace`; the codesearch golden section lists the declarations exactly as exportedAPI prints them, with no normalization of receiver names"
+        },
+        {
+          "id": "24-REQ-2.5",
+          "pattern": "event_driven",
+          "condition": "exportedAPI is called on the mcpserve directory",
+          "system": "exportedAPI",
+          "action": "return a non-empty list that contains a line beginning `func New(` and a line beginning `type Endpoint`",
+          "contract": "TS-24-2 finds both lines in the returned []string"
+        },
+        {
+          "id": "24-REQ-2.6",
+          "pattern": "unwanted",
+          "condition": "exportedAPI returns an empty list or lacks a required line for any of guard, provider/faux, sandbox, codesearch or mcpserve",
+          "system": "TS-24-2",
+          "action": "fail and name the package and the missing line prefix",
+          "contract": "the test reports FAIL with a message that contains the package directory and the expected prefix"
+        }
+      ]
+    },
+    {
+      "id": "24-REQ-3",
+      "title": "No exported identifier or behaviour changes",
+      "rationale": "The spec only widens the detector. If the existing sections stay unchanged, that is the evidence that nothing exported moved.",
+      "criteria": [
+        {
+          "id": "24-REQ-3.1",
+          "pattern": "ubiquitous",
+          "system": "exported-API golden",
+          "action": "keep the five existing sections (., core, tools, codemode, workspace) byte-identical to the sections spec 23 committed, so that the regeneration diff contains only the five appended new sections",
+          "contract": "the golden diff against the spec 23 commit contains no removed or changed line and only added lines after the workspace section"
+        },
+        {
+          "id": "24-REQ-3.2",
+          "pattern": "ubiquitous",
+          "system": "exportedAPI",
+          "action": "for any apiPackages entry, produce the same sorted, deduplicated lines on repeated calls over an unchanged tree, so that regenerating the golden twice in a row yields byte-identical files",
+          "contract": "two consecutive runs of AGENTKIT_UPDATE_API_GOLDEN=1 go test ./internal/policy -run TS13_67 leave the golden with the same bytes"
+        },
+        {
+          "id": "24-REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "the exported API of an existing section's package differs from the committed golden",
+          "system": "TS-13-67",
+          "action": "fail and list the lines the package gained and lost, instead of absorbing the change",
+          "contract": "the test reports FAIL with \"exported API gained:\" and/or \"lost:\" followed by the differing lines"
+        },
+        {
+          "id": "24-REQ-3.4",
+          "pattern": "event_driven",
+          "condition": "the regenerated golden has been committed",
+          "system": "TS-19-64",
+          "action": "find no uncommitted change under internal/policy/testdata",
+          "contract": "git status --porcelain -- internal/policy/testdata prints nothing and TS-19-64 passes"
+        }
+      ]
+    },
+    {
+      "id": "24-REQ-4",
+      "title": "Module checks and generated docs stay green",
+      "rationale": "The doc-comment edits must leave every module checking clean, with committed generated docs. The documentation in PRD R2–R7 (the erratum entry, the README contract, the architecture data flow, the stale-identifier sweep and the measurement record) is delivered as task steps verified in review, because the steering forbids tests of documents.",
+      "criteria": [
+        {
+          "id": "24-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "make check runs at the repository root",
+          "system": "Makefile",
+          "action": "run fmt, vet, lint and test in every module listed in MODULES, including mcpserve, and finish without error",
+          "contract": "make check exits with status 0"
+        },
+        {
+          "id": "24-REQ-4.2",
+          "pattern": "event_driven",
+          "condition": "make doc runs on the committed tree",
+          "system": "Makefile",
+          "action": "regenerate docs/generated for every public package and leave no uncommitted change under docs/generated",
+          "contract": "make doc exits with status 0 and git status --porcelain -- docs/generated prints nothing"
+        },
+        {
+          "id": "24-REQ-4.3",
+          "pattern": "unwanted",
+          "condition": "a module listed in MODULES fails fmt, vet, lint or test",
+          "system": "Makefile",
+          "action": "stop and report the failing module",
+          "contract": "make check exits with a non-zero status and its output names the failing module's step"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "24-PATH-1",
+      "title": "A maintainer widens the change detector and verifies it end to end",
+      "steps": [
+        {
+          "actor": "maintainer",
+          "action": "runs AGENTKIT_UPDATE_API_GOLDEN=1 go test ./internal/policy -run TS13_67 with the ten-entry apiPackages"
+        },
+        {
+          "actor": "exportedAPI",
+          "action": "parses the non-test files of ., core, tools, codemode, workspace (spec 20), guard and provider/faux (spec 22), sandbox, codesearch and mcpserve (spec 23)"
+        },
+        {
+          "actor": "TS-13-67",
+          "action": "writes internal/policy/testdata/exported-api.golden with ten sections in apiPackages order and skips"
+        },
+        {
+          "actor": "maintainer",
+          "action": "commits the golden and runs go test ./internal/policy with AGENTKIT_UPDATE_API_GOLDEN unset"
+        },
+        {
+          "actor": "internal/policy tests",
+          "action": "TS-13-67, TS-14-44, TS-15-42, TS-17-61, TS-19-64, TS-24-1 and TS-24-2 all pass against the committed golden"
+        }
+      ]
+    },
+    {
+      "id": "24-PATH-2",
+      "title": "A maintainer checks every module and regenerates the generated docs",
+      "steps": [
+        {
+          "actor": "maintainer",
+          "action": "runs make check at the repository root"
+        },
+        {
+          "actor": "Makefile",
+          "action": "runs fmt, vet, lint and test in each module in MODULES, including mcpserve, and exits 0"
+        },
+        {
+          "actor": "maintainer",
+          "action": "runs make doc"
+        },
+        {
+          "actor": "Makefile",
+          "action": "writes go doc -all output for every public package to docs/generated, leaving no uncommitted change"
+        }
+      ]
+    }
+  ]
+}

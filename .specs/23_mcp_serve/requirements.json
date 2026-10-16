@@ -1,0 +1,716 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "23",
+  "spec_name": "mcp_serve",
+  "schema_version": 2,
+  "introduction": "mcpserve is an opt-in nested Go module that serves one agentkit.Runner's tools over MCP to a harness on the same machine (Claude Code, Pi, or any MCP client), either on the process's stdio or over Streamable HTTP on a loopback port behind a bearer token. Every call runs through the runner's pipeline and guard. The module also produces the configuration strings a harness needs to connect. This spec also wires the module into the build and policy gates and moves examples/harness onto it.",
+  "glossary": {
+    "Endpoint": "The value ServeLoopback returns: the loopback URL (http://127.0.0.1:<port>/mcp) and the bearer token a client must send. It also has Close, ClaudeConfig and PiConfig.",
+    "LLMText": "core.ToolResult.LLMText(): the text AgentKit's driver shows a model for a result. For a failure this is the error envelope with the error code and detail.",
+    "Runner": "agentkit.Runner from spec 21_toolset_runner: holds a toolset, exposes Tools() []core.Tool, and runs every call through preparation, the Guard and hooks via Call(ctx, name, json.RawMessage) core.ToolResult, which never errors or panics.",
+    "harness": "An agent loop that is not AgentKit's own driver (Claude Code, Pi, or a scripted MCP client). It connects to mcpserve to use an AgentKit toolset.",
+    "nested module": "A directory of this repository with its own go.mod (for example sandbox/gatewayd or mcpserve). It is built and tested through the Makefile's MODULES list.",
+    "no-listen check": "Policy test TS-19-63 in internal/policy. It fails when a non-test file of the root or sandbox module calls a socket-listen API. Directories that have their own go.mod are skipped.",
+    "stateful HTTP session": "The default mode of the MCP Go SDK's NewStreamableHTTPHandler: the server issues an Mcp-Session-Id, and a client may hold open a standalone SSE stream.",
+    "wire limits": "The bounds wire.Defaults() returns (16 MiB per message, depth 64, container and node caps, no duplicate keys). wire.Guard enforces them on every inbound frame or body before the SDK decodes it."
+  },
+  "requirements": [
+    {
+      "id": "23-REQ-1",
+      "title": "The mcpserve module",
+      "rationale": "MCP serving lives in its own nested module, so the root and sandbox modules still listen on no socket.",
+      "criteria": [
+        {
+          "id": "23-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "mcpserve/go.mod",
+          "action": "declare module github.com/agent-fox-dev/agentkit-go/mcpserve and go 1.27, and directly require exactly two modules: github.com/agent-fox-dev/agentkit-go v0.0.0 (replaced => ../) and github.com/modelcontextprotocol/go-sdk at the version the root go.mod requires",
+          "contract": "go mod edit -json reports that path, go 1.27, one replace of the root to \"../\", and a direct set of exactly those two modules, which passes validateAllowlist"
+        },
+        {
+          "id": "23-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "mcpserve module graph",
+          "action": "name in `go list -m all` no module path that the root module's `go list -m all` lacks, apart from github.com/agent-fox-dev/agentkit-go/mcpserve itself",
+          "contract": "the set difference between the two module lists, with the mcpserve path removed, is empty"
+        },
+        {
+          "id": "23-REQ-1.3",
+          "pattern": "ubiquitous",
+          "system": "mcpserve module",
+          "action": "hold exactly one package, mcpserve, with no main package and no cmd/ directory. Its non-test files import only the standard library, the root packages agentkit, core, mcp and wire, github.com/modelcontextprotocol/go-sdk/mcp and github.com/modelcontextprotocol/go-sdk/jsonrpc",
+          "contract": "go list ./... in mcpserve lists one package of name mcpserve, and its non-test imports are a subset of that allowlist"
+        },
+        {
+          "id": "23-REQ-1.4",
+          "pattern": "ubiquitous",
+          "system": "mcpserve",
+          "action": "build every error it returns (other than a ctx.Err() passed through) with fmt.Errorf and the prefix \"mcpserve: \"",
+          "contract": "err.Error() starts with \"mcpserve: \" for every non-context error returned by New, ServeStdio and ServeLoopback"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-2",
+      "title": "New and the served tool definitions",
+      "rationale": "A harness must see exactly the runner's tools, under the same names and schemas the runner validates against.",
+      "criteria": [
+        {
+          "id": "23-REQ-2.1",
+          "pattern": "unwanted",
+          "condition": "New is called with a nil *agentkit.Runner",
+          "system": "mcpserve.New",
+          "action": "refuse to build a server",
+          "contract": "returns (nil, error) with the message \"mcpserve: Runner is nil\""
+        },
+        {
+          "id": "23-REQ-2.2",
+          "pattern": "event_driven",
+          "condition": "a client sends tools/list to a Server built by New(r, opts)",
+          "system": "mcpserve server",
+          "action": "list exactly one tool for each tool in r.Tools(). Each listed tool has the same name and description verbatim, and an inputSchema that is JSON-equal to json.Marshal(tool.InputSchema). The tool declares no outputSchema, no annotations and no _meta",
+          "contract": "the listed tools and r.Tools() are equal by count and by name. For each tool, the description is equal and the inputSchema is JSON-equal, and outputSchema, annotations and _meta are absent"
+        },
+        {
+          "id": "23-REQ-2.3",
+          "pattern": "event_driven",
+          "condition": "a runner tool has a nil InputSchema",
+          "system": "mcpserve.New",
+          "action": "serve that tool with the input schema {\"type\":\"object\"}",
+          "contract": "tools/list shows inputSchema JSON-equal to {\"type\":\"object\"} for that tool"
+        },
+        {
+          "id": "23-REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "a runner tool's InputSchema fails to marshal, or marshals to JSON whose top level is not an object with \"type\":\"object\"",
+          "system": "mcpserve.New",
+          "action": "refuse to build a server and register no tool with the SDK",
+          "contract": "returns (nil, error). The message starts with `mcpserve: tool \"<name>\": input schema`, and New does not panic"
+        },
+        {
+          "id": "23-REQ-2.5",
+          "pattern": "ubiquitous",
+          "system": "mcpserve.New",
+          "action": "read r.Tools() exactly once and serve that snapshot unchanged for the Server's whole lifetime, with no tools/list_changed notification",
+          "contract": "a later change to the slice r.Tools() returned does not change any later tools/list answer"
+        },
+        {
+          "id": "23-REQ-2.6",
+          "pattern": "ubiquitous",
+          "system": "mcpserve server",
+          "action": "report serverInfo name opts.Name, or \"agentkit\" when it is empty, and version opts.Version, or when that is empty the version of github.com/agent-fox-dev/agentkit-go/mcpserve in debug.ReadBuildInfo (the replacement's version when replaced), or \"(devel)\" when there is none. It passes opts.Instructions to the SDK's ServerOptions.Instructions",
+          "contract": "the initialize result carries serverInfo.name, serverInfo.version and instructions as described"
+        },
+        {
+          "id": "23-REQ-2.7",
+          "pattern": "event_driven",
+          "condition": "New is given a runner with zero tools",
+          "system": "mcpserve.New",
+          "action": "build a server that serves an empty tool list",
+          "contract": "returns a non-nil *Server and a nil error, and tools/list returns an empty tools array"
+        },
+        {
+          "id": "23-REQ-2.8",
+          "pattern": "ubiquitous",
+          "system": "mcpserve Server",
+          "action": "be immutable after New and serve any number of loopback endpoints and one stdio session at the same time, all over the same tool set",
+          "contract": "concurrent ServeLoopback calls and a ServeStdio session on one Server list identical tools, and the race detector reports no data race"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-3",
+      "title": "Calls run through the runner",
+      "rationale": "Every call, direct or nested inside a code_mode script, passes the runner's pipeline and Guard, so mcpserve offers no way around policy.",
+      "criteria": [
+        {
+          "id": "23-REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "a client sends tools/call for a served tool",
+          "system": "mcpserve call handler",
+          "action": "call r.Call(requestCtx, name, arguments) exactly once, with arguments as the request's raw JSON bytes, or empty bytes when arguments are absent. It adds no preparation, guard or validation of its own",
+          "contract": "the runner observes one Call with that name and byte-identical arguments (empty when absent)"
+        },
+        {
+          "id": "23-REQ-3.2",
+          "pattern": "ubiquitous",
+          "system": "mcpserve call handler",
+          "action": "answer with content of one text item holding res.LLMText(), followed by one text item for each core.TextBlock in res.Blocks in order, and drop every other block kind. isError is !res.OK, and no structuredContent, Data, Metadata or Terminate is served",
+          "contract": "CallToolResult.Content has length 1 + (number of TextBlocks), the texts appear in that order, and IsError == !res.OK"
+        },
+        {
+          "id": "23-REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "the runner's result is a failure (invalid_arguments, blocked_by_policy, panic, handler_error or aborted)",
+          "system": "mcpserve call handler",
+          "action": "return the failure as a tool result and never as a Go error or protocol error",
+          "contract": "the client receives a result with isError true whose text is the runner's envelope. For a guard block, the text carries blocked_by_policy and the guard's reason"
+        },
+        {
+          "id": "23-REQ-3.4",
+          "pattern": "event_driven",
+          "condition": "the client cancels an in-flight request, the session ends, or the endpoint closes while a call runs",
+          "system": "mcpserve call handler",
+          "action": "cancel the context passed to r.Call, which is derived from the request's context",
+          "contract": "the runner's handler observes ctx.Done(), and the runner's result for that call has error code aborted"
+        },
+        {
+          "id": "23-REQ-3.5",
+          "pattern": "ubiquitous",
+          "system": "mcpserve call handler",
+          "action": "run concurrent tools/call requests concurrently, without serializing them",
+          "contract": "two calls, each of which blocks until both are in flight, both complete"
+        },
+        {
+          "id": "23-REQ-3.6",
+          "pattern": "unwanted",
+          "condition": "a tools/call names a tool that is not served",
+          "system": "mcpserve server",
+          "action": "let the SDK answer and never invoke the runner",
+          "contract": "the client receives a JSON-RPC protocol error, and the runner records zero calls"
+        },
+        {
+          "id": "23-REQ-3.7",
+          "pattern": "event_driven",
+          "condition": "AgentKit's mcp.Pool, given the endpoint URL and header Authorization: Bearer <token>, calls code_mode with a script that calls read_file",
+          "system": "mcpserve over loopback HTTP",
+          "action": "run the code_mode call through r.Call. The script's nested read_file call also goes through the runner and its Guard",
+          "contract": "the imported result is OK and holds the file's content, and the runner's Guard observes both the code_mode call and the nested read_file call"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-4",
+      "title": "ServeStdio",
+      "rationale": "A harness that starts the program as a child process talks MCP on its stdio, under the same wire bounds as every other inbound frame.",
+      "criteria": [
+        {
+          "id": "23-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "ServeStdio(ctx) is called",
+          "system": "mcpserve stdio",
+          "action": "serve one MCP session on os.Stdin and os.Stdout through mcp.NewPipeTransport under wire.Defaults(), with the same tools as every other session of the Server",
+          "contract": "a client connected over in-process io.Pipe pairs (mcp.Connect with mcp.NewPipeTransport) and a client that spawns the program through mcp.Pool with ServerConfig.Command both list and call the served tools. The child-process case may skip on Windows"
+        },
+        {
+          "id": "23-REQ-4.2",
+          "pattern": "event_driven",
+          "condition": "the client closes its end of the session",
+          "system": "mcpserve stdio",
+          "action": "write every reply already owed, then end the session",
+          "contract": "ServeStdio returns nil, and every call issued before EOF has received its reply"
+        },
+        {
+          "id": "23-REQ-4.3",
+          "pattern": "event_driven",
+          "condition": "ctx ends while the session is open",
+          "system": "mcpserve stdio",
+          "action": "close the session",
+          "contract": "ServeStdio returns ctx.Err()"
+        },
+        {
+          "id": "23-REQ-4.4",
+          "pattern": "unwanted",
+          "condition": "ServeStdio is called with a ctx that is already done",
+          "system": "mcpserve stdio",
+          "action": "return without reading stdin",
+          "contract": "returns ctx.Err(), and no byte of stdin is consumed"
+        },
+        {
+          "id": "23-REQ-4.5",
+          "pattern": "unwanted",
+          "condition": "an inbound frame breaks wire.Defaults() limits, or the session ends for any reason other than client EOF or ctx",
+          "system": "mcpserve stdio",
+          "action": "end the session without handing the offending frame to the SDK or the runner",
+          "contract": "ServeStdio returns a non-nil error prefixed \"mcpserve: \", and the runner records zero calls for that frame"
+        },
+        {
+          "id": "23-REQ-4.6",
+          "pattern": "ubiquitous",
+          "system": "mcpserve stdio",
+          "action": "close os.Stdin and leave os.Stdout open when ServeStdio returns, and write nothing to stdout except protocol frames",
+          "contract": "after return, os.Stdout accepts a further write. Every line written to stdout during the session is a JSON-RPC message"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-5",
+      "title": "ServeLoopback listener, authentication and body guard",
+      "rationale": "The HTTP endpoint is reachable only from the same machine and only with the token. An unauthenticated peer can make the server read no body and learns nothing.",
+      "criteria": [
+        {
+          "id": "23-REQ-5.1",
+          "pattern": "unwanted",
+          "condition": "ServeLoopback is called with a ctx that is already done",
+          "system": "mcpserve loopback",
+          "action": "listen on nothing",
+          "contract": "returns (nil, ctx.Err())"
+        },
+        {
+          "id": "23-REQ-5.2",
+          "pattern": "event_driven",
+          "condition": "ServeLoopback(ctx) is called with a live ctx",
+          "system": "mcpserve loopback",
+          "action": "listen on TCP 127.0.0.1:0 and generate a fresh token for the call: 24 bytes from crypto/rand encoded as 48 lowercase hex characters",
+          "contract": "returns &Endpoint{URL: \"http://127.0.0.1:<port>/mcp\", Token: <48 chars matching ^[0-9a-f]{48}$>} and a nil error"
+        },
+        {
+          "id": "23-REQ-5.3",
+          "pattern": "unwanted",
+          "condition": "the listen call or the random source fails",
+          "system": "mcpserve loopback",
+          "action": "serve nothing and release any listener it opened",
+          "contract": "returns (nil, error) with the message prefixed \"mcpserve: \""
+        },
+        {
+          "id": "23-REQ-5.4",
+          "pattern": "unwanted",
+          "condition": "a request, on any path and with any method, lacks an Authorization header exactly equal to \"Bearer <token>\" (compared in constant time)",
+          "system": "mcpserve loopback",
+          "action": "refuse the request before reading its body and before routing it",
+          "contract": "HTTP 401 with header WWW-Authenticate: Bearer and body \"unauthorized\". The SDK and the runner see nothing"
+        },
+        {
+          "id": "23-REQ-5.5",
+          "pattern": "unwanted",
+          "condition": "an authorized request targets any path other than /mcp",
+          "system": "mcpserve loopback",
+          "action": "refuse the request",
+          "contract": "HTTP 404, and the SDK handler is not invoked"
+        },
+        {
+          "id": "23-REQ-5.6",
+          "pattern": "unwanted",
+          "condition": "an authorized request to /mcp has a body longer than wire.Defaults().MaxMessageBytes",
+          "system": "mcpserve loopback",
+          "action": "stop reading at the limit and refuse the request",
+          "contract": "HTTP 413, and the SDK handler is not invoked"
+        },
+        {
+          "id": "23-REQ-5.7",
+          "pattern": "unwanted",
+          "condition": "an authorized request to /mcp has a body that wire.Guard(body, wire.Defaults()) rejects, for example one with a duplicate key or nesting over the depth limit",
+          "system": "mcpserve loopback",
+          "action": "refuse the request",
+          "contract": "HTTP 400, and the SDK handler is not invoked"
+        },
+        {
+          "id": "23-REQ-5.8",
+          "pattern": "event_driven",
+          "condition": "an authorized request to /mcp has no body or a body that wire.Guard accepts",
+          "system": "mcpserve loopback",
+          "action": "replay the body byte for byte to the SDK's NewStreamableHTTPHandler with default (stateful) options, served by an http.Server with ReadHeaderTimeout 10s and handler contexts derived from ctx",
+          "contract": "an initialize POST with the token gets HTTP 200 and an Mcp-Session-Id header, and later requests in that session are served by the SDK"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-6",
+      "title": "Endpoint lifetime",
+      "rationale": "A client's standalone SSE stream never ends on its own, so shutdown is bounded. Tying the endpoint to ctx stops serving even when the caller forgets Close.",
+      "criteria": [
+        {
+          "id": "23-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "Endpoint.Close is called or ctx ends, whichever comes first",
+          "system": "mcpserve loopback",
+          "action": "stop accepting connections, shut down gracefully for at most 2 s, then force-close every remaining connection",
+          "contract": "Close returns within 3 s even when a client holds a standalone SSE stream open, and a later TCP connect to the port is refused"
+        },
+        {
+          "id": "23-REQ-6.2",
+          "pattern": "complex_event",
+          "condition": "the endpoint is force-closed",
+          "guard": "a tools/call is still in flight",
+          "system": "mcpserve loopback",
+          "action": "cancel the in-flight call's context",
+          "contract": "the runner's result for that call has error code aborted"
+        },
+        {
+          "id": "23-REQ-6.3",
+          "pattern": "ubiquitous",
+          "system": "Endpoint.Close",
+          "action": "be idempotent and safe to call from several goroutines at once",
+          "contract": "every call returns nil, and the race detector reports no data race"
+        },
+        {
+          "id": "23-REQ-6.4",
+          "pattern": "unwanted",
+          "condition": "Close is called on an Endpoint that ServeLoopback did not return, such as the zero value",
+          "system": "Endpoint.Close",
+          "action": "do nothing",
+          "contract": "returns nil without panicking"
+        },
+        {
+          "id": "23-REQ-6.5",
+          "pattern": "event_driven",
+          "condition": "ServeLoopback is called twice on one Server",
+          "system": "mcpserve loopback",
+          "action": "create two independent endpoints",
+          "contract": "the two endpoints have distinct ports and distinct tokens. After one is closed, the other still answers an authorized initialize with HTTP 200, and its token is refused (401) by the other endpoint while that endpoint is open"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-7",
+      "title": "Harness configuration strings",
+      "rationale": "A harness connects to the endpoint from the JSON these methods return, so an embedder writes no configuration by hand.",
+      "criteria": [
+        {
+          "id": "23-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "ClaudeConfig(name) is called on an Endpoint",
+          "system": "Endpoint.ClaudeConfig",
+          "action": "return the JSON {\"mcpServers\":{\"<name>\":{\"type\":\"http\",\"url\":\"<URL>\",\"headers\":{\"Authorization\":\"Bearer <Token>\"}}}}, which Claude Code's --mcp-config takes",
+          "contract": "the returned string decodes to exactly that object"
+        },
+        {
+          "id": "23-REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "PiConfig(name) is called on an Endpoint",
+          "system": "Endpoint.PiConfig",
+          "action": "return the ClaudeConfig object with \"exposure\":\"direct\" added to the server entry, which Pi's .pi/mcp.json takes",
+          "contract": "the returned string decodes to the ClaudeConfig object plus exposure \"direct\" in the server entry"
+        },
+        {
+          "id": "23-REQ-7.3",
+          "pattern": "event_driven",
+          "condition": "ClaudeConfig or PiConfig is called with an empty name",
+          "system": "Endpoint config methods",
+          "action": "use \"agentkit\" as the server name",
+          "contract": "the only key under mcpServers is \"agentkit\""
+        },
+        {
+          "id": "23-REQ-7.4",
+          "pattern": "ubiquitous",
+          "system": "Endpoint config methods",
+          "action": "for any non-empty name string and any URL and Token field values, build the output with encoding/json so that it is valid JSON and reflects the Endpoint's current fields",
+          "contract": "json.Valid is true, decoding yields the name byte-for-byte as the only mcpServers key, and url and Authorization equal the Endpoint's URL and \"Bearer \"+Token at call time"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-8",
+      "title": "Options and logging",
+      "rationale": "The token is a credential, and tool arguments and outputs are workspace content, so logs carry structure and never secrets or payloads.",
+      "criteria": [
+        {
+          "id": "23-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "mcpserve.Options",
+          "action": "have exactly four fields, Name, Version and Instructions of type string and Logger of type *slog.Logger. A nil Logger means slog.New(slog.DiscardHandler)",
+          "contract": "a Server built with Options{} serves calls and refusals without panicking and without writing to stdout or stderr"
+        },
+        {
+          "id": "23-REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "a served tools/call completes",
+          "system": "mcpserve logger",
+          "action": "emit exactly one Info record with message \"tool call\" and attributes tool, ok, duration, plus the error code when the result is a failure",
+          "contract": "a capturing slog handler records one Info \"tool call\" record per call, with those attributes"
+        },
+        {
+          "id": "23-REQ-8.3",
+          "pattern": "event_driven",
+          "condition": "an HTTP request is refused for a missing or wrong token, an over-size body or a rejected body",
+          "system": "mcpserve logger",
+          "action": "emit exactly one Warn record carrying the peer address and the refusal reason",
+          "contract": "a capturing handler records one Warn record per refusal, with a peer attribute and a reason that tells the three cases apart"
+        },
+        {
+          "id": "23-REQ-8.4",
+          "pattern": "event_driven",
+          "condition": "a stdio session ends with a non-nil error other than ctx.Err()",
+          "system": "mcpserve logger",
+          "action": "emit exactly one Warn record for that session end",
+          "contract": "a capturing handler records one Warn record when ServeStdio returns a \"mcpserve: \" error"
+        },
+        {
+          "id": "23-REQ-8.5",
+          "pattern": "ubiquitous",
+          "system": "mcpserve logger",
+          "action": "for any call arguments, result text, Detail and token, emit no record whose message or attribute values contain the token, the Authorization header value, the tool arguments, the result text or the Detail",
+          "contract": "none of those strings appears as a substring of the captured log output"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-9",
+      "title": "Build wiring and policy gates",
+      "rationale": "The new module must be built, vetted, linted and documented like every other module. The existing invariants of the root and sandbox modules must not move.",
+      "criteria": [
+        {
+          "id": "23-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "Makefile",
+          "action": "list mcpserve in MODULES (so test, build, vet, lint and tidy run there) and in the make doc module loop, which writes docs/generated/mcpserve/mcpserve.txt",
+          "contract": "the parsed `MODULES :=` line and the `@for m in` doc loop both contain mcpserve"
+        },
+        {
+          "id": "23-REQ-9.2",
+          "pattern": "ubiquitous",
+          "system": "internal/policy build gates",
+          "action": "include \"mcpserve\" in gateModules so that the cross-target gate (cgo off, four targets) and the host-cgo build and vet gates cover it",
+          "contract": "gateModules contains \"mcpserve\", and the gates pass for it"
+        },
+        {
+          "id": "23-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "no-listen check (TS-19-63)",
+          "action": "keep its scope to non-test files of the root and sandbox modules. Its doc comment and failure message say that only nested modules (sandbox/gatewayd, mcpserve) may listen",
+          "contract": "a fixture with a listener in a nested mcpserve/ directory that has its own go.mod passes. A fixture with a listener in the root fails, with a message naming both nested modules. The delivered tree passes"
+        },
+        {
+          "id": "23-REQ-9.4",
+          "pattern": "ubiquitous",
+          "system": "root module",
+          "action": "leave its go.mod, its direct set, its module graph snapshot, internal/policy/testdata and the exported-API golden unchanged",
+          "contract": "TS-13-65 and TS-19-64 pass"
+        },
+        {
+          "id": "23-REQ-9.5",
+          "pattern": "ubiquitous",
+          "system": "repository build",
+          "action": "pass make check with GOPROXY=off in every module, mcpserve included, with mcpserve's go.sum committed",
+          "contract": "TS-19-66 passes"
+        }
+      ]
+    },
+    {
+      "id": "23-REQ-10",
+      "title": "examples/harness served through mcpserve",
+      "rationale": "The harness is the reference embedder. It must show the short path (sandbox.Open, NewRunner, mcpserve) instead of a hand-written MCP server.",
+      "criteria": [
+        {
+          "id": "23-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "examples/harness",
+          "action": "contain no server.go. No non-test file imports a github.com/modelcontextprotocol/go-sdk package or net, or calls a listen API. calls.go keeps the per-call log, the call and blocked counts built from the toolset's hooks, and summarize, firstLine, truncate and errShellBlocked, with unchanged behaviour",
+          "contract": "a structural test finds no server.go, no SDK or net import and no listen call in non-test files, and finds those helpers declared in calls.go"
+        },
+        {
+          "id": "23-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "examples/harness main.go",
+          "action": "serve the runner with mcpserve.New(runner, mcpserve.Options{Instructions: …}) and ServeLoopback(ctx), defer ep.Close(), and print \"MCP server at <ep.URL>\"",
+          "contract": "the offline run's account contains \"MCP server at http://127.0.0.1:\""
+        },
+        {
+          "id": "23-REQ-10.3",
+          "pattern": "ubiquitous",
+          "system": "examples/harness harness runners",
+          "action": "take *mcpserve.Endpoint in runHarness and in the claude, pi and scripted runners. claude passes ep.ClaudeConfig(\"agentkit\") to --mcp-config, pi writes ep.PiConfig(\"agentkit\") to .pi/mcp.json, and scripted connects mcp.Pool to ep.URL with the header Authorization: Bearer <ep.Token>",
+          "contract": "TestHarnessArgs passes with &mcpserve.Endpoint{}, and the claude arguments carry the ClaudeConfig string after --mcp-config"
+        },
+        {
+          "id": "23-REQ-10.4",
+          "pattern": "ubiquitous",
+          "system": "examples/harness main.go",
+          "action": "choose the source first (sandbox.GitRepo{URL, Ref, Depth: 1} for --repo, sandbox.LocalDir{Path: dir, ExcludeGit: true} for --dir, otherwise sandbox.LocalDir{Path: sample}), then create, fill and get the proxies with exactly one sandbox.Open(ctx, p, spec, src, sandbox.ToolOptions{}) call, with defer sb.Close(ctx). It calls none of Provider.Create, Sandbox.Sync and Sandbox.Tools, and prints \"filled the workspace from <the sample project | dir | repo>\"",
+          "contract": "a structural test counts exactly one sandbox.Open call and no Create, Sync or Tools call, and the offline account contains \"filled the workspace from the sample project\""
+        },
+        {
+          "id": "23-REQ-10.5",
+          "pattern": "ubiquitous",
+          "system": "examples/harness",
+          "action": "use guard.Allow(allowed...) in place of guard.Restricted(guard.Options{AllowedPrograms: allowed}). In the scripted harness, use faux.ToolCall(…) and faux.Text(…) in place of faux.Turn{…} literals",
+          "contract": "a structural test finds no `faux.Turn{` literal and no guard.Restricted call in non-test files"
+        },
+        {
+          "id": "23-REQ-10.6",
+          "pattern": "ubiquitous",
+          "system": "examples/harness/go.mod",
+          "action": "require github.com/agent-fox-dev/agentkit-go/mcpserve v0.0.0 with replace => ../../mcpserve, and after go mod tidy no longer list github.com/modelcontextprotocol/go-sdk as a direct requirement",
+          "contract": "go mod edit -json shows the mcpserve require and replace, and shows the go-sdk require only as indirect"
+        },
+        {
+          "id": "23-REQ-10.7",
+          "pattern": "event_driven",
+          "condition": "the harness example runs offline with the scripted harness on the local provider",
+          "system": "examples/harness",
+          "action": "import the served tools over MCP, run the scripted code_mode turn through mcpserve, and finish with a pass verdict",
+          "contract": "output contains \"filled the workspace from the sample project\", \"imported 12 tools over MCP: agentkit__code_mode, agentkit__edit_file, agentkit__execute\", \"verdict: pass\" and \"Harness example completed successfully\", and the process exits 0"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "23-PATH-1",
+      "title": "A client runs a code_mode script over the loopback endpoint",
+      "steps": [
+        {
+          "actor": "embedder program",
+          "action": "builds tools with workspace.Open and tools.For, wraps them in code_mode, creates agentkit.NewRunner with a Guard, and calls mcpserve.New(runner, Options{}) and ServeLoopback(ctx)"
+        },
+        {
+          "actor": "mcpserve",
+          "action": "listens on 127.0.0.1:0 and returns an Endpoint with URL http://127.0.0.1:<port>/mcp and a 48-character token"
+        },
+        {
+          "actor": "mcp.Pool client",
+          "action": "connects to ep.URL with Authorization: Bearer <token>, lists the tools and calls code_mode with a script that calls read_file"
+        },
+        {
+          "actor": "mcpserve",
+          "action": "checks the token, guards the body with wire.Guard, replays it to the SDK handler, and calls runner.Call for code_mode"
+        },
+        {
+          "actor": "Runner",
+          "action": "runs code_mode through its Guard. The script's nested read_file call also passes the Guard and reads the file"
+        },
+        {
+          "actor": "mcpserve",
+          "action": "returns a CallToolResult whose text is LLMText() followed by the text blocks, with isError false"
+        },
+        {
+          "actor": "embedder program",
+          "action": "calls ep.Close(), and a later connect to the port is refused"
+        }
+      ]
+    },
+    {
+      "id": "23-PATH-2",
+      "title": "A harness spawns the program and talks MCP over stdio",
+      "steps": [
+        {
+          "actor": "mcp.Pool client",
+          "action": "spawns the program as a child process through ServerConfig.Command, with a marker variable in its environment"
+        },
+        {
+          "actor": "child program",
+          "action": "builds a Runner and a Server and calls ServeStdio(ctx)"
+        },
+        {
+          "actor": "mcpserve",
+          "action": "serves one session on stdin and stdout through mcp.NewPipeTransport under wire.Defaults()"
+        },
+        {
+          "actor": "mcp.Pool client",
+          "action": "lists the tools and calls one. The call runs through runner.Call and returns the runner's text"
+        },
+        {
+          "actor": "mcp.Pool client",
+          "action": "closes the connection, which closes the child's stdin"
+        },
+        {
+          "actor": "mcpserve",
+          "action": "writes every owed reply, and ServeStdio returns nil, so the child exits 0"
+        }
+      ]
+    },
+    {
+      "id": "23-PATH-3",
+      "title": "Refused and blocked requests never reach a tool",
+      "steps": [
+        {
+          "actor": "HTTP client",
+          "action": "POSTs an initialize request to ep.URL without the bearer token"
+        },
+        {
+          "actor": "mcpserve",
+          "action": "answers 401 with WWW-Authenticate: Bearer before reading the body, and logs one Warn record with the peer and no header value"
+        },
+        {
+          "actor": "mcp.Pool client",
+          "action": "connects with the token and calls execute with a program the runner's Guard does not allow"
+        },
+        {
+          "actor": "Runner",
+          "action": "blocks the call and returns a blocked_by_policy result with the guard's reason"
+        },
+        {
+          "actor": "mcpserve",
+          "action": "returns the block as a tool result with isError true and the envelope text, not as a protocol error, and logs one Info \"tool call\" record with ok=false"
+        }
+      ]
+    },
+    {
+      "id": "23-PATH-4",
+      "title": "The harness example runs offline end to end through mcpserve",
+      "steps": [
+        {
+          "actor": "developer",
+          "action": "runs the examples/harness program offline with the scripted harness and the local provider"
+        },
+        {
+          "actor": "harness main",
+          "action": "chooses the sample LocalDir source, calls sandbox.Open once, and prints \"filled the workspace from the sample project\""
+        },
+        {
+          "actor": "harness main",
+          "action": "builds a Runner over code_mode and the proxies with guard.Allow, then serves it with mcpserve.New and ServeLoopback and prints \"MCP server at http://127.0.0.1:<port>/mcp\""
+        },
+        {
+          "actor": "scripted harness",
+          "action": "connects mcp.Pool to ep.URL with the bearer token, imports 12 tools, and drives faux.ToolCall and faux.Text turns that call agentkit__code_mode"
+        },
+        {
+          "actor": "mcpserve",
+          "action": "runs each call through runner.Call over the sandbox proxies"
+        },
+        {
+          "actor": "harness main",
+          "action": "runs the checks, prints \"verdict: pass\" and \"Harness example completed successfully\", and closes the endpoint and the sandbox"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/modelcontextprotocol/go-sdk",
+      "version": "v1.8.0",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "NewServer",
+          "import_path": "github.com/modelcontextprotocol/go-sdk/mcp",
+          "signature": "func NewServer(impl *Implementation, opts *ServerOptions) *Server",
+          "notes": "Signature taken from call sites in examples/harness/server.go and examples/codemode/main.go. opts may be nil."
+        },
+        {
+          "name": "ServerOptions",
+          "import_path": "github.com/modelcontextprotocol/go-sdk/mcp",
+          "signature": "type ServerOptions struct { Instructions string; Capabilities *ServerCapabilities; ... }",
+          "notes": "Only the Instructions field is used."
+        },
+        {
+          "name": "(*Server).AddTool",
+          "import_path": "github.com/modelcontextprotocol/go-sdk/mcp",
+          "signature": "func (s *Server) AddTool(t *Tool, h func(context.Context, *CallToolRequest) (*CallToolResult, error))",
+          "notes": "Unverified: that it panics on a missing or non-object InputSchema and does not validate arguments. New pre-checks schemas so that it never relies on this."
+        },
+        {
+          "name": "Tool",
+          "import_path": "github.com/modelcontextprotocol/go-sdk/mcp",
+          "signature": "type Tool struct { Name, Description string; InputSchema any; ... }",
+          "notes": "InputSchema is given a json.RawMessage."
+        },
+        {
+          "name": "CallToolResult",
+          "import_path": "github.com/modelcontextprotocol/go-sdk/mcp",
+          "signature": "type CallToolResult struct { Content []Content; IsError bool; ... }",
+          "notes": "Content holds &TextContent{Text} items. req.Params.Arguments is assignable to json.RawMessage."
+        },
+        {
+          "name": "NewStreamableHTTPHandler",
+          "import_path": "github.com/modelcontextprotocol/go-sdk/mcp",
+          "signature": "func NewStreamableHTTPHandler(getServer func(*http.Request) *Server, opts *StreamableHTTPOptions) *StreamableHTTPHandler",
+          "notes": "Called with nil opts, which gives stateful sessions. The result implements http.Handler."
+        },
+        {
+          "name": "(*Server).Run",
+          "import_path": "github.com/modelcontextprotocol/go-sdk/mcp",
+          "signature": "func (s *Server) Run(ctx context.Context, t Transport) error",
+          "notes": "Unverified: what it returns on a clean EOF and on a Read error. ServeStdio normalizes the result itself, for example by wrapping the Connection to record the first Read error."
+        },
+        {
+          "name": "Connection",
+          "import_path": "github.com/modelcontextprotocol/go-sdk/mcp",
+          "signature": "type Connection interface { Read(context.Context) (jsonrpc.Message, error); Write(context.Context, jsonrpc.Message) error; Close() error; SessionID() string }",
+          "notes": "Implemented by strictConn in mcp/transport.go. jsonrpc is github.com/modelcontextprotocol/go-sdk/jsonrpc."
+        }
+      ]
+    }
+  ]
+}

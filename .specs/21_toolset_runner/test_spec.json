@@ -1,0 +1,1122 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "21",
+  "spec_name": "toolset_runner",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-21-1",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-1.1"
+      ],
+      "title": "Toolset has exactly the five documented fields in order",
+      "given": [
+        "the root package agentkit"
+      ],
+      "when": "reflect.TypeOf(agentkit.Toolset{}) is inspected",
+      "then": [
+        "fields are Tools []core.Tool, Policy core.ToolPolicy, Guard core.BeforeToolCall, After core.AfterToolCall, Events func(core.Event), in that order",
+        "there are no other fields"
+      ],
+      "pseudocode": "t = TypeOf(Toolset{}); assert names(t) == [Tools,Policy,Guard,After,Events]; assert type(Events) == func(core.Event)"
+    },
+    {
+      "id": "TS-21-2",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-1.2"
+      ],
+      "title": "Config has exactly twelve fields and none of the four moved tool fields",
+      "given": [
+        "the root package agentkit"
+      ],
+      "when": "reflect.TypeOf(agentkit.Config{}) is inspected",
+      "then": [
+        "field names in order are Client, Provider, Model, Effort, System, Prefix, Toolset, MaxTurns, MaxCostUSD, Timeout, Prune, MaxTokens",
+        "Tools, Policy, Guard and After are absent",
+        "the Toolset field has type agentkit.Toolset"
+      ],
+      "pseudocode": "assert names(TypeOf(Config{})) == [12 names]; assert no field named Tools|Policy|Guard|After"
+    },
+    {
+      "id": "TS-21-3",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-1.3"
+      ],
+      "title": "A zero Toolset yields an agent with no tools and no tool definitions in the first request",
+      "given": [
+        "a scripted provider that records requests and answers with a final text message",
+        "a valid model"
+      ],
+      "when": "New(Config{Provider, Model}) is called and a.Run(ctx, \"hi\") is executed",
+      "then": [
+        "New returns a non-nil agent and nil error",
+        "a.Runner().Tools() has length 0",
+        "the first recorded request carries zero tool definitions"
+      ],
+      "pseudocode": "a,err = New(Config{Provider:p, Model:m}); assert err==nil; assert len(a.Runner().Tools())==0; a.Run(ctx,\"hi\"); assert len(p.requests[0].Tools)==0"
+    },
+    {
+      "id": "TS-21-4",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-2.1"
+      ],
+      "title": "NewRunner checks in today's order and returns the first failure; a valid set returns a runner",
+      "given": [
+        "a toolset whose first tool has neither Handler nor Execute and which also exposes an unguarded shell tool",
+        "a toolset whose policy-resolved set contains a tool with both Handler and Execute",
+        "a valid toolset with a guard"
+      ],
+      "when": "NewRunner is called on each",
+      "then": [
+        "the first returns the neither-Handler-nor-Execute error, not the ErrUnguardedExecute error",
+        "the second returns the sets-both error from the resolved-set check",
+        "the valid one returns a non-nil runner and nil error",
+        "each failure returns a nil *Runner"
+      ],
+      "pseudocode": "r,err = NewRunner(ts1); assert r==nil && contains(err,'has neither Handler nor Execute'); ..."
+    },
+    {
+      "id": "TS-21-5",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-2.2"
+      ],
+      "title": "NewRunner refuses a tool with neither or both of Handler and Execute with the exact texts",
+      "given": [
+        "tool \"t\" with no Handler and no Execute",
+        "tool \"u\" with both Handler and Execute"
+      ],
+      "when": "NewRunner is called with each, directly and via a policy-resolved wrapper",
+      "then": [
+        "error text equals `agentkit: tool \"t\" has neither Handler nor Execute`",
+        "error text equals `agentkit: tool \"u\" sets both Handler and Execute; exactly one`",
+        "the returned *Runner is nil"
+      ],
+      "pseudocode": "r,err = NewRunner(Toolset{Tools:[t]}); assert r==nil; assert err.Error()==want"
+    },
+    {
+      "id": "TS-21-6",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-2.3"
+      ],
+      "title": "NewRunner refuses reachable-tool cycles and wrappers reaching terminating tools",
+      "given": [
+        "tools a -> b -> a by ReachableTools names",
+        "a wrapper \"codemode\" reaching a tool marked Terminating"
+      ],
+      "when": "NewRunner is called with each toolset",
+      "then": [
+        "cycle error text is `agentkit: reachable tools cycle detected: a -> b -> a`",
+        "terminating error text is `agentkit: terminating tool \"x\" cannot be reached through wrapper \"codemode\"`",
+        "runner is nil in both cases"
+      ],
+      "pseudocode": "r,err = NewRunner(cyclicPair()); assert r==nil; assert err.Error()=='agentkit: reachable tools cycle detected: a -> b -> a'"
+    },
+    {
+      "id": "TS-21-7",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-2.4"
+      ],
+      "title": "NewRunner refuses a reachable shell tool with a nil Guard and names Toolset.Guard",
+      "given": [
+        "a direct shell tool \"run_command\" and a wrapper reaching a shell tool, each with nil Guard"
+      ],
+      "when": "NewRunner is called with each",
+      "then": [
+        "errors.Is(err, core.ErrUnguardedExecute) is true",
+        "text contains `Toolset.Guard is nil` and does not contain `Config.Guard`",
+        "text ends with ` (tool \"run_command\")` for the direct case and ` (wrapper \"…\" reached shell tool \"…\")` for the wrapper case",
+        "runner is nil"
+      ],
+      "pseudocode": "r,err = NewRunner(Toolset{Tools:[shell]}); assert errors.Is(err, ErrUnguardedExecute); assert HasSuffix(err.Error(), ' (tool \"run_command\")')"
+    },
+    {
+      "id": "TS-21-8",
+      "kind": "property",
+      "verifies": [
+        "21-REQ-2.5"
+      ],
+      "title": "NewRunner and New report identical errors for any toolset",
+      "given": [
+        "a stub provider and model so New passes its client and model checks"
+      ],
+      "when": "for any generated Toolset mixing valid tools, tools with missing or doubled Handler/Execute, cycles, terminating tools behind wrappers, shell tools, nil or non-nil Guard, and policies",
+      "then": [
+        "NewRunner(ts) returns an error exactly when New(Config{Provider, Model, Toolset: ts}) does",
+        "when both fail the error texts are identical; when both succeed both errors are nil"
+      ],
+      "pseudocode": "for ts in gen(): _,e1 = NewRunner(ts); _,e2 = New(Config{...,Toolset:ts}); assert (e1==nil)==(e2==nil); if e1 != nil: assert e1.Error()==e2.Error()"
+    },
+    {
+      "id": "TS-21-9",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-2.6"
+      ],
+      "title": "Mutating the caller's Tools slice after NewRunner does not change the runner",
+      "given": [
+        "a Tools slice with tools alpha and beta"
+      ],
+      "when": "NewRunner copies it, then the caller overwrites element 0 and appends gamma",
+      "then": [
+        "r.Tools() names are still alpha, beta"
+      ],
+      "pseudocode": "r = NewRunner(Toolset{Tools:s}); s[0]=other; s=append(s,gamma); assert names(r.Tools())==[alpha,beta]"
+    },
+    {
+      "id": "TS-21-10",
+      "kind": "property",
+      "verifies": [
+        "21-REQ-2.7"
+      ],
+      "title": "A runner is safe for concurrent Call, Batch, Tools and Reachable under the race detector",
+      "given": [
+        "a runner over echo tools and a code-mode-like wrapper, with Guard, After and Events set to concurrency-safe functions"
+      ],
+      "when": "for any interleaving of 16 goroutines each calling Call, Batch, Tools and Reachable repeatedly (run with go test -race)",
+      "then": [
+        "no data race is reported",
+        "every Call and Batch returns a result of the expected shape"
+      ],
+      "pseudocode": "wg; for i in 0..16: go func(){ r.Call(...); r.Batch(...); r.Tools(); r.Reachable() }"
+    },
+    {
+      "id": "TS-21-11",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-3.1"
+      ],
+      "title": "Runner.Tools returns the policy-resolved set in policy order as a fresh slice",
+      "given": [
+        "a ToolPolicy that reorders or filters the tools"
+      ],
+      "when": "r.Tools() is called, an element of the result is overwritten, and r.Tools() is called again",
+      "then": [
+        "names and order equal ts.Policy.Resolve(ts.Tools)",
+        "the second result is unaffected by the overwrite"
+      ],
+      "pseudocode": "a = r.Tools(); a[0]=core.Tool{}; b = r.Tools(); assert names(b)==names(policy.Resolve(tools))"
+    },
+    {
+      "id": "TS-21-12",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-3.2",
+        "21-REQ-3.3"
+      ],
+      "title": "Runner.Reachable and Agent.ReachableTools equal core.ReachableTools over the resolved set",
+      "given": [
+        "a toolset containing a wrapper declaring ReachableTools",
+        "an agent built from the same toolset"
+      ],
+      "when": "Reachable, core.ReachableTools(r.Tools()), and a.ReachableTools() are compared",
+      "then": [
+        "names and order are equal across the three"
+      ],
+      "pseudocode": "assert names(r.Reachable())==names(core.ReachableTools(r.Tools())); assert names(a.ReachableTools())==names(a.Runner().Reachable())"
+    },
+    {
+      "id": "TS-21-13",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-3.4"
+      ],
+      "title": "*Agent exports exactly Run, Stream, Messages, Usage, ReachableTools and Runner",
+      "given": [
+        "the root package"
+      ],
+      "when": "the exported method set of *Agent is enumerated by reflection",
+      "then": [
+        "the names, sorted, are Messages, ReachableTools, Run, Runner, Stream, Usage"
+      ],
+      "pseudocode": "assert sorted(methodNames(TypeOf(&Agent{}))) == [6 names]"
+    },
+    {
+      "id": "TS-21-14",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-4.1"
+      ],
+      "title": "Runner.Call runs a batch of one with a generated call_ id and returns a result",
+      "given": [
+        "a runner with an echo tool, a Guard and an Events sink recording ids"
+      ],
+      "when": "r.Call(ctx, \"echo\", {\"text\":\"x\"}) is invoked",
+      "then": [
+        "one ToolResult with OK true is returned",
+        "the ToolUseID seen by Guard and by start, end and result events matches ^call_[0-9a-f]{16}$ and is the same for all",
+        "two calls get different ids"
+      ],
+      "pseudocode": "res = r.Call(ctx,'echo',raw); assert res.OK; assert regexp('^call_[0-9a-f]{16}$').match(guardSeenID)"
+    },
+    {
+      "id": "TS-21-15",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-4.2"
+      ],
+      "title": "Empty or whitespace input is treated as {}",
+      "given": [
+        "a tool with no required arguments and a Guard recording RawInput"
+      ],
+      "when": "Call is invoked with nil, \"\" and \"  \\n\" inputs",
+      "then": [
+        "Guard receives RawInput {} each time",
+        "the handler runs and OK is true"
+      ],
+      "pseudocode": "for in in [nil,'','  \\n']: res=r.Call(ctx,'noargs',in); assert res.OK; assert guard.raw=='{}'"
+    },
+    {
+      "id": "TS-21-16",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-4.3"
+      ],
+      "title": "An unknown tool name gives unknown_tool with the run's text and runs neither guard nor handler",
+      "given": [
+        "a runner with tools alpha and beta, a counting Guard"
+      ],
+      "when": "r.Call(ctx, \"missing\", {}) is invoked",
+      "then": [
+        "OK is false and the code is unknown_tool",
+        "text equals the unknown-tool message a run produces: `no tool named \"missing\" is available in this run; available tools: …`",
+        "Guard and handler invocation counts are 0"
+      ],
+      "pseudocode": "res=r.Call(ctx,'missing',{}); assert !res.OK && code=='unknown_tool'; assert res.LLMText()==unknownToolMessage('missing', byName)"
+    },
+    {
+      "id": "TS-21-17",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-4.4"
+      ],
+      "title": "Non-object input, failed validation and unencodable guard arguments give invalid_arguments",
+      "given": [
+        "a tool with a required string argument and a counting handler",
+        "a Guard that returns Arguments containing a channel value for another call"
+      ],
+      "when": "Call is invoked with `not json`, `{}`, and the call whose guard returns unencodable arguments",
+      "then": [
+        "each result has OK false and code invalid_arguments",
+        "the handler invocation count is 0"
+      ],
+      "pseudocode": "for in in ['not json','{}']: assert code(r.Call(ctx,'t',in))=='invalid_arguments'; assert handlerCalls==0"
+    },
+    {
+      "id": "TS-21-18",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-4.5"
+      ],
+      "title": "A guard block gives blocked_by_policy with the reason, default reason, and the decision's Terminate",
+      "given": [
+        "a Guard blocking with reason \"no way\" and Terminate true, a Guard blocking with empty reason, and a counting handler"
+      ],
+      "when": "Call is invoked under each guard",
+      "then": [
+        "OK is false, code is blocked_by_policy",
+        "the first text contains \"no way\" and Terminate is true",
+        "the second text contains \"blocked by policy\" and Terminate is false",
+        "the handler never runs"
+      ],
+      "pseudocode": "res=r.Call(...); assert code=='blocked_by_policy'; assert res.Terminate==dec.Terminate"
+    },
+    {
+      "id": "TS-21-19",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-4.6"
+      ],
+      "title": "A handler panic gives panic and a Handler error gives handler_error; Call returns normally",
+      "given": [
+        "a tool whose handler panics",
+        "a tool whose Handler returns an error"
+      ],
+      "when": "Call is invoked on each",
+      "then": [
+        "the first has OK false and code panic",
+        "the second has OK false and code handler_error",
+        "Call neither panics nor returns a Go error"
+      ],
+      "pseudocode": "assert code(r.Call(ctx,'boom',{}))=='panic'; assert code(r.Call(ctx,'fail',{}))=='handler_error'"
+    },
+    {
+      "id": "TS-21-20",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-4.7"
+      ],
+      "title": "A done context gives aborted without starting the handler",
+      "given": [
+        "an already cancelled context and a counting handler"
+      ],
+      "when": "r.Call(cancelledCtx, \"echo\", {}) is invoked",
+      "then": [
+        "OK is false, code aborted, text `Operation aborted`",
+        "handler invocation count is 0"
+      ],
+      "pseudocode": "cancel(); res=r.Call(ctx,'echo',{}); assert code=='aborted' && text=='Operation aborted'; assert calls==0"
+    },
+    {
+      "id": "TS-21-21",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-4.8"
+      ],
+      "title": "Guard sees the documented context for a Call",
+      "given": [
+        "a Guard recording its BeforeToolCallContext"
+      ],
+      "when": "r.Call(ctx, \"echo\", {\"text\":\"x\"}) is invoked",
+      "then": [
+        "ToolName is echo, ToolUseID matches call_<16 hex>, Tool is the echo tool, Arguments and RawInput are filled",
+        "Batch has exactly one call with that id, Index is 0",
+        "Assistant is nil, TurnCount is 0",
+        "ParentToolUseID and ParentToolName are empty"
+      ],
+      "pseudocode": "g=rec; r.Call(...); assert g.Assistant==nil && g.TurnCount==0 && g.Index==0 && len(g.Batch)==1"
+    },
+    {
+      "id": "TS-21-22",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-5.1"
+      ],
+      "title": "Batch emits start events in call order and runs all Guards before any handler",
+      "given": [
+        "a runner with three calls (known, unknown, invalid-arguments, blocked mix) and an Events sink, a Guard and handlers recording a shared timeline"
+      ],
+      "when": "r.Batch(ctx, calls...) is invoked",
+      "then": [
+        "start events arrive in call order",
+        "every Guard invocation precedes every handler start",
+        "unknown, invalid and blocked calls are finalized inline with unknown_tool, invalid_arguments and blocked_by_policy"
+      ],
+      "pseudocode": "timeline index of last guard < index of first handler; starts order == calls order"
+    },
+    {
+      "id": "TS-21-23",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-5.2"
+      ],
+      "title": "A done context at the end of prepare aborts every unfinalized call including unreached ones",
+      "given": [
+        "three calls; a Guard that cancels the context while preparing call 1, counting handlers"
+      ],
+      "when": "r.Batch(ctx, calls...) is invoked",
+      "then": [
+        "no handler runs",
+        "each call not finalized beforehand, including the call the prepare loop never reached, has code aborted and text `Operation aborted`",
+        "each such call has a start and an end event"
+      ],
+      "pseudocode": "assert handlerCalls==0; for i in unfinalized: assert code(res[i])=='aborted'; assert starts[i] && ends[i]"
+    },
+    {
+      "id": "TS-21-24",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-5.3"
+      ],
+      "title": "Handlers overlap when concurrent, never overlap with a Sequential tool, and After never overlaps",
+      "given": [
+        "two handlers that each block until both have started, a second batch including a Sequential tool, an After that records entry and exit"
+      ],
+      "when": "each batch is run through Batch",
+      "then": [
+        "the two blocking handlers overlap in time",
+        "with a Sequential tool present handlers never overlap and run in call order",
+        "no two After invocations of one batch overlap"
+      ],
+      "pseudocode": "barrier handlers: both reach barrier within timeout; sequential: max concurrent == 1; After: max concurrent == 1"
+    },
+    {
+      "id": "TS-21-25",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-5.4",
+        "21-REQ-5.5"
+      ],
+      "title": "Batch returns one result per call in call order, uses ids verbatim and returns empty for zero calls",
+      "given": [
+        "handlers that finish in reverse order of the calls",
+        "a call with empty ID",
+        "a Guard recording its context and an Events sink"
+      ],
+      "when": "Batch is invoked with three calls including the empty-ID one, then with zero calls",
+      "then": [
+        "len(results)==len(calls) and results[i] belongs to calls[i]",
+        "Guard ToolUseID and event ToolUseID equal calls[i].ID, including empty",
+        "Guard sees Batch equal to calls, Index equal to position, Assistant nil, TurnCount 0",
+        "zero calls returns an empty slice and emits no event"
+      ],
+      "pseudocode": "res=r.Batch(ctx,c0,c1,c2); assert res[i].text==expected[i]; assert len(r.Batch(ctx))==0 && events==[]"
+    },
+    {
+      "id": "TS-21-26",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-5.6"
+      ],
+      "title": "Each result's Terminate is the call's final vote",
+      "given": [
+        "a handler voting Terminate",
+        "an After returning Terminate=false for it",
+        "an After returning Terminate=true for a non-voting handler",
+        "a wrapper whose nested call was terminated by an interceptor",
+        "a call blocked by a guard with Terminate true"
+      ],
+      "when": "each is run through Batch",
+      "then": [
+        "the handler vote stands without After",
+        "a non-nil After decision replaces the handler vote",
+        "the terminated wrapper has Terminate true",
+        "the blocked call's Terminate equals the guard decision's"
+      ],
+      "pseudocode": "assert res[0].Terminate==true; assert res[1].Terminate==false; assert res[2].Terminate; assert res[3].Terminate; assert res[4].Terminate"
+    },
+    {
+      "id": "TS-21-27",
+      "kind": "property",
+      "verifies": [
+        "21-REQ-5.7"
+      ],
+      "title": "With a nil After, Batch result texts equal the run's tool result message texts",
+      "given": [
+        "a scripted provider that emits the generated calls in one assistant message",
+        "an identical toolset used for a runner"
+      ],
+      "when": "for any generated batch mixing ok, error, unknown, invalid and blocked calls",
+      "then": [
+        "for each call, results[i].LLMText() equals the text block of the corresponding ToolResultMessage in the agent run's transcript"
+      ],
+      "pseudocode": "for calls in gen(): res=runner.Batch(ctx,calls...); a.Run(...); msgs=toolResultMsgs(a.Messages()); for i: assert res[i].LLMText()==msgs[i].Content[0].Text"
+    },
+    {
+      "id": "TS-21-28",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-5.8"
+      ],
+      "title": "An After's in-place edit reaches the ToolResultEvent and the transcript but not the returned ToolResult",
+      "given": [
+        "an After that rewrites AfterToolCallContext.Result's text to \"edited\"",
+        "an Events sink recording events; an agent run over the same toolset"
+      ],
+      "when": "r.Call is invoked and, separately, the agent runs a turn with that call",
+      "then": [
+        "ToolResultEvent.Message shows \"edited\"",
+        "the run's transcript tool result shows \"edited\"",
+        "the returned result's LLMText() is the handler's original text"
+      ],
+      "pseudocode": "res=r.Call(...); assert ev.Message.text=='edited'; assert res.LLMText()=='orig'"
+    },
+    {
+      "id": "TS-21-29",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-6.1",
+        "21-REQ-6.3"
+      ],
+      "title": "A wrapper's nested call gets a nested_ id, parent fields in Guard and After, parent events and no result event",
+      "given": [
+        "a wrapper tool that calls core.CallNested on an echo tool, a Guard and After recording contexts, an Events sink"
+      ],
+      "when": "r.Call(ctx, \"wrapper\", {}) is invoked",
+      "then": [
+        "the nested id matches ^nested_[0-9a-f]{16}$",
+        "Guard and After for the nested call see ParentToolUseID of the wrapper call and ParentToolName wrapper",
+        "nested start and end events carry ParentToolUseID",
+        "exactly one ToolResultEvent is emitted (the wrapper's)",
+        "a nested call blocked by the guard returns a blocked_by_policy result to the wrapper"
+      ],
+      "pseudocode": "assert regexp(nestedID); assert guardCtx.ParentToolUseID==wrapperID; assert count(ToolResultEvent)==1"
+    },
+    {
+      "id": "TS-21-30",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-6.2"
+      ],
+      "title": "A nested call to a tool outside the wrapper's reachable set is unknown_tool",
+      "given": [
+        "a wrapper reaching only echo, and another tool other in the runner"
+      ],
+      "when": "the wrapper calls core.CallNested for tool other",
+      "then": [
+        "the nested result has code unknown_tool",
+        "its text begins `wrapper cannot call \"other\": ` followed by the unknown-tool message",
+        "other's handler did not run"
+      ],
+      "pseudocode": "res,_=CallNested(ctx,{name:'other'}); assert code=='unknown_tool'; assert HasPrefix(text,'wrapper cannot call \"other\": ')"
+    },
+    {
+      "id": "TS-21-31",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-6.4"
+      ],
+      "title": "A terminating nested block or After vote makes CallNested return ErrTerminated and the wrapper terminates",
+      "given": [
+        "case A: Guard blocks the nested call with Terminate",
+        "case B: After votes Terminate for the nested call",
+        "the wrapper makes a second nested call afterwards"
+      ],
+      "when": "the wrapper is run through Call in each case",
+      "then": [
+        "errors.Is(err, core.ErrTerminated) for the terminating call and for the later call",
+        "the wrapper result has Terminate true"
+      ],
+      "pseudocode": "_,err=CallNested(...); assert errors.Is(err,ErrTerminated); assert res.Terminate"
+    },
+    {
+      "id": "TS-21-32",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-6.5"
+      ],
+      "title": "A nested handler's own terminate vote is dropped and annotated on both results",
+      "given": [
+        "a nested tool whose handler returns Terminate true"
+      ],
+      "when": "the wrapper calls it and returns the nested text",
+      "then": [
+        "the nested result text contains `terminate vote ignored: `",
+        "the wrapper result text contains `nested terminate vote ignored`",
+        "the wrapper's Terminate is false"
+      ],
+      "pseudocode": "assert contains(nested.text,'terminate vote ignored: '); assert contains(res.text,'nested terminate vote ignored'); assert !res.Terminate"
+    },
+    {
+      "id": "TS-21-33",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-6.6"
+      ],
+      "title": "A nested call whose context is cancelled is aborted",
+      "given": [
+        "a wrapper that cancels the context before calling a nested tool, a counting nested handler"
+      ],
+      "when": "the wrapper is run through Call",
+      "then": [
+        "the nested result has code aborted and text `Operation aborted`",
+        "the nested handler did not complete"
+      ],
+      "pseudocode": "cancel(); res,_=CallNested(ctx,call); assert code=='aborted' && text=='Operation aborted'"
+    },
+    {
+      "id": "TS-21-34",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-6.7",
+        "21-REQ-7.1"
+      ],
+      "title": "code_mode over tools.For called through Runner.Call runs a script that reads a workspace file",
+      "given": [
+        "a temp workspace with a.txt, opened with workspace.Open and tools.For",
+        "a code_mode tool built over the tools, an Events sink recording events, no agent and no provider"
+      ],
+      "when": "r.Call(ctx, \"code_mode\", script) runs a script that calls read_file on a.txt",
+      "then": [
+        "OK is true and the result text contains the file content",
+        "Events holds a ToolExecutionStartEvent and a ToolExecutionEndEvent for read_file whose ParentToolUseID is the code_mode call's id",
+        "Events holds one ToolResultEvent for the code_mode call"
+      ],
+      "pseudocode": "ws=workspace.Open(dir); ts=tools.For(ws,Options{}); cm=codemode.New(ts...); r=NewRunner(Toolset{Tools:append(ts,cm),Events:rec}); res=r.Call(ctx,'code_mode',script)"
+    },
+    {
+      "id": "TS-21-35",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-6.8"
+      ],
+      "title": "A tool without ReachableTools gets no nested caller",
+      "given": [
+        "a tool with no ReachableTools whose handler calls core.CallNested"
+      ],
+      "when": "it is run through Call",
+      "then": [
+        "CallNested returns core.ErrNoNestedCaller"
+      ],
+      "pseudocode": "_,err=CallNested(ctx,call); assert errors.Is(err,core.ErrNoNestedCaller)"
+    },
+    {
+      "id": "TS-21-36",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-7.1"
+      ],
+      "title": "Events receives start, end, result and ErrorEvents for recovered panics outside a run",
+      "given": [
+        "tools that panic in PrepareArguments-time hooks, in Guard, in a handler and in After, an Events sink recording events"
+      ],
+      "when": "each panicking call is run through Call",
+      "then": [
+        "each call has a start and an end event",
+        "each top-level call has a ToolResultEvent carrying the message as After left it",
+        "each recovered panic produces one core.ErrorEvent"
+      ],
+      "pseudocode": "assert count(ErrorEvent)==4; for c: assert has(start,c) && has(end,c) && has(result,c)"
+    },
+    {
+      "id": "TS-21-37",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-7.2"
+      ],
+      "title": "A nil Events sink discards events and results are unchanged",
+      "given": [
+        "two runners over the same tools, one with Events nil and one with a recording sink"
+      ],
+      "when": "the same Call and Batch are run on both",
+      "then": [
+        "no panic with nil Events",
+        "results are equal on both runners"
+      ],
+      "pseudocode": "assert equal(r1.Call(...), r2.Call(...))"
+    },
+    {
+      "id": "TS-21-38",
+      "kind": "property",
+      "verifies": [
+        "21-REQ-7.3"
+      ],
+      "title": "Start precedes end and end precedes the result event for any concurrent batch with nested calls",
+      "given": [
+        "an Events sink recording a per-id sequence under a mutex"
+      ],
+      "when": "for any generated concurrent batch of calls, some of them wrappers making nested calls",
+      "then": [
+        "for every call id, start precedes end",
+        "for every top-level id, end precedes its ToolResultEvent"
+      ],
+      "pseudocode": "for batch in gen(): events=run(batch); for id: idx(start)<idx(end); if top: idx(end)<idx(result)"
+    },
+    {
+      "id": "TS-21-39",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-7.4"
+      ],
+      "title": "A panicking Events sink is recovered, the event dropped and not reported again",
+      "given": [
+        "an Events sink that panics on every event and counts invocations"
+      ],
+      "when": "r.Call is invoked on an echo tool",
+      "then": [
+        "Call returns the normal OK result",
+        "no ErrorEvent describing the sink's panic is delivered to any sink"
+      ],
+      "pseudocode": "res=r.Call(...); assert res.OK; assert errorEventsForSinkPanic==0"
+    },
+    {
+      "id": "TS-21-40",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-7.5"
+      ],
+      "title": "A sink that calls Runner.Call completes, and EventStream.Push works as a sink under -race",
+      "given": [
+        "an Events sink that calls r.Call on a second tool when it sees the first start event",
+        "a second runner whose Events is (*core.EventStream).Push"
+      ],
+      "when": "r.Call is invoked, and a batch runs through the second runner under go test -race",
+      "then": [
+        "the first Call returns within the test timeout",
+        "the stream receives the start, end and result events with no race"
+      ],
+      "pseudocode": "done=make(chan); go func(){r.Call(...);close(done)}(); select{done; timeout fail}"
+    },
+    {
+      "id": "TS-21-41",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-7.6"
+      ],
+      "title": "During an agent run the run's stream receives the events and Toolset.Events is not called",
+      "given": [
+        "an agent with Toolset.Events counting invocations and a scripted provider returning one tool call then a final answer"
+      ],
+      "when": "a.Stream(ctx, prompt) is consumed",
+      "then": [
+        "the stream contains start, end and ToolResultEvent for the call",
+        "Toolset.Events invocation count is 0"
+      ],
+      "pseudocode": "collect stream; assert has(start,end,result); assert eventsCount==0"
+    },
+    {
+      "id": "TS-21-42",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-8.1"
+      ],
+      "title": "New returns NewRunner's error unchanged after client and model checks and sends no request",
+      "given": [
+        "a recording provider, a toolset with an unguarded shell tool",
+        "a Config with no model and a bad toolset"
+      ],
+      "when": "New is called with each Config",
+      "then": [
+        "the shell case returns a nil agent and error text identical to NewRunner's",
+        "the provider's request count is 0",
+        "the missing-model Config returns the model error first, not the toolset error"
+      ],
+      "pseudocode": "_,e1=NewRunner(ts); a,e2=New(cfg); assert a==nil && e1.Error()==e2.Error() && p.requests==0"
+    },
+    {
+      "id": "TS-21-43",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-8.2"
+      ],
+      "title": "Requests, the system prompt and the fixed-token estimate use Runner.Tools()",
+      "given": [
+        "a Policy that filters or reorders tools, a recording scripted provider"
+      ],
+      "when": "a.Run is executed",
+      "then": [
+        "the request's tool names equal a.Runner().Tools() names in order",
+        "the system prompt lists the same tools",
+        "fixedTokens is computed from prompt.Build and ToolWires of Runner.Tools()"
+      ],
+      "pseudocode": "assert names(p.requests[0].Tools)==names(a.Runner().Tools())"
+    },
+    {
+      "id": "TS-21-44",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-8.3",
+        "21-REQ-8.4"
+      ],
+      "title": "Agent.Runner is stable and its calls stay outside every run",
+      "given": [
+        "an agent whose scripted provider blocks mid-run, an Events sink recording events"
+      ],
+      "when": "a.Run is in flight and a.Runner().Call and Batch are invoked, and again after the run",
+      "then": [
+        "a.Runner() returns the same pointer every time and never ErrBusy",
+        "a.Messages() length and a.Usage() are unchanged by the runner calls",
+        "a concurrent Run is not refused with ErrBusy because of runner calls",
+        "the runner calls' events went to Toolset.Events"
+      ],
+      "pseudocode": "assert a.Runner()==a.Runner(); before=len(a.Messages()); a.Runner().Call(...); assert len(a.Messages())==before && a.Usage()==u"
+    },
+    {
+      "id": "TS-21-45",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-8.5"
+      ],
+      "title": "The loop hands a turn's calls to the runner and ends on a terminate vote",
+      "given": [
+        "a Guard recording its context, a scripted provider returning two tool calls (one voting Terminate) in one assistant message"
+      ],
+      "when": "a.Run is executed",
+      "then": [
+        "Guard sees a non-nil Assistant and the turn number in TurnCount",
+        "the transcript holds one tool result message per call, as After left them",
+        "the run ends with the terminate stop reason"
+      ],
+      "pseudocode": "assert g.Assistant!=nil && g.TurnCount==1; assert len(toolResultMsgs)==2; assert stop==StopReasonTerminate"
+    },
+    {
+      "id": "TS-21-46",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-8.6"
+      ],
+      "title": "A run's transcript, events, stop reasons and max_tokens handling are unchanged",
+      "given": [
+        "the root module's loop, batch, nested, golden and scripted tests migrated only in their Config literals",
+        "a max_tokens response with tool calls"
+      ],
+      "when": "the root module tests run",
+      "then": [
+        "they pass with identical transcripts, event sequences and stop reasons",
+        "the max_tokens response produces the synthesized not-executed results and no handler runs"
+      ],
+      "pseudocode": "go test . (existing golden_test, loop_test, batch_test, nested_test); assert handlerCalls==0 for length stop"
+    },
+    {
+      "id": "TS-21-47",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-8.7"
+      ],
+      "title": "The pipeline exists once: no Agent.executeBatch and the wrappers are called only by the runner implementation",
+      "given": [
+        "the root package non-test Go files parsed with go/parser"
+      ],
+      "when": "an AST walk looks for an executeBatch method on *Agent and for calls to core.PrepareArguments, callBefore, invokeHandler and callAfter",
+      "then": [
+        "there is no Agent.executeBatch",
+        "every such call site is inside a function whose receiver is the runner or the nested caller type"
+      ],
+      "pseudocode": "parse files; assert !hasMethod('Agent','executeBatch'); for call in callsTo(names): assert recvOf(enclosing(call)) in runnerTypes"
+    },
+    {
+      "id": "TS-21-48",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-8.8"
+      ],
+      "title": "Outside a run the runner attaches no usage reporter and passes through the caller's",
+      "given": [
+        "a handler calling core.ReportUsage",
+        "a context carrying a counting reporter, and a plain context"
+      ],
+      "when": "r.Call is invoked with each context on a runner from Agent.Runner",
+      "then": [
+        "with the caller's reporter the usage reaches it",
+        "with a plain context nothing happens and no panic",
+        "a.Usage() is unchanged"
+      ],
+      "pseudocode": "ctx=WithUsageReporter(ctx,f); a.Runner().Call(ctx,...); assert got==u; assert a.Usage()==before"
+    },
+    {
+      "id": "TS-21-49",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-9.1"
+      ],
+      "title": "No migrated consumer still sets the removed Config tool fields",
+      "given": [
+        "Go files: root tests, metadata_message_test.go, codemode/smoke_test.go, sandbox/integration_test.go, sandbox/codemode_smoke_test.go, the example mains and harness.go"
+      ],
+      "when": "an AST scan inspects every agentkit.Config composite literal and field selector",
+      "then": [
+        "no literal uses Tools, Policy, Guard or After keys directly on Config",
+        "each tool-bearing Config sets Toolset: agentkit.Toolset{…}",
+        "make check passes in every module in MODULES"
+      ],
+      "pseudocode": "for f in files: for lit in ConfigLiterals(f): assert keys(lit) ∩ {Tools,Policy,Guard,After} == ∅"
+    },
+    {
+      "id": "TS-21-50",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-9.2"
+      ],
+      "title": "The sandbox integration refuses an unguarded proxied shell tool",
+      "given": [
+        "a sandbox with a proxied shell tool exposed in Toolset.Tools, Toolset.Guard nil"
+      ],
+      "when": "agentkit.New(Config{Toolset: ts}) is called",
+      "then": [
+        "New returns an error with errors.Is(err, core.ErrUnguardedExecute) true",
+        "the agent is nil"
+      ],
+      "pseudocode": "_,err=agentkit.New(cfg(ts,nil)); assert errors.Is(err, core.ErrUnguardedExecute)"
+    },
+    {
+      "id": "TS-21-51",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-9.3"
+      ],
+      "title": "examples/harness/server.go contains no tool-call pipeline",
+      "given": [
+        "examples/harness/server.go parsed with go/parser"
+      ],
+      "when": "an AST walk searches for core.NewToolUse, core.PrepareArguments, core.WithNestedCaller calls, core.NestedCaller implementations, recover() and a toolServer.call method",
+      "then": [
+        "none is found"
+      ],
+      "pseudocode": "assert no CallExpr matches; assert no method call on toolServer; assert no type with method Call(ctx, ...core.ToolUseBlock)"
+    },
+    {
+      "id": "TS-21-52",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-9.4"
+      ],
+      "title": "The harness builds code_mode, a runner under a wrapping guard, and runs spec steps through Runner.Call",
+      "given": [
+        "the harness example with fake proxies"
+      ],
+      "when": "main's setup, renderSpec, readTestCommands, runChecks and the final git status are exercised",
+      "then": [
+        "NewRunner receives the proxies plus code_mode and a Guard wrapping the configured guard",
+        "those steps call Runner.Call",
+        "systemPrompt is built from Runner.Tools()"
+      ],
+      "pseudocode": "r=buildRunner(proxies,guard,log); renderSpec(ctx,r,...); assert guardWrapped && prompt names == r.Tools() names"
+    },
+    {
+      "id": "TS-21-53",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-9.5"
+      ],
+      "title": "The harness runner returns the right codes and counts blocks through its hooks",
+      "given": [
+        "the harness runner over fake proxies with a restricting guard and log"
+      ],
+      "when": "calls are made for a blocked execute, an unknown tool, `{}` for a tool with required arguments, `not json`, and a code_mode script calling code_mode",
+      "then": [
+        "the codes are blocked_by_policy, unknown_tool, invalid_arguments, invalid_arguments and runtime_error (`undefined: code_mode`)",
+        "the blocked count is 3",
+        "the log records blocked lines and nested run lines"
+      ],
+      "pseudocode": "assert codes==[...]; assert blocked.Load()==3; assert contains(log,'blocked') && contains(log,'run')"
+    },
+    {
+      "id": "TS-21-54",
+      "kind": "integration",
+      "verifies": [
+        "21-REQ-9.6"
+      ],
+      "title": "The harness MCP handler answers a served tool call through Runner.Call",
+      "given": [
+        "the harness MCP server serving the runner's tools with a bearer token, an MCP client with the token"
+      ],
+      "when": "the client calls a served tool",
+      "then": [
+        "the CallToolResult has one TextContent holding the result's LLMText()",
+        "IsError equals !OK"
+      ],
+      "pseudocode": "res=client.CallTool(...); assert res.Content[0].Text==runnerRes.LLMText(); assert res.IsError==!runnerRes.OK"
+    },
+    {
+      "id": "TS-21-55",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-10.1"
+      ],
+      "title": "The exported-API golden records Toolset, NewRunner, Runner and the new Config",
+      "given": [
+        "internal/policy/testdata/exported-api.golden regenerated and committed"
+      ],
+      "when": "TS-13-67 runs without AGENTKIT_UPDATE_API_GOLDEN set",
+      "then": [
+        "it passes",
+        "the golden mentions Toolset with five fields, NewRunner, Runner with Call, Batch, Tools and Reachable, Agent.Runner and the twelve-field Config"
+      ],
+      "pseudocode": "go test ./internal/policy -run TS-13-67; assert golden contains the declarations"
+    },
+    {
+      "id": "TS-21-56",
+      "kind": "unit",
+      "verifies": [
+        "21-REQ-10.2"
+      ],
+      "title": "The core and root-module line budgets still hold",
+      "given": [
+        "the repository after the change"
+      ],
+      "when": "TS-12-14 runs",
+      "then": [
+        "core is at or under 1,600 lines of code",
+        "the root module is at or under 20,000"
+      ],
+      "pseudocode": "go test ./core -run TS-12-14"
+    },
+    {
+      "id": "TS-21-57",
+      "kind": "smoke",
+      "verifies": [
+        "21-PATH-1",
+        "21-REQ-6.7"
+      ],
+      "title": "An embedder runs code mode through a runner with no agent",
+      "given": [
+        "a temp workspace with a file",
+        "a code_mode tool over tools.For, a Guard and an Events sink"
+      ],
+      "when": "NewRunner(Toolset{Tools, Guard, Events}) is built and r.Call(ctx, \"code_mode\", script) runs a script calling read_file",
+      "then": [
+        "NewRunner returns a runner",
+        "the result is OK with the file content",
+        "Events holds nested start and end events for read_file with ParentToolUseID equal to the code_mode call id",
+        "Events holds the code_mode end and result events"
+      ],
+      "real_components": [
+        "Runner",
+        "codemode",
+        "tools",
+        "workspace",
+        "core.NestedCaller"
+      ]
+    },
+    {
+      "id": "TS-21-58",
+      "kind": "smoke",
+      "verifies": [
+        "21-PATH-2",
+        "21-REQ-8.5"
+      ],
+      "title": "An agent run executes a turn's two tool calls through its runner",
+      "given": [
+        "a scripted provider returning an assistant message with two tool calls then a final answer"
+      ],
+      "when": "agentkit.New(Config{Provider, Model, Toolset}) and a.Run(ctx, prompt) execute",
+      "then": [
+        "the first request's tool definitions equal Runner.Tools()",
+        "handlers ran for both calls, start, end and result events reached the run's stream",
+        "the transcript holds two ToolResultMessages and the final assistant answer"
+      ],
+      "real_components": [
+        "agentkit.Agent",
+        "Runner",
+        "core.EventStream",
+        "scripted provider",
+        "tools"
+      ]
+    },
+    {
+      "id": "TS-21-59",
+      "kind": "smoke",
+      "verifies": [
+        "21-PATH-3",
+        "21-REQ-8.1"
+      ],
+      "title": "A misconfigured toolset is refused before any request",
+      "given": [
+        "a recording provider and a toolset exposing run_command with a nil Toolset.Guard"
+      ],
+      "when": "agentkit.New is called",
+      "then": [
+        "it returns a nil agent and an error wrapping core.ErrUnguardedExecute naming Toolset.Guard",
+        "the provider received no request"
+      ],
+      "real_components": [
+        "agentkit.New",
+        "NewRunner",
+        "guard.IsShellTool",
+        "provider stub"
+      ]
+    },
+    {
+      "id": "TS-21-60",
+      "kind": "smoke",
+      "verifies": [
+        "21-PATH-4",
+        "21-REQ-9.7"
+      ],
+      "title": "The harness example runs offline through a runner and prints its success line",
+      "given": [
+        "the harness example in offline mode with its scripted provider and fake proxies"
+      ],
+      "when": "the program is run",
+      "then": [
+        "output contains `Harness example completed successfully`",
+        "the process exits 0",
+        "call and blocked counts are printed from the hooks",
+        "MCP-served tool calls and the final git status ran through Runner.Call"
+      ],
+      "real_components": [
+        "examples/harness",
+        "agentkit.NewRunner",
+        "codemode",
+        "MCP server",
+        "scripted provider"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1195 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "23",
+  "spec_name": "mcp_serve",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-23-1",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-1.1"
+      ],
+      "title": "mcpserve/go.mod declares the module, the root replace and exactly the two direct requirements",
+      "given": [
+        "the root module's internal/policy test helpers (go mod edit -json, directSet, validateAllowlist, parseGoMod)"
+      ],
+      "when": "the policy test reads mcpserve/go.mod and the root go.mod",
+      "then": [
+        "module path is github.com/agent-fox-dev/agentkit-go/mcpserve and go is 1.27",
+        "exactly one replace maps github.com/agent-fox-dev/agentkit-go to \"../\"",
+        "the direct set is exactly the root module and github.com/modelcontextprotocol/go-sdk",
+        "the SDK version equals the root go.mod's version",
+        "validateAllowlist(direct, approvedDeps + mcpserve path) reports no violation"
+      ],
+      "pseudocode": "m = goModEdit('mcpserve'); assert m.Module.Path == '.../mcpserve' && m.Go == '1.27'; assert replaces == {root: '../'}; assert directSet('mcpserve') == {root, sdk}; assert version(sdk, mcpserve) == version(sdk, root); assert validateAllowlist(direct, approvedDeps+modulePaths) == nil"
+    },
+    {
+      "id": "TS-23-2",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-1.2"
+      ],
+      "title": "mcpserve's module graph adds no module the root graph lacks",
+      "given": [
+        "go list -m all output for the root module and for mcpserve (offline)"
+      ],
+      "when": "the two module-path sets are compared",
+      "then": [
+        "mcpserve's set minus the root's set, with the mcpserve path removed, is empty"
+      ],
+      "pseudocode": "diff = paths(mcpserve) - paths(root) - {mcpservePath}; assert diff == empty"
+    },
+    {
+      "id": "TS-23-3",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-1.3"
+      ],
+      "title": "mcpserve holds one package named mcpserve with only allowed imports and no cmd directory",
+      "given": [
+        "the mcpserve directory"
+      ],
+      "when": "go list ./... and the non-test imports are inspected",
+      "then": [
+        "exactly one package, named mcpserve, is listed",
+        "no main package and no mcpserve/cmd directory exist",
+        "every non-test import is the standard library, agentkit, core, mcp or wire of the root, or go-sdk mcp or jsonrpc"
+      ],
+      "pseudocode": "pkgs = goList('./...'); assert len(pkgs)==1 && pkgs[0].Name=='mcpserve'; for imp in nonTestImports: assert imp in allowlist or isStdlib(imp)"
+    },
+    {
+      "id": "TS-23-4",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-1.4"
+      ],
+      "title": "Every non-context error from New, ServeStdio and ServeLoopback is prefixed \"mcpserve: \"",
+      "given": [
+        "a nil runner, a runner whose tool has a non-object schema, and a stdio session fed an over-limit frame",
+        "a loopback listen/random failure injected through the package's test seam"
+      ],
+      "when": "New, ServeStdio and ServeLoopback are each driven to a non-context failure",
+      "then": [
+        "each err.Error() starts with \"mcpserve: \""
+      ],
+      "pseudocode": "for err in [New(nil,{}), New(badSchemaRunner,{}), ServeStdio(oversizeInput), ServeLoopback(failingListen)]: assert hasPrefix(err.Error(), 'mcpserve: ')"
+    },
+    {
+      "id": "TS-23-5",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-2.1"
+      ],
+      "title": "New with a nil runner returns nil and the exact refusal message",
+      "given": [
+        "no runner"
+      ],
+      "when": "mcpserve.New(nil, Options{}) is called",
+      "then": [
+        "the server is nil",
+        "the error message is exactly \"mcpserve: Runner is nil\""
+      ],
+      "pseudocode": "s, err = New(nil, Options{}); assert s == nil; assert err.Error() == 'mcpserve: Runner is nil'"
+    },
+    {
+      "id": "TS-23-6",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-2.2"
+      ],
+      "title": "tools/list returns exactly the runner's tools with verbatim names, descriptions and JSON-equal schemas",
+      "given": [
+        "a real Runner over several tools with differing schemas (built-in tools and code_mode)",
+        "a Server connected to an SDK/mcp.Connect client over in-process pipes"
+      ],
+      "when": "the client sends tools/list",
+      "then": [
+        "the count and the set of names equal r.Tools()",
+        "each description is equal verbatim",
+        "each inputSchema is JSON-equal to json.Marshal(tool.InputSchema)",
+        "outputSchema, annotations and _meta are absent from every listed tool"
+      ],
+      "pseudocode": "listed = client.ListTools(); for t in r.Tools(): l = byName[t.Name]; assert l.Description==t.Description; assert jsonEqual(l.InputSchema, marshal(t.InputSchema)); assert l.OutputSchema==nil && l.Annotations==nil && l.Meta==nil"
+    },
+    {
+      "id": "TS-23-7",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-2.3"
+      ],
+      "title": "A tool with a nil InputSchema is listed with {\"type\":\"object\"}",
+      "given": [
+        "a runner with one tool whose InputSchema is nil"
+      ],
+      "when": "the client sends tools/list",
+      "then": [
+        "that tool's inputSchema is JSON-equal to {\"type\":\"object\"}"
+      ],
+      "pseudocode": "assert jsonEqual(list[0].InputSchema, '{\"type\":\"object\"}')"
+    },
+    {
+      "id": "TS-23-8",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-2.4"
+      ],
+      "title": "New refuses a tool whose schema cannot be served and names the tool without panicking",
+      "given": [
+        "table of runners, each with one tool named \"bad\": a schema that fails to marshal, a TypeNone schema with no type, a top-level array schema, a top-level string schema"
+      ],
+      "when": "New is called for each",
+      "then": [
+        "each call returns a nil server and a non-nil error",
+        "each message starts with `mcpserve: tool \"bad\": input schema`",
+        "no call panics"
+      ],
+      "pseudocode": "for r in cases: s, err = New(r, {}); assert s==nil; assert hasPrefix(err.Error(), 'mcpserve: tool \"bad\": input schema')"
+    },
+    {
+      "id": "TS-23-9",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-2.5"
+      ],
+      "title": "The tool set is a snapshot taken once at New",
+      "given": [
+        "a runner stub whose Tools() returns a slice the test can mutate and counts invocations"
+      ],
+      "when": "New is called, then the returned slice is mutated (element removed, description changed), then tools/list is sent",
+      "then": [
+        "r.Tools() was called exactly once",
+        "tools/list shows the original names and descriptions",
+        "no tools/list_changed notification is received"
+      ],
+      "pseudocode": "s = New(r); r.slice[0].Description='x'; r.slice = r.slice[:0]; assert listed == original; assert r.toolsCalls == 1"
+    },
+    {
+      "id": "TS-23-10",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-2.6"
+      ],
+      "title": "initialize reports the configured or default server info and the instructions",
+      "given": [
+        "Servers built with Options{Name:\"n\",Version:\"v\",Instructions:\"i\"} and with Options{}"
+      ],
+      "when": "a client connects and reads the initialize result",
+      "then": [
+        "configured: serverInfo.name is \"n\", version \"v\", instructions \"i\"",
+        "default: name is \"agentkit\" and version is the build-info version of the mcpserve module, or \"(devel)\" when there is none"
+      ],
+      "pseudocode": "info = client.InitializeResult(); assert info.ServerInfo.Name=='n' ...; default: assert Name=='agentkit' && Version==expectedBuildVersion()"
+    },
+    {
+      "id": "TS-23-11",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-2.7"
+      ],
+      "title": "A runner with no tools yields a working server with an empty tool list",
+      "given": [
+        "a Runner over an empty toolset"
+      ],
+      "when": "New is called and a client sends tools/list",
+      "then": [
+        "New returns a non-nil server and nil error",
+        "tools/list returns an empty tools array"
+      ],
+      "pseudocode": "s, err = New(emptyRunner, {}); assert s!=nil && err==nil; assert len(client.ListTools())==0"
+    },
+    {
+      "id": "TS-23-12",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-2.8"
+      ],
+      "title": "One Server serves several loopback endpoints and a stdio session concurrently over the same tools",
+      "given": [
+        "one Server",
+        "stdin and stdout replaced by pipes",
+        "tests run with the race detector"
+      ],
+      "when": "two ServeLoopback endpoints and one ServeStdio session are opened at once and each client lists tools and calls one",
+      "then": [
+        "all three clients list identical tools",
+        "all calls succeed",
+        "the race detector reports no data race"
+      ],
+      "pseudocode": "parallel(listHTTP(ep1), listHTTP(ep2), listStdio()); assert all equal; run with -race"
+    },
+    {
+      "id": "TS-23-13",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-3.1"
+      ],
+      "title": "tools/call reaches Runner.Call exactly once with byte-identical arguments, or empty when absent",
+      "given": [
+        "a Runner whose tool records every (name, input) it receives",
+        "a connected client"
+      ],
+      "when": "the client calls the tool with arguments {\"a\": 1,  \"b\":[true]} (odd whitespace) and then with no arguments",
+      "then": [
+        "the runner observes one call per request",
+        "the first input bytes equal the raw arguments bytes sent",
+        "the second input is empty",
+        "mcpserve performs no validation of its own (an argument that violates the schema reaches the runner, which rejects it)"
+      ],
+      "pseudocode": "client.CallRaw('t', raw); assert rec[0].input == raw; client.Call('t', nil); assert len(rec[1].input)==0; assert len(rec)==2"
+    },
+    {
+      "id": "TS-23-14",
+      "kind": "property",
+      "verifies": [
+        "23-REQ-3.2"
+      ],
+      "title": "Result content is LLMText followed by every TextBlock in order, isError is !OK",
+      "given": [
+        "a runner tool returning a generated core.ToolResult"
+      ],
+      "when": "for any ToolResult with any OK flag, Text/Data/Error/Detail, Metadata, Terminate vote and any sequence of TextBlock, ThinkingBlock and ToolUseBlock in Blocks, it is called through MCP",
+      "then": [
+        "Content length is 1 + number of TextBlocks",
+        "Content[0].Text equals res.LLMText() and the rest are the TextBlock texts in order",
+        "non-text blocks are dropped",
+        "IsError equals !res.OK",
+        "structuredContent is absent"
+      ],
+      "pseudocode": "for res in genResults(): out = callThroughMCP(res); assert texts(out) == [res.LLMText()] + [b.Text for b in res.Blocks if b is TextBlock]; assert out.IsError == !res.OK; assert out.StructuredContent==nil"
+    },
+    {
+      "id": "TS-23-15",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-3.3"
+      ],
+      "title": "Runner failures arrive as isError results, never as protocol errors",
+      "given": [
+        "a Runner with a Guard that blocks one call with a reason",
+        "tools that trigger invalid_arguments, a panic, a handler error and an aborted result"
+      ],
+      "when": "the client calls each",
+      "then": [
+        "every call returns without a JSON-RPC error",
+        "each result has isError true and its text is the runner's envelope with the matching error code",
+        "the blocked result text contains blocked_by_policy and the guard's reason"
+      ],
+      "pseudocode": "for c in cases: res, err = client.Call(c); assert err==nil; assert res.IsError; assert contains(res.text, c.code); assert contains(blocked.text, 'blocked_by_policy') && contains(blocked.text, reason)"
+    },
+    {
+      "id": "TS-23-16",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-3.4"
+      ],
+      "title": "Cancelling a request or ending the session cancels the runner call, which returns aborted",
+      "given": [
+        "a tool handler that blocks until ctx.Done() and records the context error",
+        "a connected client"
+      ],
+      "when": "the client cancels the in-flight request, and in a second run the session is closed while the call runs",
+      "then": [
+        "the handler observes ctx.Done() in both runs",
+        "the runner's result for that call has error code aborted"
+      ],
+      "pseudocode": "cctx, cancel = WithCancel; go client.Call(cctx,'block'); waitStarted(); cancel(); assert <-handlerDone; assert recordedResult.Error=='aborted'"
+    },
+    {
+      "id": "TS-23-17",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-3.5"
+      ],
+      "title": "Two calls that each wait for the other both complete",
+      "given": [
+        "a tool that signals arrival and blocks until two calls have arrived (with a timeout)"
+      ],
+      "when": "two tools/call requests are sent concurrently on one session",
+      "then": [
+        "both complete successfully before the timeout"
+      ],
+      "pseudocode": "barrier = newBarrier(2); parallel(call('rendezvous'), call('rendezvous')); assert both OK within 5s"
+    },
+    {
+      "id": "TS-23-18",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-3.6"
+      ],
+      "title": "A tools/call for an unserved tool is a protocol error and never reaches the runner",
+      "given": [
+        "a Runner that counts Call invocations"
+      ],
+      "when": "the client calls a tool name that is not served",
+      "then": [
+        "the client receives a JSON-RPC protocol error",
+        "the runner recorded zero calls"
+      ],
+      "pseudocode": "_, err = client.CallRaw('nope', '{}'); assert isRPCError(err); assert runner.calls == 0"
+    },
+    {
+      "id": "TS-23-19",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-3.7"
+      ],
+      "title": "mcp.Pool over loopback HTTP runs code_mode whose nested read_file passes the Guard",
+      "given": [
+        "a workspace containing a file with known content, built with workspace.Open and tools.For",
+        "code_mode wrapped around the tools, and a Runner whose Guard records every call",
+        "a Server on ServeLoopback"
+      ],
+      "when": "mcp.Pool connects with URL and header Authorization: Bearer <token> and calls code_mode with a script calling read_file on the file",
+      "then": [
+        "the imported result is OK and holds the file's content",
+        "the Guard observed both the code_mode call and the nested read_file call"
+      ],
+      "pseudocode": "pool.Connect({URL: ep.URL, Headers:{Authorization:'Bearer '+ep.Token}}); res = tools['agentkit__code_mode'].Handler(script); assert res.OK && contains(res.Text, content); assert guardSeen == ['code_mode','read_file']"
+    },
+    {
+      "id": "TS-23-20",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-4.1"
+      ],
+      "title": "ServeStdio serves the tools to a client over in-process pipes",
+      "given": [
+        "os.Stdin and os.Stdout replaced by pipe ends",
+        "a client using mcp.Connect with mcp.NewPipeTransport on the other ends"
+      ],
+      "when": "the client lists tools and calls one while ServeStdio runs",
+      "then": [
+        "the listed tools equal the runner's tools",
+        "the call returns the runner's text"
+      ],
+      "pseudocode": "go ServeStdio(ctx); c = mcp.Connect(NewPipeTransport(outR, inW, Defaults())); assert names(c.ListTools())==names(r.Tools()); assert c.CallRaw(...).OK"
+    },
+    {
+      "id": "TS-23-21",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-4.1"
+      ],
+      "title": "A child process running ServeStdio is usable through mcp.Pool with ServerConfig.Command",
+      "given": [
+        "the test binary re-executed with a marker environment variable (plus PATH/HOME), where the marker selects a main that builds a runner and calls ServeStdio",
+        "the test skips on Windows"
+      ],
+      "when": "mcp.Pool connects with Command and Env, lists tools and calls one, then closes",
+      "then": [
+        "tools are listed and the call returns the runner's text",
+        "the child exits 0 after the pool closes"
+      ],
+      "pseudocode": "if os.Getenv(MARKER)!='' { serveChild() }; pool.Connect({Command: os.Args[0], Env:[MARKER+'=1', ...]}); assert tools listed; assert call OK; pool.Close(); assert childExit==0"
+    },
+    {
+      "id": "TS-23-22",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-4.2"
+      ],
+      "title": "On client EOF every reply already owed is written and ServeStdio returns nil",
+      "given": [
+        "a tool that takes a short time to answer",
+        "stdin and stdout as pipes"
+      ],
+      "when": "the client sends a tools/call and immediately closes its write end",
+      "then": [
+        "the reply for the call is written to stdout before ServeStdio returns",
+        "ServeStdio returns nil"
+      ],
+      "pseudocode": "send(call); closeWriter(); err = <-done; assert err==nil; assert replyFrames contains id of call"
+    },
+    {
+      "id": "TS-23-23",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-4.3"
+      ],
+      "title": "Cancelling ctx while a stdio session is open closes it and returns ctx.Err()",
+      "given": [
+        "an open session with an idle client"
+      ],
+      "when": "ctx is cancelled",
+      "then": [
+        "ServeStdio returns context.Canceled (ctx.Err()) promptly"
+      ],
+      "pseudocode": "cancel(); assert errors.Is(<-done, context.Canceled) within 2s"
+    },
+    {
+      "id": "TS-23-24",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-4.4"
+      ],
+      "title": "ServeStdio with an already-done ctx returns ctx.Err() without consuming stdin",
+      "given": [
+        "os.Stdin is a file holding bytes, with a duplicated descriptor sharing its offset",
+        "ctx already cancelled"
+      ],
+      "when": "ServeStdio(ctx) is called",
+      "then": [
+        "it returns ctx.Err()",
+        "the shared file offset is still 0, so no byte was read"
+      ],
+      "pseudocode": "cancel(); err = ServeStdio(ctx); assert err == ctx.Err(); assert dupFd.Seek(0, Current)==0"
+    },
+    {
+      "id": "TS-23-25",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-4.5"
+      ],
+      "title": "A frame that breaks wire limits ends the session with an mcpserve error and never reaches the runner",
+      "given": [
+        "a Runner counting calls",
+        "stdin carrying a tools/call frame with a duplicate key (or depth over 64, or longer than 16 MiB)"
+      ],
+      "when": "ServeStdio reads the frame",
+      "then": [
+        "ServeStdio returns a non-nil error prefixed \"mcpserve: \"",
+        "the runner recorded zero calls"
+      ],
+      "pseudocode": "write(dupKeyFrame); err = ServeStdio(ctx); assert hasPrefix(err.Error(),'mcpserve: '); assert runner.calls==0"
+    },
+    {
+      "id": "TS-23-26",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-4.6"
+      ],
+      "title": "ServeStdio closes stdin, leaves stdout open and writes only JSON-RPC frames",
+      "given": [
+        "os.Stdin and os.Stdout replaced by os.Pipe files, with a session that lists and calls a tool then ends by client EOF"
+      ],
+      "when": "ServeStdio returns",
+      "then": [
+        "a read on the stdin file fails with os.ErrClosed",
+        "a further write to os.Stdout succeeds",
+        "every line captured from stdout parses as a JSON-RPC message"
+      ],
+      "pseudocode": "_, e = os.Stdin.Read(buf); assert errors.Is(e, os.ErrClosed); _, e = os.Stdout.Write('x'); assert e==nil; for line in captured: assert isJSONRPC(line)"
+    },
+    {
+      "id": "TS-23-27",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-5.1"
+      ],
+      "title": "ServeLoopback with a done ctx returns nil and ctx.Err() and listens on nothing",
+      "given": [
+        "a cancelled ctx, and a listen hook that fails the test if invoked"
+      ],
+      "when": "ServeLoopback(ctx) is called",
+      "then": [
+        "the endpoint is nil",
+        "the error is ctx.Err()",
+        "no listener was opened"
+      ],
+      "pseudocode": "ep, err = s.ServeLoopback(cancelledCtx); assert ep==nil && err==context.Canceled; assert listenCalls==0"
+    },
+    {
+      "id": "TS-23-28",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-5.2"
+      ],
+      "title": "ServeLoopback listens on 127.0.0.1 and returns the URL and a fresh 48-hex token",
+      "given": [
+        "a live ctx"
+      ],
+      "when": "ServeLoopback is called",
+      "then": [
+        "URL matches ^http://127\\.0\\.0\\.1:[0-9]+/mcp$",
+        "Token matches ^[0-9a-f]{48}$",
+        "the error is nil",
+        "the port is a TCP listener on 127.0.0.1"
+      ],
+      "pseudocode": "ep, err = ServeLoopback(ctx); assert regexp(urlRe, ep.URL) && regexp('^[0-9a-f]{48}$', ep.Token)"
+    },
+    {
+      "id": "TS-23-29",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-5.3"
+      ],
+      "title": "A listen or random-source failure returns an mcpserve error and leaves no listener",
+      "given": [
+        "a test seam that makes listen fail, and another that makes the random source fail after the listener is opened"
+      ],
+      "when": "ServeLoopback is called in each case",
+      "then": [
+        "the endpoint is nil and the error is prefixed \"mcpserve: \"",
+        "in the random-failure case the opened listener is closed (the port refuses connections)"
+      ],
+      "pseudocode": "for hook in [failListen, failRand]: ep, err = ServeLoopback(ctx); assert ep==nil && hasPrefix(err.Error(),'mcpserve: '); assert connectRefused(openedAddr) for failRand"
+    },
+    {
+      "id": "TS-23-30",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-5.4"
+      ],
+      "title": "A request without the exact bearer token gets 401 with WWW-Authenticate and body \"unauthorized\" before its body is read",
+      "given": [
+        "a running endpoint whose SDK handler is wrapped to detect invocation",
+        "a request body that blocks forever if read"
+      ],
+      "when": "requests are sent on /mcp and on /other with no Authorization, a wrong token, \"bearer <token>\", and \"Bearer <token> \" (trailing space), using POST, GET and DELETE",
+      "then": [
+        "every response is 401",
+        "WWW-Authenticate is \"Bearer\" and the body is \"unauthorized\"",
+        "the SDK handler and the runner see nothing",
+        "the response arrives without the body being consumed"
+      ],
+      "pseudocode": "for (path, method, hdr) in matrix: r = do(); assert r.Status==401 && r.Header['WWW-Authenticate']=='Bearer' && r.Body=='unauthorized'; assert sdkCalls==0"
+    },
+    {
+      "id": "TS-23-31",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-5.5"
+      ],
+      "title": "An authorized request for a path other than /mcp gets 404",
+      "given": [
+        "a running endpoint"
+      ],
+      "when": "an authorized GET and POST are sent to /, /mcp/x and /health",
+      "then": [
+        "each response is 404",
+        "the SDK handler is not invoked"
+      ],
+      "pseudocode": "for p in ['/','/mcp/x','/health']: assert do(p, auth).Status==404; assert sdkCalls==0"
+    },
+    {
+      "id": "TS-23-32",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-5.6"
+      ],
+      "title": "An authorized body over MaxMessageBytes gets 413 and is not served",
+      "given": [
+        "a running endpoint",
+        "a body one byte over wire.Defaults().MaxMessageBytes"
+      ],
+      "when": "it is POSTed to /mcp with the token",
+      "then": [
+        "the status is 413",
+        "the SDK handler is not invoked"
+      ],
+      "pseudocode": "r = post('/mcp', bytes(Defaults().MaxMessageBytes+1), auth); assert r.Status==413; assert sdkCalls==0"
+    },
+    {
+      "id": "TS-23-33",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-5.7"
+      ],
+      "title": "An authorized body that wire.Guard rejects gets 400 and is not served",
+      "given": [
+        "a running endpoint",
+        "bodies with a duplicate key, nesting deeper than the depth limit, and invalid JSON syntax"
+      ],
+      "when": "each is POSTed to /mcp with the token",
+      "then": [
+        "each status is 400",
+        "the SDK handler is not invoked"
+      ],
+      "pseudocode": "for b in [dupKey, deep, '{']: assert post('/mcp', b, auth).Status==400; assert sdkCalls==0"
+    },
+    {
+      "id": "TS-23-34",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-5.8"
+      ],
+      "title": "An authorized initialize POST gets 200 with a session id and the SDK serves later requests of that session",
+      "given": [
+        "a running endpoint"
+      ],
+      "when": "a valid initialize request is POSTed with the token, then initialized and tools/list are POSTed with the Mcp-Session-Id",
+      "then": [
+        "the initialize response is 200 and carries a non-empty Mcp-Session-Id",
+        "a GET or POST with no body that is authorized is passed on to the SDK rather than refused by mcpserve",
+        "tools/list in that session returns the runner's tools"
+      ],
+      "pseudocode": "r = post('/mcp', initialize, auth); assert r.Status==200 && r.Header['Mcp-Session-Id']!=''; r2 = post('/mcp', listTools, auth+session); assert names(r2) == names(r.Tools())"
+    },
+    {
+      "id": "TS-23-35",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-6.1"
+      ],
+      "title": "Close and ctx end each stop the endpoint within 3 s even with a standalone SSE stream open",
+      "given": [
+        "two endpoints with a client that opened an initialize and a standalone GET SSE stream that stays open"
+      ],
+      "when": "Close is called on the first and ctx is cancelled for the second",
+      "then": [
+        "Close returns within 3 s",
+        "the ctx-ended endpoint also stops accepting within 3 s",
+        "a later TCP connect to either port is refused"
+      ],
+      "pseudocode": "t0=now; ep.Close(); assert now-t0 < 3s; assert dialRefused(port); cancel(); eventually(dialRefused(port2), 3s)"
+    },
+    {
+      "id": "TS-23-36",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-6.2"
+      ],
+      "title": "Force-closing the endpoint cancels an in-flight call, which returns aborted",
+      "given": [
+        "a tool that blocks until ctx.Done() and records the runner's result",
+        "a call in flight through the loopback endpoint"
+      ],
+      "when": "Endpoint.Close is called",
+      "then": [
+        "the handler observes ctx.Done()",
+        "the runner's result for that call has error code aborted"
+      ],
+      "pseudocode": "go call('block'); waitStarted(); ep.Close(); assert <-recorded.Error=='aborted'"
+    },
+    {
+      "id": "TS-23-37",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-6.3"
+      ],
+      "title": "Close is idempotent and safe from many goroutines",
+      "given": [
+        "a live endpoint",
+        "tests run with the race detector"
+      ],
+      "when": "Close is called from 16 goroutines and then once more",
+      "then": [
+        "every call returns nil",
+        "no data race is reported"
+      ],
+      "pseudocode": "parallel(16, assert ep.Close()==nil); assert ep.Close()==nil"
+    },
+    {
+      "id": "TS-23-38",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-6.4"
+      ],
+      "title": "Close on a zero-value Endpoint does nothing and returns nil",
+      "given": [
+        "var ep mcpserve.Endpoint and &mcpserve.Endpoint{URL: \"x\", Token: \"y\"}"
+      ],
+      "when": "Close is called on each",
+      "then": [
+        "each returns nil without panicking"
+      ],
+      "pseudocode": "assert (&Endpoint{}).Close()==nil"
+    },
+    {
+      "id": "TS-23-39",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-6.5"
+      ],
+      "title": "Two ServeLoopback calls on one Server give independent endpoints",
+      "given": [
+        "one Server and two endpoints A and B"
+      ],
+      "when": "ports and tokens are compared, B is closed, and A's token is presented to B before it closes",
+      "then": [
+        "ports differ and tokens differ",
+        "A's token gets 401 from B while B is open",
+        "after B closes, A still answers an authorized initialize with 200"
+      ],
+      "pseudocode": "assert A.URL!=B.URL && A.Token!=B.Token; assert do(B.URL, bearer(A.Token)).Status==401; B.Close(); assert post(A.URL, init, bearer(A.Token)).Status==200"
+    },
+    {
+      "id": "TS-23-40",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-7.1"
+      ],
+      "title": "ClaudeConfig returns the mcpServers http entry with URL and Authorization header",
+      "given": [
+        "Endpoint{URL:\"http://127.0.0.1:1234/mcp\", Token:\"tok\"}"
+      ],
+      "when": "ClaudeConfig(\"agentkit\") is called",
+      "then": [
+        "the decoded JSON equals {\"mcpServers\":{\"agentkit\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:1234/mcp\",\"headers\":{\"Authorization\":\"Bearer tok\"}}}} exactly"
+      ],
+      "pseudocode": "assert jsonEqual(ep.ClaudeConfig('agentkit'), expected)"
+    },
+    {
+      "id": "TS-23-41",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-7.2"
+      ],
+      "title": "PiConfig is the ClaudeConfig object plus exposure \"direct\" in the server entry",
+      "given": [
+        "Endpoint{URL, Token}"
+      ],
+      "when": "PiConfig(\"agentkit\") is called",
+      "then": [
+        "the decoded JSON equals the ClaudeConfig object with \"exposure\":\"direct\" added to the server entry and nothing else different"
+      ],
+      "pseudocode": "exp = decode(ClaudeConfig); exp.mcpServers.agentkit.exposure='direct'; assert decode(PiConfig)==exp"
+    },
+    {
+      "id": "TS-23-42",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-7.3"
+      ],
+      "title": "An empty name means \"agentkit\" in both config strings",
+      "given": [
+        "an Endpoint"
+      ],
+      "when": "ClaudeConfig(\"\") and PiConfig(\"\") are called",
+      "then": [
+        "the only key under mcpServers is \"agentkit\" in both"
+      ],
+      "pseudocode": "for f in [ClaudeConfig, PiConfig]: assert keys(decode(f('')).mcpServers)==['agentkit']"
+    },
+    {
+      "id": "TS-23-43",
+      "kind": "property",
+      "verifies": [
+        "23-REQ-7.4"
+      ],
+      "title": "Config output is valid JSON that reflects any name, URL and Token byte for byte",
+      "given": [
+        "an Endpoint whose fields are set per generated case"
+      ],
+      "when": "for any non-empty name (including quotes, backslashes, control characters and invalid UTF-8 aside, unicode) and any URL and Token strings, ClaudeConfig and PiConfig are called",
+      "then": [
+        "json.Valid is true",
+        "the only mcpServers key equals the name byte for byte",
+        "url equals the Endpoint's URL and Authorization equals \"Bearer \"+Token as of call time",
+        "changing the fields and calling again reflects the new values"
+      ],
+      "pseudocode": "for (name,url,tok) in gen(): ep=Endpoint{url,tok}; for s in [Claude(name), Pi(name)]: assert json.Valid(s); e = decode(s).mcpServers; assert keys(e)==[name]; assert e[name].url==url && e[name].headers.Authorization=='Bearer '+tok"
+    },
+    {
+      "id": "TS-23-44",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-8.1"
+      ],
+      "title": "Options has exactly four fields and a zero Options serves silently",
+      "given": [
+        "reflect on mcpserve.Options",
+        "a Server built with Options{} and stdout/stderr captured"
+      ],
+      "when": "the fields are listed and the server serves a call, a refusal (401) and a stdio session",
+      "then": [
+        "fields are exactly Name, Version, Instructions (string) and Logger (*slog.Logger)",
+        "nothing panics",
+        "nothing is written to stdout (beyond protocol frames) or stderr"
+      ],
+      "pseudocode": "assert fieldsOf(Options)=={Name:string,Version:string,Instructions:string,Logger:*slog.Logger}; run scenario; assert stderr==''"
+    },
+    {
+      "id": "TS-23-45",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-8.2"
+      ],
+      "title": "Each served call emits exactly one Info \"tool call\" record with tool, ok, duration and the error code on failure",
+      "given": [
+        "a capturing slog handler as Options.Logger",
+        "a tool that succeeds and a tool that fails with handler_error"
+      ],
+      "when": "one successful and one failing call are served",
+      "then": [
+        "exactly one Info record with message \"tool call\" per call",
+        "each has attributes tool, ok and duration",
+        "the failing record also carries the error code, the successful one does not"
+      ],
+      "pseudocode": "recs = capture.filter(msg=='tool call'); assert len(recs)==2; assert recs[0].ok==true && !has(recs[0],'error'); assert recs[1].ok==false && recs[1].error=='handler_error'"
+    },
+    {
+      "id": "TS-23-46",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-8.3"
+      ],
+      "title": "Each refused HTTP request emits one Warn record with peer and a distinguishing reason",
+      "given": [
+        "a capturing handler and a live endpoint"
+      ],
+      "when": "one request with a wrong token, one with an over-size body and one with a rejected body are sent",
+      "then": [
+        "exactly three Warn records, one per refusal",
+        "each has a peer attribute",
+        "the three reason values are pairwise different"
+      ],
+      "pseudocode": "warns = capture.filter(level==Warn); assert len(warns)==3; assert distinct(reasons(warns)) and all(has(w,'peer'))"
+    },
+    {
+      "id": "TS-23-47",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-8.4"
+      ],
+      "title": "A stdio session that ends with an error logs exactly one Warn record",
+      "given": [
+        "a capturing handler",
+        "a stdio session fed an over-limit frame"
+      ],
+      "when": "ServeStdio returns an \"mcpserve: \" error",
+      "then": [
+        "exactly one Warn record was captured for the session end",
+        "a clean EOF session and a ctx-cancelled session log no Warn"
+      ],
+      "pseudocode": "err = ServeStdio(); assert count(capture.Warn)==1; cleanRun(); assert count(capture.Warn)==1"
+    },
+    {
+      "id": "TS-23-48",
+      "kind": "property",
+      "verifies": [
+        "23-REQ-8.5"
+      ],
+      "title": "No log output ever contains the token, the Authorization value, arguments, result text or Detail",
+      "given": [
+        "a capturing handler recording the full text of every record (message and attributes), with the bearer token known to the test"
+      ],
+      "when": "for any generated tool arguments, result text and Detail (including strings that resemble the token), served calls, refused requests and stdio errors are performed",
+      "then": [
+        "none of the token, the \"Bearer <token>\" value, the arguments, the result text or the Detail occurs as a substring of the captured output"
+      ],
+      "pseudocode": "for (args, text, detail) in gen(): run scenario; out = capture.String(); for s in [token,'Bearer '+token,args,text,detail]: assert !contains(out, s)"
+    },
+    {
+      "id": "TS-23-49",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-9.1"
+      ],
+      "title": "The Makefile lists mcpserve in MODULES and in the make doc loop",
+      "given": [
+        "the root Makefile"
+      ],
+      "when": "the policy test parses the `MODULES :=` line and the doc-loop `@for m in` line",
+      "then": [
+        "both contain mcpserve",
+        "the committed docs/generated/mcpserve/mcpserve.txt exists"
+      ],
+      "pseudocode": "assert 'mcpserve' in parseModules(Makefile) && 'mcpserve' in parseDocLoop(Makefile); assert exists('docs/generated/mcpserve/mcpserve.txt')"
+    },
+    {
+      "id": "TS-23-50",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-9.2"
+      ],
+      "title": "gateModules contains mcpserve and the build gates pass for it",
+      "given": [
+        "internal/policy gateModules"
+      ],
+      "when": "the covers test and the cross-target (cgo off, four targets) and host-cgo gates run",
+      "then": [
+        "gateModules contains \"mcpserve\"",
+        "the gates pass for the module"
+      ],
+      "pseudocode": "assert 'mcpserve' in gateModules; run crossTargetGate('mcpserve') == ok"
+    },
+    {
+      "id": "TS-23-51",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-9.3"
+      ],
+      "title": "The no-listen check keeps its scope, names both nested modules and exempts a nested mcpserve listener",
+      "given": [
+        "fixtures built by module(t, files) including a nested mcpserve/go.mod"
+      ],
+      "when": "noListen runs on a fixture with a listener in mcpserve/x.go, on a fixture with a listener in the root, and on the delivered tree",
+      "then": [
+        "the mcpserve fixture passes",
+        "the root-listener fixture fails with a message naming sandbox/gatewayd and mcpserve",
+        "the delivered tree passes"
+      ],
+      "pseudocode": "assert noListen(fixtureNestedMcpserve)==nil; err = noListen(fixtureRootListener); assert contains(err,'gatewayd') && contains(err,'mcpserve'); assert noListen(repoRoot)==nil"
+    },
+    {
+      "id": "TS-23-52",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-9.4"
+      ],
+      "title": "The root go.mod, graph snapshot, policy testdata and exported-API golden are unchanged",
+      "given": [
+        "the delivered tree and git HEAD"
+      ],
+      "when": "TS-13-65 and TS-19-64 run",
+      "then": [
+        "both pass",
+        "root go.mod, internal/policy/testdata and exported-api.golden are byte-identical to HEAD"
+      ],
+      "pseudocode": "run TestRootGraphSnapshot (TS-13-65) and TestGatewayUnchanged (TS-19-64); assert gitDiff(go.mod, internal/policy/testdata)==''"
+    },
+    {
+      "id": "TS-23-53",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-9.5"
+      ],
+      "title": "make check passes offline in every module including mcpserve",
+      "given": [
+        "GOPROXY=off",
+        "mcpserve/go.sum committed"
+      ],
+      "when": "make check runs (TS-19-66)",
+      "then": [
+        "it exits 0 for every module in MODULES, mcpserve included"
+      ],
+      "pseudocode": "env GOPROXY=off make check; assert exit==0"
+    },
+    {
+      "id": "TS-23-54",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-10.1"
+      ],
+      "title": "examples/harness has no server.go, no SDK or net import or listen call, and calls.go holds the helpers",
+      "given": [
+        "the examples/harness non-test sources"
+      ],
+      "when": "a structural test parses them with go/parser",
+      "then": [
+        "server.go does not exist",
+        "no non-test file imports a github.com/modelcontextprotocol/go-sdk package or net",
+        "no listen API is called",
+        "calls.go declares summarize, firstLine, truncate and errShellBlocked, and the per-call log and call/blocked counters"
+      ],
+      "pseudocode": "assert !exists('server.go'); for f in nonTest: assert no import startswith sdk or == 'net'; assert declared(calls.go) >= {summarize, firstLine, truncate, errShellBlocked}"
+    },
+    {
+      "id": "TS-23-55",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-10.2"
+      ],
+      "title": "The harness main serves the runner through mcpserve and prints the endpoint URL",
+      "given": [
+        "the harness run offline with the scripted harness and the local provider"
+      ],
+      "when": "the harness run function executes",
+      "then": [
+        "the account contains \"MCP server at http://127.0.0.1:\"",
+        "main.go calls mcpserve.New with Options{Instructions} and ServeLoopback and defers ep.Close()"
+      ],
+      "pseudocode": "out = run(offlineArgs); assert contains(out,'MCP server at http://127.0.0.1:'); assert astHasCalls(main.go, ['mcpserve.New','ServeLoopback','Close'])"
+    },
+    {
+      "id": "TS-23-56",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-10.3"
+      ],
+      "title": "The harness runners take *mcpserve.Endpoint and claude passes ClaudeConfig to --mcp-config",
+      "given": [
+        "&mcpserve.Endpoint{URL, Token} set for the claude case, and &mcpserve.Endpoint{} for TestHarnessArgs"
+      ],
+      "when": "claudeArgs is built and the pi and scripted runner signatures are inspected",
+      "then": [
+        "TestHarnessArgs passes with &mcpserve.Endpoint{}",
+        "the argument following --mcp-config is ep.ClaudeConfig(\"agentkit\")",
+        "runHarness and the claude, pi and scripted runners take *mcpserve.Endpoint"
+      ],
+      "pseudocode": "args = claudeArgs(ep.ClaudeConfig('agentkit'), ...); assert args[indexOf('--mcp-config')+1]==ep.ClaudeConfig('agentkit')"
+    },
+    {
+      "id": "TS-23-57",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-10.4"
+      ],
+      "title": "The harness fills its sandbox with exactly one sandbox.Open and no Create, Sync or Tools call",
+      "given": [
+        "the examples/harness non-test sources and an offline run"
+      ],
+      "when": "a structural test counts calls and the offline account is read",
+      "then": [
+        "exactly one sandbox.Open call exists",
+        "no Provider.Create, Sandbox.Sync or Sandbox.Tools call exists",
+        "sources are chosen as GitRepo{Depth:1}, LocalDir{ExcludeGit:true} or LocalDir{Path: sample}",
+        "the account contains \"filled the workspace from the sample project\""
+      ],
+      "pseudocode": "assert count(calls,'sandbox.Open')==1; assert count(calls,'.Create'|'.Sync'|'.Tools')==0; assert contains(out,'filled the workspace from the sample project')"
+    },
+    {
+      "id": "TS-23-58",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-10.5"
+      ],
+      "title": "The harness uses guard.Allow and faux helpers, with no guard.Restricted call or faux.Turn literal",
+      "given": [
+        "the examples/harness non-test sources"
+      ],
+      "when": "a structural test scans them",
+      "then": [
+        "guard.Allow(allowed...) is called",
+        "faux.ToolCall and faux.Text are used in the scripted harness",
+        "no `faux.Turn{` literal and no guard.Restricted call exist"
+      ],
+      "pseudocode": "assert uses('guard.Allow'); assert !contains(src,'faux.Turn{') && !uses('guard.Restricted')"
+    },
+    {
+      "id": "TS-23-59",
+      "kind": "unit",
+      "verifies": [
+        "23-REQ-10.6"
+      ],
+      "title": "examples/harness/go.mod requires mcpserve with a replace and lists the SDK only as indirect",
+      "given": [
+        "examples/harness/go.mod after go mod tidy"
+      ],
+      "when": "go mod edit -json is read",
+      "then": [
+        "it requires github.com/agent-fox-dev/agentkit-go/mcpserve v0.0.0",
+        "it has a replace to ../../mcpserve",
+        "github.com/modelcontextprotocol/go-sdk is required only as indirect"
+      ],
+      "pseudocode": "m = goModEdit('examples/harness'); assert req(mcpserve).Version=='v0.0.0'; assert replace(mcpserve)=='../../mcpserve'; assert req(sdk).Indirect==true"
+    },
+    {
+      "id": "TS-23-60",
+      "kind": "integration",
+      "verifies": [
+        "23-REQ-10.7"
+      ],
+      "title": "The harness example runs offline end to end through mcpserve",
+      "given": [
+        "the scripted harness on the local provider, no network"
+      ],
+      "when": "TestExampleRunsOffline runs the harness",
+      "then": [
+        "output contains \"filled the workspace from the sample project\"",
+        "output contains \"imported 12 tools over MCP: agentkit__code_mode, agentkit__edit_file, agentkit__execute\"",
+        "output contains \"verdict: pass\" and \"Harness example completed successfully\"",
+        "the run exits 0"
+      ],
+      "pseudocode": "out, code = run(['--harness','scripted', ...]); for s in expected: assert contains(out,s); assert code==0"
+    },
+    {
+      "id": "TS-23-61",
+      "kind": "smoke",
+      "verifies": [
+        "23-PATH-1",
+        "23-REQ-3.7",
+        "23-REQ-6.1"
+      ],
+      "title": "An embedder serves code_mode over loopback, a pool client runs a script, and Close refuses further connections",
+      "given": [
+        "a workspace from workspace.Open with a known file",
+        "tools from tools.For wrapped by code_mode, a Runner with a recording Guard, a real Server"
+      ],
+      "when": "ServeLoopback is called, mcp.Pool connects with URL and bearer token, lists tools and calls code_mode with a script calling read_file, then ep.Close() is called",
+      "then": [
+        "the endpoint URL is http://127.0.0.1:<port>/mcp with a 48-character token",
+        "the call result is OK and holds the file content",
+        "the Guard recorded the code_mode call and the nested read_file call",
+        "after Close a TCP connect to the port is refused"
+      ],
+      "real_components": [
+        "mcpserve Server and Endpoint",
+        "agentkit.Runner with Guard",
+        "code_mode",
+        "tools.For and workspace.Open",
+        "mcp.Pool client",
+        "go-sdk Streamable HTTP handler",
+        "real TCP loopback listener"
+      ]
+    },
+    {
+      "id": "TS-23-62",
+      "kind": "smoke",
+      "verifies": [
+        "23-PATH-2",
+        "23-REQ-4.1",
+        "23-REQ-4.2"
+      ],
+      "title": "A harness spawns the program as a child and uses its tools over stdio until EOF",
+      "given": [
+        "the test binary re-executed with a marker environment variable that builds a Runner and Server and calls ServeStdio",
+        "mcp.Pool with ServerConfig.Command (skipped on Windows)"
+      ],
+      "when": "the pool connects, lists tools, calls one, then closes the connection",
+      "then": [
+        "the tools are listed and the call returns the runner's text",
+        "the child's stdin is closed by the pool and every owed reply was written",
+        "the child exits with status 0"
+      ],
+      "real_components": [
+        "mcpserve Server.ServeStdio",
+        "mcp.NewPipeTransport",
+        "agentkit.Runner",
+        "mcp.Pool",
+        "child process over real pipes"
+      ]
+    },
+    {
+      "id": "TS-23-63",
+      "kind": "smoke",
+      "verifies": [
+        "23-PATH-3",
+        "23-REQ-5.4",
+        "23-REQ-3.3",
+        "23-REQ-8.2"
+      ],
+      "title": "An unauthenticated request is refused with 401 and a disallowed execute call comes back as a blocked isError result",
+      "given": [
+        "a live endpoint over a Runner whose Guard allows only some programs",
+        "a capturing slog handler as Logger"
+      ],
+      "when": "an initialize POST is sent without the token, then mcp.Pool connects with the token and calls execute with a disallowed program",
+      "then": [
+        "the unauthenticated request gets 401 with WWW-Authenticate: Bearer and a Warn record with the peer and no header value is logged",
+        "the execute call returns a result with isError true whose text carries blocked_by_policy and the guard's reason, not a protocol error",
+        "one Info \"tool call\" record with ok=false is logged"
+      ],
+      "real_components": [
+        "mcpserve Server and Endpoint",
+        "agentkit.Runner with real Guard",
+        "execute tool",
+        "mcp.Pool client",
+        "go-sdk Streamable HTTP handler",
+        "real TCP loopback listener",
+        "slog capturing handler"
+      ]
+    },
+    {
+      "id": "TS-23-64",
+      "kind": "smoke",
+      "verifies": [
+        "23-PATH-4",
+        "23-REQ-10.7"
+      ],
+      "title": "The harness example runs offline end to end through sandbox.Open, the Runner and mcpserve",
+      "given": [
+        "the examples/harness program built with the scripted harness and the local provider",
+        "no network access"
+      ],
+      "when": "the program is run offline against the sample project",
+      "then": [
+        "it prints \"filled the workspace from the sample project\" and \"MCP server at http://127.0.0.1:\"",
+        "the scripted harness imports 12 tools over MCP and its faux code_mode turn runs through the runner over the sandbox proxies",
+        "it prints \"verdict: pass\" and \"Harness example completed successfully\"",
+        "the process exits 0 and the endpoint and sandbox are closed"
+      ],
+      "real_components": [
+        "examples/harness main",
+        "sandbox.Open with the local provider",
+        "agentkit.Runner with guard.Allow",
+        "mcpserve Server and Endpoint",
+        "mcp.Pool client",
+        "faux provider with faux.ToolCall and faux.Text",
+        "code_mode"
+      ]
+    }
+  ]
+}

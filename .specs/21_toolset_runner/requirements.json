@@ -1,0 +1,685 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "21",
+  "spec_name": "toolset_runner",
+  "schema_version": 2,
+  "introduction": "AgentKit's tool side (tools, policy, guard, after-interceptor and the pipeline that runs one call through them) moves out of the agent driver into `agentkit.Toolset`, validated by `agentkit.NewRunner` and run by `agentkit.Runner` with no model or `Agent`. The agent loop becomes one consumer of the runner, so the pipeline exists once. Code mode, other harnesses, tests and embedders run tool calls through the same steps a model's calls go through.",
+  "glossary": {
+    "Runner": "The immutable `*agentkit.Runner` built by `NewRunner` (or returned by `Agent.Runner`) that runs tool calls through the full pipeline.",
+    "Toolset": "The root-package struct `agentkit.Toolset{Tools, Policy, Guard, After, Events}` describing the tool side of an agent.",
+    "batch": "A set of tool calls run together under the driver's rules: sequential prepare, a single abort decision, concurrent or sequential handlers, serialized finalization.",
+    "event sink": "The `func(core.Event)` a runner emits execution events to: `Toolset.Events` outside a run, the run's `core.EventStream` inside one.",
+    "final vote": "A call's terminate decision after the pipeline: the handler's `Terminate`, replaced by a non-nil `After` decision, forced true for a wrapper whose nested call was terminated, or the guard decision's `Terminate` for a blocked call.",
+    "nested call": "A tool call a wrapper makes through the `core.NestedCaller` on its context; it gets a `nested_…` id and its events carry `ParentToolUseID`.",
+    "pipeline": "The steps one tool call goes through: start event, tool lookup, `core.PrepareArguments`, `Guard`, the handler with a nested caller attached, `After`, end event and, for top-level calls, the result event.",
+    "run": "One `Agent.Run` or `Agent.Stream` invocation, which owns a transcript, usage, the run slot and an event stream.",
+    "wrapper": "A tool that declares `ReachableTools` and calls other tools through `core.CallNested`, such as `code_mode`."
+  },
+  "requirements": [
+    {
+      "id": "21-REQ-1",
+      "title": "Toolset and the new Config shape",
+      "rationale": "Splitting the tool side out of Config is what lets an embedder build and use it without a model.",
+      "criteria": [
+        {
+          "id": "21-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "agentkit package",
+          "action": "export a struct `Toolset` with exactly five fields in this order: `Tools []core.Tool`, `Policy core.ToolPolicy`, `Guard core.BeforeToolCall`, `After core.AfterToolCall`, `Events func(core.Event)`"
+        },
+        {
+          "id": "21-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "agentkit package",
+          "action": "define `Config` with exactly twelve fields in this order: `Client`, `Provider`, `Model`, `Effort`, `System`, `Prefix`, `Toolset`, `MaxTurns`, `MaxCostUSD`, `Timeout`, `Prune`, `MaxTokens`, with no `Tools`, `Policy`, `Guard` or `After` field, alias or forwarder"
+        },
+        {
+          "id": "21-REQ-1.3",
+          "pattern": "event_driven",
+          "condition": "`New` is called with a valid client and model and a zero-value `Toolset`",
+          "system": "agentkit.New",
+          "action": "return an agent with no tools",
+          "contract": "non-nil `*Agent` and nil error; `a.Runner().Tools()` has length 0 and the first model request carries no tool definitions"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-2",
+      "title": "NewRunner validates a toolset",
+      "rationale": "Error parity with today's `New` is the acceptance criterion for moving validation.",
+      "criteria": [
+        {
+          "id": "21-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "`NewRunner(ts)` is called",
+          "system": "NewRunner",
+          "action": "run `checkTool` on every entry of `ts.Tools`, then compute `ts.Policy.Resolve(ts.Tools)`, then run `checkTool` on every resolved tool, then run `checkShellGuard(ts.Guard, resolved)`, and return the first error any step produces",
+          "contract": "`(*Runner, nil)` when every step passes; `(nil, err)` with the first failing step's error otherwise"
+        },
+        {
+          "id": "21-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "a tool in `ts.Tools` or in the resolved set sets neither or both of `Handler` and `Execute`",
+          "system": "NewRunner",
+          "action": "refuse the toolset",
+          "contract": "nil `*Runner` and an error whose text is `agentkit: tool %q has neither Handler nor Execute` or `agentkit: tool %q sets both Handler and Execute; exactly one`"
+        },
+        {
+          "id": "21-REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "the tools' `ReachableTools` form a cycle by name, or a wrapper reaches a `Terminating` tool",
+          "system": "NewRunner",
+          "action": "refuse the toolset",
+          "contract": "nil `*Runner` and an error whose text is `agentkit: reachable tools cycle detected: a -> b -> a` (the cycle path) or `agentkit: terminating tool %q cannot be reached through wrapper %q`"
+        },
+        {
+          "id": "21-REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "a shell tool is reachable in the resolved set, directly or through a wrapper, and `ts.Guard` is nil",
+          "system": "NewRunner",
+          "action": "refuse the toolset",
+          "contract": "nil `*Runner` and an error for which `errors.Is(err, core.ErrUnguardedExecute)` is true, whose text contains `Toolset.Guard is nil`, does not contain `Config.Guard`, and ends with ` (tool %q)` or ` (wrapper %q reached shell tool %q)`"
+        },
+        {
+          "id": "21-REQ-2.5",
+          "pattern": "ubiquitous",
+          "system": "NewRunner",
+          "action": "for any toolset `ts`, return a non-nil error exactly when `agentkit.New(Config{Provider: p, Model: m, Toolset: ts})` with a valid provider and model returns one, with identical error text",
+          "contract": "`NewRunner(ts)` error text == `New(cfg)` error text for every toolset in the test corpus, including valid ones (both nil)"
+        },
+        {
+          "id": "21-REQ-2.6",
+          "pattern": "event_driven",
+          "condition": "the caller modifies or appends to the `ts.Tools` slice it passed after `NewRunner` returned",
+          "system": "Runner",
+          "action": "keep its tool set unchanged",
+          "contract": "`r.Tools()` returns the same tool names before and after the caller's mutation"
+        },
+        {
+          "id": "21-REQ-2.7",
+          "pattern": "ubiquitous",
+          "system": "Runner",
+          "action": "allow `Call`, `Batch`, `Tools` and `Reachable` to be invoked from any number of goroutines at once without data races, keeping no mutable state after construction",
+          "contract": "a test running 16 goroutines of concurrent `Call` and `Batch` passes under `go test -race`"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-3",
+      "title": "What a runner and an agent expose",
+      "rationale": "Models, MCP servers and prompts all need the resolved set the runner will actually run.",
+      "criteria": [
+        {
+          "id": "21-REQ-3.1",
+          "pattern": "ubiquitous",
+          "system": "Runner.Tools",
+          "action": "return the policy-resolved tool set in policy order as a fresh slice on every call",
+          "contract": "result equals `ts.Policy.Resolve(ts.Tools)` by name and order; overwriting an element of a returned slice does not change the next call's result"
+        },
+        {
+          "id": "21-REQ-3.2",
+          "pattern": "ubiquitous",
+          "system": "Runner.Reachable",
+          "action": "return `core.ReachableTools` computed over the resolved set",
+          "contract": "result equals `core.ReachableTools(r.Tools())` by name and order"
+        },
+        {
+          "id": "21-REQ-3.3",
+          "pattern": "ubiquitous",
+          "system": "Agent",
+          "action": "return from `ReachableTools()` the same tools as `a.Runner().Reachable()`",
+          "contract": "names and order are equal"
+        },
+        {
+          "id": "21-REQ-3.4",
+          "pattern": "ubiquitous",
+          "system": "Agent",
+          "action": "export exactly six methods on `*Agent`: `Run`, `Stream`, `Messages`, `Usage`, `ReachableTools` and `Runner`",
+          "contract": "reflection over `*Agent`'s method set yields exactly these six names"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-4",
+      "title": "Runner.Call runs one call",
+      "rationale": "A single entry point that always yields a result lets any caller run a tool exactly as the model would.",
+      "criteria": [
+        {
+          "id": "21-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "`Call(ctx, name, input)` is invoked",
+          "system": "Runner.Call",
+          "action": "run the call as a batch of one through the `Batch` implementation, with an id generated by `newID(\"call\")`, and return that call's result without returning a Go error or panicking",
+          "contract": "one `core.ToolResult`; the `ToolUseID` seen by `Guard` and the events matches `^call_[0-9a-f]{16}$`"
+        },
+        {
+          "id": "21-REQ-4.2",
+          "pattern": "event_driven",
+          "condition": "`input` is empty or contains only whitespace",
+          "system": "Runner.Call",
+          "action": "treat the input as `{}`",
+          "contract": "`Guard` receives `RawInput` `{}` and a tool with no required arguments runs with `OK` true"
+        },
+        {
+          "id": "21-REQ-4.3",
+          "pattern": "unwanted",
+          "condition": "`name` is not in `Tools()`",
+          "system": "Runner.Call",
+          "action": "return an error result without running any handler or guard",
+          "contract": "`OK` false, code `unknown_tool`, text `no tool named %q is available in this run; available tools: …` identical to the text a run produces"
+        },
+        {
+          "id": "21-REQ-4.4",
+          "pattern": "unwanted",
+          "condition": "`input` is not a JSON object, the arguments fail schema validation, or the guard returns `Arguments` that JSON cannot encode",
+          "system": "Runner.Call",
+          "action": "return an error result without running the handler",
+          "contract": "`OK` false, code `invalid_arguments`; the handler's invocation count is 0"
+        },
+        {
+          "id": "21-REQ-4.5",
+          "pattern": "unwanted",
+          "condition": "`Guard` returns a decision with `Block` true",
+          "system": "Runner.Call",
+          "action": "return an error result without running the handler, carrying the guard's reason or `blocked by policy` when the reason is empty",
+          "contract": "`OK` false, code `blocked_by_policy`, text containing the reason; `Terminate` equals the decision's `Terminate`"
+        },
+        {
+          "id": "21-REQ-4.6",
+          "pattern": "unwanted",
+          "condition": "the tool's handler panics or its `Handler` returns an error",
+          "system": "Runner.Call",
+          "action": "recover the panic or capture the error and return it as a result",
+          "contract": "`OK` false with code `panic` for a panic or `handler_error` for a `Handler` error; `Call` returns normally"
+        },
+        {
+          "id": "21-REQ-4.7",
+          "pattern": "unwanted",
+          "condition": "the context is done before the handler would start",
+          "system": "Runner.Call",
+          "action": "return an aborted result without starting the handler",
+          "contract": "`OK` false, code `aborted`, text `Operation aborted`; the handler's invocation count is 0"
+        },
+        {
+          "id": "21-REQ-4.8",
+          "pattern": "event_driven",
+          "condition": "`Guard` is invoked for a call made through `Call`",
+          "system": "Runner.Call",
+          "action": "pass a `BeforeToolCallContext` with `ToolName`, `ToolUseID`, `Tool`, `Arguments` and `RawInput` filled as in a run, `Batch` holding the one call, `Index` 0, `Assistant` nil, `TurnCount` 0 and empty `ParentToolUseID` and `ParentToolName`"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-5",
+      "title": "Runner.Batch runs a batch with the driver's rules",
+      "rationale": "Programmatic callers and the loop must get the same ordering, abort and concurrency semantics.",
+      "criteria": [
+        {
+          "id": "21-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "`Batch(ctx, calls...)` is invoked with one or more calls",
+          "system": "Runner.Batch",
+          "action": "in a sequential prepare phase, emit a `ToolExecutionStartEvent` for each call in call order and run argument preparation and `Guard` in call order before any handler starts, finalizing unknown-tool, invalid-argument and blocked calls inline with the codes of 21-REQ-4",
+          "contract": "start events arrive in call order; every `Guard` invocation precedes every handler start"
+        },
+        {
+          "id": "21-REQ-5.2",
+          "pattern": "unwanted",
+          "condition": "the context is done when the prepare phase ends",
+          "system": "Runner.Batch",
+          "action": "close every call not yet finalized as aborted, including calls the prepare loop never reached, and run no handler",
+          "contract": "each such call's result has code `aborted` and text `Operation aborted`; handler invocation count is 0; each such call gets a start and an end event"
+        },
+        {
+          "id": "21-REQ-5.3",
+          "pattern": "ubiquitous",
+          "system": "Runner.Batch",
+          "action": "run handlers concurrently with one goroutine per call joined by a `sync.WaitGroup` when there are at least two runnable calls and none targets a `Sequential` tool, run them one at a time in call order otherwise, and finalize each call (`After`, end event, result event) under a mutex scoped to the batch",
+          "contract": "two blocking handlers in one batch overlap in time; with a `Sequential` tool present they never overlap; no two `After` invocations of one batch overlap"
+        },
+        {
+          "id": "21-REQ-5.4",
+          "pattern": "ubiquitous",
+          "system": "Runner.Batch",
+          "action": "return exactly one result per call in call order whatever order the handlers finish in, and return an empty slice emitting no event when called with zero calls",
+          "contract": "`len(results) == len(calls)` and `results[i]` belongs to `calls[i]`"
+        },
+        {
+          "id": "21-REQ-5.5",
+          "pattern": "ubiquitous",
+          "system": "Runner.Batch",
+          "action": "use each call's `ID` verbatim, including an empty one, and pass `Guard` a context with `Batch` equal to `calls`, `Index` equal to the call's position, `Assistant` nil and `TurnCount` 0",
+          "contract": "`BeforeToolCallContext.ToolUseID` and the events' `ToolUseID` equal `calls[i].ID`"
+        },
+        {
+          "id": "21-REQ-5.6",
+          "pattern": "ubiquitous",
+          "system": "Runner.Batch",
+          "action": "set each result's `Terminate` to the call's final vote: the handler's `Terminate` unless `After` returned a non-nil `Terminate` which replaces it, `true` for a wrapper whose nested call was terminated by an interceptor, and the guard decision's `Terminate` for a blocked call"
+        },
+        {
+          "id": "21-REQ-5.7",
+          "pattern": "ubiquitous",
+          "system": "Runner.Batch",
+          "action": "for any batch of calls run with a nil `After`, return results whose `LLMText()` equals the text block of the `ToolResultMessage` the same calls produce in an agent run",
+          "contract": "property test over generated batches mixing ok, error, unknown, invalid and blocked calls"
+        },
+        {
+          "id": "21-REQ-5.8",
+          "pattern": "event_driven",
+          "condition": "an `After` interceptor edits `AfterToolCallContext.Result` in place",
+          "system": "Runner.Batch",
+          "action": "carry the edited message in the call's `ToolResultEvent` and in a run's transcript while leaving the returned `core.ToolResult` unedited",
+          "contract": "`ToolResultEvent.Message` shows the edit; the returned result's `LLMText()` is the handler's text"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-6",
+      "title": "Nested calls run through the runner",
+      "rationale": "A wrapper such as code mode must work from `Runner.Call` without an agent.",
+      "criteria": [
+        {
+          "id": "21-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "a tool that declares `ReachableTools` is invoked through `Call`, `Batch` or an agent run",
+          "system": "Runner",
+          "action": "attach a `core.NestedCaller` to the handler's context that gives each nested call a fresh id from `newID(\"nested\")` and runs it through preparation, `Guard`, the handler and `After`",
+          "contract": "nested ids match `^nested_[0-9a-f]{16}$`"
+        },
+        {
+          "id": "21-REQ-6.2",
+          "pattern": "unwanted",
+          "condition": "a wrapper calls a tool that is not among its declared, policy-resolved reachable tools",
+          "system": "nested caller",
+          "action": "return an error result for that call without running it",
+          "contract": "code `unknown_tool` with text beginning `%s cannot call %q: ` followed by the unknown-tool message"
+        },
+        {
+          "id": "21-REQ-6.3",
+          "pattern": "event_driven",
+          "condition": "a nested call runs",
+          "system": "nested caller",
+          "action": "pass `ParentToolUseID` and `ParentToolName` to `Guard` and `After`, emit start and end events carrying `ParentToolUseID`, emit no `ToolResultEvent`, and return a guard block as a `blocked_by_policy` result"
+        },
+        {
+          "id": "21-REQ-6.4",
+          "pattern": "unwanted",
+          "condition": "`Guard` returns `Block` with `Terminate`, or `After` votes `Terminate`, for a nested call",
+          "system": "nested caller",
+          "action": "make that and every later `CallNested` from the wrapper return `core.ErrTerminated` and set the wrapper's final vote to true",
+          "contract": "`errors.Is(err, core.ErrTerminated)` is true; the wrapper's result has `Terminate` true"
+        },
+        {
+          "id": "21-REQ-6.5",
+          "pattern": "unwanted",
+          "condition": "a nested handler returns a result with `Terminate` true",
+          "system": "nested caller",
+          "action": "drop the vote and annotate both results",
+          "contract": "the nested result's text contains `terminate vote ignored: `, the wrapper's contains `nested terminate vote ignored`, and the wrapper's `Terminate` is false"
+        },
+        {
+          "id": "21-REQ-6.6",
+          "pattern": "unwanted",
+          "condition": "the context is cancelled before a nested handler completes",
+          "system": "nested caller",
+          "action": "return the nested call as aborted",
+          "contract": "code `aborted`, text `Operation aborted`"
+        },
+        {
+          "id": "21-REQ-6.7",
+          "pattern": "event_driven",
+          "condition": "a `code_mode` tool built over `tools.For(ws, …)` is called through `Runner.Call` with a script that calls `read_file` on a workspace file",
+          "system": "Runner",
+          "action": "run the script and the nested `read_file` call with no agent and no provider",
+          "contract": "`OK` true with the file content in the result text; `Toolset.Events` receives a `ToolExecutionStartEvent` and a `ToolExecutionEndEvent` for `read_file` whose `ParentToolUseID` is the `code_mode` call's id"
+        },
+        {
+          "id": "21-REQ-6.8",
+          "pattern": "unwanted",
+          "condition": "a tool that declares no `ReachableTools` calls `core.CallNested`",
+          "system": "Runner",
+          "action": "attach no nested caller to that tool's context",
+          "contract": "`CallNested` returns `core.ErrNoNestedCaller`"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-7",
+      "title": "Execution events",
+      "rationale": "Outside a run, events are the only way to observe recovered panics and the message `After` produced.",
+      "criteria": [
+        {
+          "id": "21-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "a runner runs calls outside an agent run",
+          "system": "Runner",
+          "action": "deliver to `Toolset.Events` a `ToolExecutionStartEvent` and a `ToolExecutionEndEvent` for every call (with `ParentToolUseID` set on nested ones), a `ToolResultEvent` for each top-level call carrying the message as `After` left it, and a `core.ErrorEvent` for each panic recovered in `PrepareArguments`, `Guard`, a handler or `After`"
+        },
+        {
+          "id": "21-REQ-7.2",
+          "pattern": "unwanted",
+          "condition": "`Toolset.Events` is nil",
+          "system": "Runner",
+          "action": "discard the events and run the calls unchanged",
+          "contract": "`Call` and `Batch` return the same results as with a sink and do not panic"
+        },
+        {
+          "id": "21-REQ-7.3",
+          "pattern": "ubiquitous",
+          "system": "Runner",
+          "action": "for any call, deliver its start event before its end event, and for a top-level call its end event before its `ToolResultEvent`",
+          "contract": "property over concurrent batches and nested calls"
+        },
+        {
+          "id": "21-REQ-7.4",
+          "pattern": "unwanted",
+          "condition": "`Toolset.Events` panics while handling an event",
+          "system": "Runner",
+          "action": "recover the panic, drop that event, and not report it again",
+          "contract": "`Call` returns the call's normal result; no `ErrorEvent` for the sink's panic is delivered"
+        },
+        {
+          "id": "21-REQ-7.5",
+          "pattern": "ubiquitous",
+          "system": "Runner",
+          "action": "invoke `Toolset.Events` from the goroutines running the calls without holding any runner-wide lock, so a sink that itself calls `Runner.Call` completes",
+          "contract": "a sink calling `r.Call` from inside `Events` returns within the test timeout; `(*core.EventStream).Push` works as a sink under `-race`"
+        },
+        {
+          "id": "21-REQ-7.6",
+          "pattern": "state_driven",
+          "condition": "an agent run is executing tool calls",
+          "system": "Runner",
+          "action": "emit those calls' events to the run's `core.EventStream` and not call `Toolset.Events` for them",
+          "contract": "`Toolset.Events` invocation count for the run's calls is 0; the run's stream receives the full sequence"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-8",
+      "title": "The agent is built on a runner",
+      "rationale": "The pipeline must exist once, with the loop as one consumer.",
+      "criteria": [
+        {
+          "id": "21-REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "`New(cfg)` is called",
+          "system": "agentkit.New",
+          "action": "check `Client`/`Provider` and then `Model` first, then call `NewRunner(cfg.Toolset)` and return its error unchanged without sending any request",
+          "contract": "on a toolset failure: nil `*Agent`, error text identical to `NewRunner`'s, and the provider's request count is 0"
+        },
+        {
+          "id": "21-REQ-8.2",
+          "pattern": "ubiquitous",
+          "system": "Agent",
+          "action": "build request tool definitions (`core.ToolWires`), the system prompt (`prompt.Build`) and the fixed-token estimate from `Runner.Tools()`",
+          "contract": "the request's tool names equal `a.Runner().Tools()` names in order"
+        },
+        {
+          "id": "21-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "Agent.Runner",
+          "action": "return the agent's runner, the same pointer on every call, and remain callable while a run is in flight",
+          "contract": "pointer equality across calls; calling it during `Run` does not return or cause `core.ErrBusy`"
+        },
+        {
+          "id": "21-REQ-8.4",
+          "pattern": "event_driven",
+          "condition": "a call is made through `a.Runner().Call` or `Batch`, during or outside a run",
+          "system": "Agent",
+          "action": "keep the call outside every run: add nothing to the transcript, add nothing to `Agent.Usage`, leave the run slot unclaimed, and send its events to `Toolset.Events`",
+          "contract": "`a.Messages()` length and `a.Usage()` unchanged; a concurrent `Run` is not refused with `ErrBusy`"
+        },
+        {
+          "id": "21-REQ-8.5",
+          "pattern": "event_driven",
+          "condition": "a model response contains tool calls and its stop reason is not `max_tokens`",
+          "system": "agent loop",
+          "action": "hand the calls to the runner's batch implementation with the run's stream as sink, the assistant message and turn count for the guard context, and a context carrying `core.WithUsageReporter(ctx, a.addUsage)`, record the returned `ToolResultMessage`s as `After` left them, and end the run with the terminate stop reason when any call's final vote is true",
+          "contract": "`Guard` sees a non-nil `Assistant` and the turn number; the transcript holds one tool result message per call"
+        },
+        {
+          "id": "21-REQ-8.6",
+          "pattern": "ubiquitous",
+          "system": "Agent",
+          "action": "produce the same transcript, event sequence and order, stop reasons, model-visible texts and error texts as before this change, keeping `synthesizeTruncated` in `loop.go` for `max_tokens` responses",
+          "contract": "the root module's loop, batch, nested-call, golden and scripted tests pass with only their `Config` literals migrated"
+        },
+        {
+          "id": "21-REQ-8.7",
+          "pattern": "ubiquitous",
+          "system": "agentkit package",
+          "action": "define the batch executor and nested caller once, on the runner: `*Agent` has no `executeBatch` method, and only the runner's implementation calls `core.PrepareArguments`, `callBefore`, `invokeHandler` and `callAfter` in the root package",
+          "contract": "an AST check of the root package's non-test files finds those call sites only in functions whose receiver or call chain belongs to the runner"
+        },
+        {
+          "id": "21-REQ-8.8",
+          "pattern": "state_driven",
+          "condition": "a runner runs calls outside an agent run",
+          "system": "Runner",
+          "action": "attach no usage reporter of its own and pass through any reporter the caller's context already carries",
+          "contract": "a handler's `core.ReportUsage` reaches the caller's reporter when one is attached and is a no-op otherwise; `Agent.Usage` is unchanged"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-9",
+      "title": "Consumers move to the new shape",
+      "rationale": "Compile errors at every call site make the migration complete, and the harness must stop re-implementing the pipeline.",
+      "criteria": [
+        {
+          "id": "21-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "repository",
+          "action": "build every `agentkit.Config` in root tests, `metadata_message_test.go`, `codemode/smoke_test.go`, `sandbox/integration_test.go`, `sandbox/codemode_smoke_test.go`, the examples and `examples/harness/harness.go` with `Toolset: agentkit.Toolset{…}`",
+          "contract": "`make check` exits 0 in every module listed in `MODULES`"
+        },
+        {
+          "id": "21-REQ-9.2",
+          "pattern": "unwanted",
+          "condition": "`sandbox/integration_test.go` builds an agent whose toolset exposes a proxied shell tool with a nil `Toolset.Guard`",
+          "system": "agentkit.New",
+          "action": "refuse the configuration",
+          "contract": "error with `errors.Is(err, core.ErrUnguardedExecute)` true"
+        },
+        {
+          "id": "21-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "harness example",
+          "action": "contain in `examples/harness/server.go` no `core.NewToolUse`, `core.PrepareArguments` or `core.WithNestedCaller` call, no `core.NestedCaller` implementation, no `recover()` and no `toolServer.call` method",
+          "contract": "an AST check of the file finds none of these"
+        },
+        {
+          "id": "21-REQ-9.4",
+          "pattern": "event_driven",
+          "condition": "the harness example starts",
+          "system": "harness example",
+          "action": "build `code_mode` over the proxies, pass it with the proxies and a `Guard` wrapping the configured guard to `agentkit.NewRunner`, run `renderSpec`, `readTestCommands`, `runChecks` and the final `git status` through `Runner.Call`, and build `systemPrompt` from `Runner.Tools()`"
+        },
+        {
+          "id": "21-REQ-9.5",
+          "pattern": "event_driven",
+          "condition": "the harness's runner receives a guard-blocked call, an unknown tool, `{}` for a tool with required arguments, non-JSON input, and a `code_mode` script calling `code_mode`",
+          "system": "harness example",
+          "action": "return the runner's results and count calls and blocks through the toolset's hooks",
+          "contract": "codes `blocked_by_policy`, `unknown_tool`, `invalid_arguments`, `invalid_arguments` and `runtime_error` (`undefined: code_mode`); the blocked count is 3 and the log records blocked and nested run lines"
+        },
+        {
+          "id": "21-REQ-9.6",
+          "pattern": "event_driven",
+          "condition": "an MCP client with the bearer token calls a served tool",
+          "system": "harness MCP handler",
+          "action": "run the call through `Runner.Call` and return its text",
+          "contract": "`CallToolResult` with one `TextContent` holding the result's `LLMText()` and `IsError` equal to `!OK`"
+        },
+        {
+          "id": "21-REQ-9.7",
+          "pattern": "event_driven",
+          "condition": "the harness example's offline run executes",
+          "system": "harness example",
+          "action": "complete the scripted run and print the summary line",
+          "contract": "output contains `Harness example completed successfully` and the process exits 0"
+        }
+      ]
+    },
+    {
+      "id": "21-REQ-10",
+      "title": "API golden and line budgets",
+      "rationale": "The exported-API golden and size budgets are change detectors that must reflect the new surface.",
+      "criteria": [
+        {
+          "id": "21-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "exported-API golden",
+          "action": "record `Toolset`, `NewRunner`, `Runner` with its methods `Call`, `Batch`, `Tools` and `Reachable`, `Agent.Runner` and the twelve-field `Config` in `internal/policy/testdata/exported-api.golden`",
+          "contract": "TS-13-67 passes without `AGENTKIT_UPDATE_API_GOLDEN` set"
+        },
+        {
+          "id": "21-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "repository",
+          "action": "keep `core` at or under 1,600 lines of code and the root module at or under 20,000",
+          "contract": "TS-12-14 passes"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "21-PATH-1",
+      "title": "An embedder runs code mode through a runner with no agent",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "opens a workspace with `workspace.Open`, builds tools with `tools.For(ws, …)` and a `code_mode` tool over them, and calls `agentkit.NewRunner(Toolset{Tools, Guard, Events})`"
+        },
+        {
+          "actor": "Runner",
+          "action": "validates the toolset and returns a `*Runner`"
+        },
+        {
+          "actor": "embedder",
+          "action": "calls `r.Call(ctx, \"code_mode\", script)` where the script calls `read_file`"
+        },
+        {
+          "actor": "Runner",
+          "action": "emits a start event, prepares arguments, runs `Guard`, attaches a nested caller and runs the `code_mode` handler"
+        },
+        {
+          "actor": "nested caller",
+          "action": "runs `read_file` with a `nested_…` id through `Guard`, the handler and `After`, emitting start and end events with `ParentToolUseID` set to the `code_mode` call id"
+        },
+        {
+          "actor": "Runner",
+          "action": "finalizes the `code_mode` call, emits its end and result events to `Toolset.Events`, and returns an OK `core.ToolResult` holding the file content"
+        }
+      ]
+    },
+    {
+      "id": "21-PATH-2",
+      "title": "An agent run executes a turn's tool calls through its runner",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls `agentkit.New(Config{Provider, Model, Toolset})` and then `a.Run(ctx, prompt)`"
+        },
+        {
+          "actor": "Agent",
+          "action": "builds the runner with `NewRunner`, then sends a request whose tool definitions come from `Runner.Tools()`"
+        },
+        {
+          "actor": "provider",
+          "action": "returns an assistant message with two tool calls and stop reason `tool_use`"
+        },
+        {
+          "actor": "agent loop",
+          "action": "hands the calls to the runner's batch implementation with the run's stream, the assistant message, the turn count and a usage-reporting context"
+        },
+        {
+          "actor": "Runner",
+          "action": "prepares and guards the calls in order, runs the handlers concurrently, finalizes them under the batch mutex and pushes start, end and result events to the run's stream"
+        },
+        {
+          "actor": "agent loop",
+          "action": "records the two `ToolResultMessage`s in the transcript and sends the next request, ending with the model's final answer"
+        }
+      ]
+    },
+    {
+      "id": "21-PATH-3",
+      "title": "A misconfigured toolset is refused before any request",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls `agentkit.New` with a toolset that exposes `run_command` and a nil `Toolset.Guard`"
+        },
+        {
+          "actor": "Agent",
+          "action": "checks client and model, then calls `NewRunner(cfg.Toolset)`"
+        },
+        {
+          "actor": "Runner",
+          "action": "fails `checkShellGuard` and returns an error wrapping `core.ErrUnguardedExecute` naming `Toolset.Guard`"
+        },
+        {
+          "actor": "Agent",
+          "action": "returns a nil agent with that error unchanged, having sent no request to the provider"
+        }
+      ]
+    },
+    {
+      "id": "21-PATH-4",
+      "title": "The harness example serves and runs tools through a runner",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "runs the harness example offline"
+        },
+        {
+          "actor": "harness example",
+          "action": "builds `code_mode` over the proxied tools and creates a runner with `agentkit.NewRunner` under a counting guard"
+        },
+        {
+          "actor": "harness example",
+          "action": "runs `renderSpec`, `readTestCommands` and `runChecks` through `Runner.Call` and builds the system prompt from `Runner.Tools()`"
+        },
+        {
+          "actor": "harness MCP handler",
+          "action": "serves the runner's tools and answers each tool call with `Runner.Call`"
+        },
+        {
+          "actor": "harness example",
+          "action": "prints the call and blocked counts from its hooks, runs the final `git status` through `Runner.Call`, and prints `Harness example completed successfully`"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/modelcontextprotocol/go-sdk",
+      "version": "v1.8.0",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "(*Server).AddTool",
+          "import_path": "github.com/modelcontextprotocol/go-sdk/mcp",
+          "signature": "func (s *Server) AddTool(t *Tool, h func(ctx context.Context, req *CallToolRequest) (*CallToolResult, error))",
+          "notes": "Taken from the existing call site in examples/harness/server.go; module cache is outside the repository."
+        },
+        {
+          "name": "CallToolRequest.Params.Arguments",
+          "import_path": "github.com/modelcontextprotocol/go-sdk/mcp",
+          "signature": "req.Params.Arguments (json.RawMessage-compatible bytes)",
+          "notes": "Read as the tool input passed to Runner.Call."
+        },
+        {
+          "name": "CallToolResult",
+          "import_path": "github.com/modelcontextprotocol/go-sdk/mcp",
+          "signature": "&CallToolResult{Content: []Content{&TextContent{Text: string}}, IsError: bool}",
+          "notes": "Built from the runner's result text and OK flag."
+        }
+      ]
+    }
+  ]
+}
