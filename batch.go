@@ -50,19 +50,19 @@ type batchOutcome struct {
 // independent of completion order (REQ-LOOP-05).
 //
 // emit receives every execution event of the batch, from the goroutines that
-// run the calls, and a nil emit discards them. assistant and turnCount are the
-// guard's context for a call a model made; a runner's own Call and Batch pass
-// nil and 0. run attaches no usage reporter: a context that carries one passes
-// it through to the handlers, and the agent loop attaches its own.
+// run the calls, and holds no lock of the runner's while it does. A nil emit
+// discards the events, and a panic in emit drops the event being delivered.
+// assistant and turnCount are the guard's context for a call a model made; a
+// runner's own Call and Batch pass nil and 0. run attaches no usage reporter: a
+// context that carries one passes it through to the handlers, and the agent
+// loop attaches its own.
 //
 // The batch's termination vote is true when any call that ran voted Terminate
 // (11-REQ-8.1), or the Guard blocked a call and voted to terminate. The vote is
 // read only after every call in the batch has finished, so a terminating call
 // never cuts its siblings short.
 func (r *Runner) run(ctx context.Context, emit func(core.Event), assistant *core.AssistantMessage, calls []core.ToolUseBlock, turnCount int) batchOutcome {
-	if emit == nil {
-		emit = func(core.Event) {}
-	}
+	emit = safeSink(emit)
 	// report surfaces an error — a panicking interceptor — as an event. It
 	// takes no lock of the runner's, so it is safe inside the batch-scoped
 	// critical section.

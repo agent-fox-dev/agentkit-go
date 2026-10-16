@@ -155,6 +155,20 @@ func (r *Runner) Tools() []core.Tool { return slices.Clone(r.tools) }
 // the top-level tools.
 func (r *Runner) Reachable() []core.Tool { return core.ReachableTools(r.tools) }
 
+// safeSink returns f as a sink the code emitting to it can rely on: a nil f
+// discards its events, and a panic in f drops the event being delivered. The
+// panic is not reported as an ErrorEvent, because the sink that would receive
+// the report is the one that panicked.
+func safeSink(f func(core.Event)) func(core.Event) {
+	if f == nil {
+		return func(core.Event) {}
+	}
+	return func(e core.Event) {
+		defer func() { _ = recover() }()
+		f(e)
+	}
+}
+
 // checkTool is REQ-TOOL-01's "exactly one of Handler and Execute", for every
 // way a tool enters the registry. A tool with neither otherwise registers and
 // fails only when the model first calls it, as a nil-func panic.
