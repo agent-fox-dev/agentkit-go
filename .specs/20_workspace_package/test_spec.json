@@ -1,0 +1,1226 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "20",
+  "spec_name": "workspace_package",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-20-1",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-1.1"
+      ],
+      "title": "Open on an existing root returns its absolute, symlink-resolved path",
+      "given": [
+        "a temp directory T and a symlink L that points at T"
+      ],
+      "when": "workspace.Open(L, workspace.Options{}) is called",
+      "then": [
+        "the error is nil",
+        "Root() equals filepath.EvalSymlinks(filepath.Abs(L)), i.e. the resolved T",
+        "a relative root yields the same absolute resolved path"
+      ],
+      "pseudocode": "ws, err = Open(L, Options{}); assert err == nil; assert ws.Root() == EvalSymlinks(T)"
+    },
+    {
+      "id": "TS-20-2",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-1.2"
+      ],
+      "title": "Open with an empty root uses the symlink-resolved working directory",
+      "given": [
+        "the process working directory is a temp directory reached through a symlink"
+      ],
+      "when": "workspace.Open(\"\", workspace.Options{}) is called",
+      "then": [
+        "the error is nil",
+        "Root() equals the symlink-resolved os.Getwd()"
+      ],
+      "pseudocode": "t.Chdir(L); ws,_ = Open(\"\", Options{}); assert ws.Root() == EvalSymlinks(Getwd())"
+    },
+    {
+      "id": "TS-20-3",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-1.3"
+      ],
+      "title": "Open keeps a missing root in lexical absolute form without error",
+      "given": [
+        "a path P under a temp directory that does not exist"
+      ],
+      "when": "workspace.Open(P, workspace.Options{}) is called, and again with a relative missing path",
+      "then": [
+        "the error is nil",
+        "Root() equals filepath.Abs(P) with no symlink resolution",
+        "no directory is created"
+      ],
+      "pseudocode": "ws, err = Open(P, Options{}); assert err == nil; assert ws.Root() == Abs(P); assert !exists(P)"
+    },
+    {
+      "id": "TS-20-4",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-1.4"
+      ],
+      "title": "Open returns (nil, error) when the working directory cannot be determined",
+      "given": [
+        "the process working directory has been removed after chdir into it (test skipped on platforms where os.Getwd still succeeds)"
+      ],
+      "when": "workspace.Open(\"\", workspace.Options{}) is called",
+      "then": [
+        "the returned *Workspace is nil",
+        "the returned error is non-nil and is the underlying os.Getwd error"
+      ],
+      "pseudocode": "t.Chdir(d); os.Remove(d); ws, err = Open(\"\", Options{}); assert ws == nil; assert err != nil"
+    },
+    {
+      "id": "TS-20-5",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-1.5"
+      ],
+      "title": "Open reads no ignore file and starts no subprocess",
+      "given": [
+        "a root containing a .gitignore that is a directory-unreadable trap and a fake `git` first on PATH that records every invocation",
+        "IgnoreOptions whose Getenv, Home and GitConfig hooks count their calls"
+      ],
+      "when": "workspace.Open(root, opts) is called and nothing else",
+      "then": [
+        "the fake git recorded zero invocations",
+        "the Getenv, Home and GitConfig hooks were called zero times",
+        "the .gitignore file was not opened (no access recorded)"
+      ],
+      "pseudocode": "ws,_ = Open(root, Options{Ignore: counting}); assert gitCalls == 0; assert hookCalls == 0"
+    },
+    {
+      "id": "TS-20-6",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-1.6"
+      ],
+      "title": "Workspace has no exported fields and Options has exactly one field, Ignore",
+      "given": [
+        "the workspace package"
+      ],
+      "when": "reflect inspects workspace.Workspace and workspace.Options, and Open is called with the zero Options",
+      "then": [
+        "Workspace has zero exported fields",
+        "Options has exactly one field named Ignore of type IgnoreOptions",
+        "Open with the zero Options succeeds and does not set any hook (zero IgnoreOptions)"
+      ],
+      "pseudocode": "assert NumExportedFields(Workspace) == 0; assert Options.NumField()==1 && Field(0).Name==\"Ignore\" && Type==IgnoreOptions"
+    },
+    {
+      "id": "TS-20-7",
+      "kind": "property",
+      "verifies": [
+        "20-REQ-1.7"
+      ],
+      "title": "Concurrent use of one Workspace gives sequential results and no data race",
+      "given": [
+        "one *Workspace over a tree with nested .gitignore files, run under go test -race"
+      ],
+      "when": "for any number of goroutines (1..64) each calling Root, Resolve, Rel, CheckWriteTarget, Ignore, Walk and Ignored on the same workspace with generated paths",
+      "then": [
+        "every goroutine's result equals the result of the same call made sequentially",
+        "the race detector reports no race"
+      ],
+      "pseudocode": "seq = map(calls, run); parallel(N, calls); assert results == seq"
+    },
+    {
+      "id": "TS-20-8",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-2.1"
+      ],
+      "title": "Resolve normalizes, joins, resolves symlinks against the deepest ancestor and compares segment-wise",
+      "given": [
+        "a workspace root with an inside symlink to an inside directory, a dangling symlink whose target is inside, and a sibling directory named root+\"-evil\""
+      ],
+      "when": "Resolve is called with a relative file, a not-yet-existing file, `@rel`, a quoted path, the inside symlink, the dangling link and the sibling path",
+      "then": [
+        "relative and `@`/quoted forms return the contained absolute path with nil error",
+        "a non-existing leaf resolves against the deepest existing ancestor",
+        "the dangling link resolves to its in-root target",
+        "the sibling `root-evil` is refused (segment-wise containment, not prefix)"
+      ],
+      "pseudocode": "assert Resolve(\"a/b.txt\") == root+\"/a/b.txt\"; assert errors.Is(Resolve(root+\"-evil/x\"), ErrPathNotAllowed)"
+    },
+    {
+      "id": "TS-20-9",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-2.2"
+      ],
+      "title": "A path resolving outside the root is refused with the workspace path_not_allowed error",
+      "given": [
+        "a workspace root R, a symlink R/out -> outside directory, and an in-root directory D that is swapped for an outward symlink after Resolve"
+      ],
+      "when": "Resolve(\"out/f\"), Resolve of an absolute outside path and CheckWriteTarget(D/f) after the swap are called",
+      "then": [
+        "each error satisfies errors.Is(err, workspace.ErrPathNotAllowed)",
+        "the text starts with \"workspace: path_not_allowed\" and names the root R",
+        "the text ends with \"; use a path inside the workspace (a relative path is resolved against the root)\"",
+        "CheckWriteTarget re-resolves the whole path and refuses the swapped component"
+      ],
+      "pseudocode": "err = Resolve(\"out/f\"); assert Is(err, ErrPathNotAllowed); assert HasPrefix(err.Error(), \"workspace: path_not_allowed\"); assert HasSuffix(err.Error(), nextStep)"
+    },
+    {
+      "id": "TS-20-10",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-2.3"
+      ],
+      "title": "Malformed paths are refused with the workspace path_malformed error",
+      "given": [
+        "a workspace and the unknown user name `no-such-user-xyz`"
+      ],
+      "when": "Normalize or Resolve is called with \"\", a path containing a NUL byte, a non-local file:// URL, \"~no-such-user-xyz/x\", and a chain of 41 symlinks",
+      "then": [
+        "each error satisfies errors.Is(err, workspace.ErrPathMalformed)",
+        "each error text starts with \"workspace: path_malformed\""
+      ],
+      "pseudocode": "for p in bad: err = Resolve(p); assert Is(err, ErrPathMalformed); assert HasPrefix(err.Error(), \"workspace: path_malformed\")"
+    },
+    {
+      "id": "TS-20-11",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-2.4"
+      ],
+      "title": "A ~ path with an unresolvable HOME is refused with ErrNoHome",
+      "given": [
+        "HOME and the platform home variables unset so os.UserHomeDir fails"
+      ],
+      "when": "Normalize(\"~\") and Normalize(\"~/x\") are called",
+      "then": [
+        "each error satisfies errors.Is(err, workspace.ErrNoHome)",
+        "the text starts with \"workspace: home directory could not be resolved\"",
+        "no relative path is returned"
+      ],
+      "pseudocode": "unsetenv(HOME); _, err = Normalize(\"~/x\"); assert Is(err, ErrNoHome)"
+    },
+    {
+      "id": "TS-20-12",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-2.5"
+      ],
+      "title": "Normalize expands home forms and strips @ and quotes exactly as before",
+      "given": [
+        "HOME set to a temp directory H and the current user known"
+      ],
+      "when": "Normalize is called with `~`, `~/x`, `~<current user>/x`, `@x` and `\"quoted path\"`",
+      "then": [
+        "`~` gives H, `~/x` gives H/x, `~user/x` gives that user's home plus /x",
+        "`@x` gives `x` and the quoted path loses its quotes",
+        "outputs equal the strings recorded from the pre-change tools.Normalize test table"
+      ],
+      "pseudocode": "assert Normalize(\"~/x\") == (H+\"/x\", nil); assert Normalize(\"@x\") == (\"x\", nil)"
+    },
+    {
+      "id": "TS-20-13",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-2.6"
+      ],
+      "title": "Rel returns a root-relative path under the root and the input unchanged otherwise",
+      "given": [
+        "a workspace root R"
+      ],
+      "when": "Rel is called with R/a/b, R itself, a path outside R and a sibling R+\"-evil/x\"",
+      "then": [
+        "R/a/b gives \"a/b\"",
+        "outside paths are returned unchanged",
+        "the call never panics or reports an error"
+      ],
+      "pseudocode": "assert Rel(R+\"/a/b\")==\"a/b\"; assert Rel(\"/elsewhere\")==\"/elsewhere\""
+    },
+    {
+      "id": "TS-20-14",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-2.7"
+      ],
+      "title": "File tools fail with result code path_not_allowed for a refused path and leave the file untouched",
+      "given": [
+        "tools.For over a workspace in a temp dir, and an outside file O with known content"
+      ],
+      "when": "read_file, write_file and edit_file are called with the absolute path of O and with a path through an outward symlink",
+      "then": [
+        "each result is an error result with code \"path_not_allowed\"",
+        "the message contains the workspace error text starting \"workspace: path_not_allowed\"",
+        "O's content and mtime are unchanged and no new file is created"
+      ],
+      "pseudocode": "r = call(write_file, {path:O, content:\"x\"}); assert r.IsError && r.Code==\"path_not_allowed\"; assert read(O)==orig"
+    },
+    {
+      "id": "TS-20-15",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-3.1"
+      ],
+      "title": "IgnoreOptions has the documented fields and NoGlobalExcludes empties the global layer",
+      "given": [
+        "the workspace package"
+      ],
+      "when": "reflect inspects IgnoreOptions and NoGlobalExcludes() is called and its GitConfig is invoked",
+      "then": [
+        "IgnoreOptions has Getenv func(string) string, Home func() (string, error) and GitConfig func() string",
+        "NoGlobalExcludes().GitConfig() returns \"\"",
+        "a workspace opened with NoGlobalExcludes() ignores nothing on account of a global excludes file present in the environment"
+      ],
+      "pseudocode": "assert NoGlobalExcludes().GitConfig() == \"\""
+    },
+    {
+      "id": "TS-20-16",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-3.2"
+      ],
+      "title": "At most one core.excludesFile lookup per workspace, none before first use, including under concurrent first use",
+      "given": [
+        "a workspace opened with a counting GitConfig hook"
+      ],
+      "when": "the count is read after Open, then 32 goroutines first use the rules at once through Walk and Ignored, then use them again",
+      "then": [
+        "the count is 0 after Open",
+        "the count is exactly 1 after the concurrent first use",
+        "the count stays 1 after further walks and Ignored calls"
+      ],
+      "pseudocode": "Open(...); assert n==0; parallel(32, ()=>Ignored(\"a\",false)); assert n==1"
+    },
+    {
+      "id": "TS-20-17",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-3.3"
+      ],
+      "title": "Ignore() returns options whose GitConfig is memoized and reusable without another lookup",
+      "given": [
+        "a workspace opened with a counting GitConfig hook returning a path P"
+      ],
+      "when": "opts := ws.Ignore() is obtained, opts.GitConfig() is called three times, then a second workspace is opened with opts and used",
+      "then": [
+        "every GitConfig call returns P",
+        "the underlying hook ran at most once in total",
+        "the second workspace's rules use P without running the hook again"
+      ],
+      "pseudocode": "o = ws.Ignore(); assert o.GitConfig()==P && o.GitConfig()==P; assert n<=1; ws2=Open(root,Options{Ignore:o}); use(ws2); assert n<=1"
+    },
+    {
+      "id": "TS-20-18",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-3.4"
+      ],
+      "title": "Ignore sources apply in precedence order and the last match wins",
+      "given": [
+        "a global excludes file ignoring *.log, .git/info/exclude ignoring !keep.log, a root .gitignore ignoring build/ and a sub/.gitignore with `!important.log` and `*.tmp`"
+      ],
+      "when": "Ignored is called for a.log, keep.log, sub/important.log, build, sub/x.tmp and plain.txt, and Walk visits the tree",
+      "then": [
+        "a.log is ignored by the global layer",
+        "keep.log is re-included by the repository exclude file",
+        "sub/important.log is re-included by the later .gitignore",
+        "build and sub/x.tmp are ignored, plain.txt is not",
+        "Walk visits exactly the entries Ignored reports as not ignored"
+      ],
+      "pseudocode": "assert Ignored(\"a.log\",false) && !Ignored(\"keep.log\",false) && !Ignored(\"sub/important.log\",false)"
+    },
+    {
+      "id": "TS-20-19",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-3.5"
+      ],
+      "title": "Nested repositories start a new ignore root, .git is always ignored and .ignore is not a source",
+      "given": [
+        "root .gitignore ignoring *.dat, a nested repository dir sub/repo with its own .git and no .gitignore, and a root .ignore file containing *.txt"
+      ],
+      "when": "Ignored and Walk are evaluated for sub/repo/f.dat, sub/repo/.git, .git/config and a.txt",
+      "then": [
+        "sub/repo/f.dat is not ignored because the root .gitignore stops applying at the repository boundary",
+        "any path with a .git segment is ignored even with a `!.git` pattern",
+        "a.txt is not ignored because .ignore is not read",
+        "Walk with IncludeHidden never calls fn for a .git path"
+      ],
+      "pseudocode": "assert !Ignored(\"sub/repo/f.dat\",false); assert Ignored(\".git/config\",false); assert !Ignored(\"a.txt\",false)"
+    },
+    {
+      "id": "TS-20-20",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-4.1"
+      ],
+      "title": "Walk visits the non-ignored entries under sub with rel relative to sub and the engine rooted at sub",
+      "given": [
+        "a tree with a root .gitignore ignoring *.gen, sub/ with no .gitignore, a global excludes file ignoring *.glob and .git/info/exclude ignoring *.excl"
+      ],
+      "when": "Walk is called with sub \"\", \".\", \"sub\" and the absolute path of sub",
+      "then": [
+        "\"\" and \".\" visit the same set",
+        "rel is slash-separated and relative to sub",
+        "with sub=\"sub\" the root .gitignore pattern *.gen does not apply but the global layer and .git/info/exclude do",
+        "the relative and absolute forms of the same sub visit identical sets, equal to the pre-change tools.Walk set recorded for this tree (TestSearchReadsOnlyItsOwnIgnoreSources)",
+        "the error is nil"
+      ],
+      "pseudocode": "Walk(ctx,\"sub\",WalkOptions{},collect); assert \"x.gen\" in got && \"y.glob\" !in got && \"z.excl\" !in got"
+    },
+    {
+      "id": "TS-20-21",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-4.2"
+      ],
+      "title": "Walk refuses a sub outside the root, and a nil receiver, before calling fn",
+      "given": [
+        "a workspace over R, a sibling directory R+\"-evil\", and a nil *Workspace"
+      ],
+      "when": "Walk is called with \"../x\", an absolute outside path, R+\"-evil\", \"a/../../x\", and on the nil receiver with \"\"",
+      "then": [
+        "each error satisfies errors.Is(err, workspace.ErrPathNotAllowed)",
+        "fn is called zero times",
+        "an absolute sub inside the root and \"a/../b\" are accepted"
+      ],
+      "pseudocode": "calls=0; err = Walk(ctx,\"../x\",WalkOptions{},fn); assert Is(err,ErrPathNotAllowed) && calls==0"
+    },
+    {
+      "id": "TS-20-22",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-4.3"
+      ],
+      "title": "Walk skips hidden entries by default, does not follow symlinks, skips unreadable entries and checks sub lexically",
+      "given": [
+        "a tree with .hidden/f, a symlink to an outside directory, an unreadable directory (skipped on platforms where chmod 000 is not enforced) and a symlink dir inside the root used as sub"
+      ],
+      "when": "Walk runs with IncludeHidden false and true",
+      "then": [
+        "dot-prefixed entries are absent with IncludeHidden false and present with true",
+        "the symlinked directory's contents are never visited",
+        "the unreadable entry produces no fn call and Walk returns nil",
+        "a sub that is an in-root symlink to an outside directory is accepted lexically (not resolved) and not refused"
+      ],
+      "pseudocode": "assert \".hidden\" !in walk(false); assert \".hidden\" in walk(true); assert err==nil"
+    },
+    {
+      "id": "TS-20-23",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-4.4"
+      ],
+      "title": "Walk of a missing sub or a regular file makes no calls and returns nil",
+      "given": [
+        "a workspace with a regular file a.txt and no directory missing/"
+      ],
+      "when": "Walk is called with \"missing\" and with \"a.txt\"",
+      "then": [
+        "fn is called zero times for each",
+        "the error is nil for each"
+      ],
+      "pseudocode": "assert Walk(ctx,\"missing\",o,fn)==nil && calls==0; assert Walk(ctx,\"a.txt\",o,fn)==nil && calls==0"
+    },
+    {
+      "id": "TS-20-24",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-4.5"
+      ],
+      "title": "Walk returns the context error at the next entry when cancelled",
+      "given": [
+        "a tree of 100 files and a context cancelled by fn on the 3rd call, plus a context whose deadline has already passed"
+      ],
+      "when": "Walk runs with each context",
+      "then": [
+        "with cancellation after the 3rd call, Walk returns context.Canceled and fn is not called for the 4th entry",
+        "with the expired deadline Walk returns context.DeadlineExceeded and calls fn zero times"
+      ],
+      "pseudocode": "err = Walk(cctx,\"\",o,fn); assert err==context.Canceled && calls==3"
+    },
+    {
+      "id": "TS-20-25",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-4.6"
+      ],
+      "title": "Walk honours SkipDir and SkipAll and returns any other fn error",
+      "given": [
+        "a tree with directories d1/ and d2/, each holding files"
+      ],
+      "when": "fn returns filepath.SkipDir at d1, filepath.SkipAll at the first file, and a sentinel error E at a chosen entry",
+      "then": [
+        "SkipDir skips d1's contents, visits d2, and Walk returns nil",
+        "SkipAll stops the walk and Walk returns nil",
+        "E stops the walk and Walk returns exactly E"
+      ],
+      "pseudocode": "assert Walk(...SkipDir...)==nil && \"d1/f\" !in got; assert Walk(...E...)==E"
+    },
+    {
+      "id": "TS-20-26",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-4.7"
+      ],
+      "title": "WalkOptions has one field, IncludeHidden, and Walk always applies the workspace's own rules",
+      "given": [
+        "a workspace opened with Options.Ignore whose GitConfig names a global excludes file ignoring *.secret"
+      ],
+      "when": "reflect inspects WalkOptions and Walk runs over a tree containing x.secret",
+      "then": [
+        "WalkOptions has exactly one field, IncludeHidden of type bool",
+        "x.secret is never visited by Walk with either IncludeHidden value"
+      ],
+      "pseudocode": "assert WalkOptions.NumField()==1; assert \"x.secret\" !in walk(true)"
+    },
+    {
+      "id": "TS-20-27",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-5.1"
+      ],
+      "title": "Ignored matches rel and every ancestor using ancestors' ignore files from the root down",
+      "given": [
+        "root .gitignore `vendor/`, a/.gitignore `*.o` and `!keep.o`, nested repository a/repo/ with .git, and the workspace root"
+      ],
+      "when": "Ignored is called with \"vendor/x/y.go\", \"a/b.o\", \"a/keep.o\", \"a\\\\b.o\" (backslash separator), \"a/repo/z.o\" and \"vendor\" with isDir true",
+      "then": [
+        "a file below an ignored directory is ignored",
+        "a/b.o is ignored by the ancestor's .gitignore and a/keep.o is re-included",
+        "backslash and slash forms give the same answer",
+        "a/repo/z.o is not ignored (a/.gitignore stops applying at the nested repository boundary)"
+      ],
+      "pseudocode": "assert Ignored(\"vendor/x/y.go\",false); assert Ignored(\"a/b.o\",false)==Ignored(\"a\\\\b.o\",false)"
+    },
+    {
+      "id": "TS-20-28",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-5.2",
+        "20-REQ-5.3"
+      ],
+      "title": "Ignored reports .git segments as ignored and the root as not ignored",
+      "given": [
+        "a workspace with no ignore files"
+      ],
+      "when": "Ignored is called with \".git\", \"a/.git/config\", \"x/.git\" with isDir true, \"\" and \".\"",
+      "then": [
+        "every path with a .git segment returns true",
+        "\"\" and \".\" return false"
+      ],
+      "pseudocode": "assert Ignored(\"a/.git/config\",false); assert !Ignored(\"\",true) && !Ignored(\".\",true)"
+    },
+    {
+      "id": "TS-20-29",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-5.4"
+      ],
+      "title": "Ignored fails closed for absolute and escaping paths",
+      "given": [
+        "a workspace over R"
+      ],
+      "when": "Ignored is called with an absolute path inside R, \"/etc/passwd\", \"../x\" and \"a/../../x\"",
+      "then": [
+        "each call returns true"
+      ],
+      "pseudocode": "for p in [R+\"/a\", \"/etc/passwd\", \"../x\", \"a/../../x\"]: assert Ignored(p,false)==true"
+    },
+    {
+      "id": "TS-20-30",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-5.5"
+      ],
+      "title": "A dot-prefixed name is not reported ignored on account of its leading dot",
+      "given": [
+        "a workspace whose rules do not mention .env or .config"
+      ],
+      "when": "Ignored is called with \".env\", \".config/app.toml\" and \".github\" with isDir true",
+      "then": [
+        "each returns false"
+      ],
+      "pseudocode": "assert !Ignored(\".env\",false) && !Ignored(\".config/app.toml\",false)"
+    },
+    {
+      "id": "TS-20-31",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-5.6"
+      ],
+      "title": "Ignored keeps no cache: an edited .gitignore changes the next answer",
+      "given": [
+        "a workspace over a tree with a/.gitignore containing `*.x` and no other rules"
+      ],
+      "when": "Ignored(\"a/f.x\", false) is called, a/.gitignore is rewritten to empty, Ignored is called again, then .git/info/exclude gains `*.x` and it is called a third time",
+      "then": [
+        "the first call returns true",
+        "the second returns false",
+        "the third returns true"
+      ],
+      "pseudocode": "assert Ignored(p)==true; write(gitignore,\"\"); assert Ignored(p)==false; write(exclude,\"*.x\"); assert Ignored(p)==true"
+    },
+    {
+      "id": "TS-20-32",
+      "kind": "property",
+      "verifies": [
+        "20-REQ-5.7"
+      ],
+      "title": "Walk from the root visits exactly the WalkDir entries that Ignored reports as not ignored",
+      "given": [
+        "a randomly generated tree without unreadable entries, with nested .gitignore files, negations, nested repositories (.git dirs) and hidden entries, opened with NoGlobalExcludes()"
+      ],
+      "when": "for any such tree, ws.Walk(ctx, \"\", WalkOptions{IncludeHidden: true}, fn) is compared with filepath.WalkDir over the root",
+      "then": [
+        "the set of rel paths Walk visits equals the set of WalkDir entries (excluding the root itself) with Ignored(rel, d.IsDir()) == false"
+      ],
+      "pseudocode": "for tree in gen_trees(): visited = walkSet(ws); expected = {rel for rel,d in WalkDir(root) if rel!=\".\" && !ws.Ignored(rel,d.IsDir())}; assert visited == expected"
+    },
+    {
+      "id": "TS-20-33",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-6.1"
+      ],
+      "title": "tools.For returns the eleven built-ins in order with definitions byte-identical to the pre-change tools.All",
+      "given": [
+        "a workspace opened in a temp dir and definitions recorded from the pre-change tools.All stored under testdata"
+      ],
+      "when": "tools.For(ws, tools.Options{}) is called and each tool's name, description, input schema, output schema, guidelines and execution mode are JSON-marshalled",
+      "then": [
+        "the error is nil and the length is 11",
+        "the names in order are read_file, write_file, edit_file, list_files, find_files, search_files, file_outline, find_symbol, find_references, execute, run_command",
+        "the marshalled definitions equal the recorded bytes",
+        "the Anthropic golden request in testdata/golden/request_anthropic.json is still produced"
+      ],
+      "pseudocode": "ts,err = For(ws, Options{}); assert names(ts)==want; assert marshal(ts)==recorded"
+    },
+    {
+      "id": "TS-20-34",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-6.2"
+      ],
+      "title": "Every tool's sandbox definition digest is unchanged",
+      "given": [
+        "the digests of the eleven tools recorded before this change in sandbox/internal/tooldigest test data"
+      ],
+      "when": "tooldigest.Digest is computed over each tool returned by tools.For",
+      "then": [
+        "each digest equals the recorded pre-change digest"
+      ],
+      "pseudocode": "for t in For(ws,Options{}): assert Digest(t) == recorded[t.Name]"
+    },
+    {
+      "id": "TS-20-35",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-6.3"
+      ],
+      "title": "Index tools are appended after the built-ins and a duplicate name fails",
+      "given": [
+        "a stub tools.Index whose Tools() returns one tool named idx_search, and another whose Tools() returns a tool named read_file"
+      ],
+      "when": "tools.For(ws, tools.Options{Index: idx}) is called with each",
+      "then": [
+        "with idx_search the result has 12 tools with idx_search last and no error",
+        "with read_file the result is nil and the error is today's duplicate-name error (text recorded from the pre-change tools.All)"
+      ],
+      "pseudocode": "ts,err = For(ws, Options{Index: idx}); assert ts[11].Name==\"idx_search\""
+    },
+    {
+      "id": "TS-20-36",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-6.4"
+      ],
+      "title": "tools.For with a nil workspace returns no tools and an error naming the workspace",
+      "given": [
+        "the process working directory is a valid directory"
+      ],
+      "when": "tools.For(nil, tools.Options{}) is called",
+      "then": [
+        "the returned slice is nil",
+        "the error is non-nil and its text names the missing workspace (contains \"workspace\")",
+        "the working directory is not used as a fallback"
+      ],
+      "pseudocode": "ts, err = For(nil, Options{}); assert ts==nil; assert Contains(err.Error(),\"workspace\")"
+    },
+    {
+      "id": "TS-20-37",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-6.5"
+      ],
+      "title": "tools.Options has the five fields, the spill dir derives from the root hash, and constructors stay unexported",
+      "given": [
+        "two workspaces opened at the same root and one at another root"
+      ],
+      "when": "reflect inspects tools.Options and the default spill directory is computed through tools.For for each workspace, and the exported identifiers of package tools are listed",
+      "then": [
+        "Options has exactly SpillDir, DisableSpill, Env, Symbols and Index",
+        "the same root gives the same default spill directory and a different root gives a different one, equal to defaultSpillDir(hash of ws.Root())",
+        "no exported identifier of tools is an individual tool constructor"
+      ],
+      "pseudocode": "assert fields(Options)==[SpillDir,DisableSpill,Env,Symbols,Index]; assert spill(ws1)==spill(ws2)!=spill(ws3)"
+    },
+    {
+      "id": "TS-20-38",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-6.6"
+      ],
+      "title": "execute and run_command run in the workspace root",
+      "given": [
+        "tools.For over a workspace at a temp dir R whose process working directory differs"
+      ],
+      "when": "execute runs `pwd` and run_command runs the pwd binary",
+      "then": [
+        "both outputs equal ws.Root() (symlink-resolved R)"
+      ],
+      "pseudocode": "assert trim(call(execute,{command:\"pwd\"}).text)==ws.Root()"
+    },
+    {
+      "id": "TS-20-39",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-6.7"
+      ],
+      "title": "Every tool walk uses the workspace's ignore rules, including non-default ones",
+      "given": [
+        "a workspace opened with IgnoreOptions whose GitConfig points at a global excludes file ignoring secret_*, and a Go tree containing secret_a.go, a nested a/.gitignore ignoring b.go, and ordinary files",
+        "an index stub whose candidate set includes secret_a.go and a/b.go"
+      ],
+      "when": "find_files, search_files (native and with the index candidate filter), find_symbol (table build then refresh after adding a file), find_references (package load and candidate scan) and References are run",
+      "then": [
+        "none of them returns or reads secret_a.go",
+        "none returns a/b.go (nested .gitignore honoured, including by the index-candidate filter)",
+        "each walk was made through ws.Walk or ws.Ignored (test seam records the calls), none through the real environment"
+      ],
+      "pseudocode": "for tool in tools: assert \"secret_a.go\" !in output(tool) && \"a/b.go\" !in output(tool)"
+    },
+    {
+      "id": "TS-20-40",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-6.8"
+      ],
+      "title": "A tool set built from one workspace runs at most one core.excludesFile lookup across all walks",
+      "given": [
+        "a workspace opened with a counting GitConfig hook and tools.For over it"
+      ],
+      "when": "find_files, search_files, find_symbol (build and refresh), find_references and list_files are each called twice",
+      "then": [
+        "the hook ran exactly once in total"
+      ],
+      "pseudocode": "run all; assert n==1"
+    },
+    {
+      "id": "TS-20-41",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-7.1"
+      ],
+      "title": "tools.References returns the same sites as the pre-change method, with default bounds, no cache and no index",
+      "given": [
+        "a small Go module in a temp dir with a declaration and three reference sites, and the site list recorded from the pre-change (*Workspace).References"
+      ],
+      "when": "tools.References(ctx, ws, target, tools.ReferenceOptions{}) is called",
+      "then": [
+        "the error is nil",
+        "the ReferenceResult equals the recorded result",
+        "no reference cache file or index is consulted or created"
+      ],
+      "pseudocode": "res, err = References(ctx, ws, target, ReferenceOptions{}); assert err==nil && res==recorded"
+    },
+    {
+      "id": "TS-20-42",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-7.2"
+      ],
+      "title": "tools.References with a nil workspace returns an empty result and an error",
+      "given": [
+        "a valid target declaration"
+      ],
+      "when": "tools.References(ctx, nil, target, opts) is called",
+      "then": [
+        "the ReferenceResult equals the zero value",
+        "the error is non-nil",
+        "no search or walk was performed"
+      ],
+      "pseudocode": "res, err = References(ctx, nil, t, o); assert res.IsZero() && err!=nil"
+    },
+    {
+      "id": "TS-20-43",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-7.3"
+      ],
+      "title": "tools.References with a path outside the workspace returns ErrPathNotAllowed and an empty result",
+      "given": [
+        "a workspace over R and an outside directory O"
+      ],
+      "when": "tools.References is called with opts.Path set to O and to \"../x\"",
+      "then": [
+        "the ReferenceResult is the zero value",
+        "errors.Is(err, workspace.ErrPathNotAllowed) is true"
+      ],
+      "pseudocode": "res, err = References(ctx, ws, t, ReferenceOptions{Path:O}); assert Is(err, workspace.ErrPathNotAllowed) && res.IsZero()"
+    },
+    {
+      "id": "TS-20-44",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-7.4"
+      ],
+      "title": "tools.References stops with the context's error when cancelled",
+      "given": [
+        "a Go tree and an already-cancelled context"
+      ],
+      "when": "tools.References(ctx, ws, target, opts) is called",
+      "then": [
+        "the error satisfies errors.Is(err, context.Canceled)",
+        "the result is empty"
+      ],
+      "pseudocode": "cancel(); _, err = References(ctx, ws, t, o); assert err == context.Canceled"
+    },
+    {
+      "id": "TS-20-45",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-7.5"
+      ],
+      "title": "Search, SearchIn and CountCandidates keep root-path signatures and results; SearchIn takes workspace.IgnoreOptions",
+      "given": [
+        "a temp tree with ignored and non-ignored matches and results recorded before the change"
+      ],
+      "when": "tools.Search(ctx, root, p), tools.SearchIn(ctx, root, p, workspace.NoGlobalExcludes()), a SearchIn with a GitConfig naming a global excludes file, and tools.CountCandidates(ctx, root, p) are called",
+      "then": [
+        "results equal the recorded results",
+        "the global excludes file given through the workspace.IgnoreOptions argument is honoured",
+        "the signatures compile with root as a string path"
+      ],
+      "pseudocode": "assert SearchIn(ctx, root, p, workspace.NoGlobalExcludes()) == recorded"
+    },
+    {
+      "id": "TS-20-46",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-7.6"
+      ],
+      "title": "ReferenceOptions, ReferenceSite and ReferenceResult keep their fields",
+      "given": [
+        "the field lists of the three types recorded before the change in the exported-API golden"
+      ],
+      "when": "reflect inspects the types",
+      "then": [
+        "names, types and order of fields equal the recorded lists"
+      ],
+      "pseudocode": "assert fields(ReferenceOptions)==recorded"
+    },
+    {
+      "id": "TS-20-47",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-8.1"
+      ],
+      "title": "tools declares none of the removed identifiers",
+      "given": [
+        "the non-test and test source files of package tools parsed with go/parser"
+      ],
+      "when": "the top-level declarations, struct fields and methods are scanned for Workspace, NewWorkspace, Walk, WalkOptions, IgnoreOptions, NoGlobalExcludes, Normalize, ErrPathNotAllowed, ErrPathMalformed, ErrNoHome, All, Options.Workspace, Options.Ignore and a References method with a Workspace receiver",
+      "then": [
+        "none is found as a type, alias, var, const, func or field",
+        "tools.References exists as a plain function"
+      ],
+      "pseudocode": "for d in decls(tools): assert d.Name !in removed"
+    },
+    {
+      "id": "TS-20-48",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-8.2"
+      ],
+      "title": "codesearch.Options declares no Ignore field",
+      "given": [
+        "the codesearch module"
+      ],
+      "when": "reflect inspects codesearch.Options",
+      "then": [
+        "no field named Ignore exists",
+        "MaxFiles, MaxBytes, MaxBuildTime and TempDir remain"
+      ],
+      "pseudocode": "_, ok = TypeOf(Options{}).FieldByName(\"Ignore\"); assert !ok"
+    },
+    {
+      "id": "TS-20-49",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-8.3"
+      ],
+      "title": "workspace non-test files import only the standard library and doublestar",
+      "given": [
+        "package workspace"
+      ],
+      "when": "go list -f '{{.Imports}}' (or go/parser import scan) runs over its non-test files",
+      "then": [
+        "every import is a standard-library path or github.com/bmatcuk/doublestar/v4",
+        "no github.com/agent-fox-dev/agentkit-go path appears",
+        "private copies of the glob wrapper and the hidden-name test exist inside workspace"
+      ],
+      "pseudocode": "for imp in imports(workspace): assert isStdlib(imp) || imp==doublestar"
+    },
+    {
+      "id": "TS-20-50",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-8.4"
+      ],
+      "title": "The internal/policy graph test fails naming the file and import for an offending workspace file",
+      "given": [
+        "a synthetic package directory whose non-test file imports github.com/agent-fox-dev/agentkit-go/tools, and another whose only offending import is in a _test.go file"
+      ],
+      "when": "the policy check function for the workspace import rule is run on each directory",
+      "then": [
+        "for the first, it reports a failure whose text names the offending file and the import path",
+        "for the second, it reports no failure (test files exempt)",
+        "run on the real workspace package it passes"
+      ],
+      "pseudocode": "err = checkWorkspaceImports(dir); assert Contains(err, \"bad.go\") && Contains(err, \".../tools\")"
+    },
+    {
+      "id": "TS-20-51",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-8.5"
+      ],
+      "title": "tools imports workspace, MatchGlob and ExpandBraces stay in tools, and the root package imports neither",
+      "given": [
+        "the import lists of the root module's packages"
+      ],
+      "when": "the imports of tools, workspace and the root agentkit package's non-test files are listed, and tools' declarations are scanned",
+      "then": [
+        "tools imports workspace",
+        "tools declares MatchGlob and ExpandBraces",
+        "the root agentkit non-test files import neither tools nor workspace"
+      ],
+      "pseudocode": "assert \"workspace\" in imports(tools); assert imports(agentkit) ∩ {tools, workspace} == ∅"
+    },
+    {
+      "id": "TS-20-52",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-9.1"
+      ],
+      "title": "codesearch.New takes a workspace, builds through ws.Walk and revalidates with its rules, on both platforms",
+      "given": [
+        "a workspace over a temp tree opened with NoGlobalExcludes() and a nested .gitignore, and the Windows stub build target"
+      ],
+      "when": "codesearch.New(ws, codesearch.Options{}) is called, the index is built, a new file is added and a .gitignore edit un-ignores another file, then revalidation runs",
+      "then": [
+        "New returns (non-nil tools.Index, nil)",
+        "the built file set excludes ignored files",
+        "revalidation picks up the added and un-ignored files using the workspace's rules",
+        "the stub_windows.go build (GOOS=windows vet in the cross-target gate) compiles with the same New signature"
+      ],
+      "pseudocode": "idx, err = codesearch.New(ws, Options{}); assert err==nil; assert files(idx)==walkSet(ws)"
+    },
+    {
+      "id": "TS-20-53",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-9.2"
+      ],
+      "title": "codesearch.New with a nil workspace returns no index and the pre-change error text",
+      "given": [
+        "the error text recorded from the pre-change codesearch.New(nil, …)"
+      ],
+      "when": "codesearch.New(nil, codesearch.Options{}) is called",
+      "then": [
+        "the returned index is nil",
+        "the error text equals the recorded text"
+      ],
+      "pseudocode": "idx, err = New(nil, Options{}); assert idx==nil && err.Error()==recordedText"
+    },
+    {
+      "id": "TS-20-54",
+      "kind": "property",
+      "verifies": [
+        "20-REQ-9.3"
+      ],
+      "title": "The index holds exactly the files ws.Walk visits from the root with hidden entries off",
+      "given": [
+        "a randomly generated tree with nested .gitignore files, negations, nested repositories, hidden entries and binary-free text files, opened with NoGlobalExcludes()"
+      ],
+      "when": "for any such tree, codesearch.New(ws, Options{}) builds and the indexed file set is compared with ws.Walk(ctx, \"\", WalkOptions{}, …) file entries",
+      "then": [
+        "the indexed file set equals the set of regular files Walk visits"
+      ],
+      "pseudocode": "for tree in gen(): idx=New(ws,Options{}); assert indexedFiles(idx)==walkFiles(ws)"
+    },
+    {
+      "id": "TS-20-55",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-9.4"
+      ],
+      "title": "LocalDir.Ignore and RuleOptions.Ignore are workspace.IgnoreOptions and rsyncx visits through workspace",
+      "given": [
+        "a host directory with a .gitignore and a global excludes file that only a custom workspace.IgnoreOptions names"
+      ],
+      "when": "reflect reads the type of sandbox.LocalDir.Ignore and rsyncx.RuleOptions.Ignore, and rsyncx builds rules with ws.Ignore() as the options",
+      "then": [
+        "both types are github.com/agent-fox-dev/agentkit-go/workspace.IgnoreOptions (TS-14-1 type string updated)",
+        "the generated transfer rules exclude exactly what workspace.Walk excludes with those options",
+        "the zero-value semantics are unchanged"
+      ],
+      "pseudocode": "assert TypeOf(LocalDir{}.Ignore).String()==\"workspace.IgnoreOptions\"; assert rulesFor(dir,opts) excludes walkExcluded(dir,opts)"
+    },
+    {
+      "id": "TS-20-56",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-9.5"
+      ],
+      "title": "The sandbox agent builds its tools with tools.For over a NoGlobalExcludes workspace and its explicit environment",
+      "given": [
+        "an agent with root R and an explicit environment, and its build seam replaced by a recorder taking (ws, tools.Options)"
+      ],
+      "when": "the agent builds its tool set and also builds its rsync rules",
+      "then": [
+        "the seam receives a workspace whose Root() is the symlink-resolved R",
+        "the workspace ignores nothing from the real global excludes file (NoGlobalExcludes)",
+        "the tools.Options carry the agent's explicit Env",
+        "rsync rules are built with workspace.NoGlobalExcludes()",
+        "the default seam is tools.For"
+      ],
+      "pseudocode": "a.build = func(ws, o){rec(ws,o); return tools.For(ws,o)}; a.buildSet(); assert rec.ws.Root()==R && rec.o.Env==env"
+    },
+    {
+      "id": "TS-20-57",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-9.6"
+      ],
+      "title": "attach hostTools, fakeagent and treegen use the new API over throwaway NoGlobalExcludes workspaces",
+      "given": [
+        "the internal/attach, internal/fakeagent and internal/treegen packages"
+      ],
+      "when": "hostTools builds the host tool set, fakeagent builds its tools for digests, and treegen walks a generated tree",
+      "then": [
+        "hostTools and fakeagent return the eleven built-ins from tools.For",
+        "definitions equal the agent's, so digests agree",
+        "treegen's walk output equals the pre-change tools.Walk output for the same tree",
+        "none of them reads the real global excludes file"
+      ],
+      "pseudocode": "assert digests(hostTools()) == digests(fakeagent.Tools()); assert treegenWalk(tree)==recorded"
+    },
+    {
+      "id": "TS-20-58",
+      "kind": "integration",
+      "verifies": [
+        "20-REQ-9.7"
+      ],
+      "title": "A host from this change attaches to an agent with pre-change definitions without ErrToolMismatch",
+      "given": [
+        "a fake agent that advertises the tool digests recorded before this change, and a real host attach"
+      ],
+      "when": "the host attaches to the agent and compares host-side and agent-side tool digests",
+      "then": [
+        "attach succeeds",
+        "errors.Is(err, sandbox.ErrToolMismatch) is false",
+        "the host exposes the agent's tools to the caller"
+      ],
+      "pseudocode": "sb, err = attach(fake{digests:recorded}); assert err==nil && !Is(err, ErrToolMismatch)"
+    },
+    {
+      "id": "TS-20-59",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-9.8"
+      ],
+      "title": "Proto files and ProtocolMinor are unchanged and every module and example compiles",
+      "given": [
+        "the .proto files with their recorded .sha256 and the sandbox version constants"
+      ],
+      "when": "the proto hash tests run, sandbox.ProtocolMinor is read, and make vet runs over every module in MODULES and the examples",
+      "then": [
+        "gateway.proto and sandbox.proto hashes match their .sha256 files",
+        "ProtocolMinor equals 2",
+        "every module and example (including examples/codemode with its workspace() helper renamed, and examples/codingagent using workspace.Open and tools.For) compiles"
+      ],
+      "pseudocode": "assert sha256(sandbox.proto)==recorded; assert ProtocolMinor==2"
+    },
+    {
+      "id": "TS-20-60",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-10.1"
+      ],
+      "title": "apiPackages includes workspace and the regenerated golden records tools and workspace",
+      "given": [
+        "internal/policy's layout_test.go and testdata/exported-api.golden"
+      ],
+      "when": "TS-13-67 runs, and the golden is read",
+      "then": [
+        "apiPackages contains \"workspace\"",
+        "TS-13-67 passes against the committed golden",
+        "the golden contains workspace.Open, workspace.Workspace and tools.For and does not contain tools.All or tools.NewWorkspace"
+      ],
+      "pseudocode": "assert \"workspace\" in apiPackages; assert exportedAPI(\"workspace\") appears in golden"
+    },
+    {
+      "id": "TS-20-61",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-10.2"
+      ],
+      "title": "The goldenSHA13 comparisons are gone from TS-14-44, TS-15-42 and TS-17-61 while their other checks remain",
+      "given": [
+        "exported_api_14_test.go, exported_api_15_test.go and exported_api_17_test.go parsed with go/parser"
+      ],
+      "when": "their identifiers are scanned and the three tests are run",
+      "then": [
+        "goldenSHA13 is referenced by none of them",
+        "each test still compares the current API to the golden and passes",
+        "TS-17-61 still runs its guard API check against preSpec17Guard"
+      ],
+      "pseudocode": "assert \"goldenSHA13\" !in source(files); run TS-14-44, TS-15-42, TS-17-61"
+    },
+    {
+      "id": "TS-20-62",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-10.3"
+      ],
+      "title": "TS-19-64 passes: policy testdata matches the last commit and ProtocolMinor is 2",
+      "given": [
+        "the regenerated exported-api.golden committed to git"
+      ],
+      "when": "TS-19-64 runs",
+      "then": [
+        "internal/policy/testdata has no uncommitted changes against HEAD",
+        "ProtocolMinor equals \"2\""
+      ],
+      "pseudocode": "assert gitDiff(\"internal/policy/testdata\")==\"\"; assert ProtocolMinor==\"2\""
+    },
+    {
+      "id": "TS-20-63",
+      "kind": "unit",
+      "verifies": [
+        "20-REQ-10.4"
+      ],
+      "title": "The root module stays within the 20,000-line budget",
+      "given": [
+        "the root module sources counted as in core/size_test.go TS-12-14"
+      ],
+      "when": "TS-12-14 runs after the workspace package is added",
+      "then": [
+        "the counted lines are at most 20,000"
+      ],
+      "pseudocode": "assert budgetLines(root) <= 20000"
+    },
+    {
+      "id": "TS-20-64",
+      "kind": "smoke",
+      "verifies": [
+        "20-PATH-1",
+        "20-REQ-2.7"
+      ],
+      "title": "An embedder opens a workspace and a model lists files through find_files",
+      "given": [
+        "a temp project with ignored and non-ignored files and an outside directory"
+      ],
+      "when": "the embedder calls workspace.Open with NoGlobalExcludes and tools.For, then a model-style call to find_files is made with a path and glob, and another with an outside path",
+      "then": [
+        "the result lists the matching non-ignored files only",
+        "the outside path returns an error result with code path_not_allowed"
+      ],
+      "real_components": [
+        "workspace.Open",
+        "workspace.Walk",
+        "workspace.Resolve",
+        "tools.For",
+        "find_files tool",
+        "filesystem"
+      ]
+    },
+    {
+      "id": "TS-20-65",
+      "kind": "smoke",
+      "verifies": [
+        "20-PATH-2",
+        "20-REQ-6.7"
+      ],
+      "title": "An embedder builds a code-search index and search_files returns matches only from non-ignored files",
+      "given": [
+        "a temp project with a nested .gitignore and a text token present in ignored and non-ignored files"
+      ],
+      "when": "codesearch.New(ws, Options{}) is built, tools.For(ws, Options{Index: idx}) is called and search_files is invoked for the token",
+      "then": [
+        "the tool list is the eleven built-ins followed by the index tools",
+        "matches come only from non-ignored files",
+        "no candidate from an ignored file is returned"
+      ],
+      "real_components": [
+        "workspace",
+        "codesearch index",
+        "tools.For",
+        "search_files tool",
+        "filesystem"
+      ]
+    },
+    {
+      "id": "TS-20-66",
+      "kind": "smoke",
+      "verifies": [
+        "20-PATH-3",
+        "20-REQ-9.7"
+      ],
+      "title": "A host syncs a local directory into a sandbox and attaches to its agent",
+      "given": [
+        "a host directory with a .gitignore and the local sandbox provider with a real agent binary"
+      ],
+      "when": "the embedder opens a workspace, creates a sandbox with LocalDir{Ignore: ws.Ignore()} and attaches",
+      "then": [
+        "ignored files are not transferred and non-ignored files are",
+        "attach succeeds with no ErrToolMismatch",
+        "the sandbox's tools are exposed and a read_file call through them returns a synced file"
+      ],
+      "real_components": [
+        "workspace",
+        "rsyncx",
+        "sandbox/local provider",
+        "sandbox agent",
+        "sandbox host attach",
+        "tools.For"
+      ]
+    },
+    {
+      "id": "TS-20-67",
+      "kind": "smoke",
+      "verifies": [
+        "20-PATH-4",
+        "20-REQ-7.1"
+      ],
+      "title": "An embedder finds the references of a declaration",
+      "given": [
+        "a temp Go module with a declaration used in three places and one use in an ignored directory"
+      ],
+      "when": "the embedder opens a workspace, picks the declaration as an outline.Decl and calls tools.References",
+      "then": [
+        "the result lists exactly the three non-ignored reference sites",
+        "the error is nil"
+      ],
+      "real_components": [
+        "workspace",
+        "tools.References",
+        "outline",
+        "go/types package loader",
+        "filesystem"
+      ]
+    }
+  ]
+}

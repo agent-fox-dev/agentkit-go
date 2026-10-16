@@ -1,0 +1,579 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "20",
+  "spec_name": "workspace_package",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./workspace/... ./tools/... ./internal/policy/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "13_sandbox_core",
+      "reason": "TS-13-67's apiPackages and exported-api.golden change; docs/errata/13_sandbox_core.md gains the entry retiring the API freeze; TS-13-16 and TS-13-36 build tools through the renamed API"
+    },
+    {
+      "spec": "14_sandbox_rsync_sync",
+      "reason": "sandbox.LocalDir.Ignore and rsyncx.RuleOptions.Ignore change type (TS-14-1 pins the field type); TS-14-44's golden hash pin is retired"
+    },
+    {
+      "spec": "15_sandbox_landlock_agent",
+      "reason": "TS-15-42's golden hash pin is retired; the agent's tool build seam changes"
+    },
+    {
+      "spec": "17_sandbox_podman",
+      "reason": "TS-17-61's golden hash pin is retired; its guard check stays"
+    },
+    {
+      "spec": "19_sandbox_gateway",
+      "reason": "gatewayd parity and transfer tests build tools and LocalDirs through the renamed API; TS-19-64's clean-testdata check covers the regenerated golden"
+    },
+    {
+      "spec": "09_repository_cut",
+      "reason": "tools/repository_cut_test.go (TS-09-8, TS-09-9) moves from tools.All to tools.For over an opened workspace"
+    },
+    {
+      "spec": "08_code_mode",
+      "reason": "codemode/smoke_test.go and examples/codemode build tools through the renamed API"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Create package workspace with Open and containment (Resolve, Rel, CheckWriteTarget, Normalize)",
+      "criteria": [
+        "20-REQ-1.1",
+        "20-REQ-1.2",
+        "20-REQ-1.3",
+        "20-REQ-1.4",
+        "20-REQ-2.1",
+        "20-REQ-2.2",
+        "20-REQ-2.3",
+        "20-REQ-2.4",
+        "20-REQ-2.5",
+        "20-REQ-2.6"
+      ],
+      "tests": [
+        "TS-20-1",
+        "TS-20-2",
+        "TS-20-3",
+        "TS-20-4",
+        "TS-20-8",
+        "TS-20-9",
+        "TS-20-10",
+        "TS-20-11",
+        "TS-20-12",
+        "TS-20-13"
+      ],
+      "steps": [
+        "Read tools/path.go and the Resolve/CheckWriteTarget/Normalize tests in tools/tools_test.go (around lines 190-250, 820-890, 1440) to learn the exact behaviour and messages",
+        "Write TS-20-1..4, 8..13 in workspace/path_test.go (package workspace or workspace_test) and confirm they fail (stub marker: panic(\"not implemented\") in Open)",
+        "Create workspace/workspace.go: `type Workspace struct` with unexported fields only (root string plus the ignore state added by the next task), `type Options struct{ Ignore IgnoreOptions }`, `Open(root string, opts Options) (*Workspace, error)` (\"\" -> os.Getwd, filepath.Abs, EvalSymlinks only when the root exists, missing root kept lexical, no error for missing root, no file reads, no subprocess) and `(*Workspace).Root() string`; carry the Workspace doc comment (host execute is not contained; Landlock note) over",
+        "Declare a minimal `IgnoreOptions` struct (Getenv, Home, GitConfig) in workspace/ignore.go so Options compiles; the next task fills in the engine",
+        "Create workspace/path.go by copying tools/path.go: Resolve, CheckWriteTarget, Rel, Normalize, resolveExistingPrefix, within (segment-wise), homeDir, maxSymlinkHops=40, pathNextStep; sentinels become errors.New(\"workspace: path_not_allowed\"), \"workspace: path_malformed\" and \"workspace: home directory could not be resolved\"; keep every other message part (root named, next-step sentence) byte-identical",
+        "Read the root through the Root() method inside the copied code; do NOT delete anything from tools yet (tools is migrated by later tasks)",
+        "Port the existing tools Resolve/CheckWriteTarget/Normalize tests to package workspace with the same assertions (leave the originals in tools until the tools migration task removes them)",
+        "Run `go test ./workspace/... -count=1 -race` and `make lint`"
+      ],
+      "touches": [
+        "workspace/workspace.go",
+        "workspace/path.go",
+        "workspace/ignore.go",
+        "workspace/path_test.go"
+      ],
+      "done_when": [
+        "`go test ./workspace/... -count=1` passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Move the ignore engine into workspace with memoized git config, Ignore() and Ignored()",
+      "criteria": [
+        "20-REQ-1.5",
+        "20-REQ-3.1",
+        "20-REQ-3.2",
+        "20-REQ-3.3",
+        "20-REQ-5.1",
+        "20-REQ-5.2",
+        "20-REQ-5.3",
+        "20-REQ-5.4",
+        "20-REQ-5.5",
+        "20-REQ-5.6"
+      ],
+      "tests": [
+        "TS-20-5",
+        "TS-20-15",
+        "TS-20-17",
+        "TS-20-27",
+        "TS-20-28",
+        "TS-20-29",
+        "TS-20-30",
+        "TS-20-31"
+      ],
+      "steps": [
+        "Read tools/ignore.go, tools/glob.go (globMatch) and tools/search.go isHidden (line ~502)",
+        "Write TS-20-5, 15, 17, 27..31 in workspace/ignore_test.go and confirm they fail",
+        "Copy the engine into workspace/ignore.go: complete IgnoreOptions (Getenv, Home, GitConfig; nil GitConfig runs `git config --path --get core.excludesFile` with the 2s timeout), NoGlobalExcludes(), ignoreEngine, newIgnoreEngine, enter, match, hasGitComponent, repoBoundary, relUnder, ignorePattern.matches, parseIgnoreFile, globalExcludesPath",
+        "Add private copies in workspace/glob.go (globMatch wrapping doublestar.Match, error means no match) and workspace/hidden.go (isHidden)",
+        "In Open, wrap the GitConfig lookup in sync.OnceValue so a workspace runs at most one lookup and none before first use of the rules; store the memoized IgnoreOptions in the Workspace; implement `(*Workspace).Ignore() IgnoreOptions` returning the memoized options (Getenv/Home preserved, GitConfig memoized)",
+        "Implement `(*Workspace).Ignored(rel string, isDir bool) bool`: accept either separator; \"\" and \".\" -> false; absolute or escaping after cleaning -> true; any .git segment -> true; evaluate each ancestor from the root down using ancestors' .gitignore files (loaded fresh on every call, no cache) honouring nested-repo boundaries; an ignored ancestor makes rel ignored; a leading dot alone never ignores",
+        "Keep the engine rooted at the scan root so the Walk task can reuse it with a sub-root",
+        "Run `go test ./workspace/... -count=1 -race` and `make lint`"
+      ],
+      "touches": [
+        "workspace/ignore.go",
+        "workspace/glob.go",
+        "workspace/hidden.go",
+        "workspace/workspace.go",
+        "workspace/ignore_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`go test ./workspace/... -count=1` passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Add (*Workspace).Walk and pin the Workspace/Options/WalkOptions shapes and import rule",
+      "criteria": [
+        "20-REQ-1.6",
+        "20-REQ-4.1",
+        "20-REQ-4.2",
+        "20-REQ-4.3",
+        "20-REQ-4.4",
+        "20-REQ-4.5",
+        "20-REQ-4.6",
+        "20-REQ-4.7",
+        "20-REQ-8.3"
+      ],
+      "tests": [
+        "TS-20-6",
+        "TS-20-20",
+        "TS-20-21",
+        "TS-20-22",
+        "TS-20-23",
+        "TS-20-24",
+        "TS-20-25",
+        "TS-20-26",
+        "TS-20-49"
+      ],
+      "steps": [
+        "Read tools/walk.go, tools/walk_test.go, tools/walk_smoke_test.go and the TestSearchReadsOnlyItsOwnIgnoreSources test; record the pre-change tools.Walk visited set for the TS-20-20 tree",
+        "Write TS-20-6, 20..26 and 49 in workspace/walk_test.go and confirm they fail",
+        "Create workspace/walk.go: `type WalkOptions struct{ IncludeHidden bool }` and `(*Workspace).Walk(ctx, sub string, opts WalkOptions, fn func(rel string, d fs.DirEntry) error) error`",
+        "Sub handling: \"\" and \".\" -> root; relative -> joined to root; absolute accepted; filepath.Clean then segment-wise containment check; outside or nil receiver -> error wrapping ErrPathNotAllowed before any fn call; sub is not normalized or symlink-resolved",
+        "Walk body copied from tools' unexported walk: rel slash-separated relative to sub; engine = newIgnoreEngine(sub, w's memoized ignore options) rooted at sub; skip dot entries unless IncludeHidden; do not follow symlinks; skip unreadable entries; missing sub or file sub -> nil without calls; check ctx per entry and return its error; honour filepath.SkipDir and SkipAll; return any other fn error",
+        "Confirm workspace non-test files import only the standard library and github.com/bmatcuk/doublestar/v4 (TS-20-49 scans imports with go/parser)",
+        "Confirm TS-20-6 reflection: Workspace has zero exported fields, Options exactly one field Ignore IgnoreOptions, WalkOptions exactly one field IncludeHidden bool",
+        "Run `go test ./workspace/... -count=1 -race` and `make lint`"
+      ],
+      "touches": [
+        "workspace/walk.go",
+        "workspace/walk_test.go",
+        "workspace/shape_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "`go test ./workspace/... -count=1` passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Prove Walk/Ignored consistency, memoization and concurrency safety of the workspace",
+      "criteria": [
+        "20-REQ-1.7",
+        "20-REQ-5.7",
+        "20-REQ-3.4",
+        "20-REQ-3.5",
+        "20-REQ-3.2"
+      ],
+      "tests": [
+        "TS-20-7",
+        "TS-20-16",
+        "TS-20-18",
+        "TS-20-19",
+        "TS-20-32"
+      ],
+      "steps": [
+        "Write TS-20-16 (counting GitConfig: 0 after Open, exactly 1 after 32 goroutines first use Walk and Ignored, still 1 later) and confirm the result",
+        "Write TS-20-18 and TS-20-19 (precedence global < .git/info/exclude < .gitignore with last match wins; nested repositories; .git always ignored even with `!.git`; .ignore not read) asserting Walk and Ignored agree",
+        "Write TS-20-32 as a property test (testing/quick or a seeded generator, no new dependency) generating trees with nested .gitignore files, negations, nested repos (.git dirs) and hidden entries under NoGlobalExcludes(); assert Walk(ctx, \"\", WalkOptions{IncludeHidden:true}) equals the filepath.WalkDir entries (root excluded) with !Ignored(rel, d.IsDir())",
+        "Write TS-20-7 as a property test: N in 1..64 goroutines calling Root, Resolve, Rel, CheckWriteTarget, Ignore, Walk and Ignored on one workspace equal the sequential results; run with -race",
+        "Fix any divergence between Walk and Ignored in workspace code (nested-repo boundary or negation handling) until the property holds",
+        "Run `go test ./workspace/... -count=1 -race` and `make lint`"
+      ],
+      "touches": [
+        "workspace/ignore.go",
+        "workspace/walk.go",
+        "workspace/property_test.go",
+        "workspace/ignore_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "done_when": [
+        "`go test ./workspace/... -count=1 -race` passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Add tools.For and tools.References as workspace-based entry points (additive bridge)",
+      "criteria": [
+        "20-REQ-2.7",
+        "20-REQ-6.1",
+        "20-REQ-6.2",
+        "20-REQ-6.3",
+        "20-REQ-6.4",
+        "20-REQ-6.6",
+        "20-REQ-7.1",
+        "20-REQ-7.2",
+        "20-REQ-7.3",
+        "20-REQ-7.4"
+      ],
+      "tests": [
+        "TS-20-14",
+        "TS-20-33",
+        "TS-20-34",
+        "TS-20-35",
+        "TS-20-36",
+        "TS-20-38",
+        "TS-20-41",
+        "TS-20-42",
+        "TS-20-43",
+        "TS-20-44"
+      ],
+      "steps": [
+        "BEFORE changing tools, record from the existing tools.All(tools.Options{Workspace: ws, Ignore: NoGlobalExcludes()}) the marshalled definitions of all eleven tools (name, description, input/output schema, guidelines, execution mode) into tools/testdata/definitions.json, record the sandbox/internal/tooldigest digests, the duplicate-name error text of Index.Tools() clashes, and the site list of the existing (*Workspace).References over a small Go module",
+        "Write TS-20-14, 33, 34, 35, 36, 38, 41, 42, 43, 44 (package tools_test; TS-20-34 may live in sandbox/internal/tooldigest tests if the import graph requires it) and confirm they fail",
+        "Add tools/for.go: `For(ws *workspace.Workspace, opts Options) ([]core.Tool, error)`; nil ws -> (nil, error whose text contains \"workspace\"), no cwd fallback; otherwise build the legacy internal inputs from ws (`&Workspace{Root: ws.Root()}` and `IgnoreOptions(ws.Ignore())` struct conversion) and delegate to the existing All logic so the eleven tools come out in the same order, Index.Tools() appended with the same duplicate-name error, shell tools running in ws.Root()",
+        "Add tools/for_references.go: `References(ctx, ws *workspace.Workspace, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error)`; nil ws -> empty result and error; delegates to the existing executeReferenceSearch with default SymbolOptions, no cache and no index; an opts.Path outside the workspace returns an error wrapping workspace.ErrPathNotAllowed (map the legacy tools sentinel with errors.Is and re-wrap) with empty result; a cancelled context returns the context's error",
+        "Make find_files/read/write/edit path failures keep result code `path_not_allowed` with the workspace error text prefix `workspace: path_not_allowed` (map legacy errors to the workspace sentinel text via the bridge)",
+        "Leave the old tools names in place (they are deleted in the final tools migration task)",
+        "Run `go test ./tools/... -count=1` and `make lint`"
+      ],
+      "touches": [
+        "tools/for.go",
+        "tools/for_references.go",
+        "tools/testdata/definitions.json",
+        "tools/for_test.go",
+        "tools/references_for_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "`make test` passes in every module (old API still present)"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Migrate codesearch to a *workspace.Workspace",
+      "criteria": [
+        "20-REQ-8.2",
+        "20-REQ-9.1",
+        "20-REQ-9.2",
+        "20-REQ-9.3"
+      ],
+      "tests": [
+        "TS-20-48",
+        "TS-20-52",
+        "TS-20-53",
+        "TS-20-54"
+      ],
+      "steps": [
+        "BEFORE changing, record the error text of the current codesearch.New(nil, Options{})",
+        "Write TS-20-48, 52, 53, 54 (property test with generated trees under NoGlobalExcludes) and confirm they fail",
+        "Change `New(ws *workspace.Workspace, opts Options) (tools.Index, error)` in codesearch/index.go and codesearch/stub_windows.go; remove `Options.Ignore` from both; keep the nil-workspace error text",
+        "Replace `tools.Walk(buildCtx, idx.ws, idx.ws.Root, …)` in doBuild and the walk in dirty.go (revalidate takes ws, no ig parameter) with `ws.Walk(ctx, \"\", workspace.WalkOptions{}, …)`; read the root as ws.Root() in index.go, overlay.go and symbols.go",
+        "Index exactly the set of files that ws.Walk visits from the root with IncludeHidden false",
+        "Migrate every codesearch test (dozens of `tools.NewWorkspace(root)` and `Ignore: tools.NoGlobalExcludes()` sites) to `workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})`; update codesearch/README.md to show ignore configuration given once to workspace.Open",
+        "Run `go test ./... -count=1` and `make lint` inside codesearch, and `GOOS=windows go vet ./...` there to compile the stub"
+      ],
+      "touches": [
+        "codesearch/index.go",
+        "codesearch/dirty.go",
+        "codesearch/stub_windows.go",
+        "codesearch/overlay.go",
+        "codesearch/symbols.go",
+        "codesearch/README.md",
+        "codesearch/*_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass in codesearch; `GOOS=windows go vet ./...` compiles in codesearch"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Migrate the sandbox tree (LocalDir, rsyncx, agent, attach, fakeagent, treegen) to workspace",
+      "criteria": [
+        "20-REQ-9.4",
+        "20-REQ-9.5",
+        "20-REQ-9.6",
+        "20-REQ-9.7"
+      ],
+      "tests": [
+        "TS-20-55",
+        "TS-20-56",
+        "TS-20-57",
+        "TS-20-58"
+      ],
+      "steps": [
+        "BEFORE changing, record the pre-change tools.Walk output for the treegen test tree and the recorded tool digests (reuse task 5's recording)",
+        "Write TS-20-55, 56, 57, 58 and confirm they fail",
+        "sandbox/sandbox.go: `LocalDir.Ignore` becomes `workspace.IgnoreOptions`; update the doc comments naming tools.All/tools.Options; update TS-14-1's reflect type string in sandbox/localdir_api_test.go to workspace.IgnoreOptions",
+        "sandbox/internal/rsyncx/rules.go: `RuleOptions.Ignore` becomes workspace.IgnoreOptions; `visitFrom` walks through workspace.Open(root, Options{Ignore: ig}) and Walk",
+        "sandbox/internal/agent: `build` seam becomes `func(*workspace.Workspace, tools.Options) ([]core.Tool, error)` defaulting to tools.For; buildSet opens a workspace at the already-resolved root with workspace.NoGlobalExcludes() and passes tools.Options carrying the agent's explicit Env; rsync.go keeps workspace.NoGlobalExcludes() in RuleOptions",
+        "sandbox/internal/attach/tools.go (hostTools) and sandbox/internal/fakeagent/fakeagent.go build with tools.For over a throwaway workspace opened with NoGlobalExcludes; sandbox/internal/treegen walks through workspace",
+        "Update the tests replacing `a.build` (agent_test.go, call_test.go, call_unix_test.go), rsyncx rules_test.go, tooldigest digest_test.go, sandbox tests (integration_test.go TS-13-36, smoke_test.go, rsync_rules_test.go, rsync_sync_test.go), cmd/agentkit-sandboxd tests (confined_linux, landlock_smoke_linux) and gatewayd parity/transfer_parity tests to the new names",
+        "Verify the attach digest comparison still accepts an agent advertising pre-change digests (TS-20-58) and that no .proto file or ProtocolMinor changed",
+        "Run `make test` and `make lint` for the sandbox, sandbox/gatewayd and sandbox/podman modules"
+      ],
+      "touches": [
+        "sandbox/sandbox.go",
+        "sandbox/internal/rsyncx/rules.go",
+        "sandbox/internal/agent/agent.go",
+        "sandbox/internal/agent/tools.go",
+        "sandbox/internal/agent/rsync.go",
+        "sandbox/internal/attach/tools.go",
+        "sandbox/internal/fakeagent/fakeagent.go",
+        "sandbox/internal/treegen/treegen.go",
+        "sandbox/localdir_api_test.go",
+        "sandbox/gatewayd/parity_test.go",
+        "sandbox/gatewayd/transfer_parity_test.go",
+        "sandbox/cmd/agentkit-sandboxd"
+      ],
+      "depends_on": [
+        5
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass in the sandbox, gatewayd and podman modules"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Migrate root-module tests, examples and examples/harness to tools.For over an opened workspace",
+      "criteria": [
+        "20-REQ-8.5",
+        "20-REQ-9.8"
+      ],
+      "tests": [
+        "TS-20-51",
+        "TS-20-59"
+      ],
+      "steps": [
+        "Write TS-20-51 (tools imports workspace; tools declares MatchGlob and ExpandBraces; root agentkit non-test files import neither tools nor workspace) and TS-20-59 (proto hashes match their .sha256, ProtocolMinor == 2) and confirm the current state",
+        "Replace `tools.All(tools.Options{Workspace: ws, Ignore: …})` and `tools.NewWorkspace` with `workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})` plus `tools.For(ws, tools.Options{…})` in: root mcp_wiring_test.go, repository_cut_test.go, golden_requests_test.go, runner_metadata_smoke_test.go, prompt/{prompt,golden}_test.go, provider/anthropic/{tools,strict_internal}_test.go, codemode/smoke_test.go, outline/smoke_test.go, tools/repository_cut_test.go (spec 09 TS-09-8/9)",
+        "examples/codemode/main.go: rename the `workspace()` helper (it shadows the package), use workspace.Open, tools.For and ws.Root(); update examples/codemode/main_test.go",
+        "examples/codingagent/main.go: use workspace.Open and tools.For; update examples/codingagent/README.md",
+        "examples/harness/main_test.go (own module): migrate to the new names",
+        "Leave outline/smoke_test.go's tools.Walk/SearchIn use on the old API only if still compiling; otherwise use ws.Walk (the SearchIn ig type change is made by the final tools task)",
+        "Run `make test`, `make vet` and `make lint` across every module in MODULES"
+      ],
+      "touches": [
+        "mcp_wiring_test.go",
+        "repository_cut_test.go",
+        "golden_requests_test.go",
+        "runner_metadata_smoke_test.go",
+        "prompt/prompt_test.go",
+        "prompt/golden_test.go",
+        "provider/anthropic/tools_test.go",
+        "provider/anthropic/strict_internal_test.go",
+        "codemode/smoke_test.go",
+        "outline/smoke_test.go",
+        "examples/codemode",
+        "examples/codingagent",
+        "examples/harness/main_test.go",
+        "internal/policy/layout_20_test.go"
+      ],
+      "depends_on": [
+        5,
+        6,
+        7
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass in every module in MODULES"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Migrate tools internals onto the workspace and delete the old tools identifiers",
+      "criteria": [
+        "20-REQ-6.5",
+        "20-REQ-6.7",
+        "20-REQ-6.8",
+        "20-REQ-7.5",
+        "20-REQ-7.6",
+        "20-REQ-8.1"
+      ],
+      "tests": [
+        "TS-20-37",
+        "TS-20-39",
+        "TS-20-40",
+        "TS-20-45",
+        "TS-20-46",
+        "TS-20-47"
+      ],
+      "steps": [
+        "BEFORE changing, record Search/SearchIn/CountCandidates results for a temp tree (for TS-20-45); write TS-20-37, 39, 40, 45, 46, 47 and confirm they fail",
+        "Make tools internals take *workspace.Workspace: fileTools.ws, Options without Workspace and Ignore (fields SpillDir, DisableSpill, Env, Symbols, Index), defaultSpillDir hashed from ws.Root(), shell tools Dir = ws.Root(), `For` becomes the native constructor (no bridge); read roots as ws.Root() in outline_tool.go, ref_attribution.go, ref_gotypes.go, symbols.go",
+        "find_files: `ws.Resolve(a.Path)` then `ws.Walk(ctx, root, workspace.WalkOptions{IncludeHidden: true}, …)`; search_files and CountCandidates use ws rules; `SearchIn(ctx, root, p, ig workspace.IgnoreOptions)` and Search/CountCandidates walk through a workspace opened at root with those options",
+        "Symbol table: `var walkFn` seam takes the workspace-based walk signature (ctx, ws, sub, opts, fn) and uses ws.Walk; update symbols_*_test.go, symbol_tool_test.go and re-express TS-02-57 (memoized lookup) against workspace memoization (one `git config` for the whole tool set)",
+        "Reference engine: ref_cache.go, ref_gotypes.go and ref_scanner.go walk with ws.Walk and isPathIgnored uses ws.Ignored (replace newIgnoreEngine(ws.Root, IgnoreOptions{})); the index-candidate filter uses ws.Ignored; tools.References becomes native (default SymbolOptions, no cache, no index)",
+        "Delete tools.Workspace, NewWorkspace, Walk, WalkOptions, IgnoreOptions, NoGlobalExcludes, Normalize, ErrPathNotAllowed, ErrPathMalformed, ErrNoHome, All, (*Workspace).References, Options.Workspace/Ignore and the ignoreEngine/cached code; no aliases or forwarders; keep MatchGlob and ExpandBraces in tools/glob.go; move or delete the remaining tools tests of moved code (ignore_test.go, walk_test.go, path tests, issue76 walk parts, walk_smoke_test.go) since workspace now owns them; TestExecuteIsNotPathContained stays in tools",
+        "Remove `tools.Workspace`-typed test helpers; fix every remaining caller (outline/smoke_test.go SearchIn type, etc.); keep ReferenceOptions, ReferenceSite, ReferenceResult unchanged",
+        "Run `make test`, `make vet` and `make lint` across every module in MODULES"
+      ],
+      "touches": [
+        "tools/tools.go",
+        "tools/for.go",
+        "tools/for_references.go",
+        "tools/search.go",
+        "tools/symbols.go",
+        "tools/references.go",
+        "tools/ref_cache.go",
+        "tools/ref_gotypes.go",
+        "tools/ref_scanner.go",
+        "tools/outline_tool.go",
+        "tools/ref_attribution.go",
+        "tools/path.go",
+        "tools/walk.go",
+        "tools/ignore.go",
+        "tools/*_test.go",
+        "outline/smoke_test.go"
+      ],
+      "depends_on": [
+        4,
+        8
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass in every module in MODULES",
+        "go vet shows no remaining reference to the removed tools identifiers"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Enforce the workspace import graph, regenerate the API golden, retire the hash pins, write the erratum and docs",
+      "criteria": [
+        "20-REQ-8.4",
+        "20-REQ-10.1",
+        "20-REQ-10.2",
+        "20-REQ-10.3",
+        "20-REQ-10.4"
+      ],
+      "tests": [
+        "TS-20-50",
+        "TS-20-60",
+        "TS-20-61",
+        "TS-20-62",
+        "TS-20-63"
+      ],
+      "steps": [
+        "Write TS-20-50, 60, 61, 62, 63 and confirm the failing ones fail",
+        "internal/policy: add a checker (e.g. checkWorkspaceImports(dir) error) that parses non-test files of package workspace and fails naming the offending file and import path for anything outside the standard library and github.com/bmatcuk/doublestar/v4; test it with synthetic directories (one offending non-test file, one offending _test.go) and on the real package",
+        "internal/policy/layout_test.go: add \"workspace\" to apiPackages; regenerate internal/policy/testdata/exported-api.golden with `AGENTKIT_UPDATE_API_GOLDEN=1 go test ./internal/policy -run TS13_67` and verify it contains workspace.Open, workspace.Workspace and tools.For and not tools.All or tools.NewWorkspace",
+        "Remove the goldenSHA13 comparisons from TS-14-44, TS-15-42 and TS-17-61 (and the constant if unused) keeping the golden comparison and TS-17-61's preSpec17Guard check",
+        "Confirm TS-19-64 (testdata matches HEAD once the golden is committed; ProtocolMinor 2) and TS-12-14's 20,000-line budget (core/size_test.go) still hold",
+        "Append an entry to docs/errata/13_sandbox_core.md naming PRD 12 and spec 20, stating the frozen exported-API invariant is retired and the golden stays as a change detector; do not edit other errata or docs/prd",
+        "Update docs without rewriting sections owned by the later embedder_contract_docs spec: docs/api.md (workspace row); README.md (quickstart first two statements, packages table, tools.All row becomes tools.For plus a workspace.Open row, codesearch row); docs/architecture.md (package-graph rows for workspace, tools, codesearch, sandbox packages, internal/fakeagent and internal/treegen; Packages table; rename the Workspace.References heading; tools.All/tools.Walk mentions); docs/configuration.md (workspace.Options section, tools.Options and codesearch.Options without Workspace/Ignore, LocalDir.Ignore type); docs/cli.md agentkit-sandboxd line; docs/DEPS.md doublestar row names workspace; doc comments in sandbox",
+        "Run `make doc` and keep docs/generated/ including the new workspace.txt; then run `make check`"
+      ],
+      "touches": [
+        "internal/policy/layout_test.go",
+        "internal/policy/workspace_imports_test.go",
+        "internal/policy/exported_api_14_test.go",
+        "internal/policy/exported_api_15_test.go",
+        "internal/policy/exported_api_17_test.go",
+        "internal/policy/testdata/exported-api.golden",
+        "docs/errata/13_sandbox_core.md",
+        "docs/api.md",
+        "docs/architecture.md",
+        "docs/configuration.md",
+        "docs/cli.md",
+        "docs/DEPS.md",
+        "README.md",
+        "docs/generated"
+      ],
+      "depends_on": [
+        9
+      ],
+      "done_when": [
+        "`make check` passes in every module in MODULES"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify the four workspace execution paths end to end",
+      "tests": [
+        "TS-20-64",
+        "TS-20-65",
+        "TS-20-66",
+        "TS-20-67"
+      ],
+      "steps": [
+        "Write TS-20-64 (find_files over workspace.Open + tools.For, outside path gives result code path_not_allowed), TS-20-65 (codesearch.New + tools.For with Index + search_files), TS-20-66 (LocalDir{Ignore: ws.Ignore()} with the local provider and a real agent binary, attach with no ErrToolMismatch, read_file of a synced file) and TS-20-67 (tools.References over a Go module with one use in an ignored directory) using real components and confirm they pass",
+        "Trace 20-PATH-1 through the real code: workspace.Open -> tools.For -> find_files -> ws.Resolve -> ws.Walk; confirm each step calls the next and no stub remains",
+        "Trace 20-PATH-2: codesearch.New -> ws.Walk build; tools.For appends Index.Tools(); search_files filters candidates with ws.Ignored",
+        "Trace 20-PATH-3: ws.Ignore() -> LocalDir.Ignore -> rsyncx visitFrom -> workspace.Walk; agent buildSet -> tools.For; attach hostTools digest comparison",
+        "Trace 20-PATH-4: tools.References -> ws.Walk/ws.Ignored in the package loader and candidate scan",
+        "For every criterion with a contract (Open, Resolve error texts, Ignore(), Walk errors, tools.For nil workspace, References errors, codesearch.New nil error), confirm the producer's result is consumed by a production caller, not only by tests",
+        "Grep every file listed in all tasks' touches (workspace/, tools/, codesearch/, sandbox/, examples/, internal/policy/) for `panic(\"not implemented\")`, `TODO`, `NotImplementedError` and bare `return nil` on non-trivial paths, and remove any that remain",
+        "Confirm no production code outside tests references the removed tools identifiers, and the agentkit root package imports neither tools nor workspace in non-test code",
+        "Run `make check` and confirm every module in MODULES passes"
+      ],
+      "touches": [
+        "workspace/smoke_test.go",
+        "tools/smoke_workspace_test.go",
+        "codesearch/smoke_workspace_test.go",
+        "sandbox/smoke_workspace_test.go",
+        "tools/references_smoke_test.go"
+      ],
+      "depends_on": [
+        10
+      ],
+      "done_when": [
+        "`make check` passes in every module in MODULES with all four smoke tests passing"
+      ],
+      "state": "pending",
+      "optional": false
+    }
+  ]
+}

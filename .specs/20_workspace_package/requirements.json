@@ -1,0 +1,654 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "20",
+  "spec_name": "workspace_package",
+  "schema_version": 2,
+  "introduction": "A new root-module package `workspace` owns the containment boundary, the ignore rules and the directory walk that every agentkit scenario opens first. The built-in tools (`tools.For`), the reference engine (`tools.References`), the code-search index and the sandbox tree are built for a `*workspace.Workspace`, so ignore configuration is given once to `workspace.Open`. The `tools` API breaks on purpose; no tool, walk or containment check changes behaviour.",
+  "glossary": {
+    "MODULES": "The list of Go modules in the Makefile over which make test, make vet, make lint and make tidy run.",
+    "exported-API golden": "internal/policy/testdata/exported-api.golden, the recorded exported API of the packages in apiPackages, checked by TS-13-67 and regenerated when AGENTKIT_UPDATE_API_GOLDEN=1.",
+    "global layer": "The lowest-precedence ignore layer, read from the file named by git's core.excludesFile; workspace.NoGlobalExcludes() makes it empty.",
+    "ignore rules": "The layered gitignore-style exclusions of a workspace: the global excludes file (core.excludesFile), .git/info/exclude, then .gitignore files from the scan root down; the last matching pattern wins, and `.git` segments are always excluded.",
+    "nested-repository boundary": "A directory containing `.git` below the scan root; ignore files above it stop applying and a new ignore root starts there.",
+    "scan root": "The directory where the ignore engine starts loading .gitignore files: the `sub` argument of Walk, or the workspace root for Ignored.",
+    "tool digest": "The hash of a tool's definition computed by sandbox/internal/tooldigest, compared between host and sandbox agent to decide compatibility.",
+    "workspace": "A *workspace.Workspace returned by workspace.Open: an absolute, symlink-resolved root plus the ignore rules that apply under it. Immutable after Open."
+  },
+  "requirements": [
+    {
+      "id": "20-REQ-1",
+      "title": "Opening a workspace",
+      "rationale": "Every scenario starts from a workspace whose root was resolved exactly once and cannot be forged.",
+      "criteria": [
+        {
+          "id": "20-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "a caller invokes workspace.Open(root, opts) with a non-empty root that exists",
+          "system": "workspace package",
+          "action": "return a *Workspace whose Root() is the absolute path of root with every symlink resolved",
+          "contract": "(*Workspace, nil); Root() equals filepath.EvalSymlinks(filepath.Abs(root))"
+        },
+        {
+          "id": "20-REQ-1.2",
+          "pattern": "event_driven",
+          "condition": "a caller invokes workspace.Open with an empty root",
+          "system": "workspace package",
+          "action": "use the process working directory as the root, resolved as in 20-REQ-1.1",
+          "contract": "(*Workspace, nil); Root() equals the symlink-resolved os.Getwd()"
+        },
+        {
+          "id": "20-REQ-1.3",
+          "pattern": "event_driven",
+          "condition": "a caller invokes workspace.Open with a root that does not exist",
+          "system": "workspace package",
+          "action": "keep the root in its lexical absolute form and report no error",
+          "contract": "(*Workspace, nil); Root() equals filepath.Abs(root)"
+        },
+        {
+          "id": "20-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "the process working directory or the absolute form of root cannot be determined",
+          "system": "workspace package",
+          "action": "return no workspace and the underlying error",
+          "contract": "(nil, non-nil error)"
+        },
+        {
+          "id": "20-REQ-1.5",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "read no ignore file and start no subprocess during Open"
+        },
+        {
+          "id": "20-REQ-1.6",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "declare Workspace with no exported fields and Options with exactly one field, Ignore of type IgnoreOptions, whose zero value reads the real ignore environment including global excludes"
+        },
+        {
+          "id": "20-REQ-1.7",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "for any number of goroutines calling Root, Resolve, Rel, CheckWriteTarget, Ignore, Walk and Ignored on one *Workspace concurrently, return the same results as sequential calls and report no data race under go test -race"
+        }
+      ]
+    },
+    {
+      "id": "20-REQ-2",
+      "title": "Containment and normalization move unchanged",
+      "rationale": "The move is about placement; the security boundary must behave exactly as the tools version did.",
+      "criteria": [
+        {
+          "id": "20-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "a caller invokes (*Workspace).Resolve(p) with a path that resolves inside the root",
+          "system": "workspace package",
+          "action": "normalize p before canonicalizing it, join a relative result to Root(), resolve symlinks against the deepest existing ancestor, follow dangling links to their targets, and compare containment segment by segment",
+          "contract": "(contained absolute path, nil)"
+        },
+        {
+          "id": "20-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "Resolve or CheckWriteTarget is given a path whose resolved target lies outside the root, including a path made of a component swapped for an outward symlink after Resolve (CheckWriteTarget re-resolves the whole path)",
+          "system": "workspace package",
+          "action": "refuse the path",
+          "contract": "error wrapping workspace.ErrPathNotAllowed whose text starts with \"workspace: path_not_allowed\", names the root, and ends with \"; use a path inside the workspace (a relative path is resolved against the root)\""
+        },
+        {
+          "id": "20-REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "Normalize or Resolve is given an empty path, a path containing a NUL byte, a non-local file:// URL, `~user` for an unknown user, or a symlink chain longer than 40 hops",
+          "system": "workspace package",
+          "action": "refuse the path",
+          "contract": "error wrapping workspace.ErrPathMalformed whose text starts with \"workspace: path_malformed\""
+        },
+        {
+          "id": "20-REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "a path starting with `~` or `~/` is normalized while the home directory cannot be resolved",
+          "system": "workspace package",
+          "action": "refuse the path instead of falling back to a relative path",
+          "contract": "error wrapping workspace.ErrNoHome whose text starts with \"workspace: home directory could not be resolved\""
+        },
+        {
+          "id": "20-REQ-2.5",
+          "pattern": "event_driven",
+          "condition": "Normalize is given `~`, `~/x`, `~user/x`, `@x` or a quoted path",
+          "system": "workspace package",
+          "action": "expand the home directory or the named user's home, strip the leading `@` and the quotes, and return the rewritten path",
+          "contract": "(rewritten path, nil), identical to the string tools.Normalize returned before this change"
+        },
+        {
+          "id": "20-REQ-2.6",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "make Rel(abs) return abs relative to Root() when abs lies under the root and return abs unchanged otherwise, never failing"
+        },
+        {
+          "id": "20-REQ-2.7",
+          "pattern": "unwanted",
+          "condition": "a built-in file tool receives a path that the workspace refuses as outside the root",
+          "system": "tools package",
+          "action": "fail the tool call without touching the file",
+          "contract": "core.ErrResult with result code \"path_not_allowed\" and the workspace error text"
+        }
+      ]
+    },
+    {
+      "id": "20-REQ-3",
+      "title": "The workspace owns its ignore rules",
+      "rationale": "Ignore configuration is given once, and the git subprocess it may need is paid at most once per workspace.",
+      "criteria": [
+        {
+          "id": "20-REQ-3.1",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "declare IgnoreOptions with fields Getenv func(string) string, Home func() (string, error) and GitConfig func() string, where a nil GitConfig runs `git config --path --get core.excludesFile`, and make NoGlobalExcludes() return options whose global layer is empty",
+          "contract": "NoGlobalExcludes() returns IgnoreOptions whose GitConfig returns \"\""
+        },
+        {
+          "id": "20-REQ-3.2",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "run at most one core.excludesFile lookup per workspace over its lifetime, including when several goroutines first use its rules at once, and run none before the rules are first used"
+        },
+        {
+          "id": "20-REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "a caller invokes (*Workspace).Ignore()",
+          "system": "workspace package",
+          "action": "return the workspace's IgnoreOptions with GitConfig memoized, so that passing them on (for example to sandbox.LocalDir.Ignore) and using them runs no further lookup",
+          "contract": "IgnoreOptions whose GitConfig returns the same value on every call and invokes the underlying lookup at most once"
+        },
+        {
+          "id": "20-REQ-3.4",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "apply ignore sources from lowest precedence: the global excludes file, `.git/info/exclude`, then `.gitignore` files from the scan root down, with the last matching pattern winning so that a `!` pattern re-includes"
+        },
+        {
+          "id": "20-REQ-3.5",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "start a new ignore root at every directory containing `.git`, always ignore any path with a `.git` segment, and never read `.ignore` files as a source"
+        }
+      ]
+    },
+    {
+      "id": "20-REQ-4",
+      "title": "Walking a workspace",
+      "rationale": "One walk with the workspace's rules replaces tools.Walk and its per-call ignore options.",
+      "criteria": [
+        {
+          "id": "20-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "a caller invokes (*Workspace).Walk(ctx, sub, opts, fn) with sub equal to \"\" or \".\" (the root), a relative path (joined to the root) or an absolute path, that after cleaning lies within the root segment by segment",
+          "system": "workspace package",
+          "action": "call fn for every entry under sub that the workspace's rules do not exclude, with rel slash-separated and relative to sub, and with the ignore engine rooted at sub so that .gitignore files above sub do not apply while the global layer and `.git/info/exclude` do",
+          "contract": "nil error after all calls; the visited set equals what tools.Walk visited before this change for the same tree and options"
+        },
+        {
+          "id": "20-REQ-4.2",
+          "pattern": "unwanted",
+          "condition": "sub lies outside the root after cleaning, or the receiver is nil",
+          "system": "workspace package",
+          "action": "return before calling fn",
+          "contract": "error wrapping workspace.ErrPathNotAllowed; fn is called zero times"
+        },
+        {
+          "id": "20-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "during Walk, skip dot-prefixed entries unless opts.IncludeHidden is set, not follow symlinks, skip unreadable entries without error, and check sub lexically without normalizing or symlink-resolving it",
+          "contract": "an unreadable entry yields no fn call for it and Walk still returns nil"
+        },
+        {
+          "id": "20-REQ-4.4",
+          "pattern": "event_driven",
+          "condition": "Walk is given a sub that does not exist or that names a regular file",
+          "system": "workspace package",
+          "action": "make no calls to fn",
+          "contract": "nil error"
+        },
+        {
+          "id": "20-REQ-4.5",
+          "pattern": "unwanted",
+          "condition": "ctx is cancelled or past its deadline while Walk runs",
+          "system": "workspace package",
+          "action": "stop at the next entry without calling fn for it",
+          "contract": "returns ctx.Err()"
+        },
+        {
+          "id": "20-REQ-4.6",
+          "pattern": "event_driven",
+          "condition": "fn returns an error",
+          "system": "workspace package",
+          "action": "skip the directory on filepath.SkipDir, stop without error on filepath.SkipAll, and stop on any other error",
+          "contract": "nil for SkipDir and SkipAll; the error fn returned otherwise"
+        },
+        {
+          "id": "20-REQ-4.7",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "declare WalkOptions with exactly one field, IncludeHidden bool, and always apply the workspace's own ignore rules in Walk"
+        }
+      ]
+    },
+    {
+      "id": "20-REQ-5",
+      "title": "Asking whether a path is ignored",
+      "rationale": "Callers that filter candidate files (such as the index-candidate filter) need the same answer a root walk gives, without walking.",
+      "criteria": [
+        {
+          "id": "20-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "a caller invokes (*Workspace).Ignored(rel, isDir) with a workspace-relative path using either separator",
+          "system": "workspace package",
+          "action": "report whether rel or any ancestor directory of rel is excluded, matching each ancestor against the ignore files of the directories above it loaded from the root down and honouring nested-repository boundaries",
+          "contract": "true when rel or an ancestor is excluded, false otherwise"
+        },
+        {
+          "id": "20-REQ-5.2",
+          "pattern": "event_driven",
+          "condition": "Ignored is given a rel containing a `.git` segment",
+          "system": "workspace package",
+          "action": "report the path as ignored",
+          "contract": "true"
+        },
+        {
+          "id": "20-REQ-5.3",
+          "pattern": "event_driven",
+          "condition": "Ignored is given \"\" or \".\"",
+          "system": "workspace package",
+          "action": "report the root as not ignored",
+          "contract": "false"
+        },
+        {
+          "id": "20-REQ-5.4",
+          "pattern": "unwanted",
+          "condition": "Ignored is given an absolute path or a path that escapes the root after cleaning",
+          "system": "workspace package",
+          "action": "fail closed",
+          "contract": "true"
+        },
+        {
+          "id": "20-REQ-5.5",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "not report a dot-prefixed name as ignored on account of its leading dot"
+        },
+        {
+          "id": "20-REQ-5.6",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "read the .gitignore files of rel's ancestor directories and the repository exclude files on every Ignored call and keep no cache between calls, so a .gitignore edited between two calls changes the second answer"
+        },
+        {
+          "id": "20-REQ-5.7",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "for any tree without unreadable entries, including nested .gitignore files, negations and nested repositories, make the set of entries visited by ws.Walk(ctx, \"\", WalkOptions{IncludeHidden: true}, fn) equal the set of filepath.WalkDir entries under the root for which Ignored(rel, d.IsDir()) is false"
+        }
+      ]
+    },
+    {
+      "id": "20-REQ-6",
+      "title": "Tools are built for a workspace",
+      "rationale": "The workspace becomes an argument instead of an option, and every tool walk uses its rules.",
+      "criteria": [
+        {
+          "id": "20-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "a caller invokes tools.For(ws, opts) with a non-nil workspace and no Index",
+          "system": "tools package",
+          "action": "return read_file, write_file, edit_file, list_files, find_files, search_files, file_outline, find_symbol, find_references, execute and run_command in that order, with names, descriptions, input and output schemas, guidelines and execution modes byte-identical to what tools.All returned before this change",
+          "contract": "([]core.Tool of length 11, nil)"
+        },
+        {
+          "id": "20-REQ-6.2",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "for every tool tools.For returns, produce a sandbox/internal/tooldigest digest equal to the digest of the same tool before this change"
+        },
+        {
+          "id": "20-REQ-6.3",
+          "pattern": "optional",
+          "condition": "opts.Index is set",
+          "system": "tools package",
+          "action": "append Index.Tools() after the eleven built-ins and fail with today's duplicate-name error when an index tool reuses a name",
+          "contract": "(built-ins followed by index tools, nil), or (nil, duplicate-name error)"
+        },
+        {
+          "id": "20-REQ-6.4",
+          "pattern": "unwanted",
+          "condition": "tools.For is called with a nil workspace",
+          "system": "tools package",
+          "action": "return no tools and not fall back to the working directory",
+          "contract": "(nil, error whose text names the missing workspace)"
+        },
+        {
+          "id": "20-REQ-6.5",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "declare tools.Options with SpillDir, DisableSpill, Env, Symbols and Index and today's defaults and without Workspace or Ignore fields, derive the default spill directory from a hash of ws.Root() so the same root yields the same directory, and keep the individual tool constructors unexported"
+        },
+        {
+          "id": "20-REQ-6.6",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "run execute and run_command with ws.Root() as their working directory"
+        },
+        {
+          "id": "20-REQ-6.7",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "make every directory walk the tools perform (find_files, search_files, the symbol-table build and refresh, the reference engine's Go package load and candidate scan, and the filter over an index's candidate files) go through ws.Walk or ws.Ignored with the workspace's ignore rules"
+        },
+        {
+          "id": "20-REQ-6.8",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "run at most one core.excludesFile lookup across all walks made by a tool set built from one workspace"
+        }
+      ]
+    },
+    {
+      "id": "20-REQ-7",
+      "title": "References and the search entry points",
+      "rationale": "The reference engine moves off the containment type, and the root-path search functions keep their shape.",
+      "criteria": [
+        {
+          "id": "20-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "a caller invokes tools.References(ctx, ws, target, opts) with a non-nil workspace",
+          "system": "tools package",
+          "action": "run one reference pass bounded by the default SymbolOptions, with no reference cache and no index",
+          "contract": "(ReferenceResult, nil) equal to what (*tools.Workspace).References returned before this change for the same tree and target"
+        },
+        {
+          "id": "20-REQ-7.2",
+          "pattern": "unwanted",
+          "condition": "tools.References is called with a nil workspace",
+          "system": "tools package",
+          "action": "return without searching",
+          "contract": "(empty ReferenceResult, non-nil error)"
+        },
+        {
+          "id": "20-REQ-7.3",
+          "pattern": "unwanted",
+          "condition": "tools.References is called with an opts.Path outside the workspace",
+          "system": "tools package",
+          "action": "return without searching",
+          "contract": "(empty ReferenceResult, error wrapping workspace.ErrPathNotAllowed)"
+        },
+        {
+          "id": "20-REQ-7.4",
+          "pattern": "unwanted",
+          "condition": "the context passed to tools.References is cancelled",
+          "system": "tools package",
+          "action": "stop the pass",
+          "contract": "returns the context's error"
+        },
+        {
+          "id": "20-REQ-7.5",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "keep tools.Search(ctx, root, p), tools.SearchIn(ctx, root, p, ig) and tools.CountCandidates(ctx, root, p) with root-path signatures and unchanged results, with SearchIn's ig typed workspace.IgnoreOptions, walking root through a workspace opened at root with those options"
+        },
+        {
+          "id": "20-REQ-7.6",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "keep ReferenceOptions, ReferenceSite and ReferenceResult unchanged"
+        }
+      ]
+    },
+    {
+      "id": "20-REQ-8",
+      "title": "Old names removed and the package graph enforced",
+      "rationale": "Compile errors at every old call site make the migration complete, and workspace must never depend on first-party packages.",
+      "criteria": [
+        {
+          "id": "20-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "declare none of tools.Workspace, tools.NewWorkspace, tools.Walk, tools.WalkOptions, tools.IgnoreOptions, tools.NoGlobalExcludes, tools.Normalize, tools.ErrPathNotAllowed, tools.ErrPathMalformed, tools.ErrNoHome, tools.All, tools.Options.Workspace, tools.Options.Ignore or (*tools.Workspace).References, as a type, alias, variable or forwarding function"
+        },
+        {
+          "id": "20-REQ-8.2",
+          "pattern": "ubiquitous",
+          "system": "codesearch package",
+          "action": "declare no Ignore field in codesearch.Options"
+        },
+        {
+          "id": "20-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "workspace package",
+          "action": "import only standard-library packages and github.com/bmatcuk/doublestar/v4 from its non-test files, carrying private copies of the error-tolerant doublestar.Match wrapper and the hidden-name test",
+          "contract": "go list -f '{{.Imports}}' over the package's non-test files lists only standard-library paths and github.com/bmatcuk/doublestar/v4"
+        },
+        {
+          "id": "20-REQ-8.4",
+          "pattern": "unwanted",
+          "condition": "a non-test file of package workspace imports a package outside the standard library and github.com/bmatcuk/doublestar/v4",
+          "system": "internal/policy test suite",
+          "action": "fail",
+          "contract": "go test failure naming the offending file and import path"
+        },
+        {
+          "id": "20-REQ-8.5",
+          "pattern": "ubiquitous",
+          "system": "root module",
+          "action": "have tools import workspace, keep MatchGlob and ExpandBraces in tools, and have the root agentkit package import neither tools nor workspace in non-test code"
+        }
+      ]
+    },
+    {
+      "id": "20-REQ-9",
+      "title": "Every consumer in the repository is migrated",
+      "rationale": "The index and the sandbox are built for a workspace too, and the host-agent compatibility contract must survive the rename.",
+      "criteria": [
+        {
+          "id": "20-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "codesearch package",
+          "action": "declare New(ws *workspace.Workspace, opts Options) (tools.Index, error) in both index.go and stub_windows.go, and run the build walk and the revalidation walk through ws.Walk with the workspace's rules",
+          "contract": "New returns (tools.Index, nil) for a non-nil workspace on both index.go and stub_windows.go builds"
+        },
+        {
+          "id": "20-REQ-9.2",
+          "pattern": "unwanted",
+          "condition": "codesearch.New is called with a nil workspace",
+          "system": "codesearch package",
+          "action": "return no index",
+          "contract": "(nil, the same error text as before this change)"
+        },
+        {
+          "id": "20-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "codesearch package",
+          "action": "for any tree, index exactly the set of files that ws.Walk visits from the root with IncludeHidden false"
+        },
+        {
+          "id": "20-REQ-9.4",
+          "pattern": "ubiquitous",
+          "system": "sandbox module",
+          "action": "type sandbox.LocalDir.Ignore and internal/rsyncx.RuleOptions.Ignore as workspace.IgnoreOptions with unchanged semantics, and make rsyncx's visitFrom walk through workspace.Open and Walk"
+        },
+        {
+          "id": "20-REQ-9.5",
+          "pattern": "ubiquitous",
+          "system": "sandbox agent",
+          "action": "build its tool set with tools.For over a workspace opened at its root with workspace.NoGlobalExcludes() and its explicit environment, through a build seam that takes the workspace and the options, and keep NoGlobalExcludes for its rsync rules"
+        },
+        {
+          "id": "20-REQ-9.6",
+          "pattern": "ubiquitous",
+          "system": "sandbox module",
+          "action": "build internal/attach's host tools and internal/fakeagent's tools with tools.For over a throwaway workspace opened with NoGlobalExcludes, and walk internal/treegen through workspace"
+        },
+        {
+          "id": "20-REQ-9.7",
+          "pattern": "event_driven",
+          "condition": "a host built from this change attaches to a sandbox agent, including an agent whose tool definitions were recorded before this change",
+          "system": "sandbox host",
+          "action": "compare host-side and agent-side tool digests and accept the agent",
+          "contract": "attach succeeds with no sandbox.ErrToolMismatch"
+        },
+        {
+          "id": "20-REQ-9.8",
+          "pattern": "ubiquitous",
+          "system": "repository build",
+          "action": "leave every .proto file and sandbox.ProtocolMinor (2) unchanged, compile every module in MODULES and the examples against the new names (examples/codemode with its workspace() helper renamed, examples/codemode and examples/codingagent using workspace.Open and tools.For), and pass make check"
+        }
+      ]
+    },
+    {
+      "id": "20-REQ-10",
+      "title": "API golden and build budgets",
+      "rationale": "The change detector must track the moved declarations, and the frozen-hash invariant from spec 13 is retired. Documentation, the 13_sandbox_core erratum entry and the make doc output are task steps rather than criteria, because the steering forbids tests of docs.",
+      "criteria": [
+        {
+          "id": "20-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "internal/policy test suite",
+          "action": "include \"workspace\" in apiPackages and pass TS-13-67 against a committed exported-api.golden that was regenerated with AGENTKIT_UPDATE_API_GOLDEN=1 and records the exported API of tools and workspace"
+        },
+        {
+          "id": "20-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "internal/policy test suite",
+          "action": "remove the goldenSHA13 hash comparisons from TS-14-44, TS-15-42 and TS-17-61, while those tests keep comparing the current API to the golden and TS-17-61 keeps its guard API check"
+        },
+        {
+          "id": "20-REQ-10.3",
+          "pattern": "ubiquitous",
+          "system": "internal/policy test suite",
+          "action": "pass TS-19-64, with internal/policy/testdata matching the last commit and ProtocolMinor equal to \"2\""
+        },
+        {
+          "id": "20-REQ-10.4",
+          "pattern": "ubiquitous",
+          "system": "root module",
+          "action": "stay at or under TS-12-14's budget of 20,000 lines"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "20-PATH-1",
+      "title": "An embedder opens a workspace and a model lists files through find_files",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})"
+        },
+        {
+          "actor": "embedder",
+          "action": "calls tools.For(ws, tools.Options{}) and receives the eleven built-in tools"
+        },
+        {
+          "actor": "model",
+          "action": "calls find_files with a path and a glob"
+        },
+        {
+          "actor": "find_files tool",
+          "action": "resolves the path with ws.Resolve and walks it with ws.Walk using the workspace's ignore rules"
+        },
+        {
+          "actor": "find_files tool",
+          "action": "returns the matching non-ignored files and refuses a path outside the root with result code path_not_allowed"
+        }
+      ]
+    },
+    {
+      "id": "20-PATH-2",
+      "title": "An embedder builds a code-search index for a workspace and searches through it",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "opens a workspace and calls codesearch.New(ws, codesearch.Options{})"
+        },
+        {
+          "actor": "codesearch index",
+          "action": "builds its file set by walking the root with ws.Walk"
+        },
+        {
+          "actor": "embedder",
+          "action": "calls tools.For(ws, tools.Options{Index: idx}) and receives the built-ins followed by the index's tools"
+        },
+        {
+          "actor": "model",
+          "action": "calls search_files over the workspace"
+        },
+        {
+          "actor": "tools package",
+          "action": "filters the index's candidate files with ws.Ignored and returns matches only from non-ignored files"
+        }
+      ]
+    },
+    {
+      "id": "20-PATH-3",
+      "title": "A host syncs a local directory into a sandbox and attaches to its agent",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "opens a workspace and creates a sandbox with a sandbox.LocalDir whose Ignore is ws.Ignore()"
+        },
+        {
+          "actor": "rsyncx",
+          "action": "builds transfer rules by walking the directory through workspace.Open and Walk with those options"
+        },
+        {
+          "actor": "sandbox agent",
+          "action": "opens a workspace at its root with workspace.NoGlobalExcludes() and builds its tools with tools.For"
+        },
+        {
+          "actor": "sandbox host",
+          "action": "builds host tools with tools.For over a throwaway workspace and compares tool digests with the agent's"
+        },
+        {
+          "actor": "sandbox host",
+          "action": "accepts the agent and exposes its tools to the caller"
+        }
+      ]
+    },
+    {
+      "id": "20-PATH-4",
+      "title": "An embedder finds the references of a declaration",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "opens a workspace and picks an outline.Decl as the target"
+        },
+        {
+          "actor": "embedder",
+          "action": "calls tools.References(ctx, ws, target, tools.ReferenceOptions{})"
+        },
+        {
+          "actor": "tools package",
+          "action": "loads Go packages and scans candidates through ws.Walk and ws.Ignored with default SymbolOptions bounds"
+        },
+        {
+          "actor": "tools package",
+          "action": "returns a ReferenceResult listing the reference sites"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/bmatcuk/doublestar/v4",
+      "version": "v4.10.2",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "Match",
+          "import_path": "github.com/bmatcuk/doublestar/v4",
+          "signature": "func Match(pattern, name string) (bool, error)",
+          "notes": "Signature taken from the compiling call site in tools/glob.go (globMatch); the module source is outside the repository. workspace carries a private copy of globMatch that treats an error as no match."
+        }
+      ]
+    }
+  ]
+}
