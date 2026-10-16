@@ -60,8 +60,7 @@ func run() error {
 	// 1. The workspace is the containment boundary, not a convenience. Every
 	//    path a file tool is handed is resolved against this root — symlinks
 	//    included — so a model that asks for ../../etc/passwd is refused by
-	//    the tool rather than by a prompt asking it not to. Ignore rules are
-	//    configured here too, once: workspace.Options.Ignore.
+	//    the tool, not by a prompt asking it not to. Ignore rules go here too.
 	ws, err := workspace.Open(*dir, workspace.Options{})
 	if err != nil {
 		return err

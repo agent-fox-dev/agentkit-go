@@ -3,6 +3,7 @@ package tools_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -359,5 +360,47 @@ func TestReferencesSmoke_WriteFileRevalidates_TS05_59(t *testing.T) {
 	}
 	if len(after.Sites) != len(before.Sites)+1 {
 		t.Fatalf("sites before %d, after %d, want one more", len(before.Sites), len(after.Sites))
+	}
+}
+
+// TS-20-67 (smoke, 20-PATH-4): an embedder opens a workspace, picks a
+// declaration as an outline.Decl and calls tools.References: the result lists
+// exactly the three non-ignored reference sites, and the use in an ignored
+// directory is absent. Every component is real: workspace, tools.References,
+// outline, the go/types package loader and the filesystem.
+func TestSmokeReferencesOverAWorkspace_TS20_67(t *testing.T) {
+	ws := smokeWorkspace(t, map[string]string{
+		"go.mod":             "module example.com/refs\n\ngo 1.27\n",
+		".gitignore":         "ignored/\n",
+		"lib/lib.go":         "package lib\n\n// Target is the declaration.\nfunc Target() int { return 1 }\n",
+		"lib/other.go":       "package lib\n\nfunc Other() int { return Target() }\n",
+		"main.go":            "package main\n\nimport \"example.com/refs/lib\"\n\nfunc main() {\n\t_ = lib.Target()\n\t_ = lib.Target()\n}\n",
+		"ignored/skipped.go": "package ignored\n\nimport \"example.com/refs/lib\"\n\nfunc Skipped() int { return lib.Target() }\n",
+	})
+
+	of, err := outline.Outline(context.Background(), filepath.Join(ws.Root(), "lib", "lib.go"), nil, outline.Options{Root: ws.Root()})
+	if err != nil {
+		t.Fatalf("outline: %v", err)
+	}
+	var target outline.Decl
+	for _, d := range of.Decls {
+		if d.Name == "Target" {
+			target = d
+		}
+	}
+	if target.Name != "Target" {
+		t.Fatalf("outline found no Target in %+v", of.Decls)
+	}
+
+	res, err := tools.References(context.Background(), ws, target, tools.ReferenceOptions{})
+	if err != nil {
+		t.Fatalf("References: %v", err)
+	}
+	var sites []string
+	for _, s := range res.Sites {
+		sites = append(sites, fmt.Sprintf("%s:%d", s.Path, s.Line))
+	}
+	if want := []string{"lib/other.go:3", "main.go:6", "main.go:7"}; !slices.Equal(sites, want) {
+		t.Errorf("References listed %v, want exactly the three non-ignored sites %v", sites, want)
 	}
 }
