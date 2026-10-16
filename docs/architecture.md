@@ -136,7 +136,7 @@ What follows from it:
 
 | Package | Owns |
 |---|---|
-| `.` | `Config`, `New` and the `Agent` (`agent.go`; its surface is `Run`, `Stream`, `Messages`, `Usage`, `ReachableTools`), the loop (`loop.go`), the tool batch executor (`batch.go`), nested tool calls (`nested.go`), the unguarded-shell check (`execguard.go`). |
+| `.` | `Config`, `New` and the `Agent` (`agent.go`; its surface is `Run`, `Stream`, `Messages`, `Usage`, `ReachableTools`, `Runner`), the loop (`loop.go`), and the tool side the loop is built on: `Toolset`, `NewRunner` and `Runner` (`runner.go`), the runner's batch engine (`batch.go`), its nested caller (`nested.go`) and the unguarded-shell check (`execguard.go`). |
 | `core` | Messages, content blocks, events and their JSON form (`MarshalEvent`), `EventStream`, `Tool`, `ToolResult`, `ToolPolicy`, argument preparation, interceptors, `ProviderClient`, `Request`, `StreamEvent`, `Model`, `Usage`, stop reasons, errors. |
 | `schema` | JSON Schema values and typed combinators; `Parse` decodes a schema document keeping property order; `Validate` and `Coerce` check and repair tool arguments. |
 | `catalog` | The embedded Claude model catalog (`catalog.json`) and `Lookup`: context window, output cap, prices, thinking kind, with a usable default for an unlisted id. |
@@ -178,10 +178,12 @@ What follows from it:
 ## Data flow of one run
 
 ```
-agentkit.New   checks every tool (exactly one of Handler/Execute, no reach
+agentkit.New   builds a Runner from Config.Toolset (agentkit.NewRunner):
+               checks every tool (exactly one of Handler/Execute, no reach
                cycle, no wrapper reaching a Terminating tool), resolves
-               Config.Policy, refuses a reachable shell tool with no Guard,
-               looks up the model in the catalog, builds the provider
+               Toolset.Policy, refuses a reachable shell tool with no
+               Toolset.Guard; looks up the model in the catalog, builds the
+               provider
 Agent.Run      = Stream, then wait for the RunResult
 Agent.Stream   claims the run slot (core.ErrBusy if taken), applies
                Config.Timeout, starts runLoop on a goroutine
@@ -198,8 +200,9 @@ Agent.Stream   claims the run slot (core.ErrBusy if taken), applies
        ends the run here, before tool extraction
     4. tool_use blocks present? (the stop reason never decides)
          max_tokens: none run; each gets the fixed "not executed" result
-         otherwise batch.go: prepare (sequential: arguments, Guard)
-           -> abort decision (once) -> execute (parallel unless a
+         otherwise the Runner's batch engine (batch.go), given the run's
+           stream as its event sink: prepare (sequential: arguments,
+           Guard) -> abort decision (once) -> execute (parallel unless a
            Sequential tool is in the batch) -> finalize (After, events,
            one ToolResultMessage per call); a tool with ReachableTools
            runs with a NestedCaller on its context (nested.go)
@@ -213,7 +216,15 @@ Agent.Stream   claims the run slot (core.ErrBusy if taken), applies
 Observation is the event stream. `Stream` returns it; `Run` waits for its
 result without reading the events. Errors the run survives (a panicking tool,
 interceptor or provider) are `core.ErrorEvent`s on it. The only interception
-is `Config.Guard` and `Config.After`.
+is `Toolset.Guard` and `Toolset.After`.
+
+The tool side does not need a model. `Agent.Runner()` returns the `Runner` the
+loop runs its calls through, and `agentkit.NewRunner(toolset)` builds one on
+its own: `Runner.Call` and `Runner.Batch` run tool calls, code mode included,
+through the same steps, with the events going to `Toolset.Events`. A run's own
+calls emit to the run's stream instead, and calls made through the runner are
+outside every run: they are not in the transcript, not in `Usage`, and do not
+claim the run slot.
 
 ## Invariants worth knowing before editing
 
@@ -231,8 +242,8 @@ is `Config.Guard` and `Config.After`.
 - **Panics in third-party code are contained** (tool handlers, interceptors,
   argument preparation, the provider) and reported as `core.ErrorEvent`s. A
   panicking `Guard` blocks the call.
-- **A shell tool with no `Guard`** is refused by `New` with
-  `core.ErrUnguardedExecute`; `guard.AllowAll` is the explicit opt-out. A
+- **A shell tool with no `Guard`** is refused by `NewRunner`, and so by `New`,
+  with `core.ErrUnguardedExecute`; `guard.AllowAll` is the explicit opt-out. A
   shell tool reachable through a wrapper counts too:
   `... (wrapper "code_mode" reached shell tool "execute")`.
 - **Untrusted bytes go through `wire`**: bounds before allocation, duplicate
@@ -246,8 +257,8 @@ is `Config.Guard` and `Config.After`.
 - **The transcript is append-only.** `Agent.Messages()` returns a copy;
   pruning changes only the request.
 - **One run at a time.** A `Run` or `Stream` that overlaps another fails with
-  `core.ErrBusy`; `Messages`, `Usage` and `ReachableTools` are safe during a
-  run.
+  `core.ErrBusy`; `Messages`, `Usage`, `ReachableTools` and `Runner` are safe
+  during a run.
 
 ## Nested tool calls
 
@@ -255,7 +266,8 @@ A tool can call other tools on the model's behalf, for example a script runner
 that turns tools into functions. It declares them up front in
 `core.Tool.ReachableTools`, and nothing else is reachable.
 
-- **Registration.** `New` refuses a hierarchy in which a tool reaches itself:
+- **Registration.** `NewRunner`, and so `New`, refuses a hierarchy in which a
+  tool reaches itself:
   `agentkit: reachable tools cycle detected: toolA -> toolB -> toolA`. It
   also refuses one in which a wrapper reaches a `Terminating` tool:
   `agentkit: terminating tool "finish" cannot be reached through wrapper "code_mode"`.
@@ -265,21 +277,24 @@ that turns tools into functions. It declares them up front in
   nothing is dropped, so an allowlist must name the children as well as the
   wrapper. `ToolPolicy.Tools`, when non-nil, is used verbatim.
 - **Queries.** `core.ReachableTools(tools)` is the deduplicated transitive
-  closure in depth-first order. `Agent.ReachableTools()` is that closure over
-  the resolved set, which is what a check like "this run is read-only" must
-  inspect.
-- **Dispatch.** `executeBatch` attaches a `nestedCaller` (`nested.go`) to the
-  context of every tool that declares `ReachableTools`. It is bound to that
-  call's id and name and to the wrapper's reachable tools. The tool calls
-  `core.CallNested(ctx, calls...)`; with no caller attached, it gets
-  `core.ErrNoNestedCaller`.
+  closure in depth-first order. `Runner.Reachable()` and
+  `Agent.ReachableTools()` are that closure over the resolved set, which is
+  what a check like "this run is read-only" must inspect.
+- **Dispatch.** The runner's batch engine attaches a `nestedCaller`
+  (`nested.go`) to the context of every tool that declares `ReachableTools`,
+  whether the call came from an agent run, `Runner.Call` or `Runner.Batch`.
+  It is bound to that call's id and name and to the wrapper's reachable tools.
+  The tool calls `core.CallNested(ctx, calls...)`; with no caller attached (a
+  tool that declares no `ReachableTools`, or one invoked by something that is
+  neither an agent run nor a runner), it gets `core.ErrNoNestedCaller`.
 - **Pipeline.** A nested call goes through the same steps as a direct one:
   1. prepare and validate the arguments;
-  2. `Config.Guard`, whose context carries `ParentToolUseID` and
+  2. `Toolset.Guard`, whose context carries `ParentToolUseID` and
      `ParentToolName`;
   3. the handler;
-  4. `Config.After`;
-  5. `ToolExecutionStart`/`End` events with `ParentToolUseID`.
+  4. `Toolset.After`;
+  5. `ToolExecutionStart`/`End` events with `ParentToolUseID`, on the run's
+     stream, or on `Toolset.Events` for a call made through a runner.
 
   Each nested call gets a fresh id. Preparation runs in call order. Handlers
   run concurrently unless a `Sequential` tool is among the calls, and results
@@ -341,14 +356,16 @@ A run:
    with the line, the partial output and the calls that completed. Their side
    effects are not undone.
 
-Calling code mode outside an agent run fails the script's first tool call
-with `ErrNoNestedCaller`: code mode never runs a tool around the agent's
-pipeline. An embedder that is its own driver — one that serves the tools to
-another harness over MCP, say — supplies the pipeline itself: it implements
-`core.NestedCaller` (prepare the arguments, run the guard, run the handler)
-and attaches it with `core.WithNestedCaller` before calling the tool.
-[`examples/harness`](../examples/harness) does exactly that, and nothing
-else of the driver.
+Code mode runs outside an agent run through a `Runner`: `Runner.Call(ctx,
+"code_mode", script)` runs the script and each tool call it makes through the
+same pipeline an agent run uses, with no agent and no provider, and the nested
+calls reach `Toolset.Events` with the `code_mode` call as their parent.
+`core.ErrNoNestedCaller` is what a tool gets when it declares no
+`ReachableTools`, or when something that is neither an agent run nor a runner
+invokes it: code mode never runs a tool around the pipeline. An embedder that
+is its own driver — one that serves the tools to another harness over MCP,
+say — builds a runner and calls it. [`examples/harness`](../examples/harness)
+does exactly that, and nothing else of the driver.
 
 ## MCP client
 
@@ -664,7 +681,7 @@ unconfined after a Sync and an Export.
 **D3: the script runs on the host.** PRD 11's decision D3 (a) is what spec 13
 implements: a code-mode script over proxy tools runs in the host's Starlark
 interpreter, and each call it makes goes through the host's nested-call
-pipeline and `Config.Guard` before it becomes a `Call` RPC. The guard
+pipeline and `Toolset.Guard` before it becomes a `Call` RPC. The guard
 therefore sees every call a script makes, inside a sandbox or not. Running the
 interpreter in the sandbox with authorization called back to the host
 (D3 (c)) is deferred to the second release; only the self-contained `Call`

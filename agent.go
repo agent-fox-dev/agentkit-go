@@ -6,9 +6,14 @@
 //
 // The canonical vocabulary — messages, content blocks, events, Tool and
 // every interface seam — lives in the core package and is used directly.
-// What lives here is the driver: Config, New, the Agent, the loop and the
-// tool batch executor. The prompt assembler and the execute guard are each
-// their own package beneath this one.
+// What lives here is the driver — Config, New, the Agent and the loop — and
+// the tool side the driver is built on, which stands without a model. A
+// Toolset is the tools, the policy that selects among them, the guard, the
+// after-interceptor and the sink for execution events; NewRunner validates one
+// into a Runner, which runs tool calls (Call, Batch), code mode included,
+// through the pipeline an agent run uses. An Agent holds a Runner, and Config
+// takes a Toolset. The prompt assembler and the execute guard are each their
+// own package beneath this one.
 package agentkit
 
 import (

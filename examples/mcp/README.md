@@ -57,7 +57,7 @@ In `clientMode`:
    `pool.Connect(ctx, mcp.ServerConfig{Name, Command, Args, Env, Timeout}, env, secrets)`
    (`connectExternal`).
 4. **`pool.Tools(ctx, native)`** returns `core.Tool`s with **qualified names**,
-   `<server>__<tool>`. Write allowlists and `Config.Guard` checks against
+   `<server>__<tool>`. Write allowlists and `Config.Toolset.Guard` checks against
    the qualified name.
 5. **`smokeCall`** executes one adapted tool directly — a cheap way to prove
    the MCP side works before paying for a model turn.

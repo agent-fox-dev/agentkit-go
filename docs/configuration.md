@@ -3,7 +3,7 @@
 AgentKit is a library. It has no config file of its own and no global state.
 Configuration is one of:
 
-1. fields on `agentkit.Config` and the option structs of the packages below,
+1. fields on `agentkit.Config`, `agentkit.Toolset` and the option structs of the packages below,
 2. environment variables, read when an Anthropic client is resolved,
 3. one optional TOML section, `[mcp]`, that an embedding application may load
    with `mcp.ParseConfig`.
@@ -15,10 +15,9 @@ reference.
 ## `agentkit.Config`
 
 `agentkit.New(cfg)` builds an `Agent` from it, and refuses a config it could
-not run: no `Client` and no `Provider`, an empty `Model`, an invalid tool
-hierarchy (a tool with both or neither of `Handler` and `Execute`, a
-reachability cycle, a wrapper reaching a `Terminating` tool), or a reachable
-shell tool with no `Guard`.
+not run: no `Client` and no `Provider`, an empty `Model`, or a `Toolset` that
+`agentkit.NewRunner` refuses (below). It checks the client and the model
+first, and returns `NewRunner`'s error unchanged.
 
 | Field | Meaning / default |
 |---|---|
@@ -28,10 +27,7 @@ shell tool with no `Guard`.
 | `Effort` | `agentkit.Effort` (`core.Effort`): `""` (no thinking parameter), `EffortLow`, `EffortMedium`, `EffortHigh`, `EffortXHigh`, `EffortMax` (`low` … `max`). On an adaptive model it is sent as `thinking: {"type":"adaptive"}` with `output_config.effort`; on a budget model as `thinking: {"type":"enabled","budget_tokens":N}`, N from the catalog row; on a model without thinking, or at an effort the row does not list, neither is sent. Never moved to another effort. |
 | `System` | The base prompt. Empty means `prompt.BaseInstructions` and `prompt.UniversalGuidelines`. Either way the active tools' own guidelines (`Tool.PromptGuidelines`, and the shell guidelines) follow it (`prompt.Build`). |
 | `Prefix` | Messages sent after the system prompt and before the transcript on every request (`core.Request.Prefix`), with a cache breakpoint on their last block. Never recorded in the transcript. |
-| `Tools` | The tools the agent can run. Each sets exactly one of `Handler` and `Execute`. |
-| `Policy` | `core.ToolPolicy`: `Tools`, `ToolNames`, `ExcludeTools`, `NoTools` (`builtin` / `all`), `CustomTools`. Resolved over `Config.Tools` once, in `New`, and applied to what wrappers reach too. A non-nil empty `Policy.Tools` means no tools. |
-| `Guard` | `core.BeforeToolCall`, the authorization boundary for every call, nested ones included. Required when a shell tool (`execute`, `run_command`) is reachable; otherwise `New` fails with an error wrapping `core.ErrUnguardedExecute`. Use `guard.Restricted(opts)` or `guard.AllowAll`. |
-| `After` | `core.AfterToolCall`. Receives the handler's `ToolResult` by value and the mutable `Result *ToolResultMessage`; its `Terminate *bool` can set or clear a call's terminate vote. |
+| `Toolset` | The agent's tools, the policy that selects among them, the guard and the after-interceptor ([`agentkit.Toolset`](#agentkittoolset), below). The zero `Toolset` is an agent with no tools. |
 | `MaxTurns` | Ends a run that would go on past this many turns with `core.RunStopMaxTurns` and an error wrapping `core.ErrMaxTurns`, after the last turn's results are recorded. Zero is unbounded. |
 | `MaxCostUSD` | Checked before each request against the run's cost so far: at or past it, the request is not sent and the run ends with `core.RunStopBudgetExceeded` and an error wrapping `core.ErrBudgetExceeded`. Usage a provider did not price is priced at the model's catalog row, so an unlisted id costs nothing and never trips it. Zero is unbounded. |
 | `Timeout` | The run's deadline. Past it the run ends with `core.RunStopTimeout` and an error wrapping `context.DeadlineExceeded`. A cancellation from outside ends it with `core.RunStopAborted` and an error wrapping `core.ErrAborted` and the context's error. Zero is unbounded. |
@@ -69,11 +65,11 @@ W-token context window`.
 
 - A batch's calls run concurrently, one goroutine per call, unless a tool in
   the batch is `core.Sequential`.
-- When any call that ran returns `Terminate: true` (or `After` sets it), the
-  run ends with `core.RunStopToolTerminate` once every call in the batch has
-  finished. A call blocked by `Guard` or refused for its arguments casts no
-  vote of its own; a `Guard` decision with both `Block` and `Terminate` ends
-  the run (`guard.Options.TerminateOnBlock`).
+- When any call that ran returns `Terminate: true` (or `Toolset.After` sets
+  it), the run ends with `core.RunStopToolTerminate` once every call in the
+  batch has finished. A call blocked by `Toolset.Guard` or refused for its
+  arguments casts no vote of its own; a `Guard` decision with both `Block` and
+  `Terminate` ends the run (`guard.Options.TerminateOnBlock`).
 - A response cut off at `max_tokens` runs none of its tool calls; each gets
   the fixed result `Tool call "NAME" was not executed: the response hit the
   output token limit, ...`.
@@ -81,6 +77,71 @@ W-token context window`.
   an error wrapping `core.ErrRefusal`.
 - The event stream is unbounded and never drops an event or blocks the run;
   `Config` has no stream options.
+
+## `agentkit.Toolset`
+
+The tool side of an agent. `Config.Toolset` gives an agent one, and
+`agentkit.NewRunner(ts)` builds a `Runner` from one with no model: the agent
+holds the `Runner` it runs its calls through, and `Agent.Runner()` returns it.
+The zero `Toolset` has no tools, which is valid.
+
+| Field | Meaning / default |
+|---|---|
+| `Tools` | The tools registered. Each sets exactly one of `Handler` and `Execute`. |
+| `Policy` | `core.ToolPolicy`: `Tools`, `ToolNames`, `ExcludeTools`, `NoTools` (`builtin` / `all`), `CustomTools`. Resolved over `Tools` once, in `NewRunner`, and applied to what wrappers reach too. A non-nil empty `Policy.Tools` means no tools. |
+| `Guard` | `core.BeforeToolCall`, the authorization boundary for every call, nested ones included. Required when a shell tool (`execute`, `run_command`) is reachable. Use `guard.Restricted(opts)` or `guard.AllowAll`. |
+| `After` | `core.AfterToolCall`. Receives the handler's `ToolResult` by value and the mutable `Result *ToolResultMessage`; its `Terminate *bool` can set or clear a call's terminate vote. |
+| `Events` | `func(core.Event)`, the sink for the execution events of calls a `Runner` runs outside an agent run. Nil discards them. |
+
+`NewRunner` checks every tool in `Tools`, resolves `Policy`, checks every
+resolved tool, then checks the shell guard, and returns the first failure with
+a nil `Runner`:
+
+- `agentkit: tool "NAME" has neither Handler nor Execute`
+- `agentkit: tool "NAME" sets both Handler and Execute; exactly one`
+- `agentkit: reachable tools cycle detected: a -> b -> a`
+- `agentkit: terminating tool "NAME" cannot be reached through wrapper "NAME"`
+- an error wrapping `core.ErrUnguardedExecute` (its text names `Toolset.Guard`)
+  with the suffix ` (tool "NAME")`, or ` (wrapper "NAME" reached shell tool "NAME")`
+  for a shell tool behind a wrapper
+
+`New` makes the same checks by calling `NewRunner`, so the two refuse exactly
+the same toolsets with the same errors. `NewRunner` copies `Tools`, so a
+caller who changes its own slice afterwards does not change the runner. A
+`Runner` is immutable after construction and safe for concurrent use.
+
+A `Runner` has four methods: `Tools()` is the resolved set in policy order
+(what a model, an MCP server or a prompt should see; each call returns a fresh
+slice); `Reachable()` is `core.ReachableTools` over it; `Call(ctx, name,
+input)` runs one call as a batch of one under a generated `call_` id and
+returns its `core.ToolResult`; and `Batch(ctx, calls...)` runs calls with the
+rules an agent applies to a turn's. Every outcome is a result, never a Go
+error. `Guard` sees `Assistant` nil and `TurnCount` 0 for a call made through
+a runner, which is how a guard can tell that no model made it. A result's
+`Terminate` is the call's final vote; `Call` and `Batch` act on none.
+
+### `Events`
+
+For calls a runner runs outside an agent run, `Events` receives what a run's
+stream receives for them: a `core.ToolExecutionStartEvent` and a
+`core.ToolExecutionEndEvent` for every call (nested ones carry
+`ParentToolUseID`), a `core.ToolResultEvent` for each top-level call, carrying
+the message as `After` left it, and a `core.ErrorEvent` for each panic the
+pipeline recovered. A call's start event precedes its end event, and a
+top-level call's end event precedes its result event.
+
+`Events` is called from the goroutines that run the calls, several at once, so
+it must be safe for concurrent use and should not block. No runner-wide lock is
+held while it runs, so a sink may itself call `Runner.Call`.
+`(*core.EventStream).Push` is a conforming sink. A panic in `Events` is
+recovered and the event is dropped; it is not reported again, because the sink
+that would receive the report is the one that panicked.
+
+During an agent run the run's stream receives the events of the run's calls and
+`Events` is not called for them. Calls made through `Agent.Runner()`, during a
+run or not, are outside every run: they do not enter the transcript, are not
+counted in `Agent.Usage`, do not claim the run slot, and their events go to
+`Events`.
 
 ## `guard.Options`
 
@@ -97,7 +158,8 @@ reports `sandbox.IsolationContainer` or `sandbox.IsolationMicroVM`
 (`sandbox/podman`), under `sandbox.NetworkNone` (or with egress you accept),
 with `Spec.Resources` set, and with the files you export from it treated as
 untrusted. It is never reasonable with `local` or with any local shell tool
-in the set. `agentkit.New` still requires a `Guard` either way.
+in the set. `agentkit.New` and `agentkit.NewRunner` still require a
+`Toolset.Guard` either way.
 
 | Field | Meaning |
 |---|---|

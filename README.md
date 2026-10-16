@@ -39,8 +39,10 @@ if err != nil {
 agent, err := agentkit.New(agentkit.Config{
 	Client: client,
 	Model:  "claude-opus-5-5",
-	Tools:  ts,
-	Guard:  guard.Restricted(guard.Options{AllowedPrograms: []string{"go", "git"}}),
+	Toolset: agentkit.Toolset{
+		Tools: ts,
+		Guard: guard.Restricted(guard.Options{AllowedPrograms: []string{"go", "git"}}),
+	},
 })
 if err != nil {
 	return err
@@ -75,13 +77,13 @@ if err != nil {
 }
 fmt.Printf("code_mode binds %d tools\n", info.BoundToolsCount)
 agent, err := agentkit.New(agentkit.Config{
-	Client: client,
-	Model:  "claude-opus-5-5",
-	Tools:  []core.Tool{cm},
+	Client:  client,
+	Model:   "claude-opus-5-5",
+	Toolset: agentkit.Toolset{Tools: []core.Tool{cm}},
 })
 ```
 
-No shell tool is bound, so no `Guard` is needed. Bind `execute` or
+No shell tool is bound, so no `Toolset.Guard` is needed. Bind `execute` or
 `run_command` and `New` requires one, because a shell reached through a wrapper
 is as unguarded as one called directly. [`examples/codemode`](examples/codemode)
 runs this offline, with an MCP tool bound beside the built-ins.
@@ -114,8 +116,10 @@ if err != nil {
 agent, err := agentkit.New(agentkit.Config{
 	Client: client,
 	Model:  "claude-opus-5-5",
-	Tools:  proxies,
-	Guard:  guard.Restricted(guard.Options{AllowedPrograms: []string{"go"}}),
+	Toolset: agentkit.Toolset{
+		Tools: proxies,
+		Guard: guard.Restricted(guard.Options{AllowedPrograms: []string{"go"}}),
+	},
 })
 // ... run the agent, then bring its edits back into a host directory.
 if err := sb.Export(ctx, ".", sandbox.LocalDir{Path: "./result"}); err != nil {
@@ -191,14 +195,19 @@ accepted only on loopback, so a token never crosses a network in clear text.
 loopback port, over `local`, and drives it as an embedder would, offline;
 with `--url` it dials an `agentkit-gateway` already running.
 
-The driver is optional. Another harness — Claude Code, Pi, any MCP client —
-can work in a sandbox with code mode and the built-in tools as its only
-tools: the embedder serves them over MCP and keeps the sandbox, the guard
-and the policy on its side. [`examples/harness`](examples/harness) does that
-for one task of a spec package: it clones a repository into a sandbox, runs
-`specr` inside it, measures the spec's checks, starts the harness with its
-own tools off, and measures again. Offline it runs on `local` with a
-scripted stand-in for the harness.
+The driver is optional. The tool side of an agent — tools, policy, guard,
+after-interceptor — is a `Toolset`, and `agentkit.NewRunner` turns one into a
+`Runner` that runs tool calls with no model: `Runner.Call` runs one, through
+the same preparation, guard, handler and events a model's calls go through,
+and code mode works through it. Another harness — Claude Code, Pi, any MCP
+client — can work in a sandbox with code mode and the built-in tools as its
+only tools: the embedder serves them over MCP from a runner and keeps the
+sandbox, the guard and the policy on its side.
+[`examples/harness`](examples/harness) does that for one task of a spec
+package: it clones a repository into a sandbox, runs `specr` inside it,
+measures the spec's checks, starts the harness with its own tools off, and
+measures again. Offline it runs on `local` with a scripted stand-in for the
+harness.
 
 ## Consumer contract
 
@@ -206,11 +215,14 @@ The identifiers an embedder such as agent-fox builds on.
 
 | Identifier | Shape |
 |---|---|
-| `agentkit.Config` | `Client`, `Provider`, `Model`, `Effort`, `System`, `Prefix`, `Tools`, `Policy`, `Guard`, `After`, `MaxTurns`, `MaxCostUSD`, `Timeout`, `Prune`, `MaxTokens` |
+| `agentkit.Config` | `Client`, `Provider`, `Model`, `Effort`, `System`, `Prefix`, `Toolset`, `MaxTurns`, `MaxCostUSD`, `Timeout`, `Prune`, `MaxTokens` |
+| `agentkit.Toolset` | `Tools`, `Policy`, `Guard`, `After`, `Events` |
 | `agentkit.New` | `New(cfg Config) (*Agent, error)` |
+| `agentkit.NewRunner` | `NewRunner(ts Toolset) (*Runner, error)`; refuses what `New` refuses, with the same errors |
+| `agentkit.Runner` | `Call(ctx, name string, input json.RawMessage) core.ToolResult`, `Batch(ctx, calls ...core.ToolUseBlock) []core.ToolResult`, `Tools() []core.Tool`, `Reachable() []core.Tool`; safe for concurrent use |
 | `Agent.Run` | `Run(ctx, prompt string) (core.RunResult, error)` |
 | `Agent.Stream` | `Stream(ctx, prompt string) (*core.EventStream, error)` |
-| `Agent.Messages`, `Agent.Usage`, `Agent.ReachableTools` | `core.Messages`, `core.Usage`, `[]core.Tool`; safe during a run |
+| `Agent.Messages`, `Agent.Usage`, `Agent.ReachableTools`, `Agent.Runner` | `core.Messages`, `core.Usage`, `[]core.Tool`, `*Runner`; safe during a run |
 | `agentkit.PruneOptions` | `Threshold float64`, `KeepTurns int` |
 | `core.RunResult` | `Messages`, `StopReason`, `LastReason`, `Usage`, `TurnCount`, `Error`; `FinalText()` |
 | `core.RunStopReason` | `RunStopEndTurn`, `RunStopMaxTurns`, `RunStopBudgetExceeded`, `RunStopToolTerminate`, `RunStopError`, `RunStopAborted`, `RunStopTimeout`, `RunStopRefusal` (`RunStopPolicy` is declared but the driver never sets it) |
@@ -235,7 +247,7 @@ The identifiers an embedder such as agent-fox builds on.
 
 | Package | What it owns |
 |---|---|
-| `.` (root) | The driver: `Config`, `New`, the `Agent`, the loop, the tool batch executor, nested tool calls. |
+| `.` (root) | The driver: `Config`, `New`, the `Agent`, the loop. The tool side it is built on: `Toolset`, `NewRunner`, `Runner` and its batch engine and nested calls. |
 | `core` | The vocabulary and the seams: messages, content blocks, events, `EventStream`, `Tool`, `ToolPolicy`, interceptors, `ProviderClient`, `Model`, `Usage`, stop reasons, errors. |
 | `schema` | JSON Schema values, typed combinators, `Parse`, `Validate`, `Coerce`. |
 | `workspace` | The workspace every scenario opens first: containment (`Resolve`, `CheckWriteTarget`), the ignore rules (`IgnoreOptions`, `Ignore`, `Ignored`) and the directory walk (`Walk`). It imports nothing of the module. |

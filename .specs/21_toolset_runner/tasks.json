@@ -405,7 +405,7 @@
       "done_when": [
         "`make check` exits 0 in every module in MODULES"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,

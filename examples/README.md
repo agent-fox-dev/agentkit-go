@@ -36,7 +36,7 @@ agent, err := agentkit.New(agentkit.Config{
 	Client:     client,
 	Model:      "claude-sonnet-5",
 	System:     "You are concise.",
-	Tools:      myTools,
+	Toolset:    agentkit.Toolset{Tools: myTools},
 	MaxTurns:   12,
 	MaxCostUSD: 1.00,
 })
@@ -44,8 +44,9 @@ agent, err := agentkit.New(agentkit.Config{
 
 `New` validates the whole config before returning an agent, so a bad tool,
 a missing model or an unguarded shell is an error here rather than on the
-first run. The agent then has five methods: `Run` and `Stream` execute a
-prompt, and `Messages`, `Usage` and `ReachableTools` read its state.
+first run. The agent then has six methods: `Run` and `Stream` execute a
+prompt, `Messages`, `Usage` and `ReachableTools` read its state, and `Runner`
+returns the runner its tool calls go through.
 
 There are exactly two things to get right.
 
@@ -146,8 +147,8 @@ AGENTKIT_MODEL=claude-opus-5-5 go run ./examples/codingagent "hello"
 These are not defaults you can ignore — the library will stop you.
 
 **A shell tool needs an authorization boundary.** Passing `execute` or
-`run_command` in `Config.Tools` — directly or reachable
-through a wrapper tool — with a nil `Config.Guard` makes `agentkit.New`
+`run_command` in `Config.Toolset.Tools` — directly or reachable
+through a wrapper tool — with a nil `Config.Toolset.Guard` makes `agentkit.New`
 return an error wrapping `core.ErrUnguardedExecute`; no agent is built. A
 headless service would otherwise hand the model an unrestricted shell by
 omission. Supply an interceptor — `guard.Restricted` is a replaceable

@@ -9,7 +9,7 @@ around them, and this example wires up both:
   before every write — so `../../etc/passwd` is refused by the tool, not by a
   prompt asking nicely.
 - **The execute guard.** `tools.For` includes `execute` and `run_command`.
-  Passing either of them in `Config.Tools` with a nil `Config.Guard` makes
+  Passing either of them in `Config.Toolset.Tools` with a nil `Config.Toolset.Guard` makes
   `agentkit.New` return an error wrapping `core.ErrUnguardedExecute`, so the
   agent is never built and no request is sent. You must supply an
   interceptor — here `guard.Restricted` — or pass `guard.AllowAll` to say in
@@ -70,9 +70,9 @@ The numbered comments in `run()` are the walkthrough:
    goes back to the model as a blocked tool result; `TerminateOnBlock: true`
    ends the run instead.
 4. `logged` *wraps* the policy to log each decision, and is passed as
-   `Config.Guard`. The wrapper reports; the policy still decides. This is the
+   `Config.Toolset.Guard`. The wrapper reports; the policy still decides. This is the
    pattern for adding side effects (logging, metrics) to any interceptor.
-5. `agentkit.New(agentkit.Config{Client, Model, System, Tools, Guard,
+5. `agentkit.New(agentkit.Config{Client, Model, System, Toolset: {Tools, Guard},
    MaxTurns: 20, MaxCostUSD: 2.00})` — `Client` comes from
    `anthropic.Resolve(anthropic.OSEnv{})`. The run stops at 20 turns
    (`core.RunStopMaxTurns`) or once $2.00 has been spent
@@ -89,7 +89,7 @@ The numbered comments in `run()` are the walkthrough:
 - `guard.Restricted` is a **floor, not a sandbox**: `go` alone can run
   arbitrary code through a test file or a generator. Replace it with a policy
   that knows your workload rather than widening the allowlist.
-- The tools are fixed at construction: they all go in `Config.Tools`, and
+- The tools are fixed at construction: they all go in `Config.Toolset.Tools`, and
   the guard check happens in `agentkit.New`, before any run. There is no way
   to add a tool to an agent afterwards.
 - `summarize` sorts argument keys because JSON object order is not stable.

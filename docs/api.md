@@ -13,7 +13,7 @@ it with `go doc -all <import path>`. This file is the map.
 
 | Package | Purpose |
 |---|---|
-| `agentkit` (root) | The driver: `agentkit.Config`, `agentkit.New`, the agent loop. |
+| `agentkit` (root) | The driver: `agentkit.Config`, `agentkit.New`, the agent loop. The tool side it is built on: `agentkit.Toolset`, `agentkit.NewRunner` and `agentkit.Runner`, which run tool calls with no model. |
 | `core` | The canonical vocabulary and every interface seam (`Tool`, `ProviderClient`, messages, events). |
 | `provider/anthropic` | The Anthropic Messages wire API, on the official Go SDK. |
 | `provider/faux` | A deterministic, scripted provider for offline tests. |

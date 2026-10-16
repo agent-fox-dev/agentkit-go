@@ -17,8 +17,8 @@ var (
 	ErrStreamOverrun = errors.New("agentkit: stream consumer overrun")
 
 	// ErrNoNestedCaller: CallNested was used where no NestedCaller is
-	// attached — a tool that declares no ReachableTools, or one called
-	// outside an agent run.
+	// attached — a tool that declares no ReachableTools, or one invoked by
+	// something that is neither an agent run nor a Runner.
 	ErrNoNestedCaller = errors.New(
 		"agentkit: no nested caller on the context; only a tool that declares ReachableTools can call other tools")
 	// ErrTerminated: an interceptor voted to end the run during a nested
