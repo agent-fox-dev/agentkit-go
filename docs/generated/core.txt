@@ -818,6 +818,20 @@ type Tool struct {
     Tool is the registry + loop type (REQ-TOOL-01). Exactly one of Handler and
     Execute must be set.
 
+func Named(ts []Tool, names ...string) ([]Tool, error)
+    Named returns the tools of ts called names, in the order of names,
+    each a value copy: the result shares nothing with ts. It looks only at the
+    top-level entries of ts, never at ReachableTools, so a wrapper's tools are
+    reached through the wrapper and the policy that prunes them stays in force;
+    when ts holds a name twice, the first wins. With no names the result is
+    empty and non-nil.
+
+    A name that ts does not hold, or one that names repeats, is an error and
+    the result is nil. The error for a missing name quotes every missing name,
+    in the order of names, and lists the names ts does hold, in ts order,
+    because the usual mistake is a typo or a qualified MCP name (server__tool)
+    and the set as given fixes it in one step.
+
 func ReachableTools(tools []Tool) []Tool
     ReachableTools returns tools and everything they reach through
     ReachableTools, transitively, each name once, in order of first appearance
