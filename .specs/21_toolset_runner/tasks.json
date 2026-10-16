@@ -235,7 +235,7 @@
       "done_when": [
         "`go test . -count=1 -run 'TS21|TS_21'` passes for the nested tests"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
