@@ -16,6 +16,7 @@ import (
 	agentkit "github.com/agent-fox-dev/agentkit-go"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/mcp"
+	"github.com/agent-fox-dev/agentkit-go/mcpserve"
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 )
 
@@ -35,14 +36,14 @@ type harnessResult struct {
 }
 
 // runHarness dispatches on name: claude, pi or scripted.
-func runHarness(ctx context.Context, log io.Writer, name string, m *servedMCP, system, task string, o options) (harnessResult, error) {
+func runHarness(ctx context.Context, log io.Writer, name string, ep *mcpserve.Endpoint, system, task string, o options) (harnessResult, error) {
 	switch name {
 	case "claude":
-		return runClaude(ctx, log, m, system, task, o)
+		return runClaude(ctx, log, ep, system, task, o)
 	case "pi":
-		return runPi(ctx, log, m, system, task, o)
+		return runPi(ctx, log, ep, system, task, o)
 	case "scripted":
-		return runScripted(ctx, log, m, system, task, o)
+		return runScripted(ctx, log, ep, system, task, o)
 	}
 	return harnessResult{}, fmt.Errorf("unknown harness %q: claude, pi or scripted", name)
 }
@@ -55,13 +56,13 @@ func runHarness(ctx context.Context, log io.Writer, name string, m *servedMCP, s
 // is one JSON object: the final text, the cost and the turn count. It runs
 // in an empty directory, so nothing of this program's own tree is a
 // workspace for it; with its tools off, it could not reach one anyway.
-func runClaude(ctx context.Context, log io.Writer, m *servedMCP, system, task string, o options) (harnessResult, error) {
+func runClaude(ctx context.Context, log io.Writer, ep *mcpserve.Endpoint, system, task string, o options) (harnessResult, error) {
 	dir, systemFile, err := harnessDir(system)
 	if err != nil {
 		return harnessResult{}, err
 	}
 	defer os.RemoveAll(dir)
-	stdout, code, err := runCommand(ctx, log, dir, "claude", claudeArgs(m.mcpConfig(false), systemFile, task, o)...)
+	stdout, code, err := runCommand(ctx, log, dir, "claude", claudeArgs(ep.ClaudeConfig("agentkit"), systemFile, task, o)...)
 	if err != nil {
 		return harnessResult{}, err
 	}
@@ -125,7 +126,7 @@ func piArgs(systemFile, task string, o options) []string {
 // server's exposure is set to direct so the tools are declared to the model
 // rather than reached only through Pi's own code mode. Verified against
 // Pi's documentation, not run here.
-func runPi(ctx context.Context, log io.Writer, m *servedMCP, system, task string, o options) (harnessResult, error) {
+func runPi(ctx context.Context, log io.Writer, ep *mcpserve.Endpoint, system, task string, o options) (harnessResult, error) {
 	dir, systemFile, err := harnessDir(system)
 	if err != nil {
 		return harnessResult{}, err
@@ -134,7 +135,7 @@ func runPi(ctx context.Context, log io.Writer, m *servedMCP, system, task string
 	if err := os.MkdirAll(filepath.Join(dir, ".pi"), 0o700); err != nil {
 		return harnessResult{}, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".pi", "mcp.json"), []byte(m.mcpConfig(true)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".pi", "mcp.json"), []byte(ep.PiConfig("agentkit")), 0o600); err != nil {
 		return harnessResult{}, err
 	}
 	stdout, code, err := runCommand(ctx, log, dir, "pi", piArgs(systemFile, task, o)...)
@@ -153,10 +154,10 @@ func runPi(ctx context.Context, log io.Writer, m *servedMCP, system, task string
 // credential, no network beyond loopback. The driver needs no Guard: the
 // imported tools are agentkit__execute and friends, and the guard is the
 // server's.
-func runScripted(ctx context.Context, log io.Writer, m *servedMCP, system, task string, o options) (harnessResult, error) {
+func runScripted(ctx context.Context, log io.Writer, ep *mcpserve.Endpoint, system, task string, o options) (harnessResult, error) {
 	pool := mcp.NewPool(mcp.ConnectionOptions{Warnf: func(format string, args ...any) { fmt.Fprintf(log, "  mcp: "+format+"\n", args...) }})
 	defer pool.Close()
-	cfg := mcp.ServerConfig{Name: "agentkit", URL: m.URL, Headers: map[string]string{"Authorization": "Bearer " + m.Token}}
+	cfg := mcp.ServerConfig{Name: "agentkit", URL: ep.URL, Headers: map[string]string{"Authorization": "Bearer " + ep.Token}}
 	if _, err := pool.Connect(ctx, cfg, nil, nil); err != nil {
 		return harnessResult{}, fmt.Errorf("connect to the MCP server: %w", err)
 	}
@@ -173,11 +174,10 @@ func runScripted(ctx context.Context, log io.Writer, m *servedMCP, system, task 
 	script, _ := json.Marshal(map[string]string{"script": scriptedTask})
 	agent, err := agentkit.New(agentkit.Config{
 		Provider: faux.New(
-			faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall("call_1", "agentkit__code_mode", string(script))}, StopReason: core.StopReasonToolUse},
-			faux.Turn{Blocks: []core.ContentBlock{faux.FauxText(
-				"Task 1 is done. TS-01-1 was written first and failed (go test exit 1); Greet now returns the name's greeting, " +
-					"or \"Hello, stranger!\" for an empty name; go test ./... passes and gofmt -l . prints nothing; " +
-					"tasks.json marks task 1 done. No deviations.")}, StopReason: core.StopReasonStop},
+			faux.ToolCall("call_1", "agentkit__code_mode", string(script)),
+			faux.Text("Task 1 is done. TS-01-1 was written first and failed (go test exit 1); Greet now returns the name's greeting, "+
+				"or \"Hello, stranger!\" for an empty name; go test ./... passes and gofmt -l . prints nothing; "+
+				"tasks.json marks task 1 done. No deviations."),
 		),
 		Model:    faux.Model().ID,
 		System:   system,

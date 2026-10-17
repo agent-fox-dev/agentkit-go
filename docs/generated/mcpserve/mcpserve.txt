@@ -1,0 +1,128 @@
+package mcpserve // import "github.com/agent-fox-dev/agentkit-go/mcpserve"
+
+Package mcpserve serves one agentkit.Runner's tools over MCP to a harness that
+is not AgentKit's own model loop: Claude Code, Pi, or any MCP client on the same
+machine.
+
+It is the one AgentKit module that serves MCP, and it serves one runner's tools
+to a harness on the same machine, over stdio (ServeStdio) or over Streamable
+HTTP on a loopback port behind a bearer token (ServeLoopback). Every call runs
+through the runner's pipeline and guard; the package adds only the protocol,
+and the configuration text a harness needs to connect (Endpoint.ClaudeConfig and
+Endpoint.PiConfig).
+
+It lives in its own module so the root and sandbox modules listen on no socket.
+
+TYPES
+
+type Endpoint struct {
+	// URL is the Streamable HTTP endpoint, http://127.0.0.1:<port>/mcp.
+	URL string
+	// Token is the bearer token every request must carry, in the header
+	// "Authorization: Bearer <Token>": 48 lowercase hex characters, fresh for
+	// each endpoint.
+	Token string
+
+	// Has unexported fields.
+}
+    An Endpoint is a running loopback MCP endpoint: where a harness connects,
+    and the bearer token it must present. ServeLoopback returns it; a harness is
+    told of it with ClaudeConfig or PiConfig.
+
+func (e *Endpoint) ClaudeConfig(name string) string
+    ClaudeConfig is the JSON Claude Code's --mcp-config takes to connect to this
+    endpoint as the MCP server called name (empty means "agentkit"): a server of
+    type http, with the endpoint's URL and its bearer token in the Authorization
+    header.
+
+    The output is built with encoding/json, so any name is escaped correctly,
+    and it reflects the Endpoint's URL and Token as they are when it is called.
+
+func (e *Endpoint) Close() error
+    Close stops the endpoint, as the end of the ctx it was served with does:
+    it stops accepting connections, lets requests in flight finish for up to
+    two seconds, then closes the connections that remain and cancels the calls
+    still running. It returns when that is done. It is safe to call more than
+    once and from several goroutines, and it does nothing on an Endpoint that
+    ServeLoopback did not return. It returns nil.
+
+func (e *Endpoint) PiConfig(name string) string
+    PiConfig is the JSON Pi's .pi/mcp.json takes: ClaudeConfig's object with
+    "exposure":"direct" in the server entry, so Pi declares the tools to its
+    model directly instead of reaching them only through its own code mode.
+
+type Options struct {
+	// Name is the server name an MCP client reads in the initialize result.
+	// Empty means "agentkit".
+	Name string
+	// Version is the server version an MCP client reads. Empty means the
+	// version of this module in the binary's build information (the
+	// replacement's version when the module is replaced), or "(devel)" when
+	// there is none.
+	Version string
+	// Instructions go to the client in the initialize result. A harness shows
+	// them to its model, so they are the place for rules about the tools.
+	Instructions string
+	// Logger receives one record per served call, per refused HTTP request and
+	// per stdio session that ends with an error. It never receives the bearer
+	// token, a tool's arguments or a result. Nil discards.
+	Logger *slog.Logger
+}
+    Options configures a Server. The zero value is valid.
+
+type Server struct {
+	// Has unexported fields.
+}
+    A Server serves one runner's tools over MCP. It is immutable after New and
+    safe for concurrent use: it may serve any number of loopback endpoints and
+    one stdio session at the same time, all over the same tool set.
+
+func New(r *agentkit.Runner, opts Options) (*Server, error)
+    New builds a Server over the tools of r. It reads r.Tools() once, and serves
+    that set for the Server's whole lifetime.
+
+    Each tool is served under its own name and description, with its input
+    schema as json.Marshal renders it, or {"type":"object"} when it has none.
+    New refuses a runner that holds a tool whose schema cannot be served (it
+    does not marshal, or its top level is not an object with "type":"object"),
+    naming the tool, so the SDK is never handed a tool it would reject.
+
+func (s *Server) ServeLoopback(ctx context.Context) (*Endpoint, error)
+    ServeLoopback serves the tools over Streamable HTTP on a loopback port, for
+    a harness on this machine, and returns where it is and the token it needs.
+
+    It listens on 127.0.0.1 on a port the system chooses, with a token
+    generated for this call. Every request must carry "Authorization:
+    Bearer <token>", compared in constant time, or it is refused with 401
+    before its body is read; only /mcp is served; and a request body is read up
+    to wire.Defaults()'s message size (413 above it) and must pass wire.Guard
+    (400 if it does not) before the SDK's handler, with its default stateful
+    sessions, sees it.
+
+    The endpoint serves until Endpoint.Close is called or ctx ends, whichever
+    comes first. It then stops accepting connections, lets requests in flight
+    finish for up to two seconds, and closes what remains, which cancels the
+    calls still running: they see a cancelled context. A client's standalone
+    event stream never ends on its own, which is why the wait is bounded.
+
+    A ctx that is already done returns nil and ctx.Err() and listens on nothing.
+
+func (s *Server) ServeStdio(ctx context.Context) error
+    ServeStdio serves one MCP session on os.Stdin and os.Stdout, for a harness
+    that starts the program as a child process. Frames are newline-delimited
+    JSON, and every inbound frame is held to wire.Defaults() before the SDK
+    decodes it, so a frame that breaks those limits ends the session and never
+    reaches the runner. It is meant to be called once per process; that is not
+    enforced.
+
+    It returns nil when the client closes its end, after every reply already
+    owed has been written. It returns ctx.Err() when ctx ends: the session is
+    closed first, and a call still running sees a cancelled context. Any other
+    end of the session returns an error starting "mcpserve: ", and is logged
+    as a warning by its rule alone, since a rejected frame's text is workspace
+    content. A ctx that is already done returns ctx.Err() without reading stdin.
+
+    A served session closes os.Stdin when it ends and leaves os.Stdout open.
+    Nothing but protocol frames is written to stdout; the program's own output
+    belongs on stderr.
+

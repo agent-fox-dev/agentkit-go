@@ -19,7 +19,7 @@ is not on it. An entry ending in `/` approves every module under that path.
 |---|---|
 | `github.com/anthropics/anthropic-sdk-go` | the Anthropic wire: transport, auth, retries, stream framing |
 | `go.starlark.net` | code mode's sandboxed Starlark runtime |
-| `github.com/modelcontextprotocol/go-sdk` | the MCP client and pool |
+| `github.com/modelcontextprotocol/go-sdk` | the MCP client and pool, and the MCP server of the `mcpserve` module |
 | `github.com/tree-sitter/…`, `github.com/tree-sitter-grammars/…` | tree-sitter outlines: the runtime and its grammar modules |
 | `github.com/bmatcuk/doublestar/v4` | glob matching in `tools.MatchGlob` and in `workspace`'s ignore engine |
 | `github.com/pelletier/go-toml/v2` | TOML parsing for MCP configuration (`internal/toml`) |
@@ -38,7 +38,11 @@ It also covers the nested `sandbox/gatewayd` module (spec 19), which adds no
 module: it requires only the root and sandbox modules and grpc directly
 (protobuf only if a hand-written file imported it), and its graph holds
 nothing the sandbox module's lacks (`TestGatewaydModule_TS19_60`,
-`TestGatewaydGraph_TS19_61`). The
+`TestGatewaydGraph_TS19_61`). And it covers the nested `mcpserve` module
+(spec 23), which adds no module either: it requires only the root module and
+the MCP Go SDK directly, the SDK at the version the root requires, and its
+graph holds nothing the root module's lacks (`TestMcpserveModule_TS23_1`,
+`TestMcpserveGraph_TS23_2`). The
 `codesearch` module is separate and not covered: its zoekt graph stays out of
 the root module's.
 
@@ -99,8 +103,9 @@ as well.
 
 ## `github.com/modelcontextprotocol/go-sdk`
 
-**Used by.** `mcp` only (and the `mcp` and `codemode` examples, which serve a
-tool from the SDK's in-process server).
+**Used by.** `mcp`, and the nested `mcpserve` module, which serves a runner's
+tools with the SDK's server and its Streamable HTTP handler (and the `mcp` and
+`codemode` examples, which serve a tool from the SDK's in-process server).
 
 **Version.** `v1.8.0`.
 

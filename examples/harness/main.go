@@ -40,14 +40,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	agentkit "github.com/agent-fox-dev/agentkit-go"
 	"github.com/agent-fox-dev/agentkit-go/codemode"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/guard"
+	"github.com/agent-fox-dev/agentkit-go/mcpserve"
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/local"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/podman"
@@ -162,61 +161,50 @@ func run(ctx context.Context, w, log io.Writer, o options) error {
 		}
 	}
 
-	// 2. Create the sandbox.
-	sb, err := p.Create(ctx, spec)
+	// 2. Choose where the workspace comes from, then create the sandbox, fill
+	//    it and get its proxy tools with one sandbox.Open. A GitRepo is the
+	//    provider's init step: a clone inside the sandbox, the host never
+	//    holding the tree. A LocalDir moves a host directory in over rsync,
+	//    which is how a private repository, cloned on the host with the host's
+	//    credential, goes in without the credential: ExcludeGit leaves .git
+	//    behind.
+	var (
+		src    sandbox.Source
+		filled string
+	)
+	switch {
+	case o.Repo != "":
+		src, filled = sandbox.GitRepo{URL: o.Repo, Ref: o.Ref, Depth: 1}, o.Repo
+	case o.Dir != "":
+		src, filled = sandbox.LocalDir{Path: o.Dir, ExcludeGit: true}, o.Dir
+	default:
+		project := filepath.Join(tmp, "project")
+		if err := writeSample(project); err != nil {
+			return err
+		}
+		src, filled = sandbox.LocalDir{Path: project}, "the sample project"
+	}
+	sb, proxies, err := sandbox.Open(ctx, p, spec, src, sandbox.ToolOptions{})
 	if err != nil {
 		return err
 	}
 	defer sb.Close(ctx)
 	caps := p.Capabilities()
 	fmt.Fprintf(w, "sandbox %s on %s (%s): agent %s, network %s\n", sb.ID(), caps.Provider, isolation(caps.Isolation), sb.Agent().Version, sb.Spec().Network.Mode)
+	fmt.Fprintf(w, "filled the workspace from %s\n", filled)
 
-	// 3. Fill the workspace. A GitRepo is the provider's init step: a clone
-	//    inside the sandbox, the host never holding the tree. A LocalDir
-	//    moves a host directory in over rsync, which is how a private
-	//    repository, cloned on the host with the host's credential, goes in
-	//    without the credential: ExcludeGit leaves .git behind.
-	switch {
-	case o.Repo != "":
-		if _, err := sb.Sync(ctx, sandbox.GitRepo{URL: o.Repo, Ref: o.Ref, Depth: 1}); err != nil {
-			return err
-		}
-		fmt.Fprintf(w, "cloned %s into the sandbox\n", o.Repo)
-	case o.Dir != "":
-		res, err := sb.Sync(ctx, sandbox.LocalDir{Path: o.Dir, ExcludeGit: true})
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(w, "synced %s: %d files, %d bytes\n", o.Dir, res.Files, res.Bytes)
-	default:
-		project := filepath.Join(tmp, "project")
-		if err := writeSample(project); err != nil {
-			return err
-		}
-		res, err := sb.Sync(ctx, sandbox.LocalDir{Path: project})
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(w, "synced the sample project: %d files, %d bytes\n", res.Files, res.Bytes)
-	}
-
-	// 4. The proxy tools, and the runner that runs them under the guard.
-	//    guard.Restricted is an allowlist of programs with shell operators
-	//    refused; under a podman sandbox with no network, guard.AllowAll is
-	//    a reasonable alternative, because then the container is the
-	//    boundary. local has no boundary but this guard.
-	proxies, err := sb.Tools(ctx, sandbox.ToolOptions{})
+	// 3. The runner that runs the proxy tools under the guard. guard.Allow is
+	//    an allowlist of programs with shell operators refused; under a podman
+	//    sandbox with no network, guard.AllowAll is a reasonable alternative,
+	//    because then the container is the boundary. local has no boundary but
+	//    this guard.
+	runner, hk, info, err := buildRunner(proxies, guard.Allow(allowed...), log)
 	if err != nil {
 		return err
 	}
-	runner, hk, info, err := buildRunner(proxies, guard.Restricted(guard.Options{AllowedPrograms: allowed}), log)
-	if err != nil {
-		return err
-	}
-	srv := &toolServer{runner: runner}
 	fmt.Fprintf(w, "serving code_mode over %d proxy tools (its description is %d bytes) and the %d tools themselves\n", info.BoundToolsCount, info.DescriptionBytes, len(proxies))
 
-	// 5. specr, inside the sandbox, through the proxy execute tool: the
+	// 4. specr, inside the sandbox, through the proxy execute tool: the
 	//    package scoped to the task, as af-impl's "one task at a time" step
 	//    reads it. The call goes through the guard like the harness's will.
 	specRef := o.Spec
@@ -233,7 +221,7 @@ func run(ctx context.Context, w, log io.Writer, o options) error {
 		return fmt.Errorf("specr rendered %s without a task scope", render.Result.SpecDir)
 	}
 
-	// 6. The baseline: the spec's own checks on the unchanged tree. A red
+	// 5. The baseline: the spec's own checks on the unchanged tree. A red
 	//    baseline is a fact the prompt carries, not a blocker.
 	tc, err := readTestCommands(ctx, runner, render.Result.SpecDir)
 	if err != nil {
@@ -245,23 +233,29 @@ func run(ctx context.Context, w, log io.Writer, o options) error {
 		fmt.Fprintf(w, "  %s\n", c)
 	}
 
-	// 7. Serve the tools to the harness over MCP, on loopback, behind a
-	//    token only this process and the harness it starts know.
-	m, err := srv.serve(ctx)
+	// 6. Serve the tools to the harness over MCP, on loopback, behind a token
+	//    only this process and the harness it starts know.
+	srv, err := mcpserve.New(runner, mcpserve.Options{
+		Instructions: "The tools run in a sandbox that holds the workspace. code_mode runs a Starlark script over the other tools in one call.",
+	})
 	if err != nil {
 		return err
 	}
-	defer m.stop()
-	fmt.Fprintf(w, "MCP server at %s\n", m.URL)
+	ep, err := srv.ServeLoopback(ctx)
+	if err != nil {
+		return err
+	}
+	defer ep.Close()
+	fmt.Fprintf(w, "MCP server at %s\n", ep.URL)
 
-	// 8. The harness, with the rules as its appended system prompt and the
+	// 7. The harness, with the rules as its appended system prompt and the
 	//    task as its prompt. It holds the model credential; the sandbox and
 	//    this server never see it.
 	system := systemPrompt(runner.Tools(), allowed)
 	prompt := taskPrompt(render, baseline)
 	fmt.Fprintf(w, "starting harness %s on task %d of %s (%s): prompt %d bytes, system prompt %d bytes\n",
 		o.Harness, render.Result.Task.ID, render.Result.SpecDir, render.Result.Task.Title, len(prompt), len(system))
-	hr, err := runHarness(ctx, log, o.Harness, m, system, prompt, o)
+	hr, err := runHarness(ctx, log, o.Harness, ep, system, prompt, o)
 	if err != nil {
 		return err
 	}
@@ -274,7 +268,7 @@ func run(ctx context.Context, w, log io.Writer, o options) error {
 	}
 	fmt.Fprintf(w, "; %d tool calls, %d blocked\n\nharness said:\n%s\n", hk.calls.Load(), hk.blocked.Load(), indent(strings.TrimSpace(hr.Final)))
 
-	// 9. Measure, do not assert: the checks again, and af-impl's verdict.
+	// 8. Measure, do not assert: the checks again, and af-impl's verdict.
 	after := runChecks(ctx, runner, tc)
 	text, landable := verdict(baseline, after)
 	fmt.Fprintln(w, "\nafter the task:")
@@ -288,7 +282,7 @@ func run(ctx context.Context, w, log io.Writer, o options) error {
 		}
 	}
 
-	// 10. Export the workspace to the host, .git left behind. Landing the
+	// 9. Export the workspace to the host, .git left behind. Landing the
 	//     work — a branch, a commit, a pull request — is the embedder's,
 	//     here, where the credential is.
 	out := o.Out
@@ -348,75 +342,6 @@ func buildRunner(proxies []core.Tool, configured core.BeforeToolCall, log io.Wri
 		return nil, nil, info, err
 	}
 	return r, h, info, nil
-}
-
-// hooks are the toolset's own hooks, and the account they keep: the log of
-// every call as it happens, and the counts the program prints. Calls arrive
-// from several goroutines — a script's nested calls run concurrently — so the
-// log is written under a lock and the counts are atomic.
-//
-// The log is what the hooks see. The guard wrapper sees a call before it runs
-// (run, blocked), After sees one that ran (error). A call that never reaches
-// the guard or After — an unknown tool, arguments that fail validation — is
-// counted and has no line.
-type hooks struct {
-	w              io.Writer
-	mu             sync.Mutex
-	calls, blocked atomic.Int64
-}
-
-func (h *hooks) printf(format string, args ...any) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	fmt.Fprintf(h.w, format, args...)
-}
-
-// indentFor nests a script's calls under the code_mode call.
-func indentFor(parentID string) string {
-	if parentID != "" {
-		return "    "
-	}
-	return "  "
-}
-
-// guard decides with configured, then logs the call as run or blocked and
-// counts a block.
-func (h *hooks) guard(configured core.BeforeToolCall) core.BeforeToolCall {
-	return func(ctx context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
-		dec := configured(ctx, in)
-		indent := indentFor(in.ParentToolUseID)
-		if dec.Block {
-			h.blocked.Add(1)
-			reason := dec.Reason
-			if reason == "" {
-				reason = "blocked by policy"
-			}
-			h.printf("%s%-8s %s: %s\n", indent, "blocked", in.ToolName, firstLine(reason))
-			return dec
-		}
-		h.printf("%s%-8s %s %s\n", indent, "run", in.ToolName, summarize(in.Arguments))
-		return dec
-	}
-}
-
-// after logs a call that ran and failed.
-func (h *hooks) after(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
-	if res := in.ToolResult; !res.OK {
-		detail := res.Detail
-		if code, ok := res.Data["exit_code"]; ok && detail == "" {
-			detail = fmt.Sprintf("exit %v", code)
-		}
-		h.printf("%s%-8s %s: %s\n", indentFor(in.ParentToolUseID), "error", in.ToolName, firstLine(res.Error+": "+detail))
-	}
-	return core.AfterToolCallDecision{}
-}
-
-// event counts every call: each one, direct or nested, opens with a start
-// event.
-func (h *hooks) event(e core.Event) {
-	if _, ok := e.(core.ToolExecutionStartEvent); ok {
-		h.calls.Add(1)
-	}
 }
 
 // goEnv reads one `go env` variable of this host, or "".

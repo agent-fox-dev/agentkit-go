@@ -6,8 +6,8 @@ go 1.27
 
 require (
 	github.com/agent-fox-dev/agentkit-go v0.0.0
+	github.com/agent-fox-dev/agentkit-go/mcpserve v0.0.0
 	github.com/agent-fox-dev/agentkit-go/sandbox v0.0.0
-	github.com/modelcontextprotocol/go-sdk v1.8.0
 )
 
 require (
@@ -49,6 +49,7 @@ require (
 	github.com/landlock-lsm/go-landlock v0.0.0-20250303204525-1544bccde3a3 // indirect
 	github.com/mattn/go-pointer v0.0.1 // indirect
 	github.com/mmcloughlin/md4 v0.1.2 // indirect
+	github.com/modelcontextprotocol/go-sdk v1.8.0 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
@@ -98,5 +99,6 @@ require (
 
 replace (
 	github.com/agent-fox-dev/agentkit-go => ../..
+	github.com/agent-fox-dev/agentkit-go/mcpserve => ../../mcpserve
 	github.com/agent-fox-dev/agentkit-go/sandbox => ../../sandbox
 )

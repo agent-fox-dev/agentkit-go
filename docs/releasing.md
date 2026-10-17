@@ -19,7 +19,8 @@ Push the version tag at the release commit:
 ```bash
 git tag v0.6.0
 git tag sandbox/v0.6.0
-git push origin v0.6.0 sandbox/v0.6.0
+git tag mcpserve/v0.6.0
+git push origin v0.6.0 sandbox/v0.6.0 mcpserve/v0.6.0
 ```
 
 `vX.Y.Z` triggers the workflow. `sandbox/vX.Y.Z` is the tag Go resolves for
@@ -27,8 +28,11 @@ the nested module `github.com/agent-fox-dev/agentkit-go/sandbox` at
 `vX.Y.Z`; an embedder's binary reports that version, and
 `sandbox.DefaultImage()` turns it into the image reference, so both tags are
 pushed together
-(`docs/errata/16_sandbox_images.md`). The workflow's `v*` trigger does not
-match `sandbox/v*`, so the second tag starts nothing.
+(`docs/errata/16_sandbox_images.md`). `mcpserve/vX.Y.Z` is the tag Go resolves
+for the nested module `github.com/agent-fox-dev/agentkit-go/mcpserve`, so an
+embedder can `go get` it; it is pushed with the others. The workflow's `v*`
+trigger does not match `sandbox/v*` or `mcpserve/v*`, so those tags start
+nothing.
 
 Only tags starting with `v` start the workflow, and such a tag must match
 `^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$`;

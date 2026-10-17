@@ -8,8 +8,8 @@ one task of a specification package inside an AgentKit sandbox, with
 cd examples/harness && go run .
 ```
 
-The example is its own Go module, because it imports the nested `sandbox`
-module, which the root module does not require.
+The example is its own Go module, because it imports the nested `sandbox` and
+`mcpserve` modules, which the root module does not require.
 
 AgentKit's driver is one way to run its tools; it is not the only one. Here
 the embedder — this program — keeps what it must keep, the sandbox, the
@@ -22,12 +22,14 @@ The sandbox holds neither.
 1. **A sandbox** from `local` (the default; **not isolation**, for the
    offline run) or `sandbox/podman` (`--podman`, a hardened container from
    `--image`, no network unless `--network unrestricted`).
-2. **The workspace** from `--repo`, a public https repository the
-   provider's init step clones inside the sandbox (`sandbox.GitRepo`,
-   podman only); or from `--dir`, a host checkout moved in over rsync with
-   `.git` left behind, which is how a private repository goes in without its
-   credential; or, with neither, the sample project: a Go module with one
-   stub function and a spec package whose one task asks for it.
+2. **The workspace**, filled by one `sandbox.Open` from `--repo`, a public
+   https repository the provider's init step clones inside the sandbox
+   (`sandbox.GitRepo`, podman only); or from `--dir`, a host checkout moved in
+   over rsync with `.git` left behind, which is how a private repository goes
+   in without its credential; or, with neither, the sample project: a Go
+   module with one stub function and a spec package whose one task asks for
+   it. The account says `filled the workspace from <the sample project | dir |
+   repo>`.
 3. **`specr` inside the sandbox**, over the proxy `execute` tool, under the
    guard like every other call: `specr <spec> --task N --max-tokens 10000`
    renders the package scoped to the task, as af-impl's "one task at a time"
@@ -38,21 +40,22 @@ The sandbox holds neither.
    `all_tests`, read from the package's `tasks.json` through the proxy
    `read_file`), run on the unchanged tree. A red baseline is a fact the
    prompt carries, not a blocker.
-5. **The MCP server**: `code_mode` bound to all eleven proxy tools, and the
-   eleven tools themselves, on a free loopback port behind a random bearer
-   token. Every call — a direct one from the harness, or a nested one from a
-   script — goes through argument preparation and `guard.Restricted`
-   (`--allow`, default `go,gofmt,git,specr`) before its handler.
+5. **The MCP server**, `mcpserve`: `code_mode` bound to all eleven proxy
+   tools, and the eleven tools themselves, on a free loopback port behind a
+   random bearer token (`MCP server at <URL>`). Every call — a direct one from
+   the harness, or a nested one from a script — goes through argument
+   preparation and `guard.Allow` (`--allow`, default `go,gofmt,git,specr`)
+   before its handler.
 6. **The harness** (`--harness`), with the af-impl rules and the served
    tools' guidelines as its appended system prompt and the task — the
    baseline and specr's rendering — as its prompt:
    - `claude`: Claude Code headless. `--tools ""` turns its own tools off,
-     `--strict-mcp-config --mcp-config <json>` makes this server its only
-     MCP server, `--allowedTools mcp__agentkit` pre-approves the server's
+     `--strict-mcp-config --mcp-config <json>` (`Endpoint.ClaudeConfig`)
+     makes this server its only MCP server, `--allowedTools mcp__agentkit` pre-approves the server's
      tools, `--permission-mode dontAsk` denies whatever would still prompt,
      `--output-format json` gives the final text, the cost and the turns.
-   - `pi`: Pi in print mode, from a directory holding a `.pi/mcp.json` that
-     names this server with `exposure: direct`, so the tools are declared
+   - `pi`: Pi in print mode, from a directory holding a `.pi/mcp.json`
+     (`Endpoint.PiConfig`) that names this server with `exposure: direct`, so the tools are declared
      to the model rather than reached only through Pi's own code mode;
      `--tools 'mcp__agentkit__*'` keeps this server's tools alone. Pi reads a
      project's MCP file only once the project is trusted. Verified against
@@ -75,7 +78,7 @@ The default run prints the account to stdout and every tool call to stderr:
 
 ```
 sandbox … on local (no isolation): agent (devel), network unrestricted
-synced the sample project: 7 files, 3297 bytes
+filled the workspace from the sample project
 serving code_mode over 11 proxy tools (its description is 7672 bytes) and the 11 tools themselves
 specr: rendered 01_greeting scoped to task 1 of 1 (prd, requirements, test_spec, tasks, ~465 tokens)
 baseline:
@@ -122,7 +125,7 @@ cache counts against. Under the default `--network none`, `go` cannot
 download modules or a toolchain: vendor them, or pass
 `--network unrestricted`. Under `none`, `guard.AllowAll` would be a
 reasonable guard too, because the container is then the boundary; the
-example keeps `guard.Restricted` for both providers.
+example keeps `guard.Allow` for both providers.
 
 `--repo` takes a public https repository; a private one is cloned on the host
 and passed as `--dir`. `local` has no init step and refuses `--repo`.
@@ -143,44 +146,53 @@ steps do around the task: it measures before and after, and it lands.
 
 ## The code an embedder copies
 
-A harness is its own driver, so what it needs from AgentKit is the pipeline
-that runs one tool call, with no model: `agentkit.NewRunner`. A `Runner` runs a
-call through preparation, the guard, the handler and its events, and attaches
-the nested caller a `code_mode` script's calls go through — the same steps a
-call from AgentKit's own model goes through, in the same place. `buildRunner`
-in `main.go` is the whole of it:
+A harness is its own driver, so what it needs from AgentKit is a sandbox, the
+pipeline that runs one tool call with no model, and a server for the harness
+to call it through:
 
 ```go
+sb, proxies, err := sandbox.Open(ctx, provider, spec, src, sandbox.ToolOptions{}) // create, fill, equip
+if err != nil {
+	return err
+}
+defer sb.Close(ctx)
 cm, _, err := codemode.New(proxies, codemode.Options{}) // one tool over the proxies
 runner, err := agentkit.NewRunner(agentkit.Toolset{
 	Tools:  append([]core.Tool{cm}, proxies...),
-	Guard:  guard, // sees every call, direct or from a script
-	After:  after, // sees every call that ran
+	Guard:  guard.Allow("go", "gofmt", "git", "specr"), // sees every call, direct or from a script
+	After:  after,                                      // sees every call that ran
 	Events: events,
 })
-res := runner.Call(ctx, name, input) // a core.ToolResult; never a Go error
+srv, err := mcpserve.New(runner, mcpserve.Options{Instructions: "…"})
+ep, err := srv.ServeLoopback(ctx)
+defer ep.Close()
+// ep.URL and ep.Token say where a harness connects; ep.ClaudeConfig("agentkit")
+// is Claude Code's --mcp-config, and ep.PiConfig("agentkit") is Pi's .pi/mcp.json.
 ```
 
-`NewRunner` refuses what `agentkit.New` refuses — a reachable shell tool with no
-`Guard` among it — so the program cannot serve an unguarded shell by omission.
-`Runner.Call` takes the tool's name and the input bytes and returns a result
-for every outcome: `unknown_tool`, `invalid_arguments`, `blocked_by_policy`,
-`panic`, `handler_error`, `aborted`. `runner.Tools()` is the served set, which
-the system prompt and the MCP server both read.
+`sandbox.Open` does `Create`, `Sync` and `Tools` in one call, with the source
+the program chose, and closes the sandbox if a step fails. `NewRunner` refuses
+what `agentkit.New` refuses — a reachable shell tool with no `Guard` among it —
+so the program cannot serve an unguarded shell by omission. `Runner.Call` takes
+the tool's name and the input bytes and returns a result for every outcome:
+`unknown_tool`, `invalid_arguments`, `blocked_by_policy`, `panic`,
+`handler_error`, `aborted`. `runner.Tools()` is the served set, which the
+system prompt and the MCP server both read.
 
-`server.go` is the MCP server around it (`sdk.NewServer`,
-`sdk.NewStreamableHTTPHandler` from the MCP Go SDK the `mcp` package already
-depends on) with one MCP tool per served tool — the tool's own name,
-description and input schema, so the harness's model reads the definition
-AgentKit's driver would send, and `core.ToolResult.LLMText()` as the result
-text, so it reads the result the same way too. Its handler is one line:
-`runner.Call`.
+`mcpserve` is the MCP server around it: one MCP tool per served tool — the
+tool's own name, description and input schema, so the harness's model reads the
+definition AgentKit's driver would send — and `core.ToolResult.LLMText()` as
+the result text, so it reads the result the same way too. Every `tools/call` is
+one `runner.Call`, and a blocked or failed call is an error result, not a
+protocol error. It is a nested module of its own, the one besides the gateway
+that listens, so the example imports no MCP SDK package and no `net`.
 
-The log and the counts come from the toolset's hooks, not from the pipeline: a
-`Guard` that wraps the configured one logs each call as `run` or `blocked` and
-counts the blocks, `After` logs a call that ran and failed, and `Events` counts
-every call from its start event. A call that never reaches the guard or `After`
-— an unknown tool, arguments that fail validation — is counted and has no line.
+The log and the counts come from the toolset's hooks (`calls.go`), not from the
+pipeline: a `Guard` that wraps the configured one logs each call as `run` or
+`blocked` and counts the blocks, `After` logs a call that ran and failed, and
+`Events` counts every call from its start event. A call that never reaches the
+guard or `After` — an unknown tool, arguments that fail validation — is counted
+and has no line.
 
 What the runner leaves to the harness: a transcript, a stop condition and the
 terminate vote. A harness has its own loop to end, and its own event stream to

@@ -7,10 +7,11 @@ the file, search, navigation and shell tools (`tools`), source outlines
 sandboxes that run those tools somewhere else (`sandbox`).
 **One driver**: `agentkit.Config` and `agentkit.New`, a minimal agent loop over
 the Anthropic Messages API (`provider/anthropic`, on the official Go SDK),
-with a scripted provider (`provider/faux`) for offline tests. It serves no
-network API: the library listens on no socket; `agentkit-sandboxd` serves the
-agent service on its stdio, and `agentkit-gateway`, a separate module, is the
-one network service.
+with a scripted provider (`provider/faux`) for offline tests. The root and
+sandbox modules serve no network API: the library listens on no socket;
+`agentkit-sandboxd` serves the agent service on its stdio, and two separate
+modules serve, `agentkit-gateway` (sandboxes, over gRPC) and `mcpserve` (a
+runner's tools, over MCP, to a harness on the same machine).
 
 ## Quickstart
 
@@ -188,19 +189,48 @@ accepted only on loopback, so a token never crosses a network in clear text.
 loopback port, over `local`, and drives it as an embedder would, offline;
 with `--url` it dials an `agentkit-gateway` already running.
 
+### Another harness
+
 The driver is optional. The tool side of an agent — tools, policy, guard,
 after-interceptor — is a `Toolset`, and `agentkit.NewRunner` turns one into a
 `Runner` that runs tool calls with no model: `Runner.Call` runs one, through
 the same preparation, guard, handler and events a model's calls go through,
 and code mode works through it. Another harness — Claude Code, Pi, any MCP
 client — can work in a sandbox with code mode and the built-in tools as its
-only tools: the embedder serves them over MCP from a runner and keeps the
-sandbox, the guard and the policy on its side.
+only tools: the embedder serves them over MCP from a runner with `mcpserve`
+and keeps the sandbox, the guard and the policy on its side.
 [`examples/harness`](examples/harness) does that for one task of a spec
-package: it clones a repository into a sandbox, runs `specr` inside it,
-measures the spec's checks, starts the harness with its own tools off, and
-measures again. Offline it runs on `local` with a scripted stand-in for the
-harness.
+package: it fills a sandbox from a repository with one `sandbox.Open`, runs
+`specr` inside it, measures the spec's checks, starts the harness with its own
+tools off, and measures again. Offline it runs on `local` with a scripted
+stand-in for the harness.
+
+`mcpserve`, a nested module, is the other one that listens. It serves a
+`Runner`'s tools to a harness on the same machine, on the process's stdio or
+over Streamable HTTP on a loopback port behind a bearer token. Every call runs
+through `Runner.Call`, so the guard sees a direct call and a `code_mode`
+script's nested call alike, and a blocked or failed call comes back as an
+`isError` result, not a protocol error.
+
+```go
+srv, err := mcpserve.New(runner, mcpserve.Options{Instructions: "The tools run in a sandbox."})
+if err != nil {
+	return err // names a tool whose input schema cannot be served
+}
+ep, err := srv.ServeLoopback(ctx) // 127.0.0.1, a fresh token
+if err != nil {
+	return err
+}
+defer ep.Close()
+// ep.URL and ep.Token say where a harness connects. ep.ClaudeConfig("agentkit")
+// is Claude Code's --mcp-config and ep.PiConfig("agentkit") is Pi's .pi/mcp.json.
+// A harness that starts the program as a child process takes srv.ServeStdio(ctx).
+```
+
+Every request needs `Authorization: Bearer <ep.Token>` (401 otherwise, before
+its body is read), only `/mcp` is served, and a request body is held to
+`wire.Defaults()` before the SDK decodes it. The options and limits are in
+[`docs/configuration.md`](docs/configuration.md#mcp-serving-mcpserveoptions).
 
 ## Consumer contract
 
@@ -235,6 +265,7 @@ The identifiers an embedder such as agent-fox builds on.
 | `tools.For` | `For(ws *workspace.Workspace, opts Options) ([]core.Tool, error)` |
 | `sandbox.Provider` | `Capabilities()`, `Create(ctx, Spec) (Sandbox, error)`, `Reap(ctx) ([]string, error)` |
 | `sandbox.Sandbox` | `ID`, `Spec`, `Agent`, `Sync(ctx, Source)`, `Tools(ctx, ToolOptions) ([]core.Tool, error)`, `Export(ctx, path, Destination)`, `Close` |
+| `mcpserve` | `New(r *agentkit.Runner, opts Options) (*Server, error)`; `Server.ServeStdio(ctx) error`, `Server.ServeLoopback(ctx) (*Endpoint, error)`; `Endpoint`: `URL`, `Token`, `Close`, `ClaudeConfig(name)`, `PiConfig(name)` |
 | `sandbox.Open` | `Open(ctx, p Provider, spec Spec, src Source, opts ToolOptions) (Sandbox, []core.Tool, error)`; `Create`, `Sync` when `src` is not nil, then `Tools`; closes the sandbox if a step fails |
 | `sandbox.CheckSpec` | `CheckSpec(caps Capabilities, spec Spec) (Spec, error)` |
 | `local.Unisolated` | `Unisolated() sandbox.Provider` |
@@ -264,6 +295,7 @@ The identifiers an embedder such as agent-fox builds on.
 | `sandbox/landlock` | `landlock.New(Options)`: the agent as a child process confined by Landlock, on Linux with ABI 4. |
 | `sandbox/gateway` | `gateway.Dial(ctx, url, Options)`: a provider whose sandboxes live on a remote gateway. |
 | `sandbox/gatewayd` | Separate module: the gateway server library (`gatewayd.New`, `Serve`, `Shutdown`) and its `agentkit-gateway` command. |
+| `mcpserve` | Separate module: serves a `Runner`'s tools over MCP to a harness on the same machine, on stdio or on loopback HTTP behind a bearer token (`mcpserve.New`, `Server.ServeStdio`, `Server.ServeLoopback`, `Endpoint`). |
 | `sandbox/cmd/agentkit-sandboxd` | The agent command a sandbox image installs at `sandbox.AgentPath`; serves the protocol on its stdio. |
 | `codesearch` | Separate module: zoekt-backed `code_search`, built for a workspace (`codesearch.New(ws, opts)`) and opted in with `tools.Options{Index: idx}`. |
 
@@ -274,7 +306,7 @@ The identifiers an embedder such as agent-fox builds on.
 | `make check` | `fmt`, `vet`, `lint`, `test-short`: the fast check, run while working |
 | `make check-release` | `fmt`, `vet`, `lint`, `test`: adds the slow gates (cross-target build and vet, host cgo build, nested `make` runs); run before a release or merge |
 | `make test-short` | `go test -short ./...` in every module |
-| `make test` | `go test ./...` in every module: the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `examples/sandbox`, `examples/gateway` and `examples/harness` |
+| `make test` | `go test ./...` in every module: the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `mcpserve`, `examples/sandbox`, `examples/gateway` and `examples/harness` |
 | `make build` | `go build ./...` in every module |
 | `make coverage` | The root module's tests with a coverage report |
 | `make clean` | Remove `build/` and the coverage profile |
@@ -282,7 +314,7 @@ The identifiers an embedder such as agent-fox builds on.
 | `make lint` | `golangci-lint` in every module; skipped when not installed |
 | `make fmt` | `gofmt -l -w .` |
 | `make tidy` | `go mod tidy` in every module |
-| `make doc` | `go doc -all` for every public package of the root, `codesearch`, `sandbox` and `sandbox/gatewayd` modules, written as text to `docs/generated/` (committed; an orientation aid for agents) |
+| `make doc` | `go doc -all` for every public package of the root, `codesearch`, `sandbox`, `sandbox/gatewayd` and `mcpserve` modules, written as text to `docs/generated/` (committed; an orientation aid for agents) |
 | `make proto` | Regenerate the sandbox agent and gateway protocols' Go code and their recorded hashes; needs `protoc`, installs the pinned plugins into `build/bin` |
 | `make build-containers` | Build the sandbox image (`containers/agentkit-sandbox/Containerfile`) with podman, tagged with the version and `latest`; not part of `check` |
 | `make sandbox-podman-test` | Build the sandbox image and run the podman provider's integration tests against them; not part of `check` |

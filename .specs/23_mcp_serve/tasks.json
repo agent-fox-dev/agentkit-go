@@ -74,7 +74,7 @@
       "done_when": [
         "`cd mcpserve && go test ./... -count=1` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -118,7 +118,7 @@
       "done_when": [
         "`cd mcpserve && go test ./... -count=1 -race` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -163,7 +163,7 @@
       "done_when": [
         "`cd mcpserve && go test ./... -count=1 -race` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -213,7 +213,7 @@
       "done_when": [
         "`cd mcpserve && go test ./... -count=1 -race` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -256,7 +256,7 @@
       "done_when": [
         "`cd mcpserve && go test ./... -count=1 -race` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -291,7 +291,7 @@
       "done_when": [
         "`cd mcpserve && go test ./... -count=1 -race` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -324,7 +324,7 @@
       "done_when": [
         "`cd mcpserve && go test ./... -count=1 -race` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -366,7 +366,7 @@
       "done_when": [
         "`go test ./internal/policy/... -count=1` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -416,7 +416,7 @@
       "done_when": [
         "`cd examples/harness && go test ./... -count=1` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -461,7 +461,7 @@
       "done_when": [
         "`GOPROXY=off make check` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,
@@ -491,7 +491,7 @@
       "done_when": [
         "`make test` and `make lint` pass in every module"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

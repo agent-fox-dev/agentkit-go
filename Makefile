@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 # MODULES are the repository's Go modules: the root and its nested modules.
-MODULES := . codesearch sandbox sandbox/gatewayd examples/sandbox examples/gateway examples/harness
+MODULES := . codesearch sandbox sandbox/gatewayd mcpserve examples/sandbox examples/gateway examples/harness
 DOC_DIR ?= docs/generated
 
 VERSION    := $(shell git describe --tags 2>/dev/null || echo "0.1.0")
@@ -74,7 +74,7 @@ check-release: fmt vet lint test ## Run fmt, vet, lint and the full tests, slow 
 doc: ## Generate Go package reference (go doc -all) as text files under docs/generated
 	@rm -rf $(DOC_DIR)
 	@mkdir -p $(DOC_DIR)
-	@for m in . codesearch sandbox sandbox/gatewayd; do \
+	@for m in . codesearch sandbox sandbox/gatewayd mcpserve; do \
 		( cd $$m && mod=$$(go list -m) && pkgs=$$(go list -f '{{if .GoFiles}}{{.ImportPath}}{{end}}' ./...) && \
 		for p in $$(printf '%s\n' "$$pkgs" | grep -v -e /internal/ -e /examples/); do \
 			rel=$${p#$$mod}; rel=$${rel#/}; pre=$$m/; [ "$$m" = . ] && pre=; \
