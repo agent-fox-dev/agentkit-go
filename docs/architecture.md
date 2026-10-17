@@ -45,18 +45,21 @@ the gatewayd module and the mcpserve module.
 
 AgentKit is two parts:
 
-- **The hands**: `tools`, `outline`, `codesearch`, `codemode`, `mcp`,
-  `guard`, and `sandbox`, which runs the built-in tools somewhere else. Each
-  is usable without the driver.
+- **The hands**: `workspace`, `tools`, `outline`, `codesearch`, `codemode`,
+  `mcp`, `guard`, and `sandbox`, which runs the built-in tools somewhere else.
+  Each is usable without the driver.
 - **One driver**: the root package, `agentkit`. It holds `Config`, `New`, the
-  `Agent`, the loop, the batch executor and nested calls, and nothing else.
+  `Agent` and the loop, and the tool side the loop runs on: `Toolset`,
+  `NewRunner` and `Runner`, with the batch engine and the nested caller behind
+  it. Nothing else. The driver is the loop over a runner; the runner needs no
+  driver.
 
-The root and sandbox modules serve no network API. They are a library: they
-have no MCP server and listen on no socket; `agentkit-sandboxd` serves the
-agent service on its stdio, and two nested modules serve: `agentkit-gateway`
-(`sandbox/gatewayd`) is the gateway's gRPC server, and `mcpserve` serves a
-runner's tools over MCP, on stdio or a loopback port, to a harness on the same
-machine. `internal/policy` keeps that a checked invariant: no non-test
+The root and sandbox modules listen on no socket and serve no MCP. They are a
+library: `agentkit-sandboxd` serves the agent service on its stdio, and two
+nested modules listen: `agentkit-gateway` (`sandbox/gatewayd`) is the
+gateway's gRPC server, and `mcpserve` serves a runner's tools over MCP, on
+stdio or a loopback port, to a harness on the same machine. `internal/policy`
+keeps that a checked invariant: no non-test
 file of the root or the sandbox module refers to `net.Listen`,
 `net.ListenTCP`, `net.ListenUnix`, `net.ListenPacket`, `net.ListenConfig`,
 `tls.Listen` or `http.ListenAndServe*`. The library's only network traffic is
@@ -67,7 +70,11 @@ gateway.
 ## Package graph
 
 First-party imports, from
-`go list -f '{{.ImportPath}}: {{join .Imports " "}}' ./...` (tests excluded).
+`go list -f '{{.ImportPath}}: {{join .Imports " "}}' ./...` (tests excluded),
+run in the root module and in `codesearch`, `sandbox`, `sandbox/gatewayd` and
+`mcpserve`. The nested example modules (`examples/sandbox`, `examples/gateway`
+and `examples/harness`) are programs and not listed. A package marked "tests
+only" exists for tests: it holds only test files, or only test files import it.
 
 | Package | Imports (first-party) | Notable third-party |
 |---|---|---|
@@ -76,6 +83,9 @@ First-party imports, from
 | `wire` | none | |
 | `internal/diag` | none | |
 | `internal/toml` | `internal/diag` | `github.com/pelletier/go-toml/v2/unstable` |
+| `internal/policy` (tests only) | none | |
+| `internal/testkit` (tests only) | `core`, `schema` | |
+| `internal/toolconformance` (tests only) | `core`, `schema` | |
 | `core` | `schema` | |
 | `catalog` | `core` | |
 | `guard` | `core` | |
@@ -89,6 +99,7 @@ First-party imports, from
 | `mcpserve` (nested module) | `.` (root, `agentkit`), `core`, `mcp`, `wire` | `github.com/modelcontextprotocol/go-sdk` |
 | `prompt` | `core`, `guard`, `tools` | |
 | `.` (root, `agentkit`) | `core`, `catalog`, `guard`, `prompt`, `provider`, `provider/anthropic` | `github.com/anthropics/anthropic-sdk-go` |
+| `examples/{agentdemo,codemode,codingagent,customtools,mcp}` (programs) | `.`, `catalog`, `codemode`, `core`, `guard`, `mcp`, `provider/anthropic`, `provider/faux`, `schema`, `tools`, `wire`, `workspace`, by program | |
 | `codesearch` (nested module) | `core`, `outline`, `schema`, `tools`, `workspace` | `github.com/sourcegraph/zoekt` |
 | `sandbox` (nested module; so are the rows below) | `core`, `sandbox/internal/buildver`, `tools`, `workspace` | |
 | `sandbox/internal/sandboxpb` | none (generated) | `google.golang.org/grpc`, `google.golang.org/protobuf` |
@@ -106,6 +117,7 @@ First-party imports, from
 | `sandbox/internal/gitclone` | `sandbox` | |
 | `sandbox/podman` | `core`, `sandbox`, `sandbox/internal/{attach,gitclone,stdioconn}`, `tools` | |
 | `sandbox/landlock` | `core`, `sandbox`, `sandbox/internal/{attach,buildver,gitclone,stdioconn}` | |
+| `sandbox/images` (tests only) | none | |
 | `sandbox/internal/gatewaywire` | `sandbox`, `sandbox/internal/sandboxpb` | |
 | `sandbox/gateway` | `core`, `sandbox`, `sandbox/internal/{attach,gatewaywire,gitclone,sandboxpb}` | `google.golang.org/grpc` |
 | `sandbox/gatewayd` (nested module; so are the two rows below) | `sandbox`, `sandbox/gateway`, `sandbox/gatewayd/internal/token`, `sandbox/internal/{attach,buildver,gatewaywire,sandboxpb}`, `wire` | `google.golang.org/grpc` |
@@ -120,26 +132,37 @@ First-party imports, from
 What follows from it:
 
 - Every package that handles tools, messages or models imports `core`. The
-  leaves `schema`, `outline`, `wire` and `internal/*` import none of it.
+  leaves `schema`, `outline`, `wire`, `workspace` and `internal/diag` import
+  nothing of the module.
 - `core` imports only `schema`. It is the vocabulary and owns the interface
   seams: `Tool`, `ProviderClient`, `NestedCaller`, the interceptor types.
 - `workspace` imports nothing of the module: only the standard library and
   doublestar, so every package can depend on it (`internal/policy` checks it).
-- `tools` imports `core`, `outline`, `schema` and `workspace`. `codemode` imports `core` and
-  `schema`, and `tools` for its output buffer (`tools.Accumulator`). `mcp`
-  imports `core` and `schema`, and `wire` for its strict boundary.
-- The root does not import `tools` directly. It reaches it only through
-  `prompt`, which takes the file-navigation tool names and the shell
-  guideline texts from `tools`. The root imports the
-  SDK because `Config.Client` is an SDK client; `New` builds the provider
-  over it.
-- Nothing imports the root package except `examples/` and `mcpserve`.
-- The sandbox tree imports `core`, `schema`, `tools`, `workspace` and `wire`, and nothing outside it
-  imports the sandbox tree except `examples/sandbox`, `examples/gateway` and
-  `examples/harness` (nested modules, outside the root's check) and test helpers under
-  `internal/` (`internal/policy` checks this, and that no non-test file
-  outside it imports gRPC). `core`, `tools`, `codemode` and the driver do not
-  know a sandbox exists.
+- `tools` imports `core`, `outline`, `schema` and `workspace`. `codemode`
+  imports `core` and `schema`, and `tools` for its output buffer
+  (`tools.Accumulator`). `mcp` imports `core` and `schema`, and `wire` for its
+  strict boundary. `guard` imports `core` and nothing else.
+- The root imports `core`, `catalog`, `guard`, `prompt`, `provider` and
+  `provider/anthropic`, and neither `tools` nor `workspace` in non-test code.
+  It reaches `tools` only through `prompt`, which takes the file-navigation
+  tool names and the shell guideline texts from `tools`. The root imports the
+  SDK because `Config.Client` is an SDK client; `New` builds the provider over
+  it.
+- The root package is imported by `mcpserve` and by programs: this module's
+  `examples/` and the nested example modules. No library package of the root
+  module imports it, so the tools, the guard, code mode and the sandboxes do
+  not depend on the driver.
+- `mcpserve` imports the root (for `agentkit.Runner`), `core`, `mcp` (for its
+  pipe transport) and `wire`, and the MCP SDK. It imports neither `tools` nor
+  `workspace`, nor the sandbox tree: it serves whatever tools a runner holds.
+- `codesearch` imports `core`, `outline`, `schema`, `tools` and `workspace`,
+  and not the root or the sandbox tree.
+- The sandbox tree imports `core`, `schema`, `tools`, `workspace` and `wire`,
+  and nothing outside it imports the sandbox tree except `examples/sandbox`,
+  `examples/gateway` and `examples/harness` (nested modules, outside the
+  root's check) and test helpers under `internal/` (`internal/policy` checks
+  this, and that no non-test file outside it imports gRPC). `core`, `tools`,
+  `codemode` and the driver do not know a sandbox exists.
 
 ## Packages
 
@@ -185,15 +208,95 @@ What follows from it:
 | `mcpserve` | The MCP server (nested module): one MCP tool per tool of an `agentkit.Runner`, every call through `Runner.Call`, served on stdio (`ServeStdio`) or on loopback HTTP behind a bearer token (`ServeLoopback`). |
 | `sandbox/cmd/agentkit-sandboxd` | The agent command. |
 
+## The embedder's path
+
+What is built from what, in the order an embedder builds it. Each layer owns
+what its line says and takes the layer above as a value.
+
+```
+workspace.Open      the root every scenario opens first: containment
+                    (Resolve, CheckWriteTarget), the ignore rules, the walk
+tools.For           the built-in tools for that workspace; tools.Options sets
+                    spill, environment, symbol bounds and an optional index
+shaping the set     core.Named picks tools by name; codemode.New binds some of
+                    them into one code_mode tool; mcp Pool.Tools adds an MCP
+                    server's tools; sandbox.Open returns proxies that stand in
+                    for tools.For and fills the sandbox from a source
+agentkit.Toolset    the tool side of an agent as a value: Tools, the Policy
+                    that selects from them, Guard, After and an Events sink
+agentkit.NewRunner  checks the toolset, resolves the policy and owns the
+                    pipeline that runs a tool call
+  Runner.Call/Batch   run tool calls with no model
+  agentkit.New        the agent loop over the runner: Config.Toolset goes to
+                      NewRunner, and Agent.Runner returns the runner
+  mcpserve.New        the runner's tools served over MCP, on stdio or on
+                      loopback HTTP
+```
+
+Nothing below `agentkit.Toolset` knows which of the three uses it has. The
+pipeline is the runner's, once: a call a model makes in a run, a call an
+embedder makes with `Runner.Call` and a call an MCP client makes through
+`mcpserve` pass through the same steps, described next.
+
+## Data flow of one call
+
+`Runner.Call(ctx, name, input)` is a batch of one: it makes a
+`core.ToolUseBlock` with a generated `call_` id and runs it through
+`Runner.Batch`, which is the engine (`batch.go`) the agent loop calls too. The
+steps are the same for one call, for several, and for the calls of a model's
+turn.
+
+```
+prepare       sequential, in call order, on the calling goroutine. Per call:
+                1. ToolExecutionStartEvent
+                2. look the tool up by name (unknown_tool)
+                3. argument preparation (core.PrepareArguments): the tool's
+                   own PrepareArguments, explicit nulls dropped, coercion,
+                   then validation against the input schema
+                   (invalid_arguments)
+                4. Toolset.Guard: it may block the call (blocked_by_policy),
+                   vote Terminate with the block, or replace the arguments
+              A call that ends at 2, 3 or 4 is finalized on the spot.
+abort         one decision, after prepare and before any handler starts: if
+              ctx is done, every call not yet finalized is aborted ("Operation
+              aborted") and no handler runs
+execute       one goroutine for each call, all joined before the batch
+              returns; in call order instead when at most one handler runs or
+              a Sequential tool is among the calls. A tool that declares
+              ReachableTools runs with a nested caller on its context
+finalize      for each call as its handler returns, under a mutex scoped to
+              the batch: Toolset.After (it may replace the call's vote), then
+              ToolExecutionEndEvent, then ToolResultEvent
+```
+
+The result is one `core.ToolResult` for each call, in call order. A call that
+failed at any step is a result with `OK` false: an unknown tool, bad
+arguments, a block, a panic and an abort each have an error code, and none is
+a Go error. `ToolResult.Terminate` carries the call's final vote: the
+handler's, replaced by `After`'s when it gave one, true for a wrapper whose
+nested call an interceptor terminated, and the guard's for a call it blocked.
+`Batch` acts on no vote; ending a run is the agent's.
+
+Events go to one place. A call made through a runner emits to
+`Toolset.Events`, which may be nil; the calls of a run emit to the run's
+stream instead. A panic in the sink drops the event being delivered.
+
+What the runner does not own: the transcript, usage, the turn count, the run
+slot and the stop reason. Those belong to the `Agent`, so a call made through
+a runner is in no transcript, adds nothing to `Usage` and does not claim the
+run slot. A nested call (code mode) is a call too: it takes the same steps
+with its parent's id on its events (below).
+
 ## Data flow of one run
 
 ```
-agentkit.New   builds a Runner from Config.Toolset (agentkit.NewRunner):
-               checks every tool (exactly one of Handler/Execute, no reach
-               cycle, no wrapper reaching a Terminating tool), resolves
-               Toolset.Policy, refuses a reachable shell tool with no
-               Toolset.Guard; looks up the model in the catalog, builds the
-               provider
+agentkit.New   checks the model side (a Client or a Provider, and a Model),
+               then calls NewRunner(cfg.Toolset): it checks every tool
+               (exactly one of Handler/Execute, no reach cycle, no wrapper
+               reaching a Terminating tool), resolves Toolset.Policy and
+               refuses a reachable shell tool with no Toolset.Guard, so New
+               refuses what NewRunner refuses; then it looks up the model in
+               the catalog and builds the provider
 Agent.Run      = Stream, then wait for the RunResult
 Agent.Stream   claims the run slot (core.ErrBusy if taken), applies
                Config.Timeout, starts runLoop on a goroutine
@@ -210,12 +313,13 @@ Agent.Stream   claims the run slot (core.ErrBusy if taken), applies
        ends the run here, before tool extraction
     4. tool_use blocks present? (the stop reason never decides)
          max_tokens: none run; each gets the fixed "not executed" result
-         otherwise the Runner's batch engine (batch.go), given the run's
-           stream as its event sink: prepare (sequential: arguments,
-           Guard) -> abort decision (once) -> execute (parallel unless a
-           Sequential tool is in the batch) -> finalize (After, events,
-           one ToolResultMessage per call); a tool with ReachableTools
-           runs with a NestedCaller on its context (nested.go)
+         (this stays in the loop; the runner never sees these calls)
+         otherwise the turn's calls go to the runner's batch engine
+           (Runner.run, batch.go) with the run's stream as the event sink,
+           the assistant message and the turn count for the guard, and the
+           agent's usage reporter on the context: prepare -> abort ->
+           execute -> finalize, as in "Data flow of one call"; the loop
+           records one ToolResultMessage per call
     5. afterTurn: stop on a terminate vote (RunStopToolTerminate), a done
        context (RunStopTimeout or RunStopAborted), no tool calls
        (RunStopEndTurn, or RunStopRefusal after a refusal), or
@@ -228,13 +332,9 @@ result without reading the events. Errors the run survives (a panicking tool,
 interceptor or provider) are `core.ErrorEvent`s on it. The only interception
 is `Toolset.Guard` and `Toolset.After`.
 
-The tool side does not need a model. `Agent.Runner()` returns the `Runner` the
-loop runs its calls through, and `agentkit.NewRunner(toolset)` builds one on
-its own: `Runner.Call` and `Runner.Batch` run tool calls, code mode included,
-through the same steps, with the events going to `Toolset.Events`. A run's own
-calls emit to the run's stream instead, and calls made through the runner are
-outside every run: they are not in the transcript, not in `Usage`, and do not
-claim the run slot.
+`Agent.Runner()` returns the runner the loop runs its calls through, so an
+embedder can make calls beside a run, through the same toolset. The third use
+of a runner is [MCP serving](#mcp-serving), whose call is described there once.
 
 ## Invariants worth knowing before editing
 
@@ -245,6 +345,19 @@ claim the run slot.
 - **The abort decision for a tool batch is made once**, after prepare and
   before any handler starts. A cancelled batch runs all of its prepared
   handlers or none.
+- **The pipeline exists once**, in the runner (`Runner.run`, `batch.go`). A
+  model's call in a run, `Runner.Call`, `Runner.Batch` and a `tools/call`
+  through `mcpserve` all go through it, so each is prepared, guarded,
+  finalized and reported the same way. There is no second copy of the steps
+  for the agent, the embedder and the server to keep in step.
+- **Calls through a runner are outside every run.** They are in no transcript,
+  add nothing to `Usage`, claim no run slot and emit to `Toolset.Events`, not
+  to a run's stream. A runner is safe for concurrent use; an `Agent` runs one
+  prompt at a time.
+- **`Guard` and `After` belong to the toolset**, not to the agent. `Config` has
+  neither: `Config.Toolset.Guard` and `Config.Toolset.After` are the only
+  interception, for the agent's calls and for every call made through a runner
+  alike.
 - **Every call gets a result.** Unknown tool, invalid arguments, a block, a
   panic, an abort: each is a result with `IsError` set.
 - **The batch finalize mutex is batch-scoped**, never the agent mutex, and no
@@ -384,24 +497,36 @@ the driver.
 
 `mcpserve` is the other direction: a nested module that serves one runner's
 tools to a harness that is not AgentKit's own loop (Claude Code, Pi, any MCP
-client on the same machine). `mcpserve.New` reads `Runner.Tools()` once and
-registers one MCP tool for each, under the tool's name, description and
-`json.Marshal` of its input schema; it refuses, naming the tool, a schema the
-SDK would reject by panicking. A `tools/call` goes to `Runner.Call` with the
-request's argument bytes and nowhere else, and its result is `LLMText()` and
-the result's text blocks, with `isError` set when the call failed, so a guard
-block is an error result and never a protocol error.
+client on the same machine). It is the third use of a runner (see "The
+embedder's path"), and this section is the one place the served call is
+described; the data-flow sections link here.
 
-Two transports. `ServeStdio` speaks newline-delimited JSON on the process's
-stdin and stdout through `mcp.NewPipeTransport`, so `wire` holds every frame to
-its limits before the SDK decodes it. `ServeLoopback` listens on
-`127.0.0.1` and puts a trust boundary in front of the SDK's Streamable HTTP
-handler: the bearer token first, then the path, then the body, bounded and
-checked by `wire.Guard`. The SDK closes a session gracefully and cancels a call
-only when its client asks, so each session and each endpoint carries a lifetime,
-passed as a value of the context the SDK server is connected with, which a
-call's context also obeys; closing a session or an endpoint cancels the calls
-still running.
+```
+transport    ServeStdio: newline-delimited JSON on the process's stdin and
+             stdout (mcp.NewPipeTransport); wire.Guard holds every inbound
+             frame to wire.Defaults() before the SDK decodes it.
+             ServeLoopback: Streamable HTTP on 127.0.0.1, on a port the system
+             chooses
+bearer       HTTP only, before anything else: Authorization: Bearer <token>,
+             compared in constant time, else 401 and the body is never read;
+             then the path (only /mcp), then the body, bounded (413) and
+             checked by wire.Guard (400), and only then the SDK's handler
+tools/list   answered from the tools registered by mcpserve.New: Runner.Tools()
+             read once, one MCP tool for each, under the tool's name,
+             description and json.Marshal of its input schema
+tools/call   Runner.Call(ctx, name, the request's argument bytes), and nothing
+             else, so the steps of "Data flow of one call" apply: the guard
+             sees a direct call and a code_mode script's nested call alike
+result       the core.ToolResult becomes LLMText() and the result's text
+             blocks, with isError set when the call failed: a guard block is
+             an error result and never a protocol error
+```
+
+`mcpserve.New` refuses, naming the tool, a schema the SDK would reject by
+panicking. The SDK closes a session gracefully and cancels a call only when its
+client asks, so each session and each endpoint carries a lifetime, passed as a
+value of the context the SDK server is connected with, which a call's context
+also obeys; closing a session or an endpoint cancels the calls still running.
 
 ## MCP client
 
@@ -928,7 +1053,11 @@ anything is made) and its agent reports ABI 0 with the note
 - `testdata/golden/` holds the Anthropic request-body golden: the exact bytes
   sent. It pins regression, not vendor truth.
 - `internal/policy` holds the cross-target (cgo off) and host (cgo on) build
-  gates and the direct-dependency allowlist.
+  gates, the direct-dependency allowlist and the exported-API golden
+  (`testdata/exported-api.golden`): one section for each package in
+  `apiPackages`, compared by TS-13-67, TS-14-44, TS-15-42 and TS-17-61. It is a
+  change detector, regenerated and committed with any deliberate change to
+  those surfaces (`docs/errata/13_sandbox_core.md`).
 - `provider/faux` scripts a model offline; the root tests and the examples run
   against it.
 

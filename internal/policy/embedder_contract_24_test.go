@@ -435,3 +435,86 @@ func TestPolicyTestdataIsCommitted_TS24_12(t *testing.T) {
 		t.Errorf("TS-19-64 did not pass: %v\n%s", err, out)
 	}
 }
+
+// makeOutput runs make in the repository root with args and returns its
+// standard output and how it ended.
+func makeOutput(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("make", args...)
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.Output()
+	return string(out), err
+}
+
+// TS-24-13: the Makefile's test, vet and lint loops run in every module of
+// MODULES, mcpserve included, and check runs fmt, vet, lint and the short
+// tests. 24-REQ-4.1. check depends on test-short, the same tests under -short;
+// make check-release is the one that depends on test.
+func TestMakeLoopsCoverEveryModule_TS24_13(t *testing.T) {
+	if _, err := exec.LookPath("make"); err != nil {
+		t.Skip("make is not on PATH")
+	}
+	db, err := makeOutput(t, "-pn")
+	if err != nil {
+		t.Fatalf("make -pn: %v", err)
+	}
+	m := regexp.MustCompile(`(?m)^MODULES :?= (.*)$`).FindStringSubmatch(db)
+	if m == nil {
+		t.Fatal("make -pn does not define MODULES")
+	}
+	modules := strings.Fields(m[1])
+	if !slices.Contains(modules, "mcpserve") {
+		t.Errorf("MODULES is %q: it lacks mcpserve", modules)
+	}
+	for _, target := range []string{"test", "vet", "lint"} {
+		out, err := makeOutput(t, "-n", target)
+		if err != nil {
+			t.Fatalf("make -n %s: %v", target, err)
+		}
+		if !strings.Contains(out, strings.Join(modules, " ")) {
+			t.Errorf("make -n %s does not loop over %q:\n%s", target, modules, out)
+		}
+	}
+	c := regexp.MustCompile(`(?m)^check: (.*)$`).FindStringSubmatch(db)
+	if c == nil {
+		t.Fatal("make -pn does not define check")
+	}
+	if want := []string{"fmt", "vet", "lint", "test-short"}; !slices.Equal(strings.Fields(c[1]), want) {
+		t.Errorf("check depends on %q, want %q", strings.Fields(c[1]), want)
+	}
+}
+
+// TS-24-15: make test names the module whose tests fail, exits non-zero and
+// goes on to the modules after it. 24-REQ-4.3. Two temporary modules whose
+// only test fails stand in for a listed module.
+func TestMakeTestNamesTheFailingModule_TS24_15(t *testing.T) {
+	if _, err := exec.LookPath("make"); err != nil {
+		t.Skip("make is not on PATH")
+	}
+	var dirs []string
+	for range 2 {
+		dir := t.TempDir()
+		files := map[string]string{
+			"go.mod":       "module example.test/failing\n\ngo 1.27\n",
+			"fail_test.go": "package failing\n\nimport \"testing\"\n\nfunc TestFails(t *testing.T) { t.Fatal(\"fails on purpose\") }\n",
+		}
+		for name, content := range files {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dirs = append(dirs, dir)
+	}
+	cmd := exec.Command("make", "test", "MODULES="+strings.Join(dirs, " "))
+	cmd.Dir = repoRoot(t)
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("make test exited 0 with failing modules:\n%s", out)
+	}
+	for _, dir := range dirs {
+		if want := "go test ./... (" + dir + ")"; !strings.Contains(string(out), want) {
+			t.Errorf("the output does not name the module with %q:\n%s", want, out)
+		}
+	}
+}

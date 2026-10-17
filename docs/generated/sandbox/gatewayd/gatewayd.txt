@@ -10,9 +10,9 @@ token. A sandbox belongs to the token that created it; another token sees it as
 an id that does not exist. The server keeps only each token's SHA-256 and logs
 only its first 8 hex characters.
 
-It is a separate module so the library itself listens on no socket; the
-agentkit-gateway command (cmd/agentkit-gateway) serves it over TCP with a Podman
-or Docker backend.
+It is a separate module so the root and sandbox modules listen on no socket;
+the agentkit-gateway command (cmd/agentkit-gateway) serves it over TCP with a
+Podman or Docker backend.
 
 TYPES
 

@@ -165,7 +165,7 @@
       "done_when": [
         "a search for each removed identifier in the sweep scope finds only migration-note mentions"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
