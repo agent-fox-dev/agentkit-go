@@ -199,7 +199,7 @@
         "`make doc` leaves no uncommitted change under docs/generated",
         "`make check` passes in every module in MODULES"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,

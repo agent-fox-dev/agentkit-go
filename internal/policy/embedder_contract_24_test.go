@@ -518,3 +518,37 @@ func TestMakeTestNamesTheFailingModule_TS24_15(t *testing.T) {
 		}
 	}
 }
+
+// TS-24-14: make doc exits 0 and leaves docs/generated as it is committed, and
+// the directory has output for mcpserve, guard and provider/faux. 24-REQ-4.2. A
+// doc comment changed without regenerating and committing the docs fails it.
+func TestMakeDocLeavesGeneratedDocsCommitted_TS24_14(t *testing.T) {
+	for _, tool := range []string{"make", "git"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not on PATH", tool)
+		}
+	}
+	root := repoRoot(t)
+	if err := exec.Command("git", "-C", root, "rev-parse", "--verify", "HEAD").Run(); err != nil {
+		t.Skipf("no commit to compare docs/generated with: %v", err)
+	}
+	cmd := exec.Command("make", "doc")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("make doc: %v\n%s", err, out)
+	}
+	status := exec.Command("git", "status", "--porcelain", "--", "docs/generated")
+	status.Dir = root
+	out, err := status.Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if len(out) > 0 {
+		t.Errorf("make doc changed docs/generated, or it holds an uncommitted change:\n%s", out)
+	}
+	for _, f := range []string{"mcpserve/mcpserve.txt", "guard.txt", "provider/faux.txt"} {
+		if _, err := os.Stat(filepath.Join(root, "docs", "generated", filepath.FromSlash(f))); err != nil {
+			t.Errorf("docs/generated has no %s: %v", f, err)
+		}
+	}
+}
