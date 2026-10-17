@@ -256,7 +256,7 @@
       "done_when": [
         "`cd mcpserve && go test ./... -count=1 -race` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,

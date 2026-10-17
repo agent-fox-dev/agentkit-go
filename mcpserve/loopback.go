@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/wire"
@@ -24,6 +25,9 @@ const (
 	tokenBytes = 24
 	// headerTimeout bounds how long a client may take to send its headers.
 	headerTimeout = 10 * time.Second
+	// shutdownGrace is how long a stopping endpoint lets its requests finish
+	// before it closes their connections.
+	shutdownGrace = 2 * time.Second
 )
 
 // The listener, the random source and the SDK's HTTP handler are seams: a test
@@ -47,6 +51,12 @@ var (
 // size (413 above it) and must pass wire.Guard (400 if it does not) before the
 // SDK's handler, with its default stateful sessions, sees it.
 //
+// The endpoint serves until Endpoint.Close is called or ctx ends, whichever
+// comes first. It then stops accepting connections, lets requests in flight
+// finish for up to two seconds, and closes what remains, which cancels the
+// calls still running: they see a cancelled context. A client's standalone
+// event stream never ends on its own, which is why the wait is bounded.
+//
 // A ctx that is already done returns nil and ctx.Err() and listens on nothing.
 func (s *Server) ServeLoopback(ctx context.Context) (*Endpoint, error) {
 	if err := ctx.Err(); err != nil {
@@ -61,16 +71,45 @@ func (s *Server) ServeLoopback(ctx context.Context) (*Endpoint, error) {
 		_ = l.Close()
 		return nil, fmt.Errorf("mcpserve: generating a token: %w", err)
 	}
+	// life ends when the endpoint is force-closed. The SDK cancels a call only
+	// when its client asks, so each request carries life for the call handler
+	// to obey (see endWithLifetime).
+	life, end := context.WithCancel(context.Background())
+	guarded := s.guarded(token, newSDKHandler(s.srv))
 	hs := &http.Server{
-		Handler:           s.guarded(token, newSDKHandler(s.srv)),
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			guarded.ServeHTTP(w, r.WithContext(withLifetime(r.Context(), life)))
+		}),
 		ReadHeaderTimeout: headerTimeout,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}
 	go func() { _ = hs.Serve(l) }()
+
+	var once sync.Once
+	stopped := make(chan struct{})
+	stop := func() {
+		once.Do(func() {
+			defer close(stopped)
+			defer end()
+			grace, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+			defer cancel()
+			if hs.Shutdown(grace) != nil {
+				end()
+				_ = hs.Close()
+			}
+		})
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			stop()
+		case <-stopped:
+		}
+	}()
 	return &Endpoint{
 		URL:   "http://" + l.Addr().String() + endpointPath,
 		Token: token,
-		stop:  func() { _ = hs.Close() },
+		stop:  stop,
 	}, nil
 }
 

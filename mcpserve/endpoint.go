@@ -14,9 +14,12 @@ type Endpoint struct {
 	stop func()
 }
 
-// Close stops the endpoint: it stops accepting connections and closes the ones
-// it has. It is safe to call more than once and from several goroutines, and it
-// does nothing on an Endpoint that ServeLoopback did not return. It returns nil.
+// Close stops the endpoint, as the end of the ctx it was served with does: it
+// stops accepting connections, lets requests in flight finish for up to two
+// seconds, then closes the connections that remain and cancels the calls still
+// running. It returns when that is done. It is safe to call more than once and
+// from several goroutines, and it does nothing on an Endpoint that ServeLoopback
+// did not return. It returns nil.
 func (e *Endpoint) Close() error {
 	if e != nil && e.stop != nil {
 		e.stop()
