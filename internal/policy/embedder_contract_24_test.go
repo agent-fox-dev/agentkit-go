@@ -552,3 +552,111 @@ func TestMakeDocLeavesGeneratedDocsCommitted_TS24_14(t *testing.T) {
 		}
 	}
 }
+
+// TS-24-16 (smoke, 24-PATH-1): a maintainer regenerates the golden with the
+// update variable, and the result has one section for each apiPackages entry,
+// in order, with the five existing sections unchanged; a second regeneration is
+// byte-identical; and the golden comparison tests, TS-19-64 and the TS-24-1 and
+// TS-24-2 tests pass against it with the variable unset. 24-REQ-1.3 and 3.4.
+//
+// It runs the real exportedAPI over the real source directories, the real
+// golden file, the go toolchain and git, and puts the golden back as it found
+// it. The child runs name their tests: the whole package would start nested
+// make check-release runs.
+func TestRegeneratingTheGoldenEndToEnd_TS24_16(t *testing.T) {
+	root := repoRoot(t)
+	golden := goldenFile(root)
+	before, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.WriteFile(golden, before, 0o644); err != nil {
+			t.Errorf("the golden is not restored: %v", err)
+		}
+	})
+	regenerate := func() []byte {
+		t.Helper()
+		cmd := exec.Command("go", "test", "./internal/policy", "-run", "_TS13_67$", "-v", "-count=1")
+		cmd.Dir = root
+		cmd.Env = append(withoutUpdateVariable(), "AGENTKIT_UPDATE_API_GOLDEN=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("regenerating the golden: %v\n%s", err, out)
+		}
+		if !strings.Contains(string(out), "--- SKIP") {
+			t.Fatalf("the regeneration run did not skip after writing the golden:\n%s", out)
+		}
+		got, err := os.ReadFile(golden)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	first := regenerate()
+	headers, sections := goldenSections(string(first))
+	if !slices.Equal(headers, apiPackages) {
+		t.Errorf("the regenerated golden's sections are %q, want apiPackages %q", headers, apiPackages)
+	}
+	_, committed := goldenSections(string(before))
+	for _, pkg := range []string{".", "core", "tools", "codemode", "workspace"} {
+		if !slices.Equal(sections[pkg], committed[pkg]) {
+			t.Errorf("the regenerated %s section differs from the committed one", pkg)
+		}
+	}
+	if second := regenerate(); !bytes.Equal(first, second) {
+		t.Error("a second regeneration is not byte-identical to the first")
+	}
+
+	out, err := goTestPolicy(t, "_TS13_67$|_TS14_44$|_TS15_42$|_TS17_61$|_TS19_64$|_TS24_1$|_TS24_2$")
+	if err != nil {
+		t.Fatalf("the policy tests against the regenerated golden: %v\n%s", err, out)
+	}
+	for _, id := range []string{"TS13_67", "TS14_44", "TS15_42", "TS17_61", "TS19_64", "TS24_1", "TS24_2"} {
+		if !regexp.MustCompile(`--- PASS: \w+_` + id + ` `).MatchString(out) {
+			t.Errorf("%s did not report PASS:\n%s", id, out)
+		}
+	}
+	if strings.Contains(out, "SKIP") {
+		t.Errorf("a test skipped:\n%s", out)
+	}
+}
+
+// TS-24-17 (smoke, 24-PATH-2): make check passes in every module, then make doc
+// leaves docs/generated as committed. 24-REQ-4.1 and 4.2.
+//
+// It runs the real Makefile with the real toolchain, so it costs a whole fast
+// gate: skipped under -short, which is what make check runs it under (it would
+// start itself), and in the run make check-release starts.
+func TestMakeCheckThenMakeDoc_TS24_17(t *testing.T) {
+	if testing.Short() {
+		t.Skip("make check is skipped under -short: it runs this test")
+	}
+	if os.Getenv(inMakeCheck) != "" {
+		t.Skip("already running inside make check-release")
+	}
+	for _, tool := range []string{"make", "git"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not on PATH", tool)
+		}
+	}
+	root := repoRoot(t)
+	for _, target := range []string{"check", "doc"} {
+		cmd := exec.Command("make", target)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), inMakeCheck+"=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("make %s: %v\n%s", target, err, out)
+		}
+	}
+	status := exec.Command("git", "status", "--porcelain", "--", "docs/generated")
+	status.Dir = root
+	out, err := status.Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if len(out) > 0 {
+		t.Errorf("docs/generated has uncommitted changes after make check and make doc:\n%s", out)
+	}
+}

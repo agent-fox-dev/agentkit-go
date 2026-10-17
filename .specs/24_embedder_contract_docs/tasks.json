@@ -226,7 +226,7 @@
       "done_when": [
         "`make check` passes in every module in MODULES and `git status --porcelain -- internal/policy/testdata docs/generated` prints nothing"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
