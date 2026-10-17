@@ -95,13 +95,32 @@ func inputSchema(t core.Tool) (json.RawMessage, error) {
 	return b, nil
 }
 
-// handler serves the tool called name.
-func (s *Server) handler(name string) sdk.ToolHandler {
-	return func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
-		res := s.run.Call(ctx, name, req.Params.Arguments)
-		return &sdk.CallToolResult{
-			Content: []sdk.Content{&sdk.TextContent{Text: res.LLMText()}},
-			IsError: !res.OK,
-		}, nil
+// session is one connection of the SDK server to a transport. The SDK closes
+// a connection gracefully: it waits for the calls in flight, and cancels them
+// only when the peer cancels the request or the reader fails. So a session
+// carries a lifetime, which the call handler also obeys: close ends it first,
+// and a call a runner is still running sees a cancelled context instead of
+// holding the close for as long as the tool takes.
+type session struct {
+	ss  *sdk.ServerSession
+	end context.CancelFunc
+}
+
+// open connects the SDK server to t. Calls made on the session end with it,
+// and with ctx's values (but not its cancellation: ending ctx is the caller's
+// to turn into a close).
+func (s *Server) open(ctx context.Context, t sdk.Transport) (*session, error) {
+	life, end := context.WithCancel(context.Background())
+	ss, err := s.srv.Connect(withLifetime(ctx, life), t, nil)
+	if err != nil {
+		end()
+		return nil, err
 	}
+	return &session{ss: ss, end: end}, nil
+}
+
+// close ends the session's calls, then closes the connection once they return.
+func (c *session) close() error {
+	c.end()
+	return c.ss.Close()
 }

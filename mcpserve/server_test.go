@@ -32,14 +32,15 @@ const (
 	sdkPath  = "github.com/modelcontextprotocol/go-sdk"
 )
 
-// connect joins an AgentKit MCP client to s over in-process pipes, as a stdio
-// pair would be joined, and returns the client. Both ends close with the test.
-func connect(t *testing.T, s *Server) *agentmcp.ServerConnection {
+// connectPair joins an AgentKit MCP client to s over in-process pipes, as a
+// stdio pair would be joined, and returns the client and the server's session.
+// Both ends close with the test.
+func connectPair(t *testing.T, s *Server) (*agentmcp.ServerConnection, *session) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	toClient, fromServer := io.Pipe()
 	toServer, fromClient := io.Pipe()
-	ss, err := s.srv.Connect(ctx, agentmcp.NewPipeTransport(toServer, fromServer, wire.Defaults()), nil)
+	ss, err := s.open(ctx, agentmcp.NewPipeTransport(toServer, fromServer, wire.Defaults()))
 	if err != nil {
 		cancel()
 		t.Fatal(err)
@@ -48,14 +49,21 @@ func connect(t *testing.T, s *Server) *agentmcp.ServerConnection {
 		agentmcp.NewPipeTransport(toClient, fromClient, wire.Defaults()), agentmcp.ConnectionOptions{})
 	if err != nil {
 		cancel()
-		_ = ss.Close()
+		_ = ss.close()
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_ = conn.Close()
-		_ = ss.Close()
+		_ = ss.close()
 		cancel()
 	})
+	return conn, ss
+}
+
+// connect is connectPair for a test that does not need the session.
+func connect(t *testing.T, s *Server) *agentmcp.ServerConnection {
+	t.Helper()
+	conn, _ := connectPair(t, s)
 	return conn
 }
 
