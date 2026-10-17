@@ -45,9 +45,25 @@ func resultOf(res core.ToolResult) *sdk.CallToolResult {
 func (s *Server) logCall(tool string, res core.ToolResult, d time.Duration) {
 	attrs := []any{"tool", tool, "ok", res.OK, "duration", d}
 	if !res.OK {
-		attrs = append(attrs, "error", res.Error)
+		attrs = append(attrs, "error", errorCode(res.Error))
 	}
 	s.log.Info("tool call", attrs...)
+}
+
+// errorCode is the runner's error code as it may be logged. The runner's codes
+// are short identifiers (blocked_by_policy, handler_error, ...), but a tool
+// chooses the Error of its own result and could put text there, which is
+// workspace content; anything that is not a short identifier logs as "other".
+func errorCode(code string) string {
+	if code == "" || len(code) > 64 {
+		return "other"
+	}
+	for _, c := range code {
+		if c != '_' && (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+			return "other"
+		}
+	}
+	return code
 }
 
 // lifetimeKey carries a session's or an endpoint's lifetime in the context the

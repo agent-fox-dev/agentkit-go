@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync"
@@ -82,6 +84,7 @@ func (s *Server) ServeLoopback(ctx context.Context) (*Endpoint, error) {
 		}),
 		ReadHeaderTimeout: headerTimeout,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
+		ErrorLog:          log.New(serverErrors{s.log}, "", 0),
 	}
 	go func() { _ = hs.Serve(l) }()
 
@@ -111,6 +114,17 @@ func (s *Server) ServeLoopback(ctx context.Context) (*Endpoint, error) {
 		Token: token,
 		stop:  stop,
 	}, nil
+}
+
+// serverErrors receives what net/http reports about its own failures, such as a
+// handler that panicked. By default that goes to the standard logger, which is
+// the process's stderr, with the panic's text; here it becomes a Warn record on
+// the Logger with a fixed message, because the text is workspace content.
+type serverErrors struct{ log *slog.Logger }
+
+func (w serverErrors) Write(p []byte) (int, error) {
+	w.log.Warn("http server error")
+	return len(p), nil
 }
 
 // newToken is tokenBytes bytes of randomness as lowercase hex.
