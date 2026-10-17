@@ -119,6 +119,11 @@ func (s *Server) open(ctx context.Context, t sdk.Transport) (*session, error) {
 	return &session{ss: ss, end: end}, nil
 }
 
+// wait returns when the connection has ended, with the error that ended it: the
+// first read error that was not a clean end of stream, or else a write error,
+// or else the error of closing. It is nil for a client that left cleanly.
+func (c *session) wait() error { return c.ss.Wait() }
+
 // close ends the session's calls, then closes the connection once they return.
 func (c *session) close() error {
 	c.end()
