@@ -25,17 +25,18 @@ const (
 	endpointPath = "/mcp"
 	// tokenBytes is the size of a bearer token before it is hex-encoded.
 	tokenBytes = 24
-	// headerTimeout bounds how long a client may take to send its headers.
-	headerTimeout = 10 * time.Second
 	// shutdownGrace is how long a stopping endpoint lets its requests finish
 	// before it closes their connections.
 	shutdownGrace = 2 * time.Second
 )
 
-// The listener, the random source and the SDK's HTTP handler are seams: a test
-// replaces them to fail a listen or the token, and to see whether a refused
-// request ever reached the SDK. Production code never assigns them.
+// The listener, the random source, the SDK's HTTP handler and the header
+// timeout are seams: a test replaces them to fail a listen or the token, to see
+// whether a refused request ever reached the SDK, and to shorten the wait for
+// a client's headers. Production code never assigns them.
 var (
+	// headerTimeout bounds how long a client may take to send its headers.
+	headerTimeout            = 10 * time.Second
 	listenLoopback           = func() (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") }
 	randomSource   io.Reader = rand.Reader
 	newSDKHandler            = func(srv *sdk.Server) http.Handler {

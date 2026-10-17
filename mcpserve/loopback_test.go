@@ -425,3 +425,71 @@ func TestRefusalsAreLoggedOnce_TS23_46(t *testing.T) {
 		t.Errorf("reasons %q: want three different ones", reasons)
 	}
 }
+
+// TS-23-34, the server's settings: the HTTP server gives up on a client that
+// does not finish its headers within headerTimeout, and the contexts its
+// handlers run with derive from the ctx the endpoint was served with.
+// 23-REQ-5.8.
+func TestServerTimeoutAndContext_TS23_34(t *testing.T) {
+	old := headerTimeout
+	headerTimeout = 300 * time.Millisecond
+	defer func() { headerTimeout = old }()
+	oldHandler := newSDKHandler
+	defer func() { newSDKHandler = oldHandler }()
+	started, release := make(chan context.Context, 1), make(chan struct{})
+	newSDKHandler = func(*sdk.Server) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			started <- r.Context()
+			<-release
+		})
+	}
+	s, _ := echoServer(t, Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ep, err := s.ServeLoopback(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Close()
+
+	// A client that sends part of its headers and stops is dropped.
+	host := strings.TrimSuffix(strings.TrimPrefix(ep.URL, "http://"), "/mcp")
+	c, err := net.DialTimeout("tcp", host, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := io.WriteString(c, "POST /mcp HTTP/1.1\r\nHost: "+host+"\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(c); err != nil {
+		t.Errorf("the server held a client with incomplete headers for over 3s: %v", err)
+	}
+
+	// A request in flight sees its context end with ctx's.
+	reqDone := make(chan struct{})
+	go func() {
+		defer close(reqDone)
+		poke(ep, strings.NewReader(initFrame))
+	}()
+	var reqCtx context.Context
+	select {
+	case reqCtx = <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request never reached the handler")
+	}
+	if reqCtx.Err() != nil {
+		t.Fatalf("the request's context is already done: %v", reqCtx.Err())
+	}
+	cancel()
+	// Well inside the two seconds the endpoint's own stop waits before it
+	// closes connections, which would end the context too.
+	select {
+	case <-reqCtx.Done():
+	case <-time.After(time.Second):
+		t.Error("the request's context did not end with the ctx the endpoint was served with")
+	}
+	close(release)
+	<-reqDone
+}

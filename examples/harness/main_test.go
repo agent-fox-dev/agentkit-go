@@ -35,8 +35,8 @@ func defaults(t *testing.T) options {
 	return options{Harness: "scripted", Network: "none", Allow: "go,gofmt,git,specr", MaxTurns: 8, SpecTokens: 10000, Out: filepath.Join(t.TempDir(), "out")}
 }
 
-// The example runs offline — local, the sample project, the stand-in specr
-// and the scripted harness over the MCP server — both as a program and in
+// TS-23-60: the example runs offline — local, the sample project, the stand-in
+// specr and the scripted harness over the MCP server — both as a program and in
 // process, and the task lands: the test is written and red first, then
 // green, the gate passes, and the exported workspace holds the work.
 func TestExampleRunsOffline(t *testing.T) {

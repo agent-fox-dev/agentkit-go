@@ -322,9 +322,7 @@ func TestStandardStreamsAfterServing_TS23_26(t *testing.T) {
 			JSONRPC string `json:"jsonrpc"`
 		}
 		if err := json.Unmarshal([]byte(line), &m); err != nil || m.JSONRPC != "2.0" {
-			if line != "x" {
-				t.Errorf("stdout carries %q, which is not a JSON-RPC message", line)
-			}
+			t.Errorf("stdout carries %q, which is not a JSON-RPC message", line)
 		}
 	}
 }

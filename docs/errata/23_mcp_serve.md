@@ -65,6 +65,15 @@ read logs the reason `body unreadable`, a fourth beside the spec's three.
 `TestNoSecretReachesTheLog_TS23_48` and `TestZeroOptionsServesSilently_TS23_44`
 fail without them.
 
+## The header timeout is a test seam
+
+23-REQ-5.8 gives the HTTP server a `ReadHeaderTimeout` of 10 s and handler
+contexts derived from ctx. `headerTimeout` is a package variable
+(`mcpserve/loopback.go`) so `TestServerTimeoutAndContext_TS23_34` can shorten
+it; production code never assigns it. The same test requires the context of a
+request in flight to end within a second of ctx ending, which only the HTTP
+server's `BaseContext` does (the endpoint's own stop waits two seconds first).
+
 ## The hooks moved to `calls.go` from `main.go`, not `server.go`
 
 23-REQ-10.1 says `calls.go` keeps what `server.go` still held after spec 21: the
@@ -104,5 +113,7 @@ themselves, and `make check-release`, are left to the user.
 
 Declared in the commits: TS-23-3 and TS-23-11 (task 1), TS-23-13, 15, 17 and 18
 (task 2), TS-23-12, 19, 37, 38 and 39 (task 5), TS-23-1 and TS-23-2 (task 8),
-TS-21-54 (rewritten) and `TestHarnessArgs` (task 9), and TS-23-52 and 53
-(task 10), each because an earlier task had built what it exercises.
+TS-21-54 (rewritten) and `TestHarnessArgs` (task 9), TS-23-52 and 53 (task 10)
+and the four smoke tests TS-23-61 to 64 (task 11), each because an earlier task
+had built what it exercises. Task 11's were shown to detect a wiring gap by four
+one-at-a-time mutations that each turned the intended test red.
