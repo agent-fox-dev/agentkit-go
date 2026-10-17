@@ -8,20 +8,20 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
-	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/guard"
+	"github.com/agent-fox-dev/agentkit-go/mcp"
+	"github.com/agent-fox-dev/agentkit-go/mcpserve"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/tools"
 	"github.com/agent-fox-dev/agentkit-go/workspace"
@@ -55,7 +55,7 @@ func TestExampleRunsOffline(t *testing.T) {
 		t.Fatalf("%v\n%s\n%s", err, account.String(), log.String())
 	}
 	for _, want := range []string{
-		"on local (no isolation)", "synced the sample project: 7 files",
+		"on local (no isolation)", "filled the workspace from the sample project",
 		"specr: rendered 01_greeting scoped to task 1 of 1",
 		"baseline:\n  linter `gofmt -l .`: ok\n  all_tests `go test ./...`: ok",
 		"MCP server at http://127.0.0.1:",
@@ -185,75 +185,6 @@ print("rm:", rm.error if is_error(rm) else "ran")
 	}
 }
 
-// The MCP server answers over HTTP only with the token, and serves the tool
-// definitions AgentKit's driver would send.
-func TestServeRequiresTheToken(t *testing.T) {
-	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	all, err := tools.For(ws, tools.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runner, _, _, err := buildRunner(all, guard.AllowAll, io.Discard)
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := &toolServer{runner: runner}
-	m, err := srv.serve(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m.stop()
-	if !strings.HasPrefix(m.URL, "http://127.0.0.1:") || !strings.HasSuffix(m.URL, "/mcp") || len(m.Token) != 48 {
-		t.Fatalf("served at %q with token %q", m.URL, m.Token)
-	}
-	post := func(auth string) int {
-		body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`)
-		req, err := http.NewRequest(http.MethodPost, m.URL, body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json, text/event-stream")
-		if auth != "" {
-			req.Header.Set("Authorization", auth)
-		}
-		res, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer res.Body.Close()
-		return res.StatusCode
-	}
-	if code := post(""); code != http.StatusUnauthorized {
-		t.Errorf("without the token: HTTP %d, want 401", code)
-	}
-	if code := post("Bearer not-" + m.Token); code != http.StatusUnauthorized {
-		t.Errorf("with a wrong token: HTTP %d, want 401", code)
-	}
-	if code := post("Bearer " + m.Token); code != http.StatusOK {
-		t.Errorf("with the token: HTTP %d, want 200", code)
-	}
-	var cfg struct {
-		Servers map[string]map[string]any `json:"mcpServers"`
-	}
-	if err := json.Unmarshal([]byte(m.mcpConfig(false)), &cfg); err != nil {
-		t.Fatal(err)
-	}
-	s := cfg.Servers["agentkit"]
-	if s["type"] != "http" || s["url"] != m.URL || s["headers"].(map[string]any)["Authorization"] != "Bearer "+m.Token || s["exposure"] != nil {
-		t.Errorf("mcp config: %v", s)
-	}
-	if err := json.Unmarshal([]byte(m.mcpConfig(true)), &cfg); err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Servers["agentkit"]["exposure"] != "direct" {
-		t.Errorf("pi config lacks exposure direct: %v", cfg.Servers["agentkit"])
-	}
-}
-
 // The harness command lines turn the harness's own tools off and leave it
 // this server alone.
 func TestHarnessArgs(t *testing.T) {
@@ -275,7 +206,7 @@ func TestHarnessArgs(t *testing.T) {
 	if pi[len(pi)-1] != "-starts with a dash" {
 		t.Errorf("pi's prompt is not last: %q", pi)
 	}
-	if _, err := runHarness(context.Background(), io.Discard, "nope", &servedMCP{}, "", "", o); err == nil || !strings.Contains(err.Error(), "unknown harness") {
+	if _, err := runHarness(context.Background(), io.Discard, "nope", &mcpserve.Endpoint{}, "", "", o); err == nil || !strings.Contains(err.Error(), "unknown harness") {
 		t.Errorf("unknown harness: %v", err)
 	}
 	if _, _, err := runCommand(context.Background(), io.Discard, t.TempDir(), "agentkit-no-such-harness"); err == nil || !strings.Contains(err.Error(), "not on PATH") {
@@ -363,50 +294,51 @@ func hasSeq(args, want []string) bool {
 	return false
 }
 
-// TS-21-51: server.go holds no tool-call pipeline. The runner owns
-// preparation, the guard, the handler and its recovery, and the nested caller;
-// server.go keeps the MCP server and calls Runner.Call.
-func TestServerGoHasNoToolCallPipeline_TS21_51(t *testing.T) {
-	f, err := parser.ParseFile(token.NewFileSet(), "server.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+// TS-21-51, retargeted by spec 23: the example holds no tool-call pipeline. The
+// runner owns preparation, the guard, the handler and its recovery, and the
+// nested caller; mcpserve serves the tools, and the example's own files call
+// Runner.Call and nothing like it. Before spec 23 this parsed server.go, which
+// held the MCP server; its remaining files are the ones that could regrow a
+// pipeline (docs/errata/23_mcp_serve.md).
+func TestExampleHoldsNoToolCallPipeline_TS21_51(t *testing.T) {
 	banned := map[string]bool{"core.NewToolUse": true, "core.PrepareArguments": true, "core.WithNestedCaller": true}
-	ast.Inspect(f, func(n ast.Node) bool {
-		switch v := n.(type) {
-		case *ast.CallExpr:
-			switch fun := v.Fun.(type) {
-			case *ast.SelectorExpr:
-				if x, ok := fun.X.(*ast.Ident); ok && banned[x.Name+"."+fun.Sel.Name] {
-					t.Errorf("server.go calls %s.%s", x.Name, fun.Sel.Name)
-				}
-			case *ast.Ident:
-				if fun.Name == "recover" {
-					t.Error("server.go calls recover()")
-				}
-			}
-		case *ast.FuncDecl:
-			if v.Recv == nil {
-				break
-			}
-			if v.Name.Name == "call" {
-				t.Error("server.go declares a method named call")
-			}
-			// A core.NestedCaller: Call(ctx, ...core.ToolUseBlock).
-			if v.Name.Name == "Call" {
-				for _, p := range v.Type.Params.List {
-					if _, variadic := p.Type.(*ast.Ellipsis); variadic {
-						t.Error("server.go declares a Call method taking variadic tool-use blocks: a core.NestedCaller")
+	for name, f := range parseNonTest(t) {
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch v := n.(type) {
+			case *ast.CallExpr:
+				switch fun := v.Fun.(type) {
+				case *ast.SelectorExpr:
+					if x, ok := fun.X.(*ast.Ident); ok && banned[x.Name+"."+fun.Sel.Name] {
+						t.Errorf("%s calls %s.%s", name, x.Name, fun.Sel.Name)
+					}
+				case *ast.Ident:
+					if fun.Name == "recover" {
+						t.Errorf("%s calls recover()", name)
 					}
 				}
+			case *ast.FuncDecl:
+				if v.Recv == nil {
+					break
+				}
+				if v.Name.Name == "call" {
+					t.Errorf("%s declares a method named call", name)
+				}
+				// A core.NestedCaller: Call(ctx, ...core.ToolUseBlock).
+				if v.Name.Name == "Call" {
+					for _, p := range v.Type.Params.List {
+						if _, variadic := p.Type.(*ast.Ellipsis); variadic {
+							t.Errorf("%s declares a Call method taking variadic tool-use blocks: a core.NestedCaller", name)
+						}
+					}
+				}
+			case *ast.TypeSpec:
+				if v.Name.Name == "nested" {
+					t.Errorf("%s declares the type nested", name)
+				}
 			}
-		case *ast.TypeSpec:
-			if v.Name.Name == "nested" {
-				t.Error("server.go declares the type nested")
-			}
-		}
-		return true
-	})
+			return true
+		})
+	}
 }
 
 var callIDRE = regexp.MustCompile(`^call_[0-9a-f]{16}$`)
@@ -490,17 +422,10 @@ func TestHarnessStepsRunThroughTheRunner_TS21_52(t *testing.T) {
 	}
 }
 
-// bearer adds a bearer token to every request.
-type bearer struct{ token string }
-
-func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
-	r = r.Clone(r.Context())
-	r.Header.Set("Authorization", "Bearer "+b.token)
-	return http.DefaultTransport.RoundTrip(r)
-}
-
-// TS-21-54: an MCP client holding the token calls a served tool and gets one
-// text content holding the runner's LLMText, with IsError the negation of OK.
+// TS-21-54, rewritten by spec 23 on mcpserve: an MCP client holding the token
+// calls a served tool and gets one text content holding the runner's LLMText,
+// with IsError the negation of OK. The client is AgentKit's own, so the example
+// imports no MCP SDK package, even in its tests.
 func TestMCPHandlerAnswersThroughRunnerCall_TS21_54(t *testing.T) {
 	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
@@ -517,21 +442,23 @@ func TestMCPHandlerAnswersThroughRunnerCall_TS21_54(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &toolServer{runner: runner}
+	srv, err := mcpserve.New(runner, mcpserve.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
-	m, err := srv.serve(ctx)
+	ep, err := srv.ServeLoopback(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.stop()
+	defer ep.Close()
 
-	client := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "1"}, nil)
-	session, err := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: m.URL, HTTPClient: &http.Client{Transport: bearer{m.Token}}}, nil)
+	pool := mcp.NewPool(mcp.ConnectionOptions{})
+	defer pool.Close()
+	conn, err := pool.Connect(ctx, mcp.ServerConfig{Name: "test", URL: ep.URL, Headers: map[string]string{"Authorization": "Bearer " + ep.Token}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
-
 	for _, c := range []struct {
 		name  string
 		input string
@@ -540,13 +467,11 @@ func TestMCPHandlerAnswersThroughRunnerCall_TS21_54(t *testing.T) {
 		{"read_file", `{}`},
 	} {
 		want := runner.Call(ctx, c.name, json.RawMessage(c.input))
-		var args map[string]any
-		_ = json.Unmarshal([]byte(c.input), &args)
-		got, err := session.CallTool(ctx, &sdk.CallToolParams{Name: c.name, Arguments: args})
+		got, err := conn.CallRaw(ctx, c.name, json.RawMessage(c.input))
 		if err != nil {
 			t.Fatalf("%s %s: a protocol error: %v", c.name, c.input, err)
 		}
-		text, ok := got.Content[0].(*sdk.TextContent)
+		text, ok := got.Content[0].(*mcp.TextContent)
 		if len(got.Content) != 1 || !ok {
 			t.Fatalf("%s %s: content = %#v, want one text content", c.name, c.input, got.Content)
 		}
@@ -584,5 +509,344 @@ func TestSmokeHarnessRunsOfflineThroughARunner_TS21_60(t *testing.T) {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("the log lacks %q: the MCP-served call and its nested calls ran through the runner's hooks:\n%s", want, stderr.String())
 		}
+	}
+}
+
+// parseNonTest parses the example's non-test Go files, by name.
+func parseNonTest(t *testing.T) map[string]*ast.File {
+	t.Helper()
+	names, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]*ast.File{}
+	for _, n := range names {
+		if strings.HasSuffix(n, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), n, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[n] = f
+	}
+	return out
+}
+
+// selector names x.sel, or "" when e is not a selector on an identifier.
+func selector(e ast.Expr) string {
+	if sel, ok := e.(*ast.SelectorExpr); ok {
+		if id, ok := sel.X.(*ast.Ident); ok {
+			return id.Name + "." + sel.Sel.Name
+		}
+	}
+	return ""
+}
+
+// declared is every top-level name a file declares, and "hooks.<method>" for a
+// method on hooks.
+func declared(f *ast.File) map[string]bool {
+	out := map[string]bool{}
+	for _, d := range f.Decls {
+		switch d := d.(type) {
+		case *ast.FuncDecl:
+			if d.Recv == nil {
+				out[d.Name.Name] = true
+				continue
+			}
+			if star, ok := d.Recv.List[0].Type.(*ast.StarExpr); ok {
+				if id, ok := star.X.(*ast.Ident); ok {
+					out[id.Name+"."+d.Name.Name] = true
+				}
+			}
+		case *ast.GenDecl:
+			for _, sp := range d.Specs {
+				switch sp := sp.(type) {
+				case *ast.TypeSpec:
+					out[sp.Name.Name] = true
+				case *ast.ValueSpec:
+					for _, n := range sp.Names {
+						out[n.Name] = true
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// TS-23-54: the example has no server.go, imports no MCP SDK package or net and
+// calls no listen API, and calls.go holds what server.go held that is not the
+// server, with the per-call log and counts. 23-REQ-10.1.
+func TestExampleHoldsNoServer_TS23_54(t *testing.T) {
+	if _, err := os.Stat("server.go"); err == nil {
+		t.Error("server.go exists")
+	}
+	files := parseNonTest(t)
+	for name, f := range files {
+		for _, imp := range f.Imports {
+			p, _ := strconv.Unquote(imp.Path.Value)
+			if strings.HasPrefix(p, "github.com/modelcontextprotocol/go-sdk") || p == "net" {
+				t.Errorf("%s imports %s", name, p)
+			}
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			if sel, ok := n.(*ast.SelectorExpr); ok && strings.HasPrefix(sel.Sel.Name, "Listen") {
+				t.Errorf("%s refers to %s, a listen API", name, sel.Sel.Name)
+			}
+			return true
+		})
+	}
+	calls, ok := files["calls.go"]
+	if !ok {
+		t.Fatal("calls.go does not exist")
+	}
+	have := declared(calls)
+	for _, want := range []string{"summarize", "firstLine", "truncate", "errShellBlocked", "hooks", "indentFor",
+		"hooks.printf", "hooks.guard", "hooks.after", "hooks.event"} {
+		if !have[want] {
+			t.Errorf("calls.go does not declare %s", want)
+		}
+	}
+}
+
+// TS-23-55: main.go serves the runner with mcpserve.New(runner,
+// mcpserve.Options{Instructions: ...}) and ServeLoopback, defers ep.Close() and
+// prints the endpoint's URL. 23-REQ-10.2.
+func TestMainServesThroughMcpserve_TS23_55(t *testing.T) {
+	var newCall, optionsWithInstructions, serve, deferredClose, printsURL bool
+	ast.Inspect(parseNonTest(t)["main.go"], func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.CallExpr:
+			if selector(v.Fun) == "mcpserve.New" {
+				newCall = true
+				for _, a := range v.Args {
+					if lit, ok := a.(*ast.CompositeLit); ok && selector(lit.Type) == "mcpserve.Options" {
+						for _, e := range lit.Elts {
+							if kv, ok := e.(*ast.KeyValueExpr); ok && kv.Key.(*ast.Ident).Name == "Instructions" {
+								optionsWithInstructions = true
+							}
+						}
+					}
+				}
+			}
+			if sel, ok := v.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "ServeLoopback" {
+				serve = true
+			}
+			if sel, ok := v.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Fprintf" {
+				for _, a := range v.Args {
+					if lit, ok := a.(*ast.BasicLit); ok && strings.Contains(lit.Value, "MCP server at") {
+						printsURL = true
+					}
+				}
+			}
+		case *ast.DeferStmt:
+			if sel, ok := v.Call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Close" && selector(sel) == "ep.Close" {
+				deferredClose = true
+			}
+		}
+		return true
+	})
+	for what, ok := range map[string]bool{"calls mcpserve.New": newCall, "passes Options{Instructions: ...}": optionsWithInstructions,
+		"calls ServeLoopback": serve, "defers ep.Close()": deferredClose, `prints "MCP server at"`: printsURL} {
+		if !ok {
+			t.Errorf("main.go does not do this: %s", what)
+		}
+	}
+}
+
+// TS-23-56: the harness runners take *mcpserve.Endpoint; claude is given
+// ClaudeConfig("agentkit") after --mcp-config and pi finds PiConfig("agentkit")
+// in .pi/mcp.json. A claude and a pi that only record what they were given
+// stand in for the real ones. 23-REQ-10.3.
+func TestRunnersTakeTheEndpoint_TS23_56(t *testing.T) {
+	files := parseNonTest(t)
+	for _, fn := range []string{"runHarness", "runClaude", "runPi", "runScripted"} {
+		var found bool
+		for _, d := range files["harness.go"].Decls {
+			if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == fn {
+				found = true
+				var takes bool
+				for _, p := range fd.Type.Params.List {
+					if star, ok := p.Type.(*ast.StarExpr); ok && selector(star.X) == "mcpserve.Endpoint" {
+						takes = true
+					}
+				}
+				if !takes {
+					t.Errorf("%s does not take a *mcpserve.Endpoint", fn)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("harness.go does not declare %s", fn)
+		}
+	}
+	ep := &mcpserve.Endpoint{URL: "http://127.0.0.1:9/mcp", Token: strings.Repeat("a", 48)}
+	args := claudeArgs(ep.ClaudeConfig("agentkit"), "sys.md", "do it", options{MaxTurns: 3})
+	if i := slices.Index(args, "--mcp-config"); i < 0 || args[i+1] != ep.ClaudeConfig("agentkit") {
+		t.Errorf("claude args carry %q after --mcp-config, want %q", args, ep.ClaudeConfig("agentkit"))
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-ins are shell scripts")
+	}
+	bin, out := t.TempDir(), t.TempDir()
+	scripts := map[string]string{
+		"claude": "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = --mcp-config ]; then printf '%s' \"$a\" > \"$HARNESS_TEST_OUT/claude-config\"; fi\n  prev=$a\ndone\nprintf '{\"result\":\"done\",\"total_cost_usd\":0,\"num_turns\":1}'\n",
+		"pi":     "#!/bin/sh\ncp .pi/mcp.json \"$HARNESS_TEST_OUT/pi-config\"\necho done\n",
+	}
+	for name, body := range scripts {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HARNESS_TEST_OUT", out)
+	o := options{MaxTurns: 3}
+	if hr, err := runHarness(context.Background(), io.Discard, "claude", ep, "system", "do it", o); err != nil || hr.Final != "done" {
+		t.Fatalf("claude: %+v, %v", hr, err)
+	}
+	if _, err := runHarness(context.Background(), io.Discard, "pi", ep, "system", "do it", o); err != nil {
+		t.Fatal(err)
+	}
+	for file, want := range map[string]string{"claude-config": ep.ClaudeConfig("agentkit"), "pi-config": ep.PiConfig("agentkit")} {
+		got, err := os.ReadFile(filepath.Join(out, file))
+		if err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v; want %q", file, got, err, want)
+		}
+	}
+}
+
+// TS-23-57: the example chooses its source first and fills the sandbox with
+// exactly one sandbox.Open: no Create, Sync or sandbox Tools call. 23-REQ-10.4.
+func TestMainFillsWithOneOpen_TS23_57(t *testing.T) {
+	opens := 0
+	var gitDepth1, excludeGit, sample bool
+	for name, f := range parseNonTest(t) {
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch v := n.(type) {
+			case *ast.CallExpr:
+				if selector(v.Fun) == "sandbox.Open" {
+					opens++
+				}
+				if sel, ok := v.Fun.(*ast.SelectorExpr); ok {
+					switch sel.Sel.Name {
+					case "Create", "Sync":
+						t.Errorf("%s calls %s", name, sel.Sel.Name)
+					case "Tools":
+						for _, a := range v.Args {
+							if lit, ok := a.(*ast.CompositeLit); ok && selector(lit.Type) == "sandbox.ToolOptions" {
+								t.Errorf("%s calls Sandbox.Tools", name)
+							}
+						}
+					}
+				}
+			case *ast.CompositeLit:
+				kv := map[string]ast.Expr{}
+				for _, e := range v.Elts {
+					if p, ok := e.(*ast.KeyValueExpr); ok {
+						if id, ok := p.Key.(*ast.Ident); ok {
+							kv[id.Name] = p.Value
+						}
+					}
+				}
+				switch selector(v.Type) {
+				case "sandbox.GitRepo":
+					if lit, ok := kv["Depth"].(*ast.BasicLit); ok && lit.Value == "1" {
+						gitDepth1 = true
+					}
+				case "sandbox.LocalDir":
+					if id, ok := kv["ExcludeGit"].(*ast.Ident); ok && id.Name == "true" {
+						excludeGit = true
+					}
+					if _, ok := kv["Path"]; ok && kv["ExcludeGit"] == nil {
+						sample = true
+					}
+				}
+			}
+			return true
+		})
+	}
+	if opens != 1 {
+		t.Errorf("the example calls sandbox.Open %d times, want 1", opens)
+	}
+	if !gitDepth1 || !excludeGit || !sample {
+		t.Errorf("sources: GitRepo with Depth 1 %v, LocalDir with ExcludeGit %v, the sample's LocalDir %v; want all three", gitDepth1, excludeGit, sample)
+	}
+}
+
+// TS-23-58: the example uses guard.Allow(allowed...) and the faux helpers, and
+// has no guard.Restricted call or faux.Turn literal. 23-REQ-10.5.
+func TestExampleUsesTheHelpers_TS23_58(t *testing.T) {
+	var allow, toolCall, text bool
+	for name, f := range parseNonTest(t) {
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch v := n.(type) {
+			case *ast.CallExpr:
+				switch selector(v.Fun) {
+				case "guard.Allow":
+					allow = allow || v.Ellipsis.IsValid()
+				case "faux.ToolCall":
+					toolCall = true
+				case "faux.Text":
+					text = true
+				case "guard.Restricted":
+					t.Errorf("%s calls guard.Restricted", name)
+				}
+			case *ast.CompositeLit:
+				if selector(v.Type) == "faux.Turn" {
+					t.Errorf("%s has a faux.Turn literal", name)
+				}
+			}
+			return true
+		})
+	}
+	if !allow || !toolCall || !text {
+		t.Errorf("guard.Allow(allowed...) %v, faux.ToolCall %v, faux.Text %v; want all three", allow, toolCall, text)
+	}
+}
+
+// TS-23-59: go.mod requires mcpserve with a replace to ../../mcpserve, and the
+// MCP SDK only as an indirect requirement. 23-REQ-10.6.
+func TestGoModUsesMcpserve_TS23_59(t *testing.T) {
+	out, err := exec.Command("go", "mod", "edit", "-json").Output()
+	if err != nil {
+		t.Fatalf("go mod edit -json: %v", err)
+	}
+	var m struct {
+		Require []struct {
+			Path, Version string
+			Indirect      bool
+		}
+		Replace []struct{ Old, New struct{ Path string } }
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	const self, sdk = "github.com/agent-fox-dev/agentkit-go/mcpserve", "github.com/modelcontextprotocol/go-sdk"
+	var sawSelf, sawSDK bool
+	for _, r := range m.Require {
+		switch r.Path {
+		case self:
+			sawSelf = true
+			if r.Version != "v0.0.0" || r.Indirect {
+				t.Errorf("mcpserve is required at %s (indirect %v), want v0.0.0 directly", r.Version, r.Indirect)
+			}
+		case sdk:
+			sawSDK = true
+			if !r.Indirect {
+				t.Error("the MCP SDK is still a direct requirement")
+			}
+		}
+	}
+	if !sawSelf || !sawSDK {
+		t.Errorf("requirements: mcpserve %v, the SDK %v; want both", sawSelf, sawSDK)
+	}
+	var replaced bool
+	for _, r := range m.Replace {
+		replaced = replaced || (r.Old.Path == self && r.New.Path == "../../mcpserve")
+	}
+	if !replaced {
+		t.Errorf("no replace of mcpserve to ../../mcpserve in %+v", m.Replace)
 	}
 }
