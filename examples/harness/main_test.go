@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/guard"
@@ -848,5 +851,53 @@ func TestGoModUsesMcpserve_TS23_59(t *testing.T) {
 	}
 	if !replaced {
 		t.Errorf("no replace of mcpserve to ../../mcpserve in %+v", m.Replace)
+	}
+}
+
+// TS-23-64 (smoke, 23-PATH-4): the harness runs offline end to end through
+// sandbox.Open, the Runner and mcpserve, and when it returns the endpoint and
+// the sandbox are closed. The sandbox is local's real one, the runner and
+// mcpserve are the real ones, the scripted harness reaches them through
+// mcp.Pool and its faux.ToolCall and faux.Text turns, and code_mode runs over
+// the sandbox's proxies. 23-PATH-4, 23-REQ-10.7.
+func TestSmokeHarnessThroughOpenRunnerAndMcpserve_TS23_64(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in specr is a shell script")
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	var account, log strings.Builder
+	if err := run(context.Background(), &account, &log, defaults(t)); err != nil {
+		t.Fatalf("%v\n%s\n%s", err, account.String(), log.String())
+	}
+	for _, want := range []string{"filled the workspace from the sample project", "MCP server at http://127.0.0.1:",
+		"verdict: pass", "Harness example completed successfully"} {
+		if !strings.Contains(account.String(), want) {
+			t.Errorf("the account lacks %q:\n%s", want, account.String())
+		}
+	}
+	if want := "imported 12 tools over MCP: agentkit__code_mode, agentkit__edit_file, agentkit__execute"; !strings.Contains(log.String(), want) {
+		t.Errorf("the log lacks %q:\n%s", want, log.String())
+	}
+	if !strings.Contains(log.String(), "    run      write_file") {
+		t.Errorf("the scripted code_mode turn's nested calls did not run through the runner:\n%s", log.String())
+	}
+
+	m := regexp.MustCompile(`MCP server at http://(127\.0\.0\.1:[0-9]+)/mcp`).FindStringSubmatch(account.String())
+	if m == nil {
+		t.Fatal("the account names no endpoint")
+	}
+	if c, err := net.DialTimeout("tcp", m[1], time.Second); err == nil {
+		_ = c.Close()
+		t.Errorf("%s still accepts connections after the run: the endpoint was not closed", m[1])
+	}
+	root := filepath.Join(tmp, "agentkit-sandbox-local")
+	ents, err := os.ReadDir(root)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if len(ents) > 0 {
+		t.Errorf("%d sandbox directories remain under %s: the sandbox was not closed", len(ents), root)
 	}
 }
