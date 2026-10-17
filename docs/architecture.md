@@ -244,7 +244,8 @@ embedder makes with `Runner.Call` and a call an MCP client makes through
 `core.ToolUseBlock` with a generated `call_` id and runs it through
 `Runner.Batch`, which is the engine (`batch.go`) the agent loop calls too. The
 steps are the same for one call, for several, and for the calls of a model's
-turn.
+turn. A `tools/call` that an MCP client makes through `mcpserve` is this call
+too: [MCP serving](#mcp-serving) describes how it reaches the runner.
 
 ```
 prepare       sequential, in call order, on the calling goroutine. Per call:
