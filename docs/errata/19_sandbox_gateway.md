@@ -111,3 +111,20 @@ TS-19-64 asks that `internal/policy/testdata` be unchanged by this spec. The
 test fails when `git status` reports a change there. The spec's commits leave
 the directory untouched; `git log` shows that, and no test can know the
 spec's base commit.
+
+## The no-listen check now exempts the nested modules, gatewayd and mcpserve (PRD 12, spec 23)
+
+19-REQ-9.4 says the no-listen check "exempts only the gatewayd module". PRD 12
+(`docs/prd/12-simplify-the-embedder-contract.md`, decision D4) and spec 23
+(`mcp_serve`) add a second nested module that listens, `mcpserve`, so the
+requirement now reads: the check exempts nested modules, `sandbox/gatewayd` and
+`mcpserve`. Its scope is unchanged, the non-test files of the root and sandbox
+modules; the walk skips every directory that has its own `go.mod`, which is
+what exempts a nested module, so only the failure message and the doc comments
+changed (`internal/policy/nolisten_test.go:111`: "only the nested modules
+(sandbox/gatewayd, mcpserve) may"). `TestNoListen_TS19_63` now also checks that
+a listener in a nested `mcpserve/` module passes and that a listener in the
+root fails with a message naming both.
+
+TS-19-62's gate list gained `mcpserve` for the same reason
+(`internal/policy/crosstarget_test.go:32`; `TestGatesCoverMcpserve_TS23_50`).

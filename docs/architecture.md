@@ -7,7 +7,7 @@ disagree, fix this file.
 ## Shape
 
 One Go module, `github.com/agent-fox-dev/agentkit-go` (`go 1.27`), plus
-five nested modules with their own `go.mod`, none of them in the root build
+seven nested modules with their own `go.mod`, none of them in the root build
 graph:
 
 - [`codesearch/`](../codesearch), the zoekt-backed index;
@@ -21,6 +21,11 @@ graph:
   requires nothing else but gRPC, and its graph holds no module the sandbox
   module's lacks. Go's `internal` rule goes by import path, so it uses the
   sandbox module's `internal/sandboxpb` and `internal/attach`;
+- [`mcpserve/`](../mcpserve) (`…/mcpserve`), the MCP server for a `Runner`'s
+  tools, on stdio or on loopback HTTP behind a bearer token, for a harness on
+  the same machine. It requires the root module through `replace ../`,
+  directly requires nothing else but the MCP Go SDK at the root's version, and
+  its graph holds no module the root's lacks;
 - [`examples/sandbox/`](../examples/sandbox), the example program that uses
   the sandbox module;
 - [`examples/gateway/`](../examples/gateway), the example program that runs a
@@ -28,14 +33,15 @@ graph:
   sandbox and gatewayd modules through `replace`;
 - [`examples/harness/`](../examples/harness), the example program that serves
   code mode and a sandbox's proxy tools to another harness (Claude Code, Pi)
-  over MCP on a loopback port. It requires the root and sandbox modules
-  through `replace`.
+  over MCP on a loopback port. It requires the root, sandbox and mcpserve
+  modules through `replace`.
 
 cgo is allowed only in `//go:build cgo` files, each with a pure-Go fallback;
 `internal/policy` builds the four supported targets with cgo off and the host
-with cgo on, for the root, the sandbox module, the gatewayd module and the
-two sandbox examples. Direct dependencies are an allowlist ([`DEPS.md`](DEPS.md)), checked
-for the root, the sandbox module and the gatewayd module.
+with cgo on, for the root, the sandbox module, the gatewayd module, the
+mcpserve module and the three examples that use them. Direct dependencies are
+an allowlist ([`DEPS.md`](DEPS.md)), checked for the root, the sandbox module,
+the gatewayd module and the mcpserve module.
 
 AgentKit is two parts:
 
@@ -45,10 +51,12 @@ AgentKit is two parts:
 - **One driver**: the root package, `agentkit`. It holds `Config`, `New`, the
   `Agent`, the loop, the batch executor and nested calls, and nothing else.
 
-AgentKit serves no network API. It is a library: it has no MCP server and
-the library listens on no socket; `agentkit-sandboxd` serves the agent
-service on its stdio, and `agentkit-gateway`, a separate module, is the one
-network service. `internal/policy` keeps that a checked invariant: no non-test
+The root and sandbox modules serve no network API. They are a library: they
+have no MCP server and listen on no socket; `agentkit-sandboxd` serves the
+agent service on its stdio, and two nested modules serve: `agentkit-gateway`
+(`sandbox/gatewayd`) is the gateway's gRPC server, and `mcpserve` serves a
+runner's tools over MCP, on stdio or a loopback port, to a harness on the same
+machine. `internal/policy` keeps that a checked invariant: no non-test
 file of the root or the sandbox module refers to `net.Listen`,
 `net.ListenTCP`, `net.ListenUnix`, `net.ListenPacket`, `net.ListenConfig`,
 `tls.Listen` or `http.ListenAndServe*`. The library's only network traffic is
@@ -78,6 +86,7 @@ First-party imports, from
 | `tools` | `core`, `outline`, `schema`, `workspace` | `github.com/bmatcuk/doublestar/v4` |
 | `codemode` | `core`, `schema`, `tools` | `go.starlark.net` |
 | `mcp` | `core`, `schema`, `wire`, `internal/diag`, `internal/toml` | `github.com/modelcontextprotocol/go-sdk` |
+| `mcpserve` (nested module) | `.` (root, `agentkit`), `core`, `mcp`, `wire` | `github.com/modelcontextprotocol/go-sdk` |
 | `prompt` | `core`, `guard`, `tools` | |
 | `.` (root, `agentkit`) | `core`, `catalog`, `guard`, `prompt`, `provider`, `provider/anthropic` | `github.com/anthropics/anthropic-sdk-go` |
 | `codesearch` (nested module) | `core`, `outline`, `schema`, `tools`, `workspace` | `github.com/sourcegraph/zoekt` |
@@ -124,7 +133,7 @@ What follows from it:
   guideline texts from `tools`. The root imports the
   SDK because `Config.Client` is an SDK client; `New` builds the provider
   over it.
-- Nothing imports the root package except `examples/`.
+- Nothing imports the root package except `examples/` and `mcpserve`.
 - The sandbox tree imports `core`, `schema`, `tools`, `workspace` and `wire`, and nothing outside it
   imports the sandbox tree except `examples/sandbox`, `examples/gateway` and
   `examples/harness` (nested modules, outside the root's check) and test helpers under
@@ -149,7 +158,7 @@ What follows from it:
 | `guard` | The shell boundary: `Check` (a pure decision on an argv), `Restricted` (the interceptor over it), `Allow` (`Restricted` with only the allowlist), `AllowAll`. |
 | `codemode` | The code-mode tool (below). |
 | `prompt` | `Build(system, tools)`: the base prompt, then the active tools' guidelines, deduplicated in first-seen order. |
-| `mcp` | The MCP client over the official MCP Go SDK (below). There is no server. |
+| `mcp` | The MCP client over the official MCP Go SDK (below). The MCP server is the nested `mcpserve` module's. |
 | `wire` | A bounded, strict parser for untrusted bytes on `encoding/json/jsontext`, and frame readers. |
 | `internal/toml` | A lenient TOML reader for `mcp.ParseConfig`, over `go-toml/v2/unstable`. |
 | `internal/diag` | The shared non-fatal `Diagnostic`. |
@@ -173,6 +182,7 @@ What follows from it:
 | `sandbox/gateway` | The gateway client: `Dial` returns a `sandbox.Provider` whose sandboxes live on a remote gateway. |
 | `sandbox/gatewayd` | The gateway server (nested module): authentication, ownership, the sandbox lifecycle and the Agent relay over one backend provider. |
 | `sandbox/gatewayd/cmd/agentkit-gateway` | The gateway command: a TCP server over the Podman or Docker provider. |
+| `mcpserve` | The MCP server (nested module): one MCP tool per tool of an `agentkit.Runner`, every call through `Runner.Call`, served on stdio (`ServeStdio`) or on loopback HTTP behind a bearer token (`ServeLoopback`). |
 | `sandbox/cmd/agentkit-sandboxd` | The agent command. |
 
 ## Data flow of one run
@@ -367,7 +377,31 @@ calls reach `Toolset.Events` with the `code_mode` call as their parent.
 invokes it: code mode never runs a tool around the pipeline. An embedder that
 is its own driver — one that serves the tools to another harness over MCP,
 say — builds a runner and calls it. [`examples/harness`](../examples/harness)
-does exactly that, and nothing else of the driver.
+does exactly that, serving the runner through `mcpserve`, and nothing else of
+the driver.
+
+## MCP serving
+
+`mcpserve` is the other direction: a nested module that serves one runner's
+tools to a harness that is not AgentKit's own loop (Claude Code, Pi, any MCP
+client on the same machine). `mcpserve.New` reads `Runner.Tools()` once and
+registers one MCP tool for each, under the tool's name, description and
+`json.Marshal` of its input schema; it refuses, naming the tool, a schema the
+SDK would reject by panicking. A `tools/call` goes to `Runner.Call` with the
+request's argument bytes and nowhere else, and its result is `LLMText()` and
+the result's text blocks, with `isError` set when the call failed, so a guard
+block is an error result and never a protocol error.
+
+Two transports. `ServeStdio` speaks newline-delimited JSON on the process's
+stdin and stdout through `mcp.NewPipeTransport`, so `wire` holds every frame to
+its limits before the SDK decodes it. `ServeLoopback` listens on
+`127.0.0.1` and puts a trust boundary in front of the SDK's Streamable HTTP
+handler: the bearer token first, then the path, then the body, bounded and
+checked by `wire.Guard`. The SDK closes a session gracefully and cancels a call
+only when its client asks, so each session and each endpoint carries a lifetime,
+passed as a value of the context the SDK server is connected with, which a
+call's context also obeys; closing a session or an endpoint cancels the calls
+still running.
 
 ## MCP client
 
@@ -875,9 +909,9 @@ connection. Nothing reattaches: a crashed embedder's sandboxes live until their
 TTL unless it lists and destroys them.
 
 *No socket in the library.* The client package is in the sandbox module,
-which listens on nothing; only the gatewayd module calls `net.Listen`, in the
-command. `internal/policy` fails when a non-test file of the root or the
-sandbox module refers to a listening API.
+which listens on nothing; only the nested modules call `net.Listen`: gatewayd,
+in the command, and mcpserve, in `ServeLoopback`. `internal/policy` fails when
+a non-test file of the root or the sandbox module refers to a listening API.
 
 **`local` is not isolation.** Its capabilities say so (`IsolationNone`, only
 `NetworkUnrestricted`, nothing else honoured), and it refuses the zero
@@ -899,7 +933,7 @@ anything is made) and its agent reports ABI 0 with the note
   against it.
 
 Run the fast loop with `make check` (fmt, vet, lint, `go test -short` for every module:
-the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `examples/sandbox`,
-`examples/gateway` and `examples/harness`). `make check-release` runs the full
+the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `mcpserve`,
+`examples/sandbox`, `examples/gateway` and `examples/harness`). `make check-release` runs the full
 tests, including the slow `internal/policy` gates that `-short` skips: the
 cross-target build and vet, the host cgo build and the nested `make` runs.

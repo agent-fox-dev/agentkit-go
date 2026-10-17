@@ -34,6 +34,7 @@ codemode/ mcp/ prompt/  # Code mode, MCP client pool, prompt building
 catalog/ schema/        # Model catalog, schema helpers
 sandbox/                # Nested module: sandbox API, protocol, agent, providers
 sandbox/gatewayd/       # Nested module: the agentkit-gateway server
+mcpserve/               # Nested module: MCP serving of a Runner's tools
 codesearch/             # Nested module: zoekt-backed code search
 examples/               # Runnable examples (some are nested modules)
 containers/             # Containerfiles for the sandbox images

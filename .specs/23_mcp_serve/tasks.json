@@ -461,7 +461,7 @@
       "done_when": [
         "`GOPROXY=off make check` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,

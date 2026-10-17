@@ -486,6 +486,81 @@ ignored. A server with no `name`, with neither `command` nor `url`, with an
 unknown `transport`, or with a duplicate name is dropped with an error
 diagnostic.
 
+## MCP serving (`mcpserve.Options`)
+
+`mcpserve` is a nested module, `github.com/agent-fox-dev/agentkit-go/mcpserve`.
+`mcpserve.New(r *agentkit.Runner, opts mcpserve.Options) (*mcpserve.Server, error)`
+serves the tools of a runner to a harness on the same machine. A `Server` is
+immutable and safe for concurrent use; it may serve any number of loopback
+endpoints and one stdio session at once, over the same tools.
+
+`New` refuses a nil runner (`mcpserve: Runner is nil`) and a runner holding a
+tool whose input schema does not marshal, or whose top level is not an object
+with `"type":"object"` (`mcpserve: tool "<name>": input schema …`). It reads
+`r.Tools()` once, so the served set never changes afterwards. Each tool is
+served under its own name and description with `json.Marshal` of its input
+schema, or `{"type":"object"}` when it has none, and no output schema,
+annotations or `_meta`. A `tools/call` runs `r.Call` with the request's
+argument bytes and nothing else. Its result is one text item holding
+`core.ToolResult.LLMText()`, then one for each `core.TextBlock` in `Blocks`;
+`isError` is `!OK`. `Data`, `Metadata` and the `Terminate` vote are not served,
+and a failed call (`invalid_arguments`, `blocked_by_policy`, `panic`,
+`handler_error`, `aborted`) is an error result, never a protocol error.
+
+| `Options` field | Meaning |
+|---|---|
+| `Name` | The server name in the initialize result. Empty means `agentkit`. |
+| `Version` | The server version. Empty means this module's version from the binary's build information (the replacement's when it is replaced), or `(devel)`. |
+| `Instructions` | Sent to the client in the initialize result. |
+| `Logger` | A `*slog.Logger`; nil discards. See below. |
+
+**`ServeLoopback(ctx)`** listens on TCP `127.0.0.1` on a port the system
+chooses and returns an `Endpoint{URL, Token}`: the URL is
+`http://127.0.0.1:<port>/mcp`, and the token is 24 bytes from `crypto/rand` as 48
+lowercase hex characters, generated for each call. Neither is configurable.
+Every request needs exactly one `Authorization: Bearer <token>` header,
+compared in constant time, or it gets 401 with `WWW-Authenticate: Bearer` and
+the body `unauthorized` before its body is read, whatever its path or method.
+An authorized request for a path other than `/mcp` gets 404. An authorized body
+is read up to `wire.Defaults().MaxMessageBytes` (16 MiB; 413 above it) and must
+pass `wire.Guard` (400 if it does not) before it is replayed, byte for byte, to
+the SDK's Streamable HTTP handler with its default stateful sessions. The
+endpoint serves until `Endpoint.Close` is called or `ctx` ends: it stops
+accepting, lets requests in flight finish for up to two seconds, then closes
+the connections that remain and cancels the calls still running. `Close` blocks
+until then, is idempotent and safe from several goroutines, and does nothing on
+an `Endpoint` that `ServeLoopback` did not return. A `ctx` that is already done
+returns `nil, ctx.Err()` and listens on nothing. Two calls on one `Server` give
+independent endpoints.
+
+**`ServeStdio(ctx)`** serves one session on `os.Stdin` and `os.Stdout`, as
+newline-delimited JSON through `mcp.NewPipeTransport` under `wire.Defaults()`;
+a frame that breaks those limits ends the session and never reaches the runner.
+It returns `nil` when the client closes its end (after every reply owed is
+written), `ctx.Err()` when `ctx` ends (the session is closed first and calls in
+flight see a cancelled context), and otherwise an error starting `mcpserve: `.
+A served session closes `os.Stdin` and leaves `os.Stdout` open; nothing but
+protocol frames is written to stdout, so the program's own output belongs on
+stderr. It is meant to be called once per process, which is not enforced.
+
+**`Endpoint.ClaudeConfig(name)`** returns the JSON Claude Code's
+`--mcp-config` takes, `{"mcpServers":{"<name>":{"type":"http","url":"<URL>",
+"headers":{"Authorization":"Bearer <Token>"}}}}`, and **`PiConfig(name)`** the
+same object with `"exposure":"direct"` in the server entry, which Pi's
+`.pi/mcp.json` takes. An empty `name` means `agentkit`; the output is built
+with `encoding/json` from the endpoint's fields as they are when it is called.
+
+**Logging.** The `Logger` gets an Info record `tool call` for each served call
+(`tool`, `ok`, `duration`, and `error`, the runner's error code, when the call
+failed; a code that is not a short identifier is logged as `other`); a Warn
+record `request refused` for each refused HTTP request (`peer` and a `reason`:
+`missing or wrong token`, `body over the size limit`, `body rejected: <wire
+rule>` or `body unreadable`); a Warn record `stdio session ended with an error`
+(`reason`: `frame rejected: <wire rule>` or `session error`); and a Warn record
+`http server error` for what `net/http` reports about its own failures. No
+record carries the token, the `Authorization` header, a call's arguments, a
+result's text or its `Detail`.
+
 ## Sandboxes (`sandbox.Spec`, `sandbox.ToolOptions`, `local`, the gateway)
 
 A `sandbox.Provider` creates a sandbox from a `sandbox.Spec`. Every provider
@@ -1138,7 +1213,9 @@ take these defaults) and rejects duplicate keys before the SDK decodes it. The
 Anthropic provider checks each stream event and response body the same way,
 with the defaults. A sandbox proxy guards the `Data` and `Metadata` of every agent answer the
 same way, and every sandbox protocol message is bounded by
-`sandbox.MaxMessageBytes`, also 16 MiB.
+`sandbox.MaxMessageBytes`, also 16 MiB. `mcpserve` holds every inbound stdio
+frame and every authorized HTTP body to `wire.Defaults()` too (413 above the
+size, 400 for a body `wire.Guard` rejects), with no option.
 
 ## Compatibility
 

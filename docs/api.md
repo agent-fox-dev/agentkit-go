@@ -1,9 +1,11 @@
 # API
 
-AgentKit is a library. It serves no REST API and listens on no socket; its API
-is the set of public Go packages below. The one network service,
-`agentkit-gateway`, speaks gRPC and is described in
-[`cli.md`](cli.md) and the `sandbox/gatewayd` package documentation.
+AgentKit is a library. It serves no REST API, and its root and sandbox modules
+listen on no socket; its API is the set of public Go packages below. Two nested
+modules serve: `agentkit-gateway` (`sandbox/gatewayd`) speaks gRPC and is
+described in [`cli.md`](cli.md) and the `sandbox/gatewayd` package
+documentation, and `mcpserve` serves a runner's tools over MCP to a harness on
+the same machine.
 
 The authoritative reference is the package documentation: run `make doc` to
 write `go doc -all` output for every public package to `docs/generated/` (committed), or read
@@ -35,6 +37,7 @@ it with `go doc -all <import path>`. This file is the map.
 | `codesearch` | Indexed code search, backed by zoekt. |
 | `sandbox` | The sandbox API (`sandbox.Provider`, and `sandbox.Open`, which creates, fills and equips a sandbox in one call), the agent protocol, and the providers `sandbox/local`, `sandbox/landlock`, `sandbox/podman`, `sandbox/gateway` and `sandbox/images`. |
 | `sandbox/gatewayd` | The gateway server (`gatewayd.Server`) behind the `agentkit-gateway` command. |
+| `mcpserve` | Serves an `agentkit.Runner`'s tools over MCP: `mcpserve.New`, `Server.ServeStdio`, `Server.ServeLoopback`, and the `Endpoint` it returns with the harness configuration strings `ClaudeConfig` and `PiConfig`. |
 
 How the modules relate is in [`architecture.md`](architecture.md); the knobs
 each package takes are in [`configuration.md`](configuration.md).
