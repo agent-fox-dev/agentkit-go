@@ -118,7 +118,7 @@
       "done_when": [
         "`go test ./internal/policy -count=1` passes with AGENTKIT_UPDATE_API_GOLDEN unset"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,

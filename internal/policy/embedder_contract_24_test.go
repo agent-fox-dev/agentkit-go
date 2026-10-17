@@ -1,10 +1,13 @@
 package policy
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -189,5 +192,246 @@ func TestRequireLineChild_TS24_8(t *testing.T) {
 		requireLine(t, "guard", []string{"func Check(argv []string, o Options) Decision"}, "func Allow(")
 	default:
 		requireLine(t, "guard", nil, "func Allow(")
+	}
+}
+
+// goldenFile is the committed exported-API golden.
+func goldenFile(root string) string {
+	return filepath.Join(root, "internal", "policy", "testdata", "exported-api.golden")
+}
+
+// goldenText is the golden as TS-13-67 writes it: one "== <pkg>" header for
+// each apiPackages entry, in order, then that package's exported lines.
+func goldenText(t *testing.T, root string) string {
+	t.Helper()
+	var b strings.Builder
+	for _, pkg := range apiPackages {
+		b.WriteString("== " + pkg + "\n")
+		for _, line := range exportedAPI(t, filepath.Join(root, pkg)) {
+			b.WriteString(line + "\n")
+		}
+	}
+	return b.String()
+}
+
+// goldenSections splits golden text into its sections, in file order: each
+// header (without "== ") and the lines under it.
+func goldenSections(golden string) (headers []string, lines map[string][]string) {
+	lines = map[string][]string{}
+	cur := ""
+	for _, line := range strings.Split(strings.TrimSuffix(golden, "\n"), "\n") {
+		if name, ok := strings.CutPrefix(line, "== "); ok {
+			cur = name
+			headers = append(headers, name)
+			continue
+		}
+		lines[cur] = append(lines[cur], line)
+	}
+	return headers, lines
+}
+
+// withoutUpdateVariable is the environment of a go test child that compares
+// the golden instead of writing it.
+func withoutUpdateVariable() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "AGENTKIT_UPDATE_API_GOLDEN=") {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+// goTestPolicy runs go test over this package for the tests that match run, in
+// the repository root with the update variable unset, and returns its output
+// and how it ended.
+func goTestPolicy(t *testing.T, run string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("go", "test", "./internal/policy", "-run", run, "-v", "-count=1")
+	cmd.Dir, cmd.Env = repoRoot(t), withoutUpdateVariable()
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// TS-24-4: the golden's section headers are apiPackages, in order, and
+// nothing else. 24-REQ-1.2.
+func TestGoldenHeadersEqualAPIPackages_TS24_4(t *testing.T) {
+	raw, err := os.ReadFile(goldenFile(repoRoot(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	headers, _ := goldenSections(string(raw))
+	if !slices.Equal(headers, apiPackages) {
+		t.Errorf("the golden's sections are %q, want apiPackages %q", headers, apiPackages)
+	}
+}
+
+// TS-24-9: the five sections spec 23 left are the exported API of their
+// packages, in the first five positions, and the golden's change against HEAD
+// adds lines after the workspace section and removes none. 24-REQ-3.1. (The
+// comparison with HEAD is empty once the golden is committed; the sections
+// check holds for good.)
+func TestExistingGoldenSectionsAreUnchanged_TS24_9(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(goldenFile(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	headers, sections := goldenSections(string(raw))
+	existing := []string{".", "core", "tools", "codemode", "workspace"}
+	if len(headers) < len(existing) || !slices.Equal(headers[:len(existing)], existing) {
+		t.Fatalf("the golden's first sections are %q, want %q", headers, existing)
+	}
+	for _, pkg := range existing {
+		if want := exportedAPI(t, filepath.Join(root, pkg)); !slices.Equal(sections[pkg], want) {
+			t.Errorf("the golden's %s section differs from the package's exported API", pkg)
+		}
+	}
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not on PATH")
+	}
+	if err := exec.Command("git", "-C", root, "rev-parse", "--verify", "HEAD").Run(); err != nil {
+		t.Skipf("no commit to compare the golden with: %v", err)
+	}
+	// firstNew is the 1-based line of the first header after the workspace
+	// section, 0 when there is none.
+	firstNew, inWorkspace := 0, false
+	for i, line := range strings.Split(string(raw), "\n") {
+		if line == "== workspace" {
+			inWorkspace = true
+		} else if inWorkspace && strings.HasPrefix(line, "== ") {
+			firstNew = i + 1
+			break
+		}
+	}
+	cmd := exec.Command("git", "diff", "--no-color", "-U0", "HEAD", "--", "internal/policy/testdata/exported-api.golden")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git diff: %v", err)
+	}
+	hunk := regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "---"), strings.HasPrefix(line, "+++"):
+		case strings.HasPrefix(line, "-"):
+			t.Errorf("the golden loses a line: %s", line)
+		case hunk.MatchString(line):
+			start, _ := strconv.Atoi(hunk.FindStringSubmatch(line)[1])
+			if firstNew > 0 && start < firstNew {
+				t.Errorf("the golden changes line %d, before the first appended section at line %d: %s", start, firstNew, line)
+			}
+		}
+	}
+}
+
+// TS-24-10 (property): for every apiPackages entry, exportedAPI returns the
+// same lines on a repeated call, sorted and without a duplicate, and the golden
+// built from them twice is the same bytes. 24-REQ-3.2.
+func TestExportedAPIIsStable_TS24_10(t *testing.T) {
+	root := repoRoot(t)
+	for _, pkg := range apiPackages {
+		a := exportedAPI(t, filepath.Join(root, pkg))
+		b := exportedAPI(t, filepath.Join(root, pkg))
+		if !slices.Equal(a, b) {
+			t.Errorf("exportedAPI(%s) differs between two calls", pkg)
+		}
+		if !slices.IsSorted(a) {
+			t.Errorf("exportedAPI(%s) is not sorted", pkg)
+		}
+		if len(slices.Compact(slices.Clone(a))) != len(a) {
+			t.Errorf("exportedAPI(%s) lists a line twice", pkg)
+		}
+	}
+	first, second := goldenText(t, root), goldenText(t, root)
+	if first != second {
+		t.Error("the golden built twice in a row is not the same bytes")
+	}
+}
+
+// TS-24-5: the four golden comparison tests pass, and none skips, with the
+// update variable unset. 24-REQ-1.3.
+func TestGoldenComparisonsPassWithUpdateUnset_TS24_5(t *testing.T) {
+	out, err := goTestPolicy(t, "_TS13_67$|_TS14_44$|_TS15_42$|_TS17_61$")
+	if err != nil {
+		t.Fatalf("go test: %v\n%s", err, out)
+	}
+	for _, id := range []string{"TS13_67", "TS14_44", "TS15_42", "TS17_61"} {
+		if !regexp.MustCompile(`--- PASS: \w+_` + id + ` `).MatchString(out) {
+			t.Errorf("%s did not report PASS:\n%s", id, out)
+		}
+	}
+	if strings.Contains(out, "SKIP") {
+		t.Errorf("a golden comparison skipped:\n%s", out)
+	}
+}
+
+// TS-24-11: a section that differs from the code fails TS-13-67, which lists
+// the line the code gained instead of absorbing it. 24-REQ-3.3. The test
+// removes one line of the core section from the golden and puts the golden
+// back byte for byte; it is not parallel to any other test.
+func TestGoldenDifferenceIsListed_TS24_11(t *testing.T) {
+	golden := goldenFile(repoRoot(t))
+	backup, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := func() {
+		if err := os.WriteFile(golden, backup, 0o644); err != nil {
+			t.Errorf("the golden is not restored: %v", err)
+		}
+	}
+	t.Cleanup(restore)
+
+	lines := strings.Split(string(backup), "\n")
+	at := slices.Index(lines, "== core") + 1
+	if at == 0 || at >= len(lines) || strings.HasPrefix(lines[at], "== ") {
+		t.Fatal("the golden has no line in its core section to remove")
+	}
+	dropped := lines[at]
+	lines = slices.Delete(lines, at, at+1)
+	if err := os.WriteFile(golden, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := goTestPolicy(t, "_TS13_67$")
+	if err == nil {
+		t.Fatalf("TS-13-67 passed against a golden missing a line:\n%s", out)
+	}
+	if !strings.Contains(out, "FAIL") {
+		t.Errorf("the child did not report FAIL:\n%s", out)
+	}
+	if want := "exported API gained: " + dropped; !strings.Contains(out, want) {
+		t.Errorf("the output lacks %q:\n%s", want, out)
+	}
+
+	restore()
+	if now, err := os.ReadFile(golden); err != nil || !bytes.Equal(now, backup) {
+		t.Errorf("the golden is not byte-identical after the test: %v", err)
+	}
+}
+
+// TS-24-12: the golden is committed, so internal/policy/testdata has no
+// change, and TS-19-64 passes. 24-REQ-3.4.
+func TestPolicyTestdataIsCommitted_TS24_12(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not on PATH")
+	}
+	root := repoRoot(t)
+	if err := exec.Command("git", "-C", root, "rev-parse", "--verify", "HEAD").Run(); err != nil {
+		t.Skipf("no commit to compare internal/policy/testdata with: %v", err)
+	}
+	cmd := exec.Command("git", "status", "--porcelain", "--", "internal/policy/testdata")
+	cmd.Dir = root
+	status, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if len(status) > 0 {
+		t.Errorf("internal/policy/testdata has uncommitted changes:\n%s", status)
+	}
+	if out, err := goTestPolicy(t, "_TS19_64$"); err != nil || !regexp.MustCompile(`--- PASS: \w+_TS19_64 `).MatchString(out) {
+		t.Errorf("TS-19-64 did not pass: %v\n%s", err, out)
 	}
 }
