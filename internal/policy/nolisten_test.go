@@ -55,8 +55,9 @@ func moduleFiles(dir string) ([]string, error) {
 }
 
 // noListen fails for every non-test Go file of the root module and the
-// sandbox module under root that refers to a socket-listening API. The
-// gatewayd module, being nested, is exempt.
+// sandbox module under root that refers to a socket-listening API. The nested
+// modules that may listen, sandbox/gatewayd and mcpserve, are exempt: the walk
+// skips every directory that has its own go.mod.
 func noListen(root string) error {
 	var errs []error
 	for _, mod := range []string{root, filepath.Join(root, "sandbox")} {
@@ -107,7 +108,7 @@ func listenUses(file string) error {
 			return true
 		}
 		if p, ok := names[id.Name]; ok && listenAPIs[p](sel.Sel.Name) {
-			errs = append(errs, fmt.Errorf("%s: %s.%s listens on a socket; only the gatewayd module may", fset.Position(sel.Pos()), p, sel.Sel.Name))
+			errs = append(errs, fmt.Errorf("%s: %s.%s listens on a socket; only the nested modules (sandbox/gatewayd, mcpserve) may", fset.Position(sel.Pos()), p, sel.Sel.Name))
 		}
 		return true
 	})
@@ -115,8 +116,8 @@ func listenUses(file string) error {
 }
 
 // TS-19-63: the no-listen check fails on any socket-listening API in
-// non-test files of the root or sandbox module and exempts only gatewayd.
-// 19-REQ-9.4.
+// non-test files of the root or sandbox module and exempts only the nested
+// modules (sandbox/gatewayd, mcpserve). 19-REQ-9.4, 23-REQ-9.3 (TS-23-51).
 func TestNoListen_TS19_63(t *testing.T) {
 	if err := noListen(repoRoot(t)); err != nil {
 		t.Fatalf("the delivered tree listens:\n%v", err)
@@ -127,6 +128,7 @@ func TestNoListen_TS19_63(t *testing.T) {
 		files["go.mod"] = "module example.test/m\n\ngo 1.27\n"
 		files["sandbox/go.mod"] = "module example.test/m/sandbox\n\ngo 1.27\n"
 		files["sandbox/gatewayd/go.mod"] = "module example.test/m/sandbox/gatewayd\n\ngo 1.27\n"
+		files["mcpserve/go.mod"] = "module example.test/m/mcpserve\n\ngo 1.27\n"
 		for name, body := range files {
 			p := filepath.Join(dir, filepath.FromSlash(name))
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -162,5 +164,12 @@ func TestNoListen_TS19_63(t *testing.T) {
 	}
 	if err := noListen(module(t, map[string]string{"sandbox/gatewayd/x.go": use(`"net"`, "net.Listen")})); err != nil {
 		t.Errorf("a gatewayd use failed the check: %v", err)
+	}
+	if err := noListen(module(t, map[string]string{"mcpserve/x.go": use(`"net"`, "net.Listen")})); err != nil {
+		t.Errorf("an mcpserve use failed the check: %v", err)
+	}
+	err := noListen(module(t, map[string]string{"x.go": use(`"net"`, "net.Listen")}))
+	if err == nil || !strings.Contains(err.Error(), "sandbox/gatewayd") || !strings.Contains(err.Error(), "mcpserve") {
+		t.Errorf("a listener in the root: %v, want a failure naming both nested modules that may listen", err)
 	}
 }

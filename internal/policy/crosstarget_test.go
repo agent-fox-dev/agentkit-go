@@ -27,15 +27,22 @@ func repoRoot(t *testing.T) string {
 }
 
 // gateModules are the modules the build gates cover, relative to the
-// repository root: the root module, the nested sandbox modules and the
-// examples that use them. codesearch keeps its own gate.
-var gateModules = []string{".", "sandbox", "sandbox/gatewayd", "examples/sandbox", "examples/gateway", "examples/harness"}
+// repository root: the root module, the nested sandbox modules, the nested
+// mcpserve module and the examples that use them. codesearch keeps its own gate.
+var gateModules = []string{".", "sandbox", "sandbox/gatewayd", "mcpserve", "examples/sandbox", "examples/gateway", "examples/harness"}
 
 // TS-19-62: the cross-target and host cgo gates cover sandbox/gatewayd.
 // 19-REQ-9.3.
 func TestGatesCoverGatewayd_TS19_62(t *testing.T) {
 	if !slices.Contains(gateModules, "sandbox/gatewayd") {
 		t.Errorf("gateModules %v does not list sandbox/gatewayd", gateModules)
+	}
+}
+
+// TS-23-50: the cross-target and host cgo gates cover mcpserve. 23-REQ-9.2.
+func TestGatesCoverMcpserve_TS23_50(t *testing.T) {
+	if !slices.Contains(gateModules, "mcpserve") {
+		t.Errorf("gateModules %v does not list mcpserve", gateModules)
 	}
 }
 
