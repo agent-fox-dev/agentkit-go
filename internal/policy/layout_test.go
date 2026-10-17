@@ -16,11 +16,14 @@ import (
 const modulePath = "github.com/agent-fox-dev/agentkit-go"
 
 // apiPackages are the packages whose exported surface TS-13-67 records in
-// testdata/exported-api.golden, relative to the repository root. The golden is
-// a change detector: a change to one of these surfaces is deliberate, made with
-// AGENTKIT_UPDATE_API_GOLDEN=1 and reviewed in the diff of the golden
-// (docs/errata/13_sandbox_core.md says why it is no longer a freeze).
-var apiPackages = []string{".", "core", "tools", "codemode", "workspace"}
+// testdata/exported-api.golden, relative to the repository root: the original
+// contract (the root, core, tools, codemode) and the packages PRD 12 changed or
+// added. The golden is a change detector over this list, not a freeze: a change
+// to one of these surfaces is deliberate, made with AGENTKIT_UPDATE_API_GOLDEN=1
+// and reviewed in the diff of the golden (docs/errata/13_sandbox_core.md says
+// what it covers and how it may change). New entries go at the end, so the
+// existing sections do not move.
+var apiPackages = []string{".", "core", "tools", "codemode", "workspace", "guard", "provider/faux", "sandbox", "codesearch", "mcpserve"}
 
 // moduleGoFiles returns every Go file of the root module, relative to root:
 // nested modules, testdata, build output and dot-directories are skipped.
@@ -56,8 +59,12 @@ func moduleGoFiles(t *testing.T, root string) []string {
 }
 
 // TS-13-67: only sandbox/, examples/sandbox and internal test helpers import
-// sandbox packages, only they import grpc, and the exported APIs of
-// agentkit, core, tools and codemode are unchanged. 13-REQ-10.7.
+// sandbox packages, only they import grpc, and the exported API of every
+// package in apiPackages equals the golden. 13-REQ-10.7, which froze the
+// original four packages; the golden is now the change detector over
+// apiPackages (see its comment). A directory in apiPackages that does not
+// exist fails the test, naming it, and a difference is listed as lines gained
+// and lost.
 func TestSandboxLayoutAndAPI_TS13_67(t *testing.T) {
 	root := repoRoot(t)
 	files := moduleGoFiles(t, root)

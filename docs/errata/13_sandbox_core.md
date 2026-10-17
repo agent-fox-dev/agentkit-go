@@ -70,13 +70,72 @@ pins that held `testdata/exported-api.golden` to spec 13's version
 (`goldenSHA13` in TS-14-44, TS-15-42 and TS-17-61), are retired. TS-17-61 keeps
 its check of `guard`'s exported API.
 
-The golden stays as a change detector. TS-13-67 still fails when the exported
-API of a package in `apiPackages` (now including `workspace`) differs from it,
-and TS-14-44, TS-15-42 and TS-17-61 still compare the current API with it. A
-deliberate change to one of those surfaces regenerates the golden in the same
-change, with `AGENTKIT_UPDATE_API_GOLDEN=1`, so that the diff of the golden is
-the review of the change; TS-19-64 then requires the regenerated file to be
-committed. The pins went in the task of spec 20 that first added an exported
-declaration to `tools` (`For` and `References`), because task 5's checks could
-not pass with them, and the golden was regenerated with each later change of
-the surface. The later spec `embedder_contract_docs` completes this entry.
+The golden stays as a change detector, over the list `apiPackages` in
+`internal/policy/layout_test.go`. This entry says what that list covers, who
+regenerated the golden, how its four tests relate and how it may change.
+Spec 24 (`24_embedder_contract_docs`) completed it.
+
+**What the golden covers.** One `== <pkg>` section for each entry of
+`apiPackages`, in this order, each the package's exported declarations as
+`exportedAPI` prints them:
+
+| Section | Why it is there | Added by |
+|---|---|---|
+| `.`, `core`, `tools`, `codemode` | the original contract spec 13 froze | spec 13 |
+| `workspace` | PRD 12's new package | spec 20 |
+| `guard` | PRD 12 added `Allow` | spec 24 |
+| `provider/faux` | PRD 12 added `ToolCall` and `Text` | spec 24 |
+| `sandbox` | PRD 12 added `Open` and changed the type of `LocalDir.Ignore` | spec 24 |
+| `codesearch` | PRD 12 made `New` take a `*workspace.Workspace` and removed `Options.Ignore` | spec 24 |
+| `mcpserve` | PRD 12's new module | spec 24 |
+
+The five packages spec 24 added are the ones PRD 12 changed or added that the
+golden did not cover. They were appended after the existing sections, so no
+existing line moved. Packages PRD 12 did not change stay out.
+
+**Who regenerated it.** Four specs, each for the surface it changed:
+
+- Spec 20 added `tools.For` and `tools.References`, removed the old `tools`
+  identifiers and the `SearchIn` ignore parameter's old type, and added the
+  `workspace` section.
+- Spec 21 reshaped `Config` (`Toolset` replaces `Tools`, `Policy`, `Guard` and
+  `After`) and added `Toolset`, `NewRunner`, `Runner` with `Call` and `Batch`,
+  and `Agent.Runner`, in two regenerations.
+- Spec 22 added `core.Named`.
+- Spec 24 added the five sections above, in a single regeneration. The
+  existing five sections are byte-identical to what spec 23 left, because spec
+  23 changed no surface the golden covers.
+
+PRD 12's acceptance criterion 12 asked for one regeneration; the work was
+split into five specs and the golden regenerated in four of them
+(`docs/errata/24_embedder_contract_docs.md`).
+
+**How its tests relate.** TS-13-67, TS-14-44, TS-15-42 and TS-17-61 compare the
+same golden over the same `apiPackages`, so each widens when the list does.
+TS-13-67 writes it (with `AGENTKIT_UPDATE_API_GOLDEN=1`) and, when it differs,
+fails listing the lines the code gained and lost; a directory in `apiPackages`
+that does not exist fails it, naming the path, and does not skip. Spec 20
+retired the `goldenSHA13` pins that held the other three to spec 13's version.
+TS-17-61 also keeps a list of its own, `preSpec17Guard` (spec 22 added `Allow`
+to it), which it compares with `guard`'s exported lines in addition to the
+golden.
+
+**The rule from now on.** A change to the exported API of any package in
+`apiPackages` regenerates the golden in the same change:
+
+```
+AGENTKIT_UPDATE_API_GOLDEN=1 go test ./internal/policy -run TS13_67
+```
+
+and commits it, because TS-19-64 fails while `internal/policy/testdata` has an
+uncommitted change. The diff of the golden is the review of the surface, and
+the spec or change that makes it says why in its own record. A package joins
+the golden by being appended to `apiPackages`, so the sections already there do
+not move.
+
+**The `codesearch` section lists the Windows stub.** `exportedAPI` parses every
+non-test file whatever its build tags, so the section holds the declarations of
+`stub_windows.go` (`Options`, `New`, and the `*Index` methods with an unnamed
+receiver) beside the real ones (receiver `idx`). That is expected: the doubled
+lines make drift between the stub and the real index visible, and
+`exportedAPI` is not changed to hide it.

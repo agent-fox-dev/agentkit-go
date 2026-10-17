@@ -7,11 +7,12 @@ import (
 	"testing"
 )
 
-// TS-14-44: the exported identifiers and signatures of agentkit, core,
-// tools and codemode still equal the golden. 14-REQ-9.5. The golden is no
-// longer pinned to spec 13's hash: spec 20 (workspace_package) changes the
-// exported API on purpose and keeps the golden as a change detector
-// (docs/errata/13_sandbox_core.md).
+// TS-14-44: the exported identifiers and signatures of every package in
+// apiPackages equal the golden. 14-REQ-9.5. The golden is not pinned to spec
+// 13's hash: spec 20 (workspace_package) retired the pin, and the golden is the
+// change detector over apiPackages (docs/errata/13_sandbox_core.md). This test
+// compares the same golden, over the same list, as TS-13-67, TS-15-42 and
+// TS-17-61.
 func TestExportedAPIUnchanged_TS14_44(t *testing.T) {
 	root := repoRoot(t)
 	want, err := os.ReadFile(filepath.Join(root, "internal", "policy", "testdata", "exported-api.golden"))

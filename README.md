@@ -1,23 +1,26 @@
 # agentkit-go
 
 AgentKit is two things. **The hands**: workspace mechanics any agent can use —
-the file, search, navigation and shell tools (`tools`), source outlines
-(`outline`), indexed code search (`codesearch`, a separate module), code mode
-(`codemode`), the MCP client pool (`mcp`), the shell guard (`guard`), and
-sandboxes that run those tools somewhere else (`sandbox`).
+the workspace they run in (`workspace`), the file, search, navigation and shell
+tools built for it (`tools`), source outlines (`outline`), indexed code search
+(`codesearch`, a separate module), code mode (`codemode`), the MCP client pool
+(`mcp`), the shell guard (`guard`), and sandboxes that run those tools
+somewhere else (`sandbox`).
 **One driver**: `agentkit.Config` and `agentkit.New`, a minimal agent loop over
-the Anthropic Messages API (`provider/anthropic`, on the official Go SDK),
-with a scripted provider (`provider/faux`) for offline tests. The root and
-sandbox modules serve no network API: the library listens on no socket;
-`agentkit-sandboxd` serves the agent service on its stdio, and two separate
-modules serve, `agentkit-gateway` (sandboxes, over gRPC) and `mcpserve` (a
-runner's tools, over MCP, to a harness on the same machine).
+a `Runner` (`agentkit.Toolset` and `agentkit.NewRunner`), which runs the tool
+calls, against the Anthropic Messages API (`provider/anthropic`, on the
+official Go SDK), with a scripted provider (`provider/faux`) for offline tests.
+The root and sandbox modules listen on no socket and serve no MCP: they are a
+library. `agentkit-sandboxd` serves the agent service on its stdio, and two
+separate modules listen: `sandbox/gatewayd` (`agentkit-gateway`, sandboxes over
+gRPC) and `mcpserve` (a runner's tools over MCP, to a harness on the same
+machine).
 
 ## Quickstart
 
 ```bash
 go test ./...          # everything, offline, no API key
-make check             # fast: fmt, vet, lint and the short tests, every module
+make check             # fast: fmt, vet, lint and the short tests, in every module of MODULES
 make check-release     # full: adds the slow gates (cross-target builds, nested make runs)
 go run ./examples/agentdemo
 ```
@@ -234,41 +237,111 @@ its body is read), only `/mcp` is served, and a request body is held to
 
 ## Consumer contract
 
-The identifiers an embedder such as agent-fox builds on.
+The identifiers an embedder such as agent-fox builds on, in the order it builds
+a scenario. A scenario opens a **workspace**, builds the **tools** for it and
+shapes that set, fixes a **toolset** (the tools, their policy, the guard, the
+after-interceptor and an event sink) and turns it into a **runner**, which runs
+tool calls with no model. The runner has two consumers: the **agent loop**
+(`agentkit.New`, which builds its runner from `Config.Toolset`) and
+**`mcpserve`**, which serves its tools over MCP to another harness. A sandbox
+takes the place of the first two steps.
+
+### Workspace
+
+| Identifier | Shape |
+|---|---|
+| `workspace.Open` | `Open(root string, opts Options) (*Workspace, error)` |
+| `workspace.Options` | `Ignore IgnoreOptions` (`Getenv func(string) string`, `Home func() (string, error)`, `GitConfig func() string`); the zero value reads the real environment, global excludes included |
+| `workspace.NoGlobalExcludes` | `NoGlobalExcludes() IgnoreOptions`: hermetic ignore rules, for tests and for agents |
+| `*workspace.Workspace` | `Root() string`, `Resolve(p string) (string, error)`, `Rel(abs string) string`, `CheckWriteTarget(abs string) error`, `Ignore() IgnoreOptions`, `Walk(ctx, sub string, opts WalkOptions, fn func(rel string, d fs.DirEntry) error) error`, `Ignored(rel string, isDir bool) bool` |
+
+### Tools, and shaping the tool set
+
+| Identifier | Shape |
+|---|---|
+| `tools.For` | `For(ws *workspace.Workspace, opts Options) ([]core.Tool, error)`: the built-in tools for `ws`, in a fixed order, then `Options.Index`'s; a nil `ws` is an error |
+| `tools.Options` | `SpillDir`, `DisableSpill`, `Env`, `Symbols SymbolOptions`, `Index Index` |
+| `tools.References` | `References(ctx, ws *workspace.Workspace, target outline.Decl, opts ReferenceOptions) (ReferenceResult, error)`: references without a model |
+| `core.Named` | `Named(ts []Tool, names ...string) ([]Tool, error)`; value copies in `names` order, an error for a missing or repeated name |
+| `codemode.New` | `New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error)` |
+| `mcp` | `ParseConfig`, `NewPool`, `Pool.Connect`, `Pool.Tools`, `Pool.Close`, `Connect` |
+
+### Guard
+
+| Identifier | Shape |
+|---|---|
+| `guard.Allow` | `Allow(programs ...string) core.BeforeToolCall`: `Restricted` with only `AllowedPrograms` |
+| `guard.Restricted` | `Restricted(o Options) core.BeforeToolCall`; `Options`: `AllowedPrograms`, `AllowShellOperators`, `AllowEnvPrefixes`, `BlockedTools`, `TerminateOnBlock` |
+| `guard.AllowAll` | `AllowAll(ctx, core.BeforeToolCallContext) core.BeforeToolCallDecision`: the explicit opt-out |
+| `guard.Check` | `Check(argv []string, o Options) Decision`; `Decision`: `Block`, `Reason`, `Terminate` |
+
+### Toolset and runner
+
+| Identifier | Shape |
+|---|---|
+| `agentkit.Toolset` | `Tools []core.Tool`, `Policy core.ToolPolicy`, `Guard core.BeforeToolCall`, `After core.AfterToolCall`, `Events func(core.Event)` |
+| `agentkit.NewRunner` | `NewRunner(ts Toolset) (*Runner, error)`; refuses what `New` refuses, with the same errors |
+| `Runner.Tools`, `Runner.Reachable` | `Tools() []core.Tool` (the resolved set, in policy order), `Reachable() []core.Tool` (those and everything they reach through wrappers) |
+| `Runner.Call`, `Runner.Batch` | `Call(ctx, name string, input json.RawMessage) core.ToolResult`, `Batch(ctx, calls ...core.ToolUseBlock) []core.ToolResult`; outside every run, events to `Toolset.Events`; a `Runner` is safe for concurrent use |
+
+### Agent
 
 | Identifier | Shape |
 |---|---|
 | `agentkit.Config` | `Client`, `Provider`, `Model`, `Effort`, `System`, `Prefix`, `Toolset`, `MaxTurns`, `MaxCostUSD`, `Timeout`, `Prune`, `MaxTokens` |
-| `agentkit.Toolset` | `Tools`, `Policy`, `Guard`, `After`, `Events` |
-| `agentkit.New` | `New(cfg Config) (*Agent, error)` |
-| `agentkit.NewRunner` | `NewRunner(ts Toolset) (*Runner, error)`; refuses what `New` refuses, with the same errors |
-| `agentkit.Runner` | `Call(ctx, name string, input json.RawMessage) core.ToolResult`, `Batch(ctx, calls ...core.ToolUseBlock) []core.ToolResult`, `Tools() []core.Tool`, `Reachable() []core.Tool`; safe for concurrent use |
+| `agentkit.New` | `New(cfg Config) (*Agent, error)`; builds its runner with `NewRunner(cfg.Toolset)` |
 | `Agent.Run` | `Run(ctx, prompt string) (core.RunResult, error)` |
 | `Agent.Stream` | `Stream(ctx, prompt string) (*core.EventStream, error)` |
 | `Agent.Messages`, `Agent.Usage`, `Agent.ReachableTools`, `Agent.Runner` | `core.Messages`, `core.Usage`, `[]core.Tool`, `*Runner`; safe during a run |
 | `agentkit.PruneOptions` | `Threshold float64`, `KeepTurns int` |
+
+### Serving
+
+| Identifier | Shape |
+|---|---|
+| `mcpserve.New` | `New(r *agentkit.Runner, opts Options) (*Server, error)`: one MCP tool for each tool of `r.Tools()`, every call through `r.Call`; refuses, naming the tool, an input schema it cannot serve |
+| `mcpserve.Options` | `Name`, `Version`, `Instructions string`, `Logger *slog.Logger` |
+| `Server.ServeStdio` | `ServeStdio(ctx) error`: the process's stdin and stdout; nil when the client closes its end, `ctx.Err()` when `ctx` ends |
+| `Server.ServeLoopback` | `ServeLoopback(ctx) (*Endpoint, error)`: `127.0.0.1`, a fresh bearer token |
+| `mcpserve.Endpoint` | `URL`, `Token`; `Close() error`, `ClaudeConfig(name string) string`, `PiConfig(name string) string` |
+
+### Sandbox API
+
+| Identifier | Shape |
+|---|---|
+| `sandbox.Open` | `Open(ctx, p Provider, spec Spec, src Source, opts ToolOptions) (Sandbox, []core.Tool, error)`; `Create`, `Sync` when `src` is not nil, then `Tools`; closes the sandbox if a step fails |
+| `sandbox.Provider` | `Capabilities()`, `Create(ctx, Spec) (Sandbox, error)`, `Reap(ctx) ([]string, error)` |
+| `sandbox.Sandbox` | `ID`, `Spec`, `Agent`, `Sync(ctx, Source)`, `Tools(ctx, ToolOptions) ([]core.Tool, error)`, `Export(ctx, path, Destination)`, `Close(ctx)` |
+| `sandbox.CheckSpec` | `CheckSpec(caps Capabilities, spec Spec) (Spec, error)` |
+| `sandbox.LocalDir` | `Path`, `Ignore workspace.IgnoreOptions`, `IncludeIgnored`, `ExcludeGit`, `Delete`: a host directory, in or out, over the rsync protocol |
+| `local.Unisolated` | `Unisolated() sandbox.Provider` |
+
+### Model and provider
+
+| Identifier | Shape |
+|---|---|
+| `anthropic.Resolve` | `Resolve(env Env) (*sdk.Client, Source, error)` |
+| `catalog.Lookup` | `Lookup(id string) (core.Model, bool)` |
+| `core.ProviderClient` | `Stream(ctx, Request) (<-chan StreamEvent, error)` |
+
+### Vocabulary
+
+| Identifier | Shape |
+|---|---|
+| `core.Tool` | `Name`, `Description`, `InputSchema`, `OutputSchema`, `ReachableTools`, `Terminating`, `Handler` or `Execute`, `Label`, `Builtin`, `ExecutionMode`, `PrepareArguments`, `PromptGuidelines` |
+| `core.ToolResult` | `OK`, `Data`, `Error`, `Detail`, `Terminate`, `Metadata`, `Blocks`, `Text`; `core.OKResult`, `core.ErrResult` |
+| `core.BeforeToolCall` | `func(ctx, BeforeToolCallContext) BeforeToolCallDecision` (`Block`, `Terminate`, `Reason`, `Arguments`) |
+| `core.AfterToolCall` | `func(ctx, AfterToolCallContext) AfterToolCallDecision` (`Terminate *bool`) |
 | `core.RunResult` | `Messages`, `StopReason`, `LastReason`, `Usage`, `TurnCount`, `Error`; `FinalText()` |
 | `core.RunStopReason` | `RunStopEndTurn`, `RunStopMaxTurns`, `RunStopBudgetExceeded`, `RunStopToolTerminate`, `RunStopError`, `RunStopAborted`, `RunStopTimeout`, `RunStopRefusal` (`RunStopPolicy` is declared but the driver never sets it) |
-| `core.Tool` | `Name`, `Description`, `InputSchema`, `OutputSchema`, `ReachableTools`, `Terminating`, `Handler` or `Execute`, `Builtin`, `ExecutionMode`, `PrepareArguments`, `PromptGuidelines` |
-| `core.ToolResult` | `OK`, `Data`, `Error`, `Detail`, `Terminate`, `Metadata`, `Blocks`, `Text`; `core.OKResult`, `core.ErrResult` |
-| `core.ProviderClient` | `Stream(ctx, Request) (<-chan StreamEvent, error)` |
-| `core.BeforeToolCall` | `func(ctx, BeforeToolCallContext) BeforeToolCallDecision` |
-| `core.Named` | `Named(ts []Tool, names ...string) ([]Tool, error)`; value copies in `names` order, an error for a missing or repeated name |
-| `faux.ToolCall`, `faux.Text` | `ToolCall(id, name, args string) faux.Turn`, `Text(s string) faux.Turn`: one-block scripted turns |
 | `schema.Parse`, `schema.Validate` | `Parse(data []byte) (*Schema, error)`, `Validate(s *Schema, v any) error` |
-| `guard.Allow`, `guard.Check`, `guard.Restricted` | `Allow(programs ...string) core.BeforeToolCall` (`Restricted` with only `AllowedPrograms`), `Check(argv []string, o Options) Decision`, `Restricted(o Options) core.BeforeToolCall` |
-| `catalog.Lookup` | `Lookup(id string) (core.Model, bool)` |
-| `anthropic.Resolve` | `Resolve(env Env) (*sdk.Client, Source, error)` |
-| `codemode.New` | `New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error)` |
-| `mcp` | `ParseConfig`, `NewPool`, `Pool.Connect`, `Pool.Tools`, `Pool.Close`, `Connect` |
-| `workspace.Open` | `Open(root string, opts Options) (*Workspace, error)`; `Workspace`: `Root`, `Resolve`, `Rel`, `CheckWriteTarget`, `Ignore`, `Walk`, `Ignored` |
-| `tools.For` | `For(ws *workspace.Workspace, opts Options) ([]core.Tool, error)` |
-| `sandbox.Provider` | `Capabilities()`, `Create(ctx, Spec) (Sandbox, error)`, `Reap(ctx) ([]string, error)` |
-| `sandbox.Sandbox` | `ID`, `Spec`, `Agent`, `Sync(ctx, Source)`, `Tools(ctx, ToolOptions) ([]core.Tool, error)`, `Export(ctx, path, Destination)`, `Close` |
-| `mcpserve` | `New(r *agentkit.Runner, opts Options) (*Server, error)`; `Server.ServeStdio(ctx) error`, `Server.ServeLoopback(ctx) (*Endpoint, error)`; `Endpoint`: `URL`, `Token`, `Close`, `ClaudeConfig(name)`, `PiConfig(name)` |
-| `sandbox.Open` | `Open(ctx, p Provider, spec Spec, src Source, opts ToolOptions) (Sandbox, []core.Tool, error)`; `Create`, `Sync` when `src` is not nil, then `Tools`; closes the sandbox if a step fails |
-| `sandbox.CheckSpec` | `CheckSpec(caps Capabilities, spec Spec) (Spec, error)` |
-| `local.Unisolated` | `Unisolated() sandbox.Provider` |
+
+### Test doubles
+
+| Identifier | Shape |
+|---|---|
+| `faux.New` | `New(turns ...Turn) *Provider`: a scripted `core.ProviderClient` |
+| `faux.ToolCall`, `faux.Text` | `ToolCall(id, name, args string) faux.Turn`, `Text(s string) faux.Turn`: one-block scripted turns |
 
 ## Packages
 
@@ -327,7 +400,7 @@ The identifiers an embedder such as agent-fox builds on.
 | Document | Covers |
 |---|---|
 | [`docs/api.md`](docs/api.md) | The public Go packages and where their reference lives (the library has no REST API). |
-| [`docs/architecture.md`](docs/architecture.md) | Package graph, the data flow of a run, invariants, nested calls, code mode, the MCP client, `tools.References`, sandboxes. |
+| [`docs/architecture.md`](docs/architecture.md) | Shape, package graph, packages, the embedder's path, the data flow of one call and of one run, invariants, nested calls, code mode, MCP serving, the MCP client, symbol and reference navigation (`tools.References`), sandboxes, the testing layout. |
 | [`docs/configuration.md`](docs/configuration.md) | `agentkit.Config`, environment variables, provider, tool, code-mode, MCP and sandbox options, the model catalog. |
 | [`docs/cli.md`](docs/cli.md) | The `agentkit-sandboxd` and `agentkit-gateway` commands: flags, transport, the token file and exit codes. |
 | [`docs/releasing.md`](docs/releasing.md) | Publishing the sandbox images: the version tags, GHCR visibility, re-runs and local builds. |

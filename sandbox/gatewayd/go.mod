@@ -1,6 +1,6 @@
 // sandbox/gatewayd is a SEPARATE MODULE: the sandbox gateway server and its
-// agentkit-gateway command, the one network service, kept out of the root
-// and sandbox modules so the library itself listens on no socket.
+// agentkit-gateway command, a network service kept out of the root and
+// sandbox modules so they listen on no socket.
 module github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd
 
 go 1.27

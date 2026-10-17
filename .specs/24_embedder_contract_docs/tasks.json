@@ -82,7 +82,7 @@
       "done_when": [
         "go vet ./internal/policy passes (TS-13-67 may fail until the golden is regenerated in task 2)"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -118,7 +118,7 @@
       "done_when": [
         "`go test ./internal/policy -count=1` passes with AGENTKIT_UPDATE_API_GOLDEN unset"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -165,7 +165,7 @@
       "done_when": [
         "a search for each removed identifier in the sweep scope finds only migration-note mentions"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -199,7 +199,7 @@
         "`make doc` leaves no uncommitted change under docs/generated",
         "`make check` passes in every module in MODULES"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -226,7 +226,7 @@
       "done_when": [
         "`make check` passes in every module in MODULES and `git status --porcelain -- internal/policy/testdata docs/generated` prints nothing"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

@@ -22,9 +22,10 @@ var preSpec17Guard = []string{
 	"var ShellToolNames",
 }
 
-// TS-17-61: the exported surfaces of agentkit, core, tools and codemode
-// still equal the golden, and guard's exported declarations are unchanged.
-// 17-REQ-10.3. The golden is no longer pinned to spec 13's hash (see
+// TS-17-61: the exported surfaces of every package in apiPackages equal the
+// golden, and guard's exported declarations equal preSpec17Guard, a list of
+// its own that the golden does not replace. 17-REQ-10.3. The golden is the
+// change detector over apiPackages, not pinned to spec 13's hash (see
 // TS-14-44).
 func TestExportedAPIUnchanged_TS17_61(t *testing.T) {
 	root := repoRoot(t)

@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-// TS-15-42: the exported identifiers and signatures of agentkit, core,
-// tools and codemode still equal the golden. The golden records
-// declarations, not doc comments, so a change to a doc comment does not touch
-// it. 15-REQ-8.4. The golden is no longer pinned to spec 13's hash
+// TS-15-42: the exported identifiers and signatures of every package in
+// apiPackages equal the golden. The golden records declarations, not doc
+// comments, so a change to a doc comment does not touch it. 15-REQ-8.4. The
+// golden is the change detector over apiPackages, not pinned to spec 13's hash
 // (see TS-14-44).
 func TestExportedAPIUnchanged_TS15_42(t *testing.T) {
 	root := repoRoot(t)
