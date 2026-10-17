@@ -82,7 +82,7 @@
       "done_when": [
         "go vet ./internal/policy passes (TS-13-67 may fail until the golden is regenerated in task 2)"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,

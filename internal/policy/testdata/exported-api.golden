@@ -430,3 +430,121 @@ type Workspace struct { }
 var ErrNoHome
 var ErrPathMalformed
 var ErrPathNotAllowed
+== guard
+func Allow(programs ...string) core.BeforeToolCall
+func AllowAll(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision
+func Check(argv []string, o Options) Decision
+func IsShellTool(name string) bool
+func Restricted(o Options) core.BeforeToolCall
+type Decision struct { Block bool Reason string Terminate bool }
+type Options struct { AllowedPrograms []string AllowShellOperators bool AllowEnvPrefixes bool BlockedTools []string TerminateOnBlock bool }
+var ShellToolNames
+== provider/faux
+const API core.API
+func (p *Provider) Calls() int
+func (p *Provider) Requests() []core.Request
+func (p *Provider) Stream(ctx context.Context, req core.Request) (<-chan core.StreamEvent, error)
+func EventNames(events []core.Event) string
+func FauxAssistantMessage(reason core.StopReason, blocks ...core.ContentBlock) Turn
+func FauxText(s string) core.ContentBlock
+func FauxThinking(thinking, signature string) core.ContentBlock
+func FauxToolCall(id, name, args string) core.ContentBlock
+func Model() *core.Model
+func New(turns ...Turn) *Provider
+func Text(s string) Turn
+func ToolCall(id, name, args string) Turn
+type Provider struct { ChunkSize int ModelID string }
+type Turn struct { Blocks []core.ContentBlock StopReason core.StopReason RawStopReason string ErrorMessage string Usage core.Usage Err error Delay time.Duration }
+== sandbox
+const AgentPath
+const BaseImageRepo
+const IsolationConfinement
+const IsolationContainer
+const IsolationMicroVM
+const IsolationNone Isolation
+const LandlockMinABI
+const LandlockTCPABI
+const MaxMessageBytes
+const NetworkAllowlist
+const NetworkNone NetworkMode
+const NetworkUnrestricted
+const ProtocolMajor
+const ProtocolMinor
+func (e *SpecError) Error() string
+func (e *SpecError) Is(target error) bool
+func (l LandlockInfo) Satisfies(mode NetworkMode) bool
+func (m NetworkMode) String() string
+func AgentArgs(spec Spec) []string
+func CheckSpec(caps Capabilities, spec Spec) (Spec, error)
+func DefaultImage() (string, error)
+func ImageTag(version string) (tag string, ok bool)
+func Open(ctx context.Context, p Provider, spec Spec, src Source, opts ToolOptions) (Sandbox, []core.Tool, error)
+type AgentInfo struct { Version string ProtocolMajor uint32 ProtocolMinor uint32 Workdir string OutlineBackend string Git bool Landlock LandlockInfo }
+type Capabilities struct { Provider string Isolation Isolation Network []NetworkMode Resources ResourceCaps Image bool Workdir bool Notes string Landlock bool }
+type Destination interface { }
+type Endpoint struct { Host string Port int }
+type GitRepo struct { URL string Ref string Depth int }
+type Isolation int
+type LandlockInfo struct { ABI int KernelABI int TCP bool Note string Writable []string ReadOnly []string }
+type LocalDir struct { Path string Ignore workspace.IgnoreOptions IncludeIgnored bool ExcludeGit bool Delete bool }
+type Network struct { Mode NetworkMode Allow []Endpoint }
+type NetworkMode int
+type Provider interface { Capabilities() Capabilities Create(ctx context.Context, spec Spec) (Sandbox, error) Reap(ctx context.Context) ([]string, error) }
+type ResourceCaps struct { CPUs bool MemoryBytes bool PIDs bool DiskBytes bool }
+type Resources struct { CPUs float64 MemoryBytes int64 PIDs int64 DiskBytes int64 }
+type Sandbox interface { ID() string Spec() Spec Agent() AgentInfo Sync(ctx context.Context, src Source) (SyncResult, error) Tools(ctx context.Context, opts ToolOptions) ([]core.Tool, error) Export(ctx context.Context, path string, dst Destination) error Close(ctx context.Context) error }
+type Source interface { }
+type Spec struct { Image string Workdir string Env map[string]string Resources Resources Network Network TTL time.Duration Labels map[string]string Provider map[string]any RequireLandlock bool }
+type SpecError struct { Provider string Field string Reason string }
+type SyncResult struct { Files int Bytes int64 Deleted int Sent int64 }
+type Tar struct { R io.Reader Path string Replace bool }
+type TarOut struct { W io.Writer }
+type ToolOptions struct { Symbols tools.SymbolOptions SpillDir string DisableSpill bool }
+var ErrClosed
+var ErrNoAgent
+var ErrNoPublishedImage
+var ErrProtocol
+var ErrToolMismatch
+var ErrToolsConfigured
+var ErrUnavailable
+var ErrUnsafeArchive
+var ErrUnsupported
+== codesearch
+func (*Index) Build(context.Context) error
+func (*Index) BuildCount() int
+func (*Index) BuildStats() BuildStatsResult
+func (*Index) Close() error
+func (*Index) IndexedFiles() map[string]bool
+func (*Index) Invalidate(string)
+func (*Index) OverlayBuildCount() int
+func (*Index) RevalCount() int
+func (*Index) RunDir() string
+func (*Index) Symbols(context.Context, tools.SymbolQuery) (tools.SymbolAnswer, bool, error)
+func (*Index) Tools() []core.Tool
+func (idx *Index) Build(ctx context.Context) error
+func (idx *Index) BuildCount() int
+func (idx *Index) BuildStats() BuildStatsResult
+func (idx *Index) Close() error
+func (idx *Index) IndexedFiles() map[string]bool
+func (idx *Index) Invalidate(rel string)
+func (idx *Index) OverlayBuildCount() int
+func (idx *Index) RevalCount() int
+func (idx *Index) RunDir() string
+func (idx *Index) Symbols(ctx context.Context, q tools.SymbolQuery) (tools.SymbolAnswer, bool, error)
+func (idx *Index) Tools() []core.Tool
+func New(_ *workspace.Workspace, _ Options) (tools.Index, error)
+func New(ws *workspace.Workspace, opts Options) (tools.Index, error)
+type BuildStatsResult struct { BinarySkipped int OversizedSkipped int TooManyTrigramsSkipped int TooSmallSkipped int FilesIndexed int }
+type Index struct { }
+type Options struct { MaxFiles int MaxBytes int64 MaxBuildTime time.Duration TempDir string }
+var ErrUnsupported
+== mcpserve
+func (e *Endpoint) ClaudeConfig(name string) string
+func (e *Endpoint) Close() error
+func (e *Endpoint) PiConfig(name string) string
+func (s *Server) ServeLoopback(ctx context.Context) (*Endpoint, error)
+func (s *Server) ServeStdio(ctx context.Context) error
+func New(r *agentkit.Runner, opts Options) (*Server, error)
+type Endpoint struct { URL string Token string }
+type Options struct { Name string Version string Instructions string Logger *slog.Logger }
+type Server struct { }
