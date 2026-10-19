@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agent-fox-dev/agentkit-go/outline"
 	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
@@ -90,7 +91,7 @@ func TestRefRanker_TS05_31(t *testing.T) {
 	// Filter with includeTests = false
 	filtered := filterTestSites(sites, false)
 	for _, s := range filtered {
-		if isTestFile(s.Path) {
+		if outline.IsTestFile(s.Path) {
 			t.Errorf("expected non-test site, but got test site: %s", s.Path)
 		}
 	}

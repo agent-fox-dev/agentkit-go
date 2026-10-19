@@ -9,16 +9,22 @@ import (
 )
 
 // preSpec17Guard is guard's exported API before spec 17, which changes only
-// its doc comments, plus Allow, which spec 22 added on purpose
+// its doc comments, plus Allow, which spec 22 added on purpose, and Commands
+// with its three types, which the shell reading added on purpose
 // (docs/errata/17_sandbox_podman.md).
 var preSpec17Guard = []string{
+	"func (e *SyntaxError) Error() string",
 	"func Allow(programs ...string) core.BeforeToolCall",
 	"func AllowAll(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision",
 	"func Check(argv []string, o Options) Decision",
+	"func Commands(line string) ([]Command, error)",
 	"func IsShellTool(name string) bool",
 	"func Restricted(o Options) core.BeforeToolCall",
+	"type Command struct { Text string Assign []string Argv []string Redirects []Redirect }",
 	"type Decision struct { Block bool Reason string Terminate bool }",
 	"type Options struct { AllowedPrograms []string AllowShellOperators bool AllowEnvPrefixes bool BlockedTools []string TerminateOnBlock bool }",
+	"type Redirect struct { FD string Op string Target string }",
+	"type SyntaxError struct { Offset int Reason string }",
 	"var ShellToolNames",
 }
 

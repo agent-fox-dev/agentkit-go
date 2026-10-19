@@ -50,10 +50,10 @@ func TestRestrictedPolicy(t *testing.T) {
 	if !call("execute", map[string]any{"command": "go test | tee"}).Block {
 		t.Fatal("pipe")
 	}
-	loose := Restricted(Options{AllowedPrograms: []string{"go"}, AllowShellOperators: true})
-	if loose(context.Background(), core.BeforeToolCallContext{ToolName: "execute",
-		Arguments: map[string]any{"command": "go test | tee"}}).Block {
-		t.Fatal("AllowShellOperators must permit the pipe")
+	loose := Restricted(Options{AllowedPrograms: []string{"go", "tee"}, AllowShellOperators: true})
+	if d := loose(context.Background(), core.BeforeToolCallContext{ToolName: "execute",
+		Arguments: map[string]any{"command": "go test | tee"}}); d.Block {
+		t.Fatalf("AllowShellOperators must permit the pipe: %s", d.Reason)
 	}
 	// AllowEnvPrefixes admits an assignment prefix, but never one that changes
 	// which binary runs or what is loaded into it.

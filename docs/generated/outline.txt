@@ -30,6 +30,26 @@ func CommentAndStringSpans(ctx context.Context, path string, src []byte) (spans 
     and string literals in src, in order, as the language's tree-sitter grammar
     parses them. ok is false when the language has no grammar or ctx ended.
 
+func IsTestFile(rel string) bool
+    IsTestFile reports whether rel, a slash-separated path relative to a
+    workspace root, is a test, test data or test support code, by the naming and
+    directory conventions of the languages in the extension table (LangForExt).
+    It is the one classifier the tools rank by, so a consumer that ranks,
+    filters or splits files the same way can agree with them.
+
+    Any file under a directory named test, tests, __tests__, spec, testdata,
+    testutil, testutils or testhelpers counts. Otherwise a source file
+    (one whose extension is in the table) counts when its name, without the
+    extension:
+
+      - ends in _test or starts with test_ (Go, Python, Rust, C, Ruby, ...);
+      - ends in _spec (Ruby) or in .test or .spec (JavaScript, TypeScript);
+      - ends in Test or Tests after at least one character (Java, Kotlin, C#,
+        Ruby), or in IT (Java integration tests);
+      - is test support: conftest.py, setupTests, jest.setup or vitest.setup.
+
+    The rule is a convention, not a parse: it reads no file.
+
 func LangFor(path string, src []byte) string
     LangFor returns the language of the file at path, whose content is src: the
     extension table's answer, except that a `.h` header containing C++ is C++.

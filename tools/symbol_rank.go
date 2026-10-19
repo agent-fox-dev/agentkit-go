@@ -1,71 +1,11 @@
 package tools
 
 import (
-	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/agent-fox-dev/agentkit-go/outline"
 )
-
-// isTestFile classifies a file as a test file by the fixed rule in 02-REQ-4.2.
-//
-// Go: _test.go
-// Python: test_*.py and *_test.py
-// JS/TS: *.test.* and *.spec.*
-// Java, Kotlin, C#, Ruby: base name (without extension) ends in Test, Tests or _spec
-// Any file under a directory named test, tests, __tests__ or spec
-func isTestFile(relPath string) bool {
-	// Check directory components.
-	parts := strings.Split(relPath, "/")
-	for _, p := range parts[:len(parts)-1] {
-		switch p {
-		case "test", "tests", "__tests__", "spec":
-			return true
-		}
-	}
-
-	base := parts[len(parts)-1]
-
-	// Go: _test.go
-	if strings.HasSuffix(base, "_test.go") {
-		return true
-	}
-
-	// Python: test_*.py and *_test.py
-	if strings.HasSuffix(base, ".py") {
-		name := strings.TrimSuffix(base, ".py")
-		if strings.HasPrefix(name, "test_") || strings.HasSuffix(name, "_test") {
-			return true
-		}
-	}
-
-	// JS/TS: *.test.* and *.spec.*
-	ext := filepath.Ext(base)
-	switch ext {
-	case ".js", ".jsx", ".ts", ".tsx", ".mjs", ".mts", ".cjs", ".cts":
-		nameNoExt := strings.TrimSuffix(base, ext)
-		if strings.HasSuffix(nameNoExt, ".test") || strings.HasSuffix(nameNoExt, ".spec") {
-			return true
-		}
-	}
-
-	// Java, Kotlin, C#, Ruby: base name (without extension) ends in Test, Tests or _spec.
-	// The suffix must be preceded by at least one character ("Test.java" alone is not a test file).
-	switch ext {
-	case ".java", ".kt", ".cs", ".rb":
-		nameNoExt := strings.TrimSuffix(base, ext)
-		if len(nameNoExt) > 4 && strings.HasSuffix(nameNoExt, "Test") {
-			return true
-		}
-		if len(nameNoExt) > 5 && strings.HasSuffix(nameNoExt, "Tests") {
-			return true
-		}
-		if len(nameNoExt) > 5 && strings.HasSuffix(nameNoExt, "_spec") {
-			return true
-		}
-	}
-
-	return false
-}
 
 // isExactMatch returns true when the query matches the target exactly under
 // smart-case rules. An all-lowercase query that equals the target
@@ -113,8 +53,8 @@ func rankSymbols(matches []SymbolMatch, query string, qualified bool, caseSensit
 		}
 
 		// Tier 3: non-test files before test files.
-		aTest := isTestFile(a.Path)
-		bTest := isTestFile(b.Path)
+		aTest := outline.IsTestFile(a.Path)
+		bTest := outline.IsTestFile(b.Path)
 		if aTest != bTest {
 			return !aTest
 		}

@@ -78,12 +78,50 @@ func Restricted(o Options) core.BeforeToolCall
     context should replace it, not extend it.
 
     What it does check, it checks against what will actually run: the program
-    is matched as spelled, not by basename, and an assignment prefix that
-    would change which binary a listed name resolves to, or load code into it,
-    is refused.
+    of every command on the line (see Commands) is matched as spelled, not by
+    basename, and an assignment that would change which binary a listed name
+    resolves to, or load code into it, is refused.
 
 
 TYPES
+
+type Command struct {
+	// Text is the command as written, trimmed: its words and redirections,
+	// without the operator that ends it or a heredoc's body.
+	Text string
+	// Assign are the names of the NAME=value assignments in front of the
+	// program, in order. A command that is only assignments has an empty Argv.
+	Assign []string
+	// Argv is the program and its arguments with quotes and escapes removed.
+	// Expansions are left as written ($HOME, ${x}, $(date), `date`), so a word
+	// the shell would compute is never spelled like a plain program name.
+	Argv []string
+	// Redirects are the command's redirections, in order.
+	Redirects []Redirect
+}
+    Command is one simple command of a shell line, as Commands reads it.
+
+func Commands(line string) ([]Command, error)
+    Commands splits a POSIX-sh / bash command line into every simple command it
+    runs: the ones separated by `;`, `&`, `&&`, `||`, `|`, `|&` and newlines,
+    the ones inside subshells, and the ones inside command substitutions ($(...)
+    and backticks), process substitutions (<(...), >(...)), parameter expansions
+    (${x:-$(...)}), arithmetic ($((...))) and the bodies of unquoted heredocs.
+    Commands are returned in the order they start in the line; a substituted
+    command follows the command it appears in.
+
+    What the shell treats as data stays data: quoted text, comments, and the
+    body of a heredoc (apart from the substitutions an unquoted one expands).
+
+    It reads the grammar, it does not run it: expansions are not expanded,
+    aliases and functions are not resolved, and the keywords of compound
+    commands (if, for, while, {, [[, !, time) are words like any other,
+    so a guard that matches Argv[0] against an allowlist refuses them unless
+    they are listed. A case statement, whose patterns end in an unbalanced `)`,
+    is refused with a *SyntaxError rather than misread.
+
+    It returns a *SyntaxError for a line it cannot read with certainty;
+    see SyntaxError.
 
 type Decision struct {
 	Block     bool
@@ -103,8 +141,9 @@ func Check(argv []string, o Options) Decision
     name matches a listed bare name only. A block carries o.TerminateOnBlock.
 
 type Options struct {
-	// AllowedPrograms are the programs (argv[0], or the first word of an
-	// `execute` command after any assignments) that may run. A bare name
+	// AllowedPrograms are the programs that may run: argv[0], or the first
+	// word after any assignments of each command an `execute` line runs (see
+	// Commands). A bare name
 	// ("go") admits only that bare name, resolved through PATH. A path
 	// ("/usr/bin/git") admits that exact path only — not a bare git found
 	// through PATH, which may be another binary. A
@@ -119,10 +158,17 @@ type Options struct {
 	// sh / bash quoting — single quotes literal, double quotes expanding —
 	// and it is declared here because REQ-SEC-04 requires a filter to say
 	// which grammar it filters.
+	//
+	// When on, every command the line runs is judged, not only the first:
+	// each one Commands finds, the ones inside substitutions and unquoted
+	// heredoc bodies included. A line Commands cannot read with certainty
+	// (a *SyntaxError) is refused.
 	AllowShellOperators bool
-	// AllowEnvPrefixes permits `NAME=value` assignments in front of the
-	// program in `execute` commands (`GOFLAGS=-mod=mod go build`). Off by
-	// default: an assignment configures the program it precedes, and an
+	// AllowEnvPrefixes permits `NAME=value` assignments in `execute` commands:
+	// in front of a program (`GOFLAGS=-mod=mod go build`) or, under
+	// AllowShellOperators, on their own (`d=$(go list .)`), which changes the
+	// environment of the commands after it when NAME is already exported. Off
+	// by default: an assignment configures the programs it reaches, and an
 	// allowlist of names says nothing about how those programs are
 	// configured. Even when on, a name that changes which binary runs or
 	// what is loaded into it — PATH, LD_*, DYLD_*, BASH_ENV, interpreter
@@ -135,4 +181,30 @@ type Options struct {
 	TerminateOnBlock bool
 }
     Options configures Restricted.
+
+type Redirect struct {
+	// FD is the file descriptor written in front of the operator ("2" in
+	// 2>&1), or "" when there is none.
+	FD string
+	// Op is the operator: <, >, >>, >|, <>, <&, >&, &>, &>>, <<, <<- or <<<.
+	Op string
+	// Target is the word after the operator, unquoted: a file, a descriptor,
+	// a here-string or, for << and <<-, the heredoc's delimiter.
+	Target string
+}
+    Redirect is one redirection of a Command.
+
+type SyntaxError struct {
+	// Offset is the byte offset in the line where reading stopped.
+	Offset int
+	// Reason says what was found there.
+	Reason string
+}
+    SyntaxError is Commands' refusal of a line it cannot read with certainty:
+    one the shell would reject (an unterminated quote, an unmatched
+    parenthesis), or a construct Commands does not follow (a case statement,
+    a heredoc with no terminating line). A guard refuses such a line: the
+    commands Commands would return for it are not the ones the shell runs.
+
+func (e *SyntaxError) Error() string
 

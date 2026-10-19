@@ -431,13 +431,18 @@ var ErrNoHome
 var ErrPathMalformed
 var ErrPathNotAllowed
 == guard
+func (e *SyntaxError) Error() string
 func Allow(programs ...string) core.BeforeToolCall
 func AllowAll(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision
 func Check(argv []string, o Options) Decision
+func Commands(line string) ([]Command, error)
 func IsShellTool(name string) bool
 func Restricted(o Options) core.BeforeToolCall
+type Command struct { Text string Assign []string Argv []string Redirects []Redirect }
 type Decision struct { Block bool Reason string Terminate bool }
 type Options struct { AllowedPrograms []string AllowShellOperators bool AllowEnvPrefixes bool BlockedTools []string TerminateOnBlock bool }
+type Redirect struct { FD string Op string Target string }
+type SyntaxError struct { Offset int Reason string }
 var ShellToolNames
 == provider/faux
 const API core.API

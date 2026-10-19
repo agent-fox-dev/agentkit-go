@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/outline"
 )
 
 // TS-02-22: Matches are totally ordered by the ranking tiers and identical across repeated calls
@@ -143,10 +144,10 @@ func TestFindSymbolRankingTiers_TS02_23(t *testing.T) {
 		if len(matches) < 2 {
 			t.Fatalf("expected at least 2 matches, got %d", len(matches))
 		}
-		if isTestFile(matches[0].Path) {
+		if outline.IsTestFile(matches[0].Path) {
 			t.Error("expected non-test file first")
 		}
-		if !isTestFile(matches[1].Path) {
+		if !outline.IsTestFile(matches[1].Path) {
 			t.Error("expected test file second")
 		}
 	})
@@ -230,56 +231,6 @@ func TestFindSymbolRankingTiers_TS02_23(t *testing.T) {
 			t.Errorf("expected exact match 'run' first (tier 1 overrides tier 2), got %q", matches[0].Name)
 		}
 	})
-}
-
-// TS-02-24: Test-file classification follows the fixed rule and nothing else
-func TestIsTestFile_TS02_24(t *testing.T) {
-	positives := []string{
-		"a_test.go",
-		"test_x.py",
-		"x_test.py",
-		"a.test.ts",
-		"a.spec.js",
-		"FooTest.java",
-		"FooTests.kt",
-		"FooTest.cs",
-		"foo_spec.rb",
-		"tests/x.go",
-		"__tests__/a.js",
-		"spec/a.rb",
-		"test/a.c",
-		"pkg/test/deep.go",
-		"a.test.tsx",
-		"a.spec.mjs",
-	}
-	negatives := []string{
-		"testing.go",
-		"contest.py",
-		"latest.go",
-		"Test.java",
-		"src/attestation/a.go",
-		"a_test.txt",
-		"testutils.go",
-		"a.go",
-		"main.py",
-		"app.ts",
-		"Foo.java",
-		"Foo.kt",
-		"Foo.cs",
-		"foo.rb",
-		"pkg/src/a.go",
-	}
-
-	for _, p := range positives {
-		if !isTestFile(p) {
-			t.Errorf("expected %q to be classified as test file", p)
-		}
-	}
-	for _, p := range negatives {
-		if isTestFile(p) {
-			t.Errorf("expected %q to NOT be classified as test file", p)
-		}
-	}
 }
 
 // TS-02-25: max_results defaults to 20 and clamps to 50
@@ -759,8 +710,8 @@ func rankLessOrEqual(a, b SymbolMatch, query string, qualified, caseSensitive bo
 	if a.Exported != b.Exported {
 		return a.Exported
 	}
-	aTest := isTestFile(a.Path)
-	bTest := isTestFile(b.Path)
+	aTest := outline.IsTestFile(a.Path)
+	bTest := outline.IsTestFile(b.Path)
 	if aTest != bTest {
 		return !aTest
 	}
