@@ -53,7 +53,7 @@ func (s *Server) serveStream(ctx context.Context, r io.Reader, w io.Writer) erro
 		return s.stdioFailed(err)
 	case <-ctx.Done():
 		_ = sess.close()
-		<-ended
+		<-ended //nolint:errcheck // waits for the session to end; ctx.Err() is the result
 		return ctx.Err()
 	}
 }

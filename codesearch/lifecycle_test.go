@@ -374,8 +374,8 @@ func TestCloseWaitsAndDeletesAndIdempotent_TS03_57(t *testing.T) {
 
 	// Close should not return yet because the query is in-flight.
 	select {
-	case <-closeDone:
-		t.Error("Close returned before in-flight query finished")
+	case err := <-closeDone:
+		t.Errorf("Close returned (%v) before in-flight query finished", err)
 	case <-time.After(100 * time.Millisecond):
 		// Good: Close is waiting.
 	}
