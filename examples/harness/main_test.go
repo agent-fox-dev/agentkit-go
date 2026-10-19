@@ -201,7 +201,7 @@ func TestHarnessArgs(t *testing.T) {
 		}
 	}
 	pi := piArgs("sys.md", "-starts with a dash", o)
-	for _, want := range [][]string{{"-p"}, {"--tools", "mcp__agentkit__*"}, {"--no-skills"}, {"--append-system-prompt", "sys.md"}, {"--model", "m"}, {"--", "-starts with a dash"}} {
+	for _, want := range [][]string{{"-p"}, {"--approve"}, {"--tools", "mcp__agentkit__*"}, {"--no-skills"}, {"--append-system-prompt", "sys.md"}, {"--model", "m"}, {"--", "-starts with a dash"}} {
 		if !hasSeq(pi, want) {
 			t.Errorf("pi args lack %q: %q", want, pi)
 		}
@@ -661,7 +661,10 @@ func TestMainServesThroughMcpserve_TS23_55(t *testing.T) {
 // TS-23-56: the harness runners take *mcpserve.Endpoint; claude is given
 // ClaudeConfig("agentkit") after --mcp-config and pi finds PiConfig("agentkit")
 // in .pi/mcp.json. A claude and a pi that only record what they were given
-// stand in for the real ones. 23-REQ-10.3.
+// stand in for the real ones; the pi reads .pi/mcp.json only when it is run
+// with --approve, as the real one does in print mode, which cannot ask whether
+// to trust the project and skips an untrusted project's MCP servers, leaving
+// the model no tools. 23-REQ-10.3.
 func TestRunnersTakeTheEndpoint_TS23_56(t *testing.T) {
 	files := parseNonTest(t)
 	for _, fn := range []string{"runHarness", "runClaude", "runPi", "runScripted"} {
@@ -696,7 +699,7 @@ func TestRunnersTakeTheEndpoint_TS23_56(t *testing.T) {
 	bin, out := t.TempDir(), t.TempDir()
 	scripts := map[string]string{
 		"claude": "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = --mcp-config ]; then printf '%s' \"$a\" > \"$HARNESS_TEST_OUT/claude-config\"; fi\n  prev=$a\ndone\nprintf '{\"result\":\"done\",\"total_cost_usd\":0,\"num_turns\":1}'\n",
-		"pi":     "#!/bin/sh\ncp .pi/mcp.json \"$HARNESS_TEST_OUT/pi-config\"\necho done\n",
+		"pi":     "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = --approve ]; then cp .pi/mcp.json \"$HARNESS_TEST_OUT/pi-config\"; fi\ndone\necho done\n",
 	}
 	for name, body := range scripts {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {

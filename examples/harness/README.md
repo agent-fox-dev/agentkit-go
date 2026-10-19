@@ -58,8 +58,11 @@ The sandbox holds neither.
      (`Endpoint.PiConfig`) that names this server with `exposure: direct`, so the tools are declared
      to the model rather than reached only through Pi's own code mode;
      `--tools 'mcp__agentkit__*'` keeps this server's tools alone. Pi reads a
-     project's MCP file only once the project is trusted. Verified against
-     Pi's documentation, not run here.
+     project's MCP file only once the project is trusted, and print mode cannot
+     ask, so the run passes `--approve`: without it Pi skips the file, starts
+     with no server, and the model is offered no tools. The directory is the
+     empty one the program made, so there is nothing else to trust. Run against
+     Pi 1.3.0 with a stand-in model, not with a live one.
    - `scripted` (the default): the stand-in, and the proof that the server
      serves any MCP client. AgentKit's own driver imports the server's tools
      through AgentKit's MCP client (`mcp.Pool`), as another embedder's

@@ -560,8 +560,11 @@ stderr. It is meant to be called once per process, which is not enforced.
 `--mcp-config` takes, `{"mcpServers":{"<name>":{"type":"http","url":"<URL>",
 "headers":{"Authorization":"Bearer <Token>"}}}}`, and **`PiConfig(name)`** the
 same object with `"exposure":"direct"` in the server entry, which Pi's
-`.pi/mcp.json` takes. An empty `name` means `agentkit`; the output is built
-with `encoding/json` from the endpoint's fields as they are when it is called.
+`.pi/mcp.json` takes. Pi reads a project's `.pi/mcp.json` only once the project
+is trusted, and its print mode (`-p`) cannot ask: run it with `--approve`, or it
+skips the file, starts with no server and offers the model no tools. An empty
+`name` means `agentkit`; the output is built with `encoding/json` from the
+endpoint's fields as they are when it is called.
 
 **Logging.** The `Logger` gets an Info record `tool call` for each served call
 (`tool`, `ok`, `duration`, and `error`, the runner's error code, when the call
