@@ -1,9 +1,9 @@
 name: agentkit sandbox containers build
 
 on:
-  pull_request:
-    branches:
-      - 'main'
+  #pull_request:
+  #  branches:
+  #    - 'main'
   push:
     branches:
       - 'main'

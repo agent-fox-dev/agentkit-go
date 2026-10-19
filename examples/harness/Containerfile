@@ -33,7 +33,14 @@ RUN git clone --depth 1 --branch ${SPEC_VERSION} https://github.com/agent-fox-de
 
 FROM quay.io/agentfox/agentkit-sandbox:latest
 
+ENV GOTOOLCHAIN=auto
+
 USER root
+
+RUN dnf install -y --setopt=tsflags=nodocs \
+    cmake automake autoconf make \
+    gcc gcc-c++ golang \
+    git
 
 COPY --from=build /out/specr /usr/local/bin/specr
 
