@@ -41,7 +41,7 @@ func (s *started) stop(t *testing.T) int {
 	done := make(chan error, 1)
 	go func() { done <- s.cmd.Wait() }()
 	select {
-	case <-done:
+	case <-done: //nolint:errcheck // the exit code is read from ProcessState
 	case <-time.After(30 * time.Second):
 		t.Fatal("the command did not exit after SIGTERM")
 	}
@@ -60,7 +60,7 @@ func runBinary(t *testing.T, args ...string) (int, string) {
 	}
 	go func() { done <- cmd.Wait() }()
 	select {
-	case <-done:
+	case <-done: //nolint:errcheck // the exit code is read from ProcessState
 	case <-time.After(30 * time.Second):
 		_ = cmd.Process.Kill()
 		t.Fatalf("%v did not exit", args)

@@ -167,7 +167,7 @@ func TestRelayForwards_TS19_46(t *testing.T) {
 	go func() { _, err := ag.Call(cctx, req); done <- err }()
 	<-rec.Entered()
 	cancel()
-	<-done
+	<-done //nolint:errcheck // waits for the cancelled call to return; its error is not under test
 	eventually(t, "the agent's call context to end", func() bool { return errors.Is(rec.CallCtxErr(), context.Canceled) })
 }
 

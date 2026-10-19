@@ -184,7 +184,7 @@ func TestSyncPastTTL_TS14_35(t *testing.T) {
 		t.Fatalf("Sync = %v after %v, want an error within 10s", err, time.Since(start))
 	}
 	select {
-	case <-e.Served:
+	case <-e.Served: //nolint:errcheck // only Serve's return matters here, not its error
 	case <-time.After(5 * time.Second):
 		t.Error("the agent's Serve has not returned")
 	}

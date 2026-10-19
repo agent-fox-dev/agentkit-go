@@ -96,7 +96,7 @@ func run(args []string, stdout, stderr io.Writer, d deps) int {
 	case shutdownErr != nil:
 		return fail(1, "shutdown: %v", shutdownErr)
 	}
-	<-served
+	<-served //nolint:errcheck // waits for Serve to return after Shutdown
 	return 0
 }
 

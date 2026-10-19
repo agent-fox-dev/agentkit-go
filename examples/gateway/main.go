@@ -107,7 +107,7 @@ func run(ctx context.Context, w, logw io.Writer, dir string) error {
 	// Shutdown destroys every sandbox the gateway still holds.
 	defer func() {
 		_ = srv.Shutdown(ctx)
-		<-served
+		<-served //nolint:errcheck // waits for Serve to return after Shutdown
 	}()
 	fmt.Fprintf(w, "gateway serving on %s (plaintext, loopback), backend %s\n", l.Addr(), local.Unisolated().Capabilities().Provider)
 

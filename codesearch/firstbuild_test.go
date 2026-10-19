@@ -259,8 +259,8 @@ func TestCloseWaitsForTheBuildAndRemovesItsRunDir(t *testing.T) {
 	go func() { closed <- idx.Close() }()
 
 	select {
-	case <-closed:
-		t.Fatal("Close returned while a build was still running")
+	case err := <-closed:
+		t.Fatalf("Close returned (%v) while a build was still running", err)
 	case <-time.After(100 * time.Millisecond):
 	}
 
