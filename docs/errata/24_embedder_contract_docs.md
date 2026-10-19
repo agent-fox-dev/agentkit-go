@@ -88,3 +88,13 @@ What the numbers show. The pipeline rebuild is gone: chore 5 in `harness` goes f
 - **The child runs of TS-24-5, 11, 12 and 16 name their tests with anchored patterns.** Running `go test ./internal/policy` in full would start two nested `make check-release` runs (TS-09-20, TS-19-66).
 - **`make check` depends on `test-short`.** TS-24-13 asserts `fmt vet lint test-short`; the spec says `test`, which is `make check-release`'s.
 - **Two stale statements outside the task's `touches` were fixed with the doc comment they repeated:** the `sandbox/gatewayd/go.mod` comment ("the one network service") and `docs/api.md`, which listed `sandbox/images`, a package of tests only, as a provider.
+
+## After this spec: 24-REQ-1.5's guard list changes, on purpose
+
+24-REQ-1.5 keeps `preSpec17Guard` "unchanged from spec 22". Exporting
+`guard.Commands`, the reading of a shell line `Restricted` judges, adds five
+declarations to `guard` on purpose (`docs/errata/17_sandbox_podman.md`, "gains
+`Commands`"). The list gains them and keeps every spec 22 entry, so TS-17-61
+still fails on any other change to `guard`. The `SyntaxError.Error` method
+sorts ahead of `Allow`, so TS-24-7 now checks that `Allow` is in the list
+rather than that it leads it.

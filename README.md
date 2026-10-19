@@ -274,6 +274,7 @@ takes the place of the first two steps.
 | `guard.Restricted` | `Restricted(o Options) core.BeforeToolCall`; `Options`: `AllowedPrograms`, `AllowShellOperators`, `AllowEnvPrefixes`, `BlockedTools`, `TerminateOnBlock` |
 | `guard.AllowAll` | `AllowAll(ctx, core.BeforeToolCallContext) core.BeforeToolCallDecision`: the explicit opt-out |
 | `guard.Check` | `Check(argv []string, o Options) Decision`; `Decision`: `Block`, `Reason`, `Terminate` |
+| `guard.Commands` | `Commands(line string) ([]Command, error)`: every simple command a shell line runs, substitutions and heredoc bodies included; `Command`: `Text`, `Assign`, `Argv`, `Redirects`; a `*SyntaxError` for a line it cannot read with certainty |
 
 ### Toolset and runner
 

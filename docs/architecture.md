@@ -175,10 +175,10 @@ What follows from it:
 | `provider` | What a wire needs and does not own: cost arithmetic (`ComputeCost`), the per-session tool-schema cache (`ToolPrefix`), deferred-tool splitting. |
 | `provider/anthropic` | The Anthropic Messages wire over the official SDK, direct, on Vertex AI or on Bedrock, chosen by `Resolve`; send-time transcript repair (`RepairTranscript`) and partial-JSON salvage of streamed tool arguments (`SalvageJSON`). |
 | `provider/faux` | A scripted provider for offline tests and demos. |
-| `outline` | Declarations of a source file with line ranges. Go uses `go/ast` in every build. With cgo, Python, JavaScript, TypeScript/TSX, Java, Kotlin, C#, Scala, Rust, C, C++, PHP, Ruby, Lua and shell are parsed by tree-sitter grammars; without cgo they are `none`. |
+| `outline` | Declarations of a source file with line ranges. Go uses `go/ast` in every build. With cgo, Python, JavaScript, TypeScript/TSX, Java, Kotlin, C#, Scala, Rust, C, C++, PHP, Ruby, Lua and shell are parsed by tree-sitter grammars; without cgo they are `none`. `IsTestFile` is the test-file convention the symbol and reference ranking in `tools` uses. |
 | `workspace` | The workspace: the containment boundary (`Open`, `Resolve`, `Rel`, `CheckWriteTarget`), the layered ignore engine (`IgnoreOptions`, `NoGlobalExcludes`, `Ignore`, `Ignored`) and the directory walk (`Walk`), opened once and handed to the tools and the index; the sandbox tree opens its own over a root it owns and takes a workspace's `Ignore()` options. It imports only the standard library and doublestar. |
 | `tools` | The built-in tools (`For`), the output accumulator, process control and the runner (`Run`, `RunArgv`), glob, the symbol table behind `find_symbol` and the reference engine behind `find_references` (`References`). |
-| `guard` | The shell boundary: `Check` (a pure decision on an argv), `Restricted` (the interceptor over it), `Allow` (`Restricted` with only the allowlist), `AllowAll`. |
+| `guard` | The shell boundary: `Check` (a pure decision on an argv), `Commands` (the simple commands a shell line runs, read once for every policy), `Restricted` (the interceptor over both), `Allow` (`Restricted` with only the allowlist), `AllowAll`. |
 | `codemode` | The code-mode tool (below). |
 | `prompt` | `Build(system, tools)`: the base prompt, then the active tools' guidelines, deduplicated in first-seen order. |
 | `mcp` | The MCP client over the official MCP Go SDK (below). The MCP server is the nested `mcpserve` module's. |

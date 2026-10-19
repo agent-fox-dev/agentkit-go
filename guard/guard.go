@@ -97,8 +97,9 @@ func Check(argv []string, o Options) Decision {
 
 // Options configures Restricted.
 type Options struct {
-	// AllowedPrograms are the programs (argv[0], or the first word of an
-	// `execute` command after any assignments) that may run. A bare name
+	// AllowedPrograms are the programs that may run: argv[0], or the first
+	// word after any assignments of each command an `execute` line runs (see
+	// Commands). A bare name
 	// ("go") admits only that bare name, resolved through PATH. A path
 	// ("/usr/bin/git") admits that exact path only — not a bare git found
 	// through PATH, which may be another binary. A
@@ -113,10 +114,17 @@ type Options struct {
 	// sh / bash quoting — single quotes literal, double quotes expanding —
 	// and it is declared here because REQ-SEC-04 requires a filter to say
 	// which grammar it filters.
+	//
+	// When on, every command the line runs is judged, not only the first:
+	// each one Commands finds, the ones inside substitutions and unquoted
+	// heredoc bodies included. A line Commands cannot read with certainty
+	// (a *SyntaxError) is refused.
 	AllowShellOperators bool
-	// AllowEnvPrefixes permits `NAME=value` assignments in front of the
-	// program in `execute` commands (`GOFLAGS=-mod=mod go build`). Off by
-	// default: an assignment configures the program it precedes, and an
+	// AllowEnvPrefixes permits `NAME=value` assignments in `execute` commands:
+	// in front of a program (`GOFLAGS=-mod=mod go build`) or, under
+	// AllowShellOperators, on their own (`d=$(go list .)`), which changes the
+	// environment of the commands after it when NAME is already exported. Off
+	// by default: an assignment configures the programs it reaches, and an
 	// allowlist of names says nothing about how those programs are
 	// configured. Even when on, a name that changes which binary runs or
 	// what is loaded into it — PATH, LD_*, DYLD_*, BASH_ENV, interpreter
@@ -140,9 +148,9 @@ type Options struct {
 // with real context should replace it, not extend it.
 //
 // What it does check, it checks against what will actually run: the program
-// is matched as spelled, not by basename, and an assignment prefix that
-// would change which binary a listed name resolves to, or load code into
-// it, is refused.
+// of every command on the line (see Commands) is matched as spelled, not by
+// basename, and an assignment that would change which binary a listed name
+// resolves to, or load code into it, is refused.
 func Restricted(o Options) core.BeforeToolCall {
 	blocked := make(map[string]bool, len(o.BlockedTools))
 	for _, t := range o.BlockedTools {
@@ -173,18 +181,39 @@ func Restricted(o Options) core.BeforeToolCall {
 						"(grammar: POSIX sh); use run_command with an argument list, or one plain command", op))
 				}
 			}
-			names, prog := splitCommand(cmd)
-			if len(names) > 0 && !o.AllowEnvPrefixes {
-				return block(fmt.Sprintf("guard.Restricted: environment assignment %s= in front of the "+
-					"program is not permitted; run the program without it", names[0]))
+			cmds, err := Commands(cmd)
+			if err != nil {
+				return block(fmt.Sprintf("guard.Restricted: the command cannot be read with certainty, so "+
+					"nothing in it was run: %v", err))
 			}
-			for _, n := range names {
-				if envDenied(n) {
-					return block(fmt.Sprintf("guard.Restricted: environment assignment %s= is not permitted: "+
-						"it changes which program runs or what is loaded into it", n))
+			ran := false
+			for _, c := range cmds {
+				if len(c.Assign) > 0 && !o.AllowEnvPrefixes {
+					where := "in front of the program"
+					if len(c.Argv) == 0 {
+						where = "on its own"
+					}
+					return block(fmt.Sprintf("guard.Restricted: environment assignment %s= %s is not permitted; "+
+						"run the program without it", c.Assign[0], where))
+				}
+				for _, n := range c.Assign {
+					if envDenied(n) {
+						return block(fmt.Sprintf("guard.Restricted: environment assignment %s= is not permitted: "+
+							"it changes which program runs or what is loaded into it", n))
+					}
+				}
+				if len(c.Argv) == 0 {
+					continue // assignments or redirections alone run no program
+				}
+				ran = true
+				if d := check(c.Argv); d.Block {
+					return d
 				}
 			}
-			return check([]string{prog})
+			if !ran {
+				return block("guard.Restricted: the command runs no program")
+			}
+			return core.BeforeToolCallDecision{}
 		case "run_command":
 			raw, _ := in.Arguments["argv"].([]any)
 			argv := make([]string, len(raw))
@@ -291,92 +320,6 @@ func (a allowlist) permits(prog string) bool {
 
 func hasPathSeparator(s string) bool {
 	return strings.ContainsAny(s, `/\`)
-}
-
-// splitCommand returns the names of a command's leading NAME=value
-// assignments and its program word, unquoted. Words are split as POSIX sh
-// splits them — a quoted span is part of one word, so `X='a ls' rm` runs rm,
-// not ls. A word is an assignment only when NAME is a shell identifier
-// spelled without quotes: bash runs `x-y=1 ls` and `'X=1' ls` as the commands
-// `x-y=1` and `X=1`, so that word is the program, and it is refused. An
-// unterminated quote is a syntax error that runs nothing; prog is then empty.
-func splitCommand(cmd string) (names []string, prog string) {
-	words, ok := shellWords(cmd)
-	if !ok {
-		return nil, ""
-	}
-	for _, w := range words {
-		if i := strings.IndexByte(w.raw, '='); i > 0 && isIdentifier(w.raw[:i]) {
-			names = append(names, w.raw[:i])
-			continue
-		}
-		return names, w.text
-	}
-	return names, ""
-}
-
-// shellWord is one word of a command: as written, and with its quotes and
-// escapes removed.
-type shellWord struct{ raw, text string }
-
-// shellWords splits cmd into words under the quoting rules firstShellOperator
-// honours: blanks separate words only outside quotes, single quotes are
-// literal, and a backslash escapes the next byte outside quotes and only
-// `$`, backtick, `"`, `\` and newline inside double quotes. ok is false when
-// a quote is left open.
-func shellWords(cmd string) (words []shellWord, ok bool) {
-	var raw, text strings.Builder
-	inWord := false
-	flush := func() {
-		if inWord {
-			words = append(words, shellWord{raw.String(), text.String()})
-		}
-		raw.Reset()
-		text.Reset()
-		inWord = false
-	}
-	for i := 0; i < len(cmd); i++ {
-		c := cmd[i]
-		switch c {
-		case ' ', '\t', '\n':
-			flush()
-			continue
-		case '\'':
-			end := strings.IndexByte(cmd[i+1:], '\'')
-			if end < 0 {
-				return nil, false
-			}
-			raw.WriteString(cmd[i : i+end+2])
-			text.WriteString(cmd[i+1 : i+1+end])
-			i += end + 1
-		case '"':
-			j := i + 1
-			for ; j < len(cmd) && cmd[j] != '"'; j++ {
-				if cmd[j] == '\\' && j+1 < len(cmd) && strings.IndexByte("$`\"\\\n", cmd[j+1]) >= 0 {
-					j++
-				}
-				text.WriteByte(cmd[j])
-			}
-			if j == len(cmd) {
-				return nil, false
-			}
-			raw.WriteString(cmd[i : j+1])
-			i = j
-		case '\\':
-			raw.WriteByte(c)
-			if i+1 < len(cmd) {
-				i++
-				raw.WriteByte(cmd[i])
-				text.WriteByte(cmd[i])
-			}
-		default:
-			raw.WriteByte(c)
-			text.WriteByte(c)
-		}
-		inWord = true
-	}
-	flush()
-	return words, true
 }
 
 func isIdentifier(s string) bool {

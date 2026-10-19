@@ -150,10 +150,23 @@ counted in `Agent.Usage`, do not claim the run slot, and their events go to
 ## `guard.Options`
 
 `guard.Restricted(opts)` refuses `BlockedTools`, then, for `execute`, shell
-operators and environment prefixes, then asks `guard.Check(argv, opts)`
+operators (unless `AllowShellOperators`), then reads the line with
+`guard.Commands` and, for every command on it, refuses environment
+assignments (unless `AllowEnvPrefixes`) and asks `guard.Check(argv, opts)`
 whether the program is on `AllowedPrograms`. `Check` is a pure function
 returning a `guard.Decision{Block, Reason, Terminate}`. The guard is a floor
 for unattended safety, not a sandbox.
+
+`guard.Commands(line)` is the reading the guard judges, exported so a
+stricter policy layered over `Restricted` judges the same commands: every
+simple command the line runs, the ones in substitutions, subshells, process
+substitutions and unquoted heredoc bodies included, each as a
+`guard.Command{Text, Assign, Argv, Redirects}`. Expansions are left as
+written, so a program the shell would compute (`$CMD`, `$(echo rm)`) never
+matches a listed name. A line it cannot read with certainty — an unterminated
+quote, a `case` statement, a heredoc with no terminating line — is a
+`*guard.SyntaxError`, and `Restricted` refuses it. `TestCommandsAgainstBash`
+checks the reading against bash; it runs only with `AGENTKIT_BASH_DIFF=1`.
 
 `guard.Allow(programs...)` is `guard.Restricted` with only `AllowedPrograms`
 set: its decisions, reasons (the `guard.Restricted: ` prefix) and `Terminate`
@@ -175,8 +188,8 @@ in the set. `agentkit.New` and `agentkit.NewRunner` still require a
 | Field | Meaning |
 |---|---|
 | `AllowedPrograms` | Programs that may run. A bare name admits only that bare name; a path admits only that path, after cleaning. A program spelled with a path separator is refused unless that path is listed. Empty blocks every shell call. |
-| `AllowShellOperators` | Permit pipes, `;`, `&&`, `||`, redirection, subshells, substitution and expansion in `execute` commands (POSIX sh grammar). Off by default. |
-| `AllowEnvPrefixes` | Permit `NAME=value` in front of the program in `execute` commands. Off by default. Even when on, names that change which binary runs or what is loaded into it (`PATH`, `LD_*`, `DYLD_*`, `BASH_ENV`, …) are refused. |
+| `AllowShellOperators` | Permit pipes, `;`, `&&`, `||`, redirection, subshells, substitution and expansion in `execute` commands (POSIX sh grammar). Off by default. When on, every command on the line is judged, not only the first, and a line `guard.Commands` cannot read is refused. |
+| `AllowEnvPrefixes` | Permit `NAME=value` in `execute` commands, in front of a program or, under `AllowShellOperators`, on its own. Off by default. Even when on, names that change which binary runs or what is loaded into it (`PATH`, `LD_*`, `DYLD_*`, `BASH_ENV`, …) are refused. |
 | `BlockedTools` | Tools refused by name, shell or not. |
 | `TerminateOnBlock` | A block also votes to end the run. |
 

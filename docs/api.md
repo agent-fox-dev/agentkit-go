@@ -24,8 +24,8 @@ it with `go doc -all <import path>`. This file is the map.
 | `schema` | The structured, transformable tool-schema value type. |
 | `workspace` | The workspace every scenario opens first: containment, ignore rules and the directory walk (`workspace.Open`). |
 | `tools` | The built-in tools: file, search, navigation and shell, built for a workspace with `tools.For`. |
-| `guard` | The shell guard, the `execute` boundary in non-interactive deployments; `guard.Allow` is the allowlist-only form. |
-| `outline` | Source outlines. |
+| `guard` | The shell guard, the `execute` boundary in non-interactive deployments; `guard.Allow` is the allowlist-only form, and `guard.Commands` is the reading of a shell line it judges. |
+| `outline` | Source outlines, the extension-to-language table (`outline.LangForExt`) and the test-file convention the tools rank by (`outline.IsTestFile`). |
 | `codemode` | A tool that runs a model-written Starlark script whose functions are other tools. |
 | `mcp` | The MCP client pool. |
 | `wire` | The bounded, strict decoder for bytes AgentKit did not produce. |
