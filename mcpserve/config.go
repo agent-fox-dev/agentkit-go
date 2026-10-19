@@ -17,7 +17,9 @@ func (e *Endpoint) ClaudeConfig(name string) string { return e.config(name, fals
 
 // PiConfig is the JSON Pi's .pi/mcp.json takes: ClaudeConfig's object with
 // "exposure":"direct" in the server entry, so Pi declares the tools to its model
-// directly instead of reaching them only through its own code mode.
+// directly instead of reaching them only through its own code mode. Pi reads a
+// project's .pi/mcp.json only once the project is trusted, and its print mode
+// cannot ask: run it with --approve, or it starts with no server.
 func (e *Endpoint) PiConfig(name string) string { return e.config(name, true) }
 
 func (e *Endpoint) config(name string, pi bool) string {

@@ -104,11 +104,12 @@ func claudeArgs(mcpConfig, systemFile, task string, o options) []string {
 	return args
 }
 
-// piArgs is Pi's command line: print mode, this server's tools only, no
-// skills, the rules appended, then the prompt after `--` so a prompt that
-// starts with a dash is still a prompt.
+// piArgs is Pi's command line: print mode, the project trusted for this run,
+// this server's tools only, no skills, the rules appended, then the prompt
+// after `--` so a prompt that starts with a dash is still a prompt.
 func piArgs(systemFile, task string, o options) []string {
 	args := []string{"-p",
+		"--approve",
 		"--tools", "mcp__agentkit__*",
 		"--no-skills",
 		"--append-system-prompt", systemFile,
@@ -121,11 +122,16 @@ func piArgs(systemFile, task string, o options) []string {
 
 // runPi runs Pi in print mode. Pi takes MCP servers from a config file, not
 // a flag: the project file .pi/mcp.json of the directory it runs in, read
-// once the project is trusted. --tools 'mcp__agentkit__*' keeps only this
-// server's tools, which drops Pi's own (read, bash, edit, write, …); the
-// server's exposure is set to direct so the tools are declared to the model
-// rather than reached only through Pi's own code mode. Verified against
-// Pi's documentation, not run here.
+// only once the project is trusted. Print mode cannot ask, and without a saved
+// decision or defaultProjectTrust "always" it skips the file: Pi then starts
+// with no server, --tools matches nothing and the model is offered no tools at
+// all. --approve trusts the directory for this run, which is safe because it
+// is the empty directory harnessDir made, holding what this function wrote.
+// --tools 'mcp__agentkit__*' keeps only this server's tools, which drops Pi's
+// own (read, bash, edit, write, …); the server's exposure is set to direct so
+// the tools are declared to the model rather than reached only through Pi's own
+// code mode. Run against Pi 1.3.0 with a stand-in model: it connects with the
+// bearer token and declares mcp__agentkit__code_mode and the other tools.
 func runPi(ctx context.Context, log io.Writer, ep *mcpserve.Endpoint, system, task string, o options) (harnessResult, error) {
 	dir, systemFile, err := harnessDir(system)
 	if err != nil {

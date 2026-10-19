@@ -50,6 +50,8 @@ func (e *Endpoint) PiConfig(name string) string
     PiConfig is the JSON Pi's .pi/mcp.json takes: ClaudeConfig's object with
     "exposure":"direct" in the server entry, so Pi declares the tools to its
     model directly instead of reaching them only through its own code mode.
+    Pi reads a project's .pi/mcp.json only once the project is trusted, and its
+    print mode cannot ask: run it with --approve, or it starts with no server.
 
 type Options struct {
 	// Name is the server name an MCP client reads in the initialize result.
