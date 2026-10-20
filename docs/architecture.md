@@ -1008,7 +1008,8 @@ the interceptors only check that the context carries one, so a revocation
 between them cannot give two answers. `gatewayd.PrincipalFromContext` reads
 that key in the backend's `Create`, in the `Sync` of a `SyncGit` and in the
 `Reap` of a `Gateway.Reap` RPC; the periodic reap and every `Close` the server
-makes on its own run on a background context and see none. A revoked token
+makes on its own run on contexts derived from `context.Background()` and see
+none. A revoked token
 refuses later RPCs and leaves its principal's sandboxes alone. The embedder
 ends any sandbox with `(*Server).Destroy`, which runs the registry's single
 removal path with the reason `embedder` and closes the backend sandbox with the
@@ -1047,8 +1048,9 @@ agent connection. Each entry expires by its own timer at
 `created + TTL`; any access that finds the backend sandbox dead removes it;
 `Destroy`, the embedder's `Server.Destroy` and `Shutdown` remove the rest.
 Each removal closes the backend sandbox and logs the reason (`client`,
-`expired`, `unavailable`, `shutdown`, or `embedder`). `Serve` also runs the backend's own `Reap` at start and every
-`ReapInterval`, which catches what a crashed gateway left behind. On the
+`expired`, `unavailable`, `shutdown`, or `embedder`). `Serve` also runs the
+backend's own `Reap` at start and every `ReapInterval`, which catches what a
+crashed gateway left behind. On the
 client, a handshake that fails after `Gateway.Create` runs attach's destroy
 step, a context that ends before `Create` returns destroys the sandbox, and
 `Provider.Close` destroys every sandbox it created before closing the

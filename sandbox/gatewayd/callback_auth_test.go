@@ -225,7 +225,7 @@ func TestPrincipalLengthBound_TS25_16(t *testing.T) {
 	wantRefused(t, "Create with a 257-byte principal", err)
 	rawCreate(t, gw, "tok-max", sandboxpb.NetworkMode_UNRESTRICTED)
 	if got := be.Principals(); len(got) != 1 || len(got[0].Principal) != 256 || !got[0].OK {
-		t.Errorf("the backend's Create principals are %d entries (first of %d bytes), want one of 256 bytes", len(got), len(got[0].Principal))
+		t.Errorf("the backend's Create principals are %v, want one of 256 bytes", got)
 	}
 }
 
@@ -247,6 +247,31 @@ func TestAuthenticatorPanicRecovered_TS25_17(t *testing.T) {
 	}
 	if _, err := env.RawGateway(t).List(gwtest.Ctx(context.Background(), "tok-ok"), &sandboxpb.ListRequest{}); err != nil {
 		t.Errorf("an RPC on a new connection: %v", err)
+	}
+}
+
+// TS-25-17: an authenticator that calls panic(nil) is refused too, also when
+// the process runs with GODEBUG=panicnil=1, under which recover() returns nil
+// for it and a check on recover()'s result alone would let the RPC in with an
+// empty principal. 25-REQ-4.3.
+func TestAuthenticatorPanicNilRefused_TS25_17(t *testing.T) {
+	t.Setenv("GODEBUG", "panicnil=1")
+	logs, logger := gwtest.NewLogs()
+	authenticate := func(_ context.Context, tok string) (string, bool) {
+		if tok == "tok-nil" {
+			panic(nil)
+		}
+		return "p", true
+	}
+	env := gwtest.Start(t, gatewayd.Config{Backend: gwtest.NewCounting(), NetworkModes: unrestricted, Authenticate: authenticate, Logger: logger})
+	gw := env.RawGateway(t)
+	_, err := gw.List(gwtest.Ctx(context.Background(), "tok-nil"), &sandboxpb.ListRequest{})
+	wantRefused(t, "the panic(nil) token", err)
+	if recs := logs.Messages("authentication refused"); len(recs) != 1 || recs[0]["reason"] != "panic" {
+		t.Errorf("the refusal records are %v, want one with reason \"panic\"", recs)
+	}
+	if _, err := gw.List(gwtest.Ctx(context.Background(), "tok-ok"), &sandboxpb.ListRequest{}); err != nil {
+		t.Errorf("the next RPC: %v", err)
 	}
 }
 

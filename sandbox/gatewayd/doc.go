@@ -16,10 +16,11 @@
 //   - Callback mode, Config.Authenticate: the program that embeds the server
 //     supplies an Authenticator that turns a token into a principal. The
 //     server calls it once for each RPC, from the tap handle, and applies no
-//     rule of its own to the token. The Authenticator must be safe for
-//     concurrent use and must return quickly without blocking, because a slow
-//     one stalls every stream on its connection and the server enforces no
-//     timeout. The server trusts it to compare tokens in constant time.
+//     length or character rule of its own to the token. The Authenticator
+//     must be safe for concurrent use and must return quickly without
+//     blocking, because a slow one stalls every stream on its connection and
+//     the server enforces no timeout. The server trusts it to compare tokens
+//     in constant time.
 //
 // # Principals
 //

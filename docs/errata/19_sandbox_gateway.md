@@ -144,6 +144,14 @@ four of this spec's criteria, and static mode adds one log attribute.
   (`admit` in `sandbox/gatewayd/auth.go`;
   `TestInterceptorsRefuseWithoutPrincipal_TS25_13`). Static mode still
   authenticates in the tap and again in the interceptors.
+- **19-REQ-5.1 and 5.4: "a configured token".** With `Config.Authenticate`
+  set there is no configured token: the token is "valid" when the Authenticator
+  accepts it with a principal of 1 to 256 bytes, and the refusal comes before
+  any message is read all the same. `New` accepts a `Config` with an
+  `Authenticate` and no `Tokens`, refuses one with both and refuses one with
+  neither with an error that names both fields, in place of "no token
+  configured" (`TestNewRefusesBothModes_TS25_2`,
+  `TestNewRefusesNeitherMode_TS25_3`; `TestNewRefuses_TS19_30` still passes).
 - **19-REQ-5.5: the owner identity.** The owner of a sandbox is its
   *principal*. In static mode that is the 64-character lowercase hex SHA-256
   of the token, which only `gatewayd.PrincipalFromContext` exposes; in callback

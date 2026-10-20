@@ -96,14 +96,19 @@ func (s *Server) matchToken(tok string) (principal, reason string) {
 
 // callAuthenticator runs the embedder's Authenticator on tok and checks the
 // principal it returns. A panic is recovered and reported without its value,
-// which could hold the token.
+// which could hold the token. Whether the Authenticator returned decides it,
+// not what recover returns: recover returns nil for panic(nil) under
+// GODEBUG=panicnil=1, and a check on that would let the RPC in.
 func (s *Server) callAuthenticator(ctx context.Context, tok string) (principal, reason string) {
+	returned := false
 	defer func() {
-		if recover() != nil {
+		if !returned {
+			_ = recover() // the value could hold the token: it is dropped, never logged
 			principal, reason = "", reasonPanic
 		}
 	}()
 	p, ok := s.authenticator(ctx, tok)
+	returned = true
 	switch {
 	case !ok:
 		return "", reasonRefused
