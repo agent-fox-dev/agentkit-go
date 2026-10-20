@@ -343,7 +343,7 @@
       "done_when": [
         "`make check` passes in every module and all four smoke tests pass"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
