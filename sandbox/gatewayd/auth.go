@@ -40,30 +40,48 @@ func ownerOf(ctx context.Context) string {
 	return p
 }
 
+// maxPrincipalLen is the longest principal an Authenticator may return.
+const maxPrincipalLen = 256
+
 // errUnauthenticated is every refused RPC's answer.
 var errUnauthenticated = status.Error(codes.Unauthenticated, "gatewayd: a valid bearer token is required")
+
+// bearer is the token of md's single `authorization: Bearer <token>`, or
+// false when the header is missing, repeated, not Bearer or empty.
+func bearer(md metadata.MD) (string, bool) {
+	vals := md.Get("authorization")
+	if len(vals) != 1 {
+		return "", false
+	}
+	tok, ok := strings.CutPrefix(vals[0], "Bearer ")
+	return tok, ok && tok != ""
+}
 
 // authenticate is the principal of ctx's `authorization: Bearer <token>`, or
 // the reason it is refused.
 func (s *Server) authenticate(ctx context.Context) (principal, reason string) {
 	md, _ := metadata.FromIncomingContext(ctx)
-	return s.authenticateMD(md)
+	return s.authenticateMD(ctx, md)
 }
 
-// authenticateMD is authenticate over the request's header metadata: the
-// principal of the single `authorization: Bearer <token>` it holds, or the
-// reason the RPC is refused (a header that is missing, repeated, not Bearer or
-// empty, or a token no configured token matches). Every configured token is
-// compared, in constant time, whatever the outcome.
-func (s *Server) authenticateMD(md metadata.MD) (principal, reason string) {
-	vals := md.Get("authorization")
-	if len(vals) != 1 {
+// authenticateMD is authenticate over the request's header metadata, with ctx
+// for the Authenticator in callback mode: the principal of the token, or the
+// reason the RPC is refused.
+func (s *Server) authenticateMD(ctx context.Context, md metadata.MD) (principal, reason string) {
+	tok, ok := bearer(md)
+	if !ok {
 		return "", reasonNoToken
 	}
-	tok, ok := strings.CutPrefix(vals[0], "Bearer ")
-	if !ok || tok == "" {
-		return "", reasonNoToken
+	if s.authenticator != nil {
+		return s.callAuthenticator(ctx, tok)
 	}
+	return s.matchToken(tok)
+}
+
+// matchToken is static mode's authentication: the hex SHA-256 of tok when it
+// matches a configured token. Every configured token is compared, in constant
+// time, whatever the outcome.
+func (s *Server) matchToken(tok string) (principal, reason string) {
 	sum := sha256.Sum256([]byte(tok))
 	match := 0
 	for _, o := range s.tokenSums {
@@ -73,6 +91,25 @@ func (s *Server) authenticateMD(md metadata.MD) (principal, reason string) {
 		return "", reasonRefused
 	}
 	return hex.EncodeToString(sum[:]), ""
+}
+
+// callAuthenticator runs the embedder's Authenticator on tok and checks the
+// principal it returns. A panic is recovered and reported without its value,
+// which could hold the token.
+func (s *Server) callAuthenticator(ctx context.Context, tok string) (principal, reason string) {
+	defer func() {
+		if recover() != nil {
+			principal, reason = "", reasonPanic
+		}
+	}()
+	p, ok := s.authenticator(ctx, tok)
+	switch {
+	case !ok:
+		return "", reasonRefused
+	case p == "" || len(p) > maxPrincipalLen:
+		return "", reasonInvalidPrincipal
+	}
+	return p, ""
 }
 
 // refuse logs a refused authentication with the peer's address and reason.
@@ -88,32 +125,52 @@ func (s *Server) refuse(ctx context.Context, reason string) error {
 // tap authenticates every RPC from its headers alone, before gRPC reads a
 // message: a unary handler decodes its request before any interceptor runs,
 // so a refusal here is what keeps an unauthenticated request unread. It
-// also covers a method no handler serves.
+// also covers a method no handler serves. In callback mode it is the only
+// place the Authenticator runs, once for each RPC, with the context that
+// carries the peer address.
 func (s *Server) tap(ctx context.Context, info *tap.Info) (context.Context, error) {
-	p, reason := s.authenticateMD(info.Header)
+	p, reason := s.authenticateMD(ctx, info.Header)
 	if reason != "" {
 		return nil, s.refuse(ctx, reason)
 	}
 	return context.WithValue(ctx, principalKey{}, p), nil
 }
 
-// unaryAuth authenticates a unary RPC again before its handler runs.
-func (s *Server) unaryAuth(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
+// admit is ctx carrying the principal of the RPC it was made for, or the
+// refusal. Static mode authenticates a second time, from the headers. In
+// callback mode the tap has already run the Authenticator, so admit only
+// checks that ctx carries its principal: a second call could answer
+// differently if the token was revoked in between.
+func (s *Server) admit(ctx context.Context) (context.Context, error) {
+	if s.authenticator != nil {
+		if _, ok := PrincipalFromContext(ctx); !ok {
+			return nil, s.refuse(ctx, reasonRefused)
+		}
+		return ctx, nil
+	}
 	p, reason := s.authenticate(ctx)
 	if reason != "" {
 		return nil, s.refuse(ctx, reason)
 	}
-	return h(context.WithValue(ctx, principalKey{}, p), req)
+	return context.WithValue(ctx, principalKey{}, p), nil
 }
 
-// streamAuth authenticates a streaming RPC again before its handler reads a
-// frame.
-func (s *Server) streamAuth(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, h grpc.StreamHandler) error {
-	p, reason := s.authenticate(ss.Context())
-	if reason != "" {
-		return s.refuse(ss.Context(), reason)
+// unaryAuth admits a unary RPC again before its handler runs.
+func (s *Server) unaryAuth(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
+	ctx, err := s.admit(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return h(srv, ownedStream{ServerStream: ss, ctx: context.WithValue(ss.Context(), principalKey{}, p)})
+	return h(ctx, req)
+}
+
+// streamAuth admits a streaming RPC again before its handler reads a frame.
+func (s *Server) streamAuth(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, h grpc.StreamHandler) error {
+	ctx, err := s.admit(ss.Context())
+	if err != nil {
+		return err
+	}
+	return h(srv, ownedStream{ServerStream: ss, ctx: ctx})
 }
 
 // ownedStream is a ServerStream whose context carries the principal.

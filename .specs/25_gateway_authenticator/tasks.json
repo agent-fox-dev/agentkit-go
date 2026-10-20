@@ -144,7 +144,7 @@
       "done_when": [
         "A callback-mode server accepts exactly the tokens its authenticator accepts and refuses everything else before any message is read"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,

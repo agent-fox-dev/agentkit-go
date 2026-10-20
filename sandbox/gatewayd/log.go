@@ -45,9 +45,14 @@ const (
 	// reasonNoToken: the authorization header is missing, repeated, not
 	// Bearer or empty.
 	reasonNoToken = "no token"
-	// reasonRefused: no configured token matches, or an interceptor found no
-	// principal.
+	// reasonRefused: no configured token matches, the Authenticator did not
+	// accept the token, or an interceptor found no principal.
 	reasonRefused = "refused"
+	// reasonInvalidPrincipal: the Authenticator accepted the token with an
+	// empty principal or one over maxPrincipalLen bytes.
+	reasonInvalidPrincipal = "invalid principal"
+	// reasonPanic: the Authenticator panicked.
+	reasonPanic = "panic"
 )
 
 func (s *Server) logAuthRefused(peer, reason string) {
