@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -46,11 +47,34 @@ func TestGatesCoverMcpserve_TS23_50(t *testing.T) {
 	}
 }
 
-// gateArgs is the go command for a gate step over ./... . A build writes its
-// output to a temporary directory: in a module whose ./... is a single main
-// package, a plain `go build ./...` writes the binary into the source tree.
-func gateArgs(t *testing.T, verb string) []string {
-	if verb == "build" {
+// mainModules caches hasMainPackage by module directory.
+var mainModules sync.Map
+
+// hasMainPackage reports whether ./... in dir holds a main package.
+func hasMainPackage(t *testing.T, dir string) bool {
+	t.Helper()
+	if v, ok := mainModules.Load(dir); ok {
+		return v.(bool)
+	}
+	cmd := exec.Command("go", "list", "-f", "{{.Name}}", "./...")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("listing the packages of %s: %v", dir, err)
+	}
+	has := slices.Contains(strings.Fields(string(out)), "main")
+	mainModules.Store(dir, has)
+	return has
+}
+
+// gateArgs is the go command for a gate step over ./... in dir. A build of a
+// module with a main package writes its output to a temporary directory: in a
+// module whose ./... is a single main package, a plain `go build ./...` writes
+// the binary into the source tree. A module without one, a library such as
+// mcpserve, takes a plain build, which writes nothing, because `go build -o`
+// refuses it with "no main packages to build".
+func gateArgs(t *testing.T, dir, verb string) []string {
+	if verb == "build" && hasMainPackage(t, dir) {
 		return []string{"build", "-o", t.TempDir(), "./..."}
 	}
 	return []string{verb, "./..."}
@@ -95,8 +119,9 @@ func TestCrossTargetBuildAndVet(t *testing.T) {
 		t.Run(target.goos+"/"+target.goarch, func(t *testing.T) {
 			for _, mod := range gateModules {
 				for _, verb := range []string{"build", "vet"} {
-					cmd := exec.Command("go", gateArgs(t, verb)...)
-					cmd.Dir = filepath.Join(root, mod)
+					dir := filepath.Join(root, mod)
+					cmd := exec.Command("go", gateArgs(t, dir, verb)...)
+					cmd.Dir = dir
 					cmd.Env = append(os.Environ(),
 						"GOOS="+target.goos,
 						"GOARCH="+target.goarch,
@@ -131,8 +156,9 @@ func TestHostCgoBuildAndVet(t *testing.T) {
 	root := repoRoot(t)
 	for _, mod := range gateModules {
 		for _, verb := range []string{"build", "vet"} {
-			cmd := exec.Command("go", gateArgs(t, verb)...)
-			cmd.Dir = filepath.Join(root, mod)
+			dir := filepath.Join(root, mod)
+			cmd := exec.Command("go", gateArgs(t, dir, verb)...)
+			cmd.Dir = dir
 			cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Errorf("go %s ./... in %s with CGO_ENABLED=1 failed: %v\n%s", verb, mod, err,
