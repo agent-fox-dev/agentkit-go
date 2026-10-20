@@ -89,11 +89,12 @@ type Env struct {
 	Served chan error
 }
 
-// Start serves a gateway with cfg; Tokens defaults to [Token, TokenB]. The
-// server is shut down at the end of the test.
+// Start serves a gateway with cfg; Tokens defaults to [Token, TokenB] unless
+// Tokens or Authenticate is set. The server is shut down at the end of the
+// test.
 func Start(t *testing.T, cfg gatewayd.Config) *Env {
 	t.Helper()
-	if cfg.Tokens == nil {
+	if cfg.Tokens == nil && cfg.Authenticate == nil {
 		cfg.Tokens = []string{Token, TokenB}
 	}
 	srv, err := gatewayd.New(cfg)

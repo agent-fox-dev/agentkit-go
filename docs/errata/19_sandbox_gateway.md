@@ -128,3 +128,46 @@ root fails with a message naming both.
 
 TS-19-62's gate list gained `mcpserve` for the same reason
 (`internal/policy/crosstarget_test.go:32`; `TestGatesCoverMcpserve_TS23_50`).
+
+## Callback mode (spec 25): the interceptors, the owner and the refusal line (19-REQ-5.3, 5.4, 5.5, 5.7)
+
+Spec 25 (`gateway_authenticator`) lets a program that embeds the server
+authenticate with a callback, `Config.Authenticate`. Static mode, the mode of
+this spec and of the command, behaves as above; callback mode differs from
+four of this spec's criteria, and static mode adds one log attribute.
+
+- **19-REQ-5.3 and "Authentication runs in gRPC's tap handle as well" above:
+  the interceptors.** In callback mode the
+  Authenticator runs once for each RPC, in the tap handle. The unary and
+  stream interceptors do not run it again: they check that the context
+  carries a principal and refuse with `Unauthenticated` if it does not
+  (`admit` in `sandbox/gatewayd/auth.go`;
+  `TestInterceptorsRefuseWithoutPrincipal_TS25_13`). Static mode still
+  authenticates in the tap and again in the interceptors.
+- **19-REQ-5.1 and 5.4: "a configured token".** With `Config.Authenticate`
+  set there is no configured token: the token is "valid" when the Authenticator
+  accepts it with a principal of 1 to 256 bytes, and the refusal comes before
+  any message is read all the same. `New` accepts a `Config` with an
+  `Authenticate` and no `Tokens`, refuses one with both and refuses one with
+  neither with an error that names both fields, in place of "no token
+  configured" (`TestNewRefusesBothModes_TS25_2`,
+  `TestNewRefusesNeitherMode_TS25_3`; `TestNewRefuses_TS19_30` still passes).
+- **19-REQ-5.5: the owner identity.** The owner of a sandbox is its
+  *principal*. In static mode that is the 64-character lowercase hex SHA-256
+  of the token, which only `gatewayd.PrincipalFromContext` exposes; in callback
+  mode it is the string the Authenticator returned, and the server keeps no
+  hash of the token.
+- **19-REQ-5.7: the owner in the create line.** `sandbox created` carries
+  `owner` as the first 8 hex characters of the principal in static mode, as
+  before, and as the whole principal in callback mode, because a principal is
+  not a secret (`ownerLabel` in `sandbox/gatewayd/log.go`;
+  `TestStaticLogsFingerprint_TS25_8`, `TestCallbackLogsFullPrincipal_TS25_21`).
+- **19-REQ-5.4 and 5.7: the refusal line.** `authentication refused` keeps its
+  message, its Warn level and `peer`, and gains `reason` in both modes: `no
+  token`, `refused`, `invalid principal` or `panic`
+  (`TestStaticKeepsSpec19Refusal_TS25_40`). The destroy reasons gain
+  `embedder`, which only `(*Server).Destroy` produces.
+- **19-REQ-5.6 and 5.4 per principal.** Unknown-id answers and the refusal
+  before any message is read hold per principal: a second token of the same
+  principal reaches the first token's sandboxes (`TestSharedPrincipal_TS25_19`,
+  `TestForeignPrincipal_TS25_20`).

@@ -13,10 +13,11 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/attach"
 )
 
-// entry is one sandbox the gateway holds.
+// entry is one sandbox the gateway holds; its owner is the principal of the
+// Create RPC that made it.
 type entry struct {
 	id      string
-	owner   owner
+	owner   string
 	created time.Time
 	expires time.Time
 	spec    sandbox.Spec
@@ -79,7 +80,7 @@ func (r *registry) prune() {
 	}
 	r.mu.Unlock()
 	for _, e := range dead {
-		_ = r.remove(e, reasonUnavailable)
+		_ = r.remove(context.Background(), e, reasonUnavailable)
 	}
 }
 
@@ -93,12 +94,12 @@ func (r *registry) add(e *entry) error {
 	}
 	r.pending--
 	r.entries[e.id] = e
-	e.timer = time.AfterFunc(time.Until(e.expires), func() { _ = r.remove(e, reasonExpired) })
+	e.timer = time.AfterFunc(time.Until(e.expires), func() { _ = r.remove(context.Background(), e, reasonExpired) })
 	return nil
 }
 
 // lookup is o's sandbox id, or nil: another owner's id is nil too.
-func (r *registry) lookup(o owner, id string) *entry {
+func (r *registry) lookup(o, id string) *entry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if e := r.entries[id]; e != nil && e.owner == o {
@@ -110,13 +111,13 @@ func (r *registry) lookup(o owner, id string) *entry {
 // access is o's live sandbox id. An unknown id and another owner's are
 // answered Unavailable alike; a sandbox whose backend is no longer live is
 // removed and answered Unavailable too.
-func (r *registry) access(o owner, id string) (*entry, error) {
+func (r *registry) access(o, id string) (*entry, error) {
 	e := r.lookup(o, id)
 	if e == nil {
 		return nil, unavailable("gatewayd: no sandbox %q", id)
 	}
 	if err := attach.Live(e.sb); err != nil {
-		_ = r.remove(e, reasonUnavailable)
+		_ = r.remove(context.Background(), e, reasonUnavailable)
 		return nil, unavailable("gatewayd: sandbox %q is no longer available: %v", id, err)
 	}
 	return e, nil
@@ -124,7 +125,7 @@ func (r *registry) access(o owner, id string) (*entry, error) {
 
 // list is o's live sandboxes, by creation time and then id; the ones no
 // longer live are removed.
-func (r *registry) list(o owner) []*entry {
+func (r *registry) list(o string) []*entry {
 	r.mu.Lock()
 	var mine []*entry
 	for _, e := range r.entries {
@@ -136,7 +137,7 @@ func (r *registry) list(o owner) []*entry {
 	var out []*entry
 	for _, e := range mine {
 		if attach.Live(e.sb) != nil {
-			_ = r.remove(e, reasonUnavailable)
+			_ = r.remove(context.Background(), e, reasonUnavailable)
 			continue
 		}
 		out = append(out, e)
@@ -145,10 +146,19 @@ func (r *registry) list(o owner) []*entry {
 	return out
 }
 
-// remove deletes e once, stops its expiry, closes its backend sandbox and
-// logs the destroy with reason; it returns the Close error. A later remove
-// of the same entry does nothing.
-func (r *registry) remove(e *entry, reason string) error {
+// get is the sandbox id of any owner, or nil.
+func (r *registry) get(id string) *entry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.entries[id]
+}
+
+// remove deletes e once, stops its expiry, closes its backend sandbox with
+// ctx and logs the destroy with reason; it returns the Close error. The entry
+// is gone before Close runs, so a Close that fails or a ctx that ends leaves
+// it removed. A later remove of the same entry does nothing, and so does one
+// that loses a race with another: the Close is called exactly once.
+func (r *registry) remove(ctx context.Context, e *entry, reason string) error {
 	r.mu.Lock()
 	if r.entries[e.id] != e {
 		r.mu.Unlock()
@@ -159,7 +169,7 @@ func (r *registry) remove(e *entry, reason string) error {
 		e.timer.Stop()
 	}
 	r.mu.Unlock()
-	err := e.sb.Close(context.Background())
+	err := e.sb.Close(ctx)
 	r.s.logDestroy(e.id, reason, err)
 	return err
 }
@@ -173,7 +183,7 @@ func (r *registry) closeAll(reason string) error {
 	r.mu.Unlock()
 	var errs []error
 	for _, e := range all {
-		errs = append(errs, r.remove(e, reason))
+		errs = append(errs, r.remove(context.Background(), e, reason))
 	}
 	return errors.Join(errs...)
 }

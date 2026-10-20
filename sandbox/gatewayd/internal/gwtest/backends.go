@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/attach"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/fakeagent"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
@@ -22,9 +23,11 @@ import (
 )
 
 // Counting is a backend over another provider (local.Unisolated() by
-// default) that counts Create, Reap, sandbox Close and Sync calls and
-// records each sandbox it returns. Its Set methods turn it into a stub:
-// other capabilities, a Create error, Reap results, a sandbox Close error.
+// default) that counts Create, Reap, sandbox Close and Sync calls, records
+// each sandbox it returns and what gatewayd.PrincipalFromContext returned on
+// the context of each Create, Reap and Sync. Its Set methods turn it into a
+// stub: other capabilities, a Create error, Reap results, a sandbox Close
+// error.
 type Counting struct {
 	inner sandbox.Provider
 
@@ -42,6 +45,9 @@ type Counting struct {
 	closes    int
 	syncs     int
 	sbs       []*Sandbox
+	// principals are the PrincipalFromContext results of Create, Reap and
+	// sandbox Sync, in call order.
+	createPs, reapPs, syncPs []Principal
 }
 
 // Reaped is one Reap result of a stub.
@@ -100,6 +106,7 @@ func (c *Counting) Capabilities() sandbox.Capabilities {
 func (c *Counting) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandbox, error) {
 	c.mu.Lock()
 	c.creates++
+	c.createPs = append(c.createPs, principalOf(ctx))
 	err, stub, block, unrelay, ctxWait, after := c.createErr, c.caps != nil, c.block, c.unrelay, c.ctxWait, c.after
 	c.mu.Unlock()
 	if err != nil {
@@ -141,6 +148,7 @@ type opaque struct{ sandbox.Sandbox }
 func (c *Counting) Reap(ctx context.Context) ([]string, error) {
 	c.mu.Lock()
 	c.reapsN++
+	c.reapPs = append(c.reapPs, principalOf(ctx))
 	if c.caps != nil || len(c.reaps) > 0 {
 		var r Reaped
 		if len(c.reaps) > 0 {
@@ -158,6 +166,35 @@ func (c *Counting) Creates() int { c.mu.Lock(); defer c.mu.Unlock(); return c.cr
 func (c *Counting) Reaps() int   { c.mu.Lock(); defer c.mu.Unlock(); return c.reapsN }
 func (c *Counting) Closes() int  { c.mu.Lock(); defer c.mu.Unlock(); return c.closes }
 func (c *Counting) Syncs() int   { c.mu.Lock(); defer c.mu.Unlock(); return c.syncs }
+
+// Principal is what PrincipalFromContext returned on the context of one
+// backend call.
+type Principal struct {
+	Principal string
+	OK        bool
+}
+
+// principalOf is what PrincipalFromContext returns for ctx.
+func principalOf(ctx context.Context) Principal {
+	p, ok := gatewayd.PrincipalFromContext(ctx)
+	return Principal{Principal: p, OK: ok}
+}
+
+// CreatePrincipals, ReapPrincipals and SyncPrincipals are what
+// PrincipalFromContext returned on the context of each Create, Reap (the RPC's
+// and the periodic reap's) and sandbox Sync, in call order.
+func (c *Counting) CreatePrincipals() []Principal { return c.principals(&c.createPs) }
+func (c *Counting) ReapPrincipals() []Principal   { return c.principals(&c.reapPs) }
+func (c *Counting) SyncPrincipals() []Principal   { return c.principals(&c.syncPs) }
+
+// Principals is CreatePrincipals.
+func (c *Counting) Principals() []Principal { return c.CreatePrincipals() }
+
+func (c *Counting) principals(list *[]Principal) []Principal {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]Principal(nil), *list...)
+}
 
 // Sandboxes is every sandbox Create returned, in order.
 func (c *Counting) Sandboxes() []*Sandbox {
@@ -206,7 +243,8 @@ func (s *Sandbox) Close(ctx context.Context) error {
 }
 
 func (s *Sandbox) Sync(ctx context.Context, src sandbox.Source) (sandbox.SyncResult, error) {
-	s.c.with(func() { s.c.syncs++ })
+	p := principalOf(ctx)
+	s.c.with(func() { s.c.syncs++; s.c.syncPs = append(s.c.syncPs, p) })
 	return s.Sandbox.Sync(ctx, src)
 }
 

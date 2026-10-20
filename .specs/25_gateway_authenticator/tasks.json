@@ -44,7 +44,7 @@
       "done_when": [
         "New returns a server for Config{Backend, Authenticate} and refuses both-set and neither-set configurations"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -93,7 +93,7 @@
       "done_when": [
         "Every spec 19 test in sandbox/gatewayd and its command passes without modification"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -144,7 +144,7 @@
       "done_when": [
         "A callback-mode server accepts exactly the tokens its authenticator accepts and refuses everything else before any message is read"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -190,7 +190,7 @@
       "done_when": [
         "Principal-keyed ownership holds in both modes with the spec 19 foreign-id answers"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -227,7 +227,7 @@
       "done_when": [
         "The refused-authentication line carries one of the four reason values and no log line holds a secret"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -269,7 +269,7 @@
       "done_when": [
         "After Server.Destroy a client sees exactly what it sees after TTL expiry"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -314,7 +314,7 @@
       "done_when": [
         "`make doc` output differs from spec 19's only by the five identifiers and `make check` passes in every module"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -343,7 +343,7 @@
       "done_when": [
         "`make check` passes in every module and all four smoke tests pass"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

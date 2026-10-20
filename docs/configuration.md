@@ -1130,7 +1130,8 @@ context; a failed destroy is returned, and the sandbox then lives on the
 gateway until its expiry. Calls fail with `sandbox_unavailable` when the
 connection to the gateway, or the gateway's connection to the agent, breaks
 mid-call, and when the gateway destroys the sandbox (its expiry, another
-client with the same token, a shutdown). Nothing reconnects.
+client of the same principal, the embedder's `Server.Destroy`, a shutdown).
+Nothing reconnects.
 
 **`gatewayd.New(gatewayd.Config)`** checks the configuration and returns a
 server; `Serve(net.Listener)` serves it once, and `Shutdown(ctx)` stops
@@ -1140,19 +1141,81 @@ until `ctx` is done.
 | `gatewayd.Config` field | Meaning | Default |
 |---|---|---|
 | `Backend` | The one provider that creates the sandboxes. | required |
-| `Tokens` | The accepted tokens: at least one, each at least 32 characters of printable ASCII without whitespace, none repeated. Only their SHA-256 sums are kept. | required |
+| `Tokens` | The accepted tokens (static mode): at least one, each at least 32 characters of printable ASCII without whitespace, none repeated. Only their SHA-256 sums are kept. | exactly one of `Tokens` and `Authenticate` |
+| `Authenticate` | An `Authenticator`, `func(ctx context.Context, token string) (principal string, ok bool)` (callback mode): it decides which tokens are accepted and names the principal that owns each one's sandboxes. | exactly one of `Tokens` and `Authenticate` |
 | `TLS` | Serve TLS with this config; nil serves plaintext. | nil |
 | `NetworkModes` | The network ceiling: the modes clients may request, intersected with the backend's; an empty intersection is refused, naming both lists. | `[NetworkNone]` |
 | `MaxSandboxes` | The most sandboxes held at once, counting creates in progress; beyond it `Create` is refused with `CAPACITY`. | 16 |
 | `MaxTTL` | The longest TTL accepted; a zero TTL counts as 1h. | 24h |
 | `ReapInterval` | How often `Backend.Reap` runs; it also runs once when `Serve` starts. A failure is logged, never fatal. | 10m |
-| `Logger` | Receives one line per create, destroy, refused authentication and backend reap; never a token, an `Env` value, a tool input or a tool result. | discards |
+| `Logger` | Receives one line per create, destroy, refused authentication (with its peer address and a `reason`) and backend reap; never a token, an `Env` value, a tool input or a tool result. | discards |
 
 Negative limits are refused. The ceiling defaults to `none` because a token
 holder on a shared host should not get unrestricted egress unless the
 operator chose it; the command's `--network` sets it. The server checks every
 request again, whatever the client checked. It is the trust boundary, and
 a client may be older, newer or not AgentKit at all.
+
+**Authentication modes.** `New` refuses a `Config` that sets both `Tokens` and
+`Authenticate` and one that sets neither, with an error that names both fields
+and holds no token (`gatewayd: Config.Tokens and Config.Authenticate are both
+set: set exactly one`, `gatewayd: neither Config.Tokens nor
+Config.Authenticate is set: set exactly one`). Everything else is validated as
+before; `Tokens` is validated only in static mode.
+
+- *Static mode* (`Tokens`): each RPC's token is hashed and compared with every
+  configured hash in constant time, in gRPC's tap handle and again in the
+  interceptors.
+- *Callback mode* (`Authenticate`): the tap handle calls the function once for
+  each unary RPC and each stream, with a context that carries the peer address
+  and the token exactly as presented; the server applies no length or
+  character rule to it. A missing, repeated, non-`Bearer` or empty
+  `authorization` header is refused without calling it. `ok == false`, an empty
+  principal, a principal over 256 bytes and a panic (recovered; its value is
+  never logged) all refuse the RPC with `Unauthenticated` before gRPC reads a
+  message, also for a method no handler serves. The interceptors do not call it
+  again; they check that the context carries a principal. The function must be
+  safe for concurrent use and return quickly without blocking: a slow one
+  stalls every stream on its connection, and the server enforces no timeout.
+  The server trusts it to compare tokens in constant time.
+
+The refused-authentication line keeps its message and `peer` and has a `reason`:
+`no token` (a missing, repeated, non-`Bearer` or empty header), `refused` (no
+hash matches, the function said no, or an interceptor found no principal),
+`invalid principal` or `panic`.
+
+**Principals.** An authenticated RPC has a *principal*: what the
+`Authenticator` returned in callback mode, the 64-character lowercase hex
+SHA-256 of the token in static mode. A sandbox belongs to the principal of the
+`Create` that made it. Another token of the same principal lists, relays to,
+syncs and destroys it; a token of another principal gets the answers for an id
+that does not exist (`List` omits it, `Destroy` answers OK and does nothing,
+the relay and `SyncGit` answer `Unavailable` naming the id). Revoking a token
+refuses its later RPCs; RPCs in flight run to their end, and the principal's
+sandboxes stay until their TTL, a `Destroy`, `Server.Destroy` or `Shutdown`.
+The principal must not be a secret: a callback-mode `sandbox created` line
+carries it whole as `owner`, a static-mode line only its first 8 characters,
+and the backend receives it.
+
+**`gatewayd.PrincipalFromContext(ctx)`** returns the principal to a `Backend`
+that is serving an authenticated RPC: in `Create`, in the `Sync` of a sandbox
+that a `SyncGit` RPC syncs, and in `Reap` when the `Gateway.Reap` RPC calls it.
+It reports `ok == false` on the periodic reap, on every `Close` the server
+makes on its own (a client `Destroy`, expiry, unavailability, `Shutdown`, the
+error paths of `Create`) and on any context the server did not make. Nothing
+exported puts a principal on a context.
+
+**`(*Server).Destroy(ctx, id)`** ends a sandbox the server holds, whoever
+created it, without a client token. It removes the entry, stops its timer,
+calls the backend sandbox's `Close` with `ctx` (which ends the relayed calls in
+flight) and logs `sandbox destroyed` with the reason `embedder`; the client
+then sees what it sees at expiry (`sandbox_unavailable` on its next proxy
+call, the id gone from `List`). It returns the `Close` error wrapped with the
+id, and the entry stays removed if `Close` fails or `ctx` is cancelled. For an
+id the server does not hold (unknown, already removed by any path, a `Create`
+still in progress, before `Serve`, after `Shutdown`) it returns an error that
+matches `gatewayd.ErrNotHeld`, which an embedder wanting idempotence treats as
+"already gone". The `agentkit-gateway` command always runs in static mode.
 
 **Testing it.** The gateway's offline tests run in `make check`: an
 in-process server over `local` with a client in the same process. `make
