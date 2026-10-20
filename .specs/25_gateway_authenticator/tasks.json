@@ -190,7 +190,7 @@
       "done_when": [
         "Principal-keyed ownership holds in both modes with the spec 19 foreign-id answers"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
