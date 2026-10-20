@@ -13,10 +13,11 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/attach"
 )
 
-// entry is one sandbox the gateway holds.
+// entry is one sandbox the gateway holds; its owner is the principal of the
+// Create RPC that made it.
 type entry struct {
 	id      string
-	owner   owner
+	owner   string
 	created time.Time
 	expires time.Time
 	spec    sandbox.Spec
@@ -98,7 +99,7 @@ func (r *registry) add(e *entry) error {
 }
 
 // lookup is o's sandbox id, or nil: another owner's id is nil too.
-func (r *registry) lookup(o owner, id string) *entry {
+func (r *registry) lookup(o, id string) *entry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if e := r.entries[id]; e != nil && e.owner == o {
@@ -110,7 +111,7 @@ func (r *registry) lookup(o owner, id string) *entry {
 // access is o's live sandbox id. An unknown id and another owner's are
 // answered Unavailable alike; a sandbox whose backend is no longer live is
 // removed and answered Unavailable too.
-func (r *registry) access(o owner, id string) (*entry, error) {
+func (r *registry) access(o, id string) (*entry, error) {
 	e := r.lookup(o, id)
 	if e == nil {
 		return nil, unavailable("gatewayd: no sandbox %q", id)
@@ -124,7 +125,7 @@ func (r *registry) access(o owner, id string) (*entry, error) {
 
 // list is o's live sandboxes, by creation time and then id; the ones no
 // longer live are removed.
-func (r *registry) list(o owner) []*entry {
+func (r *registry) list(o string) []*entry {
 	r.mu.Lock()
 	var mine []*entry
 	for _, e := range r.entries {

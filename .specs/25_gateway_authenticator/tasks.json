@@ -93,7 +93,7 @@
       "done_when": [
         "Every spec 19 test in sandbox/gatewayd and its command passes without modification"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,

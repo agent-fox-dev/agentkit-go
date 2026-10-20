@@ -14,6 +14,20 @@ It is a separate module so the root and sandbox modules listen on no socket;
 the agentkit-gateway command (cmd/agentkit-gateway) serves it over TCP with a
 Podman or Docker backend.
 
+FUNCTIONS
+
+func PrincipalFromContext(ctx context.Context) (principal string, ok bool)
+    PrincipalFromContext is the principal of the authenticated RPC that ctx
+    was made for: in static mode the 64-character lowercase hex SHA-256 of its
+    token, in callback mode what the Authenticator returned. A Backend reads it
+    in Create, in the Sync of a sandbox that a SyncGit RPC syncs, and in Reap
+    when the Gateway.Reap RPC calls it, to learn which caller it serves.
+
+    It reports ok == false on the context of the periodic reap, on the context
+    of every Close the server makes on its own, and on any context the server
+    did not make. There is no exported way to put a principal on a context.
+
+
 TYPES
 
 type Authenticator func(ctx context.Context, token string) (principal string, ok bool)

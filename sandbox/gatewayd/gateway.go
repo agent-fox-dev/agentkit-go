@@ -20,7 +20,7 @@ import (
 )
 
 // gatewayService is the Gateway service. Every RPC reaching it has been
-// authenticated; the caller's owner is in its context.
+// authenticated; the caller's principal is in its context.
 type gatewayService struct {
 	sandboxpb.UnimplementedGatewayServer
 	s *Server
