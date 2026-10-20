@@ -227,7 +227,7 @@
       "done_when": [
         "The refused-authentication line carries one of the four reason values and no log line holds a secret"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
