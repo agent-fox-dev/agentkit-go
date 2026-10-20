@@ -1,6 +1,7 @@
 package gatewayd
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"errors"
@@ -19,13 +20,39 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 )
 
+// An Authenticator turns a bearer token into a principal: the identity that
+// owns the sandboxes the token creates. It reports ok == false for a token it
+// does not accept, and the RPC is then refused with Unauthenticated before
+// any request message is read.
+//
+// The server calls it once for each RPC, from gRPC's tap handle on the
+// connection's I/O goroutine, with a context that carries the peer address
+// and the token exactly as presented: the server applies no length or
+// character rule of its own to the token. It must be safe for concurrent use
+// and must return quickly without blocking, because a slow Authenticator
+// stalls every stream on the connection and the server enforces no timeout;
+// an embedder whose tokens live in a store keeps an in-memory view of them.
+// The server trusts it to compare tokens in constant time.
+//
+// A principal is 1 to 256 bytes with no other rule; an empty or longer one
+// counts as ok == false. Principals are compared byte for byte, logged as
+// given and handed to the backend (see PrincipalFromContext), so a principal
+// must not be a secret. A panic is recovered and refuses the RPC; the panic
+// value is not logged.
+type Authenticator func(ctx context.Context, token string) (principal string, ok bool)
+
 // Config configures a Server.
 type Config struct {
 	// Backend creates the sandboxes. Required.
 	Backend sandbox.Provider
-	// Tokens are the accepted bearer tokens: at least one, each at least 32
-	// characters of printable ASCII without whitespace, none repeated.
+	// Tokens are the accepted bearer tokens (static mode): at least one, each
+	// at least 32 characters of printable ASCII without whitespace, none
+	// repeated. Exactly one of Tokens and Authenticate must be set.
 	Tokens []string
+	// Authenticate (callback mode) decides which tokens are accepted and names
+	// the principal that owns the sandboxes each one creates, in place of
+	// Tokens. See Authenticator for what it must do.
+	Authenticate Authenticator
 	// TLS, when set, serves TLS with it; nil serves plaintext (behind a TLS
 	// proxy, or on loopback).
 	TLS *tls.Config
@@ -62,8 +89,10 @@ type Server struct {
 	maxTTL       time.Duration
 	reapInterval time.Duration
 	log          *slog.Logger
-	// owners are the SHA-256 sums of the accepted tokens.
-	owners [][sha256.Size]byte
+	// tokenSums are the SHA-256 sums of the accepted tokens (static mode).
+	tokenSums [][sha256.Size]byte
+	// authenticator is Config.Authenticate (callback mode); nil in static mode.
+	authenticator Authenticator
 
 	srv *grpc.Server
 	reg *registry
@@ -80,8 +109,16 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Backend == nil {
 		return nil, errors.New("gatewayd: Config.Backend is nil")
 	}
-	if err := token.Validate(cfg.Tokens); err != nil {
-		return nil, fmt.Errorf("gatewayd: Config.Tokens: %w", err)
+	switch {
+	case len(cfg.Tokens) > 0 && cfg.Authenticate != nil:
+		return nil, errors.New("gatewayd: Config.Tokens and Config.Authenticate are both set: set exactly one")
+	case len(cfg.Tokens) == 0 && cfg.Authenticate == nil:
+		return nil, errors.New("gatewayd: neither Config.Tokens nor Config.Authenticate is set: set exactly one")
+	}
+	if cfg.Authenticate == nil {
+		if err := token.Validate(cfg.Tokens); err != nil {
+			return nil, fmt.Errorf("gatewayd: Config.Tokens: %w", err)
+		}
 	}
 	for _, f := range []struct {
 		name string
@@ -107,7 +144,7 @@ func New(cfg Config) (*Server, error) {
 			modeList(ceiling), caps.Provider, modeList(caps.Network))
 	}
 	s := &Server{backend: cfg.Backend, caps: caps, offered: offered, maxSandboxes: cfg.MaxSandboxes, maxTTL: cfg.MaxTTL,
-		reapInterval: cfg.ReapInterval, log: cfg.Logger, stopped: make(chan struct{})}
+		reapInterval: cfg.ReapInterval, log: cfg.Logger, authenticator: cfg.Authenticate, stopped: make(chan struct{})}
 	if s.maxSandboxes == 0 {
 		s.maxSandboxes = defaultMaxSandboxes
 	}
@@ -121,7 +158,7 @@ func New(cfg Config) (*Server, error) {
 		s.log = slog.New(slog.DiscardHandler)
 	}
 	for _, t := range cfg.Tokens {
-		s.owners = append(s.owners, sha256.Sum256([]byte(t)))
+		s.tokenSums = append(s.tokenSums, sha256.Sum256([]byte(t)))
 	}
 	s.reg = newRegistry(s)
 	opts := []grpc.ServerOption{

@@ -50,7 +50,7 @@ func (s *Server) authenticateMD(md metadata.MD) (owner, bool) {
 	}
 	sum := sha256.Sum256([]byte(tok))
 	match := 0
-	for _, o := range s.owners {
+	for _, o := range s.tokenSums {
 		match |= subtle.ConstantTimeCompare(sum[:], o[:])
 	}
 	return sum, match == 1

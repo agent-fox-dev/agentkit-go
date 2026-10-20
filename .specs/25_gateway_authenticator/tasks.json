@@ -44,7 +44,7 @@
       "done_when": [
         "New returns a server for Config{Backend, Authenticate} and refuses both-set and neither-set configurations"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
