@@ -171,3 +171,23 @@ four of this spec's criteria, and static mode adds one log attribute.
   before any message is read hold per principal: a second token of the same
   principal reaches the first token's sandboxes (`TestSharedPrincipal_TS25_19`,
   `TestForeignPrincipal_TS25_20`).
+
+## The relay sends the backend sandbox's own metadata (D-6)
+
+Spec 19 says the relay forwards none of the incoming metadata to the agent
+(19-REQ-7.3), and TS-19-48 says an agent never sees `authorization` or
+`agentkit-sandbox-id`. Both still hold for the agent of a Podman, Landlock or
+local sandbox, and for the caller's metadata in every case. They left out a
+backend that is a gateway client: its sandbox has no agent of its own, only the
+next gateway, which routes every Agent RPC by `agentkit-sandbox-id` and
+answered a relayed one "the RPC carries no agentkit-sandbox-id". A gateway in
+front of another gateway could create a sandbox and do nothing with it.
+
+The relay now calls the agent with the outgoing metadata of the backend's
+sandbox, `attach.Outgoing` (`sandbox/internal/attach/attach.go`), used by
+`upstream` in `sandbox/gatewayd/relay.go`. That is `attach.Config.Metadata`,
+which no container or local provider sets and `gateway.Provider.Create` sets to
+the sandbox id. `TestRelayThroughAGatewayBackend` creates, syncs, reads and
+closes a sandbox through two gateways, and
+`TestRelayThroughAGatewayBackendKeepsTheAgentBlind` shows that the agent behind
+the second one sees neither key and nothing the caller added.

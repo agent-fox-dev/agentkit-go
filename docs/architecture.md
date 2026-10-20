@@ -962,7 +962,8 @@ gatewayd   authenticate from the headers, before any message is read (SHA-256
            context) → entry {owner = the principal, created, expires}
 embedder   attach.New over the shared connection, agentkit-sandbox-id metadata
 gatewayd   relay: route by id and owner → the backend sandbox's own agent
-           connection (attach.ClientConn through Unwrap), no incoming metadata
+           connection (attach.ClientConn through Unwrap), no incoming metadata,
+           the backend sandbox's own outgoing metadata (attach.Outgoing)
 agent      the backend's agent, unaware of the gateway
 ```
 
@@ -985,8 +986,14 @@ cancellation and deadlines reach the agent. It reads what it must: the
 Agent RPC the gateway's build does not know answers `Unimplemented` until the
 gateway is upgraded.
 
-*Metadata hygiene.* The relay calls the agent with an empty outgoing
-metadata set: the agent never sees `authorization` or `agentkit-sandbox-id`.
+*Metadata hygiene.* The relay forwards none of the incoming metadata. It calls
+the agent with the outgoing metadata of the backend's sandbox
+(`attach.Outgoing`), which is empty for a Podman, Landlock or local sandbox:
+the agent never sees `authorization` or `agentkit-sandbox-id`. A backend that
+is itself a gateway client makes a gateway of gateways. The sandbox it returns
+sends `agentkit-sandbox-id` with its own RPCs, so the relay passes that id to
+the next gateway, which routes by it, and the connection carries the client's
+token; the agent behind the last gateway sees neither.
 In static mode the server keeps only each token's SHA-256, which is the
 principal that owns the token's sandboxes, and logs only its first 8 hex
 characters; in callback mode it keeps no token and logs the principal the

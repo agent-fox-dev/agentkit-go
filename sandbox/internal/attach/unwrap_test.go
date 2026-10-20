@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"google.golang.org/grpc/metadata"
+
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/fakeagent"
@@ -61,5 +63,29 @@ func TestUnwrapChain_TS19_53(t *testing.T) {
 	}
 	if err := Live(w2); !errors.Is(err, sandbox.ErrClosed) {
 		t.Fatalf("Live(w2) after Close = %v, want ErrClosed", err)
+	}
+}
+
+// Outgoing follows an Unwrap chain to the sandbox attach created and returns ctx
+// with the metadata that sandbox sends with its own RPCs, replacing any outgoing
+// metadata ctx had; it is ctx itself when the sandbox sends none or is not one
+// attach created.
+func TestOutgoingFollowsTheUnwrapChain(t *testing.T) {
+	md := metadata.Pairs("agentkit-sandbox-id", "box-7")
+	sb := attachFake(t, fakeagent.New(), Config{Metadata: md})
+	base := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("stale", "1"))
+
+	for name, s := range map[string]sandbox.Sandbox{"attached": sb, "wrapped": wrapper{wrapper{sb}}} {
+		got, ok := metadata.FromOutgoingContext(Outgoing(base, s))
+		if !ok || len(got) != 1 || got.Get("agentkit-sandbox-id")[0] != "box-7" {
+			t.Errorf("%s: outgoing metadata = %v, want only agentkit-sandbox-id: box-7", name, got)
+		}
+	}
+
+	bare := attachFake(t, fakeagent.New(), Config{})
+	for name, s := range map[string]sandbox.Sandbox{"no metadata": bare, "not attached": plain{}, "cyclic": &cyclic{}, "wraps nil": wrapper{}} {
+		if got := Outgoing(base, s); got != base {
+			t.Errorf("%s: Outgoing changed the context", name)
+		}
 	}
 }

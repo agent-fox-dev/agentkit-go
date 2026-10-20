@@ -40,6 +40,16 @@ in Create, in the Sync of a sandbox that a SyncGit RPC syncs, and in the Reap
 that a Gateway.Reap RPC makes. The embedder ends any sandbox the server holds,
 without a client token, with Server.Destroy.
 
+# Gateways in a chain
+
+A Backend may itself be a client of another gateway (sandbox/gateway.Dial),
+which puts this server in front of that one. The sandbox the client returns
+sends agentkit-sandbox-id with its own RPCs, and the relay sends it on with each
+relayed Agent RPC, so the other gateway can route it; the connection carries
+the client's token. Nothing else is passed on: the metadata of the caller's
+RPC is never forwarded, and the agent behind the last gateway sees neither the
+authorization header nor the sandbox id.
+
 It is a separate module so the root and sandbox modules listen on no socket;
 the agentkit-gateway command (cmd/agentkit-gateway) serves it over TCP with a
 Podman or Docker backend.
