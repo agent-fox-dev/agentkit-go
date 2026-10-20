@@ -167,7 +167,7 @@ func (g *gatewayService) List(ctx context.Context, _ *sandboxpb.ListRequest) (*s
 // and is answered Unavailable.
 func (g *gatewayService) Destroy(ctx context.Context, req *sandboxpb.DestroyRequest) (*sandboxpb.DestroyResponse, error) {
 	if e := g.s.reg.lookup(ownerOf(ctx), req.GetId()); e != nil {
-		if err := g.s.reg.remove(e, reasonClient); err != nil {
+		if err := g.s.reg.remove(context.Background(), e, reasonClient); err != nil {
 			return nil, status.Errorf(codes.Unavailable, "gatewayd: destroy %q: %v", e.id, err)
 		}
 	}

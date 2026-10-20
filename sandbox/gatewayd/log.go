@@ -30,6 +30,7 @@ const (
 	reasonExpired     = "expired"
 	reasonUnavailable = "unavailable"
 	reasonShutdown    = "shutdown"
+	reasonEmbedder    = "embedder"
 )
 
 func (s *Server) logDestroy(id, reason string, err error) {

@@ -269,7 +269,7 @@
       "done_when": [
         "After Server.Destroy a client sees exactly what it sees after TTL expiry"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,

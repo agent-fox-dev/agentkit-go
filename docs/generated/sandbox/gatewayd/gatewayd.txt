@@ -14,6 +14,17 @@ It is a separate module so the root and sandbox modules listen on no socket;
 the agentkit-gateway command (cmd/agentkit-gateway) serves it over TCP with a
 Podman or Docker backend.
 
+VARIABLES
+
+var ErrNotHeld = errors.New("gatewayd: sandbox not held")
+    ErrNotHeld is what Destroy returns, wrapped with the id, for a sandbox the
+    server does not hold: an id it never held, one already removed by any path
+    (a client Destroy, expiry, unavailability, Shutdown or an earlier Destroy),
+    one whose Create has not been recorded yet, and any id before Serve or
+    after Shutdown. An embedder that wants Destroy to be idempotent treats
+    errors.Is(err, ErrNotHeld) as "already gone".
+
+
 FUNCTIONS
 
 func PrincipalFromContext(ctx context.Context) (principal string, ok bool)
@@ -88,6 +99,26 @@ type Server struct {
 func New(cfg Config) (*Server, error)
     New checks cfg, applies its defaults and returns a Server that is not yet
     serving.
+
+func (s *Server) Destroy(ctx context.Context, id string) error
+    Destroy ends the sandbox the server holds under id, whoever created it,
+    with the effects of an expiry: the entry is removed and its timer stopped,
+    the backend sandbox's Close is called with ctx (which ends the relayed calls
+    in flight) and "sandbox destroyed" is logged with the reason "embedder".
+    The owner's next proxy call then gets sandbox_unavailable, its List omits
+    the id, its Destroy answers OK and its SyncGit answers Unavailable.
+
+    It returns the Close error wrapped with the id, so errors.Is and errors.As
+    reach the backend's error. The entry stays removed even if Close fails or
+    ctx is cancelled. For an id the server does not hold it calls no backend
+    method and returns an error that matches ErrNotHeld and names the id.
+    If a concurrent removal of the same entry wins after the lookup, Destroy
+    returns nil: the backend sandbox is closed once, by the removal that won.
+
+    A Create still in progress is not held. The Backend sees the new sandbox's
+    id before the server records it, and a Destroy in that window returns
+    ErrNotHeld; the embedder then holds the backend sandbox and can close it
+    itself.
 
 func (s *Server) Serve(l net.Listener) error
     Serve serves the gateway on l until Shutdown: TLS when Config.TLS was set,
