@@ -154,6 +154,20 @@ func ClientConn(s sandbox.Sandbox) grpc.ClientConnInterface {
 	return nil
 }
 
+// Outgoing is ctx with the outgoing metadata of the sandbox that s is, or that
+// s's Unwrap chain reaches: the Config.Metadata it sends with every RPC of its
+// own, in place of any outgoing metadata ctx has. It is ctx itself when there
+// is no such sandbox or it sends no metadata, which is every sandbox of a
+// container or local provider. A gateway relays an Agent RPC to the agent of
+// a sandbox over ClientConn(s), and sends this with it: for a sandbox that
+// lives on another gateway it names the sandbox there.
+func Outgoing(ctx context.Context, s sandbox.Sandbox) context.Context {
+	if x := unwrapAttached(s); x != nil {
+		return x.outgoing(ctx)
+	}
+	return ctx
+}
+
 // maxUnwrap bounds an Unwrap chain, so a cyclic one cannot loop.
 const maxUnwrap = 32
 

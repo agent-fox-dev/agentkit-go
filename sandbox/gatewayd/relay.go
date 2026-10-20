@@ -62,9 +62,12 @@ func validID(id string) bool {
 
 // upstream is a client of e's agent and the context to call it under: the
 // incoming RPC's, so cancellation and deadlines propagate, with none of its
-// metadata.
+// metadata but what the backend's sandbox sends with its own RPCs. That is
+// nothing for a container or local sandbox, whose agent never sees the
+// authorization header or the sandbox id, and the sandbox id there for a
+// sandbox created through a gateway client, whose "agent" is the next gateway.
 func upstream(ctx context.Context, e *entry) (sandboxpb.AgentClient, context.Context) {
-	return sandboxpb.NewAgentClient(attach.ClientConn(e.sb)), metadata.NewOutgoingContext(ctx, metadata.MD{})
+	return sandboxpb.NewAgentClient(attach.ClientConn(e.sb)), attach.Outgoing(metadata.NewOutgoingContext(ctx, metadata.MD{}), e.sb)
 }
 
 // mapUpstream is the status a relayed RPC's upstream error is answered
