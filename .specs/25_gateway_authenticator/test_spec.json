@@ -1,0 +1,926 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "25",
+  "spec_name": "gateway_authenticator",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-25-1",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-1.1"
+      ],
+      "title": "Authenticator and Config.Authenticate are exported with the specified shapes",
+      "given": [
+        "the gatewayd package compiled in an external test package"
+      ],
+      "when": "a function literal func(ctx context.Context, token string) (string, bool) is assigned to a gatewayd.Authenticator and to Config.Authenticate",
+      "then": [
+        "the assignment compiles",
+        "a gatewayd.Authenticator value is assignable back to the bare func type"
+      ],
+      "pseudocode": "var a gatewayd.Authenticator = func(ctx context.Context, tok string) (string, bool) { return 'p', true }; cfg := gatewayd.Config{Backend: b, Authenticate: a}; var f func(context.Context,string)(string,bool) = a"
+    },
+    {
+      "id": "TS-25-2",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-1.2"
+      ],
+      "title": "New refuses a Config with both Tokens and Authenticate and leaks no token",
+      "given": [
+        "a valid backend",
+        "two valid tokens",
+        "a non-nil authenticator"
+      ],
+      "when": "gatewayd.New is called with Tokens non-empty and Authenticate non-nil",
+      "then": [
+        "the returned *Server is nil",
+        "the error is non-nil and its text contains 'Tokens' and 'Authenticate'",
+        "the error text contains neither configured token"
+      ],
+      "pseudocode": "s, err := gatewayd.New(Config{Backend:b, Tokens:[]string{Token,TokenB}, Authenticate:fn}); assert s == nil; assert err != nil; assert contains(err.Error(),'Tokens') && contains(err.Error(),'Authenticate'); assert !contains(err.Error(), Token) && !contains(err.Error(), TokenB)"
+    },
+    {
+      "id": "TS-25-3",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-1.3"
+      ],
+      "title": "New refuses a Config with neither Tokens nor Authenticate, for nil and empty Tokens",
+      "given": [
+        "a valid backend"
+      ],
+      "when": "gatewayd.New is called once with nil Tokens and once with an empty non-nil Tokens slice, both with a nil Authenticate",
+      "then": [
+        "both calls return a nil *Server",
+        "both errors are non-nil and their text contains 'Tokens' and 'Authenticate'"
+      ],
+      "pseudocode": "for toks in [nil, []string{}]: s, err := New(Config{Backend:b, Tokens:toks}); assert s == nil; assert contains(err.Error(),'Tokens') && contains(err.Error(),'Authenticate')"
+    },
+    {
+      "id": "TS-25-4",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-1.4"
+      ],
+      "title": "Static mode validates the token list with the unchanged spec 19 errors",
+      "given": [
+        "a nil Authenticate"
+      ],
+      "when": "New is called with a too-short token, a token with a non-printable byte, and a repeated token",
+      "then": [
+        "each call returns an error starting 'gatewayd: Config.Tokens: '",
+        "each error text equals what token.Validate produces for that list, wrapped as in spec 19",
+        "a valid list returns a server and nil error"
+      ],
+      "pseudocode": "for list in [short, nonprintable, dup]: _, err := New(Config{Backend:b, Tokens:list}); assert err.Error() == 'gatewayd: Config.Tokens: ' + token.Validate(list).Error()"
+    },
+    {
+      "id": "TS-25-5",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-1.5"
+      ],
+      "title": "Callback mode skips token validation but keeps the other spec 19 checks",
+      "given": [
+        "a non-nil Authenticate and empty Tokens"
+      ],
+      "when": "New is called with a valid Backend; with a nil Backend; with a negative MaxSandboxes",
+      "then": [
+        "the valid Config returns a non-nil *Server and nil error",
+        "the nil Backend returns the error 'gatewayd: Config.Backend is nil'",
+        "the negative limit returns the same error text spec 19 returns"
+      ],
+      "pseudocode": "s, err := New(Config{Backend:b, Authenticate:fn}); assert err == nil && s != nil; _, err = New(Config{Authenticate:fn}); assert err.Error() == 'gatewayd: Config.Backend is nil'; _, err = New(Config{Backend:b, Authenticate:fn, MaxSandboxes:-1}); assert err.Error() == spec19Text"
+    },
+    {
+      "id": "TS-25-6",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-2.1"
+      ],
+      "title": "Static mode refuses an unknown token in the tap and the interceptors with the spec 19 text",
+      "given": [
+        "a gwtest server started with Config.Tokens only"
+      ],
+      "when": "a unary RPC, a stream RPC and a call to a method no handler serves are made with a token not in the list, and a unary and a stream RPC are made with a configured token",
+      "then": [
+        "each unknown-token RPC returns codes.Unauthenticated with message 'gatewayd: a valid bearer token is required'",
+        "the unserved method is refused with Unauthenticated, not Unimplemented",
+        "the configured-token RPCs succeed"
+      ],
+      "pseudocode": "env := gwtest.Start(t, Config{Backend:b}); conn := env.Raw(t); for each rpc: err := invoke(Ctx(ctx, 'x'*40)); assert status.Code(err)==Unauthenticated && status.Convert(err).Message()=='gatewayd: a valid bearer token is required'"
+    },
+    {
+      "id": "TS-25-7",
+      "kind": "property",
+      "verifies": [
+        "25-REQ-2.2"
+      ],
+      "title": "In static mode the principal is the lowercase hex SHA-256 of any accepted token",
+      "given": [
+        "a gwtest server whose Tokens hold the generated token",
+        "gwtest.Counting as the backend"
+      ],
+      "when": "for any token of 32 to 64 printable ASCII bytes configured in Tokens, a client creates a sandbox with it",
+      "then": [
+        "PrincipalFromContext on the backend's Create context returns ok == true",
+        "the principal equals hex.EncodeToString(sha256.Sum256(token)) and is 64 lowercase hex characters"
+      ],
+      "pseudocode": "for tok in gen_tokens(32..64, printable): env := Start(Config{Backend:counting, Tokens:[tok]}); create(env.Dial(t,tok)); p, ok := counting.Principals()[0]; assert ok && p == hex(sha256(tok))"
+    },
+    {
+      "id": "TS-25-8",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-2.3"
+      ],
+      "title": "Static mode logs the 8-character owner fingerprint and never the full hash",
+      "given": [
+        "a static-mode server with a log capture",
+        "a token whose full hex SHA-256 is known"
+      ],
+      "when": "a client creates a sandbox with that token",
+      "then": [
+        "the 'sandbox created' record's owner equals the first 8 hex characters of the SHA-256",
+        "no log line contains the full 64-character hash or the token"
+      ],
+      "pseudocode": "h := hex(sha256(Token)); rec := logs.Messages('sandbox created')[0]; assert rec['owner'] == h[:8]; assert !contains(logs.String(), h) && !contains(logs.String(), Token)"
+    },
+    {
+      "id": "TS-25-9",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-3.1"
+      ],
+      "title": "Callback mode refuses missing, repeated, non-Bearer and empty authorization without calling the authenticator",
+      "given": [
+        "a callback-mode server with an authenticator that counts its calls and accepts everything"
+      ],
+      "when": "RPCs are sent with no authorization header, two authorization values, a 'Basic xyz' value, 'bearer x' lowercase prefix, and 'Bearer ' with an empty token",
+      "then": [
+        "each RPC returns codes.Unauthenticated with message 'gatewayd: a valid bearer token is required'",
+        "the authenticator's call count stays 0"
+      ],
+      "pseudocode": "for md in shapes: err := rawInvoke(md); assert Unauthenticated + message; assert calls.Load()==0"
+    },
+    {
+      "id": "TS-25-10",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-3.2"
+      ],
+      "title": "The authenticator runs exactly once per unary RPC and per stream, with the tap context and the raw token",
+      "given": [
+        "a callback-mode server whose authenticator records each call's token and whether peer.FromContext(ctx) is present"
+      ],
+      "when": "one unary RPC, one stream and then RPCs with a 1-byte token, a 31-byte token and a token containing an internal space and punctuation are made",
+      "then": [
+        "one call is recorded per unary RPC and one per stream",
+        "each recorded ctx carries a peer address",
+        "the recorded tokens equal the presented tokens byte for byte, without any server length or character rule"
+      ],
+      "pseudocode": "unary(Ctx(ctx,'t1')); assert len(calls)==1; stream(Ctx(ctx,'t2')); assert len(calls)==2; for tok in ['a', 31 chars, 'a b~!=']: invoke(tok); assert calls.last.token == tok && calls.last.hasPeer"
+    },
+    {
+      "id": "TS-25-11",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-3.3"
+      ],
+      "title": "A refused callback-mode RPC is stopped in the tap before any message is read and before any handler or backend runs",
+      "given": [
+        "a callback-mode server whose authenticator returns ok == false",
+        "a counting backend",
+        "a raw gRPC connection"
+      ],
+      "when": "unary and stream RPCs are made for served methods and for a method no handler serves",
+      "then": [
+        "every RPC returns codes.Unauthenticated with message 'gatewayd: a valid bearer token is required'",
+        "the unserved method returns Unauthenticated, not Unimplemented",
+        "the backend recorded no Create, Reap or Sync call"
+      ],
+      "pseudocode": "for m in [Create, Hello stream, '/x.Y/Z']: err := raw.Invoke(Ctx(ctx,'tok'), m); assert Unauthenticated; assert counting.Creates()==0 && counting.Reaps()==0"
+    },
+    {
+      "id": "TS-25-12",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-3.4",
+        "25-REQ-7.2"
+      ],
+      "title": "An accepted principal reaches the backend's Create context and the authenticator is not called again",
+      "given": [
+        "a callback-mode server whose authenticator maps 'tok-a' to principal 'tenant-1'",
+        "gwtest.Counting as backend"
+      ],
+      "when": "a client creates a sandbox with 'tok-a'",
+      "then": [
+        "PrincipalFromContext on the Create context returns ('tenant-1', true)",
+        "the authenticator's call count for that RPC is exactly 1 though the unary interceptor also ran"
+      ],
+      "pseudocode": "sb := create(env.Dial(t,'tok-a')); assert counting.Principals()[0] == ('tenant-1', true); assert calls.Load()==1"
+    },
+    {
+      "id": "TS-25-13",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-3.5",
+        "25-REQ-6.4"
+      ],
+      "title": "A callback-mode interceptor given a context without a principal refuses with Unauthenticated",
+      "given": [
+        "an in-package test with a callback-mode Server and a log capture",
+        "a context that carries no principal"
+      ],
+      "when": "unaryAuth and streamAuth are invoked directly with that context and a handler that records whether it ran",
+      "then": [
+        "both return codes.Unauthenticated with message 'gatewayd: a valid bearer token is required'",
+        "the handler never runs",
+        "the authenticator is not called",
+        "the 'authentication refused' log carries reason 'refused'"
+      ],
+      "pseudocode": "_, err := s.unaryAuth(context.Background(), req, info, handler); assert Unauthenticated; assert !ran; assert calls==0; assert logs.Messages('authentication refused')[0]['reason']=='refused'"
+    },
+    {
+      "id": "TS-25-14",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-3.6"
+      ],
+      "title": "Revoking a token refuses later RPCs but leaves in-flight RPCs and the principal's sandboxes alone",
+      "given": [
+        "a callback-mode server whose authenticator maps tokens 'tok-a' and 'tok-b' to principal P and can revoke 'tok-a' at runtime",
+        "a sandbox created with 'tok-a' and an execute tool call in flight under 'tok-a'"
+      ],
+      "when": "'tok-a' is revoked while the execute runs, then a later RPC with 'tok-a' is made, then List with 'tok-b'",
+      "then": [
+        "the in-flight execute returns its normal result",
+        "the later 'tok-a' RPC returns codes.Unauthenticated",
+        "'tok-b' List still includes the sandbox"
+      ],
+      "pseudocode": "start execute(sleep) under tok-a; revoke('tok-a'); assert execute result ok; assert Unauthenticated on List(tok-a); assert id in List(tok-b)"
+    },
+    {
+      "id": "TS-25-15",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-4.1"
+      ],
+      "title": "An empty principal is refused and no sandbox is created",
+      "given": [
+        "a callback-mode server whose authenticator returns ('', true) for 'tok-empty'",
+        "gwtest.Counting as backend"
+      ],
+      "when": "a client calls Create with 'tok-empty'",
+      "then": [
+        "the RPC returns codes.Unauthenticated",
+        "the backend's Create count is 0 and the registry holds no sandbox"
+      ],
+      "pseudocode": "_, err := env.Dial(t,'tok-empty').Create(ctx, spec); assert Unauthenticated; assert counting.Creates()==0"
+    },
+    {
+      "id": "TS-25-16",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-4.2"
+      ],
+      "title": "A 257-byte principal is refused and a 256-byte principal is accepted",
+      "given": [
+        "a callback-mode server whose authenticator returns 257 'a' bytes for 'tok-long' and 256 'a' bytes for 'tok-max'"
+      ],
+      "when": "Create is called with each token",
+      "then": [
+        "'tok-long' gets codes.Unauthenticated",
+        "'tok-max' succeeds and the backend sees a 256-byte principal"
+      ],
+      "pseudocode": "assert Unauthenticated == code(create('tok-long')); assert create('tok-max') ok; assert len(counting.Principals()[0].p)==256"
+    },
+    {
+      "id": "TS-25-17",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-4.3"
+      ],
+      "title": "A panicking authenticator is recovered and the server keeps serving",
+      "given": [
+        "a callback-mode server whose authenticator panics for 'tok-boom' and accepts 'tok-ok'",
+        "one client connection used for both tokens"
+      ],
+      "when": "an RPC with 'tok-boom' is made, then an RPC with 'tok-ok' on the same connection, then one on a new connection",
+      "then": [
+        "the 'tok-boom' RPC returns codes.Unauthenticated",
+        "the process does not exit",
+        "both following RPCs succeed"
+      ],
+      "pseudocode": "conn := env.Raw(t); assert Unauthenticated == code(invoke(conn,'tok-boom')); assert nil == invoke(conn,'tok-ok'); assert nil == invoke(env.Raw(t),'tok-ok')"
+    },
+    {
+      "id": "TS-25-18",
+      "kind": "property",
+      "verifies": [
+        "25-REQ-4.4"
+      ],
+      "title": "Any principal of 1 to 256 bytes reaches the backend unchanged",
+      "given": [
+        "a callback-mode server whose authenticator returns the generated principal for 'tok'",
+        "gwtest.Counting as backend"
+      ],
+      "when": "for any byte string of length 1 to 256, including non-ASCII, invalid UTF-8 and control bytes, used as the principal",
+      "then": [
+        "Create succeeds",
+        "PrincipalFromContext returns exactly those bytes with ok == true",
+        "a second token mapping to the same bytes sees the sandbox, and one differing in a single byte does not"
+      ],
+      "pseudocode": "for p in gen_bytes(1..256): set(authn, p); create(); assert counting.last.principal == p; assert list(tokSame) has id; assert list(tokOneByteOff) empty"
+    },
+    {
+      "id": "TS-25-19",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-5.1",
+        "25-REQ-5.2"
+      ],
+      "title": "A second token of the same principal reaches the first token's sandbox through every RPC",
+      "given": [
+        "a callback-mode server mapping 'tok-a' and 'tok-b' to principal P",
+        "a sandbox created with 'tok-a'"
+      ],
+      "when": "with 'tok-b' the client calls List, runs a tool through the Agent relay, calls SyncGit, and finally calls Destroy",
+      "then": [
+        "List includes the id",
+        "the relay tool call returns its result",
+        "SyncGit syncs the sandbox",
+        "Destroy removes it and the destroy log reason is 'client'"
+      ],
+      "pseudocode": "sb := create(dial('tok-a')); pb := dial('tok-b'); assert id in pb.List(); assert run(pb.Attach(id)).ok; assert syncGit(pb,id) == nil; pb.Destroy(id); assert destroyReason(logs,id)=='client'"
+    },
+    {
+      "id": "TS-25-20",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-5.3"
+      ],
+      "title": "A different principal gets the answers spec 19 gives for an unknown id",
+      "given": [
+        "a callback-mode server mapping 'tok-p' to P and 'tok-q' to Q",
+        "a sandbox created under P"
+      ],
+      "when": "with 'tok-q' the client calls List, Destroy, the Agent relay and SyncGit for that id",
+      "then": [
+        "List omits the id",
+        "Destroy answers OK and the sandbox stays registered (still visible to 'tok-p')",
+        "the relay and SyncGit return codes.Unavailable with a message naming the id, identical to the answers for a random unknown id"
+      ],
+      "pseudocode": "assert id not in qList(); assert qDestroy(id)==nil; assert id in pList(); for call in [relay, syncGit]: assert code==Unavailable && contains(msg,id) && msg == msgFor(unknownId)"
+    },
+    {
+      "id": "TS-25-21",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-6.1"
+      ],
+      "title": "Callback mode logs the full principal as the owner of a created sandbox",
+      "given": [
+        "a callback-mode server mapping 'tok-a' to principal 'tenant-1-lease-0042' with a log capture"
+      ],
+      "when": "a client creates a sandbox with 'tok-a'",
+      "then": [
+        "the 'sandbox created' JSON record's owner field equals 'tenant-1-lease-0042'"
+      ],
+      "pseudocode": "assert logs.Messages('sandbox created')[0]['owner']=='tenant-1-lease-0042'"
+    },
+    {
+      "id": "TS-25-22",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-6.2"
+      ],
+      "title": "Every authentication refusal logs the unchanged Warn message with peer and a reason, in both modes",
+      "given": [
+        "a static-mode server and a callback-mode server, each with a log capture"
+      ],
+      "when": "each server refuses one RPC with an unknown token",
+      "then": [
+        "each log has a Warn record 'authentication refused'",
+        "the record has a non-empty peer attribute and a reason attribute whose value is one of 'no token', 'refused', 'invalid principal', 'panic'"
+      ],
+      "pseudocode": "for env in [static, callback]: invoke(badToken); rec := logs.Messages('authentication refused')[0]; assert rec.level=='WARN' && rec['peer']!='' && rec['reason'] in {...}"
+    },
+    {
+      "id": "TS-25-23",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-6.3"
+      ],
+      "title": "A missing, repeated, non-Bearer or empty header is logged with reason 'no token'",
+      "given": [
+        "a static-mode server and a callback-mode server, each with a log capture"
+      ],
+      "when": "RPCs are sent with no header, two headers, a Basic header and an empty Bearer token",
+      "then": [
+        "each refusal record has reason == 'no token'"
+      ],
+      "pseudocode": "for env, md in product(modes, shapes): invoke(md); assert logs.last('authentication refused')['reason']=='no token'"
+    },
+    {
+      "id": "TS-25-24",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-6.4"
+      ],
+      "title": "A hash mismatch or an authenticator ok == false is logged with reason 'refused'",
+      "given": [
+        "a static-mode server and a callback-mode server whose authenticator returns ok == false, each with a log capture"
+      ],
+      "when": "an RPC with a well-formed but unaccepted token is made to each",
+      "then": [
+        "each refusal record has reason == 'refused'"
+      ],
+      "pseudocode": "invoke(static,'x'*40); invoke(callback,'nope'); assert both logs reason=='refused'"
+    },
+    {
+      "id": "TS-25-25",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-6.5"
+      ],
+      "title": "An empty or over-long principal is logged with reason 'invalid principal'",
+      "given": [
+        "a callback-mode server returning an empty principal for 'tok-empty' and a 257-byte principal for 'tok-long', with a log capture"
+      ],
+      "when": "an RPC is made with each token",
+      "then": [
+        "both refusal records have reason == 'invalid principal'"
+      ],
+      "pseudocode": "invoke('tok-empty'); invoke('tok-long'); for rec in logs.Messages('authentication refused'): assert rec['reason']=='invalid principal'"
+    },
+    {
+      "id": "TS-25-26",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-6.6"
+      ],
+      "title": "A recovered authenticator panic is logged with reason 'panic' and without the panic value",
+      "given": [
+        "a callback-mode server whose authenticator panics with the string 'PANIC-SECRET-xyz' and a log capture"
+      ],
+      "when": "an RPC is made",
+      "then": [
+        "the refusal record has reason == 'panic'",
+        "the whole log output does not contain 'PANIC-SECRET-xyz'"
+      ],
+      "pseudocode": "invoke('tok'); assert logs.Messages('authentication refused')[0]['reason']=='panic'; assert !contains(logs.String(),'PANIC-SECRET-xyz')"
+    },
+    {
+      "id": "TS-25-27",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-6.7"
+      ],
+      "title": "No log line carries a token, panic value, full static hash, Env value or tool payload in either mode",
+      "given": [
+        "a static-mode and a callback-mode server with log capture; the callback authenticator accepts a planted token and panics once for another token carrying a planted panic value",
+        "a Spec.Env value and a tool payload each containing a planted string"
+      ],
+      "when": "clients create sandboxes with the planted token, run a tool with the planted payload, make refused RPCs, and destroy the sandboxes",
+      "then": [
+        "the captured output of each server contains none of the planted token, panic value, Env value, tool payload or (static mode) the full 64-hex hash"
+      ],
+      "pseudocode": "for env in modes: run flows; for s in planted: assert !contains(logs.String(), s)"
+    },
+    {
+      "id": "TS-25-28",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-7.1"
+      ],
+      "title": "PrincipalFromContext is exported and nothing exported puts a principal on a context",
+      "given": [
+        "the exported API of package gatewayd parsed with go/parser or go/doc"
+      ],
+      "when": "the exported functions, methods and variables are enumerated",
+      "then": [
+        "PrincipalFromContext has signature func(context.Context) (string, bool)",
+        "no other exported function takes a string and returns a context.Context, and no exported key variable or type exists for context values"
+      ],
+      "pseudocode": "api := exported(gatewayd); assert api['PrincipalFromContext'].sig == 'func(context.Context)(string,bool)'; assert none(f for f in api.funcs if returns(f, context.Context) and f != nil_ok)"
+    },
+    {
+      "id": "TS-25-29",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-7.3",
+        "25-REQ-7.4"
+      ],
+      "title": "The SyncGit and Gateway.Reap RPCs pass the principal to the backend",
+      "given": [
+        "a callback-mode server mapping 'tok-a' to 'tenant-1'",
+        "gwtest.Counting as backend and a created sandbox"
+      ],
+      "when": "the client calls SyncGit and then the Reap RPC with 'tok-a'",
+      "then": [
+        "the sandbox's Sync context carried ('tenant-1', true)",
+        "the Backend.Reap context carried ('tenant-1', true)"
+      ],
+      "pseudocode": "syncGit(p, id); reapRPC(p); assert counting.SyncPrincipals()[0]==('tenant-1',true); assert counting.ReapPrincipals()[last]==('tenant-1',true)"
+    },
+    {
+      "id": "TS-25-30",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-7.5"
+      ],
+      "title": "The periodic reap carries no principal at Serve start and on every interval",
+      "given": [
+        "a server with a short ReapInterval and gwtest.Counting as backend, in either mode"
+      ],
+      "when": "the server starts and waits until at least three reaps have been recorded with no client RPC",
+      "then": [
+        "every recorded Reap result is ('', false)"
+      ],
+      "pseudocode": "env := Start(Config{Backend:counting, Authenticate:fn, ReapInterval:20ms}); eventually(len(counting.ReapPrincipals())>=3); for r in ReapPrincipals(): assert r == ('', false)"
+    },
+    {
+      "id": "TS-25-31",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-7.6",
+        "25-REQ-8.7"
+      ],
+      "title": "Server-initiated Close calls use a background context with no principal for client, expired, unavailable, shutdown and Create error paths",
+      "given": [
+        "a callback-mode server wrapping a backend whose sandboxes record the Close context",
+        "sandboxes ended by a client Destroy, a short TTL expiry, a dead backend sandbox found on access, Shutdown, and a Create whose post-create step fails"
+      ],
+      "when": "each removal occurs",
+      "then": [
+        "each recorded Close context has PrincipalFromContext == ('', false)",
+        "each has no deadline, is never cancelled and carries no values (equivalent to context.Background())"
+      ],
+      "pseudocode": "for scenario in scenarios: trigger(); c := rec.closeCtx; assert principal(c)==('',false); assert c.Done()==nil; assert deadline(c) absent"
+    },
+    {
+      "id": "TS-25-32",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-7.7"
+      ],
+      "title": "PrincipalFromContext reports no principal on contexts the server did not make",
+      "given": [
+        "context.Background()",
+        "a context with the string-keyed value 'principal' set to 'x'",
+        "a context derived from a server-made context's parent but not from the server"
+      ],
+      "when": "PrincipalFromContext is called on each",
+      "then": [
+        "each call returns (\"\", false)"
+      ],
+      "pseudocode": "for c in [Background(), WithValue(Background(),'principal','x')]: p, ok := PrincipalFromContext(c); assert p=='' && !ok"
+    },
+    {
+      "id": "TS-25-33",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-8.1"
+      ],
+      "title": "Server.Destroy removes any held sandbox through the removal path with reason 'embedder' and the caller's ctx",
+      "given": [
+        "a callback-mode server with a short-TTL-capable registry and a log capture",
+        "a sandbox created under principal P whose backend Close records its context",
+        "a caller ctx carrying a test value"
+      ],
+      "when": "the embedder calls Server.Destroy(ctx, id)",
+      "then": [
+        "the call returns nil",
+        "the backend's Close count rises by 1 and the Close context carries the caller's test value",
+        "'sandbox destroyed' is logged with reason 'embedder'",
+        "the TTL timer is stopped: no 'expired' destroy log follows after the TTL passes"
+      ],
+      "pseudocode": "id := create(); err := srv.Destroy(ctx, id); assert err==nil; assert closes==1 && closeCtx.Value(k)==v; assert destroyReason(logs,id)=='embedder'; sleep(ttl); assert no second destroy log"
+    },
+    {
+      "id": "TS-25-34",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-8.2"
+      ],
+      "title": "A failing Close or cancelled ctx leaves the entry removed and returns the wrapped error",
+      "given": [
+        "a sandbox whose backend Close returns a sentinel error, and another whose Close returns ctx.Err()"
+      ],
+      "when": "Server.Destroy is called with a live ctx for the first and with an already-cancelled ctx for the second, then again for each id",
+      "then": [
+        "the first error names the id and errors.Is reaches the sentinel",
+        "the second error names the id and errors.Is(err, context.Canceled) holds",
+        "the entries are removed (List omits them)",
+        "the second Destroy for each id returns an error matching ErrNotHeld"
+      ],
+      "pseudocode": "err := srv.Destroy(ctx,id); assert contains(err.Error(),id) && errors.Is(err, sentinel); assert id not in list(); assert errors.Is(srv.Destroy(ctx,id), gatewayd.ErrNotHeld)"
+    },
+    {
+      "id": "TS-25-35",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-8.3"
+      ],
+      "title": "Destroy of an id not held returns ErrNotHeld naming the id and calls no backend method",
+      "given": [
+        "gwtest.Counting as backend",
+        "ids that are unknown, already removed by client Destroy, by expiry, by a previous embedder Destroy",
+        "a server not yet serving and a server after Shutdown"
+      ],
+      "when": "Server.Destroy is called for each id",
+      "then": [
+        "each returns an error with errors.Is(err, gatewayd.ErrNotHeld)",
+        "each error text contains the id",
+        "gatewayd.ErrNotHeld.Error() == 'gatewayd: sandbox not held'",
+        "the backend's Close count does not change"
+      ],
+      "pseudocode": "for id in cases: err := srv.Destroy(ctx,id); assert errors.Is(err, ErrNotHeld) && contains(err.Error(), id); assert counting.Closes()==before"
+    },
+    {
+      "id": "TS-25-36",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-8.4"
+      ],
+      "title": "A Destroy while Create is still in progress returns ErrNotHeld",
+      "given": [
+        "a backend whose Create has returned but a hook blocks gatewayService.Create before the entry is recorded (Counting.SetAfterCreate)"
+      ],
+      "when": "the embedder learns the backend sandbox id and calls Server.Destroy(ctx, id) during the block, then the block is released",
+      "then": [
+        "Destroy returns an error matching ErrNotHeld",
+        "the backend Close count is unchanged by Destroy",
+        "after release the Create RPC completes normally"
+      ],
+      "pseudocode": "SetAfterCreate(func(){ id=last.ID(); err=srv.Destroy(ctx,id); signal }); create(); assert errors.Is(err, ErrNotHeld); assert closes==0"
+    },
+    {
+      "id": "TS-25-37",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-8.5"
+      ],
+      "title": "A concurrent removal winning the race closes the backend once and Destroy returns nil",
+      "given": [
+        "many held sandboxes with a Close that counts calls"
+      ],
+      "when": "for each sandbox, Server.Destroy and a client Destroy RPC (or the expiry timer) race on the same entry",
+      "then": [
+        "every Server.Destroy returns nil or an error matching ErrNotHeld and never another error",
+        "each backend sandbox's Close is called exactly once in total",
+        "each id gets exactly one 'sandbox destroyed' log"
+      ],
+      "pseudocode": "parallel for id in ids: go srv.Destroy(ctx,id); go client.Destroy(id); wait; for id: assert closeCount[id]==1 && count(destroyLogs[id])==1"
+    },
+    {
+      "id": "TS-25-38",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-8.6"
+      ],
+      "title": "After an embedder Destroy the client sees what it sees after expiry",
+      "given": [
+        "a client holding a sandbox with an execute tool call about to be issued",
+        "a callback-mode server"
+      ],
+      "when": "the embedder calls Server.Destroy, then the client makes another proxy tool call, List, a client Destroy, and SyncGit",
+      "then": [
+        "the proxy call returns the sandbox_unavailable error",
+        "List omits the id",
+        "the client Destroy answers OK",
+        "SyncGit returns codes.Unavailable naming the id"
+      ],
+      "pseudocode": "srv.Destroy(ctx,id); _, err := toolOf(sb,'execute').Run(...); assert isSandboxUnavailable(err); assert id not in list(); assert provider.Destroy(id)==nil; assert Unavailable == code(syncGit(id))"
+    },
+    {
+      "id": "TS-25-39",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-9.1"
+      ],
+      "title": "The agentkit-gateway command stays in static mode and logs refusals with reason 'no token' or 'refused'",
+      "given": [
+        "the command's run function started in process with a --token-file",
+        "a log capture"
+      ],
+      "when": "an RPC with no token and an RPC with a wrong token are made, and run.go is inspected",
+      "then": [
+        "the refusal records have reason 'no token' and 'refused' respectively and an unchanged message and peer",
+        "run.go populates Config.Tokens and contains no assignment to Authenticate",
+        "the flags and exit codes tests of the command are unchanged"
+      ],
+      "pseudocode": "stop := runCommand(tokenFile); invoke(noToken); invoke(wrong); assert reasons == ['no token','refused']; assert !contains(source('run.go'),'Authenticate')"
+    },
+    {
+      "id": "TS-25-40",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-9.2"
+      ],
+      "title": "Static mode keeps spec 19's refusals, status codes, texts and log messages, adding only reason",
+      "given": [
+        "a static-mode server with a log capture"
+      ],
+      "when": "a refused RPC is made and the 'authentication refused' record is read",
+      "then": [
+        "the status is codes.Unauthenticated with message 'gatewayd: a valid bearer token is required'",
+        "the record is at Warn level and its attributes are exactly msg, level, time, peer and reason"
+      ],
+      "pseudocode": "err := invoke('x'*40); assert code==Unauthenticated && msg==text; rec := logs.Messages('authentication refused')[0]; assert keys(rec)-{time,level,msg} == {peer, reason}"
+    },
+    {
+      "id": "TS-25-41",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-9.3"
+      ],
+      "title": "gwtest.Start defaults Tokens only when both Tokens and Authenticate are unset",
+      "given": [
+        "gwtest.Start called with three Configs"
+      ],
+      "when": "Start is called with an empty Config, with Authenticate set, and with explicit Tokens",
+      "then": [
+        "the first server accepts Token and TokenB",
+        "the second runs in callback mode with Tokens left empty and accepts exactly what its authenticator accepts",
+        "the third keeps the explicit list unchanged"
+      ],
+      "pseudocode": "e1 := Start(t, Config{Backend:b}); assert e1.Dial(t,Token) ok && e1.Dial(t,TokenB) ok; e2 := Start(t, Config{Backend:b, Authenticate:fn}); assert Token refused unless fn accepts it"
+    },
+    {
+      "id": "TS-25-42",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-9.4"
+      ],
+      "title": "gwtest.Counting records the PrincipalFromContext result of every Create, Reap and Sync",
+      "given": [
+        "a callback-mode server with gwtest.Counting as backend"
+      ],
+      "when": "a client creates a sandbox, calls SyncGit and the Reap RPC, and the periodic reap runs",
+      "then": [
+        "the accessors return one (principal, ok) pair per Create, per Reap (RPC and periodic) and per sandbox Sync",
+        "RPC-driven entries carry the principal with ok == true and the periodic Reap carries ('', false)"
+      ],
+      "pseudocode": "assert counting.CreatePrincipals() == [('tenant-1',true)]; assert counting.SyncPrincipals() == [('tenant-1',true)]; assert ('tenant-1',true) in counting.ReapPrincipals() && ('',false) in counting.ReapPrincipals()"
+    },
+    {
+      "id": "TS-25-43",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-9.5"
+      ],
+      "title": "The gatewayd exported surface gains exactly five identifiers and the protocol constants are unchanged",
+      "given": [
+        "the exported identifiers of gatewayd as listed by spec 19, recorded in a golden list"
+      ],
+      "when": "the exported API of sandbox/gatewayd (including methods and struct fields) is enumerated and compared with the golden list, and sandbox.ProtocolMinor and the proto hashes are read",
+      "then": [
+        "the difference is exactly Authenticator, Config.Authenticate, PrincipalFromContext, (*Server).Destroy and ErrNotHeld",
+        "sandbox.ProtocolMinor == 2",
+        "gateway.proto.sha256 and sandbox.proto.sha256 match the files"
+      ],
+      "pseudocode": "added := exported(gatewayd) - spec19Golden; assert added == {5 names}; assert sandbox.ProtocolMinor == 2"
+    },
+    {
+      "id": "TS-25-44",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-9.5",
+        "25-REQ-5.2"
+      ],
+      "title": "An unchanged sandbox/gateway Provider works against servers in both modes",
+      "given": [
+        "one static-mode and one callback-mode server over local through gwtest"
+      ],
+      "when": "the same client code (Provider.Create, List, tool call through the relay, Destroy) runs against each",
+      "then": [
+        "every call succeeds with identical client-visible results in both modes"
+      ],
+      "pseudocode": "for env in [static, callback]: p := env.Dial(t,tok); sb := create(p); assert run(sb,'echo hi')=='hi'; assert id in p.List(); assert p.Destroy(id)==nil"
+    },
+    {
+      "id": "TS-25-45",
+      "kind": "smoke",
+      "verifies": [
+        "25-PATH-1",
+        "25-REQ-3.4",
+        "25-REQ-6.1",
+        "25-REQ-7.2"
+      ],
+      "title": "An embedder authenticates a lease token, the backend sees the principal at Create, and a tool runs through the relay",
+      "given": [
+        "gatewayd.New(Config{Backend: counting, Authenticate: fn}) served on gwtest's in-memory listener",
+        "a log capture"
+      ],
+      "when": "a client dials with sandbox/gateway, creates a sandbox with a lease token, and runs a tool through the relay",
+      "then": [
+        "the authenticator was called once for the Create RPC",
+        "the backend recorded the principal the authenticator returned with ok == true",
+        "'sandbox created' was logged with owner equal to the principal",
+        "the tool result reaches the client"
+      ],
+      "real_components": [
+        "gatewayd.Server",
+        "tap handle and interceptors",
+        "registry",
+        "sandbox/gateway client",
+        "Agent relay",
+        "local provider via gwtest.Counting",
+        "in-memory gRPC listener"
+      ]
+    },
+    {
+      "id": "TS-25-46",
+      "kind": "smoke",
+      "verifies": [
+        "25-PATH-2",
+        "25-REQ-8.1",
+        "25-REQ-8.3",
+        "25-REQ-8.6"
+      ],
+      "title": "The embedder ends a leased sandbox mid-call and the client sees it gone",
+      "given": [
+        "a callback-mode server with gwtest.Counting",
+        "a client with a sandbox and a long tool call in flight"
+      ],
+      "when": "the embedder calls Server.Destroy(ctx, id), the client issues its next proxy call and List, and the embedder calls Destroy again",
+      "then": [
+        "the in-flight call ends and the next proxy call returns sandbox_unavailable",
+        "List omits the id",
+        "'sandbox destroyed' was logged with reason 'embedder' and the backend Close count is 1",
+        "the second Destroy returns an error matching ErrNotHeld"
+      ],
+      "real_components": [
+        "gatewayd.Server",
+        "registry removal path",
+        "sandbox/gateway client",
+        "Agent relay",
+        "local provider via gwtest.Counting",
+        "in-memory gRPC listener"
+      ]
+    },
+    {
+      "id": "TS-25-47",
+      "kind": "smoke",
+      "verifies": [
+        "25-PATH-3",
+        "25-REQ-3.6",
+        "25-REQ-5.2",
+        "25-REQ-5.3",
+        "25-REQ-6.4"
+      ],
+      "title": "Two tokens of one principal share a sandbox until one is revoked",
+      "given": [
+        "a callback-mode server mapping token A and token B to principal P and token C to principal Q, with a revocable authenticator and a log capture"
+      ],
+      "when": "A creates a sandbox, B lists, C lists and calls SyncGit for the id, token A is revoked, A makes an RPC, then B reaches the sandbox",
+      "then": [
+        "B's List includes the sandbox",
+        "C's List omits it and C's SyncGit returns codes.Unavailable naming the id",
+        "A's RPC after revocation returns codes.Unauthenticated and the log has reason 'refused'",
+        "B still reaches the sandbox through the relay"
+      ],
+      "real_components": [
+        "gatewayd.Server",
+        "tap handle and interceptors",
+        "registry",
+        "sandbox/gateway client",
+        "Agent relay",
+        "local provider via gwtest.Counting",
+        "in-memory gRPC listener"
+      ]
+    },
+    {
+      "id": "TS-25-48",
+      "kind": "smoke",
+      "verifies": [
+        "25-PATH-4",
+        "25-REQ-2.2",
+        "25-REQ-2.3"
+      ],
+      "title": "A static-mode server exposes the token hash as the principal and logs only its 8-character fingerprint",
+      "given": [
+        "a server started through gwtest.Start with Config.Tokens only and gwtest.Counting as backend",
+        "a log capture"
+      ],
+      "when": "a client creates a sandbox with Token",
+      "then": [
+        "the backend recorded the 64-character lowercase hex SHA-256 of Token as principal with ok == true",
+        "'sandbox created' was logged with the first 8 hex characters as owner",
+        "no log line contains the full hash"
+      ],
+      "real_components": [
+        "gatewayd.Server",
+        "tap handle and both interceptors",
+        "registry",
+        "sandbox/gateway client",
+        "local provider via gwtest.Counting",
+        "in-memory gRPC listener"
+      ]
+    }
+  ]
+}

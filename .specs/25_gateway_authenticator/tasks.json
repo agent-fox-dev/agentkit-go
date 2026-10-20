@@ -1,0 +1,349 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "25",
+  "spec_name": "gateway_authenticator",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make check",
+    "linter": "make lint",
+    "spec_tests": "cd sandbox/gatewayd && go test ./... -count=1 -run 'TS25|TS_25'"
+  },
+  "dependencies": [
+    {
+      "spec": "19",
+      "reason": "Modifies sandbox/gatewayd's authentication, owner identity, registry removal path, logs and gwtest; every spec 19 test must keep passing unchanged."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add Authenticator, Config.Authenticate and the exactly-one-mode rule to New",
+      "criteria": [
+        "25-REQ-1"
+      ],
+      "tests": [
+        "TS-25-1",
+        "TS-25-2",
+        "TS-25-3",
+        "TS-25-4",
+        "TS-25-5"
+      ],
+      "steps": [
+        "Write TS-25-1..TS-25-5 in sandbox/gatewayd/config_auth_test.go (package gatewayd_test, named TestXxx_TS25_NN with a '// TS-25-NN: ... 25-REQ-x.y.' comment) and confirm they fail",
+        "In config.go add `type Authenticator func(ctx context.Context, token string) (principal string, ok bool)` with a doc comment and the field `Config.Authenticate Authenticator`, and a field on Server to hold it",
+        "In New, after the Backend nil check, refuse Tokens non-empty together with Authenticate non-nil, and refuse both unset (nil or empty Tokens), with an error naming `Config.Tokens` and `Config.Authenticate` and containing no token; return a nil *Server",
+        "When Tokens is set keep `fmt.Errorf(\"gatewayd: Config.Tokens: %w\", token.Validate(...))` unchanged; when Authenticate is set skip token validation",
+        "Keep the Backend, limits, TLS and NetworkModes validation and error texts exactly as in spec 19, in the same order",
+        "Check that the existing TestNewRefuses_TS19_30 'no tokens' case still passes (still refused); if its asserted text is no longer produced, adapt only through the new error text being a refusal, never by editing the spec 19 test's expectations beyond what the PRD design decision 1 states"
+      ],
+      "touches": [
+        "sandbox/gatewayd/config.go",
+        "sandbox/gatewayd/config_auth_test.go"
+      ],
+      "done_when": [
+        "New returns a server for Config{Backend, Authenticate} and refuses both-set and neither-set configurations"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Key ownership by principal string, add PrincipalFromContext and the refusal reason in static mode",
+      "criteria": [
+        "25-REQ-2",
+        "25-REQ-5.1",
+        "25-REQ-7.1",
+        "25-REQ-7.7",
+        "25-REQ-9.2",
+        "25-REQ-9.4"
+      ],
+      "tests": [
+        "TS-25-6",
+        "TS-25-7",
+        "TS-25-8",
+        "TS-25-28",
+        "TS-25-32",
+        "TS-25-40"
+      ],
+      "steps": [
+        "Write TS-25-6, 7, 8, 28, 32, 40 (external tests in sandbox/gatewayd; TS-25-28 parses the package's exported API with go/parser/go/doc) and confirm they fail",
+        "In auth.go replace `type owner [32]byte`/`ownerOf` with a principal string stored under an unexported context key; add exported `PrincipalFromContext(ctx) (string, bool)` reading it (false for any context the server did not make); export no function or key that puts a principal on a context",
+        "Static mode: authenticateMD still compares sha256 of the token against every configured hash with subtle.ConstantTimeCompare; the principal is hex.EncodeToString of the matching hash (64 lowercase hex); tap, unaryAuth and streamAuth all authenticate and put the principal on the context",
+        "Change entry.owner to a string and make lookup, access, list, relay.route, SyncGit and gatewayService.Destroy/List/Create use the principal string",
+        "Replace owner.fingerprint with a helper that logs the first 8 characters of the principal in static mode; logCreate takes the principal string; never log the full hash",
+        "Give refuse(ctx, reason) and logAuthRefused(peer, reason) a `reason` attribute: 'no token' for a missing, repeated, non-Bearer or empty header, 'refused' for no hash match; keep message 'authentication refused' and the peer attribute unchanged",
+        "Extend gwtest.Counting (internal/gwtest/backends.go) to record the (principal, ok) of PrincipalFromContext for every Create, Reap and sandbox Sync, with accessors CreatePrincipals(), ReapPrincipals(), SyncPrincipals() and a Principals() alias for the Create list",
+        "Run all spec 19 tests in sandbox/gatewayd unchanged and confirm they pass"
+      ],
+      "touches": [
+        "sandbox/gatewayd/auth.go",
+        "sandbox/gatewayd/config.go",
+        "sandbox/gatewayd/registry.go",
+        "sandbox/gatewayd/gateway.go",
+        "sandbox/gatewayd/slot.go",
+        "sandbox/gatewayd/relay.go",
+        "sandbox/gatewayd/log.go",
+        "sandbox/gatewayd/internal/gwtest/backends.go",
+        "sandbox/gatewayd/principal_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "Every spec 19 test in sandbox/gatewayd and its command passes without modification"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Callback-mode authentication in the tap handle, with principal validation and panic recovery",
+      "criteria": [
+        "25-REQ-3.1",
+        "25-REQ-3.2",
+        "25-REQ-3.3",
+        "25-REQ-3.4",
+        "25-REQ-3.5",
+        "25-REQ-4",
+        "25-REQ-7.2",
+        "25-REQ-9.3"
+      ],
+      "tests": [
+        "TS-25-9",
+        "TS-25-10",
+        "TS-25-11",
+        "TS-25-12",
+        "TS-25-13",
+        "TS-25-15",
+        "TS-25-16",
+        "TS-25-17",
+        "TS-25-18",
+        "TS-25-41"
+      ],
+      "steps": [
+        "Write the ten tests and confirm they fail; TS-25-13 is an in-package test (package gatewayd, e.g. auth_internal_test.go) calling s.unaryAuth/s.streamAuth directly with a context carrying no principal",
+        "In gwtest.Start set Tokens to [Token, TokenB] only when both cfg.Tokens and cfg.Authenticate are unset",
+        "In auth.go callback-mode tap: read `authorization` with today's rules; a missing/repeated/non-'Bearer ' header or empty token is refused with reason 'no token' without calling the authenticator",
+        "Otherwise call the authenticator exactly once with the tap's ctx (carries the peer) and the token byte for byte, no server length or character rule, inside a func with defer recover(); a panic refuses with reason 'panic' and never logs the panic value",
+        "ok == false refuses with reason 'refused'; ok == true with an empty or >256-byte principal refuses with reason 'invalid principal'; every refusal is codes.Unauthenticated with errUnauthenticated, returned from the tap so no message is read and no handler or backend runs, also for unserved methods",
+        "On acceptance return context.WithValue(ctx, principalKey, principal) from the tap",
+        "In callback mode unaryAuth and streamAuth do not call the authenticator: they check the context carries a principal and otherwise refuse via refuse(ctx, 'refused') without running the handler; static mode keeps its second authentication",
+        "Tests: use a counting authenticator recording token and peer presence; check the backend sees the principal via Counting for 7.2; a 256-byte principal works and arbitrary bytes round-trip unchanged"
+      ],
+      "touches": [
+        "sandbox/gatewayd/auth.go",
+        "sandbox/gatewayd/config.go",
+        "sandbox/gatewayd/internal/gwtest/gwtest.go",
+        "sandbox/gatewayd/callback_auth_test.go",
+        "sandbox/gatewayd/auth_internal_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "A callback-mode server accepts exactly the tokens its authenticator accepts and refuses everything else before any message is read"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Shared and foreign principals, revocation, and the principal on Sync and Reap contexts",
+      "criteria": [
+        "25-REQ-3.6",
+        "25-REQ-5.2",
+        "25-REQ-5.3",
+        "25-REQ-7.3",
+        "25-REQ-7.4",
+        "25-REQ-7.5"
+      ],
+      "tests": [
+        "TS-25-14",
+        "TS-25-19",
+        "TS-25-20",
+        "TS-25-29",
+        "TS-25-30",
+        "TS-25-42",
+        "TS-25-44"
+      ],
+      "steps": [
+        "Write the seven tests (callback-mode servers over local through gwtest, revocable authenticator mapping several tokens to principals) and confirm which fail",
+        "Confirm SyncGit passes the RPC's principal-carrying context to the backend sandbox's Sync and the Gateway.Reap RPC passes its context to Backend.Reap; fix any place that rewraps or replaces the context",
+        "Confirm reapLoop (Serve start and each ReapInterval) still uses a context.Background()-derived timeout context with no principal",
+        "Confirm two tokens of one principal reach each other's sandboxes through List, relay, SyncGit and Destroy (destroy reason 'client'), and a different principal gets the spec 19 unknown-id answers: List omits, Destroy OK with no effect, relay and SyncGit codes.Unavailable naming the id (equal to the message for a random unknown id)",
+        "Revocation test: revoke a token while an execute is in flight; the execute finishes normally, later RPCs with that token are Unauthenticated, the sandbox stays visible to the other token",
+        "TS-25-44 runs the same client code (Create, List, relay tool call, Destroy) against a static-mode and a callback-mode gateway",
+        "TS-25-42 asserts Counting's CreatePrincipals/SyncPrincipals/ReapPrincipals pairs, including ('', false) for the periodic reap"
+      ],
+      "touches": [
+        "sandbox/gatewayd/slot.go",
+        "sandbox/gatewayd/gateway.go",
+        "sandbox/gatewayd/server.go",
+        "sandbox/gatewayd/registry.go",
+        "sandbox/gatewayd/ownership_principal_test.go",
+        "sandbox/gatewayd/internal/gwtest/backends.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "done_when": [
+        "Principal-keyed ownership holds in both modes with the spec 19 foreign-id answers"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Log the principal and the refusal reason in both modes",
+      "criteria": [
+        "25-REQ-6"
+      ],
+      "tests": [
+        "TS-25-21",
+        "TS-25-22",
+        "TS-25-23",
+        "TS-25-24",
+        "TS-25-25",
+        "TS-25-26",
+        "TS-25-27"
+      ],
+      "steps": [
+        "Write the seven tests using gwtest.NewLogs and Logs.Messages / Logs.String and confirm which fail",
+        "In log.go make logCreate log `owner` as the first 8 hex characters of the principal in static mode and as the full principal in callback mode (the mode is known from the Server's configuration)",
+        "Make sure every refusal path passes the right reason: 'no token', 'refused', 'invalid principal', 'panic'; the refusal record keeps Warn level, message 'authentication refused' and `peer`",
+        "Never log a token, the panic value, a full static-mode hash, a Spec.Env value or a tool payload; TS-25-27 plants strings in a token, a panic value, Env and a tool payload in both modes and asserts none appears in the captured output",
+        "Run TestLogging_TS19_35 and TestUnauthenticated_TS19_34 unchanged and confirm they pass"
+      ],
+      "touches": [
+        "sandbox/gatewayd/log.go",
+        "sandbox/gatewayd/auth.go",
+        "sandbox/gatewayd/gateway.go",
+        "sandbox/gatewayd/logging_auth_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "done_when": [
+        "The refused-authentication line carries one of the four reason values and no log line holds a secret"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Add (*Server).Destroy and ErrNotHeld with a context on the registry removal path",
+      "criteria": [
+        "25-REQ-7.6",
+        "25-REQ-8"
+      ],
+      "tests": [
+        "TS-25-31",
+        "TS-25-33",
+        "TS-25-34",
+        "TS-25-35",
+        "TS-25-36",
+        "TS-25-37",
+        "TS-25-38"
+      ],
+      "steps": [
+        "Write the seven tests (a recording backend wrapper recording each sandbox Close context; Counting.SetAfterCreate for TS-25-36) and confirm they fail",
+        "Add `var ErrNotHeld = errors.New(\"gatewayd: sandbox not held\")` and `reasonEmbedder = \"embedder\"` in log.go",
+        "Give registry.remove a ctx parameter used for e.sb.Close(ctx); every existing caller (prune, add's expiry timer, access, list, gatewayService.Destroy, closeAll and the Create error paths) passes context.Background(); entry deletion and timer stop happen before Close",
+        "Add an ownerless registry lookup by id returning the entry or nil",
+        "Add `func (s *Server) Destroy(ctx, id) error` beside Shutdown: not held (unknown, removed, before Serve, after Shutdown, create in progress) returns fmt.Errorf wrapping ErrNotHeld and naming the id without calling any backend method; held entry runs remove(ctx, e, reasonEmbedder)",
+        "Return the Close error wrapped with the id (%w so errors.Is/As reach it); if a concurrent removal wins after the lookup (remove reports it did nothing) return nil, with Close called exactly once overall",
+        "Doc comments for Destroy and ErrNotHeld state the semantics, that the embedder treats errors.Is(err, ErrNotHeld) as already gone, and that Close gets the caller's ctx",
+        "TS-25-31 checks Close contexts of client Destroy, expiry, unavailability, Shutdown and Create error paths have no principal, no deadline and are not cancelled; TS-25-37 races Server.Destroy with client Destroy/expiry under -race"
+      ],
+      "touches": [
+        "sandbox/gatewayd/registry.go",
+        "sandbox/gatewayd/server.go",
+        "sandbox/gatewayd/gateway.go",
+        "sandbox/gatewayd/log.go",
+        "sandbox/gatewayd/destroy_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "After Server.Destroy a client sees exactly what it sees after TTL expiry"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Keep the command in static mode, pin the exported surface and update the documentation",
+      "criteria": [
+        "25-REQ-9.1",
+        "25-REQ-9.5"
+      ],
+      "tests": [
+        "TS-25-39",
+        "TS-25-43"
+      ],
+      "steps": [
+        "Write TS-25-39 in sandbox/gatewayd/cmd/agentkit-gateway (run the command's run function in process with a --token-file, make a no-token and a wrong-token RPC, assert reasons 'no token' then 'refused', and that run.go sets Tokens and never mentions Authenticate)",
+        "Write TS-25-43: enumerate the exported identifiers of sandbox/gatewayd (including methods and struct fields) with go/parser against a golden list of the spec 19 surface kept under sandbox/gatewayd/testdata, assert the difference is exactly Authenticator, Config.Authenticate, PrincipalFromContext, (*Server).Destroy and ErrNotHeld, sandbox.ProtocolMinor == 2 and the proto .sha256 files match",
+        "Confirm run.go needs no change; do not touch gateway.proto, sandbox.proto, sandbox/gateway or internal/policy/testdata",
+        "Rewrite doc.go and the Config, Authenticator, PrincipalFromContext, Destroy and ErrNotHeld doc comments: the two modes, authenticator must be safe for concurrent use, return quickly without blocking, is trusted to compare tokens in constant time, and the principal must not be a secret",
+        "Run `make doc` to regenerate docs/generated/sandbox/gatewayd/gatewayd.txt and check it gains only the five identifiers",
+        "Update docs/configuration.md (Config table Authenticate row, exactly-one rule, paragraph on principal, PrincipalFromContext and Destroy), docs/api.md (sandbox/gatewayd row), docs/cli.md (refused line carries reason 'no token' or 'refused'), docs/architecture.md (Ownership paragraph speaks of principals plus a paragraph on the embedded gateway), and docs/errata/19_sandbox_gateway.md (callback mode differences to 19-REQ-5.3, 5.5, 5.7)",
+        "Do not write tests for docs content; run `make check`"
+      ],
+      "touches": [
+        "sandbox/gatewayd/cmd/agentkit-gateway/auth_mode_test.go",
+        "sandbox/gatewayd/api_surface_test.go",
+        "sandbox/gatewayd/testdata/exported-api.spec19.golden",
+        "sandbox/gatewayd/doc.go",
+        "sandbox/gatewayd/config.go",
+        "sandbox/gatewayd/auth.go",
+        "sandbox/gatewayd/server.go",
+        "docs/configuration.md",
+        "docs/api.md",
+        "docs/cli.md",
+        "docs/architecture.md",
+        "docs/errata/19_sandbox_gateway.md",
+        "docs/generated/sandbox/gatewayd/gatewayd.txt"
+      ],
+      "depends_on": [
+        5,
+        6
+      ],
+      "done_when": [
+        "`make doc` output differs from spec 19's only by the five identifiers and `make check` passes in every module"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "integration",
+      "title": "Verify the four execution paths end to end through real components",
+      "tests": [
+        "TS-25-45",
+        "TS-25-46",
+        "TS-25-47",
+        "TS-25-48"
+      ],
+      "steps": [
+        "Write TS-25-45..TS-25-48 as smoke tests (sandbox/gatewayd/smoke25_test.go) over gwtest's in-memory listener, gwtest.Counting and the sandbox/gateway client, and confirm they pass",
+        "Trace 25-PATH-1 from Config.Authenticate through the tap handle, the principal context value, gatewayService.Create, Backend.Create and logCreate to a relayed tool call; confirm each step calls the next and no stub remains",
+        "Trace 25-PATH-2 from (*Server).Destroy through registry.remove with reasonEmbedder to the backend Close with the caller's ctx and the client's sandbox_unavailable; trace 25-PATH-3 (shared principal, foreign principal, revocation) and 25-PATH-4 (static hex SHA-256 principal and 8-character owner log)",
+        "Confirm for each contract criterion that the producer is consumed in production code: PrincipalFromContext reads the key the tap and interceptors write; Authenticate is called from the tap in New's grpc.InTapHandle option; Destroy's ErrNotHeld is returned from production code",
+        "Search the touched files (sandbox/gatewayd/*.go, internal/gwtest, docs) for panic(\"not implemented\"), TODO, and bare `return nil` on non-trivial paths, and remove any that remain",
+        "Run `make check` in every module and confirm spec 19 tests pass unchanged; do not run make check-release"
+      ],
+      "touches": [
+        "sandbox/gatewayd/smoke25_test.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "done_when": [
+        "`make check` passes in every module and all four smoke tests pass"
+      ],
+      "state": "pending"
+    }
+  ]
+}
