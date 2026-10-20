@@ -25,9 +25,10 @@ type principalKey struct{}
 // in Create, in the Sync of a sandbox that a SyncGit RPC syncs, and in Reap
 // when the Gateway.Reap RPC calls it, to learn which caller it serves.
 //
-// It reports ok == false on the context of the periodic reap, on the context
-// of every Close the server makes on its own, and on any context the server
-// did not make. There is no exported way to put a principal on a context.
+// A principal is not a secret. PrincipalFromContext reports ok == false on
+// the context of the periodic reap, on the context of every Close the server
+// makes on its own, and on any context the server did not make. There is no
+// exported way to put a principal on a context.
 func PrincipalFromContext(ctx context.Context) (principal string, ok bool) {
 	principal, ok = ctx.Value(principalKey{}).(string)
 	return principal, ok

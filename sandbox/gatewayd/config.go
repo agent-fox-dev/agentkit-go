@@ -41,7 +41,8 @@ import (
 // value is not logged.
 type Authenticator func(ctx context.Context, token string) (principal string, ok bool)
 
-// Config configures a Server.
+// Config configures a Server. Exactly one of Tokens (static mode) and
+// Authenticate (callback mode) must be set; see the package documentation.
 type Config struct {
 	// Backend creates the sandboxes. Required.
 	Backend sandbox.Provider

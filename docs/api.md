@@ -36,7 +36,7 @@ it with `go doc -all <import path>`. This file is the map.
 |---|---|
 | `codesearch` | Indexed code search, backed by zoekt. |
 | `sandbox` | The sandbox API (`sandbox.Provider`, and `sandbox.Open`, which creates, fills and equips a sandbox in one call), the agent protocol, and the providers `sandbox/local`, `sandbox/landlock`, `sandbox/podman` and `sandbox/gateway`. The image tests are in `sandbox/images`. |
-| `sandbox/gatewayd` | The gateway server (`gatewayd.Server`) behind the `agentkit-gateway` command. |
+| `sandbox/gatewayd` | The gateway server (`gatewayd.Server`) behind the `agentkit-gateway` command. A program that embeds it can authenticate with `Config.Authenticate` (an `Authenticator`), read the caller in its backend with `gatewayd.PrincipalFromContext` and end any sandbox with `Server.Destroy` (`gatewayd.ErrNotHeld`). |
 | `mcpserve` | Serves an `agentkit.Runner`'s tools over MCP: `mcpserve.New`, `Server.ServeStdio`, `Server.ServeLoopback`, and the `Endpoint` it returns with the harness configuration strings `ClaudeConfig` and `PiConfig`. |
 
 How the modules relate is in [`architecture.md`](architecture.md); the knobs

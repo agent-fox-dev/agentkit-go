@@ -314,7 +314,7 @@
       "done_when": [
         "`make doc` output differs from spec 19's only by the five identifiers and `make check` passes in every module"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,

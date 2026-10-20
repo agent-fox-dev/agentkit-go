@@ -957,8 +957,9 @@ proxies, state machine and errors.
 embedder   gateway.Dial: URL and token rules, one gRPC connection, Capabilities
            Provider.Create: CheckSpec, MaxTTL, Provider JSON → Gateway.Create
 gatewayd   authenticate from the headers, before any message is read (SHA-256
-           of the token, constant time) → ceiling, TTL,
-           capacity → Backend.Create → entry {owner, created, expires}
+           of the token, constant time; or the embedder's Authenticator) →
+           ceiling, TTL, capacity → Backend.Create (the principal on its
+           context) → entry {owner = the principal, created, expires}
 embedder   attach.New over the shared connection, agentkit-sandbox-id metadata
 gatewayd   relay: route by id and owner → the backend sandbox's own agent
            connection (attach.ClientConn through Unwrap), no incoming metadata
@@ -986,15 +987,35 @@ gateway is upgraded.
 
 *Metadata hygiene.* The relay calls the agent with an empty outgoing
 metadata set: the agent never sees `authorization` or `agentkit-sandbox-id`.
-The server keeps only each token's SHA-256 as its owner identity and logs only
-the first 8 hex characters; no log line carries a token, an `Env` value, a
-tool input or a tool result.
+In static mode the server keeps only each token's SHA-256, which is the
+principal that owns the token's sandboxes, and logs only its first 8 hex
+characters; in callback mode it keeps no token and logs the principal the
+embedder chose, whole. No log line carries a token, an authenticator's panic
+value, an `Env` value, a tool input or a tool result.
 
-*Ownership.* A sandbox belongs to the token that created it. The relay,
-`SyncGit`, `Destroy` and `List` key every lookup by owner and id, so another
-token's id behaves exactly like one that does not exist: `List` omits it,
-`Destroy` answers OK and does nothing, the relay answers `Unavailable`. No
-existence oracle leaks.
+*Ownership.* A sandbox belongs to the principal of the `Create` that made it:
+the hex SHA-256 of the token in static mode, what the embedder's
+`Authenticator` returned in callback mode. The relay, `SyncGit`, `Destroy` and
+`List` key every lookup by principal and id, so a token of another principal
+behaves exactly like an id that does not exist: `List` omits it, `Destroy`
+answers OK and does nothing, the relay and `SyncGit` answer `Unavailable`. No
+existence oracle leaks. Several tokens of one principal share their sandboxes.
+
+*The embedded gateway.* A program that embeds `gatewayd.Server` can own
+authentication: `Config.Authenticate` is called once for each RPC, from the tap
+handle, which puts the principal on the RPC's context under an unexported key;
+the interceptors only check that the context carries one, so a revocation
+between them cannot give two answers. `gatewayd.PrincipalFromContext` reads
+that key in the backend's `Create`, in the `Sync` of a `SyncGit` and in the
+`Reap` of a `Gateway.Reap` RPC; the periodic reap and every `Close` the server
+makes on its own run on a background context and see none. A revoked token
+refuses later RPCs and leaves its principal's sandboxes alone. The embedder
+ends any sandbox with `(*Server).Destroy`, which runs the registry's single
+removal path with the reason `embedder` and closes the backend sandbox with the
+caller's context; an id the server does not hold, a `Create` in progress
+included, returns `gatewayd.ErrNotHeld`. Clients, both wire protocols and the
+`agentkit-gateway` command, which stays in static mode, do not change, and a
+client cannot tell which mode a gateway runs in.
 
 *The `GitRepo` slot.* A `GitRepo` is the backend's provider-side init step,
 so it is the Gateway RPC `SyncGit`, and the server keeps spec 17's slot rules
@@ -1024,9 +1045,9 @@ reach `MaxSandboxes`. A sandbox whose caller has gone by the time the backend
 returns is closed and never recorded, as is one whose backend exposes no
 agent connection. Each entry expires by its own timer at
 `created + TTL`; any access that finds the backend sandbox dead removes it;
-`Destroy` and `Shutdown` remove the rest. Each removal closes the backend
-sandbox and logs the reason (`client`, `expired`, `unavailable`,
-`shutdown`). `Serve` also runs the backend's own `Reap` at start and every
+`Destroy`, the embedder's `Server.Destroy` and `Shutdown` remove the rest.
+Each removal closes the backend sandbox and logs the reason (`client`,
+`expired`, `unavailable`, `shutdown`, or `embedder`). `Serve` also runs the backend's own `Reap` at start and every
 `ReapInterval`, which catches what a crashed gateway left behind. On the
 client, a handshake that fails after `Gateway.Create` runs attach's destroy
 step, a context that ends before `Create` returns destroys the sandbox, and
