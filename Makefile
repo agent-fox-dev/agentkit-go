@@ -22,9 +22,12 @@ SANDBOX_IMAGE_TAG ?= $(VERSION)
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*##"}; {printf "  %-16s %s\n", $$1, $$2}'
 
+# internal/policy runs make check, make check-release and the cross-target builds
+# as child processes. On a green tree it takes 9 to 11 minutes, depending on the
+# machine's load, so go test's default 10-minute package timeout is not enough.
 .PHONY: test
 test: ## Run all Go tests (root module and the nested modules)
-	@rc=0; for m in $(MODULES); do echo "go test ./... ($$m)"; (cd $$m && go test ./... -count=1) || rc=1; done; exit $$rc
+	@rc=0; for m in $(MODULES); do echo "go test ./... ($$m)"; (cd $$m && go test ./... -count=1 -timeout 30m) || rc=1; done; exit $$rc
 
 .PHONY: test-short
 test-short: ## Run all Go tests with -short, skipping the slow gates
