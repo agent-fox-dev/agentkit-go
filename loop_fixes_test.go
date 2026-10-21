@@ -26,7 +26,7 @@ type blocking struct {
 
 func (b *blocking) agent(t *testing.T) *Agent {
 	t.Helper()
-	a, err := New(Config{Provider: streamFunc(b.stream), Model: testModelID})
+	a, err := New(Config{Client: streamFunc(b.stream), Model: testModelID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestACancelledBatchEndsTheRunAtTheTurnBoundary(t *testing.T) {
 // outside a tool handler: the provider and a tool's argument shim.
 func TestPanicsInThirdPartyCodeDoNotCrashTheProcess(t *testing.T) {
 	t.Run("provider", func(t *testing.T) {
-		a, err := New(Config{Model: testModelID, Provider: streamFunc(
+		a, err := New(Config{Model: testModelID, Client: streamFunc(
 			func(context.Context, core.Request) *core.EventStream {
 				panic("provider exploded")
 			})})

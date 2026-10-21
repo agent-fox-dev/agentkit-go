@@ -36,13 +36,10 @@ import (
 	"time"
 
 	agentkit "github.com/agent-fox-dev/agentkit-go"
-	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/mcp"
-	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/wire"
-	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -147,21 +144,17 @@ func clientMode(ctx context.Context, prompt, external string) error {
 	// 6. From here it is an ordinary agent. The MCP tools are core.Tools like
 	//    any other, which is the point of the adaptation: nothing downstream
 	//    knows or cares that a subprocess is behind one of them.
-	// An id the catalog does not list still works, with default limits and
-	// no price.
-	model, _ := catalog.Lookup(modelSpec())
-	client, err := resolveClient()
-	if err != nil {
-		return err
-	}
-
 	// The allowlist is written in QUALIFIED names, and the native tool has to
 	// be named too: a non-nil ToolNames is an allowlist over the whole set,
 	// custom and built-in alike, not a filter over MCP tools only.
 	all := append(append([]core.Tool{}, native...), mcpTools...)
+	//
+	// Model is a tier or a model id: New resolves it through the catalog (an id
+	// it does not list still works, with default limits and no price) and
+	// builds the client from the environment, failing here, before any request,
+	// with the variables to set.
 	agent, err := agentkit.New(agentkit.Config{
-		Client:     client,
-		Model:      model.ID,
+		Model:      modelSpec(),
 		System:     "You are concise. Use the tools rather than guessing, and answer in plain prose.",
 		Toolset:    agentkit.Toolset{Tools: all, Policy: core.ToolPolicy{ToolNames: toolNames(all)}},
 		MaxTurns:   8,
@@ -203,7 +196,7 @@ func clientMode(ctx context.Context, prompt, external string) error {
 	if err != nil && !errors.Is(err, core.ErrMaxTurns) && !errors.Is(err, core.ErrBudgetExceeded) {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "\n[%s · %d turns · stop %s · $%.5f]\n", model.ID, res.TurnCount, res.StopReason, res.Usage.CostUSD)
+	fmt.Fprintf(os.Stderr, "\n[%s · %d turns · stop %s · $%.5f]\n", agent.Resolution().Model.ID, res.TurnCount, res.StopReason, res.Usage.CostUSD)
 	return nil
 }
 
@@ -464,13 +457,4 @@ func modelSpec() string {
 		return s
 	}
 	return "anthropic/claude-sonnet-5"
-}
-
-// resolveClient fails BEFORE the request with the reason a client cannot be
-// built — typically the variables to set — rather than after a 401 that names
-// none of them. Resolving reads the environment only; a cloud deployment's own
-// credentials (Google's, AWS's) are checked on first use.
-func resolveClient() (*anthropicsdk.Client, error) {
-	client, _, err := anthropic.Resolve(anthropic.OSEnv{})
-	return client, err
 }

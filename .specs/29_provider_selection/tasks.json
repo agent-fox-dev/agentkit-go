@@ -64,7 +64,7 @@
         "core/eventjson_test.go",
         "core/usage_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -139,7 +139,7 @@
         "`go list -f '{{join .Imports \"\\n\"}}' .` lists no anthropic-sdk-go path",
         "`make check` passes in every module"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -177,7 +177,7 @@
       "depends_on": [
         2
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -210,7 +210,7 @@
       "depends_on": [
         3
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -243,7 +243,7 @@
       "depends_on": [
         4
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -279,7 +279,7 @@
         1,
         5
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -306,7 +306,7 @@
       "depends_on": [
         5
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -345,7 +345,7 @@
         6,
         7
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -375,7 +375,7 @@
       "done_when": [
         "`make check` passes in every module"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

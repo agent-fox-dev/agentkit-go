@@ -130,7 +130,7 @@ func ts0461RunAgent(t *testing.T, srv *httptest.Server, requestBodies *[][]byte,
 
 	var afterMu sync.Mutex
 	cfg := Config{
-		Provider: anthropic.Provider(*model, anthropic.Options{
+		Client: anthropic.Provider(*model, anthropic.Options{
 			BaseURL: srv.URL,
 			Getenv:  getenv,
 		}),

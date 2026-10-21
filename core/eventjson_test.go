@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -88,5 +89,46 @@ func TestToolCallEndCarriesTheModelsOwnBytes(t *testing.T) {
 func TestMarshalEventRequiresAnEncoder(t *testing.T) {
 	if _, err := MarshalEvent(TurnStartEvent{}, nil); err == nil {
 		t.Fatal("a nil encoder must be an error, not a panic on the first message event")
+	}
+}
+
+// TS-29-33: every usage an event carries has an "unpriced" member, true or
+// false, and UsageJSON declares it under that key.
+func TestEventUsageCarriesUnpriced_TS29_33(t *testing.T) {
+	f, ok := reflect.TypeOf(UsageJSON{}).FieldByName("Unpriced")
+	if !ok || f.Tag.Get("json") != "unpriced" || f.Type.Kind() != reflect.Bool {
+		t.Fatalf("UsageJSON.Unpriced = %+v (%v), want a bool with the JSON key unpriced", f, ok)
+	}
+	for _, unpriced := range []bool{true, false} {
+		u := Usage{InputTokens: 3, Unpriced: unpriced}
+		for _, ev := range []Event{
+			AgentDoneEvent{Result: RunResult{StopReason: RunStopEndTurn, Usage: u}, Usage: u},
+			TurnEndEvent{TurnIndex: 1, Usage: u},
+		} {
+			b, err := MarshalEvent(ev, stubEncoder)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]json.RawMessage
+			if err := json.Unmarshal(b, &got); err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range []string{"usage", "run_usage"} {
+				raw, present := got[key]
+				if !present {
+					if _, done := ev.(AgentDoneEvent); done || key == "usage" {
+						t.Errorf("%T: no %q member in %s", ev, key, b)
+					}
+					continue
+				}
+				var usage map[string]any
+				if err := json.Unmarshal(raw, &usage); err != nil {
+					t.Fatal(err)
+				}
+				if v, ok := usage["unpriced"]; !ok || v != unpriced {
+					t.Errorf("%T %s: unpriced = %v (present %v), want %v in %s", ev, key, v, ok, unpriced, raw)
+				}
+			}
+		}
 	}
 }

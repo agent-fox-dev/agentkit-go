@@ -72,9 +72,10 @@ The numbered comments in `run()` are the walkthrough:
 4. `logged` *wraps* the policy to log each decision, and is passed as
    `Config.Toolset.Guard`. The wrapper reports; the policy still decides. This is the
    pattern for adding side effects (logging, metrics) to any interceptor.
-5. `agentkit.New(agentkit.Config{Client, Model, System, Toolset: {Tools, Guard},
-   MaxTurns: 20, MaxCostUSD: 2.00})` — `Client` comes from
-   `anthropic.Resolve(anthropic.OSEnv{})`. The run stops at 20 turns
+5. `agentkit.New(agentkit.Config{Model, System, Toolset: {Tools, Guard},
+   MaxTurns: 20, MaxCostUSD: 2.00})` — `New` resolves the model, builds the
+   provider from the environment and fails here, before any request, naming
+   the variables to set when there is no credential. The run stops at 20 turns
    (`core.RunStopMaxTurns`) or once $2.00 has been spent
    (`core.RunStopBudgetExceeded`): turns catch cheap loops, budget catches
    expensive turns.

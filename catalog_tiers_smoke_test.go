@@ -24,7 +24,7 @@ func TestSmokeAgentNewStillResolvesThroughLookup_TS26_39(t *testing.T) {
 		StopReason: core.StopReasonStop,
 		Usage:      core.Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000},
 	})
-	a, err := New(Config{Provider: fp, Model: "claude-sonnet-5-5"})
+	a, err := New(Config{Client: fp, Model: "claude-sonnet-5-5"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

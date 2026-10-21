@@ -23,13 +23,10 @@ import (
 	"strings"
 
 	agentkit "github.com/agent-fox-dev/agentkit-go"
-	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/guard"
-	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/tools"
 	"github.com/agent-fox-dev/agentkit-go/workspace"
-	sdk "github.com/anthropics/anthropic-sdk-go"
 )
 
 func main() {
@@ -51,11 +48,6 @@ func run() error {
 	if task == "" {
 		task = "List the Go files in this directory and summarise what the package does."
 	}
-
-	// An id the catalog does not list still works, with default limits and
-	// no price. The lookup here is only for the summary line; New does its
-	// own from Config.Model.
-	model, _ := catalog.Lookup(modelSpec())
 
 	// 1. The workspace is the containment boundary, not a convenience. Every
 	//    path a file tool is handed is resolved against this root — symlinks
@@ -112,19 +104,19 @@ func run() error {
 		return d
 	}
 
-	client, err := resolveClient()
-	if err != nil {
-		return err
-	}
-
 	// 5. Turns and budget are separate bounds because they fail differently.
 	//    A tool-using agent can loop cheaply for a long time (MaxTurns catches
 	//    that) or spend a lot in three turns over a large file (MaxCostUSD
 	//    catches that). The run stops on whichever comes first, with
 	//    RunStopMaxTurns or RunStopBudgetExceeded as its stop reason.
+	//
+	//    Model is a tier or a model id, and New resolves it through the
+	//    catalog (an id it does not list still works, with default limits and
+	//    no price) and builds the client from the environment. It fails here,
+	//    before any request, with the variables to set rather than a 401 that
+	//    names none of them.
 	agent, err := agentkit.New(agentkit.Config{
-		Client: client,
-		Model:  model.ID,
+		Model: modelSpec(),
 		System: "You are a careful coding assistant. Read before you write. " +
 			"Prefer the search and read tools over shell commands. Be concise.",
 		Toolset:    agentkit.Toolset{Tools: built, Guard: logged},
@@ -173,7 +165,7 @@ func run() error {
 
 	u := res.Usage
 	fmt.Fprintf(os.Stderr, "\n[%s · %d turns · stop %s · in %d / out %d tokens · $%.5f]\n",
-		model.ID, res.TurnCount, res.StopReason, u.InputTokens, u.OutputTokens, u.CostUSD)
+		agent.Resolution().Model.ID, res.TurnCount, res.StopReason, u.InputTokens, u.OutputTokens, u.CostUSD)
 	return nil
 }
 
@@ -220,13 +212,4 @@ func modelSpec() string {
 		return s
 	}
 	return "anthropic/claude-sonnet-5"
-}
-
-// resolveClient fails BEFORE the request with the reason a client cannot be
-// built — typically the variables to set — rather than after a 401 that names
-// none of them. Resolving reads the environment only; a cloud deployment's own
-// credentials (Google's, AWS's) are checked on first use.
-func resolveClient() (*sdk.Client, error) {
-	client, _, err := anthropic.Resolve(anthropic.OSEnv{})
-	return client, err
 }

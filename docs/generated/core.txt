@@ -1145,6 +1145,10 @@ type Usage struct {
 	CostUSD  float64
 	// BilledModel is the model that actually served the request (REQ-PROV-05.5).
 	BilledModel string
+	// Unpriced is true when at least one request the usage covers had a cost
+	// that neither the vendor reported nor the catalog priced, so CostUSD
+	// counts that request as zero. The cost bit cannot say this: Add ORs it.
+	Unpriced bool
 
 	// Set records which fields the provider actually reported, so an explicit
 	// 0 beats an SDK fallback (REQ-PROV-16.4) and a wholly unreported usage is
@@ -1153,8 +1157,9 @@ type Usage struct {
 }
 
 func (u Usage) Add(o Usage) Usage
-    Add sums two usages field-wise and ORs their presence masks. The session
-    layer only sums; it never recomputes cost (REQ-PROV-05).
+    Add sums two usages field-wise and ORs their presence masks and their
+    Unpriced flags. The session layer only sums; it never recomputes cost
+    (REQ-PROV-05).
 
 func (u Usage) ContextTokens() int64
     ContextTokens implements REQ-GO-15's definition exactly: TotalTokens when
@@ -1200,10 +1205,13 @@ type UsageJSON struct {
 	CostUSD            float64 `json:"cost_usd"`
 	BilledModel        string  `json:"billed_model"`
 	Reported           bool    `json:"reported"`
+	Unpriced           bool    `json:"unpriced"`
 }
     UsageJSON is Usage's wire shape for events. Every field is present — a
-    consumer reads the same keys whether or not the provider reported them — and
-    `reported` says which ones the provider actually set (REQ-GO-15).
+    consumer reads the same keys whether or not the provider reported them
+    — and `reported` says which ones the provider actually set (REQ-GO-15).
+    `unpriced` says the cost counts at least one request as zero because no one
+    could price it.
 
 type UsageWire struct {
 	InputTokens        *int64

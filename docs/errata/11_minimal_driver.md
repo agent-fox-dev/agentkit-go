@@ -26,7 +26,10 @@ The tests follow the code's vocabulary:
 
 - `Config.Client` is the SDK's `*anthropic.Client`
   (`github.com/anthropics/anthropic-sdk-go`); the driver reaches it through
-  `provider/anthropic`, so the root package imports the SDK.
+  `provider/anthropic`, so the root package imports the SDK. *Superseded by
+  spec 29:* `Config.Client` is a `core.ProviderClient`, `Config.Provider` names
+  the provider, and the root imports no SDK package
+  ([`29_provider_selection.md`](29_provider_selection.md)).
 - `Effort` is `core.Effort` re-exported (`agentkit.Effort`,
   `agentkit.EffortLow` … `EffortMax`).
 - `New` checks the tool hierarchy of `Config.Tools` and of what

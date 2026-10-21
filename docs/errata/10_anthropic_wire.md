@@ -82,7 +82,9 @@ an embedder (or a test) supply credentials explicitly.
   `anthropic.ErrNoCredentials`'s text (10-REQ-2.6).
 - `provider/auth.go` (`VendorAuth`, `ResolveAuth`) and
   `provider/anthropic/vertex.go` are deleted; the examples' credential
-  pre-flight calls `anthropic.Resolve(anthropic.OSEnv{})`.
+  pre-flight calls `anthropic.Resolve(anthropic.OSEnv{})`. *Since spec 29*
+  `agentkit.New` makes that check itself and the examples do not
+  ([`29_provider_selection.md`](29_provider_selection.md)).
 
 ## 10-REQ-3: the catalog's field names and what an unlisted id loses
 

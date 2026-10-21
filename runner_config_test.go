@@ -50,11 +50,11 @@ func TestToolsetHasTheFiveFields_TS21_1(t *testing.T) {
 	}
 }
 
-// TS-21-2: Config has exactly twelve fields, in order, and none of the four
-// moved tool fields.
-func TestConfigHasTwelveFieldsAndNoToolFields_TS21_2(t *testing.T) {
+// TS-21-2: Config has exactly fourteen fields (twelve until 29-REQ-1.1 added Env
+// and Getenv), in order, and none of the four moved tool fields.
+func TestConfigHasFourteenFieldsAndNoToolFields_TS21_2(t *testing.T) {
 	typ := reflect.TypeOf(Config{})
-	want := []string{"Client", "Provider", "Model", "Effort", "System", "Prefix", "Toolset",
+	want := []string{"Client", "Provider", "Model", "Effort", "Env", "Getenv", "System", "Prefix", "Toolset",
 		"MaxTurns", "MaxCostUSD", "Timeout", "Prune", "MaxTokens"}
 	if got := fieldNames(typ); !slices.Equal(got, want) {
 		t.Fatalf("Config fields = %v, want %v", got, want)
@@ -247,7 +247,7 @@ func TestNewRunnerAndNewAgreeOnEveryToolset_TS21_8(t *testing.T) {
 	for i := range 400 {
 		ts := genToolset(r)
 		_, e1 := NewRunner(ts)
-		_, e2 := New(Config{Provider: faux.New(), Model: testModelID, Toolset: ts})
+		_, e2 := New(Config{Client: faux.New(), Model: testModelID, Toolset: ts})
 		if (e1 == nil) != (e2 == nil) {
 			t.Fatalf("iteration %d: NewRunner err = %v, New err = %v; want both or neither", i, e1, e2)
 		}

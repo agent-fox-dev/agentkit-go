@@ -179,7 +179,7 @@ func runScripted(ctx context.Context, log io.Writer, ep *mcpserve.Endpoint, syst
 
 	script, _ := json.Marshal(map[string]string{"script": scriptedTask})
 	agent, err := agentkit.New(agentkit.Config{
-		Provider: faux.New(
+		Client: faux.New(
 			faux.ToolCall("call_1", "agentkit__code_mode", string(script)),
 			faux.Text("Task 1 is done. TS-01-1 was written first and failed (go test exit 1); Greet now returns the name's greeting, "+
 				"or \"Hello, stranger!\" for an empty name; go test ./... passes and gofmt -l . prints nothing; "+

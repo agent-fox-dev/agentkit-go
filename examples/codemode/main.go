@@ -110,7 +110,7 @@ func run(ctx context.Context, w io.Writer) error {
 	// only through code_mode. None of them is a shell tool, so no Guard is
 	// required.
 	agent, err := agentkit.New(agentkit.Config{
-		Provider: model,
+		Client:   model,
 		Model:    faux.Model().ID,
 		Toolset:  agentkit.Toolset{Tools: []core.Tool{cm}},
 		MaxTurns: 5,

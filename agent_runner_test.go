@@ -50,7 +50,7 @@ func callTurn(calls ...core.ContentBlock) faux.Turn {
 // carries no tool definitions.
 func TestZeroToolsetIsAnAgentWithNoTools_TS21_3(t *testing.T) {
 	fp := faux.New(finalTurn("hello"))
-	a, err := New(Config{Provider: fp, Model: testModelID})
+	a, err := New(Config{Client: fp, Model: testModelID})
 	if err != nil {
 		t.Fatalf("New with a zero Toolset: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestReachableAgreesAcrossRunnerAndAgent_TS21_12(t *testing.T) {
 		childTool("child_a"), childTool("child_b"))
 	ts := Toolset{Tools: []core.Tool{wrapper, childTool("solo")}}
 	r := mustRunner(t, ts)
-	a, err := New(Config{Provider: faux.New(), Model: testModelID, Toolset: ts})
+	a, err := New(Config{Client: faux.New(), Model: testModelID, Toolset: ts})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,15 +116,15 @@ func TestReachableAgreesAcrossRunnerAndAgent_TS21_12(t *testing.T) {
 }
 
 // TS-21-13: *Agent exports exactly Run, Stream, Messages, Usage,
-// ReachableTools and Runner.
-func TestAgentExportsSixMethods_TS21_13(t *testing.T) {
+// ReachableTools and Runner, and (since 29-REQ-6.4) Resolution.
+func TestAgentExportsSevenMethods_TS21_13(t *testing.T) {
 	typ := reflect.TypeOf(&Agent{})
 	var got []string
 	for i := 0; i < typ.NumMethod(); i++ {
 		got = append(got, typ.Method(i).Name)
 	}
 	sort.Strings(got)
-	want := []string{"Messages", "ReachableTools", "Run", "Runner", "Stream", "Usage"}
+	want := []string{"Messages", "ReachableTools", "Resolution", "Run", "Runner", "Stream", "Usage"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("*Agent exports %v, want %v", got, want)
 	}
@@ -135,7 +135,7 @@ func TestAgentExportsSixMethods_TS21_13(t *testing.T) {
 func TestRunEventsGoToTheRunsStreamNotToolsetEvents_TS21_41(t *testing.T) {
 	var sinkCalls atomic.Int32
 	fp := faux.New(callTurn(faux.FauxToolCall("c1", "echo", "{}")), finalTurn("done"))
-	a, err := New(Config{Provider: fp, Model: testModelID, Toolset: Toolset{
+	a, err := New(Config{Client: fp, Model: testModelID, Toolset: Toolset{
 		Tools:  []core.Tool{echoTool("echo", nil)},
 		Events: func(core.Event) { sinkCalls.Add(1) },
 	}})
@@ -183,7 +183,7 @@ func TestNewReturnsNewRunnersErrorAndSendsNothing_TS21_42(t *testing.T) {
 		t.Fatal("NewRunner accepted an unguarded shell tool")
 	}
 	fp := faux.New()
-	a, err := New(Config{Provider: fp, Model: testModelID, Toolset: unguarded})
+	a, err := New(Config{Client: fp, Model: testModelID, Toolset: unguarded})
 	if a != nil || err == nil || err.Error() != want.Error() || !errors.Is(err, core.ErrUnguardedExecute) {
 		t.Fatalf("New = %v, %v; want a nil agent and NewRunner's error %q", a, err, want)
 	}
@@ -192,7 +192,7 @@ func TestNewReturnsNewRunnersErrorAndSendsNothing_TS21_42(t *testing.T) {
 	}
 
 	// With no model and a bad toolset, the model is what New complains about.
-	if _, err := New(Config{Provider: fp, Toolset: unguarded}); err == nil || errors.Is(err, core.ErrUnguardedExecute) {
+	if _, err := New(Config{Client: fp, Toolset: unguarded}); err == nil || errors.Is(err, core.ErrUnguardedExecute) {
 		t.Fatalf("New without a model = %v; want the model error, not the toolset's", err)
 	}
 }
@@ -203,7 +203,7 @@ func TestRequestsPromptAndEstimateUseRunnerTools_TS21_43(t *testing.T) {
 	alpha, beta, gamma := echoTool("alpha", nil), echoTool("beta", nil), echoTool("gamma", nil)
 	alpha.PromptGuidelines, gamma.PromptGuidelines = []string{"Use alpha first."}, []string{"Use gamma last."}
 	fp := faux.New(finalTurn("done"))
-	a, err := New(Config{Provider: fp, Model: testModelID, System: "You are a test.", Toolset: Toolset{
+	a, err := New(Config{Client: fp, Model: testModelID, System: "You are a test.", Toolset: Toolset{
 		Tools:  []core.Tool{alpha, beta, gamma},
 		Policy: core.ToolPolicy{Tools: []core.Tool{gamma, alpha}},
 	}})
@@ -247,7 +247,7 @@ func TestAgentRunnerCallsStayOutsideTheRun_TS21_44(t *testing.T) {
 	t.Run("a runner call in flight does not claim the run slot", func(t *testing.T) {
 		started, release := make(chan struct{}, 1), make(chan struct{})
 		fp := faux.New(finalTurn("hello"))
-		a, err := New(Config{Provider: fp, Model: testModelID, Toolset: Toolset{Tools: []core.Tool{holdTool("hold", started, release)}}})
+		a, err := New(Config{Client: fp, Model: testModelID, Toolset: Toolset{Tools: []core.Tool{holdTool("hold", started, release)}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -271,7 +271,7 @@ func TestAgentRunnerCallsStayOutsideTheRun_TS21_44(t *testing.T) {
 		started, release := make(chan struct{}, 1), make(chan struct{})
 		var events eventLog
 		fp := faux.New(callTurn(faux.FauxToolCall("c1", "hold", "{}")), finalTurn("done"), finalTurn("again"))
-		a, err := New(Config{Provider: fp, Model: testModelID, Toolset: Toolset{
+		a, err := New(Config{Client: fp, Model: testModelID, Toolset: Toolset{
 			Tools:  []core.Tool{holdTool("hold", started, release), echoTool("echo", nil)},
 			Events: events.add,
 		}})
@@ -361,7 +361,7 @@ func TestLoopHandsTurnsToTheRunner_TS21_45(t *testing.T) {
 		callTurn(faux.FauxToolCall("b1", "voter", "{}"), faux.FauxToolCall("b2", "echo", "{}")),
 		finalTurn("never requested"),
 	)
-	a, err := New(Config{Provider: fp, Model: testModelID, Toolset: Toolset{
+	a, err := New(Config{Client: fp, Model: testModelID, Toolset: Toolset{
 		Tools: []core.Tool{echoTool("echo", nil), terminating("voter", 0)},
 		Guard: guards.guard, After: after,
 	}})
@@ -412,7 +412,7 @@ func TestMaxTokensResponseRunsNoTool_TS21_46(t *testing.T) {
 		faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall("c1", "echo", `{"v":"x"}`)}, StopReason: core.StopReasonLength},
 		finalTurn("retry later"),
 	)
-	a, err := New(Config{Provider: fp, Model: testModelID, Toolset: Toolset{Tools: []core.Tool{echoTool("echo", &ran)}}})
+	a, err := New(Config{Client: fp, Model: testModelID, Toolset: Toolset{Tools: []core.Tool{echoTool("echo", &ran)}}})
 	if err != nil {
 		t.Fatal(err)
 	}

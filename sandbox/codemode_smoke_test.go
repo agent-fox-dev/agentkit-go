@@ -55,7 +55,7 @@ if is_error(bad):
 	}
 	var out core.ToolResult
 	agent, err := agentkit.New(agentkit.Config{
-		Provider: model, Model: faux.Model().ID, MaxTurns: 4, Toolset: agentkit.Toolset{Tools: []core.Tool{cm}, Guard: guard, After: func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
+		Client: model, Model: faux.Model().ID, MaxTurns: 4, Toolset: agentkit.Toolset{Tools: []core.Tool{cm}, Guard: guard, After: func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {
 			if in.ToolName == cm.Name {
 				out = in.ToolResult
 			}

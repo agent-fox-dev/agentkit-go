@@ -15,12 +15,12 @@ it with `go doc -all <import path>`. This file is the map.
 
 | Package | Purpose |
 |---|---|
-| `agentkit` (root) | The driver: `agentkit.Config`, `agentkit.New`, the agent loop. The tool side it is built on: `agentkit.Toolset`, `agentkit.NewRunner` and `agentkit.Runner`, which run tool calls with no model. |
+| `agentkit` (root) | The driver: `agentkit.Config` (which names the provider, model and effort), `agentkit.Resolve` and `agentkit.Resolution` (what a `Config` resolves to), `agentkit.New`, the agent loop. The tool side it is built on: `agentkit.Toolset`, `agentkit.NewRunner` and `agentkit.Runner`, which run tool calls with no model. |
 | `core` | The canonical vocabulary and every interface seam (`Tool`, `ProviderClient`, messages, events), and `core.Named`, which picks tools by name. |
 | `provider/anthropic` | The Anthropic Messages wire API, on the official Go SDK. |
 | `provider/faux` | A deterministic, scripted provider for offline tests, with `faux.ToolCall` and `faux.Text` for single-block turns. |
-| `provider/openrouter` | A `core.ProviderClient` for models served by OpenRouter, on OpenRouter's Go SDK and its native Chat Completions API: `openrouter.New(model, openrouter.Options)`. Not chosen from `agentkit.Config` yet; pass it as `Config.Provider`. |
-| `provider/ollama` | A `core.ProviderClient` for models served by an Ollama server, on Ollama's Go package and its native `/api/chat` API: `ollama.New(model, ollama.Options)`. Not chosen from `agentkit.Config` yet; pass it as `Config.Provider`. |
+| `provider/openrouter` | A `core.ProviderClient` for models served by OpenRouter, on OpenRouter's Go SDK and its native Chat Completions API: `openrouter.New(model, openrouter.Options)`. Chosen with `Config{Provider: "openrouter"}`, or built by hand and passed as `Config.Client`. |
+| `provider/ollama` | A `core.ProviderClient` for models served by an Ollama server, on Ollama's Go package and its native `/api/chat` API: `ollama.New(model, ollama.Options)`. Chosen with `Config{Provider: "ollama"}`, or built by hand and passed as `Config.Client`. |
 | `provider` | What a wire needs and does not own: cost arithmetic (`provider.ComputeCost`), the per-session tool-schema cache, and the tool-pairing repair the chat-style wires share (`provider.RepairToolPairing`). |
 | `catalog` | The embedded model catalog of the three providers (`anthropic`, `openrouter`, `ollama`), with their tiers. `catalog.Lookup` turns a Claude model id into a `core.Model`; `catalog.Select` turns a provider, a model (a tier or an id) and an effort into the `Selection` a run will use. |
 | `prompt` | System prompt assembly. |

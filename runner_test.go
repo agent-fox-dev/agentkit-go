@@ -273,7 +273,7 @@ func TestRunnerOutsideARunPassesTheCallersUsageReporter_TS21_48(t *testing.T) {
 		core.ReportUsage(ctx, core.Usage{InputTokens: 7})
 		return json.RawMessage(`{}`), nil
 	}}
-	a, err := New(Config{Provider: faux.New(), Model: testModelID, Toolset: Toolset{Tools: []core.Tool{spend}}})
+	a, err := New(Config{Client: faux.New(), Model: testModelID, Toolset: Toolset{Tools: []core.Tool{spend}}})
 	if err != nil {
 		t.Fatal(err)
 	}

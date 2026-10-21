@@ -459,8 +459,10 @@ var requiredModules26 = []string{
 }
 
 // TS-26-35: the model ids of the new providers are written only in package
-// catalog, agent.go still resolves its model through Lookup, and go.mod
-// requires no module that spec 26 did not find.
+// catalog, the driver still resolves its model through the catalog (since spec
+// 29 through Select in resolve.go, which reaches Lookup for an Anthropic id;
+// agent.go calls neither), and go.mod requires no module that spec 26 did not
+// find.
 func TestNewProviderModelsStayInCatalog_TS26_35(t *testing.T) {
 	ids := []string{"qwen/qwen3.8-flash", "qwen3.8:27b"}
 	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
@@ -488,12 +490,15 @@ func TestNewProviderModelsStayInCatalog_TS26_35(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	src, err := os.ReadFile("agent.go")
+	src, err := os.ReadFile("resolve.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(src), "catalog.Lookup(cfg.Model)") {
-		t.Error("agent.go no longer resolves its model with catalog.Lookup(cfg.Model)")
+	if !strings.Contains(string(src), "catalog.Select(cfg.Provider, cfg.Model, cfg.Effort)") {
+		t.Error("resolve.go no longer resolves the model with catalog.Select(cfg.Provider, cfg.Model, cfg.Effort)")
+	}
+	if agent, err := os.ReadFile("agent.go"); err != nil || strings.Contains(string(agent), "catalog.Lookup") {
+		t.Errorf("agent.go calls catalog.Lookup (%v); the model is resolved in resolve.go", err)
 	}
 
 	_, requires, _ := modDirectives(t, "go.mod")

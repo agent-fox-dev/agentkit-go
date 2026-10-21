@@ -227,6 +227,8 @@ func rawOrEmptyObject(b json.RawMessage) json.RawMessage {
 // UsageJSON is Usage's wire shape for events. Every field is present — a
 // consumer reads the same keys whether or not the provider reported them —
 // and `reported` says which ones the provider actually set (REQ-GO-15).
+// `unpriced` says the cost counts at least one request as zero because no one
+// could price it.
 type UsageJSON struct {
 	InputTokens        int64   `json:"input_tokens"`
 	OutputTokens       int64   `json:"output_tokens"`
@@ -238,6 +240,7 @@ type UsageJSON struct {
 	CostUSD            float64 `json:"cost_usd"`
 	BilledModel        string  `json:"billed_model"`
 	Reported           bool    `json:"reported"`
+	Unpriced           bool    `json:"unpriced"`
 }
 
 func usageJSON(u Usage) UsageJSON {
@@ -245,6 +248,6 @@ func usageJSON(u Usage) UsageJSON {
 		InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, ReasoningTokens: u.ReasoningTokens,
 		CacheReadTokens: u.CacheReadTokens, CacheWriteTokens: u.CacheWriteTokens,
 		CacheWrite1hTokens: u.CacheWrite1hTokens, TotalTokens: u.TotalTokens,
-		CostUSD: u.CostUSD, BilledModel: u.BilledModel, Reported: u.Reported(),
+		CostUSD: u.CostUSD, BilledModel: u.BilledModel, Reported: u.Reported(), Unpriced: u.Unpriced,
 	}
 }

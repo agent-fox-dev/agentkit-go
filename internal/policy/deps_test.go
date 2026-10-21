@@ -369,6 +369,16 @@ var upgradesBySpec28 = map[string]string{
 	"gopkg.in/check.v1": "v1.0.0-20201130134442-10cb98267c6c",
 }
 
+// upgradesBySpec29 are the versions minimum version selection raised in the
+// sandbox module's graph when its go.mod began to require the OpenRouter and
+// Ollama modules, whose own go.mod files name newer ones (docs/DEPS.md). Like
+// upgradesBySpec28 it is read through acceptedLine, and it is distinct from both
+// that and d1Upgrades.
+var upgradesBySpec29 = map[string]string{
+	"github.com/stretchr/testify": "v1.12.1",
+	"golang.org/x/exp":            "v0.0.0-20250218142911-aa4b98e5adaa",
+}
+
 // rootUpgradesBySpec28 are the versions the same requirements raised in the
 // root module's graph, which TS-13-65 compares with its snapshot as a whole.
 var rootUpgradesBySpec28 = map[string]string{
@@ -381,13 +391,13 @@ var rootUpgradesBySpec28 = map[string]string{
 }
 
 // acceptedLine returns a graph line of a baseline snapshot as it reads once the
-// upgrades accepted so far have been made: D-1's, then spec 28's.
+// upgrades accepted so far have been made: D-1's, then spec 28's and spec 29's.
 func acceptedLine(line string) string {
 	f := strings.Fields(line)
 	if len(f) < 2 {
 		return line
 	}
-	for _, upgrades := range []map[string]string{d1Upgrades, upgradesBySpec28} {
+	for _, upgrades := range []map[string]string{d1Upgrades, upgradesBySpec28, upgradesBySpec29} {
 		if v, up := upgrades[f[0]]; up {
 			line = f[0] + " " + v
 		}
@@ -448,7 +458,7 @@ func TestRsyncDependency_TS14_42(t *testing.T) {
 	now := strings.Split(string(out), "\n")
 	for _, line := range strings.Split(strings.TrimSpace(string(base)), "\n") {
 		if line = acceptedLine(line); !slices.Contains(now, line) {
-			t.Errorf("%q is missing from the graph: an existing version moved beyond D-1 and spec 28's upgrades", line)
+			t.Errorf("%q is missing from the graph: an existing version moved beyond D-1's and specs 28 and 29's upgrades", line)
 		}
 	}
 }
@@ -657,6 +667,7 @@ func TestGraphTestsPassOnTheRegeneratedSnapshots_TS28_44(t *testing.T) {
 		upgrades map[string]string
 	}{
 		{"sandbox-go-list-m-all.txt", upgradesBySpec28},
+		{"sandbox-go-list-m-all.txt", upgradesBySpec29},
 		{"go-list-m-all.txt", rootUpgradesBySpec28},
 	} {
 		snap, err := os.ReadFile(filepath.Join(dir, "testdata", c.snapshot))
@@ -666,7 +677,7 @@ func TestGraphTestsPassOnTheRegeneratedSnapshots_TS28_44(t *testing.T) {
 		lines := strings.Split(string(snap), "\n")
 		for m, v := range c.upgrades {
 			if !slices.Contains(lines, m+" "+v) {
-				t.Errorf("%s does not hold %s %s, which spec 28 records as an accepted upgrade", c.snapshot, m, v)
+				t.Errorf("%s does not hold %s %s, which spec 28 or 29 records as an accepted upgrade", c.snapshot, m, v)
 			}
 		}
 	}

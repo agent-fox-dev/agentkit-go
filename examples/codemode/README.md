@@ -46,7 +46,7 @@ seven calls the scripts made. Those are on the event stream.
   does.
 - `faux.ToolCall(id, name, args)` and `faux.Text(s)` script the model: two
   `code_mode` calls, then the final answer. Each is one whole turn.
-- `agentkit.New(agentkit.Config{Provider: model, Model: faux.Model().ID,
+- `agentkit.New(agentkit.Config{Client: model, Model: faux.Model().ID,
   Toolset: agentkit.Toolset{Tools: []core.Tool{cm}}, MaxTurns: 5})` gives the agent `code_mode` alone;
   the tools it binds are its `ReachableTools`, which the model never sees
   directly. None is a shell tool, so no `Toolset.Guard` is required.

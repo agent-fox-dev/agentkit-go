@@ -284,7 +284,7 @@ func demoTranscriptRepair() {
 // second before every request.
 func newAgent(p *faux.Provider, tools ...core.Tool) *agentkit.Agent {
 	a, err := agentkit.New(agentkit.Config{
-		Provider:   p,
+		Client:     p,
 		Model:      faux.Model().ID,
 		System:     "You are a helpful assistant.",
 		Toolset:    agentkit.Toolset{Tools: tools},

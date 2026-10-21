@@ -157,7 +157,7 @@ func TestSmokeTwoTurnToolLoop_TS27_56(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent, err := agentkit.New(agentkit.Config{
-		Provider: p, Model: sel.Model.ID, Effort: sel.Effort,
+		Client: p, Model: sel.Model.ID, Effort: sel.Effort,
 		Toolset: agentkit.Toolset{Tools: []core.Tool{tool}},
 	})
 	if err != nil {

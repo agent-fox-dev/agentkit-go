@@ -20,16 +20,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"sync"
 	"time"
 
-	sdk "github.com/anthropics/anthropic-sdk-go"
-
-	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/prompt"
-	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 )
 
 // Effort is how much thinking a model puts into a turn.
@@ -45,16 +40,33 @@ const (
 )
 
 // Config is everything an Agent is built from.
+//
+// Provider, Model and Effort choose what runs the agent, and Env and Getenv
+// supply the credentials and endpoints of the provider they choose. Resolve
+// shows what a Config resolves to; New builds an agent on exactly that.
 type Config struct {
-	// Client is an Anthropic SDK client, built by anthropic.Resolve or by the
-	// caller.
-	Client *sdk.Client
-	// Provider, when set, is used instead of Client: a test double or a
-	// custom provider.
-	Provider core.ProviderClient
-	// Model is the catalog id; catalog.Lookup supplies its limits and prices.
-	Model  string
+	// Client is the provider client the agent calls: a test double such as
+	// provider/faux, or a provider the embedder built or wrapped. When it is
+	// set the agent builds none and reads no variable. Provider and Model
+	// still choose the catalog row and the effort.
+	Client core.ProviderClient
+	// Provider names the provider that serves Model: one of catalog.Providers,
+	// matched without regard to case and trimmed. Empty means the first. It
+	// names the catalog provider even when Client is set.
+	Provider string
+	// Model is a tier name (SIMPLE, STANDARD or ADVANCED) or the provider's own
+	// model id; catalog.Select supplies its limits, prices and, for a tier, its
+	// effort.
+	Model string
+	// Effort is one of the five efforts or empty. Empty takes the tier's effort
+	// when Model is a tier, and sends none otherwise.
 	Effort Effort
+	// Env and Getenv supply the variables the chosen provider reads for its
+	// credentials and endpoint. A non-empty Env value is used first; an empty
+	// one falls through to Getenv, and with no Getenv to the process
+	// environment. An empty value counts as unset. Nothing else reads them.
+	Env    map[string]string
+	Getenv func(string) string
 	System string
 	// Prefix is sent after the system prompt on every request, with a cache
 	// breakpoint on its last block.
@@ -94,17 +106,24 @@ type PruneOptions struct {
 // Agent runs prompts against one model with one tool set. It has no global
 // state: a second agent is a second value.
 //
-// Its surface is six methods. Run and Stream execute a prompt to a stop
-// condition; Messages, Usage and ReachableTools read its state and Runner
-// returns the runner its tool calls go through, all safe from any goroutine
+// Its surface is seven methods. Run and Stream execute a prompt to a stop
+// condition; Messages, Usage and ReachableTools read its state, Runner
+// returns the runner its tool calls go through, and Resolution reports the
+// provider, model and effort it was built to run, all safe from any goroutine
 // while a run is in flight. A Run or Stream that overlaps another fails with
 // core.ErrBusy rather than queueing: a prompt queued behind a running one was
 // written against a transcript the caller could see, and by the time it ran
 // the transcript would have changed underneath it.
 type Agent struct {
-	cfg    Config
+	cfg Config
+	// res is what Resolve chose, fixed at construction. model and client are
+	// its row and its client, which the loop reads.
+	res    Resolution
 	model  core.Model
 	client core.ProviderClient
+	// api is the API of the provider package Resolve built the client from, or
+	// empty when the client was given in Config.Client.
+	api core.API
 	// runner holds the resolved tool set, guard and interceptor, fixed at
 	// construction: the tool set is part of the cached prompt prefix, so it
 	// never changes under a run.
@@ -129,35 +148,35 @@ type Agent struct {
 	elided map[int]int64
 }
 
-// New builds an Agent from cfg. It refuses a config the agent could not run
-// safely: no way to reach a model, no model, or a Toolset that NewRunner
-// refuses — an invalid tool hierarchy, or a shell tool reachable with no
-// Guard to authorize it. That is a returned error here, rather than an
-// unrestricted shell discovered on the first run, and no request has been
-// sent.
+// New builds an Agent from cfg. It runs Resolve first, so what it runs is what
+// Resolve reports, and then validates the Toolset with NewRunner. It refuses a
+// config the agent could not run safely, and returns the first error in this
+// order, unchanged: the provider, the model, the effort, the credentials, and a
+// Toolset that NewRunner refuses — an invalid tool hierarchy, or a shell tool
+// reachable with no Guard to authorize it. That is a returned error here,
+// rather than a missing key or an unrestricted shell discovered on the first
+// run, and no request has been sent.
 func New(cfg Config) (*Agent, error) {
-	if cfg.Client == nil && cfg.Provider == nil {
-		return nil, errors.New("agentkit: Config needs an Anthropic client or provider")
-	}
-	if cfg.Model == "" {
-		return nil, errors.New("agentkit: Config.Model is empty; a model identifier is required")
+	res, err := Resolve(cfg)
+	if err != nil {
+		return nil, err
 	}
 	runner, err := NewRunner(cfg.Toolset)
 	if err != nil {
 		return nil, err
 	}
 
-	// Provider, when set, is the dispatch path; the client is only the
-	// default for it.
-	m, _ := catalog.Lookup(cfg.Model)
-	client := cfg.Provider
-	if client == nil {
-		client = anthropic.Provider(m, anthropic.Options{Client: cfg.Client})
-	}
 	// The runner owns the tool side now; the agent keeps no second copy of it.
 	cfg.Toolset = Toolset{}
 	cfg.Prefix = append([]core.Message(nil), cfg.Prefix...)
-	a := &Agent{cfg: cfg, model: m, client: client, runner: runner}
+	// The resolution holds what the selection fields chose, and the variables
+	// were read by the client's constructor: the agent keeps no second copy.
+	var api core.API
+	if cfg.Client == nil {
+		api = providerAPI(res.Provider)
+	}
+	cfg.Client, cfg.Env, cfg.Getenv = nil, nil, nil
+	a := &Agent{cfg: cfg, res: res, model: res.Model, client: res.Client, api: api, runner: runner}
 	tools := runner.Tools()
 	fixed := len(prompt.Build(cfg.System, tools))
 	if b, err := json.Marshal(core.ToolWires(tools)); err == nil {
@@ -165,6 +184,15 @@ func New(cfg Config) (*Agent, error) {
 	}
 	a.fixedTokens = int64(fixed) / charsPerToken
 	return a, nil
+}
+
+// Resolution returns the provider, model and effort the agent was built with and
+// the client it calls: what Resolve returns for the same Config. It is a copy,
+// so changing its Model does not change the agent's own row.
+func (a *Agent) Resolution() Resolution {
+	r := a.res
+	r.Model = cloneModel(r.Model)
+	return r
 }
 
 func newID(prefix string) string {
