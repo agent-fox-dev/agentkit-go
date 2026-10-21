@@ -114,6 +114,14 @@ var inherited = []string{
 // the Ollama path nothing but the Ollama variables is consulted.
 func runExample(t *testing.T, set map[string]string, unset ...string) result {
 	t.Helper()
+	return runExampleAt(t, "", ".", set, unset...)
+}
+
+// runExampleAt is runExample for any command go run takes: pkg, run in dir (the
+// test's own directory when empty). The smoke tests use it for the command a user
+// types at the root of the repository.
+func runExampleAt(t *testing.T, dir, pkg string, set map[string]string, unset ...string) result {
+	t.Helper()
 	goBin, err := exec.LookPath("go")
 	if err != nil {
 		t.Skip("go is not on PATH")
@@ -156,7 +164,8 @@ func runExample(t *testing.T, set map[string]string, unset ...string) result {
 		delete(env, k)
 	}
 
-	cmd := exec.Command(goBin, "run", ".")
+	cmd := exec.Command(goBin, "run", pkg)
+	cmd.Dir = dir
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

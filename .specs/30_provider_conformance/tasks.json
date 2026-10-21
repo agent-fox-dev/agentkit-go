@@ -464,7 +464,7 @@
         "`make check` passes",
         "every execution path 30-PATH-1 to 30-PATH-4 is live in production code"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     }
   ]

@@ -60,7 +60,7 @@ func livePrerequisites(t *testing.T, p providerInfo) {
 	switch p.name {
 	case "anthropic":
 		if _, _, err := anthropic.Resolve(anthropic.OSEnv{}); err != nil {
-			t.Skipf("anthropic: %v", err)
+			t.Skip(err) // Resolve's error begins "anthropic:" already
 		}
 	case "openrouter":
 		if os.Getenv("OPENROUTER_API_KEY") == "" {
