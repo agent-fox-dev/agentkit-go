@@ -1,9 +1,10 @@
 package openrouter
 
 import (
-	"context"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -97,13 +98,30 @@ var userInfo = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@`)
 // can be shown in an error.
 func withoutUserInfo(raw string) string { return userInfo.ReplaceAllString(raw, "$1") }
 
+// attempt is the side channel of one SDK request: the transport reads from it
+// the body to send, and the SDK never sees that body.
+type attempt struct{ body []byte }
+
+type attemptKey struct{}
+
 // transport is the HTTPClient the SDK sends through.
+//
+// AgentKit writes the request body itself, because the SDK's request types
+// would re-encode it: a tool's parameters are a map, which loses property
+// order, and reasoning_details is a union that drops fields it does not model.
+// The SDK is given a placeholder request, and the transport replaces the body
+// it serialized with the one the request's context carries
+// (docs/errata/27_openrouter_provider.md).
 type transport struct{ inner *http.Client }
 
-// Do sends the request.
-func (t transport) Do(req *http.Request) (*http.Response, error) { return t.inner.Do(req) }
-
-// Stream is not implemented yet.
-func (c *client) Stream(ctx context.Context, req core.Request) (<-chan core.StreamEvent, error) {
-	return nil, errors.New("openrouter: Stream is not implemented")
+// Do sends the request, with the body of the attempt its context carries when
+// there is one.
+func (t transport) Do(req *http.Request) (*http.Response, error) {
+	if a, ok := req.Context().Value(attemptKey{}).(*attempt); ok {
+		req = req.Clone(req.Context())
+		req.Body = io.NopCloser(bytes.NewReader(a.body))
+		req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(a.body)), nil }
+		req.ContentLength = int64(len(a.body))
+	}
+	return t.inner.Do(req)
 }

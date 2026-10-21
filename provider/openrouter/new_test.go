@@ -3,9 +3,7 @@ package openrouter_test
 import (
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
@@ -13,29 +11,6 @@ import (
 )
 
 // ------------------------------------------------------------------ harness
-
-// recorder is an httptest server that counts the requests it receives and
-// answers each with an empty server-sent-event stream.
-type recorder struct {
-	srv   *httptest.Server
-	count atomic.Int32
-}
-
-func newRecorder(t *testing.T) *recorder {
-	t.Helper()
-	r := &recorder{}
-	r.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		r.count.Add(1)
-		w.Header().Set("Content-Type", "text/event-stream")
-	}))
-	t.Cleanup(r.srv.Close)
-	return r
-}
-
-func (r *recorder) URL() string { return r.srv.URL }
-
-// Count is how many requests the server has received.
-func (r *recorder) Count() int { return int(r.count.Load()) }
 
 // neverDial is an HTTP client whose transport fails the test if it is used:
 // a provider that makes a request at construction time is caught by it.
@@ -60,7 +35,7 @@ func testModel() core.Model {
 // TS-27-1: New with a key and a model id returns a client without making a
 // request, and the exported constants hold their values.
 func TestNewBuildsAClientWithoutARequest_TS27_1(t *testing.T) {
-	srv := newRecorder(t)
+	srv := newReplay(t)
 	env := map[string]string{openrouter.APIKeyVar: "sk-or-test", openrouter.BaseURLVar: srv.URL()}
 	c, err := openrouter.New(testModel(), openrouter.Options{Env: env, HTTPClient: neverDial(t)})
 	if err != nil || c == nil {
@@ -81,7 +56,7 @@ func TestNewBuildsAClientWithoutARequest_TS27_1(t *testing.T) {
 // TS-27-3: a missing or empty API key fails New with ErrNoAPIKey, which names
 // the variable, and no request is made.
 func TestNewWithoutAKeyFails_TS27_3(t *testing.T) {
-	srv := newRecorder(t)
+	srv := newReplay(t)
 	none := func(string) string { return "" }
 	for name, opts := range map[string]openrouter.Options{
 		"no key anywhere": {Env: map[string]string{openrouter.BaseURLVar: srv.URL()}, Getenv: none},

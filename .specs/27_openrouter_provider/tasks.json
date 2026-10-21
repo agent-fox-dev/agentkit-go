@@ -210,7 +210,7 @@
       "done_when": [
         "`go test ./provider/openrouter/ -race -count=1` passes for the listed tests"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
