@@ -19,6 +19,7 @@ is not on it. An entry ending in `/` approves every module under that path.
 |---|---|
 | `github.com/anthropics/anthropic-sdk-go` | the Anthropic wire: transport, auth, retries, stream framing |
 | `github.com/OpenRouterTeam/go-sdk` | the OpenRouter wire (`provider/openrouter`): client, authentication, server URL, sending, SSE framing |
+| `github.com/ollama/ollama` | the Ollama wire (`provider/ollama`): Ollama's own client and request and response types for its native `/api/chat` API |
 | `go.starlark.net` | code mode's sandboxed Starlark runtime |
 | `github.com/modelcontextprotocol/go-sdk` | the MCP client and pool, and the MCP server of the `mcpserve` module |
 | `github.com/tree-sitter/…`, `github.com/tree-sitter-grammars/…` | tree-sitter outlines: the runtime and its grammar modules |
@@ -113,6 +114,89 @@ its graph gains the SDK and `ajson` (`testify` and `yaml/v3` are not in its
 graph); `internal/policy/testdata/go-list-m-all.txt` and
 `sandbox-go-list-m-all.txt` record both graphs. Importing the SDK's root package
 links the whole of its API surface, not only `Chat`.
+
+## `github.com/ollama/ollama`
+
+**Used by.** `provider/ollama`, for every request: it imports the module's
+`api` package and nothing else of it.
+
+**Version.** `v0.40.7`, pinned and moved deliberately. It is the version whose
+tool calls carry ids and whose final chunk carries `prompt_eval_cached_count`,
+both of which the provider relies on. `TestOllamaSDKIsPinned_TS28_43` fails if
+the version or the direct requirement changes, and an upgrade is a reviewed
+change that re-reads the `api` types.
+
+**Why this module.** It is Ollama's own client and types for the native
+`/api/chat` API, which is what [PRD 14](prd/14-run-the-agent-on-anthropic-openrouter-or-ollama.md)
+asks for: not Ollama's OpenAI-compatible or Anthropic-compatible endpoints, and
+no other vendor's SDK pointed at Ollama. It owns the HTTP request, the NDJSON
+line framing, the typed request and response, the insertion-ordered map of a
+tool call's arguments and the `think` value.
+
+**What AgentKit still owns.**
+
+- *The host.* `api.ClientFromEnvironment` is not used: it reads `OLLAMA_HOST`
+  from the process environment through `envconfig`, which bypasses
+  `Options.Env` and `Options.Getenv` and breaks test isolation. The provider
+  resolves the host itself by the CLI's rules and builds the client with
+  `api.NewClient`.
+- *The credential rule.* The provider sends none. The SDK has a signing path of
+  its own: when `OLLAMA_AUTH` is set in the process environment, or the host
+  is `ollama.com`, it reads `~/.ollama/id_ed25519`, adds an `Authorization`
+  header and a `ts` query parameter, and fails the request before it is sent if
+  the key is missing. The provider refuses `ollama.com`, and its transport
+  deletes `Authorization` beneath the SDK; it cannot stop the SDK reading the
+  variable or the key file, or the `ts` parameter, which the server receives.
+- *Error status.* `Client.Chat` checks a status only on the lines of the body,
+  so a 404, 5xx or 401 with an empty body returns `nil` with no chunk; a 401
+  is an `api.AuthorizationError`, not an `api.StatusError`. The transport
+  records each response's status so the provider can tell those from a
+  truncated stream. The differences from the API the spec assumed are in
+  [`docs/errata/28_ollama_provider.md`](errata/28_ollama_provider.md).
+
+**What is pulled in.** `go list -deps ./provider/ollama` reaches these
+non-standard modules besides the Ollama module itself (`api`, `auth`,
+`envconfig`, `format`, `internal/orderedmap`, `types/model`, `version`):
+
+| Module | Version | Why |
+|---|---|---|
+| `github.com/google/uuid` | `v1.6.0` | linked by `api` |
+| `golang.org/x/crypto` | `v0.43.0` | `ssh`, linked by `auth` for the signing path above |
+| `github.com/wk8/go-ordered-map/v2` | `v2.1.8` | the ordered map behind `ToolCallFunctionArguments` and `ToolPropertiesMap` |
+| `github.com/bahlo/generic-list-go` | `v0.2.0` | required by `go-ordered-map`; already in the graph |
+| `github.com/buger/jsonparser`, `github.com/mailru/easyjson` | `v1.1.2`, `v0.7.7` | required by `go-ordered-map` |
+| `gopkg.in/yaml.v3` | `v3.0.1` | linked by `go-ordered-map` |
+
+`go list -m all` grows by 64 lines (123 to 187): the Ollama module's own
+`go.mod` names a server, a terminal UI and a database driver (`gin`,
+`bubbletea`, `cobra`, `go-sqlite3` and their requirements), none of whose
+packages `api` imports, so none is compiled in. Minimum version selection
+raises `golang.org/x/crypto` to `v0.43.0`, `golang.org/x/exp` to
+`v0.0.0-20250218142911-aa4b98e5adaa`, `golang.org/x/mod` to `v0.30.0`,
+`golang.org/x/net` to `v0.46.0` and `golang.org/x/text` to `v0.30.0`, each
+required by the Ollama module, and `gopkg.in/check.v1` to
+`v1.0.0-20201130134442-10cb98267c6c`. `check.v1`, `github.com/kr/pretty` and
+`github.com/rogpeppe/go-internal` are reached only through `gopkg.in/yaml.v3`'s
+tests (`go mod why`), so they are not linked. The root `go.mod` lists 7 new
+indirect lines and `go.sum` gains 35 and drops 6.
+
+The nested `sandbox` module replaces the root module, so its graph gains the
+Ollama module, `easyjson` and `go-ordered-map` (both linked) and `kr/pretty`
+and `go-internal` (not linked), and raises only `gopkg.in/check.v1`: spec 14's
+D-1 had already lifted `x/crypto`, `x/net`, `x/text` and `x/mod` there.
+`mcpserve` raises the same three `x/*` versions the root does.
+`internal/policy/testdata/go-list-m-all.txt` and `sandbox-go-list-m-all.txt`
+record both graphs. `upgradesBySpec28` and `rootUpgradesBySpec28` in
+`internal/policy/deps_test.go` record the raised versions of the sandbox and
+the root graph, and `addedBySpec28` in `landlock_dep_test.go` the added
+sandbox modules.
+
+**The SDK's line limit.** `Client.Chat` reads the response with a
+`bufio.Scanner` whose largest line is 8,000,000 bytes (`maxBufferSize =
+8 * format.MegaByte`, a megabyte being 1,000,000 here) and allocates that
+buffer for each call. The 512 KB limit PRD 09 recorded does not apply to
+`v0.40.7`; either limit is out of reach of a 32,768-token output cap, whose
+longest line is one chunk.
 
 ## `go.starlark.net`
 
@@ -387,9 +471,9 @@ can make too little a `Create` failure with `Spec.RequireLandlock`. An
 PRD 09 §4 records libraries that were considered and rejected, so they are not
 re-proposed without new information. Its `provider/*` row (vendor SDKs) was
 reversed by PRD 10 for the one wire that remained, which runs on
-`github.com/anthropics/anthropic-sdk-go`, and by PRD 14 for a second, the
-OpenRouter wire on `github.com/OpenRouterTeam/go-sdk`; every other ruling
-stands. Some rows
+`github.com/anthropics/anthropic-sdk-go`, and by PRD 14 for two more, the
+OpenRouter wire on `github.com/OpenRouterTeam/go-sdk` and the Ollama wire on
+`github.com/ollama/ollama`; every other ruling stands. Some rows
 name code that has since been deleted; they are kept as the record.
 
 | Area | Candidate | Why not |

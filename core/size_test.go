@@ -59,7 +59,7 @@ func codeLines(t *testing.T, dir string, recurse bool) int {
 	return countCode(t, dir, recurse, nil)
 }
 
-// budgetLines is what TS-12-14 holds to 20,000: codeLines over the module
+// budgetLines is what TS-12-14 holds to 30,000: codeLines over the module
 // without generated files (Go's "Code generated ... DO NOT EDIT." marker)
 // and without internal packages that only test files import. Neither is
 // hand-maintained library code; docs/errata/13_sandbox_core.md records the
@@ -182,15 +182,15 @@ func countCode(t *testing.T, dir string, recurse bool, skip func(path string) bo
 }
 
 // TS-12-14, TS-21-56: core is at most 1,600 lines of code and the root module
-// at most 20,000; spec 21 adds the runner and holds both budgets. A line of code is a non-blank line that is not a comment. The
+// at most 30,000 (spec 28 raised it from 20,000, docs/errata/28_ollama_provider.md); spec 21 adds the runner and holds both budgets. A line of code is a non-blank line that is not a comment. The
 // module budget leaves out generated files and test-only internal packages
 // (budgetLines).
 func TestLineBudgets_TS12_14(t *testing.T) {
 	if n := codeLines(t, ".", false); n > 1600 {
 		t.Errorf("core has %d lines of code, over 1,600", n)
 	}
-	if n := budgetLines(t, moduleRoot(t)); n > 20000 {
-		t.Errorf("the root module has %d lines of hand-written library code, over 20,000", n)
+	if n := budgetLines(t, moduleRoot(t)); n > 30000 {
+		t.Errorf("the root module has %d lines of hand-written library code, over 30,000", n)
 	}
 }
 
@@ -297,8 +297,8 @@ func TestSandboxCountedInBudget_TS13_66(t *testing.T) {
 		return false
 	})
 	n := budgetLines(t, root)
-	if n > 20000 {
-		t.Errorf("the root module has %d lines of hand-written library code, over 20,000", n)
+	if n > 30000 {
+		t.Errorf("the root module has %d lines of hand-written library code, over 30,000", n)
 	}
 	t.Logf("root module: %d lines counted, %d within the budget", codeLines(t, root, true), n)
 }

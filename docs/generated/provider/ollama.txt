@@ -1,0 +1,109 @@
+package ollama // import "github.com/agent-fox-dev/agentkit-go/provider/ollama"
+
+Package ollama is a core.ProviderClient for a model served by an Ollama server,
+local or self-hosted. It reaches the server through Ollama's own Go package,
+github.com/ollama/ollama/api, and Ollama's native /api/chat endpoint,
+and owns what that package does not: turning a canonical request into an Ollama
+chat request, streaming the response back as canonical events and an assistant
+message, and handling the context window, thinking, tool calls, errors and usage
+the way Ollama documents them.
+
+The provider sends no credential and reads one variable, OLLAMA_HOST. It reads
+no model metadata of its own: the window, the output cap and the efforts a model
+takes come from the core.Model passed to New, which package catalog supplies.
+
+CONSTANTS
+
+const (
+	// API is the wire API this provider speaks: Ollama's native chat. It is the
+	// api string of the catalog's ollama vendor.
+	API core.API = core.APIOllamaChat
+
+	// HostVar names the environment variable that holds the server's address.
+	// It is the only variable the provider reads.
+	HostVar = "OLLAMA_HOST"
+
+	// DefaultHost is the address when HostVar is empty or unset. Every request
+	// is a POST to <host>/api/chat.
+	DefaultHost = "http://127.0.0.1:11434"
+)
+
+VARIABLES
+
+var (
+	// ErrInvalidHost is the error New wraps when the host is not an address the
+	// provider accepts.
+	ErrInvalidHost = errors.New("ollama: invalid host")
+	// ErrStreamTruncated is a response that ended before the chunk with
+	// done: true. Such a turn fails and keeps no tool call.
+	ErrStreamTruncated = errors.New("ollama: stream ended before done")
+	// ErrModelNotFound is a 404: the server does not have the model.
+	ErrModelNotFound = errors.New("ollama: model not found")
+	// ErrUnreachable is a failure to connect to the server.
+	ErrUnreachable = errors.New("ollama: server unreachable")
+	// ErrContextWindow is Ollama refusing an input longer than the context
+	// length the model runs at.
+	ErrContextWindow = errors.New("ollama: input exceeds the context length")
+)
+    The errors a turn can end with, each wrapped by an error whose text names
+    what to do about it.
+
+
+TYPES
+
+type Client struct {
+	// Has unexported fields.
+}
+    Client is the provider for one model. Nothing in it changes after New,
+    so Stream is safe for concurrent use.
+
+func New(m core.Model, opts Options) (*Client, error)
+    New builds a provider for one model. It resolves the server's address from
+    opts and the environment and makes no request: an unreachable server is
+    found on the first Stream.
+
+    New fails, before any request, when m.ID is empty after trimming,
+    and when the host is not an address the provider accepts (the error wraps
+    ErrInvalidHost).
+
+func (c *Client) Host() string
+    Host returns the resolved base URL of the server, for example
+    "http://127.0.0.1:11434".
+
+func (c *Client) Stream(ctx context.Context, req core.Request) (<-chan core.StreamEvent, error)
+    Stream sends the request and returns the turn's events. A context that is
+    already done is refused with its error and no channel; every failure after
+    that is encoded in the stream.
+
+type Options struct {
+	// Host is the server's address. It overrides HostVar, and when it is set the
+	// provider reads no variable at all.
+	Host string
+	// Env holds explicit values for HostVar. A variable is read from Env first;
+	// an empty value falls through to Getenv.
+	Env map[string]string
+	// Getenv looks a variable up when Env has no value for it. Nil means the
+	// process environment. The provider asks for HostVar and for nothing else.
+	Getenv func(string) string
+	// HTTPClient sends the requests. Nil means a client with the default
+	// transport and no overall timeout, so a long stream is cut only by the
+	// caller's context. Its Transport runs beneath the layer that deletes the
+	// Authorization header, and may add headers of its own.
+	HTTPClient *http.Client
+	// Now is the clock for message timestamps. Nil means time.Now.
+	Now func() time.Time
+	// Warnf receives the report of a transcript repair. Nil discards it.
+	Warnf func(format string, args ...any)
+}
+    Options configure one provider. The zero value reads the process environment
+    and uses the defaults.
+
+type StatusError struct {
+	Code int
+	Text string
+}
+    StatusError is an error Ollama reported, with its code: the HTTP status.
+    A retry policy that matches "429" or "503" finds it in Text as well.
+
+func (e *StatusError) Error() string
+

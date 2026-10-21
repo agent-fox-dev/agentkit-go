@@ -51,8 +51,9 @@ func TestAgentDecoupled_TS09_10(t *testing.T) {
 	}
 }
 
-// TS-09-11: the only first-party providers are anthropic, faux and (since spec
-// 27) openrouter; the first two are a core.ProviderClient built here.
+// TS-09-11: the only first-party providers are anthropic, faux, (since spec 27)
+// openrouter and (since spec 28) ollama; the first two are a core.ProviderClient
+// built here. TS-28-45.
 func TestProviderDefaults_TS09_11(t *testing.T) {
 	m, _ := catalog.Lookup("claude-opus-5-5")
 	var _ core.ProviderClient = anthropic.Provider(m, anthropic.Options{})
@@ -67,8 +68,8 @@ func TestProviderDefaults_TS09_11(t *testing.T) {
 			dirs = append(dirs, e.Name())
 		}
 	}
-	if strings.Join(dirs, ",") != "anthropic,faux,openrouter" {
-		t.Errorf("provider packages = %v, want [anthropic faux openrouter]", dirs)
+	if strings.Join(dirs, ",") != "anthropic,faux,ollama,openrouter" {
+		t.Errorf("provider packages = %v, want [anthropic faux ollama openrouter]", dirs)
 	}
 	src, err := os.ReadFile("agent.go")
 	if err != nil {
@@ -192,9 +193,12 @@ func assertAbsent(t *testing.T, paths ...string) {
 // TS-09-1: the provider backends, the multi-wire support files and the
 // auxiliary packages are gone.
 func TestDeletedPackagesAbsent_TS09_1(t *testing.T) {
-	assertAbsent(t, "provider/openai", "provider/openairesponses", "provider/google", "provider/ollama",
+	assertAbsent(t, "provider/openai", "provider/openairesponses", "provider/google",
 		"plugins", "skills", "_skills/code-review", "cmd/validate-plugins", "session", "subagent",
 		"difftest", "imagex", "compaction", "middleware", "stop")
+	// provider/ollama left this list when spec 28 gave the repository a new
+	// provider under that name (docs/errata/28_ollama_provider.md); the
+	// hand-written NDJSON one PRD 9 deleted is still gone.
 	// provider/repair.go and provider/repair_test.go left this list when spec 27
 	// gave package provider a new, shared tool-pairing repair under those names
 	// (docs/errata/27_openrouter_provider.md); the multi-wire repair they once
@@ -363,10 +367,19 @@ func TestMakefileTargets_TS09_19(t *testing.T) {
 // requiredModules26 is the root module's require set: the module paths of every
 // require line, direct and indirect, without versions. It was spec 26's, which
 // named no OpenRouter or Ollama SDK; spec 27 added the OpenRouter SDK and the
-// ajson module it requires, and the spec that adds the Ollama SDK restates it.
+// ajson module it requires, and spec 28 added the Ollama module and the
+// modules `go mod tidy` then requires for it (docs/DEPS.md).
 var requiredModules26 = []string{
 	"github.com/OpenRouterTeam/go-sdk",
 	"github.com/spyzhov/ajson",
+	"github.com/ollama/ollama",
+	"github.com/google/uuid",
+	"github.com/kr/pretty",
+	"github.com/mailru/easyjson",
+	"github.com/rogpeppe/go-internal",
+	"github.com/wk8/go-ordered-map/v2",
+	"gopkg.in/check.v1",
+	"gopkg.in/yaml.v3",
 	"github.com/anthropics/anthropic-sdk-go",
 	"github.com/aws/aws-sdk-go-v2",
 	"github.com/aws/aws-sdk-go-v2/config",

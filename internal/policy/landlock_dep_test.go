@@ -14,6 +14,14 @@ import (
 // module's graph, whose go.mod replaces the root module (docs/DEPS.md).
 var addedBySpec27 = []string{"github.com/OpenRouterTeam/go-sdk", "github.com/spyzhov/ajson"}
 
+// addedBySpec28 are the modules the Ollama module added to the same graph: the
+// module itself and the ones its package api links or its go.mod pulls in
+// (docs/DEPS.md).
+var addedBySpec28 = []string{
+	"github.com/kr/pretty", "github.com/mailru/easyjson", "github.com/ollama/ollama",
+	"github.com/rogpeppe/go-internal", "github.com/wk8/go-ordered-map/v2",
+}
+
 // TS-15-40: go-landlock is promoted to a direct requirement of the sandbox
 // module at its existing version, approved with a reason; psx stays
 // indirect and the module graph is 14's, plus the SDK that spec 27 added
@@ -36,19 +44,24 @@ func TestLandlockPromoted_TS15_40(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Every line 14 committed is still in the snapshot, and the only lines
-	// added since are the OpenRouter SDK and the module it requires (spec 27,
+	// Every line 14 committed is still in the snapshot, as upgraded by spec 28
+	// (acceptedLine), and the only lines added since are the OpenRouter SDK and
+	// the module it requires (spec 27) and the Ollama module's (spec 28,
 	// docs/DEPS.md): the graph is otherwise 14's.
 	have := strings.Split(strings.TrimSpace(string(snap)), "\n")
+	var baseline []string
 	for _, line := range strings.Split(strings.TrimSpace(string(pre)), "\n") {
+		baseline = append(baseline, acceptedLine(line))
+	}
+	for _, line := range baseline {
 		if !slices.Contains(have, line) {
 			t.Errorf("%q is missing from the sandbox module's graph snapshot: 14 committed it", line)
 		}
 	}
 	for _, line := range have {
-		if f := strings.Fields(line); !slices.Contains(strings.Split(string(pre), "\n"), line) &&
-			!slices.Contains(addedBySpec27, f[0]) {
-			t.Errorf("%q is in the sandbox module's graph snapshot, but 14 did not commit it and spec 27 did not add it", line)
+		if f := strings.Fields(line); !slices.Contains(baseline, line) &&
+			!slices.Contains(addedBySpec27, f[0]) && !slices.Contains(addedBySpec28, f[0]) {
+			t.Errorf("%q is in the sandbox module's graph snapshot, but 14 did not commit it and spec 27 and 28 did not add it", line)
 		}
 	}
 	want := ""

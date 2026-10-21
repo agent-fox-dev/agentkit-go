@@ -240,7 +240,7 @@ func TestPolicyTestdataIsCommitted_TS20_62(t *testing.T) {
 	}
 }
 
-// TS-20-63: the root module stays within TS-12-14's 20,000-line budget, which
+// TS-20-63: the root module stays within TS-12-14's 30,000-line budget, which
 // core's TestLineBudgets_TS12_14 measures. 20-REQ-10.4.
 func TestRootModuleStaysWithinItsLineBudget_TS20_63(t *testing.T) {
 	cmd := exec.Command("go", "test", "./core", "-run", "TestLineBudgets_TS12_14", "-count=1", "-v")
