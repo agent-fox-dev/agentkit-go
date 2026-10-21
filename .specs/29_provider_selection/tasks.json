@@ -375,7 +375,7 @@
       "done_when": [
         "`make check` passes in every module"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
