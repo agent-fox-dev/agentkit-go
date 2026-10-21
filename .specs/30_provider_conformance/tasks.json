@@ -340,7 +340,7 @@
       "done_when": [
         "`go test ./examples/codingagent` passes without network or credentials"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
