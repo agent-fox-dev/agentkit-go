@@ -307,7 +307,7 @@
       "done_when": [
         "`make check` passes"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
