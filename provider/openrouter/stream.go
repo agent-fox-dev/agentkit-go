@@ -2,7 +2,6 @@ package openrouter
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -78,42 +77,4 @@ func failureText(caller context.Context, err error) string {
 		return err.Error()
 	}
 	return "openrouter: " + err.Error()
-}
-
-// requestBody is the request body written so far: the model, the stream flags
-// and the user and assistant text of the transcript.
-type requestBody struct {
-	Model         string        `json:"model"`
-	Messages      []bodyMessage `json:"messages"`
-	Stream        bool          `json:"stream"`
-	StreamOptions streamOptions `json:"stream_options"`
-}
-
-type bodyMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type streamOptions struct {
-	IncludeUsage bool `json:"include_usage"`
-}
-
-// buildBody encodes the request for the model.
-func buildBody(m core.Model, req core.Request) ([]byte, error) {
-	b := requestBody{Model: m.ID, Messages: []bodyMessage{}, Stream: true, StreamOptions: streamOptions{IncludeUsage: true}}
-	for _, msgs := range []core.Messages{req.Prefix, req.Messages} {
-		for _, msg := range msgs {
-			switch v := msg.(type) {
-			case core.UserMessage:
-				if text := v.Content.Text(); text != "" {
-					b.Messages = append(b.Messages, bodyMessage{Role: "user", Content: text})
-				}
-			case core.AssistantMessage:
-				if text := v.Content.Text(); text != "" {
-					b.Messages = append(b.Messages, bodyMessage{Role: "assistant", Content: text})
-				}
-			}
-		}
-	}
-	return json.Marshal(b)
 }

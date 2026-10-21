@@ -118,9 +118,15 @@ func text(s string) string { return fmt.Sprintf(`{"content":%q}`, s) }
 
 var fixedNow = time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
 
-// provider builds a provider against srv with a fixed clock; opts adjusts the
-// Options first.
+// newProvider builds a provider for the test model against srv with a fixed
+// clock; opts adjusts the Options first.
 func newProvider(t *testing.T, srv *replay, opts ...func(*openrouter.Options)) core.ProviderClient {
+	t.Helper()
+	return newProviderFor(t, srv, testModel(), opts...)
+}
+
+// newProviderFor is newProvider for the model m.
+func newProviderFor(t *testing.T, srv *replay, m core.Model, opts ...func(*openrouter.Options)) core.ProviderClient {
 	t.Helper()
 	o := openrouter.Options{
 		Env: map[string]string{openrouter.APIKeyVar: "sk-or-test-key", openrouter.BaseURLVar: srv.URL()},
@@ -129,7 +135,7 @@ func newProvider(t *testing.T, srv *replay, opts ...func(*openrouter.Options)) c
 	for _, f := range opts {
 		f(&o)
 	}
-	c, err := openrouter.New(testModel(), o)
+	c, err := openrouter.New(m, o)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
