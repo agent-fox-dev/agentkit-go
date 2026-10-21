@@ -144,7 +144,7 @@
       "done_when": [
         "no model id literal appears in any file of internal/providerconformance"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
