@@ -38,6 +38,9 @@ var approvedDeps = []string{
 	// The OpenRouter wire (provider/openrouter): OpenRouter's own Go SDK for its
 	// native Chat Completions API, pinned at a beta 0.x release (docs/DEPS.md).
 	"github.com/OpenRouterTeam/go-sdk",
+	// The Ollama wire (provider/ollama): Ollama's own Go package for its native
+	// /api/chat API, pinned at v0.40.7 (docs/DEPS.md).
+	"github.com/ollama/ollama",
 	// Google OAuth for the Vertex AI deployment's credentials.
 	"golang.org/x/oauth2",
 	// AWS configuration and credentials for the Bedrock deployment.
@@ -172,7 +175,8 @@ func TestAnthropicSDKIsPinned_TS10_1(t *testing.T) {
 }
 
 // preSpec13Direct is the root module's direct-dependency set before spec 13
-// promoted grpc and protobuf, plus the OpenRouter SDK that spec 27 added.
+// promoted grpc and protobuf, plus the OpenRouter SDK that spec 27 added and
+// the Ollama module that spec 28 added.
 var preSpec13Direct = []string{
 	"github.com/OpenRouterTeam/go-sdk",
 	"github.com/agent-fox-dev/agentkit-go",
@@ -182,6 +186,7 @@ var preSpec13Direct = []string{
 	"github.com/aws/aws-sdk-go-v2/credentials",
 	"github.com/bmatcuk/doublestar/v4",
 	"github.com/modelcontextprotocol/go-sdk",
+	"github.com/ollama/ollama",
 	"github.com/pelletier/go-toml/v2",
 	"github.com/tree-sitter-grammars/tree-sitter-kotlin",
 	"github.com/tree-sitter-grammars/tree-sitter-lua",
@@ -355,6 +360,41 @@ var d1Upgrades = map[string]string{
 	"golang.org/x/tools":         "v0.39.0",
 }
 
+// upgradesBySpec28 are the versions minimum version selection raised in the
+// sandbox module's graph when the Ollama module entered the root module's
+// requirements (docs/DEPS.md). It is distinct from d1Upgrades; a baseline line
+// of the sandbox graph that 14 or 15 committed is read through both before it
+// is compared with the graph.
+var upgradesBySpec28 = map[string]string{
+	"gopkg.in/check.v1": "v1.0.0-20201130134442-10cb98267c6c",
+}
+
+// rootUpgradesBySpec28 are the versions the same requirements raised in the
+// root module's graph, which TS-13-65 compares with its snapshot as a whole.
+var rootUpgradesBySpec28 = map[string]string{
+	"golang.org/x/crypto": "v0.43.0",
+	"golang.org/x/exp":    "v0.0.0-20250218142911-aa4b98e5adaa",
+	"golang.org/x/mod":    "v0.30.0",
+	"golang.org/x/net":    "v0.46.0",
+	"golang.org/x/text":   "v0.30.0",
+	"gopkg.in/check.v1":   "v1.0.0-20201130134442-10cb98267c6c",
+}
+
+// acceptedLine returns a graph line of a baseline snapshot as it reads once the
+// upgrades accepted so far have been made: D-1's, then spec 28's.
+func acceptedLine(line string) string {
+	f := strings.Fields(line)
+	if len(f) < 2 {
+		return line
+	}
+	for _, upgrades := range []map[string]string{d1Upgrades, upgradesBySpec28} {
+		if v, up := upgrades[f[0]]; up {
+			line = f[0] + " " + v
+		}
+	}
+	return line
+}
+
 // TS-14-42: gokrazy/rsync v0.3.8 is the only new direct requirement,
 // approved with a reason; the sandbox module's graph gains only additions
 // and D-1's upgrades; x/net stays out of the direct set. Spec 15 made
@@ -407,12 +447,8 @@ func TestRsyncDependency_TS14_42(t *testing.T) {
 	}
 	now := strings.Split(string(out), "\n")
 	for _, line := range strings.Split(strings.TrimSpace(string(base)), "\n") {
-		f := strings.Fields(line)
-		if v, up := d1Upgrades[f[0]]; up {
-			line = f[0] + " " + v
-		}
-		if !slices.Contains(now, line) {
-			t.Errorf("%q is missing from the graph: an existing version moved beyond D-1", line)
+		if line = acceptedLine(line); !slices.Contains(now, line) {
+			t.Errorf("%q is missing from the graph: an existing version moved beyond D-1 and spec 28's upgrades", line)
 		}
 	}
 }
@@ -534,6 +570,105 @@ func TestOpenRouterProviderHoldsNoModelMetadata_TS27_55(t *testing.T) {
 	}
 	if scanned == 0 {
 		t.Error("provider/openrouter has no non-test Go files to scan")
+	}
+}
+
+// ollamaSDK is the Ollama Go module, the one dependency of provider/ollama
+// (spec 28).
+const ollamaSDK = "github.com/ollama/ollama"
+
+// TS-28-43: go.mod requires the Ollama module at exactly v0.40.7 as a direct
+// requirement, the allowlist approves it with a reason on the line above, and
+// the pre-spec-13 direct set names it. 28-REQ-9.1.
+func TestOllamaSDKIsPinned_TS28_43(t *testing.T) {
+	root := repoRoot(t)
+	r, ok := parseGoMod(t, root)[ollamaSDK]
+	if !ok {
+		t.Fatalf("go.mod does not require %s", ollamaSDK)
+	}
+	if r.version != "v0.40.7" {
+		t.Errorf("go.mod pins %s at %s, want v0.40.7", ollamaSDK, r.version)
+	}
+	if r.indirect {
+		t.Errorf("%s is only an indirect requirement", ollamaSDK)
+	}
+	if !slices.Contains(approvedDeps, ollamaSDK) || !commentedDeps(t, root)[ollamaSDK] {
+		t.Errorf("approvedDeps lacks %s with a reason comment above it", ollamaSDK)
+	}
+	if !slices.Contains(preSpec13Direct, ollamaSDK) {
+		t.Errorf("preSpec13Direct lacks %s", ollamaSDK)
+	}
+}
+
+// testFuncs returns the names of the Test functions declared in the _test.go
+// files of dir.
+func testFuncs(t *testing.T, dir string) map[string]bool {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "*_test.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, f := range files {
+		parsed, err := parser.ParseFile(token.NewFileSet(), f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range parsed.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil {
+				names[fn.Name.Name] = true
+			}
+		}
+	}
+	return names
+}
+
+// TS-28-44: the four module-graph tests the Ollama module restates still exist
+// and pass on the regenerated snapshots, and every version minimum version
+// selection raised is recorded in upgradesBySpec28, which is not d1Upgrades.
+// 28-REQ-9.2.
+func TestGraphTestsPassOnTheRegeneratedSnapshots_TS28_44(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go is not on PATH")
+	}
+	root := repoRoot(t)
+	dir := filepath.Join(root, "internal", "policy")
+	names := []string{
+		"TestSandboxDepsPromoted_TS13_65", "TestRsyncDependency_TS14_42",
+		"TestLandlockPromoted_TS15_40", "TestPodmanAddsNoDependency_TS17_60",
+	}
+	have := testFuncs(t, dir)
+	for _, name := range names {
+		if !have[name] {
+			t.Errorf("%s was deleted; spec 28 restates it", name)
+		}
+	}
+	cmd := exec.Command("go", "test", "-count=1", "-run", "^("+strings.Join(names, "|")+")$", ".")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("the restated graph tests fail on the snapshots: %v\n%s", err, out)
+	}
+
+	// Each accepted upgrade is the version its snapshot holds: a stale entry,
+	// or one with the wrong version, would let a baseline line pass for a
+	// module that did not move that way.
+	for _, c := range []struct {
+		snapshot string
+		upgrades map[string]string
+	}{
+		{"sandbox-go-list-m-all.txt", upgradesBySpec28},
+		{"go-list-m-all.txt", rootUpgradesBySpec28},
+	} {
+		snap, err := os.ReadFile(filepath.Join(dir, "testdata", c.snapshot))
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(string(snap), "\n")
+		for m, v := range c.upgrades {
+			if !slices.Contains(lines, m+" "+v) {
+				t.Errorf("%s does not hold %s %s, which spec 28 records as an accepted upgrade", c.snapshot, m, v)
+			}
+		}
 	}
 }
 

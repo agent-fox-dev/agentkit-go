@@ -84,7 +84,7 @@
         "`go list -m github.com/ollama/ollama` reports v0.40.7 in the root module",
         "the restated TS-13-65, TS-14-42, TS-15-40 and TS-17-60 still exist and pass"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
