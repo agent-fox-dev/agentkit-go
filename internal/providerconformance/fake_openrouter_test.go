@@ -17,6 +17,9 @@ var openRouterVendor = vendor{
 	},
 	render: renderOpenRouter,
 	decode: decodeOpenRouter,
+	// The reasoning_details fragments the render sends are the ones replayed.
+	rawThinking: func(b block) json.RawMessage { return rawJSON(openRouterFragments(b.text)) },
+	reportsCost: true,
 }
 
 // renderOpenRouter answers one request the way Chat Completions does: a chunk
@@ -57,10 +60,8 @@ blocks:
 				chunks = append(chunks, map[string]any{"role": "assistant", "content": part})
 			}
 		case blockThinking:
-			for _, part := range halves(b.text) {
-				chunks = append(chunks, map[string]any{"reasoning_details": []any{
-					map[string]any{"type": "reasoning.text", "text": part, "format": "unknown", "index": 0},
-				}})
+			for _, frag := range openRouterFragments(b.text) {
+				chunks = append(chunks, map[string]any{"reasoning_details": []any{frag}})
 			}
 		case blockToolCall:
 			for j, part := range halves(b.args) {
@@ -110,6 +111,16 @@ blocks:
 	flush(w)
 }
 
+// openRouterFragments are the reasoning_details fragments the fake sends for a
+// thinking text: one reasoning.text fragment for each of its two deltas.
+func openRouterFragments(thinking string) []map[string]any {
+	var out []map[string]any
+	for _, part := range halves(thinking) {
+		out = append(out, map[string]any{"type": "reasoning.text", "text": part, "format": "unknown", "index": 0})
+	}
+	return out
+}
+
 // decodeOpenRouter summarizes a Chat Completions request: the effort is
 // reasoning.effort, the tools are tools[].function.name, the tool results are
 // the role tool messages, and an assistant message holds its content, its
@@ -150,8 +161,10 @@ func decodeOpenRouter(body []byte) (requestSummary, error) {
 		switch m.Role {
 		case "user":
 			s.UserTexts = append(s.UserTexts, wireContent(m.Content))
+			s.Order = append(s.Order, "user")
 		case "tool":
 			s.Results = append(s.Results, toolResult{CallID: m.ToolCallID, Text: wireContent(m.Content)})
+			s.Order = append(s.Order, "tool")
 		case "assistant":
 			a := assistantSummary{Text: wireContent(m.Content)}
 			for _, c := range m.ToolCalls {
@@ -172,6 +185,7 @@ func decodeOpenRouter(body []byte) (requestSummary, error) {
 				a.Thinking = b.String()
 			}
 			s.Assistants = append(s.Assistants, a)
+			s.Order = append(s.Order, "assistant")
 		}
 	}
 	return s, nil

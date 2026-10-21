@@ -134,6 +134,9 @@ type requestSummary struct {
 	UserTexts  []string
 	Assistants []assistantSummary
 	Results    []toolResult
+	// Order is the sequence of the request's messages by kind: "user",
+	// "assistant" and "tool" (a tool result), the system prompt left out.
+	Order []string
 }
 
 // recordedRequest is a request a fake received.
@@ -156,6 +159,11 @@ type vendor struct {
 	render func(w http.ResponseWriter, model string, t logicalTurn)
 	// decode summarizes a request body.
 	decode func(body []byte) (requestSummary, error)
+	// rawThinking is the replayed form, in a request, of the thinking block b as
+	// this vendor's render sent it: what decode returns as RawThinking.
+	rawThinking func(b block) json.RawMessage
+	// reportsCost says whether the vendor's usage carries a cost.
+	reportsCost bool
 }
 
 // allVendors lists the three vendors in the catalog's order.

@@ -16,6 +16,8 @@ var anthropicVendor = vendor{
 	},
 	render: renderAnthropic,
 	decode: decodeAnthropic,
+	// A thinking block is replayed with its text and its signature.
+	rawThinking: func(b block) json.RawMessage { return anthropicThinking(b.text, b.signature) },
 }
 
 // renderAnthropic answers one request the way the Messages API does: a
@@ -125,6 +127,14 @@ func anthropicErrorType(status int) string {
 	return "api_error"
 }
 
+// anthropicThinking is the raw form of a replayed thinking block.
+func anthropicThinking(thinking, signature string) json.RawMessage {
+	return rawJSON(struct {
+		Thinking  string `json:"thinking"`
+		Signature string `json:"signature"`
+	}{thinking, signature})
+}
+
 // anthropicBlock is a content block of a request message.
 type anthropicBlock struct {
 	Type      string          `json:"type"`
@@ -175,8 +185,10 @@ func decodeAnthropic(body []byte) (requestSummary, error) {
 				switch b.Type {
 				case "text":
 					s.UserTexts = append(s.UserTexts, b.Text)
+					s.Order = append(s.Order, "user")
 				case "tool_result":
 					s.Results = append(s.Results, toolResult{CallID: b.ToolUseID, Text: wireContent(b.Content)})
+					s.Order = append(s.Order, "tool")
 				}
 			}
 		case "assistant":
@@ -187,15 +199,13 @@ func decodeAnthropic(body []byte) (requestSummary, error) {
 					a.Text += b.Text
 				case "thinking":
 					a.Thinking += b.Thinking
-					a.RawThinking = rawJSON(struct {
-						Thinking  string `json:"thinking"`
-						Signature string `json:"signature"`
-					}{b.Thinking, b.Signature})
+					a.RawThinking = anthropicThinking(b.Thinking, b.Signature)
 				case "tool_use":
 					a.ToolCalls = append(a.ToolCalls, toolCall{ID: b.ID, Name: b.Name, Args: b.Input})
 				}
 			}
 			s.Assistants = append(s.Assistants, a)
+			s.Order = append(s.Order, "assistant")
 		}
 	}
 	return s, nil

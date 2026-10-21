@@ -19,14 +19,14 @@ var helloCase = conformanceCase{
 	turns:  func(providerInfo) []logicalTurn { return []logicalTurn{oneText("hello")} },
 }
 
-// TS-30-6 (30-REQ-1.6): a fake that never answers does not hang the case. The
+// TS-30-6 (30-REQ-1.6): a fake that never answers does not hang the text case. The
 // run is cancelled at its deadline and the failure names the provider and the
 // case, and a healthy case alongside is not affected.
 func TestHangingFakeFailsTheCaseNamedAndInTime_TS30_6(t *testing.T) {
 	p := providerByName("ollama")
 	hung := &recorder{}
 	start := time.Now()
-	runCase(hung, p, helloCase, runOptions{timeout: 200 * time.Millisecond, hang: true})
+	runCase(hung, p, textCase, runOptions{timeout: 200 * time.Millisecond, hang: true})
 	if took := time.Since(start); took > 10*time.Second {
 		t.Errorf("runCase took %v against a fake that never answers, want it to return soon after its 200ms deadline", took)
 	}
@@ -34,15 +34,15 @@ func TestHangingFakeFailsTheCaseNamedAndInTime_TS30_6(t *testing.T) {
 	if len(msgs) == 0 {
 		t.Fatal("a case whose fake never answered was not reported as a failure")
 	}
-	if !strings.Contains(msgs[0], "ollama") || !strings.Contains(msgs[0], "hello") {
-		t.Errorf("the failure %q does not name the provider ollama and the case hello", msgs[0])
+	if !strings.HasPrefix(msgs[0], "ollama/text:") {
+		t.Errorf("the failure %q does not name the provider and the case as ollama/text", msgs[0])
 	}
 	if !strings.Contains(msgs[0], "did not finish within 200ms") || !strings.Contains(msgs[0], "cancelled") {
 		t.Errorf("the first failure %q does not say the run did not finish within its 200ms and was cancelled", msgs[0])
 	}
 
 	healthy := &recorder{}
-	runCase(healthy, p, helloCase, runOptions{})
+	runCase(healthy, p, textCase, runOptions{})
 	if healthy.failed() {
 		t.Errorf("the healthy case failed: %v", healthy.all())
 	}

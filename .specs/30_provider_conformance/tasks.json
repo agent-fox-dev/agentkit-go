@@ -186,7 +186,7 @@
       "done_when": [
         "each failing case is resolved by fixing the provider or recording an erratum for its spec, never by weakening the case for one provider"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {

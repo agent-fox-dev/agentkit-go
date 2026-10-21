@@ -15,6 +15,8 @@ var ollamaVendor = vendor{
 	},
 	render: renderOllama,
 	decode: decodeOllama,
+	// The thinking is replayed as the text it was sent as.
+	rawThinking: func(b block) json.RawMessage { return rawJSON(b.text) },
 }
 
 // renderOllama answers one request the way /api/chat does: a line per delta
@@ -124,8 +126,10 @@ func decodeOllama(body []byte) (requestSummary, error) {
 		switch m.Role {
 		case "user":
 			s.UserTexts = append(s.UserTexts, wireContent(m.Content))
+			s.Order = append(s.Order, "user")
 		case "tool":
 			s.Results = append(s.Results, toolResult{CallID: m.ToolCallID, Text: wireContent(m.Content)})
+			s.Order = append(s.Order, "tool")
 		case "assistant":
 			a := assistantSummary{Text: wireContent(m.Content), Thinking: m.Thinking}
 			if m.Thinking != "" {
@@ -135,6 +139,7 @@ func decodeOllama(body []byte) (requestSummary, error) {
 				a.ToolCalls = append(a.ToolCalls, toolCall{ID: c.ID, Name: c.Function.Name, Args: c.Function.Arguments})
 			}
 			s.Assistants = append(s.Assistants, a)
+			s.Order = append(s.Order, "assistant")
 		}
 	}
 	return s, nil
