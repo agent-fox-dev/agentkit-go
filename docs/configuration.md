@@ -111,7 +111,8 @@ variables under [Credentials and deployments](#credentials-and-deployments)
 also reads `OLLAMA_AUTH` from the process environment, as
 [`ollama.Options`](#ollamaoptions) says). `OLLAMA_API_KEY` is read by none of
 them and sent to no server, and the library reads no `AGENTKIT_` variable:
-`AGENTKIT_MODEL` is the examples' own. An agent's requests go only to
+`AGENTKIT_PROVIDER`, `AGENTKIT_MODEL` and `AGENTKIT_EFFORT` are the examples' own
+(see [Other variables](#other-variables)). An agent's requests go only to
 the chosen provider's host, so an Anthropic key is never sent to OpenRouter or
 Ollama, an OpenRouter key never to Anthropic or Ollama.
 
@@ -339,7 +340,9 @@ Other variables:
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `AGENTKIT_MODEL` | `examples/*` only | Overrides an example's model. The library never reads it. |
+| `AGENTKIT_PROVIDER` | `codingagent`, `customtools` and `mcp` only | The provider: `anthropic`, `openrouter` or `ollama`, passed to `Config.Provider`. Empty is `anthropic`. The library never reads it. |
+| `AGENTKIT_MODEL` | `codingagent`, `customtools` and `mcp` only | A tier or a model id, passed to `Config.Model`. Default `STANDARD`. The library never reads it. |
+| `AGENTKIT_EFFORT` | `codingagent`, `customtools` and `mcp` only | The effort, passed to `Config.Effort`. Empty is the tier's effort. The library never reads it. |
 | `AGENTKIT_LIVE` | the live provider tests only | `1` runs `TestLive` in `internal/providerconformance`; any other value, or none, skips it. The library never reads it. |
 
 ### Live provider tests

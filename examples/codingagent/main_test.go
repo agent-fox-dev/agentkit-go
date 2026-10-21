@@ -17,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	agentkit "github.com/agent-fox-dev/agentkit-go"
 	"github.com/agent-fox-dev/agentkit-go/catalog"
+	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
 // These tests run the example as a program, with go run, against a local server
@@ -270,6 +272,130 @@ func TestModelIDIsPassedThrough_TS30_42(t *testing.T) {
 	}
 	if think, sent := chats[0]["think"]; sent {
 		t.Errorf("the request carries think %v, want none for a model with no tier and no effort", think)
+	}
+	if r.decoyHits != 0 {
+		t.Errorf("the decoy accepted %d connections, want none", r.decoyHits)
+	}
+}
+
+// TS-30-37 (30-REQ-8.1, 30-REQ-8.4): with only the provider chosen, the example
+// runs the STANDARD tier at the tier's own effort, and says so.
+func TestDefaultsAreTheStandardTier_TS30_37(t *testing.T) {
+	srv := newOllamaServer(t)
+	sel, err := catalog.Select("ollama", "STANDARD", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := runExample(t, map[string]string{"AGENTKIT_PROVIDER": "ollama", "OLLAMA_HOST": srv.URL})
+	if r.exit != 0 {
+		t.Fatalf("exit status %d, want 0\nstdout:\n%s\nstderr:\n%s", r.exit, r.stdout, r.stderr)
+	}
+	chats := srv.chats(t)
+	if len(chats) != 1 || chats[0]["model"] != sel.Model.ID || chats[0]["think"] != string(sel.Effort) {
+		t.Fatalf("the server received %v, want one chat request for %q with think %q", chats, sel.Model.ID, sel.Effort)
+	}
+	line := summaryLine(r)
+	for _, want := range []string{"ollama", sel.Model.ID, string(sel.Effort), "1 turns", "in 10 / out 5 tokens"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the summary line %q does not name %q", line, want)
+		}
+	}
+	if r.decoyHits != 0 {
+		t.Errorf("the decoy accepted %d connections, want none", r.decoyHits)
+	}
+}
+
+// TS-30-39 (30-REQ-8.3): a configuration that cannot run is agentkit.New's error,
+// printed as a line that starts "error: ", with exit status 1 and no request.
+func TestBadConfigurationFailsBeforeAnyRequest_TS30_39(t *testing.T) {
+	srv := newOllamaServer(t)
+	t.Run("cases", func(t *testing.T) {
+		for _, c := range []struct {
+			name  string
+			set   map[string]string
+			unset []string
+			want  string
+		}{
+			{"an unknown effort", map[string]string{"AGENTKIT_PROVIDER": "ollama", "OLLAMA_HOST": srv.URL, "AGENTKIT_EFFORT": "bogus"}, nil, "bogus"},
+			{"no OpenRouter key", map[string]string{"AGENTKIT_PROVIDER": "openrouter", "OLLAMA_HOST": srv.URL}, []string{"OPENROUTER_API_KEY"}, "OPENROUTER_API_KEY"},
+			{"an unusable Ollama host", map[string]string{"AGENTKIT_PROVIDER": "ollama", "OLLAMA_HOST": "ftp://nowhere"}, nil, "ftp"},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				t.Parallel()
+				r := runExample(t, c.set, c.unset...)
+				if r.exit != 1 {
+					t.Errorf("exit status %d, want 1\nstdout:\n%s\nstderr:\n%s", r.exit, r.stdout, r.stderr)
+				}
+				found := false
+				for _, l := range strings.Split(r.stdout+"\n"+r.stderr, "\n") {
+					found = found || (strings.HasPrefix(l, "error: ") && strings.Contains(l, c.want))
+				}
+				if !found {
+					t.Errorf("no line starts \"error: \" and names %q:\nstdout:\n%s\nstderr:\n%s", c.want, r.stdout, r.stderr)
+				}
+				if r.decoyHits != 0 {
+					t.Errorf("the decoy accepted %d connections, want none", r.decoyHits)
+				}
+			})
+		}
+	})
+	if n := len(srv.requests()); n != 0 {
+		t.Errorf("the server received %d requests, want none", n)
+	}
+}
+
+// TS-30-40 (30-REQ-8.5): a run whose usage is flagged unpriced shows "cost
+// unknown" and no dollar figure; a priced one shows its figure; both name the
+// provider, the model and the effort.
+func TestSummaryShowsCostUnknownInsteadOfAFigure_TS30_40(t *testing.T) {
+	r := agentkit.Resolution{Provider: "openrouter", Model: core.Model{ID: "vendor/some-model"}, Effort: core.EffortHigh}
+	run := func(u core.Usage) core.RunResult {
+		return core.RunResult{TurnCount: 2, StopReason: core.RunStopEndTurn, Usage: u}
+	}
+	names := []string{"openrouter", "vendor/some-model", "high", "2 turns", "in 100 / out 20 tokens"}
+
+	unpriced := summary(r, run(core.Usage{InputTokens: 100, OutputTokens: 20, Unpriced: true}))
+	if !strings.Contains(unpriced, "cost unknown") || strings.Contains(unpriced, "$") {
+		t.Errorf("the unpriced summary %q, want \"cost unknown\" and no dollar figure", unpriced)
+	}
+	// Part of a cost is still not a cost.
+	partly := summary(r, run(core.Usage{InputTokens: 100, OutputTokens: 20, Unpriced: true, CostUSD: 0.5}))
+	if !strings.Contains(partly, "cost unknown") || strings.Contains(partly, "$") {
+		t.Errorf("the summary of a run with a cost of $0.5 that is flagged unpriced is %q, want \"cost unknown\" and no dollar figure", partly)
+	}
+	priced := summary(r, run(core.Usage{InputTokens: 100, OutputTokens: 20, CostUSD: 0.0123}))
+	if !strings.Contains(priced, "$0.0123") || strings.Contains(priced, "cost unknown") {
+		t.Errorf("the priced summary %q, want $0.0123 and not \"cost unknown\"", priced)
+	}
+	for _, s := range []string{unpriced, partly, priced} {
+		for _, want := range names {
+			if !strings.Contains(s, want) {
+				t.Errorf("the summary %q does not name %q", s, want)
+			}
+		}
+	}
+	if s := summary(agentkit.Resolution{Provider: "ollama", Model: core.Model{ID: "m"}}, run(core.Usage{})); !strings.Contains(s, "effort none") {
+		t.Errorf("the summary %q of a run with no effort, want \"effort none\"", s)
+	}
+}
+
+// TS-30-48 (30-REQ-9.4): the Ollama outcome is unchanged when the developer's
+// environment holds values for every other provider's variables, including the
+// ones that select Vertex AI or Bedrock; none of them is consulted.
+func TestForeignProviderVariablesAreNotConsulted_TS30_48(t *testing.T) {
+	srv := newOllamaServer(t)
+	model := tierRow(t, "SIMPLE")
+	r := runExample(t, map[string]string{
+		"AGENTKIT_PROVIDER": "ollama", "OLLAMA_HOST": srv.URL, "AGENTKIT_MODEL": "SIMPLE", "AGENTKIT_EFFORT": "high",
+		"ANTHROPIC_AUTH_TOKEN": "decoy", "ANTHROPIC_OAUTH_TOKEN": "decoy",
+		"CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "decoy", "CLAUDE_CODE_USE_BEDROCK": "1", "AWS_REGION": "decoy",
+	})
+	if r.exit != 0 {
+		t.Fatalf("exit status %d, want 0\nstdout:\n%s\nstderr:\n%s", r.exit, r.stdout, r.stderr)
+	}
+	chats := srv.chats(t)
+	if len(chats) != 1 || chats[0]["model"] != model || chats[0]["think"] != "high" {
+		t.Errorf("the server received %v, want one chat request for %q with think \"high\"", chats, model)
 	}
 	if r.decoyHits != 0 {
 		t.Errorf("the decoy accepted %d connections, want none", r.decoyHits)

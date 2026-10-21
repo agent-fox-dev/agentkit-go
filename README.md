@@ -40,21 +40,31 @@ ts, err := tools.For(ws, tools.Options{})
 if err != nil {
 	return err
 }
-// Provider is empty, so this is Anthropic; New reads ANTHROPIC_API_KEY (or the
-// other Anthropic variables) from the environment.
+// Provider names the service that runs the model: "anthropic" (the default when
+// it is empty), "openrouter" or "ollama". New builds that provider's client from
+// its own environment variables, the table below, and no SDK is imported here.
 agent, err := agentkit.New(agentkit.Config{
-	Model: "claude-opus-5-5",
+	Provider: "openrouter",
+	Model:    "STANDARD", // a tier: SIMPLE, STANDARD or ADVANCED; or the provider's own model id
 	Toolset: agentkit.Toolset{
 		Tools: ts,
 		Guard: guard.Allow("go", "git"),
 	},
 })
 if err != nil {
-	return err // names the environment variables to set
+	return err // a missing credential is reported by name, for example OPENROUTER_API_KEY
 }
 res, err := agent.Run(ctx, "Summarise this package.")
 fmt.Println(res.FinalText())
 ```
+
+What each provider reads from the environment, and nothing else:
+
+| `Provider` | Reads |
+|---|---|
+| `anthropic` (the default) | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_OAUTH_TOKEN`, with `ANTHROPIC_BASE_URL`; or the Vertex AI or Bedrock variables (`CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_BEDROCK`, …) |
+| `openrouter` | `OPENROUTER_API_KEY`, and `OPENROUTER_BASE_URL` |
+| `ollama` | `OLLAMA_HOST`; no credential |
 
 `New` refuses a config it could not run safely, with the first of: an unknown
 `Provider`, no `Model`, an unknown `Effort`, a credential the provider needs

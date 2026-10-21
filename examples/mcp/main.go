@@ -7,6 +7,15 @@
 //
 // --external takes any stdio MCP server.
 //
+// AGENTKIT_PROVIDER, AGENTKIT_MODEL and AGENTKIT_EFFORT choose what runs the
+// model: the provider (anthropic, the default, openrouter or ollama), a tier
+// (SIMPLE, STANDARD, the default, or ADVANCED) or the provider's own model id,
+// and the effort (low to max; the tier's when empty). One run on each provider:
+//
+//	ANTHROPIC_API_KEY=sk-ant-... go run ./examples/mcp "which topics do you know?"
+//	AGENTKIT_PROVIDER=openrouter OPENROUTER_API_KEY=sk-or-... go run ./examples/mcp "which topics do you know?"
+//	AGENTKIT_PROVIDER=ollama AGENTKIT_MODEL=SIMPLE AGENTKIT_EFFORT=high go run ./examples/mcp "which topics do you know?"
+//
 // It needs nothing installed. It starts an MCP server inside this process,
 // built directly on the official SDK, and talks to it over a pipe with the
 // shipped client — so what runs is the real qualified-name path and not a
@@ -149,12 +158,17 @@ func clientMode(ctx context.Context, prompt, external string) error {
 	// custom and built-in alike, not a filter over MCP tools only.
 	all := append(append([]core.Tool{}, native...), mcpTools...)
 	//
-	// Model is a tier or a model id: New resolves it through the catalog (an id
-	// it does not list still works, with default limits and no price) and
-	// builds the client from the environment, failing here, before any request,
-	// with the variables to set.
+	// Provider, Model and Effort are the three settings that choose what runs
+	// the agent, and they come from the environment unchanged (see selection).
+	// New resolves them through the catalog (an id it does not list still works,
+	// with default limits and no price), builds the client of the provider from
+	// the environment and fails here, before any model request: an unknown
+	// provider or effort by name, a missing credential by the variable to set.
+	provider, model, effort := selection()
 	agent, err := agentkit.New(agentkit.Config{
-		Model:      modelSpec(),
+		Provider:   provider,
+		Model:      model,
+		Effort:     effort,
 		System:     "You are concise. Use the tools rather than guessing, and answer in plain prose.",
 		Toolset:    agentkit.Toolset{Tools: all, Policy: core.ToolPolicy{ToolNames: toolNames(all)}},
 		MaxTurns:   8,
@@ -196,7 +210,7 @@ func clientMode(ctx context.Context, prompt, external string) error {
 	if err != nil && !errors.Is(err, core.ErrMaxTurns) && !errors.Is(err, core.ErrBudgetExceeded) {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "\n[%s · %d turns · stop %s · $%.5f]\n", agent.Resolution().Model.ID, res.TurnCount, res.StopReason, res.Usage.CostUSD)
+	fmt.Fprintf(os.Stderr, "\n%s\n", summary(agent.Resolution(), res))
 	return nil
 }
 
@@ -451,10 +465,33 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// modelSpec is "vendor/model-id", or a bare id when it is unambiguous.
-func modelSpec() string {
-	if s := os.Getenv("AGENTKIT_MODEL"); s != "" {
-		return s
+// selection reads the three settings that choose what runs the agent, and
+// nothing else decides it. They are the library's own: Config.Provider (empty is
+// anthropic), Config.Model (a tier or a model id, STANDARD here when unset) and
+// Config.Effort (empty is the tier's). They are passed on unchanged, so a wrong
+// value is New's error and not this program's. Each example that calls a model
+// repeats these lines rather than sharing them.
+func selection() (provider, model string, effort agentkit.Effort) {
+	model = os.Getenv("AGENTKIT_MODEL")
+	if model == "" {
+		model = "STANDARD"
 	}
-	return "anthropic/claude-sonnet-5"
+	return os.Getenv("AGENTKIT_PROVIDER"), model, agentkit.Effort(os.Getenv("AGENTKIT_EFFORT"))
+}
+
+// summary is the closing line: what ran, from Agent.Resolution, and what the run
+// used. A run whose cost could not be known says so, instead of printing a figure
+// that is not a price.
+func summary(r agentkit.Resolution, res core.RunResult) string {
+	u := res.Usage
+	cost := fmt.Sprintf("$%.5f", u.CostUSD)
+	if u.Unpriced {
+		cost = "cost unknown"
+	}
+	effort := string(r.Effort)
+	if effort == "" {
+		effort = "none"
+	}
+	return fmt.Sprintf("[%s · %s · effort %s · %d turns · stop %s · in %d / out %d tokens · %s]",
+		r.Provider, r.Model.ID, effort, res.TurnCount, res.StopReason, u.InputTokens, u.OutputTokens, cost)
 }

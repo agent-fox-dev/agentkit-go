@@ -428,7 +428,7 @@
         "the README quick start has no anthropic.Resolve and no SDK import",
         "`make check` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {

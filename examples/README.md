@@ -7,8 +7,9 @@ rather than sharing a helper package, so nothing you need is in a file you
 have not opened.
 
 `agentdemo`, `codemode`, `sandbox`, `gateway` and `harness` need **no API key and no network**:
-they run against the scripted provider `provider/faux`. The others call a model and
-need an Anthropic credential (below).
+they run against the scripted provider `provider/faux`. The others, `codingagent`,
+`customtools` and `mcp`, call a model on a provider you choose, Anthropic, OpenRouter or
+Ollama, with three environment variables (below).
 
 | Example | Run it | What it teaches |
 |---|---|---|
@@ -25,42 +26,64 @@ need an Anthropic credential (below).
 
 AgentKit reads no configuration file and has no global state. Everything is
 either a field on `agentkit.Config` or an environment variable read by the
-provider the agent is built on. The smallest real agent is:
+provider the agent is built on. Three settings choose what runs the agent, and
+the smallest real agent sets them:
 
 ```go
 agent, err := agentkit.New(agentkit.Config{
-	Model:      "claude-sonnet-5", // Provider is empty: Anthropic
+	Provider:   "openrouter", // "anthropic" (the default when empty), "openrouter" or "ollama"
+	Model:      "STANDARD",   // a tier, or the provider's own model id
+	Effort:     "",           // empty: the tier's effort
 	System:     "You are concise.",
 	Toolset:    agentkit.Toolset{Tools: myTools},
 	MaxTurns:   12,
 	MaxCostUSD: 1.00,
 })
 if err != nil {
-	return err // a missing credential names the variables to set
+	return err // a missing credential is reported by name, for example OPENROUTER_API_KEY
 }
 ```
 
 `New` validates the whole config before returning an agent, so a bad tool,
-a missing model, a missing credential or an unguarded shell is an error here
-rather than on the first run. The agent then has seven methods: `Run` and
-`Stream` execute a prompt, `Messages`, `Usage` and `ReachableTools` read its
-state, `Runner` returns the runner its tool calls go through, and `Resolution`
-reports the provider, model and effort it was built to run.
+an unknown provider or effort, a missing model, a missing credential or an
+unguarded shell is an error here rather than on the first run. The agent then has
+seven methods: `Run` and `Stream` execute a prompt, `Messages`, `Usage` and
+`ReachableTools` read its state, `Runner` returns the runner its tool calls go
+through, and `Resolution` reports the provider, model and effort it was built to
+run.
 
-There are exactly two things to get right.
+There are three things to get right.
 
-### 1. A deployment and its credential
+### 1. A provider and its credential
 
-`agentkit.New` chooses the deployment from the variables below, read through
-`Config.Env` and `Config.Getenv` or, with neither, the process environment, and
-builds the provider (`anthropic.Resolve`, `provider/anthropic/resolve.go`, is
-what it checks them with). A credential that is missing is an error from `New`,
-before any request. The examples that call a model set only `Config.Model`. When
-you need provider options instead — `VertexProject`, `Betas`, `MaxRetries` —
-build the provider yourself and pass it as `Config.Client:
-anthropic.Provider(model, anthropic.Options{…})` (`model` from
-`catalog.Lookup`); `Client` is used instead of the one `New` would build, and
+`Config.Provider` names the service that runs the model. `agentkit.New` builds
+that provider's client itself, from the variables below, read through
+`Config.Env` and `Config.Getenv` or, with neither, the process environment. A
+credential that is missing is an error from `New`, before any request. **Each
+provider reads only its own variables**, and the library reads no `AGENTKIT_*`
+variable: those are these examples'.
+
+| Provider | Runs the model on | Reads | Missing or wrong |
+|---|---|---|---|
+| `anthropic` (the default) | The Anthropic Messages API, direct, on Vertex AI or on Bedrock | The variables in the table below | `anthropic.ErrNoCredentials`, naming what to set |
+| `openrouter` | OpenRouter's Chat Completions API | `OPENROUTER_API_KEY` (required); `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`) | `openrouter.ErrNoAPIKey`, naming `OPENROUTER_API_KEY` |
+| `ollama` | A server you run, through Ollama's `/api/chat` | `OLLAMA_HOST` (default `http://127.0.0.1:11434`); no credential | `ollama.ErrInvalidHost` for a host it cannot use; a server that is down, or a model not pulled, is found by the first request |
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...        # OpenRouter
+export OLLAMA_HOST=127.0.0.1:11434         # Ollama, if the server is not on this machine's default
+```
+
+When you need provider options instead (`VertexProject`, `Betas`, `MaxRetries`,
+a `Transport`) build the provider yourself and pass it as `Config.Client`, for
+example `anthropic.Provider(model, anthropic.Options{…})` with `model` from
+`catalog.Select`; `Client` is used instead of the one `New` would build, and
 `Provider` and `Model` still choose the row and the effort.
+
+#### Anthropic's deployments
+
+For `anthropic`, the variables below choose the deployment (`anthropic.Resolve`,
+`provider/anthropic/resolve.go`, is what `New` checks them with).
 
 | Variable | Effect |
 |---|---|
@@ -78,9 +101,10 @@ anthropic.Provider(model, anthropic.Options{…})` (`model` from
 
 With no cloud flag and none of the three Anthropic credentials, `Resolve`
 fails with `anthropic.ErrNoCredentials` ("anthropic: missing credentials: …"),
-which the examples report before building the agent. A Vertex selection with no project fails the same way, naming the
-variables. `anthropic.Options.VertexProject` / `VertexLocation` select Vertex
-and set its location in code, over the environment.
+which `New` returns before building the agent. A Vertex selection with no
+project fails the same way, naming the variables. `anthropic.Options.VertexProject` /
+`VertexLocation` select Vertex and set its location in code, over the
+environment.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...        # the Anthropic API
@@ -108,41 +132,66 @@ An `ANTHROPIC_API_KEY` left over from a direct deployment is **dropped**, not
 forwarded: it is not a Vertex credential, and sending it would hand a
 first-party secret to a third party.
 
-### 2. A model, looked up in the catalog
+### 2. A model, from the catalog
+
+`Config.Model` is a tier or the provider's own model id, and `agentkit.New`
+resolves it with `catalog.Select(provider, model, effort)`:
 
 ```go
-model, known := catalog.Lookup("claude-opus-5-5") // the "anthropic/" prefix is optional
+sel, err := catalog.Select("ollama", "STANDARD", "") // sel.Model is the row, sel.Effort the tier's
 ```
 
-`catalog.Lookup` supplies what the model id does not carry: the context
-window, the output cap, the prices, and how the model takes extended thinking
+A **tier** (`SIMPLE`, `STANDARD` or `ADVANCED`, in any case) picks a model and an
+effort for the provider, the same name on all three:
+
+| Provider | `SIMPLE` | `STANDARD` | `ADVANCED` |
+|---|---|---|---|
+| `anthropic` | `claude-sonnet-5-5`, medium | `claude-sonnet-5-5`, high | `claude-opus-5-5`, xhigh |
+| `openrouter` | `qwen/qwen3.8-flash`, low | `qwen/qwen3.8-flash`, medium | `qwen/qwen3.8-flash`, high |
+| `ollama` | `qwen3.8:27b`, low | `qwen3.8:27b`, medium | `qwen3.8:27b`, high |
+
+On Ollama a tier is a model you have to have pulled: `ollama pull qwen3.8:27b`.
+The catalog supplies what the model id does not carry: the context window, the
+output cap, the prices, and how the model takes extended thinking
 (`Model.ThinkingKind`: `adaptive` with an effort, `budget` with `budget_tokens`,
-or `none`). `catalog.Lookup` knows Claude ids; `catalog.Select` resolves a tier
-or an id for any of the three providers. `Config.Model` takes either and
-`agentkit.New` does the resolution itself; `Config.Effort`
-(`agentkit.EffortLow` … `agentkit.EffortMax`) sets the effort. The examples
-print `agent.Resolution().Model.ID` in their summary line.
+or `none`).
 
-The catalog is **not an allowlist**. An id it does not list — a model
-released after this build, or Vertex's dated ids such as
-`claude-sonnet-5@20260401` — still resolves, with `known` false: a
-1,000,000-token window, a 128,000-token output cap, adaptive thinking and
-**no price**, so a run's cost reads as zero (`RunResult.Usage.Unpriced` says
-so) — and `Config.MaxCostUSD` never fires for it. Resolving never means the model
-exists; the vendor decides that on the first request.
+The catalog is **not an allowlist**. An id it does not list for the provider, a
+model released after this build, or Vertex's dated ids such as
+`claude-sonnet-5@20260401`, still resolves, with `Resolution().Listed` false: the
+provider's default window and output cap, adaptive thinking, and on Anthropic and
+OpenRouter **no price**. Unless the vendor reports a cost itself (OpenRouter does
+for most responses), a run's cost then reads as zero, `RunResult.Usage.Unpriced`
+says so (the examples print `cost unknown`), and `Config.MaxCostUSD` never fires
+for it. Resolving never means the model exists; the vendor decides that on
+the first request.
 
-Every example that calls a model takes `AGENTKIT_MODEL` to override its
-default:
+### 3. An effort
 
-```bash
-AGENTKIT_MODEL=claude-opus-5-5 go run ./examples/codingagent "hello"
-```
+`Config.Effort` is `agentkit.EffortLow` … `agentkit.EffortMax` (`low`, `medium`,
+`high`, `xhigh`, `max`), or empty for the tier's effort when `Model` is a tier and
+none otherwise. An unknown effort is an error from `New`. Every request carries
+the resolved effort in the provider's own form, and `Agent.Resolution()` reports
+it.
 
 ### Other variables
 
+These are read by the model-calling examples (`codingagent`, `customtools` and
+`mcp`) and by nothing in the library. Each example reads them in its own few
+lines, and passes them to `agentkit.Config` unchanged.
+
 | Variable | Effect |
 |---|---|
-| `AGENTKIT_MODEL` | Overrides the model of every example that calls one (default `anthropic/claude-sonnet-5`). |
+| `AGENTKIT_PROVIDER` | The provider: `anthropic`, `openrouter` or `ollama` (`Config.Provider`). Default empty, which is `anthropic`. |
+| `AGENTKIT_MODEL` | A tier or the provider's own model id (`Config.Model`). Default `STANDARD`. |
+| `AGENTKIT_EFFORT` | The effort (`Config.Effort`). Default empty: the tier's effort. |
+
+```bash
+AGENTKIT_PROVIDER=ollama AGENTKIT_MODEL=SIMPLE AGENTKIT_EFFORT=high go run ./examples/codingagent "hello"
+```
+
+The summary line each example prints names the provider, model id and effort that
+`agent.Resolution()` reports, with the turns, tokens and cost.
 
 ## Things every application has to decide
 
@@ -176,6 +225,22 @@ deliberately *not* contained — that is what the interceptor above is for.
 **`anthropic: missing credentials: …`** — no cloud deployment is selected and
 none of `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_OAUTH_TOKEN` is
 set. The message names what to set.
+
+**`openrouter: OPENROUTER_API_KEY is not set …`** — `AGENTKIT_PROVIDER=openrouter`
+and no key in the environment. `agentkit.New` reports it before any request.
+
+**`ollama: cannot reach the Ollama server at … start it with "ollama serve"`** —
+nothing answers at `OLLAMA_HOST` (default `http://127.0.0.1:11434`). Building the
+provider makes no request, so it is the first request that finds this out. Start
+the server, or point `OLLAMA_HOST` at the machine that runs it.
+
+**`ollama: HTTP 404: the model "…" is not on the server … run "ollama pull …"`** —
+the server is up and does not have the model of the tier. Pull it, or choose a
+model it has with `AGENTKIT_MODEL`.
+
+**`agentkit: unknown provider "…"; known providers are anthropic, openrouter and ollama`**
+(and `unknown effort`) — a value `AGENTKIT_PROVIDER` or `AGENTKIT_EFFORT` does not
+accept. The message lists the choices.
 
 **A 401 from Vertex or Bedrock despite the pre-flight passing** — the
 pre-flight only resolves the deployment; Google and AWS credentials are

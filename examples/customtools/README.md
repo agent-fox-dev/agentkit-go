@@ -77,7 +77,7 @@ exit status 1:
 
 ```
 error: anthropic: missing credentials: set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_TOKEN, ...
-error: openrouter: OPENROUTER_API_KEY is not set
+error: openrouter: OPENROUTER_API_KEY is not set (set it in the environment or in Options.Env)
 error: agentkit: unknown provider "openai"; known providers are anthropic, openrouter and ollama
 ```
 
