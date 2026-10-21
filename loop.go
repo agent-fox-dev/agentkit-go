@@ -128,7 +128,7 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial core.U
 		}
 
 		s.Push(core.TurnStartEvent{TurnIndex: turnCount})
-		assistant := a.callModel(ctx, s, view, report)
+		assistant, streamErr := a.callModel(ctx, s, view, report)
 		record(assistant)
 		a.noteElided(elided)
 		a.addUsage(a.priced(assistant.Usage))
@@ -143,7 +143,7 @@ func (a *Agent) runLoop(ctx context.Context, s *core.EventStream, initial core.U
 				runReason, runErr = a.contextStop(ctx)
 			} else {
 				runReason = core.RunStopError
-				runErr = errors.New(assistant.ErrorMessage)
+				runErr = failedTurn(assistant.ErrorMessage, streamErr)
 			}
 			break
 		}
@@ -413,6 +413,27 @@ func (a *Agent) priced(u core.Usage) core.Usage {
 	return u
 }
 
+// turnError is the error of a run that ended on a failed turn. Its text is the
+// turn's ErrorMessage, so it reads as it always has; it unwraps to the error
+// the provider ended its stream with, so errors.Is and errors.As reach the
+// provider's own sentinels and types through Run.
+type turnError struct {
+	text  string
+	cause error
+}
+
+func (e *turnError) Error() string { return e.text }
+func (e *turnError) Unwrap() error { return e.cause }
+
+// failedTurn is the run's error for a turn that ended in an error: the turn's
+// message, over the provider's error when it gave one.
+func failedTurn(text string, cause error) error {
+	if cause == nil {
+		return errors.New(text)
+	}
+	return &turnError{text: text, cause: cause}
+}
+
 // errorMessage is the terminal assistant message of a turn that failed
 // without the provider producing one.
 func (a *Agent) errorMessage(err error) core.AssistantMessage {
@@ -430,11 +451,13 @@ func streamReporter(s *core.EventStream) func(error) {
 	return func(err error) { s.Push(core.ErrorEvent{Message: err.Error(), Err: err}) }
 }
 
-// callModel issues one provider request and returns the assistant message.
-// It never returns an error: failures are encoded in the message, which is
-// what lets a provider emit half a message and then fail without the partial
-// content being lost.
-func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.Messages, report func(error)) core.AssistantMessage {
+// callModel issues one provider request and returns the assistant message and
+// the error the provider's stream ended with. Failures are encoded in the
+// message, which is what lets a provider emit half a message and then fail
+// without the partial content being lost; the error is returned beside it
+// because the message holds only its text, and the loop needs the error itself
+// to keep the provider's sentinels and types matchable.
+func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.Messages, report func(error)) (core.AssistantMessage, error) {
 	maxTokens := a.cfg.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = DefaultMaxTokens
@@ -480,16 +503,16 @@ func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.
 		if err == nil {
 			err = errors.New("provider ended the stream with no assistant message")
 		}
-		return a.errorMessage(err)
+		return a.errorMessage(err), err
 	}
 	// A provider that did not say which model answered answered for this
 	// agent's.
 	if msg.Model == "" {
 		m := *msg
 		m.Model = a.model.ID
-		return m
+		return m, ps.Err()
 	}
-	return *msg
+	return *msg, ps.Err()
 }
 
 // stampModel fills an unstamped message event's Model with this agent's,

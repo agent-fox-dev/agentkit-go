@@ -182,9 +182,9 @@ func TestSmokeTwoTurnToolLoop_TS28_47(t *testing.T) {
 }
 
 // failedRun runs the agent on the prompt through Agent.Stream and returns the
-// events of the run, its result and its error. The loop turns a failed turn into
-// an error of its own made from the message, so the provider's typed error is on
-// the ErrorEvent it forwards.
+// error events of the run, its result and its error, which is the error Run
+// returns. The provider's typed error is on the run's error and on the
+// ErrorEvent the loop forwards.
 func failedRun(t *testing.T, agent *agentkit.Agent) ([]core.ErrorEvent, core.RunResult, error) {
 	t.Helper()
 	s, err := agent.Stream(context.Background(), "go")
@@ -242,6 +242,9 @@ func TestSmokeNamedErrors_TS28_48(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.mention) || res.StopReason != core.RunStopError {
 				t.Errorf("run error = %v (%v), want one that says %q", err, res.StopReason, tc.mention)
 			}
+			if !errors.Is(err, tc.sentinel) {
+				t.Errorf("run error = %v, want one that wraps %v", err, tc.sentinel)
+			}
 			if a := lastAssistant(t, res); a.StopReason != core.StopReasonError || ran != 0 {
 				t.Errorf("last message %q, tool ran %d times; want an error turn and no tool run", a.StopReason, ran)
 			}
@@ -263,8 +266,8 @@ func TestSmokeTruncatedStream_TS28_49(t *testing.T) {
 	if len(failures) != 1 || !errors.Is(failures[0].Err, ollama.ErrStreamTruncated) {
 		t.Fatalf("error events = %+v, want one that wraps ErrStreamTruncated", failures)
 	}
-	if err == nil || !strings.Contains(err.Error(), ollama.ErrStreamTruncated.Error()) {
-		t.Errorf("run error = %v, want the truncation", err)
+	if err == nil || !strings.Contains(err.Error(), ollama.ErrStreamTruncated.Error()) || !errors.Is(err, ollama.ErrStreamTruncated) {
+		t.Errorf("run error = %v, want one that wraps the truncation", err)
 	}
 	a := lastAssistant(t, res)
 	if a.Content.Text() != "partial answer" || len(core.ExtractToolUse(&a)) != 0 || ran != 0 {
