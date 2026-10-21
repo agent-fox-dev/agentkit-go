@@ -78,14 +78,24 @@ func Select(provider, model string, effort core.Effort) (Selection, error) {
 //
 // The provider is trimmed and matched without regard to case; an empty one
 // means anthropic, and a name that is not one of Providers is refused
-// (ErrUnknownProvider), whatever vendors the catalog holds. The model is a tier
-// name or a model id. An id is only trimmed, never case-folded, and is looked
-// up among the rows of the provider's own vendor, so a row of one provider is
-// never returned for another. On anthropic the id goes through Lookup, which
-// accepts an optional "anthropic/" prefix. An id the catalog does not list is
-// served, not refused, with the provider's fallback limits, no price and
-// Listed false. The effort is trimmed and folded to one of the five levels, or
-// empty for none (ErrUnknownEffort otherwise).
+// (ErrUnknownProvider), whatever vendors the catalog holds.
+//
+// The model is a tier name or a model id. A string that, trimmed, is SIMPLE,
+// STANDARD or ADVANCED in any case is always the tier, never an id: it picks
+// the model and the effort from the provider's tier table, and Selection.Tier
+// is the canonical tier. A tiers block always names a row, so Listed is true;
+// a provider whose section in a parsed catalog has no tiers block is an error
+// naming the provider and the tier. Anything else is an id. An id is only
+// trimmed, never case-folded, and is looked up among the rows of the
+// provider's own vendor, so a row of one provider is never returned for
+// another. On anthropic the id goes through Lookup, which accepts an optional
+// "anthropic/" prefix. An id the catalog does not list is served, not refused,
+// with the provider's fallback limits, no price and Listed false.
+//
+// The effort is trimmed and folded to one of the five levels, or empty for none
+// (ErrUnknownEffort otherwise). Selection.Effort is the explicit effort, else
+// the tier's, else empty. It is reported as asked: Select neither filters nor
+// clamps it against Model.Efforts, which is the provider's reading.
 //
 // The inputs are checked in the order provider, model, effort, and the first
 // that fails is the error returned, with the zero Selection.
@@ -104,7 +114,7 @@ func (c *Catalog) Select(provider, model string, effort core.Effort) (Selection,
 		return Selection{}, err
 	}
 	if tier, ok := tierOf(id); ok {
-		return c.selectTier(p, tier)
+		return c.selectTier(p, tier, e)
 	}
 	m, listed := c.resolve(p, id)
 	return Selection{Provider: p, Model: m, Effort: e, Listed: listed}, nil
@@ -152,12 +162,27 @@ func tierOf(s string) (Tier, bool) {
 	return "", false
 }
 
-// selectTier resolves a tier of the provider.
+// selectTier resolves a tier of the provider to the row the tier's table entry
+// names. The effort is the explicit one when given and otherwise the tier's;
+// it is not checked against the row, because Parse already did for the tier's
+// own and an explicit one is the caller's to request.
 //
-// Tier resolution is added next; until then every tier is reported as
-// unavailable, with the error a catalog without a tiers block returns.
-func (c *Catalog) selectTier(provider string, tier Tier) (Selection, error) {
-	return Selection{}, fmt.Errorf("agentkit: provider %q has no %s tier in this catalog", provider, tier)
+// A vendor section a parsed catalog lacks, or one without a tiers block, has no
+// tiers to resolve.
+func (c *Catalog) selectTier(provider string, tier Tier, effort core.Effort) (Selection, error) {
+	var pick tierRow
+	if v := c.vendors[provider]; v != nil {
+		pick = v.tierTable[tier]
+	}
+	if pick.Model == "" {
+		return Selection{}, fmt.Errorf("agentkit: provider %q has no %s tier in this catalog", provider, tier)
+	}
+	if effort == "" {
+		effort = core.Effort(pick.Effort)
+	}
+	// Parse checked that the tier names a row of this vendor.
+	row := c.byCanonical[provider+"/"+pick.Model]
+	return Selection{Provider: provider, Tier: tier, Model: cloneModel(row.model), Effort: effort, Listed: true}, nil
 }
 
 // resolve returns the descriptor for a trimmed model id of the provider and

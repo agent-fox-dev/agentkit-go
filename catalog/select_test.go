@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -264,5 +265,216 @@ func TestSelectNoModel_TS26_23(t *testing.T) {
 				t.Errorf("errors.Is(%q, %q) = true, want the sentinels distinct", a, b)
 			}
 		}
+	}
+}
+
+// TS-26-2: provider names are trimmed and case-folded, and an empty name means
+// anthropic.
+func TestSelectCanonicalizesTheProvider_TS26_2(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{" OpenRouter ", "openrouter"},
+		{"OLLAMA", "ollama"},
+		{"", "anthropic"},
+		{"   ", "anthropic"},
+	} {
+		sel, err := Select(tc.in, "STANDARD", "")
+		if err != nil || sel.Provider != tc.want {
+			t.Errorf("Select(%q, STANDARD) = %q, %v; want provider %q", tc.in, sel.Provider, err, tc.want)
+		}
+	}
+	empty, err1 := Select("", "STANDARD", "")
+	named, err2 := Select("anthropic", "STANDARD", "")
+	if err1 != nil || err2 != nil || !reflect.DeepEqual(empty, named) {
+		t.Errorf("Select(\"\", STANDARD) = %+v, %v; Select(anthropic, STANDARD) = %+v, %v; want equal", empty, err1, named, err2)
+	}
+}
+
+// TS-26-15: a whole-string tier name in any case is a tier; a string that
+// merely contains one is a model id.
+func TestSelectRecognisesTierNames_TS26_15(t *testing.T) {
+	if TierSimple != "SIMPLE" || TierStandard != "STANDARD" || TierAdvanced != "ADVANCED" {
+		t.Errorf("tier constants = %q, %q, %q", TierSimple, TierStandard, TierAdvanced)
+	}
+	for _, tc := range []struct {
+		in   string
+		want Tier
+	}{
+		{" standard ", TierStandard},
+		{"Advanced", TierAdvanced},
+		{"simple", TierSimple},
+	} {
+		sel, err := Select("ollama", tc.in, "")
+		if err != nil || sel.Tier != tc.want {
+			t.Errorf("Select(ollama, %q) = tier %q, %v; want %q", tc.in, sel.Tier, err, tc.want)
+		}
+	}
+	sel, err := Select("ollama", "STANDARD-1", "")
+	if err != nil || sel.Tier != "" || sel.Model.ID != "STANDARD-1" || sel.Listed {
+		t.Errorf("Select(ollama, STANDARD-1) = %+v, %v; want the unlisted model id STANDARD-1 with no tier", sel, err)
+	}
+}
+
+// TS-26-16: the embedded tier table resolves to the documented model and effort
+// for every provider and tier.
+func TestSelectEmbeddedTierTable_TS26_16(t *testing.T) {
+	for _, tc := range []struct {
+		provider string
+		tier     Tier
+		model    string
+		effort   core.Effort
+	}{
+		{"anthropic", TierSimple, "claude-sonnet-5-5", core.EffortMedium},
+		{"anthropic", TierStandard, "claude-sonnet-5-5", core.EffortHigh},
+		{"anthropic", TierAdvanced, "claude-opus-5-5", core.EffortXHigh},
+		{"openrouter", TierSimple, "qwen/qwen3.8-flash", core.EffortLow},
+		{"openrouter", TierStandard, "qwen/qwen3.8-flash", core.EffortMedium},
+		{"openrouter", TierAdvanced, "qwen/qwen3.8-flash", core.EffortHigh},
+		{"ollama", TierSimple, "qwen3.8:27b", core.EffortLow},
+		{"ollama", TierStandard, "qwen3.8:27b", core.EffortMedium},
+		{"ollama", TierAdvanced, "qwen3.8:27b", core.EffortHigh},
+	} {
+		sel, err := Select(tc.provider, string(tc.tier), "")
+		if err != nil {
+			t.Errorf("Select(%s, %s): %v", tc.provider, tc.tier, err)
+			continue
+		}
+		if sel.Model.ID != tc.model || sel.Effort != tc.effort || !sel.Listed || sel.Tier != tc.tier || sel.Provider != tc.provider {
+			t.Errorf("Select(%s, %s) = %s %q %q listed=%v, want %q at %q listed",
+				tc.provider, tc.tier, sel.Provider, sel.Model.ID, sel.Effort, sel.Listed, tc.model, tc.effort)
+		}
+	}
+	sel, err := Select("", "STANDARD", "")
+	if err != nil || sel.Model.ID != "claude-sonnet-5-5" || sel.Effort != core.EffortHigh || !sel.Listed {
+		t.Errorf("Select(\"\", STANDARD) = %q %q listed=%v, %v; want claude-sonnet-5-5 at high", sel.Model.ID, sel.Effort, sel.Listed, err)
+	}
+}
+
+// testCatalogWithTiers is the test catalog with a valid tiers block on its
+// openrouter vendor. The vendor's rows carry no level map, so two of them get
+// one; the tiers name ids with slashes of their own.
+func testCatalogWithTiers(t *testing.T) *Catalog {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(testCatalogJSON), &doc); err != nil {
+		t.Fatal(err)
+	}
+	vendor := doc["vendors"].(map[string]any)["openrouter"].(map[string]any)
+	rows := vendor["models"].(map[string]any)
+	for _, id := range []string{"anthropic/claude-opus-4-5", "deepseek-ai/DeepSeek-V3"} {
+		row := rows[id].(map[string]any)
+		row["reasoning"] = true
+		row["thinking_level_map"] = map[string]any{"low": "low", "medium": "medium", "high": "high"}
+	}
+	pick := func(model, effort string) map[string]any { return map[string]any{"model": model, "effort": effort} }
+	vendor["tiers"] = map[string]any{
+		"SIMPLE":   pick("deepseek-ai/DeepSeek-V3", "low"),
+		"STANDARD": pick("anthropic/claude-opus-4-5", "medium"),
+		"ADVANCED": pick("anthropic/claude-opus-4-5", "high"),
+	}
+	data, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := Parse(data)
+	if err != nil {
+		t.Fatalf("the test catalog with tiers does not parse: %v", err)
+	}
+	return c
+}
+
+// TS-26-17: a vendor without a tiers block loads, and a valid tiers block loads
+// and selects, at the same schema version.
+func TestParseLoadsTiersBlocks_TS26_17(t *testing.T) {
+	if _, err := Parse([]byte(testCatalogJSON)); err != nil {
+		t.Fatalf("the test catalog without tiers does not parse: %v", err)
+	}
+	c := testCatalogWithTiers(t)
+	for _, tc := range []struct {
+		tier   Tier
+		model  string
+		effort core.Effort
+	}{
+		{TierSimple, "deepseek-ai/DeepSeek-V3", core.EffortLow},
+		{TierStandard, "anthropic/claude-opus-4-5", core.EffortMedium},
+		{TierAdvanced, "anthropic/claude-opus-4-5", core.EffortHigh},
+	} {
+		sel, err := c.Select("openrouter", string(tc.tier), "")
+		if err != nil {
+			t.Errorf("Select(openrouter, %s): %v", tc.tier, err)
+			continue
+		}
+		if sel.Model.ID != tc.model || sel.Effort != tc.effort || !sel.Listed || sel.Model.ContextWindow == 0 {
+			t.Errorf("Select(openrouter, %s) = %q at %q listed=%v window=%d, want %q at %q listed",
+				tc.tier, sel.Model.ID, sel.Effort, sel.Listed, sel.Model.ContextWindow, tc.model, tc.effort)
+		}
+	}
+	// The other vendors of the catalog still have none.
+	if _, err := c.Select("anthropic", "STANDARD", ""); err == nil {
+		t.Error("Select(anthropic, STANDARD) succeeded on a vendor without tiers")
+	}
+}
+
+// TS-26-25: a tier resolves to the tier's effort, unless an explicit effort
+// overrides it.
+func TestSelectTierEffortPrecedence_TS26_25(t *testing.T) {
+	sel, err := Select("openrouter", "STANDARD", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := sel.Model
+	if sel.Provider != "openrouter" || sel.Tier != TierStandard || m.ID != "qwen/qwen3.8-flash" ||
+		m.ContextWindow != 1000000 || m.MaxOutputTokens != 131072 ||
+		m.InputCostPerMillion != 0.15 || m.OutputCostPerMillion != 0.47 || m.CacheReadCostPerMillion != 0.016 ||
+		sel.Effort != core.EffortMedium || !sel.Listed {
+		t.Errorf("Select(openrouter, STANDARD) = %+v", sel)
+	}
+
+	sel, err = Select("ollama", "simple", "HIGH")
+	if err != nil || sel.Tier != TierSimple || sel.Model.ID != "qwen3.8:27b" || sel.Effort != core.EffortHigh || !sel.Listed {
+		t.Errorf("Select(ollama, simple, HIGH) = %+v, %v; want SIMPLE on qwen3.8:27b at high, not the tier's low", sel, err)
+	}
+
+	// The effort is checked before the tier is resolved.
+	if _, err := Select("ollama", "STANDARD", "turbo"); !errors.Is(err, ErrUnknownEffort) {
+		t.Errorf("Select(ollama, STANDARD, turbo) error = %v, want ErrUnknownEffort", err)
+	}
+}
+
+// TS-26-26: naming a tier on a provider whose section a parsed catalog lacks,
+// or that has no tiers block, fails with an error naming both.
+func TestSelectTierWithoutATiersBlock_TS26_26(t *testing.T) {
+	c := testCatalog(t) // openrouter has no tiers block, ollama has no section
+	for _, tc := range []struct{ provider, model, wantProvider, wantTier string }{
+		{"openrouter", "standard", "openrouter", "STANDARD"},
+		{"ollama", "ADVANCED", "ollama", "ADVANCED"},
+		{"", "simple", "anthropic", "SIMPLE"},
+	} {
+		sel, err := c.Select(tc.provider, tc.model, "")
+		if !zeroSelection(sel) || err == nil {
+			t.Errorf("Select(%q, %q) = %+v, %v; want the zero Selection and an error", tc.provider, tc.model, sel, err)
+			continue
+		}
+		if !strings.HasPrefix(err.Error(), "agentkit:") {
+			t.Errorf("message %q does not start with agentkit:", err)
+		}
+		wantMessageContains(t, err.Error(), tc.wantProvider, tc.wantTier)
+	}
+}
+
+// TS-26-27: a model id has no tier, and the requested effort is reported as
+// asked, without clamping it against the row.
+func TestSelectReportsTheRequestedEffort_TS26_27(t *testing.T) {
+	sel, err := Select("ollama", "qwen3.8:27b", "xhigh")
+	if err != nil || sel.Tier != "" || sel.Effort != core.EffortXHigh {
+		t.Errorf("Select(ollama, qwen3.8:27b, xhigh) = tier %q effort %q, %v; want no tier and xhigh", sel.Tier, sel.Effort, err)
+	}
+	if _, has := sel.Model.Efforts[core.EffortXHigh]; has {
+		t.Error("the ollama row lists xhigh; the test needs a row that does not take it")
+	}
+	if sel, _ := Select("ollama", "qwen3.8:27b", ""); sel.Effort != "" {
+		t.Errorf("Effort = %q with none asked, want empty", sel.Effort)
+	}
+	if sel, _ := Select("openrouter", "vendor/x", " Low "); sel.Effort != core.EffortLow || sel.Tier != "" {
+		t.Errorf("Select(openrouter, vendor/x, \" Low \") = tier %q effort %q, want no tier and low", sel.Tier, sel.Effort)
 	}
 }

@@ -152,14 +152,24 @@ func (c *Catalog) Select(provider, model string, effort core.Effort) (Selection,
 
     The provider is trimmed and matched without regard to case; an empty
     one means anthropic, and a name that is not one of Providers is refused
-    (ErrUnknownProvider), whatever vendors the catalog holds. The model is
-    a tier name or a model id. An id is only trimmed, never case-folded,
-    and is looked up among the rows of the provider's own vendor, so a row of
-    one provider is never returned for another. On anthropic the id goes through
-    Lookup, which accepts an optional "anthropic/" prefix. An id the catalog
-    does not list is served, not refused, with the provider's fallback limits,
-    no price and Listed false. The effort is trimmed and folded to one of the
-    five levels, or empty for none (ErrUnknownEffort otherwise).
+    (ErrUnknownProvider), whatever vendors the catalog holds.
+
+    The model is a tier name or a model id. A string that, trimmed, is SIMPLE,
+    STANDARD or ADVANCED in any case is always the tier, never an id:
+    it picks the model and the effort from the provider's tier table,
+    and Selection.Tier is the canonical tier. A tiers block always names a row,
+    so Listed is true; a provider whose section in a parsed catalog has no tiers
+    block is an error naming the provider and the tier. Anything else is an id.
+    An id is only trimmed, never case-folded, and is looked up among the rows
+    of the provider's own vendor, so a row of one provider is never returned for
+    another. On anthropic the id goes through Lookup, which accepts an optional
+    "anthropic/" prefix. An id the catalog does not list is served, not refused,
+    with the provider's fallback limits, no price and Listed false.
+
+    The effort is trimmed and folded to one of the five levels, or empty for
+    none (ErrUnknownEffort otherwise). Selection.Effort is the explicit effort,
+    else the tier's, else empty. It is reported as asked: Select neither filters
+    nor clamps it against Model.Efforts, which is the provider's reading.
 
     The inputs are checked in the order provider, model, effort, and the first
     that fails is the error returned, with the zero Selection.
