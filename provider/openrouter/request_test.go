@@ -209,6 +209,9 @@ func TestEndpointAndAuthorization_TS27_6(t *testing.T) {
 	if got.Header.Get("Authorization") != "Bearer "+key {
 		t.Errorf("Authorization = %q", got.Header.Get("Authorization"))
 	}
+	if accept := got.Header.Get("Accept"); accept != "text/event-stream" {
+		t.Errorf("Accept = %q, want text/event-stream (the SDK asks for JSON unless told otherwise)", accept)
+	}
 	checkNoLeak("configured base", got.Header, got.Body)
 }
 

@@ -9,7 +9,9 @@ somewhere else (`sandbox`).
 **One driver**: `agentkit.Config` and `agentkit.New`, a minimal agent loop over
 a `Runner` (`agentkit.Toolset` and `agentkit.NewRunner`), which runs the tool
 calls, against the Anthropic Messages API (`provider/anthropic`, on the
-official Go SDK), with a scripted provider (`provider/faux`) for offline tests.
+official Go SDK) or, passed as `Config.Provider`, OpenRouter
+(`provider/openrouter`, on OpenRouter's Go SDK), with a scripted provider
+(`provider/faux`) for offline tests.
 The root and sandbox modules listen on no socket and serve no MCP: they are a
 library. `agentkit-sandboxd` serves the agent service on its stdio, and two
 separate modules listen: `sandbox/gatewayd` (`agentkit-gateway`, sandboxes over
@@ -322,6 +324,7 @@ takes the place of the first two steps.
 | Identifier | Shape |
 |---|---|
 | `anthropic.Resolve` | `Resolve(env Env) (*sdk.Client, Source, error)` |
+| `openrouter.New` | `New(m core.Model, opts Options) (core.ProviderClient, error)`: reads `OPENROUTER_API_KEY` and `OPENROUTER_BASE_URL`; fails with `ErrNoAPIKey` before any request |
 | `catalog.Lookup` | `Lookup(id string) (core.Model, bool)`: a Claude model id; `agentkit.New` calls it |
 | `catalog.Select` | `Select(provider, model string, effort core.Effort) (Selection, error)`: offline, for `anthropic`, `openrouter` and `ollama`; `model` is a tier (`SIMPLE`, `STANDARD`, `ADVANCED`) or a model id |
 | `core.ProviderClient` | `Stream(ctx, Request) (<-chan StreamEvent, error)` |
@@ -360,8 +363,9 @@ takes the place of the first two steps.
 | `guard` | The shell boundary: `Check`, `Restricted`, `Allow`, `AllowAll`. |
 | `prompt` | The assembled system prompt: base prompt plus the active tools' guidelines. |
 | `catalog` | The embedded model catalog of the `anthropic`, `openrouter` and `ollama` providers, their tiers, `Lookup` and `Select`. |
-| `provider` | Cost arithmetic, the per-session tool-schema cache, deferred-tool splitting. |
+| `provider` | Cost arithmetic, the per-session tool-schema cache, deferred-tool splitting, and the tool-pairing repair (`RepairToolPairing`) the chat-style wires share. |
 | `provider/anthropic` | The Anthropic wire (direct, Vertex AI, Bedrock) over the official SDK. |
+| `provider/openrouter` | The OpenRouter wire over OpenRouter's Go SDK: `openrouter.New`, with its own retry loop, reasoning replay, netted usage and cost, and key redaction. |
 | `provider/faux` | A scripted provider for offline tests and demos; `ToolCall` and `Text` script a turn. |
 | `wire` | Bounded, strict parsing of untrusted JSON, and frame readers. |
 | `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `Open`, `CheckSpec`, `LocalDir`, `Tar`/`TarOut`, the protocol version and the errors. Its internal packages hold the protocol, the agent service, the attach and proxy code, the tar entry rules and the rsync adapter. |
