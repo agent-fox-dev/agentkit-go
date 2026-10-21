@@ -93,6 +93,17 @@ func newDecodeState(s *core.EventStream, c *client, req core.Request) *decodeSta
 	}
 }
 
+// reset forgets what an attempt that failed before any content had read, so the
+// next attempt starts clean. Nothing was emitted, so the consumer saw none of it.
+func (d *decodeState) reset() {
+	d.blocks, d.last = nil, nil
+	d.tools = map[int64]*block{}
+	d.ids = map[string]bool{}
+	d.usage = nil
+	d.finishRaw, d.sawFinish = "", false
+	d.responseID, d.responseModel = "", ""
+}
+
 // start emits the MessageStartEvent, once, before the first content event.
 func (d *decodeState) start() {
 	if d.started {

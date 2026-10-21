@@ -2,6 +2,7 @@ package openrouter
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +27,8 @@ type client struct {
 	maxRetries int
 	now        func() time.Time
 	warnf      func(format string, args ...any)
+	// sleep waits between attempts; a test replaces it.
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 // New builds a provider for one model. It resolves the API key and the base
@@ -75,6 +78,7 @@ func New(m core.Model, opts Options) (core.ProviderClient, error) {
 	if c.warnf == nil {
 		c.warnf = func(string, ...any) {}
 	}
+	c.sleep = sleepCtx
 	c.sdk = sdk.New(
 		sdk.WithSecurity(key),
 		sdk.WithServerURL(base),
@@ -98,9 +102,20 @@ var userInfo = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@`)
 // can be shown in an error.
 func withoutUserInfo(raw string) string { return userInfo.ReplaceAllString(raw, "$1") }
 
-// attempt is the side channel of one SDK request: the transport reads from it
-// the body to send, and the SDK never sees that body.
-type attempt struct{ body []byte }
+// attempt is the side channel of one SDK request. The transport reads from it
+// the body to send, which the SDK never sees, and records in it what the SDK's
+// typed errors leave out: the response's status and Retry-After header, and the
+// body of an error response.
+type attempt struct {
+	body []byte
+
+	status     int
+	retryAfter string
+	errBody    []byte
+}
+
+// maxErrorBody bounds how much of an error response the transport keeps.
+const maxErrorBody = 1 << 20
 
 type attemptKey struct{}
 
@@ -123,5 +138,17 @@ func (t transport) Do(req *http.Request) (*http.Response, error) {
 		req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(a.body)), nil }
 		req.ContentLength = int64(len(a.body))
 	}
-	return t.inner.Do(req)
+	resp, err := t.inner.Do(req)
+	if a, ok := req.Context().Value(attemptKey{}).(*attempt); ok && err == nil {
+		a.status = resp.StatusCode
+		a.retryAfter = resp.Header.Get("Retry-After")
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			// The SDK decodes the body into an error type without the status,
+			// so the transport keeps its own copy and hands the SDK another.
+			a.errBody, _ = io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+			_ = resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(a.errBody))
+		}
+	}
+	return resp, err
 }
