@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "catalog_version": "2026-09-30",
-  "note": "SNAPSHOT. Every number below was correct on catalog_version and is stale the moment a vendor changes a price or ships a model. Regenerating this file is the REQ-CAT-06 ritual, and two fields must be diffed per model on every regeneration because they change the request body: thinking_level_map (REQ-PROV-15 -- an entry that silently disappears turns a clamped request into a 400, and an entry that silently appears sends a level the model does not know) and cost, including the vendor of fallback-served rows (REQ-PROV-05.5 -- dropping it bills a fallback at the wrong rate, silently). Everything else in a row is a capability hint the clamp and the budget gate can survive being slightly wrong about. This catalog is NOT an allowlist: an unknown id under a known vendor clones that vendor's default_model row (REQ-CAT-03), so a model released after this snapshot works without an SDK release. Two vendor-wide facts that do not fit in a row: (1) all three vendors have moved their reasoning control from a token budget to a discrete level -- output_config.effort on Anthropic, reasoning_effort on OpenAI, thinkingLevel on Gemini. The Anthropic and OpenAI adapters emit their vendor's current field: on an anthropic row an INTEGER wire value is a budget_tokens and an effort TOKEN (low..max) is sent as output_config.effort with adaptive thinking, and a row that rejects temperature/top_p says so with compat.supports_sampling false. The google adapter sends an integer wire value as thinkingConfig.thinkingBudget and a token (MINIMAL, LOW, MEDIUM, HIGH) as thinkingConfig.thinkingLevel, never both; a google row records the levels the vendor documents for that model as tokens and the rest as PRESENT-AND-NULL. Present-null and absent are runtime-identical (ruling P-28); the runtime effect of a fully null ladder is that the thinking parameter is omitted -- the vendor's own default, never a 400 -- and the adapter warns that the level was not expressible. An `off` entry that is present-and-null means the model cannot stop thinking and the anthropic adapter omits the key for a request of off rather than sending a rejected disable. (2) The google rows are the AI Studio deployment; Vertex AI is the same wire behind a different host and credential and is selected by configuration (Options.VertexProject or a Vertex base URL), never by a catalog row.",
+  "catalog_version": "2026-10-21",
+  "note": "SNAPSHOT. Every number below was correct on catalog_version and is stale the moment a vendor changes a price or ships a model. Regenerating this file is the REQ-CAT-06 ritual, and two fields must be diffed per model on every regeneration because they change the request body: thinking_level_map (REQ-PROV-15 -- an entry that silently disappears turns a clamped request into a 400, and an entry that silently appears sends a level the model does not know) and cost, including the vendor of fallback-served rows (REQ-PROV-05.5 -- dropping it bills a fallback at the wrong rate, silently). Everything else in a row is a capability hint the clamp and the budget gate can survive being slightly wrong about. This catalog is NOT an allowlist: an unknown id under a known vendor clones that vendor's default_model row (REQ-CAT-03), so a model released after this snapshot works without an SDK release. Two vendor-wide facts that do not fit in a row: (1) all three vendors have moved their reasoning control from a token budget to a discrete level -- output_config.effort on Anthropic, reasoning_effort on OpenAI, thinkingLevel on Gemini. The Anthropic and OpenAI adapters emit their vendor's current field: on an anthropic row an INTEGER wire value is a budget_tokens and an effort TOKEN (low..max) is sent as output_config.effort with adaptive thinking, and a row that rejects temperature/top_p says so with compat.supports_sampling false. The google adapter sends an integer wire value as thinkingConfig.thinkingBudget and a token (MINIMAL, LOW, MEDIUM, HIGH) as thinkingConfig.thinkingLevel, never both; a google row records the levels the vendor documents for that model as tokens and the rest as PRESENT-AND-NULL. Present-null and absent are runtime-identical (ruling P-28); the runtime effect of a fully null ladder is that the thinking parameter is omitted -- the vendor's own default, never a 400 -- and the adapter warns that the level was not expressible. An `off` entry that is present-and-null means the model cannot stop thinking and the anthropic adapter omits the key for a request of off rather than sending a rejected disable. (2) The google rows are the AI Studio deployment; Vertex AI is the same wire behind a different host and credential and is selected by configuration (Options.VertexProject or a Vertex base URL), never by a catalog row. (3) The tier table. A vendor may carry a tiers object that maps each tier name -- SIMPLE, STANDARD and ADVANCED, in upper case -- to {model, effort}: the model is a row of the same vendor and the effort is one that row takes, present and non-null in its thinking_level_map. Parse rejects any other key, a missing tier, a model that is not a row of the vendor and an effort the row does not take, so a stale tier fails at load and not in a run. A tier is only a preset for catalog.Select: an explicit effort overrides the tier's effort and an explicit model id bypasses the table. Regenerating the file also means re-reading each tiers block against the rows it names.",
   "vendors": {
     "anthropic": {
       "name": "Anthropic",
@@ -9,6 +9,11 @@
       "base_url": "https://api.anthropic.com",
       "headers": { "anthropic-version": "2023-06-01" },
       "default_model": "claude-sonnet-5-5",
+      "tiers": {
+        "SIMPLE": { "model": "claude-sonnet-5-5", "effort": "medium" },
+        "STANDARD": { "model": "claude-sonnet-5-5", "effort": "high" },
+        "ADVANCED": { "model": "claude-opus-5-5", "effort": "xhigh" }
+      },
       "models": {
         "claude-fable-5-1": {
           "name": "Claude Fable 5.1",
@@ -243,6 +248,62 @@
             "high": "32768"
           },
           "note": "The smallest current row and a budget-wire one: the values are thinking token budgets, 1024 is the vendor minimum, `off` is \"disabled\". xhigh and max are ABSENT rather than null -- nothing was checked, they are opt-in -- so a request for max clamps DOWN to high, REQ-PROV-15's worked example. 200k window and 64k cap; output_config.effort is an error here, so the ladder stays in budgets. Lifecycle: active but legacy; the vendor's tentative retirement is not sooner than 2026-10-15 (checked 2026-09-30) -- the row stays until the API stops serving the id."
+        }
+      }
+    },
+    "openrouter": {
+      "name": "OpenRouter",
+      "api": "openrouter-chat",
+      "base_url": "https://openrouter.ai/api/v1",
+      "default_model": "qwen/qwen3.8-flash",
+      "tiers": {
+        "SIMPLE": { "model": "qwen/qwen3.8-flash", "effort": "low" },
+        "STANDARD": { "model": "qwen/qwen3.8-flash", "effort": "medium" },
+        "ADVANCED": { "model": "qwen/qwen3.8-flash", "effort": "high" }
+      },
+      "models": {
+        "qwen/qwen3.8-flash": {
+          "name": "Qwen3.8 Flash",
+          "context_window": 1000000,
+          "max_tokens": 131072,
+          "cost": { "input": 0.15, "output": 0.47, "cache_read": 0.016, "cache_write": 0 },
+          "input": ["text"],
+          "reasoning": true,
+          "thinking_level_map": {
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "max": "max"
+          },
+          "note": "Price source: OpenRouter's list of 2026-10-21, USD per million tokens: input 0.15, output 0.47, cache read 0.016. No cache-write price is listed, so it is 0. Efforts probed on 2026-10-21: low, medium, high and max each ran successfully and is sent by its own name. xhigh was not probed, so it is ABSENT: a request for it is not sent, and nothing is clamped to another level. Text input only. Every tier of this vendor names this row."
+        }
+      }
+    },
+    "ollama": {
+      "name": "Ollama",
+      "api": "ollama-chat",
+      "base_url": "http://127.0.0.1:11434",
+      "default_model": "qwen3.8:27b",
+      "tiers": {
+        "SIMPLE": { "model": "qwen3.8:27b", "effort": "low" },
+        "STANDARD": { "model": "qwen3.8:27b", "effort": "medium" },
+        "ADVANCED": { "model": "qwen3.8:27b", "effort": "high" }
+      },
+      "models": {
+        "qwen3.8:27b": {
+          "name": "Qwen3.8 27B",
+          "context_window": 32768,
+          "max_tokens": 32768,
+          "cost": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0 },
+          "input": ["text"],
+          "reasoning": true,
+          "thinking_level_map": {
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "max": "max"
+          },
+          "note": "32,768 is the context length the model ran at on the reference machine (32 GB Apple M4), not the 262,144 that /api/show reports for the model. The Ollama provider sends this window as num_ctx. The price is zero because the model runs on the embedder's own hardware. Efforts probed on 2026-10-21: low, medium, high and max each ran successfully and is sent by its own name. xhigh was not probed, so it is ABSENT: a request for it is not sent, and nothing is clamped to another level. Text input only. Every tier of this vendor names this row."
         }
       }
     }

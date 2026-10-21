@@ -295,10 +295,27 @@ cache-write tokens and `Requests: 1`; `Usage.Add` sums them.
 
 ## Model catalog
 
-`catalog.Lookup(id)` reads the embedded `catalog/catalog.json` (version
-`2026-09-30`); the `anthropic/` prefix is optional. Prices are USD per million
-tokens. Thinking is `adaptive` when the row's `thinking_level_map` holds effort
-names, `budget` when it holds token counts.
+The embedded `catalog/catalog.json` (version `2026-10-21`, schema version 1)
+lists models for the three providers an agent can run on, which
+`catalog.Providers()` returns in this order: `anthropic`, `openrouter` and
+`ollama`. The set is fixed in code; a vendor section of a catalog given to
+`catalog.Parse` that is not one of the three cannot be selected.
+
+- `catalog.Lookup(id)` resolves a Claude model id against the `anthropic` rows
+  only; the `anthropic/` prefix is optional. `agentkit.New` calls it with
+  `Config.Model`.
+- `catalog.Select(provider, model, effort)` resolves any of the three
+  providers, offline ([below](#catalogselect)).
+
+Only `anthropic` has a vendor wire in this repository (`provider/anthropic`). The
+`openrouter` and `ollama` sections, the tiers and `Select` are the catalog side
+of [PRD 14](prd/14-run-the-agent-on-anthropic-openrouter-or-ollama.md): nothing
+in `agentkit.New` reads them yet.
+
+Prices are USD per million tokens. Thinking is `adaptive` when the row's
+`thinking_level_map` holds effort names, `budget` when it holds token counts.
+
+### Anthropic rows
 
 | Model id | Context window | Max output | Input $/M | Output $/M | Thinking |
 |---|---|---|---|---|---|
@@ -320,9 +337,105 @@ The budget models take `low`, `medium` and `high` (4096, 16384 and 32768
 tokens); `xhigh` and `max` are not sent to them. `claude-opus-4-6` and
 `claude-sonnet-4-6` do not list `xhigh`.
 
-An id the catalog does not list still resolves, with `false`: a
-1,000,000-token window (`catalog.DefaultContextWindow`), a 128,000-token
-output cap (`catalog.DefaultMaxTokens`), adaptive thinking and no price.
+### OpenRouter and Ollama rows
+
+Each provider has one row. Both list `low`, `medium`, `high` and `max`, each
+mapped to its own name, and not `xhigh` (it was not probed); they take text
+input only.
+
+| Provider | Model id | Context window | Max output | Input $/M | Output $/M | Cache read $/M |
+|---|---|---|---|---|---|---|
+| `openrouter` | `qwen/qwen3.8-flash` | 1,000,000 | 131,072 | 0.15 | 0.47 | 0.016 |
+| `ollama` | `qwen3.8:27b` | 32,768 | 32,768 | 0 | 0 | 0 |
+
+The OpenRouter prices are OpenRouter's list of 2026-10-21. The Ollama window is
+the length the model ran at on the reference machine (32 GB Apple M4), not the
+262,144 that `/api/show` reports; the row's note says an Ollama provider is to
+send it as `num_ctx`. The Ollama price is zero because the model runs on the
+embedder's own hardware.
+
+### Ids the catalog does not list
+
+An id the catalog does not list is served, not refused, so a model released
+after this snapshot works the day it ships. It gets its provider's fallback
+limits, no price, adaptive thinking and no effort map (an effort is sent by its
+own name). `Lookup` reports it with `false`, and `Select` with
+`Selection.Listed` false.
+
+| Provider | Context window | Max output | Constants |
+|---|---|---|---|
+| `anthropic` | 1,000,000 | 128,000 | `catalog.DefaultContextWindow`, `catalog.DefaultMaxTokens` |
+| `openrouter` | 131,072 | 32,768 | `catalog.OpenRouterDefaultContextWindow`, `catalog.OpenRouterDefaultMaxTokens` |
+| `ollama` | 32,768 | 32,768 | `catalog.OllamaDefaultContextWindow`, `catalog.OllamaDefaultMaxTokens` |
+
+A fallback is a documented guess, not a lookup at the vendor.
+
+### Tiers
+
+A tier name picks a model and an effort for a provider. The table is the
+optional `tiers` object of each vendor in `catalog.json`; the embedded table is
+fixed per release. `catalog.Parse` rejects a `tiers`
+object with a key other than `SIMPLE`, `STANDARD` or `ADVANCED` (lower case
+included), a missing tier, a model that is not a row of the same vendor, and an
+effort that is not one of the five or that the row does not take, with a
+`*catalog.ParseError` that names the path (for example
+`vendors.ollama.tiers.STANDARD.effort`).
+
+| Provider | `SIMPLE` | `STANDARD` | `ADVANCED` |
+|---|---|---|---|
+| `anthropic` | `claude-sonnet-5-5`, medium | `claude-sonnet-5-5`, high | `claude-opus-5-5`, xhigh |
+| `openrouter` | `qwen/qwen3.8-flash`, low | `qwen/qwen3.8-flash`, medium | `qwen/qwen3.8-flash`, high |
+| `ollama` | `qwen3.8:27b`, low | `qwen3.8:27b`, medium | `qwen3.8:27b`, high |
+
+### `catalog.Select`
+
+`Select(provider, model string, effort core.Effort) (Selection, error)`
+resolves against the embedded catalog; `(*Catalog).Select` does the same against
+a catalog from `Parse`. It reads no environment variable, does no I/O, returns a
+deep copy of the row and is safe for concurrent use. The result is a
+`Selection`:
+
+| Field | Meaning |
+|---|---|
+| `Provider` | The canonical provider name. |
+| `Tier` | The canonical tier when `model` named one, else empty. |
+| `Model` | A `core.Model`; `Model.ID` is the id the vendor will receive. |
+| `Effort` | The effort to request, reported as asked and never filtered or clamped against `Model.Efforts`: `xhigh` on the `ollama` row, which does not list it, is still reported. Whether it is sent is the provider's reading of `Model.Efforts`; `provider/anthropic` does not send an effort that is absent or null in the map. |
+| `Listed` | Whether `Model` is a row of the provider's vendor. Always true for a tier. |
+
+How the inputs are read:
+
+- **Provider.** Trimmed and matched without regard to case; empty means
+  `anthropic`.
+- **Model.** The whole string, trimmed and matched without regard to case, is
+  a tier when it is `SIMPLE`, `STANDARD` or `ADVANCED`, and is then never a model
+  id (`STANDARD-1` is an id). Any other string is a model id: trimmed, its case
+  kept. On `anthropic` it goes through `Lookup`, so `anthropic/` is removed. On
+  `openrouter` and `ollama` it is looked up among that provider's rows only, and
+  `anthropic/claude-sonnet-5-5` on `openrouter` is an OpenRouter id, kept with
+  its prefix. A row of one provider is never returned for another.
+- **Effort.** Trimmed and matched without regard to case against `low`,
+  `medium`, `high`, `xhigh` and `max`, and normalized to the lower-case constant;
+  empty means none asked.
+
+The effort of the result is the explicit effort when one is given; otherwise the
+tier's effort when `model` is a tier; otherwise none. An explicit model id
+bypasses the tier table.
+
+The inputs are checked in the order provider, model, effort; the first that
+fails is returned, with the zero `Selection`. Each error wraps a sentinel that
+`errors.Is` matches:
+
+| Sentinel | Message |
+|---|---|
+| `catalog.ErrUnknownProvider` | `agentkit: unknown provider "openai"; known providers are anthropic, openrouter and ollama` |
+| `catalog.ErrNoModel` | `agentkit: no model given; name a tier (SIMPLE, STANDARD or ADVANCED); a model id is also accepted` |
+| `catalog.ErrUnknownEffort` | `agentkit: unknown effort "turbo"; known efforts are low, medium, high, xhigh and max` |
+
+Each message names the value as given. Naming a tier on a provider whose section
+in a catalog from `Parse` has no `tiers` object fails with an error such as
+`agentkit: provider "ollama" has no ADVANCED tier in this catalog`; the embedded
+catalog has a table for each provider.
 
 ## Workspace (`workspace.Options`)
 

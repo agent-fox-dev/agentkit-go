@@ -1,5 +1,13 @@
-// Package catalog embeds AgentKit's Claude model catalog and turns a model
-// id into the core.Model descriptor of REQ-PROV-10 (Lookup).
+// Package catalog embeds AgentKit's model catalog and turns a model id into the
+// core.Model descriptor of REQ-PROV-10. It lists models for the three
+// providers an agent can run on (Providers): anthropic, openrouter and ollama.
+//
+// Lookup resolves a Claude model id and is what the driver calls. Select is the
+// offline entry point for all three providers: it turns a provider, a model and
+// an effort into the Selection a run will use. The model is either a tier name,
+// SIMPLE, STANDARD or ADVANCED, which the catalog's fixed tier table maps to a
+// model id and an effort for the provider, or a model id, which bypasses the
+// table. An explicit effort overrides the tier's.
 //
 // The catalog supplies exactly the metadata no provider API returns and no
 // pass-through can synthesize: context window, output cap, pricing, how the
@@ -9,9 +17,10 @@
 // pass the model string through" is not an option.
 //
 // The catalog is NOT an allowlist. An id it does not list gets a usable
-// default descriptor (Lookup), so a model that ships after this snapshot works
-// the day it ships. All model metadata — prices, token limits, how a model
-// takes thinking — lives here and nowhere else.
+// default descriptor (Lookup, Select), so a model that ships after this
+// snapshot works the day it ships; each provider has its own fallback window
+// and output cap, and none has a price. All model metadata — prices, token
+// limits, how a model takes thinking — lives here and nowhere else.
 //
 // # Layering
 //
@@ -99,8 +108,20 @@ type vendorRow struct {
 	// guess that is wrong least often is the middle of the vendor's range.
 	DefaultModel string               `json:"default_model"`
 	Models       map[string]*modelRow `json:"models"`
+	// Tiers is the optional tier table (26-REQ-4): all of SIMPLE, STANDARD and
+	// ADVANCED, each naming a row of this vendor and an effort that row takes.
+	// A vendor without it has no tiers.
+	Tiers map[string]*tierRow `json:"tiers"`
 
-	id string // the map key, filled in by Parse
+	id        string           // the map key, filled in by Parse
+	tierTable map[Tier]tierRow // Tiers once validated, filled in by Parse
+}
+
+// tierRow is one tier's choice: the id of a row of the vendor, and the effort
+// to request on it.
+type tierRow struct {
+	Model  string `json:"model"`
+	Effort string `json:"effort"`
 }
 
 type modelRow struct {
@@ -131,6 +152,14 @@ type costRow struct {
 // Requests carry a core.Effort, which names the five from low up; off and
 // minimal are catalog-authoring metadata and never sent.
 var thinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+// allEfforts are the five levels a request can carry, lowest first:
+// thinkingLevels without off and minimal.
+var allEfforts = []core.Effort{core.EffortLow, core.EffortMedium, core.EffortHigh, core.EffortXHigh, core.EffortMax}
+
+// tierNames are the keys a tiers object must have, in the order Parse checks
+// them.
+var tierNames = []Tier{TierSimple, TierStandard, TierAdvanced}
 
 // --- parsing ---------------------------------------------------------------
 
@@ -234,6 +263,13 @@ func Parse(data []byte) (*Catalog, error) {
 			c.byCanonical[e.canonical()] = &ce
 			c.byBareID[mid] = append(c.byBareID[mid], e)
 		}
+
+		// After the rows, so a tier is checked against rows that loaded.
+		tiers, err := v.parseTiers(vpath)
+		if err != nil {
+			return nil, err
+		}
+		v.tierTable = tiers
 	}
 
 	sort.Strings(c.vendorIDs)
@@ -242,6 +278,58 @@ func Parse(data []byte) (*Catalog, error) {
 		sort.Slice(es, func(i, j int) bool { return es[i].vendor < es[j].vendor })
 	}
 	return c, nil
+}
+
+// parseTiers validates the vendor's tiers object against its rows and returns
+// the table Select reads; a vendor without one has no tiers. A tier that names
+// a missing row, or an effort the row does not take, would silently pick an
+// unlisted model or send no effort, which is the kind of hand-editing mistake
+// Parse rejects at load, like a misspelled thinking level.
+//
+// The checks run in a fixed order, so one catalog always fails at the same
+// path: unknown keys (sorted), then a missing tier, then for each tier in order
+// its model, the effort's spelling and whether the row takes the effort.
+func (v *vendorRow) parseTiers(vpath string) (map[Tier]tierRow, error) {
+	if v.Tiers == nil {
+		return nil, nil
+	}
+	tpath := vpath + ".tiers"
+
+	keys := make([]string, 0, len(v.Tiers))
+	for k := range v.Tiers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !slices.Contains(tierNames, Tier(k)) {
+			return nil, badf(tpath+"."+k, "not a tier; the keys are exactly SIMPLE, STANDARD and ADVANCED")
+		}
+	}
+
+	table := make(map[Tier]tierRow, len(tierNames))
+	for _, name := range tierNames {
+		path := tpath + "." + string(name)
+		t, ok := v.Tiers[string(name)]
+		if !ok {
+			return nil, badf(path, "missing; a tiers block names all of SIMPLE, STANDARD and ADVANCED")
+		}
+		if t == nil {
+			t = &tierRow{}
+		}
+		row, ok := v.Models[t.Model]
+		if !ok {
+			return nil, badf(path+".model", "names %q, which is not a model of this vendor", t.Model)
+		}
+		if !slices.Contains(allEfforts, core.Effort(t.Effort)) {
+			return nil, badf(path+".effort", "%q is not an effort (known: low, medium, high, xhigh, max)", t.Effort)
+		}
+		if wire := row.ThinkingLevelMap[t.Effort]; wire == nil {
+			return nil, badf(path+".effort", "model %q does not take %q: it is absent or null in its thinking_level_map",
+				t.Model, t.Effort)
+		}
+		table[name] = *t
+	}
+	return table, nil
 }
 
 // toModel projects one file row onto core.Model, inheriting vendor-level
@@ -456,7 +544,19 @@ const (
 	DefaultMaxTokens     = 128_000
 )
 
-// Vendor is the one vendor the catalog lists.
+// Default context window and output cap for an id the catalog does not list
+// under openrouter or ollama (26-REQ-3). Like the pair above they are
+// documented guesses, not a lookup at the vendor, and the descriptor they
+// belong to has no price and no effort map.
+const (
+	OpenRouterDefaultContextWindow = 131_072
+	OpenRouterDefaultMaxTokens     = 32_768
+	OllamaDefaultContextWindow     = 32_768
+	OllamaDefaultMaxTokens         = 32_768
+)
+
+// Vendor is the vendor Lookup resolves against. The catalog lists a vendor for
+// each of the other providers too (see Providers).
 const Vendor = "anthropic"
 
 // Lookup returns the descriptor for a Claude model id, with or without the

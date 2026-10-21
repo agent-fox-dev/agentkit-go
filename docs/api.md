@@ -19,7 +19,7 @@ it with `go doc -all <import path>`. This file is the map.
 | `core` | The canonical vocabulary and every interface seam (`Tool`, `ProviderClient`, messages, events), and `core.Named`, which picks tools by name. |
 | `provider/anthropic` | The Anthropic Messages wire API, on the official Go SDK. |
 | `provider/faux` | A deterministic, scripted provider for offline tests, with `faux.ToolCall` and `faux.Text` for single-block turns. |
-| `catalog` | The embedded Claude model catalog; `catalog.Lookup` turns a model id into a `core.Model`. |
+| `catalog` | The embedded model catalog of the three providers (`anthropic`, `openrouter`, `ollama`), with their tiers. `catalog.Lookup` turns a Claude model id into a `core.Model`; `catalog.Select` turns a provider, a model (a tier or an id) and an effort into the `Selection` a run will use. |
 | `prompt` | System prompt assembly. |
 | `schema` | The structured, transformable tool-schema value type. |
 | `workspace` | The workspace every scenario opens first: containment, ignore rules and the directory walk (`workspace.Open`). |

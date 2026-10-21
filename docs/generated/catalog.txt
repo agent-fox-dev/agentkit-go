@@ -1,7 +1,15 @@
 package catalog // import "github.com/agent-fox-dev/agentkit-go/catalog"
 
-Package catalog embeds AgentKit's Claude model catalog and turns a model id into
-the core.Model descriptor of REQ-PROV-10 (Lookup).
+Package catalog embeds AgentKit's model catalog and turns a model id into the
+core.Model descriptor of REQ-PROV-10. It lists models for the three providers an
+agent can run on (Providers): anthropic, openrouter and ollama.
+
+Lookup resolves a Claude model id and is what the driver calls. Select is the
+offline entry point for all three providers: it turns a provider, a model and
+an effort into the Selection a run will use. The model is either a tier name,
+SIMPLE, STANDARD or ADVANCED, which the catalog's fixed tier table maps to
+a model id and an effort for the provider, or a model id, which bypasses the
+table. An explicit effort overrides the tier's.
 
 The catalog supplies exactly the metadata no provider API returns and no
 pass-through can synthesize: context window, output cap, pricing, how the model
@@ -11,9 +19,10 @@ thinking is encoded all read it — which is why "just pass the model string
 through" is not an option.
 
 The catalog is NOT an allowlist. An id it does not list gets a usable default
-descriptor (Lookup), so a model that ships after this snapshot works the day it
-ships. All model metadata — prices, token limits, how a model takes thinking —
-lives here and nowhere else.
+descriptor (Lookup, Select), so a model that ships after this snapshot works
+the day it ships; each provider has its own fallback window and output cap,
+and none has a price. All model metadata — prices, token limits, how a model
+takes thinking — lives here and nowhere else.
 
 # Layering
 
@@ -31,6 +40,27 @@ const (
     Default context window, output cap and thinking for a Claude model the
     catalog does not list (10-REQ-3.4).
 
+const (
+	OpenRouterDefaultContextWindow = 131_072
+	OpenRouterDefaultMaxTokens     = 32_768
+	OllamaDefaultContextWindow     = 32_768
+	OllamaDefaultMaxTokens         = 32_768
+)
+    Default context window and output cap for an id the catalog does not
+    list under openrouter or ollama (26-REQ-3). Like the pair above they are
+    documented guesses, not a lookup at the vendor, and the descriptor they
+    belong to has no price and no effort map.
+
+const (
+	ProviderAnthropic  = "anthropic"
+	ProviderOpenRouter = "openrouter"
+	ProviderOllama     = "ollama"
+)
+    The providers this build can run. The set is fixed in code, not taken from
+    the catalog's vendors: a vendor section that names a provider with no client
+    behind it must not be selectable. Each name equals the catalog vendor id of
+    the same spelling.
+
 const SchemaVersion = 1
     SchemaVersion is the catalog file format this build understands.
 
@@ -42,10 +72,23 @@ const SchemaVersion = 1
     hazard) or as a mis-billed run, and neither is detectable from the result.
 
 const Vendor = "anthropic"
-    Vendor is the one vendor the catalog lists.
+    Vendor is the vendor Lookup resolves against. The catalog lists a vendor for
+    each of the other providers too (see Providers).
 
 
 VARIABLES
+
+var (
+	// ErrUnknownProvider is the provider name Select does not know.
+	ErrUnknownProvider = errors.New("agentkit: unknown provider")
+	// ErrUnknownEffort is an effort outside low, medium, high, xhigh and max.
+	ErrUnknownEffort = errors.New("agentkit: unknown effort")
+	// ErrNoModel is an empty model string: neither a tier nor a model id.
+	ErrNoModel = errors.New("agentkit: no model")
+)
+    The errors Select returns for bad input. Each is wrapped with the value
+    given and the valid choices, so errors.Is classifies it and the message
+    still says what to type instead.
 
 var ErrCorruptCatalog = errors.New("agentkit: model catalog is corrupt")
     ErrCorruptCatalog is the sentinel every Parse failure matches.
@@ -61,6 +104,10 @@ func Lookup(id string) (core.Model, bool)
     with the requested id, a 1,000,000-token window, a 128,000-token output cap,
     adaptive thinking and no price, so a model released after this snapshot
     works the day it ships.
+
+func Providers() []string
+    Providers lists the providers in the order anthropic, openrouter, ollama.
+    Every call returns a new slice.
 
 
 TYPES
@@ -107,6 +154,35 @@ func (c *Catalog) Note() string
     Note is the catalog document's maintenance note, including the REQ-CAT-06
     regeneration ritual.
 
+func (c *Catalog) Select(provider, model string, effort core.Effort) (Selection, error)
+    Select turns a provider, a model and an effort into the catalog row and the
+    effort a run will use. It is offline: it reads no environment variable and
+    makes no request, and every Model it returns is a deep copy.
+
+    The provider is trimmed and matched without regard to case; an empty
+    one means anthropic, and a name that is not one of Providers is refused
+    (ErrUnknownProvider), whatever vendors the catalog holds.
+
+    The model is a tier name or a model id. A string that, trimmed, is SIMPLE,
+    STANDARD or ADVANCED in any case is always the tier, never an id:
+    it picks the model and the effort from the provider's tier table,
+    and Selection.Tier is the canonical tier. A tiers block always names a row,
+    so Listed is true; a provider whose section in a parsed catalog has no tiers
+    block is an error naming the provider and the tier. Anything else is an id.
+    An id is only trimmed, never case-folded, and is looked up among the rows
+    of the provider's own vendor, so a row of one provider is never returned for
+    another. On anthropic the id goes through Lookup, which accepts an optional
+    "anthropic/" prefix. An id the catalog does not list is served, not refused,
+    with the provider's fallback limits, no price and Listed false.
+
+    The effort is trimmed and folded to one of the five levels, or empty for
+    none (ErrUnknownEffort otherwise). Selection.Effort is the explicit effort,
+    else the tier's, else empty. It is reported as asked: Select neither filters
+    nor clamps it against Model.Efforts, which is the provider's reading.
+
+    The inputs are checked in the order provider, model, effort, and the first
+    that fails is the error returned, with the zero Selection.
+
 func (c *Catalog) Vendors() []string
     Vendors lists known vendor ids in sorted order.
 
@@ -127,4 +203,38 @@ func (e *ParseError) Error() string
 
 func (e *ParseError) Is(target error) bool
     Is reports ErrCorruptCatalog so callers can classify without type-asserting.
+
+type Selection struct {
+	// Provider is the canonical provider name: one of Providers().
+	Provider string
+	// Tier is the canonical tier when the model string named one, else "".
+	Tier Tier
+	// Model is a deep copy of the catalog row, or the provider's fallback
+	// descriptor for an id the catalog does not list. Model.ID is the id the
+	// vendor will receive.
+	Model core.Model
+	// Effort is the effort to request: the explicit one, else the tier's, else
+	// "". Whether it is sent, and in what form, is the provider's reading of
+	// Model.Efforts, as on Anthropic today; Select never clamps it.
+	Effort core.Effort
+	// Listed reports whether Model is a row of the provider's vendor section.
+	Listed bool
+}
+    Selection is what Select resolves a (provider, model, effort) triple to.
+
+func Select(provider, model string, effort core.Effort) (Selection, error)
+    Select resolves a (provider, model, effort) triple against the embedded
+    catalog; see (*Catalog).Select.
+
+type Tier string
+    Tier is a model preset: a name that picks a model id and an effort for the
+    chosen provider from the catalog's tier table.
+
+const (
+	TierSimple   Tier = "SIMPLE"
+	TierStandard Tier = "STANDARD"
+	TierAdvanced Tier = "ADVANCED"
+)
+    The three tiers. The table is fixed per release; an embedder that wants
+    another mapping names the model and the effort directly.
 
