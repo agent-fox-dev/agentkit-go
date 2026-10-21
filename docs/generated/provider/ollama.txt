@@ -51,6 +51,51 @@ var (
 
 TYPES
 
+type Client struct {
+	// Has unexported fields.
+}
+    Client is the provider for one model. Nothing in it changes after New,
+    so Stream is safe for concurrent use.
+
+func New(m core.Model, opts Options) (*Client, error)
+    New builds a provider for one model. It resolves the server's address from
+    opts and the environment and makes no request: an unreachable server is
+    found on the first Stream.
+
+    New fails, before any request, when m.ID is empty after trimming,
+    and when the host is not an address the provider accepts (the error wraps
+    ErrInvalidHost).
+
+func (c *Client) Host() string
+    Host returns the resolved base URL of the server, for example
+    "http://127.0.0.1:11434".
+
+func (c *Client) Stream(ctx context.Context, req core.Request) (<-chan core.StreamEvent, error)
+    Stream is not implemented yet.
+
+type Options struct {
+	// Host is the server's address. It overrides HostVar, and when it is set the
+	// provider reads no variable at all.
+	Host string
+	// Env holds explicit values for HostVar. A variable is read from Env first;
+	// an empty value falls through to Getenv.
+	Env map[string]string
+	// Getenv looks a variable up when Env has no value for it. Nil means the
+	// process environment. The provider asks for HostVar and for nothing else.
+	Getenv func(string) string
+	// HTTPClient sends the requests. Nil means a client with the default
+	// transport and no overall timeout, so a long stream is cut only by the
+	// caller's context. Its Transport runs beneath the layer that deletes the
+	// Authorization header, and may add headers of its own.
+	HTTPClient *http.Client
+	// Now is the clock for message timestamps. Nil means time.Now.
+	Now func() time.Time
+	// Warnf receives the report of a transcript repair. Nil discards it.
+	Warnf func(format string, args ...any)
+}
+    Options configure one provider. The zero value reads the process environment
+    and uses the defaults.
+
 type StatusError struct {
 	Code int
 	Text string

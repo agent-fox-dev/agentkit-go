@@ -99,3 +99,47 @@ line references are to `github.com/ollama/ollama@v0.40.7`.
   went red once the graph changed and before they were restated (the child run
   failed with the `check.v1` and added-module lines of TS-14-42 and TS-15-40),
   and a mutation test shows it fails when a snapshot line is changed.
+
+## The host is parsed by the CLI's rules, and refused where the CLI guesses (28-REQ-1.3 to 1.7, task 2)
+
+28-REQ-1.4 says the value is "parsed by the rules Ollama's own CLI applies",
+and 28-REQ-1.5 to 1.7 list what is refused. `envconfig.Host` accepts several
+values the refusals cover and cannot be pointed at `Options.Env`, so
+`parseHost` (`provider/ollama/host.go:30`) reimplements the rules, as Design
+Decision 4 says. For every value the CLI parses without guessing it gives the
+same address (`TestHostResolutionProperty_TS28_4`, `TestHostExamples_TS28_5`).
+Where the CLI guesses, `parseHost` fails with an error wrapping
+`ErrInvalidHost` (`TestInvalidHosts_TS28_6`):
+
+- **The scheme is exactly `http` or `https`.** The CLI keeps any other scheme and
+  gives it port 11434 (`ftp://h` is `ftp://h:11434`, `HTTP://h` is
+  `HTTP://h:11434`). `HTTP://h` is refused rather than read as port 80, which
+  would be a different server from the CLI's.
+- **The port is digits, from 1 to 65535.** The CLI replaces any other port with
+  its default and logs a warning, and accepts port 0. A port with nothing after
+  the colon (`h:`) is no port, as in the CLI.
+- **A value is an address and a path.** `?` and `#` are refused anywhere; the
+  CLI reads `http://h:80?x=1` as `http://h:80` and drops the rest. A value that
+  `net.SplitHostPort` cannot split and that is not an IP address, such as
+  `http://[::1` (the CLI reads it as `http://[::1]:80`) or `h:80:90`, is refused.
+- **User information is refused** with the value shown and its password replaced
+  by `xxxxx` (`redactUserInfo`, `host.go:79`); the CLI reads `user:pw@h` as the
+  host `user`. Every refusal shows the value this way, so a password in a value
+  that fails for another reason is not echoed either.
+- **The hosted service is refused** for `ollama.com`, any subdomain, any letter
+  case, and a trailing dot. The SDK compares `Hostname() == "ollama.com"`
+  exactly (`api/client.go:184`), so `OLLAMA.COM` would not have taken the
+  signing path there.
+- **Bare IPv6 and an empty host are kept as the CLI keeps them:** `::1` and
+  `[::1]` are `http://[::1]:11434`, and `:8080` and `http://` use
+  `127.0.0.1`.
+
+`Options.Host` is "set" when it is not empty after trimming, so a host of spaces
+falls through to the variable, as an empty `Env` value does
+(`TestHostLookupOrder_TS28_3`).
+
+## `New` starts with a `Stream` that only fails (task 2)
+
+`TS-28-1` assigns the client to `core.ProviderClient`, so task 2 needs a `Stream`
+method to compile. It returns an error and no channel (`provider/ollama/client.go`,
+`(*Client).Stream`) and is replaced in task 3; it is not a `panic`.
