@@ -247,3 +247,30 @@ first failed on it: the cap rises to **30,000**.
   state with another comes back with parts of two numbers or an id another stream
   also got; a map of used ids shared by every stream, and an unsynchronised id
   counter, both fail it.
+
+## Replayed arguments keep their bytes, and three small choices of the replay (28-REQ-2.3, 4.1 to 4.5; task 5)
+
+- **A call's arguments are replayed as written, not as the SDK renders them.**
+  Step 5.5 says to decode `ToolUseBlock.Input` into the SDK's
+  `ToolCallFunctionArguments` with `json.Unmarshal`, and Design Decision 2 accepts
+  that a number is re-rendered by it. That also sorts the keys of a nested object
+  and writes `12345678901234567890` as `12345678901234567000`, while
+  `ToolUseBlock.Input` is "the provider's own argument bytes, verbatim and
+  AUTHORITATIVE for every replay" (`core/message.go:193`). `(*Client).arguments`
+  (`provider/ollama/messages.go:108`) reads the members of `Input` in order and sets
+  each value on the SDK's map as a `json.RawMessage` (`eachMember`, `:120`), which
+  `json.Marshal` writes as it is: the top-level keys are in the order of `Input`
+  (28-REQ-4.3, `TestReplayedArgumentsKeepKeyOrder_TS28_21`), and a number literal and a
+  nested object are untouched (`TestReplayedArgumentsKeepTheirBytes_TS28_21`, which
+  fails if `Input` goes through `json.Unmarshal` instead). Whitespace is compacted and
+  `<`, `>` and `&` in a string are written as `<`, `>` and `&`, which mean
+  the same. Input that is not a JSON object cannot occur for a block made by
+  `core.NewToolUse`; if one does, no arguments are sent and `Warnf` says so.
+- **Only the transcript is repaired.** 28-REQ-4.1 passes `Request.Messages`
+  through `provider.RepairToolPairing`; `Request.Prefix` is encoded as given.
+  `provider/openrouter` repairs both, the prefix and the history, each reported on its own.
+- **An assistant message with nothing to send is left out.** One with no text, no
+  tool call, and thinking that is redacted or another model's would be sent as an
+  empty assistant turn; `encodeAssistant` (`provider/ollama/messages.go:74`) leaves it
+  out (`TestAnAssistantMessageWithNothingToSendIsLeftOut_TS28_22`). A user message is
+  always sent, with whatever text it has, as 28-REQ-4.2 says.

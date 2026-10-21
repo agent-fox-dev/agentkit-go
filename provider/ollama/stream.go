@@ -39,13 +39,14 @@ func (c *Client) run(ctx context.Context, s *core.EventStream, req core.Request)
 	}
 }
 
-// chatRequest is the request body: the model as written, streaming, no
-// truncation of the input, and the context length the model loads at.
+// chatRequest is the request body: the model as written, the messages,
+// streaming, no truncation of the input, and the context length the model loads
+// at.
 func (c *Client) chatRequest(req core.Request) *api.ChatRequest {
 	stream, truncate := true, false
 	return &api.ChatRequest{
 		Model:    c.model.ID,
-		Messages: []api.Message{},
+		Messages: c.chatMessages(req),
 		Stream:   &stream,
 		Truncate: &truncate,
 		Options:  map[string]any{"num_ctx": c.contextLength()},
