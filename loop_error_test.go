@@ -23,7 +23,7 @@ func (e *statusFailure) Error() string { return fmt.Sprintf("test: HTTP %d", e.C
 func failedAgent(t *testing.T, err error) *Agent {
 	t.Helper()
 	p := faux.New(faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("partial")}, Err: err})
-	a, nerr := New(Config{Provider: p, Model: testModelID})
+	a, nerr := New(Config{Client: p, Model: testModelID})
 	if nerr != nil {
 		t.Fatal(nerr)
 	}
@@ -102,7 +102,7 @@ func TestTheRunErrorReadsAsTheTurnsMessage(t *testing.T) {
 		s.End(core.StreamResult{Message: &msg, Err: errNoSuchModel})
 		return s
 	})
-	a, err := New(Config{Provider: p, Model: testModelID})
+	a, err := New(Config{Client: p, Model: testModelID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func (p messagelessFailure) Stream(context.Context, core.Request) (<-chan core.S
 // terminal message itself when the provider sent none, and the provider's error
 // is still the run's cause.
 func TestAStreamWithNoMessageStillWrapsTheProvidersError(t *testing.T) {
-	a, err := New(Config{Provider: messagelessFailure{err: fmt.Errorf("%w: cut", errNoSuchModel)}, Model: testModelID})
+	a, err := New(Config{Client: messagelessFailure{err: fmt.Errorf("%w: cut", errNoSuchModel)}, Model: testModelID})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -72,7 +72,7 @@ func runAgent(t *testing.T, cm core.Tool, script string) (core.ToolResult, []cor
 	)
 	var out core.ToolResult
 	agent, err := agentkit.New(agentkit.Config{
-		Provider: model,
+		Client:   model,
 		Model:    faux.Model().ID,
 		MaxTurns: 4,
 		Toolset: agentkit.Toolset{Tools: []core.Tool{cm}, After: func(_ context.Context, in core.AfterToolCallContext) core.AfterToolCallDecision {

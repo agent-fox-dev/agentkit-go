@@ -139,7 +139,7 @@
         "`go list -f '{{join .Imports \"\\n\"}}' .` lists no anthropic-sdk-go path",
         "`make check` passes in every module"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,

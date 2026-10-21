@@ -833,7 +833,7 @@ func TestSmokeNestedThroughWrapper_TS11_47(t *testing.T) {
 		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "wrapperTool", "{}")),
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("done")),
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{wrapper}, Guard: guard.AllowAll}})
+	a, err := New(Config{Client: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{wrapper}, Guard: guard.AllowAll}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -399,7 +399,7 @@ func TestBatchTextsEqualTheRunsMessageTexts_TS21_27(t *testing.T) {
 			faux.Turn{Blocks: blocks, StopReason: core.StopReasonToolUse},
 			faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("done")}, StopReason: core.StopReasonStop},
 		)
-		a, err := New(Config{Provider: fp, Model: testModelID, Toolset: batchToolset()})
+		a, err := New(Config{Client: fp, Model: testModelID, Toolset: batchToolset()})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -453,7 +453,7 @@ func TestAfterEditsReachTheMessageNotTheResult_TS21_28(t *testing.T) {
 		faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall("c1", "orig", "{}")}, StopReason: core.StopReasonToolUse},
 		faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("done")}, StopReason: core.StopReasonStop},
 	)
-	a, err := New(Config{Provider: fp, Model: testModelID, Toolset: Toolset{Tools: []core.Tool{orig}, After: after}})
+	a, err := New(Config{Client: fp, Model: testModelID, Toolset: Toolset{Tools: []core.Tool{orig}, After: after}})
 	if err != nil {
 		t.Fatal(err)
 	}

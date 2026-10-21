@@ -29,11 +29,8 @@ import (
 	"time"
 
 	agentkit "github.com/agent-fox-dev/agentkit-go"
-	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/schema"
-	sdk "github.com/anthropics/anthropic-sdk-go"
 )
 
 func main() {
@@ -49,23 +46,7 @@ func run() error {
 		prompt = "Reserve three BOLT-M6 and one BRKT-90, then tell me the total mass of that reservation in ounces."
 	}
 
-	// 1. Resolve the model. This supplies the context window, output cap,
-	//    pricing and how the model takes extended thinking — none of which
-	//    the model-ID string carries. New does the same lookup from
-	//    Config.Model; this one is only for the summary line.
-	// An id the catalog does not list still works, with default limits and
-	// no price.
-	model, _ := catalog.Lookup(modelSpec())
-
-	// 2. Resolve the client. Nothing is registered by import side effect:
-	//    the agent reaches a model through the client it is handed, and this
-	//    one is built from the environment.
-	client, err := resolveClient()
-	if err != nil {
-		return err
-	}
-
-	// 3. The tools. New rejects a tool that sets both Handler and Execute, or
+	// 1. The tools. New rejects a tool that sets both Handler and Execute, or
 	//    neither: the two shapes are alternatives, not layers, and catching
 	//    that at construction beats discovering it when the model first
 	//    calls the tool.
@@ -76,13 +57,21 @@ func run() error {
 	//    structured arguments the schema already validated.
 	var submitted answer
 
-	// 4. A tool-using run needs an upper bound that does not depend on the
+	// 2. The model is a tier or a model id, and the agent does the rest:
+	//    New resolves it through the catalog, which supplies the context
+	//    window, output cap, pricing and how the model takes extended
+	//    thinking (an id it does not list still works, with default limits
+	//    and no price), and builds the client from the environment. Nothing
+	//    is registered by import side effect. A missing key fails here, before
+	//    any request, naming the variables to set rather than a 401 that
+	//    names none of them.
+	//
+	//    A tool-using run needs an upper bound that does not depend on the
 	//    model choosing to stop. submit_answer is the *intended* ending;
 	//    MaxTurns and MaxCostUSD are what happens when the model never gets
 	//    there.
 	agent, err := agentkit.New(agentkit.Config{
-		Client: client,
-		Model:  model.ID,
+		Model:  modelSpec(),
 		System: "You are a parts-desk assistant. Use the tools rather than guessing part data.",
 		Toolset: agentkit.Toolset{Tools: []core.Tool{
 			lookupPartTool(),
@@ -97,7 +86,7 @@ func run() error {
 		return err
 	}
 
-	// 5. Stream, so the tool calls are visible as they happen. The tool
+	// 3. Stream, so the tool calls are visible as they happen. The tool
 	//    events are the interesting ones here: ToolCallStartEvent is the
 	//    model's intent, ToolExecutionEndEvent is what your handler actually
 	//    returned — including whether it came back as an error result.
@@ -136,7 +125,7 @@ func run() error {
 		return err
 	}
 
-	// 6. RunStopToolTerminate is a distinct outcome from "the model stopped
+	// 4. RunStopToolTerminate is a distinct outcome from "the model stopped
 	//    talking". Seeing it means submit_answer ran and the loop ended on
 	//    purpose, which is the difference between an answer and a transcript
 	//    that happens to end.
@@ -149,7 +138,7 @@ func run() error {
 	} else {
 		fmt.Printf("run ended without submit_answer (%s)\n", res.StopReason)
 	}
-	fmt.Fprintf(os.Stderr, "\n[%s · %d turns · $%.5f]\n", model.ID, res.TurnCount, res.Usage.CostUSD)
+	fmt.Fprintf(os.Stderr, "\n[%s · %d turns · $%.5f]\n", agent.Resolution().Model.ID, res.TurnCount, res.Usage.CostUSD)
 	return nil
 }
 
@@ -501,13 +490,4 @@ func modelSpec() string {
 		return s
 	}
 	return "anthropic/claude-sonnet-5"
-}
-
-// resolveClient fails BEFORE the request with the reason a client cannot be
-// built — typically the variables to set — rather than after a 401 that names
-// none of them. Resolving reads the environment only; a cloud deployment's own
-// credentials (Google's, AWS's) are checked on first use.
-func resolveClient() (*sdk.Client, error) {
-	client, _, err := anthropic.Resolve(anthropic.OSEnv{})
-	return client, err
 }

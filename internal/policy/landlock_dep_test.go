@@ -22,6 +22,38 @@ var addedBySpec28 = []string{
 	"github.com/rogpeppe/go-internal", "github.com/wk8/go-ordered-map/v2",
 }
 
+// addedBySpec29 are the modules that entered the same graph when the root
+// package began to import provider/openrouter and provider/ollama: the sandbox
+// module compiles the root package in its tests, so its go.mod now requires the
+// two SDK modules itself, and listing them there brings in the modules their own
+// go.mod files name (docs/DEPS.md, docs/errata/29_provider_selection.md). None
+// is compiled into the sandbox agent.
+var addedBySpec29 = []string{
+	"github.com/TheTitanrain/w32", "github.com/agnivade/levenshtein",
+	"github.com/aymanbagabas/go-osc52/v2", "github.com/bytedance/sonic",
+	"github.com/bytedance/sonic/loader", "github.com/charmbracelet/bubbletea",
+	"github.com/charmbracelet/colorprofile", "github.com/charmbracelet/lipgloss",
+	"github.com/charmbracelet/x/ansi", "github.com/charmbracelet/x/cellbuf",
+	"github.com/charmbracelet/x/term", "github.com/cloudwego/base64x", "github.com/cloudwego/iasm",
+	"github.com/containerd/console", "github.com/d4l3k/go-bfloat16", "github.com/emirpasic/gods/v2",
+	"github.com/erikgeiser/coninput", "github.com/gabriel-vasile/mimetype",
+	"github.com/gin-contrib/cors", "github.com/gin-contrib/sse", "github.com/gin-gonic/gin",
+	"github.com/go-playground/locales", "github.com/go-playground/universal-translator",
+	"github.com/go-playground/validator/v10", "github.com/goccy/go-json",
+	"github.com/inconshreveable/mousetrap", "github.com/josharian/intern",
+	"github.com/json-iterator/go", "github.com/klauspost/compress", "github.com/klauspost/cpuid/v2",
+	"github.com/kr/text", "github.com/ledongthuc/pdf", "github.com/leodido/go-urn",
+	"github.com/lucasb-eyer/go-colorful", "github.com/mattn/go-isatty",
+	"github.com/mattn/go-localereader", "github.com/mattn/go-runewidth",
+	"github.com/mattn/go-sqlite3", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2",
+	"github.com/muesli/ansi", "github.com/muesli/cancelreader", "github.com/muesli/termenv",
+	"github.com/olekukonko/tablewriter", "github.com/pkg/browser", "github.com/rivo/uniseg",
+	"github.com/spf13/cobra", "github.com/spf13/pflag", "github.com/tkrajina/go-reflector",
+	"github.com/tkrajina/typescriptify-golang-structs", "github.com/twitchyliquid64/golang-asm",
+	"github.com/ugorji/go/codec", "github.com/x448/float16", "github.com/xo/terminfo",
+	"go.yaml.in/yaml/v3", "golang.org/x/arch", "golang.org/x/image",
+}
+
 // TS-15-40: go-landlock is promoted to a direct requirement of the sandbox
 // module at its existing version, approved with a reason; psx stays
 // indirect and the module graph is 14's, plus the SDK that spec 27 added
@@ -44,10 +76,11 @@ func TestLandlockPromoted_TS15_40(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Every line 14 committed is still in the snapshot, as upgraded by spec 28
-	// (acceptedLine), and the only lines added since are the OpenRouter SDK and
-	// the module it requires (spec 27) and the Ollama module's (spec 28,
-	// docs/DEPS.md): the graph is otherwise 14's.
+	// Every line 14 committed is still in the snapshot, as upgraded by specs 28
+	// and 29 (acceptedLine), and the only lines added since are the OpenRouter SDK
+	// and the module it requires (spec 27), the Ollama module's (spec 28,
+	// docs/DEPS.md) and the modules their go.mod files name (spec 29): the graph
+	// is otherwise 14's.
 	have := strings.Split(strings.TrimSpace(string(snap)), "\n")
 	var baseline []string
 	for _, line := range strings.Split(strings.TrimSpace(string(pre)), "\n") {
@@ -60,8 +93,8 @@ func TestLandlockPromoted_TS15_40(t *testing.T) {
 	}
 	for _, line := range have {
 		if f := strings.Fields(line); !slices.Contains(baseline, line) &&
-			!slices.Contains(addedBySpec27, f[0]) && !slices.Contains(addedBySpec28, f[0]) {
-			t.Errorf("%q is in the sandbox module's graph snapshot, but 14 did not commit it and spec 27 and 28 did not add it", line)
+			!slices.Contains(addedBySpec27, f[0]) && !slices.Contains(addedBySpec28, f[0]) && !slices.Contains(addedBySpec29, f[0]) {
+			t.Errorf("%q is in the sandbox module's graph snapshot, but 14 did not commit it and specs 27, 28 and 29 did not add it", line)
 		}
 	}
 	want := ""

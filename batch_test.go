@@ -217,7 +217,7 @@ func TestATerminateVoteEndsTheRunAfterTheBatch_TS11_31(t *testing.T) {
 		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "termTool", "{}"), faux.FauxToolCall("c2", "slowTool", "{}")),
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("never requested")),
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{terminating("termTool", 0), slow}}})
+	a, err := New(Config{Client: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{terminating("termTool", 0), slow}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestBlockedCallsDoNotTerminate_TS11_32(t *testing.T) {
 			faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "termTool", "{}")),
 			faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("continue")),
 		)
-		a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{terminating("termTool", 0)}, Guard: func(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		a, err := New(Config{Client: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{terminating("termTool", 0)}, Guard: func(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
 			return core.BeforeToolCallDecision{Block: true, Terminate: terminate, Reason: "denied"}
 		}},
 		})

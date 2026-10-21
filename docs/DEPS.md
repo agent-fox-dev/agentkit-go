@@ -191,6 +191,23 @@ record both graphs. `upgradesBySpec28` and `rootUpgradesBySpec28` in
 the root graph, and `addedBySpec28` in `landlock_dep_test.go` the added
 sandbox modules.
 
+**The root package imports both providers (spec 29).** `agentkit.Resolve`
+builds the OpenRouter and Ollama clients, so every module that imports the root
+package compiles both SDKs. Go refuses that build (`go: updates to go.mod
+needed`) unless the module lists the modules providing the packages, so
+`sandbox`, `mcpserve`, `examples/gateway`, `examples/harness` and
+`examples/sandbox` each gained seven `// indirect` lines (the two SDKs,
+`ajson`, `easyjson`, `go-ordered-map`, `google/uuid` and `yaml.v3`) and their
+`go.sum` hashes. In the `sandbox` module that expands the graph by the 57
+modules the SDKs' `go.mod` files name and raises `testify` to `v1.12.1` and
+`golang.org/x/exp` to `v0.0.0-20250218142911-aa4b98e5adaa`; none of the 57 is
+linked (`go list -deps -test ./...` in the module), and the sandbox agent
+binary links neither SDK. `upgradesBySpec29` in `deps_test.go` and
+`addedBySpec29` in `landlock_dep_test.go` record the raised versions and the
+added modules, and `sandbox-go-list-m-all.txt` is regenerated. The root
+module's `go.mod` and graph snapshot do not change. See
+[`docs/errata/29_provider_selection.md`](errata/29_provider_selection.md).
+
 **The SDK's line limit.** `Client.Chat` reads the response with a
 `bufio.Scanner` whose largest line is 8,000,000 bytes (`maxBufferSize =
 8 * format.MegaByte`, a megabyte being 1,000,000 here) and allocates that

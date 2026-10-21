@@ -63,7 +63,7 @@ func mdAssistantWithTools(reason core.StopReason, blocks ...core.ContentBlock) c
 func mdNewTestAgent(t *testing.T, s *mdScripted, mutate func(*agentkit.Config), tools ...core.Tool) *agentkit.Agent {
 	t.Helper()
 	cfg := agentkit.Config{
-		Provider: streamFunc(s.stream),
+		Client:   streamFunc(s.stream),
 		Model:    "md-test-model",
 		MaxTurns: 10,
 		Toolset:  agentkit.Toolset{Tools: tools},

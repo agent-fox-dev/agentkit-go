@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"net/http"
 	"reflect"
 	"strings"
 	"sync"
@@ -14,11 +13,9 @@ import (
 	"testing"
 	"time"
 
-	sdk "github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
-
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/guard"
+	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 )
@@ -27,7 +24,7 @@ func noopHandler(context.Context, json.RawMessage) (json.RawMessage, error) { re
 
 // agentCfg is a minimal valid config carrying tools.
 func agentCfg(tools ...core.Tool) Config {
-	return Config{Provider: faux.New(), Model: testModelID, Toolset: Toolset{Tools: tools}}
+	return Config{Client: faux.New(), Model: testModelID, Toolset: Toolset{Tools: tools}}
 }
 
 // cyclicPair builds toolA -> toolB -> toolA. Tools are values, so the cycle
@@ -112,7 +109,7 @@ func TestSmokeAgentRunsWithRetainedProviders_TS09_22(t *testing.T) {
 		StopReason: core.StopReasonStop,
 		Usage:      core.Usage{InputTokens: 12, OutputTokens: 3},
 	})
-	agent, err := New(Config{Provider: p, Model: testModelID})
+	agent, err := New(Config{Client: p, Model: testModelID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,14 +158,18 @@ func userText(s string) core.UserMessage {
 	return core.UserMessage{Content: core.Content{core.TextBlock{Text: s}}}
 }
 
-// TS-11-1: Config carries the twelve driver fields, the tool side among them
-// as one Toolset (21-REQ-1.2).
+// TS-11-1: Config carries the fourteen driver fields, the tool side among them
+// as one Toolset (21-REQ-1.2); since 29-REQ-1 Client is the provider client,
+// Provider names the provider and Env and Getenv supply its variables.
 func TestConfigDefinesTheDriverFields_TS11_1(t *testing.T) {
+	client := faux.New()
 	cfg := Config{
-		Client:   &sdk.Client{},
-		Provider: faux.New(),
+		Client:   client,
+		Provider: "anthropic",
 		Model:    driverModel,
 		Effort:   EffortHigh,
+		Env:      map[string]string{"ANTHROPIC_API_KEY": "sk-ant-test"},
+		Getenv:   noEnv,
 		System:   "system instruction",
 		Prefix:   []core.Message{userText("preamble")},
 		Toolset: Toolset{
@@ -183,24 +184,26 @@ func TestConfigDefinesTheDriverFields_TS11_1(t *testing.T) {
 		Prune:      PruneOptions{Threshold: 0.35, KeepTurns: 2},
 		MaxTokens:  4096,
 	}
-	if cfg.Model != driverModel || cfg.Effort != core.EffortHigh || cfg.MaxTurns != 10 ||
+	if cfg.Client != client || cfg.Provider != "anthropic" || cfg.Env["ANTHROPIC_API_KEY"] != "sk-ant-test" || cfg.Getenv("X") != "" ||
+		cfg.Model != driverModel || cfg.Effort != core.EffortHigh || cfg.MaxTurns != 10 ||
 		cfg.MaxCostUSD != 1.5 || cfg.Timeout != 30*time.Second || cfg.MaxTokens != 4096 ||
 		cfg.Prune.KeepTurns != 2 || len(cfg.Prefix) != 1 || len(cfg.Toolset.Tools) != 1 {
 		t.Fatalf("config = %+v", cfg)
 	}
 }
 
-// TS-11-2: no client and no provider is refused.
-func TestNewRefusesNoClientOrProvider_TS11_2(t *testing.T) {
-	a, err := New(Config{Model: driverModel})
-	if a != nil || err == nil || !strings.Contains(err.Error(), "client or provider") {
-		t.Fatalf("New = %v, %v; want nil and an error naming client or provider", a, err)
+// TS-11-2: no client and no Anthropic credential is refused with the error of
+// anthropic.Resolve (29-REQ-8: it was "needs an Anthropic client or provider").
+func TestNewRefusesNoClientAndNoCredential_TS11_2(t *testing.T) {
+	a, err := New(Config{Model: driverModel, Getenv: noEnv})
+	if a != nil || !errors.Is(err, anthropic.ErrNoCredentials) {
+		t.Fatalf("New = %v, %v; want nil and anthropic.ErrNoCredentials", a, err)
 	}
 }
 
 // TS-11-3: an empty model is refused.
 func TestNewRefusesEmptyModel_TS11_3(t *testing.T) {
-	a, err := New(Config{Provider: faux.New()})
+	a, err := New(Config{Client: faux.New()})
 	if a != nil || err == nil || !strings.Contains(err.Error(), "model") {
 		t.Fatalf("New = %v, %v; want nil and an error naming the model", a, err)
 	}
@@ -217,26 +220,21 @@ func TestNewRefusesInvalidTools_TS11_4(t *testing.T) {
 		"wrapper": {done, {Name: "wrap", Handler: noopHandler, ReachableTools: []core.Tool{done}}},
 	}
 	for name, tools := range cases {
-		a, err := New(Config{Provider: faux.New(), Model: "m", Toolset: Toolset{Tools: tools}})
+		a, err := New(Config{Client: faux.New(), Model: "m", Toolset: Toolset{Tools: tools}})
 		if a != nil || err == nil {
 			t.Errorf("%s: New = %v, %v; want nil and an error", name, a, err)
 		}
 	}
 }
 
-// TS-11-5: the policy resolves the tools, and Provider wins over Client.
-func TestNewResolvesToolsAndPrefersProvider_TS11_5(t *testing.T) {
-	clientUsed := false
-	client := sdk.NewClient(option.WithoutEnvironmentDefaults(), option.WithAPIKey("sk-ant-test"),
-		option.WithMiddleware(func(r *http.Request, _ option.MiddlewareNext) (*http.Response, error) {
-			clientUsed = true
-			return nil, errors.New("the client must not be used")
-		}))
+// TS-11-5: the policy resolves the tools, and Client is called: Provider and
+// Model choose the catalog row and the effort, not the client (29-REQ-8).
+func TestNewResolvesToolsAndCallsTheClient_TS11_5(t *testing.T) {
 	fp := faux.New()
 	a, err := New(Config{
-		Client:   &client,
-		Provider: fp,
-		Model:    driverModel,
+		Client:   fp,
+		Provider: "openrouter",
+		Model:    "STANDARD",
 		Toolset:  Toolset{Tools: []core.Tool{{Name: "toolA", Handler: noopHandler}, {Name: "toolB", Handler: noopHandler}}, Policy: core.ToolPolicy{ToolNames: []string{"toolA"}}},
 	})
 	if err != nil || a == nil {
@@ -248,14 +246,14 @@ func TestNewResolvesToolsAndPrefersProvider_TS11_5(t *testing.T) {
 	if _, err := a.Run(context.Background(), "hello"); err != nil {
 		t.Fatal(err)
 	}
-	if fp.Calls() == 0 || clientUsed {
-		t.Fatalf("provider calls = %d, client used = %v; want the provider only", fp.Calls(), clientUsed)
+	if res := a.Resolution(); fp.Calls() == 0 || res.Provider != "openrouter" || res.Model.ID != "qwen/qwen3.8-flash" || res.Effort != EffortMedium {
+		t.Fatalf("client calls %d, resolution %+v; want the client called on the openrouter row of STANDARD at medium", fp.Calls(), res)
 	}
 }
 
 // TS-11-6: a resolved shell tool with no Guard is refused at construction.
 func TestNewRefusesUnguardedShellTool_TS11_6(t *testing.T) {
-	a, err := New(Config{Provider: faux.New(), Model: driverModel,
+	a, err := New(Config{Client: faux.New(), Model: driverModel,
 		Toolset: Toolset{Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}}})
 	if a != nil || !errors.Is(err, core.ErrUnguardedExecute) || !strings.Contains(err.Error(), `"execute"`) {
 		t.Fatalf("New = %v, %v; want ErrUnguardedExecute naming execute", a, err)
@@ -267,7 +265,7 @@ func TestNewRefusesUnguardedShellTool_TS11_6(t *testing.T) {
 func TestNewRefusesUnguardedShellBehindWrapper_TS11_7(t *testing.T) {
 	shell := core.Tool{Name: "run_command", Handler: noopHandler}
 	wrapper := core.Tool{Name: "codemode", Handler: noopHandler, ReachableTools: []core.Tool{shell}}
-	a, err := New(Config{Provider: faux.New(), Model: driverModel, Toolset: Toolset{Tools: []core.Tool{wrapper}}})
+	a, err := New(Config{Client: faux.New(), Model: driverModel, Toolset: Toolset{Tools: []core.Tool{wrapper}}})
 	if a != nil || !errors.Is(err, core.ErrUnguardedExecute) ||
 		!strings.Contains(err.Error(), `wrapper "codemode"`) || !strings.Contains(err.Error(), `shell tool "run_command"`) {
 		t.Fatalf("New = %v, %v; want ErrUnguardedExecute naming codemode and run_command", a, err)
@@ -276,16 +274,16 @@ func TestNewRefusesUnguardedShellBehindWrapper_TS11_7(t *testing.T) {
 
 // TS-11-8: a Guard admits a reachable shell tool.
 func TestNewAcceptsGuardedShellTool_TS11_8(t *testing.T) {
-	a, err := New(Config{Provider: faux.New(), Model: driverModel,
+	a, err := New(Config{Client: faux.New(), Model: driverModel,
 		Toolset: Toolset{Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}, Guard: guard.AllowAll}})
 	if err != nil || a == nil {
 		t.Fatalf("New = %v, %v; want an agent", a, err)
 	}
 }
 
-// TS-11-9: the Agent's exported methods are exactly the six: the five of
-// spec 11 and Runner (21-REQ-3.4).
-func TestAgentSurfaceIsSixMethods_TS11_9(t *testing.T) {
+// TS-11-9: the Agent's exported methods are exactly the seven: the five of
+// spec 11, Runner (21-REQ-3.4) and Resolution (29-REQ-6.4).
+func TestAgentSurfaceIsSevenMethods_TS11_9(t *testing.T) {
 	typ := reflect.TypeOf(&Agent{})
 	got := map[string]bool{}
 	for i := 0; i < typ.NumMethod(); i++ {
@@ -293,7 +291,7 @@ func TestAgentSurfaceIsSixMethods_TS11_9(t *testing.T) {
 			got[m.Name] = true
 		}
 	}
-	want := map[string]bool{"Run": true, "Stream": true, "Messages": true, "Usage": true, "ReachableTools": true, "Runner": true}
+	want := map[string]bool{"Run": true, "Stream": true, "Messages": true, "Usage": true, "ReachableTools": true, "Runner": true, "Resolution": true}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("exported methods = %v, want %v", got, want)
 	}
@@ -309,7 +307,7 @@ func TestRunReturnsAComprehensiveResult_TS11_10(t *testing.T) {
 		faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall("c1", "toolA", "{}")}, StopReason: core.StopReasonToolUse, Usage: fauxTurnUsage},
 		faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("all done")}, StopReason: core.StopReasonStop, Usage: fauxTurnUsage},
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{{Name: "toolA", Handler: noopHandler}}}})
+	a, err := New(Config{Client: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{{Name: "toolA", Handler: noopHandler}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +329,7 @@ func TestRunReturnsAComprehensiveResult_TS11_10(t *testing.T) {
 // TS-11-11: Stream returns at once and the events arrive on it.
 func TestStreamDeliversEvents_TS11_11(t *testing.T) {
 	fp := faux.New(faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("streamed response")))
-	a, err := New(Config{Provider: fp, Model: driverModel})
+	a, err := New(Config{Client: fp, Model: driverModel})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +349,7 @@ func TestStreamDeliversEvents_TS11_11(t *testing.T) {
 // TS-11-12: a Run or Stream while another is in flight fails with ErrBusy.
 func TestOverlappingRunsAreBusy_TS11_12(t *testing.T) {
 	fp := faux.New(faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("waiting")}, StopReason: core.StopReasonStop, Delay: 200 * time.Millisecond})
-	a, err := New(Config{Provider: fp, Model: driverModel})
+	a, err := New(Config{Client: fp, Model: driverModel})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +380,7 @@ func TestStateIsReadableDuringARun_TS11_13(t *testing.T) {
 		turns = append(turns, faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall(fmt.Sprintf("c%d", i), "toolA", "{}")},
 			StopReason: core.StopReasonToolUse, Usage: fauxTurnUsage, Delay: time.Millisecond})
 	}
-	a, err := New(Config{Provider: faux.New(turns...), Model: driverModel, Toolset: Toolset{Tools: []core.Tool{{Name: "toolA", Handler: noopHandler}}}})
+	a, err := New(Config{Client: faux.New(turns...), Model: driverModel, Toolset: Toolset{Tools: []core.Tool{{Name: "toolA", Handler: noopHandler}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +440,7 @@ func TestSmokeMultiTurnWithParallelBatch_TS11_44(t *testing.T) {
 		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "toolA", "{}"), faux.FauxToolCall("c2", "toolB", "{}")),
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("finished")),
 	)
-	a, err := New(Config{Provider: fp, Model: driverModel, System: "be brief", Toolset: Toolset{Tools: []core.Tool{tool("toolA"), tool("toolB")}}})
+	a, err := New(Config{Client: fp, Model: driverModel, System: "be brief", Toolset: Toolset{Tools: []core.Tool{tool("toolA"), tool("toolB")}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +467,7 @@ func TestSmokeMultiTurnWithParallelBatch_TS11_44(t *testing.T) {
 // any request or stream exists.
 func TestSmokeUnguardedShellRefused_TS11_48(t *testing.T) {
 	fp := faux.New()
-	a, err := New(Config{Provider: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}}})
+	a, err := New(Config{Client: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}}})
 	if a != nil || !errors.Is(err, core.ErrUnguardedExecute) || !strings.Contains(err.Error(), `(tool "execute")`) {
 		t.Fatalf("New = %v, %v; want ErrUnguardedExecute naming execute", a, err)
 	}
@@ -487,7 +485,7 @@ func TestSmokeBudgetStopsTheRun_TS11_49(t *testing.T) {
 			Usage: core.Usage{InputTokens: 100_000, OutputTokens: 100_000}},
 		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("t2")),
 	)
-	a, err := New(Config{Provider: fp, Model: "claude-opus-5-5", MaxCostUSD: 0.05,
+	a, err := New(Config{Client: fp, Model: "claude-opus-5-5", MaxCostUSD: 0.05,
 		Toolset: Toolset{Tools: []core.Tool{{Name: "toolA", InputSchema: schema.Object(), Handler: func(context.Context, json.RawMessage) (json.RawMessage, error) {
 			ran.Add(1)
 			return json.RawMessage(`{}`), nil

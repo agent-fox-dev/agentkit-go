@@ -120,7 +120,7 @@ func TestSmokeAgentRunExecutesATurnThroughItsRunner_TS21_58(t *testing.T) {
 		callTurn(faux.FauxToolCall("c1", "read_file", `{"path":"a.txt"}`), faux.FauxToolCall("c2", "read_file", `{"path":"b.txt"}`)),
 		finalTurn("both read"),
 	)
-	a, err := New(Config{Provider: fp, Model: testModelID, Toolset: Toolset{Tools: []core.Tool{readFile}}})
+	a, err := New(Config{Client: fp, Model: testModelID, Toolset: Toolset{Tools: []core.Tool{readFile}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestSmokeUnguardedShellIsRefusedBeforeAnyRequest_TS21_59(t *testing.T) {
 		t.Fatalf("run_command is not a shell tool to guard.IsShellTool")
 	}
 	fp := faux.New(finalTurn("never sent"))
-	a, err := New(Config{Provider: fp, Model: testModelID, Toolset: Toolset{Tools: []core.Tool{runCommand}}})
+	a, err := New(Config{Client: fp, Model: testModelID, Toolset: Toolset{Tools: []core.Tool{runCommand}}})
 	if a != nil || !errors.Is(err, core.ErrUnguardedExecute) {
 		t.Fatalf("New = %v, %v; want a nil agent and an error wrapping ErrUnguardedExecute", a, err)
 	}

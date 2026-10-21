@@ -162,7 +162,7 @@ func runOn(ctx context.Context, w io.Writer, dir string, p sandbox.Provider, spe
 	}
 	args, _ := json.Marshal(map[string]string{"script": script})
 	agent, err := agentkit.New(agentkit.Config{
-		Provider: faux.New(
+		Client: faux.New(
 			faux.ToolCall("call_1", cm.Name, string(args)),
 			faux.Text("Two TODOs, both in src/."),
 		),

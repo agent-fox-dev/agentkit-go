@@ -43,20 +43,24 @@ type Agent struct {
     Agent runs prompts against one model with one tool set. It has no global
     state: a second agent is a second value.
 
-    Its surface is six methods. Run and Stream execute a prompt to a stop
-    condition; Messages, Usage and ReachableTools read its state and Runner
-    returns the runner its tool calls go through, all safe from any goroutine
-    while a run is in flight. A Run or Stream that overlaps another fails with
+    Its surface is seven methods. Run and Stream execute a prompt to a stop
+    condition; Messages, Usage and ReachableTools read its state, Runner returns
+    the runner its tool calls go through, and Resolution reports the provider,
+    model and effort it was built to run, all safe from any goroutine while
+    a run is in flight. A Run or Stream that overlaps another fails with
     core.ErrBusy rather than queueing: a prompt queued behind a running one was
     written against a transcript the caller could see, and by the time it ran
     the transcript would have changed underneath it.
 
 func New(cfg Config) (*Agent, error)
-    New builds an Agent from cfg. It refuses a config the agent could not run
-    safely: no way to reach a model, no model, or a Toolset that NewRunner
-    refuses — an invalid tool hierarchy, or a shell tool reachable with no Guard
-    to authorize it. That is a returned error here, rather than an unrestricted
-    shell discovered on the first run, and no request has been sent.
+    New builds an Agent from cfg. It runs Resolve first, so what it runs is what
+    Resolve reports, and then validates the Toolset with NewRunner. It refuses
+    a config the agent could not run safely, and returns the first error in this
+    order, unchanged: the provider, the model, the effort, the credentials,
+    and a Toolset that NewRunner refuses — an invalid tool hierarchy, or a shell
+    tool reachable with no Guard to authorize it. That is a returned error here,
+    rather than a missing key or an unrestricted shell discovered on the first
+    run, and no request has been sent.
 
 func (a *Agent) Messages() core.Messages
     Messages returns the agent's transcript: every message of every run,
@@ -67,6 +71,11 @@ func (a *Agent) ReachableTools() []core.Tool
     Toolset.Policy resolved, and everything those reach through wrappers
     (07-REQ-2.2). A check that a run is read-only, say, has to look at this set
     rather than at the top-level tools. It is Runner().Reachable().
+
+func (a *Agent) Resolution() Resolution
+    Resolution returns the provider, model and effort the agent was built with
+    and the client it calls: what Resolve returns for the same Config. It is a
+    copy, so changing its Model does not change the agent's own row.
 
 func (a *Agent) Run(ctx context.Context, prompt string) (core.RunResult, error)
     Run sends prompt and runs the loop to a stop condition. The error is the
@@ -94,15 +103,28 @@ func (a *Agent) Usage() core.Usage
     Usage returns cumulative usage for the agent's lifetime.
 
 type Config struct {
-	// Client is an Anthropic SDK client, built by anthropic.Resolve or by the
-	// caller.
-	Client *sdk.Client
-	// Provider, when set, is used instead of Client: a test double or a
-	// custom provider.
-	Provider core.ProviderClient
-	// Model is the catalog id; catalog.Lookup supplies its limits and prices.
-	Model  string
+	// Client is the provider client the agent calls: a test double such as
+	// provider/faux, or a provider the embedder built or wrapped. When it is
+	// set the agent builds none and reads no variable. Provider and Model
+	// still choose the catalog row and the effort.
+	Client core.ProviderClient
+	// Provider names the provider that serves Model: one of catalog.Providers,
+	// matched without regard to case and trimmed. Empty means the first. It
+	// names the catalog provider even when Client is set.
+	Provider string
+	// Model is a tier name (SIMPLE, STANDARD or ADVANCED) or the provider's own
+	// model id; catalog.Select supplies its limits, prices and, for a tier, its
+	// effort.
+	Model string
+	// Effort is one of the five efforts or empty. Empty takes the tier's effort
+	// when Model is a tier, and sends none otherwise.
 	Effort Effort
+	// Env and Getenv supply the variables the chosen provider reads for its
+	// credentials and endpoint. A non-empty Env value is used first; an empty
+	// one falls through to Getenv, and with no Getenv to the process
+	// environment. An empty value counts as unset. Nothing else reads them.
+	Env    map[string]string
+	Getenv func(string) string
 	System string
 	// Prefix is sent after the system prompt on every request, with a cache
 	// breakpoint on its last block.
@@ -123,6 +145,10 @@ type Config struct {
 }
     Config is everything an Agent is built from.
 
+    Provider, Model and Effort choose what runs the agent, and Env and Getenv
+    supply the credentials and endpoints of the provider they choose. Resolve
+    shows what a Config resolves to; New builds an agent on exactly that.
+
 type Effort = core.Effort
     Effort is how much thinking a model puts into a turn.
 
@@ -134,6 +160,48 @@ type PruneOptions struct {
 	KeepTurns int
 }
     PruneOptions controls how old tool results leave the request.
+
+type Resolution struct {
+	// Provider is the canonical provider name: one of catalog.Providers.
+	Provider string
+	// Tier is the tier Config.Model named, or empty when it named a model id.
+	Tier catalog.Tier
+	// Model is the catalog row, or the provider's fallback row for an id the
+	// catalog does not list. Model.ID is the id the vendor receives.
+	Model core.Model
+	// Effort is the effort requested, normalized: the explicit one, else the
+	// tier's, else empty, which sends none.
+	Effort Effort
+	// Listed reports whether Model is a catalog row and not a fallback.
+	Listed bool
+	// Client is the client a run calls: Config.Client when it was set, else the
+	// one built for Provider.
+	Client core.ProviderClient
+}
+    Resolution is what a Config resolves to: the provider, the model and the
+    effort an agent runs with, and the client it calls. Resolve returns one
+    without building an agent, and Agent.Resolution reports the one an agent was
+    built with.
+
+func Resolve(cfg Config) (Resolution, error)
+    Resolve turns the selection fields of cfg (Client, Provider, Model, Effort,
+    Env and Getenv) into what New would run: the catalog's choice for the
+    provider, model and effort, and the client to call.
+
+    It makes no request and keeps no state, and every call builds a new client.
+    It reads no variable itself: with Config.Client nil, the chosen provider's
+    own constructor looks up that provider's credential and endpoint (Env first,
+    then Getenv, or the process environment when Getenv is nil; an empty value
+    is unset), and no other provider's code runs. A credential that is missing,
+    or an endpoint the provider cannot use, is an error here, before any run.
+    A host that cannot be reached is not: that is found by the first request.
+
+    The errors of catalog.Select and of the provider's constructor are
+    returned unchanged, so errors.Is matches catalog.ErrUnknownProvider,
+    catalog.ErrNoModel, catalog.ErrUnknownEffort, openrouter.ErrNoAPIKey and
+    anthropic.ErrNoCredentials, and the message names the value or the variable.
+    The catalog's are returned even when Config.Client is set, which Resolve
+    then returns as it is, reading no variable.
 
 type Runner struct {
 	// Has unexported fields.

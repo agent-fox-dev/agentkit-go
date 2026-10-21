@@ -180,7 +180,7 @@ func TestUnguardedProxyShell_TS13_62(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := func(ts []core.Tool, g core.BeforeToolCall) agentkit.Config {
-		return agentkit.Config{Provider: faux.New(), Model: faux.Model().ID, Toolset: agentkit.Toolset{Tools: ts, Guard: g}}
+		return agentkit.Config{Client: faux.New(), Model: faux.Model().ID, Toolset: agentkit.Toolset{Tools: ts, Guard: g}}
 	}
 	if a, err := agentkit.New(cfg(proxies, nil)); a != nil || !errors.Is(err, core.ErrUnguardedExecute) {
 		t.Errorf("all proxies, nil Guard: %v, %v", a, err)

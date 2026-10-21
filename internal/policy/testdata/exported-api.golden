@@ -7,6 +7,7 @@ const EffortMedium
 const EffortXHigh
 func (a *Agent) Messages() core.Messages
 func (a *Agent) ReachableTools() []core.Tool
+func (a *Agent) Resolution() Resolution
 func (a *Agent) Run(ctx context.Context, prompt string) (core.RunResult, error)
 func (a *Agent) Runner() *Runner
 func (a *Agent) Stream(ctx context.Context, prompt string) (*core.EventStream, error)
@@ -17,10 +18,12 @@ func (r *Runner) Reachable() []core.Tool
 func (r *Runner) Tools() []core.Tool
 func New(cfg Config) (*Agent, error)
 func NewRunner(ts Toolset) (*Runner, error)
+func Resolve(cfg Config) (Resolution, error)
 type Agent struct { }
-type Config struct { Client *sdk.Client Provider core.ProviderClient Model string Effort Effort System string Prefix []core.Message Toolset Toolset MaxTurns int MaxCostUSD float64 Timeout time.Duration Prune PruneOptions MaxTokens int }
+type Config struct { Client core.ProviderClient Provider string Model string Effort Effort Env map[string]string Getenv func(string) string System string Prefix []core.Message Toolset Toolset MaxTurns int MaxCostUSD float64 Timeout time.Duration Prune PruneOptions MaxTokens int }
 type Effort = core.Effort
 type PruneOptions struct { Threshold float64 KeepTurns int }
+type Resolution struct { Provider string Tier catalog.Tier Model core.Model Effort Effort Listed bool Client core.ProviderClient }
 type Runner struct { }
 type Toolset struct { Tools []core.Tool Policy core.ToolPolicy Guard core.BeforeToolCall After core.AfterToolCall Events func(core.Event) }
 == core
