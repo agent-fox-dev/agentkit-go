@@ -99,8 +99,20 @@ type vendorRow struct {
 	// guess that is wrong least often is the middle of the vendor's range.
 	DefaultModel string               `json:"default_model"`
 	Models       map[string]*modelRow `json:"models"`
+	// Tiers is the optional tier table (26-REQ-4): all of SIMPLE, STANDARD and
+	// ADVANCED, each naming a row of this vendor and an effort that row takes.
+	// A vendor without it has no tiers.
+	Tiers map[string]*tierRow `json:"tiers"`
 
-	id string // the map key, filled in by Parse
+	id        string           // the map key, filled in by Parse
+	tierTable map[Tier]tierRow // Tiers once validated, filled in by Parse
+}
+
+// tierRow is one tier's choice: the id of a row of the vendor, and the effort
+// to request on it.
+type tierRow struct {
+	Model  string `json:"model"`
+	Effort string `json:"effort"`
 }
 
 type modelRow struct {
@@ -131,6 +143,14 @@ type costRow struct {
 // Requests carry a core.Effort, which names the five from low up; off and
 // minimal are catalog-authoring metadata and never sent.
 var thinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+// allEfforts are the five levels a request can carry, lowest first:
+// thinkingLevels without off and minimal.
+var allEfforts = []core.Effort{core.EffortLow, core.EffortMedium, core.EffortHigh, core.EffortXHigh, core.EffortMax}
+
+// tierNames are the keys a tiers object must have, in the order Parse checks
+// them.
+var tierNames = []Tier{TierSimple, TierStandard, TierAdvanced}
 
 // --- parsing ---------------------------------------------------------------
 
@@ -234,6 +254,13 @@ func Parse(data []byte) (*Catalog, error) {
 			c.byCanonical[e.canonical()] = &ce
 			c.byBareID[mid] = append(c.byBareID[mid], e)
 		}
+
+		// After the rows, so a tier is checked against rows that loaded.
+		tiers, err := v.parseTiers(vpath)
+		if err != nil {
+			return nil, err
+		}
+		v.tierTable = tiers
 	}
 
 	sort.Strings(c.vendorIDs)
@@ -242,6 +269,58 @@ func Parse(data []byte) (*Catalog, error) {
 		sort.Slice(es, func(i, j int) bool { return es[i].vendor < es[j].vendor })
 	}
 	return c, nil
+}
+
+// parseTiers validates the vendor's tiers object against its rows and returns
+// the table Select reads; a vendor without one has no tiers. A tier that names
+// a missing row, or an effort the row does not take, would silently pick an
+// unlisted model or send no effort, which is the kind of hand-editing mistake
+// Parse rejects at load, like a misspelled thinking level.
+//
+// The checks run in a fixed order, so one catalog always fails at the same
+// path: unknown keys (sorted), then a missing tier, then for each tier in order
+// its model, the effort's spelling and whether the row takes the effort.
+func (v *vendorRow) parseTiers(vpath string) (map[Tier]tierRow, error) {
+	if v.Tiers == nil {
+		return nil, nil
+	}
+	tpath := vpath + ".tiers"
+
+	keys := make([]string, 0, len(v.Tiers))
+	for k := range v.Tiers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !slices.Contains(tierNames, Tier(k)) {
+			return nil, badf(tpath+"."+k, "not a tier; the keys are exactly SIMPLE, STANDARD and ADVANCED")
+		}
+	}
+
+	table := make(map[Tier]tierRow, len(tierNames))
+	for _, name := range tierNames {
+		path := tpath + "." + string(name)
+		t, ok := v.Tiers[string(name)]
+		if !ok {
+			return nil, badf(path, "missing; a tiers block names all of SIMPLE, STANDARD and ADVANCED")
+		}
+		if t == nil {
+			t = &tierRow{}
+		}
+		row, ok := v.Models[t.Model]
+		if !ok {
+			return nil, badf(path+".model", "names %q, which is not a model of this vendor", t.Model)
+		}
+		if !slices.Contains(allEfforts, core.Effort(t.Effort)) {
+			return nil, badf(path+".effort", "%q is not an effort (known: low, medium, high, xhigh, max)", t.Effort)
+		}
+		if wire := row.ThinkingLevelMap[t.Effort]; wire == nil {
+			return nil, badf(path+".effort", "model %q does not take %q: it is absent or null in its thinking_level_map",
+				t.Model, t.Effort)
+		}
+		table[name] = *t
+	}
+	return table, nil
 }
 
 // toModel projects one file row onto core.Model, inheriting vendor-level

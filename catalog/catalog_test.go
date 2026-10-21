@@ -3,6 +3,7 @@ package catalog
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -185,6 +186,150 @@ func TestParseRejectsCorruptCatalogs(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error = %q, want it to mention %q", err, tc.want)
 			}
+		})
+	}
+}
+
+// tierDocFmt is a two-vendor catalog document with a %s for the ollama
+// vendor's tiers object. The ollama rows are the three a tier can name
+// (qwen3.8:27b takes low, medium, high and max but not xhigh; nullhigh lists
+// high as present-and-null; nomap has no thinking_level_map at all), and the
+// "other" vendor holds a row the ollama vendor does not.
+const tierDocFmt = `{"schema_version":1,"catalog_version":"t","vendors":{
+  "ollama":{"api":"ollama-chat","base_url":"http://127.0.0.1:11434","default_model":"qwen3.8:27b",
+    "models":{
+      "qwen3.8:27b":{"context_window":32768,"max_tokens":32768,"reasoning":true,
+        "thinking_level_map":{"low":"low","medium":"medium","high":"high","max":"max"}},
+      "nullhigh":{"context_window":32768,"max_tokens":32768,"reasoning":true,
+        "thinking_level_map":{"low":"low","high":null}},
+      "nomap":{"context_window":32768,"max_tokens":32768}
+    },
+    "tiers":%s},
+  "other":{"api":"ollama-chat","base_url":"http://127.0.0.1:11434","default_model":"other-model",
+    "models":{"other-model":{"context_window":8192,"max_tokens":4096,"reasoning":true,
+      "thinking_level_map":{"low":"low","medium":"medium","high":"high"}}}}
+}}`
+
+// tierPick is one tier's entry as the catalog file spells it.
+func tierPick(model, effort string) string {
+	return fmt.Sprintf(`{"model":%q,"effort":%q}`, model, effort)
+}
+
+// tiersObject spells a tiers object from its three entries.
+func tiersObject(simple, standard, advanced string) string {
+	return fmt.Sprintf(`{"SIMPLE":%s,"STANDARD":%s,"ADVANCED":%s}`, simple, standard, advanced)
+}
+
+// validTiers is a tiers object that Parse accepts against tierDocFmt.
+func validTiers() string {
+	return tiersObject(tierPick("qwen3.8:27b", "low"), tierPick("qwen3.8:27b", "medium"), tierPick("qwen3.8:27b", "high"))
+}
+
+// wantTierParseError fails the test unless Parse rejects doc with a
+// *ParseError at path that matches ErrCorruptCatalog and returns no catalog.
+func wantTierParseError(t *testing.T, doc, path string) {
+	t.Helper()
+	c, err := Parse([]byte(doc))
+	if c != nil {
+		t.Error("Parse returned a catalog for a corrupt tiers block")
+	}
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("error = %v, want a *ParseError", err)
+	}
+	if pe.Path != path {
+		t.Errorf("Path = %q, want %q (reason: %s)", pe.Path, path, pe.Reason)
+	}
+	if !errors.Is(err, ErrCorruptCatalog) {
+		t.Errorf("error does not match ErrCorruptCatalog: %v", err)
+	}
+}
+
+// TestTierDocParses pins the base the tier rejection tests vary: it is valid,
+// so each rejection below is caused by the one block it changes.
+func TestTierDocParses(t *testing.T) {
+	c, err := Parse([]byte(fmt.Sprintf(tierDocFmt, validTiers())))
+	if err != nil {
+		t.Fatalf("the base document does not parse: %v", err)
+	}
+	if got := c.Models("ollama"); len(got) != 3 {
+		t.Errorf("Models(ollama) = %v, want the three rows", got)
+	}
+	// A vendor without a tiers key loads as well (26-REQ-4.6).
+	if _, err := Parse([]byte(fmt.Sprintf(tierDocFmt, "null"))); err != nil {
+		t.Errorf("a null tiers object is a vendor without tiers, got %v", err)
+	}
+}
+
+// TS-26-18: a tiers key that is not exactly a tier name, and a block that lacks
+// one, are rejected at the key's path. An unknown key is reported before a
+// missing tier, so a lower-case "standard" names the key and not the gap.
+func TestParseRejectsTierKeys_TS26_18(t *testing.T) {
+	std := tierPick("qwen3.8:27b", "medium")
+	low := tierPick("qwen3.8:27b", "low")
+	high := tierPick("qwen3.8:27b", "high")
+	tests := []struct {
+		name  string
+		tiers string
+		path  string
+	}{
+		{"lower-case key", `{"SIMPLE":` + low + `,"standard":` + std + `,"ADVANCED":` + high + `}`, "vendors.ollama.tiers.standard"},
+		{"unknown key", `{"SIMPLE":` + low + `,"STANDARD":` + std + `,"ADVANCED":` + high + `,"EXPERT":` + high + `}`, "vendors.ollama.tiers.EXPERT"},
+		{"missing ADVANCED", `{"SIMPLE":` + low + `,"STANDARD":` + std + `}`, "vendors.ollama.tiers.ADVANCED"},
+		{"missing SIMPLE", `{"STANDARD":` + std + `,"ADVANCED":` + high + `}`, "vendors.ollama.tiers.SIMPLE"},
+		{"empty object", `{}`, "vendors.ollama.tiers.SIMPLE"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			wantTierParseError(t, fmt.Sprintf(tierDocFmt, tc.tiers), tc.path)
+		})
+	}
+}
+
+// TS-26-19: an empty tier model, a model the vendor has no row for and a row of
+// another vendor are rejected at the tier's model.
+func TestParseRejectsTierModels_TS26_19(t *testing.T) {
+	low := tierPick("qwen3.8:27b", "low")
+	high := tierPick("qwen3.8:27b", "high")
+	tests := []struct {
+		name     string
+		standard string
+	}{
+		{"empty model", tierPick("", "medium")},
+		{"no such row", tierPick("nope", "medium")},
+		{"row of another vendor", tierPick("other-model", "medium")},
+		{"null entry", `null`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := fmt.Sprintf(tierDocFmt, tiersObject(low, tc.standard, high))
+			wantTierParseError(t, doc, "vendors.ollama.tiers.STANDARD.model")
+		})
+	}
+}
+
+// TS-26-20: an effort that is not exactly one of the five levels, and one the
+// named row does not take (absent, null, or no thinking_level_map at all), are
+// rejected at the tier's effort.
+func TestParseRejectsTierEfforts_TS26_20(t *testing.T) {
+	low := tierPick("qwen3.8:27b", "low")
+	high := tierPick("qwen3.8:27b", "high")
+	tests := []struct {
+		name     string
+		standard string
+	}{
+		{"wrong case", tierPick("qwen3.8:27b", "HIGH")},
+		{"not an effort", tierPick("qwen3.8:27b", "bogus")},
+		{"empty", tierPick("qwen3.8:27b", "")},
+		{"a level, but not an effort", tierPick("qwen3.8:27b", "minimal")},
+		{"absent in the row", tierPick("qwen3.8:27b", "xhigh")},
+		{"null in the row", tierPick("nullhigh", "high")},
+		{"row without a level map", tierPick("nomap", "low")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := fmt.Sprintf(tierDocFmt, tiersObject(low, tc.standard, high))
+			wantTierParseError(t, doc, "vendors.ollama.tiers.STANDARD.effort")
 		})
 	}
 }
