@@ -91,6 +91,18 @@ func buildClient(sel catalog.Selection, cfg Config) (core.ProviderClient, error)
 	return anthropic.Provider(sel.Model, anthropic.Options{Env: cfg.Env, Getenv: cfg.Getenv}), nil
 }
 
+// providerAPI is the API constant of the package buildClient builds a client
+// from for the named provider; a run on such a client reports it.
+func providerAPI(provider string) core.API {
+	switch provider {
+	case catalog.ProviderOpenRouter:
+		return openrouter.API
+	case catalog.ProviderOllama:
+		return ollama.API
+	}
+	return anthropic.API
+}
+
 // lookupEnv is the anthropic.Env of a Config: the order every provider reads
 // its variables in. A non-empty value in set wins; then getenv, or the process
 // environment when it is nil; an empty value is unset at every step.

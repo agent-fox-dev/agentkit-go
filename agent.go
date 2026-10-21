@@ -121,6 +121,9 @@ type Agent struct {
 	res    Resolution
 	model  core.Model
 	client core.ProviderClient
+	// api is the API of the provider package Resolve built the client from, or
+	// empty when the client was given in Config.Client.
+	api core.API
 	// runner holds the resolved tool set, guard and interceptor, fixed at
 	// construction: the tool set is part of the cached prompt prefix, so it
 	// never changes under a run.
@@ -168,8 +171,12 @@ func New(cfg Config) (*Agent, error) {
 	cfg.Prefix = append([]core.Message(nil), cfg.Prefix...)
 	// The resolution holds what the selection fields chose, and the variables
 	// were read by the client's constructor: the agent keeps no second copy.
+	var api core.API
+	if cfg.Client == nil {
+		api = providerAPI(res.Provider)
+	}
 	cfg.Client, cfg.Env, cfg.Getenv = nil, nil, nil
-	a := &Agent{cfg: cfg, res: res, model: res.Model, client: res.Client, runner: runner}
+	a := &Agent{cfg: cfg, res: res, model: res.Model, client: res.Client, api: api, runner: runner}
 	tools := runner.Tools()
 	fixed := len(prompt.Build(cfg.System, tools))
 	if b, err := json.Marshal(core.ToolWires(tools)); err == nil {
