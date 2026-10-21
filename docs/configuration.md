@@ -686,7 +686,7 @@ argv without a shell. Both return `ExecResult` and take `ExecOptions`.
 | `ExitCode` | The exit code; 128+signum on unix for a signal-killed child. |
 | `Truncated`, `TotalBytes` | Whether output was cut, and how many bytes the child wrote. |
 | `SpillPath` | The spill or log file, when one exists. |
-| `Duration` | Wall time to the child's exit. |
+| `Duration` | Wall time from just before the child starts to its exit. A `timeout` reports at least `ExecOptions.Timeout`. |
 | `IOErr` | A byte-moving failure after the process started (stdin, log or spill write); `Outcome` is still classified from the exit status. |
 
 `abort` means the caller's context was done at exit; `timeout` means the

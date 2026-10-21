@@ -168,12 +168,36 @@ func TestTS_04_21_CancelKillsTreeAndClassifiesAbort(t *testing.T) {
 
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "grandchild-survived")
+	started := filepath.Join(dir, "child-started")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(150*time.Millisecond, cancel)
 	defer cancel()
 
-	cmd := "( sleep 1; touch " + marker + " ) & sleep 5"
+	// The 150ms runs from the child's first sign of life, not from before the
+	// call. RunArgv starts its Duration clock after the caller can arm a timer,
+	// so a cancel timed from before the call can land under 150ms of Duration;
+	// one timed from the child, which starts after that clock, cannot.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			if _, err := os.Stat(started); err == nil {
+				break
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(time.Millisecond):
+			}
+		}
+		select {
+		case <-stop:
+		case <-time.After(150 * time.Millisecond):
+			cancel()
+		}
+	}()
+
+	cmd := "touch " + started + "; ( sleep 1; touch " + marker + " ) & sleep 5"
 	res, err := RunArgv(ctx, []string{"sh", "-c", cmd}, ExecOptions{Dir: dir})
 	if err != nil {
 		t.Fatalf("error = %v, want nil", err)

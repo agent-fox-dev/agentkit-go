@@ -78,7 +78,9 @@ type ExecResult struct {
 	Truncated  bool
 	TotalBytes int64
 	SpillPath  string
-	Duration   time.Duration
+	// Duration is the wall time from just before the child starts to its exit.
+	// A call that timed out reports at least ExecOptions.Timeout.
+	Duration time.Duration
 	// IOErr is a byte-moving failure that did not stop the process: a Stdin
 	// read error, a log or spill write error, or Wait reporting an I/O
 	// completion failure. Outcome is still classified from the exit status.
@@ -384,14 +386,6 @@ func copyStdin(src io.Reader, w *os.File, closeOnce *sync.Once, state *stdinCopi
 }
 
 func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, error) {
-	runCtx, cancel := ctx, context.CancelFunc(nil)
-	if opts.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
-	}
-	if cancel != nil {
-		defer cancel()
-	}
-
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = opts.Dir
 	cmd.Env = opts.Env
@@ -427,6 +421,16 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 	}
 
 	start := time.Now()
+	// The timeout's clock starts after the Duration's. The other order lets the
+	// setup above, which a slow log file can stretch, use up part of the
+	// Timeout without counting toward the Duration, and a timed-out call would
+	// report less than its Timeout (04-REQ-5.3).
+	runCtx := ctx
+	if opts.Timeout > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
+		defer cancel()
+	}
 	if startErr := cmd.Start(); startErr != nil {
 		_ = pw.Close()
 		_ = pr.Close()

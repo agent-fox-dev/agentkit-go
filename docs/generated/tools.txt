@@ -411,7 +411,9 @@ type ExecResult struct {
 	Truncated  bool
 	TotalBytes int64
 	SpillPath  string
-	Duration   time.Duration
+	// Duration is the wall time from just before the child starts to its exit.
+	// A call that timed out reports at least ExecOptions.Timeout.
+	Duration time.Duration
 	// IOErr is a byte-moving failure that did not stop the process: a Stdin
 	// read error, a log or spill write error, or Wait reporting an I/O
 	// completion failure. Outcome is still classified from the exit status.
