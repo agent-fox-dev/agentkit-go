@@ -310,3 +310,49 @@ first failed on it: the cap rises to **30,000**.
   (`provider/ollama/request.go:66`) follows 28-REQ-2.4 row by row
   (`TestNumPredict_TS28_13`). `options.stop` is sent when the request has at least one
   stop sequence; temperature and top_p are sent whenever the pointer is set, 0 included.
+
+## How a failed turn is classified (28-REQ-7, 28-REQ-8.3; task 7)
+
+`(*Client).run` (`provider/ollama/stream.go:25`) sends one request, with no retry, and
+decides the turn in this order: a done chunk means the turn finished, whatever
+`Chat` returned after it; otherwise a cancelled caller's context means aborted,
+which takes precedence over every classification below
+(`TestCancelAbortsTheTurn_TS28_34`: within a second, `core.ErrAborted`, "Request was
+aborted", no `ErrorEvent`, no tool call, the text kept); otherwise
+`(*Client).failureOf` (`provider/ollama/errors.go:37`) says why, from what the SDK
+returned, which is not what the spec's table assumed:
+
+- **An error status with an empty body is read from the transport's record.**
+  `Chat` returns `nil` for it, so the status the transport recorded in the call's
+  `attempt` is used: a 404 is `ErrModelNotFound`, a 401 or 403 is a `*StatusError`,
+  any other is `ollama: HTTP <code>: <status text>`. Only a 2xx, or no status, with no
+  done chunk is `ErrStreamTruncated`
+  (`TestA404IsModelNotFound_TS28_36`, `TestStatusErrors_TS28_38`, each with and
+  without a body).
+- **A 401 arrives as `api.AuthorizationError`,** which carries no message; it gets
+  the same text as a 403.
+- **"Unreachable" is a failed dial.** The error is a `*net.OpError` whose `Op` is
+  `dial`, which a DNS failure also is. A connection reset while the body is read is
+  an `OpError` with `Op` `read`: the server was reached, so it is a plain
+  `ollama: <error>` that keeps the text so far
+  (`TestAResetMidStreamIsNotUnreachable_TS28_35`). The error wraps `ErrUnreachable`
+  and the `*net.OpError`, and its text names the host, `ollama serve` and `OLLAMA_HOST`.
+- **A 404 is both `ErrModelNotFound` and a `*StatusError{Code: 404}`,** and a
+  context-window error that came as a status is both `ErrContextWindow` and a
+  `*StatusError` with its code. The unexported `failure` type
+  (`provider/ollama/errors.go:16`) carries a text of its own and wraps the errors it
+  stands for (`Unwrap() []error`), so `errors.Is` and `errors.As` find all of them.
+- **The context-window rule is the message.** `isContextWindow`
+  (`provider/ollama/errors.go:83`) accepts a message that mentions both "context
+  length" and "exceed", which the three messages in Ollama's `server/routes.go`
+  all do (`the input length exceeds the context length`, `input after truncation
+  exceeds maximum context length`, `input exceeds maximum context length and cannot be
+  truncated further`). It applies to a status error and to an error line inside a 200
+  stream (`TestContextWindowErrors_TS28_37`). The text names the model and the
+  `num_ctx` sent, includes Ollama's message and says that a model already loaded at a
+  smaller length keeps it until it unloads.
+- **Every error text starts "ollama:"** and holds only the host among the values the
+  provider reads, and never an environment variable
+  (`TestOneAttemptAndNoSecrets_TS28_39`, which also counts one request per call for a
+  404, 401, 429, 500 and 503, and for a closed port). A failed turn reports one request
+  and no token field (`TestFailedTurnsReportOnlyTheRequest_TS28_42`).

@@ -21,7 +21,7 @@ func (c *Client) Stream(ctx context.Context, req core.Request) (<-chan core.Stre
 	return core.StreamChannel(s), nil
 }
 
-// run sends the request once and decodes its stream into s.
+// run sends the request once, with no retry, and decodes its stream into s.
 func (c *Client) run(ctx context.Context, s *core.EventStream, req core.Request) {
 	d := newDecodeState(s, c, req)
 	chatReq, err := c.chatRequest(req)
@@ -32,11 +32,14 @@ func (c *Client) run(ctx context.Context, s *core.EventStream, req core.Request)
 	a := &attempt{}
 	err = c.api.Chat(context.WithValue(ctx, attemptKey{}, a), chatReq, d.chunk)
 	switch {
-	case err != nil:
-		d.fail("ollama: "+err.Error(), err)
-	case !d.sawDone:
-		d.fail(ErrStreamTruncated.Error(), ErrStreamTruncated)
-	default:
+	case d.sawDone:
+		// The done chunk is the turn; nothing after it matters.
 		d.finish()
+	case ctx.Err() != nil:
+		// The caller's cancellation takes precedence over every other failure.
+		d.fail(abortText, core.ErrAborted)
+	default:
+		ferr := c.failureOf(a, err)
+		d.fail(ferr.Error(), ferr)
 	}
 }
