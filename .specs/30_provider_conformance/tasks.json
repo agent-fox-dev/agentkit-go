@@ -258,7 +258,7 @@
       "done_when": [
         "`go test -short ./internal/providerconformance` reports 21 passing conformance subtests"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
