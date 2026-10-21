@@ -70,7 +70,7 @@ func exportedNames(f *ast.File) []string {
 
 // TS-14-43: every file importing gokrazy/rsync is excluded on windows and
 // built on linux and darwin, its package has windows-only files declaring the
-// same exported identifiers, and TS-12-14's limit is still 20,000. The
+// same exported identifiers, and TS-12-14's limit is still 30,000. The
 // cross-target and host-cgo gates run unchanged in crosstarget_test.go.
 // 14-REQ-9.3, 14-REQ-9.4.
 func TestRsyncBuildTags_TS14_43(t *testing.T) {
@@ -147,7 +147,7 @@ func TestRsyncBuildTags_TS14_43(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(size), "n > 20000") {
-		t.Error("TS-12-14's 20,000-line limit changed")
+	if !strings.Contains(string(size), "n > 30000") {
+		t.Error("TS-12-14's 30,000-line limit changed")
 	}
 }

@@ -71,7 +71,9 @@ func (c *Client) Host() string
     "http://127.0.0.1:11434".
 
 func (c *Client) Stream(ctx context.Context, req core.Request) (<-chan core.StreamEvent, error)
-    Stream is not implemented yet.
+    Stream sends the request and returns the turn's events. A context that is
+    already done is refused with its error and no channel; every failure after
+    that is encoded in the stream.
 
 type Options struct {
 	// Host is the server's address. It overrides HostVar, and when it is set the

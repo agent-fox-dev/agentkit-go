@@ -1,13 +1,14 @@
 package ollama
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/ollama/ollama/api"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 )
@@ -59,6 +60,10 @@ func (e env) lookup(name string) string {
 type Client struct {
 	model core.Model
 	base  *url.URL
+	// api is the SDK client every request goes through: api.NewClient with the
+	// credential-free transport, never api.ClientFromEnvironment, which reads
+	// the process environment.
+	api   *api.Client
 	now   func() time.Time
 	warnf func(format string, args ...any)
 }
@@ -82,6 +87,7 @@ func New(m core.Model, opts Options) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{model: m, base: base, now: opts.Now, warnf: opts.Warnf}
+	c.api = api.NewClient(base, sdkHTTPClient(opts.HTTPClient))
 	if c.now == nil {
 		c.now = time.Now
 	}
@@ -94,8 +100,3 @@ func New(m core.Model, opts Options) (*Client, error) {
 // Host returns the resolved base URL of the server, for example
 // "http://127.0.0.1:11434".
 func (c *Client) Host() string { return c.base.String() }
-
-// Stream is not implemented yet.
-func (c *Client) Stream(ctx context.Context, req core.Request) (<-chan core.StreamEvent, error) {
-	return nil, errors.New("ollama: Stream is not implemented yet")
-}

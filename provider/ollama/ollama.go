@@ -15,8 +15,6 @@ package ollama
 import (
 	"errors"
 
-	"github.com/ollama/ollama/api"
-
 	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
@@ -60,7 +58,3 @@ type StatusError struct {
 }
 
 func (e *StatusError) Error() string { return e.Text }
-
-// The provider's client is built on api.NewClient; until it is, this reference
-// keeps the module required.
-var _ = api.NewClient

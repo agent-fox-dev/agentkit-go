@@ -143,3 +143,68 @@ falls through to the variable, as an empty `Env` value does
 `TS-28-1` assigns the client to `core.ProviderClient`, so task 2 needs a `Stream`
 method to compile. It returns an error and no channel (`provider/ollama/client.go`,
 `(*Client).Stream`) and is replaced in task 3; it is not a `panic`.
+
+## TS-28-9: an Authorization header the embedder's transport adds reaches the server (28-REQ-1.8, task 3)
+
+TS-28-9 gives an embedder `RoundTripper` that adds `X-Embedder: yes` and also
+`Authorization: Bearer x`, and expects that "no recorded request has an
+Authorization header" and that `X-Embedder: yes` reaches the server. 28-REQ-1.8
+and Design Decision 6 put the embedder's transport *beneath* the layer that
+deletes `Authorization`, which "still lets an embedder that fronts Ollama with an
+auth proxy add a header deliberately", and a layer above a transport cannot
+remove what that transport adds. For an `Authorization` the embedder's own transport adds, the test
+and the requirement cannot both hold.
+
+The requirement and the decision are followed: `credentialFree.RoundTrip`
+(`provider/ollama/transport.go:24`) deletes the header before the embedder's
+transport sees the request, so a header it adds is the embedder's own.
+`TestNoCredentialIsSent_TS28_9` (`provider/ollama/stream_test.go:74`) checks the
+rest in three subtests: with `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` and
+`OLLAMA_API_KEY` set, no request carries `Authorization` or any of the three
+values in its URL, headers or body; with `OLLAMA_AUTH=1` and a generated Ed25519
+key under `$HOME/.ollama`, the SDK signs the request (the test requires the `ts`
+query the SDK adds, or it would check nothing) and still no `Authorization`
+reaches the server; and an embedder transport that adds `X-Embedder: yes` and
+`Authorization: Bearer proxy-token` has both arrive. The signing subtest skips on
+Windows, where the SDK does not find its key through `$HOME`.
+
+## The provider sends through a copy of the embedder's `http.Client` (task 3)
+
+28-REQ-1 says `HTTPClient` is "the `*http.Client` requests go through" and that a
+nil one means a fresh client with the default transport. `sdkHTTPClient`
+(`provider/ollama/transport.go:38`) copies the struct and replaces only its
+`Transport`, so the embedder's `Timeout`, `CheckRedirect` and `Jar` are kept
+(`TestEmbedderClientSettingsAreKept`). A nil client has no overall timeout, so a
+long stream is cut only by the caller's context.
+
+## The root module's line budget is 30,000, not 20,000 (TS-12-14, TS-13-66, TS-20-63; task 3)
+
+The spec does not mention the budget. `core/size_test.go` (TS-12-14) holds the
+root module to 20,000 lines of hand-written library code: non-blank,
+non-comment lines of non-test Go files, with generated files and test-only
+internal packages left out (`budgetLines`). Spec 27 left the root module at
+19,773, which is 227 below it. `provider/ollama` is about 1,000 lines
+(`provider/openrouter` is 1,300), and with 430 of them in task 3 `make check`
+failed in `TestLineBudgets_TS12_14`, `TestSandboxCountedInBudget_TS13_66` and
+`TestRootModuleStaysWithinItsLineBudget_TS20_63` (`the root module has 20203
+lines of hand-written library code, over 20,000`).
+
+Nothing else in the repository fits the code under the old cap. PRD 14's
+decision 2 puts both new providers in the root module "so choosing one is a
+string in `Config`"; a nested module, which is how spec 14 kept the sandbox out
+of the count (`docs/errata/14_sandbox_rsync_sync.md`), would keep the root from
+importing the provider. The decision was the project owner's, taken when task 3
+first failed on it: the cap rises to **30,000**.
+
+- `core/size_test.go`: `TestLineBudgets_TS12_14` and
+  `TestSandboxCountedInBudget_TS13_66` hold the root module to `n > 30000`, and
+  the comments and messages say 30,000.
+- The two tests that read the size test's source for the figure now require the
+  new one: `TestRsyncBuildTags_TS14_43` (`internal/policy/buildtags_test.go`,
+  `"n > 30000"`) and `TestGatesUnchanged_TS15_41`
+  (`internal/policy/gates_15_test.go`, `"budgetLines(t, moduleRoot(t)); n >
+  30000"`). They are not weakened: each still fails if the limit changes again.
+- `TestRootModuleStaysWithinItsLineBudget_TS20_63` runs TS-12-14, so only its
+  comment changed.
+- What is counted is unchanged, and so is core's own 1,600-line budget. The
+  `.specs` of specs 12 to 22 and 30 still say 20,000; they are history.
