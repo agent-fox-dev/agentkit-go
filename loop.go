@@ -468,7 +468,7 @@ func (a *Agent) callModel(ctx context.Context, out *core.EventStream, view core.
 		Messages:  view,
 		Tools:     core.ToolWires(tools),
 		MaxTokens: &maxTokens,
-		Effort:    a.cfg.Effort,
+		Effort:    a.res.Effort,
 	}
 	// The assembled prompt, not the raw field: per-tool guidelines are only
 	// visible to the model if something assembles them.
