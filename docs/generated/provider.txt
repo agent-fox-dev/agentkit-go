@@ -1,6 +1,14 @@
 package provider // import "github.com/agent-fox-dev/agentkit-go/provider"
 
 
+CONSTANTS
+
+const SyntheticResultText = "No result provided"
+    SyntheticResultText is the content of the tool result RepairToolPairing
+    invents for a call nothing answered. It is model-visible, so it is pinned
+    here rather than formatted at the call site.
+
+
 FUNCTIONS
 
 func ApplyServiceTier(cost float64, t ServiceTier) float64
@@ -87,6 +95,48 @@ type Marshaller func(*schema.Schema) (json.RawMessage, error)
     parameter rather than a fixed json.Marshal because the dialects differ:
     Gemini strips keywords and upper-cases types, and a cache keyed on the
     canonical form would hand a provider the wrong bytes.
+
+type PairingReport struct {
+	// DroppedAssistants counts assistant messages that ended in an error or
+	// were aborted.
+	DroppedAssistants int
+	// DroppedResults counts tool results that answered no call of the turn
+	// they sit in: the results of a dropped turn, results of an unknown call,
+	// and a second result for one call.
+	DroppedResults int
+	// Inserted counts the synthetic results added for unanswered calls.
+	Inserted int
+}
+    PairingReport records what RepairToolPairing changed. It is returned rather
+    than logged, so a caller diagnosing a 400 can tell whether the transcript it
+    sent is the transcript it holds.
+
+func RepairToolPairing(in core.Messages) (core.Messages, PairingReport)
+    RepairToolPairing is the transcript repair shared by the chat-style wires
+    (OpenRouter and Ollama Chat Completions): wires that pair a tool call with
+    its result by id in separate messages, and reject a call that has none.
+
+    It returns a repaired view and never changes its input, its messages or
+    their content. It applies three rules:
+
+     1. An assistant message that ended in an error or was aborted is dropped.
+     2. A tool result is kept only in the run of results that directly follows
+        the assistant message that made the call. A result of a dropped turn,
+        of an unknown call, one that follows no assistant message, and a second
+        result for the same call are dropped.
+     3. A call of a kept assistant message with no result in its run gets an
+        error result with the text SyntheticResultText. The run is then ordered
+        as the calls are, so a wire that pairs by position pairs correctly;
+        a run that needs no synthetic result is left as it was recorded.
+
+    The result is a fixed point: repairing it again changes nothing. Unlike the
+    Anthropic repair it never touches thinking, which a chat-style wire replays
+    on its own terms.
+
+func (r PairingReport) Changed() bool
+    Changed reports whether the repair altered the transcript.
+
+func (r PairingReport) String() string
 
 type ServiceTier struct {
 	Name       string

@@ -10,9 +10,14 @@ import (
 	"testing"
 )
 
+// addedBySpec27 are the modules the OpenRouter SDK added to the sandbox
+// module's graph, whose go.mod replaces the root module (docs/DEPS.md).
+var addedBySpec27 = []string{"github.com/OpenRouterTeam/go-sdk", "github.com/spyzhov/ajson"}
+
 // TS-15-40: go-landlock is promoted to a direct requirement of the sandbox
 // module at its existing version, approved with a reason; psx stays
-// indirect and the module graph is unchanged. 15-REQ-8.1, 15-REQ-8.2. The
+// indirect and the module graph is 14's, plus the SDK that spec 27 added
+// (restated by 27-REQ-9.5 from whole-file equality). 15-REQ-8.1, 15-REQ-8.2. The
 // requirement is the nested sandbox module's (14's D-2), and the version is
 // the pseudo-version 14 selected, not the v0.10.1 the spec expected
 // (docs/errata/15_sandbox_landlock_agent.md).
@@ -31,8 +36,20 @@ func TestLandlockPromoted_TS15_40(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(snap, pre) {
-		t.Error("the sandbox module's graph snapshot differs from the one 14 committed")
+	// Every line 14 committed is still in the snapshot, and the only lines
+	// added since are the OpenRouter SDK and the module it requires (spec 27,
+	// docs/DEPS.md): the graph is otherwise 14's.
+	have := strings.Split(strings.TrimSpace(string(snap)), "\n")
+	for _, line := range strings.Split(strings.TrimSpace(string(pre)), "\n") {
+		if !slices.Contains(have, line) {
+			t.Errorf("%q is missing from the sandbox module's graph snapshot: 14 committed it", line)
+		}
+	}
+	for _, line := range have {
+		if f := strings.Fields(line); !slices.Contains(strings.Split(string(pre), "\n"), line) &&
+			!slices.Contains(addedBySpec27, f[0]) {
+			t.Errorf("%q is in the sandbox module's graph snapshot, but 14 did not commit it and spec 27 did not add it", line)
+		}
 	}
 	want := ""
 	for _, line := range strings.Split(string(snap), "\n") {

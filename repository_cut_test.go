@@ -51,8 +51,8 @@ func TestAgentDecoupled_TS09_10(t *testing.T) {
 	}
 }
 
-// TS-09-11: the only first-party providers left are anthropic and faux,
-// and both are a core.ProviderClient.
+// TS-09-11: the only first-party providers are anthropic, faux and (since spec
+// 27) openrouter; the first two are a core.ProviderClient built here.
 func TestProviderDefaults_TS09_11(t *testing.T) {
 	m, _ := catalog.Lookup("claude-opus-5-5")
 	var _ core.ProviderClient = anthropic.Provider(m, anthropic.Options{})
@@ -67,8 +67,8 @@ func TestProviderDefaults_TS09_11(t *testing.T) {
 			dirs = append(dirs, e.Name())
 		}
 	}
-	if strings.Join(dirs, ",") != "anthropic,faux" {
-		t.Errorf("provider packages = %v, want [anthropic faux]", dirs)
+	if strings.Join(dirs, ",") != "anthropic,faux,openrouter" {
+		t.Errorf("provider packages = %v, want [anthropic faux openrouter]", dirs)
 	}
 	src, err := os.ReadFile("agent.go")
 	if err != nil {
@@ -195,8 +195,12 @@ func TestDeletedPackagesAbsent_TS09_1(t *testing.T) {
 	assertAbsent(t, "provider/openai", "provider/openairesponses", "provider/google", "provider/ollama",
 		"plugins", "skills", "_skills/code-review", "cmd/validate-plugins", "session", "subagent",
 		"difftest", "imagex", "compaction", "middleware", "stop")
+	// provider/repair.go and provider/repair_test.go left this list when spec 27
+	// gave package provider a new, shared tool-pairing repair under those names
+	// (docs/errata/27_openrouter_provider.md); the multi-wire repair they once
+	// held is still gone.
 	assertAbsent(t, "provider/credentials.go", "provider/credentials_test.go", "provider/salvage.go",
-		"provider/salvage_test.go", "provider/repair.go", "provider/repair_test.go",
+		"provider/salvage_test.go",
 		"provider/asymmetry_test.go", "provider/conformance_test.go", "provider/fuzz_test.go")
 }
 
@@ -356,10 +360,13 @@ func TestMakefileTargets_TS09_19(t *testing.T) {
 	}
 }
 
-// requiredModules26 is the root module's require set when spec 26 landed: the
-// module paths of every require line, direct and indirect, without versions.
-// It names no OpenRouter or Ollama SDK; the specs that add one restate it.
+// requiredModules26 is the root module's require set: the module paths of every
+// require line, direct and indirect, without versions. It was spec 26's, which
+// named no OpenRouter or Ollama SDK; spec 27 added the OpenRouter SDK and the
+// ajson module it requires, and the spec that adds the Ollama SDK restates it.
 var requiredModules26 = []string{
+	"github.com/OpenRouterTeam/go-sdk",
+	"github.com/spyzhov/ajson",
 	"github.com/anthropics/anthropic-sdk-go",
 	"github.com/aws/aws-sdk-go-v2",
 	"github.com/aws/aws-sdk-go-v2/config",
@@ -486,7 +493,7 @@ func TestNewProviderModelsStayInCatalog_TS26_35(t *testing.T) {
 	if !slices.Equal(got, want) {
 		for _, m := range got {
 			if !slices.Contains(want, m) {
-				t.Errorf("go.mod requires %s, which spec 26 did not find", m)
+				t.Errorf("go.mod requires %s, which the pinned list does not name", m)
 			}
 		}
 		for _, m := range want {

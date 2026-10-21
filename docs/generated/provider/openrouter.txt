@@ -1,0 +1,95 @@
+package openrouter // import "github.com/agent-fox-dev/agentkit-go/provider/openrouter"
+
+Package openrouter is a core.ProviderClient for a model served by OpenRouter.
+It reaches OpenRouter through OpenRouter's own Go SDK and its native Chat
+Completions API, and owns what the SDK does not: turning a canonical request
+into an OpenRouter request, streaming the response back as canonical events
+and an assistant message, and handling credentials, errors, retries, reasoning
+replay, usage and reported cost the way OpenRouter documents them.
+
+The provider reads no model metadata of its own: the window, the output cap,
+the prices and the efforts a model takes come from the core.Model passed to New,
+which package catalog supplies.
+
+CONSTANTS
+
+const (
+	// API is the wire API this provider speaks: OpenRouter's native Chat
+	// Completions. It is the api string of the catalog's openrouter vendor.
+	API core.API = "openrouter-chat"
+
+	// APIKeyVar names the environment variable that holds the API key.
+	APIKeyVar = "OPENROUTER_API_KEY"
+	// BaseURLVar names the environment variable that overrides the base URL.
+	BaseURLVar = "OPENROUTER_BASE_URL"
+
+	// DefaultBaseURL is the base URL when BaseURLVar is unset. Every request is
+	// a POST to <base>/chat/completions.
+	DefaultBaseURL = "https://openrouter.ai/api/v1"
+
+	// DefaultMaxRetries is how many times a request that failed with a 429 or
+	// a 5xx is sent again when Options.MaxRetries is nil.
+	DefaultMaxRetries = 2
+)
+
+VARIABLES
+
+var ErrNoAPIKey = errors.New("openrouter: " + APIKeyVar + " is not set")
+    ErrNoAPIKey is the error New wraps when OPENROUTER_API_KEY resolves to
+    nothing. Its text names the variable.
+
+var ErrStreamTruncated = errors.New("openrouter: stream ended before finish_reason")
+    ErrStreamTruncated is a response body that ended before any choice carried a
+    finish_reason. A Chat Completions tool call is only known to be complete at
+    its finish_reason, so such a turn fails and keeps no tool call.
+
+
+FUNCTIONS
+
+func New(m core.Model, opts Options) (core.ProviderClient, error)
+    New builds a provider for one model. It resolves the API key and the base
+    URL from opts and the environment, builds the one SDK client every request
+    goes through, and makes no request: an unreachable host is found on the
+    first Stream.
+
+    New fails, before any request, when m.ID is empty, when OPENROUTER_API_KEY
+    is unset (the error wraps ErrNoAPIKey), or when OPENROUTER_BASE_URL is set
+    but is not an absolute http or https URL.
+
+
+TYPES
+
+type Options struct {
+	// Env holds explicit values for APIKeyVar and BaseURLVar. A variable is
+	// read from Env first; an empty value falls through to Getenv.
+	Env map[string]string
+	// Getenv looks a variable up when Env has no value for it. Nil means the
+	// process environment. The provider asks for APIKeyVar and BaseURLVar and
+	// for nothing else.
+	Getenv func(string) string
+	// HTTPClient sends the requests. Nil means a client with no overall
+	// timeout, so a long stream is cut only by the caller's context.
+	HTTPClient *http.Client
+	// MaxRetries is how many times a request is sent again after a 429 or a
+	// 5xx. Nil means DefaultMaxRetries; a negative value means none.
+	MaxRetries *int
+	// Now is the clock for message timestamps and for a Retry-After given as a
+	// date. Nil means time.Now.
+	Now func() time.Time
+	// Warnf receives a warning about a repair the provider made or an input it
+	// could not use. Nil discards warnings.
+	Warnf func(format string, args ...any)
+}
+    Options configure one provider. The zero value reads the process environment
+    and uses the defaults.
+
+type StatusError struct {
+	Code int
+	Text string
+}
+    StatusError is an error OpenRouter reported, with its code: the HTTP status,
+    or the code of an error chunk inside a stream that answered 200. A caller's
+    retry policy that matches "429" or "503" finds it in Text as well.
+
+func (e *StatusError) Error() string
+

@@ -293,6 +293,149 @@ cache-write tokens and `Requests: 1`; `Usage.Add` sums them.
 `anthropic.TranslateMessage` and `anthropic.TranslateUsage` translate an SDK
 `Message` and an SDK usage pair the way the stream does.
 
+## `openrouter.Options`
+
+`openrouter.New(model, opts)` returns a `core.ProviderClient` for one model
+served by OpenRouter (`provider/openrouter`). It reaches OpenRouter through
+OpenRouter's own Go SDK and its native Chat Completions API, and no other
+endpoint. `model` is a `core.Model`: the window, the output cap, the prices and
+the efforts come from it, and the provider holds none of its own. The row
+`catalog.Select("openrouter", "STANDARD", "")` returns is the usual one:
+
+```go
+sel, err := catalog.Select("openrouter", "STANDARD", "")
+if err != nil {
+	return err
+}
+p, err := openrouter.New(sel.Model, openrouter.Options{}) // OPENROUTER_API_KEY from the environment
+if err != nil {
+	return err // wraps openrouter.ErrNoAPIKey, naming the variable
+}
+agent, err := agentkit.New(agentkit.Config{Provider: p, Model: sel.Model.ID, Effort: sel.Effort})
+```
+
+`agentkit.New` does not build this provider from a name: pass it as
+`Config.Provider`. `Config.Model` is still resolved by `catalog.Lookup`, which
+lists Claude rows only, and the provider uses the `core.Model` given to `New`.
+
+`Stream(ctx, req)` has the contract of `anthropic.Provider`'s: a context already
+done is refused with its error, every later failure is the last item of the
+channel, and it is safe for concurrent use.
+
+`New` makes no request. It fails, naming what is wrong, when the model id is
+empty (`openrouter: the model id is empty`), when the key is unset (an error
+wrapping `openrouter.ErrNoAPIKey`: `openrouter: OPENROUTER_API_KEY is not set
+(set it in the environment or in Options.Env)`) and when `OPENROUTER_BASE_URL`
+is set but is not an absolute http or https URL (`openrouter: OPENROUTER_BASE_URL
+is "...", not an absolute http or https URL`, shown without user-info).
+
+| Variable | Effect |
+|---|---|
+| `OPENROUTER_API_KEY` (`openrouter.APIKeyVar`) | The API key; sent only as `Authorization: Bearer <key>`. |
+| `OPENROUTER_BASE_URL` (`openrouter.BaseURLVar`) | The base URL; default `https://openrouter.ai/api/v1` (`openrouter.DefaultBaseURL`). Trailing slashes are dropped. |
+
+A variable is read from `Options.Env` first (an empty value falls through), then
+from `Options.Getenv`, or the process environment when that is nil. An empty
+value is unset. The provider reads these two variables and no other: no
+`ANTHROPIC_*` or `OLLAMA_*` value reaches a request, and the SDK's own reads of
+`OPENROUTER_HTTP_REFERER` and `OPENROUTER_X_TITLE` are switched off. Every
+request is a `POST` to `<base>/chat/completions`, to that host only.
+
+| Field | Meaning |
+|---|---|
+| `Env` | `map[string]string` holding explicit values for the two variables. |
+| `Getenv` | Injectable lookup; nil means the process environment. |
+| `HTTPClient` | Sends the requests. Nil means a client with no overall timeout, so only the caller's context cuts a long stream. |
+| `MaxRetries` | `*int`; nil means `openrouter.DefaultMaxRetries` (2); a negative value means none. |
+| `Now` | Injectable clock for message timestamps and for a `Retry-After` given as a date. |
+| `Warnf` | Receives warnings; nil discards them. |
+
+`openrouter.API` is `"openrouter-chat"`, the api string of the catalog's
+`openrouter` vendor.
+
+What the provider sends:
+
+- `model` is `Model.ID` as written, `stream` is true and
+  `stream_options.include_usage` is true, so the response reports its usage.
+- The text blocks of `Request.System` are one leading `system` message, joined
+  with a blank line; none when there is no text.
+- The prefix, then the messages, in order. A user message without text and an
+  assistant message with no text, no tool calls and no reasoning to replay are
+  skipped. Each tool result is its own `tool` message, with
+  `provider.ToolResultText` as its content (`Error: ` first for an error). No
+  `cache_control` is ever sent.
+- A tool call's `id` and `function.arguments` are sent as the model produced
+  them, whichever model that was.
+- Each tool is `{"type":"function","function":{"name","description","parameters"}}`,
+  `parameters` being the tool's schema exactly as `schema.Schema` marshals it; a
+  tool with no schema gets `{"type":"object","properties":{}}`. No `strict` flag.
+- `tool_choice` is `auto`, `none` or absent. `max_completion_tokens` is the
+  request's `MaxTokens` capped at `Model.MaxOutputTokens`, else the cap, else
+  absent. `temperature` and `top_p` are sent when set, zero included, and `stop`
+  when there are stop sequences.
+- Effort follows `Model.Efforts` as the Anthropic provider reads it: none asked
+  sends no `reasoning`; with no map the effort is sent by its name; with a map, a
+  level that is absent or nil sends nothing and a present level sends its value.
+  A value that is a positive integer is `reasoning.max_tokens`; any other is
+  `reasoning.effort`. No effort is moved to another level.
+- Reasoning is replayed to the model that produced it, as `reasoning_details`
+  (each thinking block's `Signature`, a JSON array of the fragments received, in
+  block order), and never as text. A message from another model sends none.
+- Before encoding, `provider.RepairToolPairing` runs on the prefix and on the
+  history: errored and aborted assistant turns are dropped, a result is kept only
+  in the run after the turn that made the call, and an unanswered call gets an
+  error result `No result provided`. `Warnf` is told once for each part changed.
+
+What it returns: a `MessageStartEvent` before the first content event; text,
+thinking and tool-call events in the order the vendor sends them, with block
+indices from 0 in order of first appearance and a new block when the kind of
+delta changes; then the block-end events in block order and the
+`MessageEndEvent`, after the body has been read to its end. Keep-alive comments,
+empty deltas and other choices are ignored. `finish_reason` is kept in
+`RawStopReason`; `stop` is `StopReasonStop`, `length` `StopReasonLength`,
+`tool_calls` `StopReasonToolUse` and `content_filter` `StopReasonRefusal`,
+anything else `StopReasonStop`. Tool calls stay in the message whatever the
+reason. A call's arguments are the fragments concatenated byte for byte; empty
+arguments, and arguments that are not a JSON object (with a warning naming the
+call), become `{}`; a call without an id is given `call_` and random hex.
+
+The usage is netted: `CacheReadTokens` from `cached_tokens`, `CacheWriteTokens`
+from `cache_write_tokens`, `InputTokens` the prompt tokens less both (never
+below 0), `OutputTokens` from `completion_tokens`, `ReasoningTokens` from
+`reasoning_tokens` (never above the output) and `TotalTokens`. `Requests` is 1
+however many attempts a turn took, and `BilledModel` the served model when it
+differs from `Model.ID`. The cost is the response's `usage.cost`; else, when the
+model has any price, `provider.ComputeCost` over the usage; else `CostUSD` stays
+0 with its presence bit clear, so an unpriced response is told from a free one.
+A response with no usage leaves it unreported. A count of 0 for the prompt,
+completion or total is not marked reported, because the SDK cannot tell it from
+a missing one.
+
+Errors and retries:
+
+| Failure | Result |
+|---|---|
+| HTTP 429 or 5xx, or an error object or `finish_reason: "error"` inside the stream with such a code before any content | Retried up to `MaxRetries` times. |
+| HTTP 401 or 403 | Not retried. A `*openrouter.StatusError`, text `openrouter: HTTP 401: <message> (check OPENROUTER_API_KEY)`. |
+| Any other non-2xx | Not retried. `*openrouter.StatusError`, text `openrouter: HTTP <code>: <message>`. |
+| An error inside the stream after content, or with another code | Not retried. `*openrouter.StatusError`, text `openrouter: error <code> in stream: <message>`. |
+| A body that ends without a `finish_reason` | `openrouter.ErrStreamTruncated`, `openrouter: stream ended before finish_reason`. |
+| No HTTP response | Not retried. `openrouter: <error>`. |
+| The caller's context cancelled, in the request, in the stream or in a wait | `StopReasonAborted`, `ErrorMessage` `Request was aborted`, `Err` wrapping `core.ErrAborted`. |
+
+The message is the vendor's `error.message`, else the first line of a body that
+is not JSON, else the status text. A failed turn's message has `StopReasonError`,
+the text and thinking streamed so far and never a tool call (a Chat Completions
+tool call is not complete before its `finish_reason`), and the usage that
+arrived. It ends with a terminal `ErrorEvent`, then the `MessageEndEvent`.
+
+Between attempts the provider waits for the response's `Retry-After` when it is
+0 to 60 seconds, as seconds or an HTTP date, and otherwise 0.5 s doubling for
+each retry to 8 s with up to 25% added. A discarded attempt emits no event. The
+SDK's own retries are off. No error text, event, `ErrorMessage` or warning
+holds the API key: every occurrence, and its URL-escaped form, is replaced by
+`[redacted]`.
+
 ## Model catalog
 
 The embedded `catalog/catalog.json` (version `2026-10-21`, schema version 1)
