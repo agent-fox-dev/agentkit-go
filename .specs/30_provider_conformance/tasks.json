@@ -223,7 +223,7 @@
       "done_when": [
         "no case is weakened for one provider; a provider mismatch is fixed or recorded as an erratum"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {

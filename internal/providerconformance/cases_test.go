@@ -9,6 +9,9 @@ var conformanceCases = []conformanceCase{
 	toolCallCase,
 	toolCallStopCase,
 	thinkingCase,
+	cutOffCase,
+	errorStatusCase,
+	errorInStreamCase,
 }
 
 // TestProviderConformance runs every case against every provider as a subtest
