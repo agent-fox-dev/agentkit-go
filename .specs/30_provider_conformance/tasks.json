@@ -304,7 +304,7 @@
       "done_when": [
         "TestLive reports SKIP under -short and without AGENTKIT_LIVE=1, with no request to any service"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {

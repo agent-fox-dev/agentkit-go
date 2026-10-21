@@ -31,15 +31,23 @@ var (
 
 // testEvent is a line of go test -json.
 type testEvent struct {
-	Action string
-	Test   string
-	Output string
+	Action  string
+	Test    string
+	Output  string
+	Elapsed float64
 }
 
 // goTest runs go test in this package with the arguments and env added to the
-// process environment, and returns the events it printed. It skips the calling
-// test when it is itself such a run, or when go is not on PATH.
+// process environment, and returns the events it printed.
 func goTest(t *testing.T, env []string, args ...string) []testEvent {
+	t.Helper()
+	return goTestIn(t, append(os.Environ(), env...), args...)
+}
+
+// goTestIn runs go test in this package with the arguments and exactly the
+// environment given, and returns the events it printed. It skips the calling
+// test when it is itself such a run, or when go is not on PATH.
+func goTestIn(t *testing.T, environ []string, args ...string) []testEvent {
 	t.Helper()
 	if os.Getenv(childEnv) != "" {
 		t.Skip("this is a go test run started by another test of the package")
@@ -49,7 +57,7 @@ func goTest(t *testing.T, env []string, args ...string) []testEvent {
 		t.Skip("go is not on PATH")
 	}
 	cmd := exec.Command(goBin, append([]string{"test", "-count=1", "-json"}, args...)...)
-	cmd.Env = append(append(os.Environ(), childEnv+"=1"), env...)
+	cmd.Env = append(slices.Clone(environ), childEnv+"=1")
 	out, err := cmd.Output()
 	var stderr []byte
 	if ee, ok := err.(*exec.ExitError); ok {

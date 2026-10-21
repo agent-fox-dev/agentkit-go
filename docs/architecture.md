@@ -86,7 +86,7 @@ only" exists for tests: it holds only test files, or only test files import it.
 | `internal/policy` (tests only) | none | |
 | `internal/testkit` (tests only) | `core`, `schema` | |
 | `internal/toolconformance` (tests only) | `core`, `schema` | |
-| `internal/providerconformance` (tests only) | `.` (root, `agentkit`), `catalog`, `core`, `internal/testkit`, `provider`, `provider/{anthropic,faux,ollama,openrouter}` | |
+| `internal/providerconformance` (tests only) | `.` (root, `agentkit`), `catalog`, `core`, `internal/testkit`, `provider`, `provider/{anthropic,faux,ollama,openrouter}`, `tools`, `workspace` | |
 | `core` | `schema` | |
 | `catalog` | `core` | |
 | `guard` | `core` | |
@@ -195,7 +195,7 @@ What follows from it:
 | `internal/policy` | Tests only: the build gates and the dependency allowlist. |
 | `internal/testkit` | Shared test helpers. |
 | `internal/toolconformance` | Tests only: the spec 06 conformance case table, run against `tools.For` and against sandbox proxy tools. |
-| `internal/providerconformance` | Tests only: the cross-provider conformance suite, which runs the same logical turns through the `anthropic`, `openrouter` and `ollama` providers (below). Its only non-test file is `doc.go`. |
+| `internal/providerconformance` | Tests only: the cross-provider conformance suite, which runs the same logical turns through the `anthropic`, `openrouter` and `ollama` providers, and the opt-in live smoke tests of the three (below). Its only non-test file is `doc.go`. |
 | `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `CheckSpec`, `LocalDir`, `Tar`/`TarOut`, `LandlockInfo`, `AgentArgs`, the protocol version, `MaxMessageBytes` and the errors (below). |
 | `sandbox/internal/sandboxpb` | The `agentkit.sandbox.v1` protocols, the agent's (`sandbox.proto`) and the gateway's (`gateway.proto`), and their checked-in generated code; `make proto` regenerates both. |
 | `sandbox/internal/agent` | The agent service: runs `tools.For` over one workspace with an explicit environment. |
@@ -1139,6 +1139,16 @@ anything is made) and its agent reports ABI 0 with the note
   keeps the tool calls it salvaged from a cut-off stream, where OpenRouter and
   Ollama drop them (the loop runs neither), and an in-stream error need only hold
   the vendor's message.
+- The same package holds the live smoke tests, `TestLive`: one subtest for each
+  provider, which runs one real tool loop on the `STANDARD` tier against the
+  provider's live service. The agent has the built-in `read_file` tool alone and
+  is asked to read a file holding a random word and to answer with it, within 6
+  turns, $0.50 and 10 minutes. `TestLive` skips under `-short` and unless
+  `AGENTKIT_LIVE` is `1`, so `make check`, `make check-release` and a plain
+  `go test` make no live request; `make provider-live-test` runs it. A subtest
+  skips, naming what is missing, unless its provider is ready: credentials that
+  `anthropic.Resolve` accepts, `OPENROUTER_API_KEY`, or an Ollama server at its
+  host that has the tier's model. `docs/configuration.md` has the details.
 
 Run the fast loop with `make check` (fmt, vet, lint, `go test -short` for every module:
 the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `mcpserve`,

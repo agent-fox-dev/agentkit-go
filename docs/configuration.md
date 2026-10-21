@@ -357,7 +357,7 @@ skips, naming what is missing, unless:
 
 | Provider | Prerequisites |
 |---|---|
-| `anthropic` | `anthropic.Resolve(anthropic.OSEnv{})` succeeds: the direct API, Vertex AI or Bedrock, whichever the process environment selects. The skip message is `Resolve`'s error. |
+| `anthropic` | `anthropic.Resolve(anthropic.OSEnv{})` succeeds: the direct API, Vertex AI or Bedrock, whichever the process environment selects. The skip message holds `Resolve`'s error. |
 | `openrouter` | `OPENROUTER_API_KEY` is set. |
 | `ollama` | `ollama.New` resolves a host (`OLLAMA_HOST`, else the default), `GET <host>/api/tags` answers 200 within 2 seconds, and it lists the `STANDARD` tier's model. The skip message names the host and `ollama serve`, or `ollama pull <model>`. |
 
