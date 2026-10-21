@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/OpenRouterTeam/go-sdk/models/components"
@@ -109,8 +110,10 @@ func (d *decodeState) open(kind blockKind) *block {
 	return b
 }
 
-// chunk decodes one chunk of the stream.
-func (d *decodeState) chunk(c components.ChatStreamChunk) {
+// chunk decodes one chunk of the stream. It returns the error the chunk reports
+// when it is an in-stream error: an error object, or a choice that finished
+// with "error".
+func (d *decodeState) chunk(c components.ChatStreamChunk) *StatusError {
 	if c.ID != "" {
 		d.responseID = c.ID
 	}
@@ -120,6 +123,7 @@ func (d *decodeState) chunk(c components.ChatStreamChunk) {
 	if c.Usage != nil {
 		d.usage = c.Usage
 	}
+	finishedWithError := false
 	for _, choice := range c.Choices {
 		if choice.Index != 0 {
 			continue
@@ -132,10 +136,22 @@ func (d *decodeState) chunk(c components.ChatStreamChunk) {
 			d.toolFragment(tc)
 		}
 		if choice.FinishReason != nil {
+			if *choice.FinishReason == components.ChatFinishReasonEnumError {
+				finishedWithError = true
+				continue
+			}
 			d.sawFinish = true
 			d.finishRaw = string(*choice.FinishReason)
 		}
 	}
+	switch {
+	case c.Error != nil:
+		return &StatusError{Code: c.Error.Code,
+			Text: fmt.Sprintf("openrouter: error %d in stream: %s", c.Error.Code, c.Error.Message)}
+	case finishedWithError:
+		return &StatusError{Text: `openrouter: error in stream: finish_reason "error"`}
+	}
+	return nil
 }
 
 // text adds a content delta to the open text block, opening one when the last
@@ -344,6 +360,7 @@ func (d *decodeState) fail(text string, err error) {
 	}
 	final.ResponseID = d.responseID
 	final.ResponseModel = d.responseModel
+	final.Usage = d.finalUsage()
 	if text == abortText {
 		final.StopReason = core.StopReasonAborted
 		final.ErrorMessage = text

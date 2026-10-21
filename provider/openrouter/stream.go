@@ -14,9 +14,6 @@ import (
 // abortText is the ErrorMessage of a turn the caller cancelled.
 const abortText = "Request was aborted"
 
-// errTruncated is a body that ended before any choice carried a finish_reason.
-var errTruncated = errors.New("openrouter: stream ended before finish_reason")
-
 // Stream sends the request and returns the turn's events. A context that is
 // already done is refused with its error and no channel; every failure after
 // that is encoded in the stream.
@@ -54,14 +51,17 @@ func (c *client) run(ctx context.Context, s *core.EventStream, req core.Request,
 	events := res.EventStream
 	defer events.Close()
 	for events.Next() {
-		d.chunk(events.Value().Data)
+		if serr := d.chunk(events.Value().Data); serr != nil {
+			d.fail(serr.Text, serr)
+			return
+		}
 	}
 	if err := events.Err(); err != nil {
 		d.fail(failureText(ctx, err), err)
 		return
 	}
 	if !d.sawFinish {
-		d.fail(failureText(ctx, errTruncated), errTruncated)
+		d.fail(failureText(ctx, ErrStreamTruncated), ErrStreamTruncated)
 		return
 	}
 	d.finish()
@@ -73,7 +73,7 @@ func failureText(caller context.Context, err error) string {
 	if caller.Err() != nil {
 		return abortText
 	}
-	if errors.Is(err, errTruncated) {
+	if errors.Is(err, ErrStreamTruncated) {
 		return err.Error()
 	}
 	return "openrouter: " + err.Error()
