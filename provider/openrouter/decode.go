@@ -59,6 +59,8 @@ type decodeState struct {
 	s     *core.EventStream
 	warnf func(format string, args ...any)
 
+	// model is the model the turn asked for; the usage is priced against it.
+	model core.Model
 	// partial is the message as it starts: the model, the effort and the time.
 	partial core.AssistantMessage
 	started bool // the MessageStartEvent is out
@@ -68,6 +70,7 @@ type decodeState struct {
 	last   *block           // the block the next delta of the same kind extends
 	ids    map[string]bool  // tool-call ids used in the turn
 
+	usage         *components.ChatUsage // the last usage the response reported
 	finishRaw     string
 	sawFinish     bool
 	responseID    string
@@ -78,6 +81,7 @@ func newDecodeState(s *core.EventStream, c *client, req core.Request) *decodeSta
 	return &decodeState{
 		s:     s,
 		warnf: c.warnf,
+		model: c.model,
 		partial: core.AssistantMessage{
 			Model:     c.model.ID,
 			Effort:    req.Effort,
@@ -112,6 +116,9 @@ func (d *decodeState) chunk(c components.ChatStreamChunk) {
 	}
 	if c.Model != "" {
 		d.responseModel = c.Model
+	}
+	if c.Usage != nil {
+		d.usage = c.Usage
 	}
 	for _, choice := range c.Choices {
 		if choice.Index != 0 {
@@ -316,6 +323,7 @@ func (d *decodeState) finish() {
 	final.RawStopReason = d.finishRaw
 	final.ResponseID = d.responseID
 	final.ResponseModel = d.responseModel
+	final.Usage = d.finalUsage()
 	d.s.Push(core.MessageEndEvent{Message: final})
 	d.s.End(core.StreamResult{Message: &final})
 }

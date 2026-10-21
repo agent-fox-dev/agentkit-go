@@ -79,3 +79,17 @@ the provider does:
   provider always passes its own client, and when `Options.HTTPClient` is nil
   that client has no timeout (`provider/openrouter/client.go:59`); only the
   caller's context ends a request.
+
+## The SDK cannot tell an absent token count from a zero (27-REQ-8.1)
+
+27-REQ-8.1 sets a presence bit for exactly the fields the response reported.
+The SDK types `prompt_tokens`, `completion_tokens` and `total_tokens` as plain
+integers (`models/components/chatusage.go:93`, `:103`, `:109`), so a usage
+object that leaves one out decodes the same as one that reports 0. The provider
+marks those three reported when they are not zero (`provider/openrouter/usage.go:44`,
+`:52`, and the input when the prompt or a cache counter is reported). The cache
+read, cache write and reasoning counts and the cost are optional in the SDK
+and are marked exactly (`TestUsageIsNetted_TS27_44` checks a response that
+reports only the prompt and completion counts). A usage object whose three
+counts are all zero is therefore unreported and gets no cost unless the response
+reported one.
