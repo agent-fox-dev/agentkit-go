@@ -105,7 +105,7 @@
       "done_when": [
         "the fake files import no vendor SDK, no provider test helper and only standard library packages"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
