@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"math/rand"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,7 +19,11 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/prompt"
+	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
+	"github.com/agent-fox-dev/agentkit-go/provider/ollama"
+	"github.com/agent-fox-dev/agentkit-go/provider/openrouter"
 )
 
 // envRecorder is a hermetic Getenv: it answers from vars, never from the
@@ -310,6 +316,390 @@ func TestExamplesFailFromNewWithoutACredential_TS29_42(t *testing.T) {
 		}
 		if !strings.Contains(string(out), "ANTHROPIC_API_KEY") {
 			t.Errorf("%s printed %q, want a message naming ANTHROPIC_API_KEY", e, out)
+		}
+	}
+}
+
+// ------------------------------------------------------------ client building
+
+// authOf is the Authorization header of the last request a server got.
+func authOf(t *testing.T, s *providerServer) string {
+	t.Helper()
+	reqs := s.requests()
+	if len(reqs) == 0 {
+		t.Fatal("the server received no request")
+	}
+	return reqs[len(reqs)-1].Header.Get("Authorization")
+}
+
+// TS-29-3: a variable is read from a non-empty Env value first, then from
+// Getenv, and from the process environment only when there is no Getenv; an
+// empty value is unset at every step.
+func TestVariablesAreReadEnvThenGetenvThenProcess_TS29_3(t *testing.T) {
+	srv := openRouterServer(t, "")
+	t.Setenv("OPENROUTER_API_KEY", "proc")
+	t.Setenv("OPENROUTER_BASE_URL", srv.URL())
+	base := map[string]string{"OPENROUTER_BASE_URL": srv.URL()}
+	with := func(extra map[string]string) map[string]string {
+		m := map[string]string{}
+		for k, v := range base {
+			m[k] = v
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+	run := func(cfg Config) string {
+		t.Helper()
+		cfg.Provider, cfg.Model = "openrouter", "STANDARD"
+		r, err := Resolve(cfg)
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		streamOnce(t, r.Client)
+		return authOf(t, srv)
+	}
+
+	// An empty Env value falls through to Getenv.
+	env := &envRecorder{vars: map[string]string{"OPENROUTER_API_KEY": "k"}}
+	if got := run(Config{Env: with(map[string]string{"OPENROUTER_API_KEY": ""}), Getenv: env.Getenv}); got != "Bearer k" {
+		t.Errorf("an empty Env value: Authorization = %q, want Bearer k from Getenv", got)
+	}
+	// A non-empty Env value wins, and Getenv is not asked for the key.
+	env = &envRecorder{vars: map[string]string{"OPENROUTER_API_KEY": "k"}}
+	if got := run(Config{Env: with(map[string]string{"OPENROUTER_API_KEY": "e"}), Getenv: env.Getenv}); got != "Bearer e" {
+		t.Errorf("a non-empty Env value: Authorization = %q, want Bearer e", got)
+	}
+	if slices.Contains(env.asked(), "OPENROUTER_API_KEY") {
+		t.Errorf("Getenv was asked for the key %v although Env held one", env.asked())
+	}
+	// With a Getenv, the process environment is never read, even when Getenv
+	// has nothing.
+	_, err := Resolve(Config{Provider: "openrouter", Model: "STANDARD", Env: base, Getenv: noEnv})
+	if !errors.Is(err, openrouter.ErrNoAPIKey) {
+		t.Errorf("Getenv set and empty: error = %v, want openrouter.ErrNoAPIKey although the process holds a key", err)
+	}
+	// With no Getenv, the process environment is read.
+	if got := run(Config{}); got != "Bearer proc" {
+		t.Errorf("no Env and no Getenv: Authorization = %q, want Bearer proc from the process", got)
+	}
+}
+
+// TS-29-3, for the Anthropic provider, whose variables Resolve checks through an
+// adapter of its own (lookupEnv): the same order, with an empty value unset at
+// every step.
+func TestAnthropicLookupOrderIsTheSame_TS29_3(t *testing.T) {
+	// A machine that selects a cloud deployment or holds another credential must
+	// not change what these cases see.
+	for _, name := range []string{"CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "proc")
+	resolves := func(cfg Config) error {
+		cfg.Provider, cfg.Model = "anthropic", "STANDARD"
+		_, err := Resolve(cfg)
+		return err
+	}
+	key := map[string]string{"ANTHROPIC_API_KEY": "k"}
+	get := func(vars map[string]string) func(string) string {
+		return (&envRecorder{vars: vars}).Getenv
+	}
+
+	if err := resolves(Config{Env: map[string]string{"ANTHROPIC_API_KEY": "e"}, Getenv: noEnv}); err != nil {
+		t.Errorf("a non-empty Env value: %v, want the credential found", err)
+	}
+	if err := resolves(Config{Env: map[string]string{"ANTHROPIC_API_KEY": ""}, Getenv: get(key)}); err != nil {
+		t.Errorf("an empty Env value over a Getenv that has the key: %v, want it to fall through", err)
+	}
+	if err := resolves(Config{Getenv: get(key)}); err != nil {
+		t.Errorf("a key from Getenv: %v, want the credential found", err)
+	}
+	if err := resolves(Config{Getenv: noEnv}); !errors.Is(err, anthropic.ErrNoCredentials) {
+		t.Errorf("Getenv set and empty: %v, want anthropic.ErrNoCredentials although the process holds a key", err)
+	}
+	if err := resolves(Config{Env: map[string]string{"ANTHROPIC_API_KEY": ""}, Getenv: noEnv}); !errors.Is(err, anthropic.ErrNoCredentials) {
+		t.Errorf("an empty Env value and an empty Getenv: %v, want anthropic.ErrNoCredentials", err)
+	}
+	if err := resolves(Config{}); err != nil {
+		t.Errorf("no Env and no Getenv: %v, want the process environment's key found", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	if err := resolves(Config{}); !errors.Is(err, anthropic.ErrNoCredentials) {
+		t.Errorf("an empty value in the process environment: %v, want anthropic.ErrNoCredentials", err)
+	}
+}
+
+// distinct reports whether a and b are different clients: two pointers that are
+// not the same one.
+func distinct(a, b core.ProviderClient) bool {
+	if reflect.ValueOf(a).Kind() == reflect.Pointer && reflect.ValueOf(b).Kind() == reflect.Pointer {
+		return a != b
+	}
+	return !reflect.DeepEqual(a, b)
+}
+
+// TS-29-8: Resolve sends no request and keeps nothing between calls: each call
+// builds a new client, from the variables it was given.
+func TestResolveSendsNothingAndKeepsNoState_TS29_8(t *testing.T) {
+	anth, or, ol := anthropicServer(t), openRouterServer(t, ""), ollamaServer(t)
+	env := map[string]string{
+		"ANTHROPIC_API_KEY": "a", "ANTHROPIC_BASE_URL": anth.URL(),
+		"OPENROUTER_API_KEY": "o", "OPENROUTER_BASE_URL": or.URL(), "OLLAMA_HOST": ol.URL(),
+	}
+	for _, p := range []string{"anthropic", "openrouter", "ollama"} {
+		cfg := Config{Provider: p, Model: "STANDARD", Env: env, Getenv: noEnv}
+		var clients []core.ProviderClient
+		for range 3 {
+			r, err := Resolve(cfg)
+			if err != nil || r.Client == nil {
+				t.Fatalf("Resolve(%s) = %v, %v", p, r.Client, err)
+			}
+			clients = append(clients, r.Client)
+		}
+		for i := range clients {
+			for j := i + 1; j < len(clients); j++ {
+				if !distinct(clients[i], clients[j]) {
+					t.Errorf("%s: Resolve calls %d and %d returned the same client", p, i, j)
+				}
+			}
+		}
+	}
+	for name, s := range map[string]*providerServer{"anthropic": anth, "openrouter": or, "ollama": ol} {
+		if n := s.count(); n != 0 {
+			t.Errorf("the %s server received %d requests from Resolve, want none", name, n)
+		}
+	}
+
+	// A second call sees only the variables it is given, not the first call's.
+	other := openRouterServer(t, "")
+	if _, err := Resolve(Config{Provider: "openrouter", Model: "STANDARD", Getenv: noEnv,
+		Env: map[string]string{"OPENROUTER_API_KEY": "o", "OPENROUTER_BASE_URL": or.URL()}}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Resolve(Config{Provider: "openrouter", Model: "STANDARD", Getenv: noEnv,
+		Env: map[string]string{"OPENROUTER_API_KEY": "o", "OPENROUTER_BASE_URL": other.URL()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamOnce(t, second.Client)
+	if other.count() != 1 || or.count() != 0 {
+		t.Errorf("the second client sent %d requests to its server and %d to the first's, want 1 and 0", other.count(), or.count())
+	}
+}
+
+// TS-29-9: the Anthropic provider is built from Env and Getenv, not from a
+// fixed SDK client: it reads its variables again on every request.
+func TestAnthropicResolvesPerRequestFromEnv_TS29_9(t *testing.T) {
+	srv := anthropicServer(t)
+	env := &envRecorder{vars: map[string]string{"ANTHROPIC_API_KEY": "k1", "ANTHROPIC_BASE_URL": srv.URL()}}
+	r, err := Resolve(Config{Provider: "anthropic", Model: "claude-opus-5-5", Getenv: env.Getenv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamOnce(t, r.Client)
+	env.mu.Lock()
+	env.vars["ANTHROPIC_API_KEY"] = "k2"
+	env.mu.Unlock()
+	streamOnce(t, r.Client)
+	reqs := srv.requests()
+	if len(reqs) != 2 || reqs[0].Header.Get("X-Api-Key") != "k1" || reqs[1].Header.Get("X-Api-Key") != "k2" {
+		var keys []string
+		for _, q := range reqs {
+			keys = append(keys, q.Header.Get("X-Api-Key"))
+		}
+		t.Errorf("the requests carried keys %v, want [k1 k2]: the key is read again on each request", keys)
+	}
+}
+
+// TS-29-10: a missing Anthropic credential, and a Vertex selection without a
+// project, are errors of Resolve: the error anthropic.Resolve returns over the
+// same lookup.
+func TestAnthropicCredentialFailuresSurfaceFromResolve_TS29_10(t *testing.T) {
+	cases := []struct {
+		name string
+		vars map[string]string
+		want func(error) bool
+		need []string
+	}{
+		{"no credential", map[string]string{}, func(err error) bool { return errors.Is(err, anthropic.ErrNoCredentials) }, nil},
+		{"Vertex without a project", map[string]string{"CLAUDE_CODE_USE_VERTEX": "1"}, func(error) bool { return true },
+			[]string{"ANTHROPIC_VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT"}},
+	}
+	for _, c := range cases {
+		env := &envRecorder{vars: c.vars}
+		r, err := Resolve(Config{Provider: "anthropic", Model: "STANDARD", Getenv: env.Getenv})
+		_, _, want := anthropic.Resolve(anthropic.MapEnv(c.vars))
+		if err == nil || want == nil || err.Error() != want.Error() || !c.want(err) {
+			t.Errorf("%s: Resolve error = %v, want what anthropic.Resolve returns: %v", c.name, err, want)
+		}
+		for _, name := range c.need {
+			if err != nil && !strings.Contains(err.Error(), name) {
+				t.Errorf("%s: error %q does not name %s", c.name, err, name)
+			}
+		}
+		if r.Client != nil || r.Provider != "" {
+			t.Errorf("%s: Resolution = %+v, want the zero value", c.name, r)
+		}
+	}
+}
+
+// TS-29-11: the OpenRouter client is built from Env and Getenv and sends to the
+// base URL they name.
+func TestOpenRouterClientIsBuiltFromEnvAndGetenv_TS29_11(t *testing.T) {
+	srv := openRouterServer(t, "")
+	env := &envRecorder{vars: map[string]string{"OPENROUTER_API_KEY": "sk-or-getenv", "OPENROUTER_BASE_URL": srv.URL()}}
+	r, err := Resolve(Config{Provider: "openrouter", Model: "STANDARD", Getenv: env.Getenv})
+	if err != nil || r.Client == nil {
+		t.Fatalf("Resolve = %v, %v", r.Client, err)
+	}
+	streamOnce(t, r.Client)
+	reqs := srv.requests()
+	if len(reqs) != 1 || reqs[0].Path != "/chat/completions" || reqs[0].Header.Get("Authorization") != "Bearer sk-or-getenv" {
+		t.Errorf("requests = %+v, want one POST /chat/completions with the key from Getenv", reqs)
+	}
+}
+
+// TS-29-12: OpenRouter's constructor errors come back from Resolve as they are.
+func TestOpenRouterConstructorErrorsAreReturnedUnchanged_TS29_12(t *testing.T) {
+	sel, err := catalog.Select("openrouter", "STANDARD", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		env  map[string]string
+		is   error
+	}{
+		{"no key", map[string]string{}, openrouter.ErrNoAPIKey},
+		{"a base URL that is not one", map[string]string{"OPENROUTER_API_KEY": "k", "OPENROUTER_BASE_URL": "not a url"}, nil},
+	} {
+		_, want := openrouter.New(sel.Model, openrouter.Options{Env: c.env, Getenv: noEnv})
+		r, got := Resolve(Config{Provider: "openrouter", Model: "STANDARD", Env: c.env, Getenv: noEnv})
+		if want == nil || got == nil || got.Error() != want.Error() || (c.is != nil && !errors.Is(got, c.is)) {
+			t.Errorf("%s: Resolve error = %v, want openrouter.New's %v", c.name, got, want)
+		}
+		if r.Client != nil || r.Provider != "" {
+			t.Errorf("%s: Resolution = %+v, want the zero value", c.name, r)
+		}
+	}
+}
+
+// TS-29-13: Ollama needs no credential, and its constructor's error comes back
+// as it is.
+func TestOllamaNeedsNoCredential_TS29_13(t *testing.T) {
+	r, err := Resolve(Config{Provider: "ollama", Model: "STANDARD", Getenv: noEnv})
+	if err != nil || r.Client == nil || r.Model.ID != "qwen3.8:27b" {
+		t.Fatalf("Resolve = %+v, %v; want a client for qwen3.8:27b and no error", r, err)
+	}
+	env := map[string]string{"OLLAMA_HOST": "ftp://example.com"}
+	sel, err := catalog.Select("ollama", "STANDARD", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, want := ollama.New(sel.Model, ollama.Options{Env: env, Getenv: noEnv})
+	r, got := Resolve(Config{Provider: "ollama", Model: "STANDARD", Env: env, Getenv: noEnv})
+	if want == nil || got == nil || got.Error() != want.Error() || !errors.Is(got, ollama.ErrInvalidHost) {
+		t.Errorf("Resolve error = %v, want ollama.New's %v", got, want)
+	}
+	if r.Client != nil || r.Provider != "" {
+		t.Errorf("Resolution = %+v, want the zero value", r)
+	}
+}
+
+// TS-29-14: a given client is returned as it is and no variable is read; the
+// provider and model still choose the row and the effort.
+func TestAGivenClientIsReturnedAndNothingIsRead_TS29_14(t *testing.T) {
+	fp := faux.New()
+	env := &envRecorder{vars: allKeys}
+	r, err := Resolve(Config{Client: fp, Provider: "openrouter", Model: "STANDARD", Effort: "LOW", Getenv: env.Getenv})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if r.Client != core.ProviderClient(fp) {
+		t.Errorf("Resolution.Client = %v, want the given client", r.Client)
+	}
+	if got := env.asked(); len(got) != 0 {
+		t.Errorf("Getenv was asked for %v, want nothing", got)
+	}
+	if r.Model.ID != "qwen/qwen3.8-flash" || r.Effort != EffortLow {
+		t.Errorf("model %q effort %q, want qwen/qwen3.8-flash and low", r.Model.ID, r.Effort)
+	}
+}
+
+// TS-29-15: a host that cannot be reached is found by the first request, not by
+// Resolve or New.
+func TestAnUnreachableHostIsFoundByTheFirstRequest_TS29_15(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Provider: "openrouter", Model: "STANDARD", Getenv: noEnv,
+		Env: map[string]string{"OPENROUTER_API_KEY": "k", "OPENROUTER_BASE_URL": "http://" + addr}}
+	if _, err := Resolve(cfg); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := a.Run(ctx, "hi")
+	if err == nil || res.StopReason != core.RunStopError || !strings.Contains(err.Error(), addr) {
+		t.Errorf("Run = %v (stop %q), want an error carrying the transport error for %s", err, res.StopReason, addr)
+	}
+}
+
+// TS-29-39: an agent that picks Anthropic by name, or by default, sends the
+// request body a provider built directly with the same environment sends.
+func TestAnthropicByNameSendsTheSameBodyAsADirectProvider_TS29_39(t *testing.T) {
+	const model = "claude-opus-5-5"
+	row, listed := catalog.Lookup(model)
+	if !listed {
+		t.Fatalf("%s is not listed", model)
+	}
+	body := func(srv *providerServer) []byte {
+		t.Helper()
+		reqs := srv.requests()
+		if len(reqs) != 1 {
+			t.Fatalf("the server received %d requests, want 1", len(reqs))
+		}
+		return reqs[0].Body
+	}
+	vars := func(srv *providerServer) map[string]string {
+		return map[string]string{"ANTHROPIC_API_KEY": "sk-ant-test", "ANTHROPIC_BASE_URL": srv.URL()}
+	}
+
+	// The request the agent builds for a first prompt with no tools.
+	max := DefaultMaxTokens
+	req := core.Request{
+		System:    []core.ContentBlock{core.TextBlock{Text: prompt.Build("", nil)}},
+		Messages:  core.Messages{userText("hi")},
+		MaxTokens: &max,
+	}
+	directSrv := anthropicServer(t)
+	direct := anthropic.Provider(row, anthropic.Options{Env: vars(directSrv), Getenv: noEnv})
+	ch, err := direct.Stream(context.Background(), req)
+	for range core.EventStreamOf(ch, err).Events() {
+	}
+	want := body(directSrv)
+
+	for _, provider := range []string{"", "anthropic"} {
+		srv := anthropicServer(t)
+		a, err := New(Config{Provider: provider, Model: model, Env: vars(srv), Getenv: noEnv})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.Run(context.Background(), "hi"); err != nil {
+			t.Fatal(err)
+		}
+		if got := body(srv); !bytes.Equal(got, want) {
+			t.Errorf("Provider %q sent\n%s\nwant the direct provider's\n%s", provider, got, want)
 		}
 	}
 }
