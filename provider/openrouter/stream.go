@@ -24,7 +24,7 @@ func (c *client) Stream(ctx context.Context, req core.Request) (<-chan core.Stre
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	body, err := buildBody(c.model, req)
+	body, err := c.buildBody(req)
 	if err != nil {
 		return core.StreamChannel(core.ErrorStream(nil, fmt.Errorf("openrouter: building request: %w", err))), nil
 	}

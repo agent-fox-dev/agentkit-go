@@ -60,6 +60,22 @@ func toolCall(id, name, args string) core.ToolUseBlock {
 
 func ptr[T any](v T) *T { return &v }
 
+// jsonText renders a decoded JSON value as text.
+func jsonText(v any) (string, error) {
+	b, err := json.Marshal(v)
+	return string(b), err
+}
+
+// jsonUnmarshal decodes data into v, failing the test on an error.
+func jsonUnmarshal(t *testing.T, data []byte, v any) bool {
+	t.Helper()
+	if err := json.Unmarshal(data, v); err != nil {
+		t.Errorf("not JSON: %v\n%s", err, data)
+		return false
+	}
+	return true
+}
+
 // ------------------------------------------------------------------- tests
 
 // TS-27-2: a variable is read from Env, then Getenv, then the process
