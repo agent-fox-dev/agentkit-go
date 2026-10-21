@@ -195,8 +195,12 @@ func TestDeletedPackagesAbsent_TS09_1(t *testing.T) {
 	assertAbsent(t, "provider/openai", "provider/openairesponses", "provider/google", "provider/ollama",
 		"plugins", "skills", "_skills/code-review", "cmd/validate-plugins", "session", "subagent",
 		"difftest", "imagex", "compaction", "middleware", "stop")
+	// provider/repair.go and provider/repair_test.go left this list when spec 27
+	// gave package provider a new, shared tool-pairing repair under those names
+	// (docs/errata/27_openrouter_provider.md); the multi-wire repair they once
+	// held is still gone.
 	assertAbsent(t, "provider/credentials.go", "provider/credentials_test.go", "provider/salvage.go",
-		"provider/salvage_test.go", "provider/repair.go", "provider/repair_test.go",
+		"provider/salvage_test.go",
 		"provider/asymmetry_test.go", "provider/conformance_test.go", "provider/fuzz_test.go")
 }
 

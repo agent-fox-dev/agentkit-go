@@ -67,7 +67,7 @@
       "done_when": [
         "`go test ./provider/ -count=1` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
