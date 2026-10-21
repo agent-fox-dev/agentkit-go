@@ -63,7 +63,8 @@ const SchemaVersion = 1
     hazard) or as a mis-billed run, and neither is detectable from the result.
 
 const Vendor = "anthropic"
-    Vendor is the one vendor the catalog lists.
+    Vendor is the vendor Lookup resolves against. The catalog lists a vendor for
+    each of the other providers too (see Providers).
 
 
 VARIABLES

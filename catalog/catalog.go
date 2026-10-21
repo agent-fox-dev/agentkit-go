@@ -546,7 +546,8 @@ const (
 	OllamaDefaultMaxTokens         = 32_768
 )
 
-// Vendor is the one vendor the catalog lists.
+// Vendor is the vendor Lookup resolves against. The catalog lists a vendor for
+// each of the other providers too (see Providers).
 const Vendor = "anthropic"
 
 // Lookup returns the descriptor for a Claude model id, with or without the
