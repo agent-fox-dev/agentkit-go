@@ -12,7 +12,14 @@
 // not do in its head, reserve_stock mutates shared state, and submit_answer
 // ends the run.
 //
-//	AGENTKIT_MODEL=anthropic/claude-opus-5-5 go run ./examples/customtools
+// AGENTKIT_PROVIDER, AGENTKIT_MODEL and AGENTKIT_EFFORT choose what runs the
+// model: the provider (anthropic, the default, openrouter or ollama), a tier
+// (SIMPLE, STANDARD, the default, or ADVANCED) or the provider's own model id,
+// and the effort (low to max; the tier's when empty). One run on each provider:
+//
+//	ANTHROPIC_API_KEY=sk-ant-... go run ./examples/customtools
+//	AGENTKIT_PROVIDER=openrouter OPENROUTER_API_KEY=sk-or-... go run ./examples/customtools
+//	AGENTKIT_PROVIDER=ollama AGENTKIT_MODEL=SIMPLE AGENTKIT_EFFORT=high go run ./examples/customtools
 //
 // See examples/README.md for the full environment-variable table.
 package main
@@ -57,22 +64,27 @@ func run() error {
 	//    structured arguments the schema already validated.
 	var submitted answer
 
-	// 2. The model is a tier or a model id, and the agent does the rest:
-	//    New resolves it through the catalog, which supplies the context
-	//    window, output cap, pricing and how the model takes extended
+	// 2. The provider, the model and the effort are the three settings that
+	//    choose what runs the agent, and the agent does the rest: New resolves
+	//    the model, a tier or an id, through the catalog, which supplies the
+	//    context window, output cap, pricing and how the model takes extended
 	//    thinking (an id it does not list still works, with default limits
-	//    and no price), and builds the client from the environment. Nothing
-	//    is registered by import side effect. A missing key fails here, before
-	//    any request, naming the variables to set rather than a 401 that
-	//    names none of them.
+	//    and no price), and builds the client of the provider from the
+	//    environment. Nothing is registered by import side effect. An unknown
+	//    provider or effort, or a missing key, fails here, before any request,
+	//    by name or by the variable to set, rather than as a 401 that names
+	//    none of them.
 	//
 	//    A tool-using run needs an upper bound that does not depend on the
 	//    model choosing to stop. submit_answer is the *intended* ending;
 	//    MaxTurns and MaxCostUSD are what happens when the model never gets
 	//    there.
+	provider, model, effort := selection()
 	agent, err := agentkit.New(agentkit.Config{
-		Model:  modelSpec(),
-		System: "You are a parts-desk assistant. Use the tools rather than guessing part data.",
+		Provider: provider,
+		Model:    model,
+		Effort:   effort,
+		System:   "You are a parts-desk assistant. Use the tools rather than guessing part data.",
 		Toolset: agentkit.Toolset{Tools: []core.Tool{
 			lookupPartTool(),
 			convertUnitsTool(),
@@ -138,7 +150,7 @@ func run() error {
 	} else {
 		fmt.Printf("run ended without submit_answer (%s)\n", res.StopReason)
 	}
-	fmt.Fprintf(os.Stderr, "\n[%s · %d turns · $%.5f]\n", agent.Resolution().Model.ID, res.TurnCount, res.Usage.CostUSD)
+	fmt.Fprintf(os.Stderr, "\n%s\n", summary(agent.Resolution(), res))
 	return nil
 }
 
@@ -484,10 +496,33 @@ func compact(raw json.RawMessage) string {
 	return s
 }
 
-// modelSpec is "vendor/model-id", or a bare id when it is unambiguous.
-func modelSpec() string {
-	if s := os.Getenv("AGENTKIT_MODEL"); s != "" {
-		return s
+// selection reads the three settings that choose what runs the agent, and
+// nothing else decides it. They are the library's own: Config.Provider (empty is
+// anthropic), Config.Model (a tier or a model id, STANDARD here when unset) and
+// Config.Effort (empty is the tier's). They are passed on unchanged, so a wrong
+// value is New's error and not this program's. Each example that calls a model
+// repeats these lines rather than sharing them.
+func selection() (provider, model string, effort agentkit.Effort) {
+	model = os.Getenv("AGENTKIT_MODEL")
+	if model == "" {
+		model = "STANDARD"
 	}
-	return "anthropic/claude-sonnet-5"
+	return os.Getenv("AGENTKIT_PROVIDER"), model, agentkit.Effort(os.Getenv("AGENTKIT_EFFORT"))
+}
+
+// summary is the closing line: what ran, from Agent.Resolution, and what the run
+// used. A run whose cost could not be known says so, instead of printing a figure
+// that is not a price.
+func summary(r agentkit.Resolution, res core.RunResult) string {
+	u := res.Usage
+	cost := fmt.Sprintf("$%.5f", u.CostUSD)
+	if u.Unpriced {
+		cost = "cost unknown"
+	}
+	effort := string(r.Effort)
+	if effort == "" {
+		effort = "none"
+	}
+	return fmt.Sprintf("[%s · %s · effort %s · %d turns · stop %s · in %d / out %d tokens · %s]",
+		r.Provider, r.Model.ID, effort, res.TurnCount, res.StopReason, u.InputTokens, u.OutputTokens, cost)
 }

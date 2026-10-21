@@ -64,7 +64,7 @@
       "done_when": [
         "`make check` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -105,7 +105,7 @@
       "done_when": [
         "the fake files import no vendor SDK, no provider test helper and only standard library packages"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -144,7 +144,7 @@
       "done_when": [
         "no model id literal appears in any file of internal/providerconformance"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -186,7 +186,7 @@
       "done_when": [
         "each failing case is resolved by fixing the provider or recording an erratum for its spec, never by weakening the case for one provider"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -223,7 +223,7 @@
       "done_when": [
         "no case is weakened for one provider; a provider mismatch is fixed or recorded as an erratum"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -258,7 +258,7 @@
       "done_when": [
         "`go test -short ./internal/providerconformance` reports 21 passing conformance subtests"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -304,7 +304,7 @@
       "done_when": [
         "TestLive reports SKIP under -short and without AGENTKIT_LIVE=1, with no request to any service"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -340,7 +340,7 @@
       "done_when": [
         "`go test ./examples/codingagent` passes without network or credentials"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -376,7 +376,7 @@
       "done_when": [
         "`go test ./examples/customtools` passes without network or credentials"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -428,7 +428,7 @@
         "the README quick start has no anthropic.Resolve and no SDK import",
         "`make check` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -464,7 +464,7 @@
         "`make check` passes",
         "every execution path 30-PATH-1 to 30-PATH-4 is live in production code"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     }
   ]

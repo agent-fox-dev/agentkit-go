@@ -13,17 +13,39 @@ model.
 
 ## Run it
 
+Three environment variables choose what runs the model, and the program reads
+them itself and passes them to `agentkit.Config` unchanged. Each provider needs
+only its own credential or server (the variables are in
+[`examples/README.md`](../README.md#configuring-an-application)):
+
 ```bash
+# Anthropic, the default provider
 export ANTHROPIC_API_KEY=sk-ant-...
 go run ./examples/mcp "which topics do you know, and what do you say about qualified names?"
-go run ./examples/mcp --external "npx -y @modelcontextprotocol/server-github"   # also attach a real server
+
+# OpenRouter
+export OPENROUTER_API_KEY=sk-or-...
+AGENTKIT_PROVIDER=openrouter go run ./examples/mcp "which topics do you know?"
+
+# Ollama, on a server that has pulled the tier's model (ollama pull <model>)
+AGENTKIT_PROVIDER=ollama go run ./examples/mcp "which topics do you know?"
+
+# A tier other than STANDARD, an effort of your own, and also a real server
+AGENTKIT_PROVIDER=ollama AGENTKIT_MODEL=SIMPLE AGENTKIT_EFFORT=high \
+  go run ./examples/mcp --external "npx -y @modelcontextprotocol/server-github"
 ```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGENTKIT_PROVIDER` | empty, which is `anthropic` | `anthropic`, `openrouter` or `ollama` (`Config.Provider`). |
+| `AGENTKIT_MODEL` | `STANDARD` | A tier (`SIMPLE`, `STANDARD`, `ADVANCED`) or the provider's own model id (`Config.Model`). |
+| `AGENTKIT_EFFORT` | empty, which is the tier's effort | `low`, `medium`, `high`, `xhigh` or `max` (`Config.Effort`). |
 
 | Flag | Meaning |
 |---|---|
 | `--external "<cmd> <args>"` | Also spawn and connect a stdio MCP server (named `github`, passed `GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN}`). |
 
-Everything after the flags is the prompt. `AGENTKIT_MODEL` overrides the model.
+Everything after the flags is the prompt.
 
 ## What you'll see
 
@@ -38,8 +60,22 @@ shadowing refused: mcp: tool name collides with an existing tool: server "helper
 error: anthropic: missing credentials: set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_TOKEN, or select Vertex AI (CLAUDE_CODE_USE_VERTEX=1) or Bedrock (CLAUDE_CODE_USE_BEDROCK=1)
 ```
 
-With a credential the last line is replaced by the streamed answer, one
-`[calling …]` / `[<tool>: ok, <n>ms]` pair per tool call, and a usage summary.
+A configuration that cannot run ends the same way, before any model request and
+with exit status 1: `error: openrouter: OPENROUTER_API_KEY is not set (set it in the environment or in Options.Env)`, or
+`error: agentkit: unknown provider "openai"; known providers are anthropic, openrouter and ollama`.
+
+With a working configuration the last line is replaced by the streamed answer,
+one `[calling …]` / `[<tool>: ok, <n>ms]` pair per tool call, and a summary of
+what ran and what it used on stderr:
+
+```
+[ollama · qwen3.8:27b · effort high · 3 turns · stop end_turn · in <n> / out <n> tokens · $0.00000]
+```
+
+It names the provider, the model id and the effort that `Agent.Resolution()`
+reports. The cost is `cost unknown` when the run's usage is flagged
+`Unpriced`: a model the catalog does not list has no price, and a zero is then
+not a cost.
 
 ## Walkthrough
 
@@ -62,7 +98,8 @@ In `clientMode`:
 5. **`smokeCall`** executes one adapted tool directly — a cheap way to prove
    the MCP side works before paying for a model turn.
 6. From there it is an ordinary agent: `agentkit.New(agentkit.Config{…})`
-   with a `Toolset` whose `Tools` hold the native *and* MCP tools, and
+   with the `Provider`, `Model` and `Effort` that `selection()` read, a
+   `Toolset` whose `Tools` hold the native *and* MCP tools, and
    `Policy: core.ToolPolicy{ToolNames: …}` listing both (a non-nil allowlist
    covers the whole set). `MaxTurns: 8` and `MaxCostUSD: 1.00` bound the run.
 

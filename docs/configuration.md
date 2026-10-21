@@ -111,7 +111,8 @@ variables under [Credentials and deployments](#credentials-and-deployments)
 also reads `OLLAMA_AUTH` from the process environment, as
 [`ollama.Options`](#ollamaoptions) says). `OLLAMA_API_KEY` is read by none of
 them and sent to no server, and the library reads no `AGENTKIT_` variable:
-`AGENTKIT_MODEL` is the examples' own. An agent's requests go only to
+`AGENTKIT_PROVIDER`, `AGENTKIT_MODEL` and `AGENTKIT_EFFORT` are the examples' own
+(see [Other variables](#other-variables)). An agent's requests go only to
 the chosen provider's host, so an Anthropic key is never sent to OpenRouter or
 Ollama, an OpenRouter key never to Anthropic or Ollama.
 
@@ -339,7 +340,46 @@ Other variables:
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `AGENTKIT_MODEL` | `examples/*` only | Overrides an example's model. The library never reads it. |
+| `AGENTKIT_PROVIDER` | `codingagent`, `customtools` and `mcp` only | The provider: `anthropic`, `openrouter` or `ollama`, passed to `Config.Provider`. Empty is `anthropic`. The library never reads it. |
+| `AGENTKIT_MODEL` | `codingagent`, `customtools` and `mcp` only | A tier or a model id, passed to `Config.Model`. Default `STANDARD`. The library never reads it. |
+| `AGENTKIT_EFFORT` | `codingagent`, `customtools` and `mcp` only | The effort, passed to `Config.Effort`. Empty is the tier's effort. The library never reads it. |
+| `AGENTKIT_LIVE` | the live provider tests only | `1` runs `TestLive` in `internal/providerconformance`; any other value, or none, skips it. The library never reads it. |
+
+### Live provider tests
+
+`make provider-live-test` runs one real tool loop on each provider whose
+prerequisites are present, against its live service. It is
+`AGENTKIT_LIVE=1 go test -count=1 -v -timeout 30m -run TestLive ./internal/providerconformance`,
+and neither `make check` nor `make check-release` depends on it.
+
+`TestLive` skips as a whole under `-short`, and unless `AGENTKIT_LIVE` is
+exactly `1`; the skip message names the variable and the make target. Many
+machines export an Anthropic key or run `ollama serve`, so a key or a server
+alone never starts a run. Each provider is then a subtest of its own, and it
+skips, naming what is missing, unless:
+
+| Provider | Prerequisites |
+|---|---|
+| `anthropic` | `anthropic.Resolve(anthropic.OSEnv{})` succeeds: the direct API, Vertex AI or Bedrock, whichever the process environment selects. The skip message holds `Resolve`'s error. |
+| `openrouter` | `OPENROUTER_API_KEY` is set. |
+| `ollama` | `ollama.New` resolves a host (`OLLAMA_HOST`, else the default), `GET <host>/api/tags` answers 200 within 2 seconds, and it lists the `STANDARD` tier's model. The skip message names the host and `ollama serve`, or `ollama pull <model>`. |
+
+A ready subtest writes `secret.txt`, holding a fresh random word, into a
+temporary workspace and builds an agent with `agentkit.New`: the provider's
+name, model `STANDARD`, the process environment (no `Config.Getenv`), only the
+built-in `read_file` tool, `MaxTurns` 6, `MaxCostUSD` 0.50 and `Timeout` 10
+minutes. It asks the model to read the file and answer with the word, so the
+run costs at most $0.50 on `anthropic` and `openrouter`; on `ollama` it runs
+the tier's model on the local machine. The subtest requires that:
+
+- the run ends `RunStopEndTurn` with no error, a `read_file` call succeeded
+  and the final text contains the word;
+- `Agent.Resolution()` reports the provider, the tier `STANDARD` and the model
+  id and effort `catalog.Select` gives;
+- input and output tokens are positive and the run is not flagged `Unpriced`;
+- the cost is positive on `anthropic` and `openrouter`, and zero on `ollama`.
+
+It logs the model, effort, turns, tokens and cost.
 
 ## `anthropic.Options`
 

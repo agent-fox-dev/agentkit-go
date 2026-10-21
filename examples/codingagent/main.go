@@ -4,11 +4,20 @@
 //	export ANTHROPIC_API_KEY=sk-ant-...
 //	go run ./examples/codingagent "Which files define the tool policy?"
 //
+// AGENTKIT_PROVIDER, AGENTKIT_MODEL and AGENTKIT_EFFORT choose what runs the
+// model: the provider (anthropic, the default, openrouter or ollama), a tier
+// (SIMPLE, STANDARD, the default, or ADVANCED) or the provider's own model id,
+// and the effort (low to max; the tier's when empty). One run on each provider:
+//
+//	ANTHROPIC_API_KEY=sk-ant-... go run ./examples/codingagent "Summarise this package."
+//	AGENTKIT_PROVIDER=openrouter OPENROUTER_API_KEY=sk-or-... go run ./examples/codingagent "Summarise this package."
+//	AGENTKIT_PROVIDER=ollama AGENTKIT_EFFORT=high go run ./examples/codingagent "Summarise this package."
+//
 // The workspace root is the only directory the file tools can reach, and it
 // defaults to the current one:
 //
 //	go run ./examples/codingagent --dir ./tools "Summarise this package."
-//	AGENTKIT_MODEL=anthropic/claude-opus-5-5 go run ./examples/codingagent --dir /tmp/scratch
+//	AGENTKIT_MODEL=ADVANCED go run ./examples/codingagent --dir /tmp/scratch
 //
 // See examples/README.md for the full environment-variable table.
 package main
@@ -110,13 +119,18 @@ func run() error {
 	//    catches that). The run stops on whichever comes first, with
 	//    RunStopMaxTurns or RunStopBudgetExceeded as its stop reason.
 	//
-	//    Model is a tier or a model id, and New resolves it through the
-	//    catalog (an id it does not list still works, with default limits and
-	//    no price) and builds the client from the environment. It fails here,
-	//    before any request, with the variables to set rather than a 401 that
-	//    names none of them.
+	//    Provider, Model and Effort are the three settings that choose what runs
+	//    the agent, and they come from the environment unchanged (see
+	//    selection). New resolves them through the catalog (an id it does not
+	//    list still works, with default limits and no price), builds the client
+	//    of the provider from the environment and fails here, before any
+	//    request: an unknown provider or effort by name, a missing credential
+	//    by the variable to set, rather than a 401 that names none of them.
+	provider, model, effort := selection()
 	agent, err := agentkit.New(agentkit.Config{
-		Model: modelSpec(),
+		Provider: provider,
+		Model:    model,
+		Effort:   effort,
 		System: "You are a careful coding assistant. Read before you write. " +
 			"Prefer the search and read tools over shell commands. Be concise.",
 		Toolset:    agentkit.Toolset{Tools: built, Guard: logged},
@@ -163,9 +177,7 @@ func run() error {
 		return err
 	}
 
-	u := res.Usage
-	fmt.Fprintf(os.Stderr, "\n[%s · %d turns · stop %s · in %d / out %d tokens · $%.5f]\n",
-		agent.Resolution().Model.ID, res.TurnCount, res.StopReason, u.InputTokens, u.OutputTokens, u.CostUSD)
+	fmt.Fprintf(os.Stderr, "\n%s\n", summary(agent.Resolution(), res))
 	return nil
 }
 
@@ -206,10 +218,33 @@ func errMark(isErr bool) string {
 	return ""
 }
 
-// modelSpec is "vendor/model-id", or a bare id when it is unambiguous.
-func modelSpec() string {
-	if s := os.Getenv("AGENTKIT_MODEL"); s != "" {
-		return s
+// selection reads the three settings that choose what runs the agent, and
+// nothing else decides it. They are the library's own: Config.Provider (empty is
+// anthropic), Config.Model (a tier or a model id, STANDARD here when unset) and
+// Config.Effort (empty is the tier's). They are passed on unchanged, so a wrong
+// value is New's error and not this program's. Each example that calls a model
+// repeats these lines rather than sharing them.
+func selection() (provider, model string, effort agentkit.Effort) {
+	model = os.Getenv("AGENTKIT_MODEL")
+	if model == "" {
+		model = "STANDARD"
 	}
-	return "anthropic/claude-sonnet-5"
+	return os.Getenv("AGENTKIT_PROVIDER"), model, agentkit.Effort(os.Getenv("AGENTKIT_EFFORT"))
+}
+
+// summary is the closing line: what ran, from Agent.Resolution, and what the run
+// used. A run whose cost could not be known says so, instead of printing a figure
+// that is not a price.
+func summary(r agentkit.Resolution, res core.RunResult) string {
+	u := res.Usage
+	cost := fmt.Sprintf("$%.5f", u.CostUSD)
+	if u.Unpriced {
+		cost = "cost unknown"
+	}
+	effort := string(r.Effort)
+	if effort == "" {
+		effort = "none"
+	}
+	return fmt.Sprintf("[%s · %s · effort %s · %d turns · stop %s · in %d / out %d tokens · %s]",
+		r.Provider, r.Model.ID, effort, res.TurnCount, res.StopReason, u.InputTokens, u.OutputTokens, cost)
 }

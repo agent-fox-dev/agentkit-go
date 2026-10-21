@@ -171,6 +171,15 @@ sandbox-gateway: ## Build build/bin/agentkit-gateway (AGENTKIT_VERSION stamps it
 sandbox-gateway-test: build-sandbox-container ## Build the sandbox base image and run the gateway's opt-in Podman tests
 	cd sandbox/gatewayd && AGENTKIT_SANDBOX_BASE_IMAGE=$(CONTAINER_REGISTRY)/$(SANDBOX_IMAGE):latest AGENTKIT_CONTAINER=podman go test -count=1 -v -run Podman .
 
+# The live provider tests run one real tool loop on each provider whose
+# prerequisites are present (an Anthropic credential, OPENROUTER_API_KEY, a
+# reachable Ollama server with the tier's model) and spend money on the first
+# two. AGENTKIT_LIVE=1 is the opt-in, and neither check nor check-release runs
+# them.
+.PHONY: provider-live-test
+provider-live-test: ## Run the live provider smoke tests: one real tool loop on each provider that is ready; costs money
+	AGENTKIT_LIVE=1 go test -count=1 -v -timeout 30m -run TestLive ./internal/providerconformance
+
 .PHONY: clean-branches
 clean-branches:
 	@git branch --list 'feature/*' | xargs -r git branch -D

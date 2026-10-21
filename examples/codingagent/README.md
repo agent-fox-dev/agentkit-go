@@ -18,24 +18,43 @@ around them, and this example wires up both:
 
 ## Run it
 
-Needs a credential for the model's vendor (default `anthropic/claude-sonnet-5`):
+Three environment variables choose what runs the model, and the program reads
+them itself and passes them to `agentkit.Config` unchanged. Each provider needs
+only its own credential or server (the variables are in
+[`examples/README.md`](../README.md#configuring-an-application)):
 
 ```bash
+# Anthropic, the default provider
 export ANTHROPIC_API_KEY=sk-ant-...
 go run ./examples/codingagent --dir . "Which files define the tool policy?"
-go run ./examples/codingagent --dir ./tools "Summarise this package."
+
+# OpenRouter
+export OPENROUTER_API_KEY=sk-or-...
+AGENTKIT_PROVIDER=openrouter go run ./examples/codingagent --dir . "Which files define the tool policy?"
+
+# Ollama, on a server that has pulled the tier's model (ollama pull <model>)
+AGENTKIT_PROVIDER=ollama go run ./examples/codingagent --dir . "Which files define the tool policy?"
+
+# A tier other than STANDARD, and an effort of your own
+AGENTKIT_MODEL=ADVANCED AGENTKIT_EFFORT=high go run ./examples/codingagent --dir ./tools "Summarise this package."
 ```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGENTKIT_PROVIDER` | empty, which is `anthropic` | `anthropic`, `openrouter` or `ollama` (`Config.Provider`). |
+| `AGENTKIT_MODEL` | `STANDARD` | A tier (`SIMPLE`, `STANDARD`, `ADVANCED`) or the provider's own model id (`Config.Model`). |
+| `AGENTKIT_EFFORT` | empty, which is the tier's effort | `low`, `medium`, `high`, `xhigh` or `max` (`Config.Effort`). |
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--dir` | `.` | Workspace root; the file tools cannot reach outside it. |
 
-Everything after the flags is the task. `AGENTKIT_MODEL` overrides the model.
+Everything after the flags is the task.
 
 ## What you'll see
 
 The workspace on stderr, then one line per authorised or blocked tool call,
-the model's text on stdout, and a usage summary:
+the model's text on stdout, and a summary of what ran and what it used:
 
 ```
 workspace: /path/to/agentkit-go
@@ -44,14 +63,22 @@ workspace: /path/to/agentkit-go
   result  {"ok":true,"data":…
   blocked execute: …
 ...
-[claude-sonnet-5 · 6 turns · stop end_turn · in <n> / out <n> tokens · $<cost>]
+[ollama · qwen3.8:27b · effort high · 6 turns · stop end_turn · in <n> / out <n> tokens · $0.00000]
 ```
 
-Without a credential it prints the workspace and stops:
+The summary names the provider, the model id and the effort that
+`Agent.Resolution()` reports. The cost is `cost unknown` when the run's usage is
+flagged `Unpriced`: a model the catalog does not list has no price, and a zero is
+then not a cost.
+
+A configuration that cannot run stops before any request, with the reason and
+exit status 1: the workspace, then an `error:` line.
 
 ```
 workspace: /path/to/agentkit-go
 error: anthropic: missing credentials: set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_TOKEN, ...
+error: openrouter: OPENROUTER_API_KEY is not set (set it in the environment or in Options.Env)
+error: agentkit: unknown provider "openai"; known providers are anthropic, openrouter and ollama
 ```
 
 ## Walkthrough
@@ -72,10 +99,12 @@ The numbered comments in `run()` are the walkthrough:
 4. `logged` *wraps* the policy to log each decision, and is passed as
    `Config.Toolset.Guard`. The wrapper reports; the policy still decides. This is the
    pattern for adding side effects (logging, metrics) to any interceptor.
-5. `agentkit.New(agentkit.Config{Model, System, Toolset: {Tools, Guard},
-   MaxTurns: 20, MaxCostUSD: 2.00})` — `New` resolves the model, builds the
-   provider from the environment and fails here, before any request, naming
-   the variables to set when there is no credential. The run stops at 20 turns
+5. `agentkit.New(agentkit.Config{Provider, Model, Effort, System, Toolset:
+   {Tools, Guard}, MaxTurns: 20, MaxCostUSD: 2.00})` — `selection()` reads
+   `AGENTKIT_PROVIDER`, `AGENTKIT_MODEL` and `AGENTKIT_EFFORT` and `New`
+   resolves them through the catalog, builds the provider's client from the
+   environment and fails here, before any request: an unknown provider or effort
+   by name, a missing credential by the variable to set. The run stops at 20 turns
    (`core.RunStopMaxTurns`) or once $2.00 has been spent
    (`core.RunStopBudgetExceeded`): turns catch cheap loops, budget catches
    expensive turns.
@@ -94,11 +123,14 @@ The numbered comments in `run()` are the walkthrough:
   the guard check happens in `agentkit.New`, before any run. There is no way
   to add a tool to an agent afterwards.
 - `summarize` sorts argument keys because JSON object order is not stable.
+- The example reads three variables and knows nothing about a provider's own:
+  `OLLAMA_HOST` and the credentials are read by the provider `New` builds, and
+  only the chosen provider's are ever consulted.
 
 ## Related
 
 Packages: `agentkit` (`Config`, `New`), `workspace` (`Open`), `tools` (`For`),
 `guard` (`Restricted`, `AllowAll`), `core` (`BeforeToolCallContext`,
 `BeforeToolCallDecision`, `ErrUnguardedExecute`, `ErrMaxTurns`,
-`ErrBudgetExceeded`), `provider/anthropic` (`Resolve`). The optional `code_search` index is the
+`ErrBudgetExceeded`). The optional `code_search` index is the
 nested `codesearch` module (`tools.Options.Index`).

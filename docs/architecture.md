@@ -86,6 +86,7 @@ only" exists for tests: it holds only test files, or only test files import it.
 | `internal/policy` (tests only) | none | |
 | `internal/testkit` (tests only) | `core`, `schema` | |
 | `internal/toolconformance` (tests only) | `core`, `schema` | |
+| `internal/providerconformance` (tests only) | `.` (root, `agentkit`), `catalog`, `core`, `internal/testkit`, `provider`, `provider/{anthropic,faux,ollama,openrouter}`, `tools`, `workspace` | |
 | `core` | `schema` | |
 | `catalog` | `core` | |
 | `guard` | `core` | |
@@ -101,7 +102,7 @@ only" exists for tests: it holds only test files, or only test files import it.
 | `mcpserve` (nested module) | `.` (root, `agentkit`), `core`, `mcp`, `wire` | `github.com/modelcontextprotocol/go-sdk` |
 | `prompt` | `core`, `guard`, `tools` | |
 | `.` (root, `agentkit`) | `core`, `catalog`, `guard`, `prompt`, `provider`, `provider/anthropic`, `provider/openrouter`, `provider/ollama` | |
-| `examples/{agentdemo,codemode,codingagent,customtools,mcp}` (programs) | `.`, `catalog`, `codemode`, `core`, `guard`, `mcp`, `provider/anthropic`, `provider/faux`, `schema`, `tools`, `wire`, `workspace`, by program | |
+| `examples/{agentdemo,codemode,codingagent,customtools,mcp}` (programs) | `.`, `codemode`, `core`, `guard`, `mcp`, `provider/anthropic`, `provider/faux`, `schema`, `tools`, `wire`, `workspace`, by program | |
 | `codesearch` (nested module) | `core`, `outline`, `schema`, `tools`, `workspace` | `github.com/sourcegraph/zoekt` |
 | `sandbox` (nested module; so are the rows below) | `core`, `sandbox/internal/buildver`, `tools`, `workspace` | |
 | `sandbox/internal/sandboxpb` | none (generated) | `google.golang.org/grpc`, `google.golang.org/protobuf` |
@@ -194,6 +195,7 @@ What follows from it:
 | `internal/policy` | Tests only: the build gates and the dependency allowlist. |
 | `internal/testkit` | Shared test helpers. |
 | `internal/toolconformance` | Tests only: the spec 06 conformance case table, run against `tools.For` and against sandbox proxy tools. |
+| `internal/providerconformance` | Tests only: the cross-provider conformance suite, which runs the same logical turns through the `anthropic`, `openrouter` and `ollama` providers, and the opt-in live smoke tests of the three (below). Its only non-test file is `doc.go`. |
 | `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `CheckSpec`, `LocalDir`, `Tar`/`TarOut`, `LandlockInfo`, `AgentArgs`, the protocol version, `MaxMessageBytes` and the errors (below). |
 | `sandbox/internal/sandboxpb` | The `agentkit.sandbox.v1` protocols, the agent's (`sandbox.proto`) and the gateway's (`gateway.proto`), and their checked-in generated code; `make proto` regenerates both. |
 | `sandbox/internal/agent` | The agent service: runs `tools.For` over one workspace with an explicit environment. |
@@ -1105,6 +1107,48 @@ anything is made) and its agent reports ABI 0 with the note
   those surfaces (`docs/errata/13_sandbox_core.md`).
 - `provider/faux` scripts a model offline; the root tests and the examples run
   against it.
+- `internal/providerconformance` runs the same seven logical turns through each
+  of the three providers and requires one canonical outcome. Its cases are
+  `text`, `tool_call`, `tool_call_stop`, `thinking`, `cut_off`, `error_status`
+  and `error_in_stream`, and `TestProviderConformance` runs each against each
+  provider as a subtest named `<provider>/<case>`, 21 in all:
+  `go test -short -run 'TestProviderConformance.*/ollama/thinking' ./internal/providerconformance`
+  runs one. It runs under `-short`, so `make check` runs it.
+
+  Each subtest builds its agent with `agentkit.New` from the provider's name,
+  the tier `STANDARD`, one counting `echo` tool and `MaxTurns` 4, and a
+  `Config.Getenv` holding only that provider's variables, pointed at a fake of
+  that vendor's native API on a loopback `httptest` server: Anthropic Messages
+  server-sent events, OpenRouter Chat Completions server-sent chunks, or Ollama
+  NDJSON. The process environment is never read, so a machine with real keys
+  exported gets the same result. The fakes use the standard library and
+  `encoding/json` alone, with the vendors' documented field names, so they check
+  the providers against the wire and not against themselves. Every code line of
+  the package, the servers included, is in a `_test.go` file, so no non-test file
+  of the root module listens on a socket and no package imports it; it is
+  outside the line budget.
+
+  Every case checks that each request carries the model id and effort that
+  `catalog.Select(provider, "STANDARD", "")` gives, in the vendor's form, and
+  that the fake recorded as many requests as the case scripts. A turn that ends
+  normally must have the event skeleton `provider/faux` emits for the same
+  blocks (without the `MessageUpdateEvent`s, with each run of deltas of one block
+  as one), and block-end events that carry whole payloads. A turn that fails ends
+  in a terminal `ErrorEvent` and a `MessageEndEvent` with `StopReasonError`. The
+  cases tolerate what the providers' specs allow them to differ in: Anthropic
+  keeps the tool calls it salvaged from a cut-off stream, where OpenRouter and
+  Ollama drop them (the loop runs neither), and an in-stream error need only hold
+  the vendor's message.
+- The same package holds the live smoke tests, `TestLive`: one subtest for each
+  provider, which runs one real tool loop on the `STANDARD` tier against the
+  provider's live service. The agent has the built-in `read_file` tool alone and
+  is asked to read a file holding a random word and to answer with it, within 6
+  turns, $0.50 and 10 minutes. `TestLive` skips under `-short` and unless
+  `AGENTKIT_LIVE` is `1`, so `make check`, `make check-release` and a plain
+  `go test` make no live request; `make provider-live-test` runs it. A subtest
+  skips, naming what is missing, unless its provider is ready: credentials that
+  `anthropic.Resolve` accepts, `OPENROUTER_API_KEY`, or an Ollama server at its
+  host that has the tier's model. `docs/configuration.md` has the details.
 
 Run the fast loop with `make check` (fmt, vet, lint, `go test -short` for every module:
 the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `mcpserve`,
