@@ -277,9 +277,9 @@ type ToolUseBlock struct { ID string Name string Input json.RawMessage ThoughtSi
 type ToolWire struct { Name string Description string InputSchema *schema.Schema }
 type TurnEndEvent struct { TurnIndex int Message AssistantMessage ToolResults []ToolResultMessage Usage Usage }
 type TurnStartEvent struct { TurnIndex int }
-type Usage struct { InputTokens int64 OutputTokens int64 ReasoningTokens int64 CacheReadTokens int64 CacheWriteTokens int64 CacheWrite1hTokens int64 TotalTokens int64 Requests int64 CostUSD float64 BilledModel string Set UsageField }
+type Usage struct { InputTokens int64 OutputTokens int64 ReasoningTokens int64 CacheReadTokens int64 CacheWriteTokens int64 CacheWrite1hTokens int64 TotalTokens int64 Requests int64 CostUSD float64 BilledModel string Unpriced bool Set UsageField }
 type UsageField uint32
-type UsageJSON struct { InputTokens int64 OutputTokens int64 ReasoningTokens int64 CacheReadTokens int64 CacheWriteTokens int64 CacheWrite1hTokens int64 TotalTokens int64 CostUSD float64 BilledModel string Reported bool }
+type UsageJSON struct { InputTokens int64 OutputTokens int64 ReasoningTokens int64 CacheReadTokens int64 CacheWriteTokens int64 CacheWrite1hTokens int64 TotalTokens int64 CostUSD float64 BilledModel string Reported bool Unpriced bool }
 type UsageWire struct { InputTokens *int64 OutputTokens *int64 ReasoningTokens *int64 CacheReadTokens *int64 CacheWriteTokens *int64 CacheWrite1hTokens *int64 TotalTokens *int64 }
 type UserMessage struct { Content Content Timestamp time.Time }
 var ErrAborted

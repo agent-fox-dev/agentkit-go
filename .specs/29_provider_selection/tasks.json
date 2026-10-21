@@ -64,7 +64,7 @@
         "core/eventjson_test.go",
         "core/usage_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,

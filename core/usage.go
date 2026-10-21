@@ -37,6 +37,10 @@ type Usage struct {
 	CostUSD  float64
 	// BilledModel is the model that actually served the request (REQ-PROV-05.5).
 	BilledModel string
+	// Unpriced is true when at least one request the usage covers had a cost
+	// that neither the vendor reported nor the catalog priced, so CostUSD
+	// counts that request as zero. The cost bit cannot say this: Add ORs it.
+	Unpriced bool
 
 	// Set records which fields the provider actually reported, so an explicit
 	// 0 beats an SDK fallback (REQ-PROV-16.4) and a wholly unreported usage is
@@ -67,8 +71,9 @@ func (u *Usage) SetField(f UsageField, v int64) {
 func (u *Usage) SetCost(v float64)    { u.CostUSD = v; u.Set |= UsageCostUSD }
 func (u Usage) Has(f UsageField) bool { return u.Set&f != 0 }
 
-// Add sums two usages field-wise and ORs their presence masks. The session
-// layer only sums; it never recomputes cost (REQ-PROV-05).
+// Add sums two usages field-wise and ORs their presence masks and their
+// Unpriced flags. The session layer only sums; it never recomputes cost
+// (REQ-PROV-05).
 func (u Usage) Add(o Usage) Usage {
 	u.InputTokens += o.InputTokens
 	u.OutputTokens += o.OutputTokens
@@ -79,7 +84,7 @@ func (u Usage) Add(o Usage) Usage {
 	u.TotalTokens += o.TotalTokens
 	u.Requests += o.Requests
 	u.CostUSD += o.CostUSD
-	u.Set |= o.Set
+	u.Set, u.Unpriced = u.Set|o.Set, u.Unpriced || o.Unpriced
 	if o.BilledModel != "" {
 		u.BilledModel = o.BilledModel
 	}
