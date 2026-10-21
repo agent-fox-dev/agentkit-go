@@ -145,6 +145,25 @@ func (c *Catalog) Note() string
     Note is the catalog document's maintenance note, including the REQ-CAT-06
     regeneration ritual.
 
+func (c *Catalog) Select(provider, model string, effort core.Effort) (Selection, error)
+    Select turns a provider, a model and an effort into the catalog row and the
+    effort a run will use. It is offline: it reads no environment variable and
+    makes no request, and every Model it returns is a deep copy.
+
+    The provider is trimmed and matched without regard to case; an empty
+    one means anthropic, and a name that is not one of Providers is refused
+    (ErrUnknownProvider), whatever vendors the catalog holds. The model is
+    a tier name or a model id. An id is only trimmed, never case-folded,
+    and is looked up among the rows of the provider's own vendor, so a row of
+    one provider is never returned for another. On anthropic the id goes through
+    Lookup, which accepts an optional "anthropic/" prefix. An id the catalog
+    does not list is served, not refused, with the provider's fallback limits,
+    no price and Listed false. The effort is trimmed and folded to one of the
+    five levels, or empty for none (ErrUnknownEffort otherwise).
+
+    The inputs are checked in the order provider, model, effort, and the first
+    that fails is the error returned, with the zero Selection.
+
 func (c *Catalog) Vendors() []string
     Vendors lists known vendor ids in sorted order.
 
@@ -183,6 +202,10 @@ type Selection struct {
 	Listed bool
 }
     Selection is what Select resolves a (provider, model, effort) triple to.
+
+func Select(provider, model string, effort core.Effort) (Selection, error)
+    Select resolves a (provider, model, effort) triple against the embedded
+    catalog; see (*Catalog).Select.
 
 type Tier string
     Tier is a model preset: a name that picks a model id and an effort for the

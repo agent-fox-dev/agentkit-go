@@ -178,7 +178,7 @@
       "done_when": [
         "`go test ./catalog/... -count=1` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,

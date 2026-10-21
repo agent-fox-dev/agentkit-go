@@ -2,6 +2,8 @@ package catalog
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 )
@@ -63,3 +65,135 @@ var (
 	// ErrNoModel is an empty model string: neither a tier nor a model id.
 	ErrNoModel = errors.New("agentkit: no model")
 )
+
+// Select resolves a (provider, model, effort) triple against the embedded
+// catalog; see (*Catalog).Select.
+func Select(provider, model string, effort core.Effort) (Selection, error) {
+	return Default().Select(provider, model, effort)
+}
+
+// Select turns a provider, a model and an effort into the catalog row and the
+// effort a run will use. It is offline: it reads no environment variable and
+// makes no request, and every Model it returns is a deep copy.
+//
+// The provider is trimmed and matched without regard to case; an empty one
+// means anthropic, and a name that is not one of Providers is refused
+// (ErrUnknownProvider), whatever vendors the catalog holds. The model is a tier
+// name or a model id. An id is only trimmed, never case-folded, and is looked
+// up among the rows of the provider's own vendor, so a row of one provider is
+// never returned for another. On anthropic the id goes through Lookup, which
+// accepts an optional "anthropic/" prefix. An id the catalog does not list is
+// served, not refused, with the provider's fallback limits, no price and
+// Listed false. The effort is trimmed and folded to one of the five levels, or
+// empty for none (ErrUnknownEffort otherwise).
+//
+// The inputs are checked in the order provider, model, effort, and the first
+// that fails is the error returned, with the zero Selection.
+func (c *Catalog) Select(provider, model string, effort core.Effort) (Selection, error) {
+	p, err := providerOf(provider)
+	if err != nil {
+		return Selection{}, err
+	}
+	id := strings.TrimSpace(model)
+	if id == "" {
+		return Selection{}, fmt.Errorf("%w given; name a tier (%s); a model id is also accepted",
+			ErrNoModel, joinWords(tierNames, "or"))
+	}
+	e, err := effortOf(effort)
+	if err != nil {
+		return Selection{}, err
+	}
+	if tier, ok := tierOf(id); ok {
+		return c.selectTier(p, tier)
+	}
+	m, listed := c.resolve(p, id)
+	return Selection{Provider: p, Model: m, Effort: e, Listed: listed}, nil
+}
+
+// providerOf returns the canonical provider named by name: trimmed, matched
+// without regard to case, and anthropic when empty.
+func providerOf(name string) (string, error) {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return ProviderAnthropic, nil
+	}
+	known := Providers()
+	for _, p := range known {
+		if strings.EqualFold(n, p) {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("%w %q; known providers are %s", ErrUnknownProvider, name, joinWords(known, "and"))
+}
+
+// effortOf returns the core.Effort constant that e names, trimmed and matched
+// without regard to case, or "" for none.
+func effortOf(e core.Effort) (core.Effort, error) {
+	n := strings.TrimSpace(string(e))
+	if n == "" {
+		return "", nil
+	}
+	for _, known := range allEfforts {
+		if strings.EqualFold(n, string(known)) {
+			return known, nil
+		}
+	}
+	return "", fmt.Errorf("%w %q; known efforts are %s", ErrUnknownEffort, string(e), joinWords(allEfforts, "and"))
+}
+
+// tierOf reports whether s, already trimmed, is a tier name in any case. A
+// string that merely contains a tier name is a model id.
+func tierOf(s string) (Tier, bool) {
+	for _, t := range tierNames {
+		if strings.EqualFold(s, string(t)) {
+			return t, true
+		}
+	}
+	return "", false
+}
+
+// selectTier resolves a tier of the provider.
+//
+// Tier resolution is added next; until then every tier is reported as
+// unavailable, with the error a catalog without a tiers block returns.
+func (c *Catalog) selectTier(provider string, tier Tier) (Selection, error) {
+	return Selection{}, fmt.Errorf("agentkit: provider %q has no %s tier in this catalog", provider, tier)
+}
+
+// resolve returns the descriptor for a trimmed model id of the provider and
+// whether the provider's vendor lists it.
+func (c *Catalog) resolve(provider, id string) (core.Model, bool) {
+	var window, maxTokens int
+	switch provider {
+	case ProviderOpenRouter:
+		window, maxTokens = OpenRouterDefaultContextWindow, OpenRouterDefaultMaxTokens
+	case ProviderOllama:
+		window, maxTokens = OllamaDefaultContextWindow, OllamaDefaultMaxTokens
+	default:
+		// anthropic: Lookup strips an optional "anthropic/" prefix and serves
+		// the Anthropic fallback.
+		return c.Lookup(id)
+	}
+	// A vendor id holds no slash, so "<provider>/<id>" names one row even when
+	// the id has slashes of its own.
+	if e, ok := c.byCanonical[provider+"/"+id]; ok {
+		return cloneModel(e.model), true
+	}
+	return core.Model{
+		ID:            id,
+		ContextWindow: window, MaxOutputTokens: maxTokens,
+		ThinkingKind: core.ThinkingKindAdaptive,
+	}, false
+}
+
+// joinWords joins items as "a, b and c", with conj in place of "and".
+func joinWords[T ~string](items []T, conj string) string {
+	words := make([]string, len(items))
+	for i, it := range items {
+		words[i] = string(it)
+	}
+	if len(words) < 2 {
+		return strings.Join(words, "")
+	}
+	return strings.Join(words[:len(words)-1], ", ") + " " + conj + " " + words[len(words)-1]
+}
