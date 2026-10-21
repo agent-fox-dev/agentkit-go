@@ -322,7 +322,8 @@ takes the place of the first two steps.
 | Identifier | Shape |
 |---|---|
 | `anthropic.Resolve` | `Resolve(env Env) (*sdk.Client, Source, error)` |
-| `catalog.Lookup` | `Lookup(id string) (core.Model, bool)` |
+| `catalog.Lookup` | `Lookup(id string) (core.Model, bool)`: a Claude model id; `agentkit.New` calls it |
+| `catalog.Select` | `Select(provider, model string, effort core.Effort) (Selection, error)`: offline, for `anthropic`, `openrouter` and `ollama`; `model` is a tier (`SIMPLE`, `STANDARD`, `ADVANCED`) or a model id |
 | `core.ProviderClient` | `Stream(ctx, Request) (<-chan StreamEvent, error)` |
 
 ### Vocabulary
@@ -358,7 +359,7 @@ takes the place of the first two steps.
 | `mcp` | MCP client and tool pool on the official MCP Go SDK. |
 | `guard` | The shell boundary: `Check`, `Restricted`, `Allow`, `AllowAll`. |
 | `prompt` | The assembled system prompt: base prompt plus the active tools' guidelines. |
-| `catalog` | The embedded Claude model catalog and `Lookup`. |
+| `catalog` | The embedded model catalog of the `anthropic`, `openrouter` and `ollama` providers, their tiers, `Lookup` and `Select`. |
 | `provider` | Cost arithmetic, the per-session tool-schema cache, deferred-tool splitting. |
 | `provider/anthropic` | The Anthropic wire (direct, Vertex AI, Bedrock) over the official SDK. |
 | `provider/faux` | A scripted provider for offline tests and demos; `ToolCall` and `Text` script a turn. |

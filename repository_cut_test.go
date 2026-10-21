@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -351,6 +352,147 @@ func TestMakefileTargets_TS09_19(t *testing.T) {
 	for _, gone := range []string{"build-examples:", "difftest", "examples/codesearch"} {
 		if strings.Contains(string(src), gone) {
 			t.Errorf("Makefile still contains %q", gone)
+		}
+	}
+}
+
+// requiredModules26 is the root module's require set when spec 26 landed: the
+// module paths of every require line, direct and indirect, without versions.
+// It names no OpenRouter or Ollama SDK; the specs that add one restate it.
+var requiredModules26 = []string{
+	"github.com/anthropics/anthropic-sdk-go",
+	"github.com/aws/aws-sdk-go-v2",
+	"github.com/aws/aws-sdk-go-v2/config",
+	"github.com/aws/aws-sdk-go-v2/credentials",
+	"github.com/bmatcuk/doublestar/v4",
+	"github.com/modelcontextprotocol/go-sdk",
+	"github.com/pelletier/go-toml/v2",
+	"github.com/tree-sitter-grammars/tree-sitter-kotlin",
+	"github.com/tree-sitter-grammars/tree-sitter-lua",
+	"github.com/tree-sitter/go-tree-sitter",
+	"github.com/tree-sitter/tree-sitter-bash",
+	"github.com/tree-sitter/tree-sitter-c",
+	"github.com/tree-sitter/tree-sitter-c-sharp",
+	"github.com/tree-sitter/tree-sitter-cpp",
+	"github.com/tree-sitter/tree-sitter-java",
+	"github.com/tree-sitter/tree-sitter-javascript",
+	"github.com/tree-sitter/tree-sitter-php",
+	"github.com/tree-sitter/tree-sitter-python",
+	"github.com/tree-sitter/tree-sitter-ruby",
+	"github.com/tree-sitter/tree-sitter-rust",
+	"github.com/tree-sitter/tree-sitter-scala",
+	"github.com/tree-sitter/tree-sitter-typescript",
+	"go.starlark.net",
+	"golang.org/x/oauth2",
+	"cloud.google.com/go/auth",
+	"cloud.google.com/go/auth/oauth2adapt",
+	"cloud.google.com/go/compute/metadata",
+	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream",
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds",
+	"github.com/aws/aws-sdk-go-v2/internal/configsources",
+	"github.com/aws/aws-sdk-go-v2/internal/endpoints/v2",
+	"github.com/aws/aws-sdk-go-v2/internal/ini",
+	"github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding",
+	"github.com/aws/aws-sdk-go-v2/service/internal/presigned-url",
+	"github.com/aws/aws-sdk-go-v2/service/sso",
+	"github.com/aws/aws-sdk-go-v2/service/ssooidc",
+	"github.com/aws/aws-sdk-go-v2/service/sts",
+	"github.com/aws/smithy-go",
+	"github.com/bahlo/generic-list-go",
+	"github.com/buger/jsonparser",
+	"github.com/felixge/httpsnoop",
+	"github.com/go-logr/logr",
+	"github.com/go-logr/stdr",
+	"github.com/golang/groupcache",
+	"github.com/golang/protobuf",
+	"github.com/google/jsonschema-go",
+	"github.com/google/s2a-go",
+	"github.com/googleapis/enterprise-certificate-proxy",
+	"github.com/invopop/jsonschema",
+	"github.com/mattn/go-pointer",
+	"github.com/pb33f/ordered-map/v2",
+	"github.com/segmentio/asm",
+	"github.com/segmentio/encoding",
+	"github.com/standard-webhooks/standard-webhooks/libraries",
+	"github.com/tidwall/gjson",
+	"github.com/tidwall/match",
+	"github.com/tidwall/pretty",
+	"github.com/tidwall/sjson",
+	"github.com/yosida95/uritemplate/v3",
+	"go.opencensus.io",
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp",
+	"go.opentelemetry.io/otel",
+	"go.opentelemetry.io/otel/metric",
+	"go.opentelemetry.io/otel/trace",
+	"go.yaml.in/yaml/v4",
+	"golang.org/x/crypto",
+	"golang.org/x/net",
+	"golang.org/x/sync",
+	"golang.org/x/sys",
+	"golang.org/x/text",
+	"golang.org/x/time",
+	"google.golang.org/api",
+	"google.golang.org/genproto/googleapis/rpc",
+	"google.golang.org/grpc",
+	"google.golang.org/protobuf",
+}
+
+// TS-26-35: the model ids of the new providers are written only in package
+// catalog, agent.go still resolves its model through Lookup, and go.mod
+// requires no module that spec 26 did not find.
+func TestNewProviderModelsStayInCatalog_TS26_35(t *testing.T) {
+	ids := []string{"qwen/qwen3.8-flash", "qwen3.8:27b"}
+	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && (d.Name() == ".git" || d.Name() == "testdata" || path == "catalog") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			if strings.Contains(string(b), id) {
+				t.Errorf("%s names the model id %s; model ids live in the catalog", path, id)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	src, err := os.ReadFile("agent.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "catalog.Lookup(cfg.Model)") {
+		t.Error("agent.go no longer resolves its model with catalog.Lookup(cfg.Model)")
+	}
+
+	_, requires, _ := modDirectives(t, "go.mod")
+	var got []string
+	for _, r := range requires {
+		got = append(got, strings.Fields(r)[0])
+	}
+	slices.Sort(got)
+	want := slices.Sorted(slices.Values(requiredModules26))
+	if !slices.Equal(got, want) {
+		for _, m := range got {
+			if !slices.Contains(want, m) {
+				t.Errorf("go.mod requires %s, which spec 26 did not find", m)
+			}
+		}
+		for _, m := range want {
+			if !slices.Contains(got, m) {
+				t.Errorf("go.mod no longer requires %s", m)
+			}
 		}
 	}
 }

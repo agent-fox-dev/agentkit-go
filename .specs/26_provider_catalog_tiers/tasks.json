@@ -276,7 +276,7 @@
         "`make check` passes",
         "`go test -race ./catalog/... -count=1` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
