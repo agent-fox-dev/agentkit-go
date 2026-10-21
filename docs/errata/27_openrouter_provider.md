@@ -61,3 +61,21 @@ match what the spec assumed, and `WithSecurity` sends `Authorization: Bearer`
 
 The SDK decodes a chunk without `created` or `object`, and a chunk with only an
 `error` object, so the canned streams of the offline tests need neither.
+
+## The SDK reads two variables and times a request out on its own (27-REQ-1.1, 27-REQ-1.2)
+
+Two behaviours of `sdk.New` (`openrouter.go:219`) cut across what the spec says
+the provider does:
+
+- Unless they are set, it reads `OPENROUTER_HTTP_REFERER` and
+  `OPENROUTER_X_TITLE` from the process environment
+  (`internal/config/sdkconfiguration.go:42`). A chat completion never sends
+  them (`chat.go` passes no globals to `PopulateHeaders`), but 27-REQ-1.2 says
+  the provider looks up no variable other than the two it names. The provider
+  sets both to the empty string (`provider/openrouter/client.go:87`), so the SDK
+  reads neither.
+- Without `WithClient` it builds a client with a 60-second `Timeout`, which
+  counts the time spent reading the body and would cut a long stream. The
+  provider always passes its own client, and when `Options.HTTPClient` is nil
+  that client has no timeout (`provider/openrouter/client.go:59`); only the
+  caller's context ends a request.

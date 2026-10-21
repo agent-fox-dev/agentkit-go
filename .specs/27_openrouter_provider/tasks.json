@@ -161,7 +161,7 @@
       "done_when": [
         "`go test ./provider/openrouter/ -count=1` passes for TS-27-1,3,4,5"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
