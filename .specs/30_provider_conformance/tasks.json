@@ -376,7 +376,7 @@
       "done_when": [
         "`go test ./examples/customtools` passes without network or credentials"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {

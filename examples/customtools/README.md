@@ -14,21 +14,41 @@ state, and `submit_answer` ends the run with a structured answer.
 
 ## Run it
 
-Needs a credential for the model's vendor (default `anthropic/claude-sonnet-5`):
+Three environment variables choose what runs the model, and the program reads
+them itself and passes them to `agentkit.Config` unchanged. Each provider needs
+only its own credential or server (the variables are in
+[`examples/README.md`](../README.md#configuring-an-application)):
 
 ```bash
+# Anthropic, the default provider
 export ANTHROPIC_API_KEY=sk-ant-...
 go run ./examples/customtools
 go run ./examples/customtools "Reserve four BRKT-90 and tell me their total mass in pounds."
+
+# OpenRouter
+export OPENROUTER_API_KEY=sk-or-...
+AGENTKIT_PROVIDER=openrouter go run ./examples/customtools
+
+# Ollama, on a server that has pulled the tier's model (ollama pull <model>)
+AGENTKIT_PROVIDER=ollama go run ./examples/customtools
+
+# A tier other than STANDARD, and an effort of your own
+AGENTKIT_PROVIDER=ollama AGENTKIT_MODEL=SIMPLE AGENTKIT_EFFORT=high go run ./examples/customtools
 ```
 
-No flags; `AGENTKIT_MODEL` overrides the model. The inventory knows
-`BOLT-M6`, `NUT-M6`, `BRKT-90` and `WSHR-M6`.
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGENTKIT_PROVIDER` | empty, which is `anthropic` | `anthropic`, `openrouter` or `ollama` (`Config.Provider`). |
+| `AGENTKIT_MODEL` | `STANDARD` | A tier (`SIMPLE`, `STANDARD`, `ADVANCED`) or the provider's own model id (`Config.Model`). |
+| `AGENTKIT_EFFORT` | empty, which is the tier's effort | `low`, `medium`, `high`, `xhigh` or `max` (`Config.Effort`). |
+
+No flags. The inventory knows `BOLT-M6`, `NUT-M6`, `BRKT-90` and `WSHR-M6`.
 
 ## What you'll see
 
 Each tool call with the model's raw arguments, then whether your code returned
-a result or an error result, and finally the submitted answer. The shape:
+a result or an error result, then the submitted answer, and a summary of what
+ran and what it used on stderr. The shape:
 
 ```
   → lookup_part({"ids":["BOLT-M6","BRKT-90"],"include_specs":true})
@@ -41,12 +61,24 @@ a result or an error result, and finally the submitted answer. The shape:
 
 answer: …
 cited:  BOLT-M6, BRKT-90
+
+[ollama · qwen3.8:27b · effort high · 4 turns · stop tool_terminate · in <n> / out <n> tokens · $0.00000]
 ```
 
-Without a credential:
+The summary names the provider, the model id and the effort that
+`Agent.Resolution()` reports. The cost is `cost unknown` when the run's usage is
+flagged `Unpriced`: a model the catalog does not list has no price, and a zero is
+then not a cost. A model that answers in text and never calls `submit_answer`
+ends the run with `run ended without submit_answer (end_turn)` after what it
+said.
+
+A configuration that cannot run stops before any request, with the reason and
+exit status 1:
 
 ```
 error: anthropic: missing credentials: set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_TOKEN, ...
+error: openrouter: OPENROUTER_API_KEY is not set
+error: agentkit: unknown provider "openai"; known providers are anthropic, openrouter and ollama
 ```
 
 ## Walkthrough
@@ -63,6 +95,7 @@ error: anthropic: missing credentials: set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOK
 | Sequential execution | `reserveStockTool` `ExecutionMode: core.Sequential` | For tools with side effects. One sequential tool runs the whole batch in order on one goroutine, so don't mark read-only tools sequential. |
 | Metadata | `reserveStockTool` `res.Metadata` | `core.ToolMetadata` reaches your instrumentation, never the model. |
 | Terminating tool | `submitAnswerTool` | `res.Terminate = true`. Check `res.StopReason == core.RunStopToolTerminate` in `run()`. |
+| Provider, model and effort | `selection()`, `run()` `agentkit.Config` | `AGENTKIT_PROVIDER`, `AGENTKIT_MODEL` and `AGENTKIT_EFFORT` go to `Config.Provider`, `Model` and `Effort` unchanged; `New` builds the provider's client and rejects a bad value before any request. |
 | Run bounds | `run()` `agentkit.Config` | `MaxTurns: 12` and `MaxCostUSD: 1.00` end the run if the model never calls `submit_answer`; the run then reports `core.RunStopMaxTurns` or `core.RunStopBudgetExceeded`. |
 | Strict arguments | every tool | The Anthropic wire declares every tool `"strict": true`, so the model's arguments match the input schema. |
 
@@ -81,6 +114,6 @@ error: anthropic: missing credentials: set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOK
 
 Packages: `agentkit` (`Config`, `New`), `core` (`Tool`, `ToolResult`,
 `OKResult`, `ErrResult`, `ExecutionMode`,
-`RunStopToolTerminate`), `schema`, `provider/anthropic` (`Resolve`).
+`RunStopToolTerminate`), `schema`.
 To test tools like these offline, script the model with `provider/faux`, as
 [`agentdemo`](../agentdemo) does.
