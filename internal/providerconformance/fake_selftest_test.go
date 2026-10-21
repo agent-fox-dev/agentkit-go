@@ -256,9 +256,12 @@ func count(ps []map[string]any, ok func(map[string]any) bool) int {
 
 // TS-30-9 (30-REQ-2.3): text and thinking arrive as two deltas, tool arguments
 // as two fragments (one whole on Ollama), and the usage in each vendor's own
-// fields and netting, with a cost only on OpenRouter.
-func TestFakeRendersDeltasAndUsage_TS30_9(t *testing.T) {
-	const args = `{"v":"conformance"}`
+// fields and netting, with a cost only on OpenRouter. One test for each vendor.
+// renderedArgs are the arguments of the tool call in fullTurn.
+const renderedArgs = `{"v":"conformance"}`
+
+func TestFakeRendersDeltasAndUsageAnthropic_TS30_9(t *testing.T) {
+	const args = renderedArgs
 	status, raw := render(t, anthropicVendor, fullTurn())
 	if status != http.StatusOK {
 		t.Fatalf("anthropic: status %d: %s", status, raw)
@@ -304,12 +307,15 @@ func TestFakeRendersDeltasAndUsage_TS30_9(t *testing.T) {
 	if bytes.Contains(raw, []byte("cost")) {
 		t.Error("anthropic: the response carries a cost")
 	}
+}
 
-	status, raw = render(t, openRouterVendor, fullTurn())
+func TestFakeRendersDeltasAndUsageOpenRouter_TS30_9(t *testing.T) {
+	const args = renderedArgs
+	status, raw := render(t, openRouterVendor, fullTurn())
 	if status != http.StatusOK {
 		t.Fatalf("openrouter: status %d: %s", status, raw)
 	}
-	ps = payloads(t, raw)
+	ps := payloads(t, raw)
 	choice := func(path ...any) func(map[string]any) bool {
 		return func(p map[string]any) bool {
 			v := dig(p, append([]any{"choices", 0, "delta"}, path...)...)
@@ -325,7 +331,7 @@ func TestFakeRendersDeltasAndUsage_TS30_9(t *testing.T) {
 	if n := count(ps, choice("reasoning_details")); n != 2 {
 		t.Errorf("openrouter: %d reasoning_details fragments, want 2", n)
 	}
-	fragments = ""
+	fragments := ""
 	nFragments := 0
 	for _, p := range ps {
 		if a := str(dig(p, "choices", 0, "delta", "tool_calls", 0, "function", "arguments")); a != "" {
@@ -341,12 +347,15 @@ func TestFakeRendersDeltasAndUsage_TS30_9(t *testing.T) {
 		dig(usage, "completion_tokens") != 20.0 || dig(usage, "cost") != 0.00042 {
 		t.Errorf("openrouter: usage %v, want prompt_tokens 100, cached_tokens 60, completion_tokens 20 and cost 0.00042", usage)
 	}
+}
 
-	status, raw = render(t, ollamaVendor, fullTurn())
+func TestFakeRendersDeltasAndUsageOllama_TS30_9(t *testing.T) {
+	const args = renderedArgs
+	status, raw := render(t, ollamaVendor, fullTurn())
 	if status != http.StatusOK {
 		t.Fatalf("ollama: status %d: %s", status, raw)
 	}
-	ps = payloads(t, raw)
+	ps := payloads(t, raw)
 	if n := count(ps, func(p map[string]any) bool { return str(dig(p, "message", "content")) != "" }); n != 2 {
 		t.Errorf("ollama: %d content lines, want 2", n)
 	}
@@ -376,64 +385,78 @@ func TestFakeRendersDeltasAndUsage_TS30_9(t *testing.T) {
 	}
 }
 
-// TS-30-10 (30-REQ-2.4): each ending is rendered the way the vendor sends it.
-func TestFakeRendersEveryEndingAsTheVendorDoes_TS30_10(t *testing.T) {
-	text := []block{textBlock("Some text")}
-	call := []block{textBlock("Some text"), toolBlock("call_1", "echo", `{"v":"x"}`)}
-	// stop is the vendor's own spelling of the stop in a normal or tool-call
-	// ending: the field and the value it carries.
-	stop := func(v vendor, ps []map[string]any) string {
-		for _, p := range ps {
-			switch v.name {
-			case "anthropic":
-				if p["type"] == "message_delta" {
-					return str(dig(p, "delta", "stop_reason"))
-				}
-			case "openrouter":
-				if s := str(dig(p, "choices", 0, "finish_reason")); s != "" {
-					return s
-				}
-			case "ollama":
-				if p["done"] == true {
-					return str(p["done_reason"])
-				}
-			}
-		}
-		return ""
-	}
-	wantNormal := map[string]string{"anthropic": "end_turn", "openrouter": "stop", "ollama": "stop"}
-	wantToolStop := map[string]string{"anthropic": "tool_use", "openrouter": "tool_calls", "ollama": "stop"}
-	terminal := func(v vendor, raw []byte, ps []map[string]any) bool {
+var (
+	someText = []block{textBlock("Some text")}
+	someCall = []block{textBlock("Some text"), toolBlock("call_1", "echo", `{"v":"x"}`)}
+)
+
+// vendorStop is the vendor's own spelling of the stop in a normal or tool-call
+// ending: the field and the value it carries.
+func vendorStop(v vendor, ps []map[string]any) string {
+	for _, p := range ps {
 		switch v.name {
 		case "anthropic":
-			return bytes.Contains(raw, []byte(`"message_stop"`))
+			if p["type"] == "message_delta" {
+				return str(dig(p, "delta", "stop_reason"))
+			}
 		case "openrouter":
-			return bytes.Contains(raw, []byte("[DONE]"))
+			if s := str(dig(p, "choices", 0, "finish_reason")); s != "" {
+				return s
+			}
+		case "ollama":
+			if p["done"] == true {
+				return str(p["done_reason"])
+			}
 		}
-		return count(ps, func(p map[string]any) bool { return p["done"] == true }) > 0
 	}
+	return ""
+}
+
+// vendorTerminal says whether the body carries the vendor's final signal:
+// message_stop, [DONE], or a line with done.
+func vendorTerminal(v vendor, raw []byte, ps []map[string]any) bool {
+	switch v.name {
+	case "anthropic":
+		return bytes.Contains(raw, []byte(`"message_stop"`))
+	case "openrouter":
+		return bytes.Contains(raw, []byte("[DONE]"))
+	}
+	return count(ps, func(p map[string]any) bool { return p["done"] == true }) > 0
+}
+
+// TS-30-10 (30-REQ-2.4): the normal stop and the tool-call stop, in the vendor's own spelling.
+func TestFakeEndsWithTheVendorsStops_TS30_10(t *testing.T) {
 	for _, v := range allVendors() {
 		t.Run(v.name, func(t *testing.T) {
+			wantNormal := map[string]string{"anthropic": "end_turn", "openrouter": "stop", "ollama": "stop"}
+			wantToolStop := map[string]string{"anthropic": "tool_use", "openrouter": "tool_calls", "ollama": "stop"}
 			for _, c := range []struct {
 				name   string
 				blocks []block
 				end    ending
 				want   string
 			}{
-				{"normal stop", text, endNormal, wantNormal[v.name]},
-				{"tool-call stop", call, endToolStop, wantToolStop[v.name]},
+				{"normal stop", someText, endNormal, wantNormal[v.name]},
+				{"tool-call stop", someCall, endToolStop, wantToolStop[v.name]},
 			} {
 				status, raw := render(t, v, logicalTurn{blocks: c.blocks, end: c.end})
 				ps := payloads(t, raw)
-				if status != http.StatusOK || stop(v, ps) != c.want || !terminal(v, raw, ps) {
-					t.Errorf("%s: status %d, stop %q, terminal signal %v; want 200, %q and the terminal signal", c.name, status, stop(v, ps), terminal(v, raw, ps), c.want)
+				if status != http.StatusOK || vendorStop(v, ps) != c.want || !vendorTerminal(v, raw, ps) {
+					t.Errorf("%s: status %d, stop %q, terminal signal %v; want 200, %q and the terminal signal", c.name, status, vendorStop(v, ps), vendorTerminal(v, raw, ps), c.want)
 				}
 			}
+		})
+	}
+}
 
-			status, raw := render(t, v, logicalTurn{blocks: call, end: endCutOff})
+// TS-30-10: a body that stops inside the last block, without a stop or the final signal.
+func TestFakeEndsCutOffWithoutAStop_TS30_10(t *testing.T) {
+	for _, v := range allVendors() {
+		t.Run(v.name, func(t *testing.T) {
+			status, raw := render(t, v, logicalTurn{blocks: someCall, end: endCutOff})
 			ps := payloads(t, raw)
-			if status != http.StatusOK || stop(v, ps) != "" || terminal(v, raw, ps) {
-				t.Errorf("cut off: status %d, stop %q, terminal signal %v; want 200 and neither a stop nor the final signal", status, stop(v, ps), terminal(v, raw, ps))
+			if status != http.StatusOK || vendorStop(v, ps) != "" || vendorTerminal(v, raw, ps) {
+				t.Errorf("cut off: status %d, stop %q, terminal signal %v; want 200 and neither a stop nor the final signal", status, vendorStop(v, ps), vendorTerminal(v, raw, ps))
 			}
 			if len(ps) == 0 {
 				t.Error("cut off: the body carries nothing before the cut")
@@ -455,8 +478,15 @@ func TestFakeRendersEveryEndingAsTheVendorDoes_TS30_10(t *testing.T) {
 			case v.name != "ollama" && (args.Len() == 0 || json.Valid([]byte(args.String()))):
 				t.Errorf("cut off: the arguments before the cut are %q, want the start of an object that is not complete", args.String())
 			}
+		})
+	}
+}
 
-			status, raw = render(t, v, logicalTurn{end: endStatus, status: 400, message: "the-vendor-message"})
+// TS-30-10: an HTTP error status with the vendor's error body and message.
+func TestFakeEndsWithAStatusAndTheVendorsBody_TS30_10(t *testing.T) {
+	for _, v := range allVendors() {
+		t.Run(v.name, func(t *testing.T) {
+			status, raw := render(t, v, logicalTurn{end: endStatus, status: 400, message: "the-vendor-message"})
 			var errBody map[string]any
 			if err := json.Unmarshal(raw, &errBody); err != nil || status != 400 {
 				t.Fatalf("http status: status %d, body %q (%v); want 400 and a JSON body", status, raw, err)
@@ -479,9 +509,16 @@ func TestFakeRendersEveryEndingAsTheVendorDoes_TS30_10(t *testing.T) {
 			if msg != "the-vendor-message" {
 				t.Errorf("http status: body %v, want the vendor's message in its own place", errBody)
 			}
+		})
+	}
+}
 
-			status, raw = render(t, v, logicalTurn{blocks: text, end: endInStream, message: "the-vendor-message"})
-			ps = payloads(t, raw)
+// TS-30-10: the vendor's error as the last thing in a body that began with content.
+func TestFakeEndsWithAnErrorInTheStream_TS30_10(t *testing.T) {
+	for _, v := range allVendors() {
+		t.Run(v.name, func(t *testing.T) {
+			status, raw := render(t, v, logicalTurn{blocks: someText, end: endInStream, message: "the-vendor-message"})
+			ps := payloads(t, raw)
 			errAt := -1
 			for i, p := range ps {
 				switch v.name {
@@ -507,7 +544,7 @@ func TestFakeRendersEveryEndingAsTheVendorDoes_TS30_10(t *testing.T) {
 			if v.name == "anthropic" && !bytes.Contains(raw, []byte("event: error")) {
 				t.Error("in-stream error: the Anthropic body has no `event: error` line")
 			}
-			if terminal(v, raw, ps) {
+			if vendorTerminal(v, raw, ps) {
 				t.Error("in-stream error: the body also carries the final signal")
 			}
 		})

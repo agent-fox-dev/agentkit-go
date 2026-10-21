@@ -79,6 +79,9 @@ var textCase = conformanceCase{
 	check: checkText,
 }
 
+// checkText is TS-30-17 and TS-30-18 (30-REQ-4.1, 30-REQ-4.2): the text turn ends the
+// run normally with the scripted text after one request, and its usage is netted
+// to the canonical form and priced as the vendor or the catalog prices it.
 func checkText(r *caseRun) {
 	r.tb.Helper()
 	final, ok := r.lastAssistant()
@@ -152,8 +155,9 @@ var toolCallStopCase = conformanceCase{
 	check:  checkToolRound,
 }
 
-// checkToolRound requires echo to have run once, and the second request to carry
-// the call on the assistant message and, after it, the call's result.
+// checkToolRound is TS-30-19 and TS-30-20 (30-REQ-4.3, 30-REQ-4.4). It requires echo
+// to have run once, and the second request to carry the call on the assistant
+// message and, after it, the call's result.
 func checkToolRound(r *caseRun) {
 	r.tb.Helper()
 	if got := r.echoCalls.Load(); got != 1 {
@@ -212,6 +216,8 @@ var thinkingCase = conformanceCase{
 	check: checkThinking,
 }
 
+// checkThinking is TS-30-21 and TS-30-22 (30-REQ-4.5, 30-REQ-4.6): the thinking is
+// thinking and never text, and it is replayed in the vendor's raw form.
 func checkThinking(r *caseRun) {
 	r.tb.Helper()
 	checkToolRound(r)

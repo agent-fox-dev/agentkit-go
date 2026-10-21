@@ -94,111 +94,132 @@ func getenvOf(e ast.Expr) (string, bool) {
 func TestExamplesReadTheThreeVariablesThemselves_TS30_36(t *testing.T) {
 	for _, dir := range modelExamples {
 		f := parseFile(t, filepath.Join(dir, "main.go"))
-
-		// The function that reads them.
-		var sel *ast.FuncDecl
-		for _, d := range f.Decls {
-			fn, ok := d.(*ast.FuncDecl)
-			if !ok {
-				continue
-			}
-			var read []string
-			ast.Inspect(fn, func(n ast.Node) bool {
-				if name, ok := getenvOf(asExpr(n)); ok && strings.HasPrefix(name, "AGENTKIT_") {
-					read = append(read, name)
-				}
-				return true
-			})
-			if slices.Contains(read, "AGENTKIT_MODEL") {
-				sel = fn
-				slices.Sort(read)
-				if !slices.Equal(read, []string{"AGENTKIT_EFFORT", "AGENTKIT_MODEL", "AGENTKIT_PROVIDER"}) {
-					t.Errorf("%s: %s reads %v, want exactly %v", dir, fn.Name.Name, read, selectionVars)
-				}
-			}
-		}
+		sel := selectionFunc(t, dir, f)
 		if sel == nil {
-			t.Errorf("%s: no function reads AGENTKIT_MODEL with os.Getenv", dir)
 			continue
 		}
-
-		// Its defaults: the only string it assigns is STANDARD, under an empty
-		// model; it returns the provider and the effort as they are read.
-		var assigned []string
-		ast.Inspect(sel, func(n ast.Node) bool {
-			if as, ok := n.(*ast.AssignStmt); ok {
-				for _, rhs := range as.Rhs {
-					if s, ok := stringLit(rhs); ok {
-						assigned = append(assigned, s)
-					}
-				}
-			}
-			return true
-		})
-		if !slices.Equal(assigned, []string{"STANDARD"}) {
-			t.Errorf("%s: %s assigns the strings %q, want only the default \"STANDARD\"", dir, sel.Name.Name, assigned)
-		}
-		var returned *ast.ReturnStmt
-		ast.Inspect(sel, func(n ast.Node) bool {
-			if r, ok := n.(*ast.ReturnStmt); ok {
-				returned = r
-			}
-			return true
-		})
-		if returned == nil || len(returned.Results) != 3 {
-			t.Errorf("%s: %s does not return the three settings", dir, sel.Name.Name)
-		} else {
-			if name, _ := getenvOf(returned.Results[0]); name != "AGENTKIT_PROVIDER" {
-				t.Errorf("%s: the provider returned is not os.Getenv(\"AGENTKIT_PROVIDER\")", dir)
-			}
-			if id, ok := returned.Results[1].(*ast.Ident); !ok {
-				t.Errorf("%s: the model returned is %T, want the variable read from AGENTKIT_MODEL", dir, returned.Results[1])
-			} else if id.Name == "" {
-				t.Errorf("%s: the model returned is unnamed", dir)
-			}
-			conv, ok := returned.Results[2].(*ast.CallExpr)
-			if !ok || len(conv.Args) != 1 {
-				t.Errorf("%s: the effort returned is not a conversion of one value", dir)
-			} else if name, _ := getenvOf(conv.Args[0]); name != "AGENTKIT_EFFORT" {
-				t.Errorf("%s: the effort returned is not os.Getenv(\"AGENTKIT_EFFORT\") converted to agentkit.Effort", dir)
-			}
-		}
-
-		// The Config literal takes them as variables, untouched.
-		found := false
-		ast.Inspect(f, func(n ast.Node) bool {
-			lit, ok := n.(*ast.CompositeLit)
-			if !ok {
-				return true
-			}
-			if sx, ok := lit.Type.(*ast.SelectorExpr); !ok || sx.Sel.Name != "Config" {
-				return true
-			}
-			found = true
-			fields := map[string]ast.Expr{}
-			for _, el := range lit.Elts {
-				if kv, ok := el.(*ast.KeyValueExpr); ok {
-					if k, ok := kv.Key.(*ast.Ident); ok {
-						fields[k.Name] = kv.Value
-					}
-				}
-			}
-			for _, field := range []string{"Provider", "Model", "Effort"} {
-				if _, ok := fields[field].(*ast.Ident); !ok {
-					t.Errorf("%s: agentkit.Config.%s is %T, want a plain variable holding what selection read", dir, field, fields[field])
-				}
-			}
-			return true
-		})
-		if !found {
-			t.Errorf("%s: no agentkit.Config literal", dir)
-		}
-
+		checkSelectionDefaults(t, dir, sel)
+		checkSelectionReturns(t, dir, sel)
+		checkConfigLiteral(t, dir, f)
 		for _, imp := range importsOf(f) {
 			if strings.Contains(imp, "/examples/") || strings.Contains(imp, "/internal/") {
 				t.Errorf("%s imports %s: the examples share no helper", dir, imp)
 			}
 		}
+	}
+}
+
+// selectionFunc is the function of f that reads AGENTKIT_MODEL with os.Getenv,
+// which has to read all three variables and no other of AGENTKIT_.
+func selectionFunc(t *testing.T, dir string, f *ast.File) *ast.FuncDecl {
+	t.Helper()
+	var sel *ast.FuncDecl
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		var read []string
+		ast.Inspect(fn, func(n ast.Node) bool {
+			if name, ok := getenvOf(asExpr(n)); ok && strings.HasPrefix(name, "AGENTKIT_") {
+				read = append(read, name)
+			}
+			return true
+		})
+		if slices.Contains(read, "AGENTKIT_MODEL") {
+			sel = fn
+			slices.Sort(read)
+			if !slices.Equal(read, []string{"AGENTKIT_EFFORT", "AGENTKIT_MODEL", "AGENTKIT_PROVIDER"}) {
+				t.Errorf("%s: %s reads %v, want exactly %v", dir, fn.Name.Name, read, selectionVars)
+			}
+		}
+	}
+	if sel == nil {
+		t.Errorf("%s: no function reads AGENTKIT_MODEL with os.Getenv", dir)
+	}
+	return sel
+}
+
+// checkSelectionDefaults: the only string the function assigns is STANDARD, the
+// model's default, so the other two default to nothing.
+func checkSelectionDefaults(t *testing.T, dir string, sel *ast.FuncDecl) {
+	t.Helper()
+	var assigned []string
+	ast.Inspect(sel, func(n ast.Node) bool {
+		if as, ok := n.(*ast.AssignStmt); ok {
+			for _, rhs := range as.Rhs {
+				if s, ok := stringLit(rhs); ok {
+					assigned = append(assigned, s)
+				}
+			}
+		}
+		return true
+	})
+	if !slices.Equal(assigned, []string{"STANDARD"}) {
+		t.Errorf("%s: %s assigns the strings %q, want only the default \"STANDARD\"", dir, sel.Name.Name, assigned)
+	}
+}
+
+// checkSelectionReturns: the function returns the provider and the effort as they
+// are read, and the model as the variable it was read into.
+func checkSelectionReturns(t *testing.T, dir string, sel *ast.FuncDecl) {
+	t.Helper()
+	var returned *ast.ReturnStmt
+	ast.Inspect(sel, func(n ast.Node) bool {
+		if r, ok := n.(*ast.ReturnStmt); ok {
+			returned = r
+		}
+		return true
+	})
+	if returned == nil || len(returned.Results) != 3 {
+		t.Errorf("%s: %s does not return the three settings", dir, sel.Name.Name)
+		return
+	}
+	if name, _ := getenvOf(returned.Results[0]); name != "AGENTKIT_PROVIDER" {
+		t.Errorf("%s: the provider returned is not os.Getenv(\"AGENTKIT_PROVIDER\")", dir)
+	}
+	if _, ok := returned.Results[1].(*ast.Ident); !ok {
+		t.Errorf("%s: the model returned is %T, want the variable read from AGENTKIT_MODEL", dir, returned.Results[1])
+	}
+	conv, ok := returned.Results[2].(*ast.CallExpr)
+	if !ok || len(conv.Args) != 1 {
+		t.Errorf("%s: the effort returned is not a conversion of one value", dir)
+	} else if name, _ := getenvOf(conv.Args[0]); name != "AGENTKIT_EFFORT" {
+		t.Errorf("%s: the effort returned is not os.Getenv(\"AGENTKIT_EFFORT\") converted to agentkit.Effort", dir)
+	}
+}
+
+// checkConfigLiteral: the agentkit.Config literal takes the three settings as
+// variables, untouched.
+func checkConfigLiteral(t *testing.T, dir string, f *ast.File) {
+	t.Helper()
+	found := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		lit, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		if sx, ok := lit.Type.(*ast.SelectorExpr); !ok || sx.Sel.Name != "Config" {
+			return true
+		}
+		found = true
+		fields := map[string]ast.Expr{}
+		for _, el := range lit.Elts {
+			if kv, ok := el.(*ast.KeyValueExpr); ok {
+				if k, ok := kv.Key.(*ast.Ident); ok {
+					fields[k.Name] = kv.Value
+				}
+			}
+		}
+		for _, field := range []string{"Provider", "Model", "Effort"} {
+			if _, ok := fields[field].(*ast.Ident); !ok {
+				t.Errorf("%s: agentkit.Config.%s is %T, want a plain variable holding what selection read", dir, field, fields[field])
+			}
+		}
+		return true
+	})
+	if !found {
+		t.Errorf("%s: no agentkit.Config literal", dir)
 	}
 }
 
