@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -338,6 +339,24 @@ func TestLookupAlwaysUsable_TS10_14(t *testing.T) {
 		if m.ID == "" || m.ContextWindow <= 0 || m.MaxOutputTokens <= 0 {
 			t.Fatalf("Lookup(%q) = %+v, not usable", id, m)
 		}
+	}
+}
+
+// TS-26-1: the provider constants and Providers() return the three names in
+// order, as a fresh slice on every call.
+func TestProvidersAreTheThreeNamesInOrder_TS26_1(t *testing.T) {
+	if ProviderAnthropic != "anthropic" || ProviderOpenRouter != "openrouter" || ProviderOllama != "ollama" {
+		t.Errorf("constants = %q, %q, %q, want anthropic, openrouter, ollama",
+			ProviderAnthropic, ProviderOpenRouter, ProviderOllama)
+	}
+	want := []string{"anthropic", "openrouter", "ollama"}
+	a := Providers()
+	if !slices.Equal(a, want) {
+		t.Fatalf("Providers() = %v, want %v", a, want)
+	}
+	a[0] = "x"
+	if got := Providers(); !slices.Equal(got, want) {
+		t.Errorf("Providers() = %v after the first result was mutated, want %v; the slice is shared", got, want)
 	}
 }
 

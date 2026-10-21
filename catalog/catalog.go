@@ -456,6 +456,17 @@ const (
 	DefaultMaxTokens     = 128_000
 )
 
+// Default context window and output cap for an id the catalog does not list
+// under openrouter or ollama (26-REQ-3). Like the pair above they are
+// documented guesses, not a lookup at the vendor, and the descriptor they
+// belong to has no price and no effort map.
+const (
+	OpenRouterDefaultContextWindow = 131_072
+	OpenRouterDefaultMaxTokens     = 32_768
+	OllamaDefaultContextWindow     = 32_768
+	OllamaDefaultMaxTokens         = 32_768
+)
+
 // Vendor is the one vendor the catalog lists.
 const Vendor = "anthropic"
 
