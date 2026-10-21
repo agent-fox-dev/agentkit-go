@@ -359,26 +359,31 @@ returned, which is not what the spec's table assumed:
   404, 401, 429, 500 and 503, and for a closed port). A failed turn reports one request
   and no token field (`TestFailedTurnsReportOnlyTheRequest_TS28_42`).
 
-## The loop flattens a failed turn's error, so TS-28-48 and TS-28-49 are checked on the event (28-PATH-2, 28-PATH-3; task 8)
+## The loop flattened a failed turn's error; TS-28-48 and TS-28-49 held only on the event (28-PATH-2, 28-PATH-3; task 8)
+
+*Resolved after the spec landed; kept as the record of the deviation.*
 
 TS-28-48 and TS-28-49 say `agent.Run` returns an error that `errors.Is` finds
 `ollama.ErrModelNotFound`, `ollama.ErrUnreachable` or `ollama.ErrStreamTruncated`
-in. It cannot: when a turn ends in an error the loop sets the run's error to
-`errors.New(assistant.ErrorMessage)` (`loop.go:146`), a new error made from the
-message, so the chain the provider built is gone by the time `Run` returns. The
-provider's `StreamResult.Err` does wrap the sentinel
+in. When the spec was implemented it could not: when a turn ended in an error the
+loop set the run's error to `errors.New(assistant.ErrorMessage)`, a new error made
+from the message, so the chain the provider built was gone by the time `Run`
+returned, and the task 8 smoke tests checked the terminal `ErrorEvent` the loop
+forwards instead. The provider's `StreamResult.Err` did wrap the sentinel
 (`TestATruncatedStreamFails_TS28_33`, `TestA404IsModelNotFound_TS28_36`,
 `TestARefusedConnectionIsUnreachable_TS28_35`).
 
-The loop is not changed here: it is outside the spec, and what `Run` returns is
-every provider's contract. The smoke tests (`provider/ollama/smoke_test.go`) run the
-real loop through `Agent.Stream`. The loop forwards the provider's events onto
-its own stream, so the terminal `ErrorEvent` it forwards still has the typed error:
-each test finds exactly one, checks `errors.Is` on its `Err`, checks that the run's
-own error says what to do (`ollama pull <model>`, `ollama serve`) or that the stream
-was cut, that the run's last assistant message is `StopReasonError` (the text so far
-kept and no tool call, for the cut stream), and that the tool's handler never ran. The
-404 is run twice, with Ollama's message and with an empty body.
+The loop now keeps the chain (`callModel` returns the stream's error beside the
+message, and `failedTurn` in `loop.go` wraps it in a `turnError` whose text is the
+turn's `ErrorMessage`), so the criteria hold as worded for every provider, and the
+smoke tests check the run's own error as well as the event
+(`TestARunErrorWrapsTheProvidersError` in the root package). Each smoke test finds
+exactly one terminal `ErrorEvent`, checks `errors.Is` on its `Err` and on the
+run's error, checks that the run's error says what to do (`ollama pull <model>`,
+`ollama serve`) or that the stream was cut, that the run's last assistant message is
+`StopReasonError` (the text so far kept and no tool call, for the cut stream), and
+that the tool's handler never ran. The 404 is run twice, with Ollama's message and
+with an empty body.
 
 ## What the smoke tests cannot see, and what covers it (task 8)
 

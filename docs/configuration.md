@@ -73,6 +73,13 @@ W-token context window`.
 - A response cut off at `max_tokens` runs none of its tool calls; each gets
   the fixed result `Tool call "NAME" was not executed: the response hit the
   output token limit, ...`.
+- A turn that ends in an error ends the run with `core.RunStopError`. The
+  run's error (`Agent.Run`'s, `RunResult.Error`, the `AgentDoneEvent`'s) has the
+  turn's `ErrorMessage` as its text and wraps the error the provider ended its
+  stream with, so `errors.Is` and `errors.As` find the provider's own sentinels
+  and types through it (`ollama.ErrModelNotFound`, `*openrouter.StatusError`). A
+  provider that marked the turn failed without giving an error leaves a plain
+  error with the same text.
 - A run whose last response is a refusal ends with `core.RunStopRefusal` and
   an error wrapping `core.ErrRefusal`.
 - The event stream is unbounded and never drops an event or blocks the run;
@@ -607,8 +614,8 @@ The message is Ollama's `error`, else the status text. The server's status is re
 from the transport: the SDK's `Chat` returns no error for an error status whose
 body is empty. A failed turn has `StopReasonError`, the usage `Requests` 1 with no
 token field, and ends with a terminal `ErrorEvent`, then the `MessageEndEvent`.
-Through `Agent.Run` the error is made from the message text, and the typed error
-is on the `ErrorEvent` the loop forwards.
+The typed error is on the `ErrorEvent` the loop forwards and on the error
+`Agent.Run` returns (see [Run behaviour](#run-behaviour)).
 
 ## Model catalog
 
