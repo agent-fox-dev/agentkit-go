@@ -54,8 +54,8 @@ match what the spec assumed, and `WithSecurity` sends `Authorization: Bearer`
 | What the spec assumed | What the SDK has | What the provider does, and where |
 |---|---|---|
 | `(*Chat).Send(ctx, ChatRequest, opts...) (*ChatResponse, error)` | `Send(ctx, components.ChatRequest, *components.MetadataLevel, ...operations.Option) (*operations.SendChatCompletionRequestResponse, error)` (`chat.go:37`); the response is a union whose `EventStream` is a `*stream.EventStream[components.ChatStreamingResponse]` with `Next`, `Value`, `Err` and `Close` | calls it with a nil metadata level and reads `EventStream` (`provider/openrouter/stream.go:64-71`); every stream test runs through it |
-| a typed HTTP error exposing the status, `Retry-After` and the body | one error type per status (`sdkerrors.TooManyRequestsResponseError` and the like) with the vendor's JSON and no status or headers; `*sdkerrors.APIError` (`models/sdkerrors/apierror.go`) only for a response with an unexpected content type | the `HTTPClient` handed to the SDK records each response's status, `Retry-After` and error body (`provider/openrouter/client.go:161`, `transport.Do`), and `sendFailure` classifies from that (`provider/openrouter/stream.go:99`); `TestAuthenticationFailuresAreNotRetried_TS27_39` (`errors_test.go:30`) and `TestRetryWaits_TS27_37` (`retry_test.go:168`) |
-| request types that carry the tool schemas and `reasoning_details` without loss | a tool's `parameters` is a `map[string]any` (`models/components/chatfunctiontool.go:21`), which loses property order; `reasoning_details` is a typed union (`chatassistantmessage.go:141`) | the provider writes the request body itself (`provider/openrouter/request.go:74`, `buildBody`); the `HTTPClient` it hands the SDK replaces the body the SDK serializes from a placeholder `ChatRequest{Model, Stream}` (`client.go:161`, `stream.go:69`); `TestToolsAreDeclaredWithTheirSchema_TS27_12` (`request_test.go:323`) and `TestSmokeTwoTurnToolLoop_TS27_56` (`smoke_test.go:23`) |
+| a typed HTTP error exposing the status, `Retry-After` and the body | one error type per status (`sdkerrors.TooManyRequestsResponseError` and the like) with the vendor's JSON and no status or headers; `*sdkerrors.APIError` (`models/sdkerrors/apierror.go`) only for a response with an unexpected content type | the `HTTPClient` handed to the SDK records each response's status, `Retry-After` and error body (`provider/openrouter/client.go:139`, `transport.Do`), and `sendFailure` classifies from that (`provider/openrouter/stream.go:99`); `TestAuthenticationFailuresAreNotRetried_TS27_39` (`errors_test.go:30`) and `TestRetryWaits_TS27_37` (`retry_test.go:168`) |
+| request types that carry the tool schemas and `reasoning_details` without loss | a tool's `parameters` is a `map[string]any` (`models/components/chatfunctiontool.go:21`), which loses property order; `reasoning_details` is a typed union (`chatassistantmessage.go:141`) | the provider writes the request body itself (`provider/openrouter/request.go:74`, `buildBody`); the `HTTPClient` it hands the SDK replaces the body the SDK serializes from a placeholder `ChatRequest{Model, Stream}` (`client.go:139`, `stream.go:69`); `TestToolsAreDeclaredWithTheirSchema_TS27_12` (`request_test.go:326`) and `TestSmokeTwoTurnToolLoop_TS27_56` (`smoke_test.go:139`) |
 | an event stream that carries every `reasoning_details` field | the stream's chunks decode into the same typed union, which keeps the documented fields (`type`, `text`, `summary`, `data`, `signature`, `format`, `index`, `id`) and drops any other | the provider keeps the fields the SDK models (`provider/openrouter/decode.go:187`, `thinking`) and replays them from the block's `Signature` (`request.go:203`, `replayedFragments`); a field the SDK does not model is not replayed, and no test asserts that loss; `TestReasoningFragmentsBecomeThinking_TS27_27` (`stream_test.go:352`) and `TestReasoningDetailsReplayForTheSameModelOnly_TS27_22` (`replay_test.go:69`) |
 | an `Accept` header for a stream | `Accept: application/json;q=1, text/event-stream;q=0` unless overridden (`chat.go:99`) | passes `operations.WithAcceptHeaderOverride(operations.AcceptHeaderEnumTextEventStream)` (`stream.go:71`); `TestEndpointAndAuthorization_TS27_6` (`request_test.go:137`) asserts the header |
 
@@ -72,14 +72,14 @@ the provider does:
   (`internal/config/sdkconfiguration.go:42`). A chat completion never sends
   them (`chat.go` passes no globals to `PopulateHeaders`), but 27-REQ-1.2 says
   the provider looks up no variable other than the two it names. The provider
-  sets both to the empty string (`provider/openrouter/client.go:98`), so the SDK
+  sets both to the empty string (`provider/openrouter/client.go:97`), so the SDK
   reads neither. The two headers are absent from every request
   (`TestEndpointAndAuthorization_TS27_6`, with both variables set); that the SDK
   does not read the variables is not observable and is true by construction.
 - Without `WithClient` it builds a client with a 60-second `Timeout`, which
   counts the time spent reading the body and would cut a long stream. The
   provider always passes its own client, and when `Options.HTTPClient` is nil
-  that client has no timeout (`provider/openrouter/client.go:67`); only the
+  that client has no timeout (`provider/openrouter/client.go:66`); only the
   caller's context ends a request.
 
 ## The SDK cannot tell an absent token count from a zero (27-REQ-8.1)

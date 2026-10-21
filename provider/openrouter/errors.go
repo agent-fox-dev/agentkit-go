@@ -73,13 +73,3 @@ func vendorMessage(body []byte) string {
 
 // maxMessageRunes bounds the part of a body that is not JSON shown in an error.
 const maxMessageRunes = 200
-
-// redacted is an error whose text has had the API key replaced; it still wraps
-// the error it stands for, so errors.Is and errors.As see through it.
-type redacted struct {
-	msg string
-	err error
-}
-
-func (e *redacted) Error() string { return e.msg }
-func (e *redacted) Unwrap() error { return e.err }

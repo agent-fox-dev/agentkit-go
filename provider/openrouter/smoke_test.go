@@ -16,75 +16,55 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
-// TS-27-56 (smoke, 27-PATH-1): a two-turn tool loop runs on OpenRouter against
-// a recording server: the second request carries the model id as written, the
-// tool's full schema, the first turn's call id and argument string byte for
-// byte, the result paired to that id, and the reasoning fragments as received.
-func TestSmokeTwoTurnToolLoop_TS27_56(t *testing.T) {
-	const key = "sk-or-smoke-key-7a1"
-	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-other-key")
-	t.Setenv("OLLAMA_HOST", "http://ollama.internal:11434")
+// The reasoning fragments of the first turn as the vendor sends them, and the
+// tool call's arguments in the two pieces they arrive in.
+const (
+	smokeFrag1 = `{"type":"reasoning.text","text":"plan the work","signature":"sig-1","format":"anthropic-claude-v1","index":0,"id":"rd-1"}`
+	smokeFrag2 = `{"type":"reasoning.summary","summary":"short plan","index":1,"id":"rd-2","format":"openai-responses-v1"}`
+	smokeFrag3 = `{"type":"reasoning.encrypted","data":"AAAA==","index":2,"id":"rd-3","format":"openai-responses-v1"}`
+	smokeArgs1 = `{"path": "a.txt", `
+	smokeArgs2 = ` "limit": 5}`
+)
 
-	sel, err := catalog.Select("openrouter", "STANDARD", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	toolSchema, err := schema.Parse([]byte(`{"type":"object","properties":{"path":{"type":"string"},` +
+// smokeTool is a tool whose schema has several properties, in an order that is
+// not alphabetical. It counts its runs, and returns the schema as it marshals.
+func smokeTool(t *testing.T, runs *int) (core.Tool, []byte) {
+	t.Helper()
+	s, err := schema.Parse([]byte(`{"type":"object","properties":{"path":{"type":"string"},` +
 		`"limit":{"type":"integer","minimum":1,"maximum":100},"mode":{"type":"string","enum":["a","b"]}},` +
 		`"required":["path"],"additionalProperties":false}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantParams, _ := toolSchema.MarshalJSON()
-	var ran int
-	tool := core.Tool{
-		Name: "read_file", Description: "reads a file", InputSchema: toolSchema,
-		Handler: func(_ context.Context, in json.RawMessage) (json.RawMessage, error) {
-			ran++
+	marshaled, _ := s.MarshalJSON()
+	return core.Tool{
+		Name: "read_file", Description: "reads a file", InputSchema: s,
+		Handler: func(context.Context, json.RawMessage) (json.RawMessage, error) {
+			*runs++
 			return json.RawMessage(`{"text":"file contents"}`), nil
 		},
-	}
+	}, marshaled
+}
 
-	frag1 := `{"type":"reasoning.text","text":"plan the work","signature":"sig-1","format":"anthropic-claude-v1","index":0,"id":"rd-1"}`
-	frag2 := `{"type":"reasoning.summary","summary":"short plan","index":1,"id":"rd-2","format":"openai-responses-v1"}`
-	frag3 := `{"type":"reasoning.encrypted","data":"AAAA==","index":2,"id":"rd-3","format":"openai-responses-v1"}`
-	args1, args2 := `{"path": "a.txt", `, ` "limit": 5}`
-	turn1 := sse(
-		chunk(`{"reasoning":"plan the work","reasoning_details":[`+frag1+`,`+frag2+`]}`, ""),
-		chunk(`{"reasoning_details":[`+frag3+`]}`, ""),
-		chunk(`{"tool_calls":[{"index":0,"id":"call_0a1b2c","type":"function","function":{"name":"read_file","arguments":`+jsonStr(args1)+`}}]}`, ""),
-		chunk(`{"tool_calls":[{"index":0,"function":{"arguments":`+jsonStr(args2)+`}}]}`, ""),
-		chunk(`{}`, "tool_calls"),
-		usageChunk(`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cost":0.0002}`),
-		done)
-	turn2 := sse(chunk(text("The file says: file contents."), ""), chunk(`{}`, "stop"), done)
-	srv := newReplay(t, turn1, turn2)
+// smokeTurns are the two replies: reasoning and a tool call, then the answer.
+func smokeTurns() []reply {
+	return []reply{
+		sse(
+			chunk(`{"reasoning":"plan the work","reasoning_details":[`+smokeFrag1+`,`+smokeFrag2+`]}`, ""),
+			chunk(`{"reasoning_details":[`+smokeFrag3+`]}`, ""),
+			chunk(`{"tool_calls":[{"index":0,"id":"call_0a1b2c","type":"function","function":{"name":"read_file","arguments":`+jsonStr(smokeArgs1)+`}}]}`, ""),
+			chunk(`{"tool_calls":[{"index":0,"function":{"arguments":`+jsonStr(smokeArgs2)+`}}]}`, ""),
+			chunk(`{}`, "tool_calls"),
+			usageChunk(`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cost":0.0002}`),
+			done),
+		sse(chunk(text("The file says: file contents."), ""), chunk(`{}`, "stop"), done),
+	}
+}
 
-	p, err := openrouter.New(sel.Model, openrouter.Options{
-		Env: map[string]string{openrouter.APIKeyVar: key, openrouter.BaseURLVar: srv.URL()},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	agent, err := agentkit.New(agentkit.Config{
-		Provider: p, Model: sel.Model.ID, Effort: sel.Effort,
-		Toolset: agentkit.Toolset{Tools: []core.Tool{tool}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := agent.Run(context.Background(), "read a.txt")
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	if res.FinalText() != "The file says: file contents." || res.StopReason != core.RunStopEndTurn || ran != 1 {
-		t.Fatalf("run = %q (%v), tool ran %d times; want the turn-2 text, a normal end and one tool call", res.FinalText(), res.StopReason, ran)
-	}
-	if srv.Count() != 2 {
-		t.Fatalf("the server holds %d requests, want 2", srv.Count())
-	}
+// checkNoForeignValues fails the test if a request carries an Anthropic or an
+// Ollama value in its body or in a header.
+func checkNoForeignValues(t *testing.T, srv *replay) {
+	t.Helper()
 	for i, r := range srv.Requests() {
 		for _, other := range []string{"sk-ant-other-key", "ollama.internal"} {
 			if bytes.Contains(r.Body, []byte(other)) {
@@ -99,7 +79,13 @@ func TestSmokeTwoTurnToolLoop_TS27_56(t *testing.T) {
 			}
 		}
 	}
+}
 
+// checkSecondRequest checks the second request of the loop: the model as
+// written, the tool's schema, the first turn's call id and arguments byte for
+// byte, the result paired to that id and the reasoning fragments as received.
+func checkSecondRequest(t *testing.T, srv *replay, wantParams []byte) {
+	t.Helper()
 	var second struct {
 		Model string `json:"model"`
 		Tools []struct {
@@ -134,20 +120,68 @@ func TestSmokeTwoTurnToolLoop_TS27_56(t *testing.T) {
 	}
 	call := assistant["tool_calls"].([]any)[0].(map[string]any)
 	fn := call["function"].(map[string]any)
-	if call["id"] != "call_0a1b2c" || fn["arguments"] != args1+args2 || fn["name"] != "read_file" {
+	if call["id"] != "call_0a1b2c" || fn["arguments"] != smokeArgs1+smokeArgs2 || fn["name"] != "read_file" {
 		t.Errorf("tool call = %v, want id call_0a1b2c and the arguments byte for byte", call)
 	}
 	if toolMsg["tool_call_id"] != "call_0a1b2c" || !strings.Contains(toolMsg["content"].(string), "file contents") {
 		t.Errorf("tool message = %v, want the result paired to call_0a1b2c", toolMsg)
 	}
 	details, _ := json.Marshal(assistant["reasoning_details"])
-	if !jsonEqual(t, string(details), "["+frag1+","+frag2+","+frag3+"]") {
+	if !jsonEqual(t, string(details), "["+smokeFrag1+","+smokeFrag2+","+smokeFrag3+"]") {
 		t.Errorf("reasoning_details = %s, want the three fragments as received", details)
 	}
-	if _, has := sentBody(t, srv, 0)["messages"].([]any)[0].(map[string]any)["reasoning_details"]; has {
+}
+
+// TS-27-56 (smoke, 27-PATH-1): a two-turn tool loop runs on OpenRouter against
+// a recording server: the second request carries the model id as written, the
+// tool's full schema, the first turn's call id and argument string byte for
+// byte, the result paired to that id, and the reasoning fragments as received.
+func TestSmokeTwoTurnToolLoop_TS27_56(t *testing.T) {
+	const key = "sk-or-smoke-key-7a1"
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-other-key")
+	t.Setenv("OLLAMA_HOST", "http://ollama.internal:11434")
+
+	sel, err := catalog.Select("openrouter", "STANDARD", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ran int
+	tool, wantParams := smokeTool(t, &ran)
+	turns := smokeTurns()
+	srv := newReplay(t, turns...)
+
+	p, err := openrouter.New(sel.Model, openrouter.Options{
+		Env: map[string]string{openrouter.APIKeyVar: key, openrouter.BaseURLVar: srv.URL()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := agentkit.New(agentkit.Config{
+		Provider: p, Model: sel.Model.ID, Effort: sel.Effort,
+		Toolset: agentkit.Toolset{Tools: []core.Tool{tool}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := agent.Run(context.Background(), "read a.txt")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if res.FinalText() != "The file says: file contents." || res.StopReason != core.RunStopEndTurn || ran != 1 {
+		t.Fatalf("run = %q (%v), tool ran %d times; want the turn-2 text, a normal end and one tool call", res.FinalText(), res.StopReason, ran)
+	}
+	if srv.Count() != 2 {
+		t.Fatalf("the server holds %d requests, want 2", srv.Count())
+	}
+	checkNoForeignValues(t, srv)
+	checkSecondRequest(t, srv, wantParams)
+
+	first := sentBody(t, srv, 0)
+	if _, has := first["messages"].([]any)[0].(map[string]any)["reasoning_details"]; has {
 		t.Error("the first request already carried reasoning_details")
 	}
-	if r, _ := sentBody(t, srv, 0)["reasoning"].(map[string]any); r["effort"] != "medium" {
+	if r, _ := first["reasoning"].(map[string]any); r["effort"] != "medium" {
 		t.Errorf("the first request's reasoning = %v, want the tier's medium effort", r)
 	}
 }
