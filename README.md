@@ -25,6 +25,7 @@ machine).
 go test ./...          # everything, offline, no API key
 make check             # fast: fmt, vet, lint and the short tests, in every module of MODULES
 make check-release     # full: adds the slow gates (cross-target builds, nested make runs)
+make provider-live-test # opt-in: one real tool loop on each provider that is ready; costs money
 go run ./examples/agentdemo
 ```
 
@@ -406,6 +407,7 @@ takes the place of the first two steps.
 | `make sandbox-landlock-test` | Run the landlock provider's tests verbosely, with the public `GitRepo` clone of `AGENTKIT_SANDBOX_GIT_URL`; not part of `check` |
 | `make sandbox-gateway` | Build `build/bin/agentkit-gateway` with `-trimpath`; `AGENTKIT_VERSION=…` stamps its version |
 | `make sandbox-gateway-test` | Build the sandbox base image and run the gateway's opt-in Podman tests against it; not part of `check` |
+| `make provider-live-test` | Run the live provider smoke tests (`AGENTKIT_LIVE=1`): one real `read_file` loop on each provider whose prerequisites are present, skipping the rest and naming what is missing; costs money; not part of `check` or `check-release` |
 
 ## Documentation
 
