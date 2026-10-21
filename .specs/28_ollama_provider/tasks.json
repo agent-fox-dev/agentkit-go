@@ -377,7 +377,7 @@
         "`make check` passes",
         "docs/generated/provider/ollama.txt exists and matches `make doc` output"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     }
   ]

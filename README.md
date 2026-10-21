@@ -10,8 +10,9 @@ somewhere else (`sandbox`).
 a `Runner` (`agentkit.Toolset` and `agentkit.NewRunner`), which runs the tool
 calls, against the Anthropic Messages API (`provider/anthropic`, on the
 official Go SDK) or, passed as `Config.Provider`, OpenRouter
-(`provider/openrouter`, on OpenRouter's Go SDK), with a scripted provider
-(`provider/faux`) for offline tests.
+(`provider/openrouter`, on OpenRouter's Go SDK) or Ollama (`provider/ollama`, on
+Ollama's Go package), with a scripted provider (`provider/faux`) for offline
+tests.
 The root and sandbox modules listen on no socket and serve no MCP: they are a
 library. `agentkit-sandboxd` serves the agent service on its stdio, and two
 separate modules listen: `sandbox/gatewayd` (`agentkit-gateway`, sandboxes over
@@ -325,6 +326,7 @@ takes the place of the first two steps.
 |---|---|
 | `anthropic.Resolve` | `Resolve(env Env) (*sdk.Client, Source, error)` |
 | `openrouter.New` | `New(m core.Model, opts Options) (core.ProviderClient, error)`: reads `OPENROUTER_API_KEY` and `OPENROUTER_BASE_URL`; fails with `ErrNoAPIKey` before any request |
+| `ollama.New` | `New(m core.Model, opts Options) (*Client, error)`: reads `OLLAMA_HOST` and sends no credential; fails with `ErrInvalidHost` before any request |
 | `catalog.Lookup` | `Lookup(id string) (core.Model, bool)`: a Claude model id; `agentkit.New` calls it |
 | `catalog.Select` | `Select(provider, model string, effort core.Effort) (Selection, error)`: offline, for `anthropic`, `openrouter` and `ollama`; `model` is a tier (`SIMPLE`, `STANDARD`, `ADVANCED`) or a model id |
 | `core.ProviderClient` | `Stream(ctx, Request) (<-chan StreamEvent, error)` |
@@ -366,6 +368,7 @@ takes the place of the first two steps.
 | `provider` | Cost arithmetic, the per-session tool-schema cache, deferred-tool splitting, and the tool-pairing repair (`RepairToolPairing`) the chat-style wires share. |
 | `provider/anthropic` | The Anthropic wire (direct, Vertex AI, Bedrock) over the official SDK. |
 | `provider/openrouter` | The OpenRouter wire over OpenRouter's Go SDK: `openrouter.New`, with its own retry loop, reasoning replay, netted usage and cost, and key redaction. |
+| `provider/ollama` | The Ollama wire over Ollama's Go package: `ollama.New`, with `num_ctx` on every request, tool schemas cut to what the SDK carries, thinking and argument replay, zero-cost usage and named failures. |
 | `provider/faux` | A scripted provider for offline tests and demos; `ToolCall` and `Text` script a turn. |
 | `wire` | Bounded, strict parsing of untrusted JSON, and frame readers. |
 | `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `Open`, `CheckSpec`, `LocalDir`, `Tar`/`TarOut`, the protocol version and the errors. Its internal packages hold the protocol, the agent service, the attach and proxy code, the tar entry rules and the rsync adapter. |

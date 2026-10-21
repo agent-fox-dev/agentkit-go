@@ -436,6 +436,180 @@ SDK's own retries are off. No error text, event, `ErrorMessage` or warning
 holds the API key: every occurrence, and its URL-escaped form, is replaced by
 `[redacted]`.
 
+## `ollama.Options`
+
+`ollama.New(model, opts)` returns a `*ollama.Client`, a `core.ProviderClient`,
+for one model served by an Ollama server, local or self-hosted
+(`provider/ollama`). It reaches the server through Ollama's own Go package
+(`github.com/ollama/ollama/api`) and its native `/api/chat` endpoint, and no
+other: not Ollama's OpenAI-compatible or Anthropic-compatible ones. `model` is a
+`core.Model`: the window, the output cap and the efforts come from it, and the
+provider holds none of its own but the catalog's default window for a model that
+has none. The row `catalog.Select("ollama", "STANDARD", "")` returns is the
+usual one:
+
+```go
+sel, err := catalog.Select("ollama", "STANDARD", "")
+if err != nil {
+	return err
+}
+p, err := ollama.New(sel.Model, ollama.Options{}) // OLLAMA_HOST from the environment
+if err != nil {
+	return err // wraps ollama.ErrInvalidHost for a host it refuses
+}
+agent, err := agentkit.New(agentkit.Config{Provider: p, Model: sel.Model.ID, Effort: sel.Effort})
+```
+
+`agentkit.New` does not build this provider from a name: pass it as
+`Config.Provider`. `Config.Model` is still resolved by `catalog.Lookup`, which
+lists Claude rows only, so the agent's own view of the window (it prunes tool
+results and refuses a request that cannot fit by it) is the default
+descriptor's, not the row's; the provider sends the row's window to Ollama as
+`num_ctx`. Choosing the provider from `Config` is a later change.
+
+`Stream(ctx, req)` has the contract of `anthropic.Provider`'s: a context already
+done is refused with its error, every later failure is the last item of the
+channel, and it is safe for concurrent use. `(*Client).Host()` returns the
+resolved base URL.
+
+`New` makes no request. It fails when the model id is empty after trimming
+(`ollama: the model id is empty`) and when the host is not one the provider
+accepts (an error wrapping `ollama.ErrInvalidHost`, `ollama: invalid host: <why>
+(<the value>)`, with any password in the value replaced by `xxxxx`).
+
+| Variable | Effect |
+|---|---|
+| `OLLAMA_HOST` (`ollama.HostVar`) | The server's address; default `http://127.0.0.1:11434` (`ollama.DefaultHost`). |
+
+The host is `Options.Host` when that is not empty after trimming, and then no
+variable is read at all. Otherwise `OLLAMA_HOST` is read from `Options.Env`
+first (an empty value falls through), then from `Options.Getenv`, or the process
+environment when that is nil. The provider reads this one variable and no
+other. The value is trimmed and read by the rules of Ollama's own CLI, so it
+means the same server for `ollama` and for AgentKit:
+
+| Value | Base URL |
+|---|---|
+| `example.local` | `http://example.local:11434` (no scheme: http, port 11434) |
+| `http://h` | `http://h:80` (a scheme without a port: its default) |
+| `https://h` | `https://h:443` |
+| `http://h/proxy` | `http://h:80/proxy` (a path is kept) |
+| `::1`, `[::1]:8080` | `http://[::1]:11434`, `http://[::1]:8080` |
+| `:8080` | `http://127.0.0.1:8080` |
+
+It is stricter than the CLI where the CLI guesses, and refuses with an error
+wrapping `ErrInvalidHost`: a scheme other than exactly `http` or `https`; a port
+that is not a number from 1 to 65535; a value that cannot be split into a host
+and a port, or has a query or a fragment; user information (`user:pw@h`);
+`ollama.com` and any subdomain of it, which is Ollama's hosted service and is not
+supported. `docs/errata/28_ollama_provider.md` lists each difference.
+
+| Field | Meaning |
+|---|---|
+| `Host` | The server's address; overrides `OLLAMA_HOST`. |
+| `Env` | `map[string]string` holding an explicit value for `OLLAMA_HOST`. |
+| `Getenv` | Injectable lookup; nil means the process environment. |
+| `HTTPClient` | Sends the requests; a copy of it is used, so its `Timeout`, `CheckRedirect` and `Jar` are kept, and its `Transport` runs beneath the layer that deletes `Authorization`. Nil means a client with no overall timeout, so only the caller's context cuts a long stream. |
+| `Now` | Injectable clock for message timestamps. |
+| `Warnf` | Receives the report of a transcript repair; nil discards it. |
+
+`ollama.API` is `"ollama-chat"`, the api string of the catalog's `ollama` vendor.
+
+**No credential is sent.** The provider's requests go through a layer that
+deletes any `Authorization` header before the embedder's `HTTPClient.Transport`
+sees them, so none is sent whatever `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or
+`OLLAMA_API_KEY` hold; those values appear in no request. The embedder's own
+transport may add headers, an `Authorization` for a proxy in front of Ollama
+included. The SDK has a signing path of its own, which the provider cannot
+turn off: when `OLLAMA_AUTH` is set in the process environment it reads
+`~/.ollama/id_ed25519`, signs the request and adds a `ts` query parameter,
+and fails the request before it is sent if the key is missing. Only the
+`Authorization` header it adds is deleted.
+
+What the provider sends, as one `POST` to `<host>/api/chat`:
+
+- `model` is `Model.ID` as written, `stream` is true and `truncate` is false.
+- `options.num_ctx` is `Model.ContextWindow`, or
+  `catalog.OllamaDefaultContextWindow` (32,768) when that is not positive. Ollama
+  applies it only when the model loads: a model already loaded at another length
+  keeps that length until it unloads.
+- `options.num_predict` is the request's `MaxTokens` when it is positive and not
+  above `Model.MaxOutputTokens`, else the cap, else the request's value, else
+  absent. `temperature` and `top_p` are sent when set, zero included, and `stop`
+  when there are stop sequences. `keep_alive`, `format` and images are never sent.
+- The text blocks of `Request.System` are one leading `system` message, joined
+  with a blank line; none when there is no text. The prefix, then the messages,
+  in order. An assistant message with nothing to send is skipped. Each tool
+  result is a `tool` message with `provider.ToolResultText` as its content (`Error: `
+  first for an error), the tool's name and the id of the call it answers.
+- A call's `id`, `index` (its position among the message's calls), name and
+  arguments are sent with the arguments' keys in the order of `ToolUseBlock.Input`
+  and each value as it was written.
+- Thinking is replayed as the message's `thinking`, the unredacted blocks
+  concatenated, only for a message whose `Model` is `Model.ID`; any other
+  thinking is dropped and never sent as content.
+- Each tool is `{"type":"function","function":{"name","description","parameters"}}`,
+  `parameters` being the part of the schema the SDK's tool type carries:
+  `additionalProperties`, `format` and bounds of a property are dropped, what is
+  inside an `items` schema and `$defs` is kept, and a tool with no schema, or
+  a schema with no properties, is `{"type":"object","properties":{}}`. A tool choice of
+  `none` sends no `tools` key. A schema the SDK type cannot carry ends the turn
+  before any request (`ollama: the input schema of tool "<name>" is not one Ollama's
+  tool type can carry: <error>`).
+- `think` is a string level read from `Model.Efforts` as the Anthropic provider
+  reads it: none asked, or a model whose `ThinkingKind` is `none`, sends no
+  `think`; with no map the effort is sent by its name; with a map, a level that is
+  absent or nil sends nothing and a present level sends its value, trimmed and
+  lower-cased. No effort is moved to another level, so `xhigh` on the catalog row,
+  which does not list it, sends none.
+- Before encoding, `provider.RepairToolPairing` runs on the messages (not the
+  prefix): errored and aborted assistant turns are dropped, a result is kept only
+  in the run after the turn that made the call, and an unanswered call gets an
+  error result `No result provided`. `Warnf` is told once when it changed anything.
+
+What it returns: a `MessageStartEvent` with the first chunk; thinking, text and
+tool-call events in the order the server sends them, with block indices from 0 in
+order of first appearance and a new block when the kind changes (a completed text
+or thinking block is appended to the partial message, followed by a
+`MessageUpdateEvent`); then, with the done chunk, the block-end events in block
+order and the `MessageEndEvent`. Thinking is never reported as text. A tool call
+arrives whole: a start event, one delta holding all the arguments and the block.
+Its id is the server's; a call with none, or one that repeats an id of the turn,
+gets `ollama_<random per Client>_<n>`. The arguments are the JSON the SDK's
+ordered map writes, so the top-level keys are in the order the server sent and
+a nested object's keys are sorted. `done_reason` is kept in `RawStopReason`; `length`
+is `StopReasonLength` (even with tool calls), else a message with tool calls is
+`StopReasonToolUse`, else `StopReasonStop`.
+
+The usage is that of the done chunk: `CacheReadTokens` from
+`prompt_eval_cached_count` when it is positive, `InputTokens` the
+`prompt_eval_count` less the cached count (never below 0), `OutputTokens` from
+`eval_count`, `Requests` 1. No reasoning count is set, because Ollama reports
+none. The cost is 0 with its presence bit set whenever the chunk reported a count,
+whether the model id is listed or not: a run on Ollama is priced at zero, not
+unpriced. A done chunk with no count at all reports no usage and no cost.
+
+Errors. There is exactly one HTTP attempt per `Stream` call; nothing is retried.
+Every text starts `ollama:`, and none holds the value of an environment variable.
+
+| Failure | Result |
+|---|---|
+| The caller's context cancelled | Takes precedence over every case below. `StopReasonAborted`, `ErrorMessage` `Request was aborted`, `Err` `core.ErrAborted`, no `ErrorEvent`, no tool call. |
+| A body that ends without a done chunk | `ollama.ErrStreamTruncated`, `ollama: stream ended before done`; the text and thinking so far are kept, every tool call is dropped. |
+| A failure to connect (refused, DNS, no route) | Wraps `ollama.ErrUnreachable` and the `*net.OpError`: `ollama: cannot reach the Ollama server at <host> (<error>); start it with "ollama serve", or set OLLAMA_HOST to its address`. |
+| HTTP 404 | Wraps `ollama.ErrModelNotFound` and is a `*ollama.StatusError` with `Code` 404: `ollama: HTTP 404: the model "<id>" is not on the server at <host> (Ollama said: <message>); run "ollama pull <id>"`. |
+| A message that says the input exceeds the context length, in a status error or an error line in a 200 stream | Wraps `ollama.ErrContextWindow` (and is a `*StatusError` when it came as a status): `ollama: <message> (model "<id>", num_ctx <n> sent); shorten the input or ask for a larger context length, but a model already loaded at a smaller length keeps it until it unloads`. |
+| HTTP 401 or 403 | A `*ollama.StatusError`: `ollama: HTTP 401 from <host>: AgentKit sends no credential to Ollama; check OLLAMA_HOST (Ollama said: <message>)`. |
+| Any other non-2xx | A `*ollama.StatusError`, text `ollama: HTTP <code>: <message>`. |
+| An error line inside a 200 stream | `ollama: <message>`. |
+
+The message is Ollama's `error`, else the status text. The server's status is read
+from the transport: the SDK's `Chat` returns no error for an error status whose
+body is empty. A failed turn has `StopReasonError`, the usage `Requests` 1 with no
+token field, and ends with a terminal `ErrorEvent`, then the `MessageEndEvent`.
+Through `Agent.Run` the error is made from the message text, and the typed error
+is on the `ErrorEvent` the loop forwards.
+
 ## Model catalog
 
 The embedded `catalog/catalog.json` (version `2026-10-21`, schema version 1)

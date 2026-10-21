@@ -356,3 +356,43 @@ returned, which is not what the spec's table assumed:
   (`TestOneAttemptAndNoSecrets_TS28_39`, which also counts one request per call for a
   404, 401, 429, 500 and 503, and for a closed port). A failed turn reports one request
   and no token field (`TestFailedTurnsReportOnlyTheRequest_TS28_42`).
+
+## The loop flattens a failed turn's error, so TS-28-48 and TS-28-49 are checked on the event (28-PATH-2, 28-PATH-3; task 8)
+
+TS-28-48 and TS-28-49 say `agent.Run` returns an error that `errors.Is` finds
+`ollama.ErrModelNotFound`, `ollama.ErrUnreachable` or `ollama.ErrStreamTruncated`
+in. It cannot: when a turn ends in an error the loop sets the run's error to
+`errors.New(assistant.ErrorMessage)` (`loop.go:146`), a new error made from the
+message, so the chain the provider built is gone by the time `Run` returns. The
+provider's `StreamResult.Err` does wrap the sentinel
+(`TestATruncatedStreamFails_TS28_33`, `TestA404IsModelNotFound_TS28_36`,
+`TestARefusedConnectionIsUnreachable_TS28_35`).
+
+The loop is not changed here: it is outside the spec, and what `Run` returns is
+every provider's contract. The smoke tests (`provider/ollama/smoke_test.go`) run the
+real loop through `Agent.Stream`. The loop forwards the provider's events onto
+its own stream, so the terminal `ErrorEvent` it forwards still has the typed error:
+each test finds exactly one, checks `errors.Is` on its `Err`, checks that the run's
+own error says what to do (`ollama pull <model>`, `ollama serve`) or that the stream
+was cut, that the run's last assistant message is `StopReasonError` (the text so far
+kept and no tool call, for the cut stream), and that the tool's handler never ran. The
+404 is run twice, with Ollama's message and with an empty body.
+
+## What the smoke tests cannot see, and what covers it (task 8)
+
+- **The run's cost.** `Agent` sets the cost bit on the run's total itself, so TS-28-47's
+  "total cost 0" cannot show that the provider reported its cost. The smoke test checks
+  `Usage.Has(UsageCostUSD)` and a cost of 0 on each assistant message, which is what the
+  provider reported, and the run's sums (198 input, 556 cache read, 170 output, two
+  requests).
+- **The window the agent works with.** `agentkit.New` resolves `Config.Model` with
+  `catalog.Lookup` (`agent.go:152`), which lists Claude rows only and gives any other id
+  a default descriptor with a 1,000,000-token window. The loop prunes tool results and
+  refuses a request that cannot fit by that window (`loop.go:292`), so on Ollama it is
+  not the row's 32,768 that the agent works with, while `num_ctx` is. The spec leaves
+  choosing the provider from `Config` to `provider_selection`; `docs/configuration.md`
+  says so.
+- **TS-28-46** (the existing `provider/anthropic` and `provider/faux` tests pass
+  unmodified, and `make check` passes) is checked with commands, not a Go test: `git diff
+  main -- provider/anthropic provider/faux agent.go loop.go` is empty, and `make check`
+  exits 0. A test that reads git history cannot run in a checkout without it.

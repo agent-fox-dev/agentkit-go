@@ -20,6 +20,7 @@ it with `go doc -all <import path>`. This file is the map.
 | `provider/anthropic` | The Anthropic Messages wire API, on the official Go SDK. |
 | `provider/faux` | A deterministic, scripted provider for offline tests, with `faux.ToolCall` and `faux.Text` for single-block turns. |
 | `provider/openrouter` | A `core.ProviderClient` for models served by OpenRouter, on OpenRouter's Go SDK and its native Chat Completions API: `openrouter.New(model, openrouter.Options)`. Not chosen from `agentkit.Config` yet; pass it as `Config.Provider`. |
+| `provider/ollama` | A `core.ProviderClient` for models served by an Ollama server, on Ollama's Go package and its native `/api/chat` API: `ollama.New(model, ollama.Options)`. Not chosen from `agentkit.Config` yet; pass it as `Config.Provider`. |
 | `provider` | What a wire needs and does not own: cost arithmetic (`provider.ComputeCost`), the per-session tool-schema cache, and the tool-pairing repair the chat-style wires share (`provider.RepairToolPairing`). |
 | `catalog` | The embedded model catalog of the three providers (`anthropic`, `openrouter`, `ollama`), with their tiers. `catalog.Lookup` turns a Claude model id into a `core.Model`; `catalog.Select` turns a provider, a model (a tier or an id) and an effort into the `Selection` a run will use. |
 | `prompt` | System prompt assembly. |
