@@ -1,8 +1,12 @@
 package ollama
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/ollama/ollama/api"
 
@@ -38,6 +42,27 @@ func (b *block) content() core.ContentBlock {
 	return core.TextBlock{Text: b.text.String()}
 }
 
+// callIDs makes the ids of tool calls the server sent without one. The ids are
+// unique across the responses of one Client, and a per-Client random prefix keeps
+// them apart from those of another Client that wrote earlier turns of the same
+// transcript.
+type callIDs struct {
+	prefix string
+	n      atomic.Uint64
+}
+
+func newCallIDs() *callIDs {
+	var raw [4]byte
+	// crypto/rand.Read does not fail on a supported platform.
+	_, _ = rand.Read(raw[:])
+	return &callIDs{prefix: hex.EncodeToString(raw[:])}
+}
+
+// next returns an id nothing else has used.
+func (g *callIDs) next() string {
+	return "ollama_" + g.prefix + "_" + strconv.FormatUint(g.n.Add(1), 10)
+}
+
 // decodeState turns the chunks of one turn into events and an assistant
 // message. It is not safe for concurrent use: one Stream call owns it.
 type decodeState struct {
@@ -51,6 +76,11 @@ type decodeState struct {
 	// open is the text or thinking block the next delta of its kind extends.
 	open *block
 
+	// ids makes an id for a tool call without one; used holds the ids of this
+	// turn's calls, so an id the server repeats is replaced too.
+	ids  *callIDs
+	used map[string]bool
+
 	sawDone bool
 	last    api.ChatResponse // the chunk with done: true
 }
@@ -63,6 +93,8 @@ func newDecodeState(s *core.EventStream, c *Client, req core.Request) *decodeSta
 			Effort:    req.Effort,
 			Timestamp: c.now(),
 		},
+		ids:  c.ids,
+		used: map[string]bool{},
 	}
 }
 
@@ -146,9 +178,14 @@ func (d *decodeState) appendBlock(b *block) {
 func (d *decodeState) toolCall(tc api.ToolCall) {
 	d.closeOpen()
 	b := d.add(toolBlock)
+	id := tc.ID
+	if id == "" || d.used[id] {
+		id = d.ids.next()
+	}
+	d.used[id] = true
 	// The arguments came from JSON, so neither step fails.
 	args, _ := json.Marshal(tc.Function.Arguments)
-	b.tool, _ = core.NewToolUse(tc.ID, tc.Function.Name, args)
+	b.tool, _ = core.NewToolUse(id, tc.Function.Name, args)
 	d.s.Push(core.ToolCallStartEvent{BlockIndex: b.index, ToolUseID: b.tool.ID, Name: b.tool.Name})
 	d.s.Push(core.ToolInputDeltaEvent{BlockIndex: b.index, ToolUseID: b.tool.ID, Delta: string(b.tool.Input)})
 	d.appendBlock(b)
@@ -186,7 +223,7 @@ func (d *decodeState) finish() {
 	final.StopReason = stopReason(d.last.DoneReason, hasToolCalls)
 	final.RawStopReason = d.last.DoneReason
 	final.ResponseModel = d.last.Model
-	final.Usage = core.Usage{Requests: 1}
+	final.Usage = nettedUsage(d.last)
 	d.s.Push(core.MessageEndEvent{Message: final})
 	d.s.End(core.StreamResult{Message: &final})
 }

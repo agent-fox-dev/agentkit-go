@@ -208,3 +208,42 @@ first failed on it: the cap rises to **30,000**.
   comment changed.
 - What is counted is unchanged, and so is core's own 1,600-line budget. The
   `.specs` of specs 12 to 22 and 30 still say 20,000; they are history.
+
+## Tool-call ids, usage and the concurrency test (28-REQ-6.3, 6.4, 6.7, 8.1, 8.2; task 4)
+
+- **A synthesized id carries a per-Client prefix.** 28-REQ-6.4 asks for ids unique
+  "within each response and across responses" of one Client, and step 4.4 suggests
+  a counter. A counter alone gives every Client the same first id, and a
+  transcript resumed in another process holds ids written by two Clients, which
+  `provider.RepairToolPairing` would pair as one. The id is `ollama_<8 hex digits>_<n>`
+  (`(*callIDs).next`, `provider/ollama/decode.go:62`), the digits random per Client and
+  `n` atomic. `TestSynthesizedIDsDifferBetweenClients_TS28_29` pins it.
+- **A vendor id that repeats within a response is replaced too.** The spec
+  synthesizes an id only for a call without one; two calls with the same id would
+  be paired as one by the repair and by the loop, so the second gets a made-up id.
+  `TestSynthesizedIDsAreUnique_TS28_29` repeats vendor ids on purpose.
+- **A done chunk with no count at all reports no usage.** `prompt_eval_count` and
+  `eval_count` are plain integers in the SDK, so zero cannot be told from absent
+  (`prompt_eval_cached_count` is a `*int` and can). `nettedUsage`
+  (`provider/ollama/usage.go:24`) reads a chunk with neither, and no cached count,
+  as one that reported nothing: `Requests` 1, no token field, no cost. 28-REQ-8.1
+  sets the cost "whenever the done chunk reports usage", so this is where the
+  rule ends; the agent prices such a turn from the catalog row, which is zero.
+  Otherwise the input is the prompt count less the cached one, floored at 0, the
+  cache read is set only when positive, and the cost is 0 with its bit
+  (`TestUsageIsNettedAndPricedAtZero_TS28_40`, `TestUsageNettingProperty_TS28_41`).
+- **A tool call's arguments are the SDK's rendering.** `Input` is
+  `json.Marshal(call.Function.Arguments)`: the top-level keys are in the order
+  the server wrote them (`TestToolCallKeepsIDAndKeyOrder_TS28_28`), but a nested
+  object's keys are sorted and a number is re-rendered through `float64`, as the
+  first section of this erratum records. 28-REQ-6.3 and Design Decision 2 ask for
+  top-level order only.
+- **TS-28-31's markers are handed out by the server in arrival order.** The
+  spec has the server echo a marker taken from the request. Until task 5 the
+  request carries nothing that differs from one call to the next, so
+  `TestConcurrentStreamsAreIndependent_TS28_31` has the server number each
+  response and send it as thinking, text in three chunks with a pause between
+  them, and a tool call with no id, all of the same number. A stream that shared
+  state with another comes back with parts of two numbers or an id another stream
+  also got; a map of used ids shared by every stream, and an unsynchronised id
+  counter, both fail it.

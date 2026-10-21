@@ -64,6 +64,7 @@ type Client struct {
 	// credential-free transport, never api.ClientFromEnvironment, which reads
 	// the process environment.
 	api   *api.Client
+	ids   *callIDs
 	now   func() time.Time
 	warnf func(format string, args ...any)
 }
@@ -86,7 +87,7 @@ func New(m core.Model, opts Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{model: m, base: base, now: opts.Now, warnf: opts.Warnf}
+	c := &Client{model: m, base: base, ids: newCallIDs(), now: opts.Now, warnf: opts.Warnf}
 	c.api = api.NewClient(base, sdkHTTPClient(opts.HTTPClient))
 	if c.now == nil {
 		c.now = time.Now
