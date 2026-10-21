@@ -70,7 +70,7 @@ func (c *client) once(ctx context.Context, d *decodeState, body []byte) *failure
 	res, err := c.sdk.Chat.Send(context.WithValue(ctx, attemptKey{}, a), placeholder, nil,
 		operations.WithAcceptHeaderOverride(operations.AcceptHeaderEnumTextEventStream))
 	if err != nil {
-		return sendFailure(ctx, a, err)
+		return c.sendFailure(ctx, a, err)
 	}
 	if res == nil || res.EventStream == nil {
 		err := errors.New("openrouter: the response was not an event stream")
@@ -84,7 +84,7 @@ func (c *client) once(ctx context.Context, d *decodeState, body []byte) *failure
 		}
 	}
 	if err := events.Err(); err != nil {
-		return &failure{err: err, text: failureText(ctx, err)}
+		return &failure{err: fmt.Errorf("openrouter: %w", err), text: failureText(ctx, err)}
 	}
 	if !d.sawFinish {
 		return &failure{err: ErrStreamTruncated, text: ErrStreamTruncated.Error()}
@@ -96,12 +96,12 @@ func (c *client) once(ctx context.Context, d *decodeState, body []byte) *failure
 // sendFailure classifies an error from the SDK's send. A response with a status
 // that is not 2xx is a StatusError, retryable when it is a 429 or a 5xx; a
 // failure with no response is not.
-func sendFailure(ctx context.Context, a *attempt, err error) *failure {
+func (c *client) sendFailure(ctx context.Context, a *attempt, err error) *failure {
 	if a.status != 0 && (a.status < 200 || a.status >= 300) {
-		se := &StatusError{Code: a.status, Text: fmt.Sprintf("openrouter: HTTP %d", a.status)}
+		se := c.httpError(a.status, a.errBody)
 		return &failure{err: se, text: se.Text, retryable: retryableCode(a.status), retryAfter: a.retryAfter}
 	}
-	return &failure{err: err, text: failureText(ctx, err)}
+	return &failure{err: fmt.Errorf("openrouter: %w", err), text: failureText(ctx, err)}
 }
 
 // failureText is the text of a turn that failed with err: the abort text when

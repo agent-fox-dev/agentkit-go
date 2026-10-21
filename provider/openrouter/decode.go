@@ -57,8 +57,9 @@ func (b *block) signature() string {
 // decodeState turns the chunks of one turn into events and an assistant
 // message. It is not safe for concurrent use: one run owns it.
 type decodeState struct {
-	s     *core.EventStream
-	warnf func(format string, args ...any)
+	s      *core.EventStream
+	warnf  func(format string, args ...any)
+	redact func(string) string // takes the API key out of a text
 
 	// model is the model the turn asked for; the usage is priced against it.
 	model core.Model
@@ -80,9 +81,10 @@ type decodeState struct {
 
 func newDecodeState(s *core.EventStream, c *client, req core.Request) *decodeState {
 	return &decodeState{
-		s:     s,
-		warnf: c.warnf,
-		model: c.model,
+		s:      s,
+		warnf:  c.warnf,
+		redact: c.redact,
+		model:  c.model,
 		partial: core.AssistantMessage{
 			Model:     c.model.ID,
 			Effort:    req.Effort,
@@ -158,7 +160,7 @@ func (d *decodeState) chunk(c components.ChatStreamChunk) *StatusError {
 	switch {
 	case c.Error != nil:
 		return &StatusError{Code: c.Error.Code,
-			Text: fmt.Sprintf("openrouter: error %d in stream: %s", c.Error.Code, c.Error.Message)}
+			Text: d.redact(fmt.Sprintf("openrouter: error %d in stream: %s", c.Error.Code, c.Error.Message))}
 	case finishedWithError:
 		return &StatusError{Text: `openrouter: error in stream: finish_reason "error"`}
 	}
@@ -360,6 +362,10 @@ func (d *decodeState) finish() {
 // is not known to be complete before its finish_reason. A turn the caller
 // cancelled ends as aborted instead.
 func (d *decodeState) fail(text string, err error) {
+	text = d.redact(text)
+	if msg := err.Error(); d.redact(msg) != msg {
+		err = &redacted{msg: d.redact(msg), err: err}
+	}
 	final := d.partial
 	for _, b := range d.blocks {
 		switch b.kind {
