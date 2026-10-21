@@ -2,6 +2,7 @@ package anthropic_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -142,6 +143,29 @@ func TestResolveWithoutCredentialsFails_TS10_8(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "credentials") {
 		t.Fatalf("err = %v, want one saying credentials are missing", err)
+	}
+}
+
+// TestTheMissingCredentialsErrorNamesEveryCredentialVariable: the message is
+// the only hint an operator gets, so it names each variable Resolve accepts
+// as a direct credential, and both cloud flags.
+func TestTheMissingCredentialsErrorNamesEveryCredentialVariable(t *testing.T) {
+	_, _, err := anthropic.Resolve(anthropic.MapEnv{})
+	if !errors.Is(err, anthropic.ErrNoCredentials) {
+		t.Fatalf("err = %v, want anthropic.ErrNoCredentials", err)
+	}
+	for _, v := range []string{anthropic.APIKeyVar, anthropic.AuthTokenVar, anthropic.OAuthTokenVar} {
+		if _, src, rerr := anthropic.Resolve(anthropic.MapEnv{v: "x"}); rerr != nil || src != anthropic.SourceDirect {
+			t.Fatalf("%s alone: source = %q, err = %v; want a direct client", v, src, rerr)
+		}
+		if !strings.Contains(err.Error(), v) {
+			t.Errorf("the error does not name %s, which Resolve accepts: %v", v, err)
+		}
+	}
+	for _, v := range []string{anthropic.VertexEnableVar, anthropic.BedrockEnableVar} {
+		if !strings.Contains(err.Error(), v) {
+			t.Errorf("the error does not name the cloud flag %s: %v", v, err)
+		}
 	}
 }
 

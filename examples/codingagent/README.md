@@ -51,7 +51,7 @@ Without a credential it prints the workspace and stops:
 
 ```
 workspace: /path/to/agentkit-go
-error: anthropic: missing credentials: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, ...
+error: anthropic: missing credentials: set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_TOKEN, ...
 ```
 
 ## Walkthrough

@@ -231,8 +231,8 @@ Credentials found on the first request.
 
 With no cloud flag and none of the three Anthropic credentials, `Resolve`
 fails with `anthropic.ErrNoCredentials` (`anthropic: missing credentials: set
-ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, or select Vertex AI
-(CLAUDE_CODE_USE_VERTEX=1) or Bedrock (CLAUDE_CODE_USE_BEDROCK=1)`). A Vertex
+ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_TOKEN, or select
+Vertex AI (CLAUDE_CODE_USE_VERTEX=1) or Bedrock (CLAUDE_CODE_USE_BEDROCK=1)`). A Vertex
 selection with no project fails naming both project variables. A provider
 that cannot resolve ends the turn with that message rather than sending a
 request.

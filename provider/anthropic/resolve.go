@@ -50,8 +50,9 @@ const cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 
 // ErrNoCredentials is returned when no deployment is selected and the
 // environment holds no Anthropic credential.
-var ErrNoCredentials = errors.New("anthropic: missing credentials: set " + APIKeyVar + " or " +
-	AuthTokenVar + ", or select Vertex AI (" + VertexEnableVar + "=1) or Bedrock (" + BedrockEnableVar + "=1)")
+var ErrNoCredentials = errors.New("anthropic: missing credentials: set " + APIKeyVar + ", " +
+	AuthTokenVar + " or " + OAuthTokenVar + ", or select Vertex AI (" + VertexEnableVar + "=1) or Bedrock (" +
+	BedrockEnableVar + "=1)")
 
 // Env looks up environment variables. An empty value is treated as unset.
 type Env interface {
