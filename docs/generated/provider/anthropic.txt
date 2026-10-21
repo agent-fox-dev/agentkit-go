@@ -61,8 +61,9 @@ const VertexAPIVersion = "vertex-2023-10-16"
 
 VARIABLES
 
-var ErrNoCredentials = errors.New("anthropic: missing credentials: set " + APIKeyVar + " or " +
-	AuthTokenVar + ", or select Vertex AI (" + VertexEnableVar + "=1) or Bedrock (" + BedrockEnableVar + "=1)")
+var ErrNoCredentials = errors.New("anthropic: missing credentials: set " + APIKeyVar + ", " +
+	AuthTokenVar + " or " + OAuthTokenVar + ", or select Vertex AI (" + VertexEnableVar + "=1) or Bedrock (" +
+	BedrockEnableVar + "=1)")
     ErrNoCredentials is returned when no deployment is selected and the
     environment holds no Anthropic credential.
 

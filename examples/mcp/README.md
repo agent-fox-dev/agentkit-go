@@ -35,7 +35,7 @@ connected servers: [docs]
 tools discovered over MCP: [docs__list_topics docs__search_docs]
 direct call to docs__list_topics: ok=true {"content":[{"type":"text","text":"environment, pipe transport, protocol version, qualified names"}],"text":"environment, pipe transport, protocol version, qual…
 shadowing refused: mcp: tool name collides with an existing tool: server "helper" exposes "word_count" as "word_count", which is already a native tool
-error: anthropic: missing credentials: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, or select Vertex AI (CLAUDE_CODE_USE_VERTEX=1) or Bedrock (CLAUDE_CODE_USE_BEDROCK=1)
+error: anthropic: missing credentials: set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_TOKEN, or select Vertex AI (CLAUDE_CODE_USE_VERTEX=1) or Bedrock (CLAUDE_CODE_USE_BEDROCK=1)
 ```
 
 With a credential the last line is replaced by the streamed answer, one

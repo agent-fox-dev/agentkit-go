@@ -46,7 +46,7 @@ cited:  BOLT-M6, BRKT-90
 Without a credential:
 
 ```
-error: anthropic: missing credentials: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, ...
+error: anthropic: missing credentials: set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_TOKEN, ...
 ```
 
 ## Walkthrough
