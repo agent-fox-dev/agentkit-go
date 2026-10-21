@@ -307,7 +307,7 @@ lists models for the three providers an agent can run on, which
 - `catalog.Select(provider, model, effort)` resolves any of the three
   providers, offline ([below](#catalogselect)).
 
-Only `anthropic` has a provider in this repository (`provider/anthropic`). The
+Only `anthropic` has a vendor wire in this repository (`provider/anthropic`). The
 `openrouter` and `ollama` sections, the tiers and `Select` are the catalog side
 of [PRD 14](prd/14-run-the-agent-on-anthropic-openrouter-or-ollama.md): nothing
 in `agentkit.New` reads them yet.

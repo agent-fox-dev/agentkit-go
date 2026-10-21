@@ -388,6 +388,15 @@ func TestParseLoadsTiersBlocks_TS26_17(t *testing.T) {
 	if _, err := Parse([]byte(testCatalogJSON)); err != nil {
 		t.Fatalf("the test catalog without tiers does not parse: %v", err)
 	}
+	// A tiers block does not move the file format (26-REQ-5.6): the document the
+	// variant is made from declares schema_version 1, and Parse accepts only the
+	// version this build understands.
+	var header struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal([]byte(testCatalogJSON), &header); err != nil || header.SchemaVersion != 1 {
+		t.Fatalf("test catalog schema_version = %d (%v), want 1", header.SchemaVersion, err)
+	}
 	c := testCatalogWithTiers(t)
 	for _, tc := range []struct {
 		tier   Tier
