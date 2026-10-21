@@ -1,0 +1,596 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "28",
+  "spec_name": "ollama_provider",
+  "schema_version": 2,
+  "introduction": "provider/ollama is a core.ProviderClient that runs an AgentKit agent on a model served by a local or self-hosted Ollama server through Ollama's own Go package (github.com/ollama/ollama/api v0.40.7) and the native /api/chat endpoint: it resolves OLLAMA_HOST by Ollama's CLI rules, encodes canonical requests (num_ctx, truncate:false, think, num_predict, the tool-schema subset), decodes the stream into canonical events and an assistant message, names its failures, and reports usage priced at zero. The spec also approves and pins the Ollama module in the root module's dependency policy.",
+  "glossary": {
+    "OLLAMA_HOST": "The only environment variable the provider reads (ollama.HostVar); the base URL of the Ollama server, defaulting to http://127.0.0.1:11434 (ollama.DefaultHost).",
+    "done chunk": "The streamed /api/chat line with done:true; it carries done_reason, the response model and the token counts. A stream without it is truncated.",
+    "num_ctx": "Ollama's context-length option; it takes effect only when a model loads, so a model already loaded at another length keeps that length until it unloads.",
+    "presence bit": "The core.Usage flag recording that a field was reported, so a reported zero cost is not re-priced by Agent.priced.",
+    "tool-pairing repair": "provider.RepairToolPairing, added by spec 27: drops failed or aborted assistant turns and their orphaned results and inserts a synthetic \"No result provided\" result for each unanswered call.",
+    "tool-schema subset": "The part of a tool's JSON Schema that the SDK's tool-parameter type models, obtained by JSON-encoding the full schema and decoding it into that type; additionalProperties, format and bounds are dropped."
+  },
+  "requirements": [
+    {
+      "id": "28-REQ-1",
+      "title": "Construction, host resolution and credential isolation",
+      "rationale": "One OLLAMA_HOST value must mean the same server for the ollama CLI and AgentKit, and no credential may leave the process.",
+      "criteria": [
+        {
+          "id": "28-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "ollama.New is called with a core.Model whose trimmed ID is non-empty and a valid host",
+          "system": "ollama provider",
+          "action": "return a *Client that implements core.ProviderClient, make no network request, and expose the resolved base URL through (*Client).Host(); the exported constant ollama.API equals core.APIOllamaChat",
+          "contract": "(*Client, nil); the recording server sees zero requests after New returns; Host() returns e.g. \"http://127.0.0.1:11434\""
+        },
+        {
+          "id": "28-REQ-1.2",
+          "pattern": "unwanted",
+          "condition": "ollama.New is called with a core.Model whose ID is empty after trimming whitespace",
+          "system": "ollama provider",
+          "action": "refuse to build the client",
+          "contract": "(nil, non-nil error) whose text starts with \"ollama:\""
+        },
+        {
+          "id": "28-REQ-1.3",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "take the host from Options.Host when it is set and read no variable at all; otherwise look up OLLAMA_HOST in Options.Env first (an empty value falls through), then through Options.Getenv when it is non-nil, otherwise from the process environment, using http://127.0.0.1:11434 (ollama.DefaultHost) when the value is empty or unset, and never read any variable other than OLLAMA_HOST",
+          "contract": "a Getenv spy records only the key \"OLLAMA_HOST\", and records nothing when Options.Host is set"
+        },
+        {
+          "id": "28-REQ-1.4",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "for any trimmed host value, resolve the base URL by Ollama's CLI rules: no scheme means http with port 11434, http:// without a port means port 80, https:// without a port means port 443, and a path is kept",
+          "contract": "Host() returns e.g. \"http://example.local:11434\" for \"example.local\", \"https://h:443\" for \"https://h\", \"http://h:80/proxy\" for \"http://h/proxy\""
+        },
+        {
+          "id": "28-REQ-1.5",
+          "pattern": "unwanted",
+          "condition": "the host value has a scheme other than http or https, cannot be parsed, or carries a port outside 1-65535",
+          "system": "ollama provider",
+          "action": "refuse to build the client",
+          "contract": "(nil, error) with errors.Is(err, ollama.ErrInvalidHost) true and text starting with \"ollama:\""
+        },
+        {
+          "id": "28-REQ-1.6",
+          "pattern": "unwanted",
+          "condition": "the host value carries user information",
+          "system": "ollama provider",
+          "action": "refuse to build the client and show the host with any password redacted",
+          "contract": "(nil, error) wrapping ollama.ErrInvalidHost; the error text does not contain the password"
+        },
+        {
+          "id": "28-REQ-1.7",
+          "pattern": "unwanted",
+          "condition": "the host is ollama.com or any subdomain of ollama.com",
+          "system": "ollama provider",
+          "action": "refuse to build the client and say the hosted Ollama service is not supported",
+          "contract": "(nil, error) wrapping ollama.ErrInvalidHost whose text says the hosted service is not supported"
+        },
+        {
+          "id": "28-REQ-1.8",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "send every request through a transport layer that deletes any Authorization header before handing the request to Options.HTTPClient's transport (or the default transport when HTTPClient is nil), so no credential is sent even when ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OLLAMA_API_KEY are set, while an embedder's own transport beneath the layer may still add headers",
+          "contract": "the recording server sees no Authorization header and no other provider's variable value anywhere in any request; a header set by the embedder's RoundTripper reaches the server"
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-2",
+      "title": "Request encoding",
+      "rationale": "The window the agent prunes against must be the one the model loads at, and Request fields must mean the same thing on every provider.",
+      "criteria": [
+        {
+          "id": "28-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "Stream is called with a live context",
+          "system": "ollama provider",
+          "action": "send exactly one chat request through the SDK client's Chat method to the resolved host's /api/chat with stream true, model equal to m.ID exactly as written, truncate false, and options.num_ctx equal to m.ContextWindow",
+          "contract": "the recorded body carries \"model\", \"stream\":true, \"truncate\":false and \"options\":{\"num_ctx\":<window>,...}"
+        },
+        {
+          "id": "28-REQ-2.2",
+          "pattern": "complex_event",
+          "condition": "Stream is called",
+          "guard": "m.ContextWindow is zero or negative",
+          "system": "ollama provider",
+          "action": "send options.num_ctx equal to catalog.OllamaDefaultContextWindow",
+          "contract": "the recorded body carries \"num_ctx\":32768"
+        },
+        {
+          "id": "28-REQ-2.3",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "order the request messages as one system message whose content is the text blocks of Request.System joined by a blank line (omitted when that text is empty), then Request.Prefix, then the repaired Request.Messages",
+          "contract": "recorded messages[0] has role \"system\" only when Request.System has text"
+        },
+        {
+          "id": "28-REQ-2.4",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "set options.num_predict to the requested MaxTokens when it is positive and not above m.MaxOutputTokens, otherwise to m.MaxOutputTokens when that is positive, otherwise to the requested value when it is positive, and otherwise omit num_predict",
+          "contract": "e.g. requested 1000 with cap 32768 sends 1000; requested 50000 with cap 32768 sends 32768; no request and no cap sends no num_predict key"
+        },
+        {
+          "id": "28-REQ-2.5",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "send options.temperature, options.top_p and options.stop only when the request sets them, sending an explicit temperature of 0, and never send keep_alive, format or images",
+          "contract": "a request with Temperature 0 records \"temperature\":0; a request without sampling fields records none of those keys; no recorded body carries keep_alive, format or images"
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-3",
+      "title": "Tools and tool choice",
+      "rationale": "Ollama's tool type carries only a subset of JSON Schema and has no tool-choice field.",
+      "criteria": [
+        {
+          "id": "28-REQ-3.1",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "declare each core.ToolWire, in request order, as a function tool with its name, its description and the tool-schema subset obtained by JSON-encoding its InputSchema and decoding it into the SDK's tool-parameter type",
+          "contract": "a schema with additionalProperties, format and minimum records a tool whose parameters keep type, properties, required, enum, items and descriptions but none of those three keywords"
+        },
+        {
+          "id": "28-REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "a core.ToolWire has a nil InputSchema",
+          "system": "ollama provider",
+          "action": "declare the tool with an empty object schema",
+          "contract": "recorded parameters equal {\"type\":\"object\",\"properties\":{}}"
+        },
+        {
+          "id": "28-REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "a tool's schema cannot be decoded into the SDK's tool-parameter type",
+          "system": "ollama provider",
+          "action": "fail the turn before any HTTP request is sent",
+          "contract": "the stream ends with a non-nil Err whose text starts with \"ollama:\" and names the tool; the recording server sees zero requests"
+        },
+        {
+          "id": "28-REQ-3.4",
+          "pattern": "event_driven",
+          "condition": "Request.ToolChoice is core.ToolChoiceNone",
+          "system": "ollama provider",
+          "action": "send no tools key at all, while ToolChoiceUnset and ToolChoiceAuto send the declared tools",
+          "contract": "the recorded body has no \"tools\" key under ToolChoiceNone"
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-4",
+      "title": "Transcript replay",
+      "rationale": "The second turn of a tool loop must pair results to calls by id and keep the arguments the server sent.",
+      "criteria": [
+        {
+          "id": "28-REQ-4.1",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "pass Request.Messages through provider.RepairToolPairing before encoding, never mutate the caller's slice, and send the repair report to Options.Warnf when the repair changed anything (discarding it when Warnf is nil)",
+          "contract": "Warnf is called exactly once when the repair changed the transcript and not at all otherwise; the input messages are deeply equal before and after Stream"
+        },
+        {
+          "id": "28-REQ-4.2",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "send a core.UserMessage as role user with its text as content, and a core.AssistantMessage as role assistant with its text as content and one tool_calls entry per ToolUseBlock carrying the block's id, its position among the message's calls as index, its name and arguments decoded from ToolUseBlock.Input",
+          "contract": "recorded assistant message carries tool_calls[i].id equal to the block ID and function.index equal to i"
+        },
+        {
+          "id": "28-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "for any JSON object in ToolUseBlock.Input, replay its arguments with their keys in the order of those bytes",
+          "contract": "the recorded arguments' key order equals the key order of Input"
+        },
+        {
+          "id": "28-REQ-4.4",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "set the assistant message's thinking to the concatenated text of its non-redacted thinking blocks only when the message's Model equals m.ID, and drop all other thinking without sending it as content",
+          "contract": "thinking from another model or a redacted block appears nowhere in the recorded body"
+        },
+        {
+          "id": "28-REQ-4.5",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "send each core.ToolResultMessage, in transcript order, as one tool message whose content is provider.ToolResultText of the result, with the tool's name and the tool-call id it answers",
+          "contract": "recorded tool message carries role \"tool\", tool_name, tool_call_id and content prefixed \"Error: \" when IsError is true"
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-5",
+      "title": "Effort as think",
+      "rationale": "The catalog row decides which think levels a model accepts, read the same way provider/anthropic reads it, with no clamping.",
+      "criteria": [
+        {
+          "id": "28-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "the request's effort is empty or m.ThinkingKind is core.ThinkingKindNone",
+          "system": "ollama provider",
+          "action": "send no think field",
+          "contract": "the recorded body has no \"think\" key"
+        },
+        {
+          "id": "28-REQ-5.2",
+          "pattern": "complex_event",
+          "condition": "the request carries a non-empty effort",
+          "guard": "m.Efforts is nil",
+          "system": "ollama provider",
+          "action": "send think as the effort's own name as a string level",
+          "contract": "effort high on an unlisted model records \"think\":\"high\""
+        },
+        {
+          "id": "28-REQ-5.3",
+          "pattern": "complex_event",
+          "condition": "the request carries a non-empty effort",
+          "guard": "m.Efforts is non-nil",
+          "system": "ollama provider",
+          "action": "send no think when the effort is absent from the map or maps to nil, and otherwise send the mapped value trimmed and lower-cased as a string level, never substituting another level",
+          "contract": "xhigh on the qwen3.8:27b row records no \"think\"; medium records \"think\":\"medium\""
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-6",
+      "title": "Streaming decode",
+      "rationale": "The loop consumes canonical events and a final message regardless of vendor.",
+      "criteria": [
+        {
+          "id": "28-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "the first chunk of a response arrives",
+          "system": "ollama provider",
+          "action": "push MessageStartEvent with a partial message whose Model is m.ID, whose Effort is the request's effort and whose Timestamp comes from Options.Now",
+          "contract": "the first event is core.MessageStartEvent with those three fields set"
+        },
+        {
+          "id": "28-REQ-6.2",
+          "pattern": "event_driven",
+          "condition": "a chunk carries non-empty message.thinking or message.content",
+          "system": "ollama provider",
+          "action": "stream thinking as ThinkingStartEvent and ThinkingDeltaEvent and content as TextStartEvent and TextDeltaEvent, close the open block when the kind switches, append each completed block to the partial message followed by a MessageUpdateEvent, and never report thinking as text",
+          "contract": "the final message holds a ThinkingBlock and a TextBlock in streamed order; no TextDeltaEvent carries thinking text"
+        },
+        {
+          "id": "28-REQ-6.3",
+          "pattern": "event_driven",
+          "condition": "a chunk carries tool calls",
+          "system": "ollama provider",
+          "action": "turn each call into one ToolUseBlock built through core.NewToolUse that keeps the vendor's id and whose Input is the arguments' JSON with keys in wire order (absent arguments become {}), pushing ToolCallStartEvent then one ToolInputDeltaEvent carrying the whole argument JSON before appending the block",
+          "contract": "the final message's ToolUseBlock.ID equals the wire id and Input preserves the server's key order"
+        },
+        {
+          "id": "28-REQ-6.4",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "for any set of tool calls without an id across one or more responses of one Client, synthesize ids that are unique within each response and across responses",
+          "contract": "no two ToolUseBlock IDs produced by the same Client are equal"
+        },
+        {
+          "id": "28-REQ-6.5",
+          "pattern": "event_driven",
+          "condition": "the done chunk arrives",
+          "system": "ollama provider",
+          "action": "after processing its own content, push TextEndEvent, ThinkingEndEvent and ToolCallEndEvent in block order, build the final message with RawStopReason equal to done_reason verbatim, ResponseModel equal to the chunk's model and Usage per 28-REQ-8, push MessageEndEvent and end the stream",
+          "contract": "the stream result's Message is the final message and Err is nil"
+        },
+        {
+          "id": "28-REQ-6.6",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "set StopReason to StopReasonLength when done_reason is length (even with tool calls), otherwise to StopReasonToolUse when the message has tool calls, otherwise to StopReasonStop",
+          "contract": "done_reason \"stop\" with a tool call yields core.StopReasonToolUse"
+        },
+        {
+          "id": "28-REQ-6.7",
+          "pattern": "state_driven",
+          "condition": "several goroutines call Stream on the same *Client concurrently",
+          "system": "ollama provider",
+          "action": "complete every stream independently with no data race",
+          "contract": "each stream yields its own final message; go test -race reports no race"
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-7",
+      "title": "Incomplete turns and errors",
+      "rationale": "A local server's failures are not transient, so each one is named once, without retries, and a partial turn can never run a tool.",
+      "criteria": [
+        {
+          "id": "28-REQ-7.1",
+          "pattern": "unwanted",
+          "condition": "Stream is called with a context that is already done",
+          "system": "ollama provider",
+          "action": "return the context's error without sending a request, and carry every later failure inside the stream as the failed message followed by Err on the last item",
+          "contract": "(nil channel, ctx.Err()); the recording server sees zero requests"
+        },
+        {
+          "id": "28-REQ-7.2",
+          "pattern": "unwanted",
+          "condition": "the stream ends, or the SDK Chat call returns, without a done chunk",
+          "system": "ollama provider",
+          "action": "end the turn with StopReasonError and a terminal ErrorEvent, keeping the text and thinking that streamed and dropping every tool call",
+          "contract": "Err wraps ollama.ErrStreamTruncated; the message has no ToolUseBlock"
+        },
+        {
+          "id": "28-REQ-7.3",
+          "pattern": "unwanted",
+          "condition": "the caller's context is cancelled while a request is in flight",
+          "system": "ollama provider",
+          "action": "stop the request within 1 second and end the turn with StopReasonAborted and ErrorMessage \"Request was aborted\", pushing no ErrorEvent and keeping no tool call, taking precedence over every other error classification",
+          "contract": "Err is core.ErrAborted; the message has no ToolUseBlock"
+        },
+        {
+          "id": "28-REQ-7.4",
+          "pattern": "unwanted",
+          "condition": "connecting to the host fails (refused, DNS failure or no route)",
+          "system": "ollama provider",
+          "action": "end the turn with an error naming the host, suggesting ollama serve and naming OLLAMA_HOST",
+          "contract": "Err wraps ollama.ErrUnreachable; text starts with \"ollama:\""
+        },
+        {
+          "id": "28-REQ-7.5",
+          "pattern": "unwanted",
+          "condition": "the server answers 404",
+          "system": "ollama provider",
+          "action": "end the turn with an error naming the model and the host, including Ollama's message and suggesting ollama pull <model>",
+          "contract": "Err wraps ollama.ErrModelNotFound and errors.As yields *ollama.StatusError with Code 404"
+        },
+        {
+          "id": "28-REQ-7.6",
+          "pattern": "unwanted",
+          "condition": "Ollama's error message, in a status error or an error line inside a 200 stream, says the input exceeds the context length",
+          "system": "ollama provider",
+          "action": "end the turn with an error naming the model and the num_ctx sent, including Ollama's message and saying that a model already loaded at a smaller length keeps it until it unloads",
+          "contract": "Err wraps ollama.ErrContextWindow"
+        },
+        {
+          "id": "28-REQ-7.7",
+          "pattern": "unwanted",
+          "condition": "the server answers any other non-2xx status or sends any other error line inside a 200 stream",
+          "system": "ollama provider",
+          "action": "end the turn with StopReasonError and a terminal ErrorEvent; for 401 or 403 the text names the host, says AgentKit sends no credential to Ollama and says to check OLLAMA_HOST; for other statuses the text is \"ollama: HTTP <code>: <Ollama's message>\"; an in-stream error carries Ollama's message classified by the rules of 28-REQ-7.4 to 28-REQ-7.6",
+          "contract": "Err is a *ollama.StatusError{Code, Text} for a status error; a non-nil error starting with \"ollama:\" for an in-stream error"
+        },
+        {
+          "id": "28-REQ-7.8",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "make exactly one HTTP attempt per Stream call, and start every error text with \"ollama:\" while never including the value of any environment variable other than OLLAMA_HOST in an error, event or warning",
+          "contract": "the recording server counts exactly one request per Stream call for every failure status"
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-8",
+      "title": "Usage and zero cost",
+      "rationale": "Ollama runs on the embedder's hardware, so a run is priced at zero rather than flagged unpriced.",
+      "criteria": [
+        {
+          "id": "28-REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "the done chunk reports usage",
+          "system": "ollama provider",
+          "action": "set InputTokens to prompt_eval_count minus prompt_eval_cached_count floored at 0, CacheReadTokens to the cached count only when it is positive, OutputTokens to eval_count, Requests to 1 and the cost to 0 with its presence bit, leaving reasoning tokens unset, for listed and unlisted model ids alike",
+          "contract": "354/256/120 yields core.Usage{InputTokens: 98, CacheReadTokens: 256, OutputTokens: 120, Requests: 1, CostUSD: 0} with Has(core.UsageCostUSD) true"
+        },
+        {
+          "id": "28-REQ-8.2",
+          "pattern": "ubiquitous",
+          "system": "ollama provider",
+          "action": "for any non-negative prompt, cached and eval counts, report InputTokens = max(0, prompt - cached), report OutputTokens = eval and report CacheReadTokens only when cached > 0",
+          "contract": "InputTokens is never negative"
+        },
+        {
+          "id": "28-REQ-8.3",
+          "pattern": "unwanted",
+          "condition": "a turn fails before its done chunk",
+          "system": "ollama provider",
+          "action": "report Requests 1 and no token fields",
+          "contract": "the failed message's Usage has Requests 1 and no input, output or cache-read presence bits"
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-9",
+      "title": "Dependency pin and policy",
+      "rationale": "A new third-party module enters the root module only as a deliberate, pinned and approved change that leaves every existing test meaning the same.",
+      "criteria": [
+        {
+          "id": "28-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "dependency policy tests",
+          "action": "require github.com/ollama/ollama as a direct, non-indirect requirement of the root module at exactly v0.40.7, listed in approvedDeps with a reason comment and in preSpec13Direct",
+          "contract": "a pin test in internal/policy/deps_test.go passes and fails for any other version or an // indirect marker"
+        },
+        {
+          "id": "28-REQ-9.2",
+          "pattern": "ubiquitous",
+          "system": "dependency policy tests",
+          "action": "compare the root and sandbox module graphs to regenerated snapshots (go-list-m-all.txt, sandbox-go-list-m-all.txt and sandbox-go-list-m-all.14.txt), recording every version raised by minimum version selection as an accepted upgrade in a map distinct from d1Upgrades and deleting no test",
+          "contract": "TS-13-65, TS-14-42, TS-15-40 and TS-17-60 pass with the restated expectations"
+        },
+        {
+          "id": "28-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "repository layout tests",
+          "action": "expect the provider directories anthropic, faux, ollama and openrouter in TestProviderDefaults_TS09_11",
+          "contract": "the test asserts \"anthropic,faux,ollama,openrouter\""
+        },
+        {
+          "id": "28-REQ-9.4",
+          "pattern": "ubiquitous",
+          "system": "repository",
+          "action": "keep every existing provider/anthropic and provider/faux test passing without modification and keep make check passing",
+          "contract": "make check exits 0"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "28-PATH-1",
+      "title": "An agent completes a two-turn tool loop on a recording Ollama server",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "builds the provider with ollama.New(catalog.Select(\"ollama\", \"STANDARD\", \"\") row, Options{Env: {\"OLLAMA_HOST\": <recording server>}}) and passes it as agentkit.Config.Provider with one tool"
+        },
+        {
+          "actor": "agent loop",
+          "action": "calls Stream with the system prompt, the user message, the tool and effort medium"
+        },
+        {
+          "actor": "ollama provider",
+          "action": "encodes model qwen3.8:27b, num_ctx 32768, truncate false, think medium, stream true and the tool-schema subset, and sends one /api/chat request with no Authorization header"
+        },
+        {
+          "actor": "recording server",
+          "action": "streams thinking, a tool call with an id and ordered arguments, and a done chunk with done_reason stop"
+        },
+        {
+          "actor": "ollama provider",
+          "action": "decodes the chunks into events and a final message with StopReasonToolUse and zero-cost usage"
+        },
+        {
+          "actor": "agent loop",
+          "action": "runs the tool and calls Stream again with the transcript"
+        },
+        {
+          "actor": "ollama provider",
+          "action": "replays the tool-call id, ordered arguments, thinking text and the paired tool result with the tool's name in the second request"
+        },
+        {
+          "actor": "recording server",
+          "action": "streams a final text and a done chunk"
+        },
+        {
+          "actor": "agent loop",
+          "action": "ends the run with the final text and a total cost of 0"
+        }
+      ]
+    },
+    {
+      "id": "28-PATH-2",
+      "title": "An agent run on an unavailable model or server ends with a named error",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "builds the provider against a recording server that answers 404 (or against a closed port) and runs the agent"
+        },
+        {
+          "actor": "ollama provider",
+          "action": "sends exactly one /api/chat request attempt"
+        },
+        {
+          "actor": "ollama provider",
+          "action": "ends the turn with StopReasonError, a terminal ErrorEvent and an error wrapping ErrModelNotFound naming ollama pull <model> (or ErrUnreachable naming ollama serve)"
+        },
+        {
+          "actor": "agent loop",
+          "action": "returns the run error to the embedder without running any tool"
+        }
+      ]
+    },
+    {
+      "id": "28-PATH-3",
+      "title": "A stream cut before its done chunk ends the run without executing a partial tool call",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "runs the agent against a recording server that streams text and a tool call, then closes the body without done:true"
+        },
+        {
+          "actor": "ollama provider",
+          "action": "ends the turn with ErrStreamTruncated, keeping the streamed text and dropping the tool call"
+        },
+        {
+          "actor": "agent loop",
+          "action": "short-circuits the turn and returns the error to the embedder with the tool handler never invoked"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/ollama/ollama/api",
+      "version": "v0.40.7",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "NewClient",
+          "import_path": "github.com/ollama/ollama/api",
+          "signature": "func NewClient(base *url.URL, http *http.Client) *Client",
+          "notes": "Used instead of ClientFromEnvironment, which reads the process environment."
+        },
+        {
+          "name": "Client.Chat",
+          "import_path": "github.com/ollama/ollama/api",
+          "signature": "func (c *Client) Chat(ctx context.Context, req *ChatRequest, fn ChatResponseFunc) error",
+          "notes": "Calls fn once per streamed line; returns nil at end of body even without done:true; returns StatusError for status >= 400; returns a plain error for an in-stream {\"error\":...} line."
+        },
+        {
+          "name": "ChatResponseFunc",
+          "import_path": "github.com/ollama/ollama/api",
+          "signature": "type ChatResponseFunc func(ChatResponse) error"
+        },
+        {
+          "name": "ChatRequest",
+          "import_path": "github.com/ollama/ollama/api",
+          "signature": "type ChatRequest struct{ Model string; Messages []Message; Stream *bool; Tools Tools; Options map[string]any; Think *ThinkValue; Truncate *bool }",
+          "notes": "Truncate per the 2026-10-21 probe."
+        },
+        {
+          "name": "ThinkValue",
+          "import_path": "github.com/ollama/ollama/api",
+          "signature": "type ThinkValue struct{ Value any }",
+          "notes": "Marshalled as a bool or a string level."
+        },
+        {
+          "name": "Message",
+          "import_path": "github.com/ollama/ollama/api",
+          "signature": "type Message struct{ Role, Content, Thinking string; ToolCalls []ToolCall; ToolName string; ToolCallID string }",
+          "notes": "ToolCallID per the probe."
+        },
+        {
+          "name": "ToolCall",
+          "import_path": "github.com/ollama/ollama/api",
+          "signature": "type ToolCall struct{ ID string; Function ToolCallFunction }; type ToolCallFunction struct{ Index int; Name string; Arguments ToolCallFunctionArguments }"
+        },
+        {
+          "name": "ToolCallFunctionArguments",
+          "import_path": "github.com/ollama/ollama/api",
+          "signature": "ordered map with UnmarshalJSON / MarshalJSON keeping insertion order",
+          "notes": "Key-order preservation (28-REQ-4.3, 28-REQ-6.3) depends on it."
+        },
+        {
+          "name": "Tool",
+          "import_path": "github.com/ollama/ollama/api",
+          "signature": "type Tool struct{ Type string; Function ToolFunction }; type ToolFunction struct{ Name, Description string; Parameters ToolFunctionParameters }",
+          "notes": "Parameters decodable from JSON Schema keeping type, description, enum, items, properties and required."
+        },
+        {
+          "name": "ChatResponse",
+          "import_path": "github.com/ollama/ollama/api",
+          "signature": "type ChatResponse struct{ Model string; Message Message; Done bool; DoneReason string; Metrics }; type Metrics struct{ PromptEvalCount, PromptEvalCachedCount, EvalCount int; ... }",
+          "notes": "PromptEvalCachedCount per the probe."
+        },
+        {
+          "name": "StatusError",
+          "import_path": "github.com/ollama/ollama/api",
+          "signature": "type StatusError struct{ StatusCode int; Status string; ErrorMessage string }",
+          "notes": "Translated into ollama.StatusError{Code, Text}."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,732 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "27",
+  "spec_name": "openrouter_provider",
+  "schema_version": 2,
+  "introduction": "provider/openrouter is a core.ProviderClient that runs an AgentKit agent on a model served by OpenRouter's native Chat Completions API through OpenRouter's Go SDK (github.com/OpenRouterTeam/go-sdk v0.9.66): it encodes canonical requests, decodes the SSE stream into canonical events and an assistant message, and owns credentials, errors, retries, reasoning replay, usage and reported cost. The spec also adds a shared tool-pairing transcript repair to package provider and approves and pins the SDK in the repository's dependency policy.",
+  "glossary": {
+    "attempt": "One SDK request within a turn; the provider's own retry loop may make up to 1 + MaxRetries attempts per turn.",
+    "chat-style wire": "A provider wire whose transcript pairs tool calls and tool results by id in separate messages, as OpenRouter Chat Completions and Ollama do.",
+    "content event": "Any TextStart/TextDelta, ThinkingStart/ThinkingDelta, ToolCallStart or ToolInputDelta event emitted for the current turn; MessageStartEvent is not a content event.",
+    "in-stream error": "A chunk inside an HTTP 200 stream that carries a top-level error object {code, message} or a choice with finish_reason \"error\".",
+    "presence bit": "A core.Usage flag (UsageInputTokens … UsageCostUSD) recording that a field was reported rather than defaulted to zero.",
+    "reasoning_details fragment": "One element of a Chat Completions delta's reasoning_details array (reasoning.text, reasoning.summary or reasoning.encrypted), kept with every field it arrived with and stored as a JSON array in core.ThinkingBlock.Signature.",
+    "recording server": "An httptest server used by the offline tests that records every request it receives and replays canned SSE bodies; OPENROUTER_BASE_URL points at it.",
+    "synthetic result": "A tool result inserted by the shared repair for an unanswered tool call, marked as an error with text \"No result provided\"."
+  },
+  "requirements": [
+    {
+      "id": "27-REQ-1",
+      "title": "Constructing the provider and resolving credentials",
+      "rationale": "A missing or malformed credential must fail before any request, with an error that names the variable, and the provider must not read anything else from the environment.",
+      "criteria": [
+        {
+          "id": "27-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "openrouter.New(m, opts) is called with a non-empty m.ID and OPENROUTER_API_KEY resolvable",
+          "system": "openrouter provider",
+          "action": "build exactly one SDK client configured with the key, the resolved base URL, opts.HTTPClient when set and the SDK's own retries turned off, without making any network request",
+          "contract": "returns a non-nil core.ProviderClient and a nil error; the exported constants are API core.API = \"openrouter-chat\", APIKeyVar = \"OPENROUTER_API_KEY\", BaseURLVar = \"OPENROUTER_BASE_URL\", DefaultBaseURL = \"https://openrouter.ai/api/v1\" and DefaultMaxRetries = 2"
+        },
+        {
+          "id": "27-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "resolve each variable from Options.Env first (an empty value falls through), then from Options.Getenv when it is non-nil or otherwise the process environment, treating an empty value as unset, and look up no variable other than OPENROUTER_API_KEY and OPENROUTER_BASE_URL",
+          "contract": "a recording Getenv observes only the names OPENROUTER_API_KEY and OPENROUTER_BASE_URL; an Env entry overrides a Getenv value for the same name"
+        },
+        {
+          "id": "27-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "OPENROUTER_API_KEY resolves to unset or empty",
+          "system": "openrouter provider",
+          "action": "fail New without making any request",
+          "contract": "New returns a nil client and an error for which errors.Is(err, openrouter.ErrNoAPIKey) is true and whose text contains \"OPENROUTER_API_KEY\"; the recording server receives 0 requests"
+        },
+        {
+          "id": "27-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "OPENROUTER_BASE_URL is set but is not an absolute URL with scheme http or https",
+          "system": "openrouter provider",
+          "action": "fail New without making any request",
+          "contract": "New returns a nil client and an error whose text contains \"OPENROUTER_BASE_URL\" and the configured value with any user-info (user:password@) removed"
+        },
+        {
+          "id": "27-REQ-1.5",
+          "pattern": "unwanted",
+          "condition": "m.ID is empty",
+          "system": "openrouter provider",
+          "action": "fail New without making any request",
+          "contract": "New returns a nil client and a non-nil error"
+        },
+        {
+          "id": "27-REQ-1.6",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "send every request as a POST to <base>/chat/completions, where <base> is OPENROUTER_BASE_URL with trailing '/' characters removed or DefaultBaseURL when the variable is unset, to that host only, carrying the key only in the header Authorization: Bearer <key>",
+          "contract": "with OPENROUTER_BASE_URL unset, an HTTPClient transport records host openrouter.ai and path /api/v1/chat/completions without touching the network; no recorded request body or other header contains the key or any ANTHROPIC_* or OLLAMA_* value"
+        },
+        {
+          "id": "27-REQ-1.7",
+          "pattern": "unwanted",
+          "condition": "Stream is called with a context that is already done",
+          "system": "openrouter provider",
+          "action": "refuse the call without making a request",
+          "contract": "Stream returns a nil channel and that context's error; the recording server receives 0 requests"
+        },
+        {
+          "id": "27-REQ-1.8",
+          "pattern": "state_driven",
+          "condition": "several goroutines call Stream concurrently on one provider value",
+          "system": "openrouter provider",
+          "action": "serve each call independently, encoding every failure after Stream returns inside that call's stream",
+          "contract": "every call's channel ends with its own MessageEndEvent and result; go test -race reports no data race"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-2",
+      "title": "Encoding the request",
+      "rationale": "The second turn of a tool loop only works if model id, tool schemas, argument strings and results reach OpenRouter exactly as the transcript holds them.",
+      "criteria": [
+        {
+          "id": "27-REQ-2.1",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "send model equal to m.ID byte for byte with nothing stripped or rewritten, stream true and stream_options.include_usage true in every request body",
+          "contract": "the recorded body has model == m.ID, stream == true and stream_options.include_usage == true"
+        },
+        {
+          "id": "27-REQ-2.2",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "join the core.TextBlocks of Request.System with a blank line (\"\\n\\n\") into one leading system message, and send no system message when Request.System has no text",
+          "contract": "the recorded messages array has at most one system message and, when present, it is element 0"
+        },
+        {
+          "id": "27-REQ-2.3",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "encode the repaired Request.Prefix followed by the repaired Request.Messages in order, with no cache marker; a core.UserMessage becomes a user message with its text blocks in order and is skipped when it has no text; each core.ToolResultMessage becomes its own tool message with tool_call_id equal to the call's id and content equal to provider.ToolResultText(v)",
+          "contract": "an error result's recorded content starts with \"Error: \"; the recorded body contains no cache_control field"
+        },
+        {
+          "id": "27-REQ-2.4",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "encode a core.AssistantMessage as an assistant message whose content is its text blocks joined (absent when there is no text) and whose tool_calls carry id, type \"function\", function.name and function.arguments equal to string(ToolUseBlock.Input) without decoding and re-encoding, and skip an assistant message with no text, no tool calls and no reasoning to replay",
+          "contract": "the recorded function.arguments string is byte-identical to the Input bytes received on the previous turn, including whitespace and key order"
+        },
+        {
+          "id": "27-REQ-2.5",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "declare each tool as {\"type\":\"function\",\"function\":{\"name\",\"description\",\"parameters\"}} where parameters is the tool's schema exactly as (*schema.Schema).MarshalJSON renders it, declare a tool with a nil schema with parameters {\"type\":\"object\",\"properties\":{}}, and send no strict flag",
+          "contract": "the recorded parameters bytes equal the schema's MarshalJSON output, preserving property order, additionalProperties, format and bounds; no tool object contains a strict key"
+        },
+        {
+          "id": "27-REQ-2.6",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "send tool_choice \"auto\" for core.ToolChoiceAuto and \"none\" for core.ToolChoiceNone, and omit tool_choice when the choice is core.ToolChoiceUnset",
+          "contract": "the recorded body has the matching tool_choice value or no tool_choice key"
+        },
+        {
+          "id": "27-REQ-2.7",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "send max_completion_tokens as *Request.MaxTokens when that is positive, capped at m.MaxOutputTokens when the cap is positive; otherwise as m.MaxOutputTokens when that is positive; otherwise omit the field",
+          "contract": "MaxTokens 200000 with cap 131072 records 131072; MaxTokens 4096 records 4096; nil MaxTokens with cap 32768 records 32768; nil MaxTokens with cap 0 records no max_completion_tokens key"
+        },
+        {
+          "id": "27-REQ-2.8",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "send temperature and top_p whenever their pointers are non-nil, including an explicit 0, and send stop when StopSequences is non-empty",
+          "contract": "a pointer to 0.0 records temperature 0; nil pointers and an empty StopSequences record no temperature, top_p or stop key"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-3",
+      "title": "Effort",
+      "rationale": "Effort must follow the catalog row's Efforts map the same way the Anthropic provider reads it, never clamped and never invalid on the wire.",
+      "criteria": [
+        {
+          "id": "27-REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "Request.Effort is empty",
+          "system": "openrouter provider",
+          "action": "send no reasoning object so that the vendor's default applies",
+          "contract": "the recorded body has no reasoning key"
+        },
+        {
+          "id": "27-REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "Request.Effort is non-empty and m.Efforts is nil",
+          "system": "openrouter provider",
+          "action": "use the effort's own name as the wire value",
+          "contract": "Effort \"high\" with a nil map records reasoning.effort == \"high\""
+        },
+        {
+          "id": "27-REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "Request.Effort is non-empty and m.Efforts is non-nil but has no entry, or a nil entry, for that effort",
+          "system": "openrouter provider",
+          "action": "send no reasoning object",
+          "contract": "Effort \"xhigh\" against a map holding low, medium, high and max records no reasoning key"
+        },
+        {
+          "id": "27-REQ-3.4",
+          "pattern": "event_driven",
+          "condition": "a wire value is selected for the effort",
+          "system": "openrouter provider",
+          "action": "send the value as reasoning.max_tokens when it parses as a positive integer and as reasoning.effort otherwise",
+          "contract": "a map value \"8192\" records reasoning.max_tokens == 8192 and no reasoning.effort; a map value \"medium\" records reasoning.effort == \"medium\" and no reasoning.max_tokens"
+        },
+        {
+          "id": "27-REQ-3.5",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "never substitute another effort level for the requested one and never remove temperature or top_p because an effort is sent",
+          "contract": "a request with Effort \"max\", Temperature 0.3 and TopP 0.9 records reasoning.effort \"max\", temperature 0.3 and top_p 0.9"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-4",
+      "title": "Replaying the transcript",
+      "rationale": "Chat-style wires reject unpaired tool calls, and OpenRouter reasoning must round-trip as reasoning_details, never as visible text.",
+      "criteria": [
+        {
+          "id": "27-REQ-4.1",
+          "pattern": "ubiquitous",
+          "system": "provider tool-pairing repair",
+          "action": "return a repaired view of its input messages without modifying the input, dropping every assistant message whose StopReason is StopReasonError or StopReasonAborted, then dropping every tool result whose call id is not in a kept assistant message",
+          "contract": "returns (core.Messages, report) where the report counts dropped assistant messages and dropped orphan results; the input slice and its messages are deep-equal to their state before the call"
+        },
+        {
+          "id": "27-REQ-4.2",
+          "pattern": "ubiquitous",
+          "system": "provider tool-pairing repair",
+          "action": "for every tool call in a kept assistant message that has no result, insert an error tool result with text \"No result provided\" at that call's position among the turn's results, before the next non-result message",
+          "contract": "the report counts inserted results; for calls A, B, C with only B answered, the results following the assistant message are ordered A(synthetic), B, C(synthetic)"
+        },
+        {
+          "id": "27-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "provider tool-pairing repair",
+          "action": "for any transcript, produce output in which every tool call of a kept assistant message is followed by exactly one result with its id before the next non-result message, no thinking block is altered, and repairing the output again reports zero changes",
+          "contract": "property holds over generated transcripts mixing errored, aborted, answered and unanswered turns"
+        },
+        {
+          "id": "27-REQ-4.4",
+          "pattern": "event_driven",
+          "condition": "Stream encodes a request",
+          "system": "openrouter provider",
+          "action": "run the shared repair on Request.Prefix and on Request.Messages before encoding, and report a non-zero change count through Options.Warnf",
+          "contract": "Warnf is called once per repaired part with a non-zero count and is not called when nothing changed"
+        },
+        {
+          "id": "27-REQ-4.5",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "send every tool-call id and tool_call_id unchanged, whichever model produced it",
+          "contract": "an id \"toolu_01abc\" produced by another provider is recorded as \"toolu_01abc\" in both tool_calls[].id and tool_call_id"
+        },
+        {
+          "id": "27-REQ-4.6",
+          "pattern": "event_driven",
+          "condition": "an assistant message being encoded has Model equal to m.ID",
+          "system": "openrouter provider",
+          "action": "send reasoning_details as the concatenation, in block order, of each thinking block's Signature parsed as a JSON array, with a Signature that is empty or not a JSON array contributing nothing",
+          "contract": "the recorded reasoning_details elements are byte-equivalent JSON to the fragments received on the earlier turn, in arrival order and with every field"
+        },
+        {
+          "id": "27-REQ-4.7",
+          "pattern": "event_driven",
+          "condition": "an assistant message being encoded has Model different from m.ID",
+          "system": "openrouter provider",
+          "action": "send no reasoning_details for that message",
+          "contract": "the recorded assistant message has no reasoning_details key"
+        },
+        {
+          "id": "27-REQ-4.8",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "never place a thinking block's Thinking text in any message's content",
+          "contract": "a transcript whose thinking text is a unique marker string yields a recorded body in which no content field contains the marker"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-5",
+      "title": "Decoding the stream",
+      "rationale": "Consumers render events as they arrive and the loop acts on the final message, so events, block indices and stop reasons must follow the vendor's stream exactly.",
+      "criteria": [
+        {
+          "id": "27-REQ-5.1",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "emit exactly one MessageStartEvent per turn before any content event, not emitting another for a retried attempt, with the partial message's Model set to m.ID, Effort set to Request.Effort and Timestamp from Options.Now when set or the clock otherwise",
+          "contract": "a turn that succeeds on its second attempt delivers exactly one MessageStartEvent"
+        },
+        {
+          "id": "27-REQ-5.2",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "assign block indices from 0 in order of first appearance, open a new block whenever the delta kind changes between text, thinking and tool call, emit events in the order the vendor sends the deltas, and ignore choices other than index 0, empty deltas, role-only deltas and SSE comments such as \": OPENROUTER PROCESSING\" without treating them as content",
+          "contract": "a stream of thinking, text, tool-call deltas yields blocks 0 thinking, 1 text, 2 tool call; a stream interleaving keep-alive comments yields the same events as one without them"
+        },
+        {
+          "id": "27-REQ-5.3",
+          "pattern": "event_driven",
+          "condition": "a chunk carries a non-empty delta.content",
+          "system": "openrouter provider",
+          "action": "emit TextStartEvent when the delta opens a text block, then TextDeltaEvent with the delta",
+          "contract": "TextDeltaEvent.Delta equals delta.content and its BlockIndex equals the open text block's index"
+        },
+        {
+          "id": "27-REQ-5.4",
+          "pattern": "event_driven",
+          "condition": "a chunk carries delta.reasoning or delta.reasoning_details",
+          "system": "openrouter provider",
+          "action": "append each reasoning_details element with all its fields to the open thinking block's fragment list (opening a block if none is open), take the visible text from delta.reasoning when present or else from reasoning.text text and reasoning.summary summary fields (encrypted fragments add no text), and emit ThinkingStartEvent and ThinkingDeltaEvent for it, never text events",
+          "contract": "the finished core.ThinkingBlock has Thinking equal to the accumulated text, Signature equal to the JSON array of its fragments in arrival order (empty when none arrived) and Redacted false"
+        },
+        {
+          "id": "27-REQ-5.5",
+          "pattern": "event_driven",
+          "condition": "a chunk carries delta.tool_calls fragments",
+          "system": "openrouter provider",
+          "action": "accumulate fragments by index, emit ToolCallStartEvent on the first fragment carrying id and name, emit ToolInputDeltaEvent with each function.arguments fragment as received, finalize the call with core.NewToolUse over the byte-for-byte concatenation of the fragments (empty becomes {}), and give a call that arrives without an id the id call_ followed by random hex unique within the turn",
+          "contract": "the final ToolUseBlock.Input equals the concatenated argument bytes; two id-less calls in one turn receive distinct call_<hex> ids"
+        },
+        {
+          "id": "27-REQ-5.6",
+          "pattern": "unwanted",
+          "condition": "a tool call's concatenated arguments are not a JSON object",
+          "system": "openrouter provider",
+          "action": "finalize the call with Input {} and report the call's id and name through Options.Warnf",
+          "contract": "ToolUseBlock.Input == {}; the Warnf output contains the call's id and name"
+        },
+        {
+          "id": "27-REQ-5.7",
+          "pattern": "event_driven",
+          "condition": "a choice has carried a finish_reason",
+          "system": "openrouter provider",
+          "action": "continue reading to the end of the body to collect usage, then emit TextEndEvent, ThinkingEndEvent and ToolCallEndEvent in block order once each with the whole block, then a MessageEndEvent with the final message",
+          "contract": "the stream result's Message equals the MessageEndEvent message and its Err is nil; usage sent after the finish chunk is present in the final message"
+        },
+        {
+          "id": "27-REQ-5.8",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "keep finish_reason verbatim in RawStopReason and map stop to StopReasonStop, length to StopReasonLength, tool_calls to StopReasonToolUse, content_filter to StopReasonRefusal and any other value except error to StopReasonStop, keep tool calls in the message whatever the finish reason, and set ResponseID and ResponseModel from the chunks' id and model",
+          "contract": "a stream with tool calls and finish_reason \"stop\" yields a message with StopReasonStop that still contains its ToolUseBlocks"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-6",
+      "title": "Truncated streams and errors inside the stream",
+      "rationale": "A Chat Completions tool call is only known complete at finish_reason, so a broken stream must fail the turn without leaving anything executable.",
+      "criteria": [
+        {
+          "id": "27-REQ-6.1",
+          "pattern": "unwanted",
+          "condition": "the response body ends without any choice having carried a finish_reason",
+          "system": "openrouter provider",
+          "action": "fail the turn",
+          "contract": "the result's Err satisfies errors.Is(err, openrouter.ErrStreamTruncated) and its text is \"openrouter: stream ended before finish_reason\"; the message has StopReasonError and no ToolUseBlock"
+        },
+        {
+          "id": "27-REQ-6.2",
+          "pattern": "complex_event",
+          "condition": "an in-stream error with code 429 or in 500–599 arrives",
+          "guard": "no content event has been emitted for the turn and retries remain",
+          "system": "openrouter provider",
+          "action": "discard the attempt and retry it under the retry policy of 27-REQ-7",
+          "contract": "the recording server receives one more request; the consumer sees no event from the discarded attempt"
+        },
+        {
+          "id": "27-REQ-6.3",
+          "pattern": "unwanted",
+          "condition": "an in-stream error arrives after a content event, with a code other than 429 or 500–599, or with no retries remaining",
+          "system": "openrouter provider",
+          "action": "fail the turn without retrying",
+          "contract": "the result's Err is a *openrouter.StatusError whose Code is the vendor's code and whose Text is \"openrouter: error <code> in stream: <message>\""
+        },
+        {
+          "id": "27-REQ-6.4",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "give every failed (non-aborted) turn's message StopReasonError, ErrorMessage equal to the error text, the text and thinking blocks streamed so far, no tool-call blocks, and whatever usage had arrived, priced as in 27-REQ-8",
+          "contract": "core.ExtractToolUse on the failed message returns no calls"
+        },
+        {
+          "id": "27-REQ-6.5",
+          "pattern": "event_driven",
+          "condition": "a turn fails for any reason other than cancellation",
+          "system": "openrouter provider",
+          "action": "emit a terminal ErrorEvent, then the MessageEndEvent, then end the stream with the result carrying Err",
+          "contract": "the last two events are ErrorEvent{Terminal: true} and MessageEndEvent, and the stream result's Err equals the ErrorEvent's Err"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-7",
+      "title": "HTTP errors, retries, cancellation and credential redaction",
+      "rationale": "The SDK skips 429, cannot see in-stream errors and can back off for an hour, so the provider owns one bounded retry loop and must never leak the key.",
+      "criteria": [
+        {
+          "id": "27-REQ-7.1",
+          "pattern": "complex_event",
+          "condition": "an attempt receives an HTTP 429 or 5xx response",
+          "guard": "fewer than MaxRetries retries have been made, where a nil Options.MaxRetries means DefaultMaxRetries (2) and a negative value means 0",
+          "system": "openrouter provider",
+          "action": "retry the request",
+          "contract": "with default options and three 503 responses followed by success, the recording server receives exactly 3 requests and the turn fails; with MaxRetries 0 it receives exactly 1 request"
+        },
+        {
+          "id": "27-REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "the provider waits before a retry",
+          "system": "openrouter provider",
+          "action": "wait for the response's Retry-After value (delta-seconds or HTTP date) when it lies between 0 and 60 seconds inclusive, and otherwise wait 0.5 s doubling per retry up to a cap of 8 s with up to 25% jitter",
+          "contract": "Retry-After: 0 retries without delay; Retry-After: 120 falls back to the exponential curve, observable through the unexported backoff hook"
+        },
+        {
+          "id": "27-REQ-7.3",
+          "pattern": "unwanted",
+          "condition": "retries are exhausted on a 429, 5xx or retryable in-stream error",
+          "system": "openrouter provider",
+          "action": "end the turn with the last error",
+          "contract": "the result's Err is a *openrouter.StatusError carrying the last status code; the message has StopReasonError"
+        },
+        {
+          "id": "27-REQ-7.4",
+          "pattern": "unwanted",
+          "condition": "an attempt receives HTTP 401 or 403",
+          "system": "openrouter provider",
+          "action": "fail the turn at once without retrying",
+          "contract": "the recording server receives 1 request; the result's Err is a *openrouter.StatusError with that Code and Text \"openrouter: HTTP <code>: <vendor message>\" followed by a note naming OPENROUTER_API_KEY"
+        },
+        {
+          "id": "27-REQ-7.5",
+          "pattern": "unwanted",
+          "condition": "an attempt receives any other non-2xx status, such as 400 or 402",
+          "system": "openrouter provider",
+          "action": "fail the turn without retrying, using the body's error.message as the vendor message when present",
+          "contract": "the result's Err is a *openrouter.StatusError with that Code and Text \"openrouter: HTTP <code>: <vendor message>\"; the recording server receives 1 request"
+        },
+        {
+          "id": "27-REQ-7.6",
+          "pattern": "unwanted",
+          "condition": "an attempt fails with no HTTP response, such as a refused connection",
+          "system": "openrouter provider",
+          "action": "fail the turn without retrying",
+          "contract": "the result's Err text is \"openrouter: <error>\" and the message has StopReasonError"
+        },
+        {
+          "id": "27-REQ-7.7",
+          "pattern": "unwanted",
+          "condition": "the caller's context is cancelled during a request, during streaming or during a wait between attempts",
+          "system": "openrouter provider",
+          "action": "stop the request and any pending wait within 1 second and end the turn as aborted",
+          "contract": "the message has StopReasonAborted and ErrorMessage \"Request was aborted\"; the result's Err satisfies errors.Is(err, core.ErrAborted); the channel is closed"
+        },
+        {
+          "id": "27-REQ-7.8",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "for any error text, ErrorEvent, ErrorMessage or Warnf output the provider builds, replace every occurrence of the API key with \"[redacted]\"",
+          "contract": "with a vendor error message and a base URL that echo the key, no returned error string, event, message field or Warnf line contains the key"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-8",
+      "title": "Usage and cost",
+      "rationale": "Usage must follow core.Usage's net semantics, and the cost bit must distinguish an unpriced response from a free one.",
+      "criteria": [
+        {
+          "id": "27-REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "a chunk carries usage",
+          "system": "openrouter provider",
+          "action": "set CacheReadTokens from prompt_tokens_details.cached_tokens, CacheWriteTokens from prompt_tokens_details.cache_write_tokens when reported, InputTokens to prompt_tokens minus both floored at 0, OutputTokens from completion_tokens, ReasoningTokens from completion_tokens_details.reasoning_tokens capped at OutputTokens and TotalTokens from total_tokens, setting a presence bit for exactly the reported fields",
+          "contract": "prompt_tokens 354 (cached_tokens 256), completion_tokens 120 (reasoning_tokens 80) and cost 0.00012 yield core.Usage{InputTokens: 98, CacheReadTokens: 256, OutputTokens: 120, ReasoningTokens: 80, CostUSD: 0.00012} with UsageCostUSD set"
+        },
+        {
+          "id": "27-REQ-8.2",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "for any reported prompt, cached, cache-write, completion and reasoning counts, produce InputTokens >= 0, ReasoningTokens <= OutputTokens and InputTokens + CacheReadTokens + CacheWriteTokens == max(prompt_tokens, CacheReadTokens + CacheWriteTokens)",
+          "contract": "property holds over generated non-negative counts"
+        },
+        {
+          "id": "27-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "openrouter provider",
+          "action": "set Usage.Requests to 1 whatever the number of attempts, and set BilledModel to the served model when the chunk's model differs from m.ID",
+          "contract": "a turn that succeeds after two retries reports Requests == 1"
+        },
+        {
+          "id": "27-REQ-8.4",
+          "pattern": "event_driven",
+          "condition": "the usage reports usage.cost",
+          "system": "openrouter provider",
+          "action": "set the cost with Usage.SetCost to that value",
+          "contract": "CostUSD equals usage.cost and Has(UsageCostUSD) is true, regardless of m's prices"
+        },
+        {
+          "id": "27-REQ-8.5",
+          "pattern": "event_driven",
+          "condition": "the usage reports no usage.cost and m has at least one non-zero price",
+          "system": "openrouter provider",
+          "action": "set the cost to provider.ComputeCost(&m, usage) with SetCost",
+          "contract": "CostUSD equals provider.ComputeCost(&m, usage) and Has(UsageCostUSD) is true"
+        },
+        {
+          "id": "27-REQ-8.6",
+          "pattern": "event_driven",
+          "condition": "the usage reports no usage.cost and every price of m is zero",
+          "system": "openrouter provider",
+          "action": "leave CostUSD at 0 and its presence bit clear",
+          "contract": "CostUSD == 0 and Has(UsageCostUSD) is false"
+        },
+        {
+          "id": "27-REQ-8.7",
+          "pattern": "event_driven",
+          "condition": "a response reports no usage",
+          "system": "openrouter provider",
+          "action": "leave the message's usage unreported",
+          "contract": "Usage.Reported() is false and no cost is computed"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-9",
+      "title": "The dependency and the repository's policy",
+      "rationale": "Every new module and version move is a reviewed decision enforced by policy tests, which must be restated rather than bypassed.",
+      "criteria": [
+        {
+          "id": "27-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "internal/policy",
+          "action": "assert that the root go.mod requires github.com/OpenRouterTeam/go-sdk at exactly v0.9.66 as a direct (not // indirect) requirement",
+          "contract": "a pin test modelled on TestAnthropicSDKIsPinned_TS10_1 passes and fails if the version changes or the requirement becomes indirect"
+        },
+        {
+          "id": "27-REQ-9.2",
+          "pattern": "ubiquitous",
+          "system": "internal/policy",
+          "action": "assert that no package other than provider/openrouter imports github.com/OpenRouterTeam/go-sdk or any of its subpackages",
+          "contract": "a policy test scanning go list import graphs of every module passes"
+        },
+        {
+          "id": "27-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "internal/policy",
+          "action": "list github.com/OpenRouterTeam/go-sdk in approvedDeps with a reason comment on the line above it",
+          "contract": "the existing allowlist and commented-deps tests pass with the new module"
+        },
+        {
+          "id": "27-REQ-9.4",
+          "pattern": "ubiquitous",
+          "system": "internal/policy",
+          "action": "include the SDK in preSpec13Direct and compare the root go list -m all output with a regenerated testdata/go-list-m-all.txt that differs from the previous snapshot only by the modules the SDK adds or moves",
+          "contract": "TestSandboxDepsPromoted_TS13_65 passes; TestRemovedDependenciesPruned_TS09_15 still finds golang.org/x/net and golang.org/x/time indirect"
+        },
+        {
+          "id": "27-REQ-9.5",
+          "pattern": "ubiquitous",
+          "system": "internal/policy",
+          "action": "compare the sandbox module's graph with a regenerated testdata/sandbox-go-list-m-all.txt, with TS-15-40 checking that every line of the .14 snapshot and go-landlock is present instead of whole-file equality and TS-14-42's .13 subset check unchanged",
+          "contract": "TestRsyncDependency_TS14_42, TestLandlockPromoted_TS15_40 and TestPodmanAddsNoDependency_TS17_60 pass without -short skips"
+        },
+        {
+          "id": "27-REQ-9.6",
+          "pattern": "ubiquitous",
+          "system": "repository",
+          "action": "keep every nested module listed in MODULES tidy so that its go.sum covers the new module",
+          "contract": "make check, including vet, lint and short tests in every module of MODULES, passes; TestMcpserveGraph_TS23_2 and TestGatewaydGraph_TS19_61 pass"
+        },
+        {
+          "id": "27-REQ-9.7",
+          "pattern": "ubiquitous",
+          "system": "repository_cut_test",
+          "action": "require the directories under provider/ to be exactly anthropic, faux and openrouter",
+          "contract": "TestProviderDefaults_TS09_11 expects \"anthropic,faux,openrouter\" and passes"
+        },
+        {
+          "id": "27-REQ-9.8",
+          "pattern": "ubiquitous",
+          "system": "internal/policy",
+          "action": "assert that the non-test Go sources of provider/openrouter contain no model id, context window, output cap or price literal, every such value coming from the core.Model passed to New",
+          "contract": "a policy test scanning provider/openrouter/*.go (excluding _test.go) finds no catalog model id such as \"qwen/\" and no catalog window, cap or price value"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "27-PATH-1",
+      "title": "A two-turn tool loop runs on OpenRouter against a recording server",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "builds m from catalog.Select(\"openrouter\", \"STANDARD\", \"\") and calls openrouter.New(m, openrouter.Options{Env: {OPENROUTER_API_KEY, OPENROUTER_BASE_URL=<recording server>}}), then agentkit.New with Config.Provider set to it and one tool"
+        },
+        {
+          "actor": "agent loop",
+          "action": "calls Stream with the system prompt, the user prompt and the tool's schema"
+        },
+        {
+          "actor": "openrouter provider",
+          "action": "POSTs <base>/chat/completions with model, full tool schema and Authorization: Bearer, and decodes the replayed SSE of reasoning_details fragments and a tool call with finish_reason tool_calls into events and a message"
+        },
+        {
+          "actor": "agent loop",
+          "action": "executes the tool call and calls Stream again with the assistant message and the tool result"
+        },
+        {
+          "actor": "openrouter provider",
+          "action": "replays the tool-call id and argument string byte for byte, the result paired to that id and the reasoning_details fragments as received, then decodes the final text and usage"
+        },
+        {
+          "actor": "recording server",
+          "action": "holds two recorded requests, the second carrying the model id as written, every tool's full schema, the call id, argument string, paired result and reasoning_details, and no ANTHROPIC_* or OLLAMA_* value"
+        }
+      ]
+    },
+    {
+      "id": "27-PATH-2",
+      "title": "A missing API key fails construction before any request",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls openrouter.New(m, openrouter.Options{Env: {OPENROUTER_BASE_URL=<recording server>}, Getenv: recorder}) with OPENROUTER_API_KEY unset"
+        },
+        {
+          "actor": "openrouter provider",
+          "action": "looks up only OPENROUTER_API_KEY and OPENROUTER_BASE_URL and returns an error wrapping ErrNoAPIKey that names OPENROUTER_API_KEY"
+        },
+        {
+          "actor": "recording server",
+          "action": "has received zero requests"
+        }
+      ]
+    },
+    {
+      "id": "27-PATH-3",
+      "title": "An in-stream 429 before content is retried and the turn reports netted usage and reported cost",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls Stream on a provider built against a recording server whose first response is a 200 stream carrying an error chunk with code 429 and no finish_reason"
+        },
+        {
+          "actor": "openrouter provider",
+          "action": "discards the attempt without emitting content and retries after the Retry-After: 0 wait"
+        },
+        {
+          "actor": "recording server",
+          "action": "replays a successful stream with finish_reason stop followed by a usage chunk with prompt_tokens 354, cached_tokens 256, completion_tokens 120, reasoning_tokens 80 and cost 0.00012"
+        },
+        {
+          "actor": "openrouter provider",
+          "action": "emits one MessageStartEvent, the text events and a MessageEndEvent whose usage is InputTokens 98, CacheReadTokens 256, OutputTokens 120, ReasoningTokens 80, CostUSD 0.00012 with the cost bit set and Requests 1"
+        }
+      ]
+    },
+    {
+      "id": "27-PATH-4",
+      "title": "A truncated stream fails the turn without an executable tool call",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls Stream on a provider whose recording server replays text and a partial tool call, then ends the body without finish_reason"
+        },
+        {
+          "actor": "openrouter provider",
+          "action": "emits the text and tool-call deltas, then a terminal ErrorEvent and a MessageEndEvent"
+        },
+        {
+          "actor": "embedder",
+          "action": "receives a result whose Err is ErrStreamTruncated and whose message has StopReasonError, the streamed text and no ToolUseBlock"
+        }
+      ]
+    },
+    {
+      "id": "27-PATH-5",
+      "title": "An authentication failure ends the turn at once without leaking the key",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls Stream on a provider whose recording server answers HTTP 401 with an error.message that echoes the key"
+        },
+        {
+          "actor": "openrouter provider",
+          "action": "does not retry and fails the turn with a *StatusError{Code: 401} whose text names openrouter and OPENROUTER_API_KEY with the key replaced by [redacted]"
+        },
+        {
+          "actor": "recording server",
+          "action": "has received exactly one request"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/OpenRouterTeam/go-sdk",
+      "version": "v0.9.66",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "New",
+          "import_path": "github.com/OpenRouterTeam/go-sdk",
+          "signature": "func New(opts ...SDKOption) *OpenRouter",
+          "notes": "Assumed Speakeasy-generated constructor; read the module at v0.9.66 before use and record differences in docs/errata."
+        },
+        {
+          "name": "WithSecurity",
+          "import_path": "github.com/OpenRouterTeam/go-sdk",
+          "signature": "func WithSecurity(apiKey string) SDKOption",
+          "notes": "Assumed to send Authorization: Bearer <key>."
+        },
+        {
+          "name": "WithServerURL",
+          "import_path": "github.com/OpenRouterTeam/go-sdk",
+          "signature": "func WithServerURL(serverURL string) SDKOption",
+          "notes": "Unverified."
+        },
+        {
+          "name": "WithClient",
+          "import_path": "github.com/OpenRouterTeam/go-sdk",
+          "signature": "func WithClient(client HTTPClient) SDKOption",
+          "notes": "HTTPClient assumed to have Do(*http.Request) (*http.Response, error)."
+        },
+        {
+          "name": "WithRetryConfig",
+          "import_path": "github.com/OpenRouterTeam/go-sdk",
+          "signature": "func WithRetryConfig(retryConfig retry.Config) SDKOption",
+          "notes": "Assumed retry.Config{Strategy: \"none\"} turns SDK retries off."
+        },
+        {
+          "name": "Chat.Send",
+          "import_path": "github.com/OpenRouterTeam/go-sdk",
+          "signature": "func (s *Chat) Send(ctx context.Context, request ChatRequest, opts ...operations.Option) (*ChatResponse, error)",
+          "notes": "Assumed streaming entry point; the response exposes an event stream with Next() bool, Value(), Err() error and Close() error. Whether request types carry schema property order and every reasoning_details field without loss is unverified."
+        },
+        {
+          "name": "APIError",
+          "import_path": "github.com/OpenRouterTeam/go-sdk/models/sdkerrors",
+          "signature": "type APIError struct { Message string; StatusCode int; Body string; RawResponse *http.Response }",
+          "notes": "Assumed typed HTTP error exposing status, headers (Retry-After) and body."
+        }
+      ]
+    }
+  ]
+}

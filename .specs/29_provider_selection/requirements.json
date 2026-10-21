@@ -1,0 +1,655 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "29",
+  "spec_name": "provider_selection",
+  "schema_version": 2,
+  "introduction": "AgentKit's root package lets an embedder choose what runs an agent by provider name (anthropic, openrouter or ollama), model (a tier or the provider's own model id) and effort. The agent resolves these through the catalog and builds the provider's client itself. Each provider reads only its own variables. The same resolution is exported as `agentkit.Resolve`, the agent reports what it used, and a run whose cost cannot be known is flagged in `core.Usage`.",
+  "glossary": {
+    "Listed": "True when the resolved model id has its own catalog row, false when the provider's fallback row was used.",
+    "Resolution": "The value returned by agentkit.Resolve and Agent.Resolution: canonical provider name, tier, catalog model row, normalized effort, Listed flag and the core.ProviderClient a run calls.",
+    "cost bit": "The core.UsageCostUSD bit in Usage.Set, which marks CostUSD as present.",
+    "lookup order": "How a credential or endpoint variable is read: a non-empty Config.Env value first, then Config.Getenv when set (no process fallback), otherwise the process environment. An empty value counts as unset.",
+    "recording server": "An httptest server in a test that answers one canned text turn in a provider's wire format and records every request's path, headers and body.",
+    "tier": "A catalog tier name such as STANDARD that maps, per provider, to a model id and a default effort (spec 26).",
+    "unpriced": "A usage covering at least one request whose cost neither the vendor reported nor the catalog priced, so CostUSD counts it as zero; carried as core.Usage.Unpriced."
+  },
+  "requirements": [
+    {
+      "id": "29-REQ-1",
+      "title": "The Config fields that choose a model",
+      "rationale": "A provider name selects a built-in provider without a registry, and an SDK-typed field would be Anthropic-only.",
+      "criteria": [
+        {
+          "id": "29-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "agentkit.Config",
+          "action": "declare exactly fourteen exported fields in this order: Client core.ProviderClient, Provider string, Model string, Effort Effort, Env map[string]string, Getenv func(string) string, System, Prefix, Toolset, MaxTurns, MaxCostUSD, Timeout, Prune, MaxTokens, with the last eight keeping their current types",
+          "contract": "reflect.TypeOf(agentkit.Config{}) lists exactly these fourteen field names and types in this order"
+        },
+        {
+          "id": "29-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "agentkit.Resolve",
+          "action": "match Config.Provider after trimming surrounding whitespace and without regard to case, treat an empty Provider as anthropic, and report the canonical lower-case name in Resolution.Provider",
+          "contract": "Provider \" OpenRouter \" resolves to Resolution.Provider \"openrouter\"; Provider \"\" resolves to \"anthropic\""
+        },
+        {
+          "id": "29-REQ-1.3",
+          "pattern": "event_driven",
+          "condition": "a credential or endpoint variable is looked up for the chosen provider",
+          "system": "agentkit",
+          "action": "use a non-empty Config.Env value first, otherwise call Config.Getenv when it is set without falling back to the process environment, otherwise read the process environment, treating an empty value at any step as unset",
+          "contract": "with Env {\"OPENROUTER_API_KEY\": \"\"} and Getenv returning \"k\" for that name, the provider receives key \"k\"; with Getenv set, a process-environment value is never used"
+        },
+        {
+          "id": "29-REQ-1.4",
+          "pattern": "ubiquitous",
+          "system": "root package agentkit",
+          "action": "import neither github.com/anthropics/anthropic-sdk-go nor any of its sub-packages from non-test code",
+          "contract": "`go list -f '{{.Imports}}' github.com/agent-fox-dev/agentkit-go` lists no path starting with github.com/anthropics/anthropic-sdk-go"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-2",
+      "title": "agentkit.Resolve: from a config to what will run",
+      "rationale": "An embedder must be able to see, check or wrap exactly what New would use without building an agent.",
+      "criteria": [
+        {
+          "id": "29-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "agentkit.Resolve(cfg) is called with a valid provider, model and effort",
+          "system": "agentkit.Resolve",
+          "action": "call catalog.Select(cfg.Provider, cfg.Model, cfg.Effort) and return a Resolution whose Provider, Tier, Model, Effort and Listed equal the Selection's fields and whose Client is the client a run would call",
+          "contract": "(Resolution, nil); Tier is empty when a model id was named; Effort is the normalized effort and empty means none is sent"
+        },
+        {
+          "id": "29-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "catalog.Select returns an error, including when Config.Client is set",
+          "system": "agentkit.Resolve",
+          "action": "return that error unchanged without building a client or reading any variable",
+          "contract": "(zero Resolution, err) where errors.Is(err, catalog.ErrUnknownProvider), catalog.ErrNoModel or catalog.ErrUnknownEffort holds and the message names the rejected value and the valid choices"
+        },
+        {
+          "id": "29-REQ-2.3",
+          "pattern": "ubiquitous",
+          "system": "agentkit.Resolve",
+          "action": "for any Config, return a Resolution that depends only on Client, Provider, Model, Effort, Env and Getenv, such that two calls with the same config return equal Provider, Tier, Model, Effort and Listed, and changing System, Prefix, Toolset, MaxTurns, MaxCostUSD, Timeout, Prune or MaxTokens changes none of them",
+          "contract": "two Resolve calls on configs differing only in the non-selection fields return Resolutions with equal Provider, Tier, Model, Effort and Listed"
+        },
+        {
+          "id": "29-REQ-2.4",
+          "pattern": "ubiquitous",
+          "system": "agentkit.Resolve",
+          "action": "send no network request and keep no package-level state, building a new client on each call when Config.Client is nil",
+          "contract": "recording servers count zero requests after any number of successful Resolve calls; two calls return distinct Client values"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-3",
+      "title": "Building the provider client and checking credentials",
+      "rationale": "Credentials are checked before a run so a misconfigured agent fails at construction, not on its first request.",
+      "criteria": [
+        {
+          "id": "29-REQ-3.1",
+          "pattern": "complex_event",
+          "condition": "Resolve runs with Config.Client nil",
+          "guard": "the resolved provider is anthropic",
+          "system": "agentkit.Resolve",
+          "action": "first call anthropic.Resolve over an anthropic.Env that applies the lookup order, then return anthropic.Provider(Resolution.Model, anthropic.Options{Env: cfg.Env, Getenv: cfg.Getenv}) as Resolution.Client",
+          "contract": "Resolution.Client is the provider built with Options{Env, Getenv}, not with the resolved SDK client"
+        },
+        {
+          "id": "29-REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "the provider is anthropic and anthropic.Resolve fails, for example with no Anthropic credential or a Vertex selection without a project",
+          "system": "agentkit.Resolve",
+          "action": "return the error of anthropic.Resolve unchanged",
+          "contract": "(zero Resolution, err) with errors.Is(err, anthropic.ErrNoCredentials) when no credential is set; the Vertex error names both project variables"
+        },
+        {
+          "id": "29-REQ-3.3",
+          "pattern": "complex_event",
+          "condition": "Resolve runs with Config.Client nil",
+          "guard": "the resolved provider is openrouter",
+          "system": "agentkit.Resolve",
+          "action": "return openrouter.New(Resolution.Model, openrouter.Options{Env: cfg.Env, Getenv: cfg.Getenv}) as Resolution.Client"
+        },
+        {
+          "id": "29-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "the provider is openrouter and openrouter.New fails, for example because OPENROUTER_API_KEY is missing or OPENROUTER_BASE_URL is malformed",
+          "system": "agentkit.Resolve",
+          "action": "return the error of openrouter.New unchanged",
+          "contract": "(zero Resolution, err) with errors.Is(err, openrouter.ErrNoAPIKey) when the key is missing"
+        },
+        {
+          "id": "29-REQ-3.5",
+          "pattern": "complex_event",
+          "condition": "Resolve runs with Config.Client nil",
+          "guard": "the resolved provider is ollama",
+          "system": "agentkit.Resolve",
+          "action": "return ollama.New(Resolution.Model, ollama.Options{Env: cfg.Env, Getenv: cfg.Getenv}) as Resolution.Client, requiring no credential and returning any constructor error unchanged",
+          "contract": "with no variable set, (Resolution, nil)"
+        },
+        {
+          "id": "29-REQ-3.6",
+          "pattern": "optional",
+          "condition": "Config.Client is set",
+          "system": "agentkit.Resolve",
+          "action": "return that client as Resolution.Client without building a provider and without reading any variable",
+          "contract": "Getenv is called zero times and Env is not consulted; Provider and Model still choose Resolution.Model and Resolution.Effort"
+        },
+        {
+          "id": "29-REQ-3.7",
+          "pattern": "event_driven",
+          "condition": "the chosen provider's host is unreachable",
+          "system": "agentkit.Resolve",
+          "action": "succeed without contacting the host, so the failure surfaces from the run's first model request",
+          "contract": "Resolve and New return nil error; Agent.Run returns the transport error of the first request"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-4",
+      "title": "Credential and endpoint isolation",
+      "rationale": "A secret meant for one vendor must never be sent to another.",
+      "criteria": [
+        {
+          "id": "29-REQ-4.1",
+          "pattern": "ubiquitous",
+          "system": "agentkit",
+          "action": "perform every variable lookup through the chosen provider's own code only, so the injected Getenv is asked only for names belonging to the chosen provider's variable set and no value read for one provider is passed to another provider's client",
+          "contract": "for each provider, the set of names passed to Getenv during Resolve and one run contains no OpenRouter, Ollama or Anthropic variable belonging to a different provider"
+        },
+        {
+          "id": "29-REQ-4.2",
+          "pattern": "ubiquitous",
+          "system": "agentkit",
+          "action": "never read AGENTKIT_PROVIDER, AGENTKIT_MODEL, AGENTKIT_EFFORT or any other variable whose name starts with AGENTKIT_",
+          "contract": "no name starting with AGENTKIT_ is passed to Getenv during Resolve, New or a run"
+        },
+        {
+          "id": "29-REQ-4.3",
+          "pattern": "complex_event",
+          "condition": "an agent runs one prompt on a chosen provider",
+          "guard": "ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, OPENROUTER_API_KEY and OLLAMA_API_KEY are all set and each provider's base-URL variable points at its own recording server",
+          "system": "agentkit",
+          "action": "send requests only to the chosen provider's recording server",
+          "contract": "the other two recording servers count zero requests"
+        },
+        {
+          "id": "29-REQ-4.4",
+          "pattern": "ubiquitous",
+          "system": "agentkit",
+          "action": "for any ordered pair of distinct providers (P, Q), never place a secret of Q in any header or body of a request sent while running on P, and never send OLLAMA_API_KEY to any server",
+          "contract": "no recorded header value or body on any server contains another provider's secret string or the OLLAMA_API_KEY value"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-5",
+      "title": "agentkit.New builds on the resolution",
+      "rationale": "New is Resolve plus the tool side, so what Resolve reports is exactly what the agent uses.",
+      "criteria": [
+        {
+          "id": "29-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "agentkit.New(cfg) is called",
+          "system": "agentkit.New",
+          "action": "run Resolve(cfg) before validating cfg.Toolset with NewRunner, so errors are reported in the order provider, model, effort, credentials, tool set",
+          "contract": "a config with both an unknown provider and an invalid tool set returns catalog.ErrUnknownProvider; a config with missing credentials and an invalid tool set returns the credential error"
+        },
+        {
+          "id": "29-REQ-5.2",
+          "pattern": "unwanted",
+          "condition": "Resolve or NewRunner fails inside New",
+          "system": "agentkit.New",
+          "action": "return the error unchanged and send no request",
+          "contract": "(nil, err) with the same error value Resolve or NewRunner returned; every recording server counts zero requests"
+        },
+        {
+          "id": "29-REQ-5.3",
+          "pattern": "ubiquitous",
+          "system": "Agent",
+          "action": "call Resolution.Client for every model request and use Resolution.Model as the row for pruning, the context-window check, pricing and message stamping"
+        },
+        {
+          "id": "29-REQ-5.4",
+          "pattern": "ubiquitous",
+          "system": "Agent",
+          "action": "put Resolution.Effort on every model request instead of the raw Config.Effort",
+          "contract": "a tier's effort is sent when Config.Effort is empty; Config.Effort \"HIGH\" is sent as high; an empty Resolution.Effort sends no effort"
+        },
+        {
+          "id": "29-REQ-5.5",
+          "pattern": "event_driven",
+          "condition": "Config.Model is a tier name",
+          "system": "Agent",
+          "action": "name the tier's resolved model id wherever it names its model, including AgentStartEvent.Model, assistant message stamping and the context-window error",
+          "contract": "none of these carries the tier name"
+        },
+        {
+          "id": "29-REQ-5.6",
+          "pattern": "event_driven",
+          "condition": "an agent built with Provider openrouter, Model STANDARD and Getenv supplying OPENROUTER_API_KEY and OPENROUTER_BASE_URL runs one prompt",
+          "system": "Agent",
+          "action": "send a request whose body carries model qwen/qwen3.8-flash and reasoning.effort medium to POST <base>/chat/completions",
+          "contract": "Agent.Resolution() reports Provider openrouter, Tier STANDARD, Model.ID qwen/qwen3.8-flash, Effort medium, Listed true"
+        },
+        {
+          "id": "29-REQ-5.7",
+          "pattern": "event_driven",
+          "condition": "an agent built with Provider ollama, Model STANDARD and Getenv supplying OLLAMA_HOST runs one prompt",
+          "system": "Agent",
+          "action": "send a request to /api/chat whose body carries model qwen3.8:27b, think medium and options.num_ctx 32768",
+          "contract": "Agent.Resolution() reports Provider ollama, Tier STANDARD, Model.ID qwen3.8:27b, Effort medium, Listed true"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-6",
+      "title": "Reporting what runs",
+      "rationale": "A caller holding only the agent, such as a logger or budget gate, must be able to say what ran.",
+      "criteria": [
+        {
+          "id": "29-REQ-6.1",
+          "pattern": "ubiquitous",
+          "system": "Agent.Resolution",
+          "action": "return the Resolution the agent was built with, whose Provider, Tier, Model, Effort, Listed and Client equal those of Resolve on the same config"
+        },
+        {
+          "id": "29-REQ-6.2",
+          "pattern": "ubiquitous",
+          "system": "Agent.Resolution",
+          "action": "return a copy, so writing to the returned Model.Efforts map or Model.Compat bytes leaves the agent's own row and later Resolution() results unchanged"
+        },
+        {
+          "id": "29-REQ-6.3",
+          "pattern": "state_driven",
+          "condition": "a run is in progress on another goroutine",
+          "system": "Agent.Resolution",
+          "action": "return without a data race",
+          "contract": "`go test -race` reports no race when Resolution() is called concurrently with Run"
+        },
+        {
+          "id": "29-REQ-6.4",
+          "pattern": "ubiquitous",
+          "system": "Agent",
+          "action": "export exactly seven methods: Messages, ReachableTools, Resolution, Run, Runner, Stream and Usage"
+        },
+        {
+          "id": "29-REQ-6.5",
+          "pattern": "event_driven",
+          "condition": "a run starts",
+          "system": "Agent",
+          "action": "emit a core.AgentStartEvent whose Provider is the resolved provider name, Model is the resolved model id, and API is the API constant of the provider package Resolve built (anthropic.API, openrouter.API or ollama.API)",
+          "contract": "AgentStartEvent{Provider, API, Model} all non-empty when Resolve built the client"
+        },
+        {
+          "id": "29-REQ-6.6",
+          "pattern": "optional",
+          "condition": "Config.Client was given",
+          "system": "Agent",
+          "action": "emit AgentStartEvent with an empty API while still filling Provider and Model from the resolution",
+          "contract": "AgentStartEvent.API == \"\""
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-7",
+      "title": "Runs whose cost is unknown",
+      "rationale": "A zero cost from an unpriced model must be distinguishable from a free run, and the cost bit alone cannot carry that through Add.",
+      "criteria": [
+        {
+          "id": "29-REQ-7.1",
+          "pattern": "ubiquitous",
+          "system": "core.Usage",
+          "action": "for any two usages a and b, after a.Add(b) have a.Unpriced equal to the logical OR of the two prior Unpriced values, with every other field combined as today"
+        },
+        {
+          "id": "29-REQ-7.2",
+          "pattern": "ubiquitous",
+          "system": "core.UsageJSON",
+          "action": "carry Usage.Unpriced under the JSON key unpriced, present on every encoded usage",
+          "contract": "the encoded event JSON of a usage with Unpriced true contains \"unpriced\":true; with false it contains \"unpriced\":false"
+        },
+        {
+          "id": "29-REQ-7.3",
+          "pattern": "complex_event",
+          "condition": "the agent prices a turn whose usage was reported (Usage.Reported())",
+          "guard": "the resolved model has all four per-million rates at zero and either the resolved provider is anthropic, or it is openrouter and the response left the cost bit clear",
+          "system": "Agent",
+          "action": "mark that turn's priced usage Unpriced",
+          "contract": "an Anthropic run on an unlisted id that reported usage, and an OpenRouter run on an unlisted id whose response carried no cost, end with RunResult.Usage.Unpriced true"
+        },
+        {
+          "id": "29-REQ-7.4",
+          "pattern": "state_driven",
+          "condition": "the resolved provider is ollama, whichever client is called",
+          "system": "Agent",
+          "action": "never mark a turn Unpriced",
+          "contract": "RunResult.Usage.Unpriced is false for every Ollama run"
+        },
+        {
+          "id": "29-REQ-7.5",
+          "pattern": "ubiquitous",
+          "system": "Agent",
+          "action": "leave Unpriced false for a turn on a model with any non-zero per-million rate, for an OpenRouter response that set the cost bit, and for a turn whose usage was not reported"
+        },
+        {
+          "id": "29-REQ-7.6",
+          "pattern": "ubiquitous",
+          "system": "Agent",
+          "action": "propagate an Unpriced turn to RunResult.Usage, AgentDoneEvent.Result.Usage, AgentDoneEvent.Usage and Agent.Usage(), leaving TurnEndEvent.Usage as the provider's own usage of that turn"
+        },
+        {
+          "id": "29-REQ-7.7",
+          "pattern": "ubiquitous",
+          "system": "Agent",
+          "action": "price an unpriced turn as today, setting the computed cost of zero with the cost bit set, and keep MaxCostUSD reading CostUSD",
+          "contract": "an unpriced turn has CostUSD 0 and Has(core.UsageCostUSD) true; MaxCostUSD stop behaviour is unchanged"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-8",
+      "title": "Existing behaviour and migration",
+      "rationale": "Anthropic callers and test doubles must see no behaviour change beyond the mechanical field rename.",
+      "criteria": [
+        {
+          "id": "29-REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "an agent is built with Provider empty or anthropic and Model claude-opus-5-5 and runs one prompt",
+          "system": "Agent",
+          "action": "send a request body byte-identical to the one sent by anthropic.Provider(row, anthropic.Options{Env, Getenv}) built directly with the same environment"
+        },
+        {
+          "id": "29-REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "Provider is empty or anthropic and Model is an unlisted Claude id",
+          "system": "agentkit.Resolve",
+          "action": "resolve Resolution.Model to the same row catalog.Lookup returns for that id, with Listed false, so pruning, pricing and stop behaviour are unchanged",
+          "contract": "reflect.DeepEqual(res.Model, catalog.Lookup(id) row) and res.Listed == false"
+        },
+        {
+          "id": "29-REQ-8.3",
+          "pattern": "optional",
+          "condition": "a test double such as provider/faux is passed as Config.Client",
+          "system": "Agent",
+          "action": "call that client for every request, so every existing test in the root, codemode, sandbox and example modules passes after renaming Provider: to Client: with no other assertion change",
+          "contract": "`make test` passes across every module in MODULES"
+        },
+        {
+          "id": "29-REQ-8.4",
+          "pattern": "unwanted",
+          "condition": "examples/codingagent, examples/customtools or examples/mcp start with no Anthropic credential set",
+          "system": "example program",
+          "action": "fail from agentkit.New before any request, reporting the variables to set, without resolving an SDK client of its own",
+          "contract": "non-zero exit with an error message naming ANTHROPIC_API_KEY; the program source imports no github.com/anthropics/anthropic-sdk-go package"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-9",
+      "title": "Exported API record",
+      "rationale": "The exported-API golden is the contract later specs and embedders compare against.",
+      "criteria": [
+        {
+          "id": "29-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "exported-API golden",
+          "action": "record in the root section the fourteen-field Config, func Resolve(cfg Config) (Resolution, error), type Resolution and method (*Agent) Resolution() Resolution, and in the core section Usage.Unpriced and UsageJSON's unpriced field, with every other section unchanged",
+          "contract": "the golden comparison test of internal/policy passes against the regenerated internal/policy/testdata/exported-api.golden"
+        },
+        {
+          "id": "29-REQ-9.2",
+          "pattern": "ubiquitous",
+          "system": "exported-API golden",
+          "action": "keep the Config line ending with the substring `Prefix []core.Message Toolset Toolset MaxTurns int MaxCostUSD float64 Timeout time.Duration Prune PruneOptions MaxTokens int }`",
+          "contract": "the Config line of internal/policy/testdata/exported-api.golden contains the substring, so TS-21-55 passes"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "29-PATH-1",
+      "title": "An embedder runs an agent on OpenRouter by name",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls agentkit.New(Config{Provider: \"openrouter\", Model: \"STANDARD\", Getenv: …}) with OPENROUTER_API_KEY and OPENROUTER_BASE_URL pointing at a recording server"
+        },
+        {
+          "actor": "agentkit.Resolve",
+          "action": "calls catalog.Select and openrouter.New with Env and Getenv, returning a Resolution with model qwen/qwen3.8-flash and effort medium"
+        },
+        {
+          "actor": "Agent",
+          "action": "runs one prompt, emits AgentStartEvent{Provider: openrouter, API: openrouter.API, Model: qwen/qwen3.8-flash} and sends the request with reasoning.effort medium"
+        },
+        {
+          "actor": "recording server",
+          "action": "records one POST /chat/completions and answers a text turn whose usage carries no cost"
+        },
+        {
+          "actor": "Agent",
+          "action": "returns RunResult whose Usage.Unpriced is false for the listed row, and Agent.Resolution() reports Listed true"
+        }
+      ]
+    },
+    {
+      "id": "29-PATH-2",
+      "title": "An embedder runs an agent on Ollama by name",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls agentkit.New(Config{Provider: \"ollama\", Model: \"STANDARD\", Getenv: …}) with OLLAMA_HOST pointing at a recording server and no credential"
+        },
+        {
+          "actor": "agentkit.Resolve",
+          "action": "calls catalog.Select and ollama.New, returning a Resolution with model qwen3.8:27b and effort medium"
+        },
+        {
+          "actor": "Agent",
+          "action": "runs one prompt and sends POST /api/chat with think medium and options.num_ctx 32768"
+        },
+        {
+          "actor": "recording server",
+          "action": "records the request and answers an NDJSON text turn ending with done true"
+        },
+        {
+          "actor": "Agent",
+          "action": "returns RunResult with Usage.Unpriced false and AgentStartEvent.Provider ollama"
+        }
+      ]
+    },
+    {
+      "id": "29-PATH-3",
+      "title": "An Anthropic run stays byte-identical and flags an unlisted model as unpriced",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls agentkit.New(Config{Model: \"claude-opus-5-5\", Getenv: …}) with ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL pointing at a recording server"
+        },
+        {
+          "actor": "agentkit.Resolve",
+          "action": "runs anthropic.Resolve to check the credential, then builds anthropic.Provider with Options{Env, Getenv}"
+        },
+        {
+          "actor": "Agent",
+          "action": "runs one prompt and sends a request body byte-identical to a directly built anthropic.Provider's"
+        },
+        {
+          "actor": "embedder",
+          "action": "repeats with an unlisted Claude id whose server response reports usage"
+        },
+        {
+          "actor": "Agent",
+          "action": "returns RunResult whose Usage.Unpriced is true with CostUSD 0 and the cost bit set"
+        }
+      ]
+    },
+    {
+      "id": "29-PATH-4",
+      "title": "Provider isolation across all three providers",
+      "steps": [
+        {
+          "actor": "test harness",
+          "action": "sets all three providers' secrets in a recording Getenv and points each base-URL variable at its own recording server"
+        },
+        {
+          "actor": "embedder",
+          "action": "builds and runs an agent on anthropic, then openrouter, then ollama"
+        },
+        {
+          "actor": "agentkit.Resolve",
+          "action": "lets only the chosen provider's code look up variables"
+        },
+        {
+          "actor": "recording servers",
+          "action": "record requests only on the chosen provider's server, with no other provider's secret in any header or body"
+        },
+        {
+          "actor": "test harness",
+          "action": "checks that Getenv was asked for no other provider's variable and no AGENTKIT_ variable"
+        }
+      ]
+    },
+    {
+      "id": "29-PATH-5",
+      "title": "An embedder resolves, wraps and passes its own client",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls agentkit.Resolve(cfg) with Provider openrouter and a model id"
+        },
+        {
+          "actor": "agentkit.Resolve",
+          "action": "returns the Resolution with the built client and sends no request"
+        },
+        {
+          "actor": "embedder",
+          "action": "sets cfg.Client to a wrapper around res.Client and calls agentkit.New(cfg)"
+        },
+        {
+          "actor": "agentkit.New",
+          "action": "uses the given client and reads no variable"
+        },
+        {
+          "actor": "Agent",
+          "action": "runs one prompt through the wrapper and emits AgentStartEvent with Provider openrouter and an empty API"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/agent-fox-dev/agentkit-go/provider/anthropic",
+      "version": "in-tree",
+      "verified": true,
+      "symbols": [
+        {
+          "name": "Resolve",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/provider/anthropic",
+          "signature": "func Resolve(env Env) (*sdk.Client, Source, error)",
+          "notes": "resolve.go L100; makes no network request"
+        },
+        {
+          "name": "Env",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/provider/anthropic",
+          "signature": "type Env interface{ Lookup(name string) (string, bool) }",
+          "notes": "resolve.go L58"
+        },
+        {
+          "name": "ErrNoCredentials",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/provider/anthropic",
+          "signature": "var ErrNoCredentials error",
+          "notes": "resolve.go L53"
+        },
+        {
+          "name": "Provider",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/provider/anthropic",
+          "signature": "func Provider(m core.Model, opts Options) core.ProviderClient",
+          "notes": "stream.go L103; Options.Env map[string]string and Options.Getenv func(string) string"
+        },
+        {
+          "name": "API",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/provider/anthropic",
+          "signature": "const API core.API = \"anthropic-messages\"",
+          "notes": "anthropic.go L24"
+        }
+      ]
+    },
+    {
+      "package": "github.com/agent-fox-dev/agentkit-go/catalog",
+      "version": "spec 26 (not yet landed)",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "Select",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/catalog",
+          "signature": "func Select(provider, model string, effort core.Effort) (Selection, error)",
+          "notes": "assumed from 26-REQ-6.1"
+        },
+        {
+          "name": "Selection",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/catalog",
+          "signature": "type Selection struct{ Provider string; Tier Tier; Model core.Model; Effort core.Effort; Listed bool }",
+          "notes": "assumed from 26-REQ-6.1"
+        },
+        {
+          "name": "ErrUnknownProvider / ErrUnknownEffort / ErrNoModel",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/catalog",
+          "signature": "var ErrUnknownProvider, ErrUnknownEffort, ErrNoModel error",
+          "notes": "assumed from 26-REQ-7.1; messages start agentkit:"
+        }
+      ]
+    },
+    {
+      "package": "github.com/agent-fox-dev/agentkit-go/provider/openrouter",
+      "version": "spec 27 (not yet landed)",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "New",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/provider/openrouter",
+          "signature": "func New(m core.Model, opts Options) (core.ProviderClient, error)",
+          "notes": "Options{Env map[string]string; Getenv func(string) string; HTTPClient; MaxRetries *int; Now; Warnf}"
+        },
+        {
+          "name": "ErrNoAPIKey",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/provider/openrouter",
+          "signature": "var ErrNoAPIKey error"
+        },
+        {
+          "name": "API",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/provider/openrouter",
+          "signature": "const API core.API = \"openrouter-chat\""
+        }
+      ]
+    },
+    {
+      "package": "github.com/agent-fox-dev/agentkit-go/provider/ollama",
+      "version": "spec 28 (not yet landed)",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "New",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/provider/ollama",
+          "signature": "func New(m core.Model, opts Options) (core.ProviderClient, error)",
+          "notes": "assumed; if it returns no error, Resolve treats it as infallible"
+        },
+        {
+          "name": "API",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/provider/ollama",
+          "signature": "const API core.API",
+          "notes": "expected to equal core.APIOllamaChat \"ollama-chat\""
+        }
+      ]
+    }
+  ]
+}

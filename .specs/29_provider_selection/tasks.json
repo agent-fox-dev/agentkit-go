@@ -1,0 +1,381 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "29",
+  "spec_name": "provider_selection",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test . ./core ./internal/policy -run 'TS29_' -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "26_provider_catalog_tiers",
+      "reason": "catalog.Select, Selection, Tier and the ErrUnknownProvider/ErrUnknownEffort/ErrNoModel sentinels are the resolution Resolve applies"
+    },
+    {
+      "spec": "27_openrouter_provider",
+      "reason": "openrouter.New, Options{Env, Getenv}, API and ErrNoAPIKey build and check the openrouter client; its cost-bit-clear rule feeds Usage.Unpriced"
+    },
+    {
+      "spec": "28_ollama_provider",
+      "reason": "ollama.New, Options{Env, Getenv} and API build the ollama client"
+    },
+    {
+      "spec": "10_anthropic_wire",
+      "reason": "anthropic.Resolve, anthropic.Env, anthropic.Provider, Options.Env/Getenv, ErrNoCredentials and API are used unchanged"
+    },
+    {
+      "spec": "11_minimal_driver",
+      "reason": "TS-11-1, TS-11-2, TS-11-5 and TS-11-9 are restated for the new Config and the seventh method"
+    },
+    {
+      "spec": "21_toolset_runner",
+      "reason": "TS-21-13 is restated to seven methods; TS-21-55 reads the golden Config line tail, which must stay valid"
+    },
+    {
+      "spec": "24_embedder_contract_docs",
+      "reason": "the exported-API golden's root and core sections are regenerated"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add core.Usage.Unpriced and its event JSON key",
+      "criteria": [
+        "29-REQ-7.1",
+        "29-REQ-7.2"
+      ],
+      "tests": [
+        "TS-29-32",
+        "TS-29-33"
+      ],
+      "steps": [
+        "Write TS-29-32 (property test: Add ORs Unpriced, other fields combine as before) in core/ and TS-29-33 (encoded usage carries \"unpriced\") in core/eventjson_test.go; confirm they fail",
+        "Add `Unpriced bool` to core.Usage in core/usage.go with a doc comment (true when at least one covered request had a cost neither vendor-reported nor catalog-priced)",
+        "OR Unpriced in Usage.Add and leave every other field's combination unchanged",
+        "Add `Unpriced bool` with JSON key `unpriced` to core.UsageJSON and fill it in usageJSON in core/eventjson.go; update the doc comment",
+        "Run `go test ./core -count=1` and confirm existing core tests (TS-12-11 etc.) still pass"
+      ],
+      "touches": [
+        "core/usage.go",
+        "core/eventjson.go",
+        "core/eventjson_test.go",
+        "core/usage_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Reshape Config, add Resolve/Resolution, build provider clients, and migrate every Config user",
+      "criteria": [
+        "29-REQ-1",
+        "29-REQ-2",
+        "29-REQ-3",
+        "29-REQ-8.2",
+        "29-REQ-8.3",
+        "29-REQ-8.4"
+      ],
+      "tests": [
+        "TS-29-1",
+        "TS-29-2",
+        "TS-29-4",
+        "TS-29-5",
+        "TS-29-6",
+        "TS-29-7",
+        "TS-29-40",
+        "TS-29-41",
+        "TS-29-42"
+      ],
+      "steps": [
+        "Write TS-29-1,2,4,5,6,7,40,41,42 first (reflect field walk; Provider name normalization via Env; `go list` import check; Select equality; error passthrough with and without Client using a counting Getenv; property test over noise fields; catalog.Lookup row equality; faux Client run; example build/run + source import check) and confirm they fail",
+        "In agent.go change Config to the fourteen fields in order Client core.ProviderClient, Provider string, Model string, Effort Effort, Env map[string]string, Getenv func(string) string, System, Prefix, Toolset, MaxTurns, MaxCostUSD, Timeout, Prune, MaxTokens; remove the sdk import so the root's non-test code imports no anthropic-sdk-go package",
+        "Add resolve.go: type Resolution{Provider string; Tier catalog.Tier; Model core.Model; Effort Effort; Listed bool; Client core.ProviderClient} and func Resolve(cfg Config) (Resolution, error) that calls catalog.Select(cfg.Provider, cfg.Model, cfg.Effort) and returns its error unchanged (zero Resolution), also when Client is set",
+        "When cfg.Client is set return it as Resolution.Client and read no variable; otherwise build per provider: anthropic runs anthropic.Resolve over an anthropic.Env adapter mirroring provider/anthropic client.go providerEnv (non-empty Env value, then Getenv with no process fallback, else os.LookupEnv; empty counts as unset) and then returns anthropic.Provider(model, anthropic.Options{Env, Getenv}); openrouter returns openrouter.New(model, Options{Env, Getenv}); ollama returns ollama.New(model, Options{Env, Getenv}); return constructor errors unchanged",
+        "Rewrite New: call Resolve(cfg) first, then NewRunner(cfg.Toolset); store the Resolution, set a.model = res.Model and a.client = res.Client; add (*Agent).Resolution() returning a copy (clone the Model.Efforts map and Model.Compat bytes by hand); update the Agent doc comment to seven methods",
+        "Rename `Provider:` to `Client:` in every Config literal holding a test double: root *_test.go files, codemode/smoke_test.go, sandbox/codemode_smoke_test.go, sandbox/integration_test.go, examples/agentdemo, examples/codemode, examples/gateway, examples/harness, examples/sandbox (nested modules)",
+        "Migrate examples/codingagent, customtools and mcp: drop resolveClient and the sdk import, set Model on Config and let agentkit.New resolve; keep the failure before any request naming the variables to set (ANTHROPIC_API_KEY)",
+        "Restate TS-11-1 (fourteen fields), TS-11-2 (no client and no credential fails with anthropic.ErrNoCredentials), TS-11-5 (Client called, Provider/Model choose the row) in agent_test.go, and TS-11-9 and TS-21-13 to the seven methods including Resolution",
+        "Run `make tidy` for modules in MODULES if go.mod/go.sum change, then `make check` and narrow `go test` runs of the root, codemode and examples packages"
+      ],
+      "touches": [
+        "agent.go",
+        "resolve.go",
+        "resolve_test.go",
+        "agent_test.go",
+        "agent_runner_test.go",
+        "loop_test.go",
+        "batch_test.go",
+        "loop_fixes_test.go",
+        "metadata_message_test.go",
+        "nested_smoke_test.go",
+        "nested_test.go",
+        "perf_test.go",
+        "runner_batch_test.go",
+        "runner_config_test.go",
+        "runner_metadata_smoke_test.go",
+        "runner_smoke_test.go",
+        "runner_test.go",
+        "codemode/smoke_test.go",
+        "sandbox/codemode_smoke_test.go",
+        "sandbox/integration_test.go",
+        "examples/agentdemo/main.go",
+        "examples/codemode/main.go",
+        "examples/gateway/main.go",
+        "examples/harness/harness.go",
+        "examples/sandbox/main.go",
+        "examples/codingagent/main.go",
+        "examples/customtools/main.go",
+        "examples/mcp/main.go",
+        "go.mod",
+        "go.sum"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`go list -f '{{join .Imports \"\\n\"}}' .` lists no anthropic-sdk-go path",
+        "`make check` passes in every module"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Pin client construction, env lookup order and credential errors against recording servers",
+      "criteria": [
+        "29-REQ-3.7",
+        "29-REQ-8.1"
+      ],
+      "tests": [
+        "TS-29-3",
+        "TS-29-8",
+        "TS-29-9",
+        "TS-29-10",
+        "TS-29-11",
+        "TS-29-12",
+        "TS-29-13",
+        "TS-29-14",
+        "TS-29-15",
+        "TS-29-39"
+      ],
+      "steps": [
+        "Create shared root test helpers (e.g. provider_selection_helpers_test.go): an Anthropic SSE recording server (reuse the ts0461Server/sseResponse pattern), an OpenRouter server (SSE `data:` chunks at POST /chat/completions ending in [DONE], optional usage with or without cost) and an Ollama NDJSON server at /api/chat ending with done:true; each records path, headers and body and counts requests; plus a map-backed Getenv that records the names asked",
+        "Write TS-29-3 (Env empty falls through to Getenv, non-empty Env wins, Getenv set means no process value, Getenv nil uses process via t.Setenv, no t.Parallel) and TS-29-8 (zero requests after repeated Resolve, distinct Client values)",
+        "Write TS-29-9 (Anthropic key change between two streams shows per-request resolution) and TS-29-10 (ErrNoCredentials and the Vertex error naming ANTHROPIC_VERTEX_PROJECT_ID and GOOGLE_CLOUD_PROJECT, equal to anthropic.Resolve over the same lookup)",
+        "Write TS-29-11, TS-29-12 (ErrNoAPIKey, malformed OPENROUTER_BASE_URL equals openrouter.New's error), TS-29-13 (ollama with empty Getenv succeeds), TS-29-14 (given Client returned as is, Getenv call count zero, Effort LOW normalized), TS-29-15 (closed-port base URL: Resolve and New succeed, Run reports the transport error)",
+        "Write TS-29-39: agents with Provider empty and anthropic versus anthropic.Provider built directly with Options{Env, Getenv} send byte-identical bodies for claude-opus-5-5",
+        "Fix any divergence found in resolve.go (anthropic env adapter order, unchanged error returns, per-call new client) so all ten tests pass"
+      ],
+      "touches": [
+        "provider_selection_helpers_test.go",
+        "resolve_test.go",
+        "resolve.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Report what runs: Agent.Resolution copy semantics and AgentStartEvent provider/API/model",
+      "criteria": [
+        "29-REQ-6"
+      ],
+      "tests": [
+        "TS-29-26",
+        "TS-29-27",
+        "TS-29-28",
+        "TS-29-29",
+        "TS-29-30",
+        "TS-29-31"
+      ],
+      "steps": [
+        "Write TS-29-26 (Resolution equals Resolve on the same config, given Client returned), TS-29-27 (mutating returned Efforts map and Compat bytes leaves later Resolution() unchanged), TS-29-28 (concurrent Resolution() during Run under -race), TS-29-29 (sorted method list Messages, ReachableTools, Resolution, Run, Runner, Stream, Usage), TS-29-30 (per provider AgentStartEvent Provider/API/Model using the recording servers) and TS-29-31 (empty API with Config.Client); confirm failures",
+        "Make Agent.Resolution a deep copy of the stored resolution with no mutation after New so it is race-free",
+        "In New record the API of the provider package Resolve built (anthropic.API, openrouter.API, ollama.API) and leave it empty when Config.Client was given; keep it beside the Resolution on the Agent",
+        "In loop.go change the AgentStartEvent push to carry Provider (resolved name), API and Model (resolved id)",
+        "Run `go test -race . -run 'TS29_'` and narrowly the existing event-order tests"
+      ],
+      "touches": [
+        "agent.go",
+        "loop.go",
+        "resolve.go",
+        "resolution_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Make New and the loop use the resolution: error order, client, row and effort",
+      "criteria": [
+        "29-REQ-5"
+      ],
+      "tests": [
+        "TS-29-19",
+        "TS-29-20",
+        "TS-29-21",
+        "TS-29-22",
+        "TS-29-23",
+        "TS-29-24",
+        "TS-29-25"
+      ],
+      "steps": [
+        "Write TS-29-19 (error order provider, model, effort, credentials, tool set with an invalid Toolset), TS-29-20 (New returns the Resolve/NewRunner error unchanged, nil Agent, zero requests on servers), TS-29-21 (counting client, resolved row used for pruning, context check, pricing and stamping), TS-29-22 (recording client sees Resolution.Effort: tier effort, HIGH as high, empty sends none, each turn of a multi-turn run), TS-29-23 (tier never appears in AgentStartEvent, message stamps or the context-window error), TS-29-24 and TS-29-25 (OpenRouter and Ollama request bodies from the PRD); confirm failures",
+        "In loop.go callModel set req.Effort from the resolved effort (a.res.Effort) instead of a.cfg.Effort",
+        "Ensure every use of the model row (pruning, context-window check, pricing, stampModel, errorMessage, AgentStartEvent) reads the resolved row and id, never cfg.Model",
+        "Confirm New order in agent.go is Resolve first, then NewRunner, each error returned unchanged with no request sent",
+        "Run narrow `go test` on the root package, then `make check`"
+      ],
+      "touches": [
+        "agent.go",
+        "loop.go",
+        "new_resolution_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Flag unpriced runs in the agent's pricing",
+      "criteria": [
+        "29-REQ-7.3",
+        "29-REQ-7.4",
+        "29-REQ-7.5",
+        "29-REQ-7.6",
+        "29-REQ-7.7"
+      ],
+      "tests": [
+        "TS-29-34",
+        "TS-29-35",
+        "TS-29-36",
+        "TS-29-37",
+        "TS-29-38"
+      ],
+      "steps": [
+        "Write TS-29-34 (unlisted Anthropic with reported usage, and unlisted OpenRouter with no cost: RunResult.Usage.Unpriced true), TS-29-35 (ollama never unpriced, including a faux wrapper via Config.Client with Provider ollama and cost bit clear), TS-29-36 (listed row, OpenRouter response with cost, unreported usage: false), TS-29-37 (Unpriced reaches RunResult, AgentDoneEvent.Result.Usage, AgentDoneEvent.Usage, Agent.Usage() but not TurnEndEvent.Usage) and TS-29-38 (CostUSD 0 with cost bit set; MaxCostUSD unchanged); confirm failures",
+        "In loop.go priced(): remember whether the response had the cost bit before pricing; after computing cost, if u.Reported(), all four per-million rates of a.model are zero, and (resolved provider is anthropic, or openrouter with the cost bit clear), set Unpriced true; never for ollama",
+        "Keep SetCost with the computed zero and the cost bit set exactly as today, and keep MaxCostUSD reading CostUSD",
+        "Verify Unpriced flows through addUsage/runUsageSnapshot/AgentDoneEvent/Agent.Usage via Usage.Add, and that TurnEndEvent.Usage stays the raw assistant usage",
+        "Run narrow `go test` on the root package and `make check`"
+      ],
+      "touches": [
+        "loop.go",
+        "agent.go",
+        "unpriced_test.go"
+      ],
+      "depends_on": [
+        1,
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Prove credential and endpoint isolation across all providers",
+      "criteria": [
+        "29-REQ-4"
+      ],
+      "tests": [
+        "TS-29-16",
+        "TS-29-17",
+        "TS-29-18"
+      ],
+      "steps": [
+        "Write TS-29-16 (per provider, names asked of the recording Getenv during Resolve, New and one Run all fall in that provider's variable set; no AGENTKIT_ prefix), TS-29-17 (all secrets set, each base-URL var at its own server; only the chosen server receives requests) and TS-29-18 (property test over generated distinct secrets and ordered pairs: no other provider's secret or OLLAMA_API_KEY in any recorded header or body)",
+        "Reuse the recording servers and recording Getenv from the shared helpers; anthropic varset is ANTHROPIC_*, CLAUDE_CODE_*, GOOGLE_CLOUD_*, CLOUD_ML_REGION, CLOUDSDK_*, AWS_*",
+        "Fix any leak found: resolve.go must read no variable itself, pass nothing between providers, and read no AGENTKIT_ name",
+        "Run `make check`"
+      ],
+      "touches": [
+        "isolation_test.go",
+        "resolve.go"
+      ],
+      "depends_on": [
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Regenerate the exported-API golden, generated docs and update documentation",
+      "criteria": [
+        "29-REQ-9"
+      ],
+      "tests": [
+        "TS-29-43",
+        "TS-29-44"
+      ],
+      "steps": [
+        "Run `make doc`, then regenerate the golden with `AGENTKIT_UPDATE_API_GOLDEN=1 go test ./internal/policy -run _TS13_67$`; confirm only the root section (Config, Resolve, Resolution, Agent.Resolution) and core Usage/UsageJSON lines changed",
+        "Add TS-29-43 and TS-29-44 in internal/policy (golden comparison, Config line contains `Prefix []core.Message Toolset Toolset MaxTurns int MaxCostUSD float64 Timeout time.Duration Prune PruneOptions MaxTokens int }`) and confirm TS-21-55 still passes",
+        "Update docs/configuration.md: Config table (Client, Provider, Model, Effort, Env, Getenv), a Resolve/Resolution/Agent.Resolution section, the isolation rule and Env/Getenv lookup order, New failing early on missing credentials, Usage.Unpriced in the MaxCostUSD row",
+        "Update docs/api.md and docs/architecture.md: root imports (openrouter and ollama added, Anthropic SDK removed), seven Agent methods, the Config change",
+        "Fix README.md, examples/README.md and the example READMEs (agentdemo, codemode, sandbox) snippets that used an SDK client as Config.Client or `Provider:` for a double; update the 'six methods' text",
+        "Run `make tidy` across MODULES and `make check`; mention in the handoff that mcpserve_unchanged_test TS-23-52 needs committed testdata and the full gate is left to the user"
+      ],
+      "touches": [
+        "internal/policy/testdata/exported-api.golden",
+        "internal/policy/provider_selection_29_test.go",
+        "docs/configuration.md",
+        "docs/api.md",
+        "docs/architecture.md",
+        "docs/generated/agentkit-go.txt",
+        "docs/generated/core.txt",
+        "README.md",
+        "examples/README.md",
+        "examples/agentdemo/README.md",
+        "examples/codemode/README.md",
+        "examples/sandbox/README.md"
+      ],
+      "depends_on": [
+        6,
+        7
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "integration",
+      "title": "Verify provider selection paths end to end",
+      "tests": [
+        "TS-29-45",
+        "TS-29-46",
+        "TS-29-47",
+        "TS-29-48",
+        "TS-29-49"
+      ],
+      "steps": [
+        "Write smoke tests TS-29-45 (OpenRouter by name), TS-29-46 (Ollama by name), TS-29-47 (Anthropic byte-identical and unlisted unpriced), TS-29-48 (isolation across all three providers) and TS-29-49 (Resolve, wrap, pass as Client) against the real components and recording servers; confirm they pass",
+        "Trace 29-PATH-1 to 29-PATH-5 through the real code: New -> Resolve -> catalog.Select -> provider constructor -> Agent loop -> provider stream; confirm each step calls the next and no stub remains",
+        "For each criterion with a contract (Resolution fields, Usage.Unpriced, AgentStartEvent Provider/API/Model, Agent.Resolution), confirm the producer's result is consumed in production code (loop.go, agent.go), not only by tests",
+        "Search every file in the tasks' touches for `panic(\"not implemented\")`, TODO, and bare `return nil` on non-trivial paths, and remove any that remain",
+        "Confirm Resolve and Agent.Resolution are called from production code in agent.go, and that examples codingagent/customtools/mcp reach agentkit.New",
+        "Run `make check`"
+      ],
+      "touches": [
+        "provider_selection_smoke_test.go"
+      ],
+      "depends_on": [
+        8
+      ],
+      "done_when": [
+        "`make check` passes in every module"
+      ],
+      "state": "pending"
+    }
+  ]
+}

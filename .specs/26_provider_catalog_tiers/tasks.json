@@ -1,0 +1,313 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "26",
+  "spec_name": "provider_catalog_tiers",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make check",
+    "linter": "make lint",
+    "spec_tests": "go test ./catalog/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "10",
+      "reason": "10-REQ-3.1 required a Claude-only catalog.json; this spec adds openrouter and ollama sections (still no OpenAI or Google) and restates TS-10-11 and TestCatalogAccessors. 10-REQ-3.3 to 3.6 (Lookup, the Anthropic fallback, no model metadata in provider/anthropic) stay as they are."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Declare provider names, tier type, Selection, sentinel errors and fallback constants",
+      "criteria": [
+        "26-REQ-1.1",
+        "26-REQ-4.1",
+        "26-REQ-6.6",
+        "26-REQ-7.1"
+      ],
+      "tests": [
+        "TS-26-1",
+        "TS-26-24"
+      ],
+      "steps": [
+        "Write TS-26-1 (internal test in catalog/) and TS-26-24 (external package catalog_test) and confirm they fail to compile or fail",
+        "In catalog/catalog.go (or a new catalog/select.go; never name a file resolve.go or clamp.go) add constants ProviderAnthropic, ProviderOpenRouter, ProviderOllama and func Providers() []string returning a fresh slice [anthropic openrouter ollama] on every call",
+        "Add `type Tier string` with TierSimple=\"SIMPLE\", TierStandard=\"STANDARD\", TierAdvanced=\"ADVANCED\"",
+        "Add `type Selection struct{Provider string; Tier Tier; Model core.Model; Effort core.Effort; Listed bool}` with doc comments",
+        "Add sentinels ErrUnknownProvider, ErrUnknownEffort, ErrNoModel via errors.New with text starting \"agentkit:\", distinct from ErrCorruptCatalog",
+        "Add exported constants OpenRouterDefaultContextWindow=131_072, OpenRouterDefaultMaxTokens=32_768, OllamaDefaultContextWindow=32_768, OllamaDefaultMaxTokens=32_768 next to DefaultContextWindow/DefaultMaxTokens, with doc comments saying they are documented guesses",
+        "Do not change Lookup, the Vendor constant value or agent.go"
+      ],
+      "touches": [
+        "catalog/catalog.go",
+        "catalog/select.go",
+        "catalog/catalog_test.go",
+        "catalog/select_types_test.go"
+      ],
+      "done_when": [
+        "`go test ./catalog/... -count=1` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Parse and validate the optional per-vendor tiers block",
+      "criteria": [
+        "26-REQ-4.6",
+        "26-REQ-5.1",
+        "26-REQ-5.2",
+        "26-REQ-5.3",
+        "26-REQ-5.4",
+        "26-REQ-5.5",
+        "26-REQ-5.6"
+      ],
+      "tests": [
+        "TS-26-18",
+        "TS-26-19",
+        "TS-26-20"
+      ],
+      "steps": [
+        "Write TS-26-18, TS-26-19 and TS-26-20 as table tests next to TestParseRejectsCorruptCatalogs in catalog/catalog_test.go, using a valid base catalog JSON whose vendor has a row with a thinking_level_map and a tiers block; assert nil *Catalog, errors.As *ParseError with the exact Path and errors.Is ErrCorruptCatalog; include a second vendor row (for the other-vendor model case), a null level case and a row with no level map",
+        "Add `Tiers map[string]*tierRow` (json \"tiers\") to vendorRow with `tierRow{Model string; Effort string}` (json \"model\", \"effort\")",
+        "In Parse, for a vendor with a non-nil tiers object, validate after the models: every key must be exactly SIMPLE/STANDARD/ADVANCED (path vendors.<v>.tiers.<key>); each of the three must be present (path vendors.<v>.tiers.<missing>); model must be non-empty and a row of the same vendor (path ...<TIER>.model); effort must be exactly one of low, medium, high, xhigh, max (path ...<TIER>.effort); the row's thinking_level_map entry for the effort must be present and non-null (path ...<TIER>.effort)",
+        "Store the validated tiers on the parsed vendor so Select can read them later (keep the Catalog read-only after Parse)",
+        "A vendor without tiers loads unchanged; SchemaVersion stays 1; the existing test catalog must still parse",
+        "Run `go test ./catalog/... -count=1`"
+      ],
+      "touches": [
+        "catalog/catalog.go",
+        "catalog/catalog_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`go test ./catalog/... -count=1` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Add the openrouter and ollama sections, tier blocks and version 2026-10-21 to catalog.json",
+      "criteria": [
+        "26-REQ-2",
+        "26-REQ-4.3",
+        "26-REQ-4.4",
+        "26-REQ-4.5",
+        "26-REQ-9.1",
+        "26-REQ-9.2",
+        "26-REQ-9.3"
+      ],
+      "tests": [
+        "TS-26-6",
+        "TS-26-7",
+        "TS-26-8",
+        "TS-26-9",
+        "TS-26-32",
+        "TS-26-33"
+      ],
+      "steps": [
+        "BEFORE editing catalog.json, capture a pinned snapshot in the test (TS-26-9) of the 13 anthropic ids, and the core.Model Lookup returns for each, plus the anthropic vendor name/api/base_url/default_model",
+        "Write TS-26-6, TS-26-7, TS-26-8, TS-26-9, TS-26-32 and TS-26-33 as internal tests in package catalog (read rows through the Default() catalog's internals such as byCanonical/Models since Select is not built yet; read note text from the raw embedded JSON)",
+        "Edit catalog/catalog.json: set catalog_version \"2026-10-21\"; keep every anthropic row byte-for-byte and add the anthropic tiers block (SIMPLE claude-sonnet-5-5 medium, STANDARD claude-sonnet-5-5 high, ADVANCED claude-opus-5-5 xhigh)",
+        "Add the openrouter vendor (name OpenRouter, api openrouter-chat, base_url https://openrouter.ai/api/v1, default_model qwen/qwen3.8-flash) with the single row qwen/qwen3.8-flash exactly as in 26-REQ-2.2 (window 1000000, max_tokens 131072, cost 0.15/0.47/0.016/0, input [text], reasoning true, level map low/medium/high/max each to its own name, note citing OpenRouter's list 2026-10-21 and the efforts probed) and tiers low/medium/high",
+        "Add the ollama vendor (name Ollama, api ollama-chat, base_url http://127.0.0.1:11434, default_model qwen3.8:27b) with row qwen3.8:27b as in 26-REQ-2.4 (32768/32768, zero prices, same level map, note containing \"32,768\", \"262,144\", \"num_ctx\", the 32 GB Apple M4 reference machine and the zero-price reason) and tiers low/medium/high",
+        "Update the top-level note: keep REQ-CAT-06 and mention the tier table (the word \"tier\"); ensure the file contains none of `gpt-`, `gemini`, `\"openai\"`, `\"google\"` (case-sensitive)",
+        "Update the Vendor constant doc comment to say it is the vendor Lookup resolves against",
+        "Restate TestCatalogAccessors (Vendors() == [anthropic ollama openrouter], KnownVendor true for the three and false for openai) and TestCatalogIsClaudeOnly_TS10_11 (assert the vendor set is the three providers plus the content scan; keep the resolve.go/clamp.go absence check) in catalog/catalog_test.go",
+        "Leave TS-10-12, TS-10-13, TS-10-14, TestEveryShippedRowLooksUp and TS-10-15 unchanged and passing; Lookup stays anthropic-only",
+        "Run `go test ./catalog/... -count=1`"
+      ],
+      "touches": [
+        "catalog/catalog.json",
+        "catalog/catalog.go",
+        "catalog/catalog_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "`go test ./catalog/... ./provider/... -count=1` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Implement Select input checking and per-provider model id resolution",
+      "criteria": [
+        "26-REQ-1.4",
+        "26-REQ-1.5",
+        "26-REQ-1.6",
+        "26-REQ-3",
+        "26-REQ-6"
+      ],
+      "tests": [
+        "TS-26-3",
+        "TS-26-4",
+        "TS-26-5",
+        "TS-26-10",
+        "TS-26-11",
+        "TS-26-12",
+        "TS-26-14",
+        "TS-26-21",
+        "TS-26-22",
+        "TS-26-23"
+      ],
+      "steps": [
+        "Write TS-26-3, 4, 5, 10, 11, 12, 14, 21, 22 and 23 (use the existing testCatalog(t) for TS-26-4 and TS-26-5; TS-26-21 uses non-tier triples here)",
+        "Add `func Select(provider, model string, effort core.Effort) (Selection, error)` resolving against Default() and `func (c *Catalog) Select(...)`; document both",
+        "Check inputs in order provider, model, effort: provider trimmed, case-folded against Providers(), empty means anthropic, else fmt.Errorf(\"%w: unknown provider %q; known providers are anthropic, openrouter and ollama\", ErrUnknownProvider, given) (message exactly `agentkit: unknown provider \"openai\"; known providers are anthropic, openrouter and ollama`); the provider set comes from code, never catalog vendors",
+        "Empty-after-trim model returns ErrNoModel with a message naming SIMPLE, STANDARD, ADVANCED and saying a model id is also accepted; effort trimmed and case-folded against the five core.Effort constants (empty valid) else ErrUnknownEffort naming the value as given and low, medium, high, xhigh, max; every error returns the zero Selection",
+        "Resolve a non-tier model id: trim only (case preserved); anthropic goes through Lookup (Model and Listed copied, Listed from Lookup's bool); openrouter/ollama look up byCanonical[\"<provider>/<id>\"] among that provider's rows only and return cloneModel with Model.ID as written; unlisted ids get that provider's fallback (constants from task 1, four prices 0, ThinkingKindAdaptive, nil Efforts) with ID set and Listed false; a provider whose vendor section is missing still selects with fallback",
+        "Return Selection{Provider canonical, Tier \"\", Model, Effort normalized or \"\", Listed}; for a tier-named model (whole trimmed string equals SIMPLE/STANDARD/ADVANCED ignoring case) return, for now, the real error for a provider with no tiers (message starts \"agentkit:\" and contains canonical provider and tier); the tier lookup itself is added in the next task",
+        "Keep Select free of os/net imports and never name files resolve.go or clamp.go (use catalog/select.go)",
+        "Run `go test ./catalog/... -count=1`"
+      ],
+      "touches": [
+        "catalog/select.go",
+        "catalog/catalog.go",
+        "catalog/select_test.go"
+      ],
+      "depends_on": [
+        1,
+        3
+      ],
+      "done_when": [
+        "`go test ./catalog/... -count=1` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Resolve tiers in Select with effort precedence",
+      "criteria": [
+        "26-REQ-1.2",
+        "26-REQ-1.3",
+        "26-REQ-4.2",
+        "26-REQ-7.2",
+        "26-REQ-7.3",
+        "26-REQ-7.4",
+        "26-REQ-7.5",
+        "26-REQ-7.6",
+        "26-REQ-7.7"
+      ],
+      "tests": [
+        "TS-26-2",
+        "TS-26-15",
+        "TS-26-16",
+        "TS-26-17",
+        "TS-26-25",
+        "TS-26-26",
+        "TS-26-27"
+      ],
+      "steps": [
+        "Write TS-26-2, 15, 16, 17, 25, 26 and 27 (TS-26-17 needs a variant of the test catalog with a valid openrouter tiers block; TS-26-26 uses the plain test catalog, which has no tiers and no ollama section)",
+        "In Select, when the trimmed model equals a tier name ignoring case, set Selection.Tier to the canonical Tier and never treat the string as a model id; a string merely containing a tier name (\"STANDARD-1\") stays a model id",
+        "Read the provider's tiers from the parsed catalog; return the cloned row of the tier's model id with Listed true, Effort = the explicit normalized effort if given, else the tier's effort; no clamping or filtering against Model.Efforts (xhigh on the ollama row is reported, not dropped)",
+        "For a provider with no vendor section or no tiers block return the zero Selection and an error starting \"agentkit:\" naming the canonical provider and canonical tier",
+        "Confirm Select(\"\", \"STANDARD\", \"\") equals Select(\"anthropic\", \"STANDARD\", \"\") and gives claude-sonnet-5-5 at high; tier table for all nine provider-tier pairs matches the PRD",
+        "Confirm a non-tier model has Tier \"\" and Effort equal to the normalized given effort or \"\"",
+        "Run `go test ./catalog/... -count=1`"
+      ],
+      "touches": [
+        "catalog/select.go",
+        "catalog/select_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "`go test ./catalog/... -count=1` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Prove Select guarantees and package boundaries, and update documentation",
+      "criteria": [
+        "26-REQ-3.4",
+        "26-REQ-8.1",
+        "26-REQ-8.2",
+        "26-REQ-8.3",
+        "26-REQ-8.4",
+        "26-REQ-9.4",
+        "26-REQ-9.5"
+      ],
+      "tests": [
+        "TS-26-13",
+        "TS-26-28",
+        "TS-26-29",
+        "TS-26-30",
+        "TS-26-31",
+        "TS-26-34",
+        "TS-26-35"
+      ],
+      "steps": [
+        "Write TS-26-13 and TS-26-31 as seeded property tests (rand.New(rand.NewSource(...))) over random, Unicode, whitespace, tier-like, prefixed and very long strings against Default() and the test catalog; assert no panic, no cross-provider Listed result, and error or positive limits with Provider in Providers()",
+        "Write TS-26-28 (mutate Efforts values/Compat/deleted keys of a returned Model for an openrouter tier, an anthropic row and a tier selection; a later identical Select equals a pristine snapshot) and fix Select if any Model is not produced through cloneModel (fallbacks must also be fresh)",
+        "Write TS-26-29 (32 goroutines, fixed triples including tiers, ids and bad inputs, each mutating its own result; results equal the sequential ones; meant for -race)",
+        "Write TS-26-30 (t.Setenv OPENROUTER_API_KEY, OLLAMA_HOST, ANTHROPIC_API_KEY: results deep-equal; parse imports of non-test catalog/*.go with go/parser and assert none of os, net, net/http)",
+        "Write TS-26-34 (go list -deps ./catalog: only std plus this module's core; catalog/resolve.go and catalog/clamp.go absent) following the style of existing policy tests such as the exec/go list helpers already used in the repo",
+        "Write TS-26-35 (walk repo non-test .go files outside catalog/ for the strings qwen/qwen3.8-flash and qwen3.8:27b; agent.go contains `catalog.Lookup(cfg.Model)`; go.mod require set equals a pinned list copied from the current go.mod); place it with the repository-level tests such as repository_cut_test.go",
+        "Update the catalog package doc comment (three providers, tiers, Select)",
+        "Update docs/configuration.md 'Model catalog' section (catalog version 2026-10-21, a row table per provider, per-provider fallbacks, tier table, catalog.Select with precedence explicit effort then tier effort then none, name matching and the three errors), docs/api.md catalog row and docs/architecture.md catalog row",
+        "Run `make doc` to regenerate docs/generated/catalog.txt (never edit by hand), then `make check`; do not run make check-release"
+      ],
+      "touches": [
+        "catalog/select_property_test.go",
+        "catalog/select_guarantees_test.go",
+        "catalog/catalog.go",
+        "catalog/select.go",
+        "repository_cut_test.go",
+        "docs/configuration.md",
+        "docs/api.md",
+        "docs/architecture.md",
+        "docs/generated/catalog.txt"
+      ],
+      "depends_on": [
+        5
+      ],
+      "done_when": [
+        "`make check` passes",
+        "`go test -race ./catalog/... -count=1` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "integration",
+      "title": "Verify the tier, fallback, parse-rejection and unchanged-Lookup paths end to end",
+      "tests": [
+        "TS-26-36",
+        "TS-26-37",
+        "TS-26-38",
+        "TS-26-39"
+      ],
+      "steps": [
+        "Write TS-26-36 and TS-26-37 in catalog/smoke_test.go (package catalog_test): the real Default() catalog, catalog.Select and provider.ComputeCost with Usage{InputTokens:1000000} giving 0.15; and the ' Ollama ' / llama4:8b / HIGH fallback case",
+        "Write TS-26-38 in the same file: take the embedded catalog.json bytes (read the file from disk relative to the test), edit only the ollama STANDARD tier effort to \"xhigh\", call catalog.Parse and assert nil catalog, *ParseError Path vendors.ollama.tiers.STANDARD.effort and ErrCorruptCatalog",
+        "Write TS-26-39 in the root package: agentkit.New with Model claude-sonnet-5-5 and a faux provider client scripted with one text reply, run one turn, assert the request's model id and max-output cap equal the pre-spec claude-sonnet-5-5 row values and the run completes; follow the existing faux-based tests in loop_test.go for setup",
+        "Trace 26-PATH-1 to 26-PATH-4 through the real code: Select calls Default() and the tier table, ComputeCost consumes Selection.Model, Parse validates tiers, agentkit.New still calls catalog.Lookup; confirm each step calls the next and no stub remains",
+        "Confirm every contract with a production consumer: Parse's tiers are read by Select; Select is the exported entry point of the package (no production caller is expected in this spec, agent.go keeps Lookup by design, so confirm only that Select is reachable from the exported API)",
+        "Grep catalog/, agent.go and the other touched files for TODO, NotImplementedError, panic(\"not implemented\") and bare stub returns, and remove any that remain",
+        "Run `make check` (not make check-release) and note in the handoff that the full gate was left to the user"
+      ],
+      "touches": [
+        "catalog/smoke_test.go",
+        "catalog_tiers_smoke_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "done_when": [
+        "`make check` passes"
+      ],
+      "state": "pending"
+    }
+  ]
+}

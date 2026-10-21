@@ -1,0 +1,586 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "26",
+  "spec_name": "provider_catalog_tiers",
+  "schema_version": 2,
+  "introduction": "The model catalog (package `catalog`) learns the provider vocabulary of PRD 14: it lists rows for the `anthropic`, `openrouter` and `ollama` providers, defines per-provider id matching and fallback limits, carries a fixed per-vendor tier table (SIMPLE, STANDARD, ADVANCED) validated at load, and exposes one offline function, `catalog.Select`, that turns a (provider, model, effort) triple into the catalog row and effort a run will use. `catalog.Lookup` and every current caller stay unchanged.",
+  "glossary": {
+    "Selection": "The result of `catalog.Select`: canonical `Provider`, `Tier`, `Model` (a deep-copied `core.Model`), `Effort` and `Listed`.",
+    "effort": "One of the five `core.Effort` levels low, medium, high, xhigh, max. `Selection.Effort` is the effort to request; whether it reaches the wire is the provider's reading of `Model.Efforts`.",
+    "fallback descriptor": "The `core.Model` served for an id the catalog does not list for a provider: that provider's fixed window and output cap, all prices zero, `ThinkingKindAdaptive` and a nil `Efforts` map.",
+    "listed": "Whether the resolved model id is a row of the chosen provider in the catalog (`Selection.Listed`).",
+    "provider": "One of the three backends this build can run: `anthropic`, `openrouter` or `ollama`. Fixed in Go code; each name equals the catalog vendor id of the same spelling.",
+    "row": "A model entry under a vendor in `catalog.json`, turned into a `core.Model` with window, output cap, prices and an `Efforts` map.",
+    "tier": "One of the names SIMPLE, STANDARD or ADVANCED. Given as the model string, it picks a model id and an effort for the chosen provider from the catalog's fixed tier table.",
+    "tier table": "The optional per-vendor `tiers` object in `catalog.json`, mapping each tier name to `{model, effort}`; fixed per release."
+  },
+  "requirements": [
+    {
+      "id": "26-REQ-1",
+      "title": "Provider names",
+      "rationale": "Every later scope of PRD 14 needs one fixed, case-insensitive set of provider names that only names providers this build can run.",
+      "criteria": [
+        {
+          "id": "26-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "catalog package",
+          "action": "export the constants `ProviderAnthropic = \"anthropic\"`, `ProviderOpenRouter = \"openrouter\"` and `ProviderOllama = \"ollama\"`, and a function `Providers() []string` that returns them in that order as a newly allocated slice on every call",
+          "contract": "`Providers()` returns `[anthropic openrouter ollama]`; mutating a returned slice does not change the result of a later call"
+        },
+        {
+          "id": "26-REQ-1.2",
+          "pattern": "event_driven",
+          "condition": "`Select` receives a provider name that equals one of the three providers after trimming surrounding whitespace and ignoring case (for example \" OpenRouter \")",
+          "system": "catalog.Select",
+          "action": "resolve against that provider",
+          "contract": "`Selection.Provider` is the canonical lower-case provider name"
+        },
+        {
+          "id": "26-REQ-1.3",
+          "pattern": "event_driven",
+          "condition": "`Select` receives an empty or whitespace-only provider name",
+          "system": "catalog.Select",
+          "action": "resolve against the `anthropic` provider",
+          "contract": "`Selection.Provider == \"anthropic\"`; `Select(\"\", \"STANDARD\", \"\")` returns the same Selection as `Select(\"anthropic\", \"STANDARD\", \"\")`"
+        },
+        {
+          "id": "26-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "the trimmed, case-folded provider name is not one of the three providers",
+          "system": "catalog.Select",
+          "action": "return an error wrapping `ErrUnknownProvider` whose message names the value as given and the three providers",
+          "contract": "zero `Selection`; `errors.Is(err, catalog.ErrUnknownProvider)` is true; for \"openai\" the message is `agentkit: unknown provider \"openai\"; known providers are anthropic, openrouter and ollama`"
+        },
+        {
+          "id": "26-REQ-1.5",
+          "pattern": "unwanted",
+          "condition": "the provider name equals a vendor id present in a catalog given to `Parse` that is not one of the three providers (for example `azure`)",
+          "system": "(*Catalog).Select",
+          "action": "refuse the vendor as a provider, taking the provider set from code and not from the catalog's vendors",
+          "contract": "zero `Selection`; `errors.Is(err, catalog.ErrUnknownProvider)` is true"
+        },
+        {
+          "id": "26-REQ-1.6",
+          "pattern": "complex_event",
+          "condition": "`(*Catalog).Select` is called on a catalog returned by `Parse` with a known provider and a model id that is not a tier",
+          "guard": "that catalog has no vendor section for the provider",
+          "system": "(*Catalog).Select",
+          "action": "select the provider and serve the provider's fallback descriptor for the id",
+          "contract": "nil error; `Selection.Listed == false`; `Selection.Model` is the fallback descriptor of 26-REQ-3.5 to 26-REQ-3.7 for that provider"
+        }
+      ]
+    },
+    {
+      "id": "26-REQ-2",
+      "title": "OpenRouter and Ollama rows in the embedded catalog",
+      "rationale": "The facts every provider scope needs (window, output cap, price, efforts) live in the catalog, so a model change is a catalog change.",
+      "criteria": [
+        {
+          "id": "26-REQ-2.1",
+          "pattern": "ubiquitous",
+          "system": "embedded catalog.json",
+          "action": "carry an `openrouter` vendor section with `name` \"OpenRouter\", `api` \"openrouter-chat\", `base_url` \"https://openrouter.ai/api/v1\" and `default_model` \"qwen/qwen3.8-flash\"",
+          "contract": "`Default().KnownVendor(\"openrouter\")` is true and `Default().DefaultModelID(\"openrouter\")` is \"qwen/qwen3.8-flash\""
+        },
+        {
+          "id": "26-REQ-2.2",
+          "pattern": "ubiquitous",
+          "system": "embedded catalog.json",
+          "action": "list exactly one `openrouter` row, `qwen/qwen3.8-flash`, with `context_window` 1000000, `max_tokens` 131072, cost input 0.15 / output 0.47 / cache_read 0.016 / cache_write 0, `input` [\"text\"], `reasoning` true, a `thinking_level_map` mapping `low`, `medium`, `high` and `max` each to the same name with `xhigh` absent, and a `note` that names OpenRouter's list of 2026-10-21 as the price source and the efforts probed",
+          "contract": "the row's `core.Model` has ContextWindow 1000000, MaxOutputTokens 131072, the four prices above, and Efforts with keys exactly {low, medium, high, max}"
+        },
+        {
+          "id": "26-REQ-2.3",
+          "pattern": "ubiquitous",
+          "system": "embedded catalog.json",
+          "action": "carry an `ollama` vendor section with `name` \"Ollama\", `api` \"ollama-chat\", `base_url` \"http://127.0.0.1:11434\" and `default_model` \"qwen3.8:27b\"",
+          "contract": "`Default().KnownVendor(\"ollama\")` is true and `Default().DefaultModelID(\"ollama\")` is \"qwen3.8:27b\""
+        },
+        {
+          "id": "26-REQ-2.4",
+          "pattern": "ubiquitous",
+          "system": "embedded catalog.json",
+          "action": "list exactly one `ollama` row, `qwen3.8:27b`, with `context_window` 32768, `max_tokens` 32768, all four prices 0, `input` [\"text\"], `reasoning` true, the same `thinking_level_map` as the OpenRouter row, and a `note` stating that 32,768 is the length run on the reference machine (32 GB Apple M4) rather than the 262,144 `/api/show` reports, that the Ollama provider sends it as `num_ctx`, and that the price is zero because the model runs on the embedder's hardware",
+          "contract": "the row's `core.Model` has ContextWindow 32768, MaxOutputTokens 32768, all prices 0, and Efforts with keys exactly {low, medium, high, max}; the note contains \"32,768\", \"262,144\" and \"num_ctx\""
+        },
+        {
+          "id": "26-REQ-2.5",
+          "pattern": "ubiquitous",
+          "system": "embedded catalog.json",
+          "action": "set `catalog_version` to \"2026-10-21\" and keep `schema_version` 1, with a top-level `note` that still contains the REQ-CAT-06 regeneration ritual and mentions the tier table",
+          "contract": "`Default().Version() == \"2026-10-21\"`; `Default().Note()` contains \"REQ-CAT-06\" and \"tier\""
+        },
+        {
+          "id": "26-REQ-2.6",
+          "pattern": "ubiquitous",
+          "system": "embedded catalog.json",
+          "action": "contain no OpenAI or Google section and none of the case-sensitive substrings `gpt-`, `gemini`, `\"openai\"` or `\"google\"`",
+          "contract": "a byte scan of catalog/catalog.json finds none of the four substrings"
+        },
+        {
+          "id": "26-REQ-2.7",
+          "pattern": "ubiquitous",
+          "system": "embedded catalog.json",
+          "action": "keep the `anthropic` vendor fields and its 13 rows unchanged from catalog_version 2026-09-30",
+          "contract": "`Default().Models(\"anthropic\")` returns the same 13 ids, and each `Lookup` of them returns the same `core.Model` as before this spec"
+        }
+      ]
+    },
+    {
+      "id": "26-REQ-3",
+      "title": "Model id matching and per-provider fallbacks",
+      "rationale": "A vendor model id is case- and prefix-sensitive and a new model must work the day it ships, so ids are matched per provider and unlisted ids are served with a documented guess.",
+      "criteria": [
+        {
+          "id": "26-REQ-3.1",
+          "pattern": "ubiquitous",
+          "system": "catalog.Select",
+          "action": "trim surrounding whitespace from a model id that is not a tier and otherwise use it as written, without changing its case",
+          "contract": "`Select(\"openrouter\", \"  Qwen/X  \", \"\")` returns `Model.ID == \"Qwen/X\"`"
+        },
+        {
+          "id": "26-REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "the provider is `anthropic` and the model string is not a tier",
+          "system": "catalog.Select",
+          "action": "resolve the id through the existing `Lookup`, accepting and removing a leading `anthropic/`",
+          "contract": "`Selection.Model` and `Selection.Listed` equal the two results of `Lookup(model)`; `Select(\"anthropic\", \"anthropic/claude-sonnet-5-5\", \"\")` returns `Model.ID == \"claude-sonnet-5-5\"` and `Listed == true`"
+        },
+        {
+          "id": "26-REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "the provider is `openrouter` or `ollama` and the trimmed model id names a row of that provider's vendor section",
+          "system": "catalog.Select",
+          "action": "return that row with `Model.ID` set to the id as written",
+          "contract": "`Select(\"ollama\", \"qwen3.8:27b\", \"\")` returns `Listed == true`, ContextWindow 32768 and MaxOutputTokens 32768"
+        },
+        {
+          "id": "26-REQ-3.4",
+          "pattern": "ubiquitous",
+          "system": "catalog.Select",
+          "action": "for any provider and any model id, return only a row of that provider's own vendor section, never a row of another provider",
+          "contract": "`Select(\"openrouter\", \"anthropic/claude-sonnet-5-5\", \"\")` returns `Listed == false` and `Model.ID == \"anthropic/claude-sonnet-5-5\"`; `Select(\"ollama\", \"qwen/qwen3.8-flash\", \"\")` returns `Listed == false`"
+        },
+        {
+          "id": "26-REQ-3.5",
+          "pattern": "event_driven",
+          "condition": "the provider is `openrouter` and the model id is not a row of the `openrouter` vendor",
+          "system": "catalog.Select",
+          "action": "serve the id with the exported constants `OpenRouterDefaultContextWindow = 131_072` and `OpenRouterDefaultMaxTokens = 32_768`",
+          "contract": "nil error; `Listed == false`; `Model.ID` is the trimmed id; ContextWindow 131072; MaxOutputTokens 32768"
+        },
+        {
+          "id": "26-REQ-3.6",
+          "pattern": "event_driven",
+          "condition": "the provider is `ollama` and the model id is not a row of the `ollama` vendor",
+          "system": "catalog.Select",
+          "action": "serve the id with the exported constants `OllamaDefaultContextWindow = 32_768` and `OllamaDefaultMaxTokens = 32_768`",
+          "contract": "nil error; `Listed == false`; `Model.ID` is the trimmed id; ContextWindow 32768; MaxOutputTokens 32768"
+        },
+        {
+          "id": "26-REQ-3.7",
+          "pattern": "event_driven",
+          "condition": "the provider is `anthropic` and the model id is not an `anthropic` row",
+          "system": "catalog.Select",
+          "action": "serve the id with the unchanged `DefaultContextWindow` (1,000,000) and `DefaultMaxTokens` (128,000) through `Lookup`",
+          "contract": "nil error; `Listed == false`; ContextWindow 1000000; MaxOutputTokens 128000"
+        },
+        {
+          "id": "26-REQ-3.8",
+          "pattern": "ubiquitous",
+          "system": "catalog.Select",
+          "action": "give every fallback descriptor all four prices zero, `ThinkingKindAdaptive` and a nil `Efforts` map",
+          "contract": "for an unlisted id on each provider, the four `*CostPerMillion` fields are 0, `ThinkingKind == core.ThinkingKindAdaptive` and `Efforts == nil`"
+        }
+      ]
+    },
+    {
+      "id": "26-REQ-4",
+      "title": "Tier vocabulary and the embedded tier table",
+      "rationale": "A tier name lets an embedder ask for a current model and effort without knowing each provider's model ids.",
+      "criteria": [
+        {
+          "id": "26-REQ-4.1",
+          "pattern": "ubiquitous",
+          "system": "catalog package",
+          "action": "export a string type `Tier` with the constants `TierSimple = \"SIMPLE\"`, `TierStandard = \"STANDARD\"` and `TierAdvanced = \"ADVANCED\"`",
+          "contract": "the three constants have the stated string values"
+        },
+        {
+          "id": "26-REQ-4.2",
+          "pattern": "event_driven",
+          "condition": "the whole model string, trimmed, equals one of the three tier names ignoring case (for example \" standard \")",
+          "system": "catalog.Select",
+          "action": "treat the model string as that tier and never as a model id",
+          "contract": "`Selection.Tier` is the canonical upper-case Tier; a string that merely contains a tier name (for example \"STANDARD-1\") is treated as a model id with `Tier == \"\"`"
+        },
+        {
+          "id": "26-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "embedded catalog.json",
+          "action": "carry an `anthropic` tiers block mapping SIMPLE to `claude-sonnet-5-5` at medium, STANDARD to `claude-sonnet-5-5` at high and ADVANCED to `claude-opus-5-5` at xhigh",
+          "contract": "`Select(\"anthropic\", T, \"\")` returns these model ids and efforts for the three tiers"
+        },
+        {
+          "id": "26-REQ-4.4",
+          "pattern": "ubiquitous",
+          "system": "embedded catalog.json",
+          "action": "carry an `openrouter` tiers block mapping SIMPLE, STANDARD and ADVANCED to `qwen/qwen3.8-flash` at low, medium and high respectively",
+          "contract": "`Select(\"openrouter\", T, \"\")` returns these model ids and efforts for the three tiers"
+        },
+        {
+          "id": "26-REQ-4.5",
+          "pattern": "ubiquitous",
+          "system": "embedded catalog.json",
+          "action": "carry an `ollama` tiers block mapping SIMPLE, STANDARD and ADVANCED to `qwen3.8:27b` at low, medium and high respectively",
+          "contract": "`Select(\"ollama\", T, \"\")` returns these model ids and efforts for the three tiers"
+        },
+        {
+          "id": "26-REQ-4.6",
+          "pattern": "event_driven",
+          "condition": "`Parse` reads a vendor section without a `tiers` key",
+          "system": "catalog.Parse",
+          "action": "load the vendor with no tiers",
+          "contract": "nil error; the existing test catalog in catalog_test.go, which has no tiers blocks, still parses"
+        }
+      ]
+    },
+    {
+      "id": "26-REQ-5",
+      "title": "Tier block validation at load",
+      "rationale": "A tier that points at an unlisted model or silently sends no effort is a hand-editing mistake the catalog rejects at load, like a misspelled level.",
+      "criteria": [
+        {
+          "id": "26-REQ-5.1",
+          "pattern": "unwanted",
+          "condition": "a vendor's `tiers` object has a key that is not exactly `SIMPLE`, `STANDARD` or `ADVANCED`, including a lower-case spelling such as `standard`",
+          "system": "catalog.Parse",
+          "action": "reject the catalog",
+          "contract": "nil `*Catalog`; `errors.As(err, &*ParseError)` with Path `vendors.<vendor>.tiers.<key>`; `errors.Is(err, ErrCorruptCatalog)` is true"
+        },
+        {
+          "id": "26-REQ-5.2",
+          "pattern": "unwanted",
+          "condition": "a vendor's `tiers` object is present but lacks one of the three tier names",
+          "system": "catalog.Parse",
+          "action": "reject the catalog",
+          "contract": "nil `*Catalog`; `*ParseError` whose Path is `vendors.<vendor>.tiers.<missing tier>`; `errors.Is(err, ErrCorruptCatalog)` is true"
+        },
+        {
+          "id": "26-REQ-5.3",
+          "pattern": "unwanted",
+          "condition": "a tier's `model` is empty or is not the id of a row of the same vendor",
+          "system": "catalog.Parse",
+          "action": "reject the catalog",
+          "contract": "nil `*Catalog`; `*ParseError` whose Path is `vendors.<vendor>.tiers.<TIER>.model` (for example `vendors.ollama.tiers.STANDARD.model`); `errors.Is(err, ErrCorruptCatalog)` is true"
+        },
+        {
+          "id": "26-REQ-5.4",
+          "pattern": "unwanted",
+          "condition": "a tier's `effort` is not exactly one of `low`, `medium`, `high`, `xhigh` or `max`",
+          "system": "catalog.Parse",
+          "action": "reject the catalog",
+          "contract": "nil `*Catalog`; `*ParseError` whose Path is `vendors.<vendor>.tiers.<TIER>.effort`; `errors.Is(err, ErrCorruptCatalog)` is true"
+        },
+        {
+          "id": "26-REQ-5.5",
+          "pattern": "unwanted",
+          "condition": "a tier's `effort` is absent or null in the named row's `thinking_level_map`, or the named row has no `thinking_level_map`",
+          "system": "catalog.Parse",
+          "action": "reject the catalog",
+          "contract": "nil `*Catalog`; `*ParseError` whose Path is `vendors.<vendor>.tiers.<TIER>.effort`; `errors.Is(err, ErrCorruptCatalog)` is true"
+        },
+        {
+          "id": "26-REQ-5.6",
+          "pattern": "event_driven",
+          "condition": "`Parse` reads a `tiers` block with exactly the three names, each naming a row of the same vendor and an effort that row takes",
+          "system": "catalog.Parse",
+          "action": "load the block with `SchemaVersion` still 1",
+          "contract": "nil error; `(*Catalog).Select(vendor, tier, \"\")` returns the block's model and effort"
+        }
+      ]
+    },
+    {
+      "id": "26-REQ-6",
+      "title": "Select entry point and input checking",
+      "rationale": "The new entry point fails early on bad input at no cost to existing callers, with errors `agentkit.New` can later return unchanged.",
+      "criteria": [
+        {
+          "id": "26-REQ-6.1",
+          "pattern": "ubiquitous",
+          "system": "catalog package",
+          "action": "export `func Select(provider, model string, effort core.Effort) (Selection, error)` resolving against `Default()`, and `func (c *Catalog) Select(provider, model string, effort core.Effort) (Selection, error)` resolving against a catalog returned by `Parse`",
+          "contract": "`catalog.Select(p, m, e)` returns the same result as `catalog.Default().Select(p, m, e)`"
+        },
+        {
+          "id": "26-REQ-6.2",
+          "pattern": "ubiquitous",
+          "system": "catalog.Select",
+          "action": "check its inputs in the order provider, then model, then effort, and return the error of the first one that fails",
+          "contract": "`Select(\"openai\", \"\", \"bogus\")` wraps `ErrUnknownProvider` only; `Select(\"anthropic\", \"\", \"bogus\")` wraps `ErrNoModel` only"
+        },
+        {
+          "id": "26-REQ-6.3",
+          "pattern": "event_driven",
+          "condition": "the effort, trimmed, equals one of `low`, `medium`, `high`, `xhigh` or `max` ignoring case",
+          "system": "catalog.Select",
+          "action": "normalize it to the lower-case `core.Effort` constant",
+          "contract": "`Select(\"anthropic\", \"claude-sonnet-5-5\", \" XHigh \")` returns `Effort == core.EffortXHigh`"
+        },
+        {
+          "id": "26-REQ-6.4",
+          "pattern": "unwanted",
+          "condition": "the effort is non-empty after trimming and is not one of the five levels",
+          "system": "catalog.Select",
+          "action": "return an error wrapping `ErrUnknownEffort` whose message names the value as given and the five efforts",
+          "contract": "zero `Selection`; `errors.Is(err, catalog.ErrUnknownEffort)` is true; the message starts with `agentkit:` and contains the value, low, medium, high, xhigh and max"
+        },
+        {
+          "id": "26-REQ-6.5",
+          "pattern": "unwanted",
+          "condition": "the model string is empty after trimming",
+          "system": "catalog.Select",
+          "action": "return an error wrapping `ErrNoModel` whose message names the three tiers and says a model id is also accepted",
+          "contract": "zero `Selection`; `errors.Is(err, catalog.ErrNoModel)` is true; the message starts with `agentkit:` and contains SIMPLE, STANDARD, ADVANCED and \"model id\""
+        },
+        {
+          "id": "26-REQ-6.6",
+          "pattern": "ubiquitous",
+          "system": "catalog package",
+          "action": "declare `ErrUnknownProvider`, `ErrUnknownEffort` and `ErrNoModel` as distinct sentinel errors whose text starts with `agentkit:`, wrapped by Select with `fmt.Errorf(\"%w: …\")`",
+          "contract": "no one of the three matches another or `ErrCorruptCatalog` under `errors.Is`"
+        }
+      ]
+    },
+    {
+      "id": "26-REQ-7",
+      "title": "Selection result and effort precedence",
+      "rationale": "Effort precedence is explicit, then tier, then none, and the requested effort is reported as asked so that each provider reads `Model.Efforts` as Anthropic does today.",
+      "criteria": [
+        {
+          "id": "26-REQ-7.1",
+          "pattern": "ubiquitous",
+          "system": "catalog package",
+          "action": "export a struct `Selection` with the fields `Provider string`, `Tier Tier`, `Model core.Model`, `Effort core.Effort` and `Listed bool`, where `Model.ID` is the id the vendor will receive",
+          "contract": "the five fields are accessible to an external package"
+        },
+        {
+          "id": "26-REQ-7.2",
+          "pattern": "complex_event",
+          "condition": "the model string is a tier",
+          "guard": "no effort is given",
+          "system": "catalog.Select",
+          "action": "return the row of the tier's model id with the tier's effort",
+          "contract": "`Select(\"openrouter\", \"STANDARD\", \"\")` returns Provider \"openrouter\", Tier \"STANDARD\", Model.ID \"qwen/qwen3.8-flash\" with ContextWindow 1000000, MaxOutputTokens 131072 and prices 0.15 / 0.47 / 0.016, Effort \"medium\", Listed true"
+        },
+        {
+          "id": "26-REQ-7.3",
+          "pattern": "complex_event",
+          "condition": "the model string is a tier",
+          "guard": "an effort is given",
+          "system": "catalog.Select",
+          "action": "return the row of the tier's model id with the given effort in place of the tier's effort",
+          "contract": "`Select(\"ollama\", \"simple\", \"HIGH\")` returns Tier \"SIMPLE\", Model.ID \"qwen3.8:27b\", Effort \"high\", Listed true"
+        },
+        {
+          "id": "26-REQ-7.4",
+          "pattern": "event_driven",
+          "condition": "the provider is `anthropic` or empty and the model string is `STANDARD`",
+          "system": "catalog.Select",
+          "action": "return the `claude-sonnet-5-5` row at effort high",
+          "contract": "`Select(\"anthropic\", \"STANDARD\", \"\")` and `Select(\"\", \"STANDARD\", \"\")` both return Model.ID \"claude-sonnet-5-5\", Effort \"high\", Listed true"
+        },
+        {
+          "id": "26-REQ-7.5",
+          "pattern": "unwanted",
+          "condition": "the model string is a tier and the provider's vendor section in a catalog given to `Parse` has no tiers block or is missing",
+          "system": "(*Catalog).Select",
+          "action": "return an error naming the provider and the tier",
+          "contract": "zero `Selection`; non-nil error whose message starts with `agentkit:` and contains the canonical provider name and the canonical tier name"
+        },
+        {
+          "id": "26-REQ-7.6",
+          "pattern": "event_driven",
+          "condition": "the model string is not a tier",
+          "system": "catalog.Select",
+          "action": "return the row or fallback of 26-REQ-3 with an empty tier and the given effort, or an empty effort when none is given",
+          "contract": "`Selection.Tier == \"\"`; `Selection.Effort` is the normalized given effort or `\"\"`"
+        },
+        {
+          "id": "26-REQ-7.7",
+          "pattern": "ubiquitous",
+          "system": "catalog.Select",
+          "action": "report in `Selection.Effort` the requested effort without filtering or clamping it against `Model.Efforts`",
+          "contract": "`Select(\"ollama\", \"qwen3.8:27b\", \"xhigh\")` returns Effort \"xhigh\" while `Model.Efforts` has no `xhigh` key"
+        }
+      ]
+    },
+    {
+      "id": "26-REQ-8",
+      "title": "Select guarantees",
+      "rationale": "Select is the offline foundation the provider scopes build on, so it must be cheap, safe and total.",
+      "criteria": [
+        {
+          "id": "26-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "catalog.Select",
+          "action": "return every `Model` as a deep copy made by `cloneModel`",
+          "contract": "mutating `Efforts` values or `Compat` bytes of a returned Model does not change the result of a later identical call"
+        },
+        {
+          "id": "26-REQ-8.2",
+          "pattern": "ubiquitous",
+          "system": "catalog.Select",
+          "action": "be safe for concurrent use from multiple goroutines",
+          "contract": "concurrent calls under `go test -race` report no data race and return the same results as sequential calls"
+        },
+        {
+          "id": "26-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "catalog.Select",
+          "action": "read no environment variable and perform no file or network I/O",
+          "contract": "results are identical with `OPENROUTER_API_KEY`, `OLLAMA_HOST` and `ANTHROPIC_API_KEY` set or unset; package catalog's non-test files import neither `os` nor `net` nor `net/http`"
+        },
+        {
+          "id": "26-REQ-8.4",
+          "pattern": "ubiquitous",
+          "system": "catalog.Select",
+          "action": "for any provider, model and effort strings against a valid catalog, return without panicking either a non-nil error or a Selection whose `Model.ContextWindow` and `Model.MaxOutputTokens` are positive and whose `Provider` is one of `Providers()`",
+          "contract": "a property test over random and adversarial strings (seeded, including Unicode, whitespace and tier-like strings) observes no panic and the stated invariants"
+        }
+      ]
+    },
+    {
+      "id": "26-REQ-9",
+      "title": "Unchanged behaviour and package boundaries",
+      "rationale": "10-REQ-3.3 to 3.6 and every current caller of `Lookup` stay intact; only the Claude-only file assertions of spec 10 are restated.",
+      "criteria": [
+        {
+          "id": "26-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "catalog.Lookup",
+          "action": "keep resolving against `anthropic` rows only, accepting an optional `anthropic/` prefix, and serving the 10-REQ-3.4 fallback for an unlisted id",
+          "contract": "`Lookup(\"qwen/qwen3.8-flash\")` and `Lookup(\"qwen3.8:27b\")` return false with ContextWindow 1000000 and MaxOutputTokens 128000; TS-10-12, TS-10-13 and TS-10-14 pass unchanged"
+        },
+        {
+          "id": "26-REQ-9.2",
+          "pattern": "ubiquitous",
+          "system": "catalog package",
+          "action": "keep the constant `Vendor = \"anthropic\"`, documented as the vendor `Lookup` resolves against",
+          "contract": "`catalog.Vendor == \"anthropic\"`"
+        },
+        {
+          "id": "26-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "embedded catalog",
+          "action": "list exactly the vendors anthropic, ollama and openrouter",
+          "contract": "`Default().Vendors()` returns `[anthropic ollama openrouter]`; `KnownVendor` is true for those three and false for `openai`"
+        },
+        {
+          "id": "26-REQ-9.4",
+          "pattern": "ubiquitous",
+          "system": "catalog package",
+          "action": "import only `core` and the standard library and contain no file named `resolve.go` or `clamp.go`",
+          "contract": "`go list -deps` of package catalog shows no module other than this module's `core`; neither file exists under catalog/"
+        },
+        {
+          "id": "26-REQ-9.5",
+          "pattern": "ubiquitous",
+          "system": "repository",
+          "action": "write no model id, limit or price of the new providers in non-test Go files outside the `catalog` package, and add no module requirement to go.mod",
+          "contract": "a scan of non-test .go files outside catalog/ finds neither \"qwen/qwen3.8-flash\" nor \"qwen3.8:27b\"; `agent.go` still calls `catalog.Lookup(cfg.Model)`; go.mod's require set is unchanged"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "26-PATH-1",
+      "title": "An embedder resolves the OpenRouter STANDARD tier and prices a usage",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls catalog.Select(\"openrouter\", \"STANDARD\", \"\")"
+        },
+        {
+          "actor": "catalog",
+          "action": "parses the embedded catalog.json once through Default(), including the openrouter tiers block"
+        },
+        {
+          "actor": "catalog.Select",
+          "action": "canonicalises the provider, checks the model is non-empty and the effort empty, and recognises the STANDARD tier"
+        },
+        {
+          "actor": "catalog.Select",
+          "action": "reads the openrouter tier entry (qwen/qwen3.8-flash, medium) and returns a cloned row with Effort medium and Listed true"
+        },
+        {
+          "actor": "embedder",
+          "action": "passes &sel.Model to provider.ComputeCost with a usage of 1,000,000 input tokens and receives a cost of 0.15 USD"
+        }
+      ]
+    },
+    {
+      "id": "26-PATH-2",
+      "title": "An embedder names an unlisted Ollama model with an explicit effort",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls catalog.Select(\" Ollama \", \"llama4:8b\", \"HIGH\")"
+        },
+        {
+          "actor": "catalog.Select",
+          "action": "canonicalises the provider to ollama and normalizes the effort to high"
+        },
+        {
+          "actor": "catalog.Select",
+          "action": "finds no ollama row for llama4:8b and builds the Ollama fallback descriptor"
+        },
+        {
+          "actor": "embedder",
+          "action": "receives Selection{Provider ollama, Tier \"\", Model.ID llama4:8b, ContextWindow 32768, MaxOutputTokens 32768, zero prices, nil Efforts, Effort high, Listed false}"
+        }
+      ]
+    },
+    {
+      "id": "26-PATH-3",
+      "title": "A maintainer's malformed tier block is rejected at load",
+      "steps": [
+        {
+          "actor": "catalog maintainer",
+          "action": "calls catalog.Parse with catalog bytes whose ollama STANDARD tier names effort xhigh, which the qwen3.8:27b row does not take"
+        },
+        {
+          "actor": "catalog.Parse",
+          "action": "validates vendors and rows, then checks each tier against its row's thinking_level_map"
+        },
+        {
+          "actor": "catalog.Parse",
+          "action": "returns a nil catalog and a *ParseError with Path vendors.ollama.tiers.STANDARD.effort that matches ErrCorruptCatalog"
+        }
+      ]
+    },
+    {
+      "id": "26-PATH-4",
+      "title": "An existing embedder builds an agent through the unchanged Lookup",
+      "steps": [
+        {
+          "actor": "embedder",
+          "action": "calls agentkit.New with Model \"claude-sonnet-5-5\" and a faux provider client"
+        },
+        {
+          "actor": "agentkit.New",
+          "action": "calls catalog.Lookup(cfg.Model) against the 2026-10-21 embedded catalog"
+        },
+        {
+          "actor": "catalog.Lookup",
+          "action": "returns the unchanged anthropic row for claude-sonnet-5-5"
+        },
+        {
+          "actor": "agent",
+          "action": "runs one turn and sends the faux provider a request whose model is claude-sonnet-5-5 with a 128,000-or-row-defined output cap equal to the pre-spec value"
+        }
+      ]
+    }
+  ]
+}

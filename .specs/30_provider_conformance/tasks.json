@@ -1,0 +1,471 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "30",
+  "spec_name": "provider_conformance",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test -short -count=1 ./internal/providerconformance/..."
+  },
+  "dependencies": [
+    {
+      "spec": "26_provider_catalog_tiers",
+      "reason": "catalog.Select and the STANDARD and SIMPLE tier rows supply every expected model id, effort and price"
+    },
+    {
+      "spec": "27_openrouter_provider",
+      "reason": "OpenRouter behaviour asserted by the cases, plus openrouter.ErrStreamTruncated and *openrouter.StatusError"
+    },
+    {
+      "spec": "28_ollama_provider",
+      "reason": "Ollama behaviour asserted by the cases, plus ollama.ErrStreamTruncated, *ollama.StatusError and ollama.New(...).Host()"
+    },
+    {
+      "spec": "29_provider_selection",
+      "reason": "Config.Provider as a name, hermetic Config.Getenv, agentkit.New building each provider, Agent.Resolution() and the run-level Unpriced flag"
+    },
+    {
+      "spec": "10_anthropic_wire",
+      "reason": "Anthropic stream, failure and status-error conventions and anthropic.Resolve for the live prerequisite"
+    },
+    {
+      "spec": "11_minimal_driver",
+      "reason": "Loop continuation on tool presence, short-circuit on error and forwarding of provider events"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Create the tests-only package, its policy test and the provider-live-test make target",
+      "criteria": [
+        "30-REQ-1.1",
+        "30-REQ-6.7"
+      ],
+      "tests": [
+        "TS-30-1",
+        "TS-30-33"
+      ],
+      "steps": [
+        "Write TS-30-1 and TS-30-33 and confirm they fail (TS-30-1 as a go/parser scan test in internal/providerconformance, TS-30-33 running `make -n provider-live-test` and expanding check/check-release prerequisites)",
+        "Create internal/providerconformance/doc.go holding only the package clause and the package doc comment (package providerconformance)",
+        "Add a `provider-live-test` target to the Makefile next to the sandbox-*-test targets running exactly `AGENTKIT_LIVE=1 go test -count=1 -v -timeout 30m -run TestLive ./internal/providerconformance`; add it to .PHONY and keep it out of check and check-release",
+        "Assert in TS-30-1 that no non-test file of the root module calls net.Listen*, tls.Listen or http.ListenAndServe* and that no package imports internal/providerconformance",
+        "Add `make provider-live-test` to the README.md quickstart command block and the Make targets table, and the 'Live provider tests' paragraph plus AGENTKIT_LIVE row to docs/configuration.md (gate, per-provider prerequisites, bounds of 6 turns, $0.50 and 10 minutes, make target)"
+      ],
+      "touches": [
+        "internal/providerconformance/doc.go",
+        "internal/providerconformance/layout_test.go",
+        "Makefile",
+        "README.md",
+        "docs/configuration.md"
+      ],
+      "done_when": [
+        "`make check` passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Write the three vendor fakes with rendering, recording and request decoding",
+      "criteria": [
+        "30-REQ-2"
+      ],
+      "tests": [
+        "TS-30-7",
+        "TS-30-8",
+        "TS-30-9",
+        "TS-30-10",
+        "TS-30-11",
+        "TS-30-12"
+      ],
+      "steps": [
+        "Write TS-30-7 to TS-30-12 and confirm they fail",
+        "In internal/providerconformance/fake_test.go define the vendor-neutral logicalTurn (ordered blocks text/thinking/toolcall, ending kind: normal, toolStop, cutOff, httpStatus, inStreamError, optional usage with prompt, cacheRead, output and cost), the requestSummary type (model, effort, tool names, user texts, assistant messages with text, tool calls and raw thinking, tool results with call id and text) and a common recording fake base: httptest server, per-request script consumption, recorded method/path/headers/body, failing the testing.TB on an unknown path or a request beyond the script and answering an HTTP error",
+        "Write fake_anthropic_test.go: Anthropic Messages SSE at POST /v1/messages (message_start with net input and cache_read_input_tokens, content_block_start/delta/stop with text_delta, thinking_delta, signature_delta and two input_json_delta fragments, message_delta with stop_reason and output_tokens, message_stop, event: error, HTTP error body {\"type\":\"error\",\"error\":{...}}); decode output_config.effort, tools[].name, messages[].content[] text/thinking/tool_use/tool_result",
+        "Write fake_openrouter_test.go: Chat Completions SSE at POST /api/v1/chat/completions (delta content, reasoning_details fragments of type reasoning.text, tool_calls in two argument fragments, finish_reason, usage chunk with prompt_tokens 100, cached_tokens and cost, data: [DONE], error chunk code 502, HTTP error body {\"error\":{\"code\",\"message\"}}); decode reasoning.effort, tools[].function.name, messages with tool_calls, tool_call_id and reasoning_details",
+        "Write fake_ollama_test.go: NDJSON at POST /api/chat (message content/thinking/tool_calls whole, final done:true line with done_reason stop, prompt_eval_count, prompt_eval_cached_count, eval_count, {\"error\":...} line, HTTP error body {\"error\":\"...\"}); decode think, tools[].function.name, messages with thinking, tool_calls, tool_name and tool_call_id",
+        "Render text and thinking as two deltas each, echo the requested model id in every response, make cut-off bodies omit message_stop / finish_reason / done:true, and use the vendor tool-call stop (tool_use, tool_calls, stop)",
+        "Use only the standard library and encoding/json in the fake files; add TS-30-12 as an ImportsOnly go/parser test over those files",
+        "Run `go test -short ./internal/providerconformance` and `make check`"
+      ],
+      "touches": [
+        "internal/providerconformance/fake_test.go",
+        "internal/providerconformance/fake_anthropic_test.go",
+        "internal/providerconformance/fake_openrouter_test.go",
+        "internal/providerconformance/fake_ollama_test.go",
+        "internal/providerconformance/fake_selftest_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "the fake files import no vendor SDK, no provider test helper and only standard library packages"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Build the case harness: agent construction, timeout, common checks and faux reference",
+      "criteria": [
+        "30-REQ-1.3",
+        "30-REQ-1.5",
+        "30-REQ-1.6",
+        "30-REQ-3"
+      ],
+      "tests": [
+        "TS-30-5",
+        "TS-30-6",
+        "TS-30-16"
+      ],
+      "steps": [
+        "Write TS-30-5, TS-30-6 and TS-30-16 and confirm they fail",
+        "In harness_test.go add a provider table (name, fake constructor, ErrStreamTruncated sentinel and StatusError target, plain stop and tool-call stop endings) and fakeEnv(provider, url) returning a map-backed Getenv holding only that provider's variables (ANTHROPIC_API_KEY/ANTHROPIC_BASE_URL, OPENROUTER_API_KEY/OPENROUTER_BASE_URL=<url>/api/v1, or OLLAMA_HOST)",
+        "Add newAgent building agentkit.New(Config{Provider, Model:\"STANDARD\", Getenv, Toolset with one internal/testkit.EchoTool named echo, MaxTurns:4}); the process environment is never read",
+        "Add runCase(tb, provider, case, timeout) executing a case under a 30-second context (parametrised so TS-30-6 can use 200 ms against a hanging fake), cancelling the run and failing with a message naming provider and case",
+        "Add providerEvents(events, turnIndex) (events after that TurnStartEvent up to and including the first MessageEndEvent), skeleton() (drop MessageUpdateEvents, collapse consecutive deltas of one block) and a faux reference skeleton built from faux.New(turn).Stream(ctx, core.Request{}) for the same blocks and stop reason",
+        "Add common checks: every recorded request carries catalog.Select(provider,\"STANDARD\",\"\") model id and effort in vendor form (30-REQ-3.1), skeleton equality and whole block-end payloads for normal turns (3.2, 3.3), terminal ErrorEvent then MessageEndEvent with StopReasonError for failed turns (3.4), and checkCount(tb, scripted, recorded) naming both counts (3.5)",
+        "Write TS-30-5 scanning every .go file in the package for string literals containing any catalog model id obtained from catalog.Select; keep expected ids in assertions read from catalog.Select",
+        "Run `go test -short ./internal/providerconformance` and `make check`"
+      ],
+      "touches": [
+        "internal/providerconformance/harness_test.go",
+        "internal/providerconformance/harness_selftest_test.go",
+        "internal/providerconformance/nolit_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "no model id literal appears in any file of internal/providerconformance"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Add the cases that end normally: text, tool_call, tool_call_stop and thinking",
+      "criteria": [
+        "30-REQ-4"
+      ],
+      "tests": [
+        "TS-30-14",
+        "TS-30-17",
+        "TS-30-18",
+        "TS-30-19",
+        "TS-30-20",
+        "TS-30-21",
+        "TS-30-22",
+        "TS-30-52"
+      ],
+      "steps": [
+        "Write TS-30-14, TS-30-17 to TS-30-22 and TS-30-52 and confirm they fail",
+        "Create cases_test.go with the case table and TestProviderConformance running `<provider>/<case>` parallel-safe subtests through runCase, one fake per subtest",
+        "text case: 'Hello from the conformance suite.' with usage 100 prompt / 60 cache reads / 20 output (OpenRouter cost 0.00042); assert StopReasonStop, RunStopEndTurn, nil error, FinalText, one request carrying the prompt, usage InputTokens 40 / CacheReadTokens 60 / OutputTokens 20 / ReasoningTokens <= OutputTokens, cost bit set, CostUSD equal to the reported cost on OpenRouter else provider.ComputeCost at the selected row, and run usage not Unpriced",
+        "tool_call case: turn 1 call_conformance_1 echo {\"v\":\"conformance\"} with the vendor tool-call stop, turn 2 'All done.'; assert echo ran once with the arguments, first request declares echo, second request carries the call on the assistant message then a tool result for call_conformance_1 containing 'echoed', RunStopEndTurn, TurnCount 2, FinalText",
+        "tool_call_stop case: same with the vendor's plain stop (end_turn, stop, stop)",
+        "thinking case: 'Plan: call echo once.' (signature sig-conformance on Anthropic, two reasoning.text fragments on OpenRouter) then the tool call; assert thinking events, no text event carrying the thinking, transcript first assistant message ThinkingBlock then tool use with no text block holding the thinking, and the second request replays the thinking in raw vendor form and not in visible content",
+        "Apply the faux skeleton and whole block-end payload checks to every normal turn (TS-30-14)",
+        "Add the TS-30-52 property test (testing/quick or a seeded generator) over random block lists of text/thinking/tool-call blocks with distinct tool ids and valid JSON arguments, run once through each provider, comparing skeletons with faux",
+        "Run `go test -short ./internal/providerconformance` and `make check`"
+      ],
+      "touches": [
+        "internal/providerconformance/cases_test.go",
+        "internal/providerconformance/cases_normal_test.go",
+        "internal/providerconformance/property_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "done_when": [
+        "each failing case is resolved by fixing the provider or recording an erratum for its spec, never by weakening the case for one provider"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Add the failing cases: cut_off, error_status and error_in_stream",
+      "criteria": [
+        "30-REQ-5"
+      ],
+      "tests": [
+        "TS-30-13",
+        "TS-30-15",
+        "TS-30-23",
+        "TS-30-24",
+        "TS-30-25",
+        "TS-30-26"
+      ],
+      "steps": [
+        "Write TS-30-13, TS-30-15, TS-30-23, TS-30-24, TS-30-25 and TS-30-26 and confirm they fail",
+        "cut_off case: text 'Partial answer' then a tool call (arguments cut mid-way on Anthropic and OpenRouter, a whole tool-call chunk on Ollama), body ending without the final signal; assert errors.Is(terminal ErrorEvent.Err, provider ErrStreamTruncated), RunStopError with non-nil error, one request",
+        "cut_off: assert echo never ran, no ToolExecutionStartEvent, last assistant message StopReasonError with text containing 'Partial answer', accepting providers that keep or drop salvaged tool-use blocks",
+        "error_status case: HTTP 400 with the vendor error body and message conformance-bad-request; assert errors.As to the provider's *StatusError with Code 400, text starting '<provider>: HTTP 400' and containing the message, RunStopError, one request, no tool ran",
+        "error_in_stream case: 'Working on it' then the vendor in-stream error conformance-upstream-failure; assert the terminal ErrorEvent text contains it (no prefix requirement), RunStopError, last assistant message keeps 'Working on it', one request, no tool ran",
+        "Apply the terminal ErrorEvent plus MessageEndEvent(StopReasonError) check to all three failing cases (TS-30-15) and the model/effort-on-every-request check across all seven cases (TS-30-13)",
+        "Run `go test -short ./internal/providerconformance` and `make check`"
+      ],
+      "touches": [
+        "internal/providerconformance/cases_fail_test.go",
+        "internal/providerconformance/cases_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "no case is weakened for one provider; a provider mismatch is fixed or recorded as an erratum"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Verify the suite as a whole: 21 named subtests, hermetic environment and architecture docs",
+      "criteria": [
+        "30-REQ-1.2",
+        "30-REQ-1.4"
+      ],
+      "tests": [
+        "TS-30-2",
+        "TS-30-3",
+        "TS-30-4"
+      ],
+      "steps": [
+        "Write TS-30-2, TS-30-3 and TS-30-4 and confirm they fail or are not yet satisfied",
+        "TS-30-2: run `go test -short -v -json ./internal/providerconformance -run TestProviderConformance` as a subprocess and assert 21 passing subtests named <provider>/<case>, none skipped; rerun with -run 'TestProviderConformance.*/ollama/thinking' and assert exactly that one subtest",
+        "TS-30-3: record the agentkit.Config values each subtest passes (Provider, Model STANDARD, MaxTurns 4, one tool echo) and assert the Getenv map keys are a subset of that provider's variables, OpenRouter base URL ends /api/v1, and every variable points at the subtest's own fake",
+        "TS-30-4: start a decoy loopback listener, export ANTHROPIC_*, OPENROUTER_* and OLLAMA_HOST pointing at it, run the suite as a subprocess and assert 21 passes and zero decoy connections; guard the subprocess tests against recursion with an env flag and skip them when `go` is unavailable",
+        "Confirm TestProviderConformance does not call t.Skip under -short and does not use t.Setenv",
+        "Update docs/architecture.md: add internal/providerconformance (tests only) with its first-party imports to the package graph and Packages table, and describe the conformance suite and live tests in 'Testing layout'",
+        "Run `go test -short ./internal/providerconformance` and `make check`"
+      ],
+      "touches": [
+        "internal/providerconformance/suite_test.go",
+        "docs/architecture.md"
+      ],
+      "depends_on": [
+        5
+      ],
+      "done_when": [
+        "`go test -short ./internal/providerconformance` reports 21 passing conformance subtests"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Add the opt-in live smoke tests TestLive and their configuration docs",
+      "criteria": [
+        "30-REQ-6.1",
+        "30-REQ-6.2",
+        "30-REQ-6.3",
+        "30-REQ-6.4",
+        "30-REQ-6.5",
+        "30-REQ-6.6",
+        "30-REQ-7"
+      ],
+      "tests": [
+        "TS-30-27",
+        "TS-30-28",
+        "TS-30-29",
+        "TS-30-30",
+        "TS-30-31",
+        "TS-30-32",
+        "TS-30-35"
+      ],
+      "steps": [
+        "Write TS-30-27 to TS-30-32 and TS-30-35 and confirm they fail; the subprocess tests run `go test -run TestLive` with a controlled environment and a recording loopback server (follow sandbox/gatewayd/podman_optin_test.go for the skip pattern and its hint)",
+        "Create live_test.go with TestLive: skip under testing.Short(); skip unless AGENTKIT_LIVE is exactly \"1\", with a message naming AGENTKIT_LIVE and `make provider-live-test`; one subtest per provider",
+        "anthropic subtest: skip with the error text when anthropic.Resolve(anthropic.OSEnv{}) fails; openrouter: skip naming OPENROUTER_API_KEY when empty",
+        "ollama subtest: ollama.New(row, ollama.Options{}) and Host(); skip with the New error on failure; GET <host>/api/tags with a 2-second timeout and skip naming the host and `ollama serve` when unreachable or non-200, and naming `ollama pull <model>` when the STANDARD tier's model is not listed",
+        "Run for a ready provider: write secret.txt with a fresh random word into t.TempDir(), build agentkit.New with Provider name, Model \"STANDARD\", no Getenv, only read_file (tools.For then core.Named), MaxTurns 6, MaxCostUSD 0.50, Timeout 10 minutes, and ask the model to read the file and reply with the word",
+        "Assert RunStopEndTurn with nil error, at least one successful read_file call, final text containing the word, Agent.Resolution() matching catalog.Select (provider, tier STANDARD, model id, effort), positive input/output tokens, usage not Unpriced, cost positive on anthropic and openrouter and zero on ollama; log model, effort, turns, tokens and cost with t.Logf",
+        "Write TS-30-35 so it runs offline against a loopback fake where possible and otherwise asserts the same checks through a shared assertLiveRun helper",
+        "Ensure `go test -short` and plain `go test` never run live requests; run `make check`"
+      ],
+      "touches": [
+        "internal/providerconformance/live_test.go",
+        "internal/providerconformance/live_gate_test.go",
+        "docs/configuration.md"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "TestLive reports SKIP under -short and without AGENTKIT_LIVE=1, with no request to any service"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Move examples/codingagent to AGENTKIT_PROVIDER, AGENTKIT_MODEL and AGENTKIT_EFFORT",
+      "criteria": [
+        "30-REQ-8",
+        "30-REQ-9"
+      ],
+      "tests": [
+        "TS-30-42",
+        "TS-30-45"
+      ],
+      "steps": [
+        "Write TS-30-42 and TS-30-45 in examples/codingagent/main_test.go and confirm they fail",
+        "In the test, start an Ollama-shaped httptest server answering one text turn as NDJSON at POST /api/chat and recording requests; run `go run .` with the test's environment plus the case's variables",
+        "In main.go read AGENTKIT_PROVIDER (default empty), AGENTKIT_MODEL (default \"STANDARD\") and AGENTKIT_EFFORT (default empty) with the example's own lines and pass them unchanged to agentkit.Config Provider, Model and Effort; remove catalog.Lookup, anthropic.Resolve and the anthropic-sdk-go import",
+        "Print `error: <err>` and exit 1 when agentkit.New fails, before any request",
+        "Print the summary line from Agent.Resolution() (provider, model id, effort) with turns, stop, tokens and cost, showing `cost unknown` instead of a dollar figure when usage is Unpriced; keep the formatting in a package-level function taking a Resolution and core.Usage so a unit test can call it",
+        "Override test: AGENTKIT_PROVIDER=ollama, OLLAMA_HOST, AGENTKIT_MODEL=SIMPLE, AGENTKIT_EFFORT=high; assert exit 0, stdout has the server text, summary names ollama, qwen3.8:27b and high, recorded request model qwen3.8:27b and think \"high\"; unknown-provider test: AGENTKIT_PROVIDER=openai, non-zero exit, output names openai, anthropic, openrouter and ollama, no request recorded",
+        "Update the header comment (one invocation per provider) and examples/codingagent/README.md ('Run it' one run per provider, 'What you'll see' with the new summary line)",
+        "Run `make check`"
+      ],
+      "touches": [
+        "examples/codingagent/main.go",
+        "examples/codingagent/main_test.go",
+        "examples/codingagent/README.md"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`go test ./examples/codingagent` passes without network or credentials"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Move examples/customtools to AGENTKIT_PROVIDER, AGENTKIT_MODEL and AGENTKIT_EFFORT",
+      "criteria": [
+        "30-REQ-8",
+        "30-REQ-9"
+      ],
+      "tests": [
+        "TS-30-43",
+        "TS-30-46"
+      ],
+      "steps": [
+        "Write TS-30-43 and TS-30-46 in examples/customtools/main_test.go and confirm they fail",
+        "In the test, start an Ollama-shaped httptest server answering one text turn as NDJSON and recording requests; run `go run .` with the test's environment plus the case's variables (no shared helper with other examples)",
+        "In main.go read the three variables with the example's own lines, pass them unchanged to agentkit.Config Provider, Model (default \"STANDARD\") and Effort, and drop catalog.Lookup and any anthropic SDK use or import",
+        "Print `error: <err>` and exit 1 when agentkit.New fails; keep the 'run ended without submit_answer (<reason>)' message for a text-only reply but make sure the server text still reaches stdout",
+        "Print the summary line with provider, model id and effort from Agent.Resolution(), turns and cost, `cost unknown` when usage is Unpriced, via a package-level formatting function",
+        "Override test: assert exit 0, stdout has the server text, summary names ollama, qwen3.8:27b and high, request model qwen3.8:27b and think \"high\"; unknown-provider test: AGENTKIT_PROVIDER=openai fails with a non-zero exit naming openai and the three providers, no request",
+        "Update the header comment and examples/customtools/README.md with one run per provider and the new summary line",
+        "Run `make check`"
+      ],
+      "touches": [
+        "examples/customtools/main.go",
+        "examples/customtools/main_test.go",
+        "examples/customtools/README.md"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`go test ./examples/customtools` passes without network or credentials"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Move examples/mcp to the selection variables and verify all three examples and the README quick start",
+      "criteria": [
+        "30-REQ-8",
+        "30-REQ-9"
+      ],
+      "tests": [
+        "TS-30-36",
+        "TS-30-37",
+        "TS-30-38",
+        "TS-30-39",
+        "TS-30-40",
+        "TS-30-41",
+        "TS-30-44",
+        "TS-30-47",
+        "TS-30-48"
+      ],
+      "steps": [
+        "Write the listed tests and confirm they fail; TS-30-36, TS-30-38 and TS-30-41 are go/parser scans placed in examples/mcp/structure_test.go (reading the other examples' directories by relative path); TS-30-40 calls each example's summary function from an internal test in each example's directory",
+        "In examples/mcp/main.go read AGENTKIT_PROVIDER, AGENTKIT_MODEL (default \"STANDARD\") and AGENTKIT_EFFORT with its own lines and pass them unchanged to agentkit.Config; drop catalog.Lookup and anthropic.Resolve; print `error: <err>` and exit 1 on agentkit.New failure; print the summary with Resolution provider, model, effort and `cost unknown` when Unpriced; keep the in-process MCP server so it runs offline",
+        "In examples/mcp/main_test.go add the override test (TS-30-44) and unknown-provider test (TS-30-47) against an Ollama-shaped server using `go run .`",
+        "Add TS-30-37 (only AGENTKIT_PROVIDER=ollama and OLLAMA_HOST set: model and think match catalog.Select('ollama','STANDARD','') and the summary names them), TS-30-39 (AGENTKIT_EFFORT=bogus, and AGENTKIT_PROVIDER=openrouter without OPENROUTER_API_KEY: exit 1, `error: ` line, key named, no request) and TS-30-48 (foreign ANTHROPIC_*/OPENROUTER_* decoy variables: exit 0, same request, zero decoy connections) running all three examples",
+        "Add TS-30-40 summary-function tests for each example, and the TS-30-41 scan proving agentdemo, codemode, sandbox, gateway and harness mention none of the three variables and import provider/faux where they build a client",
+        "Update the mcp header comment and examples/mcp/README.md (one run per provider, new summary line)",
+        "Rewrite examples/README.md: intro without the Anthropic credential claim, 'Configuring an application' around provider, model and effort with the tier table and variable tables (OPENROUTER_API_KEY, OPENROUTER_BASE_URL, OLLAMA_HOST), 'Other variables' with AGENTKIT_PROVIDER, AGENTKIT_MODEL (default STANDARD) and AGENTKIT_EFFORT, troubleshooting for a missing OPENROUTER_API_KEY, an unreachable Ollama host and an unpulled model; add AGENTKIT_PROVIDER and AGENTKIT_EFFORT (examples only) to docs/configuration.md",
+        "Rewrite the README.md intro (names the three providers), quick start Go snippet (Provider, Model \"STANDARD\", a toolset, no client, no SDK import, comment naming the other providers, missing credential reported by name e.g. OPENROUTER_API_KEY) and add the short table of what each provider reads",
+        "Run `make doc` then `make check`; confirm the examples stay under the core/size_test.go line budget"
+      ],
+      "touches": [
+        "examples/mcp/main.go",
+        "examples/mcp/main_test.go",
+        "examples/mcp/structure_test.go",
+        "examples/mcp/README.md",
+        "examples/codingagent/main_test.go",
+        "examples/customtools/main_test.go",
+        "examples/README.md",
+        "README.md",
+        "docs/configuration.md"
+      ],
+      "depends_on": [
+        8,
+        9
+      ],
+      "done_when": [
+        "the README quick start has no anthropic.Resolve and no SDK import",
+        "`make check` passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify the conformance, live and example paths end to end",
+      "tests": [
+        "TS-30-34",
+        "TS-30-49",
+        "TS-30-50",
+        "TS-30-51"
+      ],
+      "steps": [
+        "Write the smoke tests TS-30-34 (make provider-live-test with at least one ready provider, skipping cleanly if none), TS-30-49 (the openrouter/tool_call subtest alone through go test -short -run), TS-30-50 (go run ./examples/customtools on Ollama with SIMPLE and high) and TS-30-51 (go run ./examples/codingagent with AGENTKIT_PROVIDER=openai) against real components, and confirm they pass",
+        "Trace 30-PATH-1 through the real code: suite -> agentkit.New -> catalog.Select -> provider/openrouter -> fake -> loop -> assertions; confirm each step calls the next and no stub remains",
+        "Trace 30-PATH-2 (Makefile -> TestLive -> agentkit.New -> read_file -> assertions) and 30-PATH-3 and 30-PATH-4 (example -> agentkit.Config -> agentkit.New -> provider or error:/exit 1)",
+        "Confirm that the producers of each contract are consumed in production code: Agent.Resolution() is read by each example's summary line and Config.Provider/Model/Effort reach agentkit.New from each example's main",
+        "Confirm entry points owned by other specs (agentkit.New with Provider names, Agent.Resolution, catalog.Select, ollama.New().Host) are called from production code",
+        "Search every file listed in the tasks' touches for panic(\"not implemented\"), TODO, and bare `return nil` on non-trivial paths, and remove any that remain",
+        "Run `make check` (not make check-release or the full make test) and note in the handoff that the full gate was left to the user"
+      ],
+      "touches": [
+        "internal/providerconformance/smoke_test.go",
+        "examples/customtools/smoke_test.go",
+        "examples/codingagent/smoke_test.go"
+      ],
+      "depends_on": [
+        6,
+        7,
+        10
+      ],
+      "done_when": [
+        "`make check` passes",
+        "every execution path 30-PATH-1 to 30-PATH-4 is live in production code"
+      ],
+      "state": "pending",
+      "optional": false
+    }
+  ]
+}

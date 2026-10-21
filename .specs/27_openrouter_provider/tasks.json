@@ -1,0 +1,496 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "27",
+  "spec_name": "openrouter_provider",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./provider/... ./internal/policy/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "26_provider_catalog_tiers",
+      "reason": "supplies the openrouter catalog row, the unlisted-id fallback and the \"openrouter-chat\" api string the tests build core.Model values from"
+    },
+    {
+      "spec": "09_repository_cut",
+      "reason": "TestProviderDefaults_TS09_11 pins provider/ directories and TS-09-16's allowlist gains the SDK"
+    },
+    {
+      "spec": "10_anthropic_wire",
+      "reason": "the Anthropic provider's stream, failure, abort, status-error and Efforts conventions are mirrored; provider/anthropic is not changed"
+    },
+    {
+      "spec": "13_sandbox_core",
+      "reason": "TestSandboxDepsPromoted_TS13_65 asserts preSpec13Direct and the root go-list snapshot, both restated for the SDK"
+    },
+    {
+      "spec": "14_sandbox_rsync_sync",
+      "reason": "TestRsyncDependency_TS14_42 compares the regenerated sandbox graph snapshot"
+    },
+    {
+      "spec": "15_sandbox_landlock_agent",
+      "reason": "TestLandlockPromoted_TS15_40 equality with the .14 snapshot is restated as a subset check"
+    },
+    {
+      "spec": "17_sandbox_podman",
+      "reason": "TestPodmanAddsNoDependency_TS17_60 compares with the regenerated sandbox snapshot"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add the shared tool-pairing transcript repair to package provider",
+      "criteria": [
+        "27-REQ-4.1",
+        "27-REQ-4.2",
+        "27-REQ-4.3"
+      ],
+      "tests": [
+        "TS-27-18",
+        "TS-27-19"
+      ],
+      "steps": [
+        "Write TS-27-18 (example-based, incl. deep-copy check of input) and TS-27-19 (property test over generated transcripts, e.g. testing/quick or a seeded rand generator) in provider/repair_test.go and confirm they fail",
+        "Create provider/repair.go importing only core: `RepairToolPairing(in core.Messages) (core.Messages, PairingReport)` with PairingReport counting DroppedAssistants, DroppedResults, Inserted, plus Changed() and String()",
+        "Rule 1: drop assistant messages with StopReasonError or StopReasonAborted; rule 2: drop tool results whose call id is not in a kept assistant message",
+        "Rule 3: for each unanswered tool call of a kept assistant message insert a core.ToolResultMessage with IsError true and text \"No result provided\" at that call's position among the turn's results, before the next non-result message (port the position-aware logic of insertSyntheticResults in provider/anthropic/repair.go, without its thinking rules)",
+        "Build a new slice and copy messages by value; never mutate the input slice or its content; never touch thinking blocks",
+        "Doc-comment the function as the shared repair for chat-style wires; make sure repairing the output reports zero changes"
+      ],
+      "touches": [
+        "provider/repair.go",
+        "provider/repair_test.go"
+      ],
+      "done_when": [
+        "`go test ./provider/ -count=1` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Approve and pin the OpenRouter SDK and restate the dependency policy tests",
+      "criteria": [
+        "27-REQ-9"
+      ],
+      "tests": [
+        "TS-27-49",
+        "TS-27-50",
+        "TS-27-51",
+        "TS-27-52",
+        "TS-27-53",
+        "TS-27-54",
+        "TS-27-55"
+      ],
+      "steps": [
+        "Create provider/openrouter/doc.go (package openrouter with a package comment) and provider/openrouter/client.go that blank-imports github.com/OpenRouterTeam/go-sdk so `go mod tidy` keeps the module; read the SDK source at v0.9.66 if reachable and note differences from the PRD's assumed symbols in docs/errata/27_openrouter_provider.md",
+        "Run `go get github.com/OpenRouterTeam/go-sdk@v0.9.66` in the root so go.mod requires it directly, then `make tidy` so every module in MODULES has go.sum entries",
+        "In internal/policy/deps_test.go add the module to approvedDeps with a reason comment on the line above and to preSpec13Direct; add a pin test modelled on TestAnthropicSDKIsPinned_TS10_1 (exact v0.9.66, not indirect) for TS-27-49",
+        "Add a policy test (TS-27-50) that runs go list over the root and every module in MODULES and asserts only provider/openrouter imports github.com/OpenRouterTeam/go-sdk or its subpackages",
+        "Add TS-27-55: a test scanning non-test provider/openrouter/*.go for qwen/, 1000000, 131072, 32768, 0.15, 0.47, 0.016 literals",
+        "Regenerate internal/policy/testdata/go-list-m-all.txt and sandbox-go-list-m-all.txt (go list -m all in root and sandbox); if the SDK moves a module version, record it in docs/DEPS.md and pin it as spec 14's D-1 did",
+        "Restate TestLandlockPromoted_TS15_40 (landlock_dep_test.go) to require every line of sandbox-go-list-m-all.14.txt plus go-landlock to be present instead of whole-file equality; confirm TS-14-42, TS-17-60, TS-09-15, TS-23-2 and TS-19-61 still pass",
+        "Change TestProviderDefaults_TS09_11 in repository_cut_test.go to expect \"anthropic,faux,openrouter\"",
+        "Update docs/DEPS.md: allowlist row, a ruling section (used by, pin and why: beta 0.x SDK upgraded only deliberately, why this module, what AgentKit still owns: its own retry loop and why, every module added to the root graph per `go mod why -m`), and the note above the Rejected table about the vendor-SDK reversal now covering two wires",
+        "Run `make check` and confirm it passes (TS-27-53)"
+      ],
+      "touches": [
+        "go.mod",
+        "go.sum",
+        "provider/openrouter/doc.go",
+        "provider/openrouter/client.go",
+        "internal/policy/deps_test.go",
+        "internal/policy/landlock_dep_test.go",
+        "internal/policy/testdata/go-list-m-all.txt",
+        "internal/policy/testdata/sandbox-go-list-m-all.txt",
+        "repository_cut_test.go",
+        "docs/DEPS.md",
+        "docs/errata/27_openrouter_provider.md",
+        "codesearch/go.sum",
+        "sandbox/go.sum",
+        "sandbox/gatewayd/go.sum",
+        "mcpserve/go.sum",
+        "examples/sandbox/go.sum",
+        "examples/gateway/go.sum",
+        "examples/harness/go.sum"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`go test ./internal/policy/... -count=1` passes with no skips for the graph tests",
+        "`make check` passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Implement openrouter.New: options, constants, credential and base URL resolution, SDK client",
+      "criteria": [
+        "27-REQ-1.1",
+        "27-REQ-1.3",
+        "27-REQ-1.4",
+        "27-REQ-1.5"
+      ],
+      "tests": [
+        "TS-27-1",
+        "TS-27-3",
+        "TS-27-4",
+        "TS-27-5"
+      ],
+      "steps": [
+        "Write TS-27-1, TS-27-3, TS-27-4, TS-27-5 in provider/openrouter/new_test.go (external package, httptest recording server counting requests) and confirm they fail",
+        "Define in provider/openrouter/options.go: constants API core.API = \"openrouter-chat\", APIKeyVar, BaseURLVar, DefaultBaseURL, DefaultMaxRetries = 2; the Options struct (Env, Getenv, HTTPClient, MaxRetries *int, Now, Warnf); ErrNoAPIKey (message names OPENROUTER_API_KEY)",
+        "Implement an env lookup type like anthropic's providerEnv: Options.Env first (empty falls through), then Getenv when non-nil else os.LookupEnv; empty is unset; only ever look up the two OPENROUTER_* names",
+        "Implement New(m core.Model, opts Options) (core.ProviderClient, error): fail on empty m.ID, missing key (wrap ErrNoAPIKey), and a base URL that is not absolute http/https (error names the variable and shows the value with user-info stripped via url.Redacted-style removal); trim trailing '/' from the base URL",
+        "Build exactly one SDK client in New with the key (WithSecurity), WithServerURL, WithClient when HTTPClient is set, and SDK retries off (retry strategy none); make no network request",
+        "Replace the blank SDK import in client.go with the real use; define the unexported client struct holding the model, SDK client, resolved key, max retries, now, warnf; Stream may remain panic(\"not implemented\") until the decode task"
+      ],
+      "touches": [
+        "provider/openrouter/options.go",
+        "provider/openrouter/client.go",
+        "provider/openrouter/new_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "`go test ./provider/openrouter/ -count=1` passes for TS-27-1,3,4,5"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Implement Stream plumbing and the chunk decoder: message start, text, thinking, tool calls, block ends, stop reasons",
+      "criteria": [
+        "27-REQ-1.7",
+        "27-REQ-1.8",
+        "27-REQ-5.1",
+        "27-REQ-5.2",
+        "27-REQ-5.3",
+        "27-REQ-5.4",
+        "27-REQ-5.5",
+        "27-REQ-5.6",
+        "27-REQ-5.8"
+      ],
+      "tests": [
+        "TS-27-7",
+        "TS-27-8",
+        "TS-27-25",
+        "TS-27-26",
+        "TS-27-27",
+        "TS-27-28",
+        "TS-27-29",
+        "TS-27-31"
+      ],
+      "steps": [
+        "Write the tests in provider/openrouter/stream_test.go against an httptest recording server replaying canned SSE bodies (include `: OPENROUTER PROCESSING` comments and `data: [DONE]`); confirm they fail",
+        "Implement Stream: refuse a done ctx with ctx.Err() and a nil channel; otherwise core.NewEventStream, `go run(...)`, return core.StreamChannel; Stream must be safe for concurrent use (no shared mutable state on the provider)",
+        "Implement a basic request build (model, stream true, stream_options.include_usage true, user/assistant messages) and the SDK Chat send call with Stream: true; consume chunks via the SDK event stream; any SDK error fails the turn as `openrouter: <error>` (refined in later tasks)",
+        "Implement decodeState in decode.go mirroring provider/anthropic: partial message (Model m.ID, Effort, Timestamp from Options.Now or clock), emit MessageStartEvent once before the first content event, block indices by first appearance, new block when delta kind changes, ignore non-zero choices, empty and role-only deltas",
+        "Text: TextStart/TextDelta. Thinking: append each reasoning_details element (with every field, as raw JSON) to the open block's fragment list; visible text from delta.reasoning else reasoning.text `text` / reasoning.summary `summary` (encrypted adds none); ThinkingStart/ThinkingDelta; finished block Thinking = text, Signature = JSON array of fragments (empty when none), Redacted false",
+        "Tool calls: accumulate by index, ToolCallStartEvent on first fragment with id and name, ToolInputDeltaEvent per arguments fragment, finalize via core.NewToolUse over the byte-exact concatenation (empty -> {}); non-object -> Input {} and Warnf reporting id and name; id-less calls get call_<random hex> unique within the turn",
+        "On completion (finish_reason seen): emit block-end events in block order, then MessageEndEvent, then End with the same message; keep finish_reason verbatim in RawStopReason and map stop/length/tool_calls/content_filter/other; keep tool calls whatever the finish reason; set ResponseID and ResponseModel from chunk id and model",
+        "Add the abort path (cancelled caller ctx -> StopReasonAborted, \"Request was aborted\", core.ErrAborted) and a `fail` helper mirroring anthropic's decodeState.fail; keep a race-clean concurrency test (TS-27-8, 16 goroutines)"
+      ],
+      "touches": [
+        "provider/openrouter/client.go",
+        "provider/openrouter/stream.go",
+        "provider/openrouter/decode.go",
+        "provider/openrouter/stream_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "done_when": [
+        "`go test ./provider/openrouter/ -race -count=1` passes for the listed tests"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Collect usage after finish_reason and compute netted usage and cost",
+      "criteria": [
+        "27-REQ-5.7",
+        "27-REQ-8.1",
+        "27-REQ-8.2",
+        "27-REQ-8.4",
+        "27-REQ-8.5",
+        "27-REQ-8.6",
+        "27-REQ-8.7"
+      ],
+      "tests": [
+        "TS-27-30",
+        "TS-27-44",
+        "TS-27-45",
+        "TS-27-47",
+        "TS-27-48"
+      ],
+      "steps": [
+        "Write TS-27-30, 44, 45 (property over generated counts), 47, 48 in provider/openrouter/usage_test.go and confirm they fail",
+        "After finish_reason keep reading to the end of the body so a later usage chunk with empty choices is collected; ensure end events and MessageEnd come after the body ends",
+        "Implement usage.go: CacheReadTokens = cached_tokens; CacheWriteTokens = cache_write_tokens when reported; InputTokens = prompt_tokens minus both floored at 0; OutputTokens = completion_tokens; ReasoningTokens = reasoning_tokens capped at OutputTokens; TotalTokens = total_tokens; set presence bits via SetField only for reported fields",
+        "Set Usage.Requests = 1 and BilledModel = served model via provider.BillingModel when chunk model differs from m.ID",
+        "Cost: usage.cost present -> SetCost; else if m has any non-zero price -> SetCost(provider.ComputeCost(&m, usage)); else leave CostUSD 0 and bit clear; no usage reported -> usage unreported and no cost computed",
+        "Expose one function used by both finish and (later) fail so a failed turn prices whatever usage arrived"
+      ],
+      "touches": [
+        "provider/openrouter/usage.go",
+        "provider/openrouter/decode.go",
+        "provider/openrouter/usage_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "`go test ./provider/openrouter/ -count=1` passes for the listed tests"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Encode the full request body: system, messages, tools, tool choice, limits, sampling",
+      "criteria": [
+        "27-REQ-1.2",
+        "27-REQ-1.6",
+        "27-REQ-2"
+      ],
+      "tests": [
+        "TS-27-2",
+        "TS-27-6",
+        "TS-27-9",
+        "TS-27-10",
+        "TS-27-11",
+        "TS-27-12",
+        "TS-27-13",
+        "TS-27-14",
+        "TS-27-15"
+      ],
+      "steps": [
+        "Write the tests in provider/openrouter/request_test.go with a recording httptest server (and a recording HTTPClient transport for the default-host case in TS-27-6); confirm they fail",
+        "Body: model = m.ID byte for byte, stream true, stream_options.include_usage true; join Request.System text blocks with \"\\n\\n\" into one leading system message, none when no text",
+        "Encode Request.Prefix then Request.Messages in order (no cache_control): user messages with text blocks (skip when no text); assistant messages with joined text content (absent when none), tool_calls {id, type \"function\", function.name, function.arguments = string(Input) verbatim}, skipping messages with no text, no calls and no reasoning; each ToolResultMessage its own tool message with tool_call_id and provider.ToolResultText",
+        "Tools: {type function, function{name, description, parameters}} where parameters is (*schema.Schema).MarshalJSON bytes sent as json.RawMessage (verify the SDK request type carries raw schema bytes with order intact; if not, marshal the body yourself and record in docs/errata/27_openrouter_provider.md); nil schema -> {\"type\":\"object\",\"properties\":{}}; no strict flag",
+        "tool_choice: auto/none/omitted; max_completion_tokens: requested capped at m.MaxOutputTokens when positive, else cap, else omitted; temperature/top_p when pointer non-nil including 0; stop when StopSequences non-empty",
+        "Ensure every request is POST <base>/chat/completions, the key only in Authorization: Bearer, and the Getenv recorder in TS-27-2 only sees the two OPENROUTER_* names; the default base URL case is asserted via the HTTPClient transport recording host openrouter.ai and path /api/v1/chat/completions",
+        "Place reasoning_details and effort encoding as seams for the next task (empty for now)"
+      ],
+      "touches": [
+        "provider/openrouter/request.go",
+        "provider/openrouter/stream.go",
+        "provider/openrouter/request_test.go"
+      ],
+      "depends_on": [
+        5
+      ],
+      "done_when": [
+        "`go test ./provider/openrouter/ -count=1` passes for the listed tests"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Encode effort and replay the transcript: shared repair, ids, reasoning_details",
+      "criteria": [
+        "27-REQ-3",
+        "27-REQ-4.4",
+        "27-REQ-4.5",
+        "27-REQ-4.6",
+        "27-REQ-4.7",
+        "27-REQ-4.8"
+      ],
+      "tests": [
+        "TS-27-16",
+        "TS-27-17",
+        "TS-27-20",
+        "TS-27-21",
+        "TS-27-22",
+        "TS-27-23"
+      ],
+      "steps": [
+        "Write the tests in provider/openrouter/replay_test.go and effort_test.go against the recording server and confirm they fail",
+        "Effort: empty -> no reasoning key; nil m.Efforts -> the effort's own name; map with absent or nil entry -> nothing; present entry -> trimmed lowercase value; a value parsing as a positive integer -> reasoning.max_tokens, else reasoning.effort; never clamp and never drop temperature/top_p",
+        "Run provider.RepairToolPairing separately on Request.Prefix and Request.Messages before encoding and call Options.Warnf once per part with a non-zero change count (no call when nothing changed)",
+        "Pass tool-call ids and tool_call_id through unchanged",
+        "For an assistant message with Model == m.ID, send reasoning_details as the concatenation in block order of each thinking block's Signature parsed as a JSON array (raw elements preserved); empty or non-array Signature contributes nothing; other-model messages send none",
+        "Never put a thinking block's Thinking text into content; an assistant message holding only thinking text and no replayable reasoning_details is skipped, one with reasoning_details alone is sent"
+      ],
+      "touches": [
+        "provider/openrouter/request.go",
+        "provider/openrouter/effort.go",
+        "provider/openrouter/replay_test.go",
+        "provider/openrouter/effort_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "done_when": [
+        "`go test ./provider/openrouter/ -count=1` passes for the listed tests"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Fail truncated and in-stream-error turns without leaving executable tool calls",
+      "criteria": [
+        "27-REQ-6.1",
+        "27-REQ-6.3",
+        "27-REQ-6.4",
+        "27-REQ-6.5"
+      ],
+      "tests": [
+        "TS-27-32",
+        "TS-27-34",
+        "TS-27-35"
+      ],
+      "steps": [
+        "Write TS-27-32, 34, 35 in provider/openrouter/failure_test.go and confirm they fail",
+        "Define ErrStreamTruncated (text \"openrouter: stream ended before finish_reason\") and `type StatusError struct{Code int; Text string}` with Error() and errors.Is support as in anthropic",
+        "Body ends with no finish_reason -> fail with ErrStreamTruncated",
+        "Detect a top-level `error` {code,message} chunk and a choice with finish_reason \"error\": fail with *StatusError{Code: vendor code, Text: \"openrouter: error <code> in stream: <message>\"} (retry is added in the retry task; for now every in-stream error fails)",
+        "fail(): message has StopReasonError, ErrorMessage = error text, text and thinking blocks streamed so far, NO tool-call blocks, whatever usage arrived priced via the usage helper; emit terminal ErrorEvent, then MessageEndEvent, then End with Err equal to the ErrorEvent's Err",
+        "Verify core.ExtractToolUse on a failed message returns nothing"
+      ],
+      "touches": [
+        "provider/openrouter/decode.go",
+        "provider/openrouter/errors.go",
+        "provider/openrouter/failure_test.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "done_when": [
+        "`go test ./provider/openrouter/ -count=1` passes for the listed tests"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Add the retry loop: 429 and 5xx, in-stream errors before content, Retry-After and backoff",
+      "criteria": [
+        "27-REQ-6.2",
+        "27-REQ-7.1",
+        "27-REQ-7.2",
+        "27-REQ-7.3",
+        "27-REQ-8.3"
+      ],
+      "tests": [
+        "TS-27-24",
+        "TS-27-33",
+        "TS-27-36",
+        "TS-27-37",
+        "TS-27-38",
+        "TS-27-46"
+      ],
+      "steps": [
+        "Write the tests in provider/openrouter/retry_test.go and confirm they fail",
+        "Implement retry.go: effective retries = DefaultMaxRetries when Options.MaxRetries is nil, 0 when negative; loop over attempts around the SDK call (SDK retries stay off)",
+        "Extract status code and Retry-After header from the SDK's typed HTTP error (verify its type in the SDK source; record differences in docs/errata/27_openrouter_provider.md); retry only 429 and 5xx",
+        "Wait: Retry-After (delta-seconds or HTTP date relative to Options.Now) within 0..60 s inclusive, else 0.5 s doubling to a cap of 8 s with up to 25% jitter; put the sleep behind an unexported hook (field or package var) so tests record waits and stay fast; the wait must select on the caller ctx",
+        "Treat an in-stream 429/5xx error chunk before any content event as retryable: discard the attempt's decode state without emitting events and retry; MessageStartEvent is emitted once per turn only (lazily at first content or at completion, never repeated across attempts)",
+        "On exhaustion end the turn with the last *StatusError and StopReasonError; Usage.Requests stays 1 and BilledModel unaffected by attempts"
+      ],
+      "touches": [
+        "provider/openrouter/retry.go",
+        "provider/openrouter/stream.go",
+        "provider/openrouter/decode.go",
+        "provider/openrouter/retry_test.go"
+      ],
+      "depends_on": [
+        8
+      ],
+      "done_when": [
+        "`go test ./provider/openrouter/ -race -count=1` passes for the listed tests"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Classify HTTP and transport errors, abort on cancellation, and redact the API key",
+      "criteria": [
+        "27-REQ-7.4",
+        "27-REQ-7.5",
+        "27-REQ-7.6",
+        "27-REQ-7.7",
+        "27-REQ-7.8"
+      ],
+      "tests": [
+        "TS-27-39",
+        "TS-27-40",
+        "TS-27-41",
+        "TS-27-42",
+        "TS-27-43"
+      ],
+      "steps": [
+        "Write the tests in provider/openrouter/errors_test.go (TS-27-43 as a property test over generated keys) and confirm they fail",
+        "401/403: no retry; *StatusError{Code, Text: \"openrouter: HTTP <code>: <vendor message>\" followed by a note to check OPENROUTER_API_KEY}; other non-2xx: no retry, same text without the note; vendor message is error.message from the body when parseable, else a fallback from the body or status text",
+        "A failure with no HTTP response: no retry, Err text \"openrouter: <error>\", StopReasonError",
+        "Cancellation of the caller ctx during the request, during streaming or during a retry wait ends the turn within 1 s as StopReasonAborted with ErrorMessage \"Request was aborted\" and Err wrapping core.ErrAborted, channel closed (classify via caller.Err() like anthropic's cancellationText)",
+        "Add one redact(text) helper replacing every occurrence of the API key with \"[redacted]\" and apply it to every error text, ErrorEvent, ErrorMessage, StatusError.Text and Warnf output the provider builds (including echoed base URLs, vendor messages, in-stream messages and tool-call names in warnings)"
+      ],
+      "touches": [
+        "provider/openrouter/errors.go",
+        "provider/openrouter/retry.go",
+        "provider/openrouter/stream.go",
+        "provider/openrouter/redact.go",
+        "provider/openrouter/errors_test.go"
+      ],
+      "depends_on": [
+        9
+      ],
+      "done_when": [
+        "`go test ./provider/openrouter/ -race -count=1` passes for the listed tests"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify the OpenRouter paths end to end, update docs and regenerate generated docs",
+      "tests": [
+        "TS-27-56",
+        "TS-27-57",
+        "TS-27-58",
+        "TS-27-59",
+        "TS-27-60"
+      ],
+      "steps": [
+        "Write the five smoke tests in provider/openrouter/smoke_test.go (TS-27-56 uses catalog.Select(\"openrouter\",\"STANDARD\",\"\") and the real agentkit.Agent loop with an httptest recording server; ANTHROPIC_API_KEY and OLLAMA_HOST set in the environment) and confirm they pass",
+        "Trace 27-PATH-1..5 through the real code: New -> Stream -> SDK send -> decode -> events/message -> loop; confirm each step calls the next and no stub remains",
+        "For every criterion with a contract confirm the producer's result is consumed by a caller in production code (e.g. provider.RepairToolPairing is called by the openrouter encoder, redact is applied on every error path, the usage helper is used by both finish and fail), not only by tests",
+        "Grep every file in the tasks' touches (provider/, provider/openrouter/, internal/policy/) for panic(\"not implemented\"), TODO, and bare `return nil` on non-trivial paths; remove any left from the task-3 Stream stub",
+        "Write the `openrouter.Options` section in docs/configuration.md (fields, variables, lookup order, what is sent, errors, retry policy); add provider/openrouter and the provider repair to docs/api.md and to the package table and import-layering table in docs/architecture.md; complete docs/errata/27_openrouter_provider.md with every SDK difference found",
+        "Run `make doc` and commit docs/generated/provider/openrouter.txt and the updated docs/generated/provider.txt",
+        "Run `make check` (not make check-release) and note in the handoff that the full gate is left to the user"
+      ],
+      "touches": [
+        "provider/openrouter/smoke_test.go",
+        "docs/configuration.md",
+        "docs/api.md",
+        "docs/architecture.md",
+        "docs/errata/27_openrouter_provider.md",
+        "docs/generated/provider/openrouter.txt",
+        "docs/generated/provider.txt"
+      ],
+      "depends_on": [
+        10
+      ],
+      "done_when": [
+        "`make check` passes",
+        "every execution path 27-PATH-1..5 is live in production code"
+      ],
+      "state": "pending"
+    }
+  ]
+}

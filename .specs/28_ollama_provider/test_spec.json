@@ -1,0 +1,957 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "28",
+  "spec_name": "ollama_provider",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-28-1",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-1.1"
+      ],
+      "title": "New with a valid model and host returns a ProviderClient, makes no request and exposes Host and API",
+      "given": [
+        "an httptest recording server counting requests",
+        "a core.Model with ID \"qwen3.8:27b\""
+      ],
+      "when": "ollama.New(m, Options{Env: {\"OLLAMA_HOST\": server.URL}}) is called and the result is assigned to core.ProviderClient",
+      "then": [
+        "the error is nil and the client is non-nil",
+        "Host() equals the server URL",
+        "the server has seen zero requests",
+        "ollama.API equals core.APIOllamaChat"
+      ],
+      "pseudocode": "c, err := ollama.New(m, opts); var _ core.ProviderClient = c; assert err == nil; assert c.Host() == srv.URL; assert srv.count == 0; assert ollama.API == core.APIOllamaChat"
+    },
+    {
+      "id": "TS-28-2",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-1.2"
+      ],
+      "title": "New refuses an empty or whitespace-only model id",
+      "given": [
+        "a core.Model whose ID is \"\" and another whose ID is \"   \\t\""
+      ],
+      "when": "ollama.New is called with each model",
+      "then": [
+        "the client is nil",
+        "the error is non-nil and its text starts with \"ollama:\""
+      ],
+      "pseudocode": "for id in ['', '   \\t']: c, err := New(Model{ID:id}, Options{}); assert c == nil; assert err != nil; assert hasPrefix(err.Error(), 'ollama:')"
+    },
+    {
+      "id": "TS-28-3",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-1.3"
+      ],
+      "title": "Host lookup order is Options.Host, then Env (empty falls through), then Getenv, then process env, then the default",
+      "given": [
+        "a Getenv spy that records every key asked",
+        "t.Setenv sets OLLAMA_HOST in the process environment for one case"
+      ],
+      "when": "New is called with Host set; with Env empty and Getenv returning a value; with Env set and Getenv set; with nothing set; with only the process environment set",
+      "then": [
+        "Options.Host wins and the spy records no key at all",
+        "an empty Env value falls through to Getenv",
+        "a non-empty Env value wins over Getenv",
+        "an unset variable gives http://127.0.0.1:11434 (ollama.DefaultHost)",
+        "the process environment is used only when Getenv is nil",
+        "the only key ever recorded is ollama.HostVar \"OLLAMA_HOST\""
+      ],
+      "pseudocode": "New(m, {Host:'h1', Getenv:spy}); assert spy.keys == []; New(m, {Env:{OLLAMA_HOST:''}, Getenv:spy}); assert spy.keys == ['OLLAMA_HOST']; assert Host()==DefaultHost when all empty"
+    },
+    {
+      "id": "TS-28-4",
+      "kind": "property",
+      "verifies": [
+        "28-REQ-1.4"
+      ],
+      "title": "Any trimmed host value resolves by Ollama's CLI rules",
+      "given": [
+        "hosts generated from scheme (none, http, https), hostname, optional port, optional path, optional surrounding whitespace"
+      ],
+      "when": "for any valid host string composed of an optional scheme, a hostname, an optional port in 1-65535 and an optional path, New is called",
+      "then": [
+        "no scheme gives http and port 11434 when no port is given",
+        "http:// without a port gives port 80",
+        "https:// without a port gives port 443",
+        "an explicit port is kept",
+        "a path is kept",
+        "surrounding whitespace is ignored"
+      ],
+      "pseudocode": "for h in gen_hosts(): c = New(m,{Host:h}); u = parse(c.Host()); assert u.scheme == expectScheme(h); assert u.port == expectPort(h); assert u.path == pathOf(h)"
+    },
+    {
+      "id": "TS-28-5",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-1.4"
+      ],
+      "title": "Documented host examples resolve to the exact base URLs",
+      "given": [
+        "no network"
+      ],
+      "when": "New is called with \"example.local\", \"https://h\", \"http://h/proxy\", \"http://h\", \"  host:8080  \"",
+      "then": [
+        "Host() returns \"http://example.local:11434\"",
+        "\"https://h:443\"",
+        "\"http://h:80/proxy\"",
+        "\"http://h:80\"",
+        "\"http://host:8080\""
+      ],
+      "pseudocode": "table-driven assert New(m,{Host:in}).Host() == want"
+    },
+    {
+      "id": "TS-28-6",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-1.5"
+      ],
+      "title": "An unsupported scheme, unparseable value or out-of-range port yields ErrInvalidHost",
+      "given": [
+        "hosts \"ftp://h\", \"http://[::1\", \"h:0\", \"h:65536\", \"http://h:99999\""
+      ],
+      "when": "New is called with each host",
+      "then": [
+        "the client is nil",
+        "errors.Is(err, ollama.ErrInvalidHost) is true",
+        "the error text starts with \"ollama:\""
+      ],
+      "pseudocode": "for h in bad: c, err := New(m,{Host:h}); assert c==nil; assert errors.Is(err, ErrInvalidHost); assert hasPrefix(err.Error(),'ollama:')"
+    },
+    {
+      "id": "TS-28-7",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-1.6"
+      ],
+      "title": "A host with user information is refused and the password is redacted from the message",
+      "given": [
+        "host \"http://user:s3cretpw@h:11434\" and \"http://user@h\""
+      ],
+      "when": "New is called with each",
+      "then": [
+        "the client is nil",
+        "errors.Is(err, ollama.ErrInvalidHost) is true",
+        "the error text does not contain \"s3cretpw\""
+      ],
+      "pseudocode": "c, err := New(m,{Host:'http://user:s3cretpw@h'}); assert errors.Is(err, ErrInvalidHost); assert !contains(err.Error(),'s3cretpw')"
+    },
+    {
+      "id": "TS-28-8",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-1.7"
+      ],
+      "title": "ollama.com and its subdomains are refused as the unsupported hosted service",
+      "given": [
+        "hosts \"ollama.com\", \"https://ollama.com\", \"https://api.ollama.com:443\", and \"notollama.com\" as a control"
+      ],
+      "when": "New is called with each host",
+      "then": [
+        "the first three fail with an error wrapping ollama.ErrInvalidHost whose text says the hosted service is not supported",
+        "\"notollama.com\" is accepted"
+      ],
+      "pseudocode": "for h in hosted: assert errors.Is(err, ErrInvalidHost) && contains(err.Error(),'not supported'); assert New(m,{Host:'notollama.com'}) ok"
+    },
+    {
+      "id": "TS-28-9",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-1.8"
+      ],
+      "title": "No Authorization header or foreign provider value reaches the server, while an embedder transport header still does",
+      "given": [
+        "ANTHROPIC_API_KEY, OPENROUTER_API_KEY and OLLAMA_API_KEY set via t.Setenv to distinctive values",
+        "an HTTPClient whose RoundTripper adds X-Embedder: yes and also Authorization: Bearer x before delegating",
+        "a recording httptest server"
+      ],
+      "when": "Stream runs one successful turn through the provider",
+      "then": [
+        "no recorded request has an Authorization header",
+        "X-Embedder: yes reaches the server",
+        "none of the three env values appears in any recorded header or body"
+      ],
+      "pseudocode": "drain(c.Stream(ctx, req)); for r in srv.requests: assert r.Header.Get('Authorization')==''; assert r.Header['X-Embedder']==['yes']; assert !containsAny(r.raw, secrets)"
+    },
+    {
+      "id": "TS-28-10",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-2.1"
+      ],
+      "title": "A stream call posts one /api/chat request with model, stream, truncate and num_ctx",
+      "given": [
+        "a recording server",
+        "a model with ID \"Qwen3.8:27B-Odd\" and ContextWindow 16384"
+      ],
+      "when": "Stream is called with a live context and the stream is drained",
+      "then": [
+        "exactly one POST to /api/chat is recorded",
+        "model equals \"Qwen3.8:27B-Odd\" exactly",
+        "stream is true and truncate is false",
+        "options.num_ctx is 16384"
+      ],
+      "pseudocode": "r = srv.only(); assert r.path=='/api/chat'; b=json(r.body); assert b.model==m.ID && b.stream==true && b.truncate==false && b.options.num_ctx==16384"
+    },
+    {
+      "id": "TS-28-11",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-2.2"
+      ],
+      "title": "A model with no positive context window sends the catalog default num_ctx",
+      "given": [
+        "models with ContextWindow 0 and -5",
+        "catalog.OllamaDefaultContextWindow is 32768"
+      ],
+      "when": "Stream is called for each model against a recording server",
+      "then": [
+        "options.num_ctx is 32768 in both bodies"
+      ],
+      "pseudocode": "for w in [0,-5]: body = record(Model{ContextWindow:w}); assert body.options.num_ctx == catalog.OllamaDefaultContextWindow"
+    },
+    {
+      "id": "TS-28-12",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-2.3"
+      ],
+      "title": "Messages are ordered system, prefix, then repaired transcript, with the system message omitted when empty",
+      "given": [
+        "Request.System with two text blocks \"A\" and \"B\"",
+        "a one-message Prefix and a one-message transcript",
+        "a second request with no System text"
+      ],
+      "when": "each request is streamed and recorded",
+      "then": [
+        "messages[0] is role system with content \"A\\n\\nB\"",
+        "the prefix message follows, then the transcript message",
+        "with empty System the first message is the prefix, and no system role appears"
+      ],
+      "pseudocode": "assert roles(b1.messages)==['system','user','user']; assert b1.messages[0].content=='A\\n\\nB'; assert 'system' not in roles(b2.messages)"
+    },
+    {
+      "id": "TS-28-13",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-2.4"
+      ],
+      "title": "num_predict follows the requested-within-cap, else cap, else requested, else omitted rule",
+      "given": [
+        "table: (requested 1000, cap 32768), (50000, 32768), (nil, 32768), (1000, 0), (nil, 0), (0, 0)"
+      ],
+      "when": "Stream is called for each row against a recording server",
+      "then": [
+        "num_predict is 1000, 32768, 32768, 1000, absent, absent respectively"
+      ],
+      "pseudocode": "for (req,cap,want) in table: b=record(); assert b.options.get('num_predict')==want"
+    },
+    {
+      "id": "TS-28-14",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-2.5"
+      ],
+      "title": "Sampling options are sent only when set, temperature 0 is sent, and keep_alive, format and images never are",
+      "given": [
+        "one request with Temperature 0, TopP 0.9 and StopSequences [\"X\"]",
+        "one request with none of them"
+      ],
+      "when": "both are streamed and recorded",
+      "then": [
+        "the first body has temperature 0, top_p 0.9 and stop [\"X\"]",
+        "the second body has none of temperature, top_p, stop",
+        "neither body has keep_alive, format or images"
+      ],
+      "pseudocode": "assert b1.options.temperature==0 && 'temperature' in b1.options; assert 'temperature' not in b2.options; assert none(k in b for k in ['keep_alive','format','images'])"
+    },
+    {
+      "id": "TS-28-15",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-3.1"
+      ],
+      "title": "Tools are declared in request order with the schema cut to the SDK's parameter subset",
+      "given": [
+        "two tools; the first schema has additionalProperties:false, a string property with format \"uri\", an integer with minimum 1, an enum, an array with items, descriptions and required"
+      ],
+      "when": "Stream is called and the body is recorded",
+      "then": [
+        "tools[0] and tools[1] keep request order, type function, name and description",
+        "parameters keep type, properties, required, enum, items and descriptions",
+        "additionalProperties, format and minimum are absent anywhere in the parameters"
+      ],
+      "pseudocode": "p=b.tools[0].function.parameters; assert p.required==[...]; assert !contains(json(p),'additionalProperties'|'format'|'minimum')"
+    },
+    {
+      "id": "TS-28-16",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-3.2"
+      ],
+      "title": "A tool with a nil schema is declared with an empty object schema",
+      "given": [
+        "a ToolWire with InputSchema nil"
+      ],
+      "when": "Stream is called and the body recorded",
+      "then": [
+        "the tool's parameters equal {\"type\":\"object\",\"properties\":{}}"
+      ],
+      "pseudocode": "assert json_equal(b.tools[0].function.parameters, {type:'object',properties:{}})"
+    },
+    {
+      "id": "TS-28-17",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-3.3"
+      ],
+      "title": "A schema the SDK type cannot decode fails the turn before any request, naming the tool",
+      "given": [
+        "a tool \"bad_tool\" whose schema encodes to JSON the SDK parameter type rejects (e.g. a property type of an incompatible JSON shape)",
+        "a recording server"
+      ],
+      "when": "Stream is called and drained",
+      "then": [
+        "the final item's Err is non-nil and its text starts with \"ollama:\"",
+        "the text contains \"bad_tool\"",
+        "the server saw zero requests"
+      ],
+      "pseudocode": "res = drain(c.Stream(ctx, req)); assert res.Err != nil; assert hasPrefix(res.Err.Error(),'ollama:') && contains(...,'bad_tool'); assert srv.count==0"
+    },
+    {
+      "id": "TS-28-18",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-3.4"
+      ],
+      "title": "ToolChoiceNone sends no tools key while unset and auto send the tools",
+      "given": [
+        "a request with one tool"
+      ],
+      "when": "it is streamed with ToolChoiceNone, ToolChoiceUnset and ToolChoiceAuto",
+      "then": [
+        "the none body has no \"tools\" key at all",
+        "the unset and auto bodies carry the declared tool"
+      ],
+      "pseudocode": "assert 'tools' not in bodyNone; assert len(bodyUnset.tools)==1 && len(bodyAuto.tools)==1"
+    },
+    {
+      "id": "TS-28-19",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-4.1"
+      ],
+      "title": "The transcript is repaired before encoding, warned about once, and the caller's slice is untouched",
+      "given": [
+        "a transcript with an assistant tool call that has no result",
+        "a clean transcript",
+        "a Warnf spy",
+        "a deep copy of the first transcript",
+        "a second client with Warnf nil"
+      ],
+      "when": "Stream is called with each transcript",
+      "then": [
+        "the unanswered call gets a synthetic \"No result provided\" tool message in the recorded body",
+        "Warnf is called exactly once for the repaired transcript and zero times for the clean one",
+        "the input messages deeply equal their copy afterwards",
+        "the nil-Warnf client does not panic"
+      ],
+      "pseudocode": "drain(stream(broken)); assert warn.calls==1; assert reflect.DeepEqual(broken, copy); assert contains(body,'No result provided')"
+    },
+    {
+      "id": "TS-28-20",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-4.2",
+        "28-REQ-4.5"
+      ],
+      "title": "User, assistant and tool-result messages are encoded with ids, indexes, tool names and Error prefix",
+      "given": [
+        "a transcript: user text; assistant with text and two ToolUseBlocks (ids call_a, call_b); a successful result for call_a; an error result for call_b"
+      ],
+      "when": "Stream is called and the body recorded",
+      "then": [
+        "the user message has role user and its text",
+        "the assistant message has content and tool_calls with ids call_a and call_b and function.index 0 and 1 and their names",
+        "two tool messages follow in transcript order with tool_name and tool_call_id",
+        "the error result's content starts with \"Error: \" and the successful one does not"
+      ],
+      "pseudocode": "a=b.messages[1]; assert a.tool_calls[1].id=='call_b' && a.tool_calls[1].function.index==1; t=b.messages[3]; assert t.role=='tool' && t.tool_call_id=='call_b' && startsWith(t.content,'Error: ')"
+    },
+    {
+      "id": "TS-28-21",
+      "kind": "property",
+      "verifies": [
+        "28-REQ-4.3"
+      ],
+      "title": "Replayed tool-call arguments keep the key order of ToolUseBlock.Input",
+      "given": [
+        "an assistant message whose single ToolUseBlock has generated Input"
+      ],
+      "when": "for any JSON object with distinct keys (including non-alphabetical order, nested objects and unicode keys) used as Input, the transcript is streamed and the raw request body recorded",
+      "then": [
+        "the top-level key order in the recorded arguments equals the key order of Input"
+      ],
+      "pseudocode": "for obj in gen_ordered_objects(): body = record(withInput(obj.bytes)); assert keyOrder(rawArguments(body)) == obj.keys"
+    },
+    {
+      "id": "TS-28-22",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-4.4"
+      ],
+      "title": "Thinking is replayed only for unredacted blocks of same-model messages and never as content",
+      "given": [
+        "an assistant message with Model == m.ID carrying a thinking block \"mine1\", a redacted block \"redacted-secret\" and another thinking block \"mine2\"",
+        "an assistant message with Model \"other-model\" carrying thinking \"foreign-thought\""
+      ],
+      "when": "the transcript is streamed and recorded",
+      "then": [
+        "the same-model message's thinking is \"mine1mine2\"",
+        "\"redacted-secret\" and \"foreign-thought\" appear nowhere in the body",
+        "no assistant content contains thinking text"
+      ],
+      "pseudocode": "assert b.messages[1].thinking=='mine1mine2'; assert !contains(raw,'redacted-secret') && !contains(raw,'foreign-thought')"
+    },
+    {
+      "id": "TS-28-23",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-5.1"
+      ],
+      "title": "An empty effort or a ThinkingKindNone model sends no think field",
+      "given": [
+        "a request with empty effort on a model with efforts",
+        "a request with effort high on a model whose ThinkingKind is none"
+      ],
+      "when": "each is streamed and recorded",
+      "then": [
+        "neither body has a \"think\" key"
+      ],
+      "pseudocode": "assert 'think' not in b1 && 'think' not in b2"
+    },
+    {
+      "id": "TS-28-24",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-5.2"
+      ],
+      "title": "A nil Efforts map sends the effort by its own name",
+      "given": [
+        "an unlisted model with Efforts nil"
+      ],
+      "when": "effort high is streamed",
+      "then": [
+        "the body has \"think\":\"high\" as a string"
+      ],
+      "pseudocode": "assert b.think == 'high'"
+    },
+    {
+      "id": "TS-28-25",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-5.3"
+      ],
+      "title": "With an Efforts map, absent or nil efforts send nothing and listed ones send the trimmed lower-cased value",
+      "given": [
+        "the qwen3.8:27b row from catalog.Select(\"ollama\",\"STANDARD\",\"\")",
+        "a custom map {medium: \" Medium \", low: nil}"
+      ],
+      "when": "efforts xhigh, medium, low are streamed",
+      "then": [
+        "xhigh on the catalog row sends no think",
+        "medium on the catalog row sends \"medium\"",
+        "custom map: medium sends \"medium\"; low (nil) sends no think",
+        "no effort is clamped to another level"
+      ],
+      "pseudocode": "assert 'think' not in rec('xhigh'); assert rec('medium').think=='medium'"
+    },
+    {
+      "id": "TS-28-26",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-6.1"
+      ],
+      "title": "The first event is MessageStartEvent with model, effort and clock timestamp",
+      "given": [
+        "Options.Now returning a fixed time T",
+        "request effort medium"
+      ],
+      "when": "Stream is drained into an event list",
+      "then": [
+        "events[0] is core.MessageStartEvent",
+        "its partial message has Model m.ID, Effort medium and Timestamp T"
+      ],
+      "pseudocode": "e := events[0].(core.MessageStartEvent); assert e.Message.Model==m.ID && e.Message.Effort=='medium' && e.Message.Timestamp==T"
+    },
+    {
+      "id": "TS-28-27",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-6.2"
+      ],
+      "title": "Thinking and content stream as separate block kinds, closing on switch, and thinking is never text",
+      "given": [
+        "a server streaming thinking \"ponder\" in two chunks, then content \"answer\" in two chunks, then a done chunk"
+      ],
+      "when": "Stream is drained",
+      "then": [
+        "events include ThinkingStartEvent, ThinkingDeltaEvents, then TextStartEvent, TextDeltaEvents",
+        "the thinking block closes before the text block starts, and a MessageUpdateEvent follows each completed block",
+        "the final message holds ThinkingBlock \"ponder\" then TextBlock \"answer\"",
+        "no TextDeltaEvent carries \"ponder\""
+      ],
+      "pseudocode": "assert kinds(final.Content)==['thinking','text']; assert all(!contains(d.Delta,'ponder') for d in textDeltas)"
+    },
+    {
+      "id": "TS-28-28",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-6.3"
+      ],
+      "title": "A tool call keeps the vendor id and wire key order and emits start then one whole-argument delta",
+      "given": [
+        "a server chunk with a tool call id \"call_9\", name \"lookup\" and arguments {\"zeta\":1,\"alpha\":2,\"mid\":3}",
+        "a second call with no arguments"
+      ],
+      "when": "Stream is drained",
+      "then": [
+        "events are ToolCallStartEvent then exactly one ToolInputDeltaEvent with the whole argument JSON, then the block is appended",
+        "ToolUseBlock.ID equals \"call_9\" and Input key order is zeta, alpha, mid",
+        "the call without arguments has Input {}"
+      ],
+      "pseudocode": "assert final.tool[0].ID=='call_9'; assert keyOrder(final.tool[0].Input)==['zeta','alpha','mid']; assert final.tool[1].Input=='{}'"
+    },
+    {
+      "id": "TS-28-29",
+      "kind": "property",
+      "verifies": [
+        "28-REQ-6.4"
+      ],
+      "title": "Synthesized tool-call ids are unique within and across responses of one Client",
+      "given": [
+        "one Client against a server that serves tool calls without ids"
+      ],
+      "when": "for any sequence of responses each carrying any number of id-less tool calls (0 to 5), all streamed through the same Client",
+      "then": [
+        "no two ToolUseBlock IDs produced by the client are equal",
+        "every synthesized id is non-empty"
+      ],
+      "pseudocode": "seen=set(); for resp in gen_responses(): for b in toolBlocks(stream(resp)): assert b.ID != '' and b.ID not in seen; seen.add(b.ID)"
+    },
+    {
+      "id": "TS-28-30",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-6.5",
+        "28-REQ-6.6"
+      ],
+      "title": "The done chunk closes blocks in order and builds the final message with raw stop reason, response model and stop mapping",
+      "given": [
+        "servers streaming: (a) text, tool call, done_reason \"stop\"; (b) text, tool call, done_reason \"length\"; (c) text only, done_reason \"stop\"; model \"resp-model\" in the done chunk"
+      ],
+      "when": "each stream is drained",
+      "then": [
+        "TextEndEvent, ThinkingEndEvent and ToolCallEndEvent arrive in block order before MessageEndEvent",
+        "(a) StopReason is StopReasonToolUse, (b) StopReasonLength, (c) StopReasonStop",
+        "RawStopReason equals done_reason verbatim and ResponseModel is \"resp-model\"",
+        "the stream result Err is nil and its Message is the MessageEndEvent message"
+      ],
+      "pseudocode": "assert endOrder==blockOrder; assert (a).StopReason==ToolUse; assert (b).StopReason==Length; assert (a).RawStopReason=='stop'"
+    },
+    {
+      "id": "TS-28-31",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-6.7"
+      ],
+      "title": "Concurrent Stream calls on one Client complete independently without a data race",
+      "given": [
+        "one Client",
+        "a server echoing a per-request marker into its response text",
+        "go test -race"
+      ],
+      "when": "32 goroutines each call Stream with a distinct marker and drain it",
+      "then": [
+        "each stream's final message contains its own marker",
+        "the race detector reports nothing"
+      ],
+      "pseudocode": "parallel(32, i -> assert text(drain(c.Stream(ctx, reqWith(i)))) == marker(i))"
+    },
+    {
+      "id": "TS-28-32",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-7.1"
+      ],
+      "title": "An already-done context returns its error and no channel without a request",
+      "given": [
+        "a cancelled context",
+        "a recording server"
+      ],
+      "when": "Stream is called",
+      "then": [
+        "the returned channel is nil",
+        "the error equals ctx.Err()",
+        "the server saw zero requests"
+      ],
+      "pseudocode": "ch, err := c.Stream(cancelledCtx, req); assert ch==nil && err==context.Canceled; assert srv.count==0"
+    },
+    {
+      "id": "TS-28-33",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-7.2"
+      ],
+      "title": "A stream ending without done:true ends with ErrStreamTruncated, keeps text and drops tool calls",
+      "given": [
+        "a server that streams text \"partial\" and a tool call, then closes the body without done:true"
+      ],
+      "when": "Stream is drained",
+      "then": [
+        "the final Err wraps ollama.ErrStreamTruncated",
+        "StopReason is StopReasonError and a terminal ErrorEvent is pushed",
+        "the message keeps TextBlock \"partial\" and has no ToolUseBlock"
+      ],
+      "pseudocode": "assert errors.Is(res.Err, ErrStreamTruncated); assert msg.StopReason==Error; assert noToolUse(msg); assert lastError.Terminal"
+    },
+    {
+      "id": "TS-28-34",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-7.3"
+      ],
+      "title": "Cancelling mid-stream aborts within a second with no ErrorEvent and no tool call",
+      "given": [
+        "a server that sends a text chunk and a tool call chunk, then blocks"
+      ],
+      "when": "the caller's context is cancelled after the first chunk is received",
+      "then": [
+        "the stream ends within 1 second",
+        "StopReason is StopReasonAborted and ErrorMessage is \"Request was aborted\"",
+        "Err is core.ErrAborted",
+        "no ErrorEvent was pushed and the message has no ToolUseBlock"
+      ],
+      "pseudocode": "cancel(); res = waitWithin(1s); assert res.Err==core.ErrAborted; assert msg.ErrorMessage=='Request was aborted'; assert noErrorEvent && noToolUse(msg)"
+    },
+    {
+      "id": "TS-28-35",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-7.4"
+      ],
+      "title": "A refused connection yields ErrUnreachable naming the host, ollama serve and OLLAMA_HOST",
+      "given": [
+        "a provider whose Host is a loopback port that was listened on and closed"
+      ],
+      "when": "Stream is drained",
+      "then": [
+        "Err wraps ollama.ErrUnreachable",
+        "the text starts with \"ollama:\", contains the host, \"ollama serve\" and \"OLLAMA_HOST\"",
+        "StopReason is StopReasonError with a terminal ErrorEvent"
+      ],
+      "pseudocode": "assert errors.Is(res.Err, ErrUnreachable); assert contains(txt,host) && contains(txt,'ollama serve') && contains(txt,'OLLAMA_HOST')"
+    },
+    {
+      "id": "TS-28-36",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-7.5"
+      ],
+      "title": "A 404 yields ErrModelNotFound and a StatusError naming the model, host and ollama pull",
+      "given": [
+        "a server answering 404 with {\"error\":\"model 'qwen3.8:27b' not found\"}"
+      ],
+      "when": "Stream is drained",
+      "then": [
+        "Err wraps ollama.ErrModelNotFound",
+        "errors.As gives *ollama.StatusError with Code 404",
+        "the text contains the model id, the host, Ollama's message and \"ollama pull qwen3.8:27b\""
+      ],
+      "pseudocode": "var se *StatusError; assert errors.Is(err, ErrModelNotFound) && errors.As(err,&se) && se.Code==404; assert contains(txt,'ollama pull '+m.ID)"
+    },
+    {
+      "id": "TS-28-37",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-7.6"
+      ],
+      "title": "A context-length error as status error or in-stream error wraps ErrContextWindow",
+      "given": [
+        "a server answering 400 with {\"error\":\"the input length exceeds the context length\"}",
+        "another server answering 200 with an error line of the same message in the stream"
+      ],
+      "when": "each is streamed with num_ctx 32768",
+      "then": [
+        "Err wraps ollama.ErrContextWindow in both cases",
+        "the text names the model and 32768, includes Ollama's message and says a model already loaded at a smaller length keeps it until it unloads"
+      ],
+      "pseudocode": "for srv in [status400, inStream]: assert errors.Is(err, ErrContextWindow); assert contains(txt,'32768') && contains(txt,m.ID) && contains(txt,'unloads')"
+    },
+    {
+      "id": "TS-28-38",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-7.7"
+      ],
+      "title": "401, 403 and other statuses and in-stream error lines are reported with the specified texts",
+      "given": [
+        "servers answering 401, 403, 500 {\"error\":\"boom\"}, and 200 with an in-stream error line {\"error\":\"model runner crashed\"}"
+      ],
+      "when": "each is streamed",
+      "then": [
+        "401 and 403 give a *ollama.StatusError whose text names the host, says AgentKit sends no credential to Ollama and says to check OLLAMA_HOST",
+        "500 gives *ollama.StatusError{Code:500} with text \"ollama: HTTP 500: boom\"",
+        "the in-stream error gives a non-nil error starting with \"ollama:\" containing \"model runner crashed\"",
+        "each ends with StopReasonError and a terminal ErrorEvent"
+      ],
+      "pseudocode": "assert se.Code==401 && contains(txt,'no credential') && contains(txt,'OLLAMA_HOST'); assert txt500=='ollama: HTTP 500: boom'"
+    },
+    {
+      "id": "TS-28-39",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-7.8"
+      ],
+      "title": "Exactly one HTTP attempt is made per Stream call and no foreign env value leaks into errors, events or warnings",
+      "given": [
+        "servers answering 404, 401, 429, 500, 503 and a closed port",
+        "distinctive values set for ANTHROPIC_API_KEY, OPENROUTER_API_KEY and OLLAMA_API_KEY",
+        "a Warnf spy"
+      ],
+      "when": "Stream is drained once per failure",
+      "then": [
+        "the server counts exactly one request per call",
+        "every error text starts with \"ollama:\"",
+        "no error, event or warning text contains any of the env values"
+      ],
+      "pseudocode": "for st in statuses: drain(stream()); assert srv.count==1; assert hasPrefix(err,'ollama:'); assert !containsAny(allText, secrets)"
+    },
+    {
+      "id": "TS-28-40",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-8.1"
+      ],
+      "title": "The done chunk's counts become netted usage priced at zero with the presence bit set",
+      "given": [
+        "a done chunk with prompt_eval_count 354, prompt_eval_cached_count 256, eval_count 120",
+        "once with a listed model id and once with an unlisted one"
+      ],
+      "when": "Stream is drained",
+      "then": [
+        "Usage equals core.Usage{InputTokens:98, CacheReadTokens:256, OutputTokens:120, Requests:1, CostUSD:0} in value",
+        "Usage.Has(core.UsageCostUSD) is true",
+        "no reasoning-token bit is set",
+        "a zero cached count leaves CacheReadTokens unset"
+      ],
+      "pseudocode": "u := final.Usage; assert u.InputTokens==98 && u.CacheReadTokens==256 && u.OutputTokens==120 && u.Requests==1; assert u.Has(UsageCostUSD) && u.CostUSD==0"
+    },
+    {
+      "id": "TS-28-41",
+      "kind": "property",
+      "verifies": [
+        "28-REQ-8.2"
+      ],
+      "title": "InputTokens is max(0, prompt - cached), OutputTokens is eval and CacheReadTokens is set only when cached > 0",
+      "given": [
+        "done chunks with generated counts"
+      ],
+      "when": "for any non-negative prompt, cached and eval counts (including cached greater than prompt), the done chunk is streamed",
+      "then": [
+        "InputTokens equals max(0, prompt - cached) and is never negative",
+        "OutputTokens equals eval",
+        "CacheReadTokens is set exactly when cached > 0"
+      ],
+      "pseudocode": "for p,c,e in gen(): u=usageOf(done(p,c,e)); assert u.InputTokens==max(0,p-c) && u.OutputTokens==e; assert u.Has(CacheRead)==(c>0)"
+    },
+    {
+      "id": "TS-28-42",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-8.3"
+      ],
+      "title": "A turn failing before its done chunk reports Requests 1 and no token fields",
+      "given": [
+        "a server that answers 500",
+        "a server that truncates the stream"
+      ],
+      "when": "each is drained",
+      "then": [
+        "the failed message's Usage.Requests is 1",
+        "no input, output or cache-read presence bit is set"
+      ],
+      "pseudocode": "u := msg.Usage; assert u.Requests==1 && !u.Has(Input) && !u.Has(Output) && !u.Has(CacheRead)"
+    },
+    {
+      "id": "TS-28-43",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-9.1"
+      ],
+      "title": "The root go.mod requires github.com/ollama/ollama directly at exactly v0.40.7 and policy lists it",
+      "given": [
+        "the root go.mod",
+        "approvedDeps and preSpec13Direct in internal/policy/deps_test.go"
+      ],
+      "when": "the new pin test (modelled on TestAnthropicSDKIsPinned_TS10_1) parses go.mod",
+      "then": [
+        "the require line has version v0.40.7 and no // indirect marker",
+        "approvedDeps contains the module with a reason comment on the line above",
+        "preSpec13Direct contains it",
+        "a different version or an indirect marker would fail the same check"
+      ],
+      "pseudocode": "r = requireLine('github.com/ollama/ollama'); assert r.version=='v0.40.7' && !r.indirect; assert approvedDeps has it; assert preSpec13Direct has it"
+    },
+    {
+      "id": "TS-28-44",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-9.2"
+      ],
+      "title": "The module-graph snapshot tests pass with regenerated snapshots and recorded accepted upgrades",
+      "given": [
+        "regenerated testdata/go-list-m-all.txt, sandbox-go-list-m-all.txt and sandbox-go-list-m-all.14.txt",
+        "an accepted-upgrades map distinct from d1Upgrades",
+        "the existing tests TS-13-65, TS-14-42, TS-15-40 and TS-17-60 still present"
+      ],
+      "when": "go test ./internal/policy runs those tests",
+      "then": [
+        "all four pass",
+        "the root graph equals its snapshot and sandbox-go-list-m-all.txt equals the .14.txt file",
+        "every version raised by minimum version selection is listed in the new map, and no test was deleted"
+      ],
+      "pseudocode": "run go test ./internal/policy -run 'TS13_65|TS14_42|TS15_40|TS17_60'; assert exit 0; assert test funcs still exist"
+    },
+    {
+      "id": "TS-28-45",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-9.3"
+      ],
+      "title": "TestProviderDefaults_TS09_11 expects anthropic,faux,ollama,openrouter",
+      "given": [
+        "the provider directory listing in the repository"
+      ],
+      "when": "TestProviderDefaults_TS09_11 runs",
+      "then": [
+        "the provider directories read from disk join to \"anthropic,faux,ollama,openrouter\"",
+        "the test source asserts that exact string"
+      ],
+      "pseudocode": "assert join(readDirNames('provider'),',') == 'anthropic,faux,ollama,openrouter'"
+    },
+    {
+      "id": "TS-28-46",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-9.4"
+      ],
+      "title": "Existing anthropic and faux tests pass unmodified and the quality gate passes",
+      "given": [
+        "no edits to provider/anthropic or provider/faux test files"
+      ],
+      "when": "go test ./provider/anthropic ./provider/faux ./internal/policy runs under make check",
+      "then": [
+        "all pass",
+        "make check exits 0"
+      ],
+      "pseudocode": "run make check; assert exit==0; assert git diff provider/anthropic provider/faux '*_test.go' is empty"
+    },
+    {
+      "id": "TS-28-47",
+      "kind": "smoke",
+      "verifies": [
+        "28-PATH-1",
+        "28-REQ-1.8",
+        "28-REQ-2.1",
+        "28-REQ-4.2",
+        "28-REQ-8.1"
+      ],
+      "title": "An agent completes a two-turn tool loop on a recording Ollama server with zero cost",
+      "given": [
+        "a recording server streaming turn 1: thinking, tool call id \"call_1\" with arguments in order {\"zeta\":..,\"alpha\":..}, done_reason stop with 354/256/120 counts; turn 2: final text and done",
+        "provider built with ollama.New(catalog.Select(\"ollama\",\"STANDARD\",\"\") row, Options{Env:{OLLAMA_HOST: server}})",
+        "an agent with one tool whose schema has additionalProperties and effort medium",
+        "ANTHROPIC_API_KEY, OPENROUTER_API_KEY and OLLAMA_API_KEY set"
+      ],
+      "when": "agent.Run is called with a user prompt",
+      "then": [
+        "two requests are recorded, both with model qwen3.8:27b, num_ctx 32768, truncate false, think \"medium\", stream true and the tool with the schema subset",
+        "neither request has an Authorization header or any env secret",
+        "the second request carries id call_1, arguments in server key order, a tool message with tool_name and tool_call_id call_1, and the first turn's thinking on the assistant message",
+        "the run ends with the final text and total cost 0",
+        "the tool handler ran exactly once"
+      ],
+      "pseudocode": "res = agent.Run(ctx,'go'); assert len(srv.reqs)==2; assert second.messages has assistant{tool_calls[0].id=='call_1', thinking} and tool{tool_call_id:'call_1'}; assert res.Usage.CostUSD==0",
+      "real_components": [
+        "agentkit.Agent loop",
+        "ollama provider",
+        "ollama api client",
+        "catalog.Select",
+        "provider.RepairToolPairing",
+        "core",
+        "httptest server"
+      ]
+    },
+    {
+      "id": "TS-28-48",
+      "kind": "smoke",
+      "verifies": [
+        "28-PATH-2",
+        "28-REQ-7.4",
+        "28-REQ-7.5"
+      ],
+      "title": "An agent run on a 404 server or a closed port ends with a named error and runs no tool",
+      "given": [
+        "a recording server answering 404",
+        "a second provider pointed at a closed port",
+        "an agent with a tool whose handler records invocations"
+      ],
+      "when": "agent.Run is called against each provider",
+      "then": [
+        "the server records exactly one request",
+        "the 404 run's error wraps ollama.ErrModelNotFound and names \"ollama pull <model>\"",
+        "the closed-port run's error wraps ollama.ErrUnreachable and names \"ollama serve\"",
+        "the final message has StopReasonError and the tool handler never ran"
+      ],
+      "pseudocode": "err = agent.Run(ctx,'go'); assert errors.Is(err, ErrModelNotFound); assert srv.count==1; assert handler.calls==0",
+      "real_components": [
+        "agentkit.Agent loop",
+        "ollama provider",
+        "ollama api client",
+        "net/http",
+        "httptest server"
+      ]
+    },
+    {
+      "id": "TS-28-49",
+      "kind": "smoke",
+      "verifies": [
+        "28-PATH-3",
+        "28-REQ-7.2"
+      ],
+      "title": "A stream cut before done:true ends the run without executing the partial tool call",
+      "given": [
+        "a recording server that streams text and a tool call then closes the body without done:true",
+        "an agent with a tool whose handler records invocations"
+      ],
+      "when": "agent.Run is called",
+      "then": [
+        "the run returns an error wrapping ollama.ErrStreamTruncated",
+        "the assistant message keeps the streamed text and carries no tool call",
+        "the tool handler was never invoked"
+      ],
+      "pseudocode": "err = agent.Run(ctx,'go'); assert errors.Is(err, ErrStreamTruncated); assert handler.calls==0",
+      "real_components": [
+        "agentkit.Agent loop",
+        "ollama provider",
+        "ollama api client",
+        "httptest server"
+      ]
+    }
+  ]
+}

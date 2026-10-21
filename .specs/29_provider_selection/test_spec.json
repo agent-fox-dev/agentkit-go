@@ -1,0 +1,943 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "29",
+  "spec_name": "provider_selection",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-29-1",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-1.1"
+      ],
+      "title": "Config declares exactly the fourteen fields in the specified order and types",
+      "given": [
+        "the root package agentkit"
+      ],
+      "when": "reflect.TypeOf(agentkit.Config{}) is walked field by field",
+      "then": [
+        "there are exactly 14 fields named Client, Provider, Model, Effort, Env, Getenv, System, Prefix, Toolset, MaxTurns, MaxCostUSD, Timeout, Prune, MaxTokens in that order",
+        "Client is core.ProviderClient, Provider and Model are string, Effort is Effort, Env is map[string]string, Getenv is func(string) string",
+        "the last eight fields keep their current types"
+      ],
+      "pseudocode": "t = TypeOf(Config{}); assert t.NumField()==14; for i,(name,typ) in expected: assert t.Field(i).Name==name && t.Field(i).Type.String()==typ"
+    },
+    {
+      "id": "TS-29-2",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-1.2"
+      ],
+      "title": "Provider names are trimmed, case-insensitive and empty means anthropic",
+      "given": [
+        "Env supplies an Anthropic key and an OpenRouter key"
+      ],
+      "when": "Resolve is called with Provider \" OpenRouter \", \"ANTHROPIC\", \"\" and \"Ollama\"",
+      "then": [
+        "Resolution.Provider is \"openrouter\", \"anthropic\", \"anthropic\" and \"ollama\" respectively"
+      ],
+      "pseudocode": "for in,want in cases: r,err = Resolve(Config{Provider:in, Model:'STANDARD', Env:keys}); assert err==nil && r.Provider==want"
+    },
+    {
+      "id": "TS-29-3",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-1.3"
+      ],
+      "title": "Variable lookup order is Env, then Getenv, then process environment, empty counts as unset",
+      "given": [
+        "the process environment holds OPENROUTER_API_KEY=proc",
+        "a Getenv that records its calls and returns \"k\" for OPENROUTER_API_KEY"
+      ],
+      "when": "Resolve with Provider openrouter is run with Env {\"OPENROUTER_API_KEY\": \"\"}, then with Env {\"OPENROUTER_API_KEY\":\"e\"}, then with Getenv unset and Env empty",
+      "then": [
+        "with the empty Env value the provider uses key \"k\" from Getenv",
+        "with a non-empty Env value the provider uses \"e\" and Getenv is not asked for the key",
+        "with Getenv set the process value \"proc\" is never used, even when Getenv returns empty (Resolve fails with openrouter.ErrNoAPIKey)",
+        "with Getenv nil the process value is used"
+      ],
+      "pseudocode": "send a request to a recording server and inspect the Authorization header in each case; assert it equals 'Bearer k' / 'Bearer e' / 'Bearer proc'"
+    },
+    {
+      "id": "TS-29-4",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-1.4"
+      ],
+      "title": "The root package's non-test code imports no anthropic-sdk-go package",
+      "given": [
+        "the repository module"
+      ],
+      "when": "go list -f '{{.Imports}}' for the root package is evaluated (non-test imports only)",
+      "then": [
+        "no import path starts with github.com/anthropics/anthropic-sdk-go"
+      ],
+      "pseudocode": "out = exec('go list -f {{join .Imports \"\\n\"}} .'); for p in lines(out): assert !hasPrefix(p, 'github.com/anthropics/anthropic-sdk-go')"
+    },
+    {
+      "id": "TS-29-5",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-2.1"
+      ],
+      "title": "Resolve returns the catalog selection plus a client for a tier and for a model id",
+      "given": [
+        "credentials for OpenRouter supplied through Getenv"
+      ],
+      "when": "Resolve is called with Provider openrouter and Model STANDARD with Effort empty, and again with Model qwen/qwen3.8-flash and Effort \"HIGH\"",
+      "then": [
+        "the first Resolution has Tier STANDARD, Model.ID qwen/qwen3.8-flash, Effort medium, Listed true, non-nil Client",
+        "the second has empty Tier, Effort high (normalized) and Listed true",
+        "each field equals the corresponding catalog.Select result"
+      ],
+      "pseudocode": "sel,_ = catalog.Select(p,m,e); r,_ = Resolve(cfg); assert r.Provider==sel.Provider && r.Tier==sel.Tier && DeepEqual(r.Model,sel.Model) && r.Effort==sel.Effort && r.Listed==sel.Listed && r.Client!=nil"
+    },
+    {
+      "id": "TS-29-6",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-2.2"
+      ],
+      "title": "Resolve returns catalog errors unchanged, with or without Config.Client",
+      "given": [
+        "a faux client for the Client-set cases",
+        "a Getenv that counts calls"
+      ],
+      "when": "Resolve is called with Provider \"gemini\", with an empty Model, and with Effort \"turbo\", each with Client nil and with Client set",
+      "then": [
+        "errors.Is matches catalog.ErrUnknownProvider, catalog.ErrNoModel and catalog.ErrUnknownEffort respectively in both variants",
+        "the returned Resolution is the zero value",
+        "the error message names the rejected value and the valid choices",
+        "Getenv was called zero times"
+      ],
+      "pseudocode": "r,err = Resolve(cfg); assert errors.Is(err, want); assert r.Client==nil && r.Provider==''; assert contains(err.Error(), badValue); assert calls==0"
+    },
+    {
+      "id": "TS-29-7",
+      "kind": "property",
+      "verifies": [
+        "29-REQ-2.3"
+      ],
+      "title": "Resolution's selection fields depend only on the six selection fields",
+      "given": [
+        "a hermetic Getenv supplying all credentials"
+      ],
+      "when": "for any valid provider, model (tier or id) and effort, and any values of System, Prefix, Toolset, MaxTurns, MaxCostUSD, Timeout, Prune and MaxTokens",
+      "then": [
+        "two Resolve calls return equal Provider, Tier, Model, Effort and Listed",
+        "varying the non-selection fields changes none of them"
+      ],
+      "pseudocode": "for base,noise in gen(): a=Resolve(base); b=Resolve(withNoise(base,noise)); assert sameSelection(a,b)"
+    },
+    {
+      "id": "TS-29-8",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-2.4"
+      ],
+      "title": "Resolve sends no request and returns a new client on each call",
+      "given": [
+        "recording servers for all three providers, their base-URL variables pointing at them"
+      ],
+      "when": "Resolve is called several times for each provider with the same config",
+      "then": [
+        "every recording server counts zero requests",
+        "two calls return distinct Client values (different pointers/instances)",
+        "no state from the first call is visible in the second"
+      ],
+      "pseudocode": "c1=Resolve(cfg).Client; c2=Resolve(cfg).Client; assert c1 != c2; assert all(s.count==0)"
+    },
+    {
+      "id": "TS-29-9",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-3.1"
+      ],
+      "title": "Anthropic client is built with Options{Env, Getenv} and resolves per request",
+      "given": [
+        "a recording Anthropic server",
+        "Getenv supplying ANTHROPIC_API_KEY=k1 and ANTHROPIC_BASE_URL at the server"
+      ],
+      "when": "Resolve is called with Provider anthropic and the Client is streamed once, then Getenv's key is changed to k2 and it is streamed again",
+      "then": [
+        "Resolve succeeds after the credential pre-check",
+        "the first request carries k1 and the second carries k2, showing per-request resolution via Env/Getenv rather than a fixed SDK client"
+      ],
+      "pseudocode": "r=Resolve(cfg); stream(r.Client); assert server.reqs[0].header['x-api-key']=='k1'; env['ANTHROPIC_API_KEY']='k2'; stream(r.Client); assert reqs[1]==...'k2'"
+    },
+    {
+      "id": "TS-29-10",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-3.2"
+      ],
+      "title": "Anthropic credential and Vertex-project failures surface from Resolve",
+      "given": [
+        "a Getenv with no Anthropic variables",
+        "a Getenv with CLAUDE_CODE_USE_VERTEX=1 and no project variable"
+      ],
+      "when": "Resolve is called with Provider anthropic in each case",
+      "then": [
+        "the first returns the zero Resolution and an error with errors.Is(err, anthropic.ErrNoCredentials)",
+        "the second returns the zero Resolution and the anthropic.Resolve error naming both ANTHROPIC_VERTEX_PROJECT_ID and GOOGLE_CLOUD_PROJECT",
+        "the error equals what anthropic.Resolve returns over the same lookup"
+      ],
+      "pseudocode": "r,err=Resolve(cfg); assert errors.Is(err, anthropic.ErrNoCredentials); assert r.Client==nil"
+    },
+    {
+      "id": "TS-29-11",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-3.3"
+      ],
+      "title": "Openrouter client is built from Env and Getenv",
+      "given": [
+        "a recording OpenRouter server",
+        "Getenv supplying OPENROUTER_API_KEY and OPENROUTER_BASE_URL"
+      ],
+      "when": "Resolve is called with Provider openrouter and the returned Client is streamed once",
+      "then": [
+        "Resolve returns nil error and a non-nil Client",
+        "the request reaches the server at /chat/completions with the key from Getenv"
+      ],
+      "pseudocode": "r,err=Resolve(cfg); stream(r.Client); assert server.reqs[0].path=='/chat/completions'"
+    },
+    {
+      "id": "TS-29-12",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-3.4"
+      ],
+      "title": "Openrouter constructor errors are returned unchanged by Resolve",
+      "given": [
+        "Getenv with no OPENROUTER_API_KEY",
+        "Getenv with the key and a malformed OPENROUTER_BASE_URL"
+      ],
+      "when": "Resolve is called with Provider openrouter in each case",
+      "then": [
+        "the first returns the zero Resolution and an error with errors.Is(err, openrouter.ErrNoAPIKey)",
+        "the second returns the zero Resolution and the same error openrouter.New returns for that base URL"
+      ],
+      "pseudocode": "_,err=Resolve(cfg); assert errors.Is(err, openrouter.ErrNoAPIKey); _,want=openrouter.New(row,opts); assert err.Error()==want.Error()"
+    },
+    {
+      "id": "TS-29-13",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-3.5"
+      ],
+      "title": "Ollama needs no credential and returns the constructor's error unchanged",
+      "given": [
+        "a Getenv that returns empty for every name"
+      ],
+      "when": "Resolve is called with Provider ollama and Model STANDARD",
+      "then": [
+        "the error is nil and Resolution.Client is non-nil",
+        "Resolution.Model.ID is qwen3.8:27b",
+        "a malformed OLLAMA_HOST, if ollama.New rejects it, returns that error unchanged"
+      ],
+      "pseudocode": "r,err=Resolve(Config{Provider:'ollama',Model:'STANDARD',Getenv:empty}); assert err==nil && r.Client!=nil"
+    },
+    {
+      "id": "TS-29-14",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-3.6"
+      ],
+      "title": "A given Client is returned as is and no variable is read",
+      "given": [
+        "a faux client",
+        "a Getenv and an Env that record every access",
+        "no credential set anywhere"
+      ],
+      "when": "Resolve is called with Client set, Provider openrouter, Model STANDARD and Effort \"LOW\"",
+      "then": [
+        "Resolution.Client is the given client (same value)",
+        "Getenv was called zero times",
+        "Resolution.Model.ID is qwen/qwen3.8-flash and Resolution.Effort is low",
+        "no ErrNoAPIKey is returned"
+      ],
+      "pseudocode": "r,err=Resolve(Config{Client:faux, Provider:'openrouter', Model:'STANDARD', Effort:'LOW', Getenv:rec}); assert err==nil && r.Client==faux && rec.calls==0"
+    },
+    {
+      "id": "TS-29-15",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-3.7"
+      ],
+      "title": "An unreachable host is not found by Resolve or New but by the first request",
+      "given": [
+        "a closed local port as OPENROUTER_BASE_URL with a key set",
+        "MaxRetries small enough that the test is fast, if the provider allows it, otherwise a short Timeout"
+      ],
+      "when": "Resolve and New are called, then Agent.Run is called with a prompt",
+      "then": [
+        "Resolve and New return nil error",
+        "Run returns an error or error message carrying the transport error of the first model request"
+      ],
+      "pseudocode": "_,err=Resolve(cfg); assert err==nil; a,err=New(cfg); assert err==nil; _,err=a.Run(ctx,'hi'); assert err!=nil (transport error)"
+    },
+    {
+      "id": "TS-29-16",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-4.1",
+        "29-REQ-4.2"
+      ],
+      "title": "Getenv is asked only for the chosen provider's variables and never for AGENTKIT_ names",
+      "given": [
+        "a recording Getenv holding all three providers' secrets and base URLs",
+        "recording servers for each provider"
+      ],
+      "when": "for each provider in turn, Resolve, New and one Run are executed",
+      "then": [
+        "for anthropic the names asked are all within the Anthropic variable set (ANTHROPIC_*, CLAUDE_CODE_*, GOOGLE_CLOUD_*, CLOUD_ML_REGION, CLOUDSDK_*, AWS_*)",
+        "for openrouter the names asked are only OPENROUTER_* variables",
+        "for ollama the names asked are only OLLAMA_* variables",
+        "no name starting with AGENTKIT_ is asked in any case"
+      ],
+      "pseudocode": "for p in providers: rec.reset(); a=New(cfg(p)); a.Run('hi'); for n in rec.names: assert n in varset[p]; assert !hasPrefix(n,'AGENTKIT_')"
+    },
+    {
+      "id": "TS-29-17",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-4.3"
+      ],
+      "title": "A run reaches only the chosen provider's recording server",
+      "given": [
+        "ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, OPENROUTER_API_KEY and OLLAMA_API_KEY all set",
+        "each provider's base-URL variable pointing at its own recording server"
+      ],
+      "when": "one prompt is run on each provider in turn",
+      "then": [
+        "the chosen provider's server records at least one request",
+        "the other two servers record zero requests"
+      ],
+      "pseudocode": "for p: reset(all); New(cfg(p)).Run('hi'); assert count[p]>=1; assert count[q]==0 for q!=p"
+    },
+    {
+      "id": "TS-29-18",
+      "kind": "property",
+      "verifies": [
+        "29-REQ-4.4"
+      ],
+      "title": "No provider's secret ever appears in a request sent while running on another provider",
+      "given": [
+        "three recording servers that record every header value and body",
+        "an Ollama API key set that must never be sent"
+      ],
+      "when": "for any ordered pair of distinct providers (P, Q) and any generated distinct secret strings for all secrets, an agent runs one prompt on P",
+      "then": [
+        "no recorded header value or body on any server contains Q's secret",
+        "no recorded header or body on any server contains the OLLAMA_API_KEY value"
+      ],
+      "pseudocode": "for secrets in gen_distinct(): for P,Q in pairs: run(P); assert not any(contains(hdr_or_body, secrets[Q]) for srv in servers); assert not contains(.., secrets.ollama)"
+    },
+    {
+      "id": "TS-29-19",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-5.1"
+      ],
+      "title": "New reports errors in the order provider, model, effort, credentials, tool set",
+      "given": [
+        "an invalid Toolset (one NewRunner rejects)"
+      ],
+      "when": "New is called with combinations: unknown provider + bad toolset; empty model + bad toolset; bad effort + bad toolset; missing credential + bad toolset; only bad toolset",
+      "then": [
+        "the errors are catalog.ErrUnknownProvider, catalog.ErrNoModel, catalog.ErrUnknownEffort, the credential error (anthropic.ErrNoCredentials or openrouter.ErrNoAPIKey) and NewRunner's error respectively",
+        "a config with several problems returns the earliest in the order"
+      ],
+      "pseudocode": "_,err=New(Config{Provider:'x', Toolset:bad}); assert errors.Is(err, catalog.ErrUnknownProvider); ..."
+    },
+    {
+      "id": "TS-29-20",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-5.2"
+      ],
+      "title": "New returns the Resolve or NewRunner error unchanged and sends no request",
+      "given": [
+        "recording servers for all providers with base URLs set"
+      ],
+      "when": "New fails once through Resolve (missing OPENROUTER_API_KEY) and once through NewRunner (invalid toolset)",
+      "then": [
+        "New returns a nil Agent and the same error value as Resolve or NewRunner respectively (errors.Is and equal message)",
+        "every recording server counts zero requests"
+      ],
+      "pseudocode": "a,err=New(cfg); assert a==nil; _,rerr=Resolve(cfg); assert err.Error()==rerr.Error(); assert all(count==0)"
+    },
+    {
+      "id": "TS-29-21",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-5.3"
+      ],
+      "title": "The agent calls Resolution.Client and uses Resolution.Model for pruning, context check, pricing and stamping",
+      "given": [
+        "a counting client wrapping a faux provider",
+        "Provider anthropic, Model an unlisted-per-catalog id with a custom row, or a listed id with known rates and a small context window"
+      ],
+      "when": "the agent runs two prompts and a prompt exceeding the context window",
+      "then": [
+        "every request goes through the given client",
+        "assistant messages are stamped with the resolved row's ID",
+        "pricing uses the resolved row's rates",
+        "the context-window check uses the resolved row's ContextWindow"
+      ],
+      "pseudocode": "a=New(Config{Client:counting, Provider:'anthropic', Model:id}); res=a.Run('hi'); assert counting.n==calls; assert msg.Model==a.Resolution().Model.ID; assert res.Usage.CostUSD==ComputeCost(row,usage)"
+    },
+    {
+      "id": "TS-29-22",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-5.4"
+      ],
+      "title": "Every request carries the resolved effort rather than the raw Config.Effort",
+      "given": [
+        "a recording client that captures core.Request.Effort"
+      ],
+      "when": "agents run with Model STANDARD and empty Effort, with Effort \"HIGH\", and with a model whose resolution has empty effort",
+      "then": [
+        "the first request carries the tier's effort (medium for STANDARD)",
+        "the second carries high",
+        "the third carries no effort (empty)",
+        "this holds for each request of a multi-turn run"
+      ],
+      "pseudocode": "assert rec.reqs[0].Effort==a.Resolution().Effort"
+    },
+    {
+      "id": "TS-29-23",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-5.5"
+      ],
+      "title": "A tier given as Model never appears where the agent names its model",
+      "given": [
+        "Provider openrouter, Model STANDARD, a recording client",
+        "a second agent whose context window is too small so the context-window error fires"
+      ],
+      "when": "a run is performed, events are collected, and the context-window error is provoked",
+      "then": [
+        "AgentStartEvent.Model is qwen/qwen3.8-flash",
+        "assistant messages are stamped with qwen/qwen3.8-flash",
+        "the context-window error text names the model id, not STANDARD"
+      ],
+      "pseudocode": "assert start.Model==id && msg.Model==id && !contains(err.Error(),'STANDARD')"
+    },
+    {
+      "id": "TS-29-24",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-5.6"
+      ],
+      "title": "An OpenRouter agent sends the tier's model and effort to /chat/completions",
+      "given": [
+        "a local OpenRouter recording server answering one SSE text turn",
+        "Getenv supplying OPENROUTER_API_KEY and OPENROUTER_BASE_URL"
+      ],
+      "when": "New(Config{Provider:\"openrouter\", Model:\"STANDARD\", Getenv}) runs one prompt",
+      "then": [
+        "the server records one POST to /chat/completions",
+        "the body has model qwen/qwen3.8-flash and reasoning.effort medium",
+        "Agent.Resolution() reports Provider openrouter, Tier STANDARD, Model.ID qwen/qwen3.8-flash, Effort medium, Listed true"
+      ],
+      "pseudocode": "body=json(server.reqs[0].body); assert body.model=='qwen/qwen3.8-flash' && body.reasoning.effort=='medium'"
+    },
+    {
+      "id": "TS-29-25",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-5.7"
+      ],
+      "title": "An Ollama agent sends the tier's model, think and num_ctx to /api/chat",
+      "given": [
+        "a local Ollama recording server answering an NDJSON text turn",
+        "Getenv supplying only OLLAMA_HOST"
+      ],
+      "when": "New(Config{Provider:\"ollama\", Model:\"STANDARD\", Getenv}) runs one prompt",
+      "then": [
+        "the server records a request to /api/chat",
+        "the body has model qwen3.8:27b, think medium and options.num_ctx 32768",
+        "Agent.Resolution() reports Provider ollama, Tier STANDARD, Model.ID qwen3.8:27b, Effort medium, Listed true"
+      ],
+      "pseudocode": "body=json(req); assert body.model=='qwen3.8:27b' && body.think=='medium' && body.options.num_ctx==32768"
+    },
+    {
+      "id": "TS-29-26",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-6.1"
+      ],
+      "title": "Agent.Resolution equals Resolve on the same config",
+      "given": [
+        "a hermetic config for each provider"
+      ],
+      "when": "Resolve(cfg) and New(cfg).Resolution() are compared",
+      "then": [
+        "Provider, Tier, Model, Effort and Listed are equal",
+        "Client is non-nil in both, and with Config.Client set Resolution().Client is the given client"
+      ],
+      "pseudocode": "r=Resolve(cfg); a=New(cfg); assert sameSelection(r,a.Resolution())"
+    },
+    {
+      "id": "TS-29-27",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-6.2"
+      ],
+      "title": "Resolution returns a copy whose mutation does not affect the agent",
+      "given": [
+        "an agent whose model row has a non-empty Efforts map and non-empty Compat bytes"
+      ],
+      "when": "the returned Model.Efforts map and Model.Compat bytes are modified, then Resolution() is called again",
+      "then": [
+        "the second Resolution() equals the first, original value",
+        "the agent's own row used by requests is unchanged"
+      ],
+      "pseudocode": "r=a.Resolution(); r.Model.Efforts[k]=nil; delete(...); r.Model.Compat[0]^=0xff; r2=a.Resolution(); assert DeepEqual(r2.Model, original)"
+    },
+    {
+      "id": "TS-29-28",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-6.3"
+      ],
+      "title": "Resolution can be called concurrently with Run without a data race",
+      "given": [
+        "an agent on a faux client, tests run with -race"
+      ],
+      "when": "several goroutines call Resolution() in a loop while Run executes",
+      "then": [
+        "the race detector reports nothing",
+        "every Resolution() value equals the initial one"
+      ],
+      "pseudocode": "go func(){ for !done { _ = a.Resolution() } }(); a.Run(ctx,'hi')"
+    },
+    {
+      "id": "TS-29-29",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-6.4"
+      ],
+      "title": "Agent exports exactly seven methods",
+      "given": [
+        "the *Agent type"
+      ],
+      "when": "its exported method set is listed by reflection and sorted",
+      "then": [
+        "the list is Messages, ReachableTools, Resolution, Run, Runner, Stream, Usage"
+      ],
+      "pseudocode": "assert sortedMethodNames(TypeOf(&Agent{}))==['Messages','ReachableTools','Resolution','Run','Runner','Stream','Usage']"
+    },
+    {
+      "id": "TS-29-30",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-6.5"
+      ],
+      "title": "AgentStartEvent carries provider, API and model when Resolve built the client",
+      "given": [
+        "recording servers for anthropic, openrouter and ollama"
+      ],
+      "when": "one prompt is streamed on each provider and the AgentStartEvent is captured",
+      "then": [
+        "Provider is the resolved name and Model the resolved id",
+        "API is anthropic.API, openrouter.API and ollama.API respectively, all non-empty"
+      ],
+      "pseudocode": "ev=firstEvent(a.Stream('hi')).(AgentStartEvent); assert ev.Provider==p && ev.API==wantAPI[p] && ev.Model==a.Resolution().Model.ID"
+    },
+    {
+      "id": "TS-29-31",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-6.6"
+      ],
+      "title": "AgentStartEvent has an empty API when Config.Client was given",
+      "given": [
+        "Config.Client set to a faux client, Provider openrouter, Model qwen/qwen3.8-flash"
+      ],
+      "when": "one prompt is streamed",
+      "then": [
+        "AgentStartEvent.API is the empty string",
+        "Provider is \"openrouter\" and Model is qwen/qwen3.8-flash"
+      ],
+      "pseudocode": "assert ev.API=='' && ev.Provider=='openrouter'"
+    },
+    {
+      "id": "TS-29-32",
+      "kind": "property",
+      "verifies": [
+        "29-REQ-7.1"
+      ],
+      "title": "Usage.Add ORs Unpriced and combines all other fields as before",
+      "given": [
+        "core.Usage values"
+      ],
+      "when": "for any two usages a and b with arbitrary counters, Set masks and Unpriced flags",
+      "then": [
+        "after a.Add(b), a.Unpriced == (a_before.Unpriced || b.Unpriced)",
+        "every other field equals what Add produced before the change (sums, OR of Set)"
+      ],
+      "pseudocode": "for a,b in gen(): want=a.Unpriced||b.Unpriced; a.Add(b); assert a.Unpriced==want"
+    },
+    {
+      "id": "TS-29-33",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-7.2"
+      ],
+      "title": "Event JSON carries unpriced on every encoded usage",
+      "given": [
+        "an AgentDoneEvent or TurnEndEvent with Usage.Unpriced true, and another with false"
+      ],
+      "when": "the event is encoded with the core event JSON encoder",
+      "then": [
+        "the usage object contains \"unpriced\":true for the first",
+        "it contains \"unpriced\":false for the second",
+        "core.UsageJSON has the field with JSON key unpriced"
+      ],
+      "pseudocode": "j=json(usageJSON(u)); assert j['unpriced']==u.Unpriced"
+    },
+    {
+      "id": "TS-29-34",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-7.3"
+      ],
+      "title": "Unlisted Anthropic and costless unlisted OpenRouter runs end Unpriced",
+      "given": [
+        "an Anthropic recording server whose response reports usage",
+        "an OpenRouter recording server whose response carries usage with no cost",
+        "unlisted model ids on both"
+      ],
+      "when": "one prompt is run on each agent",
+      "then": [
+        "RunResult.Usage.Unpriced is true in both runs",
+        "the resolved row has all four per-million rates at zero in both"
+      ],
+      "pseudocode": "assert res.Usage.Unpriced"
+    },
+    {
+      "id": "TS-29-35",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-7.4"
+      ],
+      "title": "Ollama runs are never Unpriced, even through a wrapped client",
+      "given": [
+        "Provider ollama with Model STANDARD, and an unlisted Ollama model id",
+        "a faux client reporting usage with the cost bit clear and Provider ollama"
+      ],
+      "when": "runs are performed with the Ollama recording server and with the wrapper via Config.Client",
+      "then": [
+        "RunResult.Usage.Unpriced is false in every run"
+      ],
+      "pseudocode": "assert !res.Usage.Unpriced"
+    },
+    {
+      "id": "TS-29-36",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-7.5"
+      ],
+      "title": "Unpriced stays false for priced rows, OpenRouter responses with a cost and unreported usage",
+      "given": [
+        "an Anthropic run on a listed model with rates",
+        "an OpenRouter run on an unlisted id whose response carried a cost",
+        "an Anthropic unlisted run through faux with no reported usage (Usage.Set == 0)"
+      ],
+      "when": "each runs one prompt",
+      "then": [
+        "RunResult.Usage.Unpriced is false in all three"
+      ],
+      "pseudocode": "assert !res.Usage.Unpriced for each"
+    },
+    {
+      "id": "TS-29-37",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-7.6"
+      ],
+      "title": "An Unpriced turn reaches every run-level usage but not TurnEndEvent.Usage",
+      "given": [
+        "an unlisted Anthropic run whose usage is reported"
+      ],
+      "when": "the run completes and events are collected",
+      "then": [
+        "RunResult.Usage.Unpriced, AgentDoneEvent.Result.Usage.Unpriced, AgentDoneEvent.Usage.Unpriced and Agent.Usage().Unpriced are all true",
+        "TurnEndEvent.Usage is the provider's own usage for the turn (Unpriced false)"
+      ],
+      "pseudocode": "assert res.Usage.Unpriced && done.Result.Usage.Unpriced && done.Usage.Unpriced && a.Usage().Unpriced && !turnEnd.Usage.Unpriced"
+    },
+    {
+      "id": "TS-29-38",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-7.7"
+      ],
+      "title": "An unpriced turn is still priced at zero with the cost bit set and MaxCostUSD is unchanged",
+      "given": [
+        "an unlisted Anthropic run with reported usage",
+        "a second agent with a MaxCostUSD and a priced listed row that exceeds it"
+      ],
+      "when": "both runs execute",
+      "then": [
+        "the unpriced run has CostUSD 0 and Has(core.UsageCostUSD) true",
+        "the MaxCostUSD stop behaviour on the priced run is as before (stops once CostUSD exceeds the limit)",
+        "the unpriced run is not stopped by MaxCostUSD"
+      ],
+      "pseudocode": "assert res.Usage.CostUSD==0 && res.Usage.Has(core.UsageCostUSD)"
+    },
+    {
+      "id": "TS-29-39",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-8.1"
+      ],
+      "title": "Anthropic by name sends a body byte-identical to a directly built provider",
+      "given": [
+        "a recording Anthropic server",
+        "the same Getenv/Env pointing at it",
+        "Model claude-opus-5-5"
+      ],
+      "when": "an agent with Provider empty and one with Provider anthropic each run one prompt, and anthropic.Provider(row, Options{Env, Getenv}) is called directly with the same request",
+      "then": [
+        "the three request bodies are byte-identical"
+      ],
+      "pseudocode": "assert bytes.Equal(body_agent_empty, body_direct) && bytes.Equal(body_agent_anthropic, body_direct)"
+    },
+    {
+      "id": "TS-29-40",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-8.2"
+      ],
+      "title": "An unlisted Claude id resolves to the same row as catalog.Lookup with Listed false",
+      "given": [
+        "an unlisted Claude id such as claude-3-5-sonnet"
+      ],
+      "when": "Resolve is called with Provider empty and with anthropic",
+      "then": [
+        "reflect.DeepEqual(res.Model, catalog.Lookup(id) row) is true",
+        "res.Listed is false"
+      ],
+      "pseudocode": "row,listed=catalog.Lookup(id); assert DeepEqual(res.Model,row) && !res.Listed"
+    },
+    {
+      "id": "TS-29-41",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-8.3"
+      ],
+      "title": "A faux client passed as Config.Client is called for every request",
+      "given": [
+        "provider/faux with a scripted multi-turn conversation including a tool call",
+        "Config{Client: faux, Model: unlisted test id}"
+      ],
+      "when": "the agent runs to completion",
+      "then": [
+        "the faux client received every request",
+        "no credential variable was needed and no error is returned",
+        "the run's behaviour (events, messages, usage) matches the pre-rename expectations, and Unpriced is false because faux reports no usage"
+      ],
+      "pseudocode": "a=New(Config{Client:faux, Model:testModelID}); res=a.Run(...); assert faux.calls==expected && !res.Usage.Unpriced"
+    },
+    {
+      "id": "TS-29-42",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-8.4"
+      ],
+      "title": "Examples codingagent, customtools and mcp fail from New naming ANTHROPIC_API_KEY and import no SDK",
+      "given": [
+        "each example built with go build",
+        "an environment with no Anthropic credential variable"
+      ],
+      "when": "each example binary is started and its source imports are inspected",
+      "then": [
+        "exit status is non-zero before any request",
+        "the error output names ANTHROPIC_API_KEY",
+        "no source file of the three examples imports a github.com/anthropics/anthropic-sdk-go package"
+      ],
+      "pseudocode": "out,code=run(bin, env=clean); assert code!=0 && contains(out,'ANTHROPIC_API_KEY'); assert !grep('anthropic-sdk-go', example/*.go)"
+    },
+    {
+      "id": "TS-29-43",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-9.1"
+      ],
+      "title": "The exported-API golden matches the code with the new root and core entries",
+      "given": [
+        "the regenerated internal/policy/testdata/exported-api.golden"
+      ],
+      "when": "the internal/policy golden comparison test runs",
+      "then": [
+        "the root section has the fourteen-field Config, func Resolve(cfg Config) (Resolution, error), type Resolution and (*Agent) Resolution() Resolution",
+        "the core section shows Usage.Unpriced and UsageJSON's unpriced field",
+        "the comparison passes and no other section changed"
+      ],
+      "pseudocode": "go test ./internal/policy -run _TS13_67$"
+    },
+    {
+      "id": "TS-29-44",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-9.2"
+      ],
+      "title": "The golden's Config line keeps the tail substring TS-21-55 checks",
+      "given": [
+        "internal/policy/testdata/exported-api.golden"
+      ],
+      "when": "the Config line is read",
+      "then": [
+        "it contains `Prefix []core.Message Toolset Toolset MaxTurns int MaxCostUSD float64 Timeout time.Duration Prune PruneOptions MaxTokens int }`"
+      ],
+      "pseudocode": "assert contains(configLine, tail)"
+    },
+    {
+      "id": "TS-29-45",
+      "kind": "smoke",
+      "verifies": [
+        "29-PATH-1",
+        "29-REQ-5.6",
+        "29-REQ-6.5"
+      ],
+      "title": "An embedder runs an agent on OpenRouter by name end to end",
+      "given": [
+        "a local OpenRouter recording server answering an SSE text turn whose usage has no cost",
+        "Getenv supplying OPENROUTER_API_KEY and OPENROUTER_BASE_URL"
+      ],
+      "when": "New(Config{Provider:\"openrouter\", Model:\"STANDARD\", Getenv}) is built and runs one prompt",
+      "then": [
+        "the server records one POST /chat/completions with model qwen/qwen3.8-flash and reasoning.effort medium",
+        "AgentStartEvent is {Provider openrouter, API openrouter.API, Model qwen/qwen3.8-flash}",
+        "RunResult.Usage.Unpriced is false",
+        "Agent.Resolution() reports Listed true"
+      ],
+      "real_components": [
+        "agentkit.Resolve",
+        "agentkit.New",
+        "Agent loop",
+        "catalog",
+        "provider/openrouter",
+        "httptest recording server"
+      ]
+    },
+    {
+      "id": "TS-29-46",
+      "kind": "smoke",
+      "verifies": [
+        "29-PATH-2",
+        "29-REQ-5.7"
+      ],
+      "title": "An embedder runs an agent on Ollama by name end to end",
+      "given": [
+        "a local Ollama recording server answering an NDJSON text turn ending with done true",
+        "Getenv supplying only OLLAMA_HOST"
+      ],
+      "when": "New(Config{Provider:\"ollama\", Model:\"STANDARD\", Getenv}) is built and runs one prompt",
+      "then": [
+        "the server records POST /api/chat with model qwen3.8:27b, think medium and options.num_ctx 32768",
+        "RunResult.Usage.Unpriced is false",
+        "AgentStartEvent.Provider is ollama"
+      ],
+      "real_components": [
+        "agentkit.Resolve",
+        "agentkit.New",
+        "Agent loop",
+        "catalog",
+        "provider/ollama",
+        "httptest recording server"
+      ]
+    },
+    {
+      "id": "TS-29-47",
+      "kind": "smoke",
+      "verifies": [
+        "29-PATH-3",
+        "29-REQ-8.1",
+        "29-REQ-7.3"
+      ],
+      "title": "An Anthropic run is byte-identical and an unlisted model is flagged unpriced",
+      "given": [
+        "an Anthropic recording server answering an SSE text turn with usage",
+        "Getenv supplying ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL"
+      ],
+      "when": "New(Config{Model:\"claude-opus-5-5\", Getenv}) runs one prompt and anthropic.Provider built directly sends the same request, then an unlisted Claude id is run the same way",
+      "then": [
+        "the agent's request body is byte-identical to the direct provider's",
+        "the unlisted run's RunResult.Usage.Unpriced is true with CostUSD 0 and the cost bit set",
+        "the listed run's Usage.Unpriced is false"
+      ],
+      "real_components": [
+        "agentkit.Resolve",
+        "agentkit.New",
+        "Agent loop",
+        "provider/anthropic",
+        "anthropic-sdk-go",
+        "httptest recording server"
+      ]
+    },
+    {
+      "id": "TS-29-48",
+      "kind": "smoke",
+      "verifies": [
+        "29-PATH-4",
+        "29-REQ-4.1",
+        "29-REQ-4.2",
+        "29-REQ-4.3",
+        "29-REQ-4.4"
+      ],
+      "title": "Provider isolation holds across all three providers",
+      "given": [
+        "all three providers' secrets set in a recording Getenv, plus OLLAMA_API_KEY",
+        "each base-URL variable pointing at its own recording server"
+      ],
+      "when": "an agent is built and run on anthropic, then openrouter, then ollama",
+      "then": [
+        "only the chosen provider's server receives requests in each run",
+        "no other provider's secret and no OLLAMA_API_KEY value appears in any recorded header or body",
+        "Getenv was asked for no other provider's variable and no AGENTKIT_ variable"
+      ],
+      "real_components": [
+        "agentkit.Resolve",
+        "agentkit.New",
+        "Agent loop",
+        "provider/anthropic",
+        "provider/openrouter",
+        "provider/ollama",
+        "httptest recording servers"
+      ]
+    },
+    {
+      "id": "TS-29-49",
+      "kind": "smoke",
+      "verifies": [
+        "29-PATH-5",
+        "29-REQ-3.6",
+        "29-REQ-6.6"
+      ],
+      "title": "An embedder resolves, wraps and passes its own client",
+      "given": [
+        "an OpenRouter recording server and Getenv supplying its key and base URL, counting calls"
+      ],
+      "when": "Resolve(cfg) is called for Provider openrouter and a model id, cfg.Client is set to a wrapper around res.Client, then New(cfg) runs one prompt",
+      "then": [
+        "Resolve sends no request",
+        "after setting Client, New reads no variable (Getenv call count unchanged)",
+        "the wrapper is called and the server records the request",
+        "AgentStartEvent has Provider openrouter and an empty API"
+      ],
+      "real_components": [
+        "agentkit.Resolve",
+        "agentkit.New",
+        "Agent loop",
+        "provider/openrouter",
+        "httptest recording server"
+      ]
+    }
+  ]
+}

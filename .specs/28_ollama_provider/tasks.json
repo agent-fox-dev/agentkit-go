@@ -1,0 +1,384 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "28",
+  "spec_name": "ollama_provider",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./provider/ollama/... ./internal/policy/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "26",
+      "reason": "supplies the ollama catalog row, catalog.OllamaDefaultContextWindow and catalog.Select used by the num_ctx fallback and the tests"
+    },
+    {
+      "spec": "27",
+      "reason": "adds provider.RepairToolPairing in package provider and the first policy-test edits (approvedDeps, preSpec13Direct, snapshots, TestProviderDefaults_TS09_11) that this spec extends"
+    },
+    {
+      "spec": "09",
+      "reason": "TestProviderDefaults_TS09_11 and the direct-dependency allowlist are modified"
+    },
+    {
+      "spec": "13",
+      "reason": "TS-13-65 root direct set and go-list-m-all snapshot are restated"
+    },
+    {
+      "spec": "14",
+      "reason": "TS-14-42 sandbox graph snapshot is regenerated and version moves recorded as accepted upgrades"
+    },
+    {
+      "spec": "15",
+      "reason": "TS-15-40 requires sandbox-go-list-m-all.txt to equal the .14.txt snapshot; both are restated"
+    },
+    {
+      "spec": "17",
+      "reason": "TS-17-60 compares the sandbox graph to the regenerated snapshot"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Approve and pin github.com/ollama/ollama v0.40.7 and restate the policy tests",
+      "criteria": [
+        "28-REQ-9"
+      ],
+      "tests": [
+        "TS-28-43",
+        "TS-28-44",
+        "TS-28-45"
+      ],
+      "steps": [
+        "Verify the names spec 26 and 27 produced (catalog.Select, catalog.OllamaDefaultContextWindow, provider.RepairToolPairing and its report type); if the repair helper is absent create it in provider/repair.go from rules 2, 2b and 6 of provider/anthropic/repair.go without the thinking rules",
+        "Create provider/ollama/ollama.go: package doc, `const API core.API = core.APIOllamaChat`, `HostVar = \"OLLAMA_HOST\"`, `DefaultHost = \"http://127.0.0.1:11434\"`, sentinel errors ErrInvalidHost, ErrStreamTruncated, ErrModelNotFound, ErrUnreachable, ErrContextWindow (texts start with \"ollama:\"), and `type StatusError struct{Code int; Text string}` with Error(); import github.com/ollama/ollama/api (e.g. a var using api.NewClient) so the module stays required; run `go doc github.com/ollama/ollama/api` to confirm each symbol in the PRD's external-API table",
+        "Run `go get github.com/ollama/ollama@v0.40.7` then `make tidy` so every nested module is updated; confirm the require line is direct (no // indirect)",
+        "In internal/policy/deps_test.go add the module to approvedDeps with a reason comment on the line above and to preSpec13Direct; add a pin test (TS-28-43) modelled on TestAnthropicSDKIsPinned_TS10_1 asserting exact v0.40.7, not indirect, and presence in both lists",
+        "Regenerate testdata/go-list-m-all.txt, sandbox-go-list-m-all.txt and sandbox-go-list-m-all.14.txt (TS-15-40 requires the first sandbox file to equal the .14 file)",
+        "Add an accepted-upgrades map for this spec, distinct from d1Upgrades, recording every version minimum version selection raised; restate TS-13-65 (grpc/protobuf pins), TS-14-42 baseline lines, TS-15-40 and TS-17-60 to use it without deleting any test; write TS-28-44 as a check that those tests pass with the regenerated snapshots",
+        "Update TestProviderDefaults_TS09_11 in repository_cut_test.go to expect \"anthropic,faux,ollama,openrouter\" (TS-28-45)",
+        "Do not add provider/ollama to apiPackages in internal/policy/layout_test.go (TS-24-1 stays unchanged)",
+        "Add the allowlist row and the ruling to docs/DEPS.md: Used by, Version (pinned v0.40.7), Why this module (Ollama's own client and types), What is pulled in (each non-standard module from `go list -deps ./provider/ollama`, growth of `go list -m all`, the ~512 KB line limit not reachable with a 32,768-token cap, api.ClientFromEnvironment not used)",
+        "Run `go test ./internal/policy/... -count=1` narrow runs, then `make check`"
+      ],
+      "touches": [
+        "go.mod",
+        "go.sum",
+        "provider/ollama/ollama.go",
+        "provider/repair.go",
+        "internal/policy/deps_test.go",
+        "internal/policy/testdata/go-list-m-all.txt",
+        "internal/policy/testdata/sandbox-go-list-m-all.txt",
+        "internal/policy/testdata/sandbox-go-list-m-all.14.txt",
+        "internal/policy/landlock_dep_test.go",
+        "internal/policy/deps_17_test.go",
+        "repository_cut_test.go",
+        "docs/DEPS.md",
+        "sandbox/go.mod",
+        "codesearch/go.mod",
+        "mcpserve/go.mod"
+      ],
+      "done_when": [
+        "`go list -m github.com/ollama/ollama` reports v0.40.7 in the root module",
+        "the restated TS-13-65, TS-14-42, TS-15-40 and TS-17-60 still exist and pass"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Build ollama.New with host resolution, host parsing and refusals",
+      "criteria": [
+        "28-REQ-1.1",
+        "28-REQ-1.2",
+        "28-REQ-1.3",
+        "28-REQ-1.4",
+        "28-REQ-1.5",
+        "28-REQ-1.6",
+        "28-REQ-1.7"
+      ],
+      "tests": [
+        "TS-28-1",
+        "TS-28-2",
+        "TS-28-3",
+        "TS-28-4",
+        "TS-28-5",
+        "TS-28-6",
+        "TS-28-7",
+        "TS-28-8"
+      ],
+      "steps": [
+        "Write TS-28-1 to TS-28-8 as external tests (package ollama_test) and confirm they fail",
+        "In provider/ollama add `Options{Host string; Env map[string]string; Getenv func(string) string; HTTPClient *http.Client; Now func() time.Time; Warnf func(string, ...any)}` and `type Client` with Host() string",
+        "Implement the OLLAMA_HOST lookup as in provider/anthropic client.go providerEnv.Lookup: Options.Host first (no variable read at all), then Env (empty falls through), then Getenv when non-nil, else os.LookupEnv; only the key HostVar is ever asked",
+        "Implement host parsing by Ollama CLI rules: trim; no scheme means http and port 11434; http:// without port means 80; https:// without port 443; keep path; reject other schemes, unparseable values and ports outside 1-65535 with an error wrapping ErrInvalidHost",
+        "Refuse user information (message shows the host with password redacted, e.g. via url.Redacted-style logic, never containing the password) and ollama.com or any *.ollama.com host (message says the hosted service is not supported), both wrapping ErrInvalidHost; accept notollama.com",
+        "New(m, opts) (*Client, error): fail with an \"ollama:\"-prefixed error when strings.TrimSpace(m.ID) is empty; make no network request; store the model, resolved *url.URL, Now (default time.Now) and Warnf (nil discards)",
+        "Confirm `var _ core.ProviderClient = (*Client)(nil)` once Stream exists; for now add the Stream method with `panic(\"not implemented\")` only if needed to compile, to be replaced by the next task",
+        "Run `go test ./provider/ollama/... -race -count=1`"
+      ],
+      "touches": [
+        "provider/ollama/ollama.go",
+        "provider/ollama/client.go",
+        "provider/ollama/host.go",
+        "provider/ollama/host_test.go",
+        "provider/ollama/client_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Stream core: credential-free transport, base request, text and thinking decode, final message",
+      "criteria": [
+        "28-REQ-1.8",
+        "28-REQ-2.1",
+        "28-REQ-2.2",
+        "28-REQ-6.1",
+        "28-REQ-6.2",
+        "28-REQ-6.5",
+        "28-REQ-6.6"
+      ],
+      "tests": [
+        "TS-28-9",
+        "TS-28-10",
+        "TS-28-11",
+        "TS-28-26",
+        "TS-28-27",
+        "TS-28-30"
+      ],
+      "steps": [
+        "Write TS-28-9, 10, 11, 26, 27 and 30 using an httptest recording server that serves application/x-ndjson lines, and confirm they fail; put recorder helpers in provider/ollama/recorder_test.go",
+        "Add an http.RoundTripper wrapper that deletes the Authorization header on a clone of the request then delegates to Options.HTTPClient's Transport (http.DefaultTransport when nil); build the SDK client with api.NewClient(base, &http.Client{Transport: wrapper}) in New, never api.ClientFromEnvironment",
+        "Implement (*Client).Stream: return (nil, ctx.Err()) for a done context; otherwise core.StreamChannel over a core.NewEventStream driven by a goroutine, mirroring provider/anthropic/stream.go",
+        "Build api.ChatRequest: Model = m.ID, Stream = &true, Truncate = &false, Options[\"num_ctx\"] = m.ContextWindow or catalog.OllamaDefaultContextWindow when not positive; send via client.Chat with a callback per ChatResponse",
+        "Create a decode state mirroring anthropic's decodeState: emitStart pushes MessageStartEvent{Model: m.ID, Effort: req.Effort, Timestamp: Now()}; thinking chunks stream as ThinkingStart/Delta and content as TextStart/Delta, closing the open block on a kind switch, appending each completed block and pushing MessageUpdateEvent; thinking never becomes text",
+        "On the done chunk after its own content: push TextEnd/ThinkingEnd/ToolCallEnd in block order, build the final message (StopReasonLength for done_reason length, else StopReasonToolUse if tool calls, else StopReasonStop; RawStopReason verbatim; ResponseModel from chunk), push MessageEndEvent and end the stream with the message and nil Err",
+        "Leave tool-call decode, usage, and error classification to later tasks but give a stub-free minimal path (a non-done end currently ends with ErrStreamTruncated)",
+        "Run `go test ./provider/ollama/... -race -count=1`"
+      ],
+      "touches": [
+        "provider/ollama/stream.go",
+        "provider/ollama/transport.go",
+        "provider/ollama/decode.go",
+        "provider/ollama/recorder_test.go",
+        "provider/ollama/stream_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Decode tool calls with wire key order and unique ids, report netted zero-cost usage, prove concurrency safety",
+      "criteria": [
+        "28-REQ-6.3",
+        "28-REQ-6.4",
+        "28-REQ-6.7",
+        "28-REQ-8.1",
+        "28-REQ-8.2"
+      ],
+      "tests": [
+        "TS-28-28",
+        "TS-28-29",
+        "TS-28-31",
+        "TS-28-40",
+        "TS-28-41"
+      ],
+      "steps": [
+        "Write TS-28-28, 29, 31, 40 and 41 (property tests with testing/quick or a generator loop; TS-28-31 with 32 goroutines under -race) and confirm they fail",
+        "For each message.tool_calls entry build the ToolUseBlock via core.NewToolUse(id, name, json.Marshal(call.Function.Arguments)); confirm via `go doc` that ToolCallFunctionArguments marshals in insertion order and that the SDK's ToolCall has an ID; absent arguments become {}",
+        "Push ToolCallStartEvent then exactly one ToolInputDeltaEvent carrying the whole argument JSON, then append the block; ToolCallEndEvent comes at the done chunk in block order",
+        "When a call has no id, synthesize one from a per-Client atomic counter (e.g. `ollama_call_<n>`) so ids are unique within and across responses",
+        "From the done chunk compute Usage: InputTokens = max(0, PromptEvalCount - PromptEvalCachedCount), CacheReadTokens only when cached > 0, OutputTokens = EvalCount, Requests = 1, SetCost(0) so the presence bit is set; no reasoning tokens; use core.Usage.SetField/SetCost",
+        "Ensure the Client holds no per-stream mutable state outside the decode state and atomic counter so concurrent Stream calls race-free",
+        "Run `go test ./provider/ollama/... -race -count=1`"
+      ],
+      "touches": [
+        "provider/ollama/decode.go",
+        "provider/ollama/usage.go",
+        "provider/ollama/toolcall_test.go",
+        "provider/ollama/usage_test.go",
+        "provider/ollama/concurrency_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Replay the transcript: message order, repair, thinking, tool calls and results",
+      "criteria": [
+        "28-REQ-2.3",
+        "28-REQ-4"
+      ],
+      "tests": [
+        "TS-28-12",
+        "TS-28-19",
+        "TS-28-20",
+        "TS-28-21",
+        "TS-28-22"
+      ],
+      "steps": [
+        "Write TS-28-12, 19, 20, 21 (property test over generated JSON objects with non-alphabetical, nested and unicode keys, comparing key order in the raw recorded body) and 22, and confirm they fail",
+        "Build messages in order: one system message with the text blocks of Request.System joined by \"\\n\\n\" (omitted when empty), then Request.Prefix, then the repaired Request.Messages",
+        "Pass Request.Messages through provider.RepairToolPairing before encoding; never mutate the input slice; when the repair changed anything call Options.Warnf once with the report (nil Warnf discards)",
+        "Encode core.UserMessage as role user with its text; core.AssistantMessage as role assistant with text content, thinking = concatenated non-redacted thinking text only when the message's Model == m.ID (other thinking is dropped, never content), and one api.ToolCall per ToolUseBlock with ID, Function.Index = position among the message's calls, Name and Arguments",
+        "Decode ToolUseBlock.Input into the SDK's ToolCallFunctionArguments with json.Unmarshal so key order is kept (verify with `go doc`); the recorded raw body must show Input's key order",
+        "Encode each core.ToolResultMessage as one role tool message with Content = provider.ToolResultText(result) (Error: prefix for errors), ToolName and ToolCallID, in transcript order",
+        "Run `go test ./provider/ollama/... -race -count=1`"
+      ],
+      "touches": [
+        "provider/ollama/messages.go",
+        "provider/ollama/stream.go",
+        "provider/ollama/messages_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Encode num_predict, sampling, tools, tool choice and effort as think",
+      "criteria": [
+        "28-REQ-2.4",
+        "28-REQ-2.5",
+        "28-REQ-3",
+        "28-REQ-5"
+      ],
+      "tests": [
+        "TS-28-13",
+        "TS-28-14",
+        "TS-28-15",
+        "TS-28-16",
+        "TS-28-17",
+        "TS-28-18",
+        "TS-28-23",
+        "TS-28-24",
+        "TS-28-25"
+      ],
+      "steps": [
+        "Write TS-28-13 to TS-28-18 and TS-28-23 to TS-28-25 and confirm they fail; TS-28-25 uses catalog.Select(\"ollama\",\"STANDARD\",\"\")",
+        "Set options.num_predict: requested MaxTokens when positive and not above m.MaxOutputTokens, else m.MaxOutputTokens when positive, else requested when positive, else omit",
+        "Set options.temperature (including an explicit 0), top_p and stop only when set on the request; never set keep_alive, format or images",
+        "Declare each core.ToolWire as a function api.Tool in request order: json.Marshal the InputSchema and json.Unmarshal into api.ToolFunctionParameters (so additionalProperties, format and bounds drop); a nil schema becomes {\"type\":\"object\",\"properties\":{}}; a decode failure ends the turn before any request with an \"ollama:\" error naming the tool (use core.ErrorStream-style failure, no HTTP attempt)",
+        "ToolChoiceNone sends no tools key at all; unset and auto send the tools",
+        "Implement applyThink like provider/anthropic applyThinking: empty effort or ThinkingKindNone sends none; nil Efforts map sends string(effort); with a map, absent or nil sends none, else strings.ToLower(strings.TrimSpace(*v)) as api.ThinkValue{Value: string}; never clamp",
+        "Run `go test ./provider/ollama/... -race -count=1`"
+      ],
+      "touches": [
+        "provider/ollama/request.go",
+        "provider/ollama/tools.go",
+        "provider/ollama/think.go",
+        "provider/ollama/request_test.go",
+        "provider/ollama/tools_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Classify failures: truncation, cancellation, unreachable, 404, context window, auth and other statuses",
+      "criteria": [
+        "28-REQ-7",
+        "28-REQ-8.3"
+      ],
+      "tests": [
+        "TS-28-32",
+        "TS-28-33",
+        "TS-28-34",
+        "TS-28-35",
+        "TS-28-36",
+        "TS-28-37",
+        "TS-28-38",
+        "TS-28-39",
+        "TS-28-42"
+      ],
+      "steps": [
+        "Write TS-28-32 to TS-28-39 and TS-28-42 against the recording server (closed port for unreachable, a blocking handler for cancellation) and confirm they fail",
+        "Implement fail(text, err) like anthropic's decodeState.fail: an abort gives StopReasonAborted, ErrorMessage \"Request was aborted\", Err core.ErrAborted and no ErrorEvent; any other failure gives StopReasonError, a terminal ErrorEvent, then MessageEndEvent; use the caller's context (not the derived one) to detect cancellation, which takes precedence over every other classification; cancel must stop the request within 1 second",
+        "A Chat return or stream end without a done chunk ends with an error wrapping ErrStreamTruncated; the failed message keeps streamed text and thinking and drops every tool call (also on abort)",
+        "Classify errors from client.Chat: net.OpError/dial failure wraps ErrUnreachable (names host, `ollama serve`, OLLAMA_HOST); api.StatusError 404 wraps ErrModelNotFound and also yields *ollama.StatusError{Code:404} via errors.As (names model, host, Ollama's message, `ollama pull <model>`)",
+        "Recognise a message saying the input exceeds the context length (status error or in-stream error) as ErrContextWindow: text names the model and the num_ctx sent, includes Ollama's message and says a model already loaded at a smaller length keeps it until it unloads",
+        "401/403 give a *StatusError text naming the host, saying AgentKit sends no credential to Ollama and to check OLLAMA_HOST; other statuses give *StatusError{Code, Text: \"ollama: HTTP <code>: <message>\"}; an in-stream error line becomes an \"ollama:\"-prefixed error with Ollama's message classified by the same rules",
+        "Make exactly one HTTP attempt per Stream call (no retries); every error text starts with \"ollama:\" and never includes any environment variable value other than the host",
+        "A failed turn's Usage has Requests 1 and no input, output or cache-read presence bits",
+        "Run `go test ./provider/ollama/... -race -count=1`"
+      ],
+      "touches": [
+        "provider/ollama/errors.go",
+        "provider/ollama/decode.go",
+        "provider/ollama/stream.go",
+        "provider/ollama/errors_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 8,
+      "kind": "integration",
+      "title": "Verify the tool loop, error and truncation paths end to end and update the documentation",
+      "tests": [
+        "TS-28-46",
+        "TS-28-47",
+        "TS-28-48",
+        "TS-28-49"
+      ],
+      "steps": [
+        "Write TS-28-47, TS-28-48 and TS-28-49 as smoke tests with the real agentkit.Agent loop, provider/ollama, the SDK client, catalog.Select, provider.RepairToolPairing and an httptest server (no mocks of these components); confirm they pass",
+        "Trace 28-PATH-1, 28-PATH-2 and 28-PATH-3 through the real code: Agent.Run -> Stream -> request encoding -> api.Client.Chat -> decode -> final message -> tool run or short-circuit; confirm each step calls the next",
+        "For every criterion with a contract confirm its producer result (Host(), final Usage with cost presence bit, ErrModelNotFound/ErrUnreachable/ErrStreamTruncated, repaired transcript) is consumed by production code (agent loop or Stream), not only by tests",
+        "Search every file in every task's touches for panic(\"not implemented\"), TODO, and bare `return nil` on non-trivial paths, including the temporary Stream stub from the construction task, and remove them",
+        "Confirm agentkit.Config.Provider accepts *ollama.Client directly (no change to agent.go, which belongs to provider_selection)",
+        "Update docs/configuration.md with an ollama.Options section (fields, OLLAMA_HOST rules and refusals, num_ctx, truncate:false, think, num_predict, tool-schema subset, loaded-model caveat, zero cost); add a provider/ollama row to docs/architecture.md package graph (imports catalog, core, provider; third-party github.com/ollama/ollama/api) and Packages table; add a package row to docs/api.md",
+        "Run `make doc` and commit docs/generated/provider/ollama.txt",
+        "Confirm no *_test.go under provider/anthropic or provider/faux changed (TS-28-46) and run `make check`; note in the handoff that make check-release and the Windows cross-target build of ollama/api were left to the user"
+      ],
+      "touches": [
+        "provider/ollama/smoke_test.go",
+        "docs/configuration.md",
+        "docs/architecture.md",
+        "docs/api.md",
+        "docs/generated/provider/ollama.txt"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "done_when": [
+        "`make check` passes",
+        "docs/generated/provider/ollama.txt exists and matches `make doc` output"
+      ],
+      "state": "pending",
+      "optional": false
+    }
+  ]
+}

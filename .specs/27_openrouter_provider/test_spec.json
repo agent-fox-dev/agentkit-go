@@ -1,0 +1,1196 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "27",
+  "spec_name": "openrouter_provider",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-27-1",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-1.1"
+      ],
+      "title": "New with a key and a non-empty model id returns a client and the exported constants hold their values",
+      "given": [
+        "a core.Model with ID \"vendor/model\"",
+        "Options.Env holds OPENROUTER_API_KEY and OPENROUTER_BASE_URL pointing at a recording server"
+      ],
+      "when": "openrouter.New(m, opts) is called",
+      "then": [
+        "the client is non-nil and the error is nil",
+        "the recording server has received 0 requests",
+        "API == \"openrouter-chat\", APIKeyVar == \"OPENROUTER_API_KEY\", BaseURLVar == \"OPENROUTER_BASE_URL\"",
+        "DefaultBaseURL == \"https://openrouter.ai/api/v1\" and DefaultMaxRetries == 2"
+      ],
+      "pseudocode": "c, err := New(m, Options{Env: env}); assert err == nil && c != nil; assert srv.Count() == 0; assert constants"
+    },
+    {
+      "id": "TS-27-2",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-1.2"
+      ],
+      "title": "Variables resolve Env first, then Getenv, then process env, with empty values unset, and only the two OPENROUTER names are looked up",
+      "given": [
+        "a recording Getenv that logs every name asked",
+        "Getenv returns key \"from-getenv\"; Env sets OPENROUTER_API_KEY \"from-env\"",
+        "a second case where Env holds an empty key and Getenv returns a key",
+        "a third case with Getenv nil and the key in the process environment (t.Setenv)"
+      ],
+      "when": "New is called and one request is made in each case",
+      "then": [
+        "case 1 sends Authorization: Bearer from-env",
+        "case 2 falls through the empty Env value and sends the Getenv key",
+        "case 3 uses the process environment",
+        "every name the recorder saw is OPENROUTER_API_KEY or OPENROUTER_BASE_URL"
+      ],
+      "pseudocode": "for each case: New; Stream; read to end; assert srv.Last().Header(\"Authorization\"); assert set(logged) ⊆ {APIKeyVar, BaseURLVar}"
+    },
+    {
+      "id": "TS-27-3",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-1.3"
+      ],
+      "title": "A missing or empty API key fails New with ErrNoAPIKey naming the variable and no request is made",
+      "given": [
+        "Env without OPENROUTER_API_KEY and a Getenv returning empty",
+        "a recording server as OPENROUTER_BASE_URL"
+      ],
+      "when": "New is called, and again with the key set to the empty string",
+      "then": [
+        "the client is nil",
+        "errors.Is(err, openrouter.ErrNoAPIKey) is true",
+        "err.Error() contains \"OPENROUTER_API_KEY\"",
+        "the recording server received 0 requests"
+      ],
+      "pseudocode": "c, err := New(m, opts); assert c == nil; assert errors.Is(err, ErrNoAPIKey); assert contains(err.Error(), \"OPENROUTER_API_KEY\"); assert srv.Count()==0"
+    },
+    {
+      "id": "TS-27-4",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-1.4"
+      ],
+      "title": "A malformed OPENROUTER_BASE_URL fails New naming the variable and showing the value without user-info",
+      "given": [
+        "the key is set",
+        "base URLs: \"not a url\", \"ftp://host/x\", \"/relative\", \"ftp://user:secret@host/x\""
+      ],
+      "when": "New is called with each base URL",
+      "then": [
+        "the client is nil",
+        "the error text contains \"OPENROUTER_BASE_URL\" and the configured value",
+        "for the user-info case the text contains neither \"user:secret\" nor \"secret\"",
+        "no request is made"
+      ],
+      "pseudocode": "for u in urls: c, err := New(m, Options{Env: {key, BaseURLVar: u}}); assert c==nil; assert contains(err, BaseURLVar); assert !contains(err, \"secret\")"
+    },
+    {
+      "id": "TS-27-5",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-1.5"
+      ],
+      "title": "An empty model id fails New",
+      "given": [
+        "a core.Model with ID \"\"",
+        "the key is set"
+      ],
+      "when": "New is called",
+      "then": [
+        "the client is nil and the error is non-nil",
+        "no request is made"
+      ],
+      "pseudocode": "c, err := New(core.Model{}, opts); assert c == nil && err != nil"
+    },
+    {
+      "id": "TS-27-6",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-1.6"
+      ],
+      "title": "Requests are POSTs to <base>/chat/completions with only a Bearer header carrying the key, and the default base URL is openrouter.ai/api/v1",
+      "given": [
+        "a recording HTTPClient transport that records method, host, path and headers and returns a canned SSE body without touching the network",
+        "a recording httptest server used with a base URL ending in \"//\"",
+        "ANTHROPIC_API_KEY and OLLAMA_HOST set in the process environment"
+      ],
+      "when": "Stream is run to completion with OPENROUTER_BASE_URL unset, and again against the httptest server",
+      "then": [
+        "the transport sees POST, host openrouter.ai, path /api/v1/chat/completions",
+        "the server case sees path /chat/completions after trailing slashes are trimmed",
+        "Authorization is exactly \"Bearer <key>\"",
+        "the key, ANTHROPIC_* and OLLAMA_* values appear in no body and in no other header"
+      ],
+      "pseudocode": "assert rec.Method==\"POST\"; assert rec.Host==\"openrouter.ai\"; assert rec.Path==\"/api/v1/chat/completions\"; assert !bodyContains(key) && !headersExceptAuthContain(key)"
+    },
+    {
+      "id": "TS-27-7",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-1.7"
+      ],
+      "title": "Stream refuses an already-cancelled context without making a request",
+      "given": [
+        "a provider against a recording server",
+        "a context cancelled before the call"
+      ],
+      "when": "Stream(ctx, req) is called",
+      "then": [
+        "the returned channel is nil",
+        "the returned error is ctx.Err() (context.Canceled)",
+        "the recording server received 0 requests"
+      ],
+      "pseudocode": "ch, err := c.Stream(cancelled, req); assert ch == nil; assert errors.Is(err, context.Canceled); assert srv.Count()==0"
+    },
+    {
+      "id": "TS-27-8",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-1.8"
+      ],
+      "title": "Concurrent Stream calls on one provider each complete independently and race-free",
+      "given": [
+        "one provider value against a recording server replaying a canned text stream",
+        "16 goroutines"
+      ],
+      "when": "every goroutine calls Stream and drains its channel (run under -race)",
+      "then": [
+        "each channel closes after its own MessageEndEvent",
+        "each result carries a final message with the canned text and nil Err",
+        "no data race is reported"
+      ],
+      "pseudocode": "parallel 16x { ch := Stream(); events := drain(ch); assert last(events) is MessageEndEvent }"
+    },
+    {
+      "id": "TS-27-9",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-2.1",
+        "27-REQ-2.2"
+      ],
+      "title": "The body carries the model id as written, stream flags, and one joined leading system message",
+      "given": [
+        "m.ID \"Vendor/Model:Free-v1.2\"",
+        "Request.System of two text blocks \"A\" and \"B\"",
+        "a second request with no system text"
+      ],
+      "when": "Stream is run against the recording server for each request",
+      "then": [
+        "body.model equals the id byte for byte",
+        "body.stream is true and body.stream_options.include_usage is true",
+        "messages[0] is role system with content \"A\\n\\nB\"",
+        "the second body has no system message"
+      ],
+      "pseudocode": "assert body.model==m.ID; assert body.stream_options.include_usage; assert body.messages[0]=={role:system, content:\"A\\n\\nB\"}; assert count(role==system)<=1"
+    },
+    {
+      "id": "TS-27-10",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-2.3"
+      ],
+      "title": "Prefix then messages are encoded in order; text-less user messages skipped; each tool result is its own tool message; no cache_control",
+      "given": [
+        "a Prefix with one user message",
+        "Messages holding a text-less user message, an assistant call, two tool results (one IsError) and a final user message"
+      ],
+      "when": "Stream is run against the recording server",
+      "then": [
+        "roles appear in the order prefix, then messages",
+        "the text-less user message is absent",
+        "each tool result is a separate tool message with tool_call_id equal to the call id",
+        "the error result's content starts with \"Error: \" and equals provider.ToolResultText",
+        "the body contains no cache_control"
+      ],
+      "pseudocode": "assert roles(body.messages)==[...]; assert body.messages[k].content==provider.ToolResultText(v); assert !contains(rawBody, \"cache_control\")"
+    },
+    {
+      "id": "TS-27-11",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-2.4"
+      ],
+      "title": "Assistant messages replay arguments byte for byte and skip empty assistant messages",
+      "given": [
+        "an assistant message with text and a tool call whose Input is {\"b\": 1,  \"a\":[1, 2]} with odd whitespace and key order",
+        "an assistant message with no text, no tool calls and no reasoning",
+        "an assistant message with only tool calls"
+      ],
+      "when": "Stream is run against the recording server",
+      "then": [
+        "the tool call has id, type \"function\", function.name and function.arguments byte-identical to string(Input)",
+        "content is absent for the tool-only message",
+        "the empty assistant message is not sent"
+      ],
+      "pseudocode": "assert body.messages[i].tool_calls[0].function.arguments == string(input)"
+    },
+    {
+      "id": "TS-27-12",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-2.5"
+      ],
+      "title": "Tools are declared with their full schema as MarshalJSON renders it, nil schema as empty object, and no strict flag",
+      "given": [
+        "a tool whose schema has properties in non-alphabetical order, additionalProperties false, a format and min/max bounds",
+        "a tool with a nil schema"
+      ],
+      "when": "Stream is run against the recording server",
+      "then": [
+        "tools[0].function.parameters bytes equal schema.MarshalJSON output",
+        "tools[1].function.parameters is {\"type\":\"object\",\"properties\":{}}",
+        "each entry has type \"function\" and name/description",
+        "no tool object contains a strict key"
+      ],
+      "pseudocode": "want,_ := s.MarshalJSON(); assert rawParams(0)==want; assert json(rawParams(1))=={type:object,properties:{}}; assert !contains(rawTools,\"strict\")"
+    },
+    {
+      "id": "TS-27-13",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-2.6"
+      ],
+      "title": "Tool choice auto and none are sent and unset is omitted",
+      "given": [
+        "requests with ToolChoiceAuto, ToolChoiceNone and ToolChoiceUnset"
+      ],
+      "when": "each is streamed against the recording server",
+      "then": [
+        "tool_choice is \"auto\", \"none\", and absent respectively"
+      ],
+      "pseudocode": "assert body.tool_choice == \"auto\"; assert body.tool_choice == \"none\"; assert !has(body,\"tool_choice\")"
+    },
+    {
+      "id": "TS-27-14",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-2.7"
+      ],
+      "title": "max_completion_tokens is capped by the model's output cap, defaults to it, or is omitted",
+      "given": [
+        "cases (MaxTokens, cap): (200000,131072), (4096,131072), (nil,32768), (nil,0), (4096,0)"
+      ],
+      "when": "each request is streamed against the recording server",
+      "then": [
+        "recorded values are 131072, 4096, 32768, absent, 4096"
+      ],
+      "pseudocode": "table-driven; assert body[\"max_completion_tokens\"] equals expected or key absent"
+    },
+    {
+      "id": "TS-27-15",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-2.8"
+      ],
+      "title": "temperature, top_p and stop are sent when set, including zero, and omitted otherwise",
+      "given": [
+        "Temperature pointer to 0.0, TopP pointer to 0.0, StopSequences [\"END\"]",
+        "a request with nil pointers and empty StopSequences"
+      ],
+      "when": "each is streamed",
+      "then": [
+        "the first body has temperature 0, top_p 0 and stop [\"END\"]",
+        "the second body has none of temperature, top_p, stop"
+      ],
+      "pseudocode": "assert has(body,\"temperature\") && body.temperature==0; assert !has(body2,\"stop\")"
+    },
+    {
+      "id": "TS-27-16",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-3.1",
+        "27-REQ-3.2",
+        "27-REQ-3.3"
+      ],
+      "title": "Empty effort sends no reasoning, nil map sends the name, an absent or nil map entry sends nothing",
+      "given": [
+        "Efforts nil with effort \"high\"",
+        "Efforts {low,medium,high,max} with effort \"xhigh\"",
+        "Efforts with a nil entry for \"low\"",
+        "empty Request.Effort"
+      ],
+      "when": "each request is streamed",
+      "then": [
+        "empty effort: no reasoning key",
+        "nil map: reasoning.effort == \"high\"",
+        "absent level: no reasoning key",
+        "nil entry: no reasoning key"
+      ],
+      "pseudocode": "assert !has(body,\"reasoning\") for 3 cases; assert body.reasoning.effort==\"high\""
+    },
+    {
+      "id": "TS-27-17",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-3.4",
+        "27-REQ-3.5"
+      ],
+      "title": "Numeric effort values go to reasoning.max_tokens, names to reasoning.effort, nothing is clamped or removes sampling",
+      "given": [
+        "Efforts map value \"8192\" for \"high\" and \"medium\" for \"low\"",
+        "a request with Effort \"max\" mapped to \"max\", Temperature 0.3, TopP 0.9"
+      ],
+      "when": "each is streamed",
+      "then": [
+        "\"8192\" records reasoning.max_tokens 8192 and no reasoning.effort",
+        "\"medium\" records reasoning.effort \"medium\" and no max_tokens",
+        "\"max\" records reasoning.effort \"max\", temperature 0.3 and top_p 0.9"
+      ],
+      "pseudocode": "assert body.reasoning.max_tokens==8192 && !has(body.reasoning,\"effort\")"
+    },
+    {
+      "id": "TS-27-18",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-4.1",
+        "27-REQ-4.2"
+      ],
+      "title": "The shared repair drops errored/aborted turns and orphan results, inserts synthetic results in position, and leaves its input untouched",
+      "given": [
+        "an assistant message with StopReasonError and its tool result",
+        "an assistant message with StopReasonAborted",
+        "a kept assistant message with calls A, B, C and a result only for B, followed by a user message",
+        "a deep copy of the input taken before the call"
+      ],
+      "when": "the provider repair function is called",
+      "then": [
+        "errored and aborted assistant messages are gone and the orphan result is gone",
+        "the results after the kept turn are A (synthetic, IsError, text \"No result provided\"), B, C (synthetic) before the user message",
+        "the report counts the dropped assistants, dropped orphans and inserted results",
+        "the input is deep-equal to its copy"
+      ],
+      "pseudocode": "out, rep := provider.RepairToolPairing(in); assert deepEqual(in, copy); assert ids(results(out))==[A,B,C]; assert rep.Inserted==2"
+    },
+    {
+      "id": "TS-27-19",
+      "kind": "property",
+      "verifies": [
+        "27-REQ-4.3"
+      ],
+      "title": "Repaired transcripts pair every call exactly once, keep thinking intact and are a fixed point",
+      "given": [
+        "generated transcripts mixing errored, aborted, answered and unanswered assistant turns, with thinking blocks and orphan results"
+      ],
+      "when": "for any generated transcript the repair is applied, then applied to its own output",
+      "then": [
+        "every tool call of a kept assistant message is followed by exactly one result with its id before the next non-result message",
+        "every thinking block in the output is equal to its input counterpart",
+        "the second pass reports zero changes and returns an equal transcript"
+      ],
+      "pseudocode": "for t in gen(): o,_ := Repair(t); assert paired(o); assert thinkingEqual(o,t); o2,r2 := Repair(o); assert !r2.Changed() && equal(o,o2)"
+    },
+    {
+      "id": "TS-27-20",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-4.4"
+      ],
+      "title": "Stream repairs prefix and history and reports non-zero counts through Warnf only",
+      "given": [
+        "a prefix with an unanswered tool call",
+        "history with an errored assistant turn",
+        "a clean second request",
+        "a recording Warnf"
+      ],
+      "when": "Stream is run for the broken request and then for the clean request",
+      "then": [
+        "Warnf is called once for the repaired prefix and once for the repaired history",
+        "the recorded body holds the repaired transcript",
+        "Warnf is not called for the clean request"
+      ],
+      "pseudocode": "assert len(warns)==2 after req1; assert len(warns)==2 after req2"
+    },
+    {
+      "id": "TS-27-21",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-4.5"
+      ],
+      "title": "Tool-call ids from another provider pass through unchanged",
+      "given": [
+        "an assistant message from a different model with tool call id \"toolu_01abc\" and its result"
+      ],
+      "when": "Stream is run against the recording server",
+      "then": [
+        "tool_calls[0].id and the tool message's tool_call_id are both \"toolu_01abc\""
+      ],
+      "pseudocode": "assert body.messages[1].tool_calls[0].id==\"toolu_01abc\"; assert body.messages[2].tool_call_id==\"toolu_01abc\""
+    },
+    {
+      "id": "TS-27-22",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-4.6",
+        "27-REQ-4.7"
+      ],
+      "title": "reasoning_details replays the concatenated fragments for same-model messages only, ignoring empty or non-array signatures",
+      "given": [
+        "a same-model assistant message with two thinking blocks whose Signatures are JSON arrays with extra fields, plus a third block with Signature \"\" and a fourth with \"not json\"",
+        "a message from another model with a signed thinking block"
+      ],
+      "when": "Stream is run against the recording server",
+      "then": [
+        "the same-model message's reasoning_details equals the fragments in block order, each element JSON-equivalent with every field",
+        "the empty and invalid Signatures contribute nothing",
+        "the other-model message has no reasoning_details key"
+      ],
+      "pseudocode": "assert jsonEqual(body.messages[1].reasoning_details, concat(sig1, sig2)); assert !has(body.messages[3],\"reasoning_details\")"
+    },
+    {
+      "id": "TS-27-23",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-4.8"
+      ],
+      "title": "Thinking text never appears in any content field",
+      "given": [
+        "same-model and other-model assistant messages with thinking text \"UNIQUE-MARKER-7f3\""
+      ],
+      "when": "Stream is run against the recording server",
+      "then": [
+        "no content in the recorded body contains the marker",
+        "an assistant message holding only thinking text and no signature is skipped"
+      ],
+      "pseudocode": "for m in body.messages: assert !contains(m.content, MARKER)"
+    },
+    {
+      "id": "TS-27-24",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-5.1"
+      ],
+      "title": "One MessageStartEvent per turn, even across a retried attempt, with model, effort and timestamp",
+      "given": [
+        "a recording server answering 503 first and then a successful stream",
+        "Options.Now returning a fixed time, Retry-After: 0",
+        "Request.Effort \"low\""
+      ],
+      "when": "the turn is streamed and drained",
+      "then": [
+        "exactly one MessageStartEvent precedes every content event",
+        "the partial message has Model m.ID, Effort \"low\" and the fixed Timestamp",
+        "the server received 2 requests"
+      ],
+      "pseudocode": "assert count(events, MessageStartEvent)==1; assert index(start) < index(firstContent)"
+    },
+    {
+      "id": "TS-27-25",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-5.2"
+      ],
+      "title": "Block indices follow order of first appearance and ignorable input produces no events",
+      "given": [
+        "an SSE body with keep-alive comments \": OPENROUTER PROCESSING\", a role-only delta, an empty delta and a choice with index 1, between reasoning, text and tool-call deltas"
+      ],
+      "when": "the body is decoded, then decoded again with the ignorable lines removed",
+      "then": [
+        "block 0 is thinking, block 1 text, block 2 tool call",
+        "both runs yield identical event sequences",
+        "no event derives from the index-1 choice"
+      ],
+      "pseudocode": "assert types(events)==[Start, ThinkStart(0), ThinkDelta(0), TextStart(1), ...]; assert equal(events, eventsClean)"
+    },
+    {
+      "id": "TS-27-26",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-5.3"
+      ],
+      "title": "delta.content emits a TextStart then TextDelta events with the open block's index",
+      "given": [
+        "an SSE body with content deltas \"Hel\" and \"lo\""
+      ],
+      "when": "the stream is decoded",
+      "then": [
+        "one TextStartEvent then TextDeltaEvents with Delta \"Hel\" and \"lo\" at the same BlockIndex",
+        "TextEndEvent carries \"Hello\""
+      ],
+      "pseudocode": "assert deltas==[\"Hel\",\"lo\"]; assert end.Text==\"Hello\""
+    },
+    {
+      "id": "TS-27-27",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-5.4"
+      ],
+      "title": "Reasoning fragments accumulate as the thinking block's Signature array and visible text, never as text events",
+      "given": [
+        "chunks with delta.reasoning plus reasoning_details fragments carrying extra fields (id, format, index)",
+        "a chunk with only reasoning.text, reasoning.summary and reasoning.encrypted fragments and no delta.reasoning"
+      ],
+      "when": "the stream is decoded",
+      "then": [
+        "ThinkingStart and ThinkingDelta events are emitted, no text events for them",
+        "the finished ThinkingBlock.Thinking is the accumulated text (summary and text fragments counted, encrypted adding none)",
+        "Signature is the JSON array of all fragments in arrival order with every field",
+        "Redacted is false; with no fragments Signature is empty"
+      ],
+      "pseudocode": "assert jsonEqual(block.Signature, fragments); assert block.Thinking==\"...\"; assert !block.Redacted"
+    },
+    {
+      "id": "TS-27-28",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-5.5"
+      ],
+      "title": "Tool-call fragments accumulate by index, arguments are concatenated byte for byte and id-less calls get unique ids",
+      "given": [
+        "two interleaved tool calls split over several fragments with whitespace-bearing arguments",
+        "two calls without ids in one turn",
+        "a call with empty arguments"
+      ],
+      "when": "the stream is decoded",
+      "then": [
+        "ToolCallStartEvent is emitted at the first fragment carrying id and name",
+        "each arguments fragment is a ToolInputDeltaEvent as received",
+        "final ToolUseBlock.Input equals the concatenated bytes",
+        "id-less calls get distinct ids matching ^call_[0-9a-f]+$",
+        "empty arguments yield {}"
+      ],
+      "pseudocode": "assert string(block.Input)==join(fragments); assert ids[0]!=ids[1]; assert match(\"^call_[0-9a-f]+$\", ids[0])"
+    },
+    {
+      "id": "TS-27-29",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-5.6"
+      ],
+      "title": "Non-object tool arguments become {} and Warnf names the call",
+      "given": [
+        "a call id \"call_x\" name \"read\" with arguments \"[1,2\" or \"\\\"str\\\"\"",
+        "a recording Warnf"
+      ],
+      "when": "the stream is decoded",
+      "then": [
+        "ToolUseBlock.Input is {}",
+        "a Warnf line contains \"call_x\" and \"read\""
+      ],
+      "pseudocode": "assert string(block.Input)==\"{}\"; assert contains(warns[0], \"call_x\") && contains(warns[0], \"read\")"
+    },
+    {
+      "id": "TS-27-30",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-5.7"
+      ],
+      "title": "After finish_reason reading continues to collect usage, then block ends in order and the MessageEnd carry the final message",
+      "given": [
+        "a body with text, a tool call, a finish chunk, then a usage chunk with empty choices, then [DONE]"
+      ],
+      "when": "the turn is drained",
+      "then": [
+        "TextEnd, ToolCallEnd arrive once each in block order, with whole blocks",
+        "MessageEndEvent follows them",
+        "the result message equals the MessageEndEvent message with nil Err",
+        "usage from the later chunk is present in the message"
+      ],
+      "pseudocode": "assert order(events)==[...,TextEnd(0),ToolCallEnd(1),MessageEnd]; assert res.Message==end.Message; assert res.Message.Usage.Reported()"
+    },
+    {
+      "id": "TS-27-31",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-5.8"
+      ],
+      "title": "Every finish_reason maps to its stop reason, is kept raw, tool calls survive, and response id and model are set",
+      "given": [
+        "streams ending with stop, length, tool_calls, content_filter and an unknown value \"weird\"",
+        "a stream with a tool call and finish_reason \"stop\"",
+        "chunks carrying id \"gen-1\" and model \"vendor/served\""
+      ],
+      "when": "each is decoded",
+      "then": [
+        "stop→Stop, length→Length, tool_calls→ToolUse, content_filter→Refusal, weird→Stop",
+        "RawStopReason equals the raw value",
+        "the tool-call-with-stop message keeps its ToolUseBlock",
+        "ResponseID is \"gen-1\" and ResponseModel \"vendor/served\""
+      ],
+      "pseudocode": "table-driven over finish reasons; assert msg.StopReason==want && msg.RawStopReason==raw"
+    },
+    {
+      "id": "TS-27-32",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-6.1"
+      ],
+      "title": "A body ending without finish_reason fails with ErrStreamTruncated and keeps no tool call",
+      "given": [
+        "a body with text and a partial tool call, ending after [DONE] or EOF without any finish_reason"
+      ],
+      "when": "the turn is drained",
+      "then": [
+        "result Err satisfies errors.Is(err, openrouter.ErrStreamTruncated)",
+        "the error text is \"openrouter: stream ended before finish_reason\"",
+        "the message has StopReasonError and no ToolUseBlock"
+      ],
+      "pseudocode": "assert errors.Is(res.Err, ErrStreamTruncated); assert res.Err.Error()==\"openrouter: stream ended before finish_reason\"; assert len(ExtractToolUse(msg))==0"
+    },
+    {
+      "id": "TS-27-33",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-6.2"
+      ],
+      "title": "An in-stream 429 or 5xx before content discards the attempt and retries",
+      "given": [
+        "the first 200 stream is an error chunk code 429 (or 502) with no content, with Retry-After: 0",
+        "the second response is a good stream"
+      ],
+      "when": "the turn is drained",
+      "then": [
+        "the server received 2 requests",
+        "the consumer sees events only from the second attempt",
+        "the final message is the good one with nil Err"
+      ],
+      "pseudocode": "assert srv.Count()==2; assert noEventsFrom(attempt1)"
+    },
+    {
+      "id": "TS-27-34",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-6.3"
+      ],
+      "title": "An in-stream error after content, with a non-retryable code, or with retries exhausted fails as a StatusError",
+      "given": [
+        "a stream with text then an error chunk code 429",
+        "a stream with an error chunk code 400 and no content",
+        "a stream with an error chunk code 503 and MaxRetries 0"
+      ],
+      "when": "each turn is drained",
+      "then": [
+        "each server receives exactly 1 request",
+        "Err is a *openrouter.StatusError with Code equal to the vendor's code (429, 400, 503)",
+        "Text is \"openrouter: error <code> in stream: <message>\"",
+        "a choice with finish_reason \"error\" is treated the same way"
+      ],
+      "pseudocode": "var se *StatusError; assert errors.As(res.Err,&se); assert se.Code==429; assert se.Text==\"openrouter: error 429 in stream: slow down\""
+    },
+    {
+      "id": "TS-27-35",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-6.4",
+        "27-REQ-6.5"
+      ],
+      "title": "A failed turn keeps text and thinking, drops tool calls, keeps usage, and ends ErrorEvent then MessageEnd then result",
+      "given": [
+        "a stream with thinking, text, a complete tool call, a usage chunk and then an in-stream error code 400 after content"
+      ],
+      "when": "the turn is drained",
+      "then": [
+        "the message has StopReasonError, ErrorMessage equal to the error text, the text and thinking blocks and no tool-call block",
+        "core.ExtractToolUse(message) returns no calls",
+        "usage that had arrived is on the message and priced",
+        "the last two events are ErrorEvent{Terminal: true} then MessageEndEvent",
+        "result Err equals the ErrorEvent's Err"
+      ],
+      "pseudocode": "assert last2(events)==[ErrorEvent(Terminal), MessageEnd]; assert res.Err==errEvent.Err; assert msg.ErrorMessage==res.Err.Error()"
+    },
+    {
+      "id": "TS-27-36",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-7.1"
+      ],
+      "title": "429 and 5xx are retried up to MaxRetries, with default 2, 0 and negative meaning none",
+      "given": [
+        "a server that answers 503 with Retry-After: 0 on every request",
+        "a server answering 429 then 200"
+      ],
+      "when": "default options, MaxRetries 0, MaxRetries -1 and MaxRetries 1 are exercised",
+      "then": [
+        "default: exactly 3 requests and the turn fails",
+        "MaxRetries 0 and -1: exactly 1 request",
+        "429 followed by 200 succeeds on the second request"
+      ],
+      "pseudocode": "assert srv.Count()==3; assert srv0.Count()==1"
+    },
+    {
+      "id": "TS-27-37",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-7.2"
+      ],
+      "title": "Wait honours Retry-After seconds or date in 0–60 s, otherwise follows the 0.5 s–8 s jittered curve",
+      "given": [
+        "the unexported backoff hook recording each wait",
+        "responses with Retry-After: 0, 5, an HTTP date 3 s ahead (via Options.Now), 120 and none"
+      ],
+      "when": "retries occur across successive attempts",
+      "then": [
+        "Retry-After 0 waits zero, 5 waits 5 s, the date waits about 3 s",
+        "120 and absent fall back to 0.5 s, 1 s, 2 s … capped at 8 s with up to 25% jitter",
+        "the 60 s boundary is honoured, 61 s is not"
+      ],
+      "pseudocode": "assert wait(ra=\"0\")==0; assert wait(ra=\"120\") in [0.5,0.625]; assert wait(attempt=10) <= 8*1.25"
+    },
+    {
+      "id": "TS-27-38",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-7.3"
+      ],
+      "title": "Exhausted retries end the turn with the last status error",
+      "given": [
+        "a server answering 503 then 502 then 429 with Retry-After: 0 and default retries"
+      ],
+      "when": "the turn is drained",
+      "then": [
+        "Err is a *StatusError with Code 429 (the last)",
+        "the message has StopReasonError",
+        "the server received 3 requests"
+      ],
+      "pseudocode": "assert se.Code==429; assert msg.StopReason==StopReasonError"
+    },
+    {
+      "id": "TS-27-39",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-7.4"
+      ],
+      "title": "HTTP 401 and 403 fail at once with a StatusError naming OPENROUTER_API_KEY",
+      "given": [
+        "a server answering 401 (and in a second case 403) with error.message \"bad key\""
+      ],
+      "when": "the turn is drained",
+      "then": [
+        "the server received 1 request",
+        "Err is a *StatusError with Code 401 (403)",
+        "Text starts with \"openrouter: HTTP 401: bad key\" and mentions OPENROUTER_API_KEY"
+      ],
+      "pseudocode": "assert srv.Count()==1; assert se.Code==401; assert hasPrefix(se.Text,\"openrouter: HTTP 401: bad key\") && contains(se.Text,\"OPENROUTER_API_KEY\")"
+    },
+    {
+      "id": "TS-27-40",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-7.5"
+      ],
+      "title": "Other non-2xx statuses fail without retry using error.message as the vendor message",
+      "given": [
+        "servers answering 400 and 402 with a JSON error.message, and one with a non-JSON body"
+      ],
+      "when": "each turn is drained",
+      "then": [
+        "each server received 1 request",
+        "Err is a *StatusError with the status code and Text \"openrouter: HTTP <code>: <message>\"",
+        "the non-JSON body case still yields a StatusError with that code"
+      ],
+      "pseudocode": "assert se.Text==\"openrouter: HTTP 402: insufficient credits\"; assert srv.Count()==1"
+    },
+    {
+      "id": "TS-27-41",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-7.6"
+      ],
+      "title": "A transport failure is not retried and fails as \"openrouter: <error>\"",
+      "given": [
+        "a base URL pointing at a closed port, or an HTTPClient returning an error"
+      ],
+      "when": "the turn is drained",
+      "then": [
+        "exactly one attempt is made",
+        "Err text starts with \"openrouter: \"",
+        "the message has StopReasonError"
+      ],
+      "pseudocode": "assert hasPrefix(res.Err.Error(),\"openrouter: \"); assert attempts==1"
+    },
+    {
+      "id": "TS-27-42",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-7.7"
+      ],
+      "title": "Cancelling the context during the request, mid-stream or during a retry wait aborts the turn within 1 s",
+      "given": [
+        "a server that hangs before responding",
+        "a server that sends text then stalls",
+        "a server answering 503 with Retry-After: 60 so the provider is waiting"
+      ],
+      "when": "the caller's context is cancelled in each case",
+      "then": [
+        "the channel closes within 1 second",
+        "the message has StopReasonAborted and ErrorMessage \"Request was aborted\"",
+        "errors.Is(res.Err, core.ErrAborted) is true"
+      ],
+      "pseudocode": "cancel(); assert closedWithin(1s); assert msg.StopReason==StopReasonAborted; assert errors.Is(res.Err, core.ErrAborted)"
+    },
+    {
+      "id": "TS-27-43",
+      "kind": "property",
+      "verifies": [
+        "27-REQ-7.8"
+      ],
+      "title": "No output the provider builds contains the API key",
+      "given": [
+        "generated API keys of varied length and characters",
+        "a server whose error.message, in-stream error message and tool-call name echo the key, and a base URL containing the key as a path segment",
+        "a recording Warnf"
+      ],
+      "when": "for any generated key, turns are run through HTTP errors, in-stream errors, transport errors and bad tool arguments",
+      "then": [
+        "no Err string, ErrorEvent, ErrorMessage, event field or Warnf line contains the key",
+        "the key is replaced by \"[redacted]\" where it was echoed"
+      ],
+      "pseudocode": "for k in gen(): run scenarios; assert all(!contains(s,k) for s in collectedStrings); assert contains(errText,\"[redacted]\")"
+    },
+    {
+      "id": "TS-27-44",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-8.1"
+      ],
+      "title": "Usage 354/256/120/80 with cost 0.00012 is netted into core.Usage",
+      "given": [
+        "a usage chunk prompt_tokens 354, cached_tokens 256, completion_tokens 120, reasoning_tokens 80, total_tokens 474, cost 0.00012",
+        "a second chunk reporting cache_write_tokens 50",
+        "a third chunk reporting only prompt_tokens and completion_tokens"
+      ],
+      "when": "each stream is decoded",
+      "then": [
+        "first: InputTokens 98, CacheReadTokens 256, OutputTokens 120, ReasoningTokens 80, TotalTokens 474, CostUSD 0.00012 with UsageCostUSD set",
+        "second: CacheWriteTokens 50 and InputTokens 48",
+        "third: presence bits set for exactly input and output tokens"
+      ],
+      "pseudocode": "assert usage==core.Usage{InputTokens:98,CacheReadTokens:256,OutputTokens:120,ReasoningTokens:80,...}; assert usage.Has(UsageCostUSD)"
+    },
+    {
+      "id": "TS-27-45",
+      "kind": "property",
+      "verifies": [
+        "27-REQ-8.2"
+      ],
+      "title": "Usage netting never goes negative and conserves totals",
+      "given": [
+        "generated non-negative prompt, cached, cache-write, completion and reasoning counts, including cached greater than prompt and reasoning greater than completion"
+      ],
+      "when": "for any such counts the usage chunk is decoded",
+      "then": [
+        "InputTokens >= 0",
+        "ReasoningTokens <= OutputTokens",
+        "InputTokens + CacheReadTokens + CacheWriteTokens == max(prompt_tokens, CacheReadTokens + CacheWriteTokens)"
+      ],
+      "pseudocode": "for c in gen(): u := decode(c); assert u.InputTokens>=0 && u.ReasoningTokens<=u.OutputTokens; assert u.Input+u.CacheRead+u.CacheWrite==max(c.prompt, c.cached+c.write)"
+    },
+    {
+      "id": "TS-27-46",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-8.3"
+      ],
+      "title": "Requests is 1 across retries and BilledModel records a differing served model",
+      "given": [
+        "a server answering 503 twice with Retry-After: 0 then a good stream whose chunks carry model \"vendor/other-served\""
+      ],
+      "when": "the turn is drained",
+      "then": [
+        "Usage.Requests == 1",
+        "BilledModel is \"vendor/other-served\"",
+        "with the served model equal to m.ID BilledModel stays empty"
+      ],
+      "pseudocode": "assert msg.Usage.Requests==1; assert msg.Usage.BilledModel==\"vendor/other-served\""
+    },
+    {
+      "id": "TS-27-47",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-8.4",
+        "27-REQ-8.5",
+        "27-REQ-8.6"
+      ],
+      "title": "Cost comes from the reported value, else the row's price, else stays unset",
+      "given": [
+        "a priced model and usage reporting cost 0.5",
+        "a priced model and usage with no cost",
+        "a model with all prices zero and usage with no cost"
+      ],
+      "when": "each stream is decoded",
+      "then": [
+        "case 1: CostUSD 0.5 with the bit set",
+        "case 2: CostUSD == provider.ComputeCost(&m, usage) with the bit set",
+        "case 3: CostUSD 0 and Has(UsageCostUSD) false",
+        "a reported cost wins even for a zero-price model"
+      ],
+      "pseudocode": "assert u.CostUSD==0.5 && u.Has(UsageCostUSD); assert u.CostUSD==provider.ComputeCost(&m,u); assert !u.Has(UsageCostUSD)"
+    },
+    {
+      "id": "TS-27-48",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-8.7"
+      ],
+      "title": "A response with no usage leaves usage unreported and unpriced",
+      "given": [
+        "a good stream with finish_reason stop and no usage chunk, for a priced model"
+      ],
+      "when": "the turn is drained",
+      "then": [
+        "Usage.Reported() is false",
+        "CostUSD is 0 and its bit is clear"
+      ],
+      "pseudocode": "assert !msg.Usage.Reported(); assert !msg.Usage.Has(UsageCostUSD)"
+    },
+    {
+      "id": "TS-27-49",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-9.1",
+        "27-REQ-9.3"
+      ],
+      "title": "go.mod pins the SDK at v0.9.66 directly and the allowlist carries it with a reason comment",
+      "given": [
+        "the root go.mod and internal/policy/deps_test.go sources"
+      ],
+      "when": "the policy tests parse go.mod and approvedDeps",
+      "then": [
+        "github.com/OpenRouterTeam/go-sdk is required at exactly v0.9.66 without // indirect",
+        "approvedDeps contains the module with a comment on the preceding line",
+        "the pin test fails if the version or the indirect marker changes"
+      ],
+      "pseudocode": "assert require[\"github.com/OpenRouterTeam/go-sdk\"]==\"v0.9.66\" && !indirect; assert commentedDeps passes"
+    },
+    {
+      "id": "TS-27-50",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-9.2"
+      ],
+      "title": "Only provider/openrouter imports the SDK in any module",
+      "given": [
+        "go list import graphs of the root and every module in MODULES"
+      ],
+      "when": "the policy test scans every package's imports",
+      "then": [
+        "the only package importing github.com/OpenRouterTeam/go-sdk or a subpackage is provider/openrouter"
+      ],
+      "pseudocode": "for pkg in goListAll(): if importsSDK(pkg): assert pkg.ImportPath endswith \"provider/openrouter\""
+    },
+    {
+      "id": "TS-27-51",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-9.4"
+      ],
+      "title": "Root graph snapshot and direct set accept exactly the SDK's modules",
+      "given": [
+        "preSpec13Direct including the SDK",
+        "the regenerated testdata/go-list-m-all.txt"
+      ],
+      "when": "TestSandboxDepsPromoted_TS13_65 and TestRemovedDependenciesPruned_TS09_15 run",
+      "then": [
+        "root direct set equals preSpec13Direct sorted",
+        "go list -m all equals the snapshot",
+        "golang.org/x/net and golang.org/x/time remain indirect"
+      ],
+      "pseudocode": "go test ./internal/policy -run 'TS13_65|TS09_15'"
+    },
+    {
+      "id": "TS-27-52",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-9.5"
+      ],
+      "title": "Sandbox graph snapshots pass with the restated TS-15-40 and no skips",
+      "given": [
+        "the regenerated testdata/sandbox-go-list-m-all.txt",
+        "TS-15-40 restated to check the .14 lines and go-landlock are present"
+      ],
+      "when": "TestRsyncDependency_TS14_42, TestLandlockPromoted_TS15_40 and TestPodmanAddsNoDependency_TS17_60 run without -short skipping",
+      "then": [
+        "all three pass",
+        "TS-14-42's .13 subset check is unchanged and satisfied"
+      ],
+      "pseudocode": "go test ./internal/policy -run 'TS14_42|TS15_40|TS17_60'"
+    },
+    {
+      "id": "TS-27-53",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-9.6"
+      ],
+      "title": "Every nested module is tidy and the graph subset tests still hold",
+      "given": [
+        "go.sum files regenerated with make tidy in every module of MODULES"
+      ],
+      "when": "make check runs, covering vet, lint and short tests, including TestMcpserveGraph_TS23_2 and TestGatewaydGraph_TS19_61",
+      "then": [
+        "each module builds with the new module's go.sum entries",
+        "make check exits 0"
+      ],
+      "pseudocode": "make tidy; git diff --exit-code; make check"
+    },
+    {
+      "id": "TS-27-54",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-9.7"
+      ],
+      "title": "The provider directories are exactly anthropic, faux and openrouter",
+      "given": [
+        "the directories under provider/"
+      ],
+      "when": "TestProviderDefaults_TS09_11 runs",
+      "then": [
+        "the sorted joined names equal \"anthropic,faux,openrouter\""
+      ],
+      "pseudocode": "assert join(sorted(dirs(\"provider\")),\",\")==\"anthropic,faux,openrouter\""
+    },
+    {
+      "id": "TS-27-55",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-9.8"
+      ],
+      "title": "provider/openrouter non-test sources contain no model metadata",
+      "given": [
+        "the non-test .go files of provider/openrouter"
+      ],
+      "when": "a policy test scans their string and numeric literals",
+      "then": [
+        "no catalog model id such as \"qwen/\" appears",
+        "no catalog window (1000000), output cap (131072, 32768) or price literal (0.15, 0.47, 0.016) appears"
+      ],
+      "pseudocode": "for f in glob(\"provider/openrouter/*.go\") minus *_test.go: assert !regex(f, qwen/|1000000|131072|32768|0\\.47|0\\.016)"
+    },
+    {
+      "id": "TS-27-56",
+      "kind": "smoke",
+      "verifies": [
+        "27-PATH-1",
+        "27-REQ-2.1",
+        "27-REQ-2.4",
+        "27-REQ-4.6"
+      ],
+      "title": "A two-turn tool loop completes on OpenRouter against a recording server with byte-exact replay",
+      "given": [
+        "m from catalog.Select(\"openrouter\", \"STANDARD\", \"\")",
+        "a recording server replaying turn 1 as reasoning_details fragments plus a tool call (finish_reason tool_calls, usage chunk) and turn 2 as final text",
+        "an agent with one tool whose schema has several properties",
+        "ANTHROPIC_API_KEY and OLLAMA_HOST set in the process environment"
+      ],
+      "when": "openrouter.New(m, Options{Env}) is passed to the agent and the agent runs one prompt",
+      "then": [
+        "the server holds exactly two requests",
+        "the second carries model as written, the tool's full schema, the first turn's call id and argument string byte for byte, the result paired to that id and the reasoning_details fragments as received",
+        "no ANTHROPIC_* or OLLAMA_* value appears in either request",
+        "the agent's final message is the turn-2 text"
+      ],
+      "real_components": [
+        "openrouter provider",
+        "OpenRouter Go SDK",
+        "agentkit.Agent loop",
+        "catalog",
+        "schema",
+        "httptest recording server"
+      ]
+    },
+    {
+      "id": "TS-27-57",
+      "kind": "smoke",
+      "verifies": [
+        "27-PATH-2",
+        "27-REQ-1.2",
+        "27-REQ-1.3"
+      ],
+      "title": "A missing API key fails construction before any request and looks up only the two variables",
+      "given": [
+        "Env with only OPENROUTER_BASE_URL pointing at a recording server",
+        "a recording Getenv"
+      ],
+      "when": "openrouter.New is called",
+      "then": [
+        "the error wraps ErrNoAPIKey and its text names OPENROUTER_API_KEY",
+        "the recorder saw only OPENROUTER_API_KEY and OPENROUTER_BASE_URL",
+        "the recording server received 0 requests"
+      ],
+      "real_components": [
+        "openrouter provider",
+        "httptest recording server"
+      ]
+    },
+    {
+      "id": "TS-27-58",
+      "kind": "smoke",
+      "verifies": [
+        "27-PATH-3",
+        "27-REQ-6.2",
+        "27-REQ-8.1",
+        "27-REQ-8.3"
+      ],
+      "title": "An in-stream 429 is retried and the turn reports netted usage and the reported cost",
+      "given": [
+        "a recording server whose first reply is a 200 stream with an error chunk code 429 and no finish_reason",
+        "the second reply is a stream with text, finish_reason stop and a usage chunk prompt 354, cached 256, completion 120, reasoning 80, cost 0.00012",
+        "Retry-After: 0 behaviour via the backoff hook"
+      ],
+      "when": "Stream is called and drained",
+      "then": [
+        "the server received 2 requests",
+        "exactly one MessageStartEvent and the text events appear, then one MessageEndEvent",
+        "usage is InputTokens 98, CacheReadTokens 256, OutputTokens 120, ReasoningTokens 80, CostUSD 0.00012 with the cost bit set and Requests 1"
+      ],
+      "real_components": [
+        "openrouter provider",
+        "OpenRouter Go SDK",
+        "httptest recording server",
+        "core event stream"
+      ]
+    },
+    {
+      "id": "TS-27-59",
+      "kind": "smoke",
+      "verifies": [
+        "27-PATH-4",
+        "27-REQ-6.1",
+        "27-REQ-6.4",
+        "27-REQ-6.5"
+      ],
+      "title": "A truncated stream fails the turn leaving no executable tool call",
+      "given": [
+        "a recording server replaying text and a partial tool call then ending the body without finish_reason"
+      ],
+      "when": "Stream is called and drained",
+      "then": [
+        "text and tool-call deltas are emitted first",
+        "then a terminal ErrorEvent and a MessageEndEvent",
+        "the result's Err satisfies errors.Is(err, ErrStreamTruncated)",
+        "the message has StopReasonError, the streamed text and no ToolUseBlock"
+      ],
+      "real_components": [
+        "openrouter provider",
+        "OpenRouter Go SDK",
+        "httptest recording server",
+        "core event stream"
+      ]
+    },
+    {
+      "id": "TS-27-60",
+      "kind": "smoke",
+      "verifies": [
+        "27-PATH-5",
+        "27-REQ-7.4",
+        "27-REQ-7.8"
+      ],
+      "title": "A 401 ends the turn at once and the key is redacted from the error",
+      "given": [
+        "a recording server answering 401 with an error.message that echoes the API key"
+      ],
+      "when": "Stream is called and drained",
+      "then": [
+        "the server received exactly 1 request",
+        "Err is a *StatusError with Code 401 whose text names openrouter and OPENROUTER_API_KEY",
+        "the text contains \"[redacted]\" and not the key, and neither do the ErrorEvent or ErrorMessage"
+      ],
+      "real_components": [
+        "openrouter provider",
+        "OpenRouter Go SDK",
+        "httptest recording server",
+        "core event stream"
+      ]
+    }
+  ]
+}
