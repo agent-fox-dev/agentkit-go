@@ -24,42 +24,43 @@ need an Anthropic credential (below).
 ## Configuring an application
 
 AgentKit reads no configuration file and has no global state. Everything is
-either a field on `agentkit.Config` or an environment variable read when the
-client is resolved. The smallest real agent is:
+either a field on `agentkit.Config` or an environment variable read by the
+provider the agent is built on. The smallest real agent is:
 
 ```go
-client, _, err := anthropic.Resolve(anthropic.OSEnv{})
-if err != nil {
-	return err // names the variables to set
-}
 agent, err := agentkit.New(agentkit.Config{
-	Client:     client,
-	Model:      "claude-sonnet-5",
+	Model:      "claude-sonnet-5", // Provider is empty: Anthropic
 	System:     "You are concise.",
 	Toolset:    agentkit.Toolset{Tools: myTools},
 	MaxTurns:   12,
 	MaxCostUSD: 1.00,
 })
+if err != nil {
+	return err // a missing credential names the variables to set
+}
 ```
 
 `New` validates the whole config before returning an agent, so a bad tool,
-a missing model or an unguarded shell is an error here rather than on the
-first run. The agent then has six methods: `Run` and `Stream` execute a
-prompt, `Messages`, `Usage` and `ReachableTools` read its state, and `Runner`
-returns the runner its tool calls go through.
+a missing model, a missing credential or an unguarded shell is an error here
+rather than on the first run. The agent then has seven methods: `Run` and
+`Stream` execute a prompt, `Messages`, `Usage` and `ReachableTools` read its
+state, `Runner` returns the runner its tool calls go through, and `Resolution`
+reports the provider, model and effort it was built to run.
 
 There are exactly two things to get right.
 
 ### 1. A deployment and its credential
 
-`anthropic.Resolve(env)` chooses the deployment and builds the SDK client
-(`provider/anthropic/resolve.go`); `anthropic.OSEnv{}` reads the process
-environment. The examples that call a model resolve once, up front, and pass
-the result as `Config.Client`. When you need provider options instead —
-`VertexProject`, `Betas`, `MaxRetries` — build the provider yourself and pass
-`Config.Provider: anthropic.Provider(model, anthropic.Options{…})` (`model` from
-`catalog.Lookup`);
-`Provider` is used instead of `Client` when it is set.
+`agentkit.New` chooses the deployment from the variables below, read through
+`Config.Env` and `Config.Getenv` or, with neither, the process environment, and
+builds the provider (`anthropic.Resolve`, `provider/anthropic/resolve.go`, is
+what it checks them with). A credential that is missing is an error from `New`,
+before any request. The examples that call a model set only `Config.Model`. When
+you need provider options instead — `VertexProject`, `Betas`, `MaxRetries` —
+build the provider yourself and pass it as `Config.Client:
+anthropic.Provider(model, anthropic.Options{…})` (`model` from
+`catalog.Lookup`); `Client` is used instead of the one `New` would build, and
+`Provider` and `Model` still choose the row and the effort.
 
 | Variable | Effect |
 |---|---|
@@ -116,17 +117,18 @@ model, known := catalog.Lookup("claude-opus-5-5") // the "anthropic/" prefix is 
 `catalog.Lookup` supplies what the model id does not carry: the context
 window, the output cap, the prices, and how the model takes extended thinking
 (`Model.ThinkingKind`: `adaptive` with an effort, `budget` with `budget_tokens`,
-or `none`). The catalog lists Claude models only. `Config.Model` takes the
-id and `agentkit.New` does this lookup itself; `Config.Effort`
+or `none`). `catalog.Lookup` knows Claude ids; `catalog.Select` resolves a tier
+or an id for any of the three providers. `Config.Model` takes either and
+`agentkit.New` does the resolution itself; `Config.Effort`
 (`agentkit.EffortLow` … `agentkit.EffortMax`) sets the effort. The examples
-call `catalog.Lookup` only to print the bare id in their summary line.
+print `agent.Resolution().Model.ID` in their summary line.
 
 The catalog is **not an allowlist**. An id it does not list — a model
 released after this build, or Vertex's dated ids such as
 `claude-sonnet-5@20260401` — still resolves, with `known` false: a
 1,000,000-token window, a 128,000-token output cap, adaptive thinking and
-**no price**, so a run's cost reads as zero — and `Config.MaxCostUSD` never
-fires for it. Resolving never means the model
+**no price**, so a run's cost reads as zero (`RunResult.Usage.Unpriced` says
+so) — and `Config.MaxCostUSD` never fires for it. Resolving never means the model
 exists; the vendor decides that on the first request.
 
 Every example that calls a model takes `AGENTKIT_MODEL` to override its

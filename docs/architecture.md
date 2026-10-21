@@ -100,7 +100,7 @@ only" exists for tests: it holds only test files, or only test files import it.
 | `mcp` | `core`, `schema`, `wire`, `internal/diag`, `internal/toml` | `github.com/modelcontextprotocol/go-sdk` |
 | `mcpserve` (nested module) | `.` (root, `agentkit`), `core`, `mcp`, `wire` | `github.com/modelcontextprotocol/go-sdk` |
 | `prompt` | `core`, `guard`, `tools` | |
-| `.` (root, `agentkit`) | `core`, `catalog`, `guard`, `prompt`, `provider`, `provider/anthropic` | `github.com/anthropics/anthropic-sdk-go` |
+| `.` (root, `agentkit`) | `core`, `catalog`, `guard`, `prompt`, `provider`, `provider/anthropic`, `provider/openrouter`, `provider/ollama` | |
 | `examples/{agentdemo,codemode,codingagent,customtools,mcp}` (programs) | `.`, `catalog`, `codemode`, `core`, `guard`, `mcp`, `provider/anthropic`, `provider/faux`, `schema`, `tools`, `wire`, `workspace`, by program | |
 | `codesearch` (nested module) | `core`, `outline`, `schema`, `tools`, `workspace` | `github.com/sourcegraph/zoekt` |
 | `sandbox` (nested module; so are the rows below) | `core`, `sandbox/internal/buildver`, `tools`, `workspace` | |
@@ -144,12 +144,14 @@ What follows from it:
   imports `core` and `schema`, and `tools` for its output buffer
   (`tools.Accumulator`). `mcp` imports `core` and `schema`, and `wire` for its
   strict boundary. `guard` imports `core` and nothing else.
-- The root imports `core`, `catalog`, `guard`, `prompt`, `provider` and
-  `provider/anthropic`, and neither `tools` nor `workspace` in non-test code.
-  It reaches `tools` only through `prompt`, which takes the file-navigation
-  tool names and the shell guideline texts from `tools`. The root imports the
-  SDK because `Config.Client` is an SDK client; `New` builds the provider over
-  it.
+- The root imports `core`, `catalog`, `guard`, `prompt`, `provider` and the
+  three providers (`provider/anthropic`, `provider/openrouter` and
+  `provider/ollama`), and neither `tools` nor `workspace` in non-test code. It
+  reaches `tools` only through `prompt`, which takes the file-navigation tool
+  names and the shell guideline texts from `tools`. It imports no SDK itself:
+  `Config.Client` is a `core.ProviderClient`, and `Resolve` (`resolve.go`) is
+  the one place that names a provider package, to build the client of
+  `Config.Provider`.
 - The root package is imported by `mcpserve` and by programs: this module's
   `examples/` and the nested example modules. No library package of the root
   module imports it, so the tools, the guard, code mode and the sandboxes do
@@ -170,7 +172,7 @@ What follows from it:
 
 | Package | Owns |
 |---|---|
-| `.` | `Config`, `New` and the `Agent` (`agent.go`; its surface is `Run`, `Stream`, `Messages`, `Usage`, `ReachableTools`, `Runner`), the loop (`loop.go`), and the tool side the loop is built on: `Toolset`, `NewRunner` and `Runner` (`runner.go`), the runner's batch engine (`batch.go`), its nested caller (`nested.go`) and the unguarded-shell check (`execguard.go`). |
+| `.` | `Config`, `New` and the `Agent` (`agent.go`; its surface is `Run`, `Stream`, `Messages`, `Usage`, `ReachableTools`, `Runner` and `Resolution`), `Resolve` and `Resolution` (`resolve.go`), the loop (`loop.go`), and the tool side the loop is built on: `Toolset`, `NewRunner` and `Runner` (`runner.go`), the runner's batch engine (`batch.go`), its nested caller (`nested.go`) and the unguarded-shell check (`execguard.go`). |
 | `core` | Messages, content blocks, events and their JSON form (`MarshalEvent`), `EventStream`, `Tool`, `ToolResult`, `ToolPolicy`, argument preparation, interceptors, `ProviderClient`, `Request`, `StreamEvent`, `Model`, `Usage`, stop reasons, errors. |
 | `schema` | JSON Schema values and typed combinators; `Parse` decodes a schema document keeping property order; `Validate` and `Coerce` check and repair tool arguments. |
 | `catalog` | The embedded model catalog (`catalog.json`) of the three providers, `anthropic`, `openrouter` and `ollama`: context window, output cap, prices and thinking kind per row, with a per-provider default for an unlisted id, and a fixed tier table (SIMPLE, STANDARD, ADVANCED) per vendor that `Parse` checks against its rows. `Lookup` resolves a Claude id, the way `New` does; `Select` resolves a (provider, model, effort) triple for any of the three, offline. It imports `core` and the standard library only. |
@@ -295,13 +297,18 @@ with its parent's id on its events (below).
 ## Data flow of one run
 
 ```
-agentkit.New   checks the model side (a Client or a Provider, and a Model),
-               then calls NewRunner(cfg.Toolset): it checks every tool
+agentkit.New   calls Resolve(cfg): catalog.Select(Provider, Model, Effort),
+               then, with no Client, the chosen provider's constructor, which
+               reads that provider's credential and endpoint through Env and
+               Getenv and fails here when one is missing; then it calls
+               NewRunner(cfg.Toolset): it checks every tool
                (exactly one of Handler/Execute, no reach cycle, no wrapper
                reaching a Terminating tool), resolves Toolset.Policy and
                refuses a reachable shell tool with no Toolset.Guard, so New
-               refuses what NewRunner refuses; then it looks up the model in
-               the catalog and builds the provider
+               refuses what NewRunner refuses. The errors come in the order
+               provider, model, effort, credentials, tool set. The agent keeps
+               the Resolution: its model row, its client, its effort and the
+               API of the provider package that built the client
 Agent.Run      = Stream, then wait for the RunResult
 Agent.Stream   claims the run slot (core.ErrBusy if taken), applies
                Config.Timeout, starts runLoop on a goroutine
@@ -311,11 +318,14 @@ Agent.Stream   claims the run slot (core.ErrBusy if taken), applies
        estimate reaches Config.Prune.Threshold of the context window, and
        stop with RunStopError if it still exceeds the window
     2. callModel: prompt.Build(Config.System, tools) and a core.Request
-       (Prefix, the view, ToolWires, MaxTokens, Effort);
+       (Prefix, the view, ToolWires, MaxTokens, the Resolution's Effort);
        core.EventStreamOf(ProviderClient.Stream(ctx, req)); every provider
        event is forwarded onto the run's stream
-    3. the assistant message is recorded; an Error or Aborted stop reason
-       ends the run here, before tool extraction
+    3. the assistant message is recorded and its usage priced at the resolved
+       row when the provider left the cost unset (flagged Usage.Unpriced when
+       that zero is not a price) and added to the run's and the agent's usage;
+       an Error or Aborted stop reason ends the run here, before tool
+       extraction
     4. tool_use blocks present? (the stop reason never decides)
          max_tokens: none run; each gets the fixed "not executed" result
          (this stays in the loop; the runner never sees these calls)

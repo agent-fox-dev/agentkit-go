@@ -9,10 +9,10 @@ somewhere else (`sandbox`).
 **One driver**: `agentkit.Config` and `agentkit.New`, a minimal agent loop over
 a `Runner` (`agentkit.Toolset` and `agentkit.NewRunner`), which runs the tool
 calls, against the Anthropic Messages API (`provider/anthropic`, on the
-official Go SDK) or, passed as `Config.Provider`, OpenRouter
-(`provider/openrouter`, on OpenRouter's Go SDK) or Ollama (`provider/ollama`, on
-Ollama's Go package), with a scripted provider (`provider/faux`) for offline
-tests.
+official Go SDK), OpenRouter (`provider/openrouter`, on OpenRouter's Go SDK) or
+Ollama (`provider/ollama`, on Ollama's Go package), chosen by `Config.Provider`,
+with a scripted provider (`provider/faux`, passed as `Config.Client`) for
+offline tests.
 The root and sandbox modules listen on no socket and serve no MCP: they are a
 library. `agentkit-sandboxd` serves the agent service on its stdio, and two
 separate modules listen: `sandbox/gatewayd` (`agentkit-gateway`, sandboxes over
@@ -39,29 +39,32 @@ ts, err := tools.For(ws, tools.Options{})
 if err != nil {
 	return err
 }
-client, _, err := anthropic.Resolve(anthropic.OSEnv{})
-if err != nil {
-	return err // names the environment variables to set
-}
+// Provider is empty, so this is Anthropic; New reads ANTHROPIC_API_KEY (or the
+// other Anthropic variables) from the environment.
 agent, err := agentkit.New(agentkit.Config{
-	Client: client,
-	Model:  "claude-opus-5-5",
+	Model: "claude-opus-5-5",
 	Toolset: agentkit.Toolset{
 		Tools: ts,
 		Guard: guard.Allow("go", "git"),
 	},
 })
 if err != nil {
-	return err
+	return err // names the environment variables to set
 }
 res, err := agent.Run(ctx, "Summarise this package.")
 fmt.Println(res.FinalText())
 ```
 
-`New` refuses a config it could not run safely: no `Client` or `Provider`, no
-`Model`, an invalid tool hierarchy, or a reachable shell tool (`execute`,
-`run_command`) with no `Guard`. A test sets `Config.Provider` (for example
-`faux.New(...)`) instead of `Client`.
+`New` refuses a config it could not run safely, with the first of: an unknown
+`Provider`, no `Model`, an unknown `Effort`, a credential the provider needs
+and cannot find (the error names the variables to set), an invalid tool
+hierarchy, or a reachable shell tool (`execute`, `run_command`) with no
+`Guard`. `Provider` is `anthropic` (the default), `openrouter` or `ollama`,
+`Model` is a tier (`SIMPLE`, `STANDARD`, `ADVANCED`) or the provider's own model
+id, and `Env` and `Getenv` supply that provider's variables; each provider reads
+only its own. `agentkit.Resolve` shows what a `Config` resolves to without
+building an agent. A test sets `Config.Client` (for example `faux.New(...)`)
+and builds no provider.
 
 ### Code mode
 
@@ -81,7 +84,6 @@ if err != nil {
 }
 fmt.Printf("code_mode binds %d tools\n", info.BoundToolsCount)
 agent, err := agentkit.New(agentkit.Config{
-	Client:  client,
 	Model:   "claude-opus-5-5",
 	Toolset: agentkit.Toolset{Tools: []core.Tool{cm}},
 })
@@ -114,8 +116,7 @@ if err != nil {
 }
 defer sb.Close(ctx)
 agent, err := agentkit.New(agentkit.Config{
-	Client: client,
-	Model:  "claude-opus-5-5",
+	Model: "claude-opus-5-5",
 	Toolset: agentkit.Toolset{
 		Tools: proxies,
 		Guard: guard.Allow("go"),
@@ -292,11 +293,13 @@ takes the place of the first two steps.
 
 | Identifier | Shape |
 |---|---|
-| `agentkit.Config` | `Client`, `Provider`, `Model`, `Effort`, `System`, `Prefix`, `Toolset`, `MaxTurns`, `MaxCostUSD`, `Timeout`, `Prune`, `MaxTokens` |
-| `agentkit.New` | `New(cfg Config) (*Agent, error)`; builds its runner with `NewRunner(cfg.Toolset)` |
+| `agentkit.Config` | `Client core.ProviderClient`, `Provider string`, `Model`, `Effort`, `Env map[string]string`, `Getenv func(string) string`, `System`, `Prefix`, `Toolset`, `MaxTurns`, `MaxCostUSD`, `Timeout`, `Prune`, `MaxTokens` |
+| `agentkit.Resolve` | `Resolve(cfg Config) (Resolution, error)`: what `New` would run, offline; checks the provider, model, effort and credentials |
+| `agentkit.Resolution` | `Provider`, `Tier`, `Model core.Model`, `Effort`, `Listed`, `Client core.ProviderClient` |
+| `agentkit.New` | `New(cfg Config) (*Agent, error)`; calls `Resolve(cfg)`, then builds its runner with `NewRunner(cfg.Toolset)` |
 | `Agent.Run` | `Run(ctx, prompt string) (core.RunResult, error)` |
 | `Agent.Stream` | `Stream(ctx, prompt string) (*core.EventStream, error)` |
-| `Agent.Messages`, `Agent.Usage`, `Agent.ReachableTools`, `Agent.Runner` | `core.Messages`, `core.Usage`, `[]core.Tool`, `*Runner`; safe during a run |
+| `Agent.Messages`, `Agent.Usage`, `Agent.ReachableTools`, `Agent.Runner`, `Agent.Resolution` | `core.Messages`, `core.Usage`, `[]core.Tool`, `*Runner`, `Resolution` (a copy); safe during a run |
 | `agentkit.PruneOptions` | `Threshold float64`, `KeepTurns int` |
 
 ### Serving
@@ -327,8 +330,8 @@ takes the place of the first two steps.
 | `anthropic.Resolve` | `Resolve(env Env) (*sdk.Client, Source, error)` |
 | `openrouter.New` | `New(m core.Model, opts Options) (core.ProviderClient, error)`: reads `OPENROUTER_API_KEY` and `OPENROUTER_BASE_URL`; fails with `ErrNoAPIKey` before any request |
 | `ollama.New` | `New(m core.Model, opts Options) (*Client, error)`: reads `OLLAMA_HOST` and sends no credential; fails with `ErrInvalidHost` before any request |
-| `catalog.Lookup` | `Lookup(id string) (core.Model, bool)`: a Claude model id; `agentkit.New` calls it |
-| `catalog.Select` | `Select(provider, model string, effort core.Effort) (Selection, error)`: offline, for `anthropic`, `openrouter` and `ollama`; `model` is a tier (`SIMPLE`, `STANDARD`, `ADVANCED`) or a model id |
+| `catalog.Lookup` | `Lookup(id string) (core.Model, bool)`: a Claude model id; `Select` calls it for an Anthropic id |
+| `catalog.Select` | `Select(provider, model string, effort core.Effort) (Selection, error)`: offline, for `anthropic`, `openrouter` and `ollama`; `model` is a tier (`SIMPLE`, `STANDARD`, `ADVANCED`) or a model id; `agentkit.Resolve` calls it |
 | `core.ProviderClient` | `Stream(ctx, Request) (<-chan StreamEvent, error)` |
 
 ### Vocabulary
@@ -339,7 +342,7 @@ takes the place of the first two steps.
 | `core.ToolResult` | `OK`, `Data`, `Error`, `Detail`, `Terminate`, `Metadata`, `Blocks`, `Text`; `core.OKResult`, `core.ErrResult` |
 | `core.BeforeToolCall` | `func(ctx, BeforeToolCallContext) BeforeToolCallDecision` (`Block`, `Terminate`, `Reason`, `Arguments`) |
 | `core.AfterToolCall` | `func(ctx, AfterToolCallContext) AfterToolCallDecision` (`Terminate *bool`) |
-| `core.RunResult` | `Messages`, `StopReason`, `LastReason`, `Usage`, `TurnCount`, `Error`; `FinalText()` |
+| `core.RunResult` | `Messages`, `StopReason`, `LastReason`, `Usage`, `TurnCount`, `Error`; `FinalText()`; `Usage.Unpriced` is true when a turn's cost of zero is not a price |
 | `core.RunStopReason` | `RunStopEndTurn`, `RunStopMaxTurns`, `RunStopBudgetExceeded`, `RunStopToolTerminate`, `RunStopError`, `RunStopAborted`, `RunStopTimeout`, `RunStopRefusal` (`RunStopPolicy` is declared but the driver never sets it) |
 | `schema.Parse`, `schema.Validate` | `Parse(data []byte) (*Schema, error)`, `Validate(s *Schema, v any) error` |
 

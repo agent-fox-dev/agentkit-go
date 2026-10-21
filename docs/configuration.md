@@ -4,7 +4,7 @@ AgentKit is a library. It has no config file of its own and no global state.
 Configuration is one of:
 
 1. fields on `agentkit.Config`, `agentkit.Toolset` and the option structs of the packages below,
-2. environment variables, read when an Anthropic client is resolved,
+2. environment variables, read by the provider an agent is built on,
 3. one optional TOML section, `[mcp]`, that an embedding application may load
    with `mcp.ParseConfig`.
 
@@ -14,22 +14,26 @@ reference.
 
 ## `agentkit.Config`
 
-`agentkit.New(cfg)` builds an `Agent` from it, and refuses a config it could
-not run: no `Client` and no `Provider`, an empty `Model`, or a `Toolset` that
-`agentkit.NewRunner` refuses (below). It checks the client and the model
-first, and returns `NewRunner`'s error unchanged.
+`agentkit.New(cfg)` builds an `Agent` from it. It runs
+[`agentkit.Resolve`](#agentkitresolve-resolution-and-agentresolution) on the
+fields that choose a model, then validates the `Toolset` with
+`agentkit.NewRunner` (below), and returns the first error unchanged, in this
+order: the provider, the model, the effort, the credentials, the tool set.
+Nothing has been sent when it fails, and a missing key is found here, not on
+the first request.
 
 | Field | Meaning / default |
 |---|---|
-| `Client` | `*anthropic.Client` from the official SDK, built by `anthropic.Resolve` or by the caller. `New` builds `anthropic.Provider(model, anthropic.Options{Client: cfg.Client})` over it. |
-| `Provider` | A `core.ProviderClient` (a test double such as `provider/faux`, or a custom provider). When set it is used instead of `Client`. |
-| `Model` | Catalog id. `catalog.Lookup` supplies the context window, output cap, prices and thinking kind; an id the catalog does not list gets the default row (below). |
-| `Effort` | `agentkit.Effort` (`core.Effort`): `""` (no thinking parameter), `EffortLow`, `EffortMedium`, `EffortHigh`, `EffortXHigh`, `EffortMax` (`low` … `max`). On an adaptive model it is sent as `thinking: {"type":"adaptive"}` with `output_config.effort`; on a budget model as `thinking: {"type":"enabled","budget_tokens":N}`, N from the catalog row; on a model without thinking, or at an effort the row does not list, neither is sent. Never moved to another effort. |
+| `Client` | A `core.ProviderClient`: a test double such as `provider/faux`, or a provider the embedder built or wrapped. When it is set the agent calls it, builds none and reads no variable; `Provider`, `Model` and `Effort` still choose the catalog row and the effort. Nil means `New` builds the client for `Provider`. |
+| `Provider` | `anthropic`, `openrouter` or `ollama`, trimmed and without regard to case; empty means `anthropic`. It names the catalog provider even when `Client` is set. Another name fails with `catalog.ErrUnknownProvider`. |
+| `Model` | A tier (`SIMPLE`, `STANDARD` or `ADVANCED`) or the provider's own model id, as [`catalog.Select`](#catalogselect) reads it. It supplies the context window, output cap, prices and thinking kind; an id the catalog does not list gets the provider's default row (below). A tier is the model id it names everywhere the agent names its model: the start event, the messages it stamps and the context-window error. Empty fails with `catalog.ErrNoModel`. |
+| `Effort` | `agentkit.Effort` (`core.Effort`): `""` (the tier's effort when `Model` is a tier, else none), normalized, so `"HIGH"` is sent as `high`; every request carries the resolved effort. An effort outside the five fails with `catalog.ErrUnknownEffort`. On Anthropic: `""` (no thinking parameter), `EffortLow`, `EffortMedium`, `EffortHigh`, `EffortXHigh`, `EffortMax` (`low` … `max`). On an adaptive model it is sent as `thinking: {"type":"adaptive"}` with `output_config.effort`; on a budget model as `thinking: {"type":"enabled","budget_tokens":N}`, N from the catalog row; on a model without thinking, or at an effort the row does not list, neither is sent. Never moved to another effort. |
+| `Env`, `Getenv` | The variables the chosen provider reads for its credential and endpoint. A non-empty `Env` value is used first; an empty one falls through to `Getenv`, and when `Getenv` is set it is the only other source (a test with `Getenv` set never reads the process environment); with no `Getenv`, the process environment. An empty value counts as unset. Each provider reads only its own variables (below). |
 | `System` | The base prompt. Empty means `prompt.BaseInstructions` and `prompt.UniversalGuidelines`. Either way the active tools' own guidelines (`Tool.PromptGuidelines`, and the shell guidelines) follow it (`prompt.Build`). |
 | `Prefix` | Messages sent after the system prompt and before the transcript on every request (`core.Request.Prefix`), with a cache breakpoint on their last block. Never recorded in the transcript. |
 | `Toolset` | The agent's tools, the policy that selects among them, the guard and the after-interceptor ([`agentkit.Toolset`](#agentkittoolset), below). The zero `Toolset` is an agent with no tools. |
 | `MaxTurns` | Ends a run that would go on past this many turns with `core.RunStopMaxTurns` and an error wrapping `core.ErrMaxTurns`, after the last turn's results are recorded. Zero is unbounded. |
-| `MaxCostUSD` | Checked before each request against the run's cost so far: at or past it, the request is not sent and the run ends with `core.RunStopBudgetExceeded` and an error wrapping `core.ErrBudgetExceeded`. Usage a provider did not price is priced at the model's catalog row, so an unlisted id costs nothing and never trips it. Zero is unbounded. |
+| `MaxCostUSD` | Checked before each request against the run's cost so far: at or past it, the request is not sent and the run ends with `core.RunStopBudgetExceeded` and an error wrapping `core.ErrBudgetExceeded`. Usage a provider did not price is priced at the model's catalog row, so an unlisted id costs nothing and never trips it; `Usage.Unpriced` says when that happened ([Run behaviour](#run-behaviour)). Zero is unbounded. |
 | `Timeout` | The run's deadline. Past it the run ends with `core.RunStopTimeout` and an error wrapping `context.DeadlineExceeded`. A cancellation from outside ends it with `core.RunStopAborted` and an error wrapping `core.ErrAborted` and the context's error. Zero is unbounded. |
 | `Prune` | `agentkit.PruneOptions` (below); the zero value is off. |
 | `MaxTokens` | Output cap per response, capped at the model's output cap. Zero means `agentkit.DefaultMaxTokens`. |
@@ -37,6 +41,79 @@ first, and returns `NewRunner`'s error unchanged.
 `agentkit.DefaultMaxTokens` is `32768`: the `max_tokens` sent when
 `Config.MaxTokens` is zero, still capped at the model's own output cap. A
 caller who wants the whole cap sets it.
+
+### `agentkit.Resolve`, `Resolution` and `Agent.Resolution`
+
+`agentkit.Resolve(cfg Config) (Resolution, error)` reads `Client`, `Provider`,
+`Model`, `Effort`, `Env` and `Getenv` and nothing else, and returns what `New`
+would run, so an embedder can see, check or wrap it without building an agent:
+
+| `Resolution` field | Meaning |
+|---|---|
+| `Provider` | The canonical provider name. |
+| `Tier` | `catalog.Tier`; empty when a model id was named. |
+| `Model` | `core.Model`: the catalog row, or the provider's fallback row for an id the catalog does not list. `Model.ID` is what the vendor receives. |
+| `Effort` | The effort requested, normalized: the explicit one, else the tier's, else empty (none is sent). |
+| `Listed` | True when `Model` is a catalog row and not a fallback. |
+| `Client` | The client a run calls: `Config.Client` when it was set, else the one built for `Provider`. |
+
+It calls `catalog.Select(cfg.Provider, cfg.Model, cfg.Effort)` and returns its
+errors unchanged, `Config.Client` set or not, so `errors.Is` matches
+`catalog.ErrUnknownProvider`, `catalog.ErrNoModel` and `catalog.ErrUnknownEffort`
+and the message names the value and the valid choices. With `Client` nil it
+then builds the client of the chosen provider and returns the constructor's
+error unchanged:
+
+- `anthropic`: it runs `anthropic.Resolve` over a lookup that applies the order
+  above, so a missing credential (`anthropic.ErrNoCredentials`) or a Vertex
+  selection without a project fails now, with that function's error; it then
+  builds `anthropic.Provider(model, anthropic.Options{Env: cfg.Env, Getenv:
+  cfg.Getenv})`, which resolves the deployment on every request, as an
+  embedder's own provider does.
+- `openrouter`: `openrouter.New(model, openrouter.Options{Env: cfg.Env, Getenv:
+  cfg.Getenv})`: `openrouter.ErrNoAPIKey` when `OPENROUTER_API_KEY` is unset,
+  and an error for an `OPENROUTER_BASE_URL` that is not an absolute http or
+  https URL.
+- `ollama`: `ollama.New(model, ollama.Options{Env: cfg.Env, Getenv:
+  cfg.Getenv})`. It needs no credential; `ollama.ErrInvalidHost` for a host it
+  refuses.
+
+With `Client` set, `Resolution.Client` is that client and no variable is read.
+`Resolve` makes no request and keeps no state: each call builds a new client,
+and a host that cannot be reached is found by the first request, not by
+`Resolve` or `New`. To wrap the client the agent would build, resolve, wrap and
+pass the wrapper back; `New` then reads no variable:
+
+```go
+res, err := agentkit.Resolve(cfg)
+if err != nil {
+	return err
+}
+cfg.Client = wrap(res.Client)
+agent, err := agentkit.New(cfg)
+```
+
+`(*Agent).Resolution() Resolution` returns the resolution the agent was built
+with. It is a copy: changing its `Model.Efforts` map or `Model.Compat` bytes
+does not change the agent, and it is safe to call from any goroutine during a
+run. Each run starts with a `core.AgentStartEvent` whose `Provider` is the
+resolved name, `Model` the resolved id (never a tier) and `API` the API constant
+of the provider package `Resolve` built the client from (`anthropic-messages`,
+`openrouter-chat` or `ollama-chat`), empty when `Config.Client` was given.
+
+**Each provider reads only its own variables.** Every lookup goes through the
+chosen provider's own code and only that provider's code runs; a value read for
+one provider is never passed to another's client. `anthropic` asks for the
+variables under [Credentials and deployments](#credentials-and-deployments)
+(`ANTHROPIC_*`, `CLAUDE_CODE_*`, `GOOGLE_CLOUD_*`, `CLOUD_ML_REGION`,
+`CLOUDSDK_*`, `AWS_*`), `openrouter` for `OPENROUTER_API_KEY` and
+`OPENROUTER_BASE_URL`, and `ollama` for `OLLAMA_HOST` (the Ollama package itself
+also reads `OLLAMA_AUTH` from the process environment, as
+[`ollama.Options`](#ollamaoptions) says). `OLLAMA_API_KEY` is read by none of
+them and sent to no server, and the library reads no `AGENTKIT_` variable:
+`AGENTKIT_MODEL` is the examples' own. An agent's requests go only to
+the chosen provider's host, so an Anthropic key is never sent to OpenRouter or
+Ollama, an OpenRouter key never to Anthropic or Ollama.
 
 ### `agentkit.PruneOptions`
 
@@ -73,6 +150,16 @@ W-token context window`.
 - A response cut off at `max_tokens` runs none of its tool calls; each gets
   the fixed result `Tool call "NAME" was not executed: the response hit the
   output token limit, ...`.
+- `core.Usage.Unpriced` is true on `RunResult.Usage`, `AgentDoneEvent.Result.Usage`,
+  `AgentDoneEvent.Usage` and `Agent.Usage()` when at least one turn's cost counted
+  as zero because no one could price it: the usage was reported, the resolved row
+  has no price, and the provider is `anthropic` (which reports no cost of its own)
+  or `openrouter` and the response carried no cost. The agent never sets it on
+  `ollama`, where zero is the price, whichever client is called. The turn is still
+  priced at the computed zero with the cost bit set, `MaxCostUSD` still reads
+  `CostUSD`, and `TurnEndEvent.Usage` stays the provider's own usage of the turn.
+  `Usage.Add` ORs the flag, and every encoded usage in the event JSON carries it as
+  `unpriced`.
 - A turn that ends in an error ends the run with `core.RunStopError`. The
   run's error (`Agent.Run`'s, `RunResult.Error`, the `AgentDoneEvent`'s) has the
   turn's `ErrorMessage` as its text and wraps the error the provider ended its
@@ -213,6 +300,10 @@ request. The returned `Source` is `SourceDirect`, `SourceVertex` or
 A provider built with `anthropic.Options.Client == nil` resolves the same way
 on every request, reading `Options.VertexProject` / `VertexLocation` first,
 then `Options.Env`, then `Options.Getenv` (or the process environment).
+`agentkit.New` also runs `anthropic.Resolve` once, over `Config.Env` and
+`Config.Getenv` in that order, so an Anthropic agent with no credential fails at
+construction; the provider it then builds is the one above, not the SDK client
+that call returned.
 
 | Variable | Effect |
 |---|---|
@@ -318,12 +409,15 @@ p, err := openrouter.New(sel.Model, openrouter.Options{}) // OPENROUTER_API_KEY 
 if err != nil {
 	return err // wraps openrouter.ErrNoAPIKey, naming the variable
 }
-agent, err := agentkit.New(agentkit.Config{Provider: p, Model: sel.Model.ID, Effort: sel.Effort})
+agent, err := agentkit.New(agentkit.Config{Client: p, Provider: "openrouter", Model: sel.Model.ID, Effort: sel.Effort})
 ```
 
-`agentkit.New` does not build this provider from a name: pass it as
-`Config.Provider`. `Config.Model` is still resolved by `catalog.Lookup`, which
-lists Claude rows only, and the provider uses the `core.Model` given to `New`.
+`agentkit.New(agentkit.Config{Provider: "openrouter", Model: "STANDARD"})` builds
+this provider itself, from `OPENROUTER_API_KEY` and `OPENROUTER_BASE_URL` read
+through `Config.Env` and `Config.Getenv` ([`agentkit.Config`](#agentkitconfig)).
+Build it by hand, as above, to set `HTTPClient`, `MaxRetries`, `Now` or `Warnf`,
+and pass it as `Config.Client`: `Provider` and `Model` then still choose the row
+the agent prunes, prices and stamps by, and should name what `p` was built for.
 
 `Stream(ctx, req)` has the contract of `anthropic.Provider`'s: a context already
 done is refused with its error, every later failure is the last item of the
@@ -464,15 +558,16 @@ p, err := ollama.New(sel.Model, ollama.Options{}) // OLLAMA_HOST from the enviro
 if err != nil {
 	return err // wraps ollama.ErrInvalidHost for a host it refuses
 }
-agent, err := agentkit.New(agentkit.Config{Provider: p, Model: sel.Model.ID, Effort: sel.Effort})
+agent, err := agentkit.New(agentkit.Config{Client: p, Provider: "ollama", Model: sel.Model.ID, Effort: sel.Effort})
 ```
 
-`agentkit.New` does not build this provider from a name: pass it as
-`Config.Provider`. `Config.Model` is still resolved by `catalog.Lookup`, which
-lists Claude rows only, so the agent's own view of the window (it prunes tool
-results and refuses a request that cannot fit by it) is the default
-descriptor's, not the row's; the provider sends the row's window to Ollama as
-`num_ctx`. Choosing the provider from `Config` is a later change.
+`agentkit.New(agentkit.Config{Provider: "ollama", Model: "STANDARD"})` builds
+this provider itself, from `OLLAMA_HOST` read through `Config.Env` and
+`Config.Getenv` ([`agentkit.Config`](#agentkitconfig)); it needs no credential.
+Build it by hand, as above, to set `Host`, `HTTPClient`, `Now` or `Warnf`, and
+pass it as `Config.Client`. The agent works with the resolved row's window (it
+prunes tool results and refuses a request that cannot fit by it), which is the
+window the provider sends to Ollama as `num_ctx`.
 
 `Stream(ctx, req)` has the contract of `anthropic.Provider`'s: a context already
 done is refused with its error, every later failure is the last item of the
@@ -626,15 +721,16 @@ lists models for the three providers an agent can run on, which
 `catalog.Parse` that is not one of the three cannot be selected.
 
 - `catalog.Lookup(id)` resolves a Claude model id against the `anthropic` rows
-  only; the `anthropic/` prefix is optional. `agentkit.New` calls it with
-  `Config.Model`.
+  only; the `anthropic/` prefix is optional. `catalog.Select` calls it for an
+  Anthropic id.
 - `catalog.Select(provider, model, effort)` resolves any of the three
-  providers, offline ([below](#catalogselect)).
+  providers, offline ([below](#catalogselect)). `agentkit.Resolve`, and so
+  `agentkit.New`, calls it with `Config.Provider`, `Config.Model` and
+  `Config.Effort`.
 
-Only `anthropic` has a vendor wire in this repository (`provider/anthropic`). The
-`openrouter` and `ollama` sections, the tiers and `Select` are the catalog side
-of [PRD 14](prd/14-run-the-agent-on-anthropic-openrouter-or-ollama.md): nothing
-in `agentkit.New` reads them yet.
+Each of the three providers has a wire in this repository (`provider/anthropic`,
+`provider/openrouter` and `provider/ollama`), and `Config.Provider` chooses
+among them ([PRD 14](prd/14-run-the-agent-on-anthropic-openrouter-or-ollama.md)).
 
 Prices are USD per million tokens. Thinking is `adaptive` when the row's
 `thinking_level_map` holds effort names, `budget` when it holds token counts.
@@ -692,7 +788,10 @@ own name). `Lookup` reports it with `false`, and `Select` with
 | `openrouter` | 131,072 | 32,768 | `catalog.OpenRouterDefaultContextWindow`, `catalog.OpenRouterDefaultMaxTokens` |
 | `ollama` | 32,768 | 32,768 | `catalog.OllamaDefaultContextWindow`, `catalog.OllamaDefaultMaxTokens` |
 
-A fallback is a documented guess, not a lookup at the vendor.
+A fallback is a documented guess, not a lookup at the vendor. A run on such an
+id costs nothing by the catalog's reckoning, and says so: `Usage.Unpriced` is
+set on Anthropic, and on OpenRouter when the response carried no cost
+([Run behaviour](#run-behaviour)).
 
 ### Tiers
 

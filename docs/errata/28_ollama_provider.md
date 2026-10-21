@@ -398,7 +398,9 @@ with an empty body.
   refuses a request that cannot fit by that window (`loop.go:292`), so on Ollama it is
   not the row's 32,768 that the agent works with, while `num_ctx` is. The spec leaves
   choosing the provider from `Config` to `provider_selection`; `docs/configuration.md`
-  says so.
+  said so. *Closed by spec 29:* `agentkit.New` resolves the model with
+  `catalog.Select`, so the agent works with the row's window
+  ([`29_provider_selection.md`](29_provider_selection.md)).
 - **TS-28-46** (the existing `provider/anthropic` and `provider/faux` tests pass
   unmodified, and `make check` passes) is checked with commands, not a Go test: `git diff
   main -- provider/anthropic provider/faux agent.go loop.go` is empty, and `make check`

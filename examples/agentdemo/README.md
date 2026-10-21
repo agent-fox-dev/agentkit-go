@@ -63,11 +63,11 @@ turns: 2, stop: end_turn
   with `faux.FauxText` and `faux.FauxToolCall`. `p.ChunkSize` splits text into
   deltas so streaming is visible; `p.Requests()` returns what the loop sent.
 - **The minimum config** — `newAgent`: `agentkit.New(agentkit.Config{…})`
-  with `Provider: p` (the faux provider is a `core.ProviderClient` itself),
+  with `Client: p` (the faux provider is a `core.ProviderClient` itself),
   `Model: faux.Model().ID`, a `System` prompt, a `Toolset` holding the tools, and `MaxTurns` /
-  `MaxCostUSD` bounding turns and spend. With a real model you set
-  `Client` to the client `anthropic.Resolve(anthropic.OSEnv{})` returns
-  instead of `Provider` (see [`codingagent`](../codingagent)).
+  `MaxCostUSD` bounding turns and spend. With a real model you leave `Client`
+  out and name the model: `New` builds the provider and checks its
+  credential (see [`codingagent`](../codingagent)).
 
 ## Gotchas
 

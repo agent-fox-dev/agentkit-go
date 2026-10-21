@@ -72,3 +72,27 @@ is regenerated, `upgradesBySpec29` (`deps_test.go`) records the two raised
 versions and `addedBySpec29` (`landlock_dep_test.go`) the 57 added modules. The
 older snapshots (`.13.txt`, `.14.txt`) are kept as their specs committed them.
 The root module's `go.mod` and `go-list-m-all.txt` do not change.
+
+## The window caveat of spec 28 is closed (29-REQ-5.3; task 5)
+
+Spec 28 recorded that an Ollama agent worked with the default descriptor's
+1,000,000-token window, not the row's 32,768, because `agentkit.New` resolved
+the model with `catalog.Lookup` ([`28_ollama_provider.md`](28_ollama_provider.md)).
+The loop now prunes and refuses by the resolved row (`loop.go:293`):
+`TestAgentUsesTheResolvedClientAndRow_TS29_21` sends a prompt past the Ollama
+row's window and gets the 32,768-token error without a request.
+
+## The agent only raises `Usage.Unpriced` (29-REQ-7.3; task 6)
+
+The spec has the agent mark a turn's usage Unpriced when its rule holds. Because
+the field is exported, a client may set it on its own usage, so `priced`
+(`loop.go:411`) never clears it: it assigns true when `costUnknown`
+(`loop.go:429`) says so and otherwise leaves the usage as it came
+(`TestAFlagTheClientSetIsKept`). On Ollama the agent itself never marks a turn.
+
+## The examples print the resolution (29-REQ-8.4; task 2)
+
+`examples/codingagent`, `customtools` and `mcp` no longer call `catalog.Lookup`
+for their summary line; they print `agent.Resolution().Model.ID`, which is the id
+`New` resolved, a tier included. The spec asks only that they drop their
+SDK-client resolution.

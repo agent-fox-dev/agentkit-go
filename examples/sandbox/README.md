@@ -81,8 +81,8 @@ if err != nil {
 	return err
 }
 agent, err := agentkit.New(agentkit.Config{
-	Provider: provider,
-	Model:    model,
+	Client: provider,
+	Model:  model,
 	Toolset: agentkit.Toolset{
 		Tools: picked, // execute among them: a Guard is required
 		Guard: guard.Allow("ls"),
