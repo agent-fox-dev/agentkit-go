@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/prompt"
 	"github.com/agent-fox-dev/agentkit-go/provider"
@@ -405,12 +406,39 @@ func (a *Agent) contextStop(ctx context.Context) (core.RunStopReason, error) {
 }
 
 // priced returns u with its cost, priced at the model's catalog row when the
-// provider did not price it (a test double, or a custom provider).
+// provider did not price it (a test double, or a custom provider), and flagged
+// Unpriced when that cost of zero is not a price.
 func (a *Agent) priced(u core.Usage) core.Usage {
-	if !u.Has(core.UsageCostUSD) {
+	reported, hadCost := u.Reported(), u.Has(core.UsageCostUSD)
+	if !hadCost {
 		u.SetCost(provider.ComputeCost(&a.model, u))
 	}
+	if reported && a.costUnknown(hadCost) {
+		u.Unpriced = true
+	}
 	return u
+}
+
+// costUnknown reports whether a turn that cost nothing is one whose cost no one
+// could say: the resolved row has no price and the provider would not have said
+// otherwise. Anthropic reports no cost of its own, so a row with no price is all
+// there is to go on; OpenRouter's reported cost is authoritative, so only a
+// response that left it out is unknown; on Ollama, which runs on the embedder's
+// hardware, zero is the price. It follows the resolved provider's name, so a
+// client given in Config.Client is judged as the provider it stands in for.
+func (a *Agent) costUnknown(vendorReported bool) bool {
+	m := &a.model
+	if m.InputCostPerMillion != 0 || m.OutputCostPerMillion != 0 ||
+		m.CacheReadCostPerMillion != 0 || m.CacheWriteCostPerMillion != 0 {
+		return false
+	}
+	switch a.res.Provider {
+	case catalog.ProviderAnthropic:
+		return true
+	case catalog.ProviderOpenRouter:
+		return !vendorReported
+	}
+	return false
 }
 
 // turnError is the error of a run that ended on a failed turn. Its text is the
