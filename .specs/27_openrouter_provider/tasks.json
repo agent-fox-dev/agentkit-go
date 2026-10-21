@@ -124,7 +124,7 @@
         "`go test ./internal/policy/... -count=1` passes with no skips for the graph tests",
         "`make check` passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,

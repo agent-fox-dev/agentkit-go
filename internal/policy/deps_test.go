@@ -6,10 +6,12 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -33,6 +35,9 @@ var approvedDeps = []string{
 	"go.starlark.net",
 	// The Anthropic wire: transport, auth, retries and stream framing.
 	"github.com/anthropics/anthropic-sdk-go",
+	// The OpenRouter wire (provider/openrouter): OpenRouter's own Go SDK for its
+	// native Chat Completions API, pinned at a beta 0.x release (docs/DEPS.md).
+	"github.com/OpenRouterTeam/go-sdk",
 	// Google OAuth for the Vertex AI deployment's credentials.
 	"golang.org/x/oauth2",
 	// AWS configuration and credentials for the Bedrock deployment.
@@ -167,8 +172,9 @@ func TestAnthropicSDKIsPinned_TS10_1(t *testing.T) {
 }
 
 // preSpec13Direct is the root module's direct-dependency set before spec 13
-// promoted grpc and protobuf.
+// promoted grpc and protobuf, plus the OpenRouter SDK that spec 27 added.
 var preSpec13Direct = []string{
+	"github.com/OpenRouterTeam/go-sdk",
 	"github.com/agent-fox-dev/agentkit-go",
 	"github.com/anthropics/anthropic-sdk-go",
 	"github.com/aws/aws-sdk-go-v2",
@@ -408,6 +414,126 @@ func TestRsyncDependency_TS14_42(t *testing.T) {
 		if !slices.Contains(now, line) {
 			t.Errorf("%q is missing from the graph: an existing version moved beyond D-1", line)
 		}
+	}
+}
+
+// openRouterSDK is the OpenRouter Go SDK, the one dependency of
+// provider/openrouter (spec 27).
+const openRouterSDK = "github.com/OpenRouterTeam/go-sdk"
+
+// TS-27-49: go.mod requires the OpenRouter SDK at exactly v0.9.66 as a direct
+// requirement, and the allowlist approves it with a reason on the line above.
+// 27-REQ-9.1, 27-REQ-9.3.
+func TestOpenRouterSDKIsPinned_TS27_49(t *testing.T) {
+	root := repoRoot(t)
+	r, ok := parseGoMod(t, root)[openRouterSDK]
+	if !ok {
+		t.Fatalf("go.mod does not require %s", openRouterSDK)
+	}
+	if r.version != "v0.9.66" {
+		t.Errorf("go.mod pins %s at %s, want v0.9.66", openRouterSDK, r.version)
+	}
+	if r.indirect {
+		t.Errorf("%s is only an indirect requirement", openRouterSDK)
+	}
+	if !slices.Contains(approvedDeps, openRouterSDK) || !commentedDeps(t, root)[openRouterSDK] {
+		t.Errorf("approvedDeps lacks %s with a reason comment above it", openRouterSDK)
+	}
+}
+
+// moduleDirs returns every directory under the repository that holds a go.mod,
+// the root first, and skips test fixtures.
+func moduleDirs(t *testing.T) []string {
+	t.Helper()
+	root := repoRoot(t)
+	var dirs []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && (d.Name() == ".git" || d.Name() == "testdata" || d.Name() == "build") {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() && d.Name() == "go.mod" {
+			dirs = append(dirs, filepath.Dir(path))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dirs
+}
+
+// TS-27-50: of every package in every module, only provider/openrouter imports
+// the OpenRouter SDK or one of its subpackages, tests included. 27-REQ-9.2.
+func TestOnlyTheOpenRouterProviderImportsTheSDK_TS27_50(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go is not on PATH")
+	}
+	const tmpl = "{{.ImportPath}}{{range .Imports}} {{.}}{{end}}{{range .TestImports}} {{.}}{{end}}{{range .XTestImports}} {{.}}{{end}}"
+	var importers []string
+	for _, dir := range moduleDirs(t) {
+		cmd := exec.Command("go", "list", "-e", "-f", tmpl, "./...")
+		cmd.Dir = dir
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("go list in %s: %v", dir, err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			f := strings.Fields(line)
+			for _, imp := range f[min(1, len(f)):] {
+				if imp == openRouterSDK || strings.HasPrefix(imp, openRouterSDK+"/") {
+					importers = append(importers, f[0])
+					break
+				}
+			}
+		}
+	}
+	if len(importers) != 1 || !strings.HasSuffix(importers[0], "/provider/openrouter") {
+		t.Errorf("packages importing %s: %v, want only provider/openrouter", openRouterSDK, importers)
+	}
+}
+
+// TS-27-55: the non-test sources of provider/openrouter write no model id,
+// window, output cap or price: the string and number literals hold none of the
+// catalog's openrouter row. 27-REQ-9.8.
+func TestOpenRouterProviderHoldsNoModelMetadata_TS27_55(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join(repoRoot(t), "provider", "openrouter", "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanned := 0
+	banned := map[float64]bool{1000000: true, 131072: true, 32768: true, 0.15: true, 0.47: true, 0.016: true}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		scanned++
+		parsed, err := parser.ParseFile(token.NewFileSet(), f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(parsed, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok {
+				return true
+			}
+			switch lit.Kind {
+			case token.STRING:
+				if strings.Contains(lit.Value, "qwen/") || strings.Contains(lit.Value, "qwen3") {
+					t.Errorf("%s: string literal %s names a catalog model", filepath.Base(f), lit.Value)
+				}
+			case token.INT, token.FLOAT:
+				if v, err := strconv.ParseFloat(strings.ReplaceAll(lit.Value, "_", ""), 64); err == nil && banned[v] {
+					t.Errorf("%s: number literal %s is a catalog window, cap or price", filepath.Base(f), lit.Value)
+				}
+			}
+			return true
+		})
+	}
+	if scanned == 0 {
+		t.Error("provider/openrouter has no non-test Go files to scan")
 	}
 }
 
