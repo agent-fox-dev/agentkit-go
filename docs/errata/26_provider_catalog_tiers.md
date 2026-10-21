@@ -25,7 +25,9 @@ or a package `core` itself depends on. It also checks that `resolve.go` and
 TS-26-39 asserts `req.Model.ID == "claude-sonnet-5-5"` and
 `req.Model.MaxOutputTokens == preSpecMax` on the request the faux provider
 received. `core.Request` has no `Model` field (`core/provider.go:14`): the model
-is the agent's, resolved once in `agentkit.New` (`agent.go:152`) and used for the
+is the agent's, resolved once in `agentkit.New` (`agent.go:152`; since spec 29 by
+`Resolve`, through `catalog.Select`, which reaches `Lookup` for an Anthropic id and
+returns the same row) and used for the
 cap, the pricing and the model name stamped on messages (`loop.go:411`,
 `loop.go:489`). The cap sent in the request is `Config.MaxTokens`, or
 `DefaultMaxTokens` (`loop.go:438`), and the provider caps it at the model's.
