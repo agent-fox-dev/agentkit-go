@@ -274,3 +274,39 @@ first failed on it: the cap rises to **30,000**.
   empty assistant turn; `encodeAssistant` (`provider/ollama/messages.go:74`) leaves it
   out (`TestAnAssistantMessageWithNothingToSendIsLeftOut_TS28_22`). A user message is
   always sent, with whatever text it has, as 28-REQ-4.2 says.
+
+## Tools, options and think (28-REQ-2.4, 2.5, 3, 5; task 6)
+
+- **The cut of a tool schema is the SDK type's, and its edges are the type's.**
+  `toolParameters` (`provider/ollama/tools.go:40`) encodes the schema and decodes it
+  into `api.ToolFunctionParameters`, as 28-REQ-3.1 says, so `additionalProperties`,
+  `format` and `minimum` of a property are dropped
+  (`TestToolsAreDeclaredWithTheSchemaSubset_TS28_15`). The type models an `items`
+  schema and `$defs` as `any`, so a keyword inside either stays: the "absent
+  anywhere" of TS-28-15 holds for the properties and for an `items` that holds only a
+  type, which is what the test uses. The type's `properties` has no `omitempty`, so
+  a schema without properties would be sent as `"properties":null`; it is made an
+  empty map, and a missing type is `object`, which also makes the nil schema of
+  28-REQ-3.2 `{"type":"object","properties":{}}`
+  (`TestToolWithoutASchemaIsAnEmptyObject_TS28_16`).
+- **A tool choice of none does not look at the schemas.** `chatTools`
+  (`provider/ollama/tools.go:15`) returns before decoding, because no tool is sent:
+  a schema the SDK cannot carry fails the turn only when its tools are sent.
+- **A schema that cannot be decoded ends the turn before the request, in
+  `run`.** `chatRequest` (`provider/ollama/request.go:16`) returns the error and
+  `run` ends the turn with it (`provider/ollama/stream.go:27`) before any HTTP attempt.
+  `stream.go` is not in the task's touches in `tasks.json`; the error has to end
+  the turn there. The text is `ollama: the input schema of tool "bad_tool" is not
+  one Ollama's tool type can carry: <the SDK's error>`
+  (`TestUndecodableSchemaFailsBeforeTheRequest_TS28_17`). Its schema has a top-level
+  type of `["object","null"]` (a nullable object), which the type's one-string `type`
+  cannot read.
+- **`think`.** `thinkFor` (`provider/ollama/think.go:17`) reads the model as
+  `provider/anthropic` does, and sends a string level (`api.ThinkValue{Value: "medium"}`).
+  An Efforts value that is empty after trimming sends nothing, where the spec says
+  only "its value, trimmed and lower-cased"; an empty string is not a level. With no
+  Efforts map the effort is sent as it is named.
+- **`num_predict` and the sampling options.** `numPredict`
+  (`provider/ollama/request.go:66`) follows 28-REQ-2.4 row by row
+  (`TestNumPredict_TS28_13`). `options.stop` is sent when the request has at least one
+  stop sequence; temperature and top_p are sent whenever the pointer is set, 0 included.

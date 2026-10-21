@@ -292,7 +292,7 @@
       "depends_on": [
         3
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {

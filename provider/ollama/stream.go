@@ -3,9 +3,6 @@ package ollama
 import (
 	"context"
 
-	"github.com/ollama/ollama/api"
-
-	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
@@ -27,8 +24,13 @@ func (c *Client) Stream(ctx context.Context, req core.Request) (<-chan core.Stre
 // run sends the request once and decodes its stream into s.
 func (c *Client) run(ctx context.Context, s *core.EventStream, req core.Request) {
 	d := newDecodeState(s, c, req)
+	chatReq, err := c.chatRequest(req)
+	if err != nil {
+		d.fail(err.Error(), err)
+		return
+	}
 	a := &attempt{}
-	err := c.api.Chat(context.WithValue(ctx, attemptKey{}, a), c.chatRequest(req), d.chunk)
+	err = c.api.Chat(context.WithValue(ctx, attemptKey{}, a), chatReq, d.chunk)
 	switch {
 	case err != nil:
 		d.fail("ollama: "+err.Error(), err)
@@ -37,28 +39,4 @@ func (c *Client) run(ctx context.Context, s *core.EventStream, req core.Request)
 	default:
 		d.finish()
 	}
-}
-
-// chatRequest is the request body: the model as written, the messages,
-// streaming, no truncation of the input, and the context length the model loads
-// at.
-func (c *Client) chatRequest(req core.Request) *api.ChatRequest {
-	stream, truncate := true, false
-	return &api.ChatRequest{
-		Model:    c.model.ID,
-		Messages: c.chatMessages(req),
-		Stream:   &stream,
-		Truncate: &truncate,
-		Options:  map[string]any{"num_ctx": c.contextLength()},
-	}
-}
-
-// contextLength is num_ctx: the model's window, else the catalog's default for an
-// Ollama model with none. The window the agent prunes against must be the one
-// the model loads at.
-func (c *Client) contextLength() int {
-	if c.model.ContextWindow > 0 {
-		return c.model.ContextWindow
-	}
-	return catalog.OllamaDefaultContextWindow
 }
