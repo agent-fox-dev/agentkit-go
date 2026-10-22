@@ -7,7 +7,8 @@ rather than sharing a helper package, so nothing you need is in a file you
 have not opened.
 
 `agentdemo`, `codemode`, `sandbox`, `gateway` and `harness` need **no API key and no network**:
-they run against the scripted provider `provider/faux`. The others, `codingagent`,
+they run against the scripted provider `provider/faux`. `toolbox` needs none either, and has no model
+at all: it calls the built-in tools by hand. The others, `codingagent`,
 `customtools` and `mcp`, call a model on a provider you choose, Anthropic, OpenRouter or
 Ollama, with three environment variables (below).
 
@@ -17,6 +18,7 @@ Ollama, with three environment variables (below).
 | [`codingagent`](codingagent) | `go run ./examples/codingagent --dir . "which files define the tool policy?"` | Built-in file/shell tools, a workspace root, and the `execute` authorization boundary. |
 | [`customtools`](customtools) | `go run ./examples/customtools` | Writing tools well: the schema combinators, `Handler` vs `Execute`, argument repair, sequential execution, per-tool prompt guidelines, and a tool that ends the run. |
 | [`mcp`](mcp) | `go run ./examples/mcp` · `--external CMD` | The MCP client: consuming a server's tools under qualified names, with the pool refusing a server tool that would shadow one of yours. |
+| [`toolbox`](toolbox) | `go run ./examples/toolbox` · `list` · `--dir . call find_symbol name=Runner` · `--dir . repl` | The built-in tools with no model: a tour of all eleven through `agentkit.NewRunner`, then `call` and `repl` for your own arguments on your own directory, with the shell tools behind `guard.Allow`. Results as a model reads them, as `Data` for a program, and as typed values from `tools.Search` and `tools.References`. |
 | [`codemode`](codemode) | `go run ./examples/codemode` | Code mode: one tool that runs a model-written Starlark script over other tools — chained and parallel calls, errors as values, filtering before anything reaches the conversation — through the agent's own nested-call pipeline. |
 | [`sandbox`](sandbox) | `cd examples/sandbox && go run .` (its own module) | Sandboxes: `sandbox.Open` creating one and syncing a project into it, proxy tools that are drop-in replacements for `tools.For`, a guarded code-mode script over them, and exporting files back out — against `local`, which is not isolation. |
 | [`gateway`](gateway) | `cd examples/gateway && go run .` (its own module) · `--url URL --token-file FILE` | The sandbox gateway: a `gatewayd.Server` started in process on a loopback port, and an embedder that holds only its URL and token — `gateway.Dial`, a refused token, `sandbox.Open`, `List`, and the same sandbox work through the relay. Or dial an `agentkit-gateway` already running. |

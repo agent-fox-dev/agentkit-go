@@ -213,7 +213,9 @@ The driver is optional. The tool side of an agent — tools, policy, guard,
 after-interceptor — is a `Toolset`, and `agentkit.NewRunner` turns one into a
 `Runner` that runs tool calls with no model: `Runner.Call` runs one, through
 the same preparation, guard, handler and events a model's calls go through,
-and code mode works through it. Another harness — Claude Code, Pi, any MCP
+and code mode works through it. [`examples/toolbox`](examples/toolbox) calls the
+built-in tools that way, with no model: a tour of all eleven, a one-shot `call`
+and a `repl` over your own directory. Another harness — Claude Code, Pi, any MCP
 client — can work in a sandbox with code mode and the built-in tools as its
 only tools: the embedder serves them over MCP from a runner with `mcpserve`
 and keeps the sandbox, the guard and the policy on its side.
@@ -429,7 +431,7 @@ takes the place of the first two steps.
 | [`docs/cli.md`](docs/cli.md) | The `agentkit-sandboxd` and `agentkit-gateway` commands: flags, transport, the token file and exit codes. |
 | [`docs/releasing.md`](docs/releasing.md) | Publishing the sandbox images: the version tags, GHCR visibility, re-runs and local builds. |
 | [`docs/DEPS.md`](docs/DEPS.md) | Why each direct dependency is allowed, and the libraries considered and rejected. |
-| [`examples/README.md`](examples/README.md) | The eight example programs and how to configure an application. |
+| [`examples/README.md`](examples/README.md) | The nine example programs and how to configure an application. |
 | [`docs/prd/`](docs/prd) | Product requirements. |
 | [`docs/errata/`](docs/errata) | Where the code diverges from a spec, and why. |
 | [`docs/archive/`](docs/archive) | The superseded 0.4.2 PRD and findings from the deleted provider wires. |
