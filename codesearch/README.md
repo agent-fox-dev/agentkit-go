@@ -69,6 +69,7 @@ Add `"code_search"` to your embedder's tool allowlist.
 
 The index also works without an agent: build it, call the `code_search` tool's
 `Execute` and `Symbols` directly, and call `Invalidate` when files change.
+[`examples/indexedsearch`](../examples/indexedsearch) runs through all of it.
 
 ## Known Differences from search_files
 

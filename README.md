@@ -213,7 +213,9 @@ The driver is optional. The tool side of an agent — tools, policy, guard,
 after-interceptor — is a `Toolset`, and `agentkit.NewRunner` turns one into a
 `Runner` that runs tool calls with no model: `Runner.Call` runs one, through
 the same preparation, guard, handler and events a model's calls go through,
-and code mode works through it. Another harness — Claude Code, Pi, any MCP
+and code mode works through it. [`examples/toolbox`](examples/toolbox) calls the
+built-in tools that way, with no model: a tour of all eleven, a one-shot `call`
+and a `repl` over your own directory. Another harness — Claude Code, Pi, any MCP
 client — can work in a sandbox with code mode and the built-in tools as its
 only tools: the embedder serves them over MCP from a runner with `mcpserve`
 and keeps the sandbox, the guard and the policy on its side.
@@ -393,7 +395,7 @@ takes the place of the first two steps.
 | `sandbox/gatewayd` | Separate module: the gateway server library (`gatewayd.New`, `Serve`, `Shutdown`) and its `agentkit-gateway` command. |
 | `mcpserve` | Separate module: serves a `Runner`'s tools over MCP to a harness on the same machine, on stdio or on loopback HTTP behind a bearer token (`mcpserve.New`, `Server.ServeStdio`, `Server.ServeLoopback`, `Endpoint`). |
 | `sandbox/cmd/agentkit-sandboxd` | The agent command a sandbox image installs at `sandbox.AgentPath`; serves the protocol on its stdio. |
-| `codesearch` | Separate module: zoekt-backed `code_search`, built for a workspace (`codesearch.New(ws, opts)`) and opted in with `tools.Options{Index: idx}`. |
+| `codesearch` | Separate module: zoekt-backed `code_search`, built for a workspace (`codesearch.New(ws, opts)`) and opted in with `tools.Options{Index: idx}`; [`examples/indexedsearch`](examples/indexedsearch) walks through it. |
 
 ## Make targets
 
@@ -402,7 +404,7 @@ takes the place of the first two steps.
 | `make check` | `fmt`, `vet`, `lint`, `test-short`: the fast check, run while working |
 | `make check-release` | `fmt`, `vet`, `lint`, `test`: adds the slow gates (cross-target build and vet, host cgo build, nested `make` runs); run before a release or merge |
 | `make test-short` | `go test -short ./...` in every module |
-| `make test` | `go test ./...` in every module: the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `mcpserve`, `examples/sandbox`, `examples/gateway` and `examples/harness` |
+| `make test` | `go test ./...` in every module: the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `mcpserve`, `examples/sandbox`, `examples/gateway`, `examples/harness` and `examples/indexedsearch` |
 | `make build` | `go build ./...` in every module |
 | `make coverage` | The root module's tests with a coverage report |
 | `make clean` | Remove `build/` and the coverage profile |
@@ -429,7 +431,7 @@ takes the place of the first two steps.
 | [`docs/cli.md`](docs/cli.md) | The `agentkit-sandboxd` and `agentkit-gateway` commands: flags, transport, the token file and exit codes. |
 | [`docs/releasing.md`](docs/releasing.md) | Publishing the sandbox images: the version tags, GHCR visibility, re-runs and local builds. |
 | [`docs/DEPS.md`](docs/DEPS.md) | Why each direct dependency is allowed, and the libraries considered and rejected. |
-| [`examples/README.md`](examples/README.md) | The eight example programs and how to configure an application. |
+| [`examples/README.md`](examples/README.md) | The ten example programs and how to configure an application. |
 | [`docs/prd/`](docs/prd) | Product requirements. |
 | [`docs/errata/`](docs/errata) | Where the code diverges from a spec, and why. |
 | [`docs/archive/`](docs/archive) | The superseded 0.4.2 PRD and findings from the deleted provider wires. |

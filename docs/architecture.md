@@ -34,7 +34,10 @@ graph:
 - [`examples/harness/`](../examples/harness), the example program that serves
   code mode and a sandbox's proxy tools to another harness (Claude Code, Pi)
   over MCP on a loopback port. It requires the root, sandbox and mcpserve
-  modules through `replace`.
+  modules through `replace`;
+- [`examples/indexedsearch/`](../examples/indexedsearch), the example program
+  that walks through the code-search index on a sample project. It requires the
+  root and codesearch modules through `replace`.
 
 cgo is allowed only in `//go:build cgo` files, each with a pure-Go fallback;
 `internal/policy` builds the four supported targets with cgo off and the host
@@ -72,8 +75,8 @@ gateway.
 First-party imports, from
 `go list -f '{{.ImportPath}}: {{join .Imports " "}}' ./...` (tests excluded),
 run in the root module and in `codesearch`, `sandbox`, `sandbox/gatewayd` and
-`mcpserve`. The nested example modules (`examples/sandbox`, `examples/gateway`
-and `examples/harness`) are programs and not listed. A package marked "tests
+`mcpserve`. The nested example modules (`examples/sandbox`, `examples/gateway`,
+`examples/harness` and `examples/indexedsearch`) are programs and not listed. A package marked "tests
 only" exists for tests: it holds only test files, or only test files import it.
 
 | Package | Imports (first-party) | Notable third-party |
@@ -1152,6 +1155,6 @@ anything is made) and its agent reports ABI 0 with the note
 
 Run the fast loop with `make check` (fmt, vet, lint, `go test -short` for every module:
 the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `mcpserve`,
-`examples/sandbox`, `examples/gateway` and `examples/harness`). `make check-release` runs the full
+`examples/sandbox`, `examples/gateway`, `examples/harness` and `examples/indexedsearch`). `make check-release` runs the full
 tests, including the slow `internal/policy` gates that `-short` skips: the
 cross-target build and vet, the host cgo build and the nested `make` runs.

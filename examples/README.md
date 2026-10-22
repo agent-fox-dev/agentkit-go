@@ -7,9 +7,10 @@ rather than sharing a helper package, so nothing you need is in a file you
 have not opened.
 
 `agentdemo`, `codemode`, `sandbox`, `gateway` and `harness` need **no API key and no network**:
-they run against the scripted provider `provider/faux`. The others, `codingagent`,
-`customtools` and `mcp`, call a model on a provider you choose, Anthropic, OpenRouter or
-Ollama, with three environment variables (below).
+they run against the scripted provider `provider/faux`. So do `toolbox`, which has no model at all
+and calls the built-in tools by hand, and `indexedsearch`, which walks through the code-search
+index. The others, `codingagent`, `customtools` and `mcp`, call a model on a provider you choose,
+Anthropic, OpenRouter or Ollama, with three environment variables (below).
 
 | Example | Run it | What it teaches |
 |---|---|---|
@@ -17,10 +18,12 @@ Ollama, with three environment variables (below).
 | [`codingagent`](codingagent) | `go run ./examples/codingagent --dir . "which files define the tool policy?"` | Built-in file/shell tools, a workspace root, and the `execute` authorization boundary. |
 | [`customtools`](customtools) | `go run ./examples/customtools` | Writing tools well: the schema combinators, `Handler` vs `Execute`, argument repair, sequential execution, per-tool prompt guidelines, and a tool that ends the run. |
 | [`mcp`](mcp) | `go run ./examples/mcp` · `--external CMD` | The MCP client: consuming a server's tools under qualified names, with the pool refusing a server tool that would shadow one of yours. |
+| [`toolbox`](toolbox) | `go run ./examples/toolbox` · `list` · `--dir . call find_symbol name=Runner` · `--dir . repl` | The built-in tools with no model: a tour of all eleven through `agentkit.NewRunner`, then `call` and `repl` for your own arguments on your own directory, with the shell tools behind `guard.Allow`. Results as a model reads them, as `Data` for a program, and as typed values from `tools.Search` and `tools.References`. |
 | [`codemode`](codemode) | `go run ./examples/codemode` | Code mode: one tool that runs a model-written Starlark script over other tools — chained and parallel calls, errors as values, filtering before anything reaches the conversation — through the agent's own nested-call pipeline. |
 | [`sandbox`](sandbox) | `cd examples/sandbox && go run .` (its own module) | Sandboxes: `sandbox.Open` creating one and syncing a project into it, proxy tools that are drop-in replacements for `tools.For`, a guarded code-mode script over them, and exporting files back out — against `local`, which is not isolation. |
 | [`gateway`](gateway) | `cd examples/gateway && go run .` (its own module) · `--url URL --token-file FILE` | The sandbox gateway: a `gatewayd.Server` started in process on a loopback port, and an embedder that holds only its URL and token — `gateway.Dial`, a refused token, `sandbox.Open`, `List`, and the same sandbox work through the relay. Or dial an `agentkit-gateway` already running. |
 | [`harness`](harness) | `cd examples/harness && go run .` (its own module) · `--podman --image IMG --repo URL --spec N --harness claude` | Another harness in an AgentKit sandbox: a sandbox filled from a repository with one `sandbox.Open`, `specr` run inside it over the proxy `execute`, the spec's checks as a baseline, then `code_mode` and the proxy tools served by `mcpserve` to Claude Code or Pi over MCP on loopback, under `guard.Allow`, with the harness's own tools off — and the checks again as the gate. Offline, a scripted stand-in plays the harness over the same MCP server. |
+| [`indexedsearch`](indexedsearch) | `cd examples/indexedsearch && go run .` (its own module) | The code-search index: `codesearch.New` and `tools.Options{Index: idx}`, the first query building it, zoekt's query language (`sym:`, `file:`, `lang:`, `case:`, `or`), `find_symbol` answered from the index, how edits reach it (`write_file`, `Invalidate`, the 5% rebuild), the `MaxFiles` and `MaxBytes` bounds, an agent using it, and `Close`. |
 
 ## Configuring an application
 
