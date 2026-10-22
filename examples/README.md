@@ -7,10 +7,10 @@ rather than sharing a helper package, so nothing you need is in a file you
 have not opened.
 
 `agentdemo`, `codemode`, `sandbox`, `gateway` and `harness` need **no API key and no network**:
-they run against the scripted provider `provider/faux`. `toolbox` needs none either, and has no model
-at all: it calls the built-in tools by hand. The others, `codingagent`,
-`customtools` and `mcp`, call a model on a provider you choose, Anthropic, OpenRouter or
-Ollama, with three environment variables (below).
+they run against the scripted provider `provider/faux`. So do `toolbox`, which has no model at all
+and calls the built-in tools by hand, and `indexedsearch`, which walks through the code-search
+index. The others, `codingagent`, `customtools` and `mcp`, call a model on a provider you choose,
+Anthropic, OpenRouter or Ollama, with three environment variables (below).
 
 | Example | Run it | What it teaches |
 |---|---|---|
@@ -23,6 +23,7 @@ Ollama, with three environment variables (below).
 | [`sandbox`](sandbox) | `cd examples/sandbox && go run .` (its own module) | Sandboxes: `sandbox.Open` creating one and syncing a project into it, proxy tools that are drop-in replacements for `tools.For`, a guarded code-mode script over them, and exporting files back out — against `local`, which is not isolation. |
 | [`gateway`](gateway) | `cd examples/gateway && go run .` (its own module) · `--url URL --token-file FILE` | The sandbox gateway: a `gatewayd.Server` started in process on a loopback port, and an embedder that holds only its URL and token — `gateway.Dial`, a refused token, `sandbox.Open`, `List`, and the same sandbox work through the relay. Or dial an `agentkit-gateway` already running. |
 | [`harness`](harness) | `cd examples/harness && go run .` (its own module) · `--podman --image IMG --repo URL --spec N --harness claude` | Another harness in an AgentKit sandbox: a sandbox filled from a repository with one `sandbox.Open`, `specr` run inside it over the proxy `execute`, the spec's checks as a baseline, then `code_mode` and the proxy tools served by `mcpserve` to Claude Code or Pi over MCP on loopback, under `guard.Allow`, with the harness's own tools off — and the checks again as the gate. Offline, a scripted stand-in plays the harness over the same MCP server. |
+| [`indexedsearch`](indexedsearch) | `cd examples/indexedsearch && go run .` (its own module) | The code-search index: `codesearch.New` and `tools.Options{Index: idx}`, the first query building it, zoekt's query language (`sym:`, `file:`, `lang:`, `case:`, `or`), `find_symbol` answered from the index, how edits reach it (`write_file`, `Invalidate`, the 5% rebuild), the `MaxFiles` and `MaxBytes` bounds, an agent using it, and `Close`. |
 
 ## Configuring an application
 

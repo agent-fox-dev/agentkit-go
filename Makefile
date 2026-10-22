@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 # MODULES are the repository's Go modules: the root and its nested modules.
-MODULES := . codesearch sandbox sandbox/gatewayd mcpserve examples/sandbox examples/gateway examples/harness
+MODULES := . codesearch sandbox sandbox/gatewayd mcpserve examples/sandbox examples/gateway examples/harness examples/indexedsearch
 DOC_DIR ?= docs/generated
 
 VERSION    := $(shell git describe --tags 2>/dev/null || echo "0.1.0")
@@ -36,7 +36,7 @@ test-short: ## Run all Go tests with -short, skipping the slow gates
 .PHONY: build
 build: ## Build all packages of the root module and the nested modules
 	@rc=0; for m in $(MODULES); do echo "go build ./... ($$m)"; (cd $$m && go build ./...) || rc=1; done; exit $$rc
-	rm examples/gateway/gateway examples/harness/harness examples/sandbox/sandbox
+	rm examples/gateway/gateway examples/harness/harness examples/sandbox/sandbox examples/indexedsearch/indexedsearch
 
 .PHONY: coverage
 coverage: ## Run the root module's tests with a coverage report

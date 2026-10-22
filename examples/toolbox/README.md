@@ -79,5 +79,5 @@ converts to the `outline.Decl` that `tools.References` takes, and
   with no `Guard`. `guard.Allow(programs…)` is the shortest one that is safe by
   default; see `examples/codingagent` for `guard.Restricted` in an agent.
 - To search by ranked, indexed queries instead (`sym:`, `file:`, `lang:`),
-  see `examples/codesearchdemo`.
+  see `examples/indexedsearch`.
 - `docs/architecture.md` covers the tool set, the workspace and the runner.

@@ -29,8 +29,10 @@ func repoRoot(t *testing.T) string {
 
 // gateModules are the modules the build gates cover, relative to the
 // repository root: the root module, the nested sandbox modules, the nested
-// mcpserve module and the examples that use them. codesearch keeps its own gate.
-var gateModules = []string{".", "sandbox", "sandbox/gatewayd", "mcpserve", "examples/sandbox", "examples/gateway", "examples/harness"}
+// mcpserve module and the examples that use them. codesearch keeps its own gate,
+// and its example, which builds on every target through the module's Windows
+// stub, is covered here.
+var gateModules = []string{".", "sandbox", "sandbox/gatewayd", "mcpserve", "examples/sandbox", "examples/gateway", "examples/harness", "examples/indexedsearch"}
 
 // TS-19-62: the cross-target and host cgo gates cover sandbox/gatewayd.
 // 19-REQ-9.3.
