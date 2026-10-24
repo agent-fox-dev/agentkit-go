@@ -1,28 +1,47 @@
-# gateway
+# gateway: sandboxes on another host, behind a URL and a token
 
-AgentKit's sandboxes, behind a sandbox gateway. A gateway is a gRPC service
-that holds the backend provider and its credentials; the embedder holds only
-the gateway's URL and a bearer token. `gateway.Dial` returns a
+A sandbox gateway is a gRPC service that holds the sandbox backend (Podman or
+Docker) and its configuration, so an application can create, use and destroy
+sandboxes with nothing but a URL and a bearer token. `gateway.Dial` returns a
 `sandbox.Provider` whose sandboxes behave like local ones: the same proxy
-tools, the same state machine and the same errors.
+tools, the same lifecycle and the same errors. By default this example plays
+both parts on one machine and runs offline with no API key: it starts a gateway
+in process over `local` and dials it over TCP, and the model is `provider/faux`
+replaying one scripted `code_mode` call.
+
+**`local` is not isolation**: in the default run the sandboxes run in this
+process with its privileges. Use `--url` against a real `agentkit-gateway` for
+containers.
+
+## Run it
+
+The example is its own Go module.
 
 ```bash
 cd examples/gateway && go run .
 ```
 
-The example is its own Go module, because it imports the nested `sandbox`
-and `sandbox/gatewayd` modules, which the root module does not require.
+```
+gateway serving on 127.0.0.1:46559 (plaintext, loopback), backend local
+dialled http://127.0.0.1:46559: gateway (devel), protocol 1.0, backend local, max TTL 1h0m0s, max 4 sandboxes
+a wrong token: refused (gateway.ErrUnauthenticated)
+sandbox 7097d002e377c2e7 on gateway/local: agent (devel), protocol 1.2
+...
+code_mode result:
+  README: Says hello from behind the gateway.
+  TODOs: 2
+  src: main.go, util.go
+  rm: blocked_by_policy
+...
+closed: the gateway holds 0 sandboxes for this token
 
-By default the program plays both parts on this machine. It starts a
-`gatewayd.Server` in process, listening on a free loopback port, over
-`local`, with a random token. Then it dials that port over TCP, exactly as an
-embedder on another host would. It runs offline, with no API key: the
-"model" is `provider/faux` replaying one scripted `code_mode` call.
-**`local` is not isolation**: the gateway's sandboxes run in this process
-with its privileges. The gateway logs one structured line per create,
-destroy and refused token to stderr.
+Gateway example completed successfully
+```
 
-## Against a running `agentkit-gateway`: `--url`
+The gateway also logs one structured line per sandbox created or destroyed and
+per refused token to stderr.
+
+Against a running `agentkit-gateway`:
 
 ```bash
 # from the repository root
@@ -35,66 +54,31 @@ cd examples/gateway && go run . --url http://127.0.0.1:8443 --token-file ../../t
 	--image quay.io/agentfox/agentkit-sandbox:latest
 ```
 
-`--url` starts no gateway: the program dials the one at the URL with the
-first token in `--token-file` (the gateway's own format: one per line, blank
-lines and `#` comments skipped). It creates its sandbox from `--image` (empty
-means `sandbox.DefaultImage()`, which a development build does not have)
-under `NetworkNone`, the gateway's default ceiling, with 1 GiB of memory and
-512 PIDs. `agentkit-gateway` runs every sandbox in a hardened Podman or
-Docker container ([`docs/cli.md`](../../docs/cli.md#agentkit-gateway)).
+| Flag | Default | Meaning |
+|---|---|---|
+| `--url` | empty | Dial the gateway at this URL instead of starting one in process. |
+| `--token-file` | empty | The token file for `--url` (one token per line, `#` comments); its first token is used. |
+| `--image` | empty | The sandbox image for `--url`; empty means `sandbox.DefaultImage()`, which a development build does not have. |
 
-`http://` is accepted only for `localhost` or a loopback address, so a token
-never crosses a network in clear text. A gateway on another host is dialled
-over `https://`, with `agentkit-gateway --tls-cert … --tls-key …`.
+With `--url` the sandbox has no network, 1 GiB of memory and 512 PIDs. `http://`
+is accepted only for `localhost` or a loopback address; a gateway on another
+host is dialled over `https://`.
 
-## What it does
+## What it shows
 
-1. **The gateway's side** (default run only): `gatewayd.New` with the
-   `local` backend, one token, a network ceiling of `unrestricted`, at most
-   four sandboxes and a TTL of at most an hour. `local` offers only
-   `unrestricted`; the default ceiling, `none`, would leave no mode in common,
-   and `New` refuses that. `Serve` runs on `127.0.0.1:0`, and `Shutdown`
-   destroys every sandbox still held.
-2. `gateway.Dial` with the URL and token, which fetches the gateway's
-   capabilities (`Provider.Gateway()`: version, backend, limits). A second
-   `Dial` with a token the gateway does not hold fails with
-   `gateway.ErrUnauthenticated`.
-3. The project is written to a host directory, and `sandbox.Open` does
-   `Create`, `Sync` and `Tools` in one call: it makes a sandbox on the
-   gateway's host with a 10-minute TTL and a label, puts the project in with
-   `sandbox.LocalDir` (the gateway relays the rsync stream) and returns the
-   proxy tools. If a step fails, `Open` closes the sandbox itself. `List` shows
-   the sandbox, owned by this token only.
-4. `core.Named` picks `read_file`, `search_files` and `execute`, and an agent
-   runs a code-mode script over them under `guard.Allow("ls")`. The "model" is
-   `faux.ToolCall` for the `code_mode` call and `faux.Text` for the answer. The
-   guard runs in the embedder: the script's `ls src` is relayed to the
-   sandbox, and its `rm -rf src` is refused before anything reaches the
-   gateway, coming back to the script as `blocked_by_policy`.
-5. `Export` takes `src` back out into a host directory, and `Close` destroys
-   the sandbox on the gateway; `List` is empty again.
+- Embedding the server: `gatewayd.New` with a backend, the accepted tokens and
+  limits (network ceiling, sandbox count, longest TTL).
+- `gateway.Dial` fetches the gateway's capabilities; a token the gateway does
+  not hold fails with `gateway.ErrUnauthenticated`.
+- `sandbox.Open` creates a sandbox on the gateway's host, syncs a host
+  directory into it and returns the proxy tools; `List` shows only this
+  token's sandboxes.
+- A code-mode script runs over the proxy tools under `guard.Allow("ls")`. The
+  guard runs in your process: `rm -rf src` is refused before anything reaches
+  the gateway.
+- `Export` copies files back out; `Close` destroys the sandbox on the gateway.
 
-## The code an embedder copies
-
-The server, when you embed the gateway rather than run `agentkit-gateway`:
-
-```go
-srv, err := gatewayd.New(gatewayd.Config{
-	Backend:      backend,          // podman.New(...) in production
-	Tokens:       tokens,           // each at least 32 printable characters
-	TLS:          tlsConfig,        // nil serves plaintext: loopback or behind a TLS proxy only
-	NetworkModes: []sandbox.NetworkMode{sandbox.NetworkNone},
-})
-if err != nil {
-	return err
-}
-l, err := net.Listen("tcp", "127.0.0.1:8443")
-if err != nil {
-	return err
-}
-go srv.Serve(l)
-defer srv.Shutdown(ctx) // destroys every sandbox it holds
-```
+## The code that matters
 
 The client:
 
@@ -110,9 +94,26 @@ if err != nil {
 	return err // a failed step has already closed the sandbox
 }
 defer sb.Close(ctx)
-// From here on, sb is a sandbox.Sandbox like any other: Export, a second Sync.
 ```
 
-See [`examples/sandbox`](../sandbox) for the same sandbox work against a
-provider in the embedder's own process, and
-[`docs/architecture.md`](../../docs/architecture.md) for the guarantees.
+The server, when you embed it rather than run `agentkit-gateway`:
+
+```go
+srv, err := gatewayd.New(gatewayd.Config{
+	Backend:      backend,   // podman.New(...) in production
+	Tokens:       tokens,    // each at least 32 printable characters
+	TLS:          tlsConfig, // nil serves plaintext: loopback or behind a TLS proxy only
+	NetworkModes: []sandbox.NetworkMode{sandbox.NetworkNone},
+})
+l, err := net.Listen("tcp", "127.0.0.1:8443")
+go srv.Serve(l)
+defer srv.Shutdown(ctx) // destroys every sandbox it holds
+```
+
+## Further reading
+
+- [Examples index](../README.md); [`sandbox`](../sandbox) does the same work with the provider in your own process
+- [User guide: sandboxes on another host](../../docs/guide.md#sandboxes-on-another-host-the-gateway)
+- [`agentkit-gateway` command](../../docs/cli.md#agentkit-gateway): flags and the token file
+- [Configuration: the gateway](../../docs/configuration.md#the-gateway-sandboxgateway-sandboxgatewayd)
+- [Architecture: sandboxes](../../docs/architecture.md#sandboxes)

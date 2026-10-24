@@ -1,26 +1,19 @@
-# agentdemo — the whole loop, with no key and no network
+# agentdemo: the agent loop, with no key and no network
 
-`agentdemo` runs the real AgentKit loop end to end against `provider/faux`, a
-scripted provider that replays canned turns. Nothing is mocked except the
-model: the loop, the tool executor, the Anthropic wire encoder and its
-transcript repair are the shipped code.
-
-Each of its four sections demonstrates one behaviour that a naive agent loop
-gets wrong — and that the original specification got wrong before it was
-corrected. Run it first if you want to see the machinery without spending
-anything, then read each `demo*` function next to its output.
+`agentdemo` runs AgentKit's real agent loop end to end against `provider/faux`,
+a scripted provider that replays canned model turns. Only the model is fake:
+the loop, the tool executor and the Anthropic request encoder are the shipped
+code. It shows, in four short sections, behaviour that a naive agent loop gets
+wrong. Start here if you want to see the machinery without spending anything.
 
 ## Run it
-
-No API key, no network:
 
 ```bash
 go run ./examples/agentdemo
 ```
 
-There are no flags. The output uses ANSI colours.
-
-## What you'll see
+There are no flags. The output uses ANSI colours. The first section looks like
+this:
 
 ```
 ── 1. The loop, streamed ─────────────────────────────────────────
@@ -32,49 +25,70 @@ That sentence has 9 words.
 
 final: "That sentence has 9 words."
 turns: 2, stop: end_turn
-
-── 2. Why the loop ignores stop_reason (REQ-LOOP-01) ─────────────
-  stop_reason tool_use       → tool executed: true
-  stop_reason stop           → tool executed: true
-  stop_reason (none)         → tool executed: true
-...
-── 4. Repairing what an aborted turn leaves behind (REQ-PROV-11) ─
-  repairs: 1 failed turns dropped, 1 orphaned results dropped
-...
-  History still holds all three messages; only the VIEW was repaired.
 ```
 
-## The four sections
+## What it shows
 
-| # | Function | What it shows |
-|---|---|---|
-| 1 | `demoStreamingLoop` | A two-turn tool-using run consumed as an event stream (`TextDeltaEvent`, `ToolCallStartEvent`, `ToolResultEvent`, `TurnEndEvent`), then `stream.RunResult()`. |
-| 2 | `demoStopReasonTrap` | The loop iterates on the *presence* of tool calls, not on `stop_reason` — some gateways return `STOP` alongside tool calls. |
-| 3 | `demoTruncatedToolCalls` | A tool call in a turn that hit the output cap (`StopReasonLength`) is never executed; the model gets an error result and the loop continues. |
-| 4 | `demoTranscriptRepair` | Send-time repair (`anthropic.BuildRequest`) of an aborted turn and its orphaned result; history is untouched, only the request view changes. |
+1. **The loop, streamed.** A two-turn run consumed as an event stream
+   (`TextDeltaEvent`, `ToolCallStartEvent`, `ToolResultEvent`, `TurnEndEvent`),
+   then `stream.RunResult()`.
+2. **Tool calls drive the loop, not `stop_reason`.** Some providers report
+   `stop` alongside tool calls; the loop runs the tools whatever the stop
+   reason says.
+3. **A truncated tool call is never executed.** When a turn hits the output
+   token limit, its tool calls get an error result asking the model to re-issue
+   them, and the loop continues.
+4. **Transcript repair.** An aborted turn and its orphaned tool result are
+   dropped from the request sent to the provider; the stored history is left
+   complete.
 
-## Code worth copying
+## The code that matters
 
-- **A tool** — `wordCount()` (top of `main.go`): `core.Tool` with an
-  `InputSchema` built from `schema.Object`/`schema.Prop`/`schema.Opt`, a
-  `PromptGuidelines` line, and a `Handler` that unmarshals its arguments and
-  returns JSON. The loop wraps the handler's return in `{"ok":true,"data":…}`.
-- **A scripted provider** — `faux.New(faux.Turn{Blocks: …, StopReason: …})`
-  with `faux.FauxText` and `faux.FauxToolCall`. `p.ChunkSize` splits text into
-  deltas so streaming is visible; `p.Requests()` returns what the loop sent.
-- **The minimum config** — `newAgent`: `agentkit.New(agentkit.Config{…})`
-  with `Client: p` (the faux provider is a `core.ProviderClient` itself),
-  `Model: faux.Model().ID`, a `System` prompt, a `Toolset` holding the tools, and `MaxTurns` /
-  `MaxCostUSD` bounding turns and spend. With a real model you leave `Client`
-  out and name the model: `New` builds the provider and checks its
-  credential (see [`codingagent`](../codingagent)).
+A tool is a `core.Tool` with a schema built from combinators and a handler.
+The loop wraps the handler's return in `{"ok":true,"data":…}`:
 
-## Gotchas
+```go
+core.Tool{
+	Name:        "word_count",
+	Description: "Count the words in a piece of text",
+	InputSchema: schema.Object(
+		schema.Prop("text", schema.String("The text to count words in")),
+		schema.Opt("unique", schema.Bool("Count distinct words only")),
+	),
+	Handler: func(ctx context.Context, in json.RawMessage) (json.RawMessage, error) { … },
+}
+```
 
-- `agentdemo` is a tour, not a template. For a minimal real program start with
-  [`codingagent`](../codingagent) or [`customtools`](../customtools).
+A scripted model and the minimum agent. The faux provider is a
+`core.ProviderClient`, so it goes in `Client`; with a real model you leave
+`Client` out and set `Provider` and `Model` (see [`codingagent`](../codingagent)):
 
-## Related packages
+```go
+p := faux.New(
+	faux.Turn{Blocks: []core.ContentBlock{
+		faux.FauxText("Let me count those."),
+		faux.FauxToolCall("call_1", "word_count", `{"text":"the quick brown fox"}`),
+	}, StopReason: core.StopReasonToolUse},
+	faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("4 words.")}, StopReason: core.StopReasonStop},
+)
+agent, err := agentkit.New(agentkit.Config{
+	Client:     p,
+	Model:      faux.Model().ID,
+	System:     "You are a helpful assistant.",
+	Toolset:    agentkit.Toolset{Tools: []core.Tool{wordCount()}},
+	MaxTurns:   8,
+	MaxCostUSD: 0.50,
+})
+```
 
-`core` (messages, events, `Tool`), `provider/faux`, `provider/anthropic`
-(`BuildRequest`), `schema`.
+`p.ChunkSize` splits text into deltas so streaming is visible, and
+`p.Requests()` returns what the loop sent.
+
+`agentdemo` is a tour, not a template: for a minimal real program start with
+[`codingagent`](../codingagent) or [`customtools`](../customtools).
+
+## Further reading
+
+- [Examples index](../README.md)
+- [User guide](../../docs/guide.md): [testing without a model](../../docs/guide.md#testing-without-a-model), [bounding and watching a run](../../docs/guide.md#bounding-and-watching-a-run)
+- [Architecture](../../docs/architecture.md#data-flow-of-one-run): how a run flows through the loop

@@ -1,106 +1,104 @@
-# sandbox
+# sandbox: AgentKit's tools running inside a sandbox
 
-AgentKit's built-in tools, running in a sandbox. A sandbox is an ephemeral
-environment that holds one workspace; `Sandbox.Tools` returns a drop-in
-replacement for `tools.For` whose every call runs in the AgentKit agent inside
-it, over the `agentkit.sandbox.v1` protocol. The driver does not change.
+A sandbox is a short-lived environment that holds one workspace, so an agent's
+file and shell tools act on a copy of your project rather than on your machine.
+`sandbox.Open` creates one, copies a project into it and returns proxy tools
+that are drop-in replacements for `tools.For`: the agent is configured exactly
+as before, and every call runs inside the sandbox. This example runs offline
+with no API key: the model is `provider/faux` replaying one scripted
+`code_mode` call, and the sandbox comes from `local`.
+
+**`local` is not isolation**: it runs the sandbox in this process with its
+privileges, for tests and development. Use `--landlock` or `--podman` for a
+confined sandbox.
+
+## Run it
+
+The example is its own Go module.
 
 ```bash
 cd examples/sandbox && go run .
 ```
 
-The example is its own Go module, because it imports the nested `sandbox`
-module, which the root module does not require.
+```
+sandbox 0b419d2debecdb80 on local: agent (devel), protocol 1.2
+read_file src/main.go in the sandbox: ok=true, 92 bytes
 
-It runs offline, with no API key: the "model" is `provider/faux` replaying one
-scripted `code_mode` call, and the sandbox comes from `local`, the in-process
-provider. **`local` is not isolation**: it runs the agent in this process with
-its privileges, and exists for tests and development. It speaks the same
-protocol, over the same transport, as the providers that isolate.
+code_mode result:
+  README: Says hello from inside the sandbox.
+  TODOs: 2
+  src: main.go, util.go
+  rm: blocked_by_policy
 
-## On a confined child process: `--landlock`
+model: Two TODOs, both in src/.
+exported src: main.go, util.go
+
+Sandbox example completed successfully
+```
+
+On a confined child process (Linux with Landlock ABI 4, Linux 6.7 or later):
 
 ```bash
 go install github.com/agent-fox-dev/agentkit-go/sandbox/cmd/agentkit-sandboxd@vX.Y.Z   # or, in a checkout: cd sandbox && go install ./cmd/agentkit-sandboxd
 cd examples/sandbox && go run . --landlock --agent "$(go env GOPATH)/bin/agentkit-sandboxd"
 ```
 
-`--landlock` runs the same program on `sandbox/landlock`:
-`landlock.New(landlock.Options{AgentBinary: <--agent>})` and the zero `Spec`
-(`NetworkNone`). The agent runs as a child process confined by its own
-Landlock ruleset. It needs Linux with Landlock ABI 4 (Linux 6.7); elsewhere
-the run fails with `landlock: this host cannot confine a sandbox with Landlock ABI 4`.
-
-## On a real container: `--podman`
+In a container, from an image you build first:
 
 ```bash
 make build-containers    # from the repository root: builds quay.io/agentfox/agentkit-sandbox:latest
 cd examples/sandbox && go run . --podman --image quay.io/agentfox/agentkit-sandbox:latest
 ```
 
-`--podman` runs the same program on `sandbox/podman`: `podman.New(podman.Options{})`
-and a `Spec` with the zero `Network` (`NetworkNone`), `MemoryBytes` 1 GiB and
-`PIDs` 512, from the image `--image` names (empty means
-`sandbox.DefaultImage()`, which a development build does not have). The
-agent then runs in a hardened container with no network; the first line of
-the output names the provider. The default run, without `--podman`, stays
-offline on `local`.
+| Flag | Default | Meaning |
+|---|---|---|
+| `--landlock` | off | Use `sandbox/landlock`: the agent runs as a child process confined by Landlock, with no network. |
+| `--agent` | beside this program, then on `PATH` | The `agentkit-sandboxd` binary for `--landlock`. |
+| `--podman` | off | Use `sandbox/podman`: a hardened container with no network, 1 GiB of memory and 512 PIDs. |
+| `--image` | `sandbox.DefaultImage()` | The image for `--podman`; a development build has no default image, so pass one. |
 
-## What it does
+## What it shows
 
-1. The project is written to a temporary host directory.
-2. `sandbox.Open` does `Create`, `Sync` and `Tools` in one call: it creates a
-   sandbox on `local.Unisolated()` with `NetworkUnrestricted` (`local` cannot
-   honour the zero network, `none`, and refuses rather than pretend), puts the
-   project in from the host directory with `sandbox.LocalDir` over the rsync
-   protocol, and returns the proxy tools. If a step fails, `Open` closes the
-   sandbox itself. The program closes it with `defer sb.Close(ctx)`.
-3. `core.Named` picks the proxy `read_file`, `search_files` and `execute`;
-   `read_file` is called directly.
-4. `codemode.New` binds the three, and an agent runs a script over them under
-   `guard.Allow("ls")`. The script's `ls src` runs in the sandbox; its
-   `rm -rf src` is refused by the guard and comes back to the script as
-   `blocked_by_policy`. The "model" is `faux.ToolCall` for the `code_mode` call
-   and `faux.Text` for the answer.
-5. `Export` takes `src` out into a host output directory with
-   `sandbox.LocalDir`, which creates it; the program prints the files it
-   finds there.
+- `sandbox.Open` creates the sandbox, syncs a host directory into it with
+  `sandbox.LocalDir`, and returns the proxy tools; if a step fails it closes
+  the sandbox itself.
+- `core.Named` picks the proxy `read_file`, `search_files` and `execute`, and
+  a proxy tool can be called directly like any other.
+- A code-mode script runs over them under `guard.Allow("ls")`: `ls src` runs
+  in the sandbox, and `rm -rf src` is refused by the guard and comes back as
+  `blocked_by_policy`.
+- `Export` copies files back out to a host directory.
 
-## The code an embedder copies
+## The code that matters
 
 ```go
 sb, proxies, err := sandbox.Open(ctx, local.Unisolated(),
-	sandbox.Spec{Network: sandbox.Network{Mode: sandbox.NetworkUnrestricted}},
+	sandbox.Spec{Network: sandbox.Network{Mode: sandbox.NetworkUnrestricted}}, // local supports only this mode
 	sandbox.LocalDir{Path: projectDir}, sandbox.ToolOptions{})
 if err != nil {
 	return err // a failed step has already closed the sandbox
 }
 defer sb.Close(ctx)
+
 picked, err := core.Named(proxies, "read_file", "search_files", "execute")
-if err != nil {
-	return err
-}
+cm, _, err := codemode.New(picked, codemode.Options{})
 agent, err := agentkit.New(agentkit.Config{
-	Client: provider,
-	Model:  model,
-	Toolset: agentkit.Toolset{
-		Tools: picked, // execute among them: a Guard is required
-		Guard: guard.Allow("ls"),
-	},
+	Client:  model,
+	Model:   faux.Model().ID,
+	Toolset: agentkit.Toolset{Tools: []core.Tool{cm}, Guard: guard.Allow("ls")}, // execute is reachable: a Guard is required
 })
 // ... run it, then take the result out.
-if err := sb.Export(ctx, "src", sandbox.LocalDir{Path: outDir}); err != nil {
-	return err
-}
+err = sb.Export(ctx, "src", sandbox.LocalDir{Path: outDir})
 ```
 
-`Create`, `Sync` and `Tools` stay on `Provider` and `Sandbox` for a second
-`Sync`, for no `Sync` at all (pass a nil source) and for the `SyncResult`,
-which `Open` discards. `guard.Allow` is `guard.Restricted` with only
-`AllowedPrograms` set.
+Swap `local.Unisolated()` for `landlock.New(...)` or `podman.New(...)` and
+nothing else changes. A cancelled call returns `aborted`, and a lost connection
+to the sandbox makes every later call return `sandbox_unavailable`.
 
-A cancelled call returns `aborted` and kills the process it started in the
-sandbox; a broken connection makes every later call return
-`sandbox_unavailable`. See [`docs/configuration.md`](../../docs/configuration.md)
-for `sandbox.Spec` and [`docs/architecture.md`](../../docs/architecture.md)
-for the guarantees.
+## Further reading
+
+- [Examples index](../README.md); [`gateway`](../gateway) runs the same work on sandboxes on another host
+- [User guide: sandboxes](../../docs/guide.md#sandboxes)
+- [Configuration: sandboxes](../../docs/configuration.md#sandboxes-sandboxspec-sandboxtooloptions-local-the-gateway): `sandbox.Spec` and which provider honours which field
+- [`agentkit-sandboxd` command](../../docs/cli.md#agentkit-sandboxd)
+- [Architecture: sandboxes](../../docs/architecture.md#sandboxes)

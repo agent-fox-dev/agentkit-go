@@ -1,16 +1,76 @@
 # Configuration
 
-AgentKit is a library. It has no config file of its own and no global state.
-Configuration is one of:
+The reference for every option, environment variable, default and limit in
+AgentKit. For an introduction with examples, read the [user guide](guide.md)
+first; this file is for looking things up.
 
-1. fields on `agentkit.Config`, `agentkit.Toolset` and the option structs of the packages below,
-2. environment variables, read by the provider an agent is built on,
-3. one optional TOML section, `[mcp]`, that an embedding application may load
-   with `mcp.ParseConfig`.
+AgentKit has no configuration file of its own and no global state. It is
+configured by:
 
-[`examples/README.md`](../examples/README.md) walks through the decisions every
-application has to make (deployment, credential, model). This file is the
-reference.
+1. fields on `agentkit.Config`, `agentkit.Toolset` and the option structs of
+   each package,
+2. environment variables, read only by the provider an agent runs on (and
+   nothing else in the library),
+3. an optional `[mcp]` TOML section, which an application may load with
+   `mcp.ParseConfig`.
+
+## Contents
+
+- [`agentkit.Config`](#agentkitconfig)
+  - [`agentkit.Resolve`, `Resolution` and `Agent.Resolution`](#agentkitresolve-resolution-and-agentresolution)
+  - [`agentkit.PruneOptions`](#agentkitpruneoptions)
+  - [Run behaviour](#run-behaviour)
+- [`agentkit.Toolset`](#agentkittoolset)
+  - [`Events`](#events)
+- [`guard.Options`](#guardoptions)
+- [Credentials and deployments](#credentials-and-deployments)
+  - [Other variables](#other-variables)
+  - [Live provider tests](#live-provider-tests)
+- [`anthropic.Options`](#anthropicoptions)
+- [`openrouter.Options`](#openrouteroptions)
+- [`ollama.Options`](#ollamaoptions)
+- [Model catalog](#model-catalog)
+  - [Anthropic rows](#anthropic-rows)
+  - [OpenRouter and Ollama rows](#openrouter-and-ollama-rows)
+  - [Ids the catalog does not list](#ids-the-catalog-does-not-list)
+  - [Tiers](#tiers)
+  - [`catalog.Select`](#catalogselect)
+- [Workspace (`workspace.Options`)](#workspace-workspaceoptions)
+- [Built-in tools (`tools.Options`)](#built-in-tools-toolsoptions)
+  - [`code_search` (when a `codesearch` index is set)](#code_search-when-a-codesearch-index-is-set)
+- [Subprocess runner (`tools.Run`, `tools.RunArgv`)](#subprocess-runner-toolsrun-toolsrunargv)
+- [Code mode (`codemode.Options`)](#code-mode-codemodeoptions)
+- [MCP (`mcp.Config`, `mcp.ServerConfig`)](#mcp-mcpconfig-mcpserverconfig)
+- [MCP serving (`mcpserve.Options`)](#mcp-serving-mcpserveoptions)
+- [Sandboxes (`sandbox.Spec`, `sandbox.ToolOptions`, `local`, the gateway)](#sandboxes-sandboxspec-sandboxtooloptions-local-the-gateway)
+  - [`sandbox.Spec`](#sandboxspec)
+  - [Which provider honours which field](#which-provider-honours-which-field)
+  - [Landlock: `RequireLandlock`, `Capabilities.Landlock`, `AgentInfo.Landlock`](#landlock-requirelandlock-capabilitieslandlock-agentinfolandlock)
+  - [The agent's Landlock ruleset](#the-agents-landlock-ruleset)
+  - [`sandbox.ToolOptions`](#sandboxtooloptions)
+  - [`sandbox.Open`](#sandboxopen)
+  - [Transfer: `sandbox.Tar` and `sandbox.TarOut`](#transfer-sandboxtar-and-sandboxtarout)
+  - [Transfer: `sandbox.LocalDir`](#transfer-sandboxlocaldir)
+  - [`local.Unisolated()`](#localunisolated)
+  - [The Podman and Docker provider (`sandbox/podman`)](#the-podman-and-docker-provider-sandboxpodman)
+  - [`sandbox.GitRepo`](#sandboxgitrepo)
+  - [The Landlock provider (`sandbox/landlock`)](#the-landlock-provider-sandboxlandlock)
+  - [The gateway (`sandbox/gateway`, `sandbox/gatewayd`)](#the-gateway-sandboxgateway-sandboxgatewayd)
+  - [Sandbox images](#sandbox-images)
+- [Limits on untrusted input](#limits-on-untrusted-input)
+- [Compatibility](#compatibility)
+
+## Environment variables at a glance
+
+| Variables | Read by | Section |
+|---|---|---|
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_OAUTH_TOKEN`, `ANTHROPIC_BASE_URL` | the `anthropic` provider | [Credentials and deployments](#credentials-and-deployments) |
+| `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_*`, `GOOGLE_CLOUD_*`, `CLOUD_ML_REGION`, `CLOUDSDK_COMPUTE_REGION` | the `anthropic` provider, on Vertex AI | [Credentials and deployments](#credentials-and-deployments) |
+| `CLAUDE_CODE_USE_BEDROCK`, `AWS_*` | the `anthropic` provider, on Bedrock | [Credentials and deployments](#credentials-and-deployments) |
+| `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL` | the `openrouter` provider | [`openrouter.Options`](#openrouteroptions) |
+| `OLLAMA_HOST` (and `OLLAMA_AUTH`, read by Ollama's own package) | the `ollama` provider | [`ollama.Options`](#ollamaoptions) |
+| `AGENTKIT_PROVIDER`, `AGENTKIT_MODEL`, `AGENTKIT_EFFORT`, `AGENTKIT_LIVE` | the examples and the live tests only | [Other variables](#other-variables) |
+| `AGENTKIT_SANDBOX_*`, `AGENTKIT_CONTAINER`, `AGENTKIT_BASH_DIFF` | opt-in tests only | [development.md](development.md#tests) |
 
 ## `agentkit.Config`
 
@@ -336,7 +396,9 @@ selection with no project fails naming both project variables. A provider
 that cannot resolve ends the turn with that message rather than sending a
 request.
 
-Other variables:
+### Other variables
+
+Variables the library never reads, used by the examples and tests:
 
 | Variable | Read by | Effect |
 |---|---|---|
@@ -347,39 +409,9 @@ Other variables:
 
 ### Live provider tests
 
-`make provider-live-test` runs one real tool loop on each provider whose
-prerequisites are present, against its live service. It is
-`AGENTKIT_LIVE=1 go test -count=1 -v -timeout 30m -run TestLive ./internal/providerconformance`,
-and neither `make check` nor `make check-release` depends on it.
-
-`TestLive` skips as a whole under `-short`, and unless `AGENTKIT_LIVE` is
-exactly `1`; the skip message names the variable and the make target. Many
-machines export an Anthropic key or run `ollama serve`, so a key or a server
-alone never starts a run. Each provider is then a subtest of its own, and it
-skips, naming what is missing, unless:
-
-| Provider | Prerequisites |
-|---|---|
-| `anthropic` | `anthropic.Resolve(anthropic.OSEnv{})` succeeds: the direct API, Vertex AI or Bedrock, whichever the process environment selects. The skip message holds `Resolve`'s error. |
-| `openrouter` | `OPENROUTER_API_KEY` is set. |
-| `ollama` | `ollama.New` resolves a host (`OLLAMA_HOST`, else the default), `GET <host>/api/tags` answers 200 within 2 seconds, and it lists the `STANDARD` tier's model. The skip message names the host and `ollama serve`, or `ollama pull <model>`. |
-
-A ready subtest writes `secret.txt`, holding a fresh random word, into a
-temporary workspace and builds an agent with `agentkit.New`: the provider's
-name, model `STANDARD`, the process environment (no `Config.Getenv`), only the
-built-in `read_file` tool, `MaxTurns` 6, `MaxCostUSD` 0.50 and `Timeout` 10
-minutes. It asks the model to read the file and answer with the word, so the
-run costs at most $0.50 on `anthropic` and `openrouter`; on `ollama` it runs
-the tier's model on the local machine. The subtest requires that:
-
-- the run ends `RunStopEndTurn` with no error, a `read_file` call succeeded
-  and the final text contains the word;
-- `Agent.Resolution()` reports the provider, the tier `STANDARD` and the model
-  id and effort `catalog.Select` gives;
-- input and output tokens are positive and the run is not flagged `Unpriced`;
-- the cost is positive on `anthropic` and `openrouter`, and zero on `ollama`.
-
-It logs the model, effort, turns, tokens and cost.
+`make provider-live-test` (`AGENTKIT_LIVE=1`) runs one real, paid tool loop
+on each provider whose credentials are present. What it needs and checks is
+in [development.md](development.md#live-provider-tests).
 
 ## `anthropic.Options`
 
@@ -1525,14 +1557,7 @@ nothing. `Tools` and `Sync` wait for a clone in progress. The image needs
 its files are then visible to the tools. A private repository is cloned on
 the host and synced as a `LocalDir`.
 
-**Testing it.** `make sandbox-podman-test` builds the image (`make
-build-containers`) and runs the provider's integration tests in
-`sandbox/podman` with `AGENTKIT_SANDBOX_BASE_IMAGE`,
-`AGENTKIT_SANDBOX_IMAGE_VERSION` and `AGENTKIT_CONTAINER` set; it is not part of `make check`. Without an engine,
-without `AGENTKIT_SANDBOX_BASE_IMAGE` or under `-short`, those tests skip.
-The `GitRepo` test clones `AGENTKIT_SANDBOX_GIT_URL` (default
-`https://github.com/agent-fox-dev/agentkit-go`) at depth 1, and the
-micro-VM test runs only with `AGENTKIT_SANDBOX_RUNTIME=krun`.
+**Testing it.** The opt-in integration tests are described in [development.md](development.md#container-landlock-and-gateway-tests).
 
 ### The Landlock provider (`sandbox/landlock`)
 
@@ -1651,12 +1676,7 @@ whoever created it. Otherwise `Reap` kills what is left of a dead agent's
 session (same boot, pid gone) and removes the directory, and returns the
 removed ids, sorted.
 
-**Testing it.** The offline tests run everywhere in `make check`; the Linux
-tests run there too on a kernel with Landlock ABI 4 and skip, naming the ABI,
-below it. `make sandbox-landlock-test` runs `go test -count=1 -v ./landlock/`
-in `sandbox/` with `AGENTKIT_SANDBOX_GIT_URL` (default
-`https://github.com/agent-fox-dev/agentkit-go`), which turns on the real
-public clone; it is not part of `make check`.
+**Testing it.** The opt-in integration tests are described in [development.md](development.md#container-landlock-and-gateway-tests).
 
 ### The gateway (`sandbox/gateway`, `sandbox/gatewayd`)
 
@@ -1793,14 +1813,7 @@ still in progress, before `Serve`, after `Shutdown`) it returns an error that
 matches `gatewayd.ErrNotHeld`, which an embedder wanting idempotence treats as
 "already gone". The `agentkit-gateway` command always runs in static mode.
 
-**Testing it.** The gateway's offline tests run in `make check`: an
-in-process server over `local` with a client in the same process. `make
-sandbox-gateway-test` builds the image and runs the opt-in Podman tests in
-`sandbox/gatewayd` with `AGENTKIT_SANDBOX_BASE_IMAGE` and
-`AGENTKIT_CONTAINER` set. They skip without an engine, without
-`AGENTKIT_SANDBOX_BASE_IMAGE` or under `-short`. The `GitRepo` test clones
-`AGENTKIT_SANDBOX_GIT_URL` (default
-`https://github.com/agent-fox-dev/agentkit-go`).
+**Testing it.** The opt-in integration tests are described in [development.md](development.md#container-landlock-and-gateway-tests).
 
 ### Sandbox images
 
@@ -1833,10 +1846,11 @@ fails when the host and the agent are at different versions.
 | Environment | `HOME`, beyond the base image's `PATH` |
 | Labels | `org.opencontainers.image.source` (`https://github.com/agent-fox-dev/agentkit-go`), `licenses` (`Apache-2.0`), `title`, `description`, `version`, `revision` |
 
-**Tags.** A release `vX.Y.Z` publishes `X.Y.Z`, plus a moving `X.Y` when there
-is no prerelease part, for linux/amd64 and linux/arm64; there is no
-`latest`. A re-run rebuilds a tag, so an embedder who needs an immutable
-image pins its digest. [`releasing.md`](releasing.md) has the details.
+**Tags.** The image workflow publishes `X.Y.Z` for a release built at tag
+`vX.Y.Z`, for linux/amd64 and linux/arm64, and moves `latest` with every push
+to `main`. A re-run rebuilds a tag, so an embedder who needs an immutable
+image pins its digest. [`releasing.md`](releasing.md#image-tags) has the
+details.
 
 **Make variables** for `make build-containers`, each overridable on the
 command line:

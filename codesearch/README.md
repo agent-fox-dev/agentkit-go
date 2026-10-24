@@ -1,217 +1,90 @@
-# codesearch — zoekt-backed code search for AgentKit
+# codesearch
 
-## Go/No-Go Gate
+Indexed code search for AgentKit agents. It adds a `code_search` tool backed by
+an in-process [zoekt](https://github.com/sourcegraph/zoekt) trigram index, so
+an agent working on a large repository gets fast, ranked results instead of a
+scan of every file for every query.
 
-**Decision: GO**
-**Date: 2026-10-02**
+## Why use it
 
-### Measured Figures
+The built-in `search_files` tool runs a regular expression over every file in
+the workspace. That is exact and needs no setup, but on repositories with tens
+of thousands of files it is slow, and its capped results often miss what the
+agent was looking for, so the agent searches again. `code_search` answers from
+an index:
 
-| Repository | Files | search_files share of read-phase calls | Truncated or retried within 2 turns |
-|---|---|---|---|
-| agentkit-go (navigation baseline) | ~200 | 32% | 12% |
-| sourcegraph/sourcegraph | 18 000+ | 38% | 41% |
-| kubernetes/kubernetes | 24 000+ | 35% | 37% |
+- **Ranked results**: the best matches come first, grouped by file.
+- **A query language**: substrings, regular expressions, and the filters
+  `sym:` (declarations), `file:`, `lang:` and `case:`, combined with `or`
+  and negation.
+- **Symbol lookup**: the index can also answer the built-in
+  `find_symbol` tool.
+- **Kept up to date**: edits made through the tools reach the index
+  automatically.
 
-- **search_files share ≥ 25%:** YES (32–38% across all repositories)
-- **Truncated-or-retried ≥ one third:** YES (37–41% on the two large repositories)
-- **At least two target repositories of 5 000+ files:** YES (sourcegraph: 18 000+, kubernetes: 24 000+)
-- **Requirement 9 checks:** ALL PASS (see below)
+It is a separate Go module, so applications that do not use it do not link
+zoekt and its dependencies.
 
-The thresholds are the literal values 25% and one third, as specified. They
-are not parameters and were not tuned after the data was seen.
+## Install
 
-## What It Is
+```bash
+go get github.com/agent-fox-dev/agentkit-go/codesearch
+```
 
-A nested Go module that adds a `code_search` tool backed by an in-process
-[zoekt](https://github.com/sourcegraph/zoekt) trigram index. The index lives
-in this separate module so no embedder that does not import it pays for zoekt's
-dependency graph. The root module gains only a small, standard-library-only
-seam (`tools.Index`, `Options.Index`) through which the index adds tools,
-learns about writes, and may serve `find_symbol`.
+## Use it
 
-## How to Opt In
+Build the index for a workspace and hand it to `tools.For`, which then adds
+`code_search` after the built-in tools:
 
 ```go
-import "github.com/agent-fox-dev/agentkit-go/codesearch"
-
-// Ignore configuration is given once, to the workspace: the index, the
-// built-in tools and a sandbox's LocalDir all use its rules.
-ws, err := workspace.Open(".", workspace.Options{ /* Ignore: ... */ })
+ws, err := workspace.Open(".", workspace.Options{})
 if err != nil {
-    return err
+	return err
 }
-opts := tools.Options{ /* ... */ }
+opts := tools.Options{}
 idx, err := codesearch.New(ws, codesearch.Options{})
 switch {
 case errors.Is(err, codesearch.ErrUnsupported):
-    // Windows: run without code search. Options.Index stays nil.
+	// Windows: zoekt does not build there; carry on without the index.
 case err != nil:
-    return err
+	return err
 default:
-    defer idx.Close()
-    opts.Index = idx
+	defer idx.Close()
+	opts.Index = idx
 }
-
-tools, err := tools.For(ws, opts)
+ts, err := tools.For(ws, opts)
 ```
 
-`New` returns a `tools.Index`, the same on every platform, so this is one code
-path with no build constraint. When it returns an error the index is a nil
-interface, never a nil `*codesearch.Index` inside one, so passing it on to
-`Options.Index` without checking `err` is the same as having no index. Code
-that wants the build counters or statistics (`Build`, `BuildCount`,
-`BuildStats`, `IndexedFiles`, `RunDir`, `OverlayBuildCount`, `RevalCount`)
-asserts the result to `*codesearch.Index`; the Windows stub has all of them,
-inert, so the assertion compiles everywhere.
+The index uses the workspace's ignore rules, is built on the first query, and
+is bounded by file count, total size and build time
+([options](../docs/configuration.md#code_search-when-a-codesearch-index-is-set)).
+If you restrict the agent's tools with a policy, add `"code_search"` to the
+allowed names.
 
-Add `"code_search"` to your embedder's tool allowlist.
+The index also works without an agent: call the `code_search` tool directly,
+and call `Invalidate` when files change outside the tools.
 
-The index also works without an agent: build it, call the `code_search` tool's
-`Execute` and `Symbols` directly, and call `Invalidate` when files change.
-[`examples/indexedsearch`](../examples/indexedsearch) runs through all of it.
+## code_search or search_files?
 
-## Known Differences from search_files
-
-| Aspect | search_files | code_search |
+| | `search_files` | `code_search` |
 |---|---|---|
-| Query language | RE2 regex | zoekt boolean (substring, regex, sym:, file:, lang:, case:) |
-| Walk order | Deterministic (alphabetical) | Ranked by zoekt score (best first) |
-| Per-file size limit | None | 1 MiB (matches outline's default) |
-| Binary detection | NUL in first 64 KiB (ripgrep's buffer); a later NUL ends the file's search | NUL anywhere in the file (zoekt's own check) |
-| Other skipped files | None | Over 20 000 distinct trigrams (lock files, source maps, minified bundles) and under 3 bytes: zoekt stores them as "not indexed", so they are skipped and reported in `skipped` (`binary`, `oversized`, `too_many_trigrams`, `too_small`), never counted in `files_indexed` |
-| Encoding | A byte-order mark is honoured: UTF-8 BOM stripped, UTF-16 transcoded | Bytes as stored |
-| Result grouping | By file, match order | By file, best chunks first |
-| Exhaustiveness | All matches up to cap | Ranked subset |
+| Query | RE2 regular expression | zoekt query: substring, regex, `sym:`, `file:`, `lang:`, `case:` |
+| Results | Every match up to the cap, in file order | A ranked subset, best first |
+| Setup | None | An index build on first use |
+| Files skipped | Binary files | Binary files, files over 1 MiB, and generated-looking files (lock files, minified bundles) |
 
-## Requirement 9 Answers (Risks Settled)
+Keep both: `search_files` for exhaustive answers on small trees, `code_search`
+for finding things in large ones.
 
-### Pinned Zoekt Release
+## Platforms
 
-- **Module path:** `github.com/sourcegraph/zoekt`
-- **Version:** `v0.0.0-20260911061844-153817f643cd`
+Linux and macOS. On Windows, `codesearch.New` returns `ErrUnsupported` and a
+nil index, and the code above runs unchanged without code search.
 
-### Packages Used
+## Further reading
 
-| Package | Purpose |
-|---|---|
-| `github.com/sourcegraph/zoekt` | Core types: `Repository`, `SearchOptions`, `SearchResult`, `FileMatch`, `ChunkMatch`, `Symbol` |
-| `github.com/sourcegraph/zoekt/index` | Index builder: `NewBuilder`, `Builder.Add`, `Builder.Finish`, `Document`, `DocumentSection`, `Options` |
-| `github.com/sourcegraph/zoekt/query` | Query parser: `Parse(string) (Q, error)`, query combinators |
-| `github.com/sourcegraph/zoekt/search` | Shard searcher: `NewDirectorySearcher(dir) (Streamer, error)` |
-
-### Shard Search: File-Based
-
-Shards are searched from files on disk via `search.NewDirectorySearcher(dir)`.
-There is no pure in-memory search path; the shard directory under `TempDir` is
-always used.
-
-### Per-Document Symbol Fields
-
-The builder accepts symbols as byte-offset sections:
-
-```go
-type Document struct {
-    Symbols         []DocumentSection      // byte-offset ranges
-    SymbolsMetaData []*zoekt.Symbol        // name, kind, parent
-}
-
-type DocumentSection struct {
-    Start, End uint32
-}
-```
-
-When `Symbols` and `SymbolsMetaData` are populated and `CTagsPath` is empty,
-the builder uses the supplied data without running ctags. This is verified by
-TS-03-64.
-
-Each section is the declared identifier on its start line — what `sym:`
-matches — not the declaration's body. zoekt rejects a shard whose sections
-overlap, and body ranges nest (a class spans its methods; Go's
-`var a, b = 1, 2` gives two names one range), so a section that would overlap
-the one before it is dropped.
-
-### SearchOptions Bounding Result Size and Wall Time
-
-```go
-type SearchOptions struct {
-    MaxDocDisplayCount   int           // cap on files returned
-    MaxMatchDisplayCount int           // cap on matches returned
-    MaxWallTime          time.Duration // abort after this duration
-    NumContextLines      int           // context lines around matches
-    ChunkMatches         bool          // use ChunkMatch instead of LineMatch
-    ShardMaxMatchCount   int           // per-shard match cap
-    TotalMaxMatchCount   int           // total match cap
-}
-```
-
-### CGO Check (03-REQ-9.2): PASS
-
-```
-CGO_ENABLED=1 go list -deps -f '{{.ImportPath}}|{{.Module.Path}}|{{len .CgoFiles}}' ./...
-```
-
-No non-stdlib package in the dependency graph ships cgo files.
-
-### Forbidden Imports (03-REQ-9.3): PASS (direct imports only)
-
-No package of this module directly imports gRPC, Prometheus,
-`github.com/grpc-ecosystem/…` or `net/http/httptest`. That is what
-`TestForbiddenImports` checks, and it checks **direct imports only, by
-decision**.
-
-The spec first called for the check to run over `go list -deps`. It cannot:
-the packages the spec allows, `zoekt/index` and `zoekt/search`, import these
-themselves. The project owner accepted that transitive graph instead of
-recording a no-go
-([`docs/errata/03_forbidden_imports_direct_only.md`](../docs/errata/03_forbidden_imports_direct_only.md)).
-An embedder that imports `codesearch` therefore links, among others:
-
-- `google.golang.org/grpc` and its sub-packages
-- `github.com/grpc-ecosystem/go-grpc-middleware/v2`
-- `github.com/prometheus/client_golang/prometheus` (and `promauto`),
-  `prometheus/client_model/go`, `prometheus/common/expfmt` and
-  `prometheus/procfs`
-- `github.com/getsentry/sentry-go`
-- `github.com/sourcegraph/zoekt/grpc/propagator` and
-  `github.com/sourcegraph/zoekt/grpc/protos/zoekt/webserver/v1`
-
-An embedder that does not import `codesearch` links none of them: the root
-module's graph does not include this nested module.
-
-### Builder Accepts External Symbols (03-REQ-9.4): PASS
-
-Verified by TS-03-64: a document with `Symbols` and `SymbolsMetaData` set and
-`CTagsPath` empty is indexed and searchable with `sym:` queries. The symbol
-hit outranks a comment-only hit. No ctags process is spawned.
-
-### Cross-Target Build and Vet (03-REQ-8.7): PASS (3 of 4)
-
-| Target | Build | Vet |
-|---|---|---|
-| linux/amd64 | ✅ | ✅ |
-| linux/arm64 | ✅ | ✅ |
-| darwin/arm64 | ✅ | ✅ |
-| windows/amd64 | ✅ (stub) | ✅ (stub) |
-
-Zoekt does not build on windows/amd64 (`unix.Umask` undefined). Per
-03-REQ-8.6 and 03-REQ-9.5, this is handled by a platform-constrained stub
-that returns `ErrUnsupported`, not treated as a no-go.
-
-### Windows Stub (03-REQ-8.6)
-
-On windows/amd64, `codesearch.New` returns a nil `tools.Index` and
-`ErrUnsupported`. The error value is the same on every platform
-(`errors.Is(err, codesearch.ErrUnsupported)` works). An embedder falls back to
-`Options.Index == nil`. The stub `Index` type implements `tools.Index` with
-inert methods (`Symbols` never answers, `Tools` is empty), and has the
-counters and statistics of the real one (`Build` returns `ErrUnsupported`,
-every count is 0, `BuildStats` is the zero value), so the code in
-[How to Opt In](#how-to-opt-in) compiles on Windows unchanged.
-`TestEmbedderCompilesOnEveryTarget` builds an embedder that calls them.
-
-## Goldens
-
-Test goldens in this module are tied to the pinned zoekt version
-(`v0.0.0-20260911061844-153817f643cd`). A zoekt upgrade may change ranking
-scores and require golden updates.
+- [`examples/indexedsearch`](../examples/indexedsearch) walks through the
+  index on a sample project, from the first query to an agent using it.
+- [User guide: indexed code search](../docs/guide.md#indexed-code-search).
+- [`docs/codesearch.md`](../docs/codesearch.md): why the module exists, how it
+  is built on zoekt, and the dependencies it brings in.

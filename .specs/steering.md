@@ -67,6 +67,45 @@ session — not as a follow-up task.
    CLI keeps the file anyway and says in one line that it has none.
 4. Run `make check` after doc updates to ensure nothing is broken.
 
+## Documentation Style
+
+Write every document for its reader, not for the code's authors. These rules
+apply to every README and to every document in `docs/`, new or rewritten.
+
+**READMEs** (the root `README.md`, and the `README.md` of a nested module or
+an example) introduce; they do not explain internals. Each one, in order:
+
+1. Says clearly **what the thing is, what it does and what problem it
+   solves**, in a few sentences a newcomer understands.
+2. Where appropriate, gives a **short example** of how to use it: a minimal
+   code snippet or the command to run, and what to expect.
+3. Points to **where to read more** (the user guide, the reference docs, the
+   examples), and, for the root README, **how to install** and **how to
+   develop**.
+
+Implementation details a reader does not need in order to use the thing —
+internal package names, protocol or wire details, spec and requirement ids,
+errata, test names, the history of a decision — do **not** belong in a README.
+Put them in `docs/` (`docs/architecture.md`, `docs/configuration.md`, or a
+topic file such as `docs/{topic}.md`) and link to them.
+
+**Reference documents** that cover a long list of things (`docs/api.md`,
+`docs/cli.md`, `docs/configuration.md`, `docs/architecture.md`, and any other
+document with more than a handful of sections) open with a short statement of
+what the document covers and who it is for, followed by a **Contents** index
+of links to its sections, so a reader can jump straight to what they need.
+Keep the index in step with the headings whenever a section is added,
+renamed or removed.
+
+**General rules:**
+
+- Lead with purpose, then usage, then detail.
+- Every code snippet must compile against the current API and run as shown.
+- Prefer one canonical place for each fact and link to it, rather than
+  repeating it; when a fact must appear twice, keep both copies in step.
+- Archived and historical records (`docs/prd/`, `docs/errata/`,
+  `docs/archive/`, `.specs/`) are not rewritten to follow these rules.
+
 ## Generated Docs
 
 `make doc` writes `go doc -all` output for every publicly accessible package of
@@ -88,5 +127,9 @@ grepping for declarations.
 ## Repository Specifics
 
 AgentKit is a library with no REST API: `docs/api.md` is the map of its public
-Go packages. The nested modules are listed in `MODULES` in the `Makefile`;
+Go packages. Beyond the four reference docs it keeps `docs/guide.md` (the user
+guide: each feature with an example), `docs/development.md` (building,
+testing, make targets) and `docs/releasing.md`; a change to a feature's usage
+updates its section of the guide, and a change to the make targets or the
+test setup updates `docs/development.md`. The nested modules are listed in `MODULES` in the `Makefile`;
 `make test`, `make vet`, `make lint` and `make tidy` run in each of them.

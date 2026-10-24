@@ -1,83 +1,28 @@
-# harness
+# harness: another coding harness working inside an AgentKit sandbox
 
-Another coding harness — Claude Code, Pi, or any MCP client — implementing
-one task of a specification package inside an AgentKit sandbox, with
-`code_mode` and the sandbox's built-in tools as its only tools.
+AgentKit's own agent loop is one way to drive its tools; this example shows
+another. Here a separate coding harness (Claude Code, Pi, or any MCP client)
+implements one task of a specification package, and its only tools are
+`code_mode` and the built-in tools of an AgentKit sandbox, served to it over
+MCP on loopback. Your program keeps the sandbox, the shell guard and the
+verdict; the harness keeps the model and its credential. The default run is
+offline with no API key, no container engine and no harness installed: it uses
+`local` (not isolation), a sample project, a stand-in `specr`, and a scripted
+stand-in harness.
+
+Contents: [Run it](#run-it) · [What it does](#what-it-does) ·
+[The real run](#the-real-run---podman) · [The code that matters](#the-code-that-matters) ·
+[Flags](#flags) · [Further reading](#further-reading)
+
+## Run it
+
+The example is its own Go module.
 
 ```bash
 cd examples/harness && go run .
 ```
 
-The example is its own Go module, because it imports the nested `sandbox` and
-`mcpserve` modules, which the root module does not require.
-
-AgentKit's driver is one way to run its tools; it is not the only one. Here
-the embedder — this program — keeps what it must keep, the sandbox, the
-guard and the policy, and hands the model loop to a harness. The harness
-holds the model credential and talks to this program over MCP on loopback.
-The sandbox holds neither.
-
-## What it does
-
-1. **A sandbox** from `local` (the default; **not isolation**, for the
-   offline run) or `sandbox/podman` (`--podman`, a hardened container from
-   `--image`, no network unless `--network unrestricted`).
-2. **The workspace**, filled by one `sandbox.Open` from `--repo`, a public
-   https repository the provider's init step clones inside the sandbox
-   (`sandbox.GitRepo`, podman only); or from `--dir`, a host checkout moved in
-   over rsync with `.git` left behind, which is how a private repository goes
-   in without its credential; or, with neither, the sample project: a Go
-   module with one stub function and a spec package whose one task asks for
-   it. The account says `filled the workspace from <the sample project | dir |
-   repo>`.
-3. **`specr` inside the sandbox**, over the proxy `execute` tool, under the
-   guard like every other call: `specr <spec> --task N --max-tokens 10000`
-   renders the package scoped to the task, as af-impl's "one task at a time"
-   step reads it. `--task 0` renders the whole package first and takes the
-   task its `next` entry names. The budget matters: the shell tool keeps the
-   last 50 KB of a command's output, and a cut envelope is no envelope.
-4. **The baseline**: the spec's own `test_commands` (`linter`, then
-   `all_tests`, read from the package's `tasks.json` through the proxy
-   `read_file`), run on the unchanged tree. A red baseline is a fact the
-   prompt carries, not a blocker.
-5. **The MCP server**, `mcpserve`: `code_mode` bound to all eleven proxy
-   tools, and the eleven tools themselves, on a free loopback port behind a
-   random bearer token (`MCP server at <URL>`). Every call — a direct one from
-   the harness, or a nested one from a script — goes through argument
-   preparation and `guard.Allow` (`--allow`, default `go,gofmt,git,specr`)
-   before its handler.
-6. **The harness** (`--harness`), with the af-impl rules and the served
-   tools' guidelines as its appended system prompt and the task — the
-   baseline and specr's rendering — as its prompt:
-   - `claude`: Claude Code headless. `--tools ""` turns its own tools off,
-     `--strict-mcp-config --mcp-config <json>` (`Endpoint.ClaudeConfig`)
-     makes this server its only MCP server, `--allowedTools mcp__agentkit` pre-approves the server's
-     tools, `--permission-mode dontAsk` denies whatever would still prompt,
-     `--output-format json` gives the final text, the cost and the turns.
-   - `pi`: Pi in print mode, from a directory holding a `.pi/mcp.json`
-     (`Endpoint.PiConfig`) that names this server with `exposure: direct`, so the tools are declared
-     to the model rather than reached only through Pi's own code mode;
-     `--tools 'mcp__agentkit__*'` keeps this server's tools alone. Pi reads a
-     project's MCP file only once the project is trusted, and print mode cannot
-     ask, so the run passes `--approve`: without it Pi skips the file, starts
-     with no server, and the model is offered no tools. The directory is the
-     empty one the program made, so there is nothing else to trust. Run against
-     Pi 1.3.0 with a stand-in model, not with a live one.
-   - `scripted` (the default): the stand-in, and the proof that the server
-     serves any MCP client. AgentKit's own driver imports the server's tools
-     through AgentKit's MCP client (`mcp.Pool`), as another embedder's
-     would, and `provider/faux` replays one `code_mode` call that implements
-     the sample task the af-impl way: the test first, and red; the
-     implementation; the test green; the linter; the task's state.
-7. **The gate**: the checks again, and af-impl's verdict — `pass`, `pass,
-   baseline was failing`, `regressed`, `still failing`, or `gate failed`
-   when a check could not run (the guard refused its command, say). Only the
-   first two land.
-8. **Export** of the workspace to `--out` (a temporary directory by
-   default), `.git` left behind. Landing the work — a branch, a commit, a
-   pull request — is the embedder's, on the host, where the credential is.
-
-The default run prints the account to stdout and every tool call to stderr:
+The account of the run goes to stdout and every tool call to stderr:
 
 ```
 sandbox … on local (no isolation): agent (devel), network unrestricted
@@ -93,18 +38,37 @@ starting harness scripted on task 1 of .specs/01_greeting (Implement Greet): …
     run      execute command=go test ./... timeout_s=600
     error    execute: command_exit: exit 1
     run      edit_file edits=… path=greeter.go
-    run      execute command=go test ./... timeout_s=600
     …
 verdict: pass
 exported the workspace to …/out: .specs, README.md, go.mod, greeter.go, greeter_test.go
 ```
 
+## What it does
+
+1. Creates a sandbox, on `local` or, with `--podman`, in a hardened container.
+2. Fills the workspace from `--repo` (a public https repository cloned inside
+   the sandbox; podman only), from `--dir` (a host checkout synced in without
+   its `.git`, which is how a private repository goes in without its
+   credential), or from the sample project.
+3. Runs `specr` inside the sandbox, through the guarded `execute` tool, to
+   render the spec package scoped to the task.
+4. Runs the spec's own checks (`linter`, then `all_tests`, from its
+   `tasks.json`) on the unchanged tree as the baseline.
+5. Serves `code_mode` and the eleven sandbox tools over MCP on a free loopback
+   port behind a random bearer token. Every call, direct or from a script,
+   passes `guard.Allow` (`--allow`).
+6. Starts the harness with its own tools turned off, this server as its only
+   tool source, implementation rules appended to its system prompt
+   (`prompt.go`) and the task as its prompt.
+7. Runs the checks again and prints a verdict: `pass`,
+   `pass, baseline was failing`, `regressed`, `still failing` or `gate failed`.
+8. Exports the workspace to `--out`. Committing and opening a pull request is
+   left to your program, on the host, where the credential is.
+
 ## The real run: `--podman`
 
-The sandbox needs an image with `specr` beside the agent. `Containerfile`
-builds `specr` from a clone of the spec repository (`--build-arg
-SPEC_VERSION=<branch or tag>`, default `main`) and adds it to the sandbox
-image, which holds the agent at `sandbox.AgentPath`:
+The sandbox needs an image with `specr` beside the AgentKit agent;
+`Containerfile` builds one on top of the sandbox image:
 
 ```bash
 # from the repository root: the sandbox image, at this checkout's version
@@ -112,59 +76,30 @@ make build-sandbox-container
 cd examples/harness
 podman build -t agentkit-harness:latest -f Containerfile .
 go run . --podman --image agentkit-harness:latest \
-	--repo https://github.com/agent-fox-dev/forked-repo \
-   --spec 1 --task 1 --harness claude
+	--repo https://github.com/you/project --spec 1 --task 1 --harness claude
 ```
 
-The host and the agent must be the same AgentKit version — `Sandbox.Tools`
-checks the definitions' digest — so a checkout builds its own sandbox image
-and a release passes
-`--build-arg SANDBOX_IMAGE=quay.io/agentfox/agentkit-sandbox:X.Y.Z`.
+The host and the sandbox agent must be the same AgentKit version. The
+Containerfile's base is `quay.io/agentfox/agentkit-sandbox:latest`, which
+`make build-sandbox-container` tags; for a release image, change its `FROM`
+line. Under the default `--network none`, `go` cannot download modules: vendor
+them, or pass `--network unrestricted`.
 
-The container has a read-only root and a tmpfs `/tmp`; the program points
-`GOPATH`, `GOCACHE` and `GOMODCACHE` under `/tmp` through `Spec.Env` (podman
-drops the image's own `ENV`) and gives the sandbox 4 GiB, which the build
-cache counts against. Under the default `--network none`, `go` cannot
-download modules or a toolchain: vendor them, or pass
-`--network unrestricted`. Under `none`, `guard.AllowAll` would be a
-reasonable guard too, because the container is then the boundary; the
-example keeps `guard.Allow` for both providers.
+With `--harness claude` the program runs Claude Code headless with
+`--tools ""`, `--strict-mcp-config --mcp-config <json>` and
+`--permission-mode dontAsk`; with `--harness pi` it runs Pi in print mode from
+an empty directory holding a `.pi/mcp.json`. Either reads its model credential
+from this program's environment.
 
-`--repo` takes a public https repository; a private one is cloned on the host
-and passed as `--dir`. `local` has no init step and refuses `--repo`.
-
-## What the harness is told
-
-The appended system prompt is `afImplRules` in `prompt.go` — agent-fox's
-`af-impl` skill condensed to one task: scope, orient, test first, implement,
-check narrowly then run the spec's checks as the gate, update the
-documentation, never edit the spec except the task's state, never commit or
-push — followed by the allowed programs and the served tools' own
-`PromptGuidelines`, assembled with `prompt.Build` so they follow the tools to
-another driver exactly as they would in AgentKit's own.
-
-The prompt names the task, the package's path in the workspace, the baseline
-as measured, and specr's rendering. The host does what the skill's other
-steps do around the task: it measures before and after, and it lands.
-
-## The code an embedder copies
-
-A harness is its own driver, so what it needs from AgentKit is a sandbox, the
-pipeline that runs one tool call with no model, and a server for the harness
-to call it through:
+## The code that matters
 
 ```go
 sb, proxies, err := sandbox.Open(ctx, provider, spec, src, sandbox.ToolOptions{}) // create, fill, equip
-if err != nil {
-	return err
-}
 defer sb.Close(ctx)
-cm, _, err := codemode.New(proxies, codemode.Options{}) // one tool over the proxies
+cm, _, err := codemode.New(proxies, codemode.Options{})
 runner, err := agentkit.NewRunner(agentkit.Toolset{
-	Tools:  append([]core.Tool{cm}, proxies...),
-	Guard:  guard.Allow("go", "gofmt", "git", "specr"), // sees every call, direct or from a script
-	After:  after,                                      // sees every call that ran
-	Events: events,
+	Tools: append([]core.Tool{cm}, proxies...),
+	Guard: guard.Allow("go", "gofmt", "git", "specr"), // sees every call, direct or from a script
 })
 srv, err := mcpserve.New(runner, mcpserve.Options{Instructions: "…"})
 ep, err := srv.ServeLoopback(ctx)
@@ -173,53 +108,33 @@ defer ep.Close()
 // is Claude Code's --mcp-config, and ep.PiConfig("agentkit") is Pi's .pi/mcp.json.
 ```
 
-`sandbox.Open` does `Create`, `Sync` and `Tools` in one call, with the source
-the program chose, and closes the sandbox if a step fails. `NewRunner` refuses
-what `agentkit.New` refuses — a reachable shell tool with no `Guard` among it —
-so the program cannot serve an unguarded shell by omission. `Runner.Call` takes
-the tool's name and the input bytes and returns a result for every outcome:
-`unknown_tool`, `invalid_arguments`, `blocked_by_policy`, `panic`,
-`handler_error`, `aborted`. `runner.Tools()` is the served set, which the
-system prompt and the MCP server both read.
-
-`mcpserve` is the MCP server around it: one MCP tool per served tool — the
-tool's own name, description and input schema, so the harness's model reads the
-definition AgentKit's driver would send — and `core.ToolResult.LLMText()` as
-the result text, so it reads the result the same way too. Every `tools/call` is
-one `runner.Call`, and a blocked or failed call is an error result, not a
-protocol error. It is a nested module of its own, the one besides the gateway
-that listens, so the example imports no MCP SDK package and no `net`.
-
-The log and the counts come from the toolset's hooks (`calls.go`), not from the
-pipeline: a `Guard` that wraps the configured one logs each call as `run` or
-`blocked` and counts the blocks, `After` logs a call that ran and failed, and
-`Events` counts every call from its start event. A call that never reaches the
-guard or `After` — an unknown tool, arguments that fail validation — is counted
-and has no line.
-
-What the runner leaves to the harness: a transcript, a stop condition and the
-terminate vote. A harness has its own loop to end, and its own event stream to
-watch.
+`agentkit.NewRunner` runs one tool call at a time with no model, through the
+same argument checks and guard as an agent, and refuses a toolset that reaches
+a shell tool without a `Guard`. `mcpserve` serves each runner tool under its
+own name, description and schema. The example also logs and counts calls with
+the toolset's `Guard`, `After` and `Events` hooks (`calls.go`).
 
 ## Flags
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--podman` | off | `sandbox/podman` instead of `local` |
-| `--image` | `sandbox.DefaultImage()` | the sandbox image for `--podman`; the default has no Go and no `specr` |
-| `--network` | `none` | the sandbox's network for `--podman`: `none` or `unrestricted` |
-| `--repo`, `--ref` | | a public https repository the sandbox clones, and its branch or tag |
-| `--dir` | | a host checkout to sync instead of `--repo` |
-| `--spec` | the sample's | the package, as `specr` takes it: a path, a number or a name |
-| `--task` | `0` | the task; `0` means the next task not done |
-| `--harness` | `scripted` | `claude`, `pi` or `scripted` |
-| `--model` | the harness's | `--model` for `claude` or `pi` |
-| `--allow` | `go,gofmt,git,specr` | the programs the sandbox's shell may run |
-| `--out` | a temporary directory | where the workspace is exported |
-| `--max-turns` | `40` | the harness's turn bound |
-| `--spec-tokens` | `10000` | `specr --max-tokens` |
+| `--podman` | off | Use `sandbox/podman` instead of `local`. |
+| `--image` | `sandbox.DefaultImage()` | The sandbox image for `--podman`; the default has no Go and no `specr`. |
+| `--network` | `none` | The sandbox's network for `--podman`: `none` or `unrestricted`. |
+| `--repo`, `--ref` | | A public https repository the sandbox clones (needs `--podman`), and its branch or tag. |
+| `--dir` | | A host checkout to sync in instead of `--repo`. |
+| `--spec` | the sample's | The spec package, as `specr` takes it: a path, a number or a name. |
+| `--task` | `0` | The task; `0` means the next task not done. |
+| `--harness` | `scripted` | `claude`, `pi` or `scripted`. |
+| `--model` | the harness's | The model for `claude` or `pi`. |
+| `--allow` | `go,gofmt,git,specr` | The programs the sandbox's shell may run. |
+| `--out` | a temporary directory | Where the workspace is exported. |
+| `--max-turns` | `40` | The harness's turn bound. |
+| `--spec-tokens` | `10000` | `specr --max-tokens`. |
 
-See [`docs/configuration.md`](../../docs/configuration.md) for `sandbox.Spec`
-and the providers, [`docs/architecture.md`](../../docs/architecture.md) for
-code mode and nested calls, and the spec repository's `docs/specr.md` for
-`specr`'s envelope.
+## Further reading
+
+- [Examples index](../README.md)
+- [User guide](../../docs/guide.md): [running tools without a model](../../docs/guide.md#running-tools-without-a-model), [serving tools to another harness over MCP](../../docs/guide.md#serving-tools-to-another-harness-over-mcp), [sandboxes](../../docs/guide.md#sandboxes)
+- [Configuration](../../docs/configuration.md): `sandbox.Spec`, the providers, `mcpserve.Options`
+- [Architecture](../../docs/architecture.md): code mode, nested calls and MCP serving
