@@ -17,35 +17,40 @@ func repoRoot(t *testing.T) string {
 	return filepath.Dir(modRoot)
 }
 
-// TS-03-6: codesearch/README.md leads with the go/no-go figures and records
-// the pinned-zoekt answers.
+// TS-03-6: the module's design record holds the go/no-go figures and the
+// pinned-zoekt answers. They lived in codesearch/README.md until the README was
+// rewritten for users; they are now in docs/codesearch.md
+// (docs/errata/03_codesearch_design_record.md).
 // Verifies: 03-REQ-1.2, 03-REQ-9.1, 03-REQ-10.5.
 func TestReadmeContent_TS03_6(t *testing.T) {
-	root := moduleRoot(t)
-	data, err := os.ReadFile(filepath.Join(root, "README.md"))
+	path := filepath.Join(repoRoot(t), "docs", "codesearch.md")
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("reading README.md: %v", err)
+		t.Fatalf("reading docs/codesearch.md: %v", err)
 	}
 	content := string(data)
 
-	// The first content after the title must be the go/no-go gate with figures, repos and a date.
-	// Split into sections by ## headings.
-	sections := strings.Split(content, "\n## ")
-	if len(sections) < 2 {
-		t.Fatal("README.md must have at least two ## sections")
+	// The go/no-go gate is a section of its own, with the figures, the
+	// repositories and a date.
+	var gate string
+	for _, section := range strings.Split(content, "\n## ")[1:] {
+		if strings.Contains(strings.SplitN(section, "\n", 2)[0], "Go/No-Go") {
+			gate = section
+			break
+		}
 	}
-	// The second element (sections[1]) is the first ## section.
-	// It should be the Go/No-Go Gate.
-	firstSection := sections[1]
-	for _, required := range []string{"Go/No-Go", "Decision", "Date"} {
-		if !strings.Contains(firstSection, required) {
-			t.Errorf("first ## section must contain %q", required)
+	if gate == "" {
+		t.Fatal("docs/codesearch.md must have a ## section whose heading names the Go/No-Go gate")
+	}
+	for _, required := range []string{"Decision", "Date"} {
+		if !strings.Contains(gate, required) {
+			t.Errorf("the Go/No-Go section must contain %q", required)
 		}
 	}
 	// Must mention the repositories.
 	for _, repo := range []string{"sourcegraph", "kubernetes"} {
-		if !strings.Contains(firstSection, repo) {
-			t.Errorf("first ## section must mention repository %q", repo)
+		if !strings.Contains(gate, repo) {
+			t.Errorf("the Go/No-Go section must mention repository %q", repo)
 		}
 	}
 
@@ -68,7 +73,7 @@ func TestReadmeContent_TS03_6(t *testing.T) {
 	}
 	for _, topic := range requiredTopics {
 		if !strings.Contains(content, topic) {
-			t.Errorf("README.md must contain %q", topic)
+			t.Errorf("docs/codesearch.md must contain %q", topic)
 		}
 	}
 }

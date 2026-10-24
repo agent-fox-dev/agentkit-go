@@ -1,24 +1,58 @@
 # Command-line programs
 
-AgentKit is a library. It has two commands: `agentkit-sandboxd`, the agent
-that runs inside a sandbox, and `agentkit-gateway`, the sandbox gateway, the
-one network service, built from its own nested module. The programs under
-`examples/` are runnable too; each documents its own flags in its
-`README.md`.
+AgentKit is a library, but it ships two programs. Both belong to the sandbox
+feature; an application that does not use sandboxes needs neither.
+
+| Command | What it is | Who runs it |
+|---|---|---|
+| [`agentkit-sandboxd`](#agentkit-sandboxd) | The agent that runs inside a sandbox and executes the built-in tools there. | A sandbox provider starts it; you install it in an image, or on the host for the Landlock provider. |
+| [`agentkit-gateway`](#agentkit-gateway) | A server that lets other machines create and use sandboxes on this host. | An operator, on the machine that runs the containers. |
+
+The programs under [`examples/`](../examples) are runnable too; each
+documents its own flags in its `README.md`. The make targets are listed in
+[development.md](development.md#make-targets).
+
+## Contents
+
+- [`agentkit-sandboxd`](#agentkit-sandboxd)
+  - [Installing](#installing)
+  - [Confinement and platforms](#confinement-and-platforms)
+  - [Flags](#flags)
+  - [Environment](#environment)
+  - [Output and exit codes](#output-and-exit-codes)
+- [`agentkit-gateway`](#agentkit-gateway)
+  - [Building and running](#building-and-running)
+  - [Flags](#flags-1)
+  - [The token file](#the-token-file)
+  - [Output and exit codes](#output-and-exit-codes-1)
+- [Regenerating the protocols](#regenerating-the-protocols)
 
 ## `agentkit-sandboxd`
 
-The AgentKit agent inside a sandbox. It serves the `agentkit.sandbox.v1`
-`Agent` service as one HTTP/2 connection on its stdin and stdout, and runs the
-built-in tools (`tools.For`) against one workspace. It opens no listening
-socket. A provider starts it, holding pipes to its stdin and stdout; a sandbox
-image installs it at `sandbox.AgentPath`
-(`/usr/local/bin/agentkit-sandboxd`).
+The AgentKit agent inside a sandbox. It runs the built-in tools
+(`tools.For`) against one workspace and serves them to the host over its stdin
+and stdout (the `agentkit.sandbox.v1` gRPC protocol on one HTTP/2 connection).
+It opens no listening socket. You do not normally run it by hand: a sandbox
+provider starts it and holds its pipes.
+
+### Installing
+
+The published sandbox image already contains it at `sandbox.AgentPath`
+(`/usr/local/bin/agentkit-sandboxd`). For the Landlock provider, which runs it
+on the host, install the release your module uses:
+
+```bash
+go install github.com/agent-fox-dev/agentkit-go/sandbox/cmd/agentkit-sandboxd@vX.Y.Z
+```
+
+or build it from a checkout:
 
 ```bash
 (cd sandbox && go build -o ../agentkit-sandboxd ./cmd/agentkit-sandboxd)
 agentkit-sandboxd --workdir /workspace --ttl 1h --network none
 ```
+
+### Confinement and platforms
 
 On Linux it confines itself with Landlock before any other work: before it
 redirects stdout, builds the agent or serves. Every process a tool starts
@@ -66,11 +100,15 @@ line on stderr, `agentkit-sandboxd: <cause>`.
 
 ## `agentkit-gateway`
 
-The sandbox gateway: a gRPC server on TCP that lets clients
+The sandbox gateway: a gRPC server that lets clients on other machines
 (`gateway.Dial`, package `sandbox/gateway`) create, use and destroy sandboxes
-on this host with a bearer token. Its backend is the Podman or Docker
-provider (`podman.New`), given the command's own environment as the engine's
-environment. It is not published; build it from a checkout:
+on this host, authenticated by a bearer token. It runs the sandboxes with the
+Podman or Docker provider (`podman.New`), which gets the command's own
+environment.
+
+### Building and running
+
+It is not published as a binary or image; build it from a checkout:
 
 ```bash
 make sandbox-gateway                          # build/bin/agentkit-gateway
@@ -157,11 +195,10 @@ A `GitRepo` sync through the gateway runs the backend's init step on this
 host, with the engine's default network: it reaches whatever HTTPS URL the
 client names, as on a local Podman host.
 
-## Make targets
+## Regenerating the protocols
 
-The targets are listed in [`README.md`](../README.md#make-targets). `make
-proto` regenerates the agent and gateway protocols' Go code: it needs `protoc`
-on `PATH`, installs `protoc-gen-go` v1.36.11 and `protoc-gen-go-grpc` v1.5.1
-into `build/bin`, and records the SHA-256 of `sandbox.proto` and
+`make proto` regenerates the agent and gateway protocols' Go code. It needs
+`protoc` on `PATH`, installs `protoc-gen-go` v1.36.11 and `protoc-gen-go-grpc`
+v1.5.1 into `build/bin`, and records the SHA-256 of `sandbox.proto` and
 `gateway.proto` in `sandbox/internal/sandboxpb/sandbox.proto.sha256` and
 `gateway.proto.sha256`, which tests check offline.

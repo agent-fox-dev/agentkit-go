@@ -8,6 +8,25 @@ same guarantees. [PRD 10](prd/10-cut-agentkit-down-to-the-hands.md) turned the
 list into an allowlist. Each module here is one where that was decided on
 purpose.
 
+## Contents
+
+- [The allowlist](#the-allowlist)
+- [`github.com/anthropics/anthropic-sdk-go`](#githubcomanthropicsanthropic-sdk-go)
+- [`github.com/OpenRouterTeam/go-sdk`](#githubcomopenrouterteamgo-sdk)
+- [`github.com/ollama/ollama`](#githubcomollamaollama)
+- [`go.starlark.net`](#gostarlarknet)
+- [`github.com/modelcontextprotocol/go-sdk`](#githubcommodelcontextprotocolgo-sdk)
+- [`github.com/tree-sitter/go-tree-sitter` and the grammar modules](#githubcomtree-sittergo-tree-sitter-and-the-grammar-modules)
+- [`github.com/bmatcuk/doublestar/v4`](#githubcombmatcukdoublestarv4)
+- [`github.com/pelletier/go-toml/v2`](#githubcompelletiergo-tomlv2)
+- [`golang.org/x/oauth2`](#golangorgxoauth2)
+- [`github.com/aws/aws-sdk-go-v2`](#githubcomawsaws-sdk-go-v2)
+- [`google.golang.org/grpc`](#googlegolangorggrpc)
+- [`google.golang.org/protobuf`](#googlegolangorgprotobuf)
+- [`github.com/gokrazy/rsync`](#githubcomgokrazyrsync)
+- [`github.com/landlock-lsm/go-landlock`](#githubcomlandlock-lsmgo-landlock)
+- [Rejected](#rejected)
+
 ## The allowlist
 
 `internal/policy/deps_test.go` lists the root module's approved direct

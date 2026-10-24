@@ -1,8 +1,43 @@
 # Architecture
 
-How the module is laid out, what imports what, and how a run flows through it.
+How AgentKit is built inside: how the modules are laid out, what imports what,
+how a tool call and an agent run flow through the code, and the invariants to
+keep when changing it. It is written for contributors and for embedders who
+need to know exactly what happens; to *use* AgentKit, the
+[user guide](guide.md) is the better start.
+
 The code is authoritative; when this file and a package's doc comment
 disagree, fix this file.
+
+## Contents
+
+- [Shape](#shape)
+- [Package graph](#package-graph)
+- [Packages](#packages)
+- [The embedder's path](#the-embedders-path)
+- [Data flow of one call](#data-flow-of-one-call)
+- [Data flow of one run](#data-flow-of-one-run)
+- [Invariants worth knowing before editing](#invariants-worth-knowing-before-editing)
+- [Nested tool calls](#nested-tool-calls)
+- [Code mode](#code-mode)
+- [MCP serving](#mcp-serving)
+- [MCP client](#mcp-client)
+- [Symbol and reference navigation](#symbol-and-reference-navigation)
+  - [`tools.References`](#toolsreferences)
+- [Sandboxes](#sandboxes)
+  - [The agent service](#the-agent-service)
+  - [What a proxy guarantees](#what-a-proxy-guarantees)
+  - [The state machine](#the-state-machine)
+  - [Tar transfer](#tar-transfer)
+  - [LocalDir transfer](#localdir-transfer)
+  - [Kernel confinement inside the agent](#kernel-confinement-inside-the-agent)
+  - [Code mode over proxies: the script runs on the host](#code-mode-over-proxies-the-script-runs-on-the-host)
+  - [Sandbox image](#sandbox-image)
+  - [The Podman and Docker provider](#the-podman-and-docker-provider)
+  - [The Landlock provider](#the-landlock-provider)
+  - [The gateway](#the-gateway)
+  - [`local` is not isolation](#local-is-not-isolation)
+- [Testing layout](#testing-layout)
 
 ## Shape
 
@@ -683,7 +718,9 @@ Sandbox.Export    TarOut: ExportTar; the host re-validates every entry before
 Sandbox.Close     timer stopped, connection closed, the provider's destroy step
 ```
 
-**The agent service.** `agentkit.sandbox.v1` has one service, `Agent`, with
+### The agent service
+
+`agentkit.sandbox.v1` has one service, `Agent`, with
 `Hello`, `Tools`, `Call`, client-streaming `SyncTar`, server-streaming
 `ExportTar` and, since protocol 1.1, bidirectional `Rsync`; since protocol
 1.2 `HelloResponse` carries the agent's `LandlockReport`. Tool input, result data and metadata travel as JSON bytes, so
@@ -699,7 +736,9 @@ groups those calls started, and stops. `agentkit-sandboxd` serves it on stdin
 and stdout; `local` runs it in-process over two `os.Pipe` pairs through the
 same adapter.
 
-**What a proxy guarantees.** A proxy carries the host's own definition
+### What a proxy guarantees
+
+A proxy carries the host's own definition
 (`Name`, `Description`, both schemas, `PromptGuidelines`, `Builtin`,
 `ExecutionMode`, `PrepareArguments`, `Label`), so the model sees exactly what
 `tools.For` would show; it keeps no local `Execute`. Its result looks to the
@@ -718,7 +757,9 @@ batch executor decides what runs in sequence. `checkShellGuard` sees a proxy
 `execute` by name, so `New` refuses proxy shell tools with no `Guard`, and
 `codemode.New` binds proxies unchanged.
 
-**The state machine.** A sandbox is live, then unavailable, then closed.
+### The state machine
+
+A sandbox is live, then unavailable, then closed.
 
 | From | To | When |
 |---|---|---|
@@ -733,7 +774,9 @@ retry and no reconnect. A refusal — an unsafe tar entry, a missing export
 path, differing tool options — never changes the state. The context given to
 `Create` bounds creation only.
 
-**Tar transfer.** One function, `tarsafe.Validator.Check`, applies the entry
+### Tar transfer
+
+One function, `tarsafe.Validator.Check`, applies the entry
 rules on both sides: only regular files, directories and symlinks that
 resolve inside the target; absolute names, `..` components, hard links,
 devices, FIFOs, other types, escaping symlinks and paths through them are
@@ -742,7 +785,9 @@ an `os.Root`, so no write follows a symlink out. A refused entry ends a sync
 with `ErrUnsafeArchive`, and entries already extracted stay. A transfer has no
 ordering guarantee with tool calls running at the same time.
 
-**LocalDir transfer.** `sandbox.LocalDir` moves a host directory over the
+### LocalDir transfer
+
+`sandbox.LocalDir` moves a host directory over the
 rsync protocol, `github.com/gokrazy/rsync` behind `sandbox/internal/rsyncx`,
 the only package that imports it. That library can neither apply exclude
 rules safely nor keep excluded paths from deletion
@@ -810,7 +855,9 @@ overwritten, written through or deleted. The agent serves each stream with
 exactly one module over the workspace root, writable only for SYNC
 (`rsyncx.ModulesFor`), so an EXPORT stream cannot change the workspace.
 
-**Kernel confinement inside the agent.** The containment of a sandbox is
+### Kernel confinement inside the agent
+
+The containment of a sandbox is
 the provider's; on Linux the agent adds a second boundary underneath it, a
 Landlock ruleset on its own process that every process a tool starts
 inherits and none can lift. `agentkit-sandboxd` is the only code that
@@ -861,7 +908,9 @@ zero umask; `internal/policy` checks the
 constructors, and a re-executed test child checks the process stays
 unconfined after a Sync and an Export.
 
-**D3: the script runs on the host.** PRD 11's decision D3 (a) is what spec 13
+### Code mode over proxies: the script runs on the host
+
+PRD 11's decision D3 (a) is what spec 13
 implements: a code-mode script over proxy tools runs in the host's Starlark
 interpreter, and each call it makes goes through the host's nested-call
 pipeline and `Toolset.Guard` before it becomes a `Call` RPC. The guard
@@ -870,7 +919,9 @@ interpreter in the sandbox with authorization called back to the host
 (D3 (c)) is deferred to the second release; only the self-contained `Call`
 messages are designed for it.
 
-**Sandbox image.** One Containerfile, `containers/agentkit-sandbox/Containerfile`,
+### Sandbox image
+
+One Containerfile, `containers/agentkit-sandbox/Containerfile`,
 builds the published image from the repository root, in two stages:
 
 ```
@@ -893,7 +944,9 @@ Providers pass `--entrypoint sandbox.AgentPath` (an embedder's image built
 `FROM` the base may set its own entrypoint) and `--init` for zombie reaping.
 [`releasing.md`](releasing.md) describes publishing it.
 
-**The Podman and Docker provider.** `sandbox/podman` runs each sandbox's
+### The Podman and Docker provider
+
+`sandbox/podman` runs each sandbox's
 agent as the only process of a container that holds one named volume, with
 no host mount, a read-only root, no capabilities, `no-new-privileges`, an
 explicit environment (on docker the image's own `ENV` is added, since docker
@@ -932,7 +985,9 @@ When the handshake fails with a non-zero exit other than the engine's own
 with no agent (126 or 127, reported as `sandbox.ErrNoAgent` with the
 `COPY --from` line that fixes it) from an agent that failed to start.
 
-**The Landlock provider.** `sandbox/landlock` runs `agentkit-sandboxd` as a
+### The Landlock provider
+
+`sandbox/landlock` runs `agentkit-sandboxd` as a
 child process of the embedder, and the agent's own Landlock ruleset is the
 only boundary. `New` probes the kernel once with the raw version query
 (syscall 444), not with `confine` or go-landlock, which only the agent may
@@ -965,7 +1020,9 @@ results; and file descriptors the embedder opened without close-on-exec.
 Landlock at the agent's ABI cap of 4 cannot express those, so the provider
 reports `IsolationConfinement` and its `Notes` say so.
 
-**The gateway.** A gateway lets an embedder create and use sandboxes on
+### The gateway
+
+A gateway lets an embedder create and use sandboxes on
 another host. `sandbox/gatewayd` holds one backend provider and that
 provider's credentials; the embedder holds only the gateway's URL and bearer
 token (`gateway.Dial`), and the sandbox holds neither. To the embedder and the
@@ -1088,7 +1145,9 @@ which listens on nothing; only the nested modules call `net.Listen`: gatewayd,
 in the command, and mcpserve, in `ServeLoopback`. `internal/policy` fails when
 a non-test file of the root or the sandbox module refers to a listening API.
 
-**`local` is not isolation.** Its capabilities say so (`IsolationNone`, only
+### `local` is not isolation
+
+Its capabilities say so (`IsolationNone`, only
 `NetworkUnrestricted`, nothing else honoured), and it refuses the zero
 `Spec` because the zero network is `none`. It applies no Landlock ruleset
 (`Capabilities.Landlock` is false, so `RequireLandlock` is refused before
@@ -1104,7 +1163,7 @@ anything is made) and its agent reports ABI 0 with the note
   sent. It pins regression, not vendor truth.
 - `internal/policy` holds the cross-target (cgo off) and host (cgo on) build
   gates, the direct-dependency allowlist and the exported-API golden
-  (`testdata/exported-api.golden`): one section for each package in
+  (`internal/policy/testdata/exported-api.golden`): one section for each package in
   `apiPackages`, compared by TS-13-67, TS-14-44, TS-15-42 and TS-17-61. It is a
   change detector, regenerated and committed with any deliberate change to
   those surfaces (`docs/errata/13_sandbox_core.md`).
@@ -1151,10 +1210,7 @@ anything is made) and its agent reports ABI 0 with the note
   `go test` make no live request; `make provider-live-test` runs it. A subtest
   skips, naming what is missing, unless its provider is ready: credentials that
   `anthropic.Resolve` accepts, `OPENROUTER_API_KEY`, or an Ollama server at its
-  host that has the tier's model. `docs/configuration.md` has the details.
+  host that has the tier's model.
 
-Run the fast loop with `make check` (fmt, vet, lint, `go test -short` for every module:
-the root, `codesearch`, `sandbox`, `sandbox/gatewayd`, `mcpserve`,
-`examples/sandbox`, `examples/gateway`, `examples/harness` and `examples/indexedsearch`). `make check-release` runs the full
-tests, including the slow `internal/policy` gates that `-short` skips: the
-cross-target build and vet, the host cgo build and the nested `make` runs.
+How to run each of these, and which are opt-in, is in
+[development.md](development.md#tests).

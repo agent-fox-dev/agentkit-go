@@ -1,53 +1,38 @@
-# mcp — borrowing another program's tools over MCP
+# mcp: using another program's tools over MCP
 
-The Model Context Protocol lets an agent borrow tools from other programs. An
-MCP **server** publishes tools; an MCP **client** connects to it, lists them
-and calls them. AgentKit is a client: a `Pool` of client connections adapts
-every server's tools into ordinary `core.Tool`s that the loop runs like any
-other. AgentKit ships no server of its own.
+The Model Context Protocol lets an agent borrow tools from other programs: an
+MCP server publishes tools, and a client connects, lists them and calls them.
+AgentKit's client, `mcp.Pool`, turns every connected server's tools into
+ordinary `core.Tool`s that the agent runs like its own. This example starts a
+small "docs" MCP server inside the process (built on the official Go SDK),
+connects to it, checks the tools work, and hands them to a model. The MCP part
+needs nothing; the model part needs a provider and its credential.
 
-This example starts a small "docs" MCP server *inside the process* — built
-directly on the official Go SDK (`github.com/modelcontextprotocol/go-sdk`) —
-connects to it over a pipe with the shipped client, and hands its tools to a
-model.
+(To go the other way and serve AgentKit's tools to an MCP client, see
+[`harness`](../harness).)
 
 ## Run it
 
-Three environment variables choose what runs the model, and the program reads
-them itself and passes them to `agentkit.Config` unchanged. Each provider needs
-only its own credential or server (the variables are in
-[`examples/README.md`](../README.md#configuring-an-application)):
-
 ```bash
-# Anthropic, the default provider
 export ANTHROPIC_API_KEY=sk-ant-...
 go run ./examples/mcp "which topics do you know, and what do you say about qualified names?"
 
-# OpenRouter
-export OPENROUTER_API_KEY=sk-or-...
-AGENTKIT_PROVIDER=openrouter go run ./examples/mcp "which topics do you know?"
-
-# Ollama, on a server that has pulled the tier's model (ollama pull <model>)
-AGENTKIT_PROVIDER=ollama go run ./examples/mcp "which topics do you know?"
-
-# A tier other than STANDARD, an effort of your own, and also a real server
-AGENTKIT_PROVIDER=ollama AGENTKIT_MODEL=SIMPLE AGENTKIT_EFFORT=high \
-  go run ./examples/mcp --external "npx -y @modelcontextprotocol/server-github"
+# also spawn and connect a real stdio MCP server
+go run ./examples/mcp --external "npx -y @modelcontextprotocol/server-github"
 ```
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `AGENTKIT_PROVIDER` | empty, which is `anthropic` | `anthropic`, `openrouter` or `ollama` (`Config.Provider`). |
-| `AGENTKIT_MODEL` | `STANDARD` | A tier (`SIMPLE`, `STANDARD`, `ADVANCED`) or the provider's own model id (`Config.Model`). |
-| `AGENTKIT_EFFORT` | empty, which is the tier's effort | `low`, `medium`, `high`, `xhigh` or `max` (`Config.Effort`). |
 
 | Flag | Meaning |
 |---|---|
-| `--external "<cmd> <args>"` | Also spawn and connect a stdio MCP server (named `github`, passed `GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN}`). |
+| `--external "<cmd> <args>"` | Also spawn and connect a stdio MCP server, named `github`, passing it `GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN}`. |
 
 Everything after the flags is the prompt.
 
-## What you'll see
+`AGENTKIT_PROVIDER` (`anthropic`, `openrouter` or `ollama`), `AGENTKIT_MODEL`
+(a tier or a model id, default `STANDARD`) and `AGENTKIT_EFFORT` choose the
+model. Only the examples read these variables. Each provider reads its own
+credential: `ANTHROPIC_API_KEY` (or another Anthropic credential),
+`OPENROUTER_API_KEY`, or `OLLAMA_HOST`. See
+[choosing a provider](../../docs/guide.md#choosing-a-provider).
 
 The MCP half runs before any model call, so even without a credential you see
 it work:
@@ -55,70 +40,64 @@ it work:
 ```
 connected servers: [docs]
 tools discovered over MCP: [docs__list_topics docs__search_docs]
-direct call to docs__list_topics: ok=true {"content":[{"type":"text","text":"environment, pipe transport, protocol version, qualified names"}],"text":"environment, pipe transport, protocol version, qual…
+direct call to docs__list_topics: ok=true {"content":[{"type":"text","text":"environment, pipe transport, protocol version, qualified names"}],…
 shadowing refused: mcp: tool name collides with an existing tool: server "helper" exposes "word_count" as "word_count", which is already a native tool
-error: anthropic: missing credentials: set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_TOKEN, or select Vertex AI (CLAUDE_CODE_USE_VERTEX=1) or Bedrock (CLAUDE_CODE_USE_BEDROCK=1)
+error: anthropic: missing credentials: set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_TOKEN, …
 ```
 
-A configuration that cannot run ends the same way, before any model request and
-with exit status 1: `error: openrouter: OPENROUTER_API_KEY is not set (set it in the environment or in Options.Env)`, or
-`error: agentkit: unknown provider "openai"; known providers are anthropic, openrouter and ollama`.
+With a credential, the last line is replaced by the streamed answer, a
+`[calling …]` / `[<tool>: ok, <n>ms]` pair per tool call, and a summary line on
+stderr.
 
-With a working configuration the last line is replaced by the streamed answer,
-one `[calling …]` / `[<tool>: ok, <n>ms]` pair per tool call, and a summary of
-what ran and what it used on stderr:
+## What it shows
 
+- MCP tools get **qualified names**, `<server>__<tool>`. Write allowlists and
+  guards against the qualified name: a rule written against `search_docs`
+  never matches, so it fails open.
+- `pool.NativeTools`, set before connecting, makes the pool refuse a server
+  tool that would take the name of one of your own tools.
+- Calling one adapted tool directly checks the MCP side before you pay for a
+  model turn.
+- A spawned server gets a reduced environment, not `os.Environ()`; a credential
+  travels as a `${VAR}` reference resolved at spawn, and an unset one stops the
+  spawn with `*mcp.UnresolvedVariableError`.
+
+## The code that matters
+
+```go
+opts := mcp.ConnectionOptions{
+	ClientInfo: mcp.Implementation{Name: "my-app", Version: "0.1.0"},
+	Limits:     wire.Defaults(),
+}
+pool := mcp.NewPool(opts)
+defer pool.Close()
+pool.NativeTools = []string{"word_count"} // your own tools' names
+
+_, err := pool.Connect(ctx, mcp.ServerConfig{
+	Name:    "github",
+	Command: "npx",
+	Args:    []string{"-y", "@modelcontextprotocol/server-github"},
+	Env:     map[string]string{"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"},
+	Timeout: 30 * time.Second,
+}, []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")}, os.Getenv)
+
+mcpTools, err := pool.Tools(ctx, native) // github__… core.Tools
+all := append(native, mcpTools...)
+agent, err := agentkit.New(agentkit.Config{
+	Provider: provider, Model: model, Effort: effort,
+	Toolset:  agentkit.Toolset{Tools: all, Policy: core.ToolPolicy{ToolNames: toolNames(all)}},
+	MaxTurns: 8, MaxCostUSD: 1.00,
+})
 ```
-[ollama · qwen3.8:27b · effort high · 3 turns · stop end_turn · in <n> / out <n> tokens · $0.00000]
-```
 
-It names the provider, the model id and the effort that `Agent.Resolution()`
-reports. The cost is `cost unknown` when the run's usage is flagged
-`Unpriced`: a model the catalog does not list has no price, and a zero is then
-not a cost.
+A non-nil `ToolNames` is an allowlist over the whole set, so it names your own
+tools as well as the MCP ones. For an in-process server, the example joins
+`mcp.Connect` and the SDK server with `mcp.NewPipeTransport` and adds the
+connection with `pool.Add`.
 
-## Walkthrough
+## Further reading
 
-In `clientMode`:
-
-1. **`mcp.ConnectionOptions`** carries `ClientInfo`, `Limits`
-   (`wire.Defaults()`) and a `Warnf` logger; pass the same value to the pool
-   and to hand-made connections.
-2. **`pool.NativeTools`** — set *before* connecting, to the names of your own
-   tools. A server tool that would land on one of those names is refused
-   (`demoShadowedNameIsRefused` shows it with `DisablePrefix: true`).
-3. **Connect** — `connectOverPipe` joins the SDK server's `Connect` and
-   `mcp.Connect` with `mcp.NewPipeTransport`; `pool.Add(conn)` adds it. For a
-   subprocess use
-   `pool.Connect(ctx, mcp.ServerConfig{Name, Command, Args, Env, Timeout}, env, secrets)`
-   (`connectExternal`).
-4. **`pool.Tools(ctx, native)`** returns `core.Tool`s with **qualified names**,
-   `<server>__<tool>`. Write allowlists and `Config.Toolset.Guard` checks against
-   the qualified name.
-5. **`smokeCall`** executes one adapted tool directly — a cheap way to prove
-   the MCP side works before paying for a model turn.
-6. From there it is an ordinary agent: `agentkit.New(agentkit.Config{…})`
-   with the `Provider`, `Model` and `Effort` that `selection()` read, a
-   `Toolset` whose `Tools` hold the native *and* MCP tools, and
-   `Policy: core.ToolPolicy{ToolNames: …}` listing both (a non-nil allowlist
-   covers the whole set). `MaxTurns: 8` and `MaxCostUSD: 1.00` bound the run.
-
-The in-process server: `docsServer()` builds an `sdk.NewServer(…)` and
-`addTool` registers each tool with a raw JSON Schema and a handler that gets
-its arguments decoded.
-
-## Gotchas
-
-- **A gate written against an unqualified name fails open** — it never
-  matches, so the call goes through.
-- **Subprocess servers get a reduced environment** (`env` in
-  `connectExternal`), not `os.Environ()`. Credentials travel as `${VAR}`
-  references resolved at spawn; an unset one is an
-  `*mcp.UnresolvedVariableError` and nothing is spawned.
-
-## Related
-
-Package `mcp` (`Pool`, `Connect`, `ServerConfig`, `ConnectionOptions`,
-`NewPipeTransport`), `wire` (`Defaults`), `agentkit` (`Config`, `New`),
-`core` (`ToolPolicy`). The client is
-described in [`docs/architecture.md`](../../docs/architecture.md#mcp-client).
+- [Examples index](../README.md)
+- [User guide: using tools from MCP servers](../../docs/guide.md#using-tools-from-mcp-servers)
+- [Configuration: `mcp.Config`, `mcp.ServerConfig`](../../docs/configuration.md#mcp-mcpconfig-mcpserverconfig)
+- [Architecture: MCP client](../../docs/architecture.md#mcp-client)
