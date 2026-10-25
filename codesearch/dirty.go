@@ -296,16 +296,15 @@ func (dt *dirtyTracker) revalidate(
 
 			seen[rel] = true
 
-			if !indexed {
-				// New file: mark dirty and validated.
-				dt.markDirty(rel)
-				dt.mu.Lock()
-				dt.validated[rel] = true
-				dt.mu.Unlock()
-				return nil
-			}
-
+			// New or changed: the walk has just read it, so it settles the
+			// file here, visible and validated. Its own mark is newer than the
+			// walk's start, so the loop after the walk leaves the file alone,
+			// and a gone mark from an earlier walk would otherwise stay.
 			dt.markDirty(rel)
+			dt.mu.Lock()
+			dt.validated[rel] = true
+			delete(dt.gone, rel)
+			dt.mu.Unlock()
 			return nil
 		},
 	)
