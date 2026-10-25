@@ -1,79 +1,58 @@
-package codemode_test
+package codemode
 
 import (
 	"context"
-	"fmt"
-	"math/rand"
 	"strings"
 	"testing"
 
-	"github.com/agent-fox-dev/agentkit-go/codemode"
 	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
-// TS-08-41: every call is in the ledger, in order, with its tool, arguments,
-// outcome and error code.
-func TestLedgerRecordsEveryCall_TS08_41(t *testing.T) {
-	r := rand.New(rand.NewSource(41))
-	for iter := range 20 {
-		fc := &fakeCaller{fn: map[string]func(core.ToolUseBlock) (core.ToolResult, error){
-			"good": okTool, "bad": failing("nope", "failed on purpose"),
-		}}
-		var lines []string
-		var want []string
-		for i := range 1 + r.Intn(6) {
-			name := []string{"good", "bad"}[r.Intn(2)]
-			if r.Intn(3) == 0 {
-				lines = append(lines, fmt.Sprintf("parallel([call(%s, i=%d)])", name, i))
-			} else {
-				lines = append(lines, fmt.Sprintf("%s(i=%d)", name, i))
-			}
-			want = append(want, name)
-		}
-		res := run(t, context.Background(), codemode.Options{}, fc, strings.Join(lines, "\n")+"\n", leaf("good"), leaf("bad"))
-		if !res.OK {
-			t.Fatalf("iteration %d: %+v", iter, res)
-		}
-		ledger := res.Data["calls_completed"].([]any)
-		if len(ledger) != len(want) {
-			t.Fatalf("iteration %d: %d entries, want %d", iter, len(ledger), len(want))
-		}
-		for i, e := range ledger {
-			m := e.(map[string]any)
-			args := m["arguments"].(map[string]any)
-			if m["tool"] != want[i] || args["i"] != float64(i) {
-				t.Fatalf("iteration %d: entry %d = %+v", iter, i, m)
-			}
-			if ok := m["tool"] == "good"; m["ok"] != ok || (!ok && m["error"] != "nope") {
-				t.Fatalf("iteration %d: entry %d = %+v", iter, i, m)
-			}
-		}
+// Every nested call, single or in parallel, is in the ledger in order, with
+// its tool, arguments, outcome and error code.
+func TestTheLedgerRecordsEveryCallInOrder(t *testing.T) {
+	fc := caller(map[string]answer{"good": okTool, "bad": failing("nope", "failed on purpose")})
+	res := runScript(t, context.Background(), Options{}, fc,
+		"good(i=0)\nbad(i=1)\nparallel([call(bad, i=2), call(good, i=3)])\n", leaf("good"), leaf("bad"))
+	want := `[{"arguments":{"i":0},"ok":true,"tool":"good"},{"arguments":{"i":1},"error":"nope","ok":false,"tool":"bad"},` +
+		`{"arguments":{"i":2},"error":"nope","ok":false,"tool":"bad"},{"arguments":{"i":3},"ok":true,"tool":"good"}]`
+	if !res.OK || ledger(t, res) != want {
+		t.Fatalf("result = %+v\nledger %s\nwant   %s", res, ledger(t, res), want)
 	}
 }
 
-// TS-08-42: a script that fails after making calls reports them in Data and
-// Text; their side effects stand.
-func TestLedgerReportedOnFailure_TS08_42(t *testing.T) {
-	var effects []string
-	fc := &fakeCaller{fn: map[string]func(core.ToolUseBlock) (core.ToolResult, error){
-		"ping": func(b core.ToolUseBlock) (core.ToolResult, error) {
-			effects = append(effects, string(b.Input))
-			return core.OKResult(nil), nil
-		},
-	}}
-	// A runtime failure: an undefined name would be refused before the
-	// script ran at all, since Starlark resolves names first.
-	res := run(t, context.Background(), codemode.Options{}, fc, "ping(id=1)\nping(id=2)\nfail(\"now\")\n", leaf("ping"))
-	if res.OK {
+// A script that fails after making calls reports them, with their arguments
+// sorted by name, next to what it printed: their side effects stand.
+func TestAFailedScriptReportsTheCallsItCompleted(t *testing.T) {
+	fc := caller(map[string]answer{"ping": okTool, "bad": failing("nope", "x")})
+	res := runScript(t, context.Background(), Options{}, fc,
+		"print('step 1')\nping(id=1, b='x')\nbad()\nfail(\"now\")\n", leaf("ping"), leaf("bad"))
+	if res.OK || len(fc.calls) != 2 || ledger(t, res) != `[{"arguments":{"b":"x","id":1},"ok":true,"tool":"ping"},`+
+		`{"arguments":{},"error":"nope","ok":false,"tool":"bad"}]` {
 		t.Fatalf("result = %+v", res)
 	}
-	if calls := res.Data["calls_completed"].([]any); len(calls) != 2 {
-		t.Fatalf("calls = %+v", calls)
+	for _, want := range []string{"Output before it stopped:\nstep 1", "Calls completed (2):",
+		`- ping(b="x", id=1) ok`, "- bad() failed: nope"} {
+		if !strings.Contains(res.Text, want) {
+			t.Fatalf("text lacks %q:\n%s", want, res.Text)
+		}
 	}
-	if !strings.Contains(res.Text, "ping(id=1)") || !strings.Contains(res.Text, "ping(id=2)") {
-		t.Fatalf("text = %q", res.Text)
+	if none := runScript(t, context.Background(), Options{}, caller(nil), "fail('x')\n"); !strings.HasSuffix(none.Text, "Calls completed: none") {
+		t.Fatalf("text = %q", none.Text)
 	}
-	if len(effects) != 2 {
-		t.Fatalf("side effects = %v", effects)
+}
+
+// Calls that ran before a cancellation are in the ledger, even though the
+// dispatcher reports the cancellation as results rather than an error.
+func TestTheLedgerKeepsCallsCutShortByACancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fc := caller(map[string]answer{"ping": okTool, "stop": func(core.ToolUseBlock) (core.ToolResult, error) {
+		cancel()
+		return core.ErrResult("aborted", "Operation aborted"), nil
+	}})
+	res := runScript(t, ctx, Options{}, fc, "ping(i=1)\nparallel([call(ping, i=2), call(stop)])\n", leaf("ping"), leaf("stop"))
+	if res.Error != "aborted" || strings.Count(ledger(t, res), `"tool"`) != 3 {
+		t.Fatalf("result = %+v, ledger %s", res, ledger(t, res))
 	}
 }

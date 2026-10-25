@@ -3,105 +3,61 @@ package podman
 import (
 	"context"
 	"errors"
-	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 )
 
-// refused asserts that Create refuses spec with a SpecError whose Field
-// satisfies field, before any engine command.
-func refused(t *testing.T, spec sandbox.Spec, field func(string) bool) {
-	t.Helper()
-	_ = refusal(t, spec, field)
-}
-
-// refusal is refused, returning the SpecError (nil after a failure).
-func refusal(t *testing.T, spec sandbox.Spec, field func(string) bool) *sandbox.SpecError {
-	t.Helper()
-	f := newFake(t)
-	_, err := testProvider(f, Options{}).Create(context.Background(), spec)
-	var se *sandbox.SpecError
-	if !errors.As(err, &se) || !field(se.Field) || !errors.Is(err, sandbox.ErrUnsupported) || se.Provider != "podman" {
-		t.Errorf("Create(%+v) = %v, want a podman SpecError on the right field", spec, err)
-		return nil
-	}
-	if n := len(f.recorded()); n != 0 {
-		t.Errorf("Create(%+v) ran %d engine commands before refusing", spec, n)
-	}
-	return se
-}
-
-// accepted asserts that Create passes the checks for spec.
-func accepted(t *testing.T, spec sandbox.Spec) {
-	t.Helper()
-	f := newFake(t)
-	s, err := testProvider(f, Options{}).Create(context.Background(), spec)
-	if err != nil {
-		t.Errorf("Create(%+v) = %v, want it accepted", spec, err)
-		return
-	}
-	_ = s.Close(context.Background())
-}
-
-func is(want string) func(string) bool { return func(f string) bool { return f == want } }
-
-// TS-17-17: any Spec.Provider key is refused, naming the first key in
-// sorted order. 17-REQ-3.2.
-func TestRefuseProviderKeys_TS17_17(t *testing.T) {
-	se := refusal(t, sandbox.Spec{Image: "img:1", Provider: map[string]any{"zeta": 1, "alpha": 2}},
-		func(f string) bool { return strings.Contains(f, "Provider") })
-	if se != nil && !strings.Contains(se.Field+se.Reason, "alpha") {
-		t.Errorf("the refusal %v does not name alpha", se)
-	}
-}
-
-// TS-17-18: reserved, empty and malformed label keys and control-character
-// values are refused. 17-REQ-3.3.
-func TestRefuseLabels_TS17_18(t *testing.T) {
-	for _, c := range []struct{ key, value string }{
-		{"agentkit.sandbox.expires", "x"}, {"agentkit.sandbox.owner", "x"}, {"", "x"}, {"a=b", "x"},
-		{"a b", "x"}, {"a\tb", "x"}, {"a\x01", "x"}, {"ok", "v\nw"},
+// Each refusal is a SpecError from the engine, before any engine command.
+func TestCreateRefusesWhatTheContainerCannotHonour(t *testing.T) {
+	img := func(s sandbox.Spec) sandbox.Spec { s.Image = "img:1"; return s }
+	label := func(k, v string) sandbox.Spec { return img(sandbox.Spec{Labels: map[string]string{k: v}}) }
+	env := func(k, v string) sandbox.Spec { return img(sandbox.Spec{Env: map[string]string{k: v}}) }
+	workdir := func(w string) sandbox.Spec { return img(sandbox.Spec{Workdir: w}) }
+	allowlist := sandbox.Network{Mode: sandbox.NetworkAllowlist, Allow: []sandbox.Endpoint{{Host: "example.com", Port: 443}}}
+	for _, c := range []struct {
+		engine       Engine
+		spec         sandbox.Spec
+		field, names string // field is "" for an accepted spec
+	}{
+		{EngineDocker, img(sandbox.Spec{Network: allowlist}), "Network.Mode", ""},
+		{EnginePodman, img(sandbox.Spec{Resources: sandbox.Resources{DiskBytes: 1 << 30}}), "Resources.DiskBytes", ""},
+		{EnginePodman, img(sandbox.Spec{Provider: map[string]any{"zeta": 1, "alpha": 2}}), "Provider.alpha", "alpha"},
+		{EnginePodman, label("agentkit.sandbox.expires", "x"), "Labels", "agentkit.sandbox.expires"},
+		{EnginePodman, label("agentkit.sandbox.owner", "x"), "Labels", "reserved"}, {EnginePodman, label("", "x"), "Labels", `""`},
+		{EnginePodman, label("a=b", "x"), "Labels", "a=b"}, {EnginePodman, label("a b", "x"), "Labels", "a b"},
+		{EnginePodman, label("a\tb", "x"), "Labels", `a\tb`}, {EnginePodman, label("ok", "v\nw"), "Labels", "ok"},
+		{EnginePodman, label("agentkit.sandboxes", "x"), "", ""},
+		{EnginePodman, workdir("workspace"), "Workdir", "absolute"}, {EnginePodman, workdir("/workspace/"), "Workdir", "clean"},
+		{EnginePodman, workdir("/a/../workspace"), "Workdir", "clean"}, {EnginePodman, workdir("/"), "Workdir", "root"},
+		{EnginePodman, workdir("/tmp"), "Workdir", "tmpfs"}, {EnginePodman, workdir("/tmp/w"), "Workdir", "tmpfs"},
+		{EnginePodman, workdir("/proc/x"), "Workdir", "/proc"}, {EnginePodman, workdir("/sys/x"), "Workdir", "/sys"},
+		{EnginePodman, workdir("/dev/x"), "Workdir", "/dev"}, {EnginePodman, workdir("/work,space"), "Workdir", "','"},
+		{EnginePodman, workdir("/work\x01"), "Workdir", "control"},
+		{EnginePodman, workdir("/home/agentkit/ws"), "", ""}, {EnginePodman, workdir("/tmpfoo"), "", ""},
+		{EnginePodman, sandbox.Spec{Image: "-it"}, "Image", "-it"}, {EnginePodman, sandbox.Spec{Image: "--privileged"}, "Image", ""},
+		{EnginePodman, sandbox.Spec{Image: "img name"}, "Image", ""}, {EnginePodman, sandbox.Spec{Image: "img\n"}, "Image", ""},
+		{EnginePodman, sandbox.Spec{Image: "img\x7f"}, "Image", ""},
+		{EnginePodman, env("HOME", "home"), "Env.HOME", "home"}, {EnginePodman, env("HOME", "/home/agentkit"), "Env.HOME", "/home/agentkit"},
+		{EnginePodman, env("HOME", "/var/tmp"), "Env.HOME", ""}, {EnginePodman, env("TMPDIR", "/workspacefoo"), "Env.TMPDIR", ""},
+		{EnginePodman, env("TMPDIR", "/tmpx"), "Env.TMPDIR", ""}, {EnginePodman, env("HOME", "/tmp/h"), "", ""},
+		{EnginePodman, env("HOME", "/workspace/.home"), "", ""}, {EnginePodman, env("TMPDIR", "/workspace"), "", ""},
 	} {
-		spec := sandbox.Spec{Image: "img:1", Labels: map[string]string{c.key: c.value}}
-		se := refusal(t, spec, is("Labels"))
-		if se != nil && !strings.Contains(se.Error(), strings.Trim(strconv.Quote(c.key), `"`)) {
-			t.Errorf("the refusal %q does not name the key %q", se, c.key)
+		f := newFake(t)
+		s, err := testProvider(f, Options{Engine: c.engine}).Create(context.Background(), c.spec)
+		if c.field == "" {
+			if err != nil {
+				t.Errorf("Create(%+v) = %v, want it accepted", c.spec, err)
+			} else {
+				_ = s.Close(context.Background())
+			}
+			continue
 		}
-	}
-	accepted(t, sandbox.Spec{Image: "img:1", Labels: map[string]string{"team": "core", "agentkit.sandboxes": "x"}})
-}
-
-// TS-17-19: an effective Workdir that is relative, unclean, a system or
-// tmp path, or holds a comma or control character is refused. 17-REQ-3.4.
-func TestRefuseWorkdir_TS17_19(t *testing.T) {
-	for _, w := range []string{"workspace", "/workspace/", "/a/../workspace", "/", "/tmp", "/tmp/w", "/proc/x", "/sys/x", "/dev/x", "/work,space", "/work\x01"} {
-		refused(t, sandbox.Spec{Image: "img:1", Workdir: w}, is("Workdir"))
-	}
-	for _, w := range []string{"", "/home/agentkit/ws", "/tmpfoo"} {
-		accepted(t, sandbox.Spec{Image: "img:1", Workdir: w})
-	}
-}
-
-// TS-17-20: an image reference that starts with a dash or holds whitespace
-// or a control character is refused. 17-REQ-3.5.
-func TestRefuseImage_TS17_20(t *testing.T) {
-	for _, img := range []string{"-it", "--privileged", "img name", "img\tx", "img\n", "img\x7f"} {
-		refused(t, sandbox.Spec{Image: img}, is("Image"))
-	}
-}
-
-// TS-17-21: HOME or TMPDIR outside /tmp and the workspace is refused with a
-// SpecError naming the variable. 17-REQ-3.6.
-func TestRefuseHomeTmpdir_TS17_21(t *testing.T) {
-	for _, c := range []struct{ name, value string }{
-		{"HOME", "home"}, {"HOME", "/home/agentkit"}, {"HOME", "/var/tmp"}, {"TMPDIR", "/workspacefoo"}, {"TMPDIR", "/tmpx"},
-	} {
-		refused(t, sandbox.Spec{Image: "img:1", Env: map[string]string{c.name: c.value}},
-			func(f string) bool { return strings.Contains(f, "Env") && strings.Contains(f, c.name) })
-	}
-	for _, env := range []map[string]string{{"HOME": "/tmp/h"}, {"HOME": "/workspace/.home"}, {"TMPDIR": "/tmp"}, {"TMPDIR": "/workspace"}} {
-		accepted(t, sandbox.Spec{Image: "img:1", Env: env})
+		var se *sandbox.SpecError
+		if !errors.As(err, &se) || se.Field != c.field || se.Provider != string(c.engine) || !errors.Is(err, sandbox.ErrUnsupported) ||
+			!strings.Contains(se.Reason, c.names) || len(f.recorded()) != 0 {
+			t.Errorf("Create(%+v) = %v after %d commands, want a %s SpecError on %s naming %q", c.spec, err, len(f.recorded()), c.engine, c.field, c.names)
+		}
 	}
 }

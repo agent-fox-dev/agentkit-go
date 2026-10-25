@@ -1,59 +1,18 @@
 //go:build cgo
 
-package outline_test
+package outline
 
 import (
 	"context"
-	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
-
-	"github.com/agent-fox-dev/agentkit-go/outline"
 )
 
-// nonGoBackend is the backend a recognised non-Go file gets in this build.
-const nonGoBackend = outline.BackendTreeSitter
-
-// A cgo build outlines a Python file with tree-sitter. Without this test a
-// broken build tag would fall back to the pure-Go build silently and every
-// other test would stay green.
-func TestCgoBuildSelectsTreeSitter(t *testing.T) {
-	f, err := outline.Outline(context.Background(), "/x/a.py", []byte("def f():\n    pass\n"), outline.Options{})
-	if err != nil || f.Backend != outline.BackendTreeSitter || len(f.Decls) != 1 {
-		t.Fatalf("Outline(a.py) = %+v, %v; want one tree-sitter declaration", f, err)
-	}
-}
-
-// A context that has ended stops the parse instead of crashing it:
-// go-tree-sitter's ParseCtx wrote through a nil cancellation flag.
-func TestCancelledParseDoesNotCrash(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	src := []byte(strings.Repeat("def f():\n    pass\n", 10000))
-	if _, ok := outline.CommentAndStringSpans(ctx, "/x/a.py", src); ok {
-		t.Fatal("spans reported for a cancelled parse")
-	}
-}
-
-// show renders a declaration as "kind Container.Name L<start>-<end>", with a
-// trailing "-" when it is not exported.
-func show(d outline.Decl) string {
-	name := d.Name
-	if d.Container != "" {
-		name = d.Container + "." + name
-	}
-	s := fmt.Sprintf("%s %s L%d-%d", d.Kind, name, d.StartLine, d.EndLine)
-	if !d.Exported {
-		s += " -"
-	}
-	return s
-}
-
-// Each grammar's query yields the closed Kind set, containers (so
-// find_symbol can qualify Runner.run), the language's export rule and real
-// line ranges; locals inside functions are dropped.
+// Each grammar's query yields the closed Kind set, containers, the
+// language's export rule and line ranges; locals inside functions are
+// dropped, and the signature is the line the declaration's name is on.
 func TestTreeSitterDeclarations(t *testing.T) {
 	cases := []struct {
 		file, src string
@@ -94,21 +53,26 @@ func TestTreeSitterDeclarations(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.file, func(t *testing.T) {
-			f, err := outline.Outline(context.Background(), filepath.Join("/x", tc.file), []byte(tc.src), outline.Options{})
-			if err != nil || f.Backend != outline.BackendTreeSitter {
-				t.Fatalf("Outline = %+v, %v", f, err)
+			f := outlineSrc(t, tc.file, tc.src)
+			if f.Backend != BackendTreeSitter {
+				t.Fatalf("Backend = %q", f.Backend)
 			}
-			var got []string
 			for _, d := range f.Decls {
-				got = append(got, show(d))
 				if want := strings.Split(tc.src, "\n")[d.StartLine-1]; d.Signature != strings.TrimSpace(want) {
 					t.Errorf("%s: signature %q, want the line it starts on %q", d.Name, d.Signature, want)
 				}
 			}
-			if !slices.Equal(got, tc.want) {
+			if got := shows(f.Decls); !slices.Equal(got, tc.want) {
 				t.Errorf("decls:\n got %q\nwant %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A .h header holding C++ is parsed with the C++ grammar.
+func TestACppHeaderIsOutlinedAsCpp(t *testing.T) {
+	if f := outlineSrc(t, "a.h", "namespace ns {\nint f();\n}\n"); f.Lang != LangCPP || f.Backend != BackendTreeSitter {
+		t.Errorf("Outline(a.h) = %s %s, want C++ tree-sitter", f.Lang, f.Backend)
 	}
 }
 
@@ -121,9 +85,10 @@ func TestCommentAndStringSpans(t *testing.T) {
 		{"a.cs", "var s = @\"hit\\\"; hit();\n", "hit\\", "hit();"},
 		{"a.rb", "x = <<~EOS\n  hit\nEOS\nhit\n", "hit\nEOS", "hit\n"},
 		{"a.ts", "const s = `hit`; // hit\nhit()\n", "hit`", "hit()"},
+		{"A.java", "String s = \"\"\"\n  hit\"\"\"; char c = 'h'; hit();\n", "hit\"", "hit();"},
 	}
 	for _, tc := range cases {
-		spans, ok := outline.CommentAndStringSpans(context.Background(), "/x/"+tc.file, []byte(tc.src))
+		spans, ok := CommentAndStringSpans(context.Background(), "/x/"+tc.file, []byte(tc.src))
 		if !ok {
 			t.Fatalf("%s: no grammar", tc.file)
 		}
@@ -137,7 +102,39 @@ func TestCommentAndStringSpans(t *testing.T) {
 			t.Errorf("%s: code at %d (%q) is in a literal span %v", tc.file, code, tc.inCode, spans)
 		}
 	}
-	if _, ok := outline.CommentAndStringSpans(context.Background(), "/x/a.go", nil); ok {
+	if _, ok := CommentAndStringSpans(context.Background(), "/x/a.go", nil); ok {
 		t.Error("Go has no grammar: its references are resolved by type")
+	}
+}
+
+// endsLater is a context that is live for its first n Err calls and ended
+// after them: it ends while a parse is running.
+type endsLater struct {
+	context.Context
+	n atomic.Int32
+}
+
+func (c *endsLater) Err() error {
+	if c.n.Add(-1) < 0 {
+		return context.Canceled
+	}
+	return nil
+}
+
+// A context that ends during the parse stops it, and the call reports it,
+// instead of the crash go-tree-sitter's own cancellation had.
+func TestAParseStopsWhenTheContextEnds(t *testing.T) {
+	src := []byte(strings.Repeat("def f():\n    pass\n", 10000))
+	ctx := &endsLater{Context: context.Background()}
+	if _, ok := CommentAndStringSpans(ctx, "/x/a.py", src); ok {
+		t.Error("spans reported for a parse whose context ended")
+	}
+	ctx.n.Store(1)
+	if _, err := Outline(ctx, "/x/a.py", src, Options{}); err != context.Canceled {
+		t.Errorf("Outline: err = %v, want context.Canceled", err)
+	}
+	ctx.n.Store(1)
+	if _, err := OutlineMany(ctx, []Source{{Abs: "/x/a.py", Src: src}}, Options{}); err != context.Canceled {
+		t.Errorf("OutlineMany: err = %v, want context.Canceled", err)
 	}
 }

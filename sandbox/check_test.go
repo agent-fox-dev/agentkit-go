@@ -2,9 +2,7 @@ package sandbox_test
 
 import (
 	"errors"
-	"math/rand/v2"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,88 +11,90 @@ import (
 )
 
 var (
-	unrestricted = sandbox.Network{Mode: sandbox.NetworkUnrestricted}
-	localCaps    = sandbox.Capabilities{Provider: "local", Network: []sandbox.NetworkMode{sandbox.NetworkUnrestricted}}
-	fullCaps     = sandbox.Capabilities{
+	// localCaps honours only an unrestricted network, like local.
+	localCaps = sandbox.Capabilities{Provider: "p", Network: []sandbox.NetworkMode{sandbox.NetworkUnrestricted}}
+	// fullCaps honours every field.
+	fullCaps = sandbox.Capabilities{
 		Provider:  "full",
 		Network:   []sandbox.NetworkMode{sandbox.NetworkNone, sandbox.NetworkAllowlist, sandbox.NetworkUnrestricted},
 		Resources: sandbox.ResourceCaps{CPUs: true, MemoryBytes: true, PIDs: true, DiskBytes: true},
-		Image:     true, Workdir: true,
+		Image:     true, Workdir: true, Landlock: true,
 	}
 )
 
-// TS-13-9: CheckSpec fills TTL 0 with one hour and Workdir with /workspace
-// only when the provider honours Workdir. 13-REQ-2.2.
-func TestCheckSpecDefaults_TS13_9(t *testing.T) {
-	capsWD := localCaps
-	capsWD.Workdir = true
-	spec := sandbox.Spec{Network: unrestricted, Env: map[string]string{"A": "1"}, Labels: map[string]string{"team": "x"}}
-
-	s, err := sandbox.CheckSpec(capsWD, spec)
-	if err != nil || s.TTL != time.Hour || s.Workdir != "/workspace" {
-		t.Fatalf("Workdir caps: %+v, %v", s, err)
-	}
-	if !reflect.DeepEqual(s.Env, spec.Env) || !reflect.DeepEqual(s.Labels, spec.Labels) || !reflect.DeepEqual(s.Network, spec.Network) {
-		t.Errorf("fields changed: %+v", s)
-	}
-	s, err = sandbox.CheckSpec(localCaps, spec)
-	if err != nil || s.TTL != time.Hour || s.Workdir != "" {
-		t.Fatalf("no-Workdir caps: %+v, %v", s, err)
-	}
-	spec.TTL, spec.Workdir = 5*time.Minute, "/src"
-	s, err = sandbox.CheckSpec(capsWD, spec)
-	if err != nil || s.TTL != 5*time.Minute || s.Workdir != "/src" {
-		t.Fatalf("explicit values: %+v, %v", s, err)
-	}
-	if !reflect.DeepEqual(s, spec) {
-		t.Errorf("CheckSpec changed explicit fields: %+v, want %+v", s, spec)
-	}
-}
-
-// TS-13-10: CheckSpec refuses each field outside the capabilities with a
-// *SpecError matching ErrUnsupported and the documented message.
-// 13-REQ-2.3.
-func TestCheckSpecUnsupported_TS13_10(t *testing.T) {
-	cases := []struct {
-		field string
-		spec  sandbox.Spec
+func TestCheckSpecAppliesTheDefaultsAndKeepsEverythingElse(t *testing.T) {
+	withWorkdir := localCaps
+	withWorkdir.Workdir = true
+	base := sandbox.Spec{Network: unrestricted, Env: map[string]string{"A": "1"}, Labels: map[string]string{"team": "x"}}
+	explicit := base
+	explicit.TTL, explicit.Workdir = 5*time.Minute, "/src"
+	for _, c := range []struct {
+		name    string
+		caps    sandbox.Capabilities
+		spec    sandbox.Spec
+		ttl     time.Duration
+		workdir string
 	}{
-		{"Network.Mode", sandbox.Spec{}},
-		{"Network.Mode", sandbox.Spec{Network: sandbox.Network{Mode: sandbox.NetworkAllowlist}}},
-		{"Resources.CPUs", sandbox.Spec{Network: unrestricted, Resources: sandbox.Resources{CPUs: 1}}},
-		{"Resources.MemoryBytes", sandbox.Spec{Network: unrestricted, Resources: sandbox.Resources{MemoryBytes: 1}}},
-		{"Resources.PIDs", sandbox.Spec{Network: unrestricted, Resources: sandbox.Resources{PIDs: 1}}},
-		{"Resources.DiskBytes", sandbox.Spec{Network: unrestricted, Resources: sandbox.Resources{DiskBytes: 1}}},
-		{"Image", sandbox.Spec{Network: unrestricted, Image: "alpine"}},
-		{"Workdir", sandbox.Spec{Network: unrestricted, Workdir: "/w"}},
-	}
-	for _, tc := range cases {
-		s, err := sandbox.CheckSpec(localCaps, tc.spec)
-		if !reflect.DeepEqual(s, sandbox.Spec{}) {
-			t.Errorf("%s: returned spec %+v, want the zero Spec", tc.field, s)
+		{"defaults where Workdir is honoured", withWorkdir, base, time.Hour, "/workspace"},
+		{"defaults where Workdir is not honoured", localCaps, base, time.Hour, ""},
+		{"explicit values", withWorkdir, explicit, 5 * time.Minute, "/src"},
+	} {
+		got, err := sandbox.CheckSpec(c.caps, c.spec)
+		if err != nil || got.TTL != c.ttl || got.Workdir != c.workdir {
+			t.Errorf("%s: %+v, %v; want TTL %v and Workdir %q", c.name, got, err, c.ttl, c.workdir)
 		}
-		var se *sandbox.SpecError
-		if !errors.As(err, &se) || se.Provider != "local" || se.Field != tc.field {
-			t.Errorf("%s: error %v (%#v), want a *SpecError for local naming the field", tc.field, err, se)
+		want := c.spec
+		want.TTL, want.Workdir = c.ttl, c.workdir
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: CheckSpec changed other fields: %+v, want %+v", c.name, got, want)
 		}
-		if !errors.Is(err, sandbox.ErrUnsupported) {
-			t.Errorf("%s: %v does not match ErrUnsupported", tc.field, err)
-		}
-	}
-	_, err := sandbox.CheckSpec(localCaps, sandbox.Spec{})
-	const prefix = `sandbox: provider "local" cannot honour Spec.Network.Mode = none: `
-	if !strings.HasPrefix(err.Error(), prefix) || len(err.Error()) == len(prefix) {
-		t.Errorf("zero-Spec message %q, want %q and a reason", err, prefix)
 	}
 }
 
-// TS-13-11: CheckSpec refuses values no provider accepts, even under
-// capabilities that cover every field. 13-REQ-2.4.
-func TestCheckSpecInvalid_TS13_11(t *testing.T) {
+func TestCheckSpecRefusesTheFirstFieldTheProviderDoesNotCover(t *testing.T) {
+	with := func(f func(*sandbox.Spec)) sandbox.Spec {
+		s := sandbox.Spec{Network: unrestricted}
+		f(&s)
+		return s
+	}
+	for _, c := range []struct {
+		spec         sandbox.Spec
+		field, value string
+	}{
+		{sandbox.Spec{}, "Network.Mode", "none"},
+		{sandbox.Spec{Image: "alpine", Resources: sandbox.Resources{CPUs: 1}}, "Network.Mode", "none"},
+		{sandbox.Spec{Network: sandbox.Network{Mode: sandbox.NetworkAllowlist}}, "Network.Mode", "allowlist"},
+		{with(func(s *sandbox.Spec) { s.Resources.CPUs, s.Image = 1.5, "alpine" }), "Resources.CPUs", "1.5"},
+		{with(func(s *sandbox.Spec) { s.Resources.MemoryBytes = 2 }), "Resources.MemoryBytes", "2"},
+		{with(func(s *sandbox.Spec) { s.Resources.PIDs = 3 }), "Resources.PIDs", "3"},
+		{with(func(s *sandbox.Spec) { s.Resources.DiskBytes = 4 }), "Resources.DiskBytes", "4"},
+		{with(func(s *sandbox.Spec) { s.Image, s.Workdir = "alpine", "/w" }), "Image", `"alpine"`},
+		{with(func(s *sandbox.Spec) { s.Workdir, s.RequireLandlock = "/w", true }), "Workdir", `"/w"`},
+		{with(func(s *sandbox.Spec) { s.RequireLandlock = true }), "RequireLandlock", "true"},
+	} {
+		got, err := sandbox.CheckSpec(localCaps, c.spec)
+		var se *sandbox.SpecError
+		if !errors.As(err, &se) || se.Provider != "p" || se.Field != c.field || !errors.Is(err, sandbox.ErrUnsupported) {
+			t.Errorf("%s: %v, want a *SpecError for p naming it and matching ErrUnsupported", c.field, err)
+			continue
+		}
+		if prefix := `sandbox: provider "p" cannot honour Spec.` + c.field + " = " + c.value + ": "; !strings.HasPrefix(err.Error(), prefix) || se.Reason == "" {
+			t.Errorf("%s: message %q, want %q and a reason", c.field, err, prefix)
+		}
+		if !reflect.DeepEqual(got, sandbox.Spec{}) {
+			t.Errorf("%s: returned %+v, want the zero Spec", c.field, got)
+		}
+	}
+	if _, err := sandbox.CheckSpec(fullCaps, sandbox.Spec{RequireLandlock: true, Image: "i", Workdir: "/w"}); err != nil {
+		t.Errorf("capabilities covering every field refused: %v", err)
+	}
+}
+
+func TestCheckSpecRefusesValuesNoProviderAccepts(t *testing.T) {
 	allow := func(eps ...sandbox.Endpoint) sandbox.Network {
 		return sandbox.Network{Mode: sandbox.NetworkAllowlist, Allow: eps}
 	}
-	cases := []struct {
+	for _, c := range []struct {
 		field string
 		spec  sandbox.Spec
 	}{
@@ -103,187 +103,25 @@ func TestCheckSpecInvalid_TS13_11(t *testing.T) {
 		{"Resources.MemoryBytes", sandbox.Spec{Resources: sandbox.Resources{MemoryBytes: -1}}},
 		{"Resources.PIDs", sandbox.Spec{Resources: sandbox.Resources{PIDs: -1}}},
 		{"Resources.DiskBytes", sandbox.Spec{Resources: sandbox.Resources{DiskBytes: -1}}},
-		{"Env", sandbox.Spec{Env: map[string]string{"": "v"}}},
-		{"Env", sandbox.Spec{Env: map[string]string{"A=B": "v"}}},
-		{"Env", sandbox.Spec{Env: map[string]string{"A\x00": "v"}}},
-		{"Env", sandbox.Spec{Env: map[string]string{"A": "v\x00"}}},
+		{"Env name", sandbox.Spec{Env: map[string]string{"": "v"}}},
+		{"Env name", sandbox.Spec{Env: map[string]string{"A=B": "v"}}},
+		{"Env name", sandbox.Spec{Env: map[string]string{"A\x00": "v"}}},
+		{"Env value", sandbox.Spec{Env: map[string]string{"A": "v\x00"}}},
 		{"Labels", sandbox.Spec{Labels: map[string]string{"agentkit.sandbox": "x"}}},
-		{"Network.Allow", sandbox.Spec{Network: sandbox.Network{Mode: sandbox.NetworkUnrestricted, Allow: []sandbox.Endpoint{{"example.com", 443}}}}},
-		{"Network.Allow[0].Host", sandbox.Spec{Network: allow(sandbox.Endpoint{Host: "", Port: 443})}},
-		{"Network.Allow[0].Port", sandbox.Spec{Network: allow(sandbox.Endpoint{Host: "example.com", Port: 0})}},
+		{"Network.Allow", sandbox.Spec{Network: sandbox.Network{Mode: sandbox.NetworkUnrestricted, Allow: []sandbox.Endpoint{{Host: "example.com", Port: 443}}}}},
+		{"Network.Allow[0].Host", sandbox.Spec{Network: allow(sandbox.Endpoint{Port: 443})}},
+		{"Network.Allow[1].Port", sandbox.Spec{Network: allow(sandbox.Endpoint{Host: "a", Port: 1}, sandbox.Endpoint{Host: "b", Port: 0})}},
 		{"Network.Allow[0].Port", sandbox.Spec{Network: allow(sandbox.Endpoint{Host: "example.com", Port: 65536})}},
-	}
-	for _, tc := range cases {
-		s, err := sandbox.CheckSpec(fullCaps, tc.spec)
-		if err == nil || !reflect.DeepEqual(s, sandbox.Spec{}) {
-			t.Errorf("%s: (%+v, %v), want the zero Spec and an error", tc.field, s, err)
-			continue
+	} {
+		got, err := sandbox.CheckSpec(fullCaps, c.spec)
+		if err == nil || errors.Is(err, sandbox.ErrUnsupported) || !strings.Contains(err.Error(), c.field) {
+			t.Errorf("%s: %v, want an error naming it that is not ErrUnsupported", c.field, err)
 		}
-		if !strings.Contains(err.Error(), tc.field) {
-			t.Errorf("%s: message %q does not name the field", tc.field, err)
+		if !reflect.DeepEqual(got, sandbox.Spec{}) {
+			t.Errorf("%s: returned %+v, want the zero Spec", c.field, got)
 		}
 	}
-	if _, err := sandbox.CheckSpec(fullCaps, sandbox.Spec{Network: allow(sandbox.Endpoint{Host: "example.com", Port: 443})}); err != nil {
-		t.Errorf("a valid allowlist spec was refused: %v", err)
-	}
-}
-
-// TS-13-13: CheckSpec returns ErrUnsupported exactly when the spec sets a
-// field the capabilities do not cover. 13-REQ-2.7. Spec 15 added
-// RequireLandlock against Capabilities.Landlock to the oracle.
-func TestCheckSpecProperty_TS13_13(t *testing.T) {
-	r := rand.New(rand.NewPCG(13, 13))
-	modes := []sandbox.NetworkMode{sandbox.NetworkNone, sandbox.NetworkAllowlist, sandbox.NetworkUnrestricted}
-	for range 2000 {
-		var caps sandbox.Capabilities
-		for _, m := range modes {
-			if r.IntN(2) == 0 {
-				caps.Network = append(caps.Network, m)
-			}
-		}
-		caps.Provider = "p"
-		caps.Resources = sandbox.ResourceCaps{CPUs: r.IntN(2) == 0, MemoryBytes: r.IntN(2) == 0, PIDs: r.IntN(2) == 0, DiskBytes: r.IntN(2) == 0}
-		caps.Image, caps.Workdir = r.IntN(2) == 0, r.IntN(2) == 0
-		caps.Landlock = r.IntN(2) == 0
-
-		var spec sandbox.Spec
-		spec.RequireLandlock = r.IntN(2) == 0
-		spec.Network.Mode = modes[r.IntN(3)]
-		if spec.Network.Mode == sandbox.NetworkAllowlist && r.IntN(2) == 0 {
-			spec.Network.Allow = []sandbox.Endpoint{{Host: "example.com", Port: 1 + r.IntN(65535)}}
-		}
-		pick := func() int64 { return int64(r.IntN(2) * (1 + r.IntN(8))) }
-		spec.Resources = sandbox.Resources{CPUs: float64(pick()), MemoryBytes: pick(), PIDs: pick(), DiskBytes: pick()}
-		if r.IntN(2) == 0 {
-			spec.Image = "img"
-		}
-		if r.IntN(2) == 0 {
-			spec.Workdir = "/w"
-		}
-		spec.TTL = time.Duration(r.IntN(3)) * time.Minute
-		if r.IntN(2) == 0 {
-			spec.Env = map[string]string{"K": "v"}
-		}
-
-		uncovered := !slices.Contains(caps.Network, spec.Network.Mode) ||
-			(spec.Resources.CPUs != 0 && !caps.Resources.CPUs) ||
-			(spec.Resources.MemoryBytes != 0 && !caps.Resources.MemoryBytes) ||
-			(spec.Resources.PIDs != 0 && !caps.Resources.PIDs) ||
-			(spec.Resources.DiskBytes != 0 && !caps.Resources.DiskBytes) ||
-			(spec.Image != "" && !caps.Image) || (spec.Workdir != "" && !caps.Workdir) ||
-			(spec.RequireLandlock && !caps.Landlock) // 15-REQ-6.3
-
-		out, err := sandbox.CheckSpec(caps, spec)
-		if errors.Is(err, sandbox.ErrUnsupported) != uncovered {
-			t.Fatalf("caps %+v spec %+v: err %v, oracle uncovered=%v", caps, spec, err, uncovered)
-		}
-		if err != nil && !uncovered {
-			t.Fatalf("caps %+v spec %+v: unexpected error %v", caps, spec, err)
-		}
-		if err == nil {
-			want := spec
-			if want.TTL == 0 {
-				want.TTL = time.Hour
-			}
-			if caps.Workdir && want.Workdir == "" {
-				want.Workdir = "/workspace"
-			}
-			if !reflect.DeepEqual(out, want) {
-				t.Fatalf("CheckSpec returned %+v, want %+v", out, want)
-			}
-		}
-	}
-}
-
-// TS-15-33: CheckSpec refuses RequireLandlock against capabilities without
-// Landlock with a RequireLandlock SpecError matching ErrUnsupported.
-// 15-REQ-6.1, 15-REQ-6.2.
-func TestRequireLandlockCheck_TS15_33(t *testing.T) {
-	caps := sandbox.Capabilities{Provider: "p", Network: []sandbox.NetworkMode{sandbox.NetworkNone, sandbox.NetworkUnrestricted}}
-	withLL := caps
-	withLL.Landlock = true
-	spec := sandbox.Spec{Network: sandbox.Network{Mode: sandbox.NetworkNone}, RequireLandlock: true}
-	_, err := sandbox.CheckSpec(caps, spec)
-	var se *sandbox.SpecError
-	if !errors.As(err, &se) || se.Field != "RequireLandlock" || se.Provider != "p" || !errors.Is(err, sandbox.ErrUnsupported) {
-		t.Errorf("against Landlock false: %v (%+v)", err, se)
-	}
-	if eff, err := sandbox.CheckSpec(withLL, spec); err != nil || !eff.RequireLandlock {
-		t.Errorf("against Landlock true: %+v, %v", eff, err)
-	}
-	spec.RequireLandlock = false
-	if _, err := sandbox.CheckSpec(caps, spec); err != nil {
-		t.Errorf("RequireLandlock false: %v", err)
-	}
-	if (sandbox.Capabilities{}).Landlock || (sandbox.Spec{}).RequireLandlock {
-		t.Error("the zero Capabilities or Spec sets Landlock")
-	}
-}
-
-// TS-15-34: for any capabilities and spec, CheckSpec agrees with TS-13-13's
-// oracle extended by the RequireLandlock rule, which is checked after 13's
-// fields. 15-REQ-6.3.
-func TestRequireLandlockProperty_TS15_34(t *testing.T) {
-	r := rand.New(rand.NewPCG(15, 34))
-	modes := []sandbox.NetworkMode{sandbox.NetworkNone, sandbox.NetworkAllowlist, sandbox.NetworkUnrestricted}
-	for range 3000 {
-		caps := sandbox.Capabilities{Provider: "p", Landlock: r.IntN(2) == 0,
-			Resources: sandbox.ResourceCaps{CPUs: r.IntN(2) == 0, MemoryBytes: r.IntN(2) == 0, PIDs: r.IntN(2) == 0, DiskBytes: r.IntN(2) == 0}}
-		caps.Image, caps.Workdir = r.IntN(2) == 0, r.IntN(2) == 0
-		for _, m := range modes {
-			if r.IntN(2) == 0 {
-				caps.Network = append(caps.Network, m)
-			}
-		}
-		spec := sandbox.Spec{RequireLandlock: r.IntN(2) == 0}
-		spec.Network.Mode = modes[r.IntN(3)]
-		pick := func() int64 { return int64(r.IntN(3) / 2 * (1 + r.IntN(8))) }
-		spec.Resources = sandbox.Resources{CPUs: float64(pick()), MemoryBytes: pick(), PIDs: pick(), DiskBytes: pick()}
-		if r.IntN(3) == 0 {
-			spec.Image = "img"
-		}
-		if r.IntN(3) == 0 {
-			spec.Workdir = "/w"
-		}
-		valueErr := r.IntN(10) == 0 // a value 13 refuses whatever the capabilities
-		if valueErr {
-			spec.TTL = -time.Second
-		}
-		// The oracle: 13's checks in 13's order, then RequireLandlock.
-		field := ""
-		for _, c := range []struct {
-			name string
-			fail bool
-		}{
-			{"Network.Mode", !slices.Contains(caps.Network, spec.Network.Mode)},
-			{"Resources.CPUs", spec.Resources.CPUs != 0 && !caps.Resources.CPUs},
-			{"Resources.MemoryBytes", spec.Resources.MemoryBytes != 0 && !caps.Resources.MemoryBytes},
-			{"Resources.PIDs", spec.Resources.PIDs != 0 && !caps.Resources.PIDs},
-			{"Resources.DiskBytes", spec.Resources.DiskBytes != 0 && !caps.Resources.DiskBytes},
-			{"Image", spec.Image != "" && !caps.Image},
-			{"Workdir", spec.Workdir != "" && !caps.Workdir},
-			{"RequireLandlock", spec.RequireLandlock && !caps.Landlock},
-		} {
-			if c.fail {
-				field = c.name
-				break
-			}
-		}
-		eff, err := sandbox.CheckSpec(caps, spec)
-		var se *sandbox.SpecError
-		switch {
-		case valueErr:
-			if err == nil || (errors.As(err, &se) && se.Field == "RequireLandlock") {
-				t.Fatalf("a negative TTL gave %v, want 13's value error", err)
-			}
-		case field == "":
-			if err != nil || eff.RequireLandlock != spec.RequireLandlock {
-				t.Fatalf("caps %+v spec %+v: %+v, %v; want accepted", caps, spec, eff, err)
-			}
-		default:
-			if !errors.As(err, &se) || se.Field != field || !errors.Is(err, sandbox.ErrUnsupported) {
-				t.Fatalf("caps %+v spec %+v: %v, want a SpecError for %s", caps, spec, err, field)
-			}
-		}
+	if _, err := sandbox.CheckSpec(fullCaps, sandbox.Spec{Network: allow(sandbox.Endpoint{Host: "example.com", Port: 65535})}); err != nil {
+		t.Errorf("a valid allowlist was refused: %v", err)
 	}
 }

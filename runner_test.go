@@ -3,294 +3,280 @@ package agentkit
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
+	"github.com/agent-fox-dev/agentkit-go/codemode"
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
-	"github.com/agent-fox-dev/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// mustRunner builds a runner or fails the test.
-func mustRunner(t *testing.T, ts Toolset) *Runner {
-	t.Helper()
-	r, err := NewRunner(ts)
-	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
-	}
-	return r
+// cyclic is a tool that reaches itself through a second one, through shared
+// slice storage: the only way tool values can form a cycle.
+func cyclic() core.Tool {
+	a := named("a", core.Tool{})
+	b := named("b", a)
+	a.ReachableTools[0] = b
+	return a
 }
 
-// eventLog is a Toolset.Events sink that keeps what it receives. It is safe
-// for concurrent use, as a sink must be.
-type eventLog struct {
-	mu     sync.Mutex
-	events []core.Event
-}
-
-func (l *eventLog) add(e core.Event) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.events = append(l.events, e)
-}
-
-func (l *eventLog) all() []core.Event {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return append([]core.Event(nil), l.events...)
-}
-
-// guardLog is a Guard that records the context of every call it authorizes,
-// and decides through decide when that is set.
-type guardLog struct {
-	mu     sync.Mutex
-	calls  []core.BeforeToolCallContext
-	decide func(core.BeforeToolCallContext) core.BeforeToolCallDecision
-}
-
-func (g *guardLog) guard(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
-	g.mu.Lock()
-	g.calls = append(g.calls, in)
-	g.mu.Unlock()
-	if g.decide != nil {
-		return g.decide(in)
-	}
-	return core.BeforeToolCallDecision{}
-}
-
-func (g *guardLog) seen() []core.BeforeToolCallContext {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return append([]core.BeforeToolCallContext(nil), g.calls...)
-}
-
-var callIDPattern = regexp.MustCompile(`^call_[0-9a-f]{16}$`)
-
-// TS-21-14: Call runs a batch of one under a generated call_ id, and the id is
-// the same everywhere the call is seen.
-func TestCallRunsABatchOfOneWithAGeneratedID_TS21_14(t *testing.T) {
-	var events eventLog
-	var guards guardLog
-	r := mustRunner(t, Toolset{Tools: []core.Tool{echoTool("echo", nil)}, Guard: guards.guard, Events: events.add})
-
-	res := r.Call(context.Background(), "echo", json.RawMessage(`{"v":"x"}`))
-	if !res.OK {
-		t.Fatalf("Call = %+v, want OK", res)
-	}
-	seen := guards.seen()
-	got := events.all()
-	if len(seen) != 1 || len(got) != 3 {
-		t.Fatalf("Guard saw %d calls and Events %d events; want 1 and 3 (start, end, result)", len(seen), len(got))
-	}
-	start, ok1 := got[0].(core.ToolExecutionStartEvent)
-	end, ok2 := got[1].(core.ToolExecutionEndEvent)
-	result, ok3 := got[2].(core.ToolResultEvent)
-	if !ok1 || !ok2 || !ok3 {
-		t.Fatalf("events = %T, %T, %T; want start, end, result", got[0], got[1], got[2])
-	}
-	id := seen[0].ToolUseID
-	if !callIDPattern.MatchString(id) {
-		t.Fatalf("Guard saw id %q, want call_ and 16 lowercase hex characters", id)
-	}
-	if start.ToolUseID != id || end.ToolUseID != id || result.Message.ToolUseID != id {
-		t.Fatalf("ids differ: guard %q, start %q, end %q, result %q", id, start.ToolUseID, end.ToolUseID, result.Message.ToolUseID)
-	}
-
-	r.Call(context.Background(), "echo", nil)
-	if second := guards.seen()[1].ToolUseID; second == id || !callIDPattern.MatchString(second) {
-		t.Fatalf("the second call has id %q; want a different call_ id than %q", second, id)
-	}
-}
-
-// TS-21-15: an empty or whitespace-only input is {}.
-func TestCallTreatsEmptyInputAsAnEmptyObject_TS21_15(t *testing.T) {
-	var guards guardLog
-	var ran atomic.Int32
-	r := mustRunner(t, Toolset{Tools: []core.Tool{echoTool("noargs", &ran)}, Guard: guards.guard})
-	for _, in := range []json.RawMessage{nil, json.RawMessage(""), json.RawMessage("  \n")} {
-		if res := r.Call(context.Background(), "noargs", in); !res.OK {
-			t.Fatalf("Call(%q) = %+v, want OK", string(in), res)
-		}
-	}
-	seen := guards.seen()
-	if len(seen) != 3 || ran.Load() != 3 {
-		t.Fatalf("Guard saw %d calls, handler ran %d times; want 3 and 3", len(seen), ran.Load())
-	}
-	for i, s := range seen {
-		if string(s.RawInput) != "{}" {
-			t.Errorf("call %d: Guard saw RawInput %q, want {}", i, s.RawInput)
-		}
-	}
-}
-
-// TS-21-16: an unknown tool is unknown_tool with the text a run produces, and
-// neither the guard nor a handler runs.
-func TestCallUnknownToolRunsNothing_TS21_16(t *testing.T) {
-	var ran atomic.Int32
-	var guards guardLog
-	r := mustRunner(t, Toolset{Tools: []core.Tool{echoTool("alpha", &ran), echoTool("beta", &ran)}, Guard: guards.guard})
-
-	res := r.Call(context.Background(), "missing", json.RawMessage(`{}`))
-	const want = `no tool named "missing" is available in this run; available tools: alpha, beta`
-	if res.OK || res.Error != "unknown_tool" || res.Detail != want {
-		t.Fatalf("Call = %+v; want unknown_tool with %q", res, want)
-	}
-	if n := len(guards.seen()); n != 0 || ran.Load() != 0 {
-		t.Fatalf("Guard saw %d calls and handlers ran %d times; want neither", n, ran.Load())
-	}
-}
-
-// TS-21-17: input that is not an object, arguments that fail validation and
-// arguments a guard returns that JSON cannot carry are invalid_arguments, and
-// the handler never runs.
-func TestCallInvalidArguments_TS21_17(t *testing.T) {
-	var ran atomic.Int32
-	handler := func(context.Context, json.RawMessage) (json.RawMessage, error) {
-		ran.Add(1)
-		return json.RawMessage(`{}`), nil
-	}
-	required := core.Tool{Name: "needs_text", InputSchema: schema.Object(schema.Prop("text", schema.String())), Handler: handler}
-	rewritten := core.Tool{Name: "rewritten", InputSchema: schema.Object(), Handler: handler}
-	guard := func(_ context.Context, in core.BeforeToolCallContext) core.BeforeToolCallDecision {
-		if in.ToolName == "rewritten" {
-			return core.BeforeToolCallDecision{Arguments: map[string]any{"text": make(chan int)}}
-		}
-		return core.BeforeToolCallDecision{}
-	}
-	r := mustRunner(t, Toolset{Tools: []core.Tool{required, rewritten}, Guard: guard})
-
-	for _, c := range []struct{ tool, input string }{
-		{"needs_text", "not json"},
-		{"needs_text", `{}`},
-		{"needs_text", `["a"]`},
-		{"rewritten", `{}`},
-	} {
-		res := r.Call(context.Background(), c.tool, json.RawMessage(c.input))
-		if res.OK || res.Error != "invalid_arguments" {
-			t.Errorf("Call(%s, %s) = %+v; want invalid_arguments", c.tool, c.input, res)
-		}
-	}
-	if ran.Load() != 0 {
-		t.Fatalf("the handler ran %d times for invalid arguments", ran.Load())
-	}
-}
-
-// TS-21-18: a guard block is blocked_by_policy with the guard's reason, a
-// default reason, and the decision's Terminate; the handler never runs.
-func TestCallGuardBlock_TS21_18(t *testing.T) {
+func TestNewRunner_RefusesAToolsetItCannotRunAndNewAgrees(t *testing.T) {
+	exec := func(context.Context, json.RawMessage) core.ToolResult { return core.OKResult(nil) }
+	neither, both := core.Tool{Name: "t"}, core.Tool{Name: "u", Handler: noop, Execute: exec}
+	self := named("self", core.Tool{})
+	self.ReachableTools[0] = self
+	finish := core.Tool{Name: "finish", Handler: noop, Terminating: true}
 	for _, c := range []struct {
-		name          string
-		decision      core.BeforeToolCallDecision
-		wantInDetail  string
-		wantTerminate bool
+		name string
+		ts   Toolset
+		want string
 	}{
-		{"reason and terminate", core.BeforeToolCallDecision{Block: true, Reason: "no way", Terminate: true}, "no way", true},
-		{"default reason", core.BeforeToolCallDecision{Block: true}, "blocked by policy", false},
+		{"neither Handler nor Execute", Toolset{Tools: []core.Tool{neither, named("run_command")}}, `agentkit: tool "t" has neither Handler nor Execute`},
+		{"both", Toolset{Tools: []core.Tool{both}}, `agentkit: tool "u" sets both Handler and Execute; exactly one`},
+		{"one the policy adds", Toolset{Tools: []core.Tool{named("ok")}, Policy: core.ToolPolicy{CustomTools: []core.Tool{both}}}, `agentkit: tool "u" sets both Handler and Execute; exactly one`},
+		{"one behind a wrapper", Toolset{Tools: []core.Tool{named("w", neither)}}, `agentkit: tool "t" has neither Handler nor Execute`},
+		{"a cycle", Toolset{Tools: []core.Tool{cyclic()}}, "agentkit: reachable tools cycle detected: a -> b -> a"},
+		{"a tool reaching itself", Toolset{Tools: []core.Tool{self}}, "agentkit: reachable tools cycle detected: self -> self"},
+		{"a terminating tool behind a wrapper", Toolset{Tools: []core.Tool{named("outer", named("code_mode", finish))}},
+			`agentkit: terminating tool "finish" cannot be reached through wrapper "code_mode"`},
 	} {
-		var ran atomic.Int32
-		guards := guardLog{decide: func(core.BeforeToolCallContext) core.BeforeToolCallDecision { return c.decision }}
-		r := mustRunner(t, Toolset{Tools: []core.Tool{echoTool("echo", &ran)}, Guard: guards.guard})
-		res := r.Call(context.Background(), "echo", nil)
-		if res.OK || res.Error != core.BlockErrorCode || !strings.Contains(res.Detail, c.wantInDetail) {
-			t.Errorf("%s: Call = %+v; want %s containing %q", c.name, res, core.BlockErrorCode, c.wantInDetail)
+		r, err := NewRunner(c.ts)
+		a, aerr := New(Config{Client: faux.New(), Model: testModel, Toolset: c.ts})
+		if r != nil || err == nil || err.Error() != c.want || a != nil || aerr == nil || aerr.Error() != c.want {
+			t.Errorf("%s: NewRunner = %v, %v; New = %v; want %q from both", c.name, r, err, aerr, c.want)
 		}
-		if res.Terminate != c.wantTerminate {
-			t.Errorf("%s: Terminate = %v, want %v", c.name, res.Terminate, c.wantTerminate)
-		}
-		if ran.Load() != 0 {
-			t.Errorf("%s: the handler ran for a blocked call", c.name)
+	}
+	diamond := named("root", named("l", named("leaf")), named("r", named("leaf")))
+	for _, ts := range []Toolset{{}, {Tools: []core.Tool{finish}}, {Tools: []core.Tool{diamond}}} {
+		if _, err := NewRunner(ts); err != nil {
+			t.Errorf("NewRunner(%v) = %v, want a runner", ts.Tools, err)
 		}
 	}
 }
 
-// TS-21-19: a handler panic is panic and a Handler error is handler_error;
-// Call returns normally for both.
-func TestCallHandlerFailures_TS21_19(t *testing.T) {
-	boom := core.Tool{Name: "boom", InputSchema: schema.Object(), Handler: func(context.Context, json.RawMessage) (json.RawMessage, error) {
-		panic("kaput")
-	}}
-	fail := core.Tool{Name: "fail", InputSchema: schema.Object(), Handler: func(context.Context, json.RawMessage) (json.RawMessage, error) {
-		return nil, errors.New("it broke")
-	}}
-	r := mustRunner(t, Toolset{Tools: []core.Tool{boom, fail}})
-	if res := r.Call(context.Background(), "boom", nil); res.OK || res.Error != "panic" {
-		t.Errorf("boom = %+v, want panic", res)
+func TestNewRunner_KeepsThePolicysToolsInOrderAndCopiesThem(t *testing.T) {
+	names := func(ts []core.Tool) (out []string) {
+		for _, x := range ts {
+			out = append(out, x.Name)
+		}
+		return out
 	}
-	if res := r.Call(context.Background(), "fail", nil); res.OK || res.Error != "handler_error" || res.Detail != "it broke" {
-		t.Errorf("fail = %+v, want handler_error", res)
+	alpha, beta, gamma := named("alpha"), named("beta"), named("gamma", named("child"))
+	given := []core.Tool{alpha, beta}
+	plain := mustRunner(t, Toolset{Tools: given})
+	given[0] = named("changed")
+	ts := Toolset{Tools: []core.Tool{alpha, beta, gamma}, Policy: core.ToolPolicy{Tools: []core.Tool{gamma, alpha}}}
+	r, a := mustRunner(t, ts), mustNew(t, Config{Client: faux.New(), Toolset: ts})
+	first := r.Tools()
+	first[0] = named("overwritten")
+	if got := names(plain.Tools()); !slices.Equal(got, []string{"alpha", "beta"}) {
+		t.Errorf("Tools() = %v after the caller changed its slice, want alpha, beta", got)
 	}
-}
-
-// TS-21-20: a context that is done before the handler would start gives
-// aborted, and the handler never runs.
-func TestCallDoneContextIsAborted_TS21_20(t *testing.T) {
-	var ran atomic.Int32
-	r := mustRunner(t, Toolset{Tools: []core.Tool{echoTool("echo", &ran)}})
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	res := r.Call(ctx, "echo", nil)
-	if res.OK || res.Error != "aborted" || res.Detail != "Operation aborted" {
-		t.Fatalf("Call = %+v; want aborted with %q", res, "Operation aborted")
+	if got := names(r.Tools()); !slices.Equal(got, []string{"gamma", "alpha"}) {
+		t.Errorf("Tools() = %v, want the policy's gamma, alpha whatever the caller did with a copy", got)
 	}
-	if ran.Load() != 0 {
-		t.Fatalf("the handler ran %d times under a done context", ran.Load())
+	for _, got := range [][]core.Tool{r.Reachable(), a.ReachableTools(), a.Runner().Reachable()} {
+		if !slices.Equal(names(got), []string{"gamma", "child", "alpha"}) {
+			t.Errorf("reachable = %v, want gamma, child, alpha", names(got))
+		}
 	}
 }
 
-// TS-21-21: a Guard sees the documented context for a Call.
-func TestCallGuardContext_TS21_21(t *testing.T) {
+func TestCall_RunsOneCallAsABatchOfOne(t *testing.T) {
 	var guards guardLog
-	tool := echoTool("echo", nil)
-	r := mustRunner(t, Toolset{Tools: []core.Tool{tool}, Guard: guards.guard})
-	r.Call(context.Background(), "echo", json.RawMessage(`{"v":"x"}`))
-
-	seen := guards.seen()
-	if len(seen) != 1 {
-		t.Fatalf("Guard saw %d calls, want 1", len(seen))
+	var events eventLog
+	r := mustRunner(t, Toolset{Tools: []core.Tool{echo("echo", nil)}, Guard: guards.guard, Events: events.add})
+	for _, in := range []string{`{"v":"x"}`, "", "  \n"} {
+		if res := r.Call(context.Background(), "echo", json.RawMessage(in)); !res.OK {
+			t.Errorf("Call(%q) = %+v", in, res)
+		}
 	}
+	seen := guards.calls()
+	id := regexp.MustCompile(`^call_[0-9a-f]{16}$`)
 	g := seen[0]
-	if g.ToolName != "echo" || !callIDPattern.MatchString(g.ToolUseID) || g.Tool.Name != tool.Name ||
-		g.Arguments["v"] != "x" || string(g.RawInput) != `{"v":"x"}` {
-		t.Errorf("Guard context = %+v; want the echo call with its id, tool, arguments and raw input", g)
+	if !id.MatchString(g.ToolUseID) || g.ToolUseID == seen[1].ToolUseID || g.ToolName != "echo" || g.Tool.Name != "echo" ||
+		g.Arguments["v"] != "x" || string(g.RawInput) != `{"v":"x"}` || len(g.Batch) != 1 || g.Batch[0].ID != g.ToolUseID ||
+		g.Index != 0 || g.Assistant != nil || g.TurnCount != 0 || g.ParentToolUseID != "" {
+		t.Errorf("the guard saw %+v", g)
 	}
-	if len(g.Batch) != 1 || g.Batch[0].ID != g.ToolUseID || g.Index != 0 {
-		t.Errorf("Batch = %v, Index = %d; want the one call at 0", g.Batch, g.Index)
+	if string(seen[1].RawInput) != "{}" || string(seen[2].RawInput) != "{}" {
+		t.Errorf("an empty input reached the guard as %q and %q, want {}", seen[1].RawInput, seen[2].RawInput)
 	}
-	if g.Assistant != nil || g.TurnCount != 0 || g.ParentToolUseID != "" || g.ParentToolName != "" {
-		t.Errorf("Assistant %v, TurnCount %d, parent %q/%q; want nil, 0 and no parent", g.Assistant, g.TurnCount, g.ParentToolUseID, g.ParentToolName)
+	starts, ends, results := executions(events.all())
+	if starts[g.ToolUseID] != 1 || ends[g.ToolUseID] != 1 || results[g.ToolUseID] != 1 || len(events.all()) != 9 {
+		t.Errorf("events = %v, want start, end and result for each call", events.all())
 	}
 }
 
-// TS-21-48: outside a run the runner attaches no usage reporter of its own and
-// passes through the caller's.
-func TestRunnerOutsideARunPassesTheCallersUsageReporter_TS21_48(t *testing.T) {
-	spend := core.Tool{Name: "spend", InputSchema: schema.Object(), Handler: func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+func TestCall_AnswersEveryOutcomeWithACode(t *testing.T) {
+	var guards guardLog
+	guards.decide = func(in core.BeforeToolCallContext) core.BeforeToolCallDecision {
+		return core.BeforeToolCallDecision{Block: in.ToolName == "blocked", Reason: "no way"}
+	}
+	r := mustRunner(t, Toolset{Tools: []core.Tool{echo("echo", nil), echo("blocked", nil)}, Guard: guards.guard})
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, c := range []struct {
+		ctx             context.Context
+		name, in        string
+		code, detail    string
+		guardSawTheCall bool
+	}{
+		{context.Background(), "missing", `{}`, "unknown_tool", `no tool named "missing" is available in this run; available tools: blocked, echo`, false},
+		{context.Background(), "echo", `not json`, "invalid_arguments", "", false},
+		{context.Background(), "echo", `["a"]`, "invalid_arguments", "", false},
+		{context.Background(), "echo", `{"v":{"not":"a string"}}`, "invalid_arguments", "", false},
+		{context.Background(), "blocked", `{}`, core.BlockErrorCode, "no way", true},
+		{done, "echo", `{}`, "aborted", "Operation aborted", false},
+	} {
+		before := len(guards.calls())
+		res := r.Call(c.ctx, c.name, json.RawMessage(c.in))
+		if res.OK || res.Error != c.code || !strings.HasPrefix(res.Detail, c.detail) || (len(guards.calls()) > before) != c.guardSawTheCall {
+			t.Errorf("Call(%s, %s) = %+v; want %s %q", c.name, c.in, res, c.code, c.detail)
+		}
+	}
+}
+
+func TestBatch_UsesTheCallsIDsVerbatimAndRunsNothingForNoCalls(t *testing.T) {
+	var guards guardLog
+	var events eventLog
+	r := mustRunner(t, Toolset{Tools: []core.Tool{echo("echo", nil)}, Guard: guards.guard, Events: events.add})
+	batch := []core.ToolUseBlock{use(t, "a", "echo", `{}`), use(t, "", "echo", `{}`)}
+	if res := r.Batch(context.Background(), batch...); len(res) != 2 || !res[0].OK || !res[1].OK {
+		t.Fatalf("Batch = %+v", res)
+	}
+	for i, g := range guards.calls() {
+		if g.ToolUseID != batch[i].ID || g.Index != i || !reflect.DeepEqual(g.Batch, batch) {
+			t.Errorf("the guard saw call %d as %+v", i, g)
+		}
+	}
+	if starts, _, _ := executions(events.all()); starts["a"] != 1 || starts[""] != 1 {
+		t.Errorf("start events by id %v, want the ids as given", starts)
+	}
+	n := len(events.all())
+	if res := r.Batch(context.Background()); len(res) != 0 || len(events.all()) != n {
+		t.Errorf("zero calls gave %v and %d events", res, len(events.all())-n)
+	}
+}
+
+// TestRunner_EventsSink checks what a sink may be: nil, panicking, re-entrant
+// or an EventStream's Push, and that none of them changes a result.
+func TestRunner_EventsSink(t *testing.T) {
+	var r *Runner
+	var reentered int
+	w := wrapper("wrap", func(ctx context.Context) core.ToolResult {
+		_, _ = core.CallNested(ctx, nested("first")...)
+		return core.OKResult(nil)
+	}, echo("first", nil))
+	stream := core.NewEventStream(core.StreamOptions{})
+	var mu sync.Mutex
+	sinks := map[string]func(core.Event){
+		"nil":       nil,
+		"panicking": func(core.Event) { panic("sink broke") },
+		"re-entrant": func(e core.Event) {
+			if s, ok := e.(core.ToolExecutionStartEvent); ok && s.Name == "first" {
+				mu.Lock()
+				reentered++
+				mu.Unlock()
+				r.Call(context.Background(), "second", nil)
+			}
+		},
+		"EventStream.Push": stream.Push,
+	}
+	var want []core.ToolResult
+	for _, name := range []string{"nil", "panicking", "re-entrant", "EventStream.Push"} {
+		r = mustRunner(t, Toolset{Tools: []core.Tool{echo("first", nil), echo("second", nil), w}, Events: sinks[name]})
+		got := r.Batch(context.Background(), use(t, "c1", "first", `{}`), use(t, "c2", "wrap", `{}`), use(t, "c3", "missing", `{}`))
+		if want == nil {
+			want = got
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s sink: Batch = %+v, want %+v", name, got, want)
+		}
+	}
+	stream.End(core.StreamResult{})
+	var evs []core.Event
+	for e := range stream.Events() {
+		evs = append(evs, e)
+	}
+	if starts, ends, results := executions(evs); len(starts) != 4 || len(ends) != 4 || len(results) != 3 || reentered != 2 {
+		t.Errorf("the stream saw %d/%d/%d calls start/end/result, re-entered %d; want 4/4/3 and 2", len(starts), len(ends), len(results), reentered)
+	}
+}
+
+func TestRunner_IsSafeForConcurrentUse(t *testing.T) {
+	w := wrapper("wrap", func(ctx context.Context) core.ToolResult {
+		res, err := core.CallNested(ctx, nested("child", "child")...)
+		return core.ToolResult{OK: err == nil && len(res) == 2}
+	}, child("child"))
+	var events eventLog
+	r := mustRunner(t, Toolset{Tools: []core.Tool{echo("echo", nil), w}, Guard: allow, After: noopAfter, Events: events.add})
+	var wg sync.WaitGroup
+	for g := range 16 {
+		wg.Go(func() {
+			for i := range 10 {
+				res := r.Batch(context.Background(), use(t, fmt.Sprint(g, i), "echo", `{}`), use(t, "w", "wrap", `{}`))
+				if !res[0].OK || !res[1].OK || !r.Call(context.Background(), "echo", nil).OK {
+					t.Errorf("goroutine %d: %+v", g, res)
+				}
+			}
+		})
+	}
+	wg.Wait()
+}
+
+func TestRunner_PassesTheCallersUsageReporterAndLeavesTheAgentsUsage(t *testing.T) {
+	spend := tool("spend", func(ctx context.Context, _ json.RawMessage) core.ToolResult {
 		core.ReportUsage(ctx, core.Usage{InputTokens: 7})
-		return json.RawMessage(`{}`), nil
-	}}
-	a, err := New(Config{Client: faux.New(), Model: testModelID, Toolset: Toolset{Tools: []core.Tool{spend}}})
+		return core.OKResult(nil)
+	})
+	a := mustNew(t, Config{Client: faux.New(), Toolset: Toolset{Tools: []core.Tool{spend}}})
+	var got []core.Usage
+	ctx := core.WithUsageReporter(context.Background(), func(u core.Usage) { got = append(got, u) })
+	a.Runner().Call(ctx, "spend", nil)
+	a.Runner().Call(context.Background(), "spend", nil)
+	if len(got) != 1 || got[0].InputTokens != 7 || a.Usage().InputTokens != 0 {
+		t.Errorf("the caller's reporter got %+v, the agent %+v", got, a.Usage())
+	}
+}
+
+func TestRunner_RunsCodeModeAndTheToolsItBinds(t *testing.T) {
+	ws, err := workspace.Open(testutil.Tree(t, map[string]string{"a.txt": "alpha content\n"}), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := a.Usage()
-
-	var reported []core.Usage
-	ctx := core.WithUsageReporter(context.Background(), func(u core.Usage) { reported = append(reported, u) })
-	if res := a.Runner().Call(ctx, "spend", nil); !res.OK {
+	all, err := tools.For(ws, tools.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm, _, err := codemode.New(all, codemode.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events eventLog
+	r := mustRunner(t, Toolset{Tools: append(all, cm), Guard: allow, Events: events.add})
+	script := testutil.MustJSON(t, map[string]string{"script": "res = read_file(path=\"a.txt\")\nprint(res[\"content\"].strip())\n"})
+	if res := r.Call(context.Background(), cm.Name, json.RawMessage(script)); !res.OK || !strings.Contains(res.LLMText(), "alpha content") {
 		t.Fatalf("Call = %+v", res)
 	}
-	if len(reported) != 1 || reported[0].InputTokens != 7 {
-		t.Fatalf("the caller's reporter received %+v, want one report of 7 input tokens", reported)
+	var parent string
+	var nestedReads int
+	for _, e := range events.all() {
+		if s, ok := e.(core.ToolExecutionStartEvent); ok && s.Name == cm.Name {
+			parent = s.ToolUseID
+		} else if ok && s.Name == "read_file" && s.ParentToolUseID == parent && parent != "" {
+			nestedReads++
+		}
 	}
-	if res := a.Runner().Call(context.Background(), "spend", nil); !res.OK {
-		t.Fatalf("Call under a plain context = %+v", res)
-	}
-	if after := a.Usage(); !reflect.DeepEqual(after, before) {
-		t.Fatalf("Agent.Usage changed from %+v to %+v by calls made outside a run", before, after)
+	if nestedReads != 1 {
+		t.Errorf("%d nested read_file calls under %q, want 1", nestedReads, parent)
 	}
 }

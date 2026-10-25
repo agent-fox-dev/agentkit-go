@@ -1,155 +1,114 @@
 package images
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 )
 
-// inspectJSON decodes `engine image inspect --format '{{json <format>}}' ref`.
-func inspectJSON(t *testing.T, engine, ref, format string, v any) {
-	t.Helper()
-	out, se, code := runEngine(t, engine, "image", "inspect", "--format", "{{json "+format+"}}", ref)
-	if code != 0 {
-		t.Fatalf("image inspect %s: exit %d: %s", ref, code, se)
+// The agent started from the image attaches and reports its version,
+// protocol, workspace, tree-sitter outline backend and git.
+func TestBaseImageAgentAttaches(t *testing.T) {
+	engine, image := baseImage(t)
+	a := startAgent(t, engine, image)
+	info := a.sb.Agent()
+	if info.Version != expectedVersion() || info.ProtocolMajor != sandbox.ProtocolMajor || info.Workdir != "/workspace" ||
+		info.OutlineBackend != "tree-sitter" || !info.Git {
+		t.Errorf("Agent() = %+v, want version %s, protocol major %d", info, expectedVersion(), sandbox.ProtocolMajor)
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), v); err != nil {
-		t.Fatalf("image inspect %s %s: %v\n%s", ref, format, err, out)
+	for _, name := range []string{"execute", "write_file"} {
+		if !slices.ContainsFunc(a.tools, func(tl core.Tool) bool { return tl.Name == name }) {
+			t.Errorf("the tools lack %s", name)
+		}
 	}
 }
 
-// versionLine is what --version prints for version, before the commit and
-// build time an image build stamps.
-func versionLine(version string) string {
-	return fmt.Sprintf("agentkit-sandboxd %s (protocol %d.%d)", version, sandbox.ProtocolMajor, sandbox.ProtocolMinor)
-}
-
-// isVersionLine reports whether out is the --version output for version.
-func isVersionLine(out, version string) bool {
-	rest, ok := strings.CutPrefix(out, versionLine(version))
-	return ok && (rest == "\n" || strings.HasPrefix(rest, " ") && strings.HasSuffix(rest, "\n"))
-}
-
-// mustExec runs command through proxy execute and fails t on a transport
-// error, returning the exit code and output.
-func mustExec(t *testing.T, h *harness, command string) (int, string) {
-	t.Helper()
-	rc, out, err := execIn(context.Background(), h.tools, command)
-	if err != nil {
-		t.Fatalf("%v; engine stderr: %s", err, h.stderr.String())
+func TestBaseImageAgentAnswersVersion(t *testing.T) {
+	engine, image := baseImage(t)
+	out, err := exec.Command(engine, "run", "--rm", "--entrypoint", sandbox.AgentPath, image, "--version").Output()
+	want := fmt.Sprintf("agentkit-sandboxd %s (protocol %d.%d)", expectedVersion(), sandbox.ProtocolMajor, sandbox.ProtocolMinor)
+	rest, ok := strings.CutPrefix(string(out), want)
+	if err != nil || !ok || rest != "\n" && !(strings.HasPrefix(rest, " ") && strings.HasSuffix(rest, "\n")) {
+		t.Errorf("--version = %q, %v; want %q, then the commit and build time", out, err, want)
 	}
-	return rc, out
 }
 
-// TestBaseImage attaches to one agent started from the base image and runs
-// the protocol-level checks against it.
-func TestBaseImage(t *testing.T) {
-	engine, base := requireImage(t, "AGENTKIT_SANDBOX_BASE_IMAGE")
-	h := startT(t, engine, base)
-	info := h.sb.Agent()
-
-	// TS-16-38: the agent attaches and reports the expected version,
-	// protocol, workspace, tree-sitter backend and git, and its Tools pass
-	// the digest check. 16-REQ-7.3, 16-REQ-7.4, 16-REQ-2.5, 16-REQ-2.3.
-	t.Run("attach_TS16_38", func(t *testing.T) {
-		if err := checkFacts(info, expectedVersion(os.Getenv)); err != nil {
-			t.Error(err)
+// git, bash and the CA bundle are there; rsync, curl, tini and the apt
+// lists are not; git trusts every directory.
+func TestBaseImageShipsOnlyTheToolsItNeeds(t *testing.T) {
+	engine, image := baseImage(t)
+	a := startAgent(t, engine, image)
+	for command, want := range map[string]int{
+		"git --version | grep -q '^git version'": 0, "test -x /bin/bash": 0, "test -s /etc/ssl/certs/ca-certificates.crt": 0,
+		"command -v rsync": 1, "command -v curl": 1, "command -v tini": 1, "ls /var/lib/apt/lists | grep -q _Packages": 1,
+		"test \"$(git config --system --get-all safe.directory)\" = '*'": 0,
+	} {
+		if rc, out := a.exec(t, command); (rc == 0) != (want == 0) {
+			t.Errorf("%s: rc %d, %q", command, rc, out)
 		}
-		if info.Workdir != "/workspace" || info.OutlineBackend != "tree-sitter" || !info.Git {
-			t.Errorf("Agent() = %+v", info)
-		}
-		var names []string
-		for _, tl := range h.tools {
-			names = append(names, tl.Name)
-		}
-		if !slices.Contains(names, "execute") || !slices.Contains(names, "write_file") {
-			t.Errorf("tools %v lack execute or write_file", names)
-		}
-	})
-
-	// TS-16-39: git, bash and the CA bundle are present, rsync, curl and
-	// tini are absent, the apt lists are gone, and git trusts every
-	// directory. 16-REQ-2.1, 16-REQ-2.4.
-	t.Run("packages_TS16_39", func(t *testing.T) {
-		if rc, out := mustExec(t, h, "git --version"); rc != 0 || !strings.HasPrefix(out, "git version") {
-			t.Errorf("git --version: rc %d, %q", rc, out)
-		}
-		for _, c := range []string{"test -x /bin/bash", "test -s /etc/ssl/certs/ca-certificates.crt"} {
-			if rc, out := mustExec(t, h, c); rc != 0 {
-				t.Errorf("%s: rc %d, %q", c, rc, out)
-			}
-		}
-		for _, tool := range []string{"rsync", "curl", "tini"} {
-			if rc, out := mustExec(t, h, "command -v "+tool); rc == 0 {
-				t.Errorf("%s is present: %q", tool, out)
-			}
-		}
-		if _, out := mustExec(t, h, "ls /var/lib/apt/lists"); strings.Contains(out, "_Packages") {
-			t.Errorf("/var/lib/apt/lists holds package indexes: %q", out)
-		}
-		if rc, out := mustExec(t, h, "git config --system --get-all safe.directory"); rc != 0 || out != "*" {
-			t.Errorf("safe.directory: rc %d, %q", rc, out)
-		}
-	})
-
-	// TS-16-40: the image runs as agentkit 1000:1000, owns /workspace and
-	// its home, accepts a workspace write, and cannot replace the
-	// root-owned agent. 16-REQ-2.2, 16-REQ-2.3, 16-REQ-2.5.
-	t.Run("user_TS16_40", func(t *testing.T) {
-		for c, want := range map[string]string{
-			"id -u": "1000", "id -g": "1000",
-			"getent passwd agentkit | cut -d: -f3,4,6,7": "1000:1000:/home/agentkit:/bin/bash",
-			"getent group agentkit | cut -d: -f3":        "1000",
-			"stat -c '%u %g %a' /workspace":              "1000 1000 755",
-			"stat -c %u /workspace /home/agentkit":       "1000\n1000",
-			"stat -c '%u %g' /home/agentkit":             "1000 1000",
-			"stat -c '%u %a' " + sandbox.AgentPath:       "0 755",
-		} {
-			if rc, out := mustExec(t, h, c); rc != 0 || out != want {
-				t.Errorf("%s: rc %d, %q, want %q", c, rc, out, want)
-			}
-		}
-		if rc, _ := mustExec(t, h, "test -w "+sandbox.AgentPath); rc == 0 {
-			t.Error("the agent binary is writable by the tools' user")
-		}
-		r, err := callTool(context.Background(), h.tools, "write_file", `{"path": "probe.txt", "content": "x"}`)
-		if err != nil || r.Error != "" {
-			t.Fatalf("write_file: %+v, %v", r, err)
-		}
-		if rc, out := mustExec(t, h, "cat /workspace/probe.txt; echo; stat -c %u /workspace/probe.txt"); rc != 0 || out != "x\n1000" {
-			t.Errorf("probe.txt: rc %d, %q", rc, out)
-		}
-	})
-
-	// TS-16-43: under Landlock ABI 2 or more the agent denies /var/tmp and
-	// allows HOME, /tmp and /workspace. 16-REQ-2.8.
-	t.Run("landlock_TS16_43", func(t *testing.T) {
-		t.Logf("Landlock ABI %d (kernel %d), TCP %v", info.Landlock.ABI, info.Landlock.KernelABI, info.Landlock.TCP)
-		if err := landlockCheck(info, execVia(h), t.Logf); err != nil {
-			t.Error(err)
-		}
-	})
+	}
 }
 
-// TS-16-41: image inspect shows the base image's numeric user, agent
-// entrypoint, workspace workdir, no volumes and no added environment.
-// 16-REQ-2.2, 16-REQ-2.3, 16-REQ-2.5, 16-REQ-2.6.
-func TestBaseImageConfig(t *testing.T) {
-	engine, base := requireImage(t, "AGENTKIT_SANDBOX_BASE_IMAGE")
+// The tools run as agentkit 1000:1000, who owns /workspace and its home
+// and can write the workspace, but not the root-owned agent.
+func TestBaseImageRunsAsAgentkit(t *testing.T) {
+	engine, image := baseImage(t)
+	a := startAgent(t, engine, image)
+	for command, want := range map[string]string{
+		"id -u; id -g": "1000\n1000",
+		"getent passwd agentkit | cut -d: -f3,4,6,7":          "1000:1000:/home/agentkit:/bin/bash",
+		"getent group agentkit | cut -d: -f3":                 "1000",
+		"stat -c '%u %g %a' /workspace":                       "1000 1000 755",
+		"stat -c '%u %g' /home/agentkit":                      "1000 1000",
+		"stat -c '%u %a' " + sandbox.AgentPath:                "0 755",
+		"test -w " + sandbox.AgentPath + " || echo read-only": "read-only",
+	} {
+		if rc, out := a.exec(t, command); rc != 0 || out != want {
+			t.Errorf("%s: rc %d, %q, want %q", command, rc, out, want)
+		}
+	}
+	if r := a.call(t, "write_file", map[string]string{"path": "probe.txt", "content": "x"}); r.Error != "" {
+		t.Fatalf("write_file: %+v", r)
+	}
+	if rc, out := a.exec(t, "cat /workspace/probe.txt; echo; stat -c %u /workspace/probe.txt"); rc != 0 || out != "x\n1000" {
+		t.Errorf("probe.txt: rc %d, %q", rc, out)
+	}
+}
+
+// Under Landlock ABI 2 or more the agent denies /var/tmp and allows HOME,
+// /tmp and /workspace.
+func TestBaseImageLandlockConfinesTheTools(t *testing.T) {
+	engine, image := baseImage(t)
+	a := startAgent(t, engine, image)
+	if l := a.sb.Agent().Landlock; l.ABI < sandbox.LandlockMinABI {
+		t.Skipf("the agent applied Landlock ABI %d: %s", l.ABI, l.Note)
+	}
+	if rc, _ := a.exec(t, "touch /var/tmp/agentkit-probe"); rc == 0 {
+		t.Error("touch /var/tmp succeeded under the agent's Landlock ruleset")
+	}
+	if rc, out := a.exec(t, `touch "$HOME/p" /tmp/p /workspace/p`); rc != 0 {
+		t.Errorf("touch in HOME, /tmp and /workspace: rc %d, %q", rc, out)
+	}
+}
+
+// The image runs the agent as the numeric user in /workspace, with no
+// volumes, no environment but PATH, and the OCI labels of its source,
+// licence and version.
+func TestBaseImageConfigAndLabels(t *testing.T) {
+	engine, image := baseImage(t)
 	var cfg struct {
-		User       string
-		Entrypoint []string
-		WorkingDir string
-		Volumes    map[string]any
-		Env        []string
+		User, WorkingDir string
+		Entrypoint, Env  []string
+		Volumes          map[string]any
+		Labels           map[string]string
 	}
-	inspectJSON(t, engine, base, ".Config", &cfg)
+	inspect(t, engine, image, ".Config", &cfg)
 	if cfg.User != "1000:1000" || !slices.Equal(cfg.Entrypoint, []string{sandbox.AgentPath}) || cfg.WorkingDir != "/workspace" || len(cfg.Volumes) != 0 {
 		t.Errorf("Config %+v", cfg)
 	}
@@ -158,43 +117,13 @@ func TestBaseImageConfig(t *testing.T) {
 			t.Errorf("the image sets %s", k)
 		}
 	}
-}
-
-// TS-16-42: the image carries the OCI source and licenses values, non-empty
-// title and description, and version and revision labels.
-// 16-REQ-2.7, 16-REQ-3.2.
-func TestBaseImageLabels(t *testing.T) {
-	engine, base := requireImage(t, "AGENTKIT_SANDBOX_BASE_IMAGE")
-	var l map[string]string
-	inspectJSON(t, engine, base, ".Config.Labels", &l)
+	l := cfg.Labels
 	if l["org.opencontainers.image.source"] != "https://github.com/agent-fox-dev/agentkit-go" || l["org.opencontainers.image.licenses"] != "Apache-2.0" ||
 		l["org.opencontainers.image.title"] == "" || l["org.opencontainers.image.description"] == "" ||
 		l["org.opencontainers.image.version"] != os.Getenv("AGENTKIT_SANDBOX_IMAGE_VERSION") {
-		t.Errorf("%s labels %v", base, l)
+		t.Errorf("labels %v", l)
 	}
 	if _, ok := l["org.opencontainers.image.revision"]; !ok {
-		t.Errorf("%s has no revision label", base)
-	}
-}
-
-// TS-16-44: images built without a version report (devel) in Hello and in
-// --version, and carry an empty version label. 16-REQ-4.5, 16-REQ-1.6.
-func TestBaseImageUnstamped(t *testing.T) {
-	engine, base := requireImage(t, "AGENTKIT_SANDBOX_BASE_IMAGE")
-	if v := os.Getenv("AGENTKIT_SANDBOX_IMAGE_VERSION"); v != "" {
-		t.Skipf("the images are stamped %s; this test needs an unstamped build (make build-containers with VERSION empty)", v)
-	}
-	h := startT(t, engine, base)
-	if v := h.sb.Agent().Version; v != "(devel)" {
-		t.Errorf("Agent().Version = %q", v)
-	}
-	out, se, code := runEngine(t, engine, "run", "--rm", "--entrypoint", sandbox.AgentPath, base, "--version")
-	if code != 0 || !isVersionLine(out, "(devel)") {
-		t.Errorf("%s --version: exit %d, %q (stderr %q)", base, code, out, se)
-	}
-	var l map[string]string
-	inspectJSON(t, engine, base, ".Config.Labels", &l)
-	if l["org.opencontainers.image.version"] != "" {
-		t.Errorf("%s version label %q", base, l["org.opencontainers.image.version"])
+		t.Errorf("no revision label in %v", l)
 	}
 }

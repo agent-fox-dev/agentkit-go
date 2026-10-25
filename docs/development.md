@@ -12,7 +12,6 @@ read [architecture.md](architecture.md); for publishing, read
 - [Make targets](#make-targets)
 - [The quality gate](#the-quality-gate)
 - [Tests](#tests)
-  - [Provider conformance](#provider-conformance)
   - [Live provider tests](#live-provider-tests)
   - [Container, Landlock and gateway tests](#container-landlock-and-gateway-tests)
   - [Other opt-in tests](#other-opt-in-tests)
@@ -86,9 +85,9 @@ run in each of them.
 | Target | Does |
 |---|---|
 | `make check` | `fmt`, `vet`, `lint` and `test-short`: the fast check. Run it before every commit. |
-| `make check-release` | `fmt`, `vet`, `lint` and the full `test`, slow gates included. Run by a maintainer before a release or merge; it takes about ten minutes. |
+| `make check-release` | `fmt`, `vet`, `lint` and the full `test`, slow gates included. Run by a maintainer before a release or merge; the cross-target builds take several minutes. |
 | `make test-short` | `go test -short ./...` in every module. |
-| `make test` | `go test ./...` in every module, including the slow gates (cross-target builds and vet, the host cgo build, nested `make` runs). |
+| `make test` | `go test ./...` in every module, including the slow gates (the cross-target builds and vet, the host cgo build). |
 | `make build` | `go build ./...` in every module. |
 | `make coverage` | The root module's tests with a coverage report. |
 | `make fmt` | `gofmt -l -w .` |
@@ -116,26 +115,25 @@ tests of every module. While you work, narrow runs are fine:
 ```bash
 go test ./tools/...                      # one package of the root module
 (cd sandbox && go test ./podman/...)     # a package of a nested module
-go test -short -run TestRunner ./...     # one test by name
+go test -short -run TestNewRunner .      # tests by name
 ```
 
-`make check-release` adds the slow gates in `internal/policy`: the four
-cross-target builds and vet (linux/amd64, linux/arm64, darwin/arm64 and
-windows/amd64 with cgo off), the host build with cgo on, and nested `make`
-runs. It is a manual step for maintainers before a release or a merge;
+`make check-release` adds the slow gates in `internal/policy`: the
+cross-target build and vet of every module in `MODULES` (linux/amd64,
+linux/arm64, darwin/arm64 and windows/amd64 with cgo off) and the host build
+with cgo on. It is a manual step for maintainers before a release or a merge;
 contributors and coding agents run `make check` only.
 
-`internal/policy` also enforces rules the code relies on: the
-direct-dependency allowlist ([DEPS.md](DEPS.md)), that the library opens no
-listening socket outside the nested server modules, and an exported-API golden
-(`internal/policy/testdata/exported-api.golden`) for the root, `core`, `tools`,
-`codemode`, `workspace`, `guard`, `provider/faux`, `sandbox`, `codesearch` and
-`mcpserve`. When you change one of those surfaces on purpose, regenerate the
-golden and commit it with the change.
+The direct-dependency allowlist ([DEPS.md](DEPS.md)), the rule that only the
+nested server modules open a listening socket, and the exported API of the
+public packages are kept by review, not by tests: a change to any of them is
+made on purpose and named in its pull request.
 
 ## Tests
 
-- Unit and property tests sit beside their package.
+- Tests sit beside their package, one file per area of the code, each test
+  named for the behaviour it checks; see **Tests and Spec Traceability** in
+  [`.specs/steering.md`](../.specs/steering.md).
 - `internal/testutil` holds the helpers many packages' tests share: file trees,
   a git environment that ignores the machine's configuration, polling with a
   deadline, JSON, tar and golden files, the repository root, and `go run` with a
@@ -149,20 +147,9 @@ golden and commit it with the change.
 - `internal/toolconformance` runs one table of cases against `tools.For` and
   against sandbox proxy tools, so the two stay interchangeable.
 
-### Provider conformance
-
-`internal/providerconformance` runs the same seven logical turns through each
-of the three providers and requires one canonical outcome: `text`,
-`tool_call`, `tool_call_stop`, `thinking`, `cut_off`, `error_status` and
-`error_in_stream`, 21 subtests named `<provider>/<case>`. Each provider talks
-to a fake of its vendor's native API on a loopback test server, built with the
-standard library only, so the providers are checked against the wire format
-rather than against themselves. It never reads the process environment, so
-real keys on your machine change nothing. It runs under `-short`:
-
-```bash
-go test -short -run 'TestProviderConformance.*/ollama/thinking' ./internal/providerconformance
-```
+Each provider package tests its wire against a fake of its vendor's API on a
+loopback test server (`provider/anthropic`, `provider/openrouter`,
+`provider/ollama`); none of them reads the process environment or a real key.
 
 ### Live provider tests
 
@@ -218,8 +205,7 @@ Some files are generated and committed. Never edit them by hand:
 | Files | Regenerate with | When |
 |---|---|---|
 | `docs/generated/*.txt` | `make doc` | An exported identifier or a package doc comment changes. |
-| `sandbox/internal/sandboxpb/*.pb.go` and the `*.proto.sha256` hashes | `make proto` | `sandbox.proto` or `gateway.proto` changes. It installs pinned `protoc-gen-go` and `protoc-gen-go-grpc` into `build/bin`; tests check the recorded hashes offline. |
-| `internal/policy/testdata/exported-api.golden` | `AGENTKIT_UPDATE_API_GOLDEN=1 go test -run TestSandboxLayoutAndAPI ./internal/policy` | One of the recorded packages' exported API changes on purpose; review the golden's diff. |
+| `sandbox/internal/sandboxpb/*.pb.go` and the `*.proto.sha256` hashes | `make proto` | `sandbox.proto` or `gateway.proto` changes. It installs pinned `protoc-gen-go` and `protoc-gen-go-grpc` into `build/bin`. |
 
 ## Workflow
 

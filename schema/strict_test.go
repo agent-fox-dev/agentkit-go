@@ -1,133 +1,97 @@
-package schema_test
+package schema
 
 import (
 	"errors"
 	"strings"
 	"testing"
-
-	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
-func strictErr(t *testing.T, s *schema.Schema) *schema.StrictRewriteError {
+func strictErr(t *testing.T, s *Schema) *StrictRewriteError {
 	t.Helper()
-	_, err := schema.StrictSubset(s)
-	if err == nil {
-		t.Fatal("StrictSubset: want an error, got nil")
+	_, err := StrictSubset(s)
+	var se *StrictRewriteError
+	if !errors.As(err, &se) || !errors.Is(err, ErrInvalidSchema) {
+		t.Fatalf("StrictSubset error = %v, want a *StrictRewriteError matching ErrInvalidSchema", err)
 	}
-	var se *schema.StrictRewriteError
-	if !errors.As(err, &se) {
-		t.Fatalf("error %v is not a *StrictRewriteError", err)
-	}
-	if !errors.Is(err, schema.ErrInvalidSchema) {
-		t.Fatalf("error %v is not ErrInvalidSchema", err)
+	if StrictSubsetOK(s) {
+		t.Fatal("StrictSubsetOK must report the rejection")
 	}
 	return se
 }
 
-func marshal(t *testing.T, s *schema.Schema) string {
-	t.Helper()
-	b, err := s.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
+func TestStrictSubsetRejectsWhatTheSubsetCannotExpress(t *testing.T) {
+	dict := &Schema{Type: TypeObject, AdditionalProperties: &AdditionalProperties{Allowed: true, Schema: String()}}
+	for _, tc := range []struct {
+		name          string
+		s             *Schema
+		keyword, path string
+		says          string
+	}{
+		{"allOf", &Schema{AllOf: []*Schema{String()}}, "allOf", "(root)", "uses allOf, which the strict subset forbids"},
+		{"oneOf", Object(Prop("v", OneOf(String()))), "oneOf", "/v", "forbids"},
+		{"$ref in Extra", Object(Prop("v", String().WithExtra("$ref", "#/x"))), "$ref", "/v", "forbids"},
+		{"not under items", Array(&Schema{Extra: Extra{{Key: "not", Value: []byte(`{}`)}}}), "not", "/items", "forbids"},
+		{"forbidden under anyOf", AnyOf(String(), String().WithExtra("if", true)), "if", "/anyOf/1", "forbids"},
+		{"a dictionary object", Object(Prop("name", String()), Prop("labels", dict)), "additionalProperties", "/labels", "dictionary"},
+		{"an array without items", Object(Prop("tags", Array(nil))), "items", "/tags", "declares no items"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			se := strictErr(t, tc.s)
+			if se.Keyword != tc.keyword || se.Path != tc.path || !strings.Contains(se.Error(), tc.says) {
+				t.Fatalf("error = %+v (%q), want %s at %s saying %q", se, se.Error(), tc.keyword, tc.path, tc.says)
+			}
+			if tc.keyword == "items" && strings.Contains(se.Error(), "forbids") {
+				t.Fatalf("Error() = %q reads as if items were forbidden; it is required", se.Error())
+			}
+		})
 	}
-	return string(b)
-}
-
-// REQ-TOOL-03. A dictionary object has no strict form: strict requires every
-// key enumerated and additionalProperties:false, and a map of arbitrary keys
-// is what cannot be enumerated. The rewrite used to overwrite the value
-// schema with `false` and call the result strict — a tool the model could not
-// call with any key at all. It is a rejection, so `prefer` falls back and
-// `require` fails with the reason.
-func TestADictionaryObjectIsRejectedByTheStrictRewriteNotSilentlyClosed(t *testing.T) {
-	dict := &schema.Schema{Type: schema.TypeObject,
-		AdditionalProperties: &schema.AdditionalProperties{Allowed: true, Schema: schema.String()}}
-	s := schema.Object(schema.Prop("name", schema.String()), schema.Prop("labels", dict))
-
-	se := strictErr(t, s)
-	if se.Keyword != "additionalProperties" || se.Path != "/labels" {
-		t.Fatalf("error = %+v, want additionalProperties at /labels", se)
+	// The probe never mutates the caller's schema.
+	s := Object(Prop("labels", dict))
+	if se := strictErr(t, s); se.Path != "/labels" {
+		t.Fatalf("error at %s, want /labels", se.Path)
 	}
-	if !strings.Contains(se.Error(), "dictionary") {
-		t.Fatalf("Error() = %q, want the reason spelled out", se.Error())
-	}
-	if schema.StrictSubsetOK(s) {
-		t.Fatal("StrictSubsetOK must report the rejection")
-	}
-	// The probe never mutates the shared schema.
 	if s.Properties["labels"].AdditionalProperties.Schema == nil {
 		t.Fatal("the probe closed the caller's own schema")
 	}
 }
 
-// A bare additionalProperties:true is NOT a dictionary; it is an open object
-// that the rewrite closes, as before.
-func TestABareOpenObjectIsStillClosedByTheRewrite(t *testing.T) {
-	s := schema.Object(schema.Prop("name", schema.String()))
-	s.AdditionalProperties = &schema.AdditionalProperties{Allowed: true}
-	out, err := schema.StrictSubset(s)
+func TestStrictSubsetClosesObjectsAndRequiresEveryProperty(t *testing.T) {
+	inner := Object(Opt("deep", Int()))
+	s := Object(Prop("name", String()), Opt("note", String("a free-text note")), Opt("maybe", Int().Nullable_()),
+		Opt("list", Array(inner)), Opt("alt", AnyOf(Object(Opt("x", Bool())))))
+	s.AdditionalProperties = &AdditionalProperties{Allowed: true}
+	before := marshal(t, s)
+
+	out, err := StrictSubset(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(marshal(t, out), `"additionalProperties":false`) {
-		t.Fatalf("not closed: %s", marshal(t, out))
+	want := `{"type":"object","properties":{` +
+		`"name":{"type":"string"},` +
+		`"note":{"description":"a free-text note","anyOf":[{"type":"string"},{"type":"null"}]},` +
+		`"maybe":{"type":["integer","null"]},` +
+		`"list":{"anyOf":[{"type":"array","items":{"type":"object","properties":{"deep":{"anyOf":[{"type":"integer"},{"type":"null"}]}},"required":["deep"],"additionalProperties":false}},{"type":"null"}]},` +
+		`"alt":{"anyOf":[{"anyOf":[{"type":"object","properties":{"x":{"anyOf":[{"type":"boolean"},{"type":"null"}]}},"required":["x"],"additionalProperties":false}]},{"type":"null"}]}},` +
+		`"required":["name","note","maybe","list","alt"],"additionalProperties":false}`
+	if got := marshal(t, out); got != want {
+		t.Fatalf("StrictSubset =\n%s\nwant\n%s", got, want)
+	}
+	if after := marshal(t, s); after != before {
+		t.Fatalf("the rewrite changed the caller's schema:\n%s\n%s", before, after)
 	}
 }
 
-// A widened optional property carried its description TWICE — on the anyOf
-// wrapper and on the inner copy — so the model read it once per level.
-func TestAWidenedOptionalPropertyCarriesItsDescriptionOnce(t *testing.T) {
-	s := schema.Object(schema.Opt("note", schema.String("a free-text note")))
-	out, err := schema.StrictSubset(s)
+func TestStrictSubsetTreatsATypelessSchemaWithPropertiesAsAnObject(t *testing.T) {
+	s := &Schema{Properties: map[string]*Schema{"a": String()}}
+	out, err := StrictSubset(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	j := marshal(t, out)
-	if n := strings.Count(j, "a free-text note"); n != 1 {
-		t.Fatalf("description appears %d times, want once:\n%s", n, j)
+	want := `{"type":"object","properties":{"a":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["a"],"additionalProperties":false}`
+	if got := marshal(t, out); got != want {
+		t.Fatalf("StrictSubset = %s, want %s", got, want)
 	}
-	if !strings.Contains(j, `"note":{"description":"a free-text note","anyOf":[{"type":"string"},{"type":"null"}]}`) {
-		t.Fatalf("wrapper shape drifted:\n%s", j)
-	}
-	// The caller's schema is untouched by the rewrite.
-	if s.Properties["note"].Description != "a free-text note" {
-		t.Fatal("the rewrite cleared the description on the caller's schema")
-	}
-}
-
-// A schema with properties and no type is an object to every reader; the
-// rewrite must close it and pin the type, not leave it open because the word
-// "object" was missing.
-func TestATypelessSchemaWithPropertiesIsRewrittenAsAnObject(t *testing.T) {
-	s := &schema.Schema{Properties: map[string]*schema.Schema{"a": schema.String()}}
-	out, err := schema.StrictSubset(s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	j := marshal(t, out)
-	for _, want := range []string{`"type":"object"`, `"additionalProperties":false`, `"required":["a"]`} {
-		if !strings.Contains(j, want) {
-			t.Fatalf("missing %s:\n%s", want, j)
-		}
-	}
-	if s.Type != schema.TypeNone {
+	if s.Type != TypeNone {
 		t.Fatal("the rewrite pinned the type on the caller's schema")
-	}
-}
-
-// Array(nil) marshals as a bare {"type":"array"}, which strict mode rejects
-// on the wire with the whole request. Reject it before sending instead.
-func TestAnArrayWithoutItemsIsRejectedUnderStrict(t *testing.T) {
-	s := schema.Object(schema.Prop("tags", schema.Array(nil)))
-	se := strictErr(t, s)
-	if se.Keyword != "items" || se.Path != "/tags" {
-		t.Fatalf("error = %+v, want items at /tags", se)
-	}
-	if strings.Contains(se.Error(), "forbids") {
-		t.Fatalf("Error() = %q reads as if items were forbidden; it is required", se.Error())
-	}
-	ok := schema.Object(schema.Prop("tags", schema.Array(schema.String())))
-	if !schema.StrictSubsetOK(ok) {
-		t.Fatal("an array with items is strict-convertible")
 	}
 }

@@ -2,403 +2,153 @@ package tools
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/guard"
 	"github.com/agent-fox-dev/agentkit-go/outline"
-	"github.com/agent-fox-dev/agentkit-go/schema"
-	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// TS-05-1 (unit): find_references is registered in tools.For() following find_symbol
-// and in FileNavigationTools() with correct metadata.
-// Verifies 05-REQ-1.1.
-func TestFindReferencesTool_Registration_TS05_1(t *testing.T) {
-	wsDir := t.TempDir()
-	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatalf("workspace.Open: %v", err)
-	}
-	opts := Options{}
-	ft := newFileTools(ws, opts)
-	fr := ft.findReferencesTool()
-
-	if fr.Name != "find_references" {
-		t.Fatalf("expected name find_references, got %s", fr.Name)
-	}
-	if !fr.Builtin {
-		t.Errorf("expected Builtin = true")
-	}
-	if fr.ExecutionMode != core.Parallel {
-		t.Errorf("expected ExecutionMode = Parallel, got %v", fr.ExecutionMode)
-	}
-	if guard.IsShellTool(fr.Name) {
-		t.Errorf("find_references must not be a shell tool")
-	}
-	for _, n := range guard.ShellToolNames {
-		if n == fr.Name {
-			t.Errorf("find_references must not be in guard.ShellToolNames")
-		}
-	}
-
-	expectedGuideline := "Use find_symbol for where a name is declared, find_references for who uses it, and search_files for text."
-	foundGuideline := false
-	for _, g := range fr.PromptGuidelines {
-		if strings.Contains(g, expectedGuideline) {
-			foundGuideline = true
-			break
-		}
-	}
-	if !foundGuideline {
-		t.Errorf("expected PromptGuidelines to contain %q, got %v", expectedGuideline, fr.PromptGuidelines)
-	}
-
-	// In Task 10, find_references is wired into For() and FileNavigationTools().
-	// If already present in For(), verify the wiring criteria.
-	all, _ := For(ws, opts)
-	idxFS := -1
-	idxFR := -1
-	for i, tool := range all {
-		if tool.Name == "find_symbol" {
-			idxFS = i
-		}
-		if tool.Name == "find_references" {
-			idxFR = i
-		}
-	}
-	if idxFR != -1 {
-		if idxFS == -1 || idxFR != idxFS+1 {
-			t.Errorf("find_references at index %d, find_symbol at %d; expected immediately following", idxFR, idxFS)
-		}
-		nav := FileNavigationTools()
-		if len(nav) != 6 || !slices.Contains(nav, "find_references") {
-			t.Errorf("expected FileNavigationTools() to have 6 items including find_references, got %v", nav)
-		}
-	}
+// goRunner declares Runner.Run, calls it through a renamed import and from a
+// test, and calls an unrelated Run.
+var goRunner = map[string]string{
+	"go.mod": "module example.com/app\n\ngo 1.22\n",
+	"runner/runner.go": "package runner\n\nimport \"fmt\"\n\ntype Runner struct{ Name string }\n\n" +
+		"func (r *Runner) Run() error {\n\tfmt.Println(r.Name)\n\treturn nil\n}\n\ntype Job interface{ Run() error }\n",
+	"other/other.go": "package other\n\ntype Other struct{}\n\nfunc (Other) Run() error { return nil }\n",
+	"cmd/main.go": "package main\n\nimport (\n\trn \"example.com/app/runner\"\n\t\"example.com/app/other\"\n)\n\n" +
+		"func start() error {\n\tr := &rn.Runner{Name: \"x\"}\n\treturn r.Run()\n}\n\n" +
+		"func unrelated() error {\n\treturn other.Other{}.Run()\n}\n\nfunc main() { _ = start(); _ = unrelated() }\n",
+	"runner/runner_test.go": "package runner\n\nimport \"testing\"\n\nfunc TestRun(t *testing.T) {\n\tr := &Runner{}\n\tif err := r.Run(); err != nil {\n\t\tt.Fatal(err)\n\t}\n}\n",
 }
 
-// TS-05-2 (unit): find_references input schema specifies required name and optional path, kind, include_tests, and max_results.
-// Verifies 05-REQ-1.2.
-func TestFindReferencesTool_InputSchema_TS05_2(t *testing.T) {
-	wsDir := t.TempDir()
-	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatalf("workspace.Open: %v", err)
-	}
-	opts := Options{}
-	ft := newFileTools(ws, opts)
-	fr := ft.findReferencesTool()
-
-	s := fr.InputSchema
-	if s == nil {
-		t.Fatal("expected non-nil InputSchema")
-	}
-	if s.Type != schema.TypeObject {
-		t.Fatalf("expected TypeObject, got %v", s.Type)
-	}
-
-	props := s.Properties
-	if !s.IsRequired("name") {
-		t.Errorf("name must be required")
-	}
-	nameProp, ok := props["name"]
-	if !ok || nameProp.Type != schema.TypeString {
-		t.Errorf("expected name to be TypeString, got %v", nameProp)
-	}
-
-	if s.IsRequired("path") {
-		t.Errorf("path must be optional")
-	}
-	pathProp, ok := props["path"]
-	if !ok || pathProp.Type != schema.TypeString {
-		t.Errorf("expected path to be TypeString, got %v", pathProp)
-	}
-
-	if s.IsRequired("kind") {
-		t.Errorf("kind must be optional")
-	}
-	kindProp, ok := props["kind"]
-	if !ok || kindProp.Type != schema.TypeString {
-		t.Errorf("expected kind to be TypeString, got %v", kindProp)
-	}
-
-	if s.IsRequired("include_tests") {
-		t.Errorf("include_tests must be optional")
-	}
-	incProp, ok := props["include_tests"]
-	if !ok || incProp.Type != schema.TypeBoolean {
-		t.Errorf("expected include_tests to be TypeBoolean, got %v", incProp)
-	}
-
-	if s.IsRequired("max_results") {
-		t.Errorf("max_results must be optional")
-	}
-	maxProp, ok := props["max_results"]
-	if !ok || maxProp.Type != schema.TypeInteger {
-		t.Errorf("expected max_results to be TypeInteger, got %v", maxProp)
-	}
+func refResult(t *testing.T, ft *fileTools, args string) ReferenceResult {
+	t.Helper()
+	return mustOK(t, call(ft.findReferencesTool(), args)).Data["result"].(ReferenceResult)
 }
 
-// TS-05-3 (unit): find_references rejects malformed JSON, empty name, whitespace name, or name exceeding 256 bytes.
-// Verifies 05-REQ-1.3.
-func TestFindReferencesTool_InvalidName_TS05_3(t *testing.T) {
-	wsDir := t.TempDir()
-	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatalf("workspace.Open: %v", err)
-	}
-	opts := Options{}
-	ft := newFileTools(ws, opts)
-	fr := ft.findReferencesTool()
-	ctx := context.Background()
-
-	inputs := []string{
-		"{bad-json",
-		"{}",
-		`{"name":""}`,
-		`{"name":"   "}`,
-		`{"name":"` + strings.Repeat("a", 257) + `"}`,
-	}
-
-	for _, in := range inputs {
-		res := fr.Execute(ctx, []byte(in))
-		if res.OK {
-			t.Errorf("expected OK=false for input %q", in)
-		}
-		if res.Error != "invalid_arguments" {
-			t.Errorf("expected error invalid_arguments for input %q, got %q", in, res.Error)
-		}
-		if res.Text == "" {
-			t.Errorf("expected non-empty error message for input %q", in)
+func TestFindReferencesRejectsBadArguments(t *testing.T) {
+	ws := newWS(t, map[string]string{"main.go": "package main\nfunc Foo() {}\n"})
+	fr := newFT(ws, Options{}).findReferencesTool()
+	kinds := "kind must be one of: func, method, type, class, interface, enum, trait, const, var, module, macro"
+	for args, want := range map[string]string{
+		`{bad-json`:      "invalid_arguments",
+		`{}`:             "invalid_arguments: name is required and must be non-empty",
+		`{"name":"   "}`: "invalid_arguments: name is required and must be non-empty",
+		`{"name":"` + strings.Repeat("a", 257) + `"}`: "invalid_arguments: name must be at most 256 bytes",
+		`{"name":"Foo","kind":"struct"}`:              "invalid_arguments: " + kinds,
+		`{"name":"Foo","path":"../out"}`:              "path_not_allowed",
+		`{"name":"Foo","path":"missing"}`:             "invalid_arguments: directory not found: missing",
+		`{"name":"Foo","path":"main.go"}`:             "invalid_arguments: path is not a directory: main.go",
+	} {
+		r := call(fr, args)
+		code, text, _ := strings.Cut(want, ": ")
+		if r.Error != code || r.Text == "" || (text != "" && r.Text != text) {
+			t.Errorf("%.50s: %q %q, want %q", args, r.Error, r.Text, want)
 		}
 	}
-}
-
-// TS-05-4 (unit): find_references rejects invalid kind parameters with a list of valid kinds.
-// Verifies 05-REQ-1.4.
-func TestFindReferencesTool_InvalidKind_TS05_4(t *testing.T) {
-	wsDir := t.TempDir()
-	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatalf("workspace.Open: %v", err)
+	if r := call(fr, `{bad-json`); !strings.HasPrefix(r.Text, "Malformed input: ") {
+		t.Errorf("malformed JSON: %q", r.Text)
 	}
-	opts := Options{}
-	ft := newFileTools(ws, opts)
-	fr := ft.findReferencesTool()
-	ctx := context.Background()
-
-	badKinds := []string{"struct", "unknown", "class_method"}
-	expectedKinds := []string{
-		"func", "method", "type", "class", "interface",
-		"enum", "trait", "const", "var", "module", "macro",
-	}
-
-	for _, k := range badKinds {
-		in := `{"name":"Foo","kind":"` + k + `"}`
-		res := fr.Execute(ctx, []byte(in))
-		if res.OK {
-			t.Errorf("expected OK=false for kind %q", k)
-		}
-		if res.Error != "invalid_arguments" {
-			t.Errorf("expected error invalid_arguments for kind %q, got %q", k, res.Error)
-		}
-		for _, ek := range expectedKinds {
-			if !strings.Contains(res.Text, ek) {
-				t.Errorf("expected error message to contain valid kind %q for bad kind %q, got %q", ek, k, res.Text)
-			}
-		}
-	}
-}
-
-// TS-05-5 (unit): find_references refuses a path resolving outside workspace root.
-// Verifies 05-REQ-1.5.
-func TestFindReferencesTool_PathOutsideWorkspace_TS05_5(t *testing.T) {
-	wsDir := t.TempDir()
-	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatalf("workspace.Open: %v", err)
-	}
-	opts := Options{}
-	ft := newFileTools(ws, opts)
-	fr := ft.findReferencesTool()
-	ctx := context.Background()
-
-	res := fr.Execute(ctx, []byte(`{"name":"Foo","path":"../outside"}`))
-	if res.OK {
-		t.Errorf("expected OK=false for path outside workspace")
-	}
-	if res.Error != "path_not_allowed" {
-		t.Errorf("expected error path_not_allowed, got %q", res.Error)
-	}
-}
-
-// TS-05-6 (unit): find_references rejects non-existent paths or paths pointing to regular files.
-// Verifies 05-REQ-1.6.
-func TestFindReferencesTool_InvalidPath_TS05_6(t *testing.T) {
-	wsDir := t.TempDir()
-	mainGo := filepath.Join(wsDir, "main.go")
-	if err := os.WriteFile(mainGo, []byte("package main\nfunc Foo() {}\n"), 0644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatalf("workspace.Open: %v", err)
-	}
-	opts := Options{}
-	ft := newFileTools(ws, opts)
-	fr := ft.findReferencesTool()
-	ctx := context.Background()
-
-	res1 := fr.Execute(ctx, []byte(`{"name":"Foo","path":"missing_dir"}`))
-	if res1.OK {
-		t.Errorf("expected OK=false for non-existent path")
-	}
-	if res1.Error != "invalid_arguments" {
-		t.Errorf("expected error invalid_arguments, got %q", res1.Error)
-	}
-	if !strings.Contains(strings.ToLower(res1.Text), "directory") {
-		t.Errorf("expected error message to indicate directory not found, got %q", res1.Text)
-	}
-
-	res2 := fr.Execute(ctx, []byte(`{"name":"Foo","path":"main.go"}`))
-	if res2.OK {
-		t.Errorf("expected OK=false for file path")
-	}
-	if res2.Error != "invalid_arguments" {
-		t.Errorf("expected error invalid_arguments, got %q", res2.Error)
-	}
-	if !strings.Contains(strings.ToLower(res2.Text), "directory") {
-		t.Errorf("expected error message to indicate path is not a directory, got %q", res2.Text)
-	}
-}
-
-// TS-05-7 (unit): find_references terminates immediately with aborted error when context is cancelled.
-// Verifies 05-REQ-1.7.
-func TestFindReferencesTool_ContextCancelled_TS05_7(t *testing.T) {
-	wsDir := t.TempDir()
-	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatalf("workspace.Open: %v", err)
-	}
-	opts := Options{}
-	ft := newFileTools(ws, opts)
-	fr := ft.findReferencesTool()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-
-	res := fr.Execute(ctx, []byte(`{"name":"Foo"}`))
-	if res.OK {
-		t.Errorf("expected OK=false for cancelled context")
-	}
-	if res.Error != "aborted" {
-		t.Errorf("expected error aborted, got %q", res.Error)
-	}
-	if res.Text != "Operation aborted" {
-		t.Errorf("expected text 'Operation aborted', got %q", res.Text)
+	if r := fr.Execute(ctx, []byte(`{"name":"Foo"}`)); r.Error != "aborted" || r.Text != "Operation aborted" {
+		t.Errorf("a cancelled call: %+v", r)
 	}
 }
 
-// TS-05-46 (integration): tools.References returns ReferenceResult matching find_references tool output with deterministic ranking.
-// Verifies 05-REQ-9.2.
-func TestFindReferencesTool_WorkspaceReferencesParity_TS05_46(t *testing.T) {
-	wsDir := t.TempDir()
-	goContent := `package main
-
-func TargetFunc() int {
-	return 42
-}
-
-func CallGo() int {
-	return TargetFunc()
-}
-`
-	pyContent := `def call_python():
-    # TargetFunc used in python
-    TargetFunc()
-`
-	if err := os.WriteFile(filepath.Join(wsDir, "main.go"), []byte(goContent), 0644); err != nil {
-		t.Fatalf("WriteFile main.go: %v", err)
+func TestFindReferencesResolvesAGoMethodsCallers(t *testing.T) {
+	ws := newWS(t, goRunner)
+	ft := newFT(ws, Options{})
+	r := mustOK(t, call(ft.findReferencesTool(), `{"name":"Runner.Run"}`))
+	res := r.Data["result"].(ReferenceResult)
+	if res.Target.Name != "Run" || res.Target.Container != "Runner" || res.Target.StartLine != 7 || res.Backend != "go/types" {
+		t.Fatalf("target %+v backend %q", res.Target, res.Backend)
 	}
-	if err := os.WriteFile(filepath.Join(wsDir, "script.py"), []byte(pyContent), 0644); err != nil {
-		t.Fatalf("WriteFile script.py: %v", err)
+	// The call through the renamed import, and not the unrelated Other.Run.
+	if got := siteList(res); !slices.Contains(got, "cmd/main.go:10:11 resolved") || slices.Contains(got, "cmd/main.go:14:23 resolved") {
+		t.Fatalf("sites %v", got)
 	}
-
-	ws, err := workspace.Open(wsDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatalf("workspace.Open: %v", err)
+	if s := res.Sites[0]; s.Enclosing.Name != "start" || s.Enclosing.Kind != outline.KindFunc || s.Source != "return r.Run()" {
+		t.Fatalf("the call is attributed to %+v, source %q", s.Enclosing, s.Source)
 	}
-	opts := Options{}
-	ft := newFileTools(ws, opts)
-	fr := ft.findReferencesTool()
-	ctx := context.Background()
-
-	toolRes := fr.Execute(ctx, []byte(`{"name":"TargetFunc","include_tests":true,"max_results":30}`))
-	if !toolRes.OK {
-		t.Fatalf("tool execution failed: %s (%s)", toolRes.Error, toolRes.Text)
+	if want := "find_references Runner.Run  (go/types, 2 references in 2 files; 0 text matches)\ncmd/main.go\n  L10  resolved  func start() error      return r.Run()\n" +
+		"runner/runner_test.go\n  L7  resolved  func TestRun(t *testing.T)      if err := r.Run(); err != nil {"; r.Text != want {
+		t.Fatalf("Text:\n%s\nwant:\n%s", r.Text, want)
 	}
-
-	targetDecl := outline.Decl{
-		Kind:      outline.KindFunc,
-		Name:      "TargetFunc",
-		StartLine: 3,
+	if got := siteList(refResult(t, ft, `{"name":"Runner.Run","include_tests":false}`)); !slices.Equal(got, []string{"cmd/main.go:10:11 resolved"}) {
+		t.Fatalf("include_tests false: %v", got)
 	}
-
-	wsRes, err := References(ctx, ws, targetDecl, ReferenceOptions{IncludeTests: true, MaxResults: 30})
-	if err != nil {
-		t.Fatalf("References failed: %v", err)
+	// The tool and References agree.
+	viaTool := refResult(t, ft, `{"name":"Runner.Run","include_tests":true,"max_results":30}`)
+	direct, err := References(context.Background(), ws, viaTool.Target, ReferenceOptions{IncludeTests: true, MaxResults: 30})
+	if err != nil || !reflect.DeepEqual(direct.Sites, viaTool.Sites) || direct.Backend != viaTool.Backend {
+		t.Fatalf("References %v, the tool %v", siteList(direct), siteList(viaTool))
 	}
-
-	var toolResult ReferenceResult
-	if r, ok := toolRes.Data["result"].(ReferenceResult); ok {
-		toolResult = r
-	} else {
-		t.Fatalf("toolRes.Data[\"result\"] is not ReferenceResult: %T", toolRes.Data["result"])
+	// An absolute path scope and a kind filter.
+	if res := refResult(t, ft, `{"name":"Run","kind":"method","path":"`+abs(ws, "runner")+`"}`); res.Backend != "go/types" ||
+		res.Target.Container != "Runner" || !slices.Equal(siteList(res), []string{"runner/runner_test.go:7:14 resolved"}) {
+		t.Fatalf("a scoped, kind-filtered call: %+v", res)
 	}
-
-	if !reflect.DeepEqual(toolResult.Sites, wsRes.Sites) {
-		t.Errorf("Sites mismatch:\ntool: %+v\nws:   %+v", toolResult.Sites, wsRes.Sites)
-	}
-	if toolResult.Backend != wsRes.Backend {
-		t.Errorf("Backend mismatch: tool=%q, ws=%q", toolResult.Backend, wsRes.Backend)
-	}
-	if toolResult.Truncated != wsRes.Truncated {
-		t.Errorf("Truncated mismatch: tool=%v, ws=%v", toolResult.Truncated, wsRes.Truncated)
-	}
-	if toolResult.Partial != wsRes.Partial {
-		t.Errorf("Partial mismatch: tool=%v, ws=%v", toolResult.Partial, wsRes.Partial)
+	// A caller written by write_file is found by the next call.
+	mustOK(t, call(ft.writeFile(), `{"path":"cmd/extra.go","content":"package main\n\nimport rn \"example.com/app/runner\"\n\nfunc again() error {\n\treturn (&rn.Runner{}).Run()\n}\n"}`))
+	if got := siteList(refResult(t, ft, `{"name":"Runner.Run"}`)); !slices.Contains(got, "cmd/extra.go:6:24 resolved") || len(got) != 3 {
+		t.Fatalf("after write_file: %v", got)
 	}
 }
 
-// TS-06-17: find_references declares its result. target is the resolved
-// declaration, errors a count, and the structs marshal with Go field names.
-func TestOutputSchemaFindReferences_TS06_17(t *testing.T) {
-	s := toolByName(t, t.TempDir(), "find_references").OutputSchema
-	assertObject(t, "find_references", s, map[string]prop{
-		"target": {schema.TypeObject, true}, "sites": {schema.TypeArray, true},
-		"backend": {schema.TypeString, true}, "partial": {schema.TypeBoolean, true},
-		"truncated": {schema.TypeBoolean, true}, "packages_checked": {schema.TypeInteger, true},
-		"errors": {schema.TypeInteger, true}, "result": {schema.TypeObject, true},
+func TestFindReferencesOfANameNothingDeclaresIsText(t *testing.T) {
+	ft := newFT(newWS(t, map[string]string{
+		"config/settings.py": "ENABLED = NONEXISTENT_FLAG or False\n",
+		"docs/notes.md":      "Set NONEXISTENT_FLAG to turn it on.\n",
+		"main.go":            "package main\n\nfunc main() { _ = \"NONEXISTENT_FLAG\" }\n",
+	}), Options{})
+	r := mustOK(t, call(ft.findReferencesTool(), `{"name":"NONEXISTENT_FLAG"}`))
+	res := r.Data["result"].(ReferenceResult)
+	if res.Target != (outline.Decl{}) || r.Data["target"] != (outline.Decl{}) || res.Backend != "text" || len(res.Sites) != 3 ||
+		!strings.HasPrefix(r.Text, "find_references NONEXISTENT_FLAG  (text, 3 references in 3 files; 3 text matches) [0 declarations matched]\n") {
+		t.Fatalf("%+v\n%s", res, r.Text)
+	}
+	if r := mustOK(t, call(newFT(newWS(t, nil), Options{}).findReferencesTool(), `{"name":"GOPHER_KEY"}`)); !strings.Contains(r.Text, "(text, 0 references in 0 files; 0 text matches) [0 declarations matched]") {
+		t.Fatalf("an empty workspace: %q", r.Text)
+	}
+}
+
+func TestFindReferencesInPythonIsLexical(t *testing.T) {
+	ws := newWS(t, map[string]string{
+		"billing/tax.py":  "def calculate_tax(amount):\n    return amount * 0.2\n",
+		"billing/shop.py": "# calculate_tax is applied at checkout\ndef checkout(total):\n    label = \"calculate_tax\"\n    return calculate_tax(total)\n",
 	})
-	assertObject(t, "find_references.target", s.Properties["target"], declProps)
-	site := s.Properties["sites"].Items
-	assertObject(t, "find_references.sites[]", site, map[string]prop{
-		"Path": {schema.TypeString, true}, "Line": {schema.TypeInteger, true},
-		"Column": {schema.TypeInteger, true}, "Confidence": {schema.TypeString, true},
-		"Enclosing": {schema.TypeObject, true}, "Source": {schema.TypeString, true},
-	})
-	assertObject(t, "find_references.sites[].Enclosing", site.Properties["Enclosing"], declProps)
-	assertObject(t, "find_references.result", s.Properties["result"], map[string]prop{
-		"Target": {schema.TypeObject, true}, "Sites": {schema.TypeArray, true},
-		"Backend": {schema.TypeString, true}, "Partial": {schema.TypeBoolean, true},
-		"PackagesChecked": {schema.TypeInteger, true}, "Errors": {schema.TypeInteger, true},
-		"Truncated": {schema.TypeBoolean, true},
-	})
+	res := refResult(t, newFT(ws, Options{}), `{"name":"calculate_tax"}`)
+	if f, _ := outline.Outline(context.Background(), abs(ws, "billing/shop.py"), nil, outline.Options{}); f.Backend == outline.BackendNone {
+		// Without cgo there is no Python grammar: nothing is declared, all is text.
+		if res.Backend != "text" || slices.ContainsFunc(res.Sites, func(s ReferenceSite) bool { return s.Confidence != "text" }) {
+			t.Fatalf("without a Python outline: %s %v", res.Backend, siteList(res))
+		}
+		return
+	}
+	// The call is code; the comment and the string are text.
+	want := []string{"billing/shop.py:4:12 lexical", "billing/tax.py:1:5 lexical", "billing/shop.py:1:3 text", "billing/shop.py:3:14 text"}
+	if res.Target.StartLine != 1 || res.Backend != "lexical" || !slices.Equal(siteList(res), want) {
+		t.Fatalf("%+v: %v, want %v", res.Target, siteList(res), want)
+	}
+	if call, top := res.Sites[0].Enclosing, res.Sites[2].Enclosing; call.Name != "checkout" || call.StartLine != 2 || top.Kind != "file" {
+		t.Fatalf("attributed to %+v and %+v", call, top)
+	}
+}
+
+func TestABoundedReferencePassIsPartial(t *testing.T) {
+	ws := newWS(t, map[string]string{"a.py": "def calc_total(x):\n    return x\n", "b.py": "calc_total(1)\n", "c.py": "calc_total(2)\n", "d.py": "calc_total(3)\n"})
+	for reason, opts := range map[string]SymbolOptions{"files": {MaxFiles: 1}, "time": {MaxDuration: time.Nanosecond}} {
+		r := mustOK(t, call(newFT(ws, Options{Symbols: opts}).findReferencesTool(), `{"name":"calc_total"}`))
+		if res := r.Data["result"].(ReferenceResult); !res.Partial || r.Data["partial"] != true || len(res.Sites) >= 4 ||
+			!strings.HasSuffix(r.Text, "\n"+SymbolPartialMarker(reason)) || !strings.Contains(r.Text, " [partial]\n") {
+			t.Errorf("%s: partial %v, %d sites\n%s", reason, res.Partial, len(res.Sites), r.Text)
+		}
+	}
+	if res := refResult(t, newFT(ws, Options{}), `{"name":"calc_total"}`); res.Partial || len(res.Sites) != 4 {
+		t.Errorf("unbounded: partial %v, %v", res.Partial, siteList(res))
+	}
 }

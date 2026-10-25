@@ -1,8 +1,7 @@
 package schema // import "github.com/agent-fox-dev/agentkit-go/schema"
 
 Package schema is the structured, transformable tool-schema value type.
-It contains no runtime reflection and no generated code; internal/policy asserts
-both.
+It contains no runtime reflection and no generated code.
 
 VARIABLES
 

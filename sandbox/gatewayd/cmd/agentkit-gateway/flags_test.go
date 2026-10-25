@@ -1,40 +1,32 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
+	"bytes"
+	"errors"
+	"io"
 	"strings"
 	"testing"
+
+	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/podman"
 )
 
-// TS-19-57: usage errors exit 2 with one stderr line, before the token
-// file is read or the engine contacted. 19-REQ-8.5.
-func TestUsageErrors_TS19_57(t *testing.T) {
-	log := fakeEngine(t)
-	unreadable := filepath.Join(t.TempDir(), "missing-tokens")
+// A usage error exits 2 with one stderr line, before the token file is read
+// or the backend made; a token in the environment is no --token-file.
+func TestAUsageErrorExitsTwoBeforeAnythingElse(t *testing.T) {
+	t.Setenv("AGENTKIT_GATEWAY_TOKEN", tok40)
 	for _, args := range [][]string{
-		{"--no-such-flag"},
-		{"--tls-cert", "c.pem"},
-		{"--plaintext", "--tls-cert", "c.pem", "--tls-key", "k.pem"},
-		{},
-		{"--plaintext", "--engine", "kube"},
-		{"--plaintext", "--runtime", "runc"},
-		{"--plaintext", "--network", "none,allowlist"},
-		{"--plaintext", "--max-sandboxes", "0"},
-		{"--plaintext", "--max-ttl", "0s"},
-		{"--plaintext", "--reap-interval", "-1m"},
-		{"--plaintext", "extra"},
+		{"--no-such-flag"}, {"--tls-cert", "c.pem"}, {"--plaintext", "--tls-cert", "c.pem", "--tls-key", "k.pem"}, {},
+		{"--plaintext", "--engine", "kube"}, {"--plaintext", "--runtime", "runc"}, {"--plaintext", "--network", "none,allowlist"},
+		{"--plaintext", "--max-sandboxes", "0"}, {"--plaintext", "--max-ttl", "0s"}, {"--plaintext", "--reap-interval", "-1m"},
+		{"--plaintext", "extra"}, {"--plaintext", "--token-file", ""},
 	} {
-		code, _, stderr := runCmd(append([]string{"--token-file", unreadable}, args...)...)
-		lines := strings.Split(strings.TrimRight(stderr, "\n"), "\n")
-		if code != 2 || len(lines) != 1 || !strings.HasPrefix(stderr, "agentkit-gateway: ") {
-			t.Errorf("%v: exit %d, stderr %q; want 2 and one agentkit-gateway: line", args, code, stderr)
+		made := false
+		var stderr bytes.Buffer
+		code := run(append([]string{"--token-file", "/nonexistent/tokens"}, args...), io.Discard, &stderr,
+			deps{newBackend: func(podman.Options) (sandbox.Provider, error) { made = true; return nil, errors.New("no") }})
+		if lines := strings.Split(strings.TrimRight(stderr.String(), "\n"), "\n"); code != 2 || len(lines) != 1 || !strings.HasPrefix(lines[0], "agentkit-gateway: ") || made {
+			t.Errorf("%v: exit %d, stderr %q, backend made %v; want 2 and one agentkit-gateway: line, before the backend", args, code, stderr.String(), made)
 		}
-	}
-	if code, _, stderr := runCmd("--plaintext"); code != 2 || !strings.Contains(stderr, "--token-file") {
-		t.Errorf("no --token-file: exit %d, %q", code, stderr)
-	}
-	if b, err := os.ReadFile(log); err == nil && len(b) > 0 {
-		t.Errorf("the engine was run for a usage error: %s", b)
 	}
 }

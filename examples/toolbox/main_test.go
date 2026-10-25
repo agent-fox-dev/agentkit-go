@@ -1,139 +1,15 @@
 package main
 
 import (
-	"context"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"errors"
+	"flag"
 	"strings"
 	"testing"
 
-	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// project writes files under a fresh directory and returns it.
-func project(t *testing.T, files map[string]string) string {
-	t.Helper()
-	dir := t.TempDir()
-	for rel, content := range files {
-		abs := filepath.Join(dir, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return dir
-}
-
-// do runs the program in process with the given standard input and arguments.
-func do(t *testing.T, stdin string, args ...string) (string, error) {
-	t.Helper()
-	var out strings.Builder
-	err := run(context.Background(), strings.NewReader(stdin), &out, args)
-	return out.String(), err
-}
-
-// builtins are the tools tools.For builds.
-func builtins(t *testing.T) []core.Tool {
-	t.Helper()
-	ws, err := workspace.Open(t.TempDir(), workspace.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	all, err := tools.For(ws, tools.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return all
-}
-
-func needGo(t *testing.T) {
-	t.Helper()
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go is not on PATH: find_references type-checks through it")
-	}
-}
-
-// The tour runs as a program and in process, calls every built-in tool, shows
-// each kind of failure as a result, leaves nothing behind, and ends with its
-// completion line.
-func TestTourCallsEveryBuiltInTool(t *testing.T) {
-	needGo(t)
-	leftovers := func() []string {
-		m, _ := filepath.Glob(filepath.Join(os.TempDir(), "agentkit-toolbox-example-*"))
-		return m
-	}
-	before := len(leftovers())
-
-	progOut, err := exec.Command("go", "run", ".").CombinedOutput()
-	if err != nil {
-		t.Fatalf("go run: %v\n%s", err, progOut)
-	}
-	out, err := do(t, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(progOut), "Toolbox example completed successfully") {
-		t.Errorf("the program printed:\n%s", progOut)
-	}
-
-	for _, tl := range builtins(t) {
-		if !strings.Contains(out, "\n$ "+tl.Name+" ") {
-			t.Errorf("the tour never calls %s", tl.Name)
-		}
-	}
-	for _, want := range []string{
-		"main.go",                            // find_files, list_files
-		"Showing lines 13-21 of 25",          // read_file's window and its continuation
-		"func (g *Greeter) Greet() string",   // file_outline, find_symbol
-		"(go/types, 2 references in 2 files", // find_references over the sample
-		"resolved",                           // a reference the type checker confirmed
-		"(go/types, 1 references in 1 files", // include_tests false drops one
-		"Wrote 22 bytes to notes/hello.txt",  // write_file
-		"Applied 1 edit to notes/todo.md",    // edit_file
-		"error edit_not_unique",              // edit_file refuses an ambiguous text
-		"hello from execute",                 // execute through guard.Allow("echo")
-		"error blocked_by_policy",            // ... and refuses rm
-		"\n  a;b\n",                          // run_command: no shell
-		"error path_not_allowed",             // outside the workspace
-		"error invalid_arguments",            // schema refusal
-		"error unknown_tool",                 // no such tool
-		"tools.Search: ",                     // the typed section
-		"tools.References: 2 sites by the go/types backend",
-		"Data[\"result\"] is a tools.ReferenceResult with 2 sites",
-		"Toolbox example completed successfully",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("the tour output lacks %q", want)
-		}
-	}
-	if after := len(leftovers()); after != before {
-		t.Errorf("%d sample projects before the tour, %d after: it must remove its own", before, after)
-	}
-}
-
-// The tour writes files, so it takes no workspace and no arguments of its own.
-func TestTourRefusesArgumentsAndTheFlagsOfOtherCommands(t *testing.T) {
-	for _, args := range [][]string{
-		{"tour", "extra"},
-		{"--dir", ".", "tour"},
-		{"--allow", "ls", "tour"},
-	} {
-		out, err := do(t, "", args...)
-		if err == nil || !strings.Contains(err.Error(), "sample project of its own") {
-			t.Errorf("%v: err = %v, want a refusal that names the sample project", args, err)
-		}
-		if out != "" {
-			t.Errorf("%v: printed %q before refusing", args, out)
-		}
-	}
-}
-
-// list names every tool and every parameter of its input schema.
 func TestListShowsEveryToolAndItsParameters(t *testing.T) {
 	out, err := do(t, "", "--dir", t.TempDir(), "list")
 	if err != nil {
@@ -170,7 +46,7 @@ func TestCallReadsKeyValuePairsByTheSchema(t *testing.T) {
 	for _, c := range []struct {
 		tool string
 		args []string
-		want string
+		want string // the input, or the error it fails with
 	}{
 		{"find_symbol", nil, `{}`},
 		{"find_symbol", []string{`{"name":"x"}`}, `{"name":"x"}`},
@@ -178,17 +54,6 @@ func TestCallReadsKeyValuePairsByTheSchema(t *testing.T) {
 		{"find_symbol", []string{"name=Run", "exact=true", "max_results=5"}, `{"exact":true,"max_results":5,"name":"Run"}`},
 		{"run_command", []string{`argv=["ls","-l"]`, "timeout_s=3"}, `{"argv":["ls","-l"],"timeout_s":3}`},
 		{"search_files", []string{`pattern=a b`, "case_sensitive=false"}, `{"case_sensitive":false,"pattern":"a b"}`},
-	} {
-		got, err := inputFor(r, c.tool, c.args)
-		if err != nil || string(got) != c.want {
-			t.Errorf("%s %v: input %s, error %v, want %s", c.tool, c.args, got, err, c.want)
-		}
-	}
-	for _, c := range []struct {
-		tool string
-		args []string
-		want string
-	}{
 		{"find_symbol", []string{"bogus=1"}, `no parameter "bogus"; it takes name, kind, path, exact, max_results`},
 		{"find_symbol", []string{"max_results=x"}, "want an integer"},
 		{"find_symbol", []string{"exact=maybe"}, "want true or false"},
@@ -196,59 +61,62 @@ func TestCallReadsKeyValuePairsByTheSchema(t *testing.T) {
 		{"find_symbol", []string{"name"}, "neither a JSON object nor KEY=VALUE"},
 		{"no_such_tool", []string{"a=b"}, `no tool "no_such_tool"`},
 	} {
-		if _, err := inputFor(r, c.tool, c.args); err == nil || !strings.Contains(err.Error(), c.want) {
-			t.Errorf("%s %v: error %v, want one containing %q", c.tool, c.args, err, c.want)
+		got, err := inputFor(r, c.tool, c.args)
+		if err != nil && !strings.Contains(err.Error(), c.want) || err == nil && string(got) != c.want {
+			t.Errorf("%s %v: input %s, error %v, want %s", c.tool, c.args, got, err, c.want)
+		}
+	}
+	if raw, err := encodeValue("number", "2.5"); err != nil || string(raw) != "2.5" {
+		t.Errorf("a number: %s, %v", raw, err)
+	}
+	if _, err := encodeValue("number", "x"); err == nil {
+		t.Error("a number that is not one was accepted")
+	}
+}
+
+// call runs one tool in --dir and prints what the model would read; --data
+// adds the structured result, and a refused call is a result, not a failure.
+func TestCallRunsOneToolInTheWorkspace(t *testing.T) {
+	dir := testutil.Tree(t, map[string]string{"notes.txt": "one\ntwo\nthree\n"})
+	for _, c := range []struct {
+		args       []string
+		want, none []string
+	}{
+		{[]string{"call", "read_file", "path=notes.txt", "offset=2"}, []string{`$ read_file {"offset":2,"path":"notes.txt"}`, "\n  two\n  three\n"}, []string{"one", "data:"}},
+		{[]string{"--data", "call", "read_file", `{"path":"notes.txt","limit":1}`}, []string{"data: {", `"content"`}, nil},
+		{[]string{"call", "read_file", "path=../notes.txt"}, []string{"error path_not_allowed"}, nil},
+	} {
+		out, err := do(t, "", append([]string{"--dir", dir}, c.args...)...)
+		for _, want := range c.want {
+			if err != nil || !strings.Contains(out, want) {
+				t.Errorf("%v: %v, output lacks %q:\n%s", c.args, err, want, out)
+			}
+		}
+		for _, none := range c.none {
+			if strings.Contains(out, none) {
+				t.Errorf("%v: output has %q:\n%s", c.args, none, out)
+			}
 		}
 	}
 }
 
-// call runs one tool in --dir, prints what the model would read, and with
-// --data the structured result too.
-func TestCallRunsOneToolInTheWorkspace(t *testing.T) {
-	dir := project(t, map[string]string{"notes.txt": "one\ntwo\nthree\n"})
-
-	out, err := do(t, "", "--dir", dir, "call", "read_file", "path=notes.txt", "offset=2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, `$ read_file {"offset":2,"path":"notes.txt"}`) || !strings.Contains(out, "\n  two\n  three\n") ||
-		strings.Contains(out, "one") || strings.Contains(out, "data:") {
-		t.Errorf("read_file from line 2 printed:\n%s", out)
-	}
-
-	out, err = do(t, "", "--dir", dir, "--data", "call", "read_file", `{"path":"notes.txt","limit":1}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "data: {") || !strings.Contains(out, `"content"`) {
-		t.Errorf("--data printed no structured result:\n%s", out)
-	}
-
-	// A refused call is a result, and the program still succeeds.
-	out, err = do(t, "", "--dir", dir, "call", "read_file", "path=../notes.txt")
-	if err != nil || !strings.Contains(out, "error path_not_allowed") {
-		t.Errorf("a path outside --dir: err %v, output:\n%s", err, out)
-	}
-}
-
 // The shell tools are blocked until --allow names a program.
-func TestShellToolsRunOnlyWhatIsAllowed(t *testing.T) {
+func TestTheShellToolsRunOnlyWhatIsAllowed(t *testing.T) {
 	dir := t.TempDir()
-	out, err := do(t, "", "--dir", dir, "call", "execute", "command=echo hi")
-	if err != nil || !strings.Contains(out, "error blocked_by_policy") {
-		t.Errorf("without --allow: err %v, output:\n%s", err, out)
-	}
-	out, err = do(t, "", "--dir", dir, "--allow", "echo,ls", "call", "execute", "command=echo hi")
-	if err != nil || strings.Contains(out, "blocked_by_policy") || !strings.Contains(out, "\n  hi\n") {
-		t.Errorf("with --allow echo: err %v, output:\n%s", err, out)
-	}
-	out, err = do(t, "", "--dir", dir, "--allow", "echo", "call", "execute", "command=ls")
-	if err != nil || !strings.Contains(out, "error blocked_by_policy") {
-		t.Errorf("ls with only echo allowed: err %v, output:\n%s", err, out)
+	for _, c := range []struct {
+		allow, command, want string
+	}{
+		{"", "echo hi", "error blocked_by_policy"},
+		{"echo,ls", "echo hi", "\n  hi\n"},
+		{"echo", "ls", "error blocked_by_policy"},
+	} {
+		if out, err := do(t, "", "--dir", dir, "--allow", c.allow, "call", "execute", "command="+c.command); err != nil || !strings.Contains(out, c.want) {
+			t.Errorf("--allow %q, %s: %v, output lacks %q:\n%s", c.allow, c.command, err, c.want, out)
+		}
 	}
 }
 
-func TestCommandsThatAreWrong(t *testing.T) {
+func TestAWrongCommandIsAnErrorAndHelpPrintsTheUsage(t *testing.T) {
 	for _, c := range []struct {
 		args []string
 		want string
@@ -256,17 +124,21 @@ func TestCommandsThatAreWrong(t *testing.T) {
 		{[]string{"call"}, "call needs a tool name"},
 		{[]string{"nonsense"}, `unknown command "nonsense"`},
 		{[]string{"call", "find_symbol", "bogus=1"}, `no parameter "bogus"`},
+		{[]string{"--bogus"}, "flag provided but not defined"},
 	} {
 		if _, err := do(t, "", append([]string{"--dir", t.TempDir()}, c.args...)...); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%v: error %v, want one containing %q", c.args, err, c.want)
 		}
 	}
+	if out, err := do(t, "", "--help"); !errors.Is(err, flag.ErrHelp) || !strings.HasPrefix(out, "usage: toolbox") {
+		t.Errorf("--help: %v\n%s", err, out)
+	}
 }
 
 // The repl keeps one runner across lines: an error does not end it, quit does,
 // and a file written on one line is found by the lookup on the next.
-func TestReplKeepsOneRunnerAcrossLines(t *testing.T) {
-	dir := project(t, map[string]string{"go.mod": "module example.com/x\n\ngo 1.22\n"})
+func TestTheReplKeepsOneRunnerAcrossLines(t *testing.T) {
+	dir := testutil.Tree(t, map[string]string{"go.mod": "module example.com/x\n\ngo 1.22\n"})
 	input := strings.Join([]string{
 		"find_symbol name=Widget",
 		`write_file {"path":"widget.go","content":"package x\n\n// Widget is new.\ntype Widget struct{}\n"}`,
@@ -274,6 +146,7 @@ func TestReplKeepsOneRunnerAcrossLines(t *testing.T) {
 		"find_symbol bogus=1",
 		"no_such_tool",
 		"",
+		"list",
 		"list_files",
 		"quit",
 		"list_files path=never-reached",
@@ -282,14 +155,8 @@ func TestReplKeepsOneRunnerAcrossLines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		"no symbols matched",
-		"Wrote ",
-		"widget.go:4  type  type Widget struct",
-		`find_symbol has no parameter "bogus"`,
-		"error unknown_tool",
-		"\n  widget.go\n",
-	} {
+	for _, want := range []string{"no symbols matched", "Wrote ", "widget.go:4  type  type Widget struct",
+		`find_symbol has no parameter "bogus"`, "error unknown_tool", "\nrun_command\n", "\n  widget.go\n"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the repl output lacks %q:\n%s", want, out)
 		}
@@ -299,10 +166,8 @@ func TestReplKeepsOneRunnerAcrossLines(t *testing.T) {
 	}
 }
 
-// The repl ends at the end of its input, as it does at quit.
-func TestReplEndsAtTheEndOfInput(t *testing.T) {
-	out, err := do(t, "list_files\n", "--dir", t.TempDir(), "repl")
-	if err != nil || !strings.Contains(out, "$ list_files {}") {
+func TestTheReplEndsAtTheEndOfItsInput(t *testing.T) {
+	if out, err := do(t, "list_files\n", "--dir", t.TempDir(), "repl"); err != nil || !strings.Contains(out, "$ list_files {}") {
 		t.Errorf("err %v, output:\n%s", err, out)
 	}
 }

@@ -2,6 +2,9 @@ package toml
 
 import (
 	"errors"
+	"fmt"
+	"math"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -15,289 +18,201 @@ func mustParse(t *testing.T, src string) (*Table, []Diagnostic) {
 	return tbl, diags
 }
 
-func str(t *testing.T, tbl *Table, key string) string {
+func sub(t *testing.T, tbl *Table, path ...string) *Table {
 	t.Helper()
-	v, ok := tbl.Get(key)
-	if !ok {
-		t.Fatalf("key %q missing", key)
+	for _, p := range path {
+		next, ok := tbl.Sub(p)
+		if !ok {
+			t.Fatalf("sub-table %q of %q missing", p, tbl.Name())
+		}
+		tbl = next
 	}
-	if v.Kind != KindString {
-		t.Fatalf("key %q is kind %v, want string", key, v.Kind)
-	}
-	return v.Str
+	return tbl
 }
 
-func TestTOMLParsesStringsBoolsIntegersAndStringArrays(t *testing.T) {
+func TestParseTOMLReadsTheSupportedValueForms(t *testing.T) {
 	tbl, diags := mustParse(t, `
 name = "reviewer"
-disable_model_invocation = true
+hash = "counts # of open PRs"  # trailing note
+equals = "set x = 1"
+basic = "a\tb\n\u00e9"
+literal = 'a\tb'
+on = true
+off = false
 retries = -12
 grouped = 1_000
-archetypes = ["coder", "reviewer"]
-`)
-	if len(diags) != 0 {
-		t.Fatalf("unexpected diagnostics: %v", diags)
-	}
-	if got := str(t, tbl, "name"); got != "reviewer" {
-		t.Errorf("name = %q", got)
-	}
-	if v, _ := tbl.Get("disable_model_invocation"); v.Kind != KindBool || !v.Bool {
-		t.Errorf("disable_model_invocation = %+v", v)
-	}
-	if v, _ := tbl.Get("retries"); v.Kind != KindInt || v.Int != -12 {
-		t.Errorf("retries = %+v", v)
-	}
-	if v, _ := tbl.Get("grouped"); v.Int != 1000 {
-		t.Errorf("grouped = %+v", v)
-	}
-	v, _ := tbl.Get("archetypes")
-	if v.Kind != KindStringArray || strings.Join(v.Array, ",") != "coder,reviewer" {
-		t.Errorf("archetypes = %+v", v)
-	}
-}
-
-// A '#' inside a string is data, not a comment. The obvious implementation —
-// strip everything after the first '#' on the line, then split on '=' — reads
-// this description as `counts ` and truncates the only field REQ-SKILL-10
-// treats as mandatory.
-func TestTOMLHashInsideAStringIsNotAComment(t *testing.T) {
-	tbl, _ := mustParse(t, `description = "counts # of open PRs"  # trailing note`)
-	if got := str(t, tbl, "description"); got != "counts # of open PRs" {
-		t.Fatalf("description = %q", got)
-	}
-}
-
-func TestTOMLEqualsInsideAStringIsNotASeparator(t *testing.T) {
-	tbl, _ := mustParse(t, `description = "set x = 1"`)
-	if got := str(t, tbl, "description"); got != "set x = 1" {
-		t.Fatalf("description = %q", got)
-	}
-}
-
-func TestTOMLArrayMaySpanLinesAndCarryATrailingComma(t *testing.T) {
-	tbl, diags := mustParse(t, `
+plain = 30
+f1 = 30.0
+f2 = 6.626e-34
+f3 = 1_000.5
+f4 = 1e3
 archetypes = [
   "coder",   # the default
   "planner",
 ]
+empty = []
 `)
 	if len(diags) != 0 {
 		t.Fatalf("unexpected diagnostics: %v", diags)
 	}
-	v, _ := tbl.Get("archetypes")
-	if strings.Join(v.Array, "|") != "coder|planner" {
-		t.Fatalf("archetypes = %+v", v)
+	for key, want := range map[string]Value{
+		"name":       {Kind: KindString, Str: "reviewer"},
+		"hash":       {Kind: KindString, Str: "counts # of open PRs"},
+		"equals":     {Kind: KindString, Str: "set x = 1"},
+		"basic":      {Kind: KindString, Str: "a\tb\né"},
+		"literal":    {Kind: KindString, Str: `a\tb`},
+		"on":         {Kind: KindBool, Bool: true},
+		"off":        {Kind: KindBool},
+		"retries":    {Kind: KindInt, Int: -12},
+		"grouped":    {Kind: KindInt, Int: 1000},
+		"plain":      {Kind: KindInt, Int: 30},
+		"f1":         {Kind: KindFloat, Float: 30},
+		"f2":         {Kind: KindFloat, Float: 6.626e-34},
+		"f3":         {Kind: KindFloat, Float: 1000.5},
+		"f4":         {Kind: KindFloat, Float: 1000},
+		"archetypes": {Kind: KindStringArray, Array: []string{"coder", "planner"}},
+		"empty":      {Kind: KindStringArray, Array: []string{}},
+	} {
+		got, ok := tbl.Get(key)
+		if !ok {
+			t.Errorf("%s missing", key)
+			continue
+		}
+		got.Line = 0
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s = %+v, want %+v", key, got, want)
+		}
+	}
+	tbl, _ = mustParse(t, "a = -inf\nb = nan\n")
+	if v, _ := tbl.Get("a"); v.Kind != KindFloat || !math.IsInf(v.Float, -1) {
+		t.Errorf("a = %+v, want -inf", v)
+	}
+	if v, _ := tbl.Get("b"); v.Kind != KindFloat || !math.IsNaN(v.Float) {
+		t.Errorf("b = %+v, want nan", v)
 	}
 }
 
-func TestTOMLSectionsAndSubSectionsNest(t *testing.T) {
+func TestParseTOMLNestsHeadersAndDottedKeys(t *testing.T) {
 	tbl, _ := mustParse(t, `
 name = "x"
+skill.dotted.key = "d"
 
 [skill.tools]
 module = "example.com/m"
-factory = "New"
 
 [skill.session]
 max_turns_add = 5
 `)
-	skill, ok := tbl.Sub("skill")
-	if !ok {
-		t.Fatal("[skill] missing")
+	if tbl.Name() != "" || tbl.Line() != 0 || tbl.Qualify("k") != "k" {
+		t.Errorf("root: name %q line %d qualify %q", tbl.Name(), tbl.Line(), tbl.Qualify("k"))
 	}
-	tools, ok := skill.Sub("tools")
-	if !ok {
-		t.Fatal("[skill.tools] missing")
+	skill := sub(t, tbl, "skill")
+	if got := strings.Join(skill.SubTables(), ","); got != "dotted,tools,session" {
+		t.Errorf("SubTables() = %q, want written order", got)
 	}
-	if got := str(t, tools, "module"); got != "example.com/m" {
-		t.Errorf("module = %q", got)
+	if v, _ := sub(t, skill, "dotted").Get("key"); v.Str != "d" {
+		t.Errorf("skill.dotted.key = %+v", v)
 	}
-	sess, _ := skill.Sub("session")
-	if v, _ := sess.Get("max_turns_add"); v.Int != 5 {
+	tools := sub(t, skill, "tools")
+	if tools.Name() != "skill.tools" || tools.Qualify("module") != "skill.tools.module" {
+		t.Errorf("name %q qualify %q", tools.Name(), tools.Qualify("module"))
+	}
+	if v, _ := tools.Get("module"); v.Str != "example.com/m" {
+		t.Errorf("module = %+v", v)
+	}
+	if v, _ := sub(t, skill, "session").Get("max_turns_add"); v.Int != 5 {
 		t.Errorf("max_turns_add = %+v", v)
 	}
-	if tools.Name() != "skill.tools" {
-		t.Errorf("qualified name = %q", tools.Name())
-	}
 }
 
-func TestTOMLDottedKeyWritesIntoTheNestedTable(t *testing.T) {
-	tbl, _ := mustParse(t, `skill.tools.module = "example.com/m"`)
-	skill, _ := tbl.Sub("skill")
-	tools, ok := skill.Sub("tools")
-	if !ok {
-		t.Fatal("skill.tools missing")
-	}
-	if got := str(t, tools, "module"); got != "example.com/m" {
-		t.Fatalf("module = %q", got)
-	}
-}
-
-// An unsupported value form loses THAT KEY and nothing else. A parser that
-// returned an error here would delete a whole skill over a field it does not
-// even read, which is the failure REQ-SKILL-10 exists to prevent.
-func TestTOMLUnsupportedValueSkipsOnlyItsOwnKey(t *testing.T) {
-	for _, tc := range []struct {
-		name, src, want string
-	}{
+func TestParseTOMLSkipsAnUnsupportedValueWithAWarning(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
 		{"datetime", `built = 1979-05-27T07:32:00Z`, "dates"},
+		{"local date", `built = 1979-05-27`, "dates"},
 		{"inline table", `t = { a = "b" }`, "inline tables"},
-		{"multi-line string", "s = \"\"\"a\nb\"\"\"", "multi-line"},
+		{"multi-line basic string", "s = \"\"\"a\nb\"\"\"", "multi-line"},
+		{"multi-line literal string", "s = '''a\nb'''", "multi-line"},
 		{"hex integer", `mask = 0xdeadbeef`, "decimal"},
+		{"octal integer", `mask = 0o755`, "decimal"},
+		{"integer out of range", `big = 99999999999999999999`, "unrecognized value"},
 		{"mixed array", `a = ["x", 3]`, "arrays of strings"},
 		{"nested array", `a = [["x"]]`, "arrays of strings"},
+		{"array with a bad element", `a = ["""x"""]`, "multi-line"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tbl, diags := mustParse(t, tc.src+"\ndescription = \"survives\"\n")
-			if got := str(t, tbl, "description"); got != "survives" {
-				t.Fatalf("later key lost: %q", got)
+			if got := tbl.Keys(); len(got) != 1 || got[0] != "description" {
+				t.Fatalf("Keys() = %v, want only the later key", got)
 			}
-			if len(diags) != 1 {
-				t.Fatalf("diagnostics = %v, want exactly one", diags)
-			}
-			if !strings.Contains(diags[0].Message, tc.want) {
-				t.Fatalf("diagnostic %q does not mention %q", diags[0].Message, tc.want)
-			}
-			if diags[0].Severity != SeverityWarning {
-				t.Fatalf("severity = %q, want warning", diags[0].Severity)
+			if len(diags) != 1 || diags[0].Severity != SeverityWarning || diags[0].Line != 1 ||
+				!strings.Contains(diags[0].Message, tc.want) {
+				t.Fatalf("diagnostics = %+v, want one line-1 warning mentioning %q", diags, tc.want)
 			}
 		})
 	}
 }
 
-// TestTOMLParsesFloats: REQ-MCP-CLIENT-07 writes its default as `30.0`, and a
-// reader that rejected floats dropped the requirement's own example.
-func TestTOMLParsesFloats(t *testing.T) {
-	tbl, diags := mustParse(t, "a = 30.0\nb = 2.5\nc = 6.626e-34\nd = 1_000.5\ne = -inf\nf = 1e3\n")
-	if len(diags) != 0 {
-		t.Fatalf("diagnostics = %v", diags)
-	}
-	for key, want := range map[string]float64{"a": 30, "b": 2.5, "c": 6.626e-34, "d": 1000.5, "f": 1000} {
-		v, ok := tbl.Get(key)
-		if !ok || v.Kind != KindFloat || v.Float != want {
-			t.Fatalf("%s = %+v, want float %v", key, v, want)
-		}
-	}
-	if v, _ := tbl.Get("e"); v.Kind != KindFloat || v.Float > -1e308 {
-		t.Fatalf("e = %+v, want -inf", v)
-	}
-	// An integer is still an integer: nothing here widens `30` to a float.
-	tbl, _ = mustParse(t, "n = 30\n")
-	if v, _ := tbl.Get("n"); v.Kind != KindInt {
-		t.Fatalf("n = %+v, want int", v)
-	}
-}
-
-func TestTOMLStructuralFailuresAreErrorsWithALineNumber(t *testing.T) {
+func TestParseTOMLReturnsASyntaxErrorWithItsLine(t *testing.T) {
 	for _, tc := range []struct {
 		name, src string
 		line      int
 	}{
-		// [[servers]] used to be here: an array of tables was a hard error
-		// until REQ-MCP-CLIENT-07's [[mcp.servers]] needed one. It is now
-		// parsed, and arraytable_test.go covers it.
 		{"array header not closed", "name = \"a\"\n[[servers]\n", 2},
+		{"empty array header", "[[]]\n", 1},
 		{"unterminated string", "name = \"a\ndescription = \"b\"\n", 1},
 		{"unterminated array", "a = [\"x\",\n", 1},
 		{"missing equals", "name \"a\"\n", 1},
 		{"garbage after value", "name = \"a\" oops\n", 1},
 		{"unclosed header", "[skill\n", 1},
+		{"nesting past the depth bound", "a = " + strings.Repeat("[", 200_000), 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := ParseTOML([]byte(tc.src))
-			if err == nil {
-				t.Fatal("want error, got nil")
-			}
+			tbl, _, err := ParseTOML([]byte(tc.src))
 			var se *SyntaxError
-			if !errors.As(err, &se) {
-				t.Fatalf("error %v is not a *SyntaxError", err)
+			if !errors.As(err, &se) || tbl != nil {
+				t.Fatalf("got (%v, %v), want a *SyntaxError and no table", tbl, err)
 			}
-			if se.Line != tc.line {
-				t.Fatalf("line = %d, want %d (%v)", se.Line, tc.line, err)
+			if se.Line != tc.line || se.Error() != fmt.Sprintf("line %d: %s", tc.line, se.Msg) {
+				t.Fatalf("line = %d, Error() = %q, want line %d", se.Line, se.Error(), tc.line)
 			}
 		})
 	}
 }
 
-func TestTOMLBasicStringProcessesEscapesAndLiteralStringDoesNot(t *testing.T) {
-	tbl, _ := mustParse(t, "basic = \"a\\tb\\n\\u00e9\"\nliteral = 'a\\tb'\n")
-	if got := str(t, tbl, "basic"); got != "a\tb\né" {
-		t.Errorf("basic = %q", got)
+func TestParseTOMLDuplicateKeyWarnsAndTheLastValueWins(t *testing.T) {
+	tbl, diags := mustParse(t, "[s]\nd = \"first\"\nd = \"second\"\n")
+	s := sub(t, tbl, "s")
+	if v, _ := s.Get("d"); v.Str != "second" {
+		t.Fatalf("d = %q", v.Str)
 	}
-	if got := str(t, tbl, "literal"); got != `a\tb` {
-		t.Errorf("literal = %q", got)
+	if len(s.Keys()) != 1 {
+		t.Fatalf("Keys() = %v, want the key recorded once", s.Keys())
 	}
-}
-
-func TestTOMLDuplicateKeyWarnsAndTheLastValueWins(t *testing.T) {
-	tbl, diags := mustParse(t, "description = \"first\"\ndescription = \"second\"\n")
-	if got := str(t, tbl, "description"); got != "second" {
-		t.Fatalf("description = %q", got)
-	}
-	if len(diags) != 1 || !strings.Contains(diags[0].Message, "duplicate") {
-		t.Fatalf("diagnostics = %v", diags)
-	}
-	if n := len(tbl.Keys()); n != 1 {
-		t.Fatalf("Keys() = %v, want the key recorded once", tbl.Keys())
+	if len(diags) != 1 || diags[0].Line != 3 || !strings.Contains(diags[0].Message, `duplicate key "s.d"`) {
+		t.Fatalf("diagnostics = %+v", diags)
 	}
 }
 
-func TestTOMLLeadingBOMIsNotPartOfTheFirstKey(t *testing.T) {
+func TestParseTOMLStripsALeadingBOM(t *testing.T) {
 	tbl, _ := mustParse(t, "\ufeffdescription = \"x\"")
 	if _, ok := tbl.Get("description"); !ok {
 		t.Fatalf("keys = %v; the BOM was read as part of the key", tbl.Keys())
 	}
 }
 
-func TestTOMLKeyOrderFollowsTheFileNotTheMap(t *testing.T) {
+func TestParseTOMLKeepsKeysInWrittenOrder(t *testing.T) {
 	tbl, _ := mustParse(t, "zulu = \"1\"\nalpha = \"2\"\nmike = \"3\"\n")
 	if got := strings.Join(tbl.Keys(), ","); got != "zulu,alpha,mike" {
 		t.Fatalf("Keys() = %q, want written order", got)
 	}
 }
 
-// A manifest is untrusted input, and the parser recurses once per '['. Without
-// a depth bound the stack is whatever the file says it is; with one (go-toml's,
-// 10 000 levels), a file that nests past the bound is a SyntaxError on the
-// line that opened it, and the process is still standing to report it.
-func TestTOMLArrayNestingIsBoundedNotRecursedWithoutLimit(t *testing.T) {
-	src := "a = " + strings.Repeat("[", 200_000)
-	_, _, err := ParseTOML([]byte(src))
-	if err == nil {
-		t.Fatal("want an error, got nil")
-	}
-	var se *SyntaxError
-	if !errors.As(err, &se) {
-		t.Fatalf("error %v is not a *SyntaxError", err)
-	}
-	if !strings.Contains(se.Msg, "nested") || se.Line != 1 {
-		t.Fatalf("error = %v, want the nesting bound named on line 1", err)
-	}
-
-	// The bound is on DEPTH, not on the presence of nesting: a nested array
-	// within it is still the documented "skipped with a diagnostic".
-	tbl, diags, err := ParseTOML([]byte("a = [[\"x\"]]\nb = \"kept\"\n"))
-	if err != nil {
-		t.Fatalf("a shallow nested array must still parse: %v", err)
-	}
-	if _, ok := tbl.Get("a"); ok {
-		t.Fatal("a nested array is not a supported value")
-	}
-	if len(diags) != 1 || tbl.vals["b"].Str != "kept" {
-		t.Fatalf("diags = %v, b = %+v", diags, tbl.vals["b"])
-	}
-}
-
-// Line numbers are what a manifest diagnostic points the author at: every
-// value, table header and skipped-key warning carries the line it was
-// written on.
-func TestTOMLValuesTablesAndDiagnosticsCarryTheirLine(t *testing.T) {
+func TestParseTOMLRecordsTheLineOfValuesTablesAndWarnings(t *testing.T) {
 	tbl, diags := mustParse(t, "# c\nname = \"x\"\n\n[skill.tools]\nmodule = \"m\"\nwhen = 1979-05-27\n")
 	if v, _ := tbl.Get("name"); v.Line != 2 {
 		t.Errorf("name line = %d, want 2", v.Line)
 	}
-	skill, _ := tbl.Sub("skill")
-	tools, _ := skill.Sub("tools")
+	tools := sub(t, tbl, "skill", "tools")
 	if tools.Line() != 4 {
 		t.Errorf("[skill.tools] line = %d, want 4", tools.Line())
 	}
@@ -306,5 +221,65 @@ func TestTOMLValuesTablesAndDiagnosticsCarryTheirLine(t *testing.T) {
 	}
 	if len(diags) != 1 || diags[0].Line != 6 || !strings.Contains(diags[0].Message, `"skill.tools.when"`) {
 		t.Errorf("diags = %+v, want one warning on line 6 naming skill.tools.when", diags)
+	}
+}
+
+func TestParseTOMLArraysOfTablesKeepDocumentOrderAndTheirOwnKeys(t *testing.T) {
+	root, _ := mustParse(t, `
+[mcp]
+enabled = true
+
+[[mcp.servers]]
+name = "github"
+
+[mcp.servers.env]
+TOKEN = "a"
+
+[[mcp.servers]]
+name = "db"
+allow_sampling = true
+
+[mcp.servers.env]
+TOKEN = "b"
+
+[[mcp.tools]]
+`)
+	mcp := sub(t, root, "mcp")
+	if v, ok := mcp.Get("enabled"); !ok || !v.Bool {
+		t.Fatal("a value beside an array of tables must still be readable")
+	}
+	if got := strings.Join(mcp.ArrayKeys(), ","); got != "servers,tools" {
+		t.Fatalf("ArrayKeys() = %q", got)
+	}
+	servers, ok := mcp.Array("servers")
+	if !ok || len(servers) != 2 {
+		t.Fatalf("servers = %d, want 2", len(servers))
+	}
+	for i, want := range []struct{ name, token string }{{"github", "a"}, {"db", "b"}} {
+		if v, _ := servers[i].Get("name"); v.Str != want.name {
+			t.Errorf("servers[%d].name = %q, want %q", i, v.Str, want.name)
+		}
+		if v, _ := sub(t, servers[i], "env").Get("TOKEN"); v.Str != want.token {
+			t.Errorf("servers[%d].env.TOKEN = %q, want %q", i, v.Str, want.token)
+		}
+		if servers[i].Name() != "mcp.servers" {
+			t.Errorf("servers[%d].Name() = %q", i, servers[i].Name())
+		}
+	}
+	if _, leaked := servers[0].Get("allow_sampling"); leaked {
+		t.Fatal("a key from the second element leaked into the first")
+	}
+	if _, leaked := mcp.Sub("servers"); leaked {
+		t.Fatal("[mcp.servers.env] created a sub-table beside the array instead of under its element")
+	}
+}
+
+func TestNilTableLookupsFindNothing(t *testing.T) {
+	var tbl *Table
+	_, okGet := tbl.Get("k")
+	_, okSub := tbl.Sub("k")
+	_, okArr := tbl.Array("k")
+	if okGet || okSub || okArr || tbl.ArrayKeys() != nil {
+		t.Fatal("a nil table must answer every lookup with not found")
 	}
 }

@@ -1,106 +1,75 @@
-package codemode_test
+package codemode
 
 import (
 	"context"
-	"fmt"
-	"math/rand"
+	"strings"
 	"testing"
 
 	"go.starlark.net/starlark"
 
-	"github.com/agent-fox-dev/agentkit-go/codemode"
 	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
-func failing(code, detail string) func(core.ToolUseBlock) (core.ToolResult, error) {
-	return func(core.ToolUseBlock) (core.ToolResult, error) { return core.ErrResult(code, detail), nil }
-}
-
-// TS-08-20: a failed call returns a ToolError; nothing is raised and the
-// script carries on.
-func TestToolErrorIsReturnedNotRaised_TS08_20(t *testing.T) {
-	fc := &fakeCaller{fn: map[string]func(core.ToolUseBlock) (core.ToolResult, error){"lookup": failing("not_found", "item missing")}}
-	res := run(t, context.Background(), codemode.Options{}, fc, `
+// A failed call returns a ToolError instead of raising, and the script
+// carries on: a falsy value with ok False, is_error True, the code, the detail
+// and the tool's data, as attributes or dict keys.
+func TestAFailedCallIsAToolErrorValue(t *testing.T) {
+	fc := caller(map[string]answer{"lookup": func(core.ToolUseBlock) (core.ToolResult, error) {
+		r := core.ErrResult("not_found", "item missing")
+		r.Data = map[string]any{"exit_code": 2}
+		return r, nil
+	}})
+	res := runScript(t, context.Background(), Options{}, fc, `
+err = lookup(id=1)
 def main():
-    err = lookup(id=1)
     after = "continued"
-    return [type(err), after, err.ok, bool(err)]
+    return [type(err), after, err.ok, err.is_error, bool(err), err.error, err.detail, err.data["exit_code"],
+            err["error"], err["detail"], err["ok"], err["is_error"], dir(err), str(err), hasattr(err, "other")]
 `, leaf("lookup"))
-	if got := rv(t, res); got != `["tool_error","continued",false,false]` {
+	want := `["tool_error","continued",false,true,false,"not_found","item missing",2,"not_found","item missing",false,true,` +
+		`["data","detail","error","is_error","ok"],"tool_error(error=\"not_found\", detail=\"item missing\")",false]`
+	if got := rv(t, res); got != want {
+		t.Fatalf("return value = %s\nwant %s", got, want)
+	}
+	for _, script := range []string{"e = lookup()\nx = e[\"nope\"]\n", "e = lookup()\nx = e[1]\n", "x = {lookup(): 1}\n"} {
+		if r := runScript(t, context.Background(), Options{}, fc, script, leaf("lookup")); r.OK {
+			t.Fatalf("%q succeeded", script)
+		}
+	}
+}
+
+// A ToolError's data is None without Data and the Starlark form of Data with
+// it; returned from a script, it is a JSON object.
+func TestAToolErrorCarriesTheResultsData(t *testing.T) {
+	if d, _ := NewToolError(core.ErrResult("c", "d")).Attr("data"); d != starlark.None {
+		t.Fatalf("data = %v, want None", d)
+	}
+	r := core.ErrResult("c", "d")
+	r.Data = map[string]any{"output": "partial"}
+	if d, _ := NewToolError(r).Attr("data"); d.String() != `{"output": "partial"}` {
+		t.Fatalf("data = %v", d)
+	}
+	fc := caller(map[string]answer{"bad": failing("nope", "gone")})
+	if got := rv(t, runScript(t, context.Background(), Options{}, fc, "result = bad()\n", leaf("bad"))); got !=
+		`{"data":null,"detail":"gone","error":"nope","is_error":true,"ok":false}` {
 		t.Fatalf("return value = %s", got)
 	}
 }
 
-// TS-08-21: for any failed result, the ToolError carries its code, detail and
-// data, with ok False and is_error True.
-func TestToolErrorAttributes_TS08_21(t *testing.T) {
-	r := rand.New(rand.NewSource(21))
-	for i := range 50 {
-		tr := core.ErrResult(fmt.Sprintf("code_%d", r.Intn(100)), fmt.Sprintf("detail %d é", i))
-		if r.Intn(2) == 0 {
-			tr.Data = map[string]any{"exit_code": r.Intn(5), "output": "partial"}
-		}
-		te := codemode.NewToolError(tr)
-		if te.Type() != "tool_error" {
-			t.Fatalf("type = %s", te.Type())
-		}
-		attr := func(name string) starlark.Value {
-			v, err := te.Attr(name)
-			if err != nil || v == nil {
-				t.Fatalf("attr %s: %v, %v", name, v, err)
-			}
-			return v
-		}
-		if attr("ok") != starlark.False || attr("is_error") != starlark.True ||
-			attr("error") != starlark.String(tr.Error) || attr("detail") != starlark.String(tr.Detail) {
-			t.Fatalf("attributes of %+v wrong", tr)
-		}
-		data := attr("data")
-		if tr.Data == nil && data != starlark.None {
-			t.Fatalf("data = %v, want None", data)
-		}
-		if tr.Data != nil {
-			d, ok := data.(*starlark.Dict)
-			if !ok {
-				t.Fatalf("data = %v", data)
-			}
-			if v, found, _ := d.Get(starlark.String("output")); !found || v != starlark.String("partial") {
-				t.Fatalf("data.output = %v", v)
-			}
-		}
-	}
-}
-
-// TS-08-22: a ToolError can be indexed like a dict.
-func TestToolErrorIndexing_TS08_22(t *testing.T) {
-	fc := &fakeCaller{fn: map[string]func(core.ToolUseBlock) (core.ToolResult, error){"failing_tool": failing("failed", "detail msg")}}
-	res := run(t, context.Background(), codemode.Options{}, fc, `
-def main():
-    e = failing_tool()
-    return [e["error"], e["detail"], e["ok"], e["is_error"], e.get("error") if hasattr(e, "get") else e["error"]]
-`, leaf("failing_tool"))
-	if got := rv(t, res); got != `["failed","detail msg",false,true,"failed"]` {
-		t.Fatalf("return value = %s", got)
-	}
-	bad := run(t, context.Background(), codemode.Options{}, fc, "e = failing_tool()\nx = e[\"nope\"]\n", leaf("failing_tool"))
-	if bad.OK {
-		t.Fatal("indexing an unknown key succeeded")
-	}
-}
-
-// TS-08-23: is_error is True for a ToolError and False for anything else.
-func TestToolErrorIsErrorHelper_TS08_23(t *testing.T) {
-	fc := &fakeCaller{fn: map[string]func(core.ToolUseBlock) (core.ToolResult, error){
-		"failing_tool": failing("failed", "x"),
-		"ok_tool": func(core.ToolUseBlock) (core.ToolResult, error) {
-			return core.OKResult(map[string]any{"error": "x"}), nil
-		},
-	}}
-	res := run(t, context.Background(), codemode.Options{}, fc, `
-def main():
-    return [is_error(failing_tool()), is_error({"error": "mock"}), is_error(None), is_error(123), is_error(ok_tool())]
-`, leaf("failing_tool"), leaf("ok_tool"))
+// is_error is True for a ToolError and False for anything else, a successful
+// result that happens to have an error key included.
+func TestIsErrorRecognisesOnlyAToolError(t *testing.T) {
+	fc := caller(map[string]answer{"failing_tool": failing("failed", "x"), "ok_tool": func(core.ToolUseBlock) (core.ToolResult, error) {
+		return core.OKResult(map[string]any{"error": "x"}), nil
+	}})
+	res := runScript(t, context.Background(), Options{}, fc,
+		`result = [is_error(failing_tool()), is_error({"error": "mock"}), is_error(None), is_error(123), is_error(ok_tool())]`,
+		leaf("failing_tool"), leaf("ok_tool"))
 	if got := rv(t, res); got != `[true,false,false,false,false]` {
 		t.Fatalf("return value = %s", got)
+	}
+	if res := runScript(t, context.Background(), Options{}, fc, "is_error()\n"); res.Error != "runtime_error" ||
+		!strings.Contains(res.Detail, "is_error: got 0 arguments") {
+		t.Fatalf("is_error(): %+v", res)
 	}
 }

@@ -2,5 +2,5 @@
 
 package agent
 
-// wantOutlineBackend is TS-13-15's expectation in a cgo-off build.
+// wantOutlineBackend is the backend Hello names in a build without cgo.
 const wantOutlineBackend = "none"

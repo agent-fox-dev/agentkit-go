@@ -1,218 +1,138 @@
 package confine
 
 import (
-	"fmt"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/agent-fox-dev/agentkit-go/sandbox"
 )
 
-// resolved is p with symlinks resolved, or "" when it does not exist.
-func resolved(t *testing.T, p string) string {
-	t.Helper()
-	r, err := filepath.EvalSymlinks(p)
-	if err != nil {
-		return ""
-	}
-	return r
-}
-
-// existing is the resolved, duplicate-free members of paths that exist.
-func existing(t *testing.T, paths []string, seen map[string]bool) []string {
-	t.Helper()
-	var out []string
-	for _, p := range paths {
-		if r := resolved(t, p); r != "" && !seen[r] {
-			seen[r] = true
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
-func mkdirs(t *testing.T, n int) []string {
-	t.Helper()
-	out := make([]string, n)
-	for i := range out {
-		out[i] = t.TempDir()
-	}
-	return out
-}
-
-// TS-15-1: the rule builder grants every right beneath the writable roots,
-// read and execute on the system and --landlock-ro roots, read only on /proc,
-// read and write on the device files, and nothing else. 15-REQ-1.1,
-// 15-REQ-1.2.
-func TestRuleRights_TS15_1(t *testing.T) {
-	d := mkdirs(t, 5)
-	w, h, tmp, r, o := d[0], d[1], d[2], d[3], d[4]
-	in := Inputs{Workdir: w, Env: []string{"HOME=" + h, "TMPDIR=" + tmp}, RW: []string{r}, RO: []string{o}, Mode: sandbox.NetworkUnrestricted}
-	for _, abi := range []int{2, 3, 4} {
-		p, err := buildRules(in, abi)
-		if err != nil {
-			t.Fatalf("ABI %d: %v", abi, err)
-		}
-		seen := map[string]bool{}
-		roots := existing(t, []string{w, h, tmp, r}, seen)
-		devices := existing(t, deviceFiles, seen)
-		system := existing(t, systemDirs, seen)
-		ro := existing(t, []string{o}, seen)
-		proc := existing(t, []string{"/proc"}, seen)
-		if want := slices.Concat(roots, devices); !slices.Equal(p.writable, want) {
-			t.Errorf("ABI %d: Writable %v, want %v", abi, p.writable, want)
-		}
-		if want := slices.Concat(system, ro, proc); !slices.Equal(p.readOnly, want) {
-			t.Errorf("ABI %d: ReadOnly %v, want %v", abi, p.readOnly, want)
-		}
-		full := accExecute | accWriteFile | accReadFile | accReadDir | accRemoveDir | accRemoveFile | accMakeChar |
-			accMakeDir | accMakeReg | accMakeSock | accMakeFifo | accMakeBlock | accMakeSym | accRefer
-		if abi >= 3 {
-			full |= accTruncate
-		}
-		devAccess := accReadFile | accWriteFile
-		if abi >= 3 {
-			devAccess |= accTruncate
-		}
-		want := map[string]access{}
-		for _, p := range roots {
-			want[p] = full
-		}
-		for _, p := range slices.Concat(system, ro) {
-			want[p] = accReadFile | accReadDir | accExecute
-		}
-		for _, p := range proc {
-			want[p] = accReadFile | accReadDir
-		}
-		for _, p := range devices {
-			want[p] = devAccess
-		}
-		if len(p.rules) != len(want) {
-			t.Errorf("ABI %d: %d rules, want %d", abi, len(p.rules), len(want))
-		}
-		for _, ru := range p.rules {
-			acc, ok := want[ru.path]
-			if !ok {
-				t.Errorf("ABI %d: a rule names %s", abi, ru.path)
-				continue
-			}
-			if ru.access != acc {
-				t.Errorf("ABI %d: rule %s grants %#x, want %#x", abi, ru.path, ru.access, acc)
+// The writable roots get every right of the ABI, the system and
+// --landlock-ro roots read and execute, /proc read only and the device files
+// read and write (and truncate from ABI 3), in that order.
+func TestBuildRulesGrantsEachRootItsRightsInOrder(t *testing.T) {
+	d := dirs(t, "W", "H", "T", "R", "O")
+	in := Inputs{Workdir: d["W"], Env: []string{"HOME=" + d["H"], "TMPDIR=" + d["T"]}, RW: []string{d["R"]}, RO: []string{d["O"]}}
+	abi1 := accExecute | accWriteFile | accReadFile | accReadDir | accRemoveDir | accRemoveFile | accMakeChar |
+		accMakeDir | accMakeReg | accMakeSock | accMakeFifo | accMakeBlock | accMakeSym
+	roots, rx := resolved(d["W"], d["H"], d["T"], d["R"]), resolved(append(slices.Clone(systemDirs), d["O"])...)
+	proc, devices := resolved("/proc"), resolved(deviceFiles...)
+	for _, c := range []struct {
+		abi       int
+		full, dev access
+	}{
+		{2, abi1 | accRefer, accReadFile | accWriteFile},
+		{3, abi1 | accRefer | accTruncate, accReadFile | accWriteFile | accTruncate},
+		{4, abi1 | accRefer | accTruncate, accReadFile | accWriteFile | accTruncate},
+	} {
+		var want []rule
+		for _, g := range []struct {
+			paths []string
+			acc   access
+		}{{roots, c.full}, {rx, accReadFile | accReadDir | accExecute}, {proc, accReadFile | accReadDir}, {devices, c.dev}} {
+			for _, path := range g.paths {
+				want = append(want, rule{path, g.acc})
 			}
 		}
-		if fullFS(abi) != full {
-			t.Errorf("fullFS(%d) = %#x, want %#x", abi, fullFS(abi), full)
+		p, err := buildRules(in, c.abi)
+		if w, r := slices.Concat(roots, devices), slices.Concat(rx, proc); err != nil || !slices.Equal(p.rules, want) ||
+			!slices.Equal(p.writable, w) || !slices.Equal(p.readOnly, r) {
+			t.Errorf("ABI %d: %v, rules %v, writable %v, read-only %v; want %v, %v, %v", c.abi, err, p.rules, p.writable, p.readOnly, want, w, r)
 		}
 	}
 }
 
-// replaceLists extends the system and device lists for the test.
-func replaceLists(t *testing.T, sys, dev []string) {
-	t.Helper()
-	oldS, oldD := systemDirs, deviceFiles
-	systemDirs, deviceFiles = slices.Concat(oldS, sys), slices.Concat(oldD, dev)
-	t.Cleanup(func() { systemDirs, deviceFiles = oldS, oldD })
-}
-
-// TS-15-4 (building half): missing system, device and flag paths are
-// skipped, only the flag paths are noted, and the rest still applies.
-// 15-REQ-1.5. The applying half is in setup_linux_test.go.
-func TestMissingPathsSkipped_TS15_4(t *testing.T) {
-	replaceLists(t, []string{"/nonexistent-agentkit-sys"}, []string{"/dev/nonexistent-agentkit"})
-	base := t.TempDir()
-	w, m1, m2 := t.TempDir(), filepath.Join(base, "m1"), filepath.Join(base, "m2")
-	p, err := buildRules(Inputs{Workdir: w, RO: []string{m1}, RW: []string{m2}}, 3)
+// Every root is listed resolved through symlinks (a relative workspace
+// against the working directory), once: a root resolving to one already
+// added collapses into it. Missing system and device paths are skipped
+// silently, missing flag paths with a note.
+func TestBuildRulesListsEachExistingRootOnceResolved(t *testing.T) {
+	extendLists(t, []string{"/nonexistent-agentkit-sys"}, []string{"/dev/nonexistent-agentkit"})
+	d := dirs(t, "w", "a", "b", "c", "x")
+	link := func(name, target string) string {
+		if err := os.Symlink(target, filepath.Join(d["base"], name)); err != nil {
+			t.Fatal(err)
+		}
+		return filepath.Join(d["base"], name)
+	}
+	link("lw", link("lw0", d["w"]))
+	m1, m2 := filepath.Join(d["base"], "m1"), filepath.Join(d["base"], "m2")
+	t.Chdir(d["base"])
+	in := Inputs{Workdir: "lw", Env: []string{"HOME=" + d["w"] + "/", "TMPDIR=" + filepath.Join(d["x"], "..", "a")},
+		RW: []string{link("la", d["a"]), m2, d["b"]}, RO: []string{d["b"], link("lc", d["c"]), m1, d["c"]}}
+	p, err := buildRules(in, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	all := slices.Concat(p.writable, p.readOnly)
-	for _, missing := range []string{m1, m2, "/nonexistent-agentkit-sys", "/dev/nonexistent-agentkit"} {
-		if slices.Contains(all, missing) {
-			t.Errorf("%s is listed", missing)
-		}
-	}
-	if !slices.Contains(p.writable, resolved(t, w)) || !slices.Contains(p.readOnly, resolved(t, "/usr")) {
-		t.Errorf("an existing root is missing: %v %v", p.writable, p.readOnly)
-	}
-	note := strings.Join(p.notes, "; ")
-	if !strings.Contains(note, m1) || !strings.Contains(note, m2) || strings.Contains(note, "nonexistent-agentkit") {
-		t.Errorf("notes %q, want M1 and M2 and no system or device path", note)
+	wantW := slices.Concat(resolved(d["w"], d["a"], d["b"]), resolved(deviceFiles...))
+	wantR := slices.Concat(resolved(systemDirs...), resolved(d["c"], "/proc"))
+	notes := []string{"--landlock-rw " + m2 + " does not exist; skipped", "--landlock-ro " + m1 + " does not exist; skipped"}
+	if !slices.Equal(p.writable, wantW) || !slices.Equal(p.readOnly, wantR) || len(p.rules) != len(wantW)+len(wantR) ||
+		p.rules[0].path != wantW[0] || !slices.Equal(p.notes, notes) {
+		t.Errorf("writable %v\nread-only %v\nnotes %q; want %v\n%v\n%q", p.writable, p.readOnly, p.notes, wantW, wantR, notes)
 	}
 }
 
-// TS-15-7: for any set of roots, the report lists resolved, duplicate-free
-// paths in the order their rules were added. 15-REQ-1.8.
-func TestRootsResolvedAndCollapsed_TS15_7(t *testing.T) {
-	for seed := uint64(1); seed <= 60; seed++ {
-		r := rand.New(rand.NewPCG(seed, 7))
-		base := t.TempDir()
-		var real, names []string
-		for i := range 3 + r.IntN(4) {
-			d := filepath.Join(base, fmt.Sprintf("d%d", i))
-			if err := os.MkdirAll(d, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			real = append(real, d)
-			names = append(names, d, d+"/", filepath.Join(base, "x", "..", fmt.Sprintf("d%d", i)))
-		}
-		_ = os.MkdirAll(filepath.Join(base, "x"), 0o755)
-		for i, d := range real {
-			l := filepath.Join(base, fmt.Sprintf("l%d", i))
-			if err := os.Symlink(d, l); err != nil {
-				t.Skipf("symlinks unavailable: %v", err)
-			}
-			ll := filepath.Join(base, fmt.Sprintf("ll%d", i))
-			_ = os.Symlink(l, ll) // a chain
-			names = append(names, l, ll)
-		}
-		res := func(p string) string { return resolved(t, p) }
-		// rw and ro inputs draw from disjoint halves of the real directories.
-		half := len(real) / 2
-		inHalf := func(p string, lo bool) bool {
-			i := slices.Index(real, res(p))
-			for j, d := range real {
-				if res(d) == res(p) {
-					i = j
-				}
-			}
-			return (i < half) == lo
-		}
-		pick := func(lo bool) string {
-			for {
-				if n := names[r.IntN(len(names))]; inHalf(n, lo) {
-					return n
-				}
-			}
-		}
-		in := Inputs{Workdir: pick(true), Env: []string{"HOME=" + pick(true), "TMPDIR=" + pick(true)}}
-		for range r.IntN(5) {
-			in.RW = append(in.RW, pick(true))
-		}
-		for range r.IntN(5) {
-			in.RO = append(in.RO, pick(false))
-		}
-		p, err := buildRules(in, 4)
+// An unset, relative, missing, root or system-directory HOME or temporary
+// directory is skipped with a note naming the variable and the value, and
+// the other one stays writable.
+func TestBuildRulesSkipsAnUnusableHomeOrTempDir(t *testing.T) {
+	d := dirs(t, "w", "h", "t")
+	usr := filepath.Join(d["base"], "usr")
+	if err := os.Symlink("/usr", usr); err != nil {
+		t.Fatal(err)
+	}
+	x := filepath.Join(d["base"], "missing")
+	for _, c := range []struct {
+		env         []string
+		note, other string
+	}{
+		{[]string{"TMPDIR=" + d["t"]}, `HOME="" is unset; not writable`, d["t"]},
+		{[]string{"HOME=rel/home", "TMPDIR=" + d["t"]}, `HOME="rel/home" is relative; not writable`, d["t"]},
+		{[]string{"HOME=/", "TMPDIR=" + d["t"]}, `HOME="/" resolves to /, which is or contains the system directory /usr; not writable`, d["t"]},
+		{[]string{"HOME=" + usr, "TMPDIR=" + d["t"]}, `HOME="` + usr + `" resolves to /usr, which is or contains the system directory /usr; not writable`, d["t"]},
+		{[]string{"HOME=" + d["h"], "TMPDIR=/etc"}, `TMPDIR="/etc" resolves to /etc, which is or contains the system directory /etc; not writable`, d["h"]},
+		{[]string{"HOME=" + d["h"], "TEMP=" + x}, `TEMP="` + x + `" does not exist; not writable`, d["h"]},
+	} {
+		p, err := buildRules(Inputs{Workdir: d["w"], Env: c.env}, 3)
 		if err != nil {
-			t.Fatalf("seed %d: %v", seed, err)
+			t.Errorf("%v: %v", c.env, err)
+			continue
 		}
-		seen := map[string]bool{}
-		wantW := slices.Concat(existing(t, slices.Concat([]string{in.Workdir, in.Env[0][5:], in.Env[1][7:]}, in.RW), seen),
-			existing(t, deviceFiles, seen))
-		wantR := slices.Concat(existing(t, systemDirs, seen), existing(t, in.RO, seen), existing(t, []string{"/proc"}, seen))
-		if !slices.Equal(p.writable, wantW) || !slices.Equal(p.readOnly, wantR) {
-			t.Fatalf("seed %d: inputs %+v gave\nWritable %v\nReadOnly %v\nwant %v\n%v", seed, in, p.writable, p.readOnly, wantW, wantR)
+		if want := resolved(d["w"], c.other); !slices.Equal(p.notes, []string{c.note}) || !slices.Equal(p.writable[:2], want) ||
+			slices.ContainsFunc(p.writable[2:], func(s string) bool { return !strings.HasPrefix(s, "/dev/") }) {
+			t.Errorf("%v: notes %q, writable %v; want %q and %v", c.env, p.notes, p.writable, c.note, want)
 		}
-		for _, e := range slices.Concat(p.writable, p.readOnly) {
-			if res(e) != e {
-				t.Errorf("seed %d: %s is not resolved", seed, e)
-			}
+	}
+}
+
+// A missing workspace, or a root that cannot be resolved for any reason but
+// absence, is an error naming the path.
+func TestBuildRulesFailsOnAnUnresolvableRoot(t *testing.T) {
+	d := dirs(t, "w")
+	file := filepath.Join(d["base"], "f")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(file, "x") // ENOTDIR, not absence
+	for _, c := range []struct {
+		in   Inputs
+		sys  string
+		want string
+	}{
+		{Inputs{Workdir: filepath.Join(d["base"], "gone")}, "", "the workspace " + filepath.Join(d["base"], "gone") + " does not exist"},
+		{Inputs{Workdir: bad}, "", "resolving " + bad},
+		{Inputs{Workdir: d["w"], Env: []string{"HOME=" + bad}}, "", "HOME=" + bad},
+		{Inputs{Workdir: d["w"], RW: []string{bad}}, "", "resolving " + bad},
+		{Inputs{Workdir: d["w"], RO: []string{bad}}, "", "resolving " + bad},
+		{Inputs{Workdir: d["w"]}, bad, "resolving " + bad},
+	} {
+		if c.sys != "" {
+			extendLists(t, []string{c.sys}, nil)
 		}
-		if len(p.rules) != len(seen) || slices.Contains(p.writable, "/proc") {
-			t.Errorf("seed %d: %d rules for %d distinct roots", seed, len(p.rules), len(seen))
+		if _, err := buildRules(c.in, 4); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%+v: %v, want an error containing %q", c.in, err, c.want)
 		}
 	}
 }

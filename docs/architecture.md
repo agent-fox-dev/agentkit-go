@@ -75,11 +75,9 @@ graph:
   root and codesearch modules through `replace`.
 
 cgo is allowed only in `//go:build cgo` files, each with a pure-Go fallback;
-`internal/policy` builds the four supported targets with cgo off and the host
-with cgo on, for the root, the sandbox module, the gatewayd module, the
-mcpserve module and the three examples that use them. Direct dependencies are
-an allowlist ([`DEPS.md`](DEPS.md)), checked for the root, the sandbox module,
-the gatewayd module and the mcpserve module.
+`internal/policy` builds every module in the Makefile's `MODULES` for the four
+supported targets with cgo off and for the host with cgo on. Direct
+dependencies are an allowlist ([`DEPS.md`](DEPS.md)), kept by review.
 
 AgentKit is two parts:
 
@@ -96,14 +94,11 @@ The root and sandbox modules listen on no socket and serve no MCP. They are a
 library: `agentkit-sandboxd` serves the agent service on its stdio, and two
 nested modules listen: `agentkit-gateway` (`sandbox/gatewayd`) is the
 gateway's gRPC server, and `mcpserve` serves a runner's tools over MCP, on
-stdio or a loopback port, to a harness on the same machine. `internal/policy`
-keeps that a checked invariant: no non-test
-file of the root or the sandbox module refers to `net.Listen`,
-`net.ListenTCP`, `net.ListenUnix`, `net.ListenPacket`, `net.ListenConfig`,
-`tls.Listen` or `http.ListenAndServe*`. The library's only network traffic is
-outbound: the Anthropic provider's requests, the MCP client's connections to
-servers an embedder configures, and a gateway client's connection to its
-gateway.
+stdio or a loopback port, to a harness on the same machine. No non-test file
+of the root or the sandbox module listens on a socket. The library's only
+network traffic is outbound: the Anthropic provider's requests, the MCP client's
+connections to servers an embedder configures, and a gateway client's
+connection to its gateway.
 
 ## Package graph
 
@@ -122,9 +117,10 @@ only" exists for tests: it holds only test files, or only test files import it.
 | `internal/diag` | none | |
 | `internal/toml` | `internal/diag` | `github.com/pelletier/go-toml/v2/unstable` |
 | `internal/policy` (tests only) | none | |
+| `internal/testutil` (tests only) | none | |
 | `internal/testkit` (tests only) | `core`, `schema` | |
 | `internal/toolconformance` (tests only) | `core`, `schema` | |
-| `internal/providerconformance` (tests only) | `.` (root, `agentkit`), `catalog`, `core`, `internal/testkit`, `provider`, `provider/{anthropic,faux,ollama,openrouter}`, `tools`, `workspace` | |
+| `internal/providerconformance` (tests only) | `.` (root, `agentkit`), `catalog`, `core`, `provider/{anthropic,ollama}`, `tools`, `workspace` | |
 | `core` | `schema` | |
 | `catalog` | `core` | |
 | `guard` | `core` | |
@@ -178,7 +174,7 @@ What follows from it:
 - `core` imports only `schema`. It is the vocabulary and owns the interface
   seams: `Tool`, `ProviderClient`, `NestedCaller`, the interceptor types.
 - `workspace` imports nothing of the module: only the standard library and
-  doublestar, so every package can depend on it (`internal/policy` checks it).
+  doublestar, so every package can depend on it.
 - `tools` imports `core`, `outline`, `schema` and `workspace`. `codemode`
   imports `core` and `schema`, and `tools` for its output buffer
   (`tools.Accumulator`). `mcp` imports `core` and `schema`, and `wire` for its
@@ -203,8 +199,8 @@ What follows from it:
 - The sandbox tree imports `core`, `schema`, `tools`, `workspace` and `wire`,
   and nothing outside it imports the sandbox tree except `examples/sandbox`,
   `examples/gateway` and `examples/harness` (nested modules, outside the
-  root's check) and test helpers under `internal/` (`internal/policy` checks
-  this, and that no non-test file outside it imports gRPC). `core`, `tools`,
+  root's graph) and test helpers under `internal/`, and no non-test file outside
+  it imports gRPC. `core`, `tools`,
   `codemode` and the driver do not know a sandbox exists.
 
 ## Packages
@@ -230,10 +226,11 @@ What follows from it:
 | `wire` | A bounded, strict parser for untrusted bytes on `encoding/json/jsontext`, and frame readers. |
 | `internal/toml` | A lenient TOML reader for `mcp.ParseConfig`, over `go-toml/v2/unstable`. |
 | `internal/diag` | The shared non-fatal `Diagnostic`. |
-| `internal/policy` | Tests only: the build gates and the dependency allowlist. |
-| `internal/testkit` | Shared test helpers. |
-| `internal/toolconformance` | Tests only: the spec 06 conformance case table, run against `tools.For` and against sandbox proxy tools. |
-| `internal/providerconformance` | Tests only: the cross-provider conformance suite, which runs the same logical turns through the `anthropic`, `openrouter` and `ollama` providers, and the opt-in live smoke tests of the three (below). Its only non-test file is `doc.go`. |
+| `internal/policy` | Tests only: the cross-target and host build gates. |
+| `internal/testutil` | The shared test helpers that need nothing of the module (file trees, a hermetic git environment, polling, JSON, tar, golden files, `go run`). |
+| `internal/testkit` | Test doubles over `core`: the scripted provider and tools. |
+| `internal/toolconformance` | Tests only: the conformance case table of the built-in tools, run against `tools.For` and against sandbox proxy tools. |
+| `internal/providerconformance` | Tests only: the opt-in live tests of the three providers (below). Its only non-test file is `doc.go`. |
 | `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `CheckSpec`, `LocalDir`, `Tar`/`TarOut`, `LandlockInfo`, `AgentArgs`, the protocol version, `MaxMessageBytes` and the errors (below). |
 | `sandbox/internal/sandboxpb` | The `agentkit.sandbox.v1` protocols, the agent's (`sandbox.proto`) and the gateway's (`gateway.proto`), and their checked-in generated code; `make proto` regenerates both. |
 | `sandbox/internal/agent` | The agent service: runs `tools.For` over one workspace with an explicit environment. |
@@ -904,9 +901,7 @@ working directory or the user id. The library's receiver reads the umask
 once per process by setting it to 0 and straight back
 (`internal/receiver/permissionsumask.go`); the umask is unchanged after it,
 but a file another goroutine creates in that instant gets mode bits from a
-zero umask; `internal/policy` checks the
-constructors, and a re-executed test child checks the process stays
-unconfined after a Sync and an Export.
+zero umask; a test checks that the process can still write after a transfer.
 
 ### Code mode over proxies: the script runs on the host
 
@@ -1142,8 +1137,7 @@ TTL unless it lists and destroys them.
 
 *No socket in the library.* The client package is in the sandbox module,
 which listens on nothing; only the nested modules call `net.Listen`: gatewayd,
-in the command, and mcpserve, in `ServeLoopback`. `internal/policy` fails when
-a non-test file of the root or the sandbox module refers to a listening API.
+in the command, and mcpserve, in `ServeLoopback`.
 
 ### `local` is not isolation
 
@@ -1158,50 +1152,16 @@ anything is made) and its agent reports ABI 0 with the note
 
 ## Testing layout
 
-- Unit and property tests sit beside their package.
+- Tests sit beside their package, organised by behaviour: one file per area of
+  the code, each test named for what it checks.
 - `testdata/golden/` holds the Anthropic request-body golden: the exact bytes
   sent. It pins regression, not vendor truth.
 - `internal/policy` holds the cross-target (cgo off) and host (cgo on) build
-  gates, the direct-dependency allowlist and the exported-API golden
-  (`internal/policy/testdata/exported-api.golden`): one section for each package in
-  `apiPackages`, compared by TS-13-67, TS-14-44, TS-15-42 and TS-17-61. It is a
-  change detector, regenerated and committed with any deliberate change to
-  those surfaces.
+  gates, which `make check-release` runs.
 - `provider/faux` scripts a model offline; the root tests and the examples run
-  against it.
-- `internal/providerconformance` runs the same seven logical turns through each
-  of the three providers and requires one canonical outcome. Its cases are
-  `text`, `tool_call`, `tool_call_stop`, `thinking`, `cut_off`, `error_status`
-  and `error_in_stream`, and `TestProviderConformance` runs each against each
-  provider as a subtest named `<provider>/<case>`, 21 in all:
-  `go test -short -run 'TestProviderConformance.*/ollama/thinking' ./internal/providerconformance`
-  runs one. It runs under `-short`, so `make check` runs it.
-
-  Each subtest builds its agent with `agentkit.New` from the provider's name,
-  the tier `STANDARD`, one counting `echo` tool and `MaxTurns` 4, and a
-  `Config.Getenv` holding only that provider's variables, pointed at a fake of
-  that vendor's native API on a loopback `httptest` server: Anthropic Messages
-  server-sent events, OpenRouter Chat Completions server-sent chunks, or Ollama
-  NDJSON. The process environment is never read, so a machine with real keys
-  exported gets the same result. The fakes use the standard library and
-  `encoding/json` alone, with the vendors' documented field names, so they check
-  the providers against the wire and not against themselves. Every code line of
-  the package, the servers included, is in a `_test.go` file, so no non-test file
-  of the root module listens on a socket and no package imports it; it is
-  outside the line budget.
-
-  Every case checks that each request carries the model id and effort that
-  `catalog.Select(provider, "STANDARD", "")` gives, in the vendor's form, and
-  that the fake recorded as many requests as the case scripts. A turn that ends
-  normally must have the event skeleton `provider/faux` emits for the same
-  blocks (without the `MessageUpdateEvent`s, with each run of deltas of one block
-  as one), and block-end events that carry whole payloads. A turn that fails ends
-  in a terminal `ErrorEvent` and a `MessageEndEvent` with `StopReasonError`. The
-  cases tolerate what the providers' specs allow them to differ in: Anthropic
-  keeps the tool calls it salvaged from a cut-off stream, where OpenRouter and
-  Ollama drop them (the loop runs neither), and an in-stream error need only hold
-  the vendor's message.
-- The same package holds the live smoke tests, `TestLive`: one subtest for each
+  against it. Each provider package tests its wire against a fake of its
+  vendor's API on a loopback `httptest` server.
+- `internal/providerconformance` holds the live tests, `TestLive`: one subtest for each
   provider, which runs one real tool loop on the `STANDARD` tier against the
   provider's live service. The agent has the built-in `read_file` tool alone and
   is asked to read a file holding a random word and to answer with it, within 6

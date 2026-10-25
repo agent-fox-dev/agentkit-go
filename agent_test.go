@@ -4,500 +4,130 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"math/rand"
 	"reflect"
-	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/guard"
-	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
-	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
-func noopHandler(context.Context, json.RawMessage) (json.RawMessage, error) { return nil, nil }
-
-// agentCfg is a minimal valid config carrying tools.
-func agentCfg(tools ...core.Tool) Config {
-	return Config{Client: faux.New(), Model: testModelID, Toolset: Toolset{Tools: tools}}
-}
-
-// cyclicPair builds toolA -> toolB -> toolA. Tools are values, so the cycle
-// exists through the shared backing array of toolA.ReachableTools.
-func cyclicPair() core.Tool {
-	var toolA, toolB core.Tool
-	toolA = core.Tool{Name: "toolA", Handler: noopHandler, ReachableTools: []core.Tool{toolB}}
-	toolB = core.Tool{Name: "toolB", Handler: noopHandler, ReachableTools: []core.Tool{toolA}}
-	toolA.ReachableTools[0] = toolB
-	return toolA
-}
-
-// TS-07-3: a reachability cycle is refused by New, naming the path.
-func TestCycleInReachableToolsIsRefused_TS07_3(t *testing.T) {
-	const want = "agentkit: reachable tools cycle detected: toolA -> toolB -> toolA"
-	if _, err := New(agentCfg(cyclicPair())); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("New err = %v, want %q", err, want)
-	}
-	// A tool that reaches itself directly is the shortest cycle.
-	self := core.Tool{Name: "self", Handler: noopHandler, ReachableTools: make([]core.Tool, 1)}
-	self.ReachableTools[0] = self
-	if _, err := New(agentCfg(self)); err == nil ||
-		!strings.Contains(err.Error(), "agentkit: reachable tools cycle detected: self -> self") {
-		t.Fatalf("New(self) err = %v", err)
-	}
-}
-
-// TS-07-4: a wrapper may not reach a terminating tool.
-func TestTerminatingToolReachedThroughWrapperIsRefused_TS07_4(t *testing.T) {
-	term := core.Tool{Name: "finish", Terminating: true, Handler: noopHandler}
-	wrap := core.Tool{Name: "code_mode", ReachableTools: []core.Tool{term}, Handler: noopHandler}
-	const want = `agentkit: terminating tool "finish" cannot be reached through wrapper "code_mode"`
-	if _, err := New(agentCfg(wrap)); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("New err = %v, want %q", err, want)
-	}
-	// Transitively: the wrapper that declares the terminating tool is named.
-	outer := core.Tool{Name: "outer", ReachableTools: []core.Tool{wrap}, Handler: noopHandler}
-	if _, err := New(agentCfg(outer)); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("New(outer) err = %v, want %q", err, want)
-	}
-	// A terminating tool registered directly is fine.
-	if _, err := New(agentCfg(term)); err != nil {
-		t.Fatalf("a top-level terminating tool was refused: %v", err)
-	}
-}
-
-// TS-07-5: diamonds — the same tool reached along two paths — are not
-// cycles, at any shape and depth.
-func TestReachableDiamondIsNotACycle_TS07_5(t *testing.T) {
-	r := rand.New(rand.NewSource(5))
-	for i := range 40 {
-		// A layered DAG: every tool reaches only tools in deeper layers, and
-		// at least one tool is reached along two paths.
-		layers := 2 + r.Intn(3)
-		width := 2 + r.Intn(3)
-		var below []core.Tool
-		for l := layers; l >= 0; l-- {
-			var level []core.Tool
-			for w := range width {
-				tl := core.Tool{Name: fmt.Sprintf("t%d_%d", l, w), Handler: noopHandler}
-				if len(below) > 0 {
-					tl.ReachableTools = []core.Tool{below[0], below[r.Intn(len(below))]}
-				}
-				level = append(level, tl)
+func TestAgent_ResolutionIsWhatResolveChoseAndACopy(t *testing.T) {
+	var provider, id string
+	for _, v := range catalog.Default().Vendors() {
+		for _, m := range catalog.Default().Models(v) {
+			if sel, err := catalog.Select(v, m, ""); err == nil && len(sel.Model.Efforts) > 0 && len(sel.Model.Compat) > 0 {
+				provider, id = v, m
 			}
-			below = level
-		}
-		root := core.Tool{Name: "root", Handler: noopHandler, ReachableTools: below}
-		ag, err := New(agentCfg(root))
-		if err != nil || ag == nil {
-			t.Fatalf("iteration %d: diamond refused: %v", i, err)
 		}
 	}
-}
-
-// TS-09-22 (smoke, 09-PATH-3): an embedder builds an Agent with no session
-// store or middleware and runs a turn; the result carries the provider's
-// usage and the conversation is in the transcript.
-func TestSmokeAgentRunsWithRetainedProviders_TS09_22(t *testing.T) {
-	p := faux.New(faux.Turn{
-		Blocks:     []core.ContentBlock{faux.FauxText("hello back")},
-		StopReason: core.StopReasonStop,
-		Usage:      core.Usage{InputTokens: 12, OutputTokens: 3},
-	})
-	agent, err := New(Config{Client: p, Model: testModelID})
-	if err != nil {
-		t.Fatal(err)
+	if id == "" {
+		t.Fatal("the catalog has no row with both Efforts and Compat")
 	}
-	var events []core.Event
-	st, err := agent.Stream(context.Background(), "hello")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for e := range st.Events() {
-		events = append(events, e)
-	}
-	res, err := st.RunResult()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Usage.InputTokens <= 0 && res.Usage.OutputTokens <= 0 {
-		t.Fatalf("run usage = %+v, want the provider's tokens", res.Usage)
-	}
-	if res.FinalText() != "hello back" || res.StopReason != core.RunStopEndTurn {
-		t.Fatalf("result = %q / %q", res.FinalText(), res.StopReason)
-	}
-	if n := len(agent.Messages()); n != 2 {
-		t.Fatalf("the transcript holds %d messages, want the prompt and the reply", n)
-	}
-	if len(events) == 0 {
-		t.Fatal("the run emitted no events")
-	}
-	if _, ok := events[0].(core.AgentStartEvent); !ok {
-		t.Fatalf("first event = %T, want AgentStartEvent", events[0])
-	}
-}
-
-// driverModel is the spec's model id. The catalog does not list it, so it
-// takes the default row: a 1M-token window and no price.
-const driverModel = "claude-3-5-sonnet"
-
-func allowAll(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
-	return core.BeforeToolCallDecision{}
-}
-
-func noopAfter(context.Context, core.AfterToolCallContext) core.AfterToolCallDecision {
-	return core.AfterToolCallDecision{}
-}
-
-func userText(s string) core.UserMessage {
-	return core.UserMessage{Content: core.Content{core.TextBlock{Text: s}}}
-}
-
-// TS-11-1: Config carries the fourteen driver fields, the tool side among them
-// as one Toolset (21-REQ-1.2); since 29-REQ-1 Client is the provider client,
-// Provider names the provider and Env and Getenv supply its variables.
-func TestConfigDefinesTheDriverFields_TS11_1(t *testing.T) {
-	client := faux.New()
-	cfg := Config{
-		Client:   client,
-		Provider: "anthropic",
-		Model:    driverModel,
-		Effort:   EffortHigh,
-		Env:      map[string]string{"ANTHROPIC_API_KEY": "sk-ant-test"},
-		Getenv:   noEnv,
-		System:   "system instruction",
-		Prefix:   []core.Message{userText("preamble")},
-		Toolset: Toolset{
-			Tools:  []core.Tool{{Name: "toolA", Handler: noopHandler}},
-			Policy: core.ToolPolicy{},
-			Guard:  allowAll,
-			After:  noopAfter,
-		},
-		MaxTurns:   10,
-		MaxCostUSD: 1.5,
-		Timeout:    30 * time.Second,
-		Prune:      PruneOptions{Threshold: 0.35, KeepTurns: 2},
-		MaxTokens:  4096,
-	}
-	if cfg.Client != client || cfg.Provider != "anthropic" || cfg.Env["ANTHROPIC_API_KEY"] != "sk-ant-test" || cfg.Getenv("X") != "" ||
-		cfg.Model != driverModel || cfg.Effort != core.EffortHigh || cfg.MaxTurns != 10 ||
-		cfg.MaxCostUSD != 1.5 || cfg.Timeout != 30*time.Second || cfg.MaxTokens != 4096 ||
-		cfg.Prune.KeepTurns != 2 || len(cfg.Prefix) != 1 || len(cfg.Toolset.Tools) != 1 {
-		t.Fatalf("config = %+v", cfg)
-	}
-}
-
-// TS-11-2: no client and no Anthropic credential is refused with the error of
-// anthropic.Resolve (29-REQ-8: it was "needs an Anthropic client or provider").
-func TestNewRefusesNoClientAndNoCredential_TS11_2(t *testing.T) {
-	a, err := New(Config{Model: driverModel, Getenv: noEnv})
-	if a != nil || !errors.Is(err, anthropic.ErrNoCredentials) {
-		t.Fatalf("New = %v, %v; want nil and anthropic.ErrNoCredentials", a, err)
-	}
-}
-
-// TS-11-3: an empty model is refused.
-func TestNewRefusesEmptyModel_TS11_3(t *testing.T) {
-	a, err := New(Config{Client: faux.New()})
-	if a != nil || err == nil || !strings.Contains(err.Error(), "model") {
-		t.Fatalf("New = %v, %v; want nil and an error naming the model", a, err)
-	}
-}
-
-// TS-11-4: an invalid tool hierarchy is refused.
-func TestNewRefusesInvalidTools_TS11_4(t *testing.T) {
-	exec := func(context.Context, json.RawMessage) core.ToolResult { return core.OKResult(nil) }
-	done := core.Tool{Name: "done", Handler: noopHandler, Terminating: true}
-	cases := map[string][]core.Tool{
-		"both":    {{Name: "both", Handler: noopHandler, Execute: exec}},
-		"neither": {{Name: "neither"}},
-		"cycle":   {cyclicPair()},
-		"wrapper": {done, {Name: "wrap", Handler: noopHandler, ReachableTools: []core.Tool{done}}},
-	}
-	for name, tools := range cases {
-		a, err := New(Config{Client: faux.New(), Model: "m", Toolset: Toolset{Tools: tools}})
-		if a != nil || err == nil {
-			t.Errorf("%s: New = %v, %v; want nil and an error", name, a, err)
-		}
-	}
-}
-
-// TS-11-5: the policy resolves the tools, and Client is called: Provider and
-// Model choose the catalog row and the effort, not the client (29-REQ-8).
-func TestNewResolvesToolsAndCallsTheClient_TS11_5(t *testing.T) {
 	fp := faux.New()
-	a, err := New(Config{
-		Client:   fp,
-		Provider: "openrouter",
-		Model:    "STANDARD",
-		Toolset:  Toolset{Tools: []core.Tool{{Name: "toolA", Handler: noopHandler}, {Name: "toolB", Handler: noopHandler}}, Policy: core.ToolPolicy{ToolNames: []string{"toolA"}}},
+	cfg := Config{Client: fp, Provider: provider, Model: id}
+	want, err := Resolve(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := mustNew(t, cfg)
+	got := a.Resolution()
+	if !reflect.DeepEqual(got, want) || got.Client != core.ProviderClient(fp) {
+		t.Fatalf("Resolution = %+v, want Resolve's %+v", got, want)
+	}
+	for k, v := range got.Model.Efforts {
+		if v != nil {
+			*v = "tampered"
+		}
+		got.Model.Efforts[k] = nil
+	}
+	got.Model.Compat[0] ^= 0xff
+	got.Model.ID = "tampered"
+	if again := a.Resolution(); !reflect.DeepEqual(again.Model, want.Model) || !reflect.DeepEqual(a.model, want.Model) {
+		t.Errorf("a change to the returned row reached the agent: %+v", again.Model)
+	}
+}
+
+func TestAgent_RunsOnePromptAtATime(t *testing.T) {
+	fp := faux.New(faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("slow")}, Delay: time.Minute})
+	a := mustNew(t, Config{Client: fp})
+	ctx, cancel := context.WithCancel(context.Background())
+	first, err := a.Stream(ctx, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), "second"); !errors.Is(err, core.ErrBusy) {
+		t.Errorf("Run during a run = %v, want ErrBusy", err)
+	}
+	if _, err := a.Stream(context.Background(), "third"); !errors.Is(err, core.ErrBusy) {
+		t.Errorf("Stream during a run = %v, want ErrBusy", err)
+	}
+	testutil.Eventually(t, "the first request", func() bool { return fp.Calls() == 1 })
+	cancel()
+	if _, err := first.RunResult(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the first run = %v", err)
+	}
+	for i := range 200 { // the slot is free by the time a run returns
+		if _, err := a.Run(context.Background(), "next"); err != nil {
+			t.Fatalf("run %d after the first = %v", i, err)
+		}
+	}
+}
+
+func TestAgent_KeepsTheTranscriptAndUsageAcrossRuns(t *testing.T) {
+	u := reported(100, 10)
+	a, _ := scripted(t, Toolset{}, faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("one")}, Usage: u},
+		faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("two")}, Usage: u})
+	if _, err := a.Run(context.Background(), "first"); err != nil {
+		t.Fatal(err)
+	}
+	evs, res, err := drain(t, context.Background(), a, "second")
+	if err != nil || res.Usage.InputTokens != 100 || len(res.Messages) != 2 {
+		t.Fatalf("the second run = %+v, %v; want only its own usage and messages", res, err)
+	}
+	done := evs[len(evs)-1].(core.AgentDoneEvent)
+	if a.Usage().InputTokens != 200 || done.Usage.InputTokens != 200 || done.Result.Usage.InputTokens != 100 {
+		t.Errorf("lifetime usage %d, done event %d/%d; want 200 and the run's 100", a.Usage().InputTokens, done.Usage.InputTokens, done.Result.Usage.InputTokens)
+	}
+	if msgs := a.Messages(); len(msgs) != 4 || msgs[2].(core.UserMessage).Content.Text() != "second" {
+		t.Errorf("the transcript holds %d messages, want both runs'", len(msgs))
+	}
+}
+
+// TestAgent_StateAndRunnerAreUsableDuringARun reads the agent and calls its
+// runner from inside a run's own tool call: nothing deadlocks, and the
+// runner's calls stay out of the run.
+func TestAgent_StateAndRunnerAreUsableDuringARun(t *testing.T) {
+	var a *Agent
+	var events eventLog
+	var during struct {
+		msgs   int
+		res    core.ToolResult
+		busy   error
+		runner *Runner
+	}
+	look := tool("look", func(ctx context.Context, _ json.RawMessage) core.ToolResult {
+		during.msgs = len(a.Messages())
+		during.runner = a.Runner()
+		during.res = a.Runner().Call(context.Background(), "echo", nil)
+		_, during.busy = a.Stream(context.Background(), "again")
+		_, _ = a.Usage(), a.Resolution()
+		return core.OKResult(nil)
 	})
-	if err != nil || a == nil {
-		t.Fatalf("New = %v, %v", a, err)
+	a, _ = scripted(t, Toolset{Tools: []core.Tool{look, echo("echo", nil)}, Events: events.add},
+		faux.Turn{Blocks: []core.ContentBlock{call("c1", "look", "{}")}, StopReason: core.StopReasonToolUse, Usage: reported(10, 5)}, faux.Text("done"))
+	evs, res, err := drain(t, context.Background(), a, "go")
+	if err != nil || during.msgs != 2 || !during.res.OK || !errors.Is(during.busy, core.ErrBusy) || during.runner != a.Runner() {
+		t.Fatalf("during the run: %+v; run %v", during, err)
 	}
-	if got := a.ReachableTools(); len(got) != 1 || got[0].Name != "toolA" {
-		t.Fatalf("ReachableTools = %v, want [toolA]", got)
+	if len(res.Messages) != 4 || res.Usage.InputTokens != 10 {
+		t.Errorf("the runner's call reached the run: %d messages, %+v", len(res.Messages), res.Usage)
 	}
-	if _, err := a.Run(context.Background(), "hello"); err != nil {
-		t.Fatal(err)
-	}
-	if res := a.Resolution(); fp.Calls() == 0 || res.Provider != "openrouter" || res.Model.ID != "qwen/qwen3.8-flash" || res.Effort != EffortMedium {
-		t.Fatalf("client calls %d, resolution %+v; want the client called on the openrouter row of STANDARD at medium", fp.Calls(), res)
-	}
-}
-
-// TS-11-6: a resolved shell tool with no Guard is refused at construction.
-func TestNewRefusesUnguardedShellTool_TS11_6(t *testing.T) {
-	a, err := New(Config{Client: faux.New(), Model: driverModel,
-		Toolset: Toolset{Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}}})
-	if a != nil || !errors.Is(err, core.ErrUnguardedExecute) || !strings.Contains(err.Error(), `"execute"`) {
-		t.Fatalf("New = %v, %v; want ErrUnguardedExecute naming execute", a, err)
-	}
-}
-
-// TS-11-7: a shell tool behind a wrapper with no Guard is refused, naming
-// both. The spec's "bash" is not in guard.ShellToolNames; run_command is.
-func TestNewRefusesUnguardedShellBehindWrapper_TS11_7(t *testing.T) {
-	shell := core.Tool{Name: "run_command", Handler: noopHandler}
-	wrapper := core.Tool{Name: "codemode", Handler: noopHandler, ReachableTools: []core.Tool{shell}}
-	a, err := New(Config{Client: faux.New(), Model: driverModel, Toolset: Toolset{Tools: []core.Tool{wrapper}}})
-	if a != nil || !errors.Is(err, core.ErrUnguardedExecute) ||
-		!strings.Contains(err.Error(), `wrapper "codemode"`) || !strings.Contains(err.Error(), `shell tool "run_command"`) {
-		t.Fatalf("New = %v, %v; want ErrUnguardedExecute naming codemode and run_command", a, err)
-	}
-}
-
-// TS-11-8: a Guard admits a reachable shell tool.
-func TestNewAcceptsGuardedShellTool_TS11_8(t *testing.T) {
-	a, err := New(Config{Client: faux.New(), Model: driverModel,
-		Toolset: Toolset{Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}, Guard: guard.AllowAll}})
-	if err != nil || a == nil {
-		t.Fatalf("New = %v, %v; want an agent", a, err)
-	}
-}
-
-// TS-11-9: the Agent's exported methods are exactly the seven: the five of
-// spec 11, Runner (21-REQ-3.4) and Resolution (29-REQ-6.4).
-func TestAgentSurfaceIsSevenMethods_TS11_9(t *testing.T) {
-	typ := reflect.TypeOf(&Agent{})
-	got := map[string]bool{}
-	for i := 0; i < typ.NumMethod(); i++ {
-		if m := typ.Method(i); m.PkgPath == "" {
-			got[m.Name] = true
-		}
-	}
-	want := map[string]bool{"Run": true, "Stream": true, "Messages": true, "Usage": true, "ReachableTools": true, "Runner": true, "Resolution": true}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("exported methods = %v, want %v", got, want)
-	}
-}
-
-// fauxTurnUsage is a turn's usage, so a run has some to report.
-var fauxTurnUsage = core.Usage{InputTokens: 10, OutputTokens: 5}
-
-// TS-11-10: Run executes to a stop condition and reports the transcript,
-// usage, turns and stop reason.
-func TestRunReturnsAComprehensiveResult_TS11_10(t *testing.T) {
-	fp := faux.New(
-		faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall("c1", "toolA", "{}")}, StopReason: core.StopReasonToolUse, Usage: fauxTurnUsage},
-		faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("all done")}, StopReason: core.StopReasonStop, Usage: fauxTurnUsage},
-	)
-	a, err := New(Config{Client: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{{Name: "toolA", Handler: noopHandler}}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := a.Run(context.Background(), "do work")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.StopReason != core.RunStopEndTurn || res.TurnCount != 2 || len(res.Messages) != 4 {
-		t.Fatalf("result = %q after %d turns with %d messages", res.StopReason, res.TurnCount, len(res.Messages))
-	}
-	if !reflect.DeepEqual(a.Messages(), res.Messages) {
-		t.Fatal("Messages() differs from RunResult.Messages after one run")
-	}
-	if res.Usage.InputTokens != 20 || res.Usage.OutputTokens != 10 {
-		t.Fatalf("usage = %+v, want both turns' tokens", res.Usage)
-	}
-}
-
-// TS-11-11: Stream returns at once and the events arrive on it.
-func TestStreamDeliversEvents_TS11_11(t *testing.T) {
-	fp := faux.New(faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("streamed response")))
-	a, err := New(Config{Client: fp, Model: driverModel})
-	if err != nil {
-		t.Fatal(err)
-	}
-	st, err := a.Stream(context.Background(), "stream prompt")
-	if err != nil || st == nil {
-		t.Fatalf("Stream = %v, %v", st, err)
-	}
-	var kinds []string
-	for e := range st.Events() {
-		kinds = append(kinds, fmt.Sprintf("%T", e))
-	}
-	if len(kinds) == 0 || kinds[0] != "core.AgentStartEvent" || kinds[len(kinds)-1] != "core.AgentDoneEvent" {
-		t.Fatalf("events = %v", kinds)
-	}
-}
-
-// TS-11-12: a Run or Stream while another is in flight fails with ErrBusy.
-func TestOverlappingRunsAreBusy_TS11_12(t *testing.T) {
-	fp := faux.New(faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("waiting")}, StopReason: core.StopReasonStop, Delay: 200 * time.Millisecond})
-	a, err := New(Config{Client: fp, Model: driverModel})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Stream claims the slot before it returns, so the overlap is certain.
-	first, err := a.Stream(context.Background(), "run 1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := a.Run(context.Background(), "run 2"); !errors.Is(err, core.ErrBusy) {
-		t.Fatalf("Run during a run = %v, want ErrBusy", err)
-	}
-	if _, err := a.Stream(context.Background(), "run 3"); !errors.Is(err, core.ErrBusy) {
-		t.Fatalf("Stream during a run = %v, want ErrBusy", err)
-	}
-	if _, err := first.RunResult(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := a.Run(context.Background(), "run 4"); err != nil {
-		t.Fatalf("Run after the first finished = %v", err)
-	}
-}
-
-// TS-11-13: Messages, Usage and ReachableTools are safe to read while a run
-// is in flight (run under -race).
-func TestStateIsReadableDuringARun_TS11_13(t *testing.T) {
-	var turns []faux.Turn
-	for i := 0; i < 5; i++ {
-		turns = append(turns, faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall(fmt.Sprintf("c%d", i), "toolA", "{}")},
-			StopReason: core.StopReasonToolUse, Usage: fauxTurnUsage, Delay: time.Millisecond})
-	}
-	a, err := New(Config{Client: faux.New(turns...), Model: driverModel, Toolset: Toolset{Tools: []core.Tool{{Name: "toolA", Handler: noopHandler}}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if _, err := a.Run(ctx, "start multi-turn"); err != nil {
-			t.Error(err)
-		}
-	}()
-	// Each reader sees a consistent, growing state: the transcript only
-	// grows, usage only rises, the tools never change. The race detector
-	// (go test -race) checks the reads themselves.
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			var lastLen int
-			var lastTokens int64
-			for j := 0; j < 20; j++ {
-				msgs := a.Messages()
-				for _, m := range msgs {
-					if m == nil {
-						t.Error("nil message in the transcript")
-					}
-				}
-				u := a.Usage()
-				if len(msgs) < lastLen || u.InputTokens < lastTokens {
-					t.Errorf("state went backwards: %d -> %d messages, %d -> %d tokens", lastLen, len(msgs), lastTokens, u.InputTokens)
-				}
-				lastLen, lastTokens = len(msgs), u.InputTokens
-				if len(a.ReachableTools()) != 1 {
-					t.Error("ReachableTools changed during the run")
-				}
-				time.Sleep(time.Millisecond)
-			}
-		}()
-	}
-	wg.Wait()
-}
-
-// TS-11-44 (smoke, 11-PATH-1): a prompt, a parallel batch of two tools and a
-// final answer, through New, the loop and the batch executor.
-func TestSmokeMultiTurnWithParallelBatch_TS11_44(t *testing.T) {
-	var active, peak atomic.Int32
-	tool := func(name string) core.Tool {
-		return core.Tool{Name: name, InputSchema: schema.Object(),
-			Handler: func(ctx context.Context, in json.RawMessage) (json.RawMessage, error) {
-				_, _ = overlap(&active, &peak, 30*time.Millisecond)(ctx, in)
-				return json.RawMessage(`{"from":"` + name + `"}`), nil
-			}}
-	}
-	fp := faux.New(
-		faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall("c1", "toolA", "{}"), faux.FauxToolCall("c2", "toolB", "{}")),
-		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("finished")),
-	)
-	a, err := New(Config{Client: fp, Model: driverModel, System: "be brief", Toolset: Toolset{Tools: []core.Tool{tool("toolA"), tool("toolB")}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := a.Run(context.Background(), "run multi-turn batch")
-	if err != nil || res.StopReason != core.RunStopEndTurn || res.TurnCount != 2 {
-		t.Fatalf("run = %q after %d turns, %v", res.StopReason, res.TurnCount, err)
-	}
-	if peak.Load() != 2 {
-		t.Fatalf("peak concurrency %d, want both calls at once", peak.Load())
-	}
-	r1, r2 := res.Messages[2].(core.ToolResultMessage), res.Messages[3].(core.ToolResultMessage)
-	if r1.ToolUseID != "c1" || !strings.Contains(r1.Content.Text(), "toolA") || r2.ToolUseID != "c2" || res.FinalText() != "finished" {
-		t.Fatalf("transcript = %v", res.Messages)
-	}
-	if !reflect.DeepEqual(a.Messages(), res.Messages) {
-		t.Fatal("the transcript differs from the run's messages")
-	}
-	if sys := fp.Requests()[1].System; len(sys) != 1 || !strings.HasPrefix(sys[0].(core.TextBlock).Text, "be brief") {
-		t.Fatalf("second request's system prompt = %v", sys)
-	}
-}
-
-// TS-11-48 (smoke, 11-PATH-5): New refuses an unguarded shell tool before
-// any request or stream exists.
-func TestSmokeUnguardedShellRefused_TS11_48(t *testing.T) {
-	fp := faux.New()
-	a, err := New(Config{Client: fp, Model: driverModel, Toolset: Toolset{Tools: []core.Tool{{Name: "execute", Handler: noopHandler}}}})
-	if a != nil || !errors.Is(err, core.ErrUnguardedExecute) || !strings.Contains(err.Error(), `(tool "execute")`) {
-		t.Fatalf("New = %v, %v; want ErrUnguardedExecute naming execute", a, err)
-	}
-	if fp.Calls() != 0 {
-		t.Fatal("a request was sent")
-	}
-}
-
-// TS-11-49 (smoke, 11-PATH-6): a run whose first turn spends the budget
-// stops before the second request.
-func TestSmokeBudgetStopsTheRun_TS11_49(t *testing.T) {
-	var ran atomic.Int32
-	fp := faux.New(
-		faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall("c1", "toolA", "{}")}, StopReason: core.StopReasonToolUse,
-			Usage: core.Usage{InputTokens: 100_000, OutputTokens: 100_000}},
-		faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText("t2")),
-	)
-	a, err := New(Config{Client: fp, Model: "claude-opus-5-5", MaxCostUSD: 0.05,
-		Toolset: Toolset{Tools: []core.Tool{{Name: "toolA", InputSchema: schema.Object(), Handler: func(context.Context, json.RawMessage) (json.RawMessage, error) {
-			ran.Add(1)
-			return json.RawMessage(`{}`), nil
-		}}}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := a.Run(context.Background(), "test budget smoke")
-	if res.StopReason != core.RunStopBudgetExceeded || !errors.Is(err, core.ErrBudgetExceeded) {
-		t.Fatalf("run = %q, %v; want budget_exceeded", res.StopReason, err)
-	}
-	if ran.Load() != 1 || fp.Calls() != 1 || res.Usage.CostUSD < 0.05 || a.Usage().CostUSD != res.Usage.CostUSD {
-		t.Fatalf("tool ran %d, requests %d, cost $%.4f (agent $%.4f)", ran.Load(), fp.Calls(), res.Usage.CostUSD, a.Usage().CostUSD)
+	runStarts, _, _ := executions(evs)
+	sinkStarts, _, _ := executions(events.all())
+	if len(runStarts) != 1 || runStarts["c1"] != 1 || len(sinkStarts) != 1 || sinkStarts["c1"] != 0 {
+		t.Errorf("the run's stream saw %v and Toolset.Events %v; want the run's call on the stream and the runner's on Events", runStarts, sinkStarts)
 	}
 }

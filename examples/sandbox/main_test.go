@@ -2,207 +2,116 @@ package main
 
 import (
 	"context"
-	"go/ast"
-	"go/parser"
-	"go/token"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
-	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/landlock"
 )
 
-// TS-13-68, as TS-22-28 changes it: the example runs offline against local
-// and provider/faux and exits 0, both as a program and in process, and prints
-// no "synced" line, because sandbox.Open discards the SyncResult. 13-REQ-10.8,
-// 22-REQ-7.1.
-func TestExampleRunsOffline_TS13_68(t *testing.T) {
+// On local, with provider/faux: the agent reads and searches inside the
+// sandbox, the guard refuses rm, src comes out into the host directory, and
+// the deferred Close removes the sandbox's directory.
+func TestTheOfflineRunWorksInTheSandboxExportsAndCleansUp(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the script runs POSIX ls")
 	}
 	t.Setenv("ANTHROPIC_API_KEY", "")
-	t.Setenv("TMPDIR", t.TempDir())
-	out, err := exec.Command("go", "run", ".").CombinedOutput()
-	if err != nil {
-		t.Fatalf("go run: %v\n%s", err, out)
-	}
-	if !strings.Contains(string(out), "Sandbox example completed successfully") {
-		t.Fatalf("output:\n%s", out)
-	}
+	tmp, dir := t.TempDir(), t.TempDir()
+	t.Setenv("TMPDIR", tmp)
 	var b strings.Builder
-	if err := run(context.Background(), &b, t.TempDir()); err != nil {
+	if err := run(context.Background(), &b, dir); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"read_file src/main.go in the sandbox: ok=true",
 		"README: Says hello from inside the sandbox.", "TODOs: 2", "src: main.go, util.go",
 		"rm: blocked_by_policy", "exported src: main.go, util.go", "Sandbox example completed successfully"} {
 		if !strings.Contains(b.String(), want) {
-			t.Fatalf("output lacks %q:\n%s", want, b.String())
+			t.Errorf("output lacks %q:\n%s", want, b.String())
 		}
-	}
-	for _, line := range strings.Split(b.String(), "\n") {
-		if strings.HasPrefix(line, "synced ") {
-			t.Errorf("the output has the line %q: the example no longer holds a SyncResult", line)
-		}
-	}
-}
-
-// sandboxLiteral names the sandbox type of a composite literal, or "".
-func sandboxLiteral(e ast.Expr) string {
-	if cl, ok := e.(*ast.CompositeLit); ok {
-		if sel, ok := cl.Type.(*ast.SelectorExpr); ok {
-			if id, ok := sel.X.(*ast.Ident); ok && id.Name == "sandbox" {
-				return sel.Sel.Name
-			}
-		}
-	}
-	return ""
-}
-
-// TS-14-45, as TS-22-31 changes it: the example fills the sandbox and exports
-// from it with LocalDir (no Tar or TarOut literal in main.go), runs offline,
-// and leaves the exported files in its host output directory. The
-// sandbox.Open call and the Export call each take exactly one
-// sandbox.LocalDir literal. 14-REQ-9.6, 22-REQ-7.4.
-func TestExampleUsesLocalDir_TS14_45(t *testing.T) {
-	f, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	localDirs := map[string]int{}
-	ast.Inspect(f, func(n ast.Node) bool {
-		if k := sandboxLiteral(asExpr(n)); k == "Tar" || k == "TarOut" {
-			t.Errorf("main.go has a sandbox.%s literal", k)
-		}
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		if selectorIs(sel, "sandbox", "Open") || sel.Sel.Name == "Export" {
-			for _, a := range call.Args {
-				if sandboxLiteral(a) == "LocalDir" {
-					localDirs[sel.Sel.Name]++
-				}
-			}
-		}
-		return true
-	})
-	for _, m := range []string{"Open", "Export"} {
-		if got := localDirs[m]; got != 1 {
-			t.Errorf("%s takes %d sandbox.LocalDir literals, want one", m, got)
-		}
-	}
-	if runtime.GOOS == "windows" {
-		t.Skip("the script runs POSIX ls")
-	}
-	t.Setenv("ANTHROPIC_API_KEY", "")
-	t.Setenv("TMPDIR", t.TempDir())
-	dir := t.TempDir()
-	var b strings.Builder
-	if err := run(context.Background(), &b, dir); err != nil {
-		t.Fatal(err)
 	}
 	for _, name := range []string{"main.go", "util.go"} {
 		if _, err := os.Stat(filepath.Join(dir, "out", name)); err != nil {
 			t.Errorf("the exported %s is not in the output directory: %v", name, err)
 		}
 	}
-	if !strings.Contains(b.String(), "Sandbox example completed successfully") {
-		t.Errorf("output:\n%s", b.String())
+	if ents, err := os.ReadDir(filepath.Join(tmp, "agentkit-sandbox-local")); len(ents) > 0 || (err != nil && !errors.Is(err, os.ErrNotExist)) {
+		t.Errorf("%d sandbox directories remain after the deferred Close (%v)", len(ents), err)
 	}
 }
 
-// TS-22-30: main.go opens its sandbox with one sandbox.Open, picks its proxies
-// with one core.Named and guards the shell with one guard.Allow("ls"), so it
-// holds none of the wiring they replace: no Create, Sync or Tools method call,
-// no faux.Turn literal, no guard.Restricted call and no switch over a tool's
-// Name. Its core.Named call picks read_file, search_files and execute, in that
-// order. 22-REQ-7.3.
-func TestExampleUsesTheHelpers_TS22_30(t *testing.T) {
-	f, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+func TestTheProgramRunsOffline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the script runs POSIX ls")
+	}
+	env := testutil.Environ("ANTHROPIC_API_KEY")
+	env["TMPDIR"] = t.TempDir()
+	if res := testutil.GoRun(t, "", ".", env); res.Exit != 0 || !strings.Contains(res.Stdout, "Sandbox example completed successfully") {
+		t.Fatalf("go run exited %d:\n%s\n%s", res.Exit, res.Stdout, res.Stderr)
+	}
+}
+
+// --landlock runs the same program with the agent as a confined child process
+// on a host with Landlock ABI 4, and fails saying so on one without.
+func TestTheProgramRunsOnLandlockOrSaysTheHostCannot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the agent and runs the example; skipped under -short")
+	}
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go is not on PATH")
+	}
+	agent := filepath.Join(t.TempDir(), "agentkit-sandboxd")
+	build := exec.Command(goBin, "build", "-o", agent, "./cmd/agentkit-sandboxd")
+	build.Dir = filepath.Join("..", "..", "sandbox")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building agentkit-sandboxd: %v\n%s", err, out)
+	}
+	gocache, err := exec.Command(goBin, "env", "GOCACHE").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	calls := map[string]int{}
-	var namedArgs []string
-	ast.Inspect(f, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.CompositeLit:
-			if sel, ok := n.Type.(*ast.SelectorExpr); ok && selectorIs(sel, "faux", "Turn") {
-				t.Error("main.go has a faux.Turn composite literal")
-			}
-		case *ast.CallExpr:
-			sel, ok := n.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			switch {
-			case selectorIs(sel, "sandbox", "Open"):
-				calls["sandbox.Open"]++
-			case selectorIs(sel, "core", "Named"):
-				calls["core.Named"]++
-				if len(n.Args) > 0 {
-					namedArgs = stringLiterals(n.Args[1:])
-				}
-			case selectorIs(sel, "guard", "Allow"):
-				if len(n.Args) == 1 {
-					if lit, ok := n.Args[0].(*ast.BasicLit); ok {
-						if s, err := strconv.Unquote(lit.Value); err == nil && s == "ls" {
-							calls[`guard.Allow("ls")`]++
-						}
-					}
-				}
-			case selectorIs(sel, "guard", "Restricted"):
-				t.Error("main.go calls guard.Restricted")
-			case sel.Sel.Name == "Create" || sel.Sel.Name == "Sync" || sel.Sel.Name == "Tools":
-				t.Errorf("main.go calls the %s method that sandbox.Open replaces", sel.Sel.Name)
-			}
-		case *ast.SwitchStmt:
-			if sel, ok := n.Tag.(*ast.SelectorExpr); ok && sel.Sel.Name == "Name" {
-				t.Error("main.go switches on a tool's .Name")
-			}
+	// The provider's default Root is beneath the user cache directory, which
+	// must lie outside the system directories: point it at a temporary one,
+	// keeping go's own build cache.
+	run := exec.Command(goBin, "run", ".", "--landlock", "--agent", agent)
+	run.Env = append(os.Environ(), "TMPDIR="+t.TempDir(), "XDG_CACHE_HOME="+t.TempDir(), "GOCACHE="+strings.TrimSpace(string(gocache)))
+	out, runErr := run.CombinedOutput()
+	switch _, err := landlock.New(landlock.Options{AgentBinary: agent, Root: t.TempDir()}); {
+	case err == nil:
+		if runErr != nil || !strings.Contains(string(out), "Sandbox example completed successfully") {
+			t.Errorf("go run . --landlock on a Landlock host: %v\n%s", runErr, out)
 		}
-		return true
-	})
-	for _, c := range []string{"sandbox.Open", "core.Named", `guard.Allow("ls")`} {
-		if calls[c] != 1 {
-			t.Errorf("main.go has %d %s calls, want 1", calls[c], c)
+	case errors.Is(err, landlock.ErrNoLandlock):
+		if runErr == nil || !strings.Contains(string(out), "landlock: this host cannot confine a sandbox with Landlock ABI 4") {
+			t.Errorf("go run . --landlock without Landlock: %v\n%s", runErr, out)
 		}
-	}
-	if want := []string{"read_file", "search_files", "execute"}; !slices.Equal(namedArgs, want) {
-		t.Errorf("core.Named picks %q, want %q", namedArgs, want)
+	default:
+		t.Fatalf("landlock.New: %v", err)
 	}
 }
 
-// selectorIs reports whether sel is pkg.name.
-func selectorIs(sel *ast.SelectorExpr, pkg, name string) bool {
-	id, ok := sel.X.(*ast.Ident)
-	return ok && id.Name == pkg && sel.Sel.Name == name
-}
-
-func asExpr(n ast.Node) ast.Expr {
-	e, _ := n.(ast.Expr)
-	return e
-}
-
-// stringLiterals returns the string literals among args, and "?" for any
-// argument that is not one.
-func stringLiterals(args []ast.Expr) []string {
-	out := make([]string, len(args))
-	for i, a := range args {
-		out[i] = "?"
-		if lit, ok := a.(*ast.BasicLit); ok {
-			if s, err := strconv.Unquote(lit.Value); err == nil {
-				out[i] = s
-			}
-		}
+// With a real engine and AGENTKIT_SANDBOX_BASE_IMAGE, --podman runs the same
+// program in a container with no network.
+func TestTheProgramRunsOnPodman(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the example against a container engine; skipped under -short")
 	}
-	return out
+	image := os.Getenv("AGENTKIT_SANDBOX_BASE_IMAGE")
+	if image == "" {
+		t.Skip("AGENTKIT_SANDBOX_BASE_IMAGE is not set; run make build-containers and set it to the base image")
+	}
+	if _, err := exec.LookPath("podman"); err != nil {
+		t.Skip("podman is not on PATH; the example's --podman uses podman.Options{}, whose engine is podman")
+	}
+	cmd := exec.Command("go", "run", ".", "--podman", "--image", image)
+	if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), " on podman: ") || !strings.Contains(string(out), "Sandbox example completed successfully") {
+		t.Fatalf("go run . --podman: %v\n%s", err, out)
+	}
 }

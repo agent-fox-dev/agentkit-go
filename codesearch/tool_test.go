@@ -3,720 +3,349 @@
 package codesearch
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/tools"
-	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// TS-03-16: code_search is a Builtin parallel read-only tool with the pinned
-// description, schema and guideline.
-func TestCodeSearchToolDefinition_TS03_16(t *testing.T) {
-	root := t.TempDir()
-	mkFile(t, root, "main.go", "package main\n")
-	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
+func TestCodeSearchIsABuiltinParallelTool(t *testing.T) {
+	tl := newFixture(t, map[string]string{"main.go": "package main\n"}, Options{}).Tools()
+	if len(tl) != 1 || tl[0].Name != "code_search" || !tl[0].Builtin || tl[0].ExecutionMode != core.Parallel {
+		t.Fatalf("Tools() = %+v, want one builtin parallel code_search", tl)
 	}
-
-	idx, err := newIndex(ws, Options{
-		TempDir: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer idx.Close()
-
-	tls := idx.Tools()
-	if len(tls) == 0 {
-		t.Fatal("Tools() returned no tools")
-	}
-
-	tool := tls[0]
-
-	// Name
-	if tool.Name != "code_search" {
-		t.Errorf("Name = %q, want code_search", tool.Name)
-	}
-
-	// Builtin
-	if !tool.Builtin {
-		t.Error("tool should be Builtin")
-	}
-
-	// Parallel (zero value of ExecutionMode)
-	if tool.ExecutionMode != core.Parallel {
-		t.Errorf("ExecutionMode = %v, want Parallel", tool.ExecutionMode)
-	}
-
-	// Description contains "zoekt query syntax"
-	if !strings.Contains(tool.Description, "zoekt query syntax") {
-		t.Error("description should contain 'zoekt query syntax'")
-	}
-
-	// Description does NOT contain "RE2"
-	if strings.Contains(tool.Description, "RE2") {
-		t.Error("description should not contain 'RE2'")
-	}
-
-	// Four examples
-	examples := []string{
-		"sym:Runner",
-		`retry file:^src/ -file:test`,
-		`lang:python "def load"`,
-		`(compaction or summarize) case:no`,
-	}
-	for _, ex := range examples {
-		if !strings.Contains(tool.Description, ex) {
-			t.Errorf("description should contain example %q", ex)
-		}
-	}
-
-	// PromptGuidelines
-	wantGuideline := "Use code_search for ranked questions about the codebase; search_files for an exhaustive regex scan."
-	found := false
-	for _, g := range tool.PromptGuidelines {
-		if g == wantGuideline {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("PromptGuidelines should contain %q, got %v", wantGuideline, tool.PromptGuidelines)
-	}
-
-	// Schema: query is required; path, max_files, context_lines are optional
-	if tool.InputSchema == nil {
-		t.Fatal("InputSchema is nil")
+	if s := tl[0].InputSchema; !s.IsRequired("query") || s.IsRequired("path") || s.IsRequired("max_files") || s.IsRequired("context_lines") {
+		t.Errorf("only query is required: %+v", s)
 	}
 }
 
-// TS-03-17: Empty, oversized, unparsable queries and negative context_lines
-// are invalid_arguments before any build.
-func TestInvalidArguments_TS03_17(t *testing.T) {
-	root := t.TempDir()
-	mkFile(t, root, "main.go", "package main\n")
-	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	idx, err := newIndex(ws, Options{
-		TempDir: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer idx.Close()
-
-	tool := idx.Tools()[0]
-	ctx := context.Background()
-
-	cases := []struct {
-		name string
-		args map[string]any
+// Bad arguments are refused before any build, each with its error code.
+func TestCodeSearchRefusesBadArgumentsBeforeBuilding(t *testing.T) {
+	idx := newFixture(t, map[string]string{"main.go": "package main\n"}, Options{})
+	for _, c := range []struct {
+		in, code, detail string
 	}{
-		{"empty query", map[string]any{"query": "   "}},
-		{"oversized query", map[string]any{"query": strings.Repeat("a", 1025)}},
-		{"unparsable query", map[string]any{"query": "("}},
-		{"negative context_lines", map[string]any{"query": "hello", "context_lines": -1}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			in, _ := json.Marshal(tc.args)
-			r := tool.Execute(ctx, in)
-			if r.OK {
-				t.Error("expected error result")
-			}
-			if r.Error != "invalid_arguments" {
-				t.Errorf("error code = %q, want invalid_arguments", r.Error)
-			}
-		})
-	}
-
-	// Verify parser message is included for unparsable query
-	in, _ := json.Marshal(map[string]any{"query": "("})
-	r := tool.Execute(ctx, in)
-	if !strings.Contains(r.Detail, "parse") && !strings.Contains(strings.ToLower(r.Detail), "expected") {
-		// The zoekt parser should produce some error message
-		t.Logf("parser error detail: %q", r.Detail)
-	}
-
-	// Build counter should be 0
-	if bc := idx.BuildCount(); bc != 0 {
-		t.Errorf("build count = %d, want 0 (no build should have started)", bc)
-	}
-}
-
-// TS-03-18: context_lines and max_files default and clamp as specified.
-func TestContextLinesAndMaxFilesDefaultAndClamp_TS03_18(t *testing.T) {
-	root := t.TempDir()
-
-	// Create 40 files that all contain "matchword"
-	for i := 0; i < 40; i++ {
-		content := "package pkg\n// line2\n// line3\n// matchword here\n// line5\n// line6\n// line7\n"
-		mkFile(t, root, fmt.Sprintf("pkg/file%03d.go", i), content)
-	}
-
-	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	idx, err := newIndex(ws, Options{
-		TempDir: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer idx.Close()
-
-	tool := idx.Tools()[0]
-	ctx := context.Background()
-
-	// Default: 10 files
-	in, _ := json.Marshal(map[string]any{"query": "matchword"})
-	r := tool.Execute(ctx, in)
-	if !r.OK {
-		t.Fatalf("expected OK result, got error: %s: %s", r.Error, r.Detail)
-	}
-	files := countResultFiles(r)
-	if files > 10 {
-		t.Errorf("default max_files: got %d files, want at most 10", files)
-	}
-
-	// max_files 100 clamps to 25
-	in, _ = json.Marshal(map[string]any{"query": "matchword", "max_files": 100})
-	r = tool.Execute(ctx, in)
-	if !r.OK {
-		t.Fatalf("expected OK result, got error: %s: %s", r.Error, r.Detail)
-	}
-	files = countResultFiles(r)
-	if files > 25 {
-		t.Errorf("max_files=100 clamped: got %d files, want at most 25", files)
-	}
-
-	// context_lines 500 clamps to MaxSearchContextLines
-	in, _ = json.Marshal(map[string]any{"query": "matchword", "context_lines": 500})
-	r = tool.Execute(ctx, in)
-	if !r.OK {
-		t.Fatalf("expected OK result, got error: %s: %s", r.Error, r.Detail)
-	}
-}
-
-// TS-03-19: A path outside the workspace is path_not_allowed and a missing
-// path is read_failed, both before a build.
-func TestPathValidation_TS03_19(t *testing.T) {
-	root := t.TempDir()
-	mkFile(t, root, "main.go", "package main\n")
-	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	idx, err := newIndex(ws, Options{
-		TempDir: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer idx.Close()
-
-	tool := idx.Tools()[0]
-	ctx := context.Background()
-
-	// Path outside workspace
-	in, _ := json.Marshal(map[string]any{"query": "x", "path": "../outside"})
-	r := tool.Execute(ctx, in)
-	if r.OK {
-		t.Error("expected error for path outside workspace")
-	}
-	if r.Error != "path_not_allowed" {
-		t.Errorf("error code = %q, want path_not_allowed", r.Error)
-	}
-
-	// Missing path
-	in, _ = json.Marshal(map[string]any{"query": "x", "path": "nope/missing"})
-	r = tool.Execute(ctx, in)
-	if r.OK {
-		t.Error("expected error for missing path")
-	}
-	if r.Error != "read_failed" {
-		t.Errorf("error code = %q, want read_failed", r.Error)
-	}
-
-	// Build counter should be 0
-	if bc := idx.BuildCount(); bc != 0 {
-		t.Errorf("build count = %d, want 0 (no build should have started)", bc)
-	}
-}
-
-// TS-03-20: path is a conjunction that confines an or-query, for directories,
-// files, the root and metacharacters.
-func TestPathConjunction_TS03_20(t *testing.T) {
-	root := t.TempDir()
-
-	// Create fixture files
-	mkFile(t, root, "pkg/a/x.go", "package a\n// retry fetch\n")
-	mkFile(t, root, "pkg/ab/y.go", "package ab\n// retry fetch\n")
-	mkFile(t, root, "other/z.go", "package other\n// retry fetch\n")
-	mkFile(t, root, "c++[1]/w.go", "package cplus\n// retry fetch\n")
-
-	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	idx, err := newIndex(ws, Options{
-		TempDir: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer idx.Close()
-
-	tool := idx.Tools()[0]
-	ctx := context.Background()
-
-	// path=pkg/a returns only files under pkg/a/ and not pkg/ab/
-	in, _ := json.Marshal(map[string]any{"query": "retry or fetch", "path": "pkg/a"})
-	r := tool.Execute(ctx, in)
-	if !r.OK {
-		t.Fatalf("expected OK result, got error: %s: %s", r.Error, r.Detail)
-	}
-	resultFiles := getResultFilePaths(r)
-	for _, f := range resultFiles {
-		if !strings.HasPrefix(f, "pkg/a/") {
-			t.Errorf("path=pkg/a returned file %q outside pkg/a/", f)
+		{`{malformed`, "invalid_arguments", ""},
+		{`{"query":""}`, "invalid_arguments", "must not be empty"},
+		{`{"query":"   "}`, "invalid_arguments", "must not be empty"},
+		{fmt.Sprintf(`{"query":%q}`, strings.Repeat("a", maxQueryBytes+1)), "invalid_arguments", "1024 byte limit"},
+		{`{"query":"("}`, "invalid_arguments", "query parse error"},
+		{`{"query":"x","context_lines":-1}`, "invalid_arguments", "must not be negative"},
+		{`{"query":"x","path":"../outside"}`, "path_not_allowed", ""},
+		{`{"query":"x","path":"nope/missing"}`, "read_failed", ""},
+	} {
+		r := idx.Tools()[0].Execute(context.Background(), json.RawMessage(c.in))
+		if r.OK || r.Error != c.code || !strings.Contains(r.Detail, c.detail) {
+			t.Errorf("%s: %v %q %q, want %s with %q", c.in, r.OK, r.Error, r.Detail, c.code, c.detail)
 		}
 	}
-	if len(resultFiles) == 0 {
-		t.Error("path=pkg/a returned no files, expected at least pkg/a/x.go")
+	if n := idx.BuildCount(); n != 0 {
+		t.Errorf("BuildCount = %d, want 0", n)
 	}
+}
 
-	// path=pkg/a/x.go returns only that file
-	in, _ = json.Marshal(map[string]any{"query": "retry or fetch", "path": "pkg/a/x.go"})
-	r = tool.Execute(ctx, in)
-	if !r.OK {
-		t.Fatalf("expected OK result, got error: %s: %s", r.Error, r.Detail)
-	}
-	resultFiles = getResultFilePaths(r)
-	for _, f := range resultFiles {
-		if f != "pkg/a/x.go" {
-			t.Errorf("path=pkg/a/x.go returned file %q, want only pkg/a/x.go", f)
+// max_files defaults to 10 and is capped at 25; context_lines defaults to 2
+// only when absent, 0 means none, and it is capped at MaxSearchContextLines.
+func TestMaxFilesAndContextLinesDefaultAndClamp(t *testing.T) {
+	var long strings.Builder
+	long.WriteString("package pkg\n")
+	for ln := 2; ln <= 60; ln++ {
+		if ln == 30 {
+			long.WriteString("// matchword\n")
+		} else {
+			fmt.Fprintf(&long, "// line %d\n", ln)
 		}
 	}
-
-	// Root adds no constraint
-	in, _ = json.Marshal(map[string]any{"query": "retry or fetch", "path": "."})
-	r = tool.Execute(ctx, in)
-	if !r.OK {
-		t.Fatalf("expected OK result, got error: %s: %s", r.Error, r.Detail)
+	idx := newFixture(t, with(numbered(40, "pkg/f%03d.go", "package pkg\n// matchword\n"), map[string]string{"long.go": long.String()}), Options{})
+	for _, c := range []struct {
+		kv []any
+		n  int
+	}{{nil, 10}, {[]any{"max_files", 0}, 10}, {[]any{"max_files", 3}, 3}, {[]any{"max_files", 100}, 25}} {
+		if got := len(paths(find(t, idx, "matchword", c.kv...))); got != c.n {
+			t.Errorf("%v: %d files, want %d", c.kv, got, c.n)
+		}
 	}
-	resultFiles = getResultFilePaths(r)
-	if len(resultFiles) < 4 {
-		t.Errorf("root path returned %d files, want at least 4", len(resultFiles))
-	}
-
-	// Metacharacter directory
-	in, _ = json.Marshal(map[string]any{"query": "retry or fetch", "path": "c++[1]"})
-	r = tool.Execute(ctx, in)
-	if !r.OK {
-		t.Fatalf("expected OK result, got error: %s: %s", r.Error, r.Detail)
-	}
-	resultFiles = getResultFilePaths(r)
-	for _, f := range resultFiles {
-		if !strings.HasPrefix(f, "c++[1]/") {
-			t.Errorf("path=c++[1] returned file %q outside c++[1]/", f)
+	for _, c := range []struct {
+		kv    []any
+		lines int
+	}{{nil, 5}, {[]any{"context_lines", 0}, 1}, {[]any{"context_lines", 500}, 2*tools.MaxSearchContextLines + 1}} {
+		r := find(t, idx, "matchword", append([]any{"path", "long.go"}, c.kv...)...)
+		chunks := r.Data["files"].([]any)[0].(map[string]any)["chunks"].([]any)
+		if got := len(chunks[0].(map[string]any)["lines"].([]any)); len(chunks) != 1 || got != c.lines {
+			t.Errorf("%v: %d chunks, %d lines, want one chunk of %d", c.kv, len(chunks), got, c.lines)
 		}
 	}
 }
 
-// TS-03-21: A cancelled call context returns aborted with "Operation aborted".
-func TestCancelledContext_TS03_21(t *testing.T) {
-	root := t.TempDir()
-	mkFile(t, root, "main.go", "package main\n")
-	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
+// path is a case-sensitive conjunction with the query: a directory is a
+// prefix with its slash, a file is itself, and the root adds nothing.
+func TestPathConfinesTheQuery(t *testing.T) {
+	const body = "package p\n// retry fetch\n"
+	idx := newFixture(t, map[string]string{
+		"pkg/a/x.go": body, "pkg/ab/y.go": body, "other/z.go": body, "c++[1]/w.go": body, "src/s.go": body, "Src/S.go": body,
+	}, Options{})
+	for path, want := range map[string][]string{
+		"pkg/a":      {"pkg/a/x.go"},
+		"pkg/a/x.go": {"pkg/a/x.go"},
+		"c++[1]":     {"c++[1]/w.go"},
+		"src":        {"src/s.go"},
+		".":          {"Src/S.go", "c++[1]/w.go", "other/z.go", "pkg/a/x.go", "pkg/ab/y.go", "src/s.go"},
+	} {
+		got := paths(find(t, idx, "retry or fetch", "path", path))
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
+			t.Errorf("path %q: %v, want %v", path, got, want)
+		}
 	}
+}
 
-	idx, err := newIndex(ws, Options{
-		TempDir: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer idx.Close()
-
-	tool := idx.Tools()[0]
-
+func TestACancelledCallIsAborted(t *testing.T) {
+	idx := newFixture(t, map[string]string{"main.go": "package main\n"}, Options{})
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel before the call
-
-	in, _ := json.Marshal(map[string]any{"query": "hello"})
-	r := tool.Execute(ctx, in)
-	if r.OK {
-		t.Error("expected error result for cancelled context")
-	}
-	if r.Error != "aborted" {
-		t.Errorf("error code = %q, want aborted", r.Error)
-	}
-	if r.Detail != "Operation aborted" {
-		t.Errorf("detail = %q, want 'Operation aborted'", r.Detail)
+	cancel()
+	if r := call(ctx, idx, map[string]any{"query": "main"}); r.Error != "aborted" || r.Detail != "Operation aborted" {
+		t.Errorf("= %v %q %q, want aborted", r.OK, r.Error, r.Detail)
 	}
 }
 
-// TS-03-22: A build failure that is not a bound returns index_failed with the cause.
-func TestBuildFailureReturnsIndexFailed_TS03_22(t *testing.T) {
-	root := t.TempDir()
-	mkFile(t, root, "main.go", "package main\n")
-	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Use a regular file as TempDir so the shard directory cannot be created
-	badTempFile := filepath.Join(t.TempDir(), "notadir")
-	if err := os.WriteFile(badTempFile, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	idx, err := newIndex(ws, Options{
-		TempDir: badTempFile,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer idx.Close()
-
-	tool := idx.Tools()[0]
-	ctx := context.Background()
-
-	in, _ := json.Marshal(map[string]any{"query": "hello"})
-	r := tool.Execute(ctx, in)
-	if r.OK {
-		t.Error("expected error result for build failure")
-	}
-	if r.Error != "index_failed" {
-		t.Errorf("error code = %q, want index_failed", r.Error)
-	}
-	if r.Detail == "" {
-		t.Error("detail should include the underlying error")
+func TestABuildThatCannotWriteItsShardsIsIndexFailed(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "file")
+	testutil.WriteTree(t, filepath.Dir(notADir), map[string]string{"file": "x"})
+	idx := newFixture(t, map[string]string{"main.go": "package main\n"}, Options{TempDir: notADir})
+	if r := call(context.Background(), idx, map[string]any{"query": "main"}); r.Error != "index_failed" || r.Detail == "" {
+		t.Errorf("= %v %q %q, want index_failed with its cause", r.OK, r.Error, r.Detail)
 	}
 }
 
-// TS-03-23: A failing or timed-out search returns search_failed, and the
-// timeout message says to narrow.
-func TestSearchFailedAndTimeout_TS03_23(t *testing.T) {
-	root := t.TempDir()
-	mkFile(t, root, "main.go", "package main\nfunc main() {}\n")
-	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Run("search error", func(t *testing.T) {
-		idx, err := newIndex(ws, Options{
-			TempDir: t.TempDir(),
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer idx.Close()
-
-		// Inject a searcher that returns an error
-		idx.testSearchHook = func(_ context.Context, _ string) (*searchHookResult, error) {
-			return nil, fmt.Errorf("injected search error")
-		}
-
-		tool := idx.Tools()[0]
-		ctx := context.Background()
-
-		in, _ := json.Marshal(map[string]any{"query": "main"})
-		r := tool.Execute(ctx, in)
-		if r.OK {
-			t.Error("expected error result for search failure")
-		}
-		if r.Error != "search_failed" {
-			t.Errorf("error code = %q, want search_failed", r.Error)
-		}
-	})
-
-	t.Run("search timeout", func(t *testing.T) {
-		idx, err := newIndex(ws, Options{
-			TempDir: t.TempDir(),
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer idx.Close()
-
-		// Inject a searcher that blocks until context is cancelled
-		idx.testSearchHook = func(ctx context.Context, _ string) (*searchHookResult, error) {
-			<-ctx.Done()
-			return nil, ctx.Err()
-		}
-
-		// Override the query timeout to something very short
-		idx.queryTimeout = 50 * time.Millisecond
-
-		tool := idx.Tools()[0]
-		ctx := context.Background()
-
-		in, _ := json.Marshal(map[string]any{"query": "main"})
-		r := tool.Execute(ctx, in)
-		if r.OK {
-			t.Error("expected error result for search timeout")
-		}
-		if r.Error != "search_failed" {
-			t.Errorf("error code = %q, want search_failed", r.Error)
-		}
-		if !strings.Contains(r.Detail, "timed out") {
-			t.Errorf("detail should mention 'timed out', got %q", r.Detail)
-		}
-		if !strings.Contains(r.Detail, "narrow") {
-			t.Errorf("detail should mention 'narrow', got %q", r.Detail)
-		}
-	})
-}
-
-// TS-03-5.1: The build counter is 0 after New and after any find_symbol call,
-// and 1 after the first code_search.
-func TestLazyBuild_TS03_5_1(t *testing.T) {
-	root := t.TempDir()
-	mkFile(t, root, "main.go", "package main\nfunc main() {}\n")
-	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	idx, err := newIndex(ws, Options{
-		TempDir: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer idx.Close()
-
-	// Build count is 0 after New
-	if bc := idx.BuildCount(); bc != 0 {
-		t.Errorf("build count after New = %d, want 0", bc)
-	}
-
-	// find_symbol (Symbols) does not trigger a build
-	_, _, _ = idx.Symbols(context.Background(), tools.SymbolQuery{Name: "main"})
-	if bc := idx.BuildCount(); bc != 0 {
-		t.Errorf("build count after Symbols = %d, want 0", bc)
-	}
-
-	// First code_search triggers a build
-	tool := idx.Tools()[0]
-	in, _ := json.Marshal(map[string]any{"query": "main"})
-	r := tool.Execute(context.Background(), in)
-	if !r.OK {
-		t.Fatalf("expected OK result, got error: %s: %s", r.Error, r.Detail)
-	}
-	if bc := idx.BuildCount(); bc != 1 {
-		t.Errorf("build count after first code_search = %d, want 1", bc)
-	}
-
-	// Second code_search does not rebuild
-	r = tool.Execute(context.Background(), in)
-	if !r.OK {
-		t.Fatalf("expected OK result, got error: %s: %s", r.Error, r.Detail)
-	}
-	if bc := idx.BuildCount(); bc != 1 {
-		t.Errorf("build count after second code_search = %d, want 1", bc)
-	}
-}
-
-// --- helpers ---
-
-// countResultFiles counts the number of files in a code_search result.
-func countResultFiles(r core.ToolResult) int {
-	if r.Data == nil {
-		return 0
-	}
-	files, ok := r.Data["files"]
-	if !ok {
-		return 0
-	}
-	arr, ok := files.([]any)
-	if !ok {
-		return 0
-	}
-	return len(arr)
-}
-
-// getResultFilePaths extracts file paths from a code_search result.
-func getResultFilePaths(r core.ToolResult) []string {
-	if r.Data == nil {
-		return nil
-	}
-	files, ok := r.Data["files"]
-	if !ok {
-		return nil
-	}
-	arr, ok := files.([]any)
-	if !ok {
-		return nil
-	}
-	var paths []string
-	for _, f := range arr {
-		m, ok := f.(map[string]any)
-		if !ok {
-			continue
-		}
-		if p, ok := m["path"].(string); ok {
-			paths = append(paths, p)
-		}
-	}
-	return paths
-}
-
-// TS-06-20: code_search declares the Data it returns. A file entry carries a
-// match count and context chunks, symbol_sources counts files per backend,
-// and dirty_files is a count.
-func TestOutputSchemaCodeSearch_TS06_20(t *testing.T) {
-	root := t.TempDir()
-	mkFile(t, root, "main.go", "package main\n")
-	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	idx, err := newIndex(ws, Options{TempDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer idx.Close()
-	s := idx.Tools()[0].OutputSchema
-	if s == nil || s.Type != schema.TypeObject {
-		t.Fatalf("OutputSchema = %+v, want an object", s)
-	}
-	type p struct {
-		typ      schema.Type
-		required bool
-	}
-	check := func(where string, s *schema.Schema, want map[string]p) {
-		t.Helper()
-		if s == nil || s.Type != schema.TypeObject || len(s.Properties) != len(want) {
-			t.Fatalf("%s = %+v, want an object with %d properties", where, s, len(want))
-		}
-		for name, w := range want {
-			got := s.Properties[name]
-			if got == nil || got.Type != w.typ || s.IsRequired(name) != w.required {
-				t.Errorf("%s.%s = %+v (required %v), want %s required=%v", where, name, got, s.IsRequired(name), w.typ, w.required)
+// A failing search is search_failed; one that runs out of the query timeout
+// says to narrow it; one whose caller gives up is aborted.
+func TestAFailedSearchIsSearchFailed(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		hook         func(ctx context.Context, cancel func()) error
+		code, detail string
+	}{
+		{"an error", func(context.Context, func()) error { return errors.New("injected") }, "search_failed", "injected"},
+		{"the query timeout", func(ctx context.Context, _ func()) error { <-ctx.Done(); return ctx.Err() },
+			"search_failed", "query timed out; narrow the query or add a path constraint"},
+		{"the caller gives up", func(ctx context.Context, cancel func()) error { cancel(); <-ctx.Done(); return ctx.Err() },
+			"aborted", "Operation aborted"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			idx := newFixture(t, map[string]string{"main.go": "package main\n"}, Options{})
+			idx.queryTimeout = 50 * time.Millisecond
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			idx.testSearchHook = func(sctx context.Context, _ string) (*searchHookResult, error) {
+				return nil, c.hook(sctx, cancel)
 			}
-		}
+			if r := call(ctx, idx, map[string]any{"query": "main"}); r.Error != c.code || !strings.Contains(r.Detail, c.detail) {
+				t.Errorf("= %v %q %q, want %s %q", r.OK, r.Error, r.Detail, c.code, c.detail)
+			}
+		})
 	}
-	check("code_search", s, map[string]p{
-		"files": {schema.TypeArray, true}, "truncated": {schema.TypeBoolean, true},
-		"note": {schema.TypeString, true}, "partial": {schema.TypeBoolean, true},
-		"partial_reason": {schema.TypeString, true}, "symbol_sources": {schema.TypeObject, true},
-		"files_indexed": {schema.TypeInteger, true}, "dirty_files": {schema.TypeInteger, true},
-		"skipped": {schema.TypeObject, true},
-	})
-	check("code_search.skipped", s.Properties["skipped"], map[string]p{
-		"binary": {schema.TypeInteger, true}, "oversized": {schema.TypeInteger, true},
-		"too_many_trigrams": {schema.TypeInteger, true}, "too_small": {schema.TypeInteger, true},
-	})
-	file := s.Properties["files"].Items
-	check("code_search.files[]", file, map[string]p{
-		"path": {schema.TypeString, true}, "score": {schema.TypeNumber, true},
-		"matches": {schema.TypeInteger, true}, "chunks": {schema.TypeArray, true},
-		"symbols": {schema.TypeArray, true},
-	})
-	if !file.Properties["symbols"].Nullable {
-		t.Error("code_search.files[].symbols must be nullable: collectDeclNames returns nil when no declaration matches")
+
+	idx := newFixture(t, map[string]string{"main.go": "package main\n"}, Options{})
+	idx.queryTimeout = time.Minute
+	if got := paths(find(t, idx, "main")); !slices.Equal(got, []string{"main.go"}) {
+		t.Errorf("a search under a set timeout found %v", got)
 	}
-	check("code_search.files[].chunks[]", file.Properties["chunks"].Items, map[string]p{
-		"lines": {schema.TypeArray, true},
-	})
-	check("code_search.files[].chunks[].lines[]", file.Properties["chunks"].Items.Properties["lines"].Items, map[string]p{
-		"line": {schema.TypeInteger, true}, "text": {schema.TypeString, true}, "match": {schema.TypeBoolean, true},
-	})
 }
 
-// TS-06-23 for code_search, which lives in this module rather than beside
-// the other built-in tools: malformed JSON and an empty query are
-// invalid_arguments.
-func TestErrorCodesInvalidArguments_TS06_23(t *testing.T) {
-	root := t.TempDir()
-	mkFile(t, root, "main.go", "package main\n")
-	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
+// New and Symbols build nothing; the first code_search builds, once.
+func TestTheFirstCodeSearchBuildsTheIndexOnce(t *testing.T) {
+	idx := newFixture(t, map[string]string{"main.go": "package main\nfunc main() {}\n"}, Options{})
+	if _, ok, _ := idx.Symbols(context.Background(), tools.SymbolQuery{Name: "main"}); ok || idx.BuildCount() != 0 {
+		t.Fatalf("Symbols before any code_search: ok %v, BuildCount %d", ok, idx.BuildCount())
 	}
-	idx, err := newIndex(ws, Options{TempDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer idx.Close()
-	cs := idx.Tools()[0]
-	for _, args := range []string{`{malformed`, `{"query":""}`} {
-		res := cs.Execute(context.Background(), json.RawMessage(args))
-		if res.OK || res.Error != "invalid_arguments" {
-			t.Errorf("code_search %s: OK %v error %q, want invalid_arguments", args, res.OK, res.Error)
+	for range 2 {
+		find(t, idx, "main")
+		if n := idx.BuildCount(); n != 1 {
+			t.Fatalf("BuildCount = %d, want 1", n)
 		}
 	}
 }
 
-// TS-06-22 for code_search: successful Data conforms to its OutputSchema —
-// with matches and symbols, with matches on lines no declaration starts on,
-// and with no match at all. Validated as the value of a property, so the
-// whole schema is walked.
-func TestConformanceCodeSearchDataMatchesOutputSchema_TS06_22(t *testing.T) {
-	root := t.TempDir()
-	mkFile(t, root, "main.go", "package main\n\n// Greet says hello.\nfunc Greet() string { return \"hi\" }\n\nfunc main() { _ = Greet() }\n")
-	mkFile(t, root, "notes.txt", "greeting notes\nanother line\n")
-	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
+// Past 5% of the indexed files dirty, a query rebuilds the index once and
+// removes the old shards; at 4% the overlay serves them.
+func TestMoreThanFivePercentDirtyRebuildsTheIndex(t *testing.T) {
+	idx := newFixture(t, filler(100), Options{})
+	find(t, idx, "token000")
+	oldRunDir := idx.RunDir()
+	edit := func(from, to int) {
+		for i := from; i < to; i++ {
+			rel := fmt.Sprintf("f%03d.go", i)
+			write(t, idx, rel, fmt.Sprintf("package pkg\n// updated%03d\nfunc F%03d() {}\n", i, i))
+			idx.Invalidate(rel)
+		}
 	}
-	idx, err := newIndex(ws, Options{TempDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
+	edit(0, 4)
+	if r := find(t, idx, "updated"); idx.BuildCount() != 1 || r.Data["dirty_files"] != 4 {
+		t.Fatalf("at 4%%: BuildCount %d, dirty_files %v, want 1 and 4", idx.BuildCount(), r.Data["dirty_files"])
 	}
-	defer idx.Close()
+	edit(4, 6)
+	r := find(t, idx, "updated")
+	if idx.BuildCount() != 2 || r.Data["dirty_files"] != 0 || len(paths(r)) != 6 {
+		t.Errorf("at 6%%: BuildCount %d, dirty_files %v, %d files; want 2, 0 and 6", idx.BuildCount(), r.Data["dirty_files"], len(paths(r)))
+	}
+	if !gone(oldRunDir) {
+		t.Errorf("the old run directory %s survived the rebuild", oldRunDir)
+	}
+}
+
+// Queries arriving during a rebuild wait for it and use the new index; one
+// whose context ends first gives up without waiting.
+func TestQueriesDuringARebuildWaitOrGiveUp(t *testing.T) {
+	idx := newFixture(t, filler(100), Options{})
+	find(t, idx, "token000")
+	for i := range 6 {
+		rel := fmt.Sprintf("f%03d.go", i)
+		write(t, idx, rel, fmt.Sprintf("package pkg\n// newword%03d\n", i))
+		idx.Invalidate(rel)
+	}
+	started, release := blockOutline(t, idx)
+	first := async(context.Background(), idx, "newword")
+	recv(t, started, "the rebuild")
+	waiter := async(context.Background(), idx, "newword")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if r := recv(t, async(ctx, idx, "newword"), "the impatient query"); r.Error != "aborted" {
+		t.Errorf("impatient query = %v %q, want aborted", r.OK, r.Error)
+	}
+	if !stays(first) {
+		t.Fatal("the rebuilding query returned while its rebuild was blocked")
+	}
+	release()
+	for _, ch := range []<-chan core.ToolResult{first, waiter} {
+		if r := recv(t, ch, "a query"); !r.OK || len(paths(r)) != 6 {
+			t.Errorf("after the rebuild: %v %s, %v", r.OK, r.Detail, paths(r))
+		}
+	}
+	if n := idx.BuildCount(); n != 2 {
+		t.Errorf("BuildCount = %d, want one rebuild", n)
+	}
+}
+
+// Data conforms to the declared OutputSchema with symbols, with matches on
+// lines no declaration starts on, and with no match at all.
+func TestCodeSearchDataConformsToItsOutputSchema(t *testing.T) {
+	idx := newFixture(t, map[string]string{
+		"main.go":   "package main\n\n// Greet says hello.\nfunc Greet() string { return \"hi\" }\n\nfunc main() { _ = Greet() }\n",
+		"notes.txt": "greeting notes\nanother line\n",
+	}, Options{})
 	cs := idx.Tools()[0]
 	wrapped := schema.Object(schema.Prop("data", cs.OutputSchema))
-	for _, q := range []string{`{"query":"Greet"}`, `{"query":"notes"}`, `{"query":"no_such_token_xyz"}`} {
-		res := cs.Execute(context.Background(), json.RawMessage(q))
-		if !res.OK {
-			t.Fatalf("%s: %s: %s", q, res.Error, res.Detail)
-		}
-		blob, err := json.Marshal(map[string]any{"data": res.Data})
-		if err != nil {
-			t.Fatal(err)
-		}
-		ordered, err := jsonObject(blob)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := schema.Validate(wrapped, ordered); err != nil {
-			t.Errorf("%s: Data does not conform: %v\nData: %s", q, err, blob)
+	for _, q := range []string{"Greet", "notes", "no_such_token_xyz"} {
+		r := find(t, idx, q)
+		if err := schema.Validate(wrapped, testutil.Object(t, []byte(testutil.MustJSON(t, map[string]any{"data": r.Data})))); err != nil {
+			t.Errorf("%s: Data does not conform: %v", q, err)
 		}
 	}
 }
 
-// jsonObject decodes a JSON object as schema.Validate takes it: numbers as
-// json.Number.
-func jsonObject(b []byte) (map[string]any, error) {
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.UseNumber()
-	var m map[string]any
-	err := d.Decode(&m)
-	return m, err
+// toolsWith is the tools.For list over the index's workspace with the index
+// set, by name.
+func toolsWith(t *testing.T, idx *Index) ([]string, map[string]core.Tool) {
+	t.Helper()
+	all, err := tools.For(idx.ws, tools.Options{Index: idx, Env: os.Environ()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	byName := map[string]core.Tool{}
+	for _, tl := range all {
+		names = append(names, tl.Name)
+		byName[tl.Name] = tl
+	}
+	return names, byName
+}
+
+func exec(t *testing.T, tl core.Tool, args map[string]any) core.ToolResult {
+	t.Helper()
+	r := tl.Execute(context.Background(), json.RawMessage(testutil.MustJSON(t, args)))
+	if !r.OK {
+		t.Fatalf("%s %v: %s: %s", tl.Name, args, r.Error, r.Detail)
+	}
+	return r
+}
+
+// An embedder hands the index to tools.For: code_search follows the
+// built-ins, and it and search_files see only what the ignore rules let in.
+func TestToolsForAddsCodeSearchAfterTheBuiltins(t *testing.T) {
+	const body = "package p\n\n// needleToken\nfunc F() {}\n"
+	idx := newFixture(t, map[string]string{
+		".gitignore": "ignored/\n", "nested/.gitignore": "inner.go\n",
+		"kept.go": body, "nested/ok.go": body, "ignored/hidden.go": body, "nested/inner.go": body,
+		"pkg/runner.go": "package pkg\n\n// Runner handles retry logic.\nfunc Runner() {}\n",
+	}, Options{})
+	names, byName := toolsWith(t, idx)
+	builtins := []string{"read_file", "write_file", "edit_file", "list_files", "find_files", "search_files",
+		"file_outline", "find_symbol", "find_references", "execute", "run_command"}
+	if !slices.Equal(names, append(builtins, "code_search")) {
+		t.Fatalf("tools = %v", names)
+	}
+
+	var found []string
+	for _, m := range exec(t, byName["search_files"], map[string]any{"pattern": "needleToken"}).Data["matches"].([]tools.SearchMatch) {
+		found = append(found, m.File)
+	}
+	cs := exec(t, byName["code_search"], map[string]any{"query": "needleToken"})
+	got := paths(cs)
+	slices.Sort(found)
+	slices.Sort(got)
+	if want := []string{"kept.go", "nested/ok.go"}; !slices.Equal(found, want) || !slices.Equal(got, want) {
+		t.Errorf("search_files found %v, code_search %v, want %v", found, got, want)
+	}
+	if got := paths(exec(t, byName["code_search"], map[string]any{"query": "sym:Runner", "path": "pkg"})); !slices.Equal(got, []string{"pkg/runner.go"}) {
+		t.Errorf("sym:Runner under pkg found %v", got)
+	}
+}
+
+func TestAnEditThroughEditFileIsFoundAtOnce(t *testing.T) {
+	idx := newFixture(t, with(filler(25), map[string]string{"target.go": "package pkg\n\n// oldUniqueMarker\nfunc Target() {}\n"}), Options{})
+	_, byName := toolsWith(t, idx)
+	cs := byName["code_search"]
+	exec(t, cs, map[string]any{"query": "oldUniqueMarker"})
+	exec(t, byName["edit_file"], map[string]any{"path": "target.go",
+		"edits": []map[string]string{{"old_string": "oldUniqueMarker", "new_string": "newUniqueMarker"}}})
+
+	r := exec(t, cs, map[string]any{"query": "newUniqueMarker"})
+	if !slices.Equal(paths(r), []string{"target.go"}) || r.Data["dirty_files"] != 1 {
+		t.Errorf("newUniqueMarker in %v, dirty_files %v", paths(r), r.Data["dirty_files"])
+	}
+	if got := paths(exec(t, cs, map[string]any{"query": "oldUniqueMarker"})); len(got) != 0 {
+		t.Errorf("oldUniqueMarker still found in %v", got)
+	}
+}
+
+func TestAFileDeletedByAShellCommandLeavesTheResults(t *testing.T) {
+	idx := newFixture(t, map[string]string{
+		"keep.go":   "package pkg\n\n// keepMarker\nfunc Keep() {}\n",
+		"victim.go": "package pkg\n\n// victimOnlyToken\nfunc Victim() {}\n",
+	}, Options{})
+	_, byName := toolsWith(t, idx)
+	cs := byName["code_search"]
+	exec(t, cs, map[string]any{"query": "victimOnlyToken"})
+	exec(t, byName["execute"], map[string]any{"command": "rm victim.go", "timeout_s": 5})
+	if !gone(filepath.Join(idx.ws.Root(), "victim.go")) {
+		t.Fatal("the command did not delete the file")
+	}
+	if got := paths(exec(t, cs, map[string]any{"query": "victimOnlyToken"})); len(got) != 0 {
+		t.Errorf("the deleted file is still found: %v", got)
+	}
+	if got := paths(exec(t, cs, map[string]any{"query": "keepMarker"})); !slices.Equal(got, []string{"keep.go"}) {
+		t.Errorf("keepMarker found in %v", got)
+	}
 }

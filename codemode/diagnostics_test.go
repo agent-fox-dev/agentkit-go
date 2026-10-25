@@ -1,83 +1,57 @@
-package codemode_test
+package codemode
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
-	"github.com/agent-fox-dev/agentkit-go/codemode"
-	"github.com/agent-fox-dev/agentkit-go/core"
+	"go.starlark.net/starlark"
 )
 
-func lineOf(t *testing.T, res core.ToolResult) int {
-	t.Helper()
-	l, ok := res.Data["line"].(int)
-	if !ok {
-		t.Fatalf("line = %#v, want an int", res.Data["line"])
-	}
-	return l
-}
-
-// TS-08-39: a syntax error is syntax_error with its line.
-func TestDiagnosticsSyntaxError_TS08_39(t *testing.T) {
-	res := run(t, context.Background(), codemode.Options{}, &fakeCaller{}, "x = 1\ndef foo(\n  return 1\n")
-	if res.OK || res.Error != "syntax_error" || !strings.Contains(res.Detail, "syntax") || lineOf(t, res) != 3 {
-		t.Fatalf("result = %+v", res)
-	}
-	if !strings.Contains(res.Text, "line 3") || res.Data["error"] != "syntax_error" {
-		t.Fatalf("text = %q", res.Text)
-	}
-}
-
-// TS-08-40: a runtime error is runtime_error with the line it happened on,
-// whether at top level, inside a function, or an undefined name.
-func TestDiagnosticsRuntimeError_TS08_40(t *testing.T) {
+// A failed script is classified for the model with the line it failed on:
+// syntax_error when it does not parse, runtime_error when it fails running or
+// names something undefined, invalid_arguments for a malformed tool call.
+func TestAScriptErrorIsClassifiedWithItsLine(t *testing.T) {
 	for _, tc := range []struct {
-		script string
-		line   int
-		detail string
+		script, code string
+		line         int
+		detail       string
 	}{
-		{"x = 1 / 0\n", 1, "zero"},
-		{"def f(d):\n    return d['missing']\n\ny = 2\nf({})\n", 2, "missing"},
-		{"y = 1\nz = undefined_name + 1\n", 2, "undefined"},
-		{"x = 'a' + 1\n", 1, "unknown binary op"},
+		{"x = 1\ndef foo(\n  return 1\n", "syntax_error", 3, "syntax error at script.star:3"},
+		{"x = 1 / 0\n", "runtime_error", 1, "zero"},
+		{"def f(d):\n    return d['missing']\n\ny = 2\nf({})\n", "runtime_error", 2, "missing"},
+		{"y = 1\nz = undefined_name + 1\n", "runtime_error", 2, "undefined: undefined_name"},
+		{"x = 'a' + 1\n", "runtime_error", 1, "unknown binary op"},
+		{"x = 1\nlookup(1)\n", "invalid_arguments", 2, "keyword arguments"},
+		{"x = 1\nlookup(f=lookup)\n", "invalid_arguments", 2, "argument f"},
+		{"x = 1\nparallel([(lookup,)])\n", "invalid_arguments", 2, "parallel: call 0"},
 	} {
-		res := run(t, context.Background(), codemode.Options{}, &fakeCaller{}, tc.script)
-		if res.OK || res.Error != "runtime_error" || !strings.Contains(res.Detail, tc.detail) || lineOf(t, res) != tc.line {
+		res := runScript(t, context.Background(), Options{}, caller(nil), tc.script, leaf("lookup"))
+		if res.OK || res.Error != tc.code || res.Data["error"] != tc.code || res.Data["line"] != tc.line ||
+			!strings.Contains(res.Detail, tc.detail) || !strings.HasPrefix(res.Text, "Script failed at line ") {
 			t.Fatalf("%q: result = %+v", tc.script, res)
 		}
 	}
 }
 
-// A malformed call — positional arguments, an argument JSON cannot carry, a
-// bad parallel entry — is invalid_arguments, with its line.
-func TestDiagnosticsInvalidArguments(t *testing.T) {
-	for _, script := range []string{
-		"x = 1\nlookup(1)\n",
-		"x = 1\nlookup(f=lookup)\n",
-		"x = 1\nparallel([(lookup,)])\n",
-	} {
-		res := run(t, context.Background(), codemode.Options{}, &fakeCaller{}, script, leaf("lookup"))
-		if res.OK || res.Error != "invalid_arguments" || lineOf(t, res) != 2 {
-			t.Fatalf("%q: result = %+v", script, res)
-		}
+// An error inside nested functions carries the traceback; one at top level
+// does not need it.
+func TestADeepRuntimeErrorCarriesTheTraceback(t *testing.T) {
+	res := runScript(t, context.Background(), Options{}, caller(nil), "def f():\n    return 1 / 0\ndef g():\n    return f()\ng()\n")
+	if res.Error != "runtime_error" || res.Data["line"] != 2 || !strings.Contains(res.Text, "Traceback") {
+		t.Fatalf("result = %+v", res)
+	}
+	if res := runScript(t, context.Background(), Options{}, caller(nil), "x = 1 / 0\n"); strings.Contains(res.Text, "Traceback") {
+		t.Fatalf("a top-level error carries a traceback: %q", res.Text)
 	}
 }
 
-// TS-08-43: a context cancelled before or during the script aborts it.
-func TestDiagnosticsCancelled_TS08_43(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	res := run(t, ctx, codemode.Options{}, &fakeCaller{}, "for i in range(1000):\n    pass\n")
-	if res.OK || res.Error != "aborted" || res.Detail != "Operation aborted" {
-		t.Fatalf("before: result = %+v", res)
+func TestDiagnoseAnErrorWithoutAPosition(t *testing.T) {
+	if d := diagnose(errors.New("odd")); d.code != "script_failed" || d.line != 0 || d.detail != "odd" {
+		t.Fatalf("a plain error = %+v", d)
 	}
-	ctx2, cancel2 := context.WithCancel(context.Background())
-	fc := &fakeCaller{fn: map[string]func(core.ToolUseBlock) (core.ToolResult, error){
-		"stop": func(core.ToolUseBlock) (core.ToolResult, error) { cancel2(); return core.OKResult(nil), nil },
-	}}
-	res = run(t, ctx2, codemode.Options{MaxSteps: 1 << 40}, fc, "stop()\nwhile True:\n    pass\n", leaf("stop"))
-	if res.OK || res.Error != "aborted" || res.Detail != "Operation aborted" {
-		t.Fatalf("during: result = %+v", res)
+	if d := diagnose(&starlark.EvalError{Msg: "no frames"}); d.code != "runtime_error" || d.line != 0 {
+		t.Fatalf("an error with no call stack = %+v", d)
 	}
 }

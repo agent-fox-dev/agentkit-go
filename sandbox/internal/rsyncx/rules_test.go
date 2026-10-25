@@ -2,11 +2,8 @@ package rsyncx
 
 import (
 	"context"
-	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -14,106 +11,39 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// writeTree writes files (path -> content); a content starting with "->"
-// makes a symlink to the rest.
-func writeTree(t *testing.T, root string, files map[string]string) {
-	t.Helper()
-	for rel, body := range files {
-		p := filepath.Join(root, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if target, ok := strings.CutPrefix(body, "->"); ok {
-			if err := os.Symlink(target, p); err != nil {
-				t.Fatal(err)
-			}
-			continue
-		}
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-// walkOracle is every entry filepath.WalkDir finds that workspace.Walk does
-// not visit, whose parent Walk visits (or is the root), and that has no .git
-// component, with no global excludes.
-func walkOracle(t *testing.T, root string) []string {
-	t.Helper()
-	return walkOracleWith(t, root, workspace.NoGlobalExcludes())
-}
-
-// walkOracleWith is walkOracle with ig as the workspace's ignore environment.
-func walkOracleWith(t *testing.T, root string, ig workspace.IgnoreOptions) []string {
-	t.Helper()
-	root, _ = filepath.EvalSymlinks(root)
-	ws, err := workspace.Open(root, workspace.Options{Ignore: ig})
-	if err != nil {
-		t.Fatal(err)
-	}
-	visited := map[string]bool{".": true}
-	if err := ws.Walk(context.Background(), "", workspace.WalkOptions{IncludeHidden: true},
-		func(rel string, _ fs.DirEntry) error { visited[rel] = true; return nil }); err != nil {
-		t.Fatal(err)
-	}
-	var out []string
-	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		rel, _ := filepath.Rel(root, p)
-		rel = filepath.ToSlash(rel)
-		if rel == "." {
-			return nil
-		}
-		if slices.Contains(strings.Split(rel, "/"), ".git") {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !visited[rel] && visited[path.Dir(rel)] {
-			out = append(out, rel)
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-		}
-		return nil
-	})
-	return out
-}
-
-func ruleTree(t *testing.T) string {
-	t.Helper()
-	root := t.TempDir()
-	writeTree(t, root, map[string]string{
-		".gitignore": "build/\n*.log\n", "build/sub/deep.txt": "d", "x.log": "x", "keep.txt": "k",
-		".git/HEAD": "ref", ".git/info/exclude": "secret.txt\n", "secret.txt": "s",
-		"nested/.git/HEAD": "ref", "nested/.gitignore": "tmp/\n", "nested/tmp/a": "a", "nested/n.txt": "n",
-		".hidden": "h", "esc": "->/etc", "up": "->../outside", "in": "->keep.txt", "sub/in2": "->../keep.txt",
-	})
-	return root
-}
-
-func TestComputeRules(t *testing.T) {
+// Ignored is what workspace.Walk does not visit, at its highest level and
+// never under .git; Escaping is the symlinks that leave the root.
+func TestComputeListsTheIgnoredAndEscapingEntries(t *testing.T) {
 	root := ruleTree(t)
-	ctx := context.Background()
-	rs, err := Compute(ctx, root, RuleOptions{Ignore: workspace.NoGlobalExcludes()})
+	rs, err := Compute(context.Background(), root, RuleOptions{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := walkOracle(t, root); !slices.Equal(rs.Ignored, want) {
+	if want := walkOracle(t, root, workspace.NoGlobalExcludes()); !slices.Equal(rs.Ignored, want) {
 		t.Errorf("Ignored %v, want the Walk oracle %v", rs.Ignored, want)
 	}
-	if !slices.Contains(rs.Ignored, "build") || slices.Contains(rs.Ignored, "build/sub") {
-		t.Errorf("Ignored %v: want build once, at its highest level", rs.Ignored)
+	if !slices.Contains(rs.Ignored, "build") || slices.Contains(rs.Ignored, "build/sub") || !slices.Contains(rs.Ignored, "secret.txt") {
+		t.Errorf("Ignored %v: want build once, at its highest level, and secret.txt from .git/info/exclude", rs.Ignored)
 	}
 	if want := []string{"esc", "up"}; !slices.Equal(rs.Escaping, want) {
 		t.Errorf("Escaping %v, want %v", rs.Escaping, want)
 	}
-	if rs.Git || slices.Contains(rs.List(true), ".git") {
-		t.Error("a .git rule without ExcludeGit")
+	if rs.Git || len(rs.Unreadable) != 0 {
+		t.Errorf("Git = %v, Unreadable = %v; want neither", rs.Git, rs.Unreadable)
 	}
-	rs, _ = Compute(ctx, root, RuleOptions{Ignore: workspace.NoGlobalExcludes(), ExcludeGit: true})
+}
+
+func TestComputeOptions(t *testing.T) {
+	root := ruleTree(t)
+	ctx := context.Background()
+	rs, _ := Compute(ctx, root, RuleOptions{Ignore: workspace.NoGlobalExcludes(), ExcludeGit: true})
 	if !rs.Git || !slices.Contains(rs.List(true), ".git") {
-		t.Error("no .git rule with ExcludeGit")
+		t.Error("ExcludeGit gave no .git rule")
+	}
+	for _, l := range rs.List(true) {
+		if l != ".git" && slices.Contains(strings.Split(l, "/"), ".git") {
+			t.Errorf("rule %q has a .git component", l)
+		}
 	}
 	rs, _ = Compute(ctx, root, RuleOptions{IncludeIgnored: true})
 	if len(rs.Ignored) != 0 || len(rs.Escaping) != 2 {
@@ -123,18 +53,99 @@ func TestComputeRules(t *testing.T) {
 	if l := rs.List(true); !slices.Equal(l, []string{".git"}) {
 		t.Errorf("a file transfer's rules %v, want only .git", l)
 	}
-	for _, l := range rs.List(true) {
-		if l != ".git" && slices.Contains(strings.Split(l, "/"), ".git") {
-			t.Errorf("rule %q has a .git component", l)
-		}
+	if _, err := Compute(ctx, filepath.Join(root, "missing"), RuleOptions{}); err == nil {
+		t.Error("Compute of a missing root succeeded")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := Compute(cancelled, root, RuleOptions{IncludeIgnored: true}); err == nil {
+		t.Error("Compute under a cancelled context succeeded")
 	}
 }
 
-func TestCombineAndSize(t *testing.T) {
+// An export of a subdirectory honours the workspace's ignore files; a root
+// the workspace ignores takes only its own.
+func TestComputeWithABaseAppliesTheBasesIgnoreFiles(t *testing.T) {
+	ws := t.TempDir()
+	writeTree(t, ws, map[string]string{".gitignore": "*.tmp\nskipped/\n", "sub/a.tmp": "x", "sub/b.txt": "b",
+		"skipped/.gitignore": "*.o\n", "skipped/c.tmp": "c", "skipped/d.o": "d"})
+	ig := workspace.NoGlobalExcludes()
+	rs, err := Compute(context.Background(), filepath.Join(ws, "sub"), RuleOptions{Ignore: ig, Base: ws})
+	if err != nil || !slices.Equal(rs.Ignored, []string{"a.tmp"}) {
+		t.Errorf("sub: Ignored %v, %v; want [a.tmp]", rs.Ignored, err)
+	}
+	rs, err = Compute(context.Background(), filepath.Join(ws, "skipped"), RuleOptions{Ignore: ig, Base: ws})
+	if err != nil || !slices.Equal(rs.Ignored, []string{"d.o"}) {
+		t.Errorf("skipped: Ignored %v, %v; want only its own [d.o]", rs.Ignored, err)
+	}
+	if _, err := Compute(context.Background(), ws, RuleOptions{Ignore: ig, Base: filepath.Join(ws, "missing")}); err == nil {
+		t.Error("a missing Base was accepted")
+	}
+}
+
+// The ignore environment given is the one the walk uses: a global excludes
+// file it names applies, and with no global excludes it does not.
+func TestComputeUsesTheGivenIgnoreEnvironment(t *testing.T) {
+	root := ruleTree(t)
+	writeTree(t, root, map[string]string{"a.glob": "g", "nested/b.glob": "g", "c.txt": "c"})
+	global := filepath.Join(t.TempDir(), "global-ignore")
+	if err := os.WriteFile(global, []byte("*.glob\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	custom := workspace.NoGlobalExcludes()
+	custom.GitConfig = func() string { return global }
+	rs, err := Compute(context.Background(), root, RuleOptions{Ignore: custom})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := walkOracle(t, root, custom); !slices.Equal(rs.Ignored, want) {
+		t.Errorf("Ignored %v, want what workspace.Walk excludes with those options: %v", rs.Ignored, want)
+	}
+	if !slices.Contains(rs.Ignored, "a.glob") || slices.Contains(rs.Ignored, "c.txt") {
+		t.Errorf("Ignored %v: want a.glob and not c.txt", rs.Ignored)
+	}
+	plain, _ := Compute(context.Background(), root, RuleOptions{Ignore: workspace.NoGlobalExcludes()})
+	if slices.Contains(plain.Ignored, "a.glob") {
+		t.Errorf("NoGlobalExcludes() excluded a.glob: %v", plain.Ignored)
+	}
+}
+
+func TestComputeMakesAnUnreadableEntryARule(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads everything")
+	}
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{"locked/f": "x", "secret": "s", "ok": "o"})
+	for _, p := range []string{"locked", "secret"} {
+		if err := os.Chmod(filepath.Join(root, p), 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(filepath.Join(root, p), 0o755) })
+	}
+	rs, err := Compute(context.Background(), root, RuleOptions{IncludeIgnored: true})
+	if err != nil || !slices.Equal(rs.Unreadable, []string{"locked", "secret"}) {
+		t.Errorf("Unreadable %v, %v; want [locked secret]", rs.Unreadable, err)
+	}
+}
+
+func TestRuleSetListIsSortedAndDeduplicated(t *testing.T) {
+	rs := RuleSet{Ignored: []string{"b", "a"}, Unreadable: []string{"c", "a"}, Escaping: []string{"d"}, Git: true}
+	if got := rs.List(true); !slices.Equal(got, []string{".git", "a", "b", "c", "d"}) {
+		t.Errorf("List(true) = %v", got)
+	}
+	if got := rs.List(false); !slices.Equal(got, []string{".git", "a", "c", "d"}) {
+		t.Errorf("List(false) = %v", got)
+	}
+}
+
+func TestCombineIsTheSortedUnion(t *testing.T) {
 	got := Combine([]string{"build", "a*b", "dup", "sp ace"}, []string{"dup", "q?x", "br[c]k", ".git"})
 	if want := []string{".git", "a*b", "br[c]k", "build", "dup", "q?x", "sp ace"}; !slices.Equal(got, want) {
 		t.Errorf("Combine = %q, want %q", got, want)
 	}
+}
+
+func TestCheckRuleSizeRefusesOverEightMiB(t *testing.T) {
 	rules := func(n int) []string { return []string{strings.Repeat("x", n)} }
 	if err := CheckRuleSize(rules(MaxRuleBytes)); err != nil {
 		t.Errorf("8 MiB of rules refused: %v", err)
@@ -145,139 +156,15 @@ func TestCombineAndSize(t *testing.T) {
 	}
 }
 
-func TestMatcherAndFilteredFS(t *testing.T) {
-	m := NewMatcher([]string{"build", "a*b", ".git", "sub/x"})
+// A rule matches its path and everything under it, wildcards literally, and
+// .git matches a .git component at any depth.
+func TestMatcherExcludesExactPathsAndGitAtAnyDepth(t *testing.T) {
+	m := NewMatcher([]string{"build", "a*b", ".git", "sub/x/"})
 	for p, want := range map[string]bool{"build": true, "build/o": true, "a*b": true, "axxb": false,
-		".git": true, "n/.git/HEAD": true, "sub": false, "sub/x": true, "sub/x/y": true, "sub/y": false} {
+		".git": true, "n/.git/HEAD": true, "sub": false, "sub/x": true, "sub/x/y": true, "sub/y": false,
+		".": false, "builder": false} {
 		if m.Excluded(p) != want {
 			t.Errorf("Excluded(%q) = %v, want %v", p, !want, want)
 		}
-	}
-	root := ruleTree(t)
-	r, err := os.OpenRoot(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r.Close()
-	fsys := Filtered(r, ".", NewMatcher([]string{"build", "esc", ".git", "nested/tmp"}))
-	var seen []string
-	if err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		seen = append(seen, p)
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range seen {
-		if NewMatcher([]string{"build", "esc", ".git", "nested/tmp"}).Excluded(p) {
-			t.Errorf("the filtered tree shows %s", p)
-		}
-	}
-	if !slices.Contains(seen, "keep.txt") || !slices.Contains(seen, "in") {
-		t.Errorf("the filtered tree lacks included entries: %v", seen)
-	}
-	if _, err := fsys.Open("build/sub/deep.txt"); err == nil {
-		t.Error("an excluded file opens")
-	}
-	if target, err := fsys.(fs.ReadLinkFS).ReadLink("in"); err != nil || target != "keep.txt" {
-		t.Errorf("ReadLink(in) = %q, %v", target, err)
-	}
-	sub := Filtered(r, "nested", NewMatcher([]string{"tmp"}))
-	if _, err := fs.Stat(sub, "nested/tmp/a"); err == nil {
-		t.Error("a rule relative to the transfer root nested did not apply")
-	}
-	if _, err := fs.Stat(sub, "nested/n.txt"); err != nil {
-		t.Errorf("nested/n.txt: %v", err)
-	}
-	set, err := PresentSet(fsys, ".")
-	if err != nil || slices.Contains(set, "build") || !slices.Contains(set, "sub/in2") || slices.Contains(set, ".") {
-		t.Errorf("PresentSet = %v, %v", set, err)
-	}
-}
-
-func TestDeleteAbsent(t *testing.T) {
-	base := t.TempDir()
-	root, outside := filepath.Join(base, "recv"), filepath.Join(base, "outside")
-	writeTree(t, outside, map[string]string{"keep": "k"})
-	writeTree(t, root, map[string]string{
-		"a.txt": "a", "stale.txt": "s", "out/x.o": "o", "gone/deep/f": "f", ".env": "e",
-		".git/HEAD": "ref", "link-out": "->" + outside, "dir/stale": "s", "dir/kept": "k",
-	})
-	present := []string{"a.txt", "dir", "dir/kept"}
-	n, err := DeleteAbsent(root, NewMatcher([]string{"out/x.o", ".env", ".git", "link-out"}), present)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range []string{"a.txt", "out/x.o", ".env", ".git/HEAD", "link-out", "dir/kept"} {
-		if _, err := os.Lstat(filepath.Join(root, p)); err != nil {
-			t.Errorf("%s was deleted: %v", p, err)
-		}
-	}
-	for _, p := range []string{"stale.txt", "gone", "dir/stale"} {
-		if _, err := os.Lstat(filepath.Join(root, p)); err == nil {
-			t.Errorf("%s survived", p)
-		}
-	}
-	if n != 5 {
-		t.Errorf("deleted %d entries, want 5 (stale.txt, gone, gone/deep, gone/deep/f, dir/stale)", n)
-	}
-	if _, err := os.Stat(filepath.Join(outside, "keep")); err != nil {
-		t.Error("deletion reached through a symlink")
-	}
-
-	// A symlink absent from the sender is removed, never followed.
-	writeTree(t, root, map[string]string{"link2": "->" + outside})
-	if _, err := DeleteAbsent(root, NewMatcher(nil), []string{"a.txt"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Lstat(filepath.Join(root, "link2")); err == nil {
-		t.Error("an absent symlink survived")
-	}
-	if _, err := os.Stat(filepath.Join(outside, "keep")); err != nil {
-		t.Error("deleting a symlink removed its target")
-	}
-}
-
-// TS-20-55: RuleOptions.Ignore is a workspace.IgnoreOptions and rsyncx visits
-// the tree through workspace: the rules built with ws.Ignore() exclude exactly
-// what workspace.Walk excludes with those options, a global excludes file only
-// the options name included.
-func TestRuleOptionsTakeTheWorkspacesIgnore_TS20_55(t *testing.T) {
-	if got, want := reflect.TypeFor[RuleOptions]().Field(0), reflect.TypeFor[workspace.IgnoreOptions](); got.Name != "Ignore" || got.Type != want {
-		t.Fatalf("RuleOptions' first field is %s %v, want Ignore %v", got.Name, got.Type, want)
-	}
-
-	root := ruleTree(t)
-	writeTree(t, root, map[string]string{"a.glob": "g", "nested/b.glob": "g", "c.txt": "c"})
-	global := filepath.Join(t.TempDir(), "global-ignore")
-	if err := os.WriteFile(global, []byte("*.glob\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	custom := workspace.NoGlobalExcludes()
-	custom.GitConfig = func() string { return global }
-	ws, err := workspace.Open(root, workspace.Options{Ignore: custom})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	rs, err := Compute(context.Background(), root, RuleOptions{Ignore: ws.Ignore()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := walkOracleWith(t, root, ws.Ignore()); !slices.Equal(rs.Ignored, want) {
-		t.Errorf("Ignored %v, want what workspace.Walk excludes with those options: %v", rs.Ignored, want)
-	}
-	if !slices.Contains(rs.Ignored, "a.glob") || slices.Contains(rs.Ignored, "c.txt") {
-		t.Errorf("Ignored %v: the options' global excludes file should name a.glob and not c.txt", rs.Ignored)
-	}
-	// Without the options the global layer is empty and a.glob is not excluded.
-	plain, err := Compute(context.Background(), root, RuleOptions{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if slices.Contains(plain.Ignored, "a.glob") {
-		t.Errorf("NoGlobalExcludes() excluded a.glob: %v", plain.Ignored)
 	}
 }

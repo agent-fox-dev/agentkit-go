@@ -1,565 +1,323 @@
 package openrouter_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	agentkit "github.com/agent-fox-dev/agentkit-go"
+	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 	"github.com/agent-fox-dev/agentkit-go/provider/openrouter"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
-// ------------------------------------------------------------------ harness
-
-// reply is one canned response of a replay server.
-type reply struct {
-	status int
-	header map[string]string
-	body   string
-}
-
-// recordedRequest is a request the replay server received.
-type recordedRequest struct {
-	Method string
-	Path   string
-	Header http.Header
-	Body   []byte
-}
-
-// replay is an httptest server that records every request and answers them
-// with canned replies in order; the last reply repeats. With no replies it
-// answers an empty event stream.
-type replay struct {
-	srv     *httptest.Server
-	mu      sync.Mutex
-	reqs    []recordedRequest
-	replies []reply
-}
-
-func newReplay(t *testing.T, replies ...reply) *replay {
-	t.Helper()
-	r := &replay{replies: replies}
-	r.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		body, _ := io.ReadAll(req.Body)
-		r.mu.Lock()
-		r.reqs = append(r.reqs, recordedRequest{req.Method, req.URL.Path, req.Header.Clone(), body})
-		n := len(r.reqs) - 1
-		rep := reply{status: http.StatusOK, header: map[string]string{"Content-Type": "text/event-stream"}}
-		if len(r.replies) > 0 {
-			rep = r.replies[min(n, len(r.replies)-1)]
-		}
-		r.mu.Unlock()
-		for k, v := range rep.header {
-			w.Header().Set(k, v)
-		}
-		if rep.status != 0 {
-			w.WriteHeader(rep.status)
-		}
-		_, _ = io.WriteString(w, rep.body)
-	}))
-	t.Cleanup(r.srv.Close)
-	return r
-}
-
-func (r *replay) URL() string { return r.srv.URL }
-
-// Count is how many requests the server has received.
-func (r *replay) Count() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.reqs)
-}
-
-// Requests returns the requests received so far.
-func (r *replay) Requests() []recordedRequest {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]recordedRequest(nil), r.reqs...)
-}
-
-// sse is a 200 event-stream reply whose body is the chunks as data lines, then
-// the [DONE] sentinel.
-func sse(chunks ...string) reply {
-	var b strings.Builder
-	for _, c := range chunks {
-		b.WriteString(c)
-		b.WriteString("\n\n")
-	}
-	return reply{status: 200, header: map[string]string{"Content-Type": "text/event-stream"}, body: b.String()}
-}
-
-// data renders a chunk payload as an SSE data line; done is the terminator.
-func data(payload string) string { return "data: " + payload }
-
-const done = "data: [DONE]"
-
-// chunk builds a chat.completion.chunk whose only choice carries delta and
-// finish ("" for none).
-func chunk(delta, finish string) string {
-	f := "null"
-	if finish != "" {
-		f = fmt.Sprintf("%q", finish)
-	}
-	return data(fmt.Sprintf(`{"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"vendor/served",`+
-		`"choices":[{"index":0,"delta":%s,"finish_reason":%s}]}`, delta, f))
-}
-
-// text is a content delta.
-func text(s string) string { return fmt.Sprintf(`{"content":%q}`, s) }
-
-var fixedNow = time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
-
-// newProvider builds a provider for the test model against srv with a fixed
-// clock; opts adjusts the Options first.
-func newProvider(t *testing.T, srv *replay, opts ...func(*openrouter.Options)) core.ProviderClient {
-	t.Helper()
-	return newProviderFor(t, srv, testModel(), opts...)
-}
-
-// newProviderFor is newProvider for the model m.
-func newProviderFor(t *testing.T, srv *replay, m core.Model, opts ...func(*openrouter.Options)) core.ProviderClient {
-	t.Helper()
-	o := openrouter.Options{
-		Env: map[string]string{openrouter.APIKeyVar: "sk-or-test-key", openrouter.BaseURLVar: srv.URL()},
-		Now: func() time.Time { return fixedNow },
-	}
-	for _, f := range opts {
-		f(&o)
-	}
-	c, err := openrouter.New(m, o)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	return c
-}
-
-func userRequest(s string) core.Request {
-	return core.Request{Messages: core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: s}}}}}
-}
-
-// outcome is a drained turn: every event, the final message and the error.
-type outcome struct {
-	events []core.Event
-	msg    core.AssistantMessage
-	err    error
-}
-
-// drain reads a provider channel to its close.
-func drain(t *testing.T, ch <-chan core.StreamEvent) outcome {
-	t.Helper()
-	var o outcome
-	for ev := range ch {
-		if ev.Event != nil {
-			o.events = append(o.events, ev.Event)
-			if end, ok := ev.Event.(core.MessageEndEvent); ok {
-				o.msg = end.Message
-			}
-		}
-		if ev.Err != nil {
-			o.err = ev.Err
-		}
-	}
-	return o
-}
-
-// run streams one request to completion.
-func run(t *testing.T, c core.ProviderClient, req core.Request) outcome {
-	t.Helper()
-	ch, err := c.Stream(context.Background(), req)
-	if err != nil || ch == nil {
-		t.Fatalf("Stream = %v, %v", ch, err)
-	}
-	return drain(t, ch)
-}
-
-// kinds renders an event sequence as one short word per event, with the block
-// index where the event has one: "start", "think+0", "text~1", "tool-0".
-func kinds(events []core.Event) []string {
-	var out []string
-	for _, e := range events {
-		switch v := e.(type) {
-		case core.MessageStartEvent:
-			out = append(out, "start")
-		case core.MessageEndEvent:
-			out = append(out, "end")
-		case core.TextStartEvent:
-			out = append(out, fmt.Sprintf("text+%d", v.BlockIndex))
-		case core.TextDeltaEvent:
-			out = append(out, fmt.Sprintf("text~%d", v.BlockIndex))
-		case core.TextEndEvent:
-			out = append(out, fmt.Sprintf("text-%d", v.BlockIndex))
-		case core.ThinkingStartEvent:
-			out = append(out, fmt.Sprintf("think+%d", v.BlockIndex))
-		case core.ThinkingDeltaEvent:
-			out = append(out, fmt.Sprintf("think~%d", v.BlockIndex))
-		case core.ThinkingEndEvent:
-			out = append(out, fmt.Sprintf("think-%d", v.BlockIndex))
-		case core.ToolCallStartEvent:
-			out = append(out, fmt.Sprintf("tool+%d", v.BlockIndex))
-		case core.ToolInputDeltaEvent:
-			out = append(out, fmt.Sprintf("tool~%d", v.BlockIndex))
-		case core.ToolCallEndEvent:
-			out = append(out, fmt.Sprintf("tool-%d", v.BlockIndex))
-		case core.ErrorEvent:
-			out = append(out, "error")
-		default:
-			out = append(out, fmt.Sprintf("%T", e))
-		}
-	}
-	return out
-}
-
-func jsonEqual(t *testing.T, got, want string) bool {
-	t.Helper()
-	var g, w any
-	if err := json.Unmarshal([]byte(got), &g); err != nil {
-		t.Errorf("not JSON: %q (%v)", got, err)
-		return false
-	}
-	if err := json.Unmarshal([]byte(want), &w); err != nil {
-		t.Fatalf("bad expectation %q: %v", want, err)
-	}
-	return reflect.DeepEqual(g, w)
-}
-
-// ------------------------------------------------------------------- tests
-
-// TS-27-7: Stream refuses a context that is already done, without a request.
-func TestStreamRefusesACancelledContext_TS27_7(t *testing.T) {
-	srv := newReplay(t)
-	c := newProvider(t, srv)
+func TestStreamRefusesAContextAlreadyDone(t *testing.T) {
+	srv := newServer(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	ch, err := c.Stream(ctx, userRequest("hi"))
-	if ch != nil || err != context.Canceled {
-		t.Errorf("Stream = %v, %v; want a nil channel and context.Canceled", ch, err)
-	}
-	if srv.Count() != 0 {
-		t.Errorf("the server received %d requests, want 0", srv.Count())
+	ch, err := newProvider(t, srv, testModel()).Stream(ctx, userRequest("hi"))
+	if ch != nil || !errors.Is(err, context.Canceled) || srv.Count() != 0 {
+		t.Errorf("Stream = %v, %v after %d requests; want no channel, context.Canceled and none", ch, err, srv.Count())
 	}
 }
 
-// TS-27-8: concurrent Stream calls on one provider each complete on their own;
-// run it under -race.
-func TestConcurrentStreamsAreIndependent_TS27_8(t *testing.T) {
-	srv := newReplay(t, sse(chunk(text("ok"), ""), chunk(`{}`, "stop"), done))
-	c := newProvider(t, srv)
+func TestConcurrentStreamsOnOneProviderAreIndependent(t *testing.T) {
+	c := newProvider(t, newServer(t, okTurn()), testModel())
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 16 {
+		wg.Go(func() {
 			ch, err := c.Stream(context.Background(), userRequest("hi"))
 			if err != nil {
 				t.Errorf("Stream: %v", err)
 				return
 			}
-			o := drain(t, ch)
-			if o.err != nil || o.msg.Content.Text() != "ok" || o.msg.StopReason != core.StopReasonStop {
-				t.Errorf("turn = %q %q, %v; want the text ok and a stop", o.msg.Content.Text(), o.msg.StopReason, o.err)
+			o := drain(ch)
+			if o.err != nil || o.msg.Content.Text() != "ok" || kinds(o.events) != "start text+0 text~0 text-0 end" {
+				t.Errorf("turn = %q %s, %v", o.msg.Content.Text(), kinds(o.events), o.err)
 			}
-			if k := kinds(o.events); k[len(k)-1] != "end" {
-				t.Errorf("events end with %q, want the message end", k[len(k)-1])
-			}
-		}()
+		})
 	}
 	wg.Wait()
 }
 
-// TS-27-26: content deltas become a text start and text deltas at one block
-// index, and the end event carries the whole text.
-func TestTextDeltasShareABlock_TS27_26(t *testing.T) {
-	srv := newReplay(t, sse(chunk(text("Hel"), ""), chunk(text("lo"), ""), chunk(`{}`, "stop"), done))
-	o := run(t, newProvider(t, srv), userRequest("hi"))
-	if o.err != nil {
-		t.Fatal(o.err)
-	}
-	want := []string{"start", "text+0", "text~0", "text~0", "text-0", "end"}
-	if got := kinds(o.events); !reflect.DeepEqual(got, want) {
-		t.Fatalf("events = %v, want %v", got, want)
-	}
-	var deltas []string
-	for _, e := range o.events {
-		if d, ok := e.(core.TextDeltaEvent); ok {
-			deltas = append(deltas, d.Delta)
+// Block indices follow first appearance, deltas of one kind extend one block,
+// and keep-alive comments, role-only and empty deltas and a choice other than
+// 0 make no event.
+func TestBlocksAreIndexedByFirstAppearanceAndNoiseMakesNoEvent(t *testing.T) {
+	stream := func(noisy bool) reply {
+		var lines []string
+		add := func(noise bool, l ...string) {
+			if noisy || !noise {
+				lines = append(lines, l...)
+			}
 		}
-		if end, ok := e.(core.TextEndEvent); ok && end.Text != "Hello" {
-			t.Errorf("TextEndEvent.Text = %q, want Hello", end.Text)
-		}
+		add(true, ": OPENROUTER PROCESSING", chunk(`{"role":"assistant"}`, ""))
+		add(false, chunk(`{"reasoning":"think"}`, ""))
+		add(true, chunk(`{}`, ""), data(`{"id":"gen-1","choices":[{"index":1,"delta":{"content":"NOPE"},"finish_reason":null}]}`))
+		add(false, chunk(text("Hel"), ""), chunk(text("lo"), ""), toolDelta(0, "call_a", "read", `{"p":1}`))
+		add(true, ": OPENROUTER PROCESSING")
+		add(false, chunk(`{}`, "tool_calls"), done)
+		return sse(lines...)
 	}
-	if !reflect.DeepEqual(deltas, []string{"Hel", "lo"}) {
-		t.Errorf("deltas = %v, want [Hel lo]", deltas)
+	noisy := run(t, newProvider(t, newServer(t, stream(true)), testModel()), userRequest("hi"))
+	clean := run(t, newProvider(t, newServer(t, stream(false)), testModel()), userRequest("hi"))
+	want := "start think+0 think~0 text+1 text~1 text~1 tool+2 tool~2 think-0 text-1 tool-2 end"
+	if got := kinds(noisy.events); noisy.err != nil || got != want || noisy.msg.Content.Text() != "Hello" {
+		t.Errorf("events = %s, %v\nwant     %s", got, noisy.err, want)
 	}
-}
-
-// streamWith is a stream of reasoning, text and a tool call. With ignorable it
-// also holds the input a decoder must not count as content: keep-alive
-// comments, a role-only delta, an empty delta, and a choice of index 1.
-func streamWith(ignorable bool) reply {
-	var parts []string
-	add := func(p ...string) { parts = append(parts, p...) }
-	if ignorable {
-		add(": OPENROUTER PROCESSING")
-		add(chunk(`{"role":"assistant"}`, ""))
-	}
-	add(chunk(`{"reasoning":"think"}`, ""))
-	if ignorable {
-		add(": OPENROUTER PROCESSING")
-		add(chunk(`{}`, ""))
-		add(data(`{"id":"gen-1","model":"vendor/served","choices":[{"index":1,"delta":{"content":"NOPE"},"finish_reason":null}]}`))
-	}
-	add(chunk(text("hi"), ""))
-	add(chunk(`{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"read","arguments":"{\"p\":1}"}}]}`, ""))
-	if ignorable {
-		add(": OPENROUTER PROCESSING")
-	}
-	add(chunk(`{}`, "tool_calls"), done)
-	return sse(parts...)
-}
-
-// TS-27-25: block indices follow first appearance, and keep-alive comments,
-// role-only and empty deltas and other choices produce no event.
-func TestBlockIndicesAndIgnorableInput_TS27_25(t *testing.T) {
-	noisy := run(t, newProvider(t, newReplay(t, streamWith(true))), userRequest("hi"))
-	clean := run(t, newProvider(t, newReplay(t, streamWith(false))), userRequest("hi"))
-	if noisy.err != nil || clean.err != nil {
-		t.Fatalf("errors: %v, %v", noisy.err, clean.err)
-	}
-	want := []string{"start", "think+0", "think~0", "text+1", "text~1", "tool+2", "tool~2",
-		"think-0", "text-1", "tool-2", "end"}
-	if got := kinds(noisy.events); !reflect.DeepEqual(got, want) {
-		t.Errorf("events = %v, want %v", got, want)
-	}
-	if !reflect.DeepEqual(noisy.events, clean.events) {
-		t.Errorf("the noisy stream's events differ from the clean stream's:\n%v\n%v", noisy.events, clean.events)
-	}
-	if strings.Contains(noisy.msg.Content.Text(), "NOPE") {
-		t.Errorf("the index-1 choice reached the message: %q", noisy.msg.Content.Text())
+	if mustJSON(noisy.events) != mustJSON(clean.events) || strings.Contains(noisy.msg.Content.Text(), "NOPE") {
+		t.Errorf("the noise changed the turn:\n%v\n%v", noisy.events, clean.events)
 	}
 }
 
-// TS-27-27: reasoning fragments become the thinking block's fragment array and
-// visible text, and never text events.
-func TestReasoningFragmentsBecomeThinking_TS27_27(t *testing.T) {
+// Reasoning becomes a thinking block, never text: the visible text is
+// delta.reasoning, else the text and summary fragments; every fragment is kept
+// whole in the signature, which is empty when none arrived.
+func TestReasoningBecomesAThinkingBlockKeepingEveryFragment(t *testing.T) {
 	fragA := `{"type":"reasoning.text","text":"think A","signature":"sigA","format":"anthropic-claude-v1","index":0,"id":"rd-1"}`
 	fragB := `{"type":"reasoning.text","text":"B","index":1,"id":"rd-2","format":"anthropic-claude-v1"}`
 	fragS := `{"type":"reasoning.summary","summary":"S","index":2,"id":"rd-3","format":"openai-responses-v1"}`
 	fragE := `{"type":"reasoning.encrypted","data":"AAAA==","index":3,"id":"rd-4","format":"openai-responses-v1"}`
-	srv := newReplay(t, sse(
-		chunk(`{"reasoning":"think A","reasoning_details":[`+fragA+`]}`, ""),
-		chunk(`{"reasoning_details":[`+fragB+`,`+fragS+`,`+fragE+`]}`, ""),
-		chunk(`{}`, "stop"), done))
-	o := run(t, newProvider(t, srv), userRequest("hi"))
-	if o.err != nil {
-		t.Fatal(o.err)
-	}
-	for _, k := range kinds(o.events) {
-		if strings.HasPrefix(k, "text") {
-			t.Errorf("a text event %q was emitted for reasoning", k)
+	for _, tc := range []struct {
+		name            string
+		deltas          []string
+		thinking, frags string
+		events          string
+	}{
+		{"fragments", []string{chunk(`{"reasoning":"think A","reasoning_details":[`+fragA+`]}`, ""), chunk(`{"reasoning_details":[`+fragB+`,`+fragS+`,`+fragE+`]}`, "")},
+			"think ABS", "[" + fragA + "," + fragB + "," + fragS + "," + fragE + "]", "start think+0 think~0 think~0 think-0 end"},
+		{"an encrypted fragment alone", []string{chunk(`{"reasoning_details":[`+fragE+`]}`, "")}, "", "[" + fragE + "]", "start think+0 think-0 end"},
+		{"text only", []string{chunk(`{"reasoning":"just text"}`, "")}, "just text", "", "start think+0 think~0 think-0 end"},
+	} {
+		o := run(t, newProvider(t, newServer(t, sse(append(tc.deltas, chunk(`{}`, "stop"), done)...)), testModel()), userRequest("hi"))
+		if got := kinds(o.events); o.err != nil || got != tc.events {
+			t.Errorf("%s: events = %s, %v; want %s", tc.name, got, o.err, tc.events)
+			continue
 		}
-	}
-	var tb core.ThinkingBlock
-	for _, b := range o.msg.Content {
-		if v, ok := b.(core.ThinkingBlock); ok {
-			tb = v
+		tb, ok := o.msg.Content[0].(core.ThinkingBlock)
+		if !ok || len(o.msg.Content) != 1 || tb.Thinking != tc.thinking || tb.Redacted {
+			t.Errorf("%s: content = %+v, want one thinking block %q", tc.name, o.msg.Content, tc.thinking)
 		}
-	}
-	if tb.Thinking != "think ABS" {
-		t.Errorf("Thinking = %q, want think ABS (reasoning, then the text and summary fragments)", tb.Thinking)
-	}
-	if tb.Redacted {
-		t.Error("Redacted = true, want false")
-	}
-	if !jsonEqual(t, tb.Signature, "["+fragA+","+fragB+","+fragS+","+fragE+"]") {
-		t.Errorf("Signature = %s, want the four fragments in arrival order with every field", tb.Signature)
-	}
-
-	// No fragments: the signature is empty.
-	only := run(t, newProvider(t, newReplay(t, sse(chunk(`{"reasoning":"just text"}`, ""), chunk(`{}`, "stop"), done))), userRequest("hi"))
-	tb = only.msg.Content[0].(core.ThinkingBlock)
-	if tb.Thinking != "just text" || tb.Signature != "" {
-		t.Errorf("block = %+v, want the text and an empty Signature", tb)
+		if tc.frags == "" && tb.Signature != "" || tc.frags != "" && !testutil.SameJSON([]byte(tb.Signature), []byte(tc.frags)) {
+			t.Errorf("%s: signature = %s, want %s", tc.name, tb.Signature, tc.frags)
+		}
 	}
 }
 
-// toolCallsOf returns the tool-use blocks of a message.
-func toolCallsOf(m core.AssistantMessage) []core.ToolUseBlock { return core.ExtractToolUse(&m) }
-
-// TS-27-28: fragments accumulate by index; arguments are the byte-for-byte
-// concatenation; calls without an id get distinct call_<hex> ids.
-func TestToolCallFragmentsAccumulate_TS27_28(t *testing.T) {
+// Fragments accumulate by index into arguments that are the byte-for-byte
+// concatenation; a call starts at its first named fragment, with the
+// arguments that came before; a call without an id gets a distinct call_<hex>;
+// arguments that are not a JSON object become {}; one never named is dropped.
+// Both are warned of.
+func TestToolCallFragmentsAccumulateByIndex(t *testing.T) {
 	a1, a2, a3 := `{"path": `, `"a.txt",`+"\n  ", `"n": [1, 2]}`
 	b1, b2 := `{ "k" :`, ` "v" }`
-	srv := newReplay(t, sse(
-		chunk(`{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"read","arguments":`+jsonStr(a1)+`}}]}`, ""),
-		chunk(`{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"write","arguments":`+jsonStr(b1)+`}}]}`, ""),
-		chunk(`{"tool_calls":[{"index":0,"function":{"arguments":`+jsonStr(a2)+`}}]}`, ""),
-		chunk(`{"tool_calls":[{"index":1,"function":{"arguments":`+jsonStr(b2)+`}}]}`, ""),
-		chunk(`{"tool_calls":[{"index":0,"function":{"arguments":`+jsonStr(a3)+`}}]}`, ""),
-		chunk(`{}`, "tool_calls"), done))
-	o := run(t, newProvider(t, srv), userRequest("hi"))
+	warn, warns := collectWarnings()
+	o := run(t, newProvider(t, newServer(t, sse(
+		toolDelta(0, "call_a", "read", a1),
+		toolDelta(1, "", "", b1),
+		toolDelta(0, "", "", a2),
+		toolDelta(1, "", "write", b2),
+		toolDelta(0, "", "", a3),
+		toolDelta(2, "", "x", ""),
+		toolDelta(3, "", "y", "{}"),
+		toolDelta(4, "call_lost", "", "{}"),
+		toolDelta(5, "call_x", "bad", `[1,2`),
+		chunk(`{}`, "tool_calls"), done)), testModel(), warn), userRequest("hi"))
 	if o.err != nil {
 		t.Fatal(o.err)
 	}
-	calls := toolCallsOf(o.msg)
-	if len(calls) != 2 || calls[0].ID != "call_a" || calls[0].Name != "read" || calls[1].ID != "call_b" || calls[1].Name != "write" {
-		t.Fatalf("calls = %+v, want call_a read and call_b write", calls)
+	calls := core.ExtractToolUse(&o.msg)
+	if len(calls) != 5 || string(calls[4].Input) != "{}" || calls[0].ID != "call_a" || calls[0].Name != "read" || calls[1].Name != "write" || calls[2].Name != "x" {
+		t.Fatalf("calls = %+v, want read, write, x, y and bad with input {}", calls)
 	}
-	if got, want := string(calls[0].Input), a1+a2+a3; got != want {
-		t.Errorf("call_a input = %q, want %q", got, want)
+	if string(calls[0].Input) != a1+a2+a3 || string(calls[1].Input) != b1+b2 || string(calls[2].Input) != "{}" {
+		t.Errorf("inputs = %q, %q, %q", calls[0].Input, calls[1].Input, calls[2].Input)
 	}
-	if got, want := string(calls[1].Input), b1+b2; got != want {
-		t.Errorf("call_b input = %q, want %q", got, want)
+	idForm := regexp.MustCompile(`^call_[0-9a-f]{16}$`)
+	ids := map[string]bool{}
+	for _, c := range calls[1:4] {
+		if !idForm.MatchString(c.ID) || ids[c.ID] {
+			t.Errorf("id %q, want a distinct call_<hex>", c.ID)
+		}
+		ids[c.ID] = true
 	}
-	var deltas, starts []string
+	var trace []string
 	for _, e := range o.events {
 		switch v := e.(type) {
-		case core.ToolInputDeltaEvent:
-			deltas = append(deltas, v.ToolUseID+"|"+v.Delta)
 		case core.ToolCallStartEvent:
-			starts = append(starts, fmt.Sprintf("%d|%s|%s", v.BlockIndex, v.ToolUseID, v.Name))
+			trace = append(trace, fmt.Sprintf("+%d:%s", v.BlockIndex, v.Name))
+		case core.ToolInputDeltaEvent:
+			trace = append(trace, fmt.Sprintf("~%d:%s", v.BlockIndex, v.Delta))
 		}
 	}
-	if !reflect.DeepEqual(starts, []string{"0|call_a|read", "1|call_b|write"}) {
-		t.Errorf("starts = %v", starts)
+	want := []string{"+0:read", "~0:" + a1, "~0:" + a2, "+1:write", "~1:" + b1, "~1:" + b2, "~0:" + a3, "+2:x", "+3:y", "~3:{}", "+5:bad", "~5:[1,2"}
+	if mustJSON(trace) != mustJSON(want) {
+		t.Errorf("tool events = %q\nwant          %q", trace, want)
 	}
-	wantDeltas := []string{"call_a|" + a1, "call_b|" + b1, "call_a|" + a2, "call_b|" + b2, "call_a|" + a3}
-	if !reflect.DeepEqual(deltas, wantDeltas) {
-		t.Errorf("input deltas = %q, want %q", deltas, wantDeltas)
-	}
-
-	// Two calls with no id, and a call with empty arguments.
-	srv = newReplay(t, sse(
-		chunk(`{"tool_calls":[{"index":0,"function":{"name":"x","arguments":"{}"}},{"index":1,"function":{"name":"y"}}]}`, ""),
-		chunk(`{}`, "tool_calls"), done))
-	o = run(t, newProvider(t, srv), userRequest("hi"))
-	calls = toolCallsOf(o.msg)
-	if len(calls) != 2 {
-		t.Fatalf("calls = %+v, want 2", calls)
-	}
-	idForm := regexp.MustCompile(`^call_[0-9a-f]+$`)
-	if !idForm.MatchString(calls[0].ID) || !idForm.MatchString(calls[1].ID) || calls[0].ID == calls[1].ID {
-		t.Errorf("ids = %q and %q, want two distinct call_<hex> ids", calls[0].ID, calls[1].ID)
-	}
-	if string(calls[1].Input) != "{}" {
-		t.Errorf("empty arguments gave %q, want {}", calls[1].Input)
+	if len(*warns) != 2 || !strings.Contains((*warns)[0], "never named") || !strings.Contains((*warns)[0], "index 4") ||
+		!strings.Contains((*warns)[1], "call_x (bad)") {
+		t.Errorf("warnings = %q, want the unnamed call at index 4 and call_x's arguments", *warns)
 	}
 }
 
-// jsonStr renders s as a JSON string literal.
-func jsonStr(s string) string { b, _ := json.Marshal(s); return string(b) }
-
-// TS-27-29: arguments that are not a JSON object become {} and the warning
-// names the call.
-func TestNonObjectArgumentsBecomeEmpty_TS27_29(t *testing.T) {
-	for _, args := range []string{`[1,2`, `"str"`} {
-		srv := newReplay(t, sse(
-			chunk(`{"tool_calls":[{"index":0,"id":"call_x","function":{"name":"read","arguments":`+jsonStr(args)+`}}]}`, ""),
-			chunk(`{}`, "tool_calls"), done))
-		var warns []string
-		c := newProvider(t, srv, func(o *openrouter.Options) {
-			o.Warnf = func(format string, a ...any) { warns = append(warns, fmt.Sprintf(format, a...)) }
-		})
-		o := run(t, c, userRequest("hi"))
-		calls := toolCallsOf(o.msg)
-		if len(calls) != 1 || string(calls[0].Input) != "{}" {
-			t.Errorf("arguments %q: calls = %+v, want one call with input {}", args, calls)
-		}
-		if len(warns) != 1 || !strings.Contains(warns[0], "call_x") || !strings.Contains(warns[0], "read") {
-			t.Errorf("arguments %q: warnings = %q, want one naming call_x and read", args, warns)
-		}
-	}
-}
-
-// TS-27-31: every finish reason maps to its stop reason and is kept raw, tool
-// calls survive any of them, and the response id and model are set.
-func TestFinishReasonsMapToStopReasons_TS27_31(t *testing.T) {
-	for _, tc := range []struct {
-		raw  string
-		want core.StopReason
-	}{
-		{"stop", core.StopReasonStop},
-		{"length", core.StopReasonLength},
-		{"tool_calls", core.StopReasonToolUse},
-		{"content_filter", core.StopReasonRefusal},
-		{"weird", core.StopReasonStop},
+// Every finish reason maps to a stop reason and is kept raw, a tool call
+// survives any of them, and the message carries the response id and model and
+// the model, effort and time the turn was asked with.
+func TestFinishReasonsMapToStopReasons(t *testing.T) {
+	for raw, want := range map[string]core.StopReason{
+		"stop": core.StopReasonStop, "length": core.StopReasonLength, "tool_calls": core.StopReasonToolUse,
+		"content_filter": core.StopReasonRefusal, "weird": core.StopReasonStop,
 	} {
-		srv := newReplay(t, sse(
-			chunk(`{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"t","arguments":"{}"}}]}`, ""),
-			chunk(`{}`, tc.raw), done))
 		req := userRequest("hi")
 		req.Effort = core.EffortHigh
-		o := run(t, newProvider(t, srv), req)
+		o := run(t, newProvider(t, newServer(t, sse(toolDelta(0, "call_1", "t", "{}"), chunk(`{}`, raw), done)), testModel()), req)
 		m := o.msg
-		if o.err != nil || m.StopReason != tc.want || m.RawStopReason != tc.raw {
-			t.Errorf("finish %q: stop = %q raw %q, %v; want %q", tc.raw, m.StopReason, m.RawStopReason, o.err, tc.want)
+		if o.err != nil || m.StopReason != want || m.RawStopReason != raw || len(core.ExtractToolUse(&m)) != 1 {
+			t.Errorf("%s: stop = %q raw %q with %d calls, %v; want %q", raw, m.StopReason, m.RawStopReason, len(core.ExtractToolUse(&m)), o.err, want)
 		}
-		if len(toolCallsOf(m)) != 1 {
-			t.Errorf("finish %q: the message lost its tool call: %+v", tc.raw, m.Content)
-		}
-		if m.ResponseID != "gen-1" || m.ResponseModel != "vendor/served" {
-			t.Errorf("finish %q: response id/model = %q/%q, want gen-1 and vendor/served", tc.raw, m.ResponseID, m.ResponseModel)
-		}
-		if m.Model != "vendor/model" || m.Effort != core.EffortHigh || !m.Timestamp.Equal(fixedNow) {
-			t.Errorf("finish %q: model %q effort %q at %v, want vendor/model, high, the clock", tc.raw, m.Model, m.Effort, m.Timestamp)
+		if m.ResponseID != "gen-1" || m.ResponseModel != "vendor/served" || m.Model != "vendor/model" ||
+			m.Effort != core.EffortHigh || !m.Timestamp.Equal(fixedNow) {
+			t.Errorf("%s: message = %q %q %q %q %v", raw, m.ResponseID, m.ResponseModel, m.Model, m.Effort, m.Timestamp)
 		}
 	}
 }
 
-// A cancelled caller ends the turn as aborted. (The abort path is built with
-// the stream plumbing; the spec's own cancellation test, TS-27-42, covers the
-// request and the wait as well.)
-func TestCancellingMidStreamAborts(t *testing.T) {
-	release := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, chunk(text("partial"), "")+"\n\n")
-		w.(http.Flusher).Flush()
-		select {
-		case <-release:
-		case <-r.Context().Done():
+// Cancelling while the request is in flight, in the middle of the stream or
+// during the wait before a retry ends the turn as aborted.
+func TestCancellingEndsTheTurnAsAborted(t *testing.T) {
+	for _, mode := range []string{"request", "stream", "retry wait"} {
+		entered := make(chan struct{}, 1)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			if mode == "retry wait" {
+				w.Header().Set("Retry-After", "60")
+				w.WriteHeader(503)
+				return
+			}
+			if mode == "stream" {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, chunk(text("partial"), "")+"\n\n")
+				w.(http.Flusher).Flush()
+			}
+			entered <- struct{}{}
+			<-r.Context().Done()
+		}))
+		ctx, cancel := context.WithCancel(context.Background())
+		o := options(srv.URL)
+		// The clock is read at the turn's start and again just before the wait.
+		var reads atomic.Int32
+		o.Now = func() time.Time {
+			if reads.Add(1) == 2 && mode == "retry wait" {
+				cancel()
+			}
+			return fixedNow
 		}
-	}))
-	defer srv.Close()
-	defer close(release)
-	c, err := openrouter.New(testModel(), openrouter.Options{
-		Env: map[string]string{openrouter.APIKeyVar: "sk-or-test-key", openrouter.BaseURLVar: srv.URL},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ch, err := c.Stream(ctx, userRequest("hi"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for ev := range ch {
-		if _, ok := ev.Event.(core.TextDeltaEvent); ok {
+		c, err := openrouter.New(testModel(), o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ch, err := c.Stream(ctx, userRequest("hi"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch mode {
+		case "request":
+			<-entered
 			cancel()
-			break
+		case "stream":
+			for ev := range ch {
+				if _, ok := ev.Event.(core.TextDeltaEvent); ok {
+					break
+				}
+			}
+			cancel()
 		}
+		ended := make(chan outcome, 1)
+		go func() { ended <- drain(ch) }()
+		select {
+		case out := <-ended:
+			if out.msg.StopReason != core.StopReasonAborted || out.msg.ErrorMessage != "Request was aborted" || !errors.Is(out.err, core.ErrAborted) {
+				t.Errorf("%s: message = %q %q, err = %v; want an aborted turn", mode, out.msg.StopReason, out.msg.ErrorMessage, out.err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s: the turn did not end after the cancellation", mode)
+		}
+		srv.Close()
+		cancel()
 	}
-	done := make(chan outcome, 1)
-	go func() { done <- drain(t, ch) }()
-	select {
-	case o := <-done:
-		if o.msg.StopReason != core.StopReasonAborted || o.msg.ErrorMessage != "Request was aborted" {
-			t.Errorf("message = %q %q, want an aborted turn", o.msg.StopReason, o.msg.ErrorMessage)
-		}
-		if o.err == nil || !strings.Contains(o.err.Error(), core.ErrAborted.Error()) {
-			t.Errorf("error = %v, want core.ErrAborted", o.err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the turn did not end within 5 seconds of the cancellation")
+}
+
+// A two-turn tool loop through the agent: the second request carries the
+// model id as the catalog writes it, the tool's schema, the first turn's call
+// id and argument bytes, the result paired to that id, and the reasoning
+// fragments as received.
+func TestATwoTurnToolLoopReplaysTheFirstTurn(t *testing.T) {
+	frag1 := `{"type":"reasoning.text","text":"plan","signature":"sig-1","format":"anthropic-claude-v1","index":0,"id":"rd-1"}`
+	frag2 := `{"type":"reasoning.encrypted","data":"AAAA==","index":1,"id":"rd-2","format":"openai-responses-v1"}`
+	args1, args2 := `{"path": "a.txt", `, ` "limit": 5}`
+	srv := newServer(t,
+		sse(chunk(`{"reasoning":"plan","reasoning_details":[`+frag1+`]}`, ""), chunk(`{"reasoning_details":[`+frag2+`]}`, ""),
+			toolDelta(0, "call_0a1b2c", "read_file", args1), toolDelta(0, "", "", args2), chunk(`{}`, "tool_calls"),
+			usageChunk(`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cost":0.0002}`), done),
+		sse(chunk(text("The file says: file contents."), ""), chunk(`{}`, "stop"), done))
+	s, err := schema.Parse([]byte(`{"type":"object","properties":{"path":{"type":"string"},"limit":{"type":"integer"}},"required":["path"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantParams, _ := s.MarshalJSON()
+	ran := 0
+	tool := core.Tool{Name: "read_file", Description: "reads a file", InputSchema: s,
+		Handler: func(context.Context, json.RawMessage) (json.RawMessage, error) {
+			ran++
+			return json.RawMessage(`{"text":"file contents"}`), nil
+		}}
+	sel, err := catalog.Select("openrouter", "STANDARD", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := openrouter.New(sel.Model, options(srv.URL()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := agentkit.New(agentkit.Config{Client: p, Model: sel.Model.ID, Effort: sel.Effort,
+		Toolset: agentkit.Toolset{Tools: []core.Tool{tool}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := agent.Run(context.Background(), "read a.txt")
+	if err != nil || res.FinalText() != "The file says: file contents." || res.StopReason != core.RunStopEndTurn || ran != 1 || srv.Count() != 2 {
+		t.Fatalf("run = %q %v, %v; tool ran %d times over %d requests", res.FinalText(), res.StopReason, err, ran, srv.Count())
+	}
+	if raw := srv.Requests()[1].Body; !bytes.Contains(raw, []byte(`"model":"`+sel.Model.ID+`"`)) || !bytes.Contains(raw, []byte(`"parameters":`+string(wantParams))) {
+		t.Errorf("second body = %s, want the model id as written and the schema as it marshals", raw)
+	}
+	msgs := messagesOf(srv.body(t, 1))
+	assistant, toolMsg := msgs[len(msgs)-2], msgs[len(msgs)-1]
+	if assistant["role"] != "assistant" || toolMsg["role"] != "tool" {
+		t.Fatalf("messages = %v, want the assistant turn and its result last", msgs)
+	}
+	call := assistant["tool_calls"].([]any)[0].(map[string]any)
+	if call["id"] != "call_0a1b2c" || call["function"].(map[string]any)["arguments"] != args1+args2 {
+		t.Errorf("tool call = %v, want call_0a1b2c and the arguments byte for byte", call)
+	}
+	if toolMsg["tool_call_id"] != "call_0a1b2c" || !strings.Contains(toolMsg["content"].(string), "file contents") {
+		t.Errorf("tool message = %v", toolMsg)
+	}
+	if got := mustJSON(assistant["reasoning_details"]); !testutil.SameJSON([]byte(got), []byte("["+frag1+","+frag2+"]")) {
+		t.Errorf("reasoning_details = %s, want the fragments as received", got)
 	}
 }

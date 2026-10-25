@@ -1,13 +1,16 @@
 package stdioconn
 
 import (
+	"errors"
 	"io"
 	"net"
 	"os"
+	"strings"
 	"testing"
+	"time"
 )
 
-// pair returns two adapters joined by two os.Pipe pairs.
+// pair returns two connections joined by two os.Pipe pairs.
 func pair(t *testing.T) (net.Conn, net.Conn) {
 	t.Helper()
 	r1, w1, err := os.Pipe()
@@ -23,9 +26,7 @@ func pair(t *testing.T) (net.Conn, net.Conn) {
 	return a, b
 }
 
-// The adapter carries bytes both ways over two os.Pipe pairs, a Close gives
-// io.EOF on the peer, Close is idempotent, and both addresses are non-nil.
-func TestAdapterOverPipes(t *testing.T) {
+func TestConnCarriesBytesBothWays(t *testing.T) {
 	a, b := pair(t)
 	buf := make([]byte, 2)
 	if _, err := a.Write([]byte("hi")); err != nil {
@@ -40,16 +41,50 @@ func TestAdapterOverPipes(t *testing.T) {
 	if _, err := io.ReadFull(a, buf); err != nil || string(buf) != "yo" {
 		t.Fatalf("a read %q, %v", buf, err)
 	}
-	if a.LocalAddr() == nil || a.RemoteAddr() == nil {
-		t.Error("nil address")
-	}
+}
+
+func TestConnCloseIsIdempotentAndGivesThePeerEOF(t *testing.T) {
+	a, b := pair(t)
 	if err := a.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Close(); err != nil {
 		t.Errorf("second Close = %v", err)
 	}
-	if _, err := b.Read(buf); err != io.EOF {
+	if _, err := b.Read(make([]byte, 1)); err != io.EOF {
 		t.Errorf("peer read after Close = %v, want io.EOF", err)
+	}
+}
+
+func TestConnAddressesAreStdio(t *testing.T) {
+	a, _ := pair(t)
+	for _, ad := range []net.Addr{a.LocalAddr(), a.RemoteAddr()} {
+		if ad.Network() != "stdio" || ad.String() != "stdio" {
+			t.Errorf("address = %s/%s, want stdio/stdio", ad.Network(), ad.String())
+		}
+	}
+}
+
+func TestConnForwardsDeadlinesToFiles(t *testing.T) {
+	a, _ := pair(t)
+	if err := a.SetDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Read(make([]byte, 1)); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Errorf("read past the deadline = %v, want os.ErrDeadlineExceeded", err)
+	}
+}
+
+type nopWriteCloser struct{ io.Writer }
+
+func (nopWriteCloser) Close() error { return nil }
+
+func TestConnIgnoresDeadlinesOnStreamsThatHaveNone(t *testing.T) {
+	c := New(io.NopCloser(strings.NewReader("x")), nopWriteCloser{io.Discard})
+	if err := c.SetDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatalf("SetDeadline = %v, want nil", err)
+	}
+	if n, err := c.Read(make([]byte, 1)); n != 1 || err != nil {
+		t.Errorf("read = %d, %v; the deadline should be ignored", n, err)
 	}
 }

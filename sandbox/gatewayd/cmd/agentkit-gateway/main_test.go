@@ -1,85 +1,49 @@
+//go:build !windows
+
 package main
 
 import (
-	"bytes"
-	"fmt"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strings"
+	"syscall"
 	"testing"
+	"time"
 
-	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/gateway"
-	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver"
-	"github.com/agent-fox-dev/agentkit-go/sandbox/podman"
 )
 
-// binary is the agentkit-gateway built by TestMain, or "" on Windows.
-var binary string
-
-func TestMain(m *testing.M) {
-	code := func() int {
-		if runtime.GOOS != "windows" {
-			dir, err := os.MkdirTemp("", "agentkit-gateway-test-")
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				return 1
-			}
-			defer os.RemoveAll(dir)
-			binary = filepath.Join(dir, "agentkit-gateway")
-			if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
-				fmt.Fprintf(os.Stderr, "building agentkit-gateway: %v\n%s", err, out)
-				return 1
-			}
-		}
-		return m.Run()
-	}()
-	os.Exit(code)
-}
-
-// tok40 is a valid 40-character token.
-const tok40 = "0123456789abcdefghijklmnopqrstuvwxyzABCD"
-
-// writeFile writes body to name under dir and returns its path.
-func writeFile(t *testing.T, dir, name, body string, mode os.FileMode) string {
-	t.Helper()
-	p := filepath.Join(dir, name)
-	if err := os.WriteFile(p, []byte(body), mode); err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
-// fakeEngine puts a podman script on PATH that prints its version and logs
-// every invocation; it returns the log's path.
-func fakeEngine(t *testing.T) string {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake engine is a shell script")
-	}
+// End to end: the built command, over a fake podman on PATH, serves a client
+// as gateway/podman and exits 0 on SIGTERM.
+func TestTheBuiltCommandServesUntilSIGTERM(t *testing.T) {
 	dir := t.TempDir()
-	log := filepath.Join(dir, "invocations.log")
-	writeFile(t, dir, "podman", "#!/bin/sh\necho \"$@\" >> '"+log+"'\ncase \"$1\" in --version) echo 'podman version 5.0.0';; esac\n", 0o755)
+	bin := filepath.Join(dir, "agentkit-gateway")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	fake := "#!/bin/sh\ncase \"$1\" in --version) echo 'podman version 5.0.0';; esac\n"
+	must(t, os.WriteFile(filepath.Join(dir, "podman"), []byte(fake), 0o755))
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return log
-}
-
-// runCmd runs run with args and the real podman backend, never signalled.
-func runCmd(args ...string) (int, string, string) {
-	var stdout, stderr bytes.Buffer
-	code := run(args, &stdout, &stderr, deps{newBackend: podman.New, signals: make(chan os.Signal)})
-	return code, stdout.String(), stderr.String()
-}
-
-// TS-19-59: --version prints the build version and both protocol versions
-// and exits 0. 19-REQ-8.7.
-func TestVersion_TS19_59(t *testing.T) {
-	code, out, _ := runCmd("--version")
-	want := fmt.Sprintf("agentkit-gateway %s (gateway protocol %d.%d, agent protocol %d.%d)", buildver.Version(),
-		gateway.ProtocolMajor, gateway.ProtocolMinor, sandbox.ProtocolMajor, sandbox.ProtocolMinor)
-	if code != 0 || strings.TrimSpace(out) != want {
-		t.Fatalf("--version: exit %d, %q; want 0, %q", code, out, want)
+	cmd, stderr := exec.Command(bin, "--token-file", file(t, tok40+"\n"), "--plaintext", "--listen", "127.0.0.1:0"), &syncBuffer{}
+	cmd.Stderr = stderr
+	must(t, cmd.Start())
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	p, err := gateway.Dial(context.Background(), "http://"+waitListening(t, stderr), gateway.Options{Token: tok40})
+	must(t, err)
+	if got := p.Capabilities().Provider; got != "gateway/podman" || listening.FindStringSubmatch(stderr.String())[3] != "podman" {
+		t.Errorf("Capabilities().Provider = %q, want gateway/podman:\n%s", got, stderr)
+	}
+	_ = p.Close()
+	must(t, cmd.Process.Signal(syscall.SIGTERM))
+	select {
+	case <-done: //nolint:errcheck // the exit code is read from ProcessState
+	case <-time.After(30 * time.Second):
+		t.Fatal("the command did not exit after SIGTERM")
+	}
+	if code := cmd.ProcessState.ExitCode(); code != 0 {
+		t.Errorf("exit %d after SIGTERM, want 0:\n%s", code, stderr)
 	}
 }

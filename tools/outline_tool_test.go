@@ -2,282 +2,132 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
-	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/schema"
-	"github.com/agent-fox-dev/agentkit-go/workspace"
+	"github.com/agent-fox-dev/agentkit-go/outline"
 )
 
-// mkOutlineFile creates a file in root with the given relative path and content.
-func mkOutlineFile(t *testing.T, root, rel, content string) {
-	t.Helper()
-	abs := filepath.Join(root, filepath.FromSlash(rel))
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		t.Fatal(err)
+const outlineSrc = "package x\n\ntype Observer interface {\n\tOnStart()\n}\n\nfunc (r *Runner) Run() error {\n\treturn nil\n}\n\nconst MaxRetries = 3\n\nfunc internal() {}\n"
+
+func TestFileOutlineListsDeclarationsWithLineRanges(t *testing.T) {
+	ws := newWS(t, map[string]string{
+		"x.go": outlineSrc, "empty.go": "package empty\n", "one.go": "package one\n\nfunc One() {}\n",
+		".gitignore": "gen/\n", "gen/g.go": "package gen\n\nfunc G() {}\n", ".hidden/h.go": "package h\n\nfunc H() {}\n",
+	})
+	// Neither building the tool set nor outlining a file walks the workspace.
+	walks := countWalks(t)
+	fo := toolSet(t, ws, Options{})["file_outline"]
+	defer func() {
+		if n := walks.Load(); n != 0 {
+			t.Errorf("%d walks", n)
+		}
+	}()
+	for args, want := range map[string]string{
+		`{"path":"x.go"}`: "x.go  (go/ast, 4 declarations, 1 unexported not listed)\n" +
+			"  L3-5  type Observer interface\n  L7-9  func (r *Runner) Run() error\n  L11  const MaxRetries",
+		`{"path":"x.go","include_private":true}`: "x.go  (go/ast, 4 declarations)\n" +
+			"  L3-5  type Observer interface\n  L7-9  func (r *Runner) Run() error\n  L11  const MaxRetries\n  L13  func internal()",
+		`{"path":"one.go"}`:   "one.go  (go/ast, 1 declaration)\n  L3  func One()",
+		`{"path":"empty.go"}`: "empty.go  (go/ast, 0 declarations)\n  No declarations found",
+		// Ignored and hidden files are outlined anyway: the caller named them.
+		`{"path":"gen/g.go"}`:     "gen/g.go  (go/ast, 1 declaration)\n  L3  func G()",
+		`{"path":".hidden/h.go"}`: ".hidden/h.go  (go/ast, 1 declaration)\n  L3  func H()",
+	} {
+		if r := mustOK(t, call(fo, args)); r.Text != want {
+			t.Errorf("%s:\n%s\nwant:\n%s", args, r.Text, want)
+		}
 	}
-	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
+	r := mustOK(t, call(fo, `{"path":"x.go"}`))
+	if f, ok := r.Data["file"].(outline.File); !ok || len(f.Decls) != 4 || r.Data["declarations"] != 4 || r.Data["listed"] != 3 || r.Data["backend"] != "go/ast" {
+		t.Errorf("Data = %+v", r.Data)
+	}
+	// Read from disk on every call, never from the symbol table.
+	writeAt(t, ws.Root(), "one.go", "package one\n\nfunc Two() {}\n")
+	if r := mustOK(t, call(fo, `{"path":"one.go"}`)); !strings.Contains(r.Text, "Two") || strings.Contains(r.Text, "One()") {
+		t.Errorf("a stale outline: %s", r.Text)
 	}
 }
 
-// makeOutlineTool builds a file_outline tool's Execute function from a workspace root.
-func makeOutlineTool(t *testing.T, root string) func(ctx context.Context, in json.RawMessage) core.ToolResult {
-	t.Helper()
-	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
+func TestFileOutlineRejections(t *testing.T) {
+	outsideDir := t.TempDir()
+	writeAt(t, outsideDir, "o.go", "package o\n")
+	ws := newWS(t, map[string]string{"a.go": "package a\n", "pkg/p.go": "package p\n"})
+	mustSymlink(t, outsideDir+"/o.go", abs(ws, "escape.go"))
+	fo := newFT(ws, Options{}).fileOutlineTool()
+	for args, code := range map[string]string{
+		`{`: "invalid_arguments", `{"path":""}`: "invalid_arguments", `{"path":3}`: "invalid_arguments",
+		`{"path":"escape.go"}`: "path_not_allowed", `{"path":"` + outsideDir + `/o.go"}`: "path_not_allowed",
+		`{"path":"missing.go"}`: "read_failed", `{"path":"pkg"}`: "not_a_file",
+	} {
+		if r := call(fo, args); r.Error != code {
+			t.Errorf("%s: %q %q, want %q", args, r.Error, r.Detail, code)
+		}
+	}
+	if r := call(fo, `{"path":"pkg"}`); !strings.Contains(r.Detail, "list_files") {
+		t.Errorf("a directory names list_files: %q", r.Detail)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if r := fo.Execute(ctx, []byte(`{"path":"a.go"}`)); r.Error != "aborted" || r.Detail != "Operation aborted" {
+		t.Errorf("a cancelled call: %+v", r)
+	}
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		return
+	}
+	writeAt(t, ws.Root(), "secret.go", "package secret\n")
+	_ = os.Chmod(abs(ws, "secret.go"), 0)
+	if r := call(fo, `{"path":"secret.go"}`); r.Error != "outline_failed" {
+		t.Errorf("an unreadable file: %+v", r)
+	}
+	// Over outline's size limit the file is not even read: mode 0 proves it.
+	f, err := os.Create(abs(ws, "bundle.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	fs := newFileTools(ws, Options{
-		Env:     os.Environ(),
-		Symbols: SymbolOptions{},
-	}.withDefaults(ws))
-	tl := fs.fileOutlineTool()
-	return tl.Execute
-}
-
-// TS-02-1: file_outline outlines from disk on every call and never consults the symbol table
-func TestOutlineFromDiskOnEveryCall_TS02_1(t *testing.T) {
-	root := t.TempDir()
-	mkOutlineFile(t, root, "a.go", "package a\n\nfunc Alpha() {}\n")
-
-	exec := makeOutlineTool(t, root)
-
-	r1 := exec(context.Background(), json.RawMessage(`{"path":"a.go"}`))
-	if !r1.OK {
-		t.Fatalf("first call failed: error=%s detail=%s", r1.Error, r1.Detail)
-	}
-	if !strings.Contains(r1.Text, "Alpha") {
-		t.Fatalf("first call should list Alpha; got %q", r1.Text)
-	}
-
-	// Edit the file on disk.
-	mkOutlineFile(t, root, "a.go", "package a\n\nfunc Beta() {}\n")
-
-	r2 := exec(context.Background(), json.RawMessage(`{"path":"a.go"}`))
-	if !r2.OK {
-		t.Fatalf("second call failed: error=%s detail=%s", r2.Error, r2.Detail)
-	}
-	if !strings.Contains(r2.Text, "Beta") {
-		t.Fatalf("second call should list Beta; got %q", r2.Text)
-	}
-	if strings.Contains(r2.Text, "Alpha") {
-		t.Fatalf("second call should NOT list Alpha; got %q", r2.Text)
+	_ = f.Truncate(2 << 20)
+	f.Close()
+	_ = os.Chmod(abs(ws, "bundle.js"), 0)
+	if r := call(fo, `{"path":"bundle.js"}`); !r.OK || r.Text != "bundle.js  (none, 0 declarations)\n  No declarations found (file too large); use read_file or search_files" {
+		t.Errorf("an oversized file: %+v", r)
 	}
 }
 
-// TS-02-2: file_outline rejects unparsable arguments and an empty path with invalid_arguments
-func TestOutlineInvalidArguments_TS02_2(t *testing.T) {
-	root := t.TempDir()
-	mkOutlineFile(t, root, "dummy.go", "package dummy\n")
-	exec := makeOutlineTool(t, root)
-
-	cases := []struct {
-		name string
-		args string
-	}{
-		{"malformed JSON", `{`},
-		{"empty path", `{"path":""}`},
-		// A number for path: json.Unmarshal into string will coerce or fail
-		{"number path", `{"path":3}`},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			r := exec(context.Background(), json.RawMessage(tc.args))
-			if r.OK {
-				t.Fatalf("expected failure for %s", tc.name)
-			}
-			if r.Error != "invalid_arguments" {
-				t.Fatalf("error = %q, want invalid_arguments (detail: %s)", r.Error, r.Detail)
-			}
-		})
-	}
-}
-
-// TS-02-3: file_outline refuses a path outside the workspace
-func TestOutlinePathOutsideWorkspace_TS02_3(t *testing.T) {
-	root := t.TempDir()
-	mkOutlineFile(t, root, "inside.go", "package inside\n")
-
-	// Create a file outside the workspace.
-	outside := t.TempDir()
-	mkOutlineFile(t, outside, "outside.go", "package outside\n")
-
-	exec := makeOutlineTool(t, root)
-
-	cases := []struct {
-		name string
-		path string
-	}{
-		{"relative escape", "../outside.go"},
-		{"absolute outside", filepath.Join(outside, "outside.go")},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			arg, _ := json.Marshal(map[string]string{"path": tc.path})
-			r := exec(context.Background(), json.RawMessage(arg))
-			if r.OK {
-				t.Fatalf("expected failure for %s", tc.name)
-			}
-			if r.Error != "path_not_allowed" {
-				t.Fatalf("error = %q, want path_not_allowed (detail: %s)", r.Error, r.Detail)
-			}
-		})
-	}
-
-	// Symlink escaping (skip on Windows where symlinks may need privileges)
-	if runtime.GOOS != "windows" {
-		link := filepath.Join(root, "escape.go")
-		target := filepath.Join(outside, "outside.go")
-		if err := os.Symlink(target, link); err != nil {
-			t.Fatal(err)
-		}
-		arg, _ := json.Marshal(map[string]string{"path": "escape.go"})
-		r := exec(context.Background(), json.RawMessage(arg))
-		if r.OK {
-			t.Fatalf("expected failure for escaping symlink")
-		}
-		if r.Error != "path_not_allowed" {
-			t.Fatalf("error = %q, want path_not_allowed", r.Error)
+// TestANoneOutlineSaysWhyAndWhatToUseInstead renders outlines with no
+// backend, which in a build without cgo is every language but Go.
+func TestANoneOutlineSaysWhyAndWhatToUseInstead(t *testing.T) {
+	ws := newWS(t, map[string]string{"data.xyz": "some data\n", "bin.go": "package x\n\x00\x00"})
+	fo := newFT(ws, Options{}).fileOutlineTool()
+	for path, reason := range map[string]string{"data.xyz": "language not recognised", "bin.go": "binary"} {
+		want := path + "  (none, 0 declarations)\n  No declarations found (" + reason + "); use read_file or search_files"
+		if r := mustOK(t, call(fo, `{"path":"`+path+`"}`)); r.Text != want {
+			t.Errorf("%s:\n%s\nwant:\n%s", path, r.Text, want)
 		}
 	}
-}
-
-// TS-02-4: file_outline reports read_failed when the path cannot be stat'ed
-func TestOutlineReadFailed_TS02_4(t *testing.T) {
-	root := t.TempDir()
-	exec := makeOutlineTool(t, root)
-
-	arg, _ := json.Marshal(map[string]string{"path": "missing.go"})
-	r := exec(context.Background(), json.RawMessage(arg))
-	if r.OK {
-		t.Fatal("expected failure for missing file")
-	}
-	if r.Error != "read_failed" {
-		t.Fatalf("error = %q, want read_failed (detail: %s)", r.Error, r.Detail)
+	src := []byte("<?php\nfunction hello() {}\n")
+	r := renderOutlineResult(ws, abs(ws, "a.php"), outline.File{Lang: outline.LangPHP, Backend: outline.BackendNone}, false, src, int64(len(src)))
+	if want := "a.php  (none, 0 declarations)\n  No declarations found (no outline backend for PHP in this build (built without cgo)); use read_file or search_files"; r.Text != want {
+		t.Errorf("got:\n%s\nwant:\n%s", r.Text, want)
 	}
 }
 
-// TS-02-5: file_outline reports not_a_file for a directory with the notAFile message
-func TestOutlineNotAFile_TS02_5(t *testing.T) {
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "pkg"), 0o755); err != nil {
-		t.Fatal(err)
+func TestAMemberWhoseSignatureLacksItsContainerIsIndented(t *testing.T) {
+	ws := newWS(t, nil)
+	f := outline.File{Lang: "Python", Backend: outline.BackendTreeSitter, Decls: []outline.Decl{
+		{Kind: outline.KindClass, Name: "MyClass", Signature: "class MyClass", Exported: true, StartLine: 1, EndLine: 6},
+		{Kind: outline.KindMethod, Name: "my_method", Container: "MyClass", Signature: "def my_method(self)", Exported: true, StartLine: 2, EndLine: 3},
+		{Kind: outline.KindMethod, Name: "Run", Container: "Runner", Signature: "func (r *Runner) Run()", Exported: true, StartLine: 7},
+		{Kind: outline.KindFunc, Name: "top", Signature: "def top()", Exported: true, StartLine: 5, EndLine: 5},
+	}}
+	want := "mod.py  (tree-sitter, 4 declarations)\n  L1-6  class MyClass\n    L2-3  def my_method(self)\n  L7  func (r *Runner) Run()\n  L5  def top()"
+	if r := renderOutlineResult(ws, abs(ws, "mod.py"), f, false, nil, 0); r.Text != want {
+		t.Errorf("got:\n%s\nwant:\n%s", r.Text, want)
 	}
-	exec := makeOutlineTool(t, root)
-
-	arg, _ := json.Marshal(map[string]string{"path": "pkg"})
-	r := exec(context.Background(), json.RawMessage(arg))
-	if r.OK {
-		t.Fatal("expected failure for directory")
+	for n, want := range map[int]string{0: "0", 7: "7", 1234: "1234", -42: "-42"} {
+		if got := itoa(n); got != want {
+			t.Errorf("itoa(%d) = %q", n, got)
+		}
 	}
-	if r.Error != "not_a_file" {
-		t.Fatalf("error = %q, want not_a_file (detail: %s)", r.Error, r.Detail)
-	}
-	if !strings.Contains(r.Detail, "list_files") {
-		t.Fatalf("directory detail should mention list_files; got %q", r.Detail)
-	}
-}
-
-// TS-02-6: file_outline returns outline_failed with the underlying detail when outline.Outline errors
-func TestOutlineOutlineFailed_TS02_6(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits not reliable on Windows")
-	}
-	if os.Getuid() == 0 {
-		t.Skip("running as root; permission test would not fail")
-	}
-
-	root := t.TempDir()
-	unreadable := filepath.Join(root, "secret.go")
-	if err := os.WriteFile(unreadable, []byte("package secret\n"), 0o000); err != nil {
-		t.Fatal(err)
-	}
-	exec := makeOutlineTool(t, root)
-
-	arg, _ := json.Marshal(map[string]string{"path": "secret.go"})
-	r := exec(context.Background(), json.RawMessage(arg))
-	if r.OK {
-		t.Fatal("expected failure for unreadable file")
-	}
-	if r.Error != "outline_failed" {
-		t.Fatalf("error = %q, want outline_failed (detail: %s)", r.Error, r.Detail)
-	}
-}
-
-// TS-02-7: file_outline returns aborted for a cancelled context
-func TestOutlineAborted_TS02_7(t *testing.T) {
-	root := t.TempDir()
-	mkOutlineFile(t, root, "a.go", "package a\n\nfunc Hello() {}\n")
-	exec := makeOutlineTool(t, root)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // already cancelled
-
-	arg, _ := json.Marshal(map[string]string{"path": "a.go"})
-	r := exec(ctx, json.RawMessage(arg))
-	if r.OK {
-		t.Fatal("expected failure for cancelled context")
-	}
-	if r.Error != "aborted" {
-		t.Fatalf("error = %q, want aborted (detail: %s)", r.Error, r.Detail)
-	}
-	if r.Detail != "Operation aborted" {
-		t.Fatalf("detail = %q, want %q", r.Detail, "Operation aborted")
-	}
-}
-
-// TS-02-8: file_outline outlines every readable workspace file regardless of ignore rules and hidden directories
-func TestOutlineIgnoredAndHiddenFiles_TS02_8(t *testing.T) {
-	root := t.TempDir()
-
-	// Create .gitignore that ignores generated files
-	mkOutlineFile(t, root, ".gitignore", "generated/\n*.gen.go\n")
-
-	// Create various files: normal, ignored, hidden-dir
-	mkOutlineFile(t, root, "normal.go", "package normal\n\nfunc Normal() {}\n")
-	mkOutlineFile(t, root, "generated/gen.go", "package generated\n\nfunc Gen() {}\n")
-	mkOutlineFile(t, root, "foo.gen.go", "package main\n\nfunc GenFunc() {}\n")
-	mkOutlineFile(t, root, ".hidden/secret.go", "package hidden\n\nfunc Secret() {}\n")
-
-	exec := makeOutlineTool(t, root)
-
-	files := []string{
-		"normal.go",
-		"generated/gen.go",
-		"foo.gen.go",
-		".hidden/secret.go",
-	}
-
-	for _, f := range files {
-		t.Run(f, func(t *testing.T) {
-			arg, _ := json.Marshal(map[string]string{"path": f})
-			r := exec(context.Background(), json.RawMessage(arg))
-			if !r.OK {
-				t.Fatalf("file_outline should succeed for %s (even if ignored/hidden); error=%s detail=%s",
-					f, r.Error, r.Detail)
-			}
-		})
-	}
-}
-
-// TS-06-15: file_outline declares the outline it returns. outline.File and
-// outline.Decl carry no json tags, so their keys are the Go field names.
-func TestOutputSchemaFileOutline_TS06_15(t *testing.T) {
-	s := toolByName(t, t.TempDir(), "file_outline").OutputSchema
-	assertObject(t, "file_outline", s, map[string]prop{
-		"file": {schema.TypeObject, true}, "backend": {schema.TypeString, true},
-		"declarations": {schema.TypeInteger, true}, "listed": {schema.TypeInteger, true},
-	})
-	file := s.Properties["file"]
-	assertObject(t, "file_outline.file", file, map[string]prop{
-		"Path": {schema.TypeString, true}, "Lang": {schema.TypeString, true},
-		"Backend": {schema.TypeString, true}, "Decls": {schema.TypeArray, true},
-	})
-	assertObject(t, "file_outline.file.Decls[]", file.Properties["Decls"].Items, declProps)
 }
