@@ -219,9 +219,9 @@ func (a *Agent) Usage() core.Usage {
 }
 
 // ReachableTools returns every tool a run of this agent can call: the tools
-// Toolset.Policy resolved, and everything those reach through wrappers
-// (07-REQ-2.2). A check that a run is read-only, say, has to look at this set
-// rather than at the top-level tools. It is Runner().Reachable().
+// Toolset.Policy resolved, and everything those reach through wrappers. A
+// check that a run is read-only, say, has to look at this set rather than at
+// the top-level tools. It is Runner().Reachable().
 func (a *Agent) ReachableTools() []core.Tool {
 	return a.Runner().Reachable()
 }

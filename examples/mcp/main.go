@@ -234,7 +234,8 @@ func smokeCall(ctx context.Context, tools []core.Tool, qualified string) error {
 		qualified, "__")
 }
 
-// demoShadowedNameIsRefused makes REQ-MCP-CLIENT-06 concrete.
+// demoShadowedNameIsRefused shows the pool refusing a server tool that would
+// shadow a native one.
 //
 // The collision needs a server whose tool lands on a name we already own, and
 // with the default `<name>__` prefix that cannot happen — which is exactly why
@@ -271,11 +272,11 @@ func demoShadowedNameIsRefused(ctx context.Context, native []string) {
 
 // connectExternal spawns a real MCP server, the way an application does.
 //
-// Two things here are not decoration. The child gets a REDUCED environment
-// (REQ-MCP-CLIENT-10) — not os.Environ(), which would hand every credential
-// this process holds to a program the user found on npm — and the credential
-// it does need travels as a `${VAR}` reference resolved at spawn time, so the
-// token is in neither the config file nor the process table.
+// Two things here are not decoration. The child gets a REDUCED environment —
+// not os.Environ(), which would hand every credential this process holds to a
+// program the user found on npm — and the credential it does need travels as
+// a `${VAR}` reference resolved at spawn time, so the token is in neither the
+// config file nor the process table.
 //
 // An unresolved reference is an *mcp.UnresolvedVariableError and nothing is
 // spawned. That is deliberate: substituting a blank would start the server

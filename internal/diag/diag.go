@@ -1,12 +1,12 @@
-// Package diag holds the non-fatal report type shared by every subsystem that
-// loads LOCALLY AUTHORED content — skill manifests, plugin manifests, the TOML
-// subset underneath both.
+// Package diag holds the non-fatal report type shared by the code that loads
+// LOCALLY AUTHORED content: the MCP client's configuration and the TOML subset
+// underneath it.
 //
 // It is separate from the error types those packages return because the
-// distinction is load-bearing (REQ-SKILL-10, REQ-PLUGIN-08): authored content
-// is decoded leniently, so almost everything that goes wrong is something the
-// embedder may want to log rather than something that stops the load. Only
-// SeverityError means a thing was not loaded.
+// distinction is load-bearing: authored content is decoded leniently, so
+// almost everything that goes wrong is something the embedder may want to log
+// rather than something that stops the load. Only SeverityError means a thing
+// was not loaded.
 package diag
 
 import "fmt"

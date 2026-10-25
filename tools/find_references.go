@@ -49,7 +49,7 @@ func (f *fileTools) ensureSymbolTable(ctx context.Context) error {
 // table, read under its lock: the top-ranked match of kind under the
 // workspace-relative directory relPath, the file declaring it, and the
 // backend that searches for it. With no declaration the name is searched
-// as text (05-REQ-2.4). ok is false when ctx ends waiting for the table.
+// as text. ok is false when ctx ends waiting for the table.
 func (f *fileTools) referenceTarget(ctx context.Context, name, kind, relPath string) (target outline.Decl, targetPath, backend string, ok bool) {
 	st := f.getTable()
 	if !st.lock(ctx) {

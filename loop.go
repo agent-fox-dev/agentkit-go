@@ -13,11 +13,11 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/provider"
 )
 
-// maxTokensToolText is REQ-LOOP-10's fixed result text, pinned byte-for-byte
-// because it is model-visible. The line break inside it is a literal newline
-// (ruling P-43): the PRD renders it across two lines inside a fenced block,
-// and "inherit whatever the implementer typed" is not a specification for text
-// the model reads.
+// maxTokensToolText is the fixed result text of a call that was not run
+// because its response hit the output token limit. It is pinned byte-for-byte
+// because it is model-visible, and the line break inside it is a literal
+// newline on purpose: text the model reads is specified exactly, not left to
+// however it happens to be typed.
 const maxTokensToolText = "Tool call %q was not executed: the response hit the output token limit,\n" +
 	"so its arguments may be truncated. Re-issue the tool call with complete arguments."
 

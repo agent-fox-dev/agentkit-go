@@ -1,6 +1,6 @@
-// Package catalog embeds AgentKit's model catalog and turns a model id into the
-// core.Model descriptor of REQ-PROV-10. It lists models for the three
-// providers an agent can run on (Providers): anthropic, openrouter and ollama.
+// Package catalog embeds AgentKit's model catalog and turns a model id into a
+// core.Model descriptor. It lists models for the three providers an agent can
+// run on (Providers): anthropic, openrouter and ollama.
 //
 // Lookup resolves a Claude model id and is what the driver calls. Select is the
 // offline entry point for all three providers: it turns a provider, a model and
@@ -24,10 +24,10 @@
 //
 // # Layering
 //
-// catalog imports core and nothing else in the module (plan §1.3). It holds no
-// mutable package-level state: Default is a sync.OnceValue over the embedded
-// bytes and every returned core.Model is a deep copy, so a caller who edits a
-// resolved descriptor cannot corrupt the process-wide catalog.
+// catalog imports core and nothing else in the module. It holds no mutable
+// package-level state: Default is a sync.OnceValue over the embedded bytes and
+// every returned core.Model is a deep copy, so a caller who edits a resolved
+// descriptor cannot corrupt the process-wide catalog.
 package catalog
 
 import (
@@ -46,12 +46,12 @@ import (
 
 // SchemaVersion is the catalog file format this build understands.
 //
-// The catalog is versioned separately from the SDK (REQ-CAT-01), so a caller
-// may hand Parse a file newer than this binary. A file that declares a
-// different schema_version is rejected rather than parsed on a guess: the
-// failure mode of guessing is a silently wrong price or context window, which
-// surfaces as a 400 deep into a long session (REQ-CAT-04's stated hazard) or
-// as a mis-billed run, and neither is detectable from the result.
+// The catalog is versioned separately from the SDK, so a caller may hand Parse
+// a file newer than this binary. A file that declares a different
+// schema_version is rejected rather than parsed on a guess: the failure mode
+// of guessing is a silently wrong price or context window, which surfaces as
+// a 400 deep into a long session or as a mis-billed run, and neither is
+// detectable from the result.
 const SchemaVersion = 1
 
 //go:embed catalog.json
@@ -84,8 +84,8 @@ func (e entry) canonical() string { return e.vendor + "/" + e.model.ID }
 // --- file format -----------------------------------------------------------
 //
 // The wire format is DELIBERATELY not core.Model. The catalog is versioned
-// separately from the SDK (REQ-CAT-01), so its file format is an interface
-// with a future version of itself, not a mirror of an internal struct: rows
+// separately from the SDK, so its file format is an interface with a future
+// version of itself, not a mirror of an internal struct: rows
 // inherit api/base_url/headers from their vendor (so a vendor-wide base URL
 // change is one edit, not six), and a row may carry a human `note` that has no
 // place on a runtime descriptor.
@@ -102,13 +102,14 @@ type vendorRow struct {
 	API     core.API           `json:"api"`
 	BaseURL string             `json:"base_url"`
 	Headers map[string]*string `json:"headers"`
-	// DefaultModel names the row cloned for an unknown id under this vendor
-	// (REQ-CAT-03). It is the most representative current row, not the
-	// cheapest and not the largest: the clone is a documented guess, and the
-	// guess that is wrong least often is the middle of the vendor's range.
+	// DefaultModel names the vendor's most representative current row, not
+	// the cheapest and not the largest: the middle of the vendor's range.
+	// DefaultModelID reports it. Parse requires it, but no lookup clones it:
+	// an id the catalog does not list gets the provider's fixed default
+	// descriptor (see Lookup and Select).
 	DefaultModel string               `json:"default_model"`
 	Models       map[string]*modelRow `json:"models"`
-	// Tiers is the optional tier table (26-REQ-4): all of SIMPLE, STANDARD and
+	// Tiers is the optional tier table: all of SIMPLE, STANDARD and
 	// ADVANCED, each naming a row of this vendor and an effort that row takes.
 	// A vendor without it has no tiers.
 	Tiers map[string]*tierRow `json:"tiers"`
@@ -167,8 +168,8 @@ var tierNames = []Tier{TierSimple, TierStandard, TierAdvanced}
 var ErrCorruptCatalog = errors.New("agentkit: model catalog is corrupt")
 
 // ParseError names the exact row that failed validation. A catalog is edited
-// by hand during the REQ-CAT-06 regeneration ritual, so "corrupt" without a
-// path is a message that costs an hour.
+// by hand whenever it is regenerated, so "corrupt" without a path is a message
+// that costs an hour.
 type ParseError struct {
 	Path   string // "vendors.anthropic.models.claude-opus-4-5.cost.input", or "" for whole-file failures
 	Reason string
@@ -189,10 +190,11 @@ func badf(path, format string, args ...any) error {
 	return &ParseError{Path: path, Reason: fmt.Sprintf(format, args...)}
 }
 
-// Parse decodes and validates a catalog document (REQ-CAT-01's "overridable by
-// the caller"). It is the only constructor; there is no partially-valid
-// Catalog, because a catalog that loaded "mostly" is one whose missing row
-// becomes a sibling clone with a plausible, wrong context window.
+// Parse decodes and validates a catalog document, such as a caller's own in
+// place of the embedded one. It is the only constructor; there is no
+// partially-valid Catalog, because a catalog that loaded "mostly" is one whose
+// missing row silently resolves to the default descriptor, with a plausible,
+// wrong context window and no price.
 func Parse(data []byte) (*Catalog, error) {
 	var f catalogFile
 	if err := json.Unmarshal(data, &f); err != nil {
@@ -223,9 +225,9 @@ func Parse(data []byte) (*Catalog, error) {
 		if vid == "" {
 			return nil, badf("vendors", "empty vendor id")
 		}
-		// A vendor id containing a slash would make "vendor/id" ambiguous to
-		// split, and REQ-CAT-02.1 splits at the FIRST slash. Reject it here
-		// rather than resolve wrongly later.
+		// A vendor id containing a slash would make "vendor/id" ambiguous: a
+		// row's id may hold slashes of its own. Reject it here rather than
+		// resolve wrongly later.
 		if strings.ContainsAny(vid, "/ \t\n") {
 			return nil, badf(vpath, "vendor id may not contain a slash or whitespace")
 		}
@@ -431,14 +433,13 @@ func thinkingKindOf(levels map[string]*string) core.ThinkingKind {
 
 // defaultCatalog parses the embedded bytes at most once.
 //
-// REQ-CAT-01 says a corrupt catalog "panics at init". NFR-SEC-05 forbids
-// package init() from mutating global state, and an init() panic is also
-// untestable and unrecoverable: it takes down every binary that merely imports
-// the package, including the test binary that would have reported the problem.
-// Ruling P-15 reconciles the two — sync.OnceValue, panicking on FIRST USE.
-// The observable contract is identical (nothing ever sees a silently empty
-// catalog), the failure is attributable to the call that needed the catalog,
-// and the corrupt case becomes an ordinary table test: sync.OnceValue stores
+// A corrupt catalog must panic, but package init() must not mutate global
+// state, and an init() panic is also untestable and unrecoverable: it takes
+// down every binary that merely imports the package, including the test binary
+// that would have reported the problem. So the parse is a sync.OnceValue,
+// panicking on FIRST USE. Nothing ever sees a silently empty catalog, the
+// failure is attributable to the call that needed the catalog, and the
+// corrupt case becomes an ordinary table test: sync.OnceValue stores
 // the recovered panic value and re-panics with THE SAME value on every
 // subsequent call, so "panics identically the second time" is assertable.
 var defaultCatalog = onceCatalog(embeddedCatalog)
@@ -457,27 +458,26 @@ func onceCatalog(data []byte) func() *Catalog {
 
 // Default returns the embedded catalog, parsing it on first use.
 //
-// It panics if the embedded catalog is corrupt (REQ-CAT-01 as amended by
-// ruling P-15) and panics identically on every later call. It never returns a
-// silently empty catalog.
+// It panics if the embedded catalog is corrupt and panics identically on every
+// later call. It never returns a silently empty catalog.
 func Default() *Catalog { return defaultCatalog() }
 
 // --- accessors -------------------------------------------------------------
 
 // Version is the catalog document's own version, which moves independently of
-// the SDK's (REQ-CAT-01).
+// the SDK's.
 func (c *Catalog) Version() string { return c.version }
 
-// Note is the catalog document's maintenance note, including the REQ-CAT-06
-// regeneration ritual.
+// Note is the catalog document's maintenance note, including how to
+// regenerate the file.
 func (c *Catalog) Note() string { return c.note }
 
 // Vendors lists known vendor ids in sorted order.
 func (c *Catalog) Vendors() []string { return append([]string(nil), c.vendorIDs...) }
 
-// KnownVendor reports whether id names a vendor. This is REQ-CAT-02 rule 1's
-// predicate: it decides whether the segment before the first slash of a spec
-// is a vendor prefix or just part of an OpenRouter-style model id.
+// KnownVendor reports whether id names a vendor. It tells whether the segment
+// before the first slash of a model spec is a vendor prefix or just part of an
+// OpenRouter-style model id.
 func (c *Catalog) KnownVendor(id string) bool {
 	_, ok := c.vendors[id]
 	return ok
@@ -498,8 +498,8 @@ func (c *Catalog) Models(vendor string) []string {
 	return out
 }
 
-// DefaultModelID is the id of the row REQ-CAT-03 clones for an unknown model
-// under this vendor. It returns "" for an unknown vendor.
+// DefaultModelID is the id of the vendor's default_model row, its most
+// representative current model. It returns "" for an unknown vendor.
 func (c *Catalog) DefaultModelID(vendor string) string {
 	v, ok := c.vendors[vendor]
 	if !ok {
@@ -510,8 +510,8 @@ func (c *Catalog) DefaultModelID(vendor string) string {
 
 // cloneModel deep-copies a descriptor.
 //
-// Every model handed to a caller goes through this, hit or clone. REQ-CAT-03
-// says callers "may override any inherited field", and the catalog is a
+// Every listed model handed to a caller goes through this. A caller may
+// override any field of the descriptor it gets, and the catalog is a
 // process-wide singleton: without the copy, one caller raising MaxTokens or
 // deleting a header would change every later resolution in the process.
 func cloneModel(m core.Model) core.Model {
@@ -537,15 +537,15 @@ func cloneModel(m core.Model) core.Model {
 	return out
 }
 
-// Default context window, output cap and thinking for a Claude model the
-// catalog does not list (10-REQ-3.4).
+// Default context window and output cap for a Claude model the catalog does
+// not list.
 const (
 	DefaultContextWindow = 1_000_000
 	DefaultMaxTokens     = 128_000
 )
 
 // Default context window and output cap for an id the catalog does not list
-// under openrouter or ollama (26-REQ-3). Like the pair above they are
+// under openrouter or ollama. Like the pair above they are
 // documented guesses, not a lookup at the vendor, and the descriptor they
 // belong to has no price and no effort map.
 const (

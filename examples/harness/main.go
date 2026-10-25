@@ -24,7 +24,7 @@
 // implements the task. local is NOT isolation. The real run is:
 //
 //	podman build -t agentkit-harness:latest -f Containerfile .
-//	go run . --podman --image agentkit-harness:latest --repo https://github.com/you/project --spec 16 --harness claude
+//	go run . --podman --image agentkit-harness:latest --repo https://github.com/you/project --spec=16 --harness claude
 //
 // See README.md for the image, the flags and what each harness is told.
 package main

@@ -153,9 +153,9 @@ func (r *Runner) Batch(ctx context.Context, calls ...core.ToolUseBlock) []core.T
 func (r *Runner) Tools() []core.Tool { return slices.Clone(r.tools) }
 
 // Reachable returns every tool the runner can call: the tools the policy
-// resolved, and everything those reach through wrappers (07-REQ-2.2). A check
-// that a toolset is read-only, say, has to look at this set rather than at
-// the top-level tools.
+// resolved, and everything those reach through wrappers. A check that a
+// toolset is read-only, say, has to look at this set rather than at the
+// top-level tools.
 func (r *Runner) Reachable() []core.Tool { return core.ReachableTools(r.tools) }
 
 // safeSink returns f as a sink the code emitting to it can rely on: a nil f
@@ -172,11 +172,11 @@ func safeSink(f func(core.Event)) func(core.Event) {
 	}
 }
 
-// checkTool is REQ-TOOL-01's "exactly one of Handler and Execute", for every
-// way a tool enters the registry. A tool with neither otherwise registers and
+// checkTool enforces "exactly one of Handler and Execute" for every way a
+// tool enters the registry. A tool with neither otherwise registers and
 // fails only when the model first calls it, as a nil-func panic.
 //
-// It also validates the tool's ReachableTools hierarchy (07-REQ-1): every
+// It also validates the tool's ReachableTools hierarchy: every
 // reachable tool passes the same handler check, no tool reaches itself
 // directly or transitively, and no wrapper reaches a Terminating tool.
 // Failing here, at construction or registration, keeps a cycle from becoming

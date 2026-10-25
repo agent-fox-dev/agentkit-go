@@ -1,7 +1,6 @@
 package wire // import "github.com/agent-fox-dev/agentkit-go/wire"
 
-Package wire is REQ-SEC-11 and REQ-SEC-12: the bounded, strict decoder for bytes
-AgentKit did not produce.
+Package wire is the bounded, strict decoder for bytes AgentKit did not produce.
 
 Every other decoder in this module reads data we or the model authored — a
 tool's arguments, a catalog file — and can afford to be lenient. This one reads
@@ -10,24 +9,23 @@ The difference is not tone. A lenient decoder on that surface turns a malformed
 message into an allocation the peer chose, a duplicate key into a value the peer
 chose, and a deep nest into a stack the peer chose.
 
-WHY encoding/json/v2, NOT v1. REQ-SEC-11.5 states it plainly: encoding/json
-satisfies none of rules 1-4 and silently accepts duplicate keys, and it matches
-field names case-insensitively. jsontext rejects duplicate names itself and
-exposes a token stream, so the bounds are a loop over it, each checked before
-the token that would exceed it is read.
+WHY encoding/json/v2, NOT v1. encoding/json enforces none of these bounds,
+silently accepts duplicate keys, and matches field names case-insensitively.
+jsontext rejects duplicate names itself and exposes a token stream, so the
+bounds are a loop over it, each checked before the token that would exceed it is
+read.
 
 VARIABLES
 
 var ErrRejected = errors.New("wire: message rejected")
     ErrRejected matches every rejection this package produces, so a transport
-    can implement REQ-SEC-11.4's poisoning without enumerating rules.
+    can poison itself on the first rejection without enumerating rules.
 
 
 FUNCTIONS
 
 func Guard(data []byte, l Limits) error
-    Guard validates a message against REQ-SEC-11's bounds WITHOUT building a
-    tree.
+    Guard validates a message against the bounds WITHOUT building a tree.
 
     It exists because the bounds and the strict binding have different scopes.
     Every untrusted surface needs the bounds — a provider response included —
@@ -59,11 +57,11 @@ type FrameReader struct {
 	// Has unexported fields.
 }
     FrameReader reads one untrusted message at a time, bounded before it
-    allocates (REQ-SEC-11).
+    allocates.
 
-    It is POISONED by its first malformed message (REQ-SEC-11.4): once a frame
-    is rejected, every later call returns the same error and no attempt is made
-    to resynchronize. Resynchronizing a framed stream after a parse error means
+    It is POISONED by its first malformed message: once a frame is rejected,
+    every later call returns the same error and no attempt is made to
+    resynchronize. Resynchronizing a framed stream after a parse error means
     guessing where the next frame starts, using framing that has already proved
     untrustworthy — and a peer that can desynchronize the framing can then
     choose what AgentKit reads as a message boundary.
@@ -112,10 +110,10 @@ type Limits struct {
 	// and a legitimate message that needs more is not one this protocol has.
 	MaxNodes int
 }
-    Limits are REQ-SEC-11's bounds. The zero value means Defaults.
+    Limits are the decoder's bounds. The zero value means Defaults.
 
 func Defaults() Limits
-    Defaults are the table in REQ-SEC-11.
+    Defaults returns the default bounds.
 
 func (l Limits) WithDefaults() Limits
     WithDefaults fills the zero fields. It is exported because a caller that
@@ -142,9 +140,8 @@ type Value struct {
 	Number json.Number
 	String string
 	Array  []Value
-	// Object holds members. Duplicate keys are REJECTED at decode
-	// (REQ-SEC-11.3), so a map is safe here: there is never a second value to
-	// lose.
+	// Object holds members. Duplicate keys are REJECTED at decode, so a map
+	// is safe here: there is never a second value to lose.
 	Object map[string]Value
 	// Keys is insertion order, for deterministic error messages and for a
 	// caller that needs to know what the peer actually sent.
@@ -153,12 +150,11 @@ type Value struct {
     Value is one decoded JSON value.
 
     Numbers are held as json.Number — the VERBATIM literal — so 1, 1.0 and 1e3
-    stay distinguishable. REQ-SEC-12.2 needs that distinction to implement
-    cross-language number semantics correctly, and NFR-TEST-06.4 needs it to
-    diff a request body without laundering it through a float64.
+    stay distinguishable. Cross-language number semantics need that distinction,
+    and so does diffing a request body without laundering it through a float64.
 
 func Parse(data []byte, l Limits) (Value, error)
-    Parse decodes a bounded tree. It is the REQ-SEC-12 entry point.
+    Parse decodes a bounded tree. It is the strict decoder's entry point.
 
 func (v Value) Any() (any, error)
     Any materializes the tree as ordinary Go values: map[string]any, []any,

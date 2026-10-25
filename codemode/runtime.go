@@ -62,7 +62,7 @@ func execute(ctx context.Context, opts Options, bound []core.Tool, in json.RawMe
 
 // run executes the script and renders its result.
 func (r *runner) run(script string) core.ToolResult {
-	// A run whose caller already gave up does not start (08-REQ-9.5).
+	// A run whose caller already gave up does not start.
 	if r.ctx.Err() != nil {
 		h := r.ctxHalt()
 		return r.failure(h.code, h.detail, false)
@@ -120,7 +120,7 @@ func (r *runner) run(script string) core.ToolResult {
 func (r *runner) print(msg string) { r.write(msg + "\n") }
 
 // write adds to the output, and stops the script once it is past
-// MaxOutputBytes (08-REQ-7.4).
+// MaxOutputBytes.
 func (r *runner) write(s string) {
 	_, _ = r.out.Write([]byte(s))
 	if r.out.Total() > int64(r.opts.MaxOutputBytes) {

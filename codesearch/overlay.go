@@ -25,8 +25,7 @@ type overlayState struct {
 
 	// dir is the directory containing the overlay shard files. It is a
 	// subdirectory of runDir, the run directory the overlay was built
-	// against, so the sweep of a dead process's run directory takes it too
-	// (spec 03 §4).
+	// against, so the sweep of a dead process's run directory takes it too.
 	dir    string
 	runDir string
 

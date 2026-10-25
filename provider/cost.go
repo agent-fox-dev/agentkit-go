@@ -6,16 +6,16 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
-// This file is REQ-PROV-05's arithmetic, shared by every wire API.
+// This file is the cost arithmetic, shared by every wire API.
 //
-// It is shared because every trap in that requirement produces a WRONG NUMBER
-// rather than an error. A wrong number is invisible: it does not fail a test
-// that asserts the request succeeded, it does not appear in a log, and its
-// only symptom is that the REQ-LOOP-08 budget gate fires early or late. Four
+// It is shared because every trap in it produces a WRONG NUMBER rather than an
+// error. A wrong number is invisible: it does not fail a test that asserts the
+// request succeeded, it does not appear in a log, and its only symptom is that
+// the loop's cost budget gate fires early or late. Four
 // independent implementations of this would be four chances to be silently
 // wrong about money, and no way to notice.
 
-// ServiceTier is REQ-PROV-05.6's post-hoc multiplier.
+// ServiceTier is a service tier's post-hoc cost multiplier.
 type ServiceTier struct {
 	Name       string
 	Multiplier float64 // 1 for standard, 0.5 flex, 2 priority
@@ -24,9 +24,9 @@ type ServiceTier struct {
 // ComputeCost prices a usage against a model's catalog row. Rates are USD per
 // 1M tokens.
 //
-// Two subtleties, both from REQ-PROV-05:
+// Two subtleties:
 //
-//  1. InputTokens must already be NET of cache reads and writes (05.1). This
+//  1. InputTokens must already be NET of cache reads and writes. This
 //     function does not subtract, because it cannot tell a net value from a
 //     gross one, and subtracting an already-net value understates cost as
 //     silently as not subtracting a gross one overstates it. The netting is
@@ -34,9 +34,9 @@ type ServiceTier struct {
 //     OpenAI family reports prompt_tokens inclusive of cached tokens and must
 //     subtract; Anthropic reports input_tokens exclusive of both and must not.
 //
-//  2. 1h cache writes bill at 2x BASE INPUT, not at the cache-write rate
-//     (05.3). CacheWrite1hTokens is a SUBSET of CacheWriteTokens, so the
-//     5-minute portion is the difference. Treating them as separate addends
+//  2. 1h cache writes bill at 2x BASE INPUT, not at the cache-write rate.
+//     CacheWrite1hTokens is a SUBSET of CacheWriteTokens, so the 5-minute
+//     portion is the difference. Treating them as separate addends
 //     double-counts every 1h write.
 func ComputeCost(m *core.Model, u core.Usage) float64 {
 	if m == nil {
@@ -62,7 +62,7 @@ func ComputeCost(m *core.Model, u core.Usage) float64 {
 }
 
 // KnownServiceTier resolves a tier NAME a response reported to its
-// REQ-PROV-05.6 multiplier: flex 0.5x, priority 2x, and the standard tier 1x.
+// multiplier: flex 0.5x, priority 2x, and the standard tier 1x.
 //
 // It exists for the served-tier case: a flex request can be served at
 // standard, and the response says so in service_tier. Pricing with the
@@ -81,10 +81,11 @@ func KnownServiceTier(name string) (ServiceTier, bool) {
 	return ServiceTier{}, false
 }
 
-// ApplyServiceTier is REQ-PROV-05.6. It is a separate call rather than a
-// parameter of ComputeCost because the multiplier applies POST-HOC to the
-// whole computed cost — including the tiered portion — and folding it into the
-// rates would apply it before tier selection.
+// ApplyServiceTier applies a service tier's multiplier to a computed cost. It
+// is a separate call rather than a parameter of ComputeCost because the
+// multiplier applies POST-HOC to the whole computed cost, cache reads and
+// writes included, and the tier that applies is the one the response says
+// served it, known only once the response is in.
 func ApplyServiceTier(cost float64, t ServiceTier) float64 {
 	if t.Multiplier == 0 {
 		return cost
@@ -92,8 +93,8 @@ func ApplyServiceTier(cost float64, t ServiceTier) float64 {
 	return cost * t.Multiplier
 }
 
-// BillingModel implements REQ-PROV-05.5: bill the model that actually SERVED
-// the request.
+// BillingModel picks the model to bill: the one that actually SERVED the
+// request.
 //
 // served is the model id the response named. When it differs from the
 // requested id, lookup resolves the served model's catalog row and that row's

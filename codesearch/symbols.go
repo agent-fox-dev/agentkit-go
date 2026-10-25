@@ -82,7 +82,7 @@ func (idx *Index) Symbols(ctx context.Context, q tools.SymbolQuery) (tools.Symbo
 	var matches []tools.SymbolMatch
 
 	// The files and backends of the queried scope, as find_symbol's table
-	// counts them (02-REQ-4.5): only the files under path.
+	// counts them: only the files under path.
 	filesIndexed := 0
 	backends := make(map[string]int)
 

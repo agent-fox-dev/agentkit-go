@@ -10,11 +10,10 @@ import (
 	"unicode/utf8"
 )
 
-// Parse decodes a bounded tree. It is the REQ-SEC-12 entry point.
+// Parse decodes a bounded tree. It is the strict decoder's entry point.
 func Parse(data []byte, l Limits) (Value, error) { return decode(data, l, true) }
 
-// Guard validates a message against REQ-SEC-11's bounds WITHOUT building a
-// tree.
+// Guard validates a message against the bounds WITHOUT building a tree.
 //
 // It exists because the bounds and the strict binding have different scopes.
 // Every untrusted surface needs the bounds — a provider response included —
@@ -60,12 +59,12 @@ func join(parent, key string) string {
 
 // decode is the one walk behind Parse and Guard, so the two cannot disagree
 // about what is legal. jsontext does the grammar, the unescaping and the
-// duplicate-name rejection (REQ-SEC-11.3); this loop adds REQ-SEC-11's
-// bounds, each checked BEFORE the token that would exceed it is read.
+// duplicate-name rejection; this loop adds the bounds, each checked BEFORE
+// the token that would exceed it is read.
 func decode(data []byte, l Limits, build bool) (Value, error) {
 	l = l.withDefaults()
-	// int64 throughout: REQ-SEC-11.1 is about a peer-declared length narrowed
-	// to int on a 32-bit build, and the package keeps one width for sizes.
+	// int64 throughout: a peer-declared length narrowed to int on a 32-bit
+	// build can wrap, and the package keeps one width for sizes.
 	if int64(len(data)) > l.MaxMessageBytes {
 		return Value{}, failf(RuleMessageBytes, "$", "message is %d bytes, limit is %d",
 			len(data), l.MaxMessageBytes)
@@ -101,9 +100,9 @@ func decode(data []byte, l Limits, build bool) (Value, error) {
 			return Value{}, syntaxError(err, stack)
 		}
 		// RFC 8259 §8.1: JSON text is UTF-8, and an invalid byte is a
-		// REJECTION. The fuzz fixed point (NFR-TEST-09.3) found that an
-		// accepted 0xFF re-encodes differently on the second pass, so a
-		// message accepted here would be one AgentKit could not stably write.
+		// REJECTION. The fuzz fixed point found that an accepted 0xFF
+		// re-encodes differently on the second pass, so a message accepted
+		// here would be one AgentKit could not stably write.
 		if kind == '"' && !utf8.Valid(data[start:dec.InputOffset()]) {
 			at := child(top)
 			if isName {
@@ -125,8 +124,8 @@ func decode(data []byte, l Limits, build bool) (Value, error) {
 			}
 		case '{', '[':
 			// NOT sized to anything: JSON declares no length, and sizing to
-			// MaxContainerLen "just in case" is the allocation REQ-SEC-11.2
-			// rules out. Members are appended as they actually arrive.
+			// MaxContainerLen "just in case" is an allocation the peer would
+			// choose. Members are appended as they actually arrive.
 			c := &container{path: child(top)}
 			c.Kind = KindArray
 			if kind == '{' {

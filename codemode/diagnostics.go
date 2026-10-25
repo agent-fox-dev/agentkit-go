@@ -20,7 +20,7 @@ func (e *argError) Error() string { return e.msg }
 
 func argErrorf(format string, a ...any) error { return &argError{msg: fmt.Sprintf(format, a...)} }
 
-// diagnosis is a script error classified for the model (08-REQ-9).
+// diagnosis is a script error classified for the model.
 type diagnosis struct {
 	code   string
 	line   int

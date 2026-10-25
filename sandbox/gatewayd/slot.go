@@ -15,7 +15,7 @@ import (
 // slotTaken is the refusal of a GitRepo that is no longer the first Sync.
 const slotTaken = "GitRepo must be the first Sync and come before Tools"
 
-// slot is a sandbox's GitRepo slot, kept by the gateway with spec 17's
+// slot is a sandbox's GitRepo slot, kept by the gateway with the backends'
 // rules because relayed RPCs bypass the backend wrapper's own bookkeeping:
 // a successful SyncGit, the first relayed Tools, a relayed SyncTar that
 // succeeds and a relayed SYNC Rsync that ends OK each take it. While it is

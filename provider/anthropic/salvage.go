@@ -6,9 +6,9 @@ import "encoding/json"
 // off, so that a truncated call is REPRESENTABLE rather than undecodable.
 //
 // It returns the input UNCHANGED, and repaired=false, whenever the input
-// already parses. That is not an optimization — it is REQ-PROV-17. The bytes a
-// provider streamed are authoritative for every replay and fingerprint, so the
-// salvage path must be a no-op on the overwhelmingly common case; a repair
+// already parses. That is not an optimization: the bytes a provider streamed
+// are authoritative for every replay and fingerprint, so the salvage path must
+// be a no-op on the overwhelmingly common case; a repair
 // that "normalizes" valid input would reorder keys on every turn and shift the
 // prompt-cache prefix.
 //
@@ -18,14 +18,15 @@ import "encoding/json"
 //
 // Closing an open string is the friendlier-looking choice and it is the wrong
 // one here. `{"path":"/etc/pas` becomes a syntactically perfect call to delete
-// a file nobody named, indistinguishable from a complete one — the file-
-// corrupting case REQ-LOOP-10 exists for, now wearing valid JSON. Dropping the
-// member instead makes the truncation SURVIVE as a missing required property,
-// where REQ-TOOL-11's schema validation rejects it and the caller is told what
-// happened. Complete top-level members before the cut are kept; only the
-// partial one is lost, however deep inside it the cut fell.
+// a file nobody named, indistinguishable from a complete one — the
+// file-corrupting case the loop's refusal to run truncated calls exists for,
+// now wearing valid JSON. Dropping the member instead makes the truncation
+// SURVIVE as a missing required property, where schema validation of the
+// arguments rejects it and the caller is told what happened. Complete
+// top-level members before the cut are kept; only the partial one is lost,
+// however deep inside it the cut fell.
 //
-// This is a safety net under REQ-LOOP-10, never a substitute for it: the loop
+// This is a safety net under that refusal, never a substitute for it: the loop
 // still refuses to execute any tool call from a `max_tokens` turn, because a
 // call can be truncated at a point where the remaining JSON is both valid and
 // wrong.

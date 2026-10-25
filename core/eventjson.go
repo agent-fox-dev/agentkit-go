@@ -5,13 +5,13 @@ import (
 	"fmt"
 )
 
-// REQ-OBS-06c: event structs serialize to a DISCRIMINATED JSON union — a
-// `type` field plus exactly the fields that variant carries. No shared
-// optional-everything envelope.
+// Event structs serialize to a DISCRIMINATED JSON union — a `type` field plus
+// exactly the fields that variant carries. No shared optional-everything
+// envelope.
 //
 // Messages inside an event are encoded by the caller-supplied encoder rather
 // than by this package: the canonical message codec lives with the session
-// log (NFR-TEST-03 requires it to be lossless, unknown keys included), and
+// log (which must be lossless, unknown keys included), and
 // carrying a second, drifting copy of it here is the failure mode the golden
 // tests exist to catch. The root package wires the session codec in.
 
@@ -226,7 +226,7 @@ func rawOrEmptyObject(b json.RawMessage) json.RawMessage {
 
 // UsageJSON is Usage's wire shape for events. Every field is present — a
 // consumer reads the same keys whether or not the provider reported them —
-// and `reported` says which ones the provider actually set (REQ-GO-15).
+// and `reported` says which ones the provider actually set.
 // `unpriced` says the cost counts at least one request as zero because no one
 // could price it.
 type UsageJSON struct {

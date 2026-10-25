@@ -23,15 +23,15 @@ type Options struct {
 	Ignore IgnoreOptions
 }
 
-// Workspace is the containment boundary for the built-in FILE tools
-// (REQ-SEC-01), with the ignore rules that apply under its root.
+// Workspace is the containment boundary for the built-in FILE tools, with the
+// ignore rules that apply under its root.
 //
 // On a host it does NOT constrain `execute`. That is not an oversight, and
 // it is stated here rather than left to be discovered: a shell command can
 // read and write anything the process can, and pretending otherwise would be
 // worse than admitting it. The boundary for `execute` is the BeforeToolCall
-// interceptor (REQ-SEC-03). See TestExecuteIsNotPathContained in package
-// tools, whose name is the documentation.
+// interceptor. See TestExecuteIsNotPathContained in package tools, whose name
+// is the documentation.
 //
 // Inside a sandbox whose agent reports a Landlock ABI
 // (sandbox.AgentInfo.Landlock), the agent's kernel ruleset confines

@@ -10,16 +10,16 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
-// This file is §6.2a Level 3: REQ-CACHE-06 (serialize the tool list once per
-// session) and REQ-CACHE-10 (deferred tool loading).
+// This file is the tool side of prompt caching: the tool list is serialized
+// once per session, and a tool that appears mid-session is loaded deferred.
 //
 // Both exist to protect the same thing — the provider-side prompt cache
-// prefix — and they attack it from opposite ends. REQ-CACHE-06 stops us paying
-// to re-serialize a tool list that has not changed; REQ-CACHE-10 stops a tool
-// that appeared mid-session from being prepended to the prefix, which would
-// invalidate the entire cached history over one added tool.
+// prefix — and they attack it from opposite ends. The per-session prefix stops
+// us paying to re-serialize a tool list that has not changed; deferred loading
+// stops a tool that appeared mid-session from being prepended to the prefix,
+// which would invalidate the entire cached history over one added tool.
 
-// ---------------------------------------------------------------- REQ-CACHE-06
+// ----------------------------------------------------- per-session tool prefix
 
 type prefixEntry struct {
 	// ptr is the identity fast path. Tools are registered once and their
@@ -44,17 +44,17 @@ type ToolPrefix struct {
 	by map[string]prefixEntry
 }
 
-// SyncReport is what Sync learned. It feeds REQ-CACHE-11's counters.
+// SyncReport is what Sync learned, for an embedder's prompt-cache counters.
 type SyncReport struct {
 	// Added names tools that appeared since the last Sync. An addition does
-	// NOT invalidate (REQ-CACHE-06).
+	// NOT invalidate.
 	Added []string
 	// Invalidated is true when a tool was REMOVED or an existing tool's schema
 	// CHANGED. Either rewrites the cached prefix and costs the whole
 	// provider-side cache.
 	Invalidated bool
 	// Reason names what invalidated it, for the operator who has to explain a
-	// cost spike (REQ-CACHE-11).
+	// cost spike.
 	Reason string
 	// Marshalled counts schemas actually serialized on this call. Zero on a
 	// steady-state turn is the whole point of the cache.
@@ -146,7 +146,7 @@ func (p *ToolPrefix) SyncWith(tools []core.ToolWire, marshal Marshaller) ([]json
 	return out, rep, nil
 }
 
-// ---------------------------------------------------------------- REQ-CACHE-10
+// ------------------------------------------------------- deferred tool loading
 
 // DeferredSplit is SplitDeferredTools' partition.
 type DeferredSplit struct {
@@ -154,7 +154,7 @@ type DeferredSplit struct {
 	Deferred  []core.ToolWire
 	// Promoted is true when the safety valve fired: every tool would have been
 	// deferred, leaving no prefix to anchor against, so all were promoted back
-	// and the cache wipe accepted. REQ-CACHE-11 reports this.
+	// and the cache wipe accepted.
 	Promoted bool
 }
 
@@ -168,13 +168,14 @@ func (s DeferredSplit) IsDeferred(name string) bool {
 	return false
 }
 
-// SplitDeferredTools implements REQ-CACHE-10.
+// SplitDeferredTools splits tools into the immediate ones, which form the
+// cached prefix, and the deferred ones, declared after it.
 //
 // A tool is deferred only if a tool result MARKED it as newly added and no
 // assistant turn used it BEFORE that marker. The pass is forward and the
 // decision is made at the marker: later usage cannot un-defer a tool.
 //
-// That ordering is the requirement and it is not obvious. A tool used after
+// That ordering is deliberate and it is not obvious. A tool used after
 // being added is exactly the normal case — a skill activates and the model
 // calls its tool on the next turn — and un-deferring on later use would
 // promote every deferred tool on the turn after it appeared, which is when

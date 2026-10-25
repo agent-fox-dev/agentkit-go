@@ -1,6 +1,6 @@
-// Package schema is the structured, transformable tool-schema value type of
-// REQ-TOOL-02 / REQ-GO-07. It contains no runtime reflection and no generated
-// code; internal/policy asserts both.
+// Package schema is the structured, transformable tool-schema value type. It
+// contains no runtime reflection and no generated code; internal/policy
+// asserts both.
 package schema
 
 import (
@@ -24,8 +24,8 @@ const (
 
 // Schema is a JSON Schema value AgentKit can rewrite, not a blob it can only
 // forward. PropertyOrder is authoritative for emission order: a bare map
-// cannot carry it because Go marshals maps with sorted keys unconditionally
-// (REQ-PROV-16.5), and property order is model-visible.
+// cannot carry it because Go marshals maps with sorted keys unconditionally,
+// and property order is model-visible.
 type Schema struct {
 	Type        Type
 	Description string
@@ -43,14 +43,14 @@ type Schema struct {
 	// Enum values are verbatim bytes in declaration order.
 	Enum []json.RawMessage
 	// Const + HasConst distinguish `const: null` from an absent const. This is
-	// the case reflection cannot express, and it is REQ-TOOL-02's stated
-	// reason for rejecting reflection.
+	// the case reflection cannot express, and it is the reason the package
+	// builds schemas without reflection.
 	Const    json.RawMessage
 	HasConst bool
 
 	// Nullable on a concrete type marshals as a type array, e.g.
 	// "type":["string","null"]. JSON Schema has no `nullable` keyword (that is
-	// OpenAPI 3.0) and the PRD does not pin this; it is pinned by a golden.
+	// OpenAPI 3.0) and nothing else fixes this form; it is pinned by a golden.
 	Nullable bool
 
 	AnyOf []*Schema
@@ -162,8 +162,8 @@ func contains(ss []string, s string) bool {
 func Prop(name string, s *Schema) Field { return Field{Name: name, Schema: s, Required: true} }
 func Opt(name string, s *Schema) Field  { return Field{Name: name, Schema: s} }
 
-// desc is variadic so both String() and String("...") read well; the §7
-// sketches use both spellings. Only the first element is used.
+// desc is variadic so both String() and String("...") read well. Only the
+// first element is used.
 func String(desc ...string) *Schema { return prim(TypeString, desc) }
 func Int(desc ...string) *Schema    { return prim(TypeInteger, desc) }
 func Number(desc ...string) *Schema { return prim(TypeNumber, desc) }
@@ -262,7 +262,7 @@ func sortStrings(ss []string) {
 }
 
 // Clone is a full deep copy. It is mandatory rather than convenient: the
-// strict rewrite, per-provider dialect translation and the REQ-CACHE-06 schema
+// strict rewrite, per-provider dialect translation and the per-session schema
 // cache all operate on a copy, and a Tool's schema is shared across turns and
 // across agents.
 func (s *Schema) Clone() *Schema {
@@ -298,13 +298,13 @@ func (s *Schema) Clone() *Schema {
 // PropertyList order, then Extra in authored order. Pinned by a golden.
 func (s *Schema) MarshalJSON() ([]byte, error) { return marshalSchema(s) }
 
-// --- strict subset (REQ-TOOL-03) ---
+// --- strict subset ---
 
 var ErrInvalidSchema = errors.New("agentkit: schema cannot be converted")
 
-// StrictRewriteError names the keyword that made a schema unconvertible.
-// REQ-TOOL-03's "require" mode must fail the request WITH the specific
-// rejection reason, so the reason is a value, not a log line.
+// StrictRewriteError names the keyword that made a schema unconvertible. The
+// reason is a value, not a log line, so a caller can tell an unconvertible
+// schema from any other failure and say exactly why.
 type StrictRewriteError struct {
 	Path    string
 	Keyword string
@@ -328,10 +328,10 @@ func (e *StrictRewriteError) Is(target error) bool { return target == ErrInvalid
 // a probe never mutates the tool's shared schema.
 func StrictSubset(s *Schema) (*Schema, error) { return strictSubset(s) }
 
-// StrictSubsetOK is the pre-send probe REQ-TOOL-03 requires.
+// StrictSubsetOK is the pre-send probe: whether s has a strict subset.
 func StrictSubsetOK(s *Schema) bool { _, err := StrictSubset(s); return err == nil }
 
-// --- validation (REQ-TOOL-11 steps 2-4) ---
+// --- validation (argument pipeline steps 2-4) ---
 
 var ErrArgumentValidation = errors.New("agentkit: tool arguments failed validation")
 
@@ -347,9 +347,9 @@ type Coercion struct {
 }
 
 // ValidationError carries the arguments as JSON so Error() can echo them and
-// the message is self-correcting (REQ-TOOL-11.4). Validate fills Args from
-// the value; a caller holding the model's own bytes (core.PrepareArguments)
-// replaces them, so the echo is in the order the model wrote.
+// the message is self-correcting. Validate fills Args from the value; a
+// caller holding the model's own bytes (core.PrepareArguments) replaces them,
+// so the echo is in the order the model wrote.
 type ValidationError struct {
 	Issues []Issue
 	Args   json.RawMessage
@@ -358,25 +358,26 @@ type ValidationError struct {
 func (e *ValidationError) Error() string        { return renderValidationError(e) }
 func (e *ValidationError) Is(target error) bool { return target == ErrArgumentValidation }
 
-// DeleteOptionalNulls is REQ-TOOL-11 step 2. Constrained sampling forces the
-// model to emit every declared property, so optional fields arrive as explicit
-// nulls; treating them as present is a validation failure on well-formed
-// output. Returns a copy.
+// DeleteOptionalNulls is step 2 of the argument pipeline
+// (core.PrepareArguments). Constrained sampling forces the model to emit
+// every declared property, so optional fields arrive as explicit nulls;
+// treating them as present is a validation failure on well-formed output.
+// Returns a copy.
 func DeleteOptionalNulls(s *Schema, in map[string]any) map[string]any {
 	return deleteOptionalNulls(s, in)
 }
 
-// Coerce is REQ-TOOL-11 step 3: string->number, string->bool, number->string,
-// against the declared schema only. Never guesses without a declared type. A
-// string becomes a number only when it is a JSON number literal ("NaN",
-// "+5", ".5", "5." and "1_0" stay strings for Validate to refuse); a number
-// coerced to integer is an int64, to number a float64.
+// Coerce is step 3 of the argument pipeline: string->number, string->bool,
+// number->string, against the declared schema only. Never guesses without a
+// declared type. A string becomes a number only when it is a JSON number
+// literal ("NaN", "+5", ".5", "5." and "1_0" stay strings for Validate to
+// refuse); a number coerced to integer is an int64, to number a float64.
 func Coerce(s *Schema, in map[string]any) (map[string]any, []Coercion) {
 	return coerce(s, in)
 }
 
-// Validate is REQ-TOOL-11 step 4. It reports ALL issues, not the first, so one
-// round trip fixes the whole call. v is a value as encoding/json decodes it
-// (an object is a map[string]any); numbers may be json.Number or any Go
-// number.
+// Validate is step 4 of the argument pipeline. It reports ALL issues, not the
+// first, so one round trip fixes the whole call. v is a value as encoding/json
+// decodes it (an object is a map[string]any); numbers may be json.Number or
+// any Go number.
 func Validate(s *Schema, v any) error { return validate(s, v) }

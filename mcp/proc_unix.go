@@ -8,7 +8,7 @@ import (
 )
 
 // setProcessGroup puts the child in its own process group so the whole tree
-// can be killed as a unit (REQ-TOOL-17.1).
+// can be killed as a unit.
 func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }

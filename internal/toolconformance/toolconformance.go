@@ -1,4 +1,4 @@
-// Package toolconformance holds the spec 06 conformance case table: every
+// Package toolconformance holds the tool conformance case table: every
 // built-in tool returns its documented error codes, and its Data conforms to
 // its declared OutputSchema. The tools package runs it against tools.For and
 // the sandbox package against proxy tools, so the two cannot drift. Only
@@ -99,8 +99,8 @@ type group struct {
 	run  func(t *testing.T, all map[string]core.Tool)
 }
 
-// RunGroup runs the case group id (such as "TS-06-22") against the tools
-// build returns.
+// RunGroup runs the case group id, one of CaseNames, against the tools build
+// returns.
 func RunGroup(t *testing.T, id string, build Builder) {
 	t.Helper()
 	g, ok := groups[id]
@@ -136,9 +136,9 @@ func unreadable() bool { return runtime.GOOS != "windows" && os.Geteuid() != 0 }
 func posix() bool { return runtime.GOOS != "windows" }
 
 var groups = map[string]group{
-	// TS-06-22: every built-in tool's successful Data conforms to its
-	// declared OutputSchema, across the result shapes each one has: empty
-	// results, truncation notes. 06-REQ-9.1.
+	// Every built-in tool's successful Data conforms to its declared
+	// OutputSchema, across the result shapes each one has: empty results,
+	// truncation notes.
 	"TS-06-22": {
 		tree: func() Tree { return append(BaseTree(), Entry{Path: "empty", Dir: true}) },
 		run: func(t *testing.T, all map[string]core.Tool) {
@@ -190,8 +190,7 @@ var groups = map[string]group{
 		},
 	},
 
-	// TS-06-23: malformed JSON is invalid_arguments for every built-in
-	// tool. 06-REQ-9.2.
+	// Malformed JSON is invalid_arguments for every built-in tool.
 	"TS-06-23": {run: func(t *testing.T, all map[string]core.Tool) {
 		for _, name := range []string{"read_file", "write_file", "edit_file", "list_files", "find_files",
 			"search_files", "file_outline", "find_symbol", "find_references",
@@ -208,8 +207,7 @@ var groups = map[string]group{
 		expectError(t, context.Background(), all["search_files"], `{"pattern":""}`, "invalid_arguments")
 	}},
 
-	// TS-06-24: a path outside the workspace is path_not_allowed.
-	// 06-REQ-9.3.
+	// A path outside the workspace is path_not_allowed.
 	"TS-06-24": {run: func(t *testing.T, all map[string]core.Tool) {
 		for name, args := range map[string]string{
 			"read_file":    `{"path":"../outside/secret.txt"}`,
@@ -226,8 +224,7 @@ var groups = map[string]group{
 		expectError(t, context.Background(), all["read_file"], `{"path":"/etc/hosts"}`, "path_not_allowed")
 	}},
 
-	// TS-06-25: a directory is not_a_file for the tools that read one file.
-	// 06-REQ-9.4.
+	// A directory is not_a_file for the tools that read one file.
 	"TS-06-25": {run: func(t *testing.T, all map[string]core.Tool) {
 		for name, args := range map[string]string{
 			"read_file":    `{"path":"dir"}`,
@@ -238,8 +235,8 @@ var groups = map[string]group{
 		}
 	}},
 
-	// TS-06-26: a cancelled context is aborted for the tools that walk or
-	// index the workspace. 06-REQ-9.5.
+	// A cancelled context is aborted for the tools that walk or index the
+	// workspace.
 	"TS-06-26": {run: func(t *testing.T, all map[string]core.Tool) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -254,9 +251,9 @@ var groups = map[string]group{
 		}
 	}},
 
-	// TS-06-27: a failed subprocess still returns Data that conforms to the
-	// shared subprocess schema: a non-zero exit is command_exit, a binary
-	// that cannot start is exec_failed. 06-REQ-9.6.
+	// A failed subprocess still returns Data that conforms to the shared
+	// subprocess schema: a non-zero exit is command_exit, a binary that
+	// cannot start is exec_failed.
 	"TS-06-27": {run: func(t *testing.T, all map[string]core.Tool) {
 		if !posix() {
 			t.Skip("POSIX shell commands")
@@ -269,24 +266,24 @@ var groups = map[string]group{
 			validateToolData(t, all[name], res.Data)
 		}
 		// A process that never started has no output, exit code or outcome:
-		// exec_failed carries no Data, and there is nothing to validate. See
-		// docs/adr/04-describe-the-tools-as-they-behave.md.
+		// exec_failed carries no Data, and there is nothing to validate (see
+		// docs/adr/04-describe-the-tools-as-they-behave.md).
 		res := expectError(t, context.Background(), all["run_command"], `{"argv":["/nonexistent_bin_xyz"]}`, "exec_failed")
 		if res.Data != nil {
 			t.Fatalf("exec_failed Data = %+v, want none", res.Data)
 		}
 	}},
 
-	// TS-06-28: reading past the end of a file. 06-REQ-9.7.
+	// Reading past the end of a file is offset_past_end.
 	"TS-06-28": {run: func(t *testing.T, all map[string]core.Tool) {
 		expectError(t, context.Background(), all["read_file"], `{"path":"f.txt","offset":999}`, "offset_past_end")
 	}},
 
-	// TS-06-29: the I/O failures each tool documents. 06-REQ-9.8.
+	// The I/O failures each tool documents.
 	//
 	// edit_failed is not induced: ApplyEdits returns only *EditError, which
-	// edit_file reports as edit_<phase>; see
-	// docs/adr/04-describe-the-tools-as-they-behave.md.
+	// edit_file reports as edit_<phase> (see
+	// docs/adr/04-describe-the-tools-as-they-behave.md).
 	"TS-06-29": {
 		tree: func() Tree {
 			tree := BaseTree()
@@ -304,7 +301,7 @@ var groups = map[string]group{
 			// dir is a directory: the atomic rename cannot replace it with a file.
 			expectError(t, bg, all["write_file"], `{"path":"dir","content":"x"}`, "write_failed")
 			expectError(t, bg, all["list_files"], `{"path":"missing_dir"}`, "list_failed")
-			// The spec's edit_precondition is spelled edit_<phase>: a missing
+			// A failed edit precondition is spelled edit_<phase>: a missing
 			// old_string is edit_not_found.
 			expectError(t, bg, all["edit_file"], `{"path":"f.txt","edits":[{"old_string":"not_there","new_string":"x"}]}`, "edit_not_found")
 			if !unreadable() {
@@ -315,9 +312,9 @@ var groups = map[string]group{
 		},
 	},
 
-	// TS-06-30 (smoke, 06-PATH-1): a caller runs the real read_file and
-	// list_files on a real workspace, marshals Data, decodes it ordered and
-	// validates it with schema.Validate.
+	// Smoke: a caller runs the real read_file and list_files on a real
+	// workspace, marshals Data, decodes it ordered and validates it with
+	// schema.Validate.
 	"TS-06-30": {run: func(t *testing.T, all map[string]core.Tool) {
 		ran := 0
 		for name, args := range map[string]string{"read_file": `{"path":"main.go"}`, "list_files": `{"path":"."}`} {
@@ -337,9 +334,8 @@ var groups = map[string]group{
 		}
 	}},
 
-	// TS-06-33 (smoke, 06-PATH-4): the real execute and run_command exit 2;
-	// Data carries output, exit_code 2 and outcome exit, and conforms to the
-	// subprocess schema.
+	// Smoke: the real execute and run_command exit 2; Data carries output,
+	// exit_code 2 and outcome exit, and conforms to the subprocess schema.
 	"TS-06-33": {run: func(t *testing.T, all map[string]core.Tool) {
 		if !posix() {
 			t.Skip("POSIX shell commands")

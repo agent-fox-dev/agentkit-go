@@ -27,15 +27,15 @@ type (
 	CreateMessageResult = sdk.CreateMessageResult //nolint:staticcheck // as above
 )
 
-// ResultCharCap is REQ-MCP-CLIENT-09: 50K characters per tool result.
+// ResultCharCap is the cap on one tool result: 50K characters.
 //
 // It is counted in RUNES, not bytes. "Characters" in a requirement about model
 // context means what the model sees, and a byte cap truncates a CJK result to
 // a third of the length an ASCII one gets.
 const ResultCharCap = 50_000
 
-// DefaultCallLimit and DefaultTimeout are REQ-MCP-CLIENT-07's defaults;
-// DefaultReconnectLimit is NFR-REL-03's.
+// DefaultCallLimit, DefaultTimeout and DefaultReconnectLimit apply to a server
+// whose configuration leaves its call limit, timeout or reconnect limit unset.
 const (
 	DefaultCallLimit      = 1000
 	DefaultTimeout        = 30 * time.Second
@@ -44,14 +44,16 @@ const (
 
 // Errors a connection can raise.
 var (
-	// ErrNameCollision is REQ-MCP-CLIENT-06's MCPNameCollisionError, raised at
-	// CONNECTION time rather than call time.
+	// ErrNameCollision is a server tool whose qualified name is already
+	// taken, by a native tool or another server's. It is raised when the
+	// server connects or its tools are listed, never at call time.
 	ErrNameCollision = errors.New("mcp: tool name collides with an existing tool")
-	// ErrCallLimit is REQ-MCP-CLIENT-07's per-session cap (REQ-SEC-08).
+	// ErrCallLimit is the per-session cap on calls to one server.
 	ErrCallLimit = errors.New("mcp: per-session call limit reached")
-	// ErrSamplingNotAllowed is REQ-MCP-CLIENT-08's gate.
+	// ErrSamplingNotAllowed refuses a sampling request from a server with
+	// AllowSampling when no Sampling handler is set.
 	ErrSamplingNotAllowed = errors.New("mcp: sampling is not enabled for this server")
-	// ErrReconnectLimit is NFR-REL-03's bound: the transport died more times
+	// ErrReconnectLimit is the reconnect bound: the transport died more times
 	// than per_session_reconnect_limit allows, and the connection is dead for
 	// the rest of the session. Every later call fails with it immediately.
 	ErrReconnectLimit = errors.New("mcp: per-session reconnect limit reached; the connection is dead")
@@ -59,7 +61,7 @@ var (
 	ErrClosed = errors.New("mcp: connection is closed")
 )
 
-// ServerConfig is one `[[mcp.servers]]` entry (REQ-MCP-CLIENT-07).
+// ServerConfig is one `[[mcp.servers]]` entry.
 type ServerConfig struct {
 	Name    string
 	Command string
@@ -68,8 +70,7 @@ type ServerConfig struct {
 	// "streamable-http" (the default) or "sse", the 2024-11-05 HTTP+SSE
 	// transport. Protocol versions are negotiated either way. A url server
 	// is not subscribed to tools/list_changed — that is a request held open
-	// for the life of the session against a remote; a command server is
-	// (REQ-CACHE-07).
+	// for the life of the session against a remote; a command server is.
 	URL       string
 	Transport string
 	Dir       string
@@ -77,7 +78,7 @@ type ServerConfig struct {
 	// ${VAR} references, resolved from the secrets store exactly like Env.
 	Headers map[string]string
 	// Env values may carry ${VAR} references, resolved at spawn time against
-	// the secrets store (REQ-MCP-CLIENT-10).
+	// the secrets store.
 	Env map[string]string
 	// ToolPrefix overrides the default `<name>__`. An empty string in the
 	// config file means the default; DisablePrefix is how a caller asks for
@@ -88,9 +89,9 @@ type ServerConfig struct {
 	// PerSessionCallLimit is 0 for the default. A NEGATIVE value disables the
 	// limit, so "unlimited" is something a caller has to write down.
 	PerSessionCallLimit int
-	// PerSessionReconnectLimit is NFR-REL-03's bound on re-spawning (stdio) or
-	// re-opening (HTTP) a transport that died, per session. 0 means
-	// DefaultReconnectLimit; a NEGATIVE value means never reconnect.
+	// PerSessionReconnectLimit bounds re-spawning (stdio) or re-opening
+	// (HTTP) a transport that died, per session. 0 means DefaultReconnectLimit;
+	// a NEGATIVE value means never reconnect.
 	PerSessionReconnectLimit int
 	Timeout                  time.Duration
 }
@@ -148,8 +149,8 @@ type ConnectionOptions struct {
 	ClientInfo Implementation
 }
 
-// ServerConnection is REQ-MCP-CLIENT-03: one server, over an SDK session that
-// is replaced when it dies (NFR-REL-03).
+// ServerConnection is one server, over an SDK session that is replaced when
+// it dies.
 type ServerConnection struct {
 	cfg    ServerConfig
 	opts   ConnectionOptions
@@ -187,15 +188,15 @@ func newConnection(cfg ServerConfig, opts ConnectionOptions) *ServerConnection {
 	}
 	c := &ServerConnection{cfg: cfg, opts: opts}
 	// An empty capability set: no roots. Sampling is advertised only when it
-	// will be honoured (REQ-MCP-CLIENT-08), because the SDK advertises it
-	// whenever a handler is installed.
+	// will be honoured, because the SDK advertises it whenever a handler is
+	// installed.
 	co := &sdk.ClientOptions{Capabilities: &sdk.ClientCapabilities{}}
 	if cfg.AllowSampling {
 		co.CreateMessageHandler = c.sample //nolint:staticcheck // sampling is deprecated by SEP-2577 but still offered through AllowSampling
 	}
 	if cfg.Command != "" {
 		// A handler is what makes the SDK hold a tools/list_changed
-		// subscription open, which keeps its tool cache honest (REQ-CACHE-07).
+		// subscription open, which keeps its tool cache honest.
 		co.ToolListChangedHandler = func(context.Context, *sdk.ToolListChangedRequest) {}
 	}
 	c.client = sdk.NewClient(&c.opts.ClientInfo, co)
@@ -310,7 +311,7 @@ func (c *ServerConnection) Reconnects() int {
 	return c.reconnects
 }
 
-// Dead reports whether the reconnect budget is exhausted (NFR-REL-03).
+// Dead reports whether the reconnect budget is exhausted.
 func (c *ServerConnection) Dead() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -337,7 +338,7 @@ func (c *ServerConnection) ListTools(ctx context.Context) ([]*Tool, error) {
 	return out, nil
 }
 
-// Call invokes a tool by its UNQUALIFIED name (REQ-MCP-CLIENT-03).
+// Call invokes a tool by its UNQUALIFIED name.
 func (c *ServerConnection) Call(ctx context.Context, toolName string, args map[string]any) (*CallToolResult, error) {
 	var raw json.RawMessage
 	if args != nil {
@@ -383,8 +384,8 @@ func (c *ServerConnection) CallRaw(ctx context.Context, toolName string, args js
 	return res, nil
 }
 
-// sample is the sampling gate (REQ-MCP-CLIENT-08). It is installed only for a
-// server with AllowSampling, and refuses unless a handler is set.
+// sample is the sampling gate. It is installed only for a server with
+// AllowSampling, and refuses unless a handler is set.
 func (c *ServerConnection) sample(ctx context.Context, req *sdk.CreateMessageRequest) (*CreateMessageResult, error) {
 	if c.opts.Sampling == nil {
 		return nil, fmt.Errorf("%w: %s", ErrSamplingNotAllowed, c.cfg.Name)
@@ -392,7 +393,7 @@ func (c *ServerConnection) sample(ctx context.Context, req *sdk.CreateMessageReq
 	return c.opts.Sampling(ctx, req.Params)
 }
 
-// CapContent applies REQ-MCP-CLIENT-09's 50K cap across the whole result.
+// CapContent applies ResultCharCap across the whole result.
 //
 // The budget is spent ACROSS the content items, not per item: two hundred
 // blocks of 49K each would otherwise pass a per-item cap. A non-text block is
@@ -470,7 +471,8 @@ func (c *ServerConnection) warnf(format string, args ...any) {
 	}
 }
 
-// QualifiedName is REQ-MCP-CLIENT-05's `server_name__tool_name`.
+// QualifiedName is the name a server's tool is exposed under: the server's
+// prefix, `server_name__` by default, then the tool's own name.
 func QualifiedName(cfg ServerConfig, tool string) string { return cfg.prefix() + tool }
 
 // SplitQualified is the inverse, given the prefix.

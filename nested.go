@@ -24,9 +24,9 @@ type nestedEnv struct {
 }
 
 // nestedCaller is the core.NestedCaller a batch attaches to a wrapper's
-// context (07-REQ-4.3). It is bound to one wrapper call: its parent id and
-// name, and the wrapper's reachable tools as the policy resolved them. A
-// wrapper can call those tools and no others.
+// context. It is bound to one wrapper call: its parent id and name, and the
+// wrapper's reachable tools as the policy resolved them. A wrapper can call
+// those tools and no others.
 type nestedCaller struct {
 	env        *nestedEnv
 	parentID   string
@@ -45,7 +45,7 @@ type nestedCaller struct {
 	// ErrTerminated, and the wrapper's own result carries the vote.
 	terminated atomic.Bool
 	// voteIgnored is set when a nested handler voted to terminate and the
-	// vote was dropped; the wrapper's result says so (07-REQ-6.3).
+	// vote was dropped; the wrapper's result says so.
 	voteIgnored atomic.Bool
 }
 
@@ -71,10 +71,10 @@ func (env *nestedEnv) withCaller(ctx context.Context, c core.ToolUseBlock, t cor
 // Call runs calls for the wrapper. Preparation and authorization run in
 // order, as for a direct batch, so the interceptor sees a deterministic
 // sequence. Then the handlers run: concurrently, one goroutine per call
-// joined by a WaitGroup (07-REQ-7.1), unless one of the calls is to a
-// Sequential tool, which runs them in call order (07-REQ-7.2). Results are written by index, so they come back in call
-// order whatever order the handlers finish in (07-REQ-7.3), and a call that
-// fails is a result of its own that stops no sibling (07-REQ-7.4).
+// joined by a WaitGroup, unless one of the calls is to a Sequential tool,
+// which runs them in call order. Results are written by index, so they come
+// back in call order whatever order the handlers finish in, and a call that
+// fails is a result of its own that stops no sibling.
 func (n *nestedCaller) Call(ctx context.Context, calls ...core.ToolUseBlock) ([]core.ToolResult, error) {
 	if n.terminated.Load() {
 		return nil, core.ErrTerminated
@@ -140,7 +140,7 @@ func (n *nestedCaller) Call(ctx context.Context, calls ...core.ToolUseBlock) ([]
 func (n *nestedCaller) prepare(ctx context.Context, batch []core.ToolUseBlock, i int, c core.ToolUseBlock) (
 	prepared core.PreparedArguments, tool core.Tool, call core.ToolUseBlock, res core.ToolResult, ok bool) {
 
-	// Every nested call gets an id of its own (07-REQ-8.1): the wrapper's
+	// Every nested call gets an id of its own: the wrapper's
 	// ids are its own business, and need not be unique across wrappers or
 	// turns. With the id it opens on the stream, so that, however it ends,
 	// it closes there too.
@@ -197,9 +197,9 @@ func (n *nestedCaller) prepare(ctx context.Context, batch []core.ToolUseBlock, i
 		})
 		if dec.Block {
 			// A block is a result the wrapper can read and react to, not an
-			// error that aborts it (07-REQ-5.2). A block that also votes to
-			// terminate ends the wrapper (07-REQ-5.3): the interceptor is the
-			// embedder's authority, and the wrapper must not carry on.
+			// error that aborts it. A block that also votes to terminate ends
+			// the wrapper: the interceptor is the embedder's authority, and the
+			// wrapper must not carry on.
 			if dec.Terminate {
 				n.terminated.Store(true)
 			}
@@ -236,11 +236,11 @@ func (n *nestedCaller) execute(ctx context.Context, call core.ToolUseBlock, tool
 		}
 	}
 	// A call still running when the context was cancelled is aborted,
-	// whatever its handler made of the cancellation (07-REQ-7.5).
+	// whatever its handler made of the cancellation.
 	if ctx.Err() != nil {
 		out = abortedResult()
 	}
-	// A nested handler cannot end the run (07-REQ-6.1). No tool a wrapper
+	// A nested handler cannot end the run. No tool a wrapper
 	// reaches is Terminating — registration refuses that — so the vote is
 	// always dropped, and recorded where it was cast and on the wrapper.
 	if out.Terminate {
@@ -300,8 +300,7 @@ func (n *nestedCaller) push(e core.Event) {
 }
 
 // endEvent closes a nested call on the event sink. There is no ToolResultEvent:
-// that event is the transcript's, and a nested result is the wrapper's
-// (07-REQ-8.3).
+// that event is the transcript's, and a nested result is the wrapper's.
 func (n *nestedCaller) endEvent(call core.ToolUseBlock, out core.ToolResult, elapsed time.Duration) core.Event {
 	return core.ToolExecutionEndEvent{ToolUseID: call.ID, Name: call.Name, IsError: !out.OK,
 		ElapsedMS: elapsed.Milliseconds(), ParentToolUseID: n.parentID}

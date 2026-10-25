@@ -13,7 +13,7 @@ import (
 
 // newOutput is a script's output buffer: the same bounded accumulator the
 // shell tools use, keeping the head and tail of MaxOutputBytes and, unless
-// DisableSpill, writing everything to a file in SpillDir (08-REQ-8.1).
+// DisableSpill, writing everything to a file in SpillDir.
 func newOutput(opts Options) *tools.Accumulator {
 	acc := tools.NewAccumulator(opts.MaxOutputBytes, tools.TruncateMiddle)
 	if !opts.DisableSpill {
@@ -25,8 +25,7 @@ func newOutput(opts Options) *tools.Accumulator {
 
 // finishOutput closes the output and records it in the result's metadata.
 // The accumulator writes its spill file from the first byte, so a run whose
-// output fit removes the file: only truncated output is spilled, as
-// 08-REQ-8.4 asks.
+// output fit removes the file: only truncated output is spilled.
 func (r *runner) finishOutput(res *core.ToolResult, elapsed time.Duration) {
 	_ = r.out.Close()
 	md := &core.ToolMetadata{DurationMS: elapsed.Milliseconds()}
@@ -43,8 +42,8 @@ func (r *runner) finishOutput(res *core.ToolResult, elapsed time.Duration) {
 
 // FormatResultText is the text the model reads for a script that finished:
 // what it printed, then "Return value: <value>" when it returned one, or a
-// note that there was neither (08-REQ-8.3). A Starlark value is rendered as
-// Starlark writes it; any other value as JSON.
+// note that there was neither. A Starlark value is rendered as Starlark
+// writes it; any other value as JSON.
 func FormatResultText(printed string, returnValue any) string {
 	text := printed
 	if line := returnLine(returnValue); line != "" {

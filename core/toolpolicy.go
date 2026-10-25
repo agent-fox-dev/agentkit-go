@@ -1,9 +1,9 @@
 package core
 
-// Resolve is REQ-TOOL-10's five-field resolution over a registered set. It applies
+// Resolve is the five-field resolution over a registered set. It applies
 // UNIFORMLY to built-in and caller-supplied tools — that uniformity is the
-// requirement, and it is what makes four otherwise surprising consequences
-// true. Each is normative and each has a test:
+// point, and it is what makes four otherwise surprising consequences true.
+// Each is intended and each has a test:
 //
 //	NoTools "all"     disables CUSTOM tools too, not just built-ins.
 //	NoTools "builtin" leaves the allowlist unset, so custom tools SURVIVE.
@@ -14,9 +14,9 @@ package core
 // CustomTools merged in before name-based selection so the selectors see one
 // undifferentiated set.
 //
-// This is what REQ-MULTI-05's per-agent "tool allowlist" resolves to, and it
-// is what lets an agent be scoped to read-and-search-only without rebuilding
-// the tool set by hand.
+// This is what a per-agent tool allowlist resolves to, and it is what lets an
+// agent be scoped to read-and-search-only without rebuilding the tool set by
+// hand.
 func (p ToolPolicy) Resolve(registered []Tool) []Tool {
 	// Tools, when non-nil INCLUDING EMPTY, is used verbatim and bypasses
 	// everything below. Non-nil-but-empty is deliberately distinct from nil:
@@ -80,9 +80,9 @@ func (p ToolPolicy) Resolve(registered []Tool) []Tool {
 		set = filterTools(set, func(t Tool) bool { return !deny[t.Name] })
 	}
 
-	// The same selection applies to what each surviving tool reaches
-	// (07-REQ-2.3): a policy that excludes a tool excludes it behind a
-	// wrapper too, or the wrapper would be a way around the policy.
+	// The same selection applies to what each surviving tool reaches: a
+	// policy that excludes a tool excludes it behind a wrapper too, or the
+	// wrapper would be a way around the policy.
 	var allow map[string]bool
 	if p.ToolNames != nil {
 		allow = make(map[string]bool, len(p.ToolNames))
@@ -101,9 +101,9 @@ func (p ToolPolicy) Resolve(registered []Tool) []Tool {
 
 // pruneReachable filters each tool's ReachableTools by admit, recursively,
 // into fresh slices so the registered tools are never modified. A wrapper
-// that reached something and is left reaching nothing is dropped
-// (07-REQ-2.4): it would be a dead tool in the model's prompt. A tool that
-// never reached anything is kept (07-REQ-2.5).
+// that reached something and is left reaching nothing is dropped: it would
+// be a dead tool in the model's prompt. A tool that never reached anything is
+// kept.
 func pruneReachable(ts []Tool, admit func(Tool) bool) []Tool {
 	out := ts[:0]
 	for _, t := range ts {

@@ -33,7 +33,7 @@ type Options struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	// Getenv is injectable so a test never mutates process environment
-	// (NFR-TEST-04). Nil means os.Getenv.
+	// Nil means os.Getenv.
 	Getenv func(string) string
 	// MaxRetries overrides the SDK's retry count; nil keeps its default.
 	MaxRetries *int
@@ -48,17 +48,17 @@ type Options struct {
 	// authorized with. Nil uses a Google access token in ANTHROPIC_AUTH_TOKEN
 	// when there is one, and Application Default Credentials otherwise.
 	VertexTokenSource oauth2.TokenSource
-	// BillingLookup resolves a SERVED model id to its catalog row
-	// (REQ-PROV-05.5). Nil bills a fallback-served response at the requested
-	// model's rates and still records the served name.
+	// BillingLookup resolves a SERVED model id to its catalog row. Nil bills
+	// a fallback-served response at the requested model's rates and still
+	// records the served name.
 	BillingLookup func(string) *core.Model
-	// ToolPrefix is REQ-CACHE-06's per-session schema cache. Nil means this
+	// ToolPrefix is the per-session schema cache. Nil means this
 	// provider value owns one, which is the right scope in practice: a
 	// registry is built per agent config. Pass one explicitly to share it, or
 	// to read its reconciliation reports.
 	ToolPrefix *provider.ToolPrefix
-	// OnToolPrefixSync reports each reconciliation, so an embedder can feed
-	// REQ-CACHE-11's prefix-invalidation counter.
+	// OnToolPrefixSync reports each reconciliation, so an embedder can count
+	// prompt-cache prefix invalidations.
 	OnToolPrefixSync func(provider.SyncReport)
 	// Now is injectable for deterministic timestamps in tests.
 	Now func() time.Time
@@ -77,14 +77,14 @@ type Options struct {
 	// ignored.
 	NonStrictTools []string
 	// Headers merge into every request. A present-nil value is a DELETION
-	// MARKER suppressing a default of that name (REQ-AUTH-02); no string
+	// MARKER suppressing a default of that name; no string
 	// value can express that.
 	Headers map[string]*string
-	// Timeout bounds each request, independently of the caller's context
-	// (REQ-PROV-18); zero is none.
+	// Timeout bounds each request, independently of the caller's context;
+	// zero is none.
 	Timeout time.Duration
-	// Env is consulted before Getenv when resolving the deployment
-	// (REQ-AUTH-03). An empty override falls through rather than masking.
+	// Env is consulted before Getenv when resolving the deployment. An empty
+	// override falls through rather than masking.
 	Env map[string]string
 	// Transport replaces the HTTP transport.
 	Transport http.RoundTripper
@@ -123,7 +123,7 @@ func (c *client) now() time.Time {
 
 // Stream implements core.ProviderClient. A context already done is refused
 // with its error; every failure after that is encoded in the stream — the
-// failed turn's message and, on the last item, the error (REQ-PROV-04).
+// failed turn's message and, on the last item, the error.
 func (c *client) Stream(ctx context.Context, req core.Request) (<-chan core.StreamEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -149,7 +149,7 @@ func (c *client) stream(ctx context.Context, m *core.Model, req core.Request) *c
 		c.opts.Warnf("anthropic: %s", rep.String())
 	}
 
-	// REQ-PROV-18: OnPayload runs after canonical->wire translation and before
+	// OnPayload runs after canonical->wire translation and before
 	// the first byte. Its error propagates to the caller UNMODIFIED, which is
 	// why it is wrapped by ErrorStream rather than by fmt.Errorf.
 	var payload any = body
@@ -191,7 +191,7 @@ func (c *client) requestOptions(m *core.Model, raw []byte) []option.RequestOptio
 	if n := c.opts.MaxRetries; n != nil && c.opts.Client != nil {
 		opts = append(opts, option.WithMaxRetries(*n))
 	}
-	// REQ-AUTH-02: a request's own headers win, and a present-nil value
+	// A request's own headers win, and a present-nil value
 	// removes the header the provider would otherwise send — how a gateway
 	// turns the upstream credential off.
 	for k, v := range c.opts.Headers {
@@ -231,12 +231,12 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 
 	// caller is the ctx the caller handed to Stream; ctx below may be a
 	// Timeout-derived child of it. The two are kept apart because their
-	// expiries mean different things: the caller's is an abort (REQ-LOOP-09),
-	// the derived one a retryable timeout (REQ-PROV-18).
+	// expiries mean different things: the caller's is an abort, the derived
+	// one a retryable timeout.
 	caller := ctx
 	if to := c.opts.Timeout; to > 0 {
-		// A per-request timeout INDEPENDENT of the caller's context deadline
-		// (REQ-PROV-18). It must not outlive this function, hence the defer.
+		// A per-request timeout INDEPENDENT of the caller's context deadline.
+		// It must not outlive this function, hence the defer.
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, to)
 		defer cancel()
@@ -277,8 +277,8 @@ func (c *client) run(ctx context.Context, s *core.EventStream, m *core.Model, re
 			return
 		}
 		// A cancellation lands here as whatever the transport or the body
-		// reader reported, and only the contexts say which of REQ-LOOP-09's
-		// abort or REQ-PROV-18's timeout it was.
+		// reader reported, and only the contexts say whether it was the
+		// caller's abort or the request timeout.
 		d.fail(transportErrorText(caller, ctx, err), err)
 		return
 	}
@@ -395,9 +395,9 @@ func cancellationText(caller, req context.Context, err error) (string, bool) {
 type decodeState struct {
 	s       *core.EventStream
 	partial core.AssistantMessage
-	// model and lookup are what finish and fail price usage against
-	// (REQ-PROV-05.5); fail needs them too, because a truncated stream that
-	// reported usage in message_start still cost money.
+	// model and lookup are what finish and fail price usage against; fail
+	// needs them too, because a truncated stream that reported usage in
+	// message_start still cost money.
 	model  *core.Model
 	lookup func(string) *core.Model
 
@@ -423,7 +423,7 @@ func (d *decodeState) event(typ string, data []byte) error {
 	if ev.Type == "ping" || (ev.Type == "" && len(ev.Data) == 0) {
 		return nil
 	}
-	// REQ-SEC-11: bytes a provider sent are bytes we did not produce. One
+	// Bytes a provider sent are bytes we did not produce. One
 	// linear scan enforces the size, depth and container bounds and rejects
 	// duplicate keys, which is what stops a gateway sending two stop_reasons
 	// and letting last-wins choose which one we act on.
@@ -544,7 +544,7 @@ func (d *decodeState) event(typ string, data []byte) error {
 		}
 		d.partial.Content = append(d.partial.Content, b)
 		// A snapshot per completed block, so a diff-based renderer never needs
-		// its own delta accumulator (REQ-OBS-06b).
+		// its own delta accumulator.
 		d.s.Push(core.MessageUpdateEvent{Message: d.partial})
 
 	case "message_delta":
@@ -578,8 +578,8 @@ func (d *decodeState) event(typ string, data []byte) error {
 
 // finish emits the authoritative phase and ends the stream.
 func (d *decodeState) finish(m *core.Model, lookup func(string) *core.Model) {
-	// Block-end events, in BLOCK ORDER, after the stream has fully ended
-	// (REQ-OBS-08.3). Emitting them from the per-chunk handler produces
+	// Block-end events, in BLOCK ORDER, after the stream has fully ended.
+	// Emitting them from the per-chunk handler produces
 	// duplicate ends and a message end with no usage, because usage arrives
 	// with the terminal chunk — which is exactly the event we have only now.
 	for _, i := range d.order {
@@ -600,7 +600,7 @@ func (d *decodeState) finish(m *core.Model, lookup func(string) *core.Model) {
 	final.Usage.BilledModel = ""
 	final.Usage.Requests = 1
 
-	// REQ-PROV-05.5: bill the model that SERVED the request. Cost is computed
+	// Bill the model that SERVED the request. Cost is computed
 	// ONCE, here, from the final served name — never accumulated per event.
 	// That is what makes "repriced back" fall out for free when a later event
 	// names the requested model again.
@@ -622,7 +622,7 @@ func (d *decodeState) price(msg *core.AssistantMessage, m *core.Model, lookup fu
 	}
 }
 
-// fail is REQ-PROV-04: the partial content and the failure are ONE value.
+// fail ends the stream with the partial content and the failure as ONE value.
 //
 // Half an assistant message followed by a truncated stream is not an error
 // with a message thrown away — the retry classifier reads the text and session
@@ -650,9 +650,9 @@ func (d *decodeState) fail(text string, err error) {
 
 // partialContent is what a failed or aborted stream keeps: every completed
 // block, then every block still open when the stream died, salvaged the same
-// way the other wires' per-chunk snapshots keep theirs. REQ-LOOP-09 appends
-// this message to history verbatim; the half-streamed text is what the UI and
-// the session log display, so dropping an open block loses it twice.
+// way the other wires' per-chunk snapshots keep theirs. The loop appends this
+// message to history verbatim; the half-streamed text is what the UI and the
+// session log display, so dropping an open block loses it twice.
 func (d *decodeState) partialContent() core.Content {
 	out := append(core.Content(nil), d.partial.Content...)
 	for _, i := range d.order {
@@ -672,10 +672,11 @@ func (d *decodeState) partialContent() core.Content {
 
 // DecodeResponse decodes a NON-streaming Messages response.
 //
-// It exists for REQ-PROV-17's conformance test: the streaming and whole
-// response paths must produce byte-identical ToolUseBlock.Input for the same
-// call. Sharing the assembler is what makes that true by construction rather
-// than by coincidence, and DecodeResponse is how the test can say so.
+// TranslateMessage decodes through it, and so does the conformance test: the
+// streaming and whole-response paths must produce byte-identical
+// ToolUseBlock.Input for the same call. Sharing the assembler is what makes
+// that true by construction rather than by coincidence, and DecodeResponse is
+// how the test can say so.
 func DecodeResponse(m *core.Model, data []byte, lookup func(string) *core.Model) (*core.AssistantMessage, error) {
 	if err := wire.Guard(data, wire.Limits{}); err != nil {
 		return nil, fmt.Errorf("anthropic: decoding response: %w", err)
@@ -725,7 +726,7 @@ var effortTokens = map[string]string{
 // is a 400.
 const minThinkingBudget = 1024
 
-// applyThinking encodes the requested effort for m (10-REQ-4):
+// applyThinking encodes the requested effort for m:
 //
 //   - an adaptive model gets {"type":"adaptive"} and output_config.effort;
 //   - a budget model gets {"type":"enabled","budget_tokens":N}, N being its

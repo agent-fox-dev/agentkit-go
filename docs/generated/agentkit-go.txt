@@ -68,9 +68,9 @@ func (a *Agent) Messages() core.Messages
 
 func (a *Agent) ReachableTools() []core.Tool
     ReachableTools returns every tool a run of this agent can call: the tools
-    Toolset.Policy resolved, and everything those reach through wrappers
-    (07-REQ-2.2). A check that a run is read-only, say, has to look at this set
-    rather than at the top-level tools. It is Runner().Reachable().
+    Toolset.Policy resolved, and everything those reach through wrappers.
+    A check that a run is read-only, say, has to look at this set rather than at
+    the top-level tools. It is Runner().Reachable().
 
 func (a *Agent) Resolution() Resolution
     Resolution returns the provider, model and effort the agent was built with
@@ -279,8 +279,8 @@ func (r *Runner) Call(ctx context.Context, name string, input json.RawMessage) c
 
 func (r *Runner) Reachable() []core.Tool
     Reachable returns every tool the runner can call: the tools the policy
-    resolved, and everything those reach through wrappers (07-REQ-2.2). A check
-    that a toolset is read-only, say, has to look at this set rather than at the
+    resolved, and everything those reach through wrappers. A check that a
+    toolset is read-only, say, has to look at this set rather than at the
     top-level tools.
 
 func (r *Runner) Tools() []core.Tool

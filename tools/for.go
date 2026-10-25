@@ -28,7 +28,7 @@ func For(ws *workspace.Workspace, opts Options) ([]core.Tool, error) {
 
 	// Wrap the shell tools so they mark the symbol table for revalidation
 	// after the command returns, whatever the outcome, and call
-	// Index.Invalidate("") when an index is set. 02-REQ-6.3, 03-REQ-2.7.
+	// Index.Invalidate("") when an index is set.
 	wrapShell := func(t core.Tool) core.Tool {
 		orig := t.Execute
 		t.Execute = func(ctx context.Context, in json.RawMessage) core.ToolResult {
@@ -56,7 +56,7 @@ func For(ws *workspace.Workspace, opts Options) ([]core.Tool, error) {
 		wrapShell(runCommandTool(ws, opts)),
 	}
 
-	// Append index tools when an index is set. 03-REQ-2.3.
+	// Append index tools when an index is set.
 	if opts.Index != nil {
 		names := make(map[string]bool, len(builtins))
 		for _, t := range builtins {

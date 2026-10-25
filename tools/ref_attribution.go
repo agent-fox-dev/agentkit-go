@@ -50,8 +50,7 @@ func sanitizeSnippet(rawLine string) string {
 }
 
 // findEnclosingDecl returns the innermost declaration of decls whose line
-// range spans line (05-REQ-5.1, 05-REQ-5.2), or a zero Decl with Kind
-// "file" when none does (05-REQ-5.3).
+// range spans line, or a zero Decl with Kind "file" when none does.
 func findEnclosingDecl(decls []outline.Decl, line int) outline.Decl {
 	best, bestSpan := outline.Decl{Kind: "file"}, -1
 	for _, d := range decls {

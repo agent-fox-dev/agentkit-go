@@ -20,10 +20,10 @@ const (
 	EvThinkingDelta EventType = "thinking_delta"
 	EvThinkingEnd   EventType = "thinking_end"
 
-	// Model-stream decode events (REQ-OBS-06). Distinct from the execution
-	// triple below: REQ-LOOP-05 and REQ-LOOP-11.3 say "ToolCallStartEvent" for
-	// tool EXECUTION, which would produce two events of that name per call
-	// with different payloads. The loop emits the execution triple.
+	// Model-stream decode events: the model writing a tool call. Distinct
+	// from the execution triple below, which reports the tool RUNNING; one
+	// name for both would produce two events of that name per call with
+	// different payloads. The loop emits the execution triple.
 	EvToolCallStart  EventType = "tool_call_start"
 	EvToolInputDelta EventType = "tool_input_delta"
 	EvToolCallEnd    EventType = "tool_call_end"
@@ -36,15 +36,14 @@ const (
 	EvError      EventType = "error"
 )
 
-// EventClass is REQ-OBS-06a's split, with a third member the requirement needs
-// and does not have.
+// EventClass splits events into deltas, snapshots and authoritative events.
 //
-// 06a defines authoritative as "complete and final for the item it names,
-// exactly one per item, always emitted" and then places everything that is not
-// a delta into that class. But MessageUpdateEvent is by construction repeated
-// and non-final, and 06b explicitly wants many of them. A consumer following
-// 06a literally would treat the first MessageUpdateEvent as final and stop
-// rendering.
+// A split into deltas and authoritative events alone ("complete and final for
+// the item it names, exactly one per item, always emitted") would place
+// everything that is not a delta into the authoritative class. But
+// MessageUpdateEvent is by construction repeated and non-final, and a stream
+// carries many of them. A consumer treating it as authoritative would treat
+// the first MessageUpdateEvent as final and stop rendering.
 type EventClass uint8
 
 const (
@@ -61,7 +60,7 @@ const (
 )
 
 // Event is a sealed union. clone and size are unexported so the union cannot
-// be extended from outside and so EventStream.Push can enforce REQ-OBS-06b
+// be extended from outside and so EventStream.Push can deep-copy every event
 // centrally, rather than trusting every producer to remember.
 type Event interface {
 	EventType() EventType
@@ -87,7 +86,7 @@ type TurnStartEvent struct{ TurnIndex int }
 type TurnEndEvent struct {
 	TurnIndex int
 	Message   AssistantMessage
-	// ToolResults is always non-nil; [] for a no-tool turn (REQ-OBS-06).
+	// ToolResults is always non-nil; [] for a no-tool turn.
 	ToolResults []ToolResultMessage
 	Usage       Usage
 }
@@ -102,10 +101,9 @@ type TextDeltaEvent struct {
 	Delta      string
 }
 
-// TextEndEvent carries the WHOLE text, not just a final delta. REQ-OBS-06's
-// payload table says "block_index, delta", but REQ-OBS-06a requires a consumer
-// to discard accumulated deltas and take the authoritative payload whole,
-// which is impossible if the end event carries only a delta. 06a wins.
+// TextEndEvent carries the WHOLE text, not just a final delta. It is
+// authoritative: a consumer discards the deltas it accumulated and takes the
+// payload whole, which is impossible if the end event carries only a delta.
 type TextEndEvent struct {
 	BlockIndex int
 	Text       string
@@ -135,17 +133,17 @@ type ToolInputDeltaEvent struct {
 }
 
 // ToolCallEndEvent carries the finalized block, Input bytes included, so the
-// consumer needs no salvage parser of its own. REQ-OBS-08.4: it AUGMENTS the
-// accumulated call and never replaces state later events read.
+// consumer needs no salvage parser of its own. It AUGMENTS the accumulated
+// call and never replaces state later events read.
 type ToolCallEndEvent struct {
 	BlockIndex int
 	Block      ToolUseBlock
 }
 
 // ParentToolUseID, on the three execution events, is the wrapper call a
-// nested call was made through, empty for a call the model made directly
-// (07-REQ-8.2). A nested call emits these events and no ToolResultEvent: its
-// result goes to the wrapper, not into the transcript.
+// nested call was made through, empty for a call the model made directly. A
+// nested call emits these events and no ToolResultEvent: its result goes to
+// the wrapper, not into the transcript.
 type ToolExecutionStartEvent struct {
 	ToolUseID       string
 	Name            string
@@ -220,9 +218,9 @@ func (ToolExecutionEndEvent) Class() EventClass   { return ClassAuthoritative }
 func (ToolResultEvent) Class() EventClass         { return ClassAuthoritative }
 func (ErrorEvent) Class() EventClass              { return ClassAuthoritative }
 
-// clone implements REQ-OBS-06b. Every event carrying a partial message carries
-// an independent deep copy taken at push time, never a pointer to one live,
-// mutating message shared by all events.
+// clone is the deep copy EventStream.Push takes. Every event carrying a
+// partial message carries an independent deep copy taken at push time, never
+// a pointer to one live, mutating message shared by all events.
 func (e AgentStartEvent) clone() Event { return e }
 func (e AgentDoneEvent) clone() Event {
 	e.Result.Messages = e.Result.Messages.Clone()

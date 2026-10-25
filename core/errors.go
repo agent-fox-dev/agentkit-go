@@ -2,17 +2,18 @@ package core
 
 import "errors"
 
-// Sentinel errors of REQ-GO-09, all comparable with errors.Is.
+// Sentinel errors, all comparable with errors.Is.
 var (
 	ErrMaxTurns       = errors.New("agentkit: maximum turns reached")
 	ErrBudgetExceeded = errors.New("agentkit: budget exceeded")
 	ErrToolRejected   = errors.New("agentkit: tool call rejected")
 	ErrRefusal        = errors.New("agentkit: model refused the request")
 	// ErrBusy: a conflicting operation was attempted while a turn was in
-	// flight (REQ-LOOP-15). The caller may retry; it is never queued.
+	// flight. The caller may retry; it is never queued.
 	ErrBusy = errors.New("agentkit: agent is busy")
-	// ErrAborted: stopped by Agent.Abort(), deliberately distinguishable from
-	// context.Canceled, which signals the caller's own ctx (REQ-GO-09).
+	// ErrAborted: the run stopped on a cancelled context, or a provider ended
+	// its stream as aborted. On a cancellation the run's error wraps it
+	// beside the context's own error, so errors.Is matches either.
 	ErrAborted       = errors.New("agentkit: run aborted")
 	ErrStreamOverrun = errors.New("agentkit: stream consumer overrun")
 
@@ -31,17 +32,16 @@ var (
 	ErrSessionExists  = errors.New("agentkit: session log already exists at path")
 	// ErrSessionNotEmpty makes the forbidden "construct, then patch the model
 	// onto it" resume a runtime failure on the first line rather than a style
-	// violation (REQ-SESS-02).
+	// violation.
 	ErrSessionNotEmpty = errors.New(
 		"agentkit: session store is not empty; resume with LoadSession + NewAgentFromSession")
 
-	// ErrUnguardedExecute is OQ-8's resolution: a toolset that reaches a shell
-	// tool (execute, run_command) with no Guard is refused by
-	// agentkit.NewRunner, and so by agentkit.New, before any request. A
-	// headless embedder with no policy would otherwise hand the model an
-	// unrestricted shell by omission. Supply an interceptor — RestrictedPolicy
-	// is the shipped starting point — or pass AllowAllToolCalls to say so
-	// explicitly.
+	// ErrUnguardedExecute: a toolset that reaches a shell tool (execute,
+	// run_command) with no Guard is refused by agentkit.NewRunner, and so by
+	// agentkit.New, before any request. A headless embedder with no policy
+	// would otherwise hand the model an unrestricted shell by omission.
+	// Supply an interceptor — guard.Restricted is the shipped starting point
+	// — or pass guard.AllowAll to say so explicitly.
 	ErrUnguardedExecute = errors.New(
 		"agentkit: a shell tool is reachable but Toolset.Guard is nil; " +
 			"supply an interceptor (guard.Restricted is the shipped starting point) " +

@@ -2,8 +2,8 @@ package anthropic // import "github.com/agent-fox-dev/agentkit-go/provider/anthr
 
 Package anthropic implements the Anthropic Messages wire API.
 
-It is keyed by WIRE API, not by vendor (REQ-PROV-02): the same implementation
-serves Anthropic direct and any gateway that speaks Messages.
+It is keyed by WIRE API, not by vendor: the same implementation serves Anthropic
+direct and any gateway that speaks Messages.
 
 CONSTANTS
 
@@ -42,10 +42,9 @@ const DefaultBedrockRegion = "us-east-1"
 
 const DefaultMaxTokens = 4096
     DefaultMaxTokens is sent when neither the request nor the model bounds
-    the output. max_tokens is REQUIRED on this wire and 0 is rejected, so a
-    hand-built Model with no cap and no window still needs a positive number;
-    this is the floor REQ-CAT-04 leaves for an unknown window, sized so a normal
-    answer fits rather than the literal 1 the formula's max(1, ·) yields.
+    the output. max_tokens is REQUIRED on this wire and 0 is rejected,
+    so a hand-built Model with no output cap still needs a positive number;
+    this one is sized so a normal answer fits.
 
 const DefaultVertexRegion = "global"
     DefaultVertexRegion is the Vertex location when CLOUD_ML_REGION is unset.
@@ -74,29 +73,31 @@ var ErrStreamTruncated = errors.New("agentkit: stream ended before message_stop"
 FUNCTIONS
 
 func BuildRequest(m *core.Model, req core.Request, retention core.CacheRetention) (*request, RepairReport, error)
-func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRetention,
-	prefix *provider.ToolPrefix) (*request, RepairReport, provider.SyncReport, error)
-    BuildRequestCached is BuildRequest with REQ-CACHE-06's per-session
-    schema cache attached. A nil prefix marshals every schema, which is what
-    BuildRequest does and what a one-shot caller wants.
-
-    NFR-PERF-03 is why this exists rather than being an internal detail:
-    tool schema serialization "must be computed once per session and cached,
-    not recomputed on every model call", and at 128 tools that recomputation
-    is ~0.9 ms of the ~1.5 ms it takes to build a request — the dominant term,
-    paid on every turn, for bytes that did not change.
-
-func BuildRequestJSON(req core.Request, m core.Model) ([]byte, error)
     BuildRequest converts a canonical request into the Anthropic wire body.
     It is exported so the golden tests can capture the exact bytes without a
     network call or an API key; BuildRequestJSON returns them as sent.
 
-    It runs the shared repair pass first (REQ-PROV-11) — that is part of the
-    provider contract, not the loop's, because the loop is not running when a
-    transcript is loaded from disk. BuildRequestJSON is the request body for
-    req on m, byte for byte as it is sent, with the short cache retention.
-    Replayed tool_use input and replayed raw blocks keep the exact bytes they
-    arrived with; json.Marshal of a BuildRequest result would compact them.
+    It runs the transcript repair pass (RepairTranscript) first — that is part
+    of the provider contract, not the loop's, because the loop is not running
+    when a transcript is loaded from disk.
+
+func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRetention,
+	prefix *provider.ToolPrefix) (*request, RepairReport, provider.SyncReport, error)
+    BuildRequestCached is BuildRequest with a per-session schema cache attached.
+    A nil prefix marshals every schema, which is what BuildRequest does and what
+    a one-shot caller wants.
+
+    It exists rather than being an internal detail because tool schema
+    serialization must be computed once per session and cached, not recomputed
+    on every model call: at 128 tools that recomputation is ~0.9 ms of the ~1.5
+    ms it takes to build a request — the dominant term, paid on every turn,
+    for bytes that did not change.
+
+func BuildRequestJSON(req core.Request, m core.Model) ([]byte, error)
+    BuildRequestJSON is the request body for req on m, byte for byte as it is
+    sent, with the short cache retention. Replayed tool_use input and replayed
+    raw blocks keep the exact bytes they arrived with; json.Marshal of a
+    BuildRequest result would compact them.
 
 func BuildRequestJSONWith(req core.Request, m core.Model, opts Options) ([]byte, error)
     BuildRequestJSONWith is BuildRequestJSON for a provider configured
@@ -106,21 +107,22 @@ func BuildRequestJSONWith(req core.Request, m core.Model, opts Options) ([]byte,
 func DecodeResponse(m *core.Model, data []byte, lookup func(string) *core.Model) (*core.AssistantMessage, error)
     DecodeResponse decodes a NON-streaming Messages response.
 
-    It exists for REQ-PROV-17's conformance test: the streaming and whole
-    response paths must produce byte-identical ToolUseBlock.Input for the same
-    call. Sharing the assembler is what makes that true by construction rather
-    than by coincidence, and DecodeResponse is how the test can say so.
+    TranslateMessage decodes through it, and so does the conformance test:
+    the streaming and whole-response paths must produce byte-identical
+    ToolUseBlock.Input for the same call. Sharing the assembler is what makes
+    that true by construction rather than by coincidence, and DecodeResponse is
+    how the test can say so.
 
 func MapStopReason(s string) core.StopReason
     MapStopReason normalizes an Anthropic stop_reason. The provider's own string
     is preserved verbatim by the caller in RawStopReason; this mapping is lossy
-    on purpose and never drives control flow (REQ-LOOP-01).
+    on purpose and never drives control flow.
 
 func NormalizeToolCallID(s string) string
     NormalizeToolCallID rewrites an id into Anthropic's accepted shape:
     characters outside [A-Za-z0-9_-] become '_', truncated to 64. It is the
-    function REQ-PROV-11 rule 5 uses when replaying a transcript produced by
-    another provider.
+    function RepairTranscript's rule 5 uses when replaying a transcript produced
+    by another provider.
 
 func Provider(m core.Model, opts Options) core.ProviderClient
     Provider returns a core.ProviderClient for the model m.
@@ -130,34 +132,36 @@ func SalvageJSON(b []byte) (json.RawMessage, bool)
     off, so that a truncated call is REPRESENTABLE rather than undecodable.
 
     It returns the input UNCHANGED, and repaired=false, whenever the input
-    already parses. That is not an optimization — it is REQ-PROV-17. The bytes
-    a provider streamed are authoritative for every replay and fingerprint,
-    so the salvage path must be a no-op on the overwhelmingly common case;
-    a repair that "normalizes" valid input would reorder keys on every turn and
-    shift the prompt-cache prefix.
+    already parses. That is not an optimization: the bytes a provider streamed
+    are authoritative for every replay and fingerprint, so the salvage path must
+    be a no-op on the overwhelmingly common case; a repair that "normalizes"
+    valid input would reorder keys on every turn and shift the prompt-cache
+    prefix.
 
     WHAT IT DOES WITH A TRUNCATED VALUE, and why: it DROPS the incomplete member
     rather than closing it — and a member whose value is a container still open
     at the cut is a truncated member too, dropped whole.
 
-    Closing an open string is the friendlier-looking choice and it is the wrong
-    one here. `{"path":"/etc/pas` becomes a syntactically perfect call to delete
-    a file nobody named, indistinguishable from a complete one — the file-
-    corrupting case REQ-LOOP-10 exists for, now wearing valid JSON. Dropping the
-    member instead makes the truncation SURVIVE as a missing required property,
-    where REQ-TOOL-11's schema validation rejects it and the caller is told
-    what happened. Complete top-level members before the cut are kept; only the
-    partial one is lost, however deep inside it the cut fell.
+    Closing an open string is the friendlier-looking choice and it is the
+    wrong one here. `{"path":"/etc/pas` becomes a syntactically perfect call
+    to delete a file nobody named, indistinguishable from a complete one — the
+    file-corrupting case the loop's refusal to run truncated calls exists for,
+    now wearing valid JSON. Dropping the member instead makes the truncation
+    SURVIVE as a missing required property, where schema validation of the
+    arguments rejects it and the caller is told what happened. Complete
+    top-level members before the cut are kept; only the partial one is lost,
+    however deep inside it the cut fell.
 
-    This is a safety net under REQ-LOOP-10, never a substitute for it:
+    This is a safety net under that refusal, never a substitute for it:
     the loop still refuses to execute any tool call from a `max_tokens` turn,
     because a call can be truncated at a point where the remaining JSON is both
     valid and wrong.
 
 func StampCacheControl(r *request, retention core.CacheRetention, m *core.Model)
-    StampCacheControl places the §6.2a Level 1 breakpoints.
+    StampCacheControl places the prompt-cache breakpoints.
 
-    Exactly three placements, recomputed on EVERY request:
+    Three placements, and a fourth when the request carries a Prefix, all
+    recomputed on EVERY request:
 
      1. the LAST system block only — a marker caches everything rendered
         before it, and the wire renders tools, then system, then messages,
@@ -170,6 +174,9 @@ func StampCacheControl(r *request, retention core.CacheRetention, m *core.Model)
      3. the last content block of the last message, when that message is a user
         message and the block is text, image or tool_result.
 
+    The fourth is the last block of the encoded Prefix: the prefix is the same
+    on every request, so its end is a stable breakpoint.
+
     Placement 3 is a ROLLING breakpoint: it moves forward every turn,
     extending the cached prefix to include the previous turn's tool results.
     That is the whole point. The "optimization" of recomputing only when the
@@ -177,11 +184,12 @@ func StampCacheControl(r *request, retention core.CacheRetention, m *core.Model)
     which re-pays full input price on the entire growing transcript — the
     dominant cost in exactly the multi-turn agent workload this SDK exists for.
 
-    Under CacheRetentionLong the 1h TTL goes on placements 1 and 2 only. The
-    rolling breakpoint stays at the default 5-minute TTL: it is rewritten every
-    turn anyway, a 1h write bills at twice the 5m rate, and the wire requires
-    every 1h entry to precede every 5m one — which tools -> system -> messages
-    order satisfies exactly when the message breakpoint is the short one.
+    Under CacheRetentionLong the 1h TTL goes on every placement but the
+    rolling one. The rolling breakpoint stays at the default 5-minute TTL:
+    it is rewritten every turn anyway, a 1h write bills at twice the 5m rate,
+    and the wire requires every 1h entry to precede every 5m one — which tools
+    -> system -> messages order satisfies exactly when the last breakpoint is
+    the short one.
 
 func TranslateMessage(m *core.Model, msg sdk.Message) (core.AssistantMessage, error)
     TranslateMessage translates a whole (non-streamed) SDK Message for m into
@@ -223,7 +231,7 @@ type Options struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	// Getenv is injectable so a test never mutates process environment
-	// (NFR-TEST-04). Nil means os.Getenv.
+	// Nil means os.Getenv.
 	Getenv func(string) string
 	// MaxRetries overrides the SDK's retry count; nil keeps its default.
 	MaxRetries *int
@@ -238,17 +246,17 @@ type Options struct {
 	// authorized with. Nil uses a Google access token in ANTHROPIC_AUTH_TOKEN
 	// when there is one, and Application Default Credentials otherwise.
 	VertexTokenSource oauth2.TokenSource
-	// BillingLookup resolves a SERVED model id to its catalog row
-	// (REQ-PROV-05.5). Nil bills a fallback-served response at the requested
-	// model's rates and still records the served name.
+	// BillingLookup resolves a SERVED model id to its catalog row. Nil bills
+	// a fallback-served response at the requested model's rates and still
+	// records the served name.
 	BillingLookup func(string) *core.Model
-	// ToolPrefix is REQ-CACHE-06's per-session schema cache. Nil means this
+	// ToolPrefix is the per-session schema cache. Nil means this
 	// provider value owns one, which is the right scope in practice: a
 	// registry is built per agent config. Pass one explicitly to share it, or
 	// to read its reconciliation reports.
 	ToolPrefix *provider.ToolPrefix
-	// OnToolPrefixSync reports each reconciliation, so an embedder can feed
-	// REQ-CACHE-11's prefix-invalidation counter.
+	// OnToolPrefixSync reports each reconciliation, so an embedder can count
+	// prompt-cache prefix invalidations.
 	OnToolPrefixSync func(provider.SyncReport)
 	// Now is injectable for deterministic timestamps in tests.
 	Now func() time.Time
@@ -267,14 +275,14 @@ type Options struct {
 	// ignored.
 	NonStrictTools []string
 	// Headers merge into every request. A present-nil value is a DELETION
-	// MARKER suppressing a default of that name (REQ-AUTH-02); no string
+	// MARKER suppressing a default of that name; no string
 	// value can express that.
 	Headers map[string]*string
-	// Timeout bounds each request, independently of the caller's context
-	// (REQ-PROV-18); zero is none.
+	// Timeout bounds each request, independently of the caller's context;
+	// zero is none.
 	Timeout time.Duration
-	// Env is consulted before Getenv when resolving the deployment
-	// (REQ-AUTH-03). An empty override falls through rather than masking.
+	// Env is consulted before Getenv when resolving the deployment. An empty
+	// override falls through rather than masking.
 	Env map[string]string
 	// Transport replaces the HTTP transport.
 	Transport http.RoundTripper
@@ -304,8 +312,8 @@ type RepairReport struct {
     sent was the transcript it holds, and a log line is not available to a test.
 
 func RepairTranscript(in core.Messages, t Target) (core.Messages, RepairReport)
-    RepairTranscript is REQ-PROV-11: the shared, unconditional pass every
-    provider runs on every request, before wire-format conversion.
+    RepairTranscript is the unconditional pass this provider runs on every
+    request, before wire-format conversion.
 
     It is part of the provider contract and not the loop's, because the loop is
     not running when a transcript is loaded from disk and no caller may be able
@@ -324,18 +332,18 @@ func RepairTranscript(in core.Messages, t Target) (core.Messages, RepairReport)
         5  cross-model: rewrite tool-call ids, remembering the mapping
         6  insert a synthetic result for any tool_use still unanswered
 
-    # Rule 2b, which the PRD does not have
+    # Rule 2b
 
     Rule 2 drops an aborted assistant message — including its tool_use blocks.
     But the ToolResultMessages that answered those blocks are SEPARATE canonical
     messages and survive rule 2 untouched. Every provider rejects a tool result
-    whose tool_use is absent, so the seven rules as written produce an INVALID
+    whose tool_use is absent, so the other rules alone produce an INVALID
     request on the single commonest damaged transcript: Ctrl-C during a tool
     batch, then resume.
 
-    Rule 2b closes that hole (ruling P-1). Without it the repair pass creates
-    the exact failure it exists to prevent, and only on the resume path — which
-    no single-process test exercises.
+    Rule 2b closes that hole. Without it the repair pass creates the exact
+    failure it exists to prevent, and only on the resume path — which no
+    single-process test exercises.
 
 func (r RepairReport) Changed() bool
 

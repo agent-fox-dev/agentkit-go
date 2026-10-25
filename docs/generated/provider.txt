@@ -12,14 +12,15 @@ const SyntheticResultText = "No result provided"
 FUNCTIONS
 
 func ApplyServiceTier(cost float64, t ServiceTier) float64
-    ApplyServiceTier is REQ-PROV-05.6. It is a separate call rather than a
-    parameter of ComputeCost because the multiplier applies POST-HOC to the
-    whole computed cost — including the tiered portion — and folding it into the
-    rates would apply it before tier selection.
+    ApplyServiceTier applies a service tier's multiplier to a computed cost.
+    It is a separate call rather than a parameter of ComputeCost because the
+    multiplier applies POST-HOC to the whole computed cost, cache reads and
+    writes included, and the tier that applies is the one the response says
+    served it, known only once the response is in.
 
 func BillingModel(requested *core.Model, served string, lookup func(string) *core.Model) (m *core.Model, billed string)
-    BillingModel implements REQ-PROV-05.5: bill the model that actually SERVED
-    the request.
+    BillingModel picks the model to bill: the one that actually SERVED the
+    request.
 
     served is the model id the response named. When it differs from the
     requested id, lookup resolves the served model's catalog row and that
@@ -37,19 +38,19 @@ func ComputeCost(m *core.Model, u core.Usage) float64
     ComputeCost prices a usage against a model's catalog row. Rates are USD per
     1M tokens.
 
-    Two subtleties, both from REQ-PROV-05:
+    Two subtleties:
 
-     1. InputTokens must already be NET of cache reads and writes (05.1).
-        This function does not subtract, because it cannot tell a net value from
-        a gross one, and subtracting an already-net value understates cost as
-        silently as not subtracting a gross one overstates it. The netting is
-        the DECODER's job, at the one place that knows the wire convention: the
-        OpenAI family reports prompt_tokens inclusive of cached tokens and must
-        subtract; Anthropic reports input_tokens exclusive of both and must not.
+     1. InputTokens must already be NET of cache reads and writes. This function
+        does not subtract, because it cannot tell a net value from a gross one,
+        and subtracting an already-net value understates cost as silently as not
+        subtracting a gross one overstates it. The netting is the DECODER's job,
+        at the one place that knows the wire convention: the OpenAI family
+        reports prompt_tokens inclusive of cached tokens and must subtract;
+        Anthropic reports input_tokens exclusive of both and must not.
 
-     2. 1h cache writes bill at 2x BASE INPUT, not at the cache-write rate
-        (05.3). CacheWrite1hTokens is a SUBSET of CacheWriteTokens, so the
-        5-minute portion is the difference. Treating them as separate addends
+     2. 1h cache writes bill at 2x BASE INPUT, not at the cache-write rate.
+        CacheWrite1hTokens is a SUBSET of CacheWriteTokens, so the 5-minute
+        portion is the difference. Treating them as separate addends
         double-counts every 1h write.
 
 func ToolResultText(v core.ToolResultMessage) string
@@ -68,24 +69,25 @@ type DeferredSplit struct {
 	Deferred  []core.ToolWire
 	// Promoted is true when the safety valve fired: every tool would have been
 	// deferred, leaving no prefix to anchor against, so all were promoted back
-	// and the cache wipe accepted. REQ-CACHE-11 reports this.
+	// and the cache wipe accepted.
 	Promoted bool
 }
     DeferredSplit is SplitDeferredTools' partition.
 
 func SplitDeferredTools(tools []core.ToolWire, history core.Messages) DeferredSplit
-    SplitDeferredTools implements REQ-CACHE-10.
+    SplitDeferredTools splits tools into the immediate ones, which form the
+    cached prefix, and the deferred ones, declared after it.
 
     A tool is deferred only if a tool result MARKED it as newly added and no
     assistant turn used it BEFORE that marker. The pass is forward and the
     decision is made at the marker: later usage cannot un-defer a tool.
 
-    That ordering is the requirement and it is not obvious. A tool used after
-    being added is exactly the normal case — a skill activates and the model
-    calls its tool on the next turn — and un-deferring on later use would
-    promote every deferred tool on the turn after it appeared, which is when
-    promoting it is most expensive: the transcript is longest and the cache
-    prefix most valuable.
+    That ordering is deliberate and it is not obvious. A tool used after being
+    added is exactly the normal case — a skill activates and the model calls
+    its tool on the next turn — and un-deferring on later use would promote
+    every deferred tool on the turn after it appeared, which is when promoting
+    it is most expensive: the transcript is longest and the cache prefix most
+    valuable.
 
 func (s DeferredSplit) IsDeferred(name string) bool
     IsDeferred reports whether a named tool is in the deferred set.
@@ -142,11 +144,11 @@ type ServiceTier struct {
 	Name       string
 	Multiplier float64 // 1 for standard, 0.5 flex, 2 priority
 }
-    ServiceTier is REQ-PROV-05.6's post-hoc multiplier.
+    ServiceTier is a service tier's post-hoc cost multiplier.
 
 func KnownServiceTier(name string) (ServiceTier, bool)
-    KnownServiceTier resolves a tier NAME a response reported to its
-    REQ-PROV-05.6 multiplier: flex 0.5x, priority 2x, and the standard tier 1x.
+    KnownServiceTier resolves a tier NAME a response reported to its multiplier:
+    flex 0.5x, priority 2x, and the standard tier 1x.
 
     It exists for the served-tier case: a flex request can be served at
     standard, and the response says so in service_tier. Pricing with the
@@ -156,20 +158,20 @@ func KnownServiceTier(name string) (ServiceTier, bool)
 
 type SyncReport struct {
 	// Added names tools that appeared since the last Sync. An addition does
-	// NOT invalidate (REQ-CACHE-06).
+	// NOT invalidate.
 	Added []string
 	// Invalidated is true when a tool was REMOVED or an existing tool's schema
 	// CHANGED. Either rewrites the cached prefix and costs the whole
 	// provider-side cache.
 	Invalidated bool
 	// Reason names what invalidated it, for the operator who has to explain a
-	// cost spike (REQ-CACHE-11).
+	// cost spike.
 	Reason string
 	// Marshalled counts schemas actually serialized on this call. Zero on a
 	// steady-state turn is the whole point of the cache.
 	Marshalled int
 }
-    SyncReport is what Sync learned. It feeds REQ-CACHE-11's counters.
+    SyncReport is what Sync learned, for an embedder's prompt-cache counters.
 
 type ToolPrefix struct {
 	// Has unexported fields.

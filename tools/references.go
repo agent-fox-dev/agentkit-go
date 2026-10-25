@@ -56,9 +56,8 @@ func clampMaxResults(maxResults int) int {
 // workspace files. targetPath, when known, is the workspace-relative file
 // that declares target. An empty backend is chosen from the target: "go/types"
 // when a Go package declares it, "lexical" otherwise, "text" for an empty
-// name. The pass is bounded by bounds (05-REQ-6.4). rc, when non-nil,
-// supplies the checked Go packages, outlines and candidate files it has
-// cached (05-REQ-8.1).
+// name. The pass is bounded by bounds. rc, when non-nil, supplies the
+// checked Go packages, outlines and candidate files it has cached.
 func executeReferenceSearch(ctx context.Context, ws *workspace.Workspace, target outline.Decl, targetPath, backend string, opts ReferenceOptions, bounds SymbolOptions, rc *referenceCache) (ReferenceResult, error) {
 	if err := ctx.Err(); err != nil {
 		return ReferenceResult{}, err
