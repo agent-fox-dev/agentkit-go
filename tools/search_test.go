@@ -1,550 +1,274 @@
-package tools_test
+package tools
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/schema"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-type coreTool = core.Tool
-
-// searchTree builds a fixture with the things that separate a real search tool
-// from a regexp over filepath.Walk: an ignored directory, a nested repository,
-// a binary file, and content that matches in more than one case.
+// searchTree is a project with ignored, binary, hidden and nested-repository
+// files, each holding "needle".
 func searchTree(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
-	write := func(rel, body string) {
-		t.Helper()
-		p := filepath.Join(root, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	write(".gitignore", "node_modules/\n*.log\n")
-	write("main.go", "package main\n\nfunc needle() {}\n\nfunc other() {}\n")
-	write("lib/helper.go", "package lib\n\n// needle here too\nvar Needle = 1\n")
-	write("README.md", "the needle is in the haystack\n")
-	write("debug.log", "needle in an ignored file\n")
-	write("node_modules/pkg/index.js", "var needle = require('needle')\n")
-
-	// A nested repository with its own rules: they apply within it and do not
-	// leak outward (REQ-TOOL-05.3).
-	write("vendor/sub/.git/HEAD", "ref: refs/heads/main\n")
-	write("vendor/sub/.gitignore", "secret.txt\n")
-	write("vendor/sub/ok.go", "// needle in a nested repo\n")
-	write("vendor/sub/secret.txt", "needle in an ignored nested file\n")
-
-	// A file whose extension differs from the glob only in CASE. AgentKit's
-	// glob dialect is smart-case and ripgrep's is not, which is exactly the
-	// divergence the accelerated path must not inherit.
-	write("UPPER.GO", "needle in an uppercase-extension file\n")
-
-	// Binary: a NUL byte in the first block.
-	if err := os.WriteFile(filepath.Join(root, "blob.bin"),
-		append([]byte("needle\x00"), make([]byte, 64)...), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return root
+	return testutil.Tree(t, map[string]string{
+		".gitignore":                "node_modules/\n*.log\n",
+		"main.go":                   "package main\n\nfunc needle() {}\n\nfunc other() {}\n",
+		"lib/helper.go":             "package lib\n\n// needle here too\nvar Needle = 1\n",
+		"README.md":                 "the needle is in the haystack\n",
+		"UPPER.GO":                  "needle in an uppercase-extension file\n",
+		"debug.log":                 "needle in an ignored file\n",
+		"node_modules/pkg/index.js": "var needle = require('needle')\n",
+		".env":                      "needle=hidden\n",
+		"vendor/sub/.git/HEAD":      "ref: refs/heads/main\n",
+		"vendor/sub/.gitignore":     "secret.txt\n",
+		"vendor/sub/ok.go":          "// needle in a nested repo\n",
+		"vendor/sub/secret.txt":     "needle in a file the nested repo ignores\n",
+		"blob.bin":                  "needle\x00" + strings.Repeat("\x00", 64),
+	})
 }
 
-func names(res tools.SearchResult) []string {
-	out := make([]string, 0, len(res.Matches))
+func search(t *testing.T, root string, p SearchParams) SearchResult {
+	t.Helper()
+	res, err := SearchIn(context.Background(), root, p, workspace.NoGlobalExcludes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func sites(res SearchResult) []string {
+	out := []string{}
 	for _, m := range res.Matches {
 		out = append(out, fmt.Sprintf("%s:%d", m.File, m.Line))
 	}
 	return out
 }
 
-// ---- the declared semantics
-
-// TestSearchSkipsIgnoredAndBinaryFiles is the difference REQ-TOOL-05 names
-// between a search tool and a regexp over a walk: one returns the project's
-// files, the other returns node_modules.
-func TestSearchSkipsIgnoredAndBinaryFiles(t *testing.T) {
+func TestSearchSelectsTheProjectsOwnTextFiles(t *testing.T) {
 	root := searchTree(t)
-	res, err := runNative(t, root, tools.SearchParams{Pattern: "needle"})
-	if err != nil {
-		t.Fatal(err)
+	res := search(t, root, SearchParams{Pattern: "needle"})
+	// Ignored, hidden and binary files are skipped, a nested repository's
+	// rules apply inside it, and an all-lowercase pattern matches any case.
+	want := []string{"README.md:1", "UPPER.GO:1", "lib/helper.go:3", "lib/helper.go:4", "main.go:3", "vendor/sub/ok.go:1"}
+	if got := sites(res); !reflect.DeepEqual(got, want) {
+		t.Fatalf("matches %v, want %v", got, want)
 	}
-	got := strings.Join(names(res), " ")
-	for _, forbidden := range []string{"node_modules", "debug.log", "blob.bin"} {
-		if strings.Contains(got, forbidden) {
-			t.Fatalf("%s must not be searched; got %s", forbidden, got)
+	// A binary file is selected, so counted, and then not scanned.
+	if res.FilesSearched != 6 || res.Truncated {
+		t.Fatalf("files_searched %d truncated %v, want 6", res.FilesSearched, res.Truncated)
+	}
+	// Truncation stops the reading, not the count.
+	if res := search(t, root, SearchParams{Pattern: "needle", MaxMatches: 2}); len(res.Matches) != 2 || !res.Truncated || res.FilesSearched != 6 || res.TruncatedBy != TruncatedByLines {
+		t.Fatalf("max_matches 2: %v truncated %v files %d", sites(res), res.Truncated, res.FilesSearched)
+	}
+	// Search reads the real ignore environment, SearchIn the one it is given.
+	testutil.Hermetic(t)
+	if real, err := Search(context.Background(), root, SearchParams{Pattern: "needle"}); err != nil || !reflect.DeepEqual(sites(real), want) {
+		t.Fatalf("Search = %v, %v", sites(real), err)
+	}
+	for glob, want := range map[string]int{"": 6, "*.go": 4} {
+		if n, err := CountCandidates(context.Background(), root, SearchParams{FileGlob: glob}); err != nil || n != want {
+			t.Errorf("CountCandidates(%q) = %d, %v; want %d", glob, n, err, want)
 		}
 	}
-	if !strings.Contains(got, "main.go") || !strings.Contains(got, "lib/helper.go") {
-		t.Fatalf("expected the project's own files; got %s", got)
+}
+
+func TestSearchReadsOnlyTheIgnoreFilesUnderItsRoot(t *testing.T) {
+	top := testutil.Tree(t, map[string]string{
+		".gitignore":  "*.log\n", // a parent of the search root
+		"sub/.ignore": "*.txt\n", // ripgrep's file, not git's
+		"sub/a.log":   "needle\n", "sub/b.txt": "needle\n", "sub/c.md": "needle\n",
+	})
+	if got := sites(search(t, top+"/sub", SearchParams{Pattern: "needle"})); !reflect.DeepEqual(got, []string{"a.log:1", "b.txt:1", "c.md:1"}) {
+		t.Fatalf("got %v", got)
 	}
 }
 
-// TestANestedRepositorysRulesDoNotLeakOutward is REQ-TOOL-05.3. The nested
-// repo ignores secret.txt; the outer tree does not, and the outer tree's rules
-// say nothing about it either way.
-func TestANestedRepositorysRulesDoNotLeakOutward(t *testing.T) {
-	root := searchTree(t)
-	res, err := runNative(t, root, tools.SearchParams{Pattern: "needle"})
-	if err != nil {
-		t.Fatal(err)
+func TestSearchSemantics(t *testing.T) {
+	utf16 := func(s string, little bool) string {
+		b := []byte{0xFE, 0xFF}
+		if little {
+			b = []byte{0xFF, 0xFE}
+		}
+		for _, r := range s {
+			if little {
+				b = append(b, byte(r), byte(r>>8))
+			} else {
+				b = append(b, byte(r>>8), byte(r))
+			}
+		}
+		return string(b)
 	}
-	got := strings.Join(names(res), " ")
-	if strings.Contains(got, "secret.txt") {
-		t.Fatalf("the nested repo ignores secret.txt; got %s", got)
-	}
-	if !strings.Contains(got, "vendor/sub/ok.go") {
-		t.Fatalf("the nested repo's other files are still searched; got %s", got)
-	}
-}
-
-// TestSmartCaseIsTheDefault. AgentKit's declared semantics, not ripgrep's:
-// absent means smart-case, so a lowercase pattern matches any case and a
-// pattern carrying an uppercase rune does not.
-func TestSmartCaseIsTheDefault(t *testing.T) {
-	root := searchTree(t)
+	root := testutil.Tree(t, map[string]string{
+		"u.py":      "def café():\n    return 1\nx = ٣\n",
+		"crlf.cs":   "class Foo\r\n{\r\n}\r\n",
+		"e.txt":     "Error: boom\nQuoted\n",
+		"early.dat": strings.Repeat("x", 13000) + "\nlate needle\n\x00\n",
+		"far.dat":   "far needle\n" + strings.Repeat("yyyyyyyyyyyyyyy\n", 20000) + "\x00\nfar needle again\n",
+		"le.ps1":    utf16("needle here\nsecond\n", true),
+		"be.ps1":    utf16("big needle\n", false) + "\xd8\x00\x00A", // an unpaired high surrogate, then A
+		"odd.ps1":   utf16("odd needle", true) + "x",                // a trailing odd byte
+		"bom.txt":   "\xEF\xBB\xBFfirst line\nsecond\n",
+		"min.js":    "var x = \"" + strings.Repeat("a", 5<<20) + "\"; NEEDLE_ONE\nafter\nNEEDLE_TWO\n",
+	})
 	yes, no := true, false
-	lower, err := runNative(t, root, tools.SearchParams{Pattern: "needle"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(strings.Join(names(lower), " "), "lib/helper.go:4") {
-		t.Fatalf("an all-lowercase pattern must match `var Needle`; got %v", names(lower))
-	}
-
-	upper, err := runNative(t, root, tools.SearchParams{Pattern: "Needle"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, m := range upper.Matches {
-		if !strings.Contains(m.Text, "Needle") {
-			t.Fatalf("an uppercase rune makes the pattern sensitive; %q matched", m.Text)
-		}
-	}
-
-	forced, err := runNative(t, root, tools.SearchParams{
-		Pattern: "Needle", CaseSensitive: &no})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(forced.Matches) <= len(upper.Matches) {
-		t.Fatal("case_sensitive=false must widen the result beyond smart-case")
-	}
-
-	strict, err := runNative(t, root, tools.SearchParams{
-		Pattern: "needle", CaseSensitive: &yes})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(strict.Matches) >= len(lower.Matches) {
-		t.Fatal("case_sensitive=true must narrow the result below smart-case; " +
-			"absent and false are not the same answer")
-	}
-}
-
-// TestContextLinesSurroundTheMatch.
-func TestContextLinesSurroundTheMatch(t *testing.T) {
-	root := searchTree(t)
-	res, err := runNative(t, root, tools.SearchParams{
-		Pattern: "func needle", ContextLines: 2, FileGlob: "main.go"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Matches) != 1 {
-		t.Fatalf("want 1 match, got %v", names(res))
-	}
-	m := res.Matches[0]
-	if len(m.Before) != 2 || m.Before[1] != "" || m.Before[0] != "package main" {
-		t.Fatalf("before context wrong: %q", m.Before)
-	}
-	if len(m.After) != 2 || m.After[1] != "func other() {}" {
-		t.Fatalf("after context wrong: %q", m.After)
-	}
-}
-
-// TestTheFileGlobUsesAgentKitsDialect. rg's glob dialect is close but not
-// identical; ours is the declared one, so the accelerated path re-filters.
-func TestTheFileGlobUsesAgentKitsDialect(t *testing.T) {
-	root := searchTree(t)
-	res, err := runNative(t, root, tools.SearchParams{
-		Pattern: "needle", FileGlob: "**/*.{go,md}"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Matches) == 0 {
-		t.Fatal("brace expansion must select the .go and .md files")
-	}
-	var sawUpper bool
-	for _, m := range res.Matches {
-		ext := strings.ToLower(filepath.Ext(m.File))
-		if ext != ".go" && ext != ".md" {
-			t.Fatalf("%s does not match the glob", m.File)
-		}
-		if m.File == "UPPER.GO" {
-			sawUpper = true
-		}
-	}
-	// Smart-case globbing is AgentKit's declared dialect and ripgrep's
-	// is case-sensitive, so this is the assertion that the accelerated
-	// path did not inherit ripgrep's rules.
-	if !sawUpper {
-		t.Fatalf("an all-lowercase glob must match UPPER.GO; got %v", names(res))
-	}
-}
-
-// TestSearchTruncatesAtMaxMatches.
-func TestSearchTruncatesAtMaxMatches(t *testing.T) {
-	root := searchTree(t)
-	res, err := runNative(t, root, tools.SearchParams{
-		Pattern: "needle", MaxMatches: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Matches) != 2 || !res.Truncated {
-		t.Fatalf("want 2 matches and truncated=true; got %d, %v",
-			len(res.Matches), res.Truncated)
-	}
-}
-
-// TestAnInvalidPatternIsAnArgumentError, not a failed search: the caller has to
-// change the pattern, and a retry cannot help.
-func TestAnInvalidPatternIsAnArgumentError(t *testing.T) {
-	root := searchTree(t)
-	_, err := tools.Search(context.Background(), root, tools.SearchParams{Pattern: "a(b"})
-	if err == nil {
-		t.Fatal("an unparseable pattern must be refused")
-	}
-	var perr *tools.SearchPatternError
-	if !asPatternError(err, &perr) {
-		t.Fatalf("want a SearchPatternError so the tool can report invalid_arguments; got %T", err)
-	}
-}
-
-// ---- the parity test REQ-TOOL-05 requires
-
-// ---- the tool envelope
-
-func TestSearchToolRejectsAPathOutsideTheWorkspace(t *testing.T) {
-	root := searchTree(t)
-	tool := searchTool(t, root)
-	res := tool.Execute(context.Background(), json.RawMessage(`{"pattern":"needle","path":"../.."}`))
-	if res.OK || res.Error != "path_not_allowed" {
-		t.Fatalf("want path_not_allowed, got %+v", res)
-	}
-}
-
-func TestSearchToolBoundsContextLines(t *testing.T) {
-	root := searchTree(t)
-	tool := searchTool(t, root)
-	res := tool.Execute(context.Background(),
-		json.RawMessage(`{"pattern":"needle","context_lines":500}`))
-	if res.OK || res.Error != "invalid_arguments" {
-		t.Fatalf("context must be bounded: 100 matches with 500 lines either side is "+
-			"50000 lines the model pays for; got %+v", res)
-	}
-}
-
-// TestSearchAppliesTheByteCap is REQ-TOOL-09's second limit for search_files
-// and REQ-TOOL-15.3. 100 matches with 20 lines of context either side at 500
-// chars a line is two megabytes; the 50 KB cap must fire first and say so.
-func TestSearchAppliesTheByteCap(t *testing.T) {
-	root := t.TempDir()
-	var b strings.Builder
-	for i := 0; i < 200; i++ {
-		fmt.Fprintf(&b, "needle %03d %s\n", i, strings.Repeat("x", 480))
-	}
-	if err := os.WriteFile(filepath.Join(root, "wide.txt"), []byte(b.String()), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	res, err := runNative(t, root, tools.SearchParams{Pattern: "needle", ContextLines: 20})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Truncated || res.TruncatedBy != tools.TruncatedByBytes {
-		t.Fatalf("want truncated_by=bytes, got truncated=%v by=%q with %d matches",
-			res.Truncated, res.TruncatedBy, len(res.Matches))
-	}
-	if len(res.Matches) >= tools.SearchMatchCap {
-		t.Fatal("the byte cap must fire BEFORE the match cap here")
-	}
-	payload, _ := json.Marshal(res.Matches)
-	if len(payload) > tools.DefaultByteLimit+1024 {
-		t.Fatalf("payload is %d bytes, over the 50 KB budget", len(payload))
-	}
-
-	// The envelope names the limit that fired and a call that narrows.
-	out := searchTool(t, root).Execute(context.Background(),
-		json.RawMessage(`{"pattern":"needle","context_lines":20}`))
-	if !out.OK || out.Metadata == nil || out.Metadata.TruncatedBy != "bytes" {
-		t.Fatalf("metadata.truncated_by must be \"bytes\": %+v", out.Metadata)
-	}
-	note, _ := out.Data["note"].(string)
-	if !strings.Contains(note, "50.0KB") || strings.Contains(note, "limit=") {
-		t.Fatalf("the marker must name the byte limit, not find_files' limit=: %q", note)
-	}
-}
-
-// TestSearchMarkerNamesMaxMatches is REQ-TOOL-09b for search_files: the
-// marker used to say `limit=`, a parameter the tool does not have.
-func TestSearchMarkerNamesMaxMatches(t *testing.T) {
-	root := searchTree(t)
-	res := searchTool(t, root).Execute(context.Background(),
-		json.RawMessage(`{"pattern":"needle","max_matches":2}`))
-	note, _ := res.Data["note"].(string)
-	if !strings.Contains(note, "max_matches=4") || strings.Contains(note, "limit=") {
-		t.Fatalf("marker = %q, want it to name max_matches", note)
-	}
-}
-
-// ---- helpers
-
-func runNative(t *testing.T, root string, p tools.SearchParams) (tools.SearchResult, error) {
-	t.Helper()
-	// The global excludes layer is pinned EMPTY (NFR-TEST-04): a developer's
-	// own ~/.config/git/ignore must not decide whether this test passes.
-	return tools.SearchIn(context.Background(), root, p, workspace.NoGlobalExcludes())
-}
-
-func asPatternError(err error, target **tools.SearchPatternError) bool {
-	for err != nil {
-		if p, ok := err.(*tools.SearchPatternError); ok {
-			*target = p
-			return true
-		}
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-	return false
-}
-
-// searchTool builds the real tool against a workspace rooted at root.
-func searchTool(t *testing.T, root string) coreTool {
-	t.Helper()
-	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	all, err := tools.For(ws, tools.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tl := range all {
-		if tl.Name == "search_files" {
-			return tl
-		}
-	}
-	t.Fatal("search_files is not in the default tool set")
-	return coreTool{}
-}
-
-// ---- REQ-TOOL-14.6: read_file detects images by magic bytes
-
-func readTool(t *testing.T, root string) coreTool {
-	t.Helper()
-	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	all, err := tools.For(ws, tools.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tl := range all {
-		if tl.Name == "read_file" {
-			return tl
-		}
-	}
-	t.Fatal("read_file is missing")
-	return coreTool{}
-}
-
-// TestReadFileStillReadsText. The image path must not capture ordinary files.
-func TestReadFileStillReadsText(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	res := readTool(t, root).Execute(context.Background(), json.RawMessage(`{"path":"a.go"}`))
-	if !res.OK || len(res.Blocks) != 0 {
-		t.Fatalf("a text file must return no image blocks; got %+v", res)
-	}
-}
-
-// ---- review fixes
-
-// TestSearchReadsOnlyItsOwnIgnoreSources is B3. Search reads the global
-// excludes, .git/info/exclude and .gitignore files from the search ROOT down
-// (REQ-TOOL-05.2): not a parent directory's .gitignore, and not .ignore files.
-func TestSearchReadsOnlyItsOwnIgnoreSources(t *testing.T) {
-	top := t.TempDir()
-	write := func(rel, body string) {
-		t.Helper()
-		p := filepath.Join(top, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(".gitignore", "*.log\n")  // a PARENT of the search root
-	write("sub/.ignore", "*.txt\n") // an .ignore file, which is rg's, not git's
-	write("sub/a.log", "needle\n")
-	write("sub/b.txt", "needle\n")
-	write("sub/c.md", "needle\n")
-	root := filepath.Join(top, "sub")
-	res, err := runNative(t, root, tools.SearchParams{Pattern: "needle"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(names(res), " "); got != "a.log:1 b.txt:1 c.md:1" {
-		t.Fatalf("got %q; a parent .gitignore and an .ignore file are not ignore sources", got)
-	}
-}
-
-// TestSearchSemanticsOutsideGo pins five rules that never bite on a Go tree
-// (issue #89): Unicode classes, CRLF line ends, a NUL past the binary sniff,
-// smart-case over escapes, and BOM-marked files.
-func TestSearchSemanticsOutsideGo(t *testing.T) {
-	root := t.TempDir()
-	write := func(rel string, body []byte) {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(root, rel), body, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write("u.py", []byte("def café():\n    return 1\nx = ٣\n"))
-	write("crlf.cs", []byte("class Foo\r\n{\r\n}\r\n"))
-	write("e.txt", []byte("Error: boom\n"))
-	// A NUL inside ripgrep's first buffer makes the file binary...
-	write("early.dat", append(append(bytes.Repeat([]byte("x"), 13000), "\nlate needle\n"...), 0, '\n'))
-	// ...and one far past it ends the search there, keeping what came before.
-	far := append([]byte("far needle\n"), bytes.Repeat([]byte("yyyyyyyyyyyyyyy\n"), 20000)...)
-	write("far.dat", append(far, "\x00\nfar needle again\n"...))
-	// UTF-16LE with a BOM, as Windows PowerShell writes it, and a UTF-8 BOM.
-	utf16 := []byte{0xFF, 0xFE}
-	for _, r := range "needle here\nsecond\n" {
-		utf16 = append(utf16, byte(r), 0)
-	}
-	write("w.ps1", utf16)
-	write("bom.txt", []byte("\xEF\xBB\xBFfirst line\nsecond\n"))
-
-	yes := true
 	for _, c := range []struct {
 		name string
-		q    tools.SearchParams
+		q    SearchParams
 		want []string
 	}{
-		{"\\w is ASCII", tools.SearchParams{Pattern: `def \w+\(`}, []string{}},
-		{"\\d is ASCII", tools.SearchParams{Pattern: `\d`, FileGlob: "u.py"}, []string{"u.py:2"}},
-		{"\\b is ASCII", tools.SearchParams{Pattern: `\bcafé\b`}, []string{}},
-		{"$ before CRLF", tools.SearchParams{Pattern: `Foo$`}, []string{"crlf.cs:1"}},
-		{"^...$ on a CRLF line", tools.SearchParams{Pattern: `^\{$`}, []string{"crlf.cs:2"}},
-		{"a NUL in the first buffer is binary", tools.SearchParams{Pattern: `late needle`}, []string{}},
-		{"a late NUL stops the search", tools.SearchParams{Pattern: `far needle`}, []string{"far.dat:1"}},
-		{"smart-case ignores escapes", tools.SearchParams{Pattern: `error\S`}, []string{"e.txt:1"}},
-		{"an uppercase literal is still sensitive", tools.SearchParams{Pattern: `ERROR\S`}, []string{}},
-		{"explicit sensitivity wins", tools.SearchParams{Pattern: `error\S`, CaseSensitive: &yes}, []string{}},
-		{"UTF-16 with a BOM is transcoded", tools.SearchParams{Pattern: `^needle here$`}, []string{"w.ps1:1"}},
-		{"a UTF-8 BOM is not part of line 1", tools.SearchParams{Pattern: `^first`}, []string{"bom.txt:1"}},
+		{`\w is ASCII`, SearchParams{Pattern: `def \w+\(`}, []string{}},
+		{`\d is ASCII`, SearchParams{Pattern: `\d`, FileGlob: "u.py"}, []string{"u.py:2"}},
+		{`\b is ASCII`, SearchParams{Pattern: `\bcafé\b`}, []string{}},
+		{"$ before CRLF", SearchParams{Pattern: `Foo$`}, []string{"crlf.cs:1"}},
+		{"^...$ on a CRLF line", SearchParams{Pattern: `^\{$`}, []string{"crlf.cs:2"}},
+		{"a NUL in the first 64 KiB is binary", SearchParams{Pattern: `late needle`}, []string{}},
+		{"a later NUL ends the file's search", SearchParams{Pattern: `far needle`}, []string{"far.dat:1"}},
+		{"smart-case ignores escapes", SearchParams{Pattern: `error\S`}, []string{"e.txt:1"}},
+		{"an uppercase literal is sensitive", SearchParams{Pattern: `ERROR\S`}, []string{}},
+		{"case_sensitive true wins", SearchParams{Pattern: `error\S`, CaseSensitive: &yes}, []string{}},
+		{"case_sensitive false wins", SearchParams{Pattern: `ERROR`, CaseSensitive: &no}, []string{"e.txt:1"}},
+		{"UTF-16LE with a BOM is transcoded", SearchParams{Pattern: `^needle here$`}, []string{"le.ps1:1"}},
+		{"UTF-16BE with a BOM is transcoded", SearchParams{Pattern: `^big needle$`}, []string{"be.ps1:1"}},
+		{"an unpaired surrogate is U+FFFD", SearchParams{Pattern: "^�A$"}, []string{"be.ps1:2"}},
+		{"a trailing odd byte is U+FFFD", SearchParams{Pattern: "odd needle�$"}, []string{"odd.ps1:1"}},
+		{"a UTF-8 BOM is not part of line 1", SearchParams{Pattern: `^first`}, []string{"bom.txt:1"}},
+		{"a 5 MB line does not end the search", SearchParams{Pattern: `NEEDLE_`, FileGlob: "*.js"}, []string{"min.js:1", "min.js:3"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			res, err := runNative(t, root, c.q)
-			if err != nil {
-				t.Fatalf("%v", err)
-			}
-			if got := names(res); !reflect.DeepEqual(got, c.want) {
+			if got := sites(search(t, root, c.q)); !reflect.DeepEqual(got, c.want) {
 				t.Errorf("%q matched %v, want %v", c.q.Pattern, got, c.want)
 			}
 		})
 	}
-}
-
-// TestReadFileSaysWhenAFileIsNotUTF8 (issue #89): a Latin-1 file reached the
-// model with U+FFFD for each invalid byte under `encoding: utf-8`, and an
-// edit built from what the model saw then failed not_found with no reason.
-// The envelope says the file is not UTF-8, and the text says what that costs.
-func TestReadFileSaysWhenAFileIsNotUTF8(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "l1.txt"), []byte("caf\xe9\nplain\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "ok.txt"), []byte("café\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	read := readTool(t, root)
-	res := read.Execute(context.Background(), json.RawMessage(`{"path":"l1.txt"}`))
-	if !res.OK {
-		t.Fatalf("read failed: %s %s", res.Error, res.Detail)
-	}
-	data := res.Data
-	if data["encoding"] == "utf-8" {
-		t.Fatalf("encoding = %v for a file that is not valid UTF-8", data["encoding"])
-	}
-	if !strings.Contains(res.Text, "not valid UTF-8") || !strings.Contains(res.Text, "edit_file") {
-		t.Fatalf("the text does not say what invalid UTF-8 costs:\n%s", res.Text)
-	}
-
-	res = read.Execute(context.Background(), json.RawMessage(`{"path":"ok.txt"}`))
-	data = res.Data
-	if data["encoding"] != "utf-8" || strings.Contains(res.Text, "not valid UTF-8") {
-		t.Fatalf("a UTF-8 file is reported as %v:\n%s", data["encoding"], res.Text)
+	if m := search(t, root, SearchParams{Pattern: `NEEDLE_ONE`}).Matches[0]; utf8.RuneCountInString(m.Text) != SearchLineChars+1 || !strings.HasSuffix(m.Text, "…") {
+		t.Errorf("a long line is returned whole: %d runes", utf8.RuneCountInString(m.Text))
 	}
 }
 
-// TS-06-14: search_files declares its matches, flags and optional note. The
-// context keys are before/after, as SearchMatch marshals them.
-func TestOutputSchemaSearchFiles_TS06_14(t *testing.T) {
-	s := searchTool(t, t.TempDir()).OutputSchema
-	if s == nil || s.Type != schema.TypeObject {
-		t.Fatalf("OutputSchema = %+v, want an object", s)
-	}
-	want := map[string]schema.Type{"matches": schema.TypeArray, "truncated": schema.TypeBoolean,
-		"files_searched": schema.TypeInteger, "note": schema.TypeString}
-	if len(s.Properties) != len(want) {
-		t.Fatalf("properties = %v, want %d", s.PropertyList(), len(want))
-	}
-	for name, typ := range want {
-		if p := s.Properties[name]; p == nil || p.Type != typ {
-			t.Errorf("%s = %+v, want %s", name, p, typ)
+func TestHasUppercaseLiteralReadsOnlyTheLiteralText(t *testing.T) {
+	for pat, want := range map[string]bool{
+		`error\S\W\D\B\A`: false, `\p{Lu}x`: false, `\pLx`: false, `\x{41}`: false, `\x41`: false,
+		`(?i)x`: false, `(?P<Name>x)`: false, `(?<Name>x)`: false, `(?-s:x)`: false,
+		`\Qa.B\E`: true, `\Qab\E`: false, `\Qab`: false, `(?<=A)x`: true, `É`: true, `Error`: true, `x\`: false,
+	} {
+		if got := hasUppercaseLiteral(pat); got != want {
+			t.Errorf("hasUppercaseLiteral(%q) = %v, want %v", pat, got, want)
 		}
 	}
-	if s.IsRequired("note") || !s.IsRequired("matches") || !s.IsRequired("truncated") || !s.IsRequired("files_searched") {
-		t.Errorf("required = %v, want matches, truncated, files_searched", s.Required)
+}
+
+func TestSearchContextLines(t *testing.T) {
+	root := searchTree(t)
+	m := search(t, root, SearchParams{Pattern: "func needle", ContextLines: 2, FileGlob: "main.go"}).Matches
+	if len(m) != 1 || !reflect.DeepEqual(m[0].Before, []string{"package main", ""}) || !reflect.DeepEqual(m[0].After, []string{"", "func other() {}"}) {
+		t.Fatalf("matches %+v", m)
 	}
-	item := s.Properties["matches"].Items
-	if item == nil || item.Type != schema.TypeObject {
-		t.Fatalf("matches items = %+v, want an object", item)
+	// The glob is AgentKit's dialect, relative to the search root.
+	if got := sites(search(t, root+"/lib", SearchParams{Pattern: "needle", FileGlob: "*.{go,md}"})); !reflect.DeepEqual(got, []string{"helper.go:3", "helper.go:4"}) {
+		t.Fatalf("a relative glob: %v", got)
 	}
-	for name, typ := range map[string]schema.Type{"file": schema.TypeString, "line": schema.TypeInteger,
-		"text": schema.TypeString, "before": schema.TypeArray, "after": schema.TypeArray} {
-		if p := item.Properties[name]; p == nil || p.Type != typ {
-			t.Errorf("matches[].%s = %+v, want %s", name, p, typ)
+}
+
+func TestSearchAppliesTheByteCapBeforeTheMatchCap(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&b, "needle %03d %s\n", i, strings.Repeat("x", 480))
+	}
+	root := testutil.Tree(t, map[string]string{"wide.txt": b.String()})
+	res := search(t, root, SearchParams{Pattern: "needle", ContextLines: 20})
+	if !res.Truncated || res.TruncatedBy != TruncatedByBytes || len(res.Matches) >= SearchMatchCap || len(testutil.MustJSON(t, res.Matches)) > DefaultByteLimit+1024 {
+		t.Fatalf("truncated %v by %q with %d matches", res.Truncated, res.TruncatedBy, len(res.Matches))
+	}
+	ws, _ := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
+	r := mustOK(t, call(toolSet(t, ws, Options{})["search_files"], `{"pattern":"needle","context_lines":20}`))
+	if r.Metadata.TruncatedBy != "bytes" || r.Data["note"] != SearchBytesMarker(len(res.Matches), DefaultByteLimit) {
+		t.Fatalf("the tool: %+v note %v", r.Metadata, r.Data["note"])
+	}
+}
+
+func TestTheSearchTool(t *testing.T) {
+	root := searchTree(t)
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := toolSet(t, ws, Options{})["search_files"]
+	r := mustOK(t, call(st, `{"pattern":"needle","max_matches":2}`))
+	if r.Data["note"] != SearchMarker(2) || r.Metadata.TruncatedBy != "lines" || !strings.HasSuffix(r.Text, "\n"+SearchMarker(2)) {
+		t.Errorf("the marker names max_matches: %v", r.Data["note"])
+	}
+	if r := mustOK(t, call(st, `{"pattern":"needle","path":"lib","context_lines":1}`)); r.Text != "helper.go\n  2- \n  3: // needle here too\n  4: var Needle = 1" {
+		t.Errorf("Text = %q", r.Text)
+	}
+	if r := mustOK(t, call(st, `{"pattern":"zzz"}`)); r.Text != "No matches (6 files searched)." || r.Data["matches"] == nil {
+		t.Errorf("no match: %q", r.Text)
+	}
+	for args, detail := range map[string]string{
+		`{"pattern":" "}`:                    "pattern is required",
+		`{"pattern":"x","context_lines":25}`: "context_lines must be between 0 and 20 (got 25); retry with context_lines=20 or less, or omit it for no context",
+		`{"pattern":"x","context_lines":-1}`: "context_lines must be between 0 and 20 (got -1); retry with context_lines=20 or less, or omit it for no context",
+	} {
+		if r := call(st, args); r.Error != "invalid_arguments" || r.Detail != detail {
+			t.Errorf("%s: %q %q\nwant %q", args, r.Error, r.Detail, detail)
 		}
 	}
-	for _, ctxKey := range []string{"before", "after"} {
-		if it := item.Properties[ctxKey].Items; it == nil || it.Type != schema.TypeString {
-			t.Errorf("matches[].%s items = %+v, want string", ctxKey, it)
+	if r := call(st, `{"pattern":"foo("}`); r.Error != "invalid_arguments" || !strings.HasPrefix(r.Detail, "invalid pattern: error parsing regexp: missing closing )") ||
+		!strings.HasSuffix(r.Detail, `The pattern is a regular expression (RE2): write a literal metacharacter with a backslash, for example \( for a literal ( or \. for a literal .`) {
+		t.Errorf("a bad pattern: %q %q", r.Error, r.Detail)
+	}
+	var perr *SearchPatternError
+	if _, err := Search(context.Background(), root, SearchParams{Pattern: "a(b"}); !errors.As(err, &perr) || errors.Unwrap(perr) == nil {
+		t.Errorf("a bad pattern is a *SearchPatternError: %v", err)
+	}
+	// A max_matches over the cap is clamped by the argument repair, not refused.
+	for _, raw := range []string{`{"pattern":"x","max_matches":500}`, `{"pattern":"x","max_matches":50}`, `{"pattern":"x","max_matches":"many"}`} {
+		c, err := core.NewToolUse("c", "search_files", json.RawMessage(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := core.PrepareArguments(st, c)
+		want := map[string]string{`{"pattern":"x","max_matches":500}`: "100", `{"pattern":"x","max_matches":50}`: "50"}[raw]
+		if want != "" && (err != nil || fmt.Sprint(p.Args["max_matches"]) != want) {
+			t.Errorf("%s: max_matches %v, %v; want %s", raw, p.Args["max_matches"], err, want)
 		}
 	}
-	if len(item.Properties) != 5 || item.IsRequired("before") || item.IsRequired("after") || !item.IsRequired("line") {
-		t.Errorf("matches[] = %v required %v, want file/line/text required, before/after optional",
-			item.PropertyList(), item.Required)
+	if args := st.PrepareArguments(map[string]any{"max_matches": float64(101)}); args["max_matches"] != SearchMatchCap {
+		t.Errorf("a float64 over the cap: %v", args)
+	}
+	if args := st.PrepareArguments(map[string]any{"max_matches": json.Number("x")}); args["max_matches"] != json.Number("x") {
+		t.Errorf("a malformed number is left for validation: %v", args)
+	}
+}
+
+func TestRenderSearchTextIsGrepStyleFileByFile(t *testing.T) {
+	res := SearchResult{FilesSearched: 7, Matches: []SearchMatch{
+		{File: "a/b.go", Line: 12, Text: "\tx := needle()", Before: []string{"func f() {"}, After: []string{"\treturn x", "}"}},
+		{File: "a/b.go", Line: 13, Text: "\treturn needle", Before: []string{"\tx := needle()"}, After: []string{"}"}},
+		{File: "c.md", Line: 1, Text: "needle"},
+	}}
+	// A line that is both a match and another match's context is the match.
+	want := "a/b.go\n  11- func f() {\n  12: \tx := needle()\n  13: \treturn needle\n  14- }\n\nc.md\n  1: needle\n[m]"
+	if got := RenderSearchText(res, "[m]"); got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+	if got := capLine(strings.Repeat("é", 300)); got != strings.Repeat("é", 300) {
+		t.Errorf("300 two-byte runes are under the 500-character cap")
+	}
+	if got := capLine(strings.Repeat("é", 600)); !utf8.ValidString(got) || got != strings.Repeat("é", 500)+"…" {
+		t.Errorf("capLine cut a rune or kept %d runes", utf8.RuneCountInString(got))
+	}
+	if !bytes.Equal([]byte(capLine("plain")), []byte("plain")) {
+		t.Error("a short line is unchanged")
 	}
 }

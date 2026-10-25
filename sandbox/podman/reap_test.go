@@ -16,129 +16,91 @@ import (
 type engineEntry struct {
 	name   string
 	labels map[string]string // nil: inspect fails
-	rmErr  string            // non-empty: its removal fails with this output
-}
-
-// listingAnswer serves containers and volumes to Reap's listings, inspect
-// commands and removals.
-func listingAnswer(containers, volumes []engineEntry) func(context.Context, []string) (tools.ExecResult, error) {
-	find := func(list []engineEntry, name string) (engineEntry, bool) {
-		for _, e := range list {
-			if e.name == name {
-				return e, true
-			}
-		}
-		return engineEntry{}, false
-	}
-	names := func(list []engineEntry) string {
-		var b strings.Builder
-		for _, e := range list {
-			b.WriteString(e.name + "\n")
-		}
-		return b.String()
-	}
-	inspect := func(list []engineEntry, name string) (tools.ExecResult, error) {
-		e, ok := find(list, name)
-		if !ok || e.labels == nil {
-			return exitResult(125, "Error: inspecting "+name+": failed"), nil
-		}
-		b, _ := json.Marshal(e.labels)
-		return exitResult(0, string(b)+"\n"), nil
-	}
-	remove := func(list []engineEntry, name string) (tools.ExecResult, error) {
-		if e, ok := find(list, name); ok && e.rmErr != "" {
-			return exitResult(1, e.rmErr), nil
-		}
-		return exitResult(0, name+"\n"), nil
-	}
-	return func(_ context.Context, argv []string) (tools.ExecResult, error) {
-		last := argv[len(argv)-1]
-		switch {
-		case hasArgs(argv, "ps", "-a"):
-			return exitResult(0, names(containers)), nil
-		case hasArgs(argv, "volume", "ls"):
-			return exitResult(0, names(volumes)), nil
-		case hasArgs(argv, "volume", "inspect"):
-			return inspect(volumes, last)
-		case hasArgs(argv, "inspect"):
-			return inspect(containers, last)
-		case hasArgs(argv, "volume", "rm"):
-			return remove(volumes, last)
-		case hasArgs(argv, "rm", "-f"):
-			return remove(containers, last)
-		}
-		return exitResult(0, ""), nil
-	}
-}
-
-// labels is an entry's labels with the given id and expiry.
-func labels(id, expires string) map[string]string {
-	m := map[string]string{"agentkit.sandbox": id}
-	if expires != "" {
-		m["agentkit.sandbox.expires"] = expires
-	}
-	return m
+	raw    string            // when set, what inspect prints instead
+	rmErr  string            // when set, its removal fails with this output
 }
 
 var reapT = time.Date(2026, 5, 6, 7, 8, 9, 0, time.UTC)
 
-// rfc is t in the label format.
-func rfc(t time.Time) string { return t.Format(time.RFC3339) }
-
-// TS-17-50: Reap lists by label key, reads labels from inspect JSON and
-// removes expired entries, containers first. 17-REQ-8.1, 17-REQ-8.2.
-func TestReapRemovesExpired_TS17_50(t *testing.T) {
-	f := newFake(t)
-	f.answer = listingAnswer(
-		[]engineEntry{{name: "agentkit-aaaa", labels: labels("aaaa", rfc(reapT.Add(-time.Hour)))}},
-		[]engineEntry{{name: "agentkit-aaaa", labels: labels("aaaa", rfc(reapT.Add(-time.Hour)))}, {name: "agentkit-bbbb", labels: labels("bbbb", rfc(reapT))}})
-	p := testProvider(f, Options{})
-	p.now = func() time.Time { return reapT }
-	ids, err := p.Reap(context.Background())
-	if err != nil || !slices.Equal(ids, []string{"aaaa", "bbbb"}) {
-		t.Fatalf("Reap = %v, %v; want [aaaa bbbb], nil", ids, err)
-	}
-	if !f.ran("ps", "-a", "--filter", "label=agentkit.sandbox") || !f.ran("volume", "ls", "--filter", "label=agentkit.sandbox") {
-		t.Errorf("Reap did not list by the label key: %v", f.recorded())
-	}
-	if !f.ran("inspect", "--format", "{{json .Config.Labels}}", "agentkit-aaaa") || !f.ran("volume", "inspect", "--format", "{{json .Labels}}", "agentkit-bbbb") {
-		t.Errorf("Reap did not inspect the labels: %v", f.recorded())
-	}
-	rc := f.index(0, "rm", "-f", "agentkit-aaaa")
-	va, vb := f.index(0, "volume", "rm", "agentkit-aaaa"), f.index(0, "volume", "rm", "agentkit-bbbb")
-	if rc < 0 || va < 0 || vb < 0 || rc > va || rc > vb {
-		t.Errorf("removals out of order or missing: rm %d, volume rm %d and %d", rc, va, vb)
-	}
+func labels(id string, exp time.Time) map[string]string {
+	return map[string]string{labelID: id, labelExpires: exp.Format(time.RFC3339)}
 }
 
-// TS-17-51: Reap leaves unexpired, unlabelled and unreadable entries alone
-// and returns partial results with joined errors. 17-REQ-8.3, 17-REQ-8.4.
-func TestReapSparesAndJoins_TS17_51(t *testing.T) {
-	f := newFake(t)
-	past := rfc(reapT.Add(-time.Hour))
-	f.answer = listingAnswer(nil, []engineEntry{
-		{name: "agentkit-cccc", labels: labels("cccc", rfc(reapT.Add(time.Hour)))},
-		{name: "agentkit-dddd", labels: labels("dddd", "")},
-		{name: "agentkit-eeee", labels: labels("eeee", "yesterday")},
-		{name: "agentkit-ffff"},
-		{name: "agentkit-gggg", labels: labels("gggg", past)},
-		{name: "agentkit-hhhh", labels: labels("hhhh", past), rmErr: "Error: device busy"},
-	})
+// reaper is a provider at reapT over a fake engine listing these entries, with stderr noise.
+func reaper(f *fakeRunner, containers, volumes []engineEntry) *provider {
+	f.answer = func(_ context.Context, argv []string) (tools.ExecResult, error) {
+		list, verb := containers, argv[1]
+		if verb == "volume" {
+			list, verb = volumes, argv[2]
+		}
+		var e engineEntry
+		if i := slices.IndexFunc(list, func(e engineEntry) bool { return e.name == argv[len(argv)-1] }); i >= 0 {
+			e = list[i]
+		}
+		res := exitResult(0, e.name+"\n")
+		switch b, _ := json.Marshal(e.labels); {
+		case verb == "ps" || verb == "ls":
+			var names []string
+			for _, e := range list {
+				names = append(names, e.name)
+			}
+			res = exitResult(0, strings.Join(names, "\n"))
+		case verb == "inspect" && e.raw != "":
+			res = exitResult(0, e.raw)
+		case verb == "inspect" && e.labels == nil:
+			res = exitResult(125, "Error: inspecting "+e.name)
+		case verb == "inspect":
+			res = exitResult(0, string(b)+"\n")
+		case e.rmErr != "":
+			res = exitResult(1, e.rmErr)
+		}
+		res.Output = "WARN[0000] rootless: cgroup v1\n" + res.Output
+		return res, nil
+	}
 	p := testProvider(f, Options{})
 	p.now = func() time.Time { return reapT }
-	ids, err := p.Reap(context.Background())
-	if !slices.Equal(ids, []string{"gggg"}) || err == nil || !strings.Contains(err.Error(), "device busy") {
-		t.Fatalf("Reap = %v, %v; want [gggg] and an error with device busy", ids, err)
+	return p
+}
+
+// Unexpired, unlabelled and unreadable entries are spared; failures are joined.
+func TestReapRemovesOnlyExpiredEntriesContainersFirst(t *testing.T) {
+	f := newFake(t)
+	past := labels("aaaa", reapT.Add(-time.Hour))
+	ids, err := reaper(f, []engineEntry{{name: "agentkit-aaaa", labels: past}}, []engineEntry{
+		{name: "agentkit-aaaa", labels: past}, {name: "agentkit-bbbb", labels: labels("bbbb", reapT)},
+		{name: "agentkit-cccc", labels: labels("cccc", reapT.Add(time.Hour))},
+		{name: "agentkit-dddd", labels: map[string]string{labelID: "dddd"}},
+		{name: "agentkit-eeee", labels: map[string]string{labelID: "eeee", labelExpires: "yesterday"}},
+		{name: "agentkit-ffff"}, {name: "agentkit-gggg", raw: "not json"},
+		{name: "agentkit-hhhh", labels: labels("hhhh", reapT.Add(-time.Hour)), rmErr: "Error: device busy"},
+	}).Reap(context.Background())
+	if !slices.Equal(ids, []string{"aaaa", "bbbb"}) || err == nil || !strings.Contains(err.Error(), "device busy") {
+		t.Fatalf("Reap = %v, %v; want [aaaa bbbb] and the device busy error", ids, err)
 	}
-	for _, id := range []string{"cccc", "dddd", "eeee", "ffff"} {
-		if f.ran("volume", "rm", "agentkit-"+id) || f.ran("rm", "-f", "agentkit-"+id) {
+	if !f.ran("ps", "-a", "--filter", "label=agentkit.sandbox", "--format", "{{.Names}}") ||
+		!f.ran("volume", "ls", "--filter", "label=agentkit.sandbox", "--format", "{{.Name}}") ||
+		!f.ran("inspect", "--format", "{{json .Config.Labels}}", "agentkit-aaaa") ||
+		!f.ran("volume", "inspect", "--format", "{{json .Labels}}", "agentkit-bbbb") {
+		t.Errorf("Reap did not list and inspect by the label: %v", f.recorded())
+	}
+	for _, id := range []string{"cccc", "dddd", "eeee", "ffff", "gggg"} {
+		if f.ran("volume", "rm", "agentkit-"+id) {
 			t.Errorf("Reap removed %s", id)
 		}
 	}
-	if !f.ran("volume", "rm", "agentkit-gggg") || !f.ran("volume", "rm", "agentkit-hhhh") {
-		t.Error("Reap did not attempt both expired volumes")
+	if rc, va := f.index(0, "rm", "-f", "agentkit-aaaa"), f.index(0, "volume", "rm"); rc < 0 || va < rc || !f.ran("volume", "rm", "agentkit-hhhh") {
+		t.Errorf("removals out of order or missing: %v", f.recorded())
 	}
-	if errors.Is(err, context.Canceled) {
-		t.Error("unexpected cancellation")
+}
+
+func TestReapFailsWhenAListingFails(t *testing.T) {
+	for _, failing := range [][]string{{"ps"}, {"volume", "ls"}} {
+		f := newFake(t)
+		f.answer = func(_ context.Context, argv []string) (tools.ExecResult, error) {
+			return exitResult(0, ""), map[bool]error{true: errors.New("engine gone")}[hasArgs(argv, failing...)]
+		}
+		if ids, err := testProvider(f, Options{}).Reap(context.Background()); ids != nil || err == nil || !strings.Contains(err.Error(), "podman "+strings.Join(failing, " ")) {
+			t.Errorf("%s fails: Reap = %v, %v", failing, ids, err)
+		}
 	}
 }

@@ -2,13 +2,15 @@ package landlock
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -19,16 +21,67 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/stdioconn"
 )
 
-// newTestProvider is a provider built through newProvider with Linux seams,
-// probe ABI 4, a temporary Root and a faked version run, so it works on
-// every platform; mods adjust the seams.
+// agentBin and dialtcpBin are built for the Linux tests; children are what a
+// re-executed test binary runs, by the name in childVar.
+var (
+	agentBin, dialtcpBin string
+	children             = map[string]func() error{}
+)
+
+const childVar, childAgentVar = "AGENTKIT_LANDLOCK_CHILD", "AGENTKIT_LANDLOCK_AGENT"
+
+func TestMain(m *testing.M) {
+	if name := os.Getenv(childVar); name != "" {
+		agentBin = os.Getenv(childAgentVar)
+		if err := children[name](); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	if runtime.GOOS != "linux" {
+		os.Exit(m.Run())
+	}
+	dir, _ := os.MkdirTemp("", "landlock-test-")
+	agentBin, dialtcpBin = filepath.Join(dir, "agentkit-sandboxd"), filepath.Join(dir, "dialtcp", "dialtcp")
+	for out, pkg := range map[string]string{agentBin: "./cmd/agentkit-sandboxd", dialtcpBin: "./cmd/agentkit-sandboxd/testdata/dialtcp"} {
+		cmd := exec.Command("go", "build", "-o", out, pkg)
+		cmd.Dir, cmd.Env = "..", append(os.Environ(), "CGO_ENABLED=0")
+		if b, err := cmd.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "building %s: %v\n%s", pkg, err, b)
+			os.Exit(1)
+		}
+	}
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// testSeams are Linux seams probing abi, with no agent beside the executable
+// or on PATH and a version run that answers protocol 1.2, counting runs.
+func testSeams(abi int, versionRuns *int) seams {
+	return seams{goos: "linux", probe: func() (int, error) { return abi, nil },
+		runVersion: func(string) (string, error) {
+			if versionRuns != nil {
+				*versionRuns++
+			}
+			return "agentkit-sandboxd v0.0.0-test (protocol 1.2)\n", nil
+		},
+		executable: func() (string, error) { return "/nonexistent/test.binary", nil },
+		lookPath:   func(string) (string, error) { return "", os.ErrNotExist },
+		resolver:   func(string) string { return "" }, remove: removeTree, initCommand: defaultInitCommand,
+	}
+}
+
+// newTestProvider is newProvider over testSeams(4) with a temporary Root
+// and a placeholder agent unless o sets them; mods adjust the seams.
 func newTestProvider(t *testing.T, o Options, mods ...func(*seams)) *provider {
 	t.Helper()
 	if o.Root == "" {
 		o.Root = t.TempDir()
 	}
 	if o.AgentBinary == "" {
-		o.AgentBinary = placeholderAgent(t)
+		o.AgentBinary = script(t, t.TempDir(), "agentkit-sandboxd", "exit 0")
 	}
 	s := testSeams(4, nil)
 	for _, m := range mods {
@@ -41,94 +94,136 @@ func newTestProvider(t *testing.T, o Options, mods ...func(*seams)) *provider {
 	return p
 }
 
-// creatorStart is the start time the fake table reports for this process.
-const creatorStart = 4711
-
-// startRec is what one start was given.
-type startRec struct {
-	args, env []string
-	dir       string
-}
-
-// inProc is a starter that serves an in-process agent.New over two pipe
-// pairs, with a test-chosen Landlock report, and registers a fake pid in a
-// fake process table that leaves it when the agent ends.
-type inProc struct {
-	t       *testing.T
-	table   *fakeTable
-	mu      sync.Mutex
-	recs    []startRec
-	nextPID int
-	// report is the Landlock report for the sandbox directory dir.
-	report func(dir string) sandbox.LandlockInfo
-	// before runs before each start; pid, when set, chooses the agent's pid.
-	before func(req startReq)
-	pid    func() int
-	// fail makes every start fail.
-	fail error
-	// ignoreEOF keeps the agent's process alive after the host leaves, and
-	// killErr is what killing its group returns.
-	ignoreEOF bool
-	killErr   error
-}
-
-func newInProc(t *testing.T) *inProc {
-	ft := newFakeTable()
-	ft.add(procEntry{PID: os.Getpid(), Session: os.Getpid(), State: 'S', Start: creatorStart})
-	return &inProc{t: t, table: ft, nextPID: 40000, report: goodReport}
-}
-
-// goodReport is a report that passes every check for dir.
-func goodReport(dir string) sandbox.LandlockInfo {
-	var w []string
-	for _, sub := range []string{"workspace", "home", "tmp"} {
-		r, err := filepath.EvalSymlinks(filepath.Join(dir, sub))
-		if err != nil {
-			r = filepath.Join(dir, sub)
-		}
-		w = append(w, r)
+// script writes an executable shell script holding body.
+func script(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	return sandbox.LandlockInfo{ABI: 4, KernelABI: 6, TCP: true, Note: "fake", Writable: append(w, "/dev/null"), ReadOnly: []string{"/usr", "/proc"}}
+	return p
 }
 
-// isInit reports whether dir already had an agent started: the next start
-// for it is the init agent's.
-func (f *inProc) isInit(dir string) bool {
+// fakeTable is a fake process table on boot B1. A kill removes its target
+// unless immortal; listErr fails each scan; anyPID makes lookup find any pid.
+type fakeTable struct {
+	mu       sync.Mutex
+	procs    map[int]procEntry
+	kills    []int
+	immortal map[int]bool
+	scans    int
+	listErr  error
+	anyPID   bool
+}
+
+func newFakeTable() *fakeTable {
+	return &fakeTable{procs: map[int]procEntry{}, immortal: map[int]bool{}}
+}
+
+func (f *fakeTable) add(es ...procEntry) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	n := 0
-	for _, r := range f.recs {
-		if filepath.Dir(argAfter(r.args, "--workdir")) == dir {
-			n++
-		}
+	for _, e := range es {
+		f.procs[e.PID] = e
 	}
-	return n > 1
 }
 
-// with installs f as p's starter and process table.
+func (f *fakeTable) forget(pid int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.procs, pid)
+}
+
+func (f *fakeTable) list() ([]procEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scans++
+	var out []procEntry
+	for _, e := range f.procs {
+		out = append(out, e)
+	}
+	return out, f.listErr
+}
+
+func (f *fakeTable) lookup(pid int) (uint64, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e, ok := f.procs[pid]; ok || !f.anyPID {
+		return e.Start, ok, nil
+	}
+	return uint64(pid) * 10, true, nil
+}
+
+func (f *fakeTable) bootID() (string, error) { return "B1", nil }
+
+func (f *fakeTable) kill(pid int, _ syscall.Signal) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.kills = append(f.kills, pid)
+	if !f.immortal[pid] {
+		delete(f.procs, pid)
+	}
+	return nil
+}
+
+// alive is whether pid is in the table.
+func (f *fakeTable) alive(pid int) bool { _, ok, _ := f.lookup(pid); return ok }
+
+// creatorStart is the start time the fake table gives this process.
+const creatorStart = 4711
+
+// inProc starts each agent in process: an agent.New served over pipes with
+// the Landlock report report(<sandbox dir>), under a fake pid (from 40000,
+// start time pid*10, its own session) that leaves the table when it ends.
+type inProc struct {
+	table  *fakeTable
+	mu     sync.Mutex
+	recs   []startReq
+	pid    int
+	report func(dir string) sandbox.LandlockInfo
+	// before runs first in each start; fail makes the start fail.
+	before func(req startReq)
+	fail   error
+}
+
+func newInProc() *inProc {
+	ft := newFakeTable()
+	ft.add(procEntry{PID: os.Getpid(), Session: os.Getpid(), State: 'S', Start: creatorStart})
+	return &inProc{table: ft, pid: 40000, report: goodReport}
+}
+
+// with installs f as the starter and process table.
 func (f *inProc) with(s *seams) { s.start, s.procs = f.start, f.table }
 
-// starts is a copy of the recorded starts.
-func (f *inProc) starts() []startRec {
+// starts is a copy of the starts so far.
+func (f *inProc) starts() []startReq {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.recs)
 }
 
-func (f *inProc) start(req startReq) (*agentProc, net.Conn, error) {
+// register records req and adds the next fake pid to the table.
+func (f *inProc) register(req startReq) int {
 	f.mu.Lock()
-	f.recs = append(f.recs, startRec{args: slices.Clone(req.args), env: slices.Clone(req.env), dir: req.dir})
-	pid := f.nextPID
-	f.nextPID++
+	f.recs = append(f.recs, req)
+	pid := f.pid
+	f.pid++
 	f.mu.Unlock()
+	f.table.add(procEntry{PID: pid, Session: pid, State: 'S', Start: uint64(pid) * 10})
+	return pid
+}
+
+// exited ends h's fake process.
+func (f *inProc) exited(h *agentProc) { f.table.forget(h.pid); h.setExit(0, false, 0) }
+
+func (f *inProc) start(req startReq) (*agentProc, net.Conn, error) {
 	if f.before != nil {
 		f.before(req)
 	}
+	pid := f.register(req)
 	if f.fail != nil {
+		f.table.forget(pid)
 		return nil, nil, f.fail
-	}
-	if f.pid != nil {
-		pid = f.pid()
 	}
 	ws := argAfter(req.args, "--workdir")
 	a, err := agent.New(agent.Config{Workdir: ws, Env: req.env, TTL: time.Hour, Landlock: f.report(filepath.Dir(ws))})
@@ -137,21 +232,44 @@ func (f *inProc) start(req startReq) (*agentProc, net.Conn, error) {
 	}
 	r1, w1, _ := os.Pipe()
 	r2, w2, _ := os.Pipe()
-	host, agentConn := stdioconn.New(r2, w1), stdioconn.New(r1, w2)
-	f.table.add(procEntry{PID: pid, Session: pid, State: 'S', Start: uint64(pid) * 10})
-	h := newAgentProc(pid, func() error { _ = agentConn.Close(); return f.killErr })
-	go func() {
-		_ = a.Serve(agentConn)
-		_ = agentConn.Close()
-		if f.ignoreEOF {
-			return
-		}
-		f.table.mu.Lock()
-		delete(f.table.procs, pid)
-		f.table.mu.Unlock()
-		h.setExit(0, false, 0)
-	}()
-	return h, host, nil
+	agentConn := stdioconn.New(r1, w2)
+	h := newAgentProc(pid, agentConn.Close)
+	go func() { _ = a.Serve(agentConn); _ = agentConn.Close(); f.exited(h) }()
+	return h, stdioconn.New(r2, w1), nil
+}
+
+// fakeStarter starts fa, over net.Pipe, as the agent.
+func (f *inProc) fakeStarter(fa *fakeagent.Agent) func(startReq) (*agentProc, net.Conn, error) {
+	return func(req startReq) (*agentProc, net.Conn, error) {
+		h := newAgentProc(f.register(req), func() error { fa.Stop(); return nil })
+		conn := fa.Serve()
+		go func() { <-fa.Closed(); fa.Stop(); f.exited(h) }()
+		return h, conn, nil
+	}
+}
+
+// silentStarter starts an agent that never answers Hello, closing entered
+// once started.
+func (f *inProc) silentStarter(entered chan<- struct{}) func(startReq) (*agentProc, net.Conn, error) {
+	return func(req startReq) (*agentProc, net.Conn, error) {
+		r1, w1, _ := os.Pipe()
+		r2, w2, _ := os.Pipe()
+		h := newAgentProc(f.register(req), r1.Close)
+		go func() { close(entered); _, _ = io.Copy(io.Discard, r1); _ = w2.Close(); f.exited(h) }()
+		return h, stdioconn.New(r2, w1), nil
+	}
+}
+
+// goodReport is a Landlock report that passes every check for dir, which
+// is beneath the resolved Root.
+func goodReport(dir string) sandbox.LandlockInfo {
+	return sandbox.LandlockInfo{ABI: 4, KernelABI: 6, TCP: true, Note: "fake",
+		Writable: []string{dir + "/workspace", dir + "/home", dir + "/tmp", "/dev/null"}, ReadOnly: []string{"/usr", "/proc"}}
+}
+
+// reportWith is goodReport with change applied.
+func reportWith(change func(*sandbox.LandlockInfo)) func(string) sandbox.LandlockInfo {
+	return func(dir string) sandbox.LandlockInfo { r := goodReport(dir); change(&r); return r }
 }
 
 // argAfter is the value after flag in args.
@@ -162,7 +280,7 @@ func argAfter(args []string, flag string) string {
 	return ""
 }
 
-// entries is the names in dir.
+// entries is the sorted names in dir; none when it is missing.
 func entries(t *testing.T, dir string) []string {
 	t.Helper()
 	ents, err := os.ReadDir(dir)
@@ -173,88 +291,14 @@ func entries(t *testing.T, dir string) []string {
 	for _, e := range ents {
 		names = append(names, e.Name())
 	}
-	slices.Sort(names)
 	return names
 }
 
-// fakeAgentStarter starts fa, served over net.Pipe, as the agent; it
-// "exits" 0 when the host closes the connection.
-func (f *inProc) fakeAgentStarter(fa *fakeagent.Agent) func(startReq) (*agentProc, net.Conn, error) {
-	return func(req startReq) (*agentProc, net.Conn, error) {
-		f.mu.Lock()
-		f.recs = append(f.recs, startRec{args: slices.Clone(req.args), env: slices.Clone(req.env), dir: req.dir})
-		pid := f.nextPID
-		f.nextPID++
-		f.mu.Unlock()
-		conn := fa.Serve()
-		f.table.add(procEntry{PID: pid, Session: pid, State: 'S', Start: uint64(pid) * 10})
-		h := newAgentProc(pid, func() error { fa.Stop(); return nil })
-		go func() {
-			<-fa.Closed()
-			fa.Stop()
-			f.forget(pid)
-			h.setExit(0, false, 0)
-		}()
-		return h, conn, nil
+func evalSymlinks(t *testing.T, p string) string {
+	t.Helper()
+	r, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return r
 }
-
-// silentStarter starts an agent that never answers Hello and exits 0 when
-// the host closes its stdin.
-func (f *inProc) silentStarter(entered chan<- struct{}) func(startReq) (*agentProc, net.Conn, error) {
-	return func(req startReq) (*agentProc, net.Conn, error) {
-		f.mu.Lock()
-		pid := f.nextPID
-		f.nextPID++
-		f.mu.Unlock()
-		r1, w1, _ := os.Pipe()
-		r2, w2, _ := os.Pipe()
-		f.table.add(procEntry{PID: pid, Session: pid, State: 'S', Start: uint64(pid) * 10})
-		h := newAgentProc(pid, func() error { return r1.Close() })
-		go func() {
-			close(entered)
-			_, _ = io.Copy(io.Discard, r1)
-			_ = w2.Close()
-			f.forget(pid)
-			h.setExit(0, false, 0)
-		}()
-		return h, stdioconn.New(r2, w1), nil
-	}
-}
-
-// forget removes pid from the fake table: the process is gone.
-func (f *inProc) forget(pid int) {
-	f.table.mu.Lock()
-	delete(f.table.procs, pid)
-	f.table.mu.Unlock()
-}
-
-// session is the live pids in session sid.
-func (f *fakeTable) session(sid int) []int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []int
-	for _, e := range f.procs {
-		if e.Session == sid && e.State != 'Z' {
-			out = append(out, e.PID)
-		}
-	}
-	return out
-}
-
-// countRemove counts the destroy step's removals (one per run) around the
-// real removal.
-func countRemove(n *atomic.Int32) func(*seams) {
-	return func(s *seams) {
-		s.remove = func(dir string) error { n.Add(1); return removeTree(dir) }
-	}
-}
-
-// anyPID is a process table that knows every pid (start time pid*10, boot
-// B1) and lists none: for tests that start real processes on any platform.
-type anyPID struct{}
-
-func (anyPID) list() ([]procEntry, error)           { return nil, nil }
-func (anyPID) lookup(pid int) (uint64, bool, error) { return uint64(pid) * 10, true, nil }
-func (anyPID) bootID() (string, error)              { return "B1", nil }
-func (anyPID) kill(int, syscall.Signal) error       { return nil }

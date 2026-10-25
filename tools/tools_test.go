@@ -1,10 +1,10 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"hash/fnv"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,1923 +13,675 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/schema"
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// ------------------------------------------------------------------ edit_file
+// ------------------------------------------------------------------ read_file
 
-// TestEditRejectionsAreEvaluatedInGlobalPhaseOrder pins ruling P-22.
-//
-// REQ-TOOL-04b's "fixed order" is ambiguous between per-edit and per-phase, and
-// the difference is a real behavioural fork: with a non-unique edits[0] and a
-// not-found edits[1], per-edit ordering reports "not found" while phase
-// ordering reports "not unique". Two conforming implementations would show the
-// model different problems to fix.
-func TestEditRejectionsAreEvaluatedInGlobalPhaseOrder(t *testing.T) {
-	const content = "alpha\nalpha\nbravo\n"
-	_, _, err := ApplyEdits(content, []Edit{
-		{OldString: "alpha", NewString: "x"}, // appears twice -> phase 3
-		{OldString: "zulu", NewString: "y"},  // absent        -> phase 2
-	})
-	if err == nil {
-		t.Fatal("want a rejection")
-	}
-	var ee *EditError
-	if !errors.As(err, &ee) {
-		t.Fatalf("want *EditError, got %T", err)
-	}
-	if ee.Phase != "not_found" {
-		t.Fatalf("phase = %q, want %q.\nPhase 2 (not found) is evaluated for the WHOLE "+
-			"batch before phase 3 (not unique), so edits[1] is reported even though "+
-			"edits[0] appears earlier (ruling P-22).", ee.Phase, "not_found")
-	}
-}
-
-// TestNonUniqueIsARejectionNotAReplaceAll is the single most important tool
-// invariant. Silent multi-site replacement is how an agent corrupts a file it
-// was asked to touch once.
-func TestNonUniqueIsARejectionNotAReplaceAll(t *testing.T) {
-	const content = "x := 1\ny := 1\nz := 1\n"
-	out, n, err := ApplyEdits(content, []Edit{{OldString: "1", NewString: "2"}})
-	if err == nil {
-		t.Fatalf("a non-unique old_string must be REJECTED, not replaced everywhere.\n"+
-			"got %d edits applied and content:\n%s", n, out)
-	}
-	want := "Found 3 occurrences of the string to replace. The text must be unique. " +
-		"Please provide more context to make it unique."
-	if err.Error() != want {
-		t.Fatalf("error text is model-visible contract.\n got: %q\nwant: %q", err.Error(), want)
-	}
-}
-
-// TestAllEditsMatchAgainstTheOriginal pins REQ-TOOL-04a. If edits were applied
-// sequentially, the second would match text the first created.
-func TestAllEditsMatchAgainstTheOriginal(t *testing.T) {
-	const content = "one two three"
-	out, n, err := ApplyEdits(content, []Edit{
-		{OldString: "one", NewString: "two"}, // creates a second "two"
-		{OldString: "two", NewString: "ONE"}, // must match the ORIGINAL "two"
-	})
-	if err != nil {
-		t.Fatalf("unexpected rejection: %v", err)
-	}
-	if n != 2 {
-		t.Fatalf("edits applied = %d, want 2", n)
-	}
-	if out != "two ONE three" {
-		t.Fatalf("content = %q, want %q.\nEdits must match the ORIGINAL content, never "+
-			"the result of an earlier edit in the same call (REQ-TOOL-04a).", out, "two ONE three")
-	}
-}
-
-func TestOverlappingEditsAreRejected(t *testing.T) {
-	const content = "abcdef"
-	_, _, err := ApplyEdits(content, []Edit{
-		{OldString: "abcd", NewString: "X"},
-		{OldString: "cdef", NewString: "Y"}, // overlaps at "cd"
-	})
-	if err == nil {
-		t.Fatal("overlapping edits must be rejected: applying either alone silently drops the other")
-	}
-	if !strings.Contains(err.Error(), "overlap") {
-		t.Fatalf("error should name the overlap: %q", err.Error())
-	}
-}
-
-func TestNoOpEditIsRejected(t *testing.T) {
-	_, _, err := ApplyEdits("hello", []Edit{{OldString: "hello", NewString: "hello"}})
-	if err == nil {
-		t.Fatal("an edit batch that changes nothing must be rejected: reporting success " +
-			"lets the model believe it edited something it did not")
-	}
-}
-
-func TestBOMAndCRLFArePreserved(t *testing.T) {
-	orig := "\ufeffline one\r\nline two\r\n"
-	norm, bom, ending := NormalizeForEdit(orig)
-	if !bom || ending != CRLF {
-		t.Fatalf("bom=%v ending=%v, want true/crlf", bom, ending)
-	}
-	if strings.Contains(norm, "\r") {
-		t.Fatal("normalized content still contains CR; matching would fail against what the model saw")
-	}
-	out, _, err := ApplyEdits(norm, []Edit{{OldString: "line one", NewString: "line 1"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	restored := Restore(out, bom, ending)
-	if !strings.HasPrefix(restored, "\ufeff") {
-		t.Error("BOM was not restored")
-	}
-	if !strings.Contains(restored, "\r\n") {
-		t.Error("CRLF was not restored")
-	}
-}
-
-func TestRepairEditArgsHandlesTheThreeObservedShapes(t *testing.T) {
-	want := `[{"new_string":"b","old_string":"a"}]`
-	norm := func(m map[string]any) string {
-		b, _ := json.Marshal(m["edits"])
-		return string(b)
-	}
-	t.Run("edits as a JSON string", func(t *testing.T) {
-		got := repairEditArgs(map[string]any{"edits": `[{"old_string":"a","new_string":"b"}]`})
-		if norm(got) != want {
-			t.Fatalf("got %s, want %s", norm(got), want)
-		}
-	})
-	t.Run("bare object instead of an array", func(t *testing.T) {
-		got := repairEditArgs(map[string]any{
-			"edits": map[string]any{"old_string": "a", "new_string": "b"}})
-		if norm(got) != want {
-			t.Fatalf("got %s, want %s", norm(got), want)
-		}
-	})
-	t.Run("legacy top-level keys", func(t *testing.T) {
-		got := repairEditArgs(map[string]any{"old_string": "a", "new_string": "b"})
-		if norm(got) != want {
-			t.Fatalf("got %s, want %s", norm(got), want)
-		}
-		if _, still := got["old_string"]; still {
-			t.Error("legacy top-level keys must be removed once folded into edits[]")
-		}
-	})
-}
-
-// ------------------------------------------------------------------ path guard
-
-// TestExecuteIsNotPathContained. The test name is the documentation
-// (REQ-SEC-01): path containment constrains the FILE tools and says nothing
-// about `execute`, and pretending otherwise would be worse than admitting it.
-func TestExecuteIsNotPathContained(t *testing.T) {
-	if _, _, err := ResolveShell(); err != nil {
-		t.Skip("no shell available")
-	}
-	dir := t.TempDir()
-	outside := filepath.Join(t.TempDir(), "outside.txt")
-	if err := os.WriteFile(outside, []byte("readable"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	res, err := Run(context.Background(), "cat "+outside, ExecOptions{Dir: dir, MaxBytes: 4096})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(res.Output, "readable") {
-		t.Skip("shell could not read the file; environment-dependent")
-	}
-	// This is the documented state of affairs, not a bug: the boundary for
-	// execute is the BeforeToolCall interceptor (REQ-SEC-03).
-	t.Log("execute read a file outside the workspace, as documented: " +
-		"the boundary for execute is the interceptor, not the path guard")
-}
-
-// ------------------------------------------------------------------ execute
-
-func TestClassifyOutcomePrecedence(t *testing.T) {
-	// abort > timeout > signal > exit. Each row sets EVERY lower-precedence
-	// condition too, so a wrong precedence fails rather than coincidentally
-	// agreeing.
-	cases := []struct {
-		name              string
-		aborted, timedOut bool
-		exitCode          int
-		signaled          bool
-		want              Outcome
+func TestReadFilePagesThroughAFile(t *testing.T) {
+	read := tool(t, map[string]string{
+		"two.txt": "a\nb\n", "empty.txt": "", "main.go": "package main\n\nfunc main() {\n\tprintln(\"hi\")\n}\n",
+	}, "read_file")
+	for _, c := range []struct {
+		args, content, truncatedBy string
+		lines                      int64
 	}{
-		{"abort wins over everything", true, true, 137, true, OutcomeAbort},
-		{"timeout wins over signal and exit", false, true, 137, true, OutcomeTimeout},
-		{"signal wins over exit", false, false, -1, true, OutcomeSignal},
-		{"plain non-zero exit", false, false, 1, false, OutcomeExit},
-		{"success", false, false, 0, false, OutcomeOK},
+		// The model reads the file itself, with the markers as lines of it.
+		{`{"path":"main.go"}`, "package main\n\nfunc main() {\n\tprintln(\"hi\")\n}", "", 5},
+		{`{"path":"main.go","limit":2}`, "package main\n\n" + ReadOffsetMarker(1, 2, 5), "lines", 5},
+		{`{"path":"main.go","offset":4,"limit":1}`, "\tprintln(\"hi\")\n" + ReadOffsetMarker(4, 4, 5), "lines", 5},
+		{`{"path":"main.go","offset":0,"limit":99999}`, "package main\n\nfunc main() {\n\tprintln(\"hi\")\n}", "", 5},
+		// "a\nb\n" is two lines, as an editor counts them.
+		{`{"path":"two.txt","offset":2}`, "b", "", 2},
+		{`{"path":"two.txt","limit":2}`, "a\nb", "", 2}, // a limit on the last line is no truncation
+		{`{"path":"empty.txt"}`, "", "", 0},
+	} {
+		r := mustOK(t, call(read, c.args))
+		if r.Text != c.content || r.Data["content"] != c.content || r.Data["encoding"] != "utf-8" ||
+			r.Metadata.TruncatedBy != c.truncatedBy || r.Metadata.TotalLines != c.lines {
+			t.Errorf("%s: Text %q %+v, want %q truncated by %q, %d lines", c.args, r.Text, r.Metadata, c.content, c.truncatedBy, c.lines)
+		}
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := ClassifyOutcome(c.aborted, c.timedOut, c.exitCode, c.signaled); got != c.want {
-				t.Fatalf("got %q, want %q", got, c.want)
-			}
-		})
+	if r := call(read, `{"path":"two.txt","offset":3}`); r.Error != "offset_past_end" || r.Text != "" || !strings.HasPrefix(r.LLMText(), `{"detail"`) {
+		t.Errorf("offset 3 of a 2-line file: %+v; an error keeps the envelope", r)
+	}
+	if r := call(read, `{"path":"two.txt"}`); r.Metadata.TotalBytes != 4 {
+		t.Errorf("total bytes = %d, want 4", r.Metadata.TotalBytes)
 	}
 }
 
-func TestStdoutAndStderrInterleaveInWriteOrder(t *testing.T) {
-	if _, _, err := ResolveShell(); err != nil {
-		t.Skip("no shell available")
-	}
-	// Alternating writes to the two streams. With separate captures the output
-	// would be "1\n3\n2\n4\n" — the error appearing before the line that
-	// caused it.
-	res, err := Run(context.Background(),
-		`echo 1; echo 2 >&2; echo 3; echo 4 >&2`,
-		ExecOptions{MaxBytes: 4096})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := strings.Join(strings.Fields(res.Output), "")
-	if got != "1234" {
-		t.Fatalf("output order = %q, want 1234: stdout and stderr must share ONE pipe "+
-			"so they interleave in true write order (REQ-TOOL-17.4)", got)
-	}
-}
-
-// TestGrandchildDoesNotSurviveTreeKill is REQ-TOOL-17.7's regression test.
-//
-// The shell starts a background grandchild that writes a marker AFTER the
-// parent would be gone. Killing only the direct child orphans it and the
-// marker appears — which in production is a dev server still holding a port
-// long after the agent believes the command ended.
-func TestGrandchildDoesNotSurviveTreeKill(t *testing.T) {
-	if _, _, err := ResolveShell(); err != nil {
-		t.Skip("no shell available")
-	}
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "grandchild-survived")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(150 * time.Millisecond)
-		cancel()
-	}()
-
-	// The grandchild sleeps past the kill, then writes.
-	cmd := "( sleep 1; touch " + marker + " ) & sleep 5"
-	_, err := Run(ctx, cmd, ExecOptions{Dir: dir, MaxBytes: 4096})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Wait past when the grandchild would have written.
-	time.Sleep(1500 * time.Millisecond)
-	if _, err := os.Stat(marker); err == nil {
-		t.Fatal("the grandchild survived the kill and wrote its marker.\n" +
-			"Cancellation must kill the whole PROCESS GROUP, not just the direct " +
-			"child (REQ-TOOL-17.2).")
-	}
-}
-
-// TestDetachedDescendantOutputIsDrainedOnAReArmingTimer is REQ-TOOL-17.5.
-//
-// It is the inverse of the test above and the two are the whole contract:
-// there, a descendant must not SURVIVE a kill; here, a descendant that
-// legitimately outlives its parent must still have every byte it writes
-// drained. The grandchild writes for longer than any fixed post-exit deadline
-// (the old code closed the pipe 2s after the child exited), so a drain that
-// does not re-arm on each read loses the tail of the log — which in production
-// is the half of a background job's output that says what went wrong.
-func TestDetachedDescendantOutputIsDrainedOnAReArmingTimer(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fractional sleep in a background job is not portable to the Windows shell")
-	}
-	if _, _, err := ResolveShell(); err != nil {
-		t.Skip("no shell available")
-	}
-	// The parent shell exits IMMEDIATELY — it does not wait for the job — so
-	// every line after the first arrives on a pipe whose only remaining writer
-	// is a process the tool never started.
-	const lines = 40
-	cmd := fmt.Sprintf(`( i=0; while [ $i -lt %d ]; do echo "late-$i"; sleep 0.1; i=$((i+1)); done ) &`, lines)
-
-	type outcome struct {
-		res ExecResult
-		err error
-	}
-	ch := make(chan outcome, 1)
-	go func() {
-		res, err := Run(context.Background(), cmd, ExecOptions{
-			MaxBytes: 1 << 16,
-			// Shortened only to keep the test quick. The property under test
-			// is that output ARRIVING inside the window re-arms it; the
-			// grandchild writes every 100ms for ~4s, so a non-re-arming drain
-			// of any length under 4s truncates it. The window is 15 gaps
-			// wide: at 500ms (5 gaps) a loaded machine stalled the writer
-			// long enough to close it early (issue #76).
-			DrainIdle: 1500 * time.Millisecond,
-		})
-		ch <- outcome{res, err}
-	}()
-
-	var got outcome
-	select {
-	case got = <-ch:
-	case <-time.After(30 * time.Second):
-		// A re-arming timer must still terminate: DrainCeiling is the bound.
-		t.Fatal("Run never returned; the post-exit drain must be bounded")
-	}
-	if got.err != nil {
-		t.Fatal(got.err)
-	}
-	for _, want := range []string{"late-0", fmt.Sprintf("late-%d", lines-1)} {
-		if !strings.Contains(got.res.Output, want) {
-			t.Fatalf("output is missing %q:\n%s\n\nAfter the child exits, output must be "+
-				"drained on a RE-ARMING idle timer, not a fixed post-exit deadline "+
-				"(REQ-TOOL-17.5).", want, got.res.Output)
-		}
-	}
-}
-
-func TestExecuteDoesNotLeakAPIKeys(t *testing.T) {
-	env := ReducedEnv([]string{
-		"PATH=/usr/bin:/bin",
-		"ANTHROPIC_API_KEY=sk-ant-secret",
-		"OPENAI_API_KEY=sk-openai-secret",
-		"anthropic_api_key=sk-lower-secret", // the prefix rule is case-insensitive
-		"HOME=/home/user",
-	})
-	joined := strings.Join(env, "\n")
-	for _, leaked := range []string{"sk-ant-secret", "sk-openai-secret", "sk-lower-secret"} {
-		if strings.Contains(joined, leaked) {
-			t.Errorf("credential %q reached the subprocess environment", leaked)
-		}
-	}
-	// PATH must survive verbatim: dropping it is the obvious reading of
-	// "reduced environment" and it breaks every command (ruling P-47).
-	if !strings.Contains(joined, "PATH=/usr/bin:/bin") {
-		t.Error("PATH was stripped; every command would fail")
-	}
-	if !strings.Contains(joined, "HOME=/home/user") {
-		t.Error("HOME was stripped")
-	}
-}
-
-// ------------------------------------------------------------------ accumulator
-
-// TestAccumulatorIsBoundedRegardlessOfVolume pins REQ-TOOL-15: peak retention
-// is ~2x cap however much is written. The naive implementation — buffer
-// everything, truncate at the end — is quadratic and OOMs on exactly the
-// runaway command the cap exists to contain.
-func TestAccumulatorIsBoundedRegardlessOfVolume(t *testing.T) {
-	const cap = 1024
-	a := NewAccumulator(cap, TruncateTail)
-	chunk := strings.Repeat("x", 4096)
-	for i := 0; i < 2000; i++ { // 8 MB written
-		if _, err := a.Write([]byte(chunk)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := len(a.head) + len(a.tail); got > 2*cap {
-		t.Fatalf("retained %d bytes for a cap of %d after writing 8MB", got, cap)
-	}
-	if a.Total() != 2000*4096 {
-		t.Fatalf("Total() = %d, want %d", a.Total(), 2000*4096)
-	}
-	if !a.Truncated() {
-		t.Fatal("Truncated() should be true")
-	}
-}
-
-// TestExecuteTruncatesFromTheTail pins REQ-TOOL-09a: a failing build puts its
-// error at the END, and head-truncation preserves the banner and discards the
-// failure.
-func TestExecuteTruncatesFromTheTail(t *testing.T) {
-	a := NewAccumulator(64, TruncateTail)
-	_, _ = a.Write([]byte(strings.Repeat("BANNER", 100)))
-	_, _ = a.Write([]byte("FINAL_ERROR_LINE"))
-	out := a.String()
-	if !strings.Contains(out, "FINAL_ERROR_LINE") {
-		t.Fatal("tail truncation dropped the end of the output, which is where the " +
-			"error is (REQ-TOOL-09a)")
-	}
-	if !strings.Contains(out, "elided") {
-		t.Fatal("a truncated result must carry a marker naming what was elided")
-	}
-}
-
-func TestReadMarkerOffsetsAre1Based(t *testing.T) {
-	// The PRD's own example marker says "Use offset=2001" after showing lines
-	// 1-2000, which is only correct 1-based. A 0-based reading re-reads line
-	// 2000 forever (ruling P-21).
-	got := ReadOffsetMarker(1, 2000, 8000)
-	if !strings.Contains(got, "offset=2001") {
-		t.Fatalf("marker = %q, want it to name offset=2001", got)
-	}
-}
-
-// ------------------------------------------------------------------ glob
-
-func TestGlobDialect(t *testing.T) {
-	cases := []struct {
-		pattern, path string
-		want          bool
-	}{
-		{"*.go", "main.go", true},
-		{"*.go", "sub/main.go", true}, // basename fallback
-		{"**/*.go", "a/b/c.go", true},
-		{"**/*.go", "c.go", true}, // ** matches zero segments
-		{"a/**/c.go", "a/b/x/c.go", true},
-		{"a/**/c.go", "a/c.go", true},
-		{"{a,b}/*.go", "a/x.go", true},
-		{"{a,b}/*.go", "c/x.go", false},
-		{"{a,{b,c}}/x.go", "c/x.go", true}, // nested braces
-		{"[!x]*.go", "main.go", true},
-		{"src/*.go", "src/sub/x.go", false}, // * does not cross /
-		{"*.go", "Main.GO", true},           // smart-case: lowercase pattern folds case
-		{"*.Go", "main.go", false},          // ... an uppercase letter makes it exact
-		{"*.Go", "main.Go", true},
-		{"a/**", "a", true}, // trailing ** matches zero segments
-		{"a/**", "a/b/c", true},
-		{"a/**", "ab/c", false},
-		{"*", ".env", true}, // * matches dotfiles
-		{"**/*.go", "a/.hidden/x.go", true},
-		{"[!x]*.go", "xmain.go", false},
-		{"[!x]*.go", "!main.go", true},        // [!x] is a negated class, not a literal "!"
-		{"{*.go,src/*.md}", "sub/x.go", true}, // basename fallback per alternative
-		{"{*.go,src/*.md}", "sub/src/x.md", false},
-		{"?.go", "ab.go", false},
-		{"{a.go", "{a.go", true}, // an unbalanced brace is literal
-	}
-	for _, c := range cases {
-		if got := MatchGlob(c.pattern, c.path); got != c.want {
-			t.Errorf("MatchGlob(%q, %q) = %v, want %v", c.pattern, c.path, got, c.want)
-		}
-	}
-}
-
-// ------------------------------------------------------------------ locks
-
-// TestConcurrentEditsToOneFileSerialize pins REQ-LOOP-12 THROUGH THE TOOL.
-//
-// Models routinely emit two edits to the same file in one batch; without
-// per-path serialization they interleave read-modify-write and one silently
-// loses. The two spellings here are ones the tool actually receives — a
-// symlink and a relative path — not two strings filepath.Join cleans to the
-// same thing, which the previous version of this test used and which would
-// have passed with the lock keyed on the raw string.
-//
-// Serialization is asserted directly: while the real file's lock is held,
-// an edit through either spelling must BLOCK, and an edit to a different file
-// must not.
-func TestConcurrentEditsToOneFileSerialize(t *testing.T) {
-	dir := t.TempDir()
-	real := filepath.Join(dir, "real.txt")
-	if err := os.WriteFile(real, []byte("alpha\nbravo\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "other.txt"), []byte("charlie\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("real.txt", filepath.Join(dir, "link.txt")); err != nil {
-		t.Skipf("symlinks unavailable here: %v", err)
-	}
-	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	fs := newFileTools(ws, Options{}.withDefaults(ws))
-	edit := fs.editFile()
-
-	// Hold the lock the way write_file/edit_file compute it.
-	key, err := lockKey(real)
-	if err != nil {
-		t.Fatal(err)
-	}
-	release := fs.locks.acquire(key)
-
-	run := func(path, old, new string) <-chan core.ToolResult {
-		ch := make(chan core.ToolResult, 1)
-		go func() {
-			ch <- edit.Execute(context.Background(), json.RawMessage(
-				`{"path":"`+path+`","edits":[{"old_string":"`+old+`","new_string":"`+new+`"}]}`))
-		}()
-		return ch
-	}
-	viaLink := run("link.txt", "alpha", "ALPHA")
-	viaRel := run("./sub/../real.txt", "bravo", "BRAVO")
-	viaOther := run("other.txt", "charlie", "CHARLIE")
-
-	select {
-	case res := <-viaOther:
-		if !res.OK {
-			t.Fatalf("edit to a distinct file failed: %+v", res)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("an edit to a DISTINCT file must stay concurrent; the lock is per-path, " +
-			"not global (REQ-LOOP-12)")
-	}
-	select {
-	case res := <-viaLink:
-		t.Fatalf("an edit through a SYMLINK spelling ran while the file's lock was held: %+v", res)
-	case res := <-viaRel:
-		t.Fatalf("an edit through a RELATIVE spelling ran while the file's lock was held: %+v", res)
-	case <-time.After(200 * time.Millisecond):
-	}
-
-	release()
-	for name, ch := range map[string]<-chan core.ToolResult{"symlink": viaLink, "relative": viaRel} {
-		select {
-		case res := <-ch:
-			if !res.OK {
-				t.Fatalf("%s edit failed after release: %+v", name, res)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("%s edit never ran after the lock was released", name)
-		}
-	}
-	got, _ := os.ReadFile(real)
-	if string(got) != "ALPHA\nBRAVO\n" {
-		t.Fatalf("a lost update: file = %q, want both edits applied", got)
-	}
-	// The table must not grow unbounded.
-	if len(fs.locks.m) != 0 {
-		t.Fatalf("lock table retained %d entries; entries must be released at "+
-			"refcount zero", len(fs.locks.m))
-	}
-}
-
-// TestLockKeyPropagatesResolutionErrors pins REQ-LOOP-12's "any other
-// resolution error propagates rather than being swallowed". Only not-exist
-// may fall back to the absolute path.
-func TestLockKeyPropagatesResolutionErrors(t *testing.T) {
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if k, err := lockKey(filepath.Join(dir, "not-yet.txt")); err != nil || k != filepath.Join(dir, "not-yet.txt") {
-		t.Fatalf("a not-yet-created file must key on its absolute path: %q, %v", k, err)
-	}
-	// A symlink loop is a resolution error that is NOT not-exist.
-	loop := filepath.Join(dir, "loop")
-	if err := os.Symlink("loop", loop); err != nil {
-		t.Skipf("symlinks unavailable here: %v", err)
-	}
-	if _, err := lockKey(loop); err == nil {
-		t.Fatal("a symlink loop must propagate as an error, not fall back to the raw " +
-			"path: a key from an unresolvable path is one two spellings may not share")
-	}
-}
-
-// ------------------------------------------------------------------ wiring
-
-func TestAllToolsHaveSchemasAndExactlyOneHandler(t *testing.T) {
-	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	all, err := For(ws, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(all) == 0 {
-		t.Fatal("no tools returned")
-	}
-	for _, tl := range all {
-		if tl.InputSchema == nil {
-			t.Errorf("%s has no schema", tl.Name)
-		}
-		if (tl.Handler == nil) == (tl.Execute == nil) {
-			t.Errorf("%s must set exactly one of Handler and Execute", tl.Name)
-		}
-		if !tl.Builtin {
-			t.Errorf("%s should be marked Builtin so NoTools=\"builtin\" can find it", tl.Name)
-		}
-		// The wire projection must not carry loop-only fields.
-		w := tl.Wire()
-		if w.Name != tl.Name || w.InputSchema != tl.InputSchema {
-			t.Errorf("%s wire projection is wrong", tl.Name)
-		}
-	}
-}
-
-// TestDeletedToolsAreAbsent: REQ-TOOL-04's minimality is the requirement.
-// Deletion, renaming, appending and stat are one shell word each.
-func TestDeletedToolsAreAbsent(t *testing.T) {
-	ws, _ := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	all, _ := For(ws, Options{})
-	present := map[string]bool{}
-	for _, tl := range all {
-		present[tl.Name] = true
-	}
-	for _, gone := range []string{"delete_file", "move_file", "stat_file", "append_file", "fetch_url"} {
-		if present[gone] {
-			t.Errorf("%s is in the default set; REQ-TOOL-04 ships it as a shell word, "+
-				"and REQ-TOOL-07 keeps fetch_url out of the default set", gone)
-		}
-	}
-}
-
-func TestWriteAndReadRoundTripThroughTheTools(t *testing.T) {
-	ws, _ := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	all, _ := For(ws, Options{})
-	byName := map[string]core.Tool{}
-	for _, tl := range all {
-		byName[tl.Name] = tl
-	}
-	ctx := context.Background()
-
-	w := byName["write_file"].Execute(ctx, json.RawMessage(`{"path":"a/b.txt","content":"hello\nworld\n"}`))
-	if !w.OK {
-		t.Fatalf("write failed: %+v", w)
-	}
-	r := byName["read_file"].Execute(ctx, json.RawMessage(`{"path":"a/b.txt"}`))
-	if !r.OK {
-		t.Fatalf("read failed: %+v", r)
-	}
-	if got := r.Data["content"].(string); !strings.Contains(got, "hello") {
-		t.Fatalf("content = %q", got)
-	}
-
-	e := byName["edit_file"].Execute(ctx,
-		json.RawMessage(`{"path":"a/b.txt","edits":[{"old_string":"world","new_string":"there"}]}`))
-	if !e.OK {
-		t.Fatalf("edit failed: %+v", e)
-	}
-	r2 := byName["read_file"].Execute(ctx, json.RawMessage(`{"path":"a/b.txt"}`))
-	if got := r2.Data["content"].(string); !strings.Contains(got, "there") {
-		t.Fatalf("edit did not apply: %q", got)
-	}
-}
-
-func TestFileToolsRefusePathsOutsideTheWorkspace(t *testing.T) {
-	ws, _ := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	all, _ := For(ws, Options{})
-	for _, tl := range all {
-		if tl.Name == "execute" {
-			continue // deliberately not contained
-		}
-		res := tl.Execute(context.Background(), json.RawMessage(`{"path":"../../etc/passwd","content":"x","pattern":"*","edits":[]}`))
-		if res.OK {
-			t.Errorf("%s accepted a path outside the workspace", tl.Name)
-		}
-	}
-}
-
-// ------------------------------------------------------------------ regressions
-
-// toolByName builds the real default set over dir and returns one tool, with
-// the global ignore layer pinned empty (NFR-TEST-04).
-func toolByName(t *testing.T, dir, name string, opts ...Options) core.Tool {
-	t.Helper()
-	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	o := Options{}
-	if len(opts) > 0 {
-		o = opts[0]
-	}
-	all, err := For(ws, o)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tl := range all {
-		if tl.Name == name {
-			return tl
-		}
-	}
-	t.Fatalf("%s is not in the default tool set", name)
-	return core.Tool{}
-}
-
-func mustSymlink(t *testing.T, target, link string) {
-	t.Helper()
-	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlinks unavailable here: %v", err)
-	}
-}
-
-// TestDanglingSymlinkCannotEscapeTheWorkspace is REQ-SEC-01 / NFR-SEC-02.
-//
-// EvalSymlinks fails on a dangling link exactly as it fails on a missing
-// file, so a guard that resolves the parent and rejoins the base sees
-// `ws/link` — inside — while os.WriteFile follows the link and creates the
-// file OUTSIDE. The link's target is where containment must be decided.
-func TestDanglingSymlinkCannotEscapeTheWorkspace(t *testing.T) {
-	dir := t.TempDir()
-	outside := t.TempDir()
-	ws, _ := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	write := toolByName(t, dir, "write_file")
-
-	t.Run("dangling link to outside is rejected", func(t *testing.T) {
-		mustSymlink(t, filepath.Join(outside, "newfile"), filepath.Join(dir, "escape"))
-		if _, err := ws.Resolve("escape"); !errors.Is(err, workspace.ErrPathNotAllowed) {
-			t.Fatalf("Resolve(escape) err = %v, want workspace.ErrPathNotAllowed", err)
-		}
-		res := write.Execute(context.Background(), json.RawMessage(`{"path":"escape","content":"pwned"}`))
-		if res.OK || res.Error != "path_not_allowed" {
-			t.Fatalf("write through a dangling link to outside: %+v", res)
-		}
-		if _, err := os.Stat(filepath.Join(outside, "newfile")); err == nil {
-			t.Fatal("the file was created OUTSIDE the workspace")
-		}
-	})
-	t.Run("dangling link inside is allowed", func(t *testing.T) {
-		mustSymlink(t, "inner/newfile", filepath.Join(dir, "stay"))
-		if err := os.MkdirAll(filepath.Join(dir, "inner"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		got, err := ws.Resolve("stay")
-		if err != nil {
-			t.Fatalf("a dangling link whose target is inside must resolve: %v", err)
-		}
-		if got != filepath.Join(ws.Root(), "inner", "newfile") {
-			t.Fatalf("resolved to %q, want the link TARGET", got)
-		}
-		res := write.Execute(context.Background(), json.RawMessage(`{"path":"stay","content":"ok"}`))
-		if !res.OK {
-			t.Fatalf("write through an inside dangling link failed: %+v", res)
-		}
-		if b, _ := os.ReadFile(filepath.Join(dir, "inner", "newfile")); string(b) != "ok" {
-			t.Fatalf("content landed elsewhere: %q", b)
-		}
-	})
-	t.Run("chained dangling links are followed to the end", func(t *testing.T) {
-		mustSymlink(t, filepath.Join(outside, "deep"), filepath.Join(dir, "hop2"))
-		mustSymlink(t, "hop2", filepath.Join(dir, "hop1"))
-		if _, err := ws.Resolve("hop1"); !errors.Is(err, workspace.ErrPathNotAllowed) {
-			t.Fatalf("Resolve(hop1) err = %v, want workspace.ErrPathNotAllowed: hop1 -> hop2 -> outside", err)
-		}
-	})
-	t.Run("a link loop is malformed, not accepted", func(t *testing.T) {
-		mustSymlink(t, "cycle", filepath.Join(dir, "cycle"))
-		if _, err := ws.Resolve("cycle"); err == nil {
-			t.Fatal("a symlink cycle must be rejected")
-		}
-	})
-}
-
-// TestCapMarkersNameACallThatWorks is REQ-TOOL-09b: a marker at the cap must
-// not name limit=2×cap, which the tool clamps straight back.
-func TestCapMarkersNameACallThatWorks(t *testing.T) {
-	if m := FindMarker(FindResultCap); strings.Contains(m, "limit=") {
-		t.Fatalf("at the cap the marker must not name a larger limit: %q", m)
-	}
-	if m := FindMarker(300); !strings.Contains(m, "limit=600") {
-		t.Fatalf("below the cap the marker names the doubled limit: %q", m)
-	}
-	if m := FindMarker(700); !strings.Contains(m, "limit=1000") {
-		t.Fatalf("the doubled limit is clamped to the cap: %q", m)
-	}
-	if m := ListMarker(ListEntryCap); strings.Contains(m, "limit=") {
-		t.Fatalf("list_files at the cap: %q", m)
-	}
-	if m := SearchMarker(50); !strings.Contains(m, "max_matches=100") || strings.Contains(m, "limit=") {
-		t.Fatalf("search_files' parameter is max_matches, capped at 100: %q", m)
-	}
-	if m := SearchMarker(SearchMatchCap); strings.Contains(m, "max_matches=") {
-		t.Fatalf("search_files at the cap: %q", m)
-	}
-
-	// Through the tool: 501 entries. At the DEFAULT limit (200) the marker
-	// names limit=400, a call that works; at the cap it says so.
-	dir := t.TempDir()
-	for i := 0; i < ListEntryCap+1; i++ {
-		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%04d", i)), nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	list := toolByName(t, dir, "list_files")
-	res := list.Execute(context.Background(), json.RawMessage(`{}`))
-	note, _ := res.Data["note"].(string)
-	if entries := res.Data["entries"].([]string); len(entries) != ListEntryDefault {
-		t.Fatalf("the default list limit is %d, got %d entries", ListEntryDefault, len(entries))
-	}
-	if !strings.Contains(note, "limit=400") {
-		t.Fatalf("at the default the marker names the doubled limit: %q", note)
-	}
-	res = list.Execute(context.Background(), json.RawMessage(`{"limit":500}`))
-	note, _ = res.Data["note"].(string)
-	if note == "" || strings.Contains(note, "limit=") {
-		t.Fatalf("list_files at the cap must say so, not name limit=1000: %+v", res.Data)
-	}
-	// REQ-TOOL-09b (item: list_files): the marker is NOT an entry.
-	entries := res.Data["entries"].([]string)
-	if len(entries) != ListEntryCap || strings.HasPrefix(entries[len(entries)-1], "[") {
-		t.Fatalf("the marker must live under `note`, not be appended to entries as a "+
-			"filename: last entry %q, %d entries", entries[len(entries)-1], len(entries))
-	}
-}
-
-// TestReadFileByteCutIsOnWholeLinesWithARealOffset is REQ-TOOL-09b/09c.
-func TestReadFileByteCutIsOnWholeLinesWithARealOffset(t *testing.T) {
-	dir := t.TempDir()
-	line := strings.Repeat("x", 1023) // 1 KB with the newline
-	var b strings.Builder
+func TestReadFileCutsOnWholeLinesAndMarksALongLine(t *testing.T) {
+	var big strings.Builder
 	for i := 0; i < 100; i++ {
-		fmt.Fprintf(&b, "%03d%s\n", i, line[3:])
+		fmt.Fprintf(&big, "%03d%s\n", i, strings.Repeat("x", 1020)) // 1 KB lines
 	}
-	if err := os.WriteFile(filepath.Join(dir, "big.txt"), []byte(b.String()), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	res := toolByName(t, dir, "read_file").Execute(context.Background(), json.RawMessage(`{"path":"big.txt"}`))
-	if !res.OK || res.Metadata == nil || res.Metadata.TruncatedBy != "bytes" {
-		t.Fatalf("100 KB must truncate by bytes: %+v", res.Metadata)
-	}
-	content := res.Data["content"].(string)
-	lines := strings.Split(content, "\n")
-	marker := lines[len(lines)-1]
+	huge := strings.Repeat("é", 60*1024) // 120 KB on one line
+	read := tool(t, map[string]string{"big.txt": big.String(), "long file.txt": "first\n" + huge + "\nlast\n"}, "read_file")
+
+	r := mustOK(t, call(read, `{"path":"big.txt"}`))
+	lines := strings.Split(r.Text, "\n")
 	shown := lines[:len(lines)-1]
 	for i, l := range shown {
 		if len(l) != 1023 || l[:3] != fmt.Sprintf("%03d", i) {
-			t.Fatalf("line %d was cut mid-line: %d bytes, prefix %q", i+1, len(l), l[:3])
+			t.Fatalf("line %d was cut: %d bytes", i+1, len(l))
 		}
 	}
-	want := fmt.Sprintf("[Showing lines 1-%d of 100. Use offset=%d to continue.]", len(shown), len(shown)+1)
-	if marker != want {
-		t.Fatalf("marker = %q\nwant     %q: the byte cut must emit ONE marker with the real offset", marker, want)
+	if want := ReadOffsetMarker(1, len(shown), 100); lines[len(lines)-1] != want || r.Metadata.TruncatedBy != "bytes" || len(r.Text) > DefaultByteLimit+len(want)+1 {
+		t.Fatalf("the byte cut ends %q (%s), want one marker %q with the real offset", lines[len(lines)-1], r.Metadata.TruncatedBy, want)
 	}
-	if len(content) > DefaultByteLimit+len(marker)+1 {
-		t.Fatalf("content is %d bytes, over the 50 KB budget", len(content))
-	}
-	if res.Metadata.TotalLines != 100 {
-		t.Fatalf("total_lines = %d, want 100", res.Metadata.TotalLines)
+
+	r = mustOK(t, call(read, `{"path":"long file.txt"}`))
+	want := "first\n" + LongLineMarker(2, int64(len(huge)), DefaultByteLimit, "long file.txt") + "\nlast"
+	if r.Text != want || r.Metadata.TruncatedBy != "bytes" || r.Metadata.TotalLines != 3 {
+		t.Fatalf("Text %.80q… %+v, want the long line replaced by its marker and the read continued", r.Text, r.Metadata)
 	}
 }
 
-// TestReadFileLongLineGetsTheSedMarker is REQ-TOOL-09c: LongLineMarker had no
-// callers, so a single oversized line was silently cut instead.
-func TestReadFileLongLineGetsTheSedMarker(t *testing.T) {
-	dir := t.TempDir()
-	huge := strings.Repeat("é", 60*1024) // 120 KB, multi-byte
-	body := "first\n" + huge + "\nlast\n"
-	if err := os.WriteFile(filepath.Join(dir, "long.txt"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	res := toolByName(t, dir, "read_file").Execute(context.Background(), json.RawMessage(`{"path":"long.txt"}`))
-	if !res.OK {
-		t.Fatalf("%+v", res)
-	}
-	content := res.Data["content"].(string)
-	wantMarker := LongLineMarker(2, int64(len(huge)), DefaultByteLimit, "long.txt")
-	if !strings.Contains(content, wantMarker) {
-		t.Fatalf("content lacks the REQ-TOOL-09c marker %q:\n%.200s", wantMarker, content)
-	}
-	if !strings.Contains(wantMarker, "sed -n '2p' 'long.txt' | head -c 51200") {
-		t.Fatalf("the marker must name the sed workaround, with the path shell-quoted: %q", wantMarker)
-	}
-	if strings.Contains(content, "éé") {
-		t.Fatal("the oversized line's bytes must not be shown at all")
-	}
-	if !strings.HasPrefix(content, "first\n") || !strings.HasSuffix(content, "\nlast") {
-		t.Fatalf("the read must continue past the long line: %.60s ... %.60s",
-			content, content[len(content)-30:])
-	}
-	if res.Metadata.TruncatedBy != "bytes" || res.Metadata.TotalLines != 3 {
-		t.Fatalf("metadata = %+v", res.Metadata)
-	}
-}
-
-// TestReadFileCountsLinesLikeAnEditor: "a\nb\n" is two lines, not three.
-// strings.Split's trailing empty element inflated every total and made
-// offset=N for an N-line file a rejection.
-func TestReadFileCountsLinesLikeAnEditor(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "two.txt"), []byte("a\nb\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "empty.txt"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	read := toolByName(t, dir, "read_file")
-	res := read.Execute(context.Background(), json.RawMessage(`{"path":"two.txt"}`))
-	if !res.OK || res.Metadata.TotalLines != 2 || res.Metadata.TotalBytes != 4 {
-		t.Fatalf("metadata = %+v, want 2 lines / 4 bytes", res.Metadata)
-	}
-	if got := res.Data["content"]; got != "a\nb" {
-		t.Fatalf("content = %q", got)
-	}
-	res = read.Execute(context.Background(), json.RawMessage(`{"path":"two.txt","offset":2}`))
-	if !res.OK || res.Data["content"] != "b" || res.Metadata.Truncated {
-		t.Fatalf("offset=2 of a 2-line file is the last line with no marker: %+v %+v", res.Data, res.Metadata)
-	}
-	res = read.Execute(context.Background(), json.RawMessage(`{"path":"two.txt","offset":3}`))
-	if res.OK || res.Error != "offset_past_end" {
-		t.Fatalf("offset=3 of a 2-line file: %+v", res)
-	}
-	// limit landing exactly on the last line is not a truncation.
-	res = read.Execute(context.Background(), json.RawMessage(`{"path":"two.txt","limit":2}`))
-	if !res.OK || res.Metadata.Truncated {
-		t.Fatalf("limit=2 of a 2-line file is complete: %+v", res.Metadata)
-	}
-	res = read.Execute(context.Background(), json.RawMessage(`{"path":"two.txt","limit":1}`))
-	if !res.OK || res.Metadata.TruncatedBy != "lines" || res.Data["content"] != "a\n"+ReadOffsetMarker(1, 1, 2) {
-		t.Fatalf("limit=1: %+v %+v", res.Data, res.Metadata)
-	}
-	res = read.Execute(context.Background(), json.RawMessage(`{"path":"empty.txt"}`))
-	if !res.OK || res.Data["content"] != "" {
-		t.Fatalf("an empty file reads as empty content, not offset_past_end: %+v", res)
-	}
-}
-
-// TestReadFileStreamsInsteadOfLoadingTheFile: a read of the first lines of a
-// large file must not allocate the file.
 func TestReadFileStreamsInsteadOfLoadingTheFile(t *testing.T) {
-	dir := t.TempDir()
 	const size = 16 << 20
-	f, err := os.Create(filepath.Join(dir, "large.log"))
+	ws := newWS(t, nil)
+	f, err := os.Create(abs(ws, "large.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	chunk := []byte(strings.Repeat("0123456789abcdef0123456789abcde\n", 32)) // 1 KB
-	for written := 0; written < size; written += len(chunk) {
-		if _, err := f.Write(chunk); err != nil {
-			t.Fatal(err)
-		}
+	for n := 0; n < size; n += len(chunk) {
+		_, _ = f.Write(chunk)
 	}
 	f.Close()
-	read := toolByName(t, dir, "read_file")
+	read := toolSet(t, ws, Options{})["read_file"]
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	res := read.Execute(context.Background(), json.RawMessage(`{"path":"large.log","limit":5}`))
+	r := mustOK(t, call(read, `{"path":"large.log","limit":5}`))
 	runtime.ReadMemStats(&after)
-	if !res.OK || res.Metadata.TotalLines != size/32 {
-		t.Fatalf("%+v %+v", res.Error, res.Metadata)
-	}
-	if alloc := after.TotalAlloc - before.TotalAlloc; alloc > size/4 {
-		t.Fatalf("reading 5 lines of a 16 MB file allocated %d bytes; the read must "+
-			"stream through a bounded buffer", alloc)
+	if r.Metadata.TotalLines != size/32 || after.TotalAlloc-before.TotalAlloc > size/4 {
+		t.Fatalf("reading 5 lines of 16 MB allocated %d bytes (%d lines counted)", after.TotalAlloc-before.TotalAlloc, r.Metadata.TotalLines)
 	}
 }
 
-// TestCapLineCutsOnRuneBoundaries: the PRD says 500 CHARS.
-func TestCapLineCutsOnRuneBoundaries(t *testing.T) {
-	s := strings.Repeat("é", 600)
-	got := capLine(s)
-	if !utf8.ValidString(got) {
-		t.Fatal("capLine produced invalid UTF-8: it sliced a rune in half")
-	}
-	if n := utf8.RuneCountInString(strings.TrimSuffix(got, "…")); n != SearchLineChars {
-		t.Fatalf("kept %d runes, want %d", n, SearchLineChars)
-	}
-	if short := strings.Repeat("é", 300); capLine(short) != short {
-		t.Fatal("300 runes of 2 bytes each is under the 500-char cap")
-	}
-}
-
-// TestOverlappingOccurrencesAreNotUnique is REQ-TOOL-04c: strings.Count says
-// "aa" occurs once in "aaa"; there are two sites the model could mean.
-func TestOverlappingOccurrencesAreNotUnique(t *testing.T) {
-	_, _, err := ApplyEdits("aaa", []Edit{{OldString: "aa", NewString: "b"}})
-	if err == nil {
-		t.Fatal("\"aa\" in \"aaa\" is two overlapping sites and must be rejected as not unique")
-	}
-	var ee *EditError
-	if !errors.As(err, &ee) || ee.Phase != "not_unique" || !strings.Contains(ee.Text, "Found 2 occurrences") {
-		t.Fatalf("want not_unique with 2 occurrences, got %v", err)
-	}
-}
-
-// TestFindFilesFileType is REQ-TOOL-04's table: file_type string (default
-// "file"), with "dir"/"directory" and "any".
-func TestFindFilesFileType(t *testing.T) {
-	dir := t.TempDir()
-	for _, p := range []string{"src/a.go", "src/pkg/b.go", "docs/c.md"} {
-		full := filepath.Join(dir, filepath.FromSlash(p))
-		_ = os.MkdirAll(filepath.Dir(full), 0o755)
-		if err := os.WriteFile(full, nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	find := toolByName(t, dir, "find_files")
-	run := func(args string) []string {
-		res := find.Execute(context.Background(), json.RawMessage(args))
-		if !res.OK {
-			t.Fatalf("%s: %+v", args, res)
-		}
-		files := res.Data["files"].([]string)
-		for i := range files {
-			files[i] = filepath.ToSlash(files[i])
-		}
-		return files
-	}
-	if got := run(`{"pattern":"**/*"}`); strings.Join(got, " ") != "docs/c.md src/a.go src/pkg/b.go" {
-		t.Fatalf("default is files only: %v", got)
-	}
-	if got := run(`{"pattern":"**/*","file_type":"dir"}`); strings.Join(got, " ") != "docs/ src/ src/pkg/" {
-		t.Fatalf("file_type=dir: %v", got)
-	}
-	if got := run(`{"pattern":"src/*","file_type":"directory"}`); strings.Join(got, " ") != "src/pkg/" {
-		t.Fatalf("file_type=directory is a spelling of dir: %v", got)
-	}
-	if got := run(`{"pattern":"src/*","file_type":"any"}`); strings.Join(got, " ") != "src/a.go src/pkg/" {
-		t.Fatalf("file_type=any: %v", got)
-	}
-	if res := find.Execute(context.Background(), json.RawMessage(`{"pattern":"*","file_type":"symlink"}`)); res.Error != "invalid_arguments" {
-		t.Fatalf("an unknown file_type is invalid_arguments: %+v", res)
-	}
-}
-
-// TestExecuteSpillsByDefault is REQ-TOOL-09d: the requirement says output over
-// the cap IS streamed to a temp file, so the default cannot be "off".
-func TestExecuteSpillsByDefault(t *testing.T) {
-	if _, _, err := ResolveShell(); err != nil {
-		t.Skip("no shell available")
-	}
-	dir := t.TempDir()
-	cmd := json.RawMessage(`{"command":"head -c 70000 /dev/zero | tr '\\0' x"}`)
-
-	res := toolByName(t, dir, "execute").Execute(context.Background(), cmd)
-	if !res.OK || !res.Metadata.Truncated {
-		t.Fatalf("70 KB must truncate: %+v %+v", res.Error, res.Metadata)
-	}
-	spill := res.Metadata.SpillPath
-	if spill == "" {
-		t.Fatal("no spill path: spilling must be ON by default (REQ-TOOL-09d)")
-	}
-	t.Cleanup(func() { os.RemoveAll(filepath.Dir(spill)) })
-	if rel, err := filepath.Rel(os.TempDir(), spill); err != nil || strings.HasPrefix(rel, "..") {
-		t.Fatalf("spill %q is not under os.TempDir() %q", spill, os.TempDir())
-	}
-	if st, err := os.Stat(spill); err != nil || st.Size() != 70000 {
-		t.Fatalf("spill file must hold the COMPLETE output: %v %v", st, err)
-	}
-	if !strings.Contains(res.Data["output"].(string), spill) {
-		t.Fatal("the marker must name the spill path")
-	}
-
-	off := toolByName(t, dir, "execute", Options{DisableSpill: true}).Execute(context.Background(), cmd)
-	if off.Metadata.SpillPath != "" {
-		t.Fatalf("DisableSpill must leave no file: %q", off.Metadata.SpillPath)
-	}
-}
-
-// TestSignalKilledProcessReportsExitCode128PlusSignum is NFR-COMPAT-06's
-// unix exit-code semantics.
-func TestSignalKilledProcessReportsExitCode128PlusSignum(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("a Windows wait status carries no signal")
-	}
-	if _, _, err := ResolveShell(); err != nil {
-		t.Skip("no shell available")
-	}
-	res, err := Run(context.Background(), "kill -TERM $$", ExecOptions{MaxBytes: 4096})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Outcome != OutcomeSignal {
-		t.Fatalf("outcome = %q, want signal", res.Outcome)
-	}
-	if res.ExitCode != 128+15 {
-		t.Fatalf("exit code = %d, want 143 (128+SIGTERM)", res.ExitCode)
-	}
-}
-
-// TestExecuteRejectsANonPositiveTimeout is REQ-TOOL-06: "when supplied it must
-// be positive". A negative or zero value used to mean "no timeout".
-func TestExecuteRejectsANonPositiveTimeout(t *testing.T) {
-	dir := t.TempDir()
-	exe := toolByName(t, dir, "execute")
-	for _, in := range []string{`{"command":"true","timeout_s":0}`, `{"command":"true","timeout_s":-5}`} {
-		res := exe.Execute(context.Background(), json.RawMessage(in))
-		if res.Error != "invalid_arguments" {
-			t.Fatalf("%s: want invalid_arguments, got %+v", in, res)
-		}
-	}
-	if _, _, err := ResolveShell(); err == nil {
-		if res := exe.Execute(context.Background(), json.RawMessage(`{"command":"true"}`)); !res.OK {
-			t.Fatalf("absent timeout_s is fine: %+v", res)
+func TestReadFileRefusesImagesByTheirMagicBytes(t *testing.T) {
+	read := tool(t, map[string]string{
+		"a.png":          "\x89PNG\r\n\x1a\n\x00",
+		"screenshot.txt": "\x89PNG\r\n\x1a\n\x00", // the extension does not matter
+		"b.jpg":          "\xff\xd8\xff\xe0\x00\x10JFIF",
+		"c.gif":          "GIF89a\x01\x00\x01\x00",
+		"d.webp":         "RIFF\x00\x00\x00\x00WEBPVP8 ",
+	}, "read_file")
+	for path, format := range map[string]string{"a.png": "PNG", "screenshot.txt": "PNG", "b.jpg": "JPEG", "c.gif": "GIF", "d.webp": "WebP"} {
+		r := callJSON(t, read, map[string]string{"path": path})
+		if r.Error != "unsupported_file" || r.Detail != path+" is a "+format+" image: reading images is not supported" || len(r.Blocks) != 0 {
+			t.Errorf("%s: %+v", path, r)
 		}
 	}
 }
 
-// TestReducedEnvStripsGenericCredentialSuffixes is REQ-SEC-08: a provider
-// prefix list only ever names the providers someone thought of.
-func TestReducedEnvStripsGenericCredentialSuffixes(t *testing.T) {
-	env := ReducedEnv([]string{
-		"PATH=/usr/bin", "HOME=/h", "LANG=C.UTF-8", "TMPDIR=/tmp", "TERM=xterm",
-		"GITHUB_TOKEN=ghp_1", "NPM_TOKEN=npm_1", "DB_PASSWORD=pw", "STRIPE_SECRET=sk",
-		"SOME_API_KEY=k", "GOOGLE_APPLICATION_CREDENTIALS=/c.json", "vault_token=lower",
-		// The suffixes a provider list never reaches.
-		"GITHUB_PAT=pat1", "DOCKER_AUTH=auth1", "DB_PASS=pass1", "DB_PWD=pwd1",
-		"SSH_PRIVATE_KEY=priv1", "SIGNING_KEY=key1",
-		// Bare names with no suffix at all.
-		"TOKEN=bare1", "API_KEY=bare2", "SECRET=bare3", "PASSWORD=bare4",
-		// Provider prefixes in either case; the non-secret settings survive.
-		"aws_secret_access_key=aws1", "AWS_ACCESS_KEY_ID=aws2", "google_api_key=g1",
-		"AWS_PROFILE=dev", "AWS_REGION=eu-west-1", "AWS_DEFAULT_REGION=us-east-1",
-		"GOOGLE_CLOUD_PROJECT=proj",
-		"EDITOR=vim",
-	})
-	joined := "\n" + strings.Join(env, "\n") + "\n"
-	for _, leaked := range []string{"ghp_1", "npm_1", "=pw\n", "=sk\n", "=k\n", "c.json", "lower",
-		"pat1", "auth1", "pass1", "pwd1", "priv1", "key1",
-		"bare1", "bare2", "bare3", "bare4", "aws1", "aws2", "=g1"} {
-		if strings.Contains(joined, leaked) {
-			t.Errorf("%q reached the subprocess environment", leaked)
+func TestTheFileToolsRefuseWhatIsNotARegularFile(t *testing.T) {
+	ws := newWS(t, map[string]string{"sub/x": ""})
+	ts := toolSet(t, ws, Options{})
+	for _, name := range []string{"read_file", "edit_file"} {
+		r := call(ts[name], `{"path":"sub","edits":[{"old_string":"a","new_string":"b"}]}`)
+		if r.Error != "not_a_file" || r.Detail != "sub is a directory; use list_files" {
+			t.Errorf("%s on a directory: %+v", name, r)
 		}
 	}
-	for _, kept := range []string{"PATH=/usr/bin", "HOME=/h", "LANG=C.UTF-8", "TMPDIR=/tmp", "TERM=xterm", "EDITOR=vim",
-		"AWS_PROFILE=dev", "AWS_REGION=eu-west-1", "AWS_DEFAULT_REGION=us-east-1", "GOOGLE_CLOUD_PROJECT=proj"} {
-		if !strings.Contains(joined, "\n"+kept+"\n") {
-			t.Errorf("%q was stripped", kept)
+	if runtime.GOOS != "windows" {
+		if out, err := exec.Command("mkfifo", abs(ws, "pipe")).CombinedOutput(); err != nil {
+			t.Skipf("mkfifo: %v %s", err, out)
 		}
-	}
-}
-
-// TestExecuteBuiltOutsideAllReducesTheEnvironment: the nil-Env default must
-// hold for a tool built by hand, not only through For().
-func TestExecuteBuiltOutsideAllReducesTheEnvironment(t *testing.T) {
-	if _, _, err := ResolveShell(); err != nil {
-		t.Skip("no shell available")
-	}
-	t.Setenv("GITHUB_TOKEN", "ghp_should_not_leak")
-	ws, _ := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	for name, tl := range map[string]core.Tool{
-		"execute":     executeTool(ws, Options{}),
-		"run_command": runCommandTool(ws, Options{}),
-	} {
-		in := `{"command":"env"}`
-		if name == "run_command" {
-			in = `{"argv":["env"]}`
-		}
-		res := tl.Execute(context.Background(), json.RawMessage(in))
-		if !res.OK {
-			t.Fatalf("%s: %+v", name, res)
-		}
-		if strings.Contains(res.Data["output"].(string), "ghp_should_not_leak") {
-			t.Fatalf("%s built outside For() leaked GITHUB_TOKEN to the child (REQ-SEC-08)", name)
-		}
-	}
-}
-
-// TestRunCommandResolvesARelativeProgramAgainstTheWorkspace: `./script.sh`
-// means the directory the command runs in, not the process working directory.
-func TestRunCommandResolvesARelativeProgramAgainstTheWorkspace(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fixture is a shell script")
-	}
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "script.sh"), []byte("#!/bin/sh\necho from-workspace\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if wd, _ := os.Getwd(); wd == dir {
-		t.Fatal("the test needs the process cwd to differ from the workspace")
-	}
-	res := toolByName(t, dir, "run_command").Execute(context.Background(), json.RawMessage(`{"argv":["./script.sh"]}`))
-	if !res.OK || !strings.Contains(res.Data["output"].(string), "from-workspace") {
-		t.Fatalf("./script.sh must resolve against the workspace, not the process cwd: %+v", res)
-	}
-}
-
-// TestIgnoreOptionsAreThreadedAndGitConfigIsCached is NFR-TEST-04: the tool
-// reads the injected global layer, and consults `git config` once per
-// workspace rather than once per call.
-func TestIgnoreOptionsAreThreadedAndGitConfigIsCached(t *testing.T) {
-	dir := t.TempDir()
-	excludes := filepath.Join(t.TempDir(), "global-ignore")
-	if err := os.WriteFile(excludes, []byte("*.secret\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range []string{"a.go", "b.secret"} {
-		if err := os.WriteFile(filepath.Join(dir, p), []byte("needle\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var calls atomic.Int32
-	ws, _ := workspace.Open(dir, workspace.Options{Ignore: workspace.IgnoreOptions{
-		Getenv:    func(string) string { return "" },
-		Home:      func() (string, error) { return "", os.ErrNotExist },
-		GitConfig: func() string { calls.Add(1); return excludes },
-	}})
-	all, err := For(ws, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	byName := map[string]core.Tool{}
-	for _, tl := range all {
-		byName[tl.Name] = tl
-	}
-	for i := 0; i < 3; i++ {
-		res := byName["find_files"].Execute(context.Background(), json.RawMessage(`{"pattern":"*"}`))
-		if got := strings.Join(res.Data["files"].([]string), " "); got != "a.go" {
-			t.Fatalf("the injected global excludes must apply: %q", got)
-		}
-		res = byName["search_files"].Execute(context.Background(), json.RawMessage(`{"pattern":"needle"}`))
-		for _, m := range res.Data["matches"].([]SearchMatch) {
-			if m.File == "b.secret" {
-				t.Fatal("search_files must honour the injected global layer too")
+		for _, name := range []string{"read_file", "edit_file"} {
+			done := make(chan core.ToolResult, 1)
+			go func() { done <- call(ts[name], `{"path":"pipe","edits":[{"old_string":"a","new_string":"b"}]}`) }()
+			select {
+			case r := <-done:
+				if r.Error != "not_a_file" || r.Detail != "pipe is a named pipe" {
+					t.Errorf("%s on a FIFO: %+v", name, r)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("%s blocked opening a FIFO: it must be refused before it is opened", name)
 			}
 		}
 	}
-	if n := calls.Load(); n != 1 {
-		t.Fatalf("git config was consulted %d times across six calls; want once per workspace", n)
-	}
-}
-
-// ------------------------------------------------------------------ review fixes
-
-// TestFileToolsRefuseWhatIsNotARegularFile. A directory is a list_files
-// question. A FIFO is worse: a read blocks until something writes, which is
-// never, and the whole batch waits behind it. The FIFO case runs with a
-// deadline so a regression is a failure rather than a hang.
-func TestFileToolsRefuseWhatIsNotARegularFile(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	read := toolByName(t, dir, "read_file")
-	edit := toolByName(t, dir, "edit_file")
-
-	for name, in := range map[string]json.RawMessage{
-		"read_file": json.RawMessage(`{"path":"sub"}`),
-		"edit_file": json.RawMessage(`{"path":"sub","edits":[{"old_string":"a","new_string":"b"}]}`),
-	} {
-		tl := read
-		if name == "edit_file" {
-			tl = edit
-		}
-		res := tl.Execute(context.Background(), in)
-		if res.OK || res.Error != "not_a_file" || !strings.Contains(res.Detail, "directory") {
-			t.Fatalf("%s on a directory: want not_a_file naming a directory, got %+v", name, res)
-		}
-	}
-
-	if runtime.GOOS == "windows" {
-		return
-	}
-	fifo := filepath.Join(dir, "pipe")
-	if out, err := exec.Command("mkfifo", fifo).CombinedOutput(); err != nil {
-		t.Skipf("mkfifo unavailable: %v %s", err, out)
-	}
-	for name, tl := range map[string]core.Tool{"read_file": read, "edit_file": edit} {
-		in := json.RawMessage(`{"path":"pipe","edits":[{"old_string":"a","new_string":"b"}]}`)
-		done := make(chan core.ToolResult, 1)
-		go func() { done <- tl.Execute(context.Background(), in) }()
-		select {
-		case res := <-done:
-			if res.OK || res.Error != "not_a_file" {
-				t.Fatalf("%s on a FIFO: want not_a_file, got %+v", name, res)
-			}
-		case <-time.After(3 * time.Second):
-			t.Fatalf("%s blocked on a FIFO: the file must be Stat'ed and refused before it is opened", name)
+	for mode, want := range map[fs.FileMode]string{fs.ModeSocket: "x is a socket", fs.ModeDevice: "x is a device", fs.ModeIrregular: "x is not a regular file"} {
+		if got := notAFile("x", mode); got != want {
+			t.Errorf("notAFile(%v) = %q, want %q", mode, got, want)
 		}
 	}
 }
 
-// TestEditFileRefusesAFileOverItsSizeCeiling, with a message that names the
-// tool that can do it. Sparse again: the size is what is checked.
-func TestEditFileRefusesAFileOverItsSizeCeiling(t *testing.T) {
-	dir := t.TempDir()
-	f, err := os.Create(filepath.Join(dir, "big.log"))
-	if err != nil {
-		t.Fatal(err)
+func TestReadFileSaysWhenAFileIsNotUTF8(t *testing.T) {
+	read := tool(t, map[string]string{"l1.txt": "caf\xe9\nplain\n", "ok.txt": "café\n"}, "read_file")
+	r := mustOK(t, call(read, `{"path":"l1.txt"}`))
+	if r.Data["encoding"] != "unknown (not valid UTF-8)" || r.Text != "caf\xe9\nplain\n"+InvalidUTF8Marker("l1.txt") {
+		t.Errorf("Latin-1: %v %q", r.Data["encoding"], r.Text)
 	}
-	if _, err := f.WriteString("needle\n"); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Truncate(EditFileMaxBytes + 1); err != nil {
-		t.Fatal(err)
-	}
-	f.Close()
-	res := toolByName(t, dir, "edit_file").Execute(context.Background(),
-		json.RawMessage(`{"path":"big.log","edits":[{"old_string":"needle","new_string":"x"}]}`))
-	if res.OK || res.Error != "file_too_large" || !strings.Contains(res.Detail, "execute") {
-		t.Fatalf("want file_too_large pointing at execute, got %+v", res)
+	if r := mustOK(t, call(read, `{"path":"ok.txt"}`)); r.Data["encoding"] != "utf-8" || r.Text != "café" {
+		t.Errorf("UTF-8: %v %q", r.Data["encoding"], r.Text)
 	}
 }
 
-// TestWriteFileChecksContainmentBeforeMkdirAll pins the ORDER. The swap is
-// made while the tool is blocked on the path lock — after Resolve, before the
-// write — which is the race the check exists for. MkdirAll before the check
-// would create `deeper/` inside the outside directory even though the write
-// itself is then refused.
-func TestWriteFileChecksContainmentBeforeMkdirAll(t *testing.T) {
-	dir := t.TempDir()
-	outside := t.TempDir()
-	ws, _ := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	sub := filepath.Join(ws.Root(), "sub")
-	if err := os.Mkdir(sub, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	fs := newFileTools(ws, Options{}.withDefaults(ws))
-	abs := filepath.Join(sub, "deeper", "file.txt")
-	key, err := lockKey(abs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	release := fs.locks.acquire(key)
+// ------------------------------------------------------------- write and edit
 
-	done := make(chan core.ToolResult, 1)
-	go func() {
-		done <- fs.writeFile().Execute(context.Background(),
-			json.RawMessage(`{"path":"sub/deeper/file.txt","content":"pwned"}`))
-	}()
-	// The tool has resolved the path and is now waiting on the lock.
-	time.Sleep(200 * time.Millisecond)
-	select {
-	case res := <-done:
-		t.Fatalf("the write ran while the lock was held: %+v", res)
-	default:
-	}
-	if err := os.RemoveAll(sub); err != nil {
-		t.Fatal(err)
-	}
-	mustSymlink(t, outside, sub)
-	release()
-
-	select {
-	case res := <-done:
-		if res.OK || res.Error != "path_not_allowed" {
-			t.Fatalf("want path_not_allowed, got %+v", res)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the write never completed")
-	}
-	if _, err := os.Stat(filepath.Join(outside, "deeper")); err == nil {
-		t.Fatal("MkdirAll created a directory OUTSIDE the workspace before the containment " +
-			"re-check ran; CheckWriteTarget must come first")
-	}
-	if _, err := os.Stat(filepath.Join(outside, "deeper", "file.txt")); err == nil {
-		t.Fatal("the file was written outside the workspace")
-	}
-}
-
-// TestCRLFNeedlesMatchACRLFFile is B1. The file is normalised to LF before
-// matching; a needle the model copied with its CRs intact was not, and never
-// matched. Through the tool, so Restore is covered too.
-func TestCRLFNeedlesMatchACRLFFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "win.txt")
-	if err := os.WriteFile(path, []byte("alpha\r\nbravo\r\ncharlie\r\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	res := toolByName(t, dir, "edit_file").Execute(context.Background(), json.RawMessage(
-		`{"path":"win.txt","edits":[{"old_string":"alpha\r\nbravo","new_string":"ALPHA\r\nBRAVO"}]}`))
-	if !res.OK {
-		t.Fatalf("a CRLF needle against a CRLF file must match: %+v", res)
-	}
-	got, _ := os.ReadFile(path)
-	if string(got) != "ALPHA\r\nBRAVO\r\ncharlie\r\n" {
-		t.Fatalf("file = %q: the replacement must be written with the file's own CRLF, once", got)
-	}
-}
-
-// TestEditRejectionsNameTheEditOnlyInABatch is B9: `edits[1]:` tells the
-// model which one, and for a single edit the prefix is noise. The pinned
-// not-unique wording is asserted unprefixed in
-// TestNonUniqueIsARejectionNotAReplaceAll.
-func TestEditRejectionsNameTheEditOnlyInABatch(t *testing.T) {
-	const content = "one\ntwo\ntwo\n"
-	_, _, err := ApplyEdits(content, []Edit{
-		{OldString: "one", NewString: "1"},
-		{OldString: "two", NewString: "2"},
-	})
-	if err == nil || !strings.HasPrefix(err.Error(), "edits[1]: Found 2 occurrences") {
-		t.Fatalf("a batch rejection names the edit: %v", err)
-	}
-	_, _, err = ApplyEdits(content, []Edit{{OldString: "zulu", NewString: "z"}})
-	if err == nil || strings.HasPrefix(err.Error(), "edits[") {
-		t.Fatalf("a single-edit rejection carries no index: %v", err)
-	}
-	_, _, err = ApplyEdits(content, []Edit{
-		{OldString: "one", NewString: "1"},
-		{OldString: "zulu", NewString: "z"},
-	})
-	if err == nil || !strings.HasPrefix(err.Error(), "edits[1]: The string to replace was not found") {
-		t.Fatalf("a batch not-found names the edit: %v", err)
-	}
-}
-
-// TestNotFoundSaysWhereTheFirstLineIs is T5: the rejection reports whether
-// the needle's first line occurs and at which lines (at most three), so the
-// model can repair the needle without re-reading the file.
-func TestNotFoundSaysWhereTheFirstLineIs(t *testing.T) {
-	content := "func a() {\n\treturn 1\n}\n\nfunc a() {\n\treturn 2\n}\n\nfunc a() {\n\treturn 3\n}\n\nfunc a() {\n\treturn 4\n}\n"
-	reject := func(old string) string {
-		t.Helper()
-		_, _, err := ApplyEdits(content, []Edit{{OldString: old, NewString: "x"}})
-		if err == nil {
-			t.Fatalf("%q must be rejected", old)
-		}
-		return err.Error()
-	}
-	got := reject("func a() {\n\treturn 9\n}")
-	if !strings.Contains(got, "first line occurs at line 1, 5, 9, …") || strings.Contains(got, "13") {
-		t.Fatalf("the hint names at most three line numbers of the first line: %q", got)
-	}
-	if !strings.Contains(got, "lines after it differ") {
-		t.Fatalf("the hint says what to look at: %q", got)
-	}
-	got = reject("    return 4")
-	if !strings.Contains(got, "line 14 with different indentation") {
-		t.Fatalf("an indentation mismatch is named as such: %q", got)
-	}
-	got = reject("func zzz() {\n\treturn 1\n}")
-	if !strings.Contains(got, "Not even its first line occurs") {
-		t.Fatalf("an absent first line says so: %q", got)
-	}
-}
-
-// TestShellQuoteIsSafeForTheSedMarker is B8: the path in the long-line marker
-// is pasted into a shell.
-func TestShellQuoteIsSafeForTheSedMarker(t *testing.T) {
-	if got := ShellQuote("it's a $file.txt"); got != `'it'\''s a $file.txt'` {
-		t.Fatalf("ShellQuote = %s", got)
-	}
-	m := LongLineMarker(3, 1<<20, DefaultByteLimit, "my file.txt")
-	if !strings.Contains(m, "sed -n '3p' 'my file.txt' |") {
-		t.Fatalf("the path must be quoted in the marker: %q", m)
-	}
-}
-
-// TestAbortDuringTheDrainDoesNotReclassifyAFinishedCommand is B5. The
-// command exits 0 at once and leaves a descendant holding the pipe. A
-// cancellation that arrives during the post-exit drain must (a) end the drain
-// now rather than at the idle/ceiling bound, and (b) not turn a command that
-// had already completed into an aborted one.
-func TestAbortDuringTheDrainDoesNotReclassifyAFinishedCommand(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fixture is a unix shell background job")
-	}
-	if _, _, err := ResolveShell(); err != nil {
-		t.Skip("no shell available")
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		cancel()
-	}()
-	start := time.Now()
-	res, err := Run(ctx, "( sleep 3 ) & echo started; exit 0", ExecOptions{
-		MaxBytes: 4096, DrainIdle: 10 * time.Second, DrainCeiling: 10 * time.Second,
-	})
-	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if elapsed > 2*time.Second {
-		t.Fatalf("Run took %v after cancellation; the post-exit drain must stop on ctx.Done", elapsed)
-	}
-	if res.Outcome != OutcomeOK || !strings.Contains(res.Output, "started") {
-		t.Fatalf("outcome = %q output = %q; the command finished before the cancellation and "+
-			"must be classified from the state at exit", res.Outcome, res.Output)
-	}
-}
-
-// ---- T1: the model-facing text (core.ToolResult.Text)
-
-// TestReadFileTextIsTheContentWithoutAnEnvelope.
-func TestReadFileTextIsTheContentWithoutAnEnvelope(t *testing.T) {
-	dir := t.TempDir()
-	body := "package main\n\nfunc main() {\n\tprintln(\"hi\")\n}\n"
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	read := toolByName(t, dir, "read_file")
-	res := read.Execute(context.Background(), json.RawMessage(`{"path":"main.go"}`))
-	if !res.OK {
-		t.Fatalf("%+v", res)
-	}
-	if res.Text != strings.TrimSuffix(body, "\n") {
-		t.Fatalf("Text = %q, want the raw content", res.Text)
-	}
-	if res.Data["content"] != res.Text {
-		t.Fatal("Data.content stays populated for programmatic consumers")
-	}
-	if res.LLMText() != res.Text || strings.HasPrefix(res.LLMText(), "{") {
-		t.Fatalf("the model must read the text, not an envelope: %q", res.LLMText())
-	}
-	// The continuation marker is part of the text, in place.
-	res = read.Execute(context.Background(), json.RawMessage(`{"path":"main.go","limit":2}`))
-	if !strings.HasSuffix(res.Text, "\n"+ReadOffsetMarker(1, 2, 5)) {
-		t.Fatalf("the marker stays inside the text: %q", res.Text)
-	}
-	// Errors keep the envelope.
-	res = read.Execute(context.Background(), json.RawMessage(`{"path":"missing.go"}`))
-	if res.OK || res.Text != "" || !strings.HasPrefix(res.LLMText(), `{"detail"`) {
-		t.Fatalf("an error keeps the envelope: %+v", res)
-	}
-}
-
-// TestWriteEditAndEmptyListsAreTextNotAnEnvelope: every success path of the
-// file tools gives the model a sentence, while Data keeps the structured
-// fields for programmatic consumers.
-func TestWriteEditAndEmptyListsAreTextNotAnEnvelope(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dir, "empty"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+func TestWriteAndEditGiveTheModelASentence(t *testing.T) {
+	ts := toolSet(t, newWS(t, nil), Options{})
 	for _, c := range []struct{ tool, args, text string }{
 		{"write_file", `{"path":"a/b.txt","content":"one two\n"}`, "Wrote 8 bytes to a/b.txt"},
 		{"edit_file", `{"path":"a/b.txt","edits":[{"old_string":"two","new_string":"2"}]}`, "Applied 1 edit to a/b.txt"},
-		{"edit_file", `{"path":"a/b.txt","edits":[{"old_string":"one","new_string":"1"},{"old_string":"2","new_string":"II"}]}`,
-			"Applied 2 edits to a/b.txt"},
-		{"find_files", `{"pattern":"*.zzz"}`, `No files match "*.zzz".`},
-		{"list_files", `{"path":"empty"}`, "No entries."},
+		{"edit_file", `{"path":"a/b.txt","edits":[{"old_string":"one","new_string":"1"},{"old_string":"2","new_string":"II"}]}`, "Applied 2 edits to a/b.txt"},
+		{"read_file", `{"path":"a/b.txt"}`, "1 II"},
 	} {
-		res := toolByName(t, dir, c.tool).Execute(context.Background(), json.RawMessage(c.args))
-		if !res.OK || res.LLMText() != c.text {
-			t.Fatalf("%s %s: model text = %q (%+v), want %q", c.tool, c.args, res.LLMText(), res, c.text)
+		if r := mustOK(t, call(ts[c.tool], c.args)); r.LLMText() != c.text {
+			t.Errorf("%s %s: %q, want %q", c.tool, c.args, r.LLMText(), c.text)
 		}
-		if res.Data == nil {
-			t.Fatalf("%s: Data must stay populated", c.tool)
+	}
+	if r := mustOK(t, call(ts["write_file"], `{"path":"a/b.txt","content":"x"}`)); r.Data["written"] != true || r.Data["bytes"] != 1 {
+		t.Errorf("write_file Data = %v", r.Data)
+	}
+}
+
+func TestEditFile(t *testing.T) {
+	ws := newWS(t, map[string]string{"win.txt": "alpha\r\nbravo\r\ncharlie\r\n", "dup.txt": "x\nx\n"})
+	edit := toolSet(t, ws, Options{})["edit_file"]
+	r := mustOK(t, call(edit, `{"path":"win.txt","edits":[{"old_string":"alpha\r\nbravo","new_string":"ALPHA\r\nBRAVO"}]}`))
+	if got, _ := os.ReadFile(abs(ws, "win.txt")); string(got) != "ALPHA\r\nBRAVO\r\ncharlie\r\n" || r.Metadata.LineEnding != "crlf" || r.Data["edits_applied"] != 1 {
+		t.Errorf("a CRLF edit: %q %+v", got, r.Metadata)
+	}
+	for args, code := range map[string]string{
+		`{"path":"dup.txt","edits":[{"old_string":"x","new_string":"y"}]}`:       "edit_not_unique",
+		`{"path":"dup.txt","edits":[]}`:                                          "edit_empty",
+		`{"path":"dup.txt","edits":[{"old_string":"x\nx","new_string":"x\nx"}]}`: "edit_noop",
+		`{"path":"dup.txt","edits":"not an edit list"}`:                          "invalid_arguments",
+	} {
+		if r := call(edit, args); r.Error != code {
+			t.Errorf("%s: %q, want %q", args, r.Error, code)
+		}
+	}
+
+	// The size is what is checked, so a sparse file is enough.
+	f, err := os.Create(abs(ws, "big.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Truncate(EditFileMaxBytes + 1)
+	f.Close()
+	if r := call(edit, `{"path":"big.log","edits":[{"old_string":"a","new_string":"b"}]}`); r.Error != "file_too_large" || !strings.Contains(r.Detail, "use execute with sed") {
+		t.Errorf("an oversized file: %+v", r)
+	}
+}
+
+func TestWritesAreAtomicAndKeepModeAndLinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mode bits and symlinks differ on Windows")
+	}
+	ws := newWS(t, map[string]string{"run.sh": "echo old\n", "real.txt": "x"})
+	ts := toolSet(t, ws, Options{})
+	script := abs(ws, "run.sh")
+	_ = os.Chmod(script, 0o755)
+	before, _ := os.Stat(script)
+	mustOK(t, call(ts["edit_file"], `{"path":"run.sh","edits":[{"old_string":"old","new_string":"new"}]}`))
+	after, _ := os.Stat(script)
+	if os.SameFile(before, after) || after.Mode().Perm() != 0o755 {
+		t.Errorf("edit_file rewrote in place (%v) or lost the mode (%v); a crash mid-write would truncate the file", os.SameFile(before, after), after.Mode())
+	}
+
+	target := abs(ws, "real.txt")
+	_ = os.Chmod(target, 0o600)
+	mustSymlink(t, target, abs(ws, "link.txt"))
+	mustOK(t, call(ts["write_file"], `{"path":"link.txt","content":"through the link"}`))
+	fi, _ := os.Lstat(abs(ws, "link.txt"))
+	got, _ := os.ReadFile(target)
+	tfi, _ := os.Stat(target)
+	if fi.Mode()&os.ModeSymlink == 0 || string(got) != "through the link" || tfi.Mode().Perm() != 0o600 {
+		t.Errorf("write_file through a link: link %v, target %q mode %v", fi.Mode(), got, tfi.Mode())
+	}
+	entries, _ := os.ReadDir(ws.Root())
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".agentkit-") {
+			t.Errorf("temporary file %s left behind", e.Name())
+		}
+	}
+	// A directory in the way is a write failure, not a replaced directory.
+	if r := call(ts["write_file"], `{"path":"sub/x","content":"a"}`); !r.OK {
+		t.Fatal(r.Detail)
+	}
+	if r := call(ts["write_file"], `{"path":"sub","content":"a"}`); r.Error != "write_failed" {
+		t.Errorf("writing over a directory: %+v", r)
+	}
+}
+
+func TestTheFileToolsStayInsideTheWorkspace(t *testing.T) {
+	outsideDir := t.TempDir()
+	writeAt(t, outsideDir, "o.txt", "original")
+	outside := filepath.Join(outsideDir, "o.txt")
+	ws := newWS(t, nil)
+	mustSymlink(t, outsideDir, abs(ws, "out"))
+	mustSymlink(t, filepath.Join(outsideDir, "dangling"), abs(ws, "escape"))
+	ts := toolSet(t, ws, Options{})
+	for _, path := range []string{outside, "out/o.txt", "out/new.txt", "escape", "../o.txt"} {
+		for name, args := range map[string]any{
+			"read_file":  map[string]any{"path": path},
+			"write_file": map[string]any{"path": path, "content": "pwned"},
+			"edit_file":  map[string]any{"path": path, "edits": []Edit{{OldString: "original", NewString: "x"}}},
+		} {
+			r := callJSON(t, ts[name], args)
+			if r.Error != "path_not_allowed" || !strings.HasPrefix(r.Detail, "workspace: path_not_allowed") ||
+				!strings.Contains(r.Detail, ws.Root()) || !strings.Contains(r.Detail, "inside the workspace") {
+				t.Errorf("%s %s: %+v; want path_not_allowed naming the root and the next step", name, path, r)
+			}
+		}
+	}
+	if got, _ := os.ReadFile(outside); string(got) != "original" {
+		t.Errorf("the outside file now reads %q", got)
+	}
+	for _, p := range []string{"new.txt", "dangling"} {
+		if _, err := os.Stat(filepath.Join(outsideDir, p)); err == nil {
+			t.Errorf("%s was created outside the workspace", p)
+		}
+	}
+	// A dangling link whose target is inside is written through.
+	mustSymlink(t, "inner/newfile", abs(ws, "stay"))
+	_ = os.Mkdir(abs(ws, "inner"), 0o755)
+	mustOK(t, call(ts["write_file"], `{"path":"stay","content":"ok"}`))
+	if b, _ := os.ReadFile(abs(ws, "inner/newfile")); string(b) != "ok" {
+		t.Errorf("the write through an inside link landed elsewhere: %q", b)
+	}
+}
+
+// TestWriteFileRechecksContainmentBeforeMakingDirectories swaps a directory
+// for a link to outside while write_file waits on the path lock, after it
+// resolved the path and before it writes: the re-check must run before
+// MkdirAll, or the missing directories are built outside.
+func TestWriteFileRechecksContainmentBeforeMakingDirectories(t *testing.T) {
+	outside := t.TempDir()
+	ws := newWS(t, map[string]string{"sub/keep": ""})
+	ft := newFT(ws, Options{})
+	key, err := lockKey(abs(ws, "sub/deeper/file.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := ft.locks.acquire(key)
+	done := make(chan core.ToolResult, 1)
+	go func() { done <- call(ft.writeFile(), `{"path":"sub/deeper/file.txt","content":"pwned"}`) }()
+	testutil.Eventually(t, "write_file to wait on the path lock", func() bool { return lockWaiters(ft.locks, key) == 2 })
+	if err := os.RemoveAll(abs(ws, "sub")); err != nil {
+		t.Fatal(err)
+	}
+	mustSymlink(t, outside, abs(ws, "sub"))
+	release()
+	if r := <-done; r.Error != "path_not_allowed" {
+		t.Fatalf("want path_not_allowed, got %+v", r)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "deeper")); err == nil {
+		t.Fatal("MkdirAll built a directory outside the workspace")
+	}
+}
+
+// lockWaiters is the number of holders and waiters of key.
+func lockWaiters(p *pathLocks, key string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e := p.m[key]; e != nil {
+		return e.ref
+	}
+	return 0
+}
+
+// TestEditsToOneFileSerializeAcrossItsSpellings holds the real file's lock
+// and checks that edits through a symlink and a relative spelling queue on
+// that same lock, while an edit to another file goes ahead.
+func TestEditsToOneFileSerializeAcrossItsSpellings(t *testing.T) {
+	ws := newWS(t, map[string]string{"real.txt": "alpha\nbravo\n", "other.txt": "charlie\n"})
+	mustSymlink(t, "real.txt", abs(ws, "link.txt"))
+	ft := newFT(ws, Options{})
+	edit := ft.editFile()
+	key, err := lockKey(abs(ws, "real.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := ft.locks.acquire(key)
+	start := func(path, old, new string) <-chan core.ToolResult {
+		ch := make(chan core.ToolResult, 1)
+		go func() {
+			ch <- callJSON(t, edit, map[string]any{"path": path, "edits": []Edit{{OldString: old, NewString: new}}})
+		}()
+		return ch
+	}
+	viaLink, viaRel := start("link.txt", "alpha", "ALPHA"), start("./sub/../real.txt", "bravo", "BRAVO")
+	if r := <-start("other.txt", "charlie", "CHARLIE"); !r.OK {
+		t.Fatalf("an edit to another file: %+v", r)
+	}
+	testutil.Eventually(t, "both spellings to wait on the real file's lock", func() bool { return lockWaiters(ft.locks, key) == 3 })
+	release()
+	for _, ch := range []<-chan core.ToolResult{viaLink, viaRel} {
+		mustOK(t, <-ch)
+	}
+	if got, _ := os.ReadFile(abs(ws, "real.txt")); string(got) != "ALPHA\nBRAVO\n" {
+		t.Fatalf("a lost update: %q", got)
+	}
+	if n := len(ft.locks.m); n != 0 {
+		t.Fatalf("the lock table kept %d entries; they are released at refcount zero", n)
+	}
+}
+
+func TestLockKeyResolvesSpellingsAndPropagatesOtherErrors(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Mkdir(filepath.Join(dir, "real"), 0o755)
+	mustSymlink(t, "real", filepath.Join(dir, "linked"))
+	for in, want := range map[string]string{
+		filepath.Join(dir, "not-yet.txt"):         filepath.Join(dir, "not-yet.txt"),
+		filepath.Join(dir, "linked", "new.txt"):   filepath.Join(dir, "real", "new.txt"), // the parent is resolved
+		filepath.Join(dir, "missing", "deep.txt"): filepath.Join(dir, "missing", "deep.txt"),
+	} {
+		if got, err := lockKey(in); err != nil || got != want {
+			t.Errorf("lockKey(%s) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	mustSymlink(t, "loop", filepath.Join(dir, "loop"))
+	if _, err := lockKey(filepath.Join(dir, "loop")); err == nil {
+		t.Error("a link loop must be an error, not a key two spellings may not share")
+	}
+	if _, err := lockKey(filepath.Join(dir, "loop", "x")); err == nil {
+		t.Error("a link loop in the parent must be an error")
+	}
+	ft := newFT(newWS(t, nil), Options{})
+	mustSymlink(t, "loop", abs(ft.ws, "loop"))
+	for _, name := range []string{"writeFile", "editFile"} {
+		tl := map[string]core.Tool{"writeFile": ft.writeFile(), "editFile": ft.editFile()}[name]
+		if r := call(tl, `{"path":"loop","content":"x","edits":[{"old_string":"a","new_string":"b"}]}`); r.OK {
+			t.Errorf("%s through a link loop: %+v", name, r)
 		}
 	}
 }
 
-// TestExecuteTextIsTheOutputPlusAStatusLineOnlyWhenInformative.
-func TestExecuteTextIsTheOutputPlusAStatusLineOnlyWhenInformative(t *testing.T) {
-	ok := execResultToTool(ExecResult{Output: "hello\n", Outcome: OutcomeOK}, 0)
-	if ok.Text != "hello\n" {
-		t.Fatalf("a clean exit adds nothing: %q", ok.Text)
-	}
-	if ok.Data["exit_code"] != 0 || ok.Data["outcome"] != "ok" {
-		t.Fatalf("Data keeps exit_code/outcome for programmatic readers: %+v", ok.Data)
-	}
-	cases := []struct {
-		res  ExecResult
-		want string
+func TestRepairEditArgs(t *testing.T) {
+	want := []any{map[string]any{"old_string": "a", "new_string": "b"}}
+	for name, c := range map[string]struct {
+		in   map[string]any
+		want any
 	}{
-		{ExecResult{Output: "boom", Outcome: OutcomeExit, ExitCode: 2}, "boom\n[exit 2]"},
-		{ExecResult{Output: "", Outcome: OutcomeExit, ExitCode: 1}, "[exit 1]"},
-		{ExecResult{Output: "partial\n", Outcome: OutcomeTimeout, ExitCode: 137}, "partial\n[timeout after 5s]"},
-		{ExecResult{Output: "x\n", Outcome: OutcomeAbort}, "x\n[aborted]"},
-		{ExecResult{Output: "y\n", Outcome: OutcomeSignal, ExitCode: 137}, "y\n[killed by signal 9]"},
-	}
-	for _, c := range cases {
-		got := execResultToTool(c.res, 5*time.Second)
-		if got.Text != c.want {
-			t.Fatalf("%s: Text = %q, want %q", c.res.Outcome, got.Text, c.want)
+		"edits as a JSON string":           {map[string]any{"edits": `[{"old_string":"a","new_string":"b"}]`}, want},
+		"a bare object":                    {map[string]any{"edits": map[string]any{"old_string": "a", "new_string": "b"}}, want},
+		"legacy top-level keys":            {map[string]any{"old_string": "a", "new_string": "b"}, want},
+		"quote-gt for quote-colon-quote":   {map[string]any{"edits": `[{"old_string">\tTokens int\n", "new_string":"b"}]`}, []any{map[string]any{"old_string": "\tTokens int\n", "new_string": "b"}}},
+		"gt for colon":                     {map[string]any{"edits": `[{"old_string">"a", "new_string">"b"}]`}, want},
+		"trailing commas":                  {map[string]any{"edits": `[{"old_string":"a","new_string":"b",},]`}, want},
+		"a raw control character":          {map[string]any{"edits": "[{\"old_string\">\tfoo\nbar\", \"new_string\":\"b\"}]"}, []any{map[string]any{"old_string": "\tfoo\nbar", "new_string": "b"}}},
+		"a string value is never repaired": {map[string]any{"edits": `[{"old_string":"a\">b,]","new_string":"b"},]`}, []any{map[string]any{"old_string": `a">b,]`, "new_string": "b"}}},
+		"an unrepairable string is left":   {map[string]any{"edits": "not json at all"}, "not json at all"},
+		"a repair that is not edits":       {map[string]any{"edits": `[{"x":1},]`}, `[{"x":1},]`},
+		"an empty repaired list":           {map[string]any{"edits": `[,]`}, `[,]`},
+	} {
+		got := repairEditArgs(c.in)
+		if testutil.MustJSON(t, got["edits"]) != testutil.MustJSON(t, c.want) {
+			t.Errorf("%s: edits = %#v, want %#v", name, got["edits"], c.want)
 		}
-		if got.OK {
-			t.Fatalf("%s is not OK", c.res.Outcome)
+		if _, still := got["old_string"]; still && name == "legacy top-level keys" {
+			t.Error("the legacy keys must be removed once folded into edits")
 		}
 	}
-	if _, _, err := ResolveShell(); err != nil {
-		return
-	}
-	res := toolByName(t, t.TempDir(), "execute").Execute(context.Background(),
-		json.RawMessage(`{"command":"echo out; echo err >&2; exit 3"}`))
-	if res.Text != "out\nerr\n[exit 3]" {
-		t.Fatalf("through the tool: %q", res.Text)
-	}
-}
-
-// TestSearchTextIsGrepStyleGroupedByFile.
-func TestSearchTextIsGrepStyleGroupedByFile(t *testing.T) {
-	res := SearchResult{FilesSearched: 7, Matches: []SearchMatch{
-		{File: "a/b.go", Line: 12, Text: "\tx := needle()", Before: []string{"func f() {"}, After: []string{"\treturn x", "}"}},
-		{File: "a/b.go", Line: 13, Text: "\treturn needle", Before: []string{"\tx := needle()"}, After: []string{"}"}},
-		{File: "c.md", Line: 1, Text: "needle"},
-	}}
-	want := "a/b.go\n" +
-		"  11- func f() {\n" +
-		"  12: \tx := needle()\n" +
-		"  13: \treturn needle\n" +
-		"  14- }\n" +
-		"\n" +
-		"c.md\n" +
-		"  1: needle\n" +
-		SearchMarker(50)
-	if got := RenderSearchText(res, SearchMarker(50)); got != want {
-		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
-	}
-	if got := RenderSearchText(SearchResult{FilesSearched: 3}, ""); got != "No matches (3 files searched)." {
-		t.Fatalf("empty: %q", got)
-	}
-
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "x.txt"), []byte("one\nneedle\nthree\n"), 0o644); err != nil {
+	// Wired into the argument pipeline, so the schema check sees the repair.
+	c, err := core.NewToolUse("c", "edit_file", json.RawMessage(`{"path":"p.go","edits":"[{\"old_string\">\"a\", \"new_string\":\"b\"},]"}`))
+	if err != nil {
 		t.Fatal(err)
 	}
-	out := toolByName(t, dir, "search_files").Execute(context.Background(),
-		json.RawMessage(`{"pattern":"needle","context_lines":1}`))
-	if !out.OK || out.Text != "x.txt\n  1- one\n  2: needle\n  3- three" {
-		t.Fatalf("through the tool: %+v %q", out.Error, out.Text)
-	}
-	if _, ok := out.Data["matches"].([]SearchMatch); !ok {
-		t.Fatal("Data keeps the structured matches")
+	if p, err := core.PrepareArguments(tool(t, nil, "edit_file"), c); err != nil || testutil.MustJSON(t, p.Args["edits"]) != testutil.MustJSON(t, want) {
+		t.Fatalf("PrepareArguments = %v, %v", p.Args, err)
 	}
 }
 
-// TestListAndFindTextIsOneEntryPerLine, plus T3's defaults and B11's
-// slash-separated find paths and symlink-to-directory suffix.
-func TestListAndFindTextIsOneEntryPerLine(t *testing.T) {
-	dir := t.TempDir()
-	for _, p := range []string{"src/a.go", "src/b.go", "README"} {
-		full := filepath.Join(dir, filepath.FromSlash(p))
-		_ = os.MkdirAll(filepath.Dir(full), 0o755)
-		if err := os.WriteFile(full, nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	mustSymlink(t, "src", filepath.Join(dir, "srclink"))
-	list := toolByName(t, dir, "list_files")
-	res := list.Execute(context.Background(), json.RawMessage(`{}`))
-	if res.Text != "README\nsrc/\nsrclink/" {
-		t.Fatalf("list_files Text = %q: one entry per line, directories and links to directories with /", res.Text)
-	}
-	find := toolByName(t, dir, "find_files")
-	res = find.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*.go"}`))
-	if res.Text != "src/a.go\nsrc/b.go" {
-		t.Fatalf("find_files Text = %q", res.Text)
-	}
-	for _, f := range res.Data["files"].([]string) {
-		if strings.Contains(f, `\`) {
-			t.Fatalf("find_files returns slash-separated paths: %q", f)
-		}
-	}
+// ---------------------------------------------------------- list and find
 
-	// Defaults: 201 files at the default limit of 200 truncates with a marker
-	// naming limit=400.
-	many := t.TempDir()
+func TestListFiles(t *testing.T) {
+	files := map[string]string{"src/a.go": "", "README": "", ".gitignore": "README\n", "empty/.keep": ""}
+	for i := 0; i < ListEntryCap+1; i++ {
+		files[fmt.Sprintf("many/f%04d", i)] = ""
+	}
+	ws := newWS(t, files)
+	mustSymlink(t, "src", abs(ws, "srclink"))
+	_ = os.Remove(abs(ws, "empty/.keep"))
+	list := toolSet(t, ws, Options{})["list_files"]
+	// It does not apply .gitignore, and a link to a directory lists as one.
+	if r := mustOK(t, call(list, `{}`)); r.Text != ".gitignore\nREADME\nempty/\nmany/\nsrc/\nsrclink/" {
+		t.Errorf("list_files Text = %q", r.Text)
+	}
+	if r := mustOK(t, call(list, `{"path":"empty"}`)); r.Text != "No entries." || r.Data["truncated"] != false {
+		t.Errorf("an empty directory: %q", r.Text)
+	}
+	r := mustOK(t, call(list, `{"path":"many"}`))
+	if entries := r.Data["entries"].([]string); len(entries) != ListEntryDefault || r.Data["note"] != ListMarker(ListEntryDefault) ||
+		!strings.HasSuffix(r.Text, "\n"+ListMarker(ListEntryDefault)) || r.Metadata.TruncatedBy != "lines" {
+		t.Errorf("the default limit: %d entries, note %v", len(entries), r.Data["note"])
+	}
+	r = mustOK(t, call(list, `{"path":"many","limit":5000}`))
+	if entries := r.Data["entries"].([]string); len(entries) != ListEntryCap || r.Data["note"] != ListMarker(ListEntryCap) || strings.HasPrefix(entries[len(entries)-1], "[") {
+		t.Errorf("a limit over the cap: %d entries, note %v; the marker is not an entry", len(entries), r.Data["note"])
+	}
+	if r := call(list, `{"path":"missing"}`); r.Error != "list_failed" {
+		t.Errorf("a missing directory: %+v", r)
+	}
+}
+
+func TestFindFiles(t *testing.T) {
+	files := map[string]string{
+		"src/a.go": "", "src/pkg/b.go": "", "docs/c.md": "", "UPPER.GO": "",
+		".gitignore": "*.log\nignored/\n", "x.log": "", "ignored/d.go": "",
+		"gen/.gitignore": "*.go\n", "gen/generated.go": "",
+		".github/ci.yml": "", "vendor/dep/.git/HEAD": "", "sub/mod/.git": "gitdir: x\n", "sub/mod/m.go": "",
+	}
 	for i := 0; i < FindResultDefault+1; i++ {
-		if err := os.WriteFile(filepath.Join(many, fmt.Sprintf("f%04d.txt", i)), nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		files[fmt.Sprintf("many/f%04d.txt", i)] = ""
 	}
-	res = toolByName(t, many, "find_files").Execute(context.Background(), json.RawMessage(`{"pattern":"*.txt"}`))
-	files := res.Data["files"].([]string)
-	if len(files) != FindResultDefault || res.Data["truncated"] != true {
-		t.Fatalf("default find limit is %d: got %d, truncated=%v", FindResultDefault, len(files), res.Data["truncated"])
-	}
-	marker, _ := res.Data["marker"].(string)
-	if !strings.Contains(marker, "limit=400") || !strings.HasSuffix(res.Text, "\n"+marker) {
-		t.Fatalf("the marker names limit=400 and ends the text: %q / %q", marker, res.Text)
-	}
-	if strings.Count(res.Text, "\n") != FindResultDefault {
-		t.Fatalf("Text is %d entries then the marker", FindResultDefault)
-	}
-	res = toolByName(t, many, "find_files").Execute(context.Background(), json.RawMessage(`{"pattern":"*.txt","limit":5000}`))
-	if len(res.Data["files"].([]string)) != FindResultDefault+1 {
-		t.Fatal("an explicit limit above the cap is clamped to the cap, which still fits 201 files")
-	}
-}
-
-// TestToolDescriptionsCarryTheOperativeFacts is T5/T6: these strings are sent
-// on every request, so each fact is one sentence, and the facts a model most
-// often gets wrong are present.
-func TestToolDescriptionsCarryTheOperativeFacts(t *testing.T) {
-	ws, _ := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	all, _ := For(ws, Options{})
-	byName := map[string]core.Tool{}
-	for _, tl := range all {
-		byName[tl.Name] = tl
-	}
-	for _, want := range []string{"last 50 KB", "No default timeout", "> log 2>&1 &", "workspace root"} {
-		if !strings.Contains(byName["execute"].Description, want) {
-			t.Errorf("execute's description lacks %q: %q", want, byName["execute"].Description)
-		}
-	}
-	for _, want := range []string{"hidden", "max_matches (<= 100)", "context_lines (<= 20)"} {
-		if !strings.Contains(byName["search_files"].Description, want) {
-			t.Errorf("search_files' description lacks %q", want)
-		}
-	}
-	if !strings.Contains(byName["list_files"].Description, "Does not apply .gitignore") {
-		t.Error("list_files' description must say it ignores .gitignore")
-	}
-	if g := byName["write_file"].PromptGuidelines; len(g) != 1 ||
-		g[0] != "Prefer edit_file for an existing file; write_file replaces the whole file." {
-		t.Errorf("write_file guideline: %q", g)
-	}
-	if ExecuteFallbackGuideline != "Use execute for file operations like ls, rg, find." {
-		t.Error("REQ-TOOL-04e's guideline is pinned")
-	}
-}
-
-// Issue #71: the corruption seen in an agent-fox run — `">` where `":"`
-// belongs, and trailing commas — is repaired before the edits string is
-// given up on.
-func TestRepairEditArgsRepairsCorruptedJSONStrings(t *testing.T) {
-	cases := map[string][2]string{
-		"quote-colon-quote became quote-gt": {`[{"old_string">\tRepoMapTokens int\n", "new_string":"x"}]`, "\tRepoMapTokens int\n"},
-		"colon became gt":                   {`[{"old_string">"a", "new_string">"b"}]`, "a"},
-		"trailing commas":                   {`[{"old_string":"a","new_string":"b",},]`, "a"},
-	}
-	for name, c := range cases {
-		got := repairEditArgs(map[string]any{"path": "p.go", "edits": c[0]})
-		arr, ok := got["edits"].([]any)
-		if !ok || len(arr) != 1 {
-			t.Errorf("%s: edits = %#v, want a repaired one-element array", name, got["edits"])
-			continue
-		}
-		if e := arr[0].(map[string]any); e["old_string"] != c[1] {
-			t.Errorf("%s: old_string = %q, want %q", name, e["old_string"], c[1])
-		}
-	}
-	// A string that is not an edit list after repair is left for the
-	// validator to refuse, never turned into something else.
-	got := repairEditArgs(map[string]any{"edits": "not json at all"})
-	if _, still := got["edits"].(string); !still {
-		t.Errorf("an unrepairable string became %#v", got["edits"])
-	}
-	// The repair never touches text inside string values.
-	got = repairEditArgs(map[string]any{"edits": `[{"old_string":"a\">b,]","new_string":"c"},]`})
-	if arr, ok := got["edits"].([]any); !ok || arr[0].(map[string]any)["old_string"] != `a">b,]` {
-		t.Errorf("repair changed a string value: %#v", got["edits"])
-	}
-}
-
-// Issue #71, end to end through REQ-TOOL-11's pipeline with the registered
-// tools: each shape from the agent-fox run is either repaired or refused in
-// a short message.
-func TestIssue71ShapesThroughThePipeline(t *testing.T) {
-	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	all, err := For(ws, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	byName := map[string]core.Tool{}
-	for _, tl := range all {
-		byName[tl.Name] = tl
-	}
-	prep := func(tool, args string) (core.PreparedArguments, error) {
+	find := tool(t, files, "find_files")
+	run := func(args string) string {
 		t.Helper()
-		c, err := core.NewToolUse("c", tool, json.RawMessage(args))
-		if err != nil {
-			t.Fatal(err)
+		return strings.Join(mustOK(t, call(find, args)).Data["files"].([]string), " ")
+	}
+	for args, want := range map[string]string{
+		// Ignored files and .git at any depth are skipped; other dotfiles are not.
+		`{"pattern":"**/*.go"}`:                          "UPPER.GO src/a.go src/pkg/b.go sub/mod/m.go",
+		`{"pattern":"**/*.go","path":"src"}`:             "a.go pkg/b.go",
+		`{"pattern":"**/*.yml"}`:                         ".github/ci.yml",
+		`{"pattern":"*","file_type":"dir","path":"src"}`: "pkg/",
+		`{"pattern":"src/*","file_type":"directory"}`:    "src/pkg/",
+		`{"pattern":"src/*","file_type":"any"}`:          "src/a.go src/pkg/",
+		`{"pattern":"**/*.zzz"}`:                         "",
+	} {
+		if got := run(args); got != want {
+			t.Errorf("%s = %q, want %q", args, got, want)
 		}
-		return core.PrepareArguments(byName[tool], c)
 	}
-
-	// edit_file: edits as a string with `">` for `":"` — repaired.
-	p, err := prep("edit_file", `{"path":"issuetriage/pipeline.go","edits":"[{\"old_string\">\tRepoMapTokens int\n\", \"new_string\":\"x\"}]"}`)
-	if err != nil {
-		t.Fatalf("the corrupted edits string was not repaired: %v", err)
+	if r := mustOK(t, call(find, `{"pattern":"*.zzz"}`)); r.Text != `No files match "*.zzz".` {
+		t.Errorf("no match: %q", r.Text)
 	}
-	if arr, ok := p.Args["edits"].([]any); !ok || len(arr) != 1 {
-		t.Fatalf("edits = %#v, want a one-element array", p.Args["edits"])
+	r := mustOK(t, call(find, `{"pattern":"many/*.txt"}`))
+	if n := len(r.Data["files"].([]string)); n != FindResultDefault || r.Data["marker"] != FindMarker(FindResultDefault) ||
+		!strings.HasSuffix(r.Text, "\n"+FindMarker(FindResultDefault)) || r.Metadata.TruncatedBy != "lines" {
+		t.Errorf("the default limit: %d files, marker %v", n, r.Data["marker"])
 	}
-
-	// edit_file: an edits string beyond repair — a short, shaped refusal.
-	long := strings.Repeat("y", 1000)
-	_, err = prep("edit_file", `{"path":"p.go","edits":"[{old_string: `+long+`"}`)
-	if err == nil || !strings.Contains(err.Error(), "not a JSON string") || len(err.Error()) > 600 {
-		t.Fatalf("want a short refusal saying not to send a JSON string, got %d bytes: %v", len(fmt.Sprint(err)), err)
+	if n := len(mustOK(t, call(find, `{"pattern":"many/*.txt","limit":5000}`)).Data["files"].([]string)); n != FindResultDefault+1 {
+		t.Errorf("a limit over the cap is clamped to the cap, which fits all %d: got %d", FindResultDefault+1, n)
 	}
-
-	// read_file: offset "1, " — coerced.
-	p, err = prep("read_file", `{"path":"codefix/pipeline_test.go","offset":"1, ","limit":190}`)
-	if err != nil {
-		t.Fatalf(`offset "1, " was refused: %v`, err)
+	if r := mustOK(t, call(find, `{"pattern":"**","file_type":"dir","limit":1}`)); r.Data["truncated"] != true {
+		t.Errorf("a directory over the limit truncates too: %v", r.Data)
 	}
-	if fmt.Sprint(p.Args["offset"]) != "1" {
-		t.Fatalf("offset = %v, want 1", p.Args["offset"])
+	if r := call(find, `{"pattern":"*","file_type":"symlink"}`); r.Error != "invalid_arguments" {
+		t.Errorf("an unknown file_type: %+v", r)
 	}
 }
 
-// The inner JSON of an edits string carries real tabs and newlines once the
-// outer JSON is decoded; the repair escapes them.
-func TestRepairEditArgsEscapesRawControlCharacters(t *testing.T) {
-	got := repairEditArgs(map[string]any{"edits": "[{\"old_string\">\tfoo\nbar\", \"new_string\":\"x\"}]"})
-	arr, ok := got["edits"].([]any)
-	if !ok || arr[0].(map[string]any)["old_string"] != "\tfoo\nbar" {
-		t.Fatalf("edits = %#v", got["edits"])
-	}
-}
-
-// Issue #87: the schema now enforces enum and maximum. Two leniencies the
-// built-in tools always had are kept as explicit argument repairs
-// (REQ-TOOL-11.1), not lost to the stricter validation: fetch_url's method is
-// case-insensitive, and search_files clamps max_matches to its cap.
-func TestBuiltinLeniencySurvivesStrictValidation(t *testing.T) {
-	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
+// TestTheWalkingToolsReadTheGlobalExcludesOncePerWorkspace injects a global
+// excludes file through the workspace and counts the git config lookups.
+func TestTheWalkingToolsReadTheGlobalExcludesOncePerWorkspace(t *testing.T) {
+	root := testutil.Tree(t, map[string]string{"a.go": "package a\n\nfunc Needle() {}\n", "b.secret": "Needle\n"})
+	excludes := filepath.Join(t.TempDir(), "global-ignore")
+	writeAt(t, filepath.Dir(excludes), "global-ignore", "*.secret\n")
+	var lookups atomic.Int32
+	ws, err := workspace.Open(root, workspace.Options{Ignore: workspace.IgnoreOptions{
+		Getenv:    func(string) string { return "" },
+		Home:      func() (string, error) { return "", os.ErrNotExist },
+		GitConfig: func() string { lookups.Add(1); return excludes },
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := For(ws, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	byName := map[string]core.Tool{}
-	for _, tl := range all {
-		byName[tl.Name] = tl
-	}
-	prep := func(tool, args string) (core.PreparedArguments, error) {
-		t.Helper()
-		c, err := core.NewToolUse("c", tool, json.RawMessage(args))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return core.PrepareArguments(byName[tool], c)
-	}
-	p, err := prep("search_files", fmt.Sprintf(`{"pattern":"x","max_matches":%d}`, SearchMatchCap*5))
-	if err != nil {
-		t.Fatalf("max_matches over the cap refused: %v", err)
-	}
-	if fmt.Sprint(p.Args["max_matches"]) != fmt.Sprint(SearchMatchCap) {
-		t.Fatalf("max_matches = %v, want the cap %d", p.Args["max_matches"], SearchMatchCap)
-	}
-}
-
-// ------------------------------------------------------------ output schemas
-
-// prop is one expected property of an output schema: its type and whether
-// the object requires it.
-type prop struct {
-	typ      schema.Type
-	required bool
-}
-
-// assertObject checks that s is an object schema with exactly the given
-// properties, types and requiredness — no more, no fewer.
-func assertObject(t *testing.T, where string, s *schema.Schema, want map[string]prop) {
-	t.Helper()
-	if s == nil {
-		t.Fatalf("%s: schema is nil", where)
-	}
-	if s.Type != schema.TypeObject {
-		t.Fatalf("%s: type = %q, want object", where, s.Type)
-	}
-	if len(s.Properties) != len(want) {
-		t.Errorf("%s: properties = %v, want %d of them", where, s.PropertyList(), len(want))
-	}
-	for name, w := range want {
-		got := s.Properties[name]
-		if got == nil {
-			t.Errorf("%s: property %q is missing", where, name)
-			continue
-		}
-		if got.Type != w.typ {
-			t.Errorf("%s.%s: type = %q, want %q", where, name, got.Type, w.typ)
-		}
-		if s.IsRequired(name) != w.required {
-			t.Errorf("%s.%s: required = %v, want %v", where, name, s.IsRequired(name), w.required)
+	ts := toolSet(t, ws, Options{})
+	for i := 0; i < 2; i++ {
+		for name, args := range map[string]string{
+			"find_files": `{"pattern":"*"}`, "search_files": `{"pattern":"Needle"}`,
+			"find_symbol": `{"name":"Needle"}`, "find_references": `{"name":"Needle"}`,
+		} {
+			if r := mustOK(t, call(ts[name], args)); strings.Contains(r.Text, "b.secret") {
+				t.Errorf("%s did not apply the global excludes: %s", name, r.Text)
+			}
 		}
 	}
-}
-
-// TS-06-11: read_file's OutputSchema is the text read. Spec 09 removed the
-// image branch (09-REQ-3.6); an image file is an unsupported_file error.
-func TestOutputSchemaReadFile_TS06_11(t *testing.T) {
-	s := toolByName(t, t.TempDir(), "read_file").OutputSchema
-	if s == nil || len(s.OneOf) != 0 {
-		t.Fatalf("OutputSchema = %+v, want one object schema", s)
+	if n := lookups.Load(); n != 1 {
+		t.Errorf("git config was consulted %d times, want once per workspace", n)
 	}
-	assertObject(t, "read_file", s, map[string]prop{
-		"content":  {schema.TypeString, true},
-		"encoding": {schema.TypeString, true},
-	})
 }
 
-// TS-06-12: write_file and edit_file declare their result objects.
-func TestOutputSchemaWriteAndEditFile_TS06_12(t *testing.T) {
-	dir := t.TempDir()
-	assertObject(t, "write_file", toolByName(t, dir, "write_file").OutputSchema, map[string]prop{
-		"written": {schema.TypeBoolean, true},
-		"bytes":   {schema.TypeInteger, true},
-	})
-	assertObject(t, "edit_file", toolByName(t, dir, "edit_file").OutputSchema, map[string]prop{
-		"edits_applied": {schema.TypeInteger, true},
-	})
+// ------------------------------------------------------------- shell tools
+
+func TestTheShellToolsRunInTheWorkspaceRoot(t *testing.T) {
+	needPOSIX(t)
+	ws := newWS(t, map[string]string{"script.sh": "#!/bin/sh\necho from-workspace\n"})
+	_ = os.Chmod(abs(ws, "script.sh"), 0o755)
+	if cwd, _ := os.Getwd(); cwd == ws.Root() {
+		t.Fatal("the test needs the working directory to differ from the workspace")
+	}
+	ts := toolSet(t, ws, Options{})
+	for name, args := range map[string]string{
+		"execute": `{"command":"pwd"}`, "run_command": `{"argv":["pwd"]}`,
+	} {
+		if r := mustOK(t, call(ts[name], args)); r.Text != ws.Root()+"\n" {
+			t.Errorf("%s printed %q, want the workspace root", name, r.Text)
+		}
+	}
+	// A relative program is the workspace's, not the process's.
+	if r := mustOK(t, call(ts["run_command"], `{"argv":["./script.sh"]}`)); r.Text != "from-workspace\n" {
+		t.Errorf("./script.sh: %q", r.Text)
+	}
 }
 
-// TS-06-13: list_files and find_files declare string arrays, the truncated
-// flag and their optional marker.
-func TestOutputSchemaListAndFindFiles_TS06_13(t *testing.T) {
-	dir := t.TempDir()
-	l := toolByName(t, dir, "list_files").OutputSchema
-	assertObject(t, "list_files", l, map[string]prop{
-		"entries":   {schema.TypeArray, true},
-		"truncated": {schema.TypeBoolean, true},
-		"note":      {schema.TypeString, false},
-	})
-	f := toolByName(t, dir, "find_files").OutputSchema
-	assertObject(t, "find_files", f, map[string]prop{
-		"files":     {schema.TypeArray, true},
-		"truncated": {schema.TypeBoolean, true},
-		"marker":    {schema.TypeString, false},
-	})
-	for name, s := range map[string]*schema.Schema{"list_files.entries": l.Properties["entries"], "find_files.files": f.Properties["files"]} {
-		if s.Items == nil || s.Items.Type != schema.TypeString {
-			t.Errorf("%s items = %+v, want string", name, s.Items)
+func TestTheShellToolsValidateTheirArguments(t *testing.T) {
+	ts := toolSet(t, newWS(t, nil), Options{})
+	for _, c := range []struct{ tool, args string }{
+		{"execute", `{"command":"  "}`},
+		{"execute", `{"command":"true","timeout_s":0}`},
+		{"execute", `{"command":"true","timeout_s":-5}`},
+		{"run_command", `{"argv":[]}`},
+		{"run_command", `{"argv":["  "]}`},
+		{"run_command", `{}`},
+		{"run_command", `{"argv":["true"],"timeout_s":0}`},
+	} {
+		if r := call(ts[c.tool], c.args); r.Error != "invalid_arguments" {
+			t.Errorf("%s %s: %+v, want invalid_arguments", c.tool, c.args, r)
+		}
+	}
+	r := call(ts["run_command"], `{"argv":["definitely-not-a-program-xyz"]}`)
+	if r.Error != "exec_failed" || !strings.Contains(r.Detail, "definitely-not-a-program-xyz") {
+		t.Errorf("a missing program: %+v", r)
+	}
+}
+
+func TestTheShellToolsEnvelope(t *testing.T) {
+	needPOSIX(t)
+	ts := toolSet(t, newWS(t, nil), Options{})
+	for _, c := range []struct{ tool, args, text, code string }{
+		{"execute", `{"command":"echo out; echo err >&2; exit 3"}`, "out\nerr\n[exit 3]", "command_exit"},
+		{"execute", `{"command":"printf partial; sleep 30","timeout_s":1}`, "partial\n[timeout after 1s]", "command_timeout"},
+		// Nothing is re-parsed: each argument reaches the program verbatim.
+		{"run_command", `{"argv":["echo","hello; $(id)","&& rm -rf /"]}`, "hello; $(id) && rm -rf /\n", ""},
+		{"run_command", `{"argv":["sh","-c","kill -KILL $$"]}`, "[killed by signal 9]", "command_signal"},
+		// The command's stdin is the null device.
+		{"run_command", `{"argv":["sh","-c","cat; echo after"],"timeout_s":5}`, "after\n", ""},
+	} {
+		r := call(ts[c.tool], c.args)
+		if r.Text != c.text || r.Error != c.code || r.OK != (c.code == "") || r.Metadata.ExitCode == nil ||
+			r.Metadata.Outcome != r.Data["outcome"] || *r.Metadata.ExitCode != r.Data["exit_code"] {
+			t.Errorf("%s %s: Text %q error %q %+v, want %q %q", c.tool, c.args, r.Text, r.Error, r.Metadata, c.text, c.code)
 		}
 	}
 }
 
-// declProps is outline.Decl as it marshals: Go field names, no json tags.
-var declProps = map[string]prop{
-	"Kind": {schema.TypeString, true}, "Name": {schema.TypeString, true},
-	"Container": {schema.TypeString, true}, "Signature": {schema.TypeString, true},
-	"Exported": {schema.TypeBoolean, true}, "StartLine": {schema.TypeInteger, true},
-	"EndLine": {schema.TypeInteger, true},
-}
-
-// TS-09-21 (smoke, 09-PATH-2): read_file from tools.For, over a real
-// workspace, refuses a PNG by its magic bytes and names the format.
-func TestSmokeReadFileRefusesPNG_TS09_21(t *testing.T) {
-	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	png := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00}
-	if err := os.WriteFile(filepath.Join(ws.Root(), "test.png"), png, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	all, err := For(ws, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var readFile core.Tool
-	for _, tl := range all {
-		if tl.Name == "read_file" {
-			readFile = tl
+func TestExecResultToToolAddsAStatusLineOnlyWhenInformative(t *testing.T) {
+	for _, c := range []struct {
+		res     ExecResult
+		timeout time.Duration
+		want    string
+	}{
+		{ExecResult{Output: "hello\n", Outcome: OutcomeOK}, 0, "hello\n"},
+		{ExecResult{Output: "boom", Outcome: OutcomeExit, ExitCode: 2}, 0, "boom\n[exit 2]"},
+		{ExecResult{Outcome: OutcomeExit, ExitCode: 1}, 0, "[exit 1]"},
+		{ExecResult{Output: "p\n", Outcome: OutcomeTimeout}, 5 * time.Second, "p\n[timeout after 5s]"},
+		{ExecResult{Outcome: OutcomeTimeout}, 0, "[timeout]"},
+		{ExecResult{Output: "x\n", Outcome: OutcomeAbort}, 0, "x\n[aborted]"},
+		{ExecResult{Outcome: OutcomeSignal, ExitCode: 143}, 0, "[killed by signal 15]"},
+		{ExecResult{Outcome: OutcomeSignal, ExitCode: -1}, 0, "[killed by signal]"},
+	} {
+		got := execResultToTool(c.res, c.timeout)
+		if got.Text != c.want || got.OK != (c.res.Outcome == OutcomeOK) {
+			t.Errorf("%+v: Text %q OK %v, want %q", c.res, got.Text, got.OK, c.want)
 		}
 	}
-	res := readFile.Execute(context.Background(), json.RawMessage(`{"path":"test.png"}`))
-	if res.OK || res.Error != "unsupported_file" {
-		t.Fatalf("OK %v Error %q, want unsupported_file", res.OK, res.Error)
+	// IOErr is not rendered: the result is the same without it.
+	base := ExecResult{Output: "t", Outcome: OutcomeTimeout, ExitCode: 137, Truncated: true, TotalBytes: 9, SpillPath: "/s", Duration: time.Second}
+	withErr := base
+	withErr.IOErr = os.ErrClosed
+	a, b := execResultToTool(base, time.Second), execResultToTool(withErr, time.Second)
+	if testutil.MustJSON(t, a) != testutil.MustJSON(t, b) || a.Metadata.TruncatedBy != "bytes" || a.Metadata.SpillPath != "/s" || a.Metadata.DurationMS != 1000 {
+		t.Errorf("with IOErr %s\nwithout %s", testutil.MustJSON(t, b), testutil.MustJSON(t, a))
 	}
-	if !strings.Contains(res.Detail, "reading images is not supported") || !strings.Contains(res.Detail, "PNG") {
-		t.Fatalf("Detail = %q", res.Detail)
+}
+
+func TestTheShellToolsTruncateFromTheTailAndSpill(t *testing.T) {
+	needPOSIX(t)
+	cmd := `{"command":"head -c 70000 /dev/zero | tr '\\0' x; echo END"}`
+	spill := filepath.Join(t.TempDir(), "spill")
+	ws := newWS(t, nil)
+	r := call(toolSet(t, ws, Options{SpillDir: spill})["execute"], cmd)
+	if !r.OK || !strings.HasPrefix(r.Text, "[18804 bytes elided of 70004 total. Full output: "+spill+"/agentkit-exec-") ||
+		!strings.HasSuffix(r.Text, "xEND\n") || r.Metadata.TotalBytes != 70004 || r.Metadata.TruncatedBy != "bytes" {
+		t.Fatalf("%.120q… %+v", r.Text, r.Metadata)
 	}
-	if len(res.Blocks) != 0 {
-		t.Fatalf("a refused image carries %d blocks", len(res.Blocks))
+	if fi, err := os.Stat(r.Metadata.SpillPath); err != nil || fi.Size() != 70004 {
+		t.Fatalf("the spill file must hold the complete output: %v %v", fi, err)
+	}
+	// Spilling is on by default, into a per-workspace directory under the
+	// temp directory named after a hash of the root.
+	r = call(toolSet(t, ws, Options{})["execute"], cmd)
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(ws.Root()))
+	want := filepath.Join(os.TempDir(), fmt.Sprintf("agentkit-spill-%08x", h.Sum32()))
+	t.Cleanup(func() { os.RemoveAll(want) })
+	if filepath.Dir(r.Metadata.SpillPath) != want || defaultSpillDir(newWS(t, nil).Root()) == want {
+		t.Fatalf("default spill %q, want it under %s, a directory per workspace", r.Metadata.SpillPath, want)
+	}
+	if r := call(toolSet(t, ws, Options{DisableSpill: true})["execute"], cmd); r.Metadata.SpillPath != "" {
+		t.Fatalf("DisableSpill left %q", r.Metadata.SpillPath)
+	}
+}
+
+func TestTheShellToolsEnvironment(t *testing.T) {
+	needPOSIX(t)
+	t.Setenv("GITHUB_TOKEN", "ghp_should_not_leak")
+	ws := newWS(t, nil)
+	// A nil Env is reduced for a tool built by hand too, not only through For.
+	for _, tl := range []core.Tool{executeTool(ws, Options{}), runCommandTool(ws, Options{})} {
+		if r := mustOK(t, call(tl, `{"command":"env","argv":["env"]}`)); strings.Contains(r.Text, "ghp_") || !strings.Contains(r.Text, "PATH=") {
+			t.Errorf("%s leaked the token:\n%s", tl.Name, r.Text)
+		}
+	}
+	ts := toolSet(t, ws, Options{Env: []string{"PATH=" + os.Getenv("PATH"), "MARK=1"}})
+	for _, name := range []string{"execute", "run_command"} {
+		if r := mustOK(t, call(ts[name], `{"command":"env","argv":["env"]}`)); !strings.Contains(r.Text, "MARK=1") || strings.Contains(r.Text, "ghp_") {
+			t.Errorf("%s did not run with Options.Env:\n%s", name, r.Text)
+		}
 	}
 }

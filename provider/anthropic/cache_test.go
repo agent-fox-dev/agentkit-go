@@ -6,103 +6,139 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider"
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
+	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
-// rawBody returns the exact request bytes for req on m, as they are sent.
-func rawBody(t *testing.T, m core.Model, req core.Request) []byte {
-	t.Helper()
-	raw, err := anthropic.BuildRequestJSON(req, m)
-	if err != nil {
-		t.Fatal(err)
+func namedTool(name string) core.ToolWire {
+	return core.ToolWire{Name: name, InputSchema: schema.Object(schema.Opt("x", schema.String()))}
+}
+
+// ttls renders every breakpoint of a body, "-" for none: the system blocks,
+// the tools, then each message's blocks, separated by " / ".
+func ttls(body map[string]any) string {
+	mark := func(bs []map[string]any) string {
+		var out []string
+		for _, b := range bs {
+			out = append(out, ttl(b))
+		}
+		return strings.Join(out, ",")
 	}
-	return raw
-}
-
-func decode(t *testing.T, raw []byte) map[string]any {
-	t.Helper()
-	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil {
-		t.Fatal(err)
+	parts := []string{mark(objects(body["system"])), mark(objects(body["tools"]))}
+	for _, bs := range blocks(body) {
+		parts = append(parts, mark(bs))
 	}
-	return out
+	return strings.Join(parts, " / ")
 }
 
-func cached(v any) bool {
-	obj, _ := v.(map[string]any)
-	cc, _ := obj["cache_control"].(map[string]any)
-	return cc != nil && cc["type"] == "ephemeral"
-}
-
-func blocksOf(t *testing.T, msg any) []any {
-	t.Helper()
-	content, _ := msg.(map[string]any)["content"].([]any)
-	return content
-}
-
-// TS-10-23: a replayed tool_use input reaches the wire as the model wrote it,
-// spacing and key order included.
-func TestReplayedToolInputKeepsItsBytes_TS10_23(t *testing.T) {
-	raw := json.RawMessage(`{"b": 1,  "a":  2}`)
-	m := *testModel()
-	body := rawBody(t, m, core.Request{Messages: core.Messages{
-		core.UserMessage{Content: core.Content{core.TextBlock{Text: "go"}}},
-		core.AssistantMessage{Content: core.Content{core.ToolUseBlock{ID: "call_1", Name: "tool", Input: raw}},
-			StopReason: core.StopReasonToolUse, Model: m.ID},
-		core.ToolResultMessage{ToolUseID: "call_1", ToolName: "tool", Content: core.Content{core.TextBlock{Text: "ok"}}},
-	}})
-	if !strings.Contains(string(body), `"input":`+string(raw)) {
-		t.Fatalf("the tool_use input was re-encoded; want %s verbatim in\n%s", raw, body)
-	}
-}
-
-// TS-10-24: one breakpoint on the last system block and one on the last tool,
-// none on the others.
-func TestSystemAndToolBreakpoints_TS10_24(t *testing.T) {
-	m := *testModel()
-	w := decode(t, rawBody(t, m, core.Request{
-		System:   []core.ContentBlock{core.TextBlock{Text: "one"}, core.TextBlock{Text: "two"}},
-		Messages: userTurn(),
-		Tools:    core.ToolWires(sampleTools()),
-	}))
-	sys, _ := w["system"].([]any)
-	if len(sys) != 2 || cached(sys[0]) || !cached(sys[1]) {
-		t.Fatalf("system = %v; want cache_control on the last block only", sys)
-	}
-	tools, _ := w["tools"].([]any)
-	if len(tools) != 2 || cached(tools[0]) || !cached(tools[1]) {
-		t.Fatalf("tools = %v; want cache_control on the last tool only", tools)
-	}
-}
-
-// TS-10-25: one breakpoint on the last block of the prefix and one on the
-// last block of the last user message.
-func TestPrefixAndUserBreakpoints_TS10_25(t *testing.T) {
-	m := *testModel()
-	w := decode(t, rawBody(t, m, core.Request{
-		Prefix: core.Messages{
-			core.UserMessage{Content: core.Content{core.TextBlock{Text: "project brief"}, core.TextBlock{Text: "spec"}}},
-			core.AssistantMessage{Content: core.Content{core.TextBlock{Text: "understood"}},
-				StopReason: core.StopReasonStop, Model: m.ID},
+// One breakpoint each sits on the last system block, the last tool, the
+// prefix's last block and a final user turn's last block, with the hour TTL
+// only on the stable ones and only where the row supports it.
+func TestBreakpointsSitAtTheEndOfEachCachedSection(t *testing.T) {
+	req := core.Request{
+		System: []core.ContentBlock{core.TextBlock{Text: "one"}, core.TextBlock{Text: "two"}, core.TextBlock{Text: "three"}},
+		Tools:  []core.ToolWire{namedTool("a"), namedTool("b")},
+		Prefix: core.Messages{user("brief", "spec"), reply(core.TextBlock{Text: "understood"})},
+		Messages: core.Messages{
+			user("q"), reply(toolUse("c1", "a", `{}`)), result("c1", "ok"), user("first", "last"),
 		},
-		Messages: core.Messages{core.UserMessage{Content: core.Content{
-			core.TextBlock{Text: "first"}, core.TextBlock{Text: "last"}}}},
-	}))
-	msgs, _ := w["messages"].([]any)
-	if len(msgs) != 3 {
-		t.Fatalf("%d wire messages, want prefix (2) then history (1): %v", len(msgs), msgs)
 	}
-	prefixLast := blocksOf(t, msgs[1])
-	if !cached(prefixLast[len(prefixLast)-1]) {
-		t.Fatalf("prefix's last block = %v, want cache_control", prefixLast[len(prefixLast)-1])
+	const layout = "-,-,P / -,P / -,- / P / - / - / -,-,R"
+	noLong := testModel()
+	noLong.Compat = json.RawMessage(`{"supports_long_cache_retention": false}`)
+	cases := []struct {
+		retention       core.CacheRetention
+		model           *core.Model
+		prefix, rolling string
+	}{
+		{core.CacheRetentionShort, testModel(), "5m", "5m"},
+		{core.CacheRetentionLong, testModel(), "1h", "5m"},
+		{core.CacheRetentionLong, noLong, "5m", "5m"},
+		{core.CacheRetentionNone, testModel(), "-", "-"},
 	}
-	for _, b := range blocksOf(t, msgs[0]) {
-		if cached(b) {
-			t.Fatalf("an earlier prefix block carries cache_control: %v", b)
+	for _, c := range cases {
+		want := strings.NewReplacer("P", c.prefix, "R", c.rolling).Replace(layout)
+		if got := ttls(wireBody(t, c.model, req, anthropic.Options{CacheRetention: c.retention})); got != want {
+			t.Errorf("%s (compat %s): breakpoints\n got %s\nwant %s", c.retention, c.model.Compat, got, want)
 		}
 	}
-	user := blocksOf(t, msgs[2])
-	if cached(user[0]) || !cached(user[1]) {
-		t.Fatalf("user blocks = %v, want cache_control on the last only", user)
+
+	// The rolling breakpoint is for a user turn's text or result; an
+	// assistant turn at the end carries none.
+	body := wireBody(t, testModel(), core.Request{Messages: core.Messages{user("q"), reply(core.TextBlock{Text: "a"})}},
+		anthropic.Options{})
+	if got := ttls(body); got != " /  / - / -" {
+		t.Errorf("breakpoints = %q", got)
+	}
+}
+
+// A prefix that ends on the role the history starts with is joined to it, and
+// the breakpoint stays on the prefix's own last block.
+func TestAPrefixJoinsAHistoryThatStartsWithItsLastRole(t *testing.T) {
+	body := wireBody(t, testModel(), core.Request{
+		Prefix:   core.Messages{user("brief")},
+		Messages: core.Messages{user("question"), reply(core.TextBlock{Text: "answer"})},
+	}, anthropic.Options{})
+	if got := blockTypes(body); got != "user:text,text assistant:text" {
+		t.Fatalf("messages = %s", got)
+	}
+	if got := ttls(body); got != " /  / 5m,- / -" {
+		t.Errorf("breakpoints = %q, want one on the prefix's last block", got)
+	}
+}
+
+// A tool that appeared mid-session goes after the established ones with no
+// breakpoint, so the cached prefix is byte-identical to the last turn's, and
+// stays visible to the model: no defer_loading.
+func TestALateAddedToolIsAppendedAfterTheCachedTools(t *testing.T) {
+	history := core.Messages{
+		user("go"), reply(toolUse("c1", "read_file", `{}`)),
+		core.ToolResultMessage{ToolUseID: "c1", ToolName: "read_file", Content: core.Content{core.TextBlock{Text: "ok"}},
+			AddedToolNames: []string{"mcp__db__query"}},
+	}
+	for _, c := range []struct {
+		name    string
+		history core.Messages
+		want    string
+	}{
+		{"a late tool", history, "read_file:5m mcp__db__query:-"},
+		{"nothing deferred", nil, "mcp__db__query:- read_file:5m"},
+	} {
+		body := wireBody(t, testModel(), core.Request{
+			Tools: []core.ToolWire{namedTool("mcp__db__query"), namedTool("read_file")}, Messages: c.history,
+		}, anthropic.Options{})
+		var got []string
+		for _, tl := range objects(body["tools"]) {
+			if _, ok := tl["defer_loading"]; ok {
+				t.Errorf("%s: %v carries defer_loading, which hides it from the model", c.name, tl["name"])
+			}
+			got = append(got, tl["name"].(string)+":"+ttl(tl))
+		}
+		if strings.Join(got, " ") != c.want {
+			t.Errorf("%s: tools = %s, want %s", c.name, strings.Join(got, " "), c.want)
+		}
+	}
+}
+
+// The tool schemas are serialized once per session: a steady-state turn
+// marshals none, and each reconciliation is reported to the embedder.
+func TestToolSchemasAreSerializedOncePerSession(t *testing.T) {
+	req := core.Request{Messages: core.Messages{user("hi")}, Tools: []core.ToolWire{namedTool("a"), namedTool("b")}}
+	var prefix provider.ToolPrefix
+	for turn, want := range []int{2, 0} {
+		_, _, rep, err := anthropic.BuildRequestCached(testModel(), req, core.CacheRetentionShort, &prefix)
+		if err != nil || rep.Marshalled != want {
+			t.Fatalf("turn %d: report %+v, %v; want %d marshalled", turn, rep, err, want)
+		}
+	}
+
+	var reports []provider.SyncReport
+	opts := anthropic.Options{ToolPrefix: &provider.ToolPrefix{},
+		OnToolPrefixSync: func(r provider.SyncReport) { reports = append(reports, r) }}
+	run(t, testModel(), req, opts, 200, streamFixture())
+	run(t, testModel(), req, opts, 200, streamFixture())
+	if len(reports) != 2 || len(reports[0].Added) != 2 || reports[1].Marshalled != 0 {
+		t.Fatalf("reports = %+v, want both tools added and then none marshalled", reports)
 	}
 }

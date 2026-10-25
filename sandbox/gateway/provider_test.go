@@ -2,65 +2,101 @@ package gateway
 
 import (
 	"context"
-	"maps"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
+	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 )
 
-// TS-19-15: Reap returns the server's ids sorted and surfaces the server's
-// error text. 19-REQ-3.2.
-func TestReap_TS19_15(t *testing.T) {
+func TestReapReturnsTheRemovedIDsSortedAndTheGatewaysError(t *testing.T) {
 	f := newFakeGW(t, nil)
-	f.set(func() {
-		f.reaps = []*sandboxpb.ReapResponse{{Ids: []string{"c", "a", "b"}}, {Ids: []string{"b", "a"}, Error: "remove x: busy"}}
-	})
+	reaps := []*sandboxpb.ReapResponse{{Ids: []string{"c", "a", "b"}}, {Ids: []string{"b", "a"}, Error: "remove x: busy"}}
+	f.with(func() { f.reaps = reaps })
 	p := f.dial(t)
-	ids, err := p.Reap(context.Background())
-	if err != nil || !slices.Equal(ids, []string{"a", "b", "c"}) {
-		t.Fatalf("first Reap = %v, %v; want [a b c], nil", ids, err)
+	if ids, err := p.Reap(context.Background()); err != nil || !slices.Equal(ids, []string{"a", "b", "c"}) {
+		t.Errorf("first Reap = %v, %v; want [a b c]", ids, err)
 	}
-	ids, err = p.Reap(context.Background())
-	if !slices.Equal(ids, []string{"a", "b"}) || err == nil || !strings.Contains(err.Error(), "remove x: busy") {
-		t.Fatalf("second Reap = %v, %v; want [a b] and the server's error text", ids, err)
+	if ids, err := p.Reap(context.Background()); !slices.Equal(ids, []string{"a", "b"}) || err == nil || !strings.Contains(err.Error(), "remove x: busy") {
+		t.Errorf("second Reap = %v, %v; want [a b] and the gateway's error", ids, err)
 	}
 }
 
-// TS-19-16: List returns the caller's sandboxes as Info sorted by creation
-// time and then id. 19-REQ-3.3.
-func TestList_TS19_16(t *testing.T) {
-	t1, t2 := time.Now().Add(-time.Hour).UnixNano(), time.Now().UnixNano()
-	e2 := t2 + int64(time.Hour)
+func TestListReturnsTheSandboxesByCreationTimeThenID(t *testing.T) {
 	f := newFakeGW(t, nil)
-	f.set(func() {
+	f.with(func() {
 		f.list = &sandboxpb.ListResponse{Sandboxes: []*sandboxpb.SandboxEntry{
-			{Id: "z", CreatedUnixNanos: t1, ExpiresUnixNanos: t1 + 1},
-			{Id: "b", Labels: map[string]string{"k": "w"}, CreatedUnixNanos: t2, ExpiresUnixNanos: e2},
-			{Id: "a", Labels: map[string]string{"k": "v"}, CreatedUnixNanos: t2, ExpiresUnixNanos: e2},
+			{Id: "z", CreatedUnixNanos: 20, ExpiresUnixNanos: 21},
+			{Id: "b", Labels: map[string]string{"k": "w"}, CreatedUnixNanos: 10, ExpiresUnixNanos: 12},
+			{Id: "a", CreatedUnixNanos: 10, ExpiresUnixNanos: 13},
 		}}
 	})
 	infos, err := f.dial(t).List(context.Background())
-	if err != nil {
+	var got []string
+	for _, i := range infos {
+		got = append(got, fmt.Sprintf("%s %v %d %d", i.ID, i.Labels, i.Created.UnixNano(), i.Expires.UnixNano()))
+	}
+	if want := []string{"a map[] 10 13", "b map[k:w] 10 12", "z map[] 20 21"}; err != nil || !slices.Equal(got, want) {
+		t.Errorf("List = %q, %v; want %q", got, err, want)
+	}
+}
+
+// Close destroys every sandbox still open, joins the failures, closes the
+// connection, and is idempotent; afterwards every call fails with ErrClosed
+// and no RPC.
+func TestProviderCloseDestroysTheOpenSandboxesAndEndsTheProvider(t *testing.T) {
+	f := newFakeGW(t, nil)
+	p := f.dial(t)
+	s1, s2 := mustCreate(t, p), mustCreate(t, p)
+	closed := mustCreate(t, p)
+	if err := closed.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	var ids []string
-	for _, i := range infos {
-		ids = append(ids, i.ID)
+	f.with(func() { f.destroyErr[s2.ID()] = status.Error(codes.Unavailable, "boom") })
+	if err := p.Close(); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("Close = %v, want an error carrying boom", err)
 	}
-	if !slices.Equal(ids, []string{"z", "a", "b"}) {
-		t.Fatalf("List ids %v, want [z a b]", ids)
+	f.with(func() {
+		if got := slices.Sorted(slices.Values(f.destroys)); !slices.Equal(got, slices.Sorted(slices.Values([]string{closed.ID(), s1.ID(), s2.ID()}))) {
+			t.Errorf("Destroy was sent for %v", f.destroys)
+		}
+	})
+	testutil.Eventually(t, "the connection to close", f.connsClosed)
+	n := f.count("")
+	ctx := context.Background()
+	_, e1 := p.Create(ctx, testSpec)
+	_, e2 := p.Reap(ctx)
+	_, e3 := p.List(ctx)
+	for i, err := range []error{e1, e2, e3, p.Destroy(ctx, "x")} {
+		if !errors.Is(err, ErrClosed) {
+			t.Errorf("call %d after Close: %v, want ErrClosed", i, err)
+		}
 	}
-	for _, c := range []struct {
-		labels           map[string]string
-		created, expires int64
-	}{{nil, t1, t1 + 1}, {map[string]string{"k": "v"}, t2, e2}, {map[string]string{"k": "w"}, t2, e2}} {
-		i := infos[0]
-		infos = infos[1:]
-		if !maps.Equal(i.Labels, c.labels) || !i.Created.Equal(time.Unix(0, c.created)) || !i.Expires.Equal(time.Unix(0, c.expires)) {
-			t.Errorf("Info %+v does not carry the entry's labels and times", i)
+	if err := p.Close(); err != nil || f.count("") != n {
+		t.Errorf("after Close: a second Close = %v, and %d RPCs were sent", err, f.count("")-n)
+	}
+}
+
+func TestARefusedTokenAfterDialMatchesErrUnauthenticated(t *testing.T) {
+	f := newFakeGW(t, nil)
+	p := f.dial(t)
+	sb := mustCreate(t, p)
+	f.with(func() { f.denyAll = true })
+	ctx := context.Background()
+	_, e1 := p.Create(ctx, testSpec)
+	_, e2 := p.List(ctx)
+	_, e3 := p.Reap(ctx)
+	_, e4 := sb.Sync(ctx, sandbox.GitRepo{URL: "https://example.test/r.git"})
+	for i, err := range []error{e1, e2, e3, e4, p.Destroy(ctx, "x")} {
+		if !errors.Is(err, ErrUnauthenticated) || !strings.Contains(err.Error(), "http://127.0.0.1") {
+			t.Errorf("call %d: %v, want ErrUnauthenticated naming the gateway", i, err)
 		}
 	}
 }

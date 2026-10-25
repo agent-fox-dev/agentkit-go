@@ -2,474 +2,100 @@ package tools
 
 import (
 	"context"
-	"fmt"
-	"go/ast"
-	"os"
-	"path/filepath"
-	"strings"
+	"slices"
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/outline"
-	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// TS-05-13 (unit): Go type resolver parses workspace packages and type-checks with workspace-local importer without external processes
-// Verifies: 05-REQ-3.1
-func TestGoTypeResolver_WorkspaceImporter_TS_05_13(t *testing.T) {
-	dir := t.TempDir()
-
-	// Root go.mod defining module 'example.com/mod'
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/mod\n\ngo 1.22\n"), 0o600); err != nil {
-		t.Fatal(err)
+func TestTheWorkspaceImporterChecksWorkspacePackagesAndStubsTheRest(t *testing.T) {
+	ws := newWS(t, map[string]string{
+		"go.mod":     "module example.com/mod\n\ngo 1.22\n",
+		"pkg/a/a.go": "package a\n\ntype Value struct{ Count int }\n\nfunc NewValue() Value { return Value{Count: 42} }\n",
+		"pkg/b/b.go": "package b\n\nimport (\n\t\"C\"\n\t\"fmt\"\n\t\"example.com/mod/pkg/a\"\n\t\"github.com/x/assert\"\n)\n\n" +
+			"func Compute() int {\n\tfmt.Println(assert.True)\n\treturn a.NewValue().Count\n}\n",
+		"pkg/b/b_test.go": "package b\n\nfunc TestCompute() { _ = Compute() }\n",
+		"pkg/b/broken.go": "package b\n\nfunc Broken( {\n",
+	})
+	imp := newWorkspaceImporter(ws, "")
+	if imp.modulePath != "example.com/mod" {
+		t.Fatalf("module path %q, read from go.mod", imp.modulePath)
 	}
-
-	// Subpackage pkg/a
-	pkgADir := filepath.Join(dir, "pkg", "a")
-	if err := os.MkdirAll(pkgADir, 0o750); err != nil {
-		t.Fatal(err)
-	}
-	srcA := `package a
-
-type Value struct {
-	Count int
-}
-
-func NewValue() Value {
-	return Value{Count: 42}
-}
-`
-	if err := os.WriteFile(filepath.Join(pkgADir, "a.go"), []byte(srcA), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	// Subpackage pkg/b importing example.com/mod/pkg/a
-	pkgBDir := filepath.Join(dir, "pkg", "b")
-	if err := os.MkdirAll(pkgBDir, 0o750); err != nil {
-		t.Fatal(err)
-	}
-	srcB := `package b
-
-import "example.com/mod/pkg/a"
-
-func Compute() int {
-	v := a.NewValue()
-	return v.Count
-}
-`
-	if err := os.WriteFile(filepath.Join(pkgBDir, "b.go"), []byte(srcB), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatalf("workspace.Open failed: %v", err)
-	}
-
-	imp := newWorkspaceImporter(ws, "example.com/mod")
 	pkg, err := checkPackage(imp, "pkg/b")
-	if err != nil {
-		t.Fatalf("checkPackage failed: %v", err)
-	}
-	if pkg == nil {
-		t.Fatal("expected non-nil package for pkg/b")
-	}
-
-	if len(pkg.Imports()) == 0 {
-		t.Fatal("expected at least 1 import in pkg/b")
-	}
-	if pkg.Imports()[0].Path() != "example.com/mod/pkg/a" {
-		t.Fatalf("expected import path 'example.com/mod/pkg/a', got %q", pkg.Imports()[0].Path())
-	}
-
-	// Check that types from pkg/a are fully resolved in pkg/b
-	pkgA := pkg.Imports()[0]
-	if pkgA.Scope().Lookup("Value") == nil {
-		t.Fatal("expected Value type to be resolved in pkg/a")
-	}
-	if pkgA.Scope().Lookup("NewValue") == nil {
-		t.Fatal("expected NewValue func to be resolved in pkg/a")
-	}
-}
-
-// TS-05-14 (unit): Go type resolver stubs external imports with empty synthetic packages and FakeImportC without aborting
-// Verifies: 05-REQ-3.2
-func TestGoTypeResolver_SyntheticExternalStubs_TS_05_14(t *testing.T) {
-	dir := t.TempDir()
-	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatalf("workspace.Open failed: %v", err)
-	}
-
-	src := `package main
-
-import (
-	"C"
-	"fmt"
-	"os"
-	"github.com/stretchr/testify/assert"
-)
-
-func main() {
-	fmt.Println("hello")
-	_ = os.Args
-	_ = assert.True
-}
-`
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	imp := newWorkspaceImporter(ws, "example.com/test")
-	if !makeTypesConfig(imp).FakeImportC {
-		t.Fatal("expected cfg.FakeImportC to be true")
-	}
-
-	pkg, err := checkPackage(imp, "")
 	if err != nil || pkg == nil {
-		t.Fatalf("expected a package despite errors, got %v, %v", pkg, err)
+		t.Fatalf("checkPackage = %v, %v", pkg, err)
 	}
-
-	// Check synthetic empty packages
-	if imp.imported["fmt"] == nil || imp.imported["fmt"].Scope().Len() != 0 {
-		t.Fatalf("expected synthetic empty package for 'fmt', got scope len=%d", imp.imported["fmt"].Scope().Len())
+	a := imp.imported["example.com/mod/pkg/a"]
+	if a == nil || a.Scope().Lookup("Value") == nil || a.Scope().Lookup("NewValue") == nil {
+		t.Fatal("the workspace import was not type-checked")
 	}
-	if imp.imported["os"] == nil || imp.imported["os"].Scope().Len() != 0 {
-		t.Fatalf("expected synthetic empty package for 'os', got scope len=%d", imp.imported["os"].Scope().Len())
-	}
-	if imp.imported["github.com/stretchr/testify/assert"] == nil || imp.imported["github.com/stretchr/testify/assert"].Scope().Len() != 0 {
-		t.Fatalf("expected synthetic empty package for assert, got scope len=%d", imp.imported["github.com/stretchr/testify/assert"].Scope().Len())
-	}
-
-	// Type checking completed without panicking and collected type errors
-	if len(imp.errors) == 0 {
-		t.Fatal("expected collected type errors for undefined identifiers on synthetic packages")
-	}
-}
-
-// TS-05-15 (unit): Go type resolver attributes resolved confidence to receiver method calls, interfaces, renamed imports, and promoted fields
-// Verifies: 05-REQ-3.3
-func TestGoTypeResolver_ResolvedConfidence_TS_05_15(t *testing.T) {
-	dir := t.TempDir()
-
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/resolved\n\ngo 1.22\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	// pkg/a defining Do
-	pkgADir := filepath.Join(dir, "pkg", "a")
-	if err := os.MkdirAll(pkgADir, 0o750); err != nil {
-		t.Fatal(err)
-	}
-	srcA := `package a
-
-func Do() {}
-`
-	if err := os.WriteFile(filepath.Join(pkgADir, "a.go"), []byte(srcA), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	// main package with Reader interface, Buffer struct, Base struct, and renamed import
-	srcMain := `package main
-
-import alias "example.com/resolved/pkg/a"
-
-type Reader interface {
-	Read(p []byte) (n int, err error)
-}
-
-type Base struct{}
-
-func (Base) Ping() {}
-
-type Buffer struct {
-	Base
-}
-
-func (Buffer) Read(p []byte) (n int, err error) {
-	return 0, nil
-}
-
-func Run() {
-	var buf Buffer
-	buf.Ping()
-
-	var r Reader = buf
-	_, _ = r.Read(nil)
-
-	alias.Do()
-}
-`
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(srcMain), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatalf("workspace.Open failed: %v", err)
-	}
-
-	// 1. Target Ping: receiver method call through embedded Base
-	targetPing := outline.Decl{
-		Kind:      outline.KindMethod,
-		Name:      "Ping",
-		Container: "Base",
-	}
-	sitesPing := resolveGoReferences(loadGoWorkspace(context.Background(), ws, nil), targetPing, "")
-	if len(sitesPing) == 0 {
-		t.Fatal("expected at least 1 reference site for Ping")
-	}
-	for _, s := range sitesPing {
-		if s.Confidence != "resolved" {
-			t.Fatalf("expected confidence 'resolved' for Ping, got %q", s.Confidence)
+	for _, ext := range []string{"fmt", "github.com/x/assert"} {
+		if p := imp.imported[ext]; p == nil || p.Scope().Len() != 0 {
+			t.Errorf("%s is not an empty stub", ext)
 		}
 	}
-
-	// 2. Target Read: interface method invocation r.Read()
-	targetRead := outline.Decl{
-		Kind:      outline.KindMethod,
-		Name:      "Read",
-		Container: "Reader",
+	// The parse error and the uses of stubbed names are collected, not fatal.
+	if len(imp.errors) < 2 {
+		t.Errorf("errors = %v", imp.errors)
 	}
-	sitesRead := resolveGoReferences(loadGoWorkspace(context.Background(), ws, nil), targetRead, "")
-	if len(sitesRead) == 0 {
-		t.Fatal("expected at least 1 reference site for Read")
+	if again, _ := checkPackage(imp, "example.com/mod/pkg/b"); again != pkg {
+		t.Error("a checked package is checked once")
 	}
-	for _, s := range sitesRead {
-		if s.Confidence != "resolved" {
-			t.Fatalf("expected confidence 'resolved' for Read, got %q", s.Confidence)
-		}
+	if _, err := checkPackage(imp, "missing"); err == nil {
+		t.Error("a directory that is not there")
 	}
-
-	// 3. Target Do: renamed import alias.Do()
-	targetDo := outline.Decl{
-		Kind: outline.KindFunc,
-		Name: "Do",
+	if _, err := checkPackage(newWorkspaceImporter(newWS(t, map[string]string{"x/readme.md": ""}), "m"), "x"); err == nil {
+		t.Error("a directory with no Go files")
 	}
-	sitesDo := resolveGoReferences(loadGoWorkspace(context.Background(), ws, nil), targetDo, "")
-	if len(sitesDo) == 0 {
-		t.Fatal("expected at least 1 reference site for Do")
+	if !makeTypesConfig(imp).FakeImportC {
+		t.Error("cgo's C import must not stop a check")
 	}
-	for _, s := range sitesDo {
-		if s.Confidence != "resolved" {
-			t.Fatalf("expected confidence 'resolved' for Do, got %q", s.Confidence)
-		}
+	if p, _ := imp.Import("C"); p == nil {
+		t.Error("an unresolvable import is a stub")
 	}
 }
 
-// TS-05-16 (unit): Go type resolver excludes same-named methods on unrelated types or distinct packages
-// Verifies: 05-REQ-3.4
-func TestGoTypeResolver_ExcludeUnrelatedTypes_TS_05_16(t *testing.T) {
-	dir := t.TempDir()
-
-	srcAlpha := `package main
-
-type Alpha struct{}
-
-func (Alpha) Close() {}
-`
-	if err := os.WriteFile(filepath.Join(dir, "alpha.go"), []byte(srcAlpha), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	srcBeta := `package main
-
-type Beta struct{}
-
-func (Beta) Close() {}
-`
-	if err := os.WriteFile(filepath.Join(dir, "beta.go"), []byte(srcBeta), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	srcCaller := `package main
-
-func Use() {
-	var a Alpha
-	a.Close()
-
-	var b Beta
-	b.Close()
-}
-`
-	if err := os.WriteFile(filepath.Join(dir, "alpha_caller.go"), []byte(srcCaller), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatalf("workspace.Open failed: %v", err)
-	}
-
-	alphaClose := outline.Decl{
-		Kind:      outline.KindMethod,
-		Name:      "Close",
-		Container: "Alpha",
-	}
-	sites := resolveGoReferences(loadGoWorkspace(context.Background(), ws, nil), alphaClose, "")
-	if len(sites) == 0 {
-		t.Fatal("expected at least 1 reference for Alpha.Close")
-	}
-
-	for _, s := range sites {
-		if s.Path != "alpha_caller.go" {
-			t.Fatalf("expected reference site path 'alpha_caller.go', got %q", s.Path)
-		}
-		if strings.Contains(s.Source, "beta.Close") || strings.Contains(s.Source, "b.Close") {
-			t.Fatalf("unexpected Beta.Close reference found in sites: %s", s.Source)
-		}
-	}
-}
-
-// TS-05-17 (unit): Go type resolver demotes incompletely typed identifiers to lexical confidence instead of dropping them
-// Verifies: 05-REQ-3.5
-func TestGoTypeResolver_DemoteIncompleteTypes_TS_05_17(t *testing.T) {
-	dir := t.TempDir()
-
-	srcTarget := `package main
-
-type Handler struct{}
-
-func (Handler) Do() {}
-`
-	if err := os.WriteFile(filepath.Join(dir, "handler.go"), []byte(srcTarget), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	srcCaller := `package main
-
-import "external"
-
-func Call(client external.Client) {
-	client.Do()
-}
-`
-	if err := os.WriteFile(filepath.Join(dir, "caller.go"), []byte(srcCaller), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatalf("workspace.Open failed: %v", err)
-	}
-
-	targetDo := outline.Decl{
-		Kind:      outline.KindMethod,
-		Name:      "Do",
-		Container: "Handler",
-	}
-	sites := resolveGoReferences(loadGoWorkspace(context.Background(), ws, nil), targetDo, "")
-	var hit *ReferenceSite
-	for i := range sites {
-		if strings.Contains(sites[i].Source, "client.Do()") {
-			hit = &sites[i]
-		}
-	}
-	if hit == nil {
-		t.Fatal("expected call site 'client.Do()' to be found")
-	}
-	if hit.Confidence != "lexical" {
-		t.Fatalf("expected confidence 'lexical' for client.Do(), got %q", hit.Confidence)
-	}
-}
-
-// TS-05-18 (property): Go source parsing preserves comments and records 1-based line and column offsets via token.FileSet
-// Verifies: 05-REQ-3.6
-func TestGoTypeResolver_CommentsAndPositions_TS_05_18(t *testing.T) {
-	// Generate multiple Go packages with comments and expressions
-	genGoPackages := func() []string {
-		var pkgDirs []string
-		snippets := []string{
-			`package sample1
-// Leading comment on type
-type Item struct {
-	// Field comment
-	ID int
-}
-// Function comment
-func Do(x int) int {
-	/* inline comment */
-	return x + 1
-}
-`,
-			`package sample2
-// Another package comment
-const (
-	// Const A
-	Alpha = 1
-	// Const B
-	Beta = 2
-)
-func Compute() {
-	// inside compute
-	println("done")
-}
-`,
-		}
-
-		for i, snip := range snippets {
-			dir := t.TempDir()
-			filePath := filepath.Join(dir, fmt.Sprintf("sample_%d.go", i))
-			if err := os.WriteFile(filePath, []byte(snip), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			pkgDirs = append(pkgDirs, dir)
-		}
-		return pkgDirs
-	}
-
-	for _, pkgDir := range genGoPackages() {
-		ws, err := workspace.Open(pkgDir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-		if err != nil {
-			t.Fatal(err)
-		}
-		imp := newWorkspaceImporter(ws, "")
-		fset := imp.fset
-		files, err := imp.parseDirFiles(ws.Root(), false)
-		if err != nil || len(imp.errors) > 0 {
-			t.Fatalf("parseDirFiles failed: %v %v", err, imp.errors)
-		}
-		if len(files) == 0 {
-			t.Fatal("expected at least 1 parsed file")
-		}
-
-		for _, f := range files {
-			if len(f.Comments) == 0 {
-				t.Fatal("expected comments to be preserved in parsed ast.File")
-			}
-			ast.Inspect(f, func(n ast.Node) bool {
-				if id, ok := n.(*ast.Ident); ok {
-					p := fset.Position(id.Pos())
-					if p.Line < 1 || p.Column < 1 {
-						t.Errorf("identifier %s position line=%d column=%d not 1-based", id.Name, p.Line, p.Column)
-					}
-				}
-				return true
-			})
-		}
-	}
-}
-
-// TS-05-16 (unit): same-named functions in other packages, called
-// unqualified there, and same-named local variables are not references to
-// the target; only uses of the target's own object are.
-// Verifies: 05-REQ-3.3, 05-REQ-3.4
-func TestGoTypeResolver_ExcludeSameNameOtherPackages_TS_05_16(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "go.mod", "module example.com/x\n\ngo 1.22\n")
-	writeFile(t, dir, "a/a.go", "package a\n\ntype Alpha struct{}\n\nfunc (Alpha) Close() {}\n\nfunc Run() {}\n")
-	writeFile(t, dir, "b/b.go", "package b\n\nimport \"example.com/x/a\"\n\nfunc Run() {}\n\nfunc use() {\n\ta.Run()\n\tRun()\n\tClose := 3\n\t_ = Close\n\ta.Alpha{}.Close()\n}\n")
-	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestResolvedReferencesAreTheTargetsAndNoOthers(t *testing.T) {
+	ws := newWS(t, map[string]string{
+		"go.mod": "module example.com/x\n\ngo 1.22\n",
+		"main.go": "package main\n\nimport alias \"example.com/x/a\"\n\ntype Reader interface{ Read(p []byte) (int, error) }\n\n" +
+			"type Base struct{}\n\nfunc (Base) Ping() {}\n\ntype Buffer struct{ Base }\n\nfunc (Buffer) Read(p []byte) (int, error) { return 0, nil }\n\n" +
+			"func Run() {\n\tvar buf Buffer\n\tbuf.Ping()\n\tvar r Reader = buf\n\t_, _ = r.Read(nil)\n\talias.Do()\n}\n",
+		"a/a.go": "package a\n\ntype Alpha struct{}\n\nfunc (Alpha) Close() {}\n\nfunc (*Alpha) Open() {}\n\nfunc Do() {}\n\nfunc Run() {}\n",
+		"b/b.go": "package b\n\nimport (\n\t\"example.com/x/a\"\n\t\"external\"\n)\n\ntype Beta struct{}\n\nfunc (Beta) Close() {}\n\n" +
+			"func Run() {}\n\nfunc use(c external.Client) {\n\ta.Run()\n\tRun()\n\tClose := 3\n\t_ = Close\n\ta.Alpha{}.Close()\n\tBeta{}.Close()\n\tc.Close()\n\t(&a.Alpha{}).Open()\n}\n",
+	})
 	imp := loadGoWorkspace(context.Background(), ws, nil)
-
-	runSites := resolveGoReferences(imp, outline.Decl{Kind: outline.KindFunc, Name: "Run", StartLine: 7}, "a/a.go")
-	if len(runSites) != 1 || runSites[0].Path != "b/b.go" || runSites[0].Line != 8 || runSites[0].Confidence != "resolved" {
-		t.Fatalf("a.Run sites = %+v, want only the resolved a.Run() at b/b.go:8", runSites)
+	for _, c := range []struct {
+		name   string
+		target outline.Decl
+		path   string
+		want   []string
+	}{
+		{"an embedded method", outline.Decl{Name: "Ping", Container: "Base"}, "", []string{"main.go:17:6 resolved"}},
+		{"an interface method", outline.Decl{Name: "Read", Container: "Reader"}, "", []string{"main.go:19:11 resolved"}},
+		{"through an import alias", outline.Decl{Name: "Do"}, "a/a.go", []string{"main.go:20:8 resolved"}},
+		// Another package's Run, a local variable called Close and Beta's
+		// Close are other objects; a call on a stubbed type cannot be
+		// confirmed, so it is kept as lexical rather than dropped.
+		{"only this package's Run", outline.Decl{Name: "Run", StartLine: 11}, "a/a.go", []string{"b/b.go:15:4 resolved"}},
+		{"only Alpha's Close", outline.Decl{Name: "Close", Container: "Alpha", StartLine: 5}, "a/a.go",
+			[]string{"b/b.go:19:12 resolved", "b/b.go:21:4 lexical"}},
+		// A target whose line moved is found by name in its package scope.
+		{"a pointer-receiver method by scope", outline.Decl{Name: "Open", Container: "Alpha", StartLine: 99}, "", []string{"b/b.go:22:15 resolved"}},
+		{"an unknown target confirms nothing", outline.Decl{Name: "Close", Container: "Nobody"}, "", []string{
+			"b/b.go:18:6 lexical", "b/b.go:19:12 lexical", "b/b.go:20:9 lexical", "b/b.go:21:4 lexical"}},
+	} {
+		sites := resolveGoReferences(imp, c.target, c.path)
+		sortReferenceSites(sites)
+		if got := siteList(ReferenceResult{Sites: sites}); !slices.Equal(got, c.want) {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
 	}
-
-	closeSites := resolveGoReferences(imp, outline.Decl{Kind: outline.KindMethod, Name: "Close", Container: "Alpha", StartLine: 5}, "a/a.go")
-	if len(closeSites) != 1 || closeSites[0].Line != 12 || closeSites[0].Confidence != "resolved" {
-		t.Fatalf("Alpha.Close sites = %+v, want only the resolved call at b/b.go:12", closeSites)
+	if packages, errs := imp.stats(); packages < 3 || errs == 0 {
+		t.Errorf("stats = %d packages, %d errors", packages, errs)
+	}
+	if !imp.definesName("Ping") || imp.definesName("Nope") {
+		t.Error("definesName")
 	}
 }

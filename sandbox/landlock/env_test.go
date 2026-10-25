@@ -2,40 +2,28 @@ package landlock
 
 import (
 	"slices"
-	"strings"
 	"testing"
 )
 
-// cut splits NAME=value.
-func cut(kv string) (string, string, bool) { return strings.Cut(kv, "=") }
-
-// TS-18-30: the agent environment is exactly Spec.Env plus HOME, TMPDIR and
-// a default PATH, sorted, with nothing from the embedder. 18-REQ-5.3.
-func TestAgentEnv_TS18_30(t *testing.T) {
+// A default PATH unless Spec.Env sets one; nothing from the embedder.
+func TestAgentEnvAddsThePrivateDirectories(t *testing.T) {
 	t.Setenv("AGENTKIT_EMBEDDER_SENTINEL", "leak")
 	dir := "/srv/root/0123456789abcdef"
-	e1 := agentEnv(map[string]string{"B": "2", "A": "1"}, dir)
-	want := []string{"A=1", "B=2", "HOME=" + dir + "/home", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "TMPDIR=" + dir + "/tmp"}
-	if !slices.Equal(e1, want) {
-		t.Errorf("agentEnv = %q,\nwant %q", e1, want)
-	}
-	e2 := agentEnv(map[string]string{"PATH": "/custom"}, dir)
-	n := 0
-	for _, kv := range e2 {
-		if strings.HasPrefix(kv, "PATH=") {
-			n++
+	home, tmp := "HOME="+dir+"/home", "TMPDIR="+dir+"/tmp"
+	for _, c := range []struct {
+		env  map[string]string
+		want []string
+	}{
+		{nil, []string{home, "PATH=" + defaultPATH, tmp}},
+		{map[string]string{"B": "2", "A": "1"}, []string{"A=1", "B=2", home, "PATH=" + defaultPATH, tmp}},
+		{map[string]string{"PATH": "/custom"}, []string{home, "PATH=/custom", tmp}},
+	} {
+		got := agentEnv(c.env, dir)
+		if !slices.Equal(got, c.want) || envValue(got, "PATH") != c.want[len(c.want)-2][5:] {
+			t.Errorf("agentEnv(%v) = %q, want %q", c.env, got, c.want)
 		}
 	}
-	if n != 1 || !slices.Contains(e2, "PATH=/custom") {
-		t.Errorf("a Spec.Env PATH: %q", e2)
-	}
-	e3 := agentEnv(nil, dir)
-	if len(e3) != 3 {
-		t.Errorf("agentEnv(nil) = %q", e3)
-	}
-	for _, e := range [][]string{e1, e2, e3} {
-		if !slices.IsSorted(e) || strings.Contains(strings.Join(e, " "), "AGENTKIT_EMBEDDER_SENTINEL") {
-			t.Errorf("%q is unsorted or carries the embedder's environment", e)
-		}
+	if envValue([]string{"A=1"}, "PATH") != "" {
+		t.Error("envValue found an unset variable")
 	}
 }

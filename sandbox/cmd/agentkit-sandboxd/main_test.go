@@ -1,286 +1,197 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
-	"debug/buildinfo"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
-	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/attach"
-	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/stdioconn"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// binary is agentkit-sandboxd built once for this package's tests.
-var binary string
-
-func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "agentkit-sandboxd-test-")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+func TestParseFlagsReadsTheCommandLine(t *testing.T) {
+	spec := func(ttl time.Duration, mode sandbox.NetworkMode, wd string) []string {
+		return sandbox.AgentArgs(sandbox.Spec{TTL: ttl, Network: sandbox.Network{Mode: mode}, Workdir: wd})
 	}
-	binary = filepath.Join(dir, "agentkit-sandboxd")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
-	}
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "building agentkit-sandboxd: %v\n%s", err, out)
-		os.Exit(1)
-	}
-	code := m.Run()
-	os.RemoveAll(dir)
-	os.Exit(code)
-}
-
-// started is a running agentkit-sandboxd and a sandbox attached to it.
-type started struct {
-	cmd    *exec.Cmd
-	stderr *bytes.Buffer
-	sb     sandbox.Sandbox
-}
-
-// start runs the binary with args and env and attaches to its stdio.
-func start(t *testing.T, env []string, args ...string) *started {
-	t.Helper()
-	cmd := exec.Command(binary, args...)
-	cmd.Env = env
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-	sb, err := attach.Dial(context.Background(), stdioconn.New(stdout, stdin), attach.Config{Spec: sandbox.Spec{TTL: time.Hour}})
-	if err != nil {
-		t.Fatalf("attach: %v (stderr %q)", err, stderr.String())
-	}
-	return &started{cmd: cmd, stderr: &stderr, sb: sb}
-}
-
-// tool runs the named proxy with input.
-func tool(t *testing.T, sb sandbox.Sandbox, name, input string) core.ToolResult {
-	t.Helper()
-	tl, err := sb.Tools(context.Background(), sandbox.ToolOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range tl {
-		if p.Name == name {
-			return p.Execute(context.Background(), []byte(input))
+	for _, c := range []struct {
+		args []string
+		want config
+	}{
+		{nil, config{workdir: "/workspace", ttl: time.Hour, network: sandbox.NetworkNone}},
+		{spec(90*time.Second, sandbox.NetworkUnrestricted, "/w"), config{workdir: "/w", ttl: 90 * time.Second, network: sandbox.NetworkUnrestricted}},
+		{spec(48*time.Hour, sandbox.NetworkAllowlist, ""), config{workdir: "/workspace", ttl: 48 * time.Hour, network: sandbox.NetworkAllowlist}},
+		{[]string{"--landlock-ro", "/a", "--landlock-rw", "/x", "--landlock-ro", "/b", "--network", "none"},
+			config{workdir: "/workspace", ttl: time.Hour, landlockRO: []string{"/a", "/b"}, landlockRW: []string{"/x"}}},
+	} {
+		got, err := parseFlags(c.args)
+		if got.networkFlag = ""; err != nil || !reflect.DeepEqual(got, c.want) {
+			t.Errorf("parseFlags(%q) = %+v, %v; want %+v", c.args, got, err, c.want)
 		}
 	}
-	t.Fatalf("no proxy %s", name)
-	return core.ToolResult{}
-}
-
-// runBinary runs the binary to completion and returns stdout, stderr and the exit
-// code.
-func runBinary(t *testing.T, args ...string) (string, string, int) {
-	t.Helper()
-	cmd := exec.Command(binary, args...)
-	var so, se bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &so, &se
-	err := cmd.Run()
-	code := 0
-	if ee, ok := err.(*exec.ExitError); ok {
-		code = ee.ExitCode()
-	} else if err != nil {
-		t.Fatal(err)
-	}
-	return so.String(), se.String(), code
-}
-
-func oneLine(s string) bool {
-	s = strings.TrimSpace(s)
-	return s != "" && !strings.Contains(s, "\n")
-}
-
-// TS-13-23: agentkit-sandboxd defaults to /workspace and 1h and hands its
-// own environment to the tools verbatim. 13-REQ-4.1.
-func TestDefaultsAndEnvironment_TS13_23(t *testing.T) {
-	cfg, err := parseFlags(nil)
-	if err != nil || cfg.workdir != "/workspace" || cfg.ttl != time.Hour {
-		t.Fatalf("parseFlags() = %+v, %v", cfg, err)
-	}
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX env command")
-	}
-	t.Setenv("HOST_ONLY_VAR", "1")
-	p := start(t, []string{"PATH=" + os.Getenv("PATH"), "MARKER=sandboxd-env"}, "--workdir", t.TempDir())
-	out := tool(t, p.sb, "execute", `{"command":"env"}`).Text
-	if !strings.Contains(out, "MARKER=sandboxd-env") || strings.Contains(out, "HOST_ONLY_VAR") {
-		t.Errorf("execute env:\n%s", out)
-	}
-}
-
-// expectedVersion is the module version recorded in the built binary, or
-// (devel): what the binary itself reports.
-func expectedVersion(t *testing.T) string {
-	t.Helper()
-	bi, err := buildinfo.ReadFile(binary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bi.Main.Version != "" {
-		return bi.Main.Version
-	}
-	return "(devel)"
-}
-
-// TS-13-24: --version prints the versions and exits 0, and usage errors
-// exit non-zero with a one-line stderr message without serving.
-// 13-REQ-4.2, 13-REQ-4.3.
-func TestVersionAndUsageErrors_TS13_24(t *testing.T) {
-	so, _, code := runBinary(t, "--version")
-	if code != 0 || !strings.Contains(so, expectedVersion(t)) || !strings.Contains(so, "(protocol 1.2)") {
-		t.Errorf("--version: exit %d, stdout %q", code, so)
-	}
-	for _, args := range [][]string{{"--ttl", "0"}, {"--ttl", "-1s"}, {"--ttl", "bogus"}, {"--nosuchflag"}} {
-		so, se, code := runBinary(t, args...)
-		if code == 0 || !oneLine(se) || so != "" {
-			t.Errorf("%v: exit %d, stdout %q, stderr %q; want non-zero, nothing, one line", args, code, so, se)
+	for args, want := range map[string]string{
+		"--ttl -1s": "--ttl must be positive, got -1s", "--ttl bogus": `invalid value "bogus" for flag -ttl`,
+		"--nosuchflag": "flag provided but not defined: -nosuchflag", "/w": `unexpected argument "/w"`,
+		"--network NONE": `--network: invalid value "NONE" (want none, allowlist or unrestricted)`,
+	} {
+		if _, err := parseFlags(strings.Fields(args)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("parseFlags(%s) = %v, want %q", args, err, want)
 		}
 	}
 }
 
-// TS-13-25: the command points os.Stdout at stderr before serving and opens
-// no listening socket. 13-REQ-4.4.
-func TestStdoutRedirectAndNoSocket_TS13_25(t *testing.T) {
-	r, w, err := os.Pipe()
-	if err != nil {
+// A bad flag, or a path flag widening the boundary, exits 2 with one stderr
+// line naming it; a workspace the ruleset or the agent cannot use exits 1.
+func TestRunRefusesWhatItCannotServe(t *testing.T) {
+	usr, missing := filepath.Join(t.TempDir(), "usr"), filepath.Join(t.TempDir(), "missing")
+	if err := os.Symlink("/usr", usr); err != nil {
 		t.Fatal(err)
 	}
+	t.Chdir("/")
+	for _, c := range []struct {
+		flag, value string
+		code        int
+	}{{"--ttl", "0", 2}, {"--network", "", 2}, {"--workdir", "/", 2}, {"--workdir", ".", 2}, {"--workdir", usr, 2},
+		{"--landlock-rw", "/opt", 2}, {"--landlock-rw", "rel/dir", 2}, {"--landlock-ro", "rel/dir", 2}, {"--workdir", missing, 1}} {
+		want := map[int]string{2: c.flag, 1: missing}[c.code]
+		if so, se, code := runIn(t, c.flag, c.value); code != c.code || so != "" || !oneLine(se) || !strings.Contains(se, want) {
+			t.Errorf("%s %s: exit %d, stdout %q, stderr %q; want %d and one line naming %s", c.flag, c.value, code, so, se, c.code, want)
+		}
+	}
+}
+
+// --version prints the versions, and any commit and build time stamped, first.
+func TestVersionPrintsTheVersions(t *testing.T) {
+	proto := fmt.Sprintf("(protocol %d.%d)", sandbox.ProtocolMajor, sandbox.ProtocolMinor)
+	if so, se, code := runIn(t, "--version"); code != 0 || se != "" || so != "agentkit-sandboxd "+buildver.Version()+" "+proto+"\n" {
+		t.Errorf("--version in process: exit %d, stdout %q, stderr %q", code, so, se)
+	}
+	out, err := exec.Command(binary, "--version", "--workdir", "/").CombinedOutput()
+	if want := "agentkit-sandboxd v9.8.7 " + proto + " commit abc1234 built 2026-10-14T00:00:00Z\n"; err != nil || string(out) != want {
+		t.Errorf("--version: %v, %q; want %q", err, out, want)
+	}
+}
+
+func TestRedirectStdoutSendsStrayWritesToStderr(t *testing.T) {
 	origOut, origErr := os.Stdout, os.Stderr
-	os.Stderr = w
+	f, _ := os.Create(filepath.Join(t.TempDir(), "stderr"))
+	os.Stderr = f
 	got := redirectStdout()
 	fmt.Println("stray")
 	os.Stdout, os.Stderr = origOut, origErr
-	w.Close()
-	captured, _ := io.ReadAll(r)
-	if !strings.Contains(string(captured), "stray") {
-		t.Errorf("a stray Println reached %q, not stderr", captured)
-	}
-	if got != origOut {
-		t.Error("redirectStdout did not return the original stdout")
-	}
-
-	p := start(t, []string{"PATH=" + os.Getenv("PATH")}, "--workdir", t.TempDir())
-	if p.sb.Agent().ProtocolMajor != 1 {
-		t.Errorf("Hello over stdio: %+v", p.sb.Agent())
-	}
-	if runtime.GOOS != "linux" {
-		t.Skip("the socket check reads /proc")
-	}
-	fds, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", p.cmd.Process.Pid))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, fd := range fds {
-		link, _ := os.Readlink(fmt.Sprintf("/proc/%d/fd/%s", p.cmd.Process.Pid, fd.Name()))
-		if strings.HasPrefix(link, "socket:") {
-			t.Errorf("fd %s is a socket (%s)", fd.Name(), link)
-		}
+	if b, _ := os.ReadFile(f.Name()); got != origOut || string(b) != "stray\n" {
+		t.Errorf("redirectStdout returned %v (stdout %v); stderr got %q", got, origOut, b)
 	}
 }
 
-// TS-13-26: a startup failure or TTL expiry exits non-zero with one stderr
-// line naming the cause. 13-REQ-4.6.
-func TestStartupFailureAndTTL_TS13_26(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "missing")
-	_, se, code := runBinary(t, "--workdir", missing)
-	if code == 0 || !oneLine(se) || !strings.Contains(se, missing) {
-		t.Errorf("missing workdir: exit %d, stderr %q", code, se)
+// The agent serves its stdio (no socket) until the host closes, running the
+// tools in --workdir with its environment verbatim, through constant GC; on
+// Linux it and its tools are confined to W, HOME and TMPDIR, as Hello says.
+func TestServesAConfinedAgentOverItsStdio(t *testing.T) {
+	base := testutil.Tree(t, map[string]string{"W/seed.txt": "seed\n", "H/.keep": "", "T/.keep": "", "S/secret": "s"})
+	d := map[string]string{}
+	for _, n := range []string{"W", "H", "T", "S"} {
+		d[n], _ = filepath.EvalSymlinks(filepath.Join(base, n))
 	}
-
-	cmd := exec.Command(binary, "--workdir", t.TempDir(), "--ttl", "300ms")
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
+	// dialtcp to 127.0.0.1:1 is refused with TCP open, denied under Landlock.
+	dial := filepath.Join(d["W"], "dialtcp")
+	build := exec.Command("go", "build", "-o", dial, "./testdata/dialtcp")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if b, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building dialtcp: %v\n%s", err, b)
 	}
-	defer stdin.Close()
-	var se2 bytes.Buffer
-	cmd.Stderr = &se2
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
+	dial += " 127.0.0.1:1"
+	t.Setenv("HOST_ONLY_VAR", "1")
+	p := start(t, []string{"PATH=/usr/bin:/bin", "MARKER=sandboxd-env", "GOGC=1", "HOME=" + d["H"], "TMPDIR=" + d["T"]}, "--workdir", d["W"])
+	a, l := p.sb.Agent(), p.sb.Agent().Landlock
+	if a.ProtocolMajor != sandbox.ProtocolMajor || a.Workdir != d["W"] {
+		t.Errorf("Agent() = %+v", a)
 	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		if err == nil || !oneLine(se2.String()) || !strings.Contains(se2.String(), "300ms") {
-			t.Errorf("TTL: %v, stderr %q", err, se2.String())
-		}
-	case <-time.After(5 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatal("the agent outlived its 300ms TTL by 5s")
-	}
-}
-
-// TS-13-27: agentkit-sandboxd builds on the four cross targets with cgo off
-// and on the host with cgo on. 13-REQ-4.7.
-func TestCrossTargetBuilds_TS13_27(t *testing.T) {
-	if testing.Short() {
-		t.Skip("cross-target builds skipped under -short")
-	}
-	for _, tgt := range [][3]string{{"linux", "amd64", "0"}, {"linux", "arm64", "0"}, {"darwin", "arm64", "0"},
-		{"windows", "amd64", "0"}, {runtime.GOOS, runtime.GOARCH, "1"}} {
-		cmd := exec.Command("go", "build", "-o", os.DevNull, ".")
-		cmd.Env = append(os.Environ(), "GOOS="+tgt[0], "GOARCH="+tgt[1], "CGO_ENABLED="+tgt[2])
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Errorf("%v: %v\n%s", tgt, err, out)
-		}
-	}
-}
-
-// TS-13-74 (smoke, 13-PATH-6): the built binary serves the protocol on its
-// stdio to the attach package and exits 0 when the host closes.
-// 13-REQ-4.4, 13-REQ-4.5.
-func TestSmokeBinaryServesStdio_TS13_74(t *testing.T) {
-	wd := t.TempDir()
-	if err := os.WriteFile(filepath.Join(wd, "seed.txt"), []byte("seed\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	p := start(t, []string{"PATH=" + os.Getenv("PATH")}, "--workdir", wd, "--ttl", "1m")
-	want, _ := filepath.EvalSymlinks(wd)
-	if p.sb.Agent().ProtocolMajor != 1 || p.sb.Agent().Workdir != want {
-		t.Errorf("Agent() = %+v", p.sb.Agent())
-	}
-	tl, err := p.sb.Tools(context.Background(), sandbox.ToolOptions{})
-	if err != nil || len(tl) != 11 {
-		t.Fatalf("Tools: %d, %v", len(tl), err)
-	}
-	if r := tool(t, p.sb, "list_files", `{"path":"."}`); !r.OK || !strings.Contains(r.Text, "seed.txt") {
+	if r := p.tool(t, "list_files", `{"path":"."}`); !r.OK || !strings.Contains(r.Text, "seed.txt") {
 		t.Errorf("list_files: %+v", r)
 	}
-	if err := p.sb.Close(context.Background()); err != nil {
-		t.Fatal(err)
+	if _, out := p.sh(t, "env"); !strings.Contains(out, "MARKER=sandboxd-env") || strings.Contains(out, "HOST_ONLY_VAR") {
+		t.Errorf("execute env:\n%s", out)
 	}
-	done := make(chan error, 1)
-	go func() { done <- p.cmd.Wait() }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("exit after the host closed: %v (stderr %q)", err, p.stderr.String())
+	for i := range 30 {
+		if code, out := p.sh(t, "echo hi"); code != "0" || out != "hi\n" {
+			t.Fatalf("call %d: exit %s, %q (stderr %q)", i, code, out, p.stderr)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the agent did not exit within 5s of the host closing")
+	}
+	fds, _ := filepath.Glob(fmt.Sprintf("/proc/%d/fd/*", p.cmd.Process.Pid))
+	for _, fd := range fds {
+		if link, _ := os.Readlink(fd); strings.HasPrefix(link, "socket:") {
+			t.Errorf("%s is a socket", fd)
+		}
+	}
+	ctx := context.Background()
+	project := testutil.Tree(t, map[string]string{"go.mod": "module p\n", "pkg/deep/z.go": "package deep\n"})
+	if _, err := p.sb.Sync(ctx, sandbox.LocalDir{Path: project, Ignore: workspace.NoGlobalExcludes()}); err != nil {
+		t.Errorf("LocalDir sync: %v", err)
+	}
+	var out bytes.Buffer
+	if err := p.sb.Export(ctx, "pkg", sandbox.TarOut{W: &out}); err != nil {
+		t.Errorf("tar export: %v", err)
+	} else if h, err := tar.NewReader(&out).Next(); err != nil || !strings.HasPrefix(h.Name, "deep") {
+		t.Errorf("the exported tar starts with %+v, %v", h, err)
+	}
+	// 200 KB is past the output limit, so the result spills into T.
+	r := p.tool(t, "execute", `{"command":"head -c 200000 /dev/zero | tr '\\0' x"}`)
+	if r.Metadata == nil || !strings.HasPrefix(r.Metadata.SpillPath, d["T"]+"/agentkit-spill/") {
+		t.Errorf("the oversized execute spilled to %+v (stderr %q)", r.Metadata, p.stderr)
+	}
+	if runtime.GOOS != "linux" && l.Note != "Landlock is Linux-only (GOOS="+runtime.GOOS+")" {
+		t.Errorf("Agent().Landlock = %+v", l)
+	}
+	if k := l.KernelABI; l.ABI >= 2 {
+		if l.ABI != min(k, 4) || l.TCP != (k >= 4) || !slices.Equal(l.Writable[:3], []string{d["W"], d["H"], d["T"]}) {
+			t.Errorf("Agent().Landlock = %+v, want ABI %d and W, H, T writable", l, min(k, 4))
+		}
+		for _, c := range []string{"touch " + d["S"] + "/x", "cat " + d["S"] + "/secret", `/bin/sh -c "/bin/sh -c 'echo x > ` + d["S"] + `/y'"`} {
+			if code, out := p.sh(t, c); code == "0" || !strings.Contains(out, "Permission denied") {
+				t.Errorf("%s: exit %s: %s", c, code, out)
+			}
+		}
+		if _, out := p.sh(t, dial); !strings.Contains(out, map[bool]string{true: "permission denied", false: "connection refused"}[k >= 4]) {
+			t.Errorf("dialtcp under none at ABI %d: %s", k, out)
+		}
+	}
+	if err := errors.Join(p.sb.Close(ctx), p.cmd.Wait()); err != nil {
+		t.Errorf("closing: %v (stderr %q)", err, p.stderr)
+	}
+	if l.ABI < 2 {
+		return
+	}
+	missing := filepath.Join(d["S"], "missing")
+	p = start(t, []string{"HOME=/", "TMPDIR=" + missing, "PATH=/usr/bin:/bin"}, "--network", "unrestricted", "--workdir", d["W"])
+	if l := p.sb.Agent().Landlock; l.ABI < 2 || l.TCP || slices.Contains(l.Writable, "/") ||
+		!strings.Contains(l.Note, `HOME="/"`) || !strings.Contains(l.Note, `TMPDIR="`+missing) {
+		t.Errorf("unusable HOME and TMPDIR: Agent().Landlock = %+v", l)
+	}
+	if _, out := p.sh(t, dial); !strings.Contains(out, "connection refused") {
+		t.Errorf("dialtcp under unrestricted: %s", out)
+	}
+	if code, _ := p.sh(t, "touch "+d["S"]+"/x"); code == "0" {
+		t.Error("touch S/x succeeded under unrestricted")
+	}
+}
+
+func TestExitsOneWhenTheTTLExpires(t *testing.T) {
+	p := start(t, []string{"HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir()}, "--workdir", t.TempDir(), "--ttl", "300ms")
+	var ee *exec.ExitError
+	if err := p.cmd.Wait(); !errors.As(err, &ee) || ee.ExitCode() != 1 || !oneLine(p.stderr.String()) || !strings.Contains(p.stderr.String(), "300ms") {
+		t.Errorf("after the TTL: %v, stderr %q", err, p.stderr)
 	}
 }

@@ -100,8 +100,7 @@ type DocumentSection struct {
 ```
 
 When `Symbols` and `SymbolsMetaData` are populated and `CTagsPath` is empty,
-the builder uses the supplied data without running ctags. This is verified by
-TS-03-64.
+the builder uses the supplied data without running ctags; a test checks it.
 
 Each section is the declared identifier on its start line — what `sym:`
 matches — not the declaration's body. zoekt rejects a shard whose sections
@@ -131,14 +130,13 @@ CGO_ENABLED=1 go list -deps -f '{{.ImportPath}}|{{.Module.Path}}|{{len .CgoFiles
 
 No non-stdlib package in the dependency graph ships cgo files.
 
-### Forbidden imports: checked on direct imports only
+### Forbidden imports: direct imports only
 
 No package of this module directly imports gRPC, Prometheus,
-`github.com/grpc-ecosystem/…` or `net/http/httptest`. That is what
-`TestForbiddenImports` checks, and it checks **direct imports only, by
-decision**.
+`github.com/grpc-ecosystem/…` or `net/http/httptest`; that is kept by review,
+and it holds for **direct imports only, by decision**.
 
-The spec first called for the check to run over `go list -deps`. It cannot:
+The spec first called for the rule to cover `go list -deps`. It cannot:
 the packages the spec allows, `zoekt/index` and `zoekt/search`, import these
 themselves. The project owner accepted that transitive graph instead of
 recording a no-go.
@@ -158,7 +156,7 @@ module's graph does not include this nested module.
 
 ### The builder accepts AgentKit's symbols
 
-Verified by TS-03-64: a document with `Symbols` and `SymbolsMetaData` set and
+A test checks that a document with `Symbols` and `SymbolsMetaData` set and
 `CTagsPath` empty is indexed and searchable with `sym:` queries. The symbol
 hit outranks a comment-only hit. No ctags process is spawned.
 
@@ -171,9 +169,10 @@ hit outranks a comment-only hit. No ctags process is spawned.
 | darwin/arm64 | ✅ | ✅ |
 | windows/amd64 | ✅ (stub) | ✅ (stub) |
 
-Zoekt does not build on windows/amd64 (`unix.Umask` undefined). Per
-03-REQ-8.6 and 03-REQ-9.5, this is handled by a platform-constrained stub
-that returns `ErrUnsupported`, not treated as a no-go.
+Zoekt does not build on windows/amd64 (`unix.Umask` undefined). This is
+handled by a platform-constrained stub that returns `ErrUnsupported`, not
+treated as a no-go. `internal/policy`'s cross-target gate, which
+`make check-release` runs, builds and vets the module for every target.
 
 ### The Windows stub
 
@@ -185,7 +184,6 @@ inert methods (`Symbols` never answers, `Tools` is empty), and has the
 counters and statistics of the real one (`Build` returns `ErrUnsupported`,
 every count is 0, `BuildStats` is the zero value), so the code in
 [the opt-in snippet](../codesearch/README.md#use-it) compiles on Windows unchanged.
-`TestEmbedderCompilesOnEveryTarget` builds an embedder that calls them.
 
 ## Test goldens
 

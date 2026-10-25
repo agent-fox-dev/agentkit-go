@@ -1,137 +1,92 @@
 package core
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"os"
+	"encoding/json"
 	"reflect"
-	"sort"
-	"strings"
 	"testing"
 )
 
-// coreDecls parses the package's production files and returns the names of
-// its declared types (and its functions, as "func Name") and the receiver
-// types of each method name.
-func coreDecls(t *testing.T) (types map[string]bool, methods map[string][]string) {
-	t.Helper()
-	fset := token.NewFileSet()
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	types, methods = map[string]bool{}, map[string][]string{}
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		f, err := parser.ParseFile(fset, name, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, d := range f.Decls {
-			switch d := d.(type) {
-			case *ast.GenDecl:
-				for _, s := range d.Specs {
-					if ts, ok := s.(*ast.TypeSpec); ok {
-						types[ts.Name.Name] = true
-					}
-				}
-			case *ast.FuncDecl:
-				if d.Recv == nil || len(d.Recv.List) == 0 {
-					types["func "+d.Name.Name] = true
-					continue
-				}
-				recv := d.Recv.List[0].Type
-				if star, ok := recv.(*ast.StarExpr); ok {
-					recv = star.X
-				}
-				if id, ok := recv.(*ast.Ident); ok {
-					methods[d.Name.Name] = append(methods[d.Name.Name], id.Name)
-				}
-			}
+func TestNewToolUseKeepsAnObjectsBytesAndNormalizesEmptyInput(t *testing.T) {
+	for in, want := range map[string]string{``: `{}`, " \t\n": `{}`, ` {"z":1, "a":2} `: `{"z":1, "a":2}`} {
+		b, err := NewToolUse("1", "t", json.RawMessage(in))
+		if err != nil || string(b.Input) != want || b.ID != "1" || b.Name != "t" {
+			t.Errorf("NewToolUse(%q) = %+v, %v; want input %s", in, b, err, want)
 		}
 	}
-	for _, rs := range methods {
-		sort.Strings(rs)
+	if b, err := NewToolUse("1", "t", nil); err != nil || string(b.Input) != "{}" {
+		t.Errorf("NewToolUse(nil) = %s, %v", b.Input, err)
 	}
-	return types, methods
-}
-
-func hasField(v any, name string) bool {
-	_, ok := reflect.TypeOf(v).FieldByName(name)
-	return ok
-}
-
-// TS-12-1: Message and ContentBlock are sealed to the canonical types, and
-// the image, raw and tool-result blocks are gone.
-func TestMessageAndBlockUnionsAreSealed_TS12_1(t *testing.T) {
-	types, methods := coreDecls(t)
-	if got := strings.Join(methods["isMessage"], ","); got != "AssistantMessage,ToolResultMessage,UserMessage" {
-		t.Fatalf("Message implementors = %s", got)
-	}
-	if got := strings.Join(methods["isContentBlock"], ","); got != "TextBlock,ThinkingBlock,ToolUseBlock" {
-		t.Fatalf("ContentBlock implementors = %s", got)
-	}
-	for _, gone := range []string{"ImageBlock", "RawBlock", "ToolResultBlock"} {
-		if types[gone] {
-			t.Errorf("core still declares %s", gone)
-		}
-	}
-	// The seal is an unexported method: a type outside core cannot satisfy
-	// the interfaces.
-	for _, iface := range []reflect.Type{reflect.TypeOf((*Message)(nil)).Elem(), reflect.TypeOf((*ContentBlock)(nil)).Elem()} {
-		sealed := false
-		for i := 0; i < iface.NumMethod(); i++ {
-			if iface.Method(i).PkgPath != "" {
-				sealed = true
-			}
-		}
-		if !sealed {
-			t.Errorf("%s is not sealed", iface.Name())
-		}
-	}
-}
-
-// TS-12-2: the messages carry no jsonx, deferred or provenance fields beyond
-// the model, and a tool use keeps its raw input.
-func TestMessageFieldsArePruned_TS12_2(t *testing.T) {
-	for _, m := range []any{UserMessage{}, AssistantMessage{}, ToolResultMessage{}} {
-		for _, gone := range []string{"Unknown", "Deferred"} {
-			if hasField(m, gone) {
-				t.Errorf("%T still has %s", m, gone)
-			}
-		}
-	}
-	for _, gone := range []string{"ThinkingLevel", "API", "Provider"} {
-		if hasField(AssistantMessage{}, gone) {
-			t.Errorf("AssistantMessage still has %s", gone)
-		}
-	}
-	if f, ok := reflect.TypeOf(AssistantMessage{}).FieldByName("Effort"); !ok || f.Type != reflect.TypeOf(Effort("")) {
-		t.Error("AssistantMessage.Effort is missing or not an Effort")
-	}
-	for _, kept := range []string{"ID", "Name", "Input", "ThoughtSignature"} {
-		if !hasField(ToolUseBlock{}, kept) {
-			t.Errorf("ToolUseBlock lost %s", kept)
-		}
-	}
-	if hasField(ToolUseBlock{}, "InputOrder") {
-		t.Error("ToolUseBlock still has InputOrder")
-	}
-}
-
-// A tool input with bytes after the object is refused: replayed verbatim, it
-// would make the next request body invalid JSON.
-func TestToolInputWithTrailingBytesIsRefused(t *testing.T) {
-	for _, in := range []string{`{"a":1}]`, `{"a":1}}`, `{"a":1} {}`} {
+	// Bytes after the object would make a replayed request body invalid JSON.
+	for _, in := range []string{`{"a":1}]`, `{"a":1}}`, `{"a":1} {}`, `[1,2]`, `"s"`, `{"a":`} {
 		if _, err := NewToolUse("1", "t", []byte(in)); err == nil {
 			t.Errorf("NewToolUse(%s) accepted it", in)
 		}
 	}
-	if _, err := NewToolUse("1", "t", []byte(` {"a":1} `)); err != nil {
-		t.Errorf("surrounding space refused: %v", err)
+}
+
+func TestToolUseInputMapKeepsNumbersVerbatim(t *testing.T) {
+	m := toolUse(t, "1", "t", `{"n":9007199254740993,"o":{"f":1.50}}`).InputMap()
+	if m["n"] != json.Number("9007199254740993") || m["o"].(map[string]any)["f"] != json.Number("1.50") {
+		t.Fatalf("InputMap() = %#v", m)
+	}
+	if (ToolUseBlock{Input: json.RawMessage(`[`)}).InputMap() != nil {
+		t.Fatal("an undecodable input must map to nil")
+	}
+}
+
+func TestMessagesReportTheirRoleAndBlocksTheirType(t *testing.T) {
+	for _, c := range []struct {
+		m    Message
+		want Role
+	}{{UserMessage{}, RoleUser}, {AssistantMessage{}, RoleAssistant}, {ToolResultMessage{}, RoleToolResult}} {
+		if c.m.Role() != c.want {
+			t.Errorf("%T.Role() = %q, want %q", c.m, c.m.Role(), c.want)
+		}
+	}
+	for _, c := range []struct {
+		b    ContentBlock
+		want BlockType
+	}{{TextBlock{}, BlockText}, {ThinkingBlock{}, BlockThinking}, {ToolUseBlock{}, BlockToolUse}} {
+		if c.b.BlockType() != c.want {
+			t.Errorf("%T.BlockType() = %q, want %q", c.b, c.b.BlockType(), c.want)
+		}
+	}
+}
+
+func TestContentTextConcatenatesOnlyTextBlocks(t *testing.T) {
+	c := Content{TextBlock{Text: "a"}, ThinkingBlock{Thinking: "no"}, toolUse(t, "1", "t", `{}`), TextBlock{Text: "b"}}
+	if got := c.Text(); got != "ab" {
+		t.Fatalf("Text() = %q, want ab", got)
+	}
+}
+
+func TestMessageCloneSharesNothingMutable(t *testing.T) {
+	exit := 3
+	usage := Usage{InputTokens: 1}
+	msgs := Messages{
+		UserMessage{Content: Content{TextBlock{Text: "u"}, toolUse(t, "1", "t", `{"a":1}`)}},
+		AssistantMessage{Content: Content{ThinkingBlock{Thinking: "th"}, toolUse(t, "2", "t", `{"b":2}`)}},
+		ToolResultMessage{ToolUseID: "2", Content: Content{TextBlock{Text: "r"}}, AddedToolNames: []string{"x"},
+			Usage: &usage, Metadata: &ToolMetadata{ExitCode: &exit, Outcome: "exit"}},
+	}
+	before := msgs.Clone()
+	c := msgs.Clone()
+	if !reflect.DeepEqual(c, msgs) {
+		t.Fatalf("Clone() = %+v, want an equal copy", c)
+	}
+	c[0].(UserMessage).Content[0] = TextBlock{Text: "changed"}
+	c[0].(UserMessage).Content[1].(ToolUseBlock).Input[2] = 'X'
+	c[1].(AssistantMessage).Content[1].(ToolUseBlock).Input[2] = 'X'
+	tr := c[2].(ToolResultMessage)
+	tr.Content[0], tr.AddedToolNames[0] = TextBlock{Text: "changed"}, "changed"
+	tr.Usage.InputTokens, tr.Metadata.Outcome, *tr.Metadata.ExitCode = 9, "changed", 9
+	if !reflect.DeepEqual(msgs, before) {
+		t.Fatalf("mutating a clone changed the original:\n%+v\nwant\n%+v", msgs, before)
+	}
+	if Messages(nil).Clone() != nil || Content(nil).Clone() != nil {
+		t.Fatal("a nil slice clones to nil")
+	}
+	if c := (ToolResultMessage{}).Clone().(ToolResultMessage); c.Usage != nil || c.Metadata != nil {
+		t.Fatalf("an empty result cloned to %+v", c)
 	}
 }

@@ -6,16 +6,16 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/treegen"
 )
 
-// TS-20-57 (the treegen half): treegen walks through the workspace package and
-// its walk output is what tools.Walk's was, for the same generated trees.
-// testdata/walksets.json holds the sets recorded from tools.Walk before the
-// workspace package existed, for seeds 1 to 5.
-func TestWalkSetIsWhatToolsWalkVisited_TS20_57(t *testing.T) {
+// testdata/walksets.json holds the walk sets tools.Walk listed for seeds 1 to
+// 5; the walk treegen's oracles stand on must list the same, and must not read
+// a global excludes file that would hide everything.
+func TestWalkSetIsTheRecordedOneForEachSeed(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("testdata", "walksets.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -24,20 +24,17 @@ func TestWalkSetIsWhatToolsWalkVisited_TS20_57(t *testing.T) {
 	if err := json.Unmarshal(raw, &recorded); err != nil {
 		t.Fatal(err)
 	}
-
-	// A global excludes file in the environment that would hide everything:
-	// the walk must not read it. git's own core.excludesFile would take
-	// precedence over the XDG path, so it names the same file, and the
-	// machine's own configuration is out of the picture.
+	// git's own core.excludesFile would take precedence over the XDG path, so
+	// it names the same file.
 	cfg := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(cfg, "git"), 0o755); err != nil {
+	ignore := filepath.Join(cfg, "git", "ignore")
+	gitconfig := filepath.Join(cfg, "gitconfig")
+	if err := os.MkdirAll(filepath.Dir(ignore), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ignore := filepath.Join(cfg, "git", "ignore")
 	if err := os.WriteFile(ignore, []byte("*\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitconfig := filepath.Join(cfg, "gitconfig")
 	if err := os.WriteFile(gitconfig, []byte("[core]\n\texcludesFile = "+ignore+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -55,5 +52,58 @@ func TestWalkSetIsWhatToolsWalkVisited_TS20_57(t *testing.T) {
 		if !slices.Equal(got, want) {
 			t.Errorf("seed %d: the walk set is %v, want the recorded %v", seed, got, want)
 		}
+	}
+}
+
+// The oracles partition a tree: what Walk lists, the .git trees, the ignored
+// entries; and every escaping link is a symlink.
+func TestOraclesDescribeAGeneratedPair(t *testing.T) {
+	src, recv, outside := t.TempDir(), t.TempDir(), t.TempDir()
+	treegen.Pair(t, 3, src, recv, outside)
+	for _, root := range []string{src, recv} {
+		listed, git, ignored := treegen.WalkSet(t, root), treegen.GitTrees(t, root), treegen.Ignored(t, root)
+		entries := treegen.Entries(t, root)
+		for rel := range ignored {
+			if listed[rel] || git[rel] {
+				t.Errorf("%s is ignored and also listed or in a .git tree", rel)
+			}
+		}
+		for rel := range git {
+			if !strings.Contains("/"+rel+"/", "/.git/") && !strings.HasSuffix(rel, ".git") {
+				t.Errorf("GitTrees holds %s, outside any .git", rel)
+			}
+		}
+		esc := treegen.Escaping(t, root)
+		if len(esc) == 0 {
+			t.Errorf("%s: the pair has no escaping link", root)
+		}
+		for rel := range esc {
+			if !strings.HasPrefix(entries[rel], "link ") {
+				t.Errorf("Escaping holds %s, which Entries describes as %q", rel, entries[rel])
+			}
+		}
+	}
+}
+
+func TestSnapshotRecordsAbsenceTimesAndEverythingUnderAPath(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "d", "f"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap := treegen.Snapshot(t, root, map[string]bool{"d": true, "gone": true})
+	if snap["gone"] != "absent" {
+		t.Errorf("gone = %q, want absent", snap["gone"])
+	}
+	if want := `file -rw------- "x" `; !strings.HasPrefix(snap["d/f"], want) || len(snap["d/f"]) == len(want) {
+		t.Errorf("d/f = %q, want %q and a modification time", snap["d/f"], want)
+	}
+	if !strings.HasPrefix(snap["d"], "dir ") {
+		t.Errorf("d = %q, want a directory", snap["d"])
+	}
+	if got := treegen.Describe(filepath.Join(root, "gone"), false); got != "absent" {
+		t.Errorf("Describe of a missing path = %q", got)
 	}
 }

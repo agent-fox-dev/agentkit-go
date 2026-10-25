@@ -3,132 +3,120 @@ package core
 import (
 	"encoding/json"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 )
 
-// A minimal encoder standing in for the session codec: enough to prove the
-// envelope, not the message shape.
-func stubEncoder(m Message) (json.RawMessage, error) {
-	return json.Marshal(map[string]any{"role": string(m.Role())})
-}
-
-// TestEventsSerializeAsADiscriminatedUnion is REQ-OBS-06c: a `type` member
-// plus exactly the fields the variant carries — no shared envelope with every
-// field optional.
-func TestEventsSerializeAsADiscriminatedUnion(t *testing.T) {
-	cases := []struct {
-		ev   Event
-		want []string // keys that must be present, and no others
-	}{
-		{AgentStartEvent{SessionID: "s", Provider: "p", API: "a", Model: "m"}, []string{"type", "session_id", "provider", "api", "model"}},
-		{AgentDoneEvent{Result: RunResult{StopReason: RunStopEndTurn}}, []string{"type", "stop_reason", "last_reason", "turn_count", "error", "run_usage", "messages", "usage"}},
-		{TurnStartEvent{TurnIndex: 1}, []string{"type", "turn_index"}},
-		{TurnEndEvent{TurnIndex: 1, ToolResults: []ToolResultMessage{{ToolUseID: "x"}}}, []string{"type", "turn_index", "message", "tool_results", "usage"}},
-		{MessageStartEvent{}, []string{"type", "message"}},
-		{MessageUpdateEvent{}, []string{"type", "message"}},
-		{MessageEndEvent{}, []string{"type", "message"}},
-		{TextStartEvent{BlockIndex: 0}, []string{"type", "block_index"}},
-		{TextDeltaEvent{Delta: "d"}, []string{"type", "block_index", "delta"}},
-		{TextEndEvent{Text: "t"}, []string{"type", "block_index", "text"}},
-		{ThinkingStartEvent{}, []string{"type", "block_index"}},
-		{ThinkingDeltaEvent{Delta: "d"}, []string{"type", "block_index", "delta"}},
-		{ThinkingEndEvent{Thinking: "t"}, []string{"type", "block_index", "thinking", "signature", "redacted"}},
-		{ToolCallStartEvent{ToolUseID: "1", Name: "n"}, []string{"type", "block_index", "tool_use_id", "name"}},
-		{ToolInputDeltaEvent{ToolUseID: "1", Delta: "{"}, []string{"type", "block_index", "tool_use_id", "delta"}},
-		{ToolCallEndEvent{Block: ToolUseBlock{ID: "1", Name: "n", Input: json.RawMessage(`{"b":1,"a":2}`)}}, []string{"type", "block_index", "tool_use_id", "name", "input"}},
-		{ToolExecutionStartEvent{ToolUseID: "1", Name: "n"}, []string{"type", "tool_use_id", "name"}},
-		{ToolExecutionUpdateEvent{ToolUseID: "1", Name: "n", Chunk: "c"}, []string{"type", "tool_use_id", "name", "chunk"}},
-		{ToolExecutionEndEvent{ToolUseID: "1", Name: "n"}, []string{"type", "tool_use_id", "name", "is_error", "elapsed_ms"}},
-		{ToolResultEvent{}, []string{"type", "message"}},
-		{ErrorEvent{Message: "boom", Err: errors.New("boom"), Terminal: true}, []string{"type", "message", "terminal"}},
+func TestMarshalEventWritesTheTypeFirstAndExactlyTheVariantsFields(t *testing.T) {
+	want := map[EventType][]string{
+		EvAgentStart:          {"session_id", "provider", "api", "model"},
+		EvAgentDone:           {"stop_reason", "last_reason", "turn_count", "error", "run_usage", "messages", "usage"},
+		EvTurnStart:           {"turn_index"},
+		EvTurnEnd:             {"turn_index", "message", "tool_results", "usage"},
+		EvMessageStart:        {"message"},
+		EvMessageUpdate:       {"message"},
+		EvMessageEnd:          {"message"},
+		EvTextStart:           {"block_index"},
+		EvTextDelta:           {"block_index", "delta"},
+		EvTextEnd:             {"block_index", "text"},
+		EvThinkingStart:       {"block_index"},
+		EvThinkingDelta:       {"block_index", "delta"},
+		EvThinkingEnd:         {"block_index", "thinking", "signature", "redacted"},
+		EvToolCallStart:       {"block_index", "tool_use_id", "name"},
+		EvToolInputDelta:      {"block_index", "tool_use_id", "delta"},
+		EvToolCallEnd:         {"block_index", "tool_use_id", "name", "input"},
+		EvToolExecutionStart:  {"tool_use_id", "name"},
+		EvToolExecutionUpdate: {"tool_use_id", "name", "chunk"},
+		EvToolExecutionEnd:    {"tool_use_id", "name", "is_error", "elapsed_ms"},
+		EvToolResult:          {"message"},
+		EvError:               {"message", "terminal"},
 	}
-	for _, c := range cases {
-		b, err := MarshalEvent(c.ev, stubEncoder)
+	for _, e := range everyEvent(t) {
+		b, err := MarshalEvent(e, stubEncoder)
 		if err != nil {
-			t.Fatalf("%T: %v", c.ev, err)
+			t.Fatalf("%T: %v", e, err)
 		}
-		var got map[string]json.RawMessage
-		if err := json.Unmarshal(b, &got); err != nil {
-			t.Fatalf("%T: not an object: %s", c.ev, b)
+		if !strings.HasPrefix(string(b), `{"type":"`+string(e.EventType())+`"`) {
+			t.Errorf("%T: the type is not the first member: %s", e, b)
 		}
-		if string(got["type"]) != `"`+string(c.ev.EventType())+`"` {
-			t.Errorf("%T: type = %s, want %q", c.ev, got["type"], c.ev.EventType())
+		got := object(t, b)
+		keys := want[e.EventType()]
+		if len(got) != len(keys)+1 {
+			t.Errorf("%T: %d members, want exactly %d: %s", e, len(got), len(keys)+1, b)
 		}
-		// The type member is FIRST, so a consumer can dispatch before decoding
-		// the rest.
-		if !strings.HasPrefix(string(b), `{"type":`) {
-			t.Errorf("%T: type is not the first member: %s", c.ev, b)
-		}
-		for _, k := range c.want {
+		for _, k := range keys {
 			if _, ok := got[k]; !ok {
-				t.Errorf("%T: missing %q in %s", c.ev, k, b)
+				t.Errorf("%T: missing %q in %s", e, k, b)
 			}
 		}
-		if len(got) != len(c.want) {
-			t.Errorf("%T: %d members, want exactly %d (%s): no optional-everything envelope", c.ev, len(got), len(c.want), b)
+	}
+}
+
+func TestMarshalEventCarriesThePayloadsAConsumerReads(t *testing.T) {
+	u := Usage{InputTokens: 3, BilledModel: "m", Unpriced: true}
+	u.SetCost(0.5)
+	for _, tc := range []struct {
+		e    Event
+		want string
+	}{
+		{ToolCallEndEvent{Block: ToolUseBlock{ID: "1", Name: "n", Input: json.RawMessage(`{"z":1,"a":{"y":2,"b":3}}`)}},
+			`{"type":"tool_call_end","block_index":0,"tool_use_id":"1","name":"n","input":{"z":1,"a":{"y":2,"b":3}}}`},
+		{ToolCallEndEvent{Block: ToolUseBlock{ID: "1", Name: "n"}},
+			`{"type":"tool_call_end","block_index":0,"tool_use_id":"1","name":"n","input":{}}`},
+		{ToolExecutionStartEvent{ToolUseID: "c", Name: "n", ParentToolUseID: "p"},
+			`{"type":"tool_execution_start","tool_use_id":"c","name":"n","parent_tool_use_id":"p"}`},
+		{ToolExecutionUpdateEvent{ToolUseID: "c", Name: "n", Chunk: "x", ParentToolUseID: "p"},
+			`{"type":"tool_execution_update","tool_use_id":"c","name":"n","chunk":"x","parent_tool_use_id":"p"}`},
+		{ToolExecutionEndEvent{ToolUseID: "c", Name: "n", IsError: true, ElapsedMS: 7, ParentToolUseID: "p"},
+			`{"type":"tool_execution_end","tool_use_id":"c","name":"n","is_error":true,"elapsed_ms":7,"parent_tool_use_id":"p"}`},
+		{TurnEndEvent{TurnIndex: 2, Usage: u},
+			`{"type":"turn_end","turn_index":2,"message":{"role":"assistant"},"tool_results":[],"usage":{"input_tokens":3,` +
+				`"output_tokens":0,"reasoning_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"cache_write_1h_tokens":0,` +
+				`"total_tokens":0,"cost_usd":0.5,"billed_model":"m","reported":true,"unpriced":true}}`},
+		{AgentDoneEvent{Result: RunResult{Messages: Messages{UserMessage{}}, StopReason: RunStopError, LastReason: StopReasonError,
+			TurnCount: 2, Error: errors.New("boom")}}, `"stop_reason":"error","last_reason":"error","turn_count":2,"error":"boom"`},
+	} {
+		b, err := MarshalEvent(tc.e, stubEncoder)
+		if err != nil || !strings.Contains(string(b), tc.want) {
+			t.Errorf("MarshalEvent(%T) = %s, %v; want it to contain %s", tc.e, b, err, tc.want)
 		}
 	}
-}
-
-// TestToolCallEndCarriesTheModelsOwnBytes: the tool-call input is the
-// model's argument bytes verbatim (REQ-TOOL-12), never a re-marshalled map
-// with sorted keys.
-func TestToolCallEndCarriesTheModelsOwnBytes(t *testing.T) {
-	in := json.RawMessage(`{"z":1,"a":{"y":2,"b":3}}`)
-	b, err := MarshalEvent(ToolCallEndEvent{Block: ToolUseBlock{ID: "1", Name: "n", Input: in}}, stubEncoder)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(b), string(in)) {
-		t.Fatalf("input bytes were re-encoded: %s", b)
+	b, _ := MarshalEvent(AgentDoneEvent{Result: RunResult{Usage: Usage{Unpriced: true}}}, stubEncoder)
+	if !strings.Contains(string(b), `"run_usage":{"input_tokens":0,"output_tokens":0,"reasoning_tokens":0,"cache_read_tokens":0,`+
+		`"cache_write_tokens":0,"cache_write_1h_tokens":0,"total_tokens":0,"cost_usd":0,"billed_model":"","reported":false,"unpriced":true}`) {
+		t.Errorf("an unreported, unpriced run usage = %s", b)
 	}
 }
 
-func TestMarshalEventRequiresAnEncoder(t *testing.T) {
+func TestMarshalEventFailsWithoutAnEncoderOrOnAnEncoderError(t *testing.T) {
 	if _, err := MarshalEvent(TurnStartEvent{}, nil); err == nil {
-		t.Fatal("a nil encoder must be an error, not a panic on the first message event")
+		t.Fatal("a nil encoder must be an error")
 	}
-}
-
-// TS-29-33: every usage an event carries has an "unpriced" member, true or
-// false, and UsageJSON declares it under that key.
-func TestEventUsageCarriesUnpriced_TS29_33(t *testing.T) {
-	f, ok := reflect.TypeOf(UsageJSON{}).FieldByName("Unpriced")
-	if !ok || f.Tag.Get("json") != "unpriced" || f.Type.Kind() != reflect.Bool {
-		t.Fatalf("UsageJSON.Unpriced = %+v (%v), want a bool with the JSON key unpriced", f, ok)
+	if _, err := MarshalEvent(nil, stubEncoder); err == nil || !strings.Contains(err.Error(), "unknown event") {
+		t.Fatalf("MarshalEvent(nil) = %v, want an unknown-event error", err)
 	}
-	for _, unpriced := range []bool{true, false} {
-		u := Usage{InputTokens: 3, Unpriced: unpriced}
-		for _, ev := range []Event{
-			AgentDoneEvent{Result: RunResult{StopReason: RunStopEndTurn, Usage: u}, Usage: u},
-			TurnEndEvent{TurnIndex: 1, Usage: u},
-		} {
-			b, err := MarshalEvent(ev, stubEncoder)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var got map[string]json.RawMessage
-			if err := json.Unmarshal(b, &got); err != nil {
-				t.Fatal(err)
-			}
-			for _, key := range []string{"usage", "run_usage"} {
-				raw, present := got[key]
-				if !present {
-					if _, done := ev.(AgentDoneEvent); done || key == "usage" {
-						t.Errorf("%T: no %q member in %s", ev, key, b)
-					}
-					continue
-				}
-				var usage map[string]any
-				if err := json.Unmarshal(raw, &usage); err != nil {
-					t.Fatal(err)
-				}
-				if v, ok := usage["unpriced"]; !ok || v != unpriced {
-					t.Errorf("%T %s: unpriced = %v (present %v), want %v in %s", ev, key, v, ok, unpriced, raw)
-				}
-			}
+	boom := errors.New("boom")
+	failing := func(m Message) (json.RawMessage, error) {
+		if m.Role() == RoleToolResult || m.Role() == RoleAssistant {
+			return nil, boom
 		}
+		return json.RawMessage(`{}`), nil
+	}
+	for _, e := range []Event{
+		AgentDoneEvent{Result: RunResult{Messages: Messages{UserMessage{}, AssistantMessage{}}}},
+		TurnEndEvent{}, MessageStartEvent{}, MessageUpdateEvent{}, MessageEndEvent{}, ToolResultEvent{},
+	} {
+		if _, err := MarshalEvent(e, failing); !errors.Is(err, boom) {
+			t.Errorf("MarshalEvent(%T) = %v, want the encoder's error", e, err)
+		}
+	}
+	onlyResults := func(m Message) (json.RawMessage, error) {
+		if m.Role() == RoleToolResult {
+			return nil, boom
+		}
+		return json.RawMessage(`{}`), nil
+	}
+	if _, err := MarshalEvent(TurnEndEvent{ToolResults: []ToolResultMessage{{}}}, onlyResults); !errors.Is(err, boom) {
+		t.Errorf("a failing tool result encoding = %v, want the encoder's error", err)
 	}
 }

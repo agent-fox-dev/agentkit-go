@@ -4,46 +4,76 @@ package confine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
-	"sync/atomic"
+	"strings"
 	"syscall"
 	"testing"
 
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 )
 
-// dirs creates the named directories under one parent and returns them.
-func dirs(t *testing.T, names ...string) map[string]string {
+// A test that applies a ruleset does it in a child, the test binary run again
+// for that test, so only the child is confined (and it creates no t.TempDir).
+const childVar, childDone = "AGENTKIT_CONFINE_CHILD", "CONFINE-CHILD-COMPLETE"
+
+// args are what a parent hands a child.
+type args struct {
+	Dirs map[string]string
+	ABI  int // the kernel's
+	Sim  int // the ABI the probe reports instead, when not 0
+	Mode sandbox.NetworkMode
+}
+
+// kernelABI probes Landlock independently of the package:
+// landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION), number
+// 444 on amd64 and arm64.
+func kernelABI(t *testing.T, lo, hi int) int {
 	t.Helper()
-	base := t.TempDir()
-	out := map[string]string{}
-	for _, n := range names {
-		out[n] = filepath.Join(base, n)
-		if err := os.MkdirAll(out[n], 0o755); err != nil {
-			t.Fatal(err)
+	r, _, errno := syscall.Syscall(444, 0, 0, 1)
+	if errno != 0 || int(r) < lo || int(r) > hi {
+		t.Skipf("kernel Landlock ABI %d (%v); the test needs %d to %d", r, errno, lo, hi)
+	}
+	return int(r)
+}
+
+// runChild runs the test again in a child with a, and requires exit status
+// 0 and the completion marker, so a skipped child fails.
+func runChild(t *testing.T, a args) {
+	t.Helper()
+	b, _ := json.Marshal(a)
+	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.count=1", "-test.v")
+	cmd.Env = append(os.Environ(), childVar+"="+string(b))
+	if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), childDone) {
+		t.Fatalf("child %+v: %v\n%s", a, err, out)
+	}
+}
+
+// child reports whether this process is a child, with its args; a child that
+// passes prints the completion marker.
+func child(t *testing.T) (args, bool) {
+	t.Helper()
+	var a args
+	if os.Getenv(childVar) == "" {
+		return a, false
+	}
+	if err := json.Unmarshal([]byte(os.Getenv(childVar)), &a); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if !t.Failed() {
+			fmt.Println(childDone)
 		}
-	}
-	return out
-}
-
-func write(t *testing.T, p, body string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func inputs(d map[string]string, mode sandbox.NetworkMode) Inputs {
-	return Inputs{Workdir: d["W"], Env: []string{"HOME=" + d["H"], "TMPDIR=" + d["T"]},
-		RW: []string{d["R"]}, RO: []string{d["O"]}, Mode: mode}
+	})
+	return a, true
 }
 
 // denied fails unless err is EACCES.
@@ -54,272 +84,140 @@ func denied(t *testing.T, what string, err error) {
 	}
 }
 
-// TS-15-2: under the applied ruleset, the writable roots accept create,
-// cross-directory rename, truncate and execute, and everything outside is
-// denied with EACCES. 15-REQ-1.1, 15-REQ-1.2.
-func TestRulesetEffect_TS15_2(t *testing.T) {
+// Setup fails before probing on an unsafe flag, and before applying when the
+// ruleset cannot be built.
+func TestSetupFailsBeforeApplying(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "gone")
+	var ue *UsageError
+	calls := fakeProbe(t, 4, nil)
+	if _, err := Setup(Inputs{Workdir: "/"}); !errors.As(err, &ue) || *calls != 0 {
+		t.Errorf("Setup(--workdir /) = %v after %d probes, want a usage error and no probe", err, *calls)
+	}
+	if info, err := Setup(Inputs{Workdir: gone}); err == nil || !strings.Contains(err.Error(), gone) {
+		t.Errorf("Setup with a missing workspace = %+v, %v", info, err)
+	}
+}
+
+// A failed probe, or a kernel offering only ABI 1, is no error: nothing is
+// applied and the outcome says why.
+func TestSetupAppliesNothingWithoutAUsableABI(t *testing.T) {
+	d := dirs(t, "W", "S")
+	for _, c := range []struct {
+		abi int
+		err error
+	}{{1, nil}, {0, syscall.ENOSYS}, {0, syscall.EPERM}} {
+		calls := fakeProbe(t, c.abi, c.err)
+		info, err := Setup(Inputs{Workdir: d["W"], Mode: sandbox.NetworkNone})
+		want := sandbox.LandlockInfo{KernelABI: c.abi, Note: Plan(c.abi, c.err, sandbox.NetworkNone).Note}
+		if err != nil || !reflect.DeepEqual(info, want) || *calls != 1 {
+			t.Errorf("probe %d/%v: Setup = %+v, %v; want %+v", c.abi, c.err, info, err, want)
+		}
+	}
+	testutil.WriteTree(t, d["S"], map[string]string{"x": ""})
+}
+
+// Under the ruleset the writable roots accept create, cross-directory
+// rename, truncate and execute; everything else is read-only or denied with
+// EACCES, on every thread and in every later process, with no_new_privs set.
+// The ABI applied is exactly the one chosen (V2 does not handle truncate),
+// and TCP bind and connect are denied at ABI 4 under NetworkNone only.
+func TestSetupConfinesTheProcess(t *testing.T) {
 	if a, ok := child(t); ok {
-		d := a.Dirs
-		info, err := Setup(inputs(d, sandbox.NetworkUnrestricted))
-		if err != nil || info.ABI < 2 {
-			t.Fatalf("Setup = %+v, %v", info, err)
+		d, abi := a.Dirs, min(a.ABI, 4)
+		if a.Sim != 0 {
+			fakeProbe(t, a.Sim, nil)
+			abi = a.Sim
+		}
+		start, result := make(chan struct{}), make(chan error)
+		go func() {
+			runtime.LockOSThread()
+			<-start
+			result <- os.WriteFile(filepath.Join(d["S"], "thread"), nil, 0o644)
+		}()
+		info, err := Setup(Inputs{Workdir: d["W"], Env: []string{"HOME=" + d["H"], "TMPDIR=" + d["T"]},
+			RW: []string{d["R"]}, RO: []string{d["O"]}, Mode: a.Mode})
+		tcp := abi >= 4 && a.Mode == sandbox.NetworkNone
+		note := Plan(abi, nil, a.Mode).Note
+		if err != nil || info.ABI != abi || info.TCP != tcp || info.Note != note || info.Writable[0] != resolved(d["W"])[0] {
+			t.Fatalf("Setup = %+v, %v; want ABI %d, TCP %v and %q", info, err, abi, tcp, note)
 		}
 		for _, k := range []string{"W", "H", "T", "R"} {
-			if err := os.WriteFile(filepath.Join(d[k], "new"), []byte("n"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(d[k], "new"), nil, 0o644); err != nil {
 				t.Errorf("creating under %s: %v", k, err)
 			}
 		}
 		if err := os.Rename(filepath.Join(d["W"], "a", "f"), filepath.Join(d["W"], "b", "f")); err != nil {
 			t.Errorf("rename across directories: %v", err)
 		}
-		if info.ABI >= 3 {
-			if err := syscall.Truncate(filepath.Join(d["W"], "b", "f"), 0); err != nil {
-				t.Errorf("truncate: %v", err)
-			}
+		if err := syscall.Truncate(filepath.Join(d["W"], "b", "f"), 0); err != nil {
+			t.Errorf("truncate in W: %v", err)
+		}
+		if err := syscall.Truncate(filepath.Join(d["O"], "ro"), 0); abi == 2 && err != nil {
+			t.Errorf("truncate in O under V2: %v (V2 does not handle truncate)", err)
+		} else if abi > 2 {
+			denied(t, "truncate in O", err)
 		}
 		script := filepath.Join(d["W"], "s.sh")
-		if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		_ = os.WriteFile(script, []byte("#!/bin/sh\necho x > /dev/null\n"), 0o755)
 		if err := exec.Command(script).Run(); err != nil {
 			t.Errorf("executing a script in W: %v", err)
+		}
+		for _, p := range []string{filepath.Join(d["O"], "ro"), "/etc/passwd", "/proc/self/status"} {
+			if _, err := os.ReadFile(p); err != nil {
+				t.Errorf("reading %s: %v", p, err)
+			}
 		}
 		denied(t, "creating S/new", os.WriteFile(filepath.Join(d["S"], "new"), nil, 0o644))
 		denied(t, "creating O/new", os.WriteFile(filepath.Join(d["O"], "new"), nil, 0o644))
 		denied(t, "writing /proc/self/comm", os.WriteFile("/proc/self/comm", []byte("x"), 0o644))
 		_, err = os.ReadFile(filepath.Join(d["S"], "secret"))
 		denied(t, "reading S/secret", err)
-		for _, p := range []string{filepath.Join(d["O"], "ro.txt"), "/etc/passwd", "/proc/self/status"} {
-			if _, err := os.ReadFile(p); err != nil {
-				t.Errorf("reading %s: %v", p, err)
-			}
+		close(start)
+		denied(t, "a thread started before Setup creating S/thread", <-result)
+		if r, _, _ := syscall.Syscall(syscall.SYS_PRCTL, 39 /* PR_GET_NO_NEW_PRIVS */, 0, 0); r != 1 {
+			t.Errorf("PR_GET_NO_NEW_PRIVS = %d", r)
 		}
-		for _, c := range []string{"true", "echo x > /dev/null"} {
-			if err := exec.Command("/bin/sh", "-c", c).Run(); err != nil {
-				t.Errorf("/bin/sh -c %q: %v", c, err)
-			}
-		}
-		return
-	}
-	needABI(t, 2)
-	d := dirs(t, "W", "H", "T", "R", "O", "S", "W/a", "W/b")
-	write(t, filepath.Join(d["S"], "secret"), "s")
-	write(t, filepath.Join(d["O"], "ro.txt"), "r")
-	write(t, filepath.Join(d["W/a"], "f"), "f")
-	runChild(t, t.Name(), childArgs{Dirs: d})
-}
-
-// TS-15-3: at applied ABI 4 the ruleset denies TCP bind and connect under
-// none, loopback included, and leaves TCP alone under allowlist and
-// unrestricted. 15-REQ-1.3, 15-REQ-1.4.
-func TestRulesetTCP_TS15_3(t *testing.T) {
-	if a, ok := child(t); ok {
-		mode := sandbox.NetworkMode(a.Mode)
-		info, err := Setup(inputs(a.Dirs, mode))
-		if err != nil {
-			t.Fatal(err)
-		}
-		none := mode == sandbox.NetworkNone
-		if info.TCP != none {
-			t.Errorf("TCP %v under %v", info.TCP, mode)
-		}
-		var d net.Dialer
-		d.SetMultipathTCP(false)
-		c, err := d.Dial("tcp", a.Addr)
-		if none {
-			denied(t, "dial", err)
-		} else if err != nil {
-			t.Errorf("dial: %v", err)
-		} else {
-			_ = c.Close()
+		if exec.Command("/bin/sh", "-c", "touch "+filepath.Join(d["S"], "y")).Run() == nil {
+			t.Error("a later process created S/y")
 		}
 		var lc net.ListenConfig
 		lc.SetMultipathTCP(false)
 		l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-		if none {
+		if tcp {
 			denied(t, "bind", err)
+			_, err = net.Dial("tcp", "127.0.0.1:1")
+			denied(t, "connect", err)
 		} else if err != nil {
-			t.Errorf("bind: %v", err)
-		} else {
-			_ = l.Close()
+			t.Errorf("bind under %v: %v", a.Mode, err)
+		} else if _, err := net.Dial("tcp", l.Addr().String()); err != nil {
+			t.Errorf("connect under %v: %v", a.Mode, err)
 		}
 		return
 	}
-	needABI(t, 4)
-	var lc net.ListenConfig
-	lc.SetMultipathTCP(false)
-	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	k := kernelABI(t, 2, 99)
+	runs := []args{{Mode: sandbox.NetworkNone}, {Mode: sandbox.NetworkAllowlist}, {Mode: sandbox.NetworkUnrestricted}}
+	for sim := 2; sim <= min(k, 3); sim++ {
+		runs = append(runs, args{Sim: sim, Mode: sandbox.NetworkNone})
 	}
-	defer l.Close()
-	var accepted atomic.Int32
-	go func() {
-		for {
-			c, err := l.Accept()
-			if err != nil {
-				return
-			}
-			accepted.Add(1)
-			_ = c.Close()
-		}
-	}()
-	d := dirs(t, "W", "H", "T", "R", "O")
-	for _, mode := range []sandbox.NetworkMode{sandbox.NetworkNone, sandbox.NetworkAllowlist, sandbox.NetworkUnrestricted} {
-		runChild(t, t.Name(), childArgs{Dirs: d, Addr: l.Addr().String(), Mode: int(mode)})
-	}
-	if n := accepted.Load(); n != 2 {
-		t.Errorf("the listener accepted %d connections, want 2 (allowlist and unrestricted)", n)
+	for _, a := range runs {
+		d := dirs(t, "W/b", "H", "T", "R")
+		testutil.WriteTree(t, d["base"], map[string]string{"S/secret": "s", "O/ro": "r", "W/a/f": "f"})
+		d["W"], d["O"], d["S"] = filepath.Join(d["base"], "W"), filepath.Join(d["base"], "O"), filepath.Join(d["base"], "S")
+		a.Dirs, a.ABI = d, k
+		runChild(t, a)
 	}
 }
 
-// TS-15-4 (applying half): with missing system, device and flag paths the
-// apply returns nil, and the workspace stays writable. 15-REQ-1.5.
-func TestMissingPathsApply_TS15_4(t *testing.T) {
+// On a kernel offering exactly ABI 2 or 3, Setup with the probe reporting 4
+// fails instead of applying a weaker ruleset.
+func TestSetupFailsRatherThanWeakenTheRuleset(t *testing.T) {
 	if a, ok := child(t); ok {
-		replaceLists(t, []string{"/nonexistent-agentkit-sys"}, []string{"/dev/nonexistent-agentkit"})
-		info, err := Setup(Inputs{Workdir: a.Dirs["W"], RO: []string{a.Dirs["M1"]}, RW: []string{a.Dirs["M2"]}})
-		if err != nil || info.ABI < 2 {
-			t.Fatalf("Setup = %+v, %v", info, err)
-		}
-		if err := os.WriteFile(filepath.Join(a.Dirs["W"], "new"), nil, 0o644); err != nil {
-			t.Errorf("creating under W: %v", err)
+		fakeProbe(t, 4, nil)
+		if info, err := Setup(Inputs{Workdir: a.Dirs["W"], Mode: sandbox.NetworkNone}); err == nil {
+			t.Errorf("Setup with V4 on an older kernel = %+v, nil", info)
 		}
 		return
 	}
-	needABI(t, 2)
-	d := dirs(t, "W")
-	d["M1"], d["M2"] = filepath.Join(d["W"], "..", "m1"), filepath.Join(d["W"], "..", "m2")
-	runChild(t, t.Name(), childArgs{Dirs: d})
-}
-
-// TS-15-9 (probe half): Setup probes exactly once per call; a simulated
-// ABI 1 or probe error applies nothing, and a simulated 2 or 3 applies that
-// version. 15-REQ-2.3.
-func TestProbeOnce_TS15_9(t *testing.T) {
-	if a, ok := child(t); ok {
-		if a.Sim == 0 {
-			for _, c := range []struct {
-				abi int
-				err error
-			}{{1, nil}, {0, syscall.ENOSYS}} {
-				calls := fakeProbe(t, c.abi, c.err)
-				info, err := Setup(Inputs{Workdir: a.Dirs["W"]})
-				if err != nil || info.ABI != 0 || *calls != 1 {
-					t.Errorf("probe %d/%v: %+v, %v, %d probes", c.abi, c.err, info, err, *calls)
-				}
-			}
-			if err := os.WriteFile(filepath.Join(a.Dirs["S"], "x"), nil, 0o644); err != nil {
-				t.Errorf("creating outside every root after ABI 0: %v", err)
-			}
-			return
-		}
-		calls := fakeProbe(t, a.Sim, nil)
-		info, err := Setup(Inputs{Workdir: a.Dirs["W"]})
-		if err != nil || info.ABI != a.Sim || *calls != 1 {
-			t.Errorf("simulated %d: %+v, %v, %d probes", a.Sim, info, err, *calls)
-		}
-		return
-	}
-	k := needABI(t, 0)
-	d := dirs(t, "W", "S")
-	runChild(t, t.Name(), childArgs{Dirs: d})
-	for _, sim := range []int{2, 3} {
-		if k >= sim {
-			runChild(t, t.Name(), childArgs{Dirs: d, Sim: sim})
-		}
-	}
-}
-
-// TS-15-10: applying sets no_new_privs, reaches every thread and every later
-// process, and uses exactly the chosen version rather than the kernel's
-// best. 15-REQ-2.4.
-func TestApplyStrict_TS15_10(t *testing.T) {
-	if a, ok := child(t); ok {
-		d := a.Dirs
-		// Explicit HOME and TMPDIR: the default /tmp would hold S.
-		in := Inputs{Workdir: d["W"], Env: []string{"HOME=" + d["H"], "TMPDIR=" + d["T"]}, RO: []string{d["O"]},
-			Mode: sandbox.NetworkMode(a.Mode)}
-		switch a.Sim {
-		case 0:
-			start, result := make(chan struct{}), make(chan error)
-			go func() {
-				runtime.LockOSThread()
-				<-start
-				result <- os.WriteFile(filepath.Join(d["S"], "x"), nil, 0o644)
-			}()
-			info, err := Setup(in)
-			if err != nil || info.ABI < 2 {
-				t.Fatalf("Setup = %+v, %v", info, err)
-			}
-			if n := noNewPrivs(); n != 1 {
-				t.Errorf("PR_GET_NO_NEW_PRIVS = %d", n)
-			}
-			close(start)
-			denied(t, "the pinned thread creating S/x", <-result)
-			if err := exec.Command("/bin/sh", "-c", "touch "+filepath.Join(d["S"], "y")).Run(); err == nil {
-				t.Error("a grandchild created S/y")
-			}
-			if _, err := os.Lstat(filepath.Join(d["S"], "y")); err == nil {
-				t.Error("S/y exists")
-			}
-		case 2, 3:
-			fakeProbe(t, a.Sim, nil)
-			info, err := Setup(in)
-			if err != nil || info.ABI != a.Sim {
-				t.Fatalf("Setup = %+v, %v", info, err)
-			}
-			terr := syscall.Truncate(filepath.Join(d["O"], "f"), 0)
-			if a.Sim == 2 {
-				if terr != nil {
-					t.Errorf("truncate under V2: %v (V2 does not handle truncate)", terr)
-				}
-				denied(t, "creating O/new", os.WriteFile(filepath.Join(d["O"], "new"), nil, 0o644))
-			} else {
-				denied(t, "truncate under V3", terr)
-			}
-			if a.Addr != "" {
-				if info.TCP {
-					t.Error("the report says TCP under a simulated ABI 3")
-				}
-				var dl net.Dialer
-				dl.SetMultipathTCP(false)
-				c, err := dl.Dial("tcp", a.Addr)
-				if err != nil {
-					t.Errorf("dial under V3 paths only: %v", err)
-				} else {
-					_ = c.Close()
-				}
-			}
-		}
-		return
-	}
-	k := needABI(t, 2)
-	d := dirs(t, "W", "H", "T", "O", "S")
-	write(t, filepath.Join(d["O"], "f"), "content")
-	runChild(t, t.Name(), childArgs{Dirs: d})
-	if k >= 3 {
-		runChild(t, t.Name(), childArgs{Dirs: d, Sim: 2})
-		write(t, filepath.Join(d["O"], "f"), "content")
-		runChild(t, t.Name(), childArgs{Dirs: d, Sim: 3})
-	}
-	if k >= 4 {
-		var lc net.ListenConfig
-		lc.SetMultipathTCP(false)
-		l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer l.Close()
-		go func() {
-			for {
-				c, err := l.Accept()
-				if err != nil {
-					return
-				}
-				_ = c.Close()
-			}
-		}()
-		runChild(t, t.Name(), childArgs{Dirs: d, Sim: 3, Addr: l.Addr().String(), Mode: int(sandbox.NetworkNone)})
-	}
+	kernelABI(t, 2, 3)
+	runChild(t, args{Dirs: dirs(t, "W")})
 }

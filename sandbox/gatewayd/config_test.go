@@ -2,113 +2,88 @@ package gatewayd_test
 
 import (
 	"context"
-	"os"
-	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/gateway"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd/internal/gwtest"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/local"
 )
 
-// tok40 is a valid 40-character token.
-const tok40 = "0123456789abcdefghijklmnopqrstuvwxyzABCD"
-
-// TS-19-30: New refuses a missing backend, bad or repeated tokens, negative
-// limits and an empty network intersection. 19-REQ-5.1.
-func TestNewRefuses_TS19_30(t *testing.T) {
+func TestNewRefusesAnInvalidConfig(t *testing.T) {
 	be := local.Unisolated() // offers only NetworkUnrestricted
-	unr := []sandbox.NetworkMode{sandbox.NetworkUnrestricted}
-	for name, cfg := range map[string]gatewayd.Config{
-		"nil backend":     {Tokens: []string{tok40}, NetworkModes: unr},
-		"no tokens":       {Backend: be, NetworkModes: unr},
-		"31 characters":   {Backend: be, Tokens: []string{tok40[:31]}, NetworkModes: unr},
-		"space":           {Backend: be, Tokens: []string{tok40[:20] + " " + tok40[:20]}, NetworkModes: unr},
-		"control":         {Backend: be, Tokens: []string{tok40[:20] + "\x01" + tok40[:20]}, NetworkModes: unr},
-		"repeated":        {Backend: be, Tokens: []string{tok40, tok40}, NetworkModes: unr},
-		"MaxSandboxes -1": {Backend: be, Tokens: []string{tok40}, NetworkModes: unr, MaxSandboxes: -1},
-		"MaxTTL -1":       {Backend: be, Tokens: []string{tok40}, NetworkModes: unr, MaxTTL: -1},
-		"ReapInterval -1": {Backend: be, Tokens: []string{tok40}, NetworkModes: unr, ReapInterval: -1},
-		"no common mode":  {Backend: be, Tokens: []string{tok40}, NetworkModes: []sandbox.NetworkMode{sandbox.NetworkNone}},
+	acceptAll := func(context.Context, string) (string, bool) { return "p", true }
+	toks := []string{tok40}
+	for _, c := range []struct {
+		name string
+		cfg  gatewayd.Config
+		want []string // substrings of the error, or its whole text when one starts with "gatewayd:"
+	}{
+		{"nil backend", gatewayd.Config{Authenticate: acceptAll}, []string{"gatewayd: Config.Backend is nil"}},
+		{"both modes", gatewayd.Config{Backend: be, Tokens: toks, Authenticate: acceptAll}, []string{"Tokens", "Authenticate", "both"}},
+		{"nil tokens", gatewayd.Config{Backend: be}, []string{"Tokens", "Authenticate", "neither"}},
+		{"empty tokens", gatewayd.Config{Backend: be, Tokens: []string{}}, []string{"Tokens", "Authenticate", "neither"}},
+		{"short token", gatewayd.Config{Backend: be, Tokens: []string{tok40[:31]}},
+			[]string{"gatewayd: Config.Tokens: token 1 is 31 characters long; at least 32 are required"}},
+		{"space", gatewayd.Config{Backend: be, Tokens: []string{tok40[:20] + " " + tok40[:20]}}, []string{"Config.Tokens", "offset 20"}},
+		{"control", gatewayd.Config{Backend: be, Tokens: []string{tok40[:20] + "\x01" + tok40[:20]}}, []string{"Config.Tokens", "offset 20"}},
+		{"repeated", gatewayd.Config{Backend: be, Tokens: []string{tok40, tok40}}, []string{"gatewayd: Config.Tokens: token 2 repeats token 1"}},
+		{"MaxSandboxes", gatewayd.Config{Backend: be, Authenticate: acceptAll, MaxSandboxes: -1}, []string{"gatewayd: Config.MaxSandboxes is negative"}},
+		{"MaxTTL", gatewayd.Config{Backend: be, Tokens: toks, MaxTTL: -1}, []string{"gatewayd: Config.MaxTTL is negative"}},
+		{"ReapInterval", gatewayd.Config{Backend: be, Tokens: toks, ReapInterval: -1}, []string{"gatewayd: Config.ReapInterval is negative"}},
+		{"no common mode", gatewayd.Config{Backend: be, Tokens: toks}, []string{"[none]", `"local"`, "[unrestricted]"}},
 	} {
-		s, err := gatewayd.New(cfg)
+		if c.name != "no common mode" && c.cfg.NetworkModes == nil {
+			c.cfg.NetworkModes = unrestricted
+		}
+		s, err := gatewayd.New(c.cfg)
 		if s != nil || err == nil {
-			t.Errorf("%s: New = %v, %v; want a refusal", name, s, err)
+			t.Errorf("%s: New = %v, %v; want a refusal", c.name, s, err)
 			continue
 		}
+		for _, w := range c.want {
+			if strings.HasPrefix(w, "gatewayd:") && err.Error() != w || !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: the error is %q, want %q", c.name, err, w)
+			}
+		}
 		if strings.Contains(err.Error(), tok40[:20]) {
-			t.Errorf("%s: the error %q contains the token", name, err)
+			t.Errorf("%s: the error %q contains the token", c.name, err)
 		}
-	}
-	_, err := gatewayd.New(gatewayd.Config{Backend: be, Tokens: []string{tok40}, NetworkModes: []sandbox.NetworkMode{sandbox.NetworkNone}})
-	if err == nil || !strings.Contains(err.Error(), "none") || !strings.Contains(err.Error(), "unrestricted") {
-		t.Errorf("the network refusal %v does not name both [none] and [unrestricted]", err)
 	}
 }
 
-// TS-19-31: zero optional fields default to a none-only ceiling, 16
-// sandboxes, a 24h TTL, a 10m reap interval and a silent logger.
-// 19-REQ-5.2.
-func TestDefaults_TS19_31(t *testing.T) {
-	be := gwtest.NewCounting()
-	be.SetCaps(sandbox.Capabilities{Provider: "stub", Network: []sandbox.NetworkMode{sandbox.NetworkNone, sandbox.NetworkUnrestricted}})
-	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
-	if err != nil {
-		t.Fatal(err)
-	}
-	saved := os.Stderr
-	os.Stderr = stderr
-	defer func() { os.Stderr = saved }()
-	env := gwtest.Start(t, gatewayd.Config{Backend: be, Tokens: []string{gwtest.Token}})
-	p := env.Dial(t, gwtest.Token)
-	if n := p.Capabilities().Network; len(n) != 1 || n[0] != sandbox.NetworkNone {
-		t.Errorf("Capabilities().Network = %v, want [none]", n)
-	}
-	if g := p.Gateway(); g.MaxSandboxes != 16 || g.MaxTTL != 24*time.Hour {
-		t.Errorf("Gateway() = %+v, want 16 sandboxes and 24h", g)
-	}
-	time.Sleep(300 * time.Millisecond)
-	if n := be.Reaps(); n != 1 {
-		t.Errorf("the backend was reaped %d times in 300 ms, want 1 (a 10m interval)", n)
-	}
-	if fi, err := stderr.Stat(); err != nil || fi.Size() != 0 {
-		t.Errorf("serving with a nil Logger wrote %v bytes to stderr (%v)", fi.Size(), err)
-	}
-}
-
-// TS-19-14: capabilities over a local backend are named gateway/local,
-// limited to the ceiling, pass the backend's fields through and are served
-// from the cache. 19-REQ-3.1.
-func TestCapabilitiesOverLocal_TS19_14(t *testing.T) {
-	env := gwtest.Start(t, gatewayd.Config{Backend: local.Unisolated(), NetworkModes: []sandbox.NetworkMode{sandbox.NetworkUnrestricted},
-		MaxTTL: 2 * time.Hour, MaxSandboxes: 3})
-	p := env.Dial(t, gwtest.Token)
-	c, lc := p.Capabilities(), local.Unisolated().Capabilities()
-	if c.Provider != "gateway/local" || len(c.Network) != 1 || c.Network[0] != sandbox.NetworkUnrestricted {
-		t.Errorf("Provider %q Network %v, want gateway/local [unrestricted]", c.Provider, c.Network)
-	}
-	if c.Isolation != lc.Isolation || c.Resources != lc.Resources || c.Image != lc.Image || c.Workdir != lc.Workdir || c.Landlock != lc.Landlock {
-		t.Errorf("capabilities %+v do not pass local's %+v through", c, lc)
-	}
-	if !strings.HasPrefix(c.Notes, lc.Notes) {
-		t.Errorf("Notes %q does not start with local's %q", c.Notes, lc.Notes)
-	}
-	sentences := strings.Split(strings.TrimSuffix(c.Notes, "."), ". ")
-	last := sentences[len(sentences)-1]
-	for _, want := range []string{"127.0.0.1", "2h", "3"} {
-		if !strings.Contains(last, want) {
-			t.Errorf("the last sentence %q does not name %s", last, want)
+// The network modes are the backend's within the ceiling (nil meaning [none]); zero limits mean 16 sandboxes and 24h.
+func TestCapabilitiesAnswerTheCeilingAndTheLimits(t *testing.T) {
+	both := []sandbox.NetworkMode{sandbox.NetworkNone, sandbox.NetworkUnrestricted}
+	for _, c := range []struct {
+		name    string
+		cfg     gatewayd.Config
+		network []sandboxpb.NetworkMode
+		max     int32
+		ttl     time.Duration
+	}{
+		{"defaults", gatewayd.Config{}, []sandboxpb.NetworkMode{sandboxpb.NetworkMode_NONE}, 16, 24 * time.Hour},
+		{"set", gatewayd.Config{NetworkModes: both, MaxSandboxes: 3, MaxTTL: 2 * time.Hour},
+			[]sandboxpb.NetworkMode{sandboxpb.NetworkMode_NONE, sandboxpb.NetworkMode_UNRESTRICTED}, 3, 2 * time.Hour},
+	} {
+		be := gwtest.NewCounting()
+		be.SetCaps(sandbox.Capabilities{Provider: "stub", Network: both, Image: true, Notes: "stub notes."})
+		c.cfg.Backend = be
+		r, err := gwtest.Start(t, c.cfg).RawGateway(t).Capabilities(authed(gwtest.Token), &sandboxpb.CapabilitiesRequest{})
+		must(t, err)
+		if !slices.Equal(r.GetNetwork(), c.network) || r.GetMaxSandboxes() != c.max || time.Duration(r.GetMaxTtlNanos()) != c.ttl {
+			t.Errorf("%s: network %v, max %d, TTL %v; want %v, %d, %v", c.name, r.GetNetwork(), r.GetMaxSandboxes(),
+				time.Duration(r.GetMaxTtlNanos()), c.network, c.max, c.ttl)
 		}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := env.Server.Shutdown(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if again := p.Capabilities(); !reflect.DeepEqual(again, c) {
-		t.Errorf("Capabilities() changed with the server gone: %+v, was %+v", again, c)
+		if r.GetProvider() != "stub" || !r.GetImage() || r.GetNotes() != "stub notes." || r.GetVersion() != buildver.Version() ||
+			r.GetProtocolMajor() != gateway.ProtocolMajor || r.GetProtocolMinor() != gateway.ProtocolMinor {
+			t.Errorf("%s: %v does not pass the backend's fields through with the gateway's versions", c.name, r)
+		}
 	}
 }

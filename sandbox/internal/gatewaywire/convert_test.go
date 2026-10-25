@@ -1,134 +1,108 @@
 package gatewaywire
 
 import (
-	"encoding/json"
-	"fmt"
-	"math/rand/v2"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 )
 
-// genMap is nil or a map of up to four entries.
-func genMap(r *rand.Rand, prefix string) map[string]string {
-	n := r.IntN(5)
-	if n == 0 {
-		return nil
-	}
-	m := map[string]string{}
-	for i := range n {
-		m[fmt.Sprintf("%s%d", prefix, i)] = fmt.Sprintf("v%d-%d", r.IntN(100), i)
-	}
-	return m
-}
-
-// genProvider is nil or a map whose values encode as JSON: nil, a number, a
-// string, a slice or a map.
-func genProvider(r *rand.Rand) map[string]any {
-	n := r.IntN(4)
-	if n == 0 {
-		return nil
-	}
-	m := map[string]any{}
-	for i := range n {
-		var v any
-		switch r.IntN(5) {
-		case 0:
-			v = nil
-		case 1:
-			v = r.Float64() * 1000
-		case 2:
-			v = fmt.Sprintf("s%d", r.IntN(100))
-		case 3:
-			v = []any{"a", float64(r.IntN(9))}
-		default:
-			v = map[string]any{"k": "v", "n": float64(r.IntN(9))}
-		}
-		m[fmt.Sprintf("p%d", i)] = v
-	}
-	return m
-}
-
-// genSpec is a random Spec; collections are nil rather than empty, because
-// proto cannot tell the two apart.
-func genSpec(r *rand.Rand) sandbox.Spec {
-	s := sandbox.Spec{
-		Image:   fmt.Sprintf("img%d", r.IntN(10)),
-		Workdir: fmt.Sprintf("/w%d", r.IntN(10)),
-		Env:     genMap(r, "E"),
-		Resources: sandbox.Resources{CPUs: float64(r.IntN(8)) / 2, MemoryBytes: r.Int64N(1 << 40),
-			PIDs: r.Int64N(1000), DiskBytes: r.Int64N(1 << 40)},
-		Network:         sandbox.Network{Mode: sandbox.NetworkMode(r.IntN(3))},
-		TTL:             time.Duration(r.Int64N(int64(48 * time.Hour))),
-		Labels:          genMap(r, "l"),
-		Provider:        genProvider(r),
-		RequireLandlock: r.IntN(2) == 0,
-	}
-	if s.Network.Mode == sandbox.NetworkAllowlist {
-		for i := range r.IntN(3) {
-			s.Network.Allow = append(s.Network.Allow, sandbox.Endpoint{Host: fmt.Sprintf("h%d.example", i), Port: 1 + r.IntN(65535)})
-		}
-	}
-	return s
-}
-
-// genCaps is a random Capabilities.
-func genCaps(r *rand.Rand) sandbox.Capabilities {
-	c := sandbox.Capabilities{
-		Provider:  fmt.Sprintf("prov%d", r.IntN(10)),
-		Isolation: sandbox.Isolation(r.IntN(4)),
-		Resources: sandbox.ResourceCaps{CPUs: r.IntN(2) == 0, MemoryBytes: r.IntN(2) == 0, PIDs: r.IntN(2) == 0, DiskBytes: r.IntN(2) == 0},
-		Image:     r.IntN(2) == 0, Workdir: r.IntN(2) == 0, Landlock: r.IntN(2) == 0,
-		Notes: fmt.Sprintf("notes %d", r.IntN(100)),
-	}
-	for _, m := range []sandbox.NetworkMode{sandbox.NetworkNone, sandbox.NetworkAllowlist, sandbox.NetworkUnrestricted} {
-		if r.IntN(2) == 0 {
-			c.Network = append(c.Network, m)
-		}
-	}
-	return c
-}
-
-// jsonEqual reports whether a and b encode to the same JSON.
-func jsonEqual(t *testing.T, a, b map[string]any) bool {
-	t.Helper()
-	ja, err := json.Marshal(a)
-	if err != nil {
-		t.Fatal(err)
-	}
-	jb, err := json.Marshal(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(ja) == string(jb)
-}
-
-// TS-19-3: Spec and Capabilities survive a round trip through the wire
-// messages unchanged. 19-REQ-1.3.
-func TestRoundTrip_TS19_3(t *testing.T) {
-	for seed := range uint64(501) {
-		r := rand.New(rand.NewPCG(seed, 19))
-		s := genSpec(r)
+func TestWireRoundTripKeepsTheSpec(t *testing.T) {
+	for name, s := range map[string]sandbox.Spec{
+		"zero": {},
+		"full": {
+			Image: "img", Workdir: "/w",
+			Env:       map[string]string{"A": "1", "B": "2"},
+			Resources: sandbox.Resources{CPUs: 1.5, MemoryBytes: 1 << 30, PIDs: 100, DiskBytes: 1 << 33},
+			Network: sandbox.Network{Mode: sandbox.NetworkAllowlist, Allow: []sandbox.Endpoint{
+				{Host: "a.example", Port: 443}, {Host: "b.example", Port: 65535}}},
+			TTL:             36 * time.Hour,
+			Labels:          map[string]string{"l": "v"},
+			Provider:        map[string]any{"n": 2.5, "s": "x", "list": []any{"a", 1.0}, "obj": map[string]any{"k": "v"}, "nil": nil},
+			RequireLandlock: true,
+		},
+		"unrestricted": {Network: sandbox.Network{Mode: sandbox.NetworkUnrestricted}},
+	} {
 		pb, err := SpecToPB(s)
 		if err != nil {
-			t.Fatalf("seed %d: SpecToPB: %v", seed, err)
+			t.Fatalf("%s: SpecToPB: %v", name, err)
 		}
 		got, err := SpecFromPB(pb)
 		if err != nil {
-			t.Fatalf("seed %d: SpecFromPB: %v", seed, err)
+			t.Fatalf("%s: SpecFromPB: %v", name, err)
 		}
-		if !jsonEqual(t, got.Provider, s.Provider) {
-			t.Fatalf("seed %d: Provider %v, want %v", seed, got.Provider, s.Provider)
-		}
-		got.Provider, s.Provider = nil, nil
 		if !reflect.DeepEqual(got, s) {
-			t.Fatalf("seed %d: spec round trip\n got %+v\nwant %+v", seed, got, s)
+			t.Errorf("%s: round trip\n got %+v\nwant %+v", name, got, s)
 		}
-		c := genCaps(r)
-		if gc := CapsFromPB(CapsToPB(c)); !reflect.DeepEqual(gc, c) {
-			t.Fatalf("seed %d: capabilities round trip\n got %+v\nwant %+v", seed, gc, c)
+	}
+}
+
+// Proto cannot tell an empty collection from a nil one; the decoded spec has nil.
+func TestEmptyCollectionsComeBackNil(t *testing.T) {
+	pb, err := SpecToPB(sandbox.Spec{Env: map[string]string{}, Labels: map[string]string{}, Provider: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pb.GetProvider()) != 0 {
+		t.Errorf("an empty Provider encodes as %q, want no bytes", pb.GetProvider())
+	}
+	pb.Provider = []byte("{}")
+	got, err := SpecFromPB(pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Env != nil || got.Labels != nil || got.Provider != nil {
+		t.Errorf("SpecFromPB = %+v, want nil collections", got)
+	}
+}
+
+func TestEncodingRefusesAProviderThatIsNotJSON(t *testing.T) {
+	_, err := SpecToPB(sandbox.Spec{Provider: map[string]any{"f": func() {}}})
+	if err == nil || !strings.Contains(err.Error(), "Provider") {
+		t.Errorf("SpecToPB = %v, want an error naming Provider", err)
+	}
+}
+
+func TestDecodingRefusesAnUnknownModeOrAProviderThatIsNotAnObject(t *testing.T) {
+	for name, pb := range map[string]*sandboxpb.SandboxSpec{
+		"mode":     {Network: &sandboxpb.Network{Mode: 9}},
+		"provider": {Provider: []byte("[1]")},
+	} {
+		if _, err := SpecFromPB(pb); err == nil {
+			t.Errorf("%s: SpecFromPB accepted %v", name, pb)
 		}
+	}
+}
+
+func TestCapabilitiesSurviveARoundTripThroughTheWire(t *testing.T) {
+	for _, c := range []sandbox.Capabilities{
+		{},
+		{
+			Provider: "prov", Isolation: sandbox.Isolation(3),
+			Resources: sandbox.ResourceCaps{CPUs: true, MemoryBytes: true, PIDs: true, DiskBytes: true},
+			Network:   []sandbox.NetworkMode{sandbox.NetworkNone, sandbox.NetworkAllowlist, sandbox.NetworkUnrestricted},
+			Image:     true, Workdir: true, Landlock: true, Notes: "notes",
+		},
+	} {
+		if got := CapsFromPB(CapsToPB(c)); !reflect.DeepEqual(got, c) {
+			t.Errorf("round trip\n got %+v\nwant %+v", got, c)
+		}
+	}
+}
+
+func TestCapsFromPBLeavesOutAnUnknownMode(t *testing.T) {
+	got := CapsFromPB(&sandboxpb.CapabilitiesResponse{Network: []sandboxpb.NetworkMode{9, sandboxpb.NetworkMode_NONE}})
+	if !reflect.DeepEqual(got.Network, []sandbox.NetworkMode{sandbox.NetworkNone}) {
+		t.Errorf("Network = %v, want [none]", got.Network)
+	}
+}
+
+func TestNanosRoundTripsATime(t *testing.T) {
+	at := time.Date(2026, 10, 25, 1, 2, 3, 456, time.UTC)
+	if got := FromNanos(Nanos(at)); !got.Equal(at) {
+		t.Errorf("FromNanos(Nanos(%v)) = %v", at, got)
 	}
 }

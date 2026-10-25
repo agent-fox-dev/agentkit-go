@@ -1,8 +1,10 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -11,146 +13,123 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/attach"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/gitclone"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 )
 
-// tool is the proxy tool named name of sb.
-func tool(t *testing.T, sb sandbox.Sandbox, name string) core.Tool {
-	t.Helper()
-	tl, err := sb.Tools(context.Background(), sandbox.ToolOptions{})
+// Every RPC carries the bearer token, and only Agent RPCs the sandbox id.
+func TestRPCsCarryTheTokenAndAgentRPCsTheSandboxID(t *testing.T) {
+	f := newFakeGW(t, nil)
+	emptyTar := make([]byte, 1024)
+	f.agent.SetExport(emptyTar, nil)
+	p := f.dial(t)
+	ctx := context.Background()
+	sb, err := p.Create(ctx, testSpec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, x := range tl {
-		if x.Name == name {
-			return x
+	if sb.Spec().Image != testSpec.Image || sb.Agent().ProtocolMajor != sandbox.ProtocolMajor {
+		t.Errorf("Spec() = %+v, Agent() = %+v", sb.Spec(), sb.Agent())
+	}
+	_ = tool(t, sb, "read_file").Execute(ctx, []byte(`{"path":"x"}`))
+	_, e1 := sb.Sync(ctx, sandbox.Tar{R: bytes.NewReader(emptyTar)})
+	e2 := sb.Export(ctx, ".", sandbox.TarOut{W: &bytes.Buffer{}})
+	_, e3 := p.List(ctx)
+	if err := errors.Join(e1, e2, e3, sb.Close(ctx)); err != nil {
+		t.Fatal(err)
+	}
+	var agentRPCs []string
+	f.with(func() {
+		for _, r := range f.rpcs {
+			if got := r.md.Get("authorization"); !slices.Equal(got, []string{"Bearer " + testToken}) {
+				t.Errorf("%s carried authorization %q", r.method, got)
+			}
+			id := r.md.Get(SandboxIDKey)
+			if m, ok := strings.CutPrefix(r.method, "/agentkit.sandbox.v1.Agent/"); ok {
+				agentRPCs = append(agentRPCs, m)
+				if !slices.Equal(id, []string{sb.ID()}) {
+					t.Errorf("%s carried %s %q, want [%s]", r.method, SandboxIDKey, id, sb.ID())
+				}
+			} else if id != nil {
+				t.Errorf("the Gateway RPC %s carried %s %q", r.method, SandboxIDKey, id)
+			}
+		}
+		if !slices.Equal(f.destroys, []string{sb.ID()}) {
+			t.Errorf("Close sent Destroy for %v, want [%s]", f.destroys, sb.ID())
+		}
+	})
+	for _, m := range []string{"Hello", "Tools", "Call", "SyncTar", "ExportTar"} {
+		if !slices.Contains(agentRPCs, m) {
+			t.Errorf("no Agent %s RPC was recorded among %v", m, agentRPCs)
 		}
 	}
-	t.Fatalf("no proxy tool %s", name)
-	return core.Tool{}
 }
 
-// TS-19-18: Provider.Close destroys every open sandbox, joins the failures,
-// closes the connection and is idempotent. 19-REQ-3.5.
-func TestProviderClose_TS19_18(t *testing.T) {
-	f := newFakeGW(t, nil)
-	p := f.dial(t)
-	s1, err := p.Create(context.Background(), testSpec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s2, err := p.Create(context.Background(), testSpec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.set(func() { f.destroyErr[s2.ID()] = status.Error(codes.Unavailable, "boom") })
-	if err := p.Close(); err == nil || !strings.Contains(err.Error(), "boom") {
-		t.Fatalf("Close = %v, want an error carrying boom", err)
-	}
-	got := f.destroyedIDs()
-	if len(got) != 2 || !(got[0] == s1.ID() && got[1] == s2.ID() || got[0] == s2.ID() && got[1] == s1.ID()) {
-		t.Errorf("the fake received Destroy for %v, want %s and %s", got, s1.ID(), s2.ID())
-	}
-	eventually(t, "the connection to close", func() bool { return f.openConns() == 0 })
-	n := f.rpcCount()
-	if err := p.Close(); err != nil || f.rpcCount() != n {
-		t.Errorf("a second Close = %v with %d RPCs, want nil and none", err, f.rpcCount()-n)
-	}
-}
-
-// TS-19-27: a GitRepo Sync checks liveness and the repository locally
-// before calling SyncGit, and a success returns a zero SyncResult.
-// 19-REQ-4.6.
-func TestGitRepoSync_TS19_27(t *testing.T) {
+// A GitRepo Sync is the gateway's SyncGit, sent only for a live sandbox and a
+// valid repository; a success reports zeros, one cut short by its context
+// leaves the sandbox live, and a transport failure makes it unavailable, as
+// attach's own RPCs do, so that later calls fail with no RPC.
+func TestAGitRepoSyncIsTheGatewaysSyncGit(t *testing.T) {
 	f := newFakeGW(t, nil)
 	p := f.dial(t)
 	ctx := context.Background()
 	sb := mustCreate(t, p)
 	good := sandbox.GitRepo{URL: "https://example.test/r.git", Ref: "main", Depth: 1}
-	r, err := sb.Sync(ctx, good)
-	if r != (sandbox.SyncResult{}) || err != nil {
+	if r, err := sb.Sync(ctx, good); r != (sandbox.SyncResult{}) || err != nil {
 		t.Fatalf("Sync(GitRepo) = %+v, %v; want zeros and nil", r, err)
 	}
-	want := &sandboxpb.SyncGitRequest{Id: sb.ID(), Url: good.URL, Ref: "main", Depth: 1}
-	if got := f.lastSyncGitRequest(); !proto.Equal(got, want) {
-		t.Errorf("SyncGit carried %v, want %v", got, want)
-	}
-
-	n := f.n("SyncGit")
+	f.with(func() {
+		if want := (&sandboxpb.SyncGitRequest{Id: sb.ID(), Url: good.URL, Ref: "main", Depth: 1}); !proto.Equal(f.lastSync, want) {
+			t.Errorf("SyncGit carried %v, want %v", f.lastSync, want)
+		}
+	})
 	bad := sandbox.GitRepo{URL: "ext::sh -c x"}
-	if _, err := sb.Sync(ctx, bad); err == nil || err.Error() != gitclone.Check(bad).Error() {
-		t.Errorf("an invalid repository gave %v, want gitclone.Check's %v", err, gitclone.Check(bad))
+	if _, err := sb.Sync(ctx, bad); err == nil || err.Error() != gitclone.Check(bad).Error() || f.count("/SyncGit") != 1 {
+		t.Errorf("an invalid repository gave %v, want gitclone.Check's %v and no RPC", err, gitclone.Check(bad))
 	}
 	closed := mustCreate(t, p)
-	if err := closed.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := closed.Sync(ctx, good); !errors.Is(err, sandbox.ErrClosed) {
+	_ = closed.Close(ctx)
+	if _, err := closed.Sync(ctx, good); !errors.Is(err, sandbox.ErrClosed) || !errors.Is(attach.Live(closed), sandbox.ErrClosed) {
 		t.Errorf("a closed sandbox gave %v, want ErrClosed", err)
 	}
-	unavail := mustCreate(t, p)
-	f.agent.SetCall(nil, status.Error(codes.Unavailable, "gone"), true)
-	if r := tool(t, unavail, "read_file").Execute(ctx, []byte(`{"path":"x"}`)); r.Error != "sandbox_unavailable" {
-		t.Fatalf("a Call answered Unavailable gave %+v, want sandbox_unavailable", r)
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := sb.Sync(cancelled, good); !errors.Is(err, context.Canceled) || attach.Live(sb) != nil {
+		t.Errorf("a cancelled Sync(GitRepo) = %v, live %v; want context.Canceled and a live sandbox", err, attach.Live(sb))
 	}
-	if _, err := unavail.Sync(ctx, good); !errors.Is(err, sandbox.ErrUnavailable) {
-		t.Errorf("an unavailable sandbox gave %v, want ErrUnavailable", err)
+	read := tool(t, sb, "read_file")
+	f.with(func() { f.syncGitErr = status.Error(codes.Unavailable, "gatewayd: no sandbox") })
+	if _, err := sb.Sync(ctx, good); !errors.Is(err, sandbox.ErrUnavailable) || !strings.Contains(err.Error(), "http://127.0.0.1") {
+		t.Fatalf("Sync(GitRepo) = %v, want ErrUnavailable naming the gateway", err)
 	}
-	if got := f.n("SyncGit"); got != n {
-		t.Errorf("%d SyncGit RPCs were sent for the refused cases, want 0", got-n)
+	n := f.count("")
+	if r := read.Execute(ctx, []byte(`{"path":"x"}`)); r.Error != "sandbox_unavailable" {
+		t.Errorf("read_file after the failed SyncGit: %+v, want sandbox_unavailable", r)
+	}
+	if _, err := sb.Sync(ctx, good); !errors.Is(err, sandbox.ErrUnavailable) || f.count("") != n {
+		t.Errorf("a later Sync(GitRepo) = %v after %d RPCs, want ErrUnavailable and none", err, f.count("")-n)
 	}
 }
 
-// TS-19-29: a failed Destroy is returned by Close, is sent with a fresh
-// 30-second context, and leaves the entry on the gateway. 19-REQ-4.7.
-func TestCloseDestroyFails_TS19_29(t *testing.T) {
+// A failed Destroy is Close's error; it is sent with a fresh 30-second
+// context, whatever Close's.
+func TestCloseReturnsAFailedDestroy(t *testing.T) {
 	f := newFakeGW(t, nil)
-	p := f.dial(t)
-	sb, err := p.Create(context.Background(), testSpec)
+	sb, err := f.dial(t).Create(context.Background(), testSpec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.set(func() { f.destroyErr[sb.ID()] = status.Error(codes.Unavailable, "backend busy") })
+	f.with(func() { f.destroyErr[sb.ID()] = status.Error(codes.Unavailable, "backend busy") })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := sb.Close(ctx); err == nil || !strings.Contains(err.Error(), "backend busy") {
 		t.Fatalf("Close = %v, want an error carrying backend busy", err)
 	}
-	d := f.lastDestroy()
-	if d.id != sb.ID() || d.deadlineIn <= 25*time.Second {
-		t.Errorf("Destroy %+v, want %s with a deadline over 25 s away", d, sb.ID())
-	}
-	if !f.has(sb.ID()) {
-		t.Error("the fake no longer holds the sandbox")
-	}
-}
-
-// A SyncGit that fails as a transport failure (the gateway no longer holds
-// the sandbox, or the connection broke) makes the sandbox unavailable, as
-// attach's own RPCs do: the Sync matches sandbox.ErrUnavailable, names the
-// gateway, and later calls fail without an RPC. 19-REQ-10.4, 19-REQ-4.3.
-func TestGitRepoSyncUnavailable(t *testing.T) {
-	f := newFakeGW(t, nil)
-	p := f.dial(t)
-	ctx := context.Background()
-	sb := mustCreate(t, p)
-	read := tool(t, sb, "read_file")
-	f.set(func() { f.syncGit = fakeCreate{err: status.Error(codes.Unavailable, "gatewayd: no sandbox")} })
-	_, err := sb.Sync(ctx, sandbox.GitRepo{URL: "https://example.test/r.git"})
-	if !errors.Is(err, sandbox.ErrUnavailable) || !strings.Contains(err.Error(), "http://127.0.0.1") {
-		t.Fatalf("Sync(GitRepo) = %v, want ErrUnavailable naming the gateway", err)
-	}
-	n := f.rpcCount()
-	if r := read.Execute(ctx, []byte(`{"path":"x"}`)); r.Error != "sandbox_unavailable" {
-		t.Errorf("read_file after the failed SyncGit: %+v, want sandbox_unavailable", r)
-	}
-	if _, err := sb.Sync(ctx, sandbox.GitRepo{URL: "https://example.test/r.git"}); !errors.Is(err, sandbox.ErrUnavailable) {
-		t.Errorf("a second Sync(GitRepo) = %v, want ErrUnavailable", err)
-	}
-	if got := f.rpcCount(); got != n {
-		t.Errorf("%d RPCs were sent after the sandbox became unavailable", got-n)
-	}
+	f.with(func() {
+		if !slices.Equal(f.destroys, []string{sb.ID()}) || f.destroyIn <= 25*time.Second {
+			t.Errorf("Destroy for %v with a deadline %v away, want [%s] and about 30 s", f.destroys, f.destroyIn, sb.ID())
+		}
+	})
 }

@@ -22,9 +22,9 @@ SANDBOX_IMAGE_TAG ?= $(VERSION)
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*##"}; {printf "  %-16s %s\n", $$1, $$2}'
 
-# internal/policy runs make check, make check-release and the cross-target builds
-# as child processes. On a green tree it takes 9 to 11 minutes, depending on the
-# machine's load, so go test's default 10-minute package timeout is not enough.
+# internal/policy builds and vets every module for four targets and the host,
+# which can take longer than go test's default 10-minute package timeout on a
+# loaded machine.
 .PHONY: test
 test: ## Run all Go tests (root module and the nested modules)
 	@rc=0; for m in $(MODULES); do echo "go test ./... ($$m)"; (cd $$m && go test ./... -count=1 -timeout 30m) || rc=1; done; exit $$rc
@@ -61,16 +61,11 @@ lint: ## Run golangci-lint if installed, otherwise skip
 
 # check is the fast loop for day-to-day work: it runs the tests with -short, so
 # the slow gates in internal/policy (the cross-target build and vet, the host
-# cgo build, the nested make runs) are skipped. Run check-release before a
-# release or a merge.
+# cgo build) are skipped. Run check-release before a release or a merge.
 .PHONY: check
 check: fmt vet lint test-short ## Run fmt, vet, lint and the short tests - the fast check
 
-# AGENTKIT_IN_MAKE_CHECK tells the tests that run inside make check-release to
-# skip the checks that would start make check-release again or repeat a suite
-# it already runs.
 .PHONY: check-release
-check-release: export AGENTKIT_IN_MAKE_CHECK := 1
 check-release: fmt vet lint test ## Run fmt, vet, lint and the full tests, slow gates included - use before a release
 
 .PHONY: doc

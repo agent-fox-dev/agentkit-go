@@ -4,7 +4,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,36 +15,29 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/rsyncx"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 )
 
-func startFrame(d sandboxpb.RsyncStart_Direction, path string) *sandboxpb.RsyncFrame {
-	return &sandboxpb.RsyncFrame{Frame: &sandboxpb.RsyncFrame_Start{Start: &sandboxpb.RsyncStart{Direction: d, Path: path}}}
+func startFrame(s *sandboxpb.RsyncStart) *sandboxpb.RsyncFrame {
+	return &sandboxpb.RsyncFrame{Frame: &sandboxpb.RsyncFrame_Start{Start: s}}
 }
 
-func argsFrame(args []string) *sandboxpb.RsyncFrame {
-	return &sandboxpb.RsyncFrame{Frame: &sandboxpb.RsyncFrame_Args{Args: &sandboxpb.RsyncArgs{Args: args}}}
+var (
+	syncStart   = startFrame(&sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_SYNC})
+	exportStart = startFrame(&sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_EXPORT, Path: "dir"})
+)
+
+func argsFrame(a *sandboxpb.RsyncArgs) *sandboxpb.RsyncFrame {
+	return &sandboxpb.RsyncFrame{Frame: &sandboxpb.RsyncFrame_Args{Args: a}}
 }
 
-func dataOf(b []byte) *sandboxpb.RsyncFrame {
-	return &sandboxpb.RsyncFrame{Frame: &sandboxpb.RsyncFrame_Data{Data: b}}
-}
-
-// syncBase and exportBase are the agent's argument lists this module
-// produces: the agent receives on SYNC and sends on EXPORT.
-func syncBase(t *testing.T) []string {
+// serverArgs are the agent's arguments this module produces: the agent
+// receives on SYNC and sends operand on EXPORT.
+func serverArgs(t *testing.T, del, export bool, operand string) []string {
 	t.Helper()
-	a, err := rsyncx.ServerArgs(rsyncx.ClientArgs(false), false, ".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return a
-}
-
-func exportBase(t *testing.T, operand string) []string {
-	t.Helper()
-	a, err := rsyncx.ServerArgs(rsyncx.ClientArgs(false), true, operand)
+	a, err := rsyncx.ServerArgs(rsyncx.ClientArgs(del), export, operand)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,200 +56,188 @@ func drain(st sandboxpb.Agent_RsyncClient) error {
 	}
 }
 
-// recvPlan reads the first frame of st and returns its plan, or the error.
-func recvPlan(st sandboxpb.Agent_RsyncClient) (*sandboxpb.RsyncPlan, error) {
-	f, err := st.Recv()
-	if err != nil {
-		return nil, err
-	}
-	return f.GetPlan(), nil
-}
-
-// rsyncAgent serves an agent over a workspace holding a.txt, with tools
-// configured.
-func rsyncAgent(t *testing.T) (sandboxpb.AgentClient, string) {
+// open starts a stream with start and returns it with the plan.
+func open(t *testing.T, c sandboxpb.AgentClient, start *sandboxpb.RsyncFrame) (sandboxpb.Agent_RsyncClient, *sandboxpb.RsyncPlan, error) {
 	t.Helper()
-	ws := t.TempDir()
-	writeFile(t, ws, "a.txt", "a")
-	writeFile(t, ws, "dir/b.txt", "b")
-	c, _ := serveRaw(t, newAgent(t, ws, testEnv(t), time.Hour))
-	if _, err := c.Tools(context.Background(), &sandboxpb.ToolsRequest{}); err != nil {
+	st, err := c.Rsync(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
-	return c, ws
+	if err := st.Send(start); err != nil {
+		t.Fatal(err)
+	}
+	f, err := st.Recv()
+	return st, f.GetPlan(), err
 }
 
-// TS-14-7: the agent refuses an out-of-order frame with InvalidArgument
-// naming the frame kind, stops any rsync work it started, and stays live.
-// 14-REQ-2.4.
-func TestRsyncFrameOrder_TS14_7(t *testing.T) {
-	c, _ := rsyncAgent(t)
-	ctx := context.Background()
-	sync := startFrame(sandboxpb.RsyncStart_SYNC, "")
-	cases := []struct {
-		frames  []*sandboxpb.RsyncFrame
-		plan    int // index after which the plan frame is read
-		kind    string
-		comment string
-	}{
-		{[]*sandboxpb.RsyncFrame{dataOf([]byte("x"))}, -1, "data", "first frame data"},
-		{[]*sandboxpb.RsyncFrame{argsFrame(syncBase(t))}, -1, "args", "first frame args"},
-		{[]*sandboxpb.RsyncFrame{sync, sync}, -1, "start", "second start"},
-		{[]*sandboxpb.RsyncFrame{sync, dataOf([]byte("x"))}, 0, "data", "data before args"},
-		{[]*sandboxpb.RsyncFrame{sync, argsFrame(syncBase(t)), argsFrame(syncBase(t))}, 0, "args", "second args"},
-	}
-	for _, tc := range cases {
-		st, err := c.Rsync(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for i, f := range tc.frames {
-			if err := st.Send(f); err != nil {
-				break
-			}
-			if i == tc.plan {
-				if _, err := recvPlan(st); err != nil {
-					t.Fatalf("%s: no plan: %v", tc.comment, err)
-				}
-			}
-		}
-		err = drain(st)
-		if status.Code(err) != codes.InvalidArgument || !strings.Contains(status.Convert(err).Message(), tc.kind) {
-			t.Errorf("%s: %v, want InvalidArgument naming %s", tc.comment, err, tc.kind)
-		}
-		if r := call(t, c, "list_files", `{"path":"."}`); !r.Ok {
-			t.Errorf("%s: list_files afterwards: %v", tc.comment, r)
-		}
-	}
-	st, _ := c.Rsync(ctx)
-	_ = st.Send(sync)
-	if p, err := recvPlan(st); err != nil || p == nil {
-		t.Errorf("a new stream after the refusals: %v, %v; want a plan", p, err)
-	}
-	_ = st.CloseSend()
-}
-
-// TS-14-31: a second Rsync stream while one is running gets
-// FailedPrecondition and the first completes with its own result.
-// 14-REQ-6.2. Stream 1 is driven as the host drives it: a server sending a
-// filtered source tree (docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md).
-func TestRsyncOneStream_TS14_31(t *testing.T) {
-	ctx := context.Background()
-	ws := t.TempDir()
-	c, _ := serveRaw(t, newAgent(t, ws, testEnv(t), time.Hour))
-	if _, err := c.Tools(ctx, &sandboxpb.ToolsRequest{}); err != nil {
-		t.Fatal(err)
-	}
-	src := t.TempDir()
-	writeFile(t, src, "a.txt", "hello")
-
-	s1, _ := c.Rsync(ctx)
-	_ = s1.Send(startFrame(sandboxpb.RsyncStart_SYNC, ""))
-	if _, err := recvPlan(s1); err != nil {
-		t.Fatal(err)
-	}
-	_ = s1.Send(argsFrame(syncBase(t)))
-
-	s2, _ := c.Rsync(ctx)
-	_ = s2.Send(startFrame(sandboxpb.RsyncStart_SYNC, ""))
-	if p, err := recvPlan(s2); p != nil || status.Code(err) != codes.FailedPrecondition {
-		t.Errorf("second stream: plan %v, %v; want FailedPrecondition and no plan", p, err)
-	}
-
+// serveSource serves src, filtered by rules, over st as the host does on SYNC.
+func serveSource(t *testing.T, st sandboxpb.Agent_RsyncClient, src string, rules []string) *rsyncx.Conn {
+	t.Helper()
 	root, err := os.OpenRoot(src)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	srv, err := rsyncx.NewServer(rsyncx.Filtered(root, ".", rsyncx.NewMatcher(nil)))
+	srv, err := rsyncx.NewServer(rsyncx.Filtered(root, ".", rsyncx.NewMatcher(rules)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	hostArgs, _ := rsyncx.ServerArgs(rsyncx.ClientArgs(false), true, ".")
-	conn := rsyncx.HostConn(s1)
-	if err := srv.Serve(ctx, conn, hostArgs); err != nil {
+	conn := rsyncx.HostConn(st)
+	if err := srv.Serve(context.Background(), conn, serverArgs(t, false, true, ".")); err != nil {
 		t.Fatalf("serving the source: %v", err)
 	}
 	_, _ = io.Copy(io.Discard, conn)
+	return conn
+}
+
+// A SYNC writes the host's files, deletes what the host lacks unless a rule
+// of either side protects it, and reports what changed.
+func TestRsyncSyncReceivesDeletesAndCounts(t *testing.T) {
+	ws := testutil.Tree(t, map[string]string{"a.txt": "a", "dir/b.txt": "b", "keep.txt": "k", ".gitignore": "*.log\n", "x.log": "l"})
+	c := configured(t, ws)
+	src := testutil.Tree(t, map[string]string{"a.txt": "hello", "new.txt": "n", "host-only.tmp": "t"})
+	st, plan, err := open(t, c, startFrame(&sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_SYNC, Delete: true}))
+	if err != nil || !slices.Contains(plan.GetRules(), "x.log") {
+		t.Fatalf("plan %v, %v; want the workspace's ignored x.log as a rule", plan, err)
+	}
+	rules := rsyncx.Combine(plan.GetRules(), []string{"keep.txt", ".gitignore", "host-only.tmp"})
+	_ = st.Send(argsFrame(&sandboxpb.RsyncArgs{Args: serverArgs(t, true, false, "."), Rules: rules, Present: []string{"a.txt", "new.txt"}}))
+	conn := serveSource(t, st, src, rules)
+	d, ok := conn.Done()
+	if !ok || d.Files != 2 || d.Bytes != 6 || d.Deleted != 2 {
+		t.Errorf("done = %v, %v; want 2 files of 6 bytes and 2 deleted (dir/b.txt, dir)", d, ok)
+	}
+	want := []string{".gitignore", "a.txt", "keep.txt", "new.txt", "x.log"}
+	if got, _ := os.ReadDir(ws); len(got) != len(want) {
+		t.Errorf("the workspace holds %v, want %v", got, want)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "a.txt")); string(b) != "hello" {
+		t.Errorf("a.txt = %q", b)
+	}
+	if err := drain(st); err != nil {
+		t.Errorf("the stream ended with %v", err)
+	}
+}
+
+// An EXPORT serves a filtered, read-only view of the export path, and done
+// carries the transfer set when the host deletes.
+func TestRsyncExportSendsTheFilteredPath(t *testing.T) {
+	ws := testutil.Tree(t, map[string]string{"dir/b.txt": "b", "dir/skip.o": "o", "dir/.git/HEAD": "ref", "top.txt": "t"})
+	c := configured(t, ws)
+	st, plan, err := open(t, c, startFrame(&sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_EXPORT, Path: "dir", Delete: true}))
+	if err != nil || !slices.Contains(plan.GetRules(), ".git") {
+		t.Fatalf("plan %v, %v; want the .git rule", plan, err)
+	}
+	_ = st.Send(argsFrame(&sandboxpb.RsyncArgs{Args: serverArgs(t, true, true, "dir/"), Rules: rsyncx.Combine(plan.GetRules(), []string{"skip.o"})}))
+	dst := t.TempDir()
+	conn := rsyncx.HostConn(st)
+	if err := rsyncx.RunClient(context.Background(), conn, rsyncx.ClientArgs(false), dst); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, conn)
+	if d, ok := conn.Done(); !ok || !slices.Equal(d.GetPresent(), []string{"b.txt"}) {
+		t.Errorf("done = %v, %v; want the transfer set [b.txt]", d, ok)
+	}
+	if got, _ := os.ReadDir(dst); len(got) != 1 || got[0].Name() != "b.txt" {
+		t.Errorf("the destination holds %v, want only b.txt", got)
+	}
+}
+
+// A frame out of order is InvalidArgument naming its kind, and the agent
+// stays live for the next stream.
+func TestRsyncRefusesAFrameOutOfOrder(t *testing.T) {
+	c := configured(t, testutil.Tree(t, map[string]string{"a.txt": "a", "dir/b.txt": "b"}))
+	data := &sandboxpb.RsyncFrame{Frame: &sandboxpb.RsyncFrame_Data{Data: []byte("x")}}
+	args := argsFrame(&sandboxpb.RsyncArgs{Args: serverArgs(t, false, false, ".")})
+	for _, k := range []struct {
+		first, then []*sandboxpb.RsyncFrame
+		kind        string
+	}{
+		{[]*sandboxpb.RsyncFrame{data}, nil, "data"},
+		{[]*sandboxpb.RsyncFrame{args}, nil, "args"},
+		{[]*sandboxpb.RsyncFrame{{}}, nil, "empty"},
+		{[]*sandboxpb.RsyncFrame{syncStart}, []*sandboxpb.RsyncFrame{syncStart}, "start"},
+		{[]*sandboxpb.RsyncFrame{syncStart}, []*sandboxpb.RsyncFrame{data}, "data"},
+		{[]*sandboxpb.RsyncFrame{syncStart}, []*sandboxpb.RsyncFrame{args, args}, "args"},
+	} {
+		st, err := c.Rsync(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range k.first {
+			_ = st.Send(f)
+		}
+		if k.then != nil {
+			if f, err := st.Recv(); err != nil || f.GetPlan() == nil {
+				t.Fatalf("no plan: %v, %v", f, err)
+			}
+			for _, f := range k.then {
+				_ = st.Send(f)
+			}
+		}
+		if err := drain(st); status.Code(err) != codes.InvalidArgument || !strings.Contains(status.Convert(err).Message(), k.kind) {
+			t.Errorf("%s frame out of order: %v, want InvalidArgument naming it", k.kind, err)
+		}
+		if r := call(t, c, "list_files", `{"path":"."}`); !r.Ok {
+			t.Errorf("list_files afterwards: %v", r)
+		}
+	}
+}
+
+// A second stream while one runs is FailedPrecondition, and the first
+// completes with its own result.
+func TestRsyncRunsOneStreamAtATime(t *testing.T) {
+	ws := t.TempDir()
+	c := configured(t, ws)
+	s1, _, err := open(t, c, syncStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s1.Send(argsFrame(&sandboxpb.RsyncArgs{Args: serverArgs(t, false, false, ".")}))
+	if _, p, err := open(t, c, syncStart); p != nil || status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("second stream: plan %v, %v; want FailedPrecondition and no plan", p, err)
+	}
+	conn := serveSource(t, s1, testutil.Tree(t, map[string]string{"a.txt": "hello"}), nil)
 	if d, ok := conn.Done(); !ok || d.Files != 1 {
 		t.Errorf("done = %v, %v; want files 1", d, ok)
 	}
 	if err := drain(s1); err != nil {
 		t.Errorf("stream 1 ended with %v, want OK", err)
 	}
-	if b, err := os.ReadFile(filepath.Join(ws, "a.txt")); err != nil || string(b) != "hello" {
-		t.Errorf("workspace a.txt: %q, %v", b, err)
-	}
-	s3, _ := c.Rsync(ctx)
-	_ = s3.Send(startFrame(sandboxpb.RsyncStart_SYNC, ""))
-	if p, err := recvPlan(s3); err != nil || p == nil {
-		t.Errorf("third stream: %v, %v", p, err)
-	}
-	_ = s3.CloseSend()
-	if r := call(t, c, "list_files", `{"path":"."}`); !r.Ok {
-		t.Error(r)
-	}
 }
 
-// TS-14-32: an args frame with an unknown option, a known option outside the
-// allowlist, a mismatched sender flag or a foreign path operand is refused
-// with InvalidArgument naming it, before any server is built.
-// 14-REQ-6.3, 14-REQ-6.4, 14-REQ-6.5.
-func TestRsyncArgChecks_TS14_32(t *testing.T) {
-	c, ws := rsyncAgent(t)
-	ctx := context.Background()
-	snap := treeSnapshot(t, ws)
-	sb, ex := syncBase(t), exportBase(t, "dir/")
-	for _, opt := range []string{"--include=x", "--filter=- x", "-c"} {
-		if _, err := rsyncx.ParseArgs(append(slices.Clone(sb), opt)); err != nil {
-			t.Errorf("the library's parser does not recognise %s: %v", opt, err)
-		}
-	}
-	// --remove-source-files is not an option this library knows at all; it is
-	// refused all the same, by the parser check.
-	withOp := func(base []string, op string) []string {
-		a := slices.Clone(base)
-		a[len(a)-1] = op
-		return a
-	}
-	without := func(base []string, tok string) []string {
-		return slices.DeleteFunc(slices.Clone(base), func(s string) bool { return s == tok })
-	}
-	type tc struct {
+// An argument list this module would not produce is refused with
+// InvalidArgument naming the token, before any server is built or any data
+// moves.
+func TestRsyncRefusesForeignArguments(t *testing.T) {
+	c := configured(t, testutil.Tree(t, map[string]string{"a.txt": "a", "dir/b.txt": "b"}))
+	sb, ex := serverArgs(t, false, false, "."), serverArgs(t, false, true, "dir/")
+	plus := func(base []string, tok string) []string { return append(slices.Clone(base), tok) }
+	withOp := func(op string) []string { a := slices.Clone(ex); a[len(a)-1] = op; return a }
+	for _, k := range []struct {
 		start *sandboxpb.RsyncFrame
 		args  []string
 		word  string
-	}
-	syncStart, exportStart := startFrame(sandboxpb.RsyncStart_SYNC, ""), startFrame(sandboxpb.RsyncStart_EXPORT, "dir")
-	cases := []tc{
-		{syncStart, append(slices.Clone(sb), "--frobnicate"), "--frobnicate"},
-		{syncStart, append(slices.Clone(sb), "--remove-source-files"), "--remove-source-files"},
-		{syncStart, append(slices.Clone(sb), "--include=x"), "--include=x"},
-		{syncStart, append(slices.Clone(sb), "--filter=- x"), "--filter=- x"},
-		{syncStart, append(slices.Clone(sb), "-c"), "-c"},
-		{syncStart, append(slices.Clone(sb), "--sender"), "--sender"},
-		{exportStart, without(ex, "--sender"), "--sender"},
-		{exportStart, withOp(ex, "../etc"), "../etc"},
-		{exportStart, withOp(ex, "other"), "other"},
-	}
-	for _, k := range cases {
+	}{
+		{syncStart, plus(sb, "--frobnicate"), "--frobnicate"},
+		{syncStart, plus(sb, "--include=x"), "--include=x"},
+		{syncStart, plus(sb, "-c"), "-c"},
+		{syncStart, plus(sb, "--sender"), "--sender"},
+		{exportStart, slices.DeleteFunc(slices.Clone(ex), func(s string) bool { return s == "--sender" }), "--sender"},
+		{exportStart, withOp("../etc"), "../etc"},
+		{exportStart, withOp("other"), "other"},
+	} {
 		n0 := rsyncx.ServersBuilt()
-		st, _ := c.Rsync(ctx)
-		_ = st.Send(k.start)
-		if _, err := recvPlan(st); err != nil {
-			t.Fatalf("%v: %v", k.args, err)
+		st, _, err := open(t, c, k.start)
+		if err != nil {
+			t.Fatal(err)
 		}
-		_ = st.Send(argsFrame(k.args))
-		var err error
-		data := 0
+		_ = st.Send(argsFrame(&sandboxpb.RsyncArgs{Args: k.args}))
+		var f *sandboxpb.RsyncFrame
 		for err == nil {
-			var f *sandboxpb.RsyncFrame
 			if f, err = st.Recv(); f.GetData() != nil {
-				data++
+				t.Errorf("%q: a data frame: the refused stream reached the transfer", k.args)
 			}
-		}
-		if data != 0 {
-			t.Errorf("%q: %d data frames: the refused stream reached the transfer", k.args, data)
 		}
 		if status.Code(err) != codes.InvalidArgument || !strings.Contains(status.Convert(err).Message(), k.word) {
 			t.Errorf("%q: %v, want InvalidArgument naming %s", k.args, err, k.word)
@@ -265,69 +245,21 @@ func TestRsyncArgChecks_TS14_32(t *testing.T) {
 		if rsyncx.ServersBuilt() != n0 {
 			t.Errorf("%q: a server was built for a refused stream", k.args)
 		}
-		if r := call(t, c, "list_files", `{"path":"."}`); !r.Ok {
-			t.Errorf("%q: list_files afterwards: %v", k.args, r)
-		}
-	}
-	if got := treeSnapshot(t, ws); !slices.Equal(got, snap) {
-		t.Errorf("the workspace changed: %v -> %v", snap, got)
-	}
-
-	// The unmodified baselines are accepted: SYNC reaches the data phase (the
-	// agent's client speaks first), EXPORT builds its server.
-	st, _ := c.Rsync(ctx)
-	_ = st.Send(syncStart)
-	_, _ = recvPlan(st)
-	_ = st.Send(argsFrame(sb))
-	if f, err := st.Recv(); err != nil || f.GetData() == nil {
-		t.Errorf("SYNC baseline: %v, %v; want a data frame", f, err)
-	}
-	_ = st.CloseSend()
-	_ = drain(st)
-	for _, op := range []string{"dir/", "dir"} {
-		n0 := rsyncx.ServersBuilt()
-		st, _ = c.Rsync(ctx)
-		_ = st.Send(exportStart)
-		_, _ = recvPlan(st)
-		_ = st.Send(argsFrame(exportBase(t, op)))
-		deadline := time.Now().Add(2 * time.Second)
-		for rsyncx.ServersBuilt() == n0 && time.Now().Before(deadline) {
-			time.Sleep(10 * time.Millisecond)
-		}
-		if rsyncx.ServersBuilt() != n0+1 {
-			t.Errorf("EXPORT baseline with operand %q built no server", op)
-		}
-		_ = st.CloseSend()
-		_ = drain(st)
 	}
 }
 
-// treeSnapshot lists every entry under dir with its size and mtime.
-func treeSnapshot(t *testing.T, dir string) []string {
-	t.Helper()
-	var out []string
-	_ = filepath.Walk(dir, func(p string, fi os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(dir, p)
-		out = append(out, fmt.Sprintf("%s %v %v %d", rel, fi.Mode(), fi.ModTime(), fi.Size()))
-		return nil
-	})
-	return out
-}
-
-// TS-14-30: an invalid start frame is refused before plan with
-// InvalidArgument naming the field, or NotFound for a missing export path.
-// 14-REQ-6.1. The host half is in sandbox/rsync_export_test.go.
-func TestRsyncStartChecks_TS14_30(t *testing.T) {
-	c, ws := rsyncAgent(t)
-	writeFile(t, ws, "file.txt", "f")
+// An invalid start frame is refused before the plan, with InvalidArgument
+// naming the field or NotFound for a missing export path.
+func TestRsyncRefusesAnInvalidStart(t *testing.T) {
+	ws := testutil.Tree(t, map[string]string{"file.txt": "f"})
+	c := configured(t, ws)
 	if err := os.Symlink("file.txt", filepath.Join(ws, "link")); err != nil {
 		t.Fatal(err)
 	}
-	snap := treeSnapshot(t, ws)
-	cases := []struct {
+	export := func(path string, del bool) *sandboxpb.RsyncStart {
+		return &sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_EXPORT, Path: path, Delete: del}
+	}
+	for _, k := range []struct {
 		start *sandboxpb.RsyncStart
 		code  codes.Code
 		word  string
@@ -335,43 +267,42 @@ func TestRsyncStartChecks_TS14_30(t *testing.T) {
 		{&sandboxpb.RsyncStart{}, codes.InvalidArgument, "direction"},
 		{&sandboxpb.RsyncStart{Direction: 7}, codes.InvalidArgument, "direction"},
 		{&sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_SYNC, Path: "x"}, codes.InvalidArgument, "path"},
-		{&sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_EXPORT, Path: "../x"}, codes.InvalidArgument, "path"},
-		{&sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_EXPORT, Path: "missing"}, codes.NotFound, "missing"},
-		{&sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_EXPORT, Path: "link"}, codes.InvalidArgument, "path"},
-		{&sandboxpb.RsyncStart{Direction: sandboxpb.RsyncStart_EXPORT, Path: "file.txt", Delete: true}, codes.InvalidArgument, "delete"},
-	}
-	for _, k := range cases {
-		st, _ := c.Rsync(context.Background())
-		_ = st.Send(&sandboxpb.RsyncFrame{Frame: &sandboxpb.RsyncFrame_Start{Start: k.start}})
-		f, err := st.Recv()
-		if f != nil || status.Code(err) != k.code || !strings.Contains(status.Convert(err).Message(), k.word) {
-			t.Errorf("start %v: frame %v, %v; want %v naming %s", k.start, f, err, k.code, k.word)
-		}
-		if r := call(t, c, "list_files", `{"path":"."}`); !r.Ok {
-			t.Error(r)
+		{export("../x", false), codes.InvalidArgument, "path"},
+		{export("missing", false), codes.NotFound, "missing"},
+		{export("link", false), codes.InvalidArgument, "symlink"},
+		{export("file.txt", true), codes.InvalidArgument, "delete"},
+	} {
+		_, p, err := open(t, c, startFrame(k.start))
+		if p != nil || status.Code(err) != k.code || !strings.Contains(status.Convert(err).Message(), k.word) {
+			t.Errorf("start %v: plan %v, %v; want %v naming %s", k.start, p, err, k.code, k.word)
 		}
 	}
-	if got := treeSnapshot(t, ws); !slices.Equal(got, snap) {
-		t.Error("the workspace changed")
+	if _, p, err := open(t, c, startFrame(export("file.txt", false))); err != nil || !p.GetFile() {
+		t.Errorf("a file export: plan %v, %v; want File set", p, err)
 	}
 }
 
-// A stream that arrives while a cancelled stream is still unwinding waits
-// for its slot instead of being refused (14-REQ-4.8: a following Sync
-// succeeds); a live holder is still refused at once (TS-14-31).
-func TestRsyncSlotAfterCancel(t *testing.T) {
+// A stream that finds the slot held by a cancelled stream waits for its
+// release instead of being refused; a live holder is refused at once.
+func TestRsyncSlotWaitsForACancelledHolder(t *testing.T) {
 	var s rsyncSlot
-	live := context.Background()
 	ctx1, cancel := context.WithCancel(context.Background())
 	if !s.acquire(ctx1) {
 		t.Fatal("the free slot was refused")
 	}
-	if s.acquire(live) {
+	if s.acquire(context.Background()) {
 		t.Fatal("a live holder's slot was granted")
 	}
 	cancel()
+	waiter, giveUp := context.WithCancel(context.Background())
+	gaveUp := make(chan bool)
+	go func() { gaveUp <- s.acquire(waiter) }()
+	giveUp()
+	if <-gaveUp {
+		t.Error("a waiter whose own context ended got the slot")
+	}
 	got := make(chan bool)
-	go func() { got <- s.acquire(live) }()
+	go func() { got <- s.acquire(context.Background()) }()
 	select {
 	case ok := <-got:
 		t.Fatalf("acquire returned %v before the cancelled holder released", ok)

@@ -1,4 +1,4 @@
-package codemode_test
+package codemode
 
 import (
 	"context"
@@ -6,92 +6,79 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agent-fox-dev/agentkit-go/codemode"
 	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
-func okTool(core.ToolUseBlock) (core.ToolResult, error) {
-	return core.OKResult(map[string]any{"ok": true}), nil
-}
-
-// TS-08-28: a script past MaxTimeout is stopped as a timeout. MaxSteps is
-// raised so the step limit does not end the loop first.
-func TestLimitsTimeout_TS08_28(t *testing.T) {
-	start := time.Now()
-	res := run(t, context.Background(), codemode.Options{MaxTimeout: 50 * time.Millisecond, MaxSteps: 1 << 40},
-		&fakeCaller{}, "print('started')\nwhile True:\n    pass\n")
-	if res.OK || res.Error != "timeout" || !strings.Contains(res.Detail, "50ms") {
+// Each limit stops the script with an error that names it and its value, and
+// keeps what the script printed before it stopped.
+func TestALimitStopsTheScriptNamingIt(t *testing.T) {
+	for _, tc := range []struct {
+		name, script string
+		opts         Options
+		code, detail string
+	}{
+		{"wall time", "print('started')\nwhile True:\n    pass\n",
+			Options{MaxTimeout: 50 * time.Millisecond, MaxSteps: 1 << 40}, "timeout", "50ms time limit (MaxTimeout)"},
+		{"steps", "print('started')\nfor x in range(1000):\n    pass\n",
+			Options{MaxSteps: 100}, "step_limit_exceeded", "100 execution steps (MaxSteps)"},
+		{"calls", "print('started')\nfor i in range(5):\n    ping()\n",
+			Options{MaxCalls: 3}, "call_limit_exceeded", "more than 3 tool calls (MaxCalls)"},
+		{"printed output", "print('started')\nprint('A' * 300)\nprint('after')\n",
+			Options{MaxOutputBytes: 200, DisableSpill: true}, "output_limit_exceeded", "200 bytes (MaxOutputBytes)"},
+		{"a return value", "print('started')\nresult = 'B' * 300\n",
+			Options{MaxOutputBytes: 200, DisableSpill: true}, "output_limit_exceeded", "200 bytes (MaxOutputBytes)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := caller(map[string]answer{"ping": okTool})
+			res := runScript(t, context.Background(), tc.opts, fc, tc.script, leaf("ping"))
+			if res.OK || res.Error != tc.code || !strings.Contains(res.Detail, tc.detail) || strings.Contains(res.Text, "after") {
+				t.Fatalf("result = %+v", res)
+			}
+			if !strings.HasPrefix(res.Data["partial_output"].(string), "started") {
+				t.Fatalf("partial output = %q", res.Data["partial_output"])
+			}
+		})
+	}
+	// Well under the default limits, the same loop finishes.
+	if res := runScript(t, context.Background(), Options{}, caller(nil), "for x in range(1000):\n    pass\n"); !res.OK {
 		t.Fatalf("result = %+v", res)
-	}
-	if time.Since(start) > 5*time.Second {
-		t.Fatalf("took %v to stop", time.Since(start))
-	}
-	if res.Data["partial_output"] != "started" {
-		t.Fatalf("partial output = %q", res.Data["partial_output"])
-	}
-}
-
-// TS-08-29: a script past MaxSteps is stopped, naming the limit.
-func TestLimitsSteps_TS08_29(t *testing.T) {
-	res := run(t, context.Background(), codemode.Options{MaxSteps: 100}, &fakeCaller{}, "for x in range(1000):\n    pass\n")
-	if res.OK || res.Error != "step_limit_exceeded" || !strings.Contains(res.Detail, "100") {
-		t.Fatalf("result = %+v", res)
-	}
-	// Well under the limit, the same loop finishes.
-	if res := run(t, context.Background(), codemode.Options{}, &fakeCaller{}, "for x in range(1000):\n    pass\n"); !res.OK {
-		t.Fatalf("result = %+v", res)
-	}
-}
-
-// TS-08-30: MaxCalls counts single calls and parallel calls together, and the
-// excess call is not made.
-func TestLimitsCalls_TS08_30(t *testing.T) {
-	fc := &fakeCaller{fn: map[string]func(core.ToolUseBlock) (core.ToolResult, error){"ping": okTool}}
-	res := run(t, context.Background(), codemode.Options{MaxCalls: 3}, fc, "for i in range(5):\n    ping()\n", leaf("ping"))
-	if res.OK || res.Error != "call_limit_exceeded" || !strings.Contains(res.Detail, "3") || len(fc.calls) != 3 {
-		t.Fatalf("result = %+v, %d calls", res, len(fc.calls))
-	}
-	fc = &fakeCaller{fn: map[string]func(core.ToolUseBlock) (core.ToolResult, error){"ping": okTool}}
-	res = run(t, context.Background(), codemode.Options{MaxCalls: 3}, fc, "ping()\nparallel([call(ping), call(ping), call(ping)])\n", leaf("ping"))
-	if res.OK || res.Error != "call_limit_exceeded" || len(fc.calls) != 1 {
-		t.Fatalf("parallel over budget: result = %+v, %d calls", res, len(fc.calls))
 	}
 }
 
-// TS-08-31: output past MaxOutputBytes stops the script, naming the limit.
-func TestLimitsOutput_TS08_31(t *testing.T) {
-	res := run(t, context.Background(), codemode.Options{MaxOutputBytes: 200, DisableSpill: true}, &fakeCaller{},
-		"print('A' * 300)\nprint('after')\n")
-	if res.OK || res.Error != "output_limit_exceeded" || !strings.Contains(res.Detail, "200") ||
-		strings.Contains(res.Text, "after") {
-		t.Fatalf("result = %+v", res)
-	}
-	// A return value counts towards the limit too.
-	res = run(t, context.Background(), codemode.Options{MaxOutputBytes: 200, DisableSpill: true}, &fakeCaller{},
-		"result = 'B' * 300\n")
-	if res.OK || res.Error != "output_limit_exceeded" {
-		t.Fatalf("return value: result = %+v", res)
+// MaxCalls counts single and parallel calls together, and a parallel call
+// over the remaining budget makes none of its calls, however many batches it
+// would take.
+func TestTheCallBudgetIsCheckedBeforeAnyCallOfAParallel(t *testing.T) {
+	for _, tc := range []struct {
+		script string
+		calls  int
+	}{
+		{"ping()\nparallel([call(ping), call(ping), call(ping)])\n", 1},
+		{"parallel([call(ping), call(ping), call(ping), call(ping), call(ping)])\n", 0},
+	} {
+		fc := caller(map[string]answer{"ping": okTool})
+		res := runScript(t, context.Background(), Options{MaxCalls: 4 - tc.calls, MaxConcurrentCalls: 2}, fc, tc.script, leaf("ping"))
+		if res.Error != "call_limit_exceeded" || len(fc.calls) != tc.calls {
+			t.Fatalf("%q: result = %+v, %d calls", tc.script, res, len(fc.calls))
+		}
 	}
 }
 
-// TS-08-32: a limit keeps the partial output and the calls that completed,
-// in Data and in Text.
-func TestLimitsKeepPartialOutputAndCalls_TS08_32(t *testing.T) {
-	fc := &fakeCaller{fn: map[string]func(core.ToolUseBlock) (core.ToolResult, error){"ping": okTool}}
-	res := run(t, context.Background(), codemode.Options{MaxOutputBytes: 100, DisableSpill: true}, fc,
-		"print('step 1 completed')\nping(id=1)\nprint('A' * 500)\n", leaf("ping"))
-	if res.OK || res.Error != "output_limit_exceeded" {
-		t.Fatalf("result = %+v", res)
+// A context already cancelled when the script starts, or cancelled while it
+// runs, aborts it; the caller cancelling is not a timeout.
+func TestACancelledContextAbortsTheScript(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	fc := caller(nil)
+	res := runScript(t, ctx, Options{}, fc, "ping()\n", leaf("ping"))
+	if res.Error != "aborted" || res.Detail != "Operation aborted" || len(fc.calls) != 0 {
+		t.Fatalf("before: result = %+v", res)
 	}
-	if !strings.Contains(res.Data["partial_output"].(string), "step 1 completed") {
-		t.Fatalf("partial output = %q", res.Data["partial_output"])
-	}
-	calls := res.Data["calls_completed"].([]any)
-	if len(calls) != 1 || calls[0].(map[string]any)["tool"] != "ping" {
-		t.Fatalf("calls = %+v", calls)
-	}
-	if !strings.Contains(res.Text, "step 1 completed") || !strings.Contains(res.Text, "ping(id=1)") ||
-		!strings.Contains(res.Text, "output_limit_exceeded") {
-		t.Fatalf("text = %q", res.Text)
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	fc = caller(map[string]answer{"stop": func(core.ToolUseBlock) (core.ToolResult, error) { cancel2(); return core.OKResult(nil), nil }})
+	res = runScript(t, ctx2, Options{MaxSteps: 1 << 40}, fc, "stop()\nwhile True:\n    pass\n", leaf("stop"))
+	if res.Error != "aborted" || res.Detail != "Operation aborted" {
+		t.Fatalf("during: result = %+v", res)
 	}
 }

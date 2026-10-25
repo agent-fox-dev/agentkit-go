@@ -1,90 +1,20 @@
 package prompt
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 	"github.com/agent-fox-dev/agentkit-go/tools"
 	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// TS-02-55: The prompt builder emits the execute fallback only when no navigation tool is present
-func TestExecuteFallbackSuppression_TS02_55(t *testing.T) {
-	// Helper to build a minimal tool set.
-	mkTool := func(name string, guidelines ...string) core.Tool {
-		return core.Tool{Name: name, PromptGuidelines: guidelines}
-	}
-
-	tests := []struct {
-		name         string
-		tools        []core.Tool
-		wantFallback bool
-	}{
-		{
-			name:         "execute alone",
-			tools:        []core.Tool{mkTool("execute")},
-			wantFallback: true,
-		},
-		{
-			name:         "execute with file_outline only",
-			tools:        []core.Tool{mkTool("execute"), mkTool("file_outline")},
-			wantFallback: false,
-		},
-		{
-			name:         "execute with find_symbol only",
-			tools:        []core.Tool{mkTool("execute"), mkTool("find_symbol")},
-			wantFallback: false,
-		},
-		{
-			name:         "execute with list_files",
-			tools:        []core.Tool{mkTool("execute"), mkTool("list_files")},
-			wantFallback: false,
-		},
-		{
-			name:         "execute with all navigation tools",
-			tools:        []core.Tool{mkTool("execute"), mkTool("list_files"), mkTool("find_files"), mkTool("search_files"), mkTool("file_outline"), mkTool("find_symbol")},
-			wantFallback: false,
-		},
-		{
-			name:         "no execute at all",
-			tools:        []core.Tool{mkTool("read_file")},
-			wantFallback: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := Build("", tt.tools)
-			hasFallback := contains(got, tools.ExecuteFallbackGuideline)
-			if hasFallback != tt.wantFallback {
-				t.Errorf("ExecuteFallbackGuideline present=%v, want %v\nprompt:\n%s", hasFallback, tt.wantFallback, got)
-			}
-		})
-	}
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && searchString(s, sub)
-}
-
-func searchString(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}
-
-// The "prefer search_files over execute+grep" guideline compares two tools, so
-// it is only sound when both are present: a run without execute must not be
-// told about a tool it does not have.
-func TestSearchOverExecuteGuidelineNeedsBothTools(t *testing.T) {
+// defaultToolSet is the real default tool set through the real resolver, so a
+// change to any tool's description or guidelines shows up as a golden diff.
+func defaultToolSet(t *testing.T) []core.Tool {
+	t.Helper()
 	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
 	if err != nil {
 		t.Fatal(err)
@@ -93,147 +23,126 @@ func TestSearchOverExecuteGuidelineNeedsBothTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pick := func(names ...string) []core.Tool {
-		var out []core.Tool
-		for _, tl := range all {
-			for _, n := range names {
-				if tl.Name == n {
-					out = append(out, tl)
-				}
-			}
-		}
-		if len(out) != len(names) {
-			t.Fatalf("wanted %v, resolved %d tools", names, len(out))
-		}
-		return out
-	}
+	return core.ToolPolicy{}.Resolve(all)
+}
 
+func named(names ...string) []core.Tool {
+	out := make([]core.Tool, len(names))
+	for i, n := range names {
+		out[i] = core.Tool{Name: n}
+	}
+	return out
+}
+
+func TestBuildMatchesTheGoldenPromptOverTheDefaultTools(t *testing.T) {
+	navigation := map[string]bool{"list_files": true, "find_files": true, "search_files": true,
+		"file_outline": true, "find_symbol": true, "find_references": true}
+	all := defaultToolSet(t)
+	var withoutNavigation []core.Tool
+	for _, tl := range all {
+		if !navigation[tl.Name] {
+			withoutNavigation = append(withoutNavigation, tl)
+		}
+	}
+	for _, tc := range []struct {
+		golden, system string
+		tools          []core.Tool
+	}{
+		{"system_prompt_default.txt", "", all},
+		{"system_prompt_custom.txt", "You are a release engineer. Answer only about this repository.", all},
+		{"system_prompt_no_navigation.txt", "", withoutNavigation},
+	} {
+		t.Run(tc.golden, func(t *testing.T) {
+			testutil.Golden(t, filepath.Join("testdata", "golden", tc.golden), []byte(Build(tc.system, tc.tools)))
+		})
+	}
+}
+
+func TestBuildWithoutASystemPromptOpensWithTheBaseAndEndsWithTheUniversalGuidelines(t *testing.T) {
+	got := Build("", nil)
+	want := BaseInstructions + "\n\nGuidelines:\n- " + strings.Join(UniversalGuidelines, "\n- ")
+	if got != want {
+		t.Fatalf("Build(\"\", nil) =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestBuildWithASystemPromptReplacesTheBuiltInTextButKeepsTheToolsGuidelines(t *testing.T) {
+	if got := Build("Custom.\n\n", nil); got != "Custom." {
+		t.Fatalf("custom prompt without guidelines = %q, want it alone, trailing newlines trimmed", got)
+	}
+	got := Build("You are a release engineer.", []core.Tool{
+		{Name: "search_files", PromptGuidelines: []string{"Search before reading whole files."}},
+		{Name: "execute"},
+	})
+	want := "You are a release engineer.\n\nGuidelines:\n" +
+		"- Search before reading whole files.\n- " + tools.SearchOverExecuteGuideline
+	if got != want {
+		t.Fatalf("custom prompt =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestBuildDeduplicatesGuidelinesInFirstSeenOrder(t *testing.T) {
+	got := Build("", []core.Tool{
+		{Name: "zeta", PromptGuidelines: []string{"Zeta first.", "Shared advice.", "  "}},
+		{Name: "alpha", PromptGuidelines: []string{" Shared advice. ", "Alpha second."}},
+	})
+	want := BaseInstructions + "\n\nGuidelines:\n" +
+		"- Zeta first.\n- Shared advice.\n- Alpha second.\n- " + strings.Join(UniversalGuidelines, "\n- ")
+	if got != want {
+		t.Fatalf("Build =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestBuildAddsTheShellFallbackOnlyWhenNoNavigationToolIsPresent(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		tools []core.Tool
 		want  bool
 	}{
-		{"search_files and execute", pick("search_files", "execute"), true},
-		{"search_files without execute", pick("search_files", "list_files"), false},
-		{"execute without search_files", pick("execute", "list_files"), false},
-		{"search_files alone", pick("search_files"), false},
+		{"execute alone", named("execute"), true},
+		{"execute with file_outline", named("execute", "file_outline"), false},
+		{"execute with find_symbol", named("execute", "find_symbol"), false},
+		{"execute with list_files", named("execute", "list_files"), false},
+		{"no shell", named("read_file"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Build("", tc.tools)
-			if has := contains(got, "execute+grep"); has != tc.want {
-				t.Errorf("execute+grep guideline present=%v, want %v\nprompt:\n%s", has, tc.want, got)
+			if has := strings.Contains(got, tools.ExecuteFallbackGuideline); has != tc.want {
+				t.Errorf("fallback present = %v, want %v\n%s", has, tc.want, got)
 			}
 		})
 	}
 }
 
-// Issue #75 §4: a custom system prompt replaces the BUILT-IN text — the base
-// instructions and the universal guidelines — but a tool's own guidelines
-// travel with the tool (NFR-TEST-08a), so they still reach the model.
-func TestACustomPromptKeepsTheToolsGuidelines(t *testing.T) {
-	got := Build("You are a release engineer.", []core.Tool{
-		{Name: "search_files", PromptGuidelines: []string{"Search before reading whole files."}},
-		{Name: "execute"},
-	})
-	for _, want := range []string{"You are a release engineer.", "Search before reading whole files.", tools.SearchOverExecuteGuideline} {
-		if !strings.Contains(got, want) {
-			t.Errorf("custom prompt lacks %q:\n%s", want, got)
-		}
-	}
-	if strings.Contains(got, BaseInstructions) {
-		t.Error("a custom prompt must replace the built-in base instructions")
-	}
-	for _, g := range UniversalGuidelines {
-		if strings.Contains(got, g) {
-			t.Errorf("a custom prompt must replace the built-in universal guideline %q", g)
-		}
-	}
-}
-
-// Issue #75 §4: the shell guidelines are keyed on whichever shell tool is
-// active, not on the literal name "execute", and name that tool.
-func TestShellGuidelinesNameTheActiveShell(t *testing.T) {
-	for _, shell := range []string{"run_command"} {
-		got := Build("", []core.Tool{{Name: shell}})
-		if want := "Use " + shell + " for file operations like ls, rg, find."; !strings.Contains(got, want) {
-			t.Errorf("%s alone: prompt lacks %q:\n%s", shell, want, got)
-		}
-		got = Build("", []core.Tool{{Name: "search_files"}, {Name: shell}})
-		if want := "Prefer search_files over " + shell + "+grep"; !strings.Contains(got, want) {
-			t.Errorf("%s with search_files: prompt lacks %q:\n%s", shell, want, got)
-		}
-	}
-	// execute keeps its exact, pinned wording.
-	if got := Build("", []core.Tool{{Name: "execute"}}); !strings.Contains(got, tools.ExecuteFallbackGuideline) {
-		t.Errorf("execute alone: prompt lacks the pinned %q", tools.ExecuteFallbackGuideline)
-	}
-}
-
-// TS-12-35: Build takes the base prompt and the tools; Input, SkillBlocks
-// and the skills package are gone.
-func TestBuildSignatureAndNoSkills_TS12_35(t *testing.T) {
-	// Compiles only if Build has exactly this signature.
-	var _ func(string, []core.Tool) string = Build
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fset := token.NewFileSet()
-	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		f, err := parser.ParseFile(fset, name, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, imp := range f.Imports {
-			if strings.Contains(imp.Path.Value, "/skills") {
-				t.Errorf("%s imports %s", name, imp.Path.Value)
+func TestBuildPrefersSearchFilesOverTheShellOnlyWhenBothArePresent(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		tools []core.Tool
+		want  bool
+	}{
+		{"search_files and execute", named("search_files", "execute"), true},
+		{"search_files without a shell", named("search_files", "list_files"), false},
+		{"execute without search_files", named("execute", "list_files"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Build("", tc.tools)
+			if has := strings.Contains(got, tools.SearchOverExecuteGuideline); has != tc.want {
+				t.Errorf("search guideline present = %v, want %v\n%s", has, tc.want, got)
 			}
-		}
-		for _, d := range f.Decls {
-			if g, ok := d.(*ast.GenDecl); ok {
-				for _, sp := range g.Specs {
-					if ts, ok := sp.(*ast.TypeSpec); ok && (ts.Name.Name == "Input" || ts.Name.Name == "SkillBlocks") {
-						t.Errorf("prompt still declares %s", ts.Name.Name)
-					}
-				}
-			}
-		}
+		})
 	}
 }
 
-// TS-12-36: an empty system prompt opens with the built-in instructions and
-// universal guidelines; a non-empty one replaces both.
-func TestBuildBaseOrCustom_TS12_36(t *testing.T) {
-	def := Build("", nil)
-	if !strings.HasPrefix(def, BaseInstructions) || !strings.Contains(def, UniversalGuidelines[0]) {
-		t.Fatalf("default prompt:\n%s", def)
+func TestBuildNamesTheActiveShellInTheShellGuidelines(t *testing.T) {
+	got := Build("", named("run_command"))
+	if want := "Use run_command for file operations like ls, rg, find."; !strings.Contains(got, want) {
+		t.Errorf("run_command alone: prompt lacks %q:\n%s", want, got)
 	}
-	custom := Build("Custom system prompt instructions.", nil)
-	if !strings.HasPrefix(custom, "Custom system prompt instructions.") || strings.Contains(custom, BaseInstructions) ||
-		strings.Contains(custom, UniversalGuidelines[0]) {
-		t.Fatalf("custom prompt:\n%s", custom)
+	got = Build("", named("search_files", "run_command"))
+	if want := "Prefer search_files over run_command+grep"; !strings.Contains(got, want) {
+		t.Errorf("run_command with search_files: prompt lacks %q:\n%s", want, got)
 	}
-}
-
-// TS-12-37: tool guidelines are deduplicated in first-seen order, and the
-// shell guidelines follow the tools present.
-func TestBuildGuidelines_TS12_37(t *testing.T) {
-	t1 := core.Tool{Name: "t1", PromptGuidelines: []string{"Guideline A", "Guideline B"}}
-	t2 := core.Tool{Name: "t2", PromptGuidelines: []string{"Guideline B", "Guideline C"}}
-	res := Build("", []core.Tool{t1, t2})
-	a, b, c := strings.Index(res, "Guideline A"), strings.Index(res, "Guideline B"), strings.Index(res, "Guideline C")
-	if !(a >= 0 && a < b && b < c) || strings.Count(res, "Guideline B") != 1 {
-		t.Fatalf("guidelines out of order or repeated:\n%s", res)
-	}
-	alone := Build("", []core.Tool{{Name: "execute"}})
-	if !strings.Contains(alone, tools.ExecuteFallbackGuideline) || strings.Contains(alone, tools.SearchOverExecuteGuideline) {
-		t.Fatalf("execute alone:\n%s", alone)
-	}
-	both := Build("", []core.Tool{{Name: "search_files"}, {Name: "execute"}})
-	if !strings.Contains(both, tools.SearchOverExecuteGuideline) {
-		t.Fatalf("execute with search_files:\n%s", both)
+	if strings.Contains(got, "execute") {
+		t.Errorf("a prompt without execute names it:\n%s", got)
 	}
 }

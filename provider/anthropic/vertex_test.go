@@ -2,457 +2,188 @@ package anthropic_test
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"golang.org/x/oauth2"
-
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 )
 
-// testGoogleToken is the Google access token the Vertex tests authorize with.
-const testGoogleToken = "ya29.test-adc-token"
+const vertexPath = "/v1/projects/proj-1/locations/us-east5/publishers/anthropic/models/claude-test:streamRawPredict"
 
-// sent drives one request through the provider and returns what the transport
-// saw. No network, no key, no process environment (NFR-TEST-01, NFR-TEST-04):
-// the deployment is decided from the injected env alone.
-func sent(t *testing.T, opts anthropic.Options, env map[string]string) *http.Request {
+// sentTo is the URL a turn with opts and env goes to.
+func sentTo(t *testing.T, opts anthropic.Options, env map[string]string) *http.Request {
 	t.Helper()
-	var got *http.Request
-	req := core.Request{
-		Messages: core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}},
-	}
 	opts.Env = env
-	opts.Transport = rtFunc(func(r *http.Request) (*http.Response, error) {
-		got = r.Clone(r.Context())
-		if r.Body != nil {
-			b, _ := io.ReadAll(r.Body)
-			got.Body = io.NopCloser(strings.NewReader(string(b)))
-		}
-		return &http.Response{StatusCode: 200, Header: http.Header{},
-			Body: io.NopCloser(strings.NewReader(streamFixture()))}, nil
-	})
-	if opts.Getenv == nil {
-		opts.Getenv = func(string) string { return "" }
+	if opts.Env == nil {
+		opts.Env = map[string]string{}
 	}
-	if opts.VertexTokenSource == nil {
-		// Never this machine's Application Default Credentials.
-		opts.VertexTokenSource = oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken})
+	x := run(t, testModel(), core.Request{Messages: core.Messages{user("hi")}}, opts, 200, streamFixture())
+	if x.req == nil {
+		t.Fatalf("no request was sent: %+v", x.msg)
 	}
-	stream(anthropic.Provider(*testModel(), opts), context.Background(), req).Result()
-	return got
+	return x.req
 }
 
-// TestSwitchingToVertexIsAConfigChangeNotAProviderSwap is NFR-COMPAT-05.
-//
-// The requirement is not "Vertex works" — it is that the SAME wire API
-// implementation serves both deployments and that moving between them touches
-// configuration only. Each case changes one piece of config and nothing else.
-func TestSwitchingToVertexIsAConfigChangeNotAProviderSwap(t *testing.T) {
-	const path = "/v1/projects/proj-1/locations/us-east5/publishers/anthropic/" +
-		"models/claude-test:streamRawPredict"
-
+// Moving between the direct API and Vertex is a configuration change: the
+// flag selects Vertex, an explicit off vetoes every other signal, Options
+// outrank the environment, and leftover Vertex-only variables select nothing.
+func TestTheDeploymentIsAConfigurationChange(t *testing.T) {
+	direct := "https://api.anthropic.com/v1/messages"
+	regional := "https://us-east5-aiplatform.googleapis.com" + vertexPath
 	cases := []struct {
 		name string
 		opts anthropic.Options
 		env  map[string]string
 		want string
 	}{
-		{
-			name: "the default is the direct deployment",
-			env:  map[string]string{"ANTHROPIC_API_KEY": "sk-ant-x"},
-			want: "https://api.anthropic.com/v1/messages",
-		},
-		{
-			name: "a project on Options is the whole switch, host included",
-			opts: anthropic.Options{VertexProject: "proj-1", VertexLocation: "us-east5"},
-			want: "https://us-east5-aiplatform.googleapis.com" + path,
-		},
-		{
-			// The reported environment, spelled exactly: the flag plus the
-			// coordinates, no key anywhere.
-			name: "CLAUDE_CODE_USE_VERTEX selects it with the coordinates from the environment",
-			env: map[string]string{
-				"CLAUDE_CODE_USE_VERTEX":      "1",
-				"ANTHROPIC_VERTEX_PROJECT_ID": "proj-1",
-				"CLOUD_ML_REGION":             "us-east5",
-			},
-			want: "https://us-east5-aiplatform.googleapis.com" + path,
-		},
-		{
-			// GOOGLE_CLOUD_PROJECT may SUPPLY a project once something else
-			// has selected the deployment (ruling L-12).
-			name: "the project may come from the ambient GCP environment",
-			env: map[string]string{
-				"CLAUDE_CODE_USE_VERTEX": "true",
-				"GOOGLE_CLOUD_PROJECT":   "proj-1",
-				"GOOGLE_CLOUD_LOCATION":  "us-east5",
-			},
-			want: "https://us-east5-aiplatform.googleapis.com" + path,
-		},
-		{
-			// A proxy in front of Vertex: the path shape is Vertex's, the host
-			// is the operator's, and it beats ANTHROPIC_BASE_URL because the
-			// two name different upstreams.
-			name: "ANTHROPIC_VERTEX_BASE_URL beats the general base URL",
-			env: map[string]string{
-				"CLAUDE_CODE_USE_VERTEX":      "1",
-				"ANTHROPIC_VERTEX_PROJECT_ID": "proj-1",
-				"CLOUD_ML_REGION":             "us-east5",
-				"ANTHROPIC_BASE_URL":          "https://general.proxy.example.com",
-				"ANTHROPIC_VERTEX_BASE_URL":   "https://vertex.proxy.example.com",
-			},
-			want: "https://vertex.proxy.example.com" + path,
-		},
-		{
-			// No region named anywhere. The global endpoint is the only one
-			// that needs no regional prefix, so it is the safe default.
-			name: "no location falls back to the global endpoint",
-			env: map[string]string{
-				"CLAUDE_CODE_USE_VERTEX":      "1",
-				"ANTHROPIC_VERTEX_PROJECT_ID": "proj-1",
-			},
-			want: "https://aiplatform.googleapis.com/v1/projects/proj-1/locations/global/" +
-				"publishers/anthropic/models/claude-test:streamRawPredict",
-		},
+		{"an API key is direct", anthropic.Options{}, map[string]string{"ANTHROPIC_API_KEY": "sk-ant-x"}, direct},
+		{"a project on Options", anthropic.Options{VertexProject: "proj-1", VertexLocation: "us-east5"}, nil, regional},
+		{"the flag and its coordinates", anthropic.Options{}, map[string]string{"CLAUDE_CODE_USE_VERTEX": "1",
+			"ANTHROPIC_VERTEX_PROJECT_ID": "proj-1", "CLOUD_ML_REGION": "us-east5"}, regional},
+		{"the ambient GCP project and location", anthropic.Options{}, map[string]string{"CLAUDE_CODE_USE_VERTEX": "true",
+			"GOOGLE_CLOUD_PROJECT": "proj-1", "GOOGLE_CLOUD_LOCATION": "us-east5"}, regional},
+		{"the Vertex proxy beats the general base URL", anthropic.Options{}, map[string]string{"CLAUDE_CODE_USE_VERTEX": "1",
+			"ANTHROPIC_VERTEX_PROJECT_ID": "proj-1", "CLOUDSDK_COMPUTE_REGION": "us-east5",
+			"ANTHROPIC_BASE_URL": "https://general.example.com", "ANTHROPIC_VERTEX_BASE_URL": "https://vertex.example.com"},
+			"https://vertex.example.com" + vertexPath},
+		{"no location is global", anthropic.Options{}, map[string]string{"CLAUDE_CODE_USE_VERTEX": "1",
+			"ANTHROPIC_VERTEX_PROJECT_ID": "proj-1"},
+			"https://aiplatform.googleapis.com/v1/projects/proj-1/locations/global/publishers/anthropic/models/claude-test:streamRawPredict"},
+		{"a leftover project does not select Vertex", anthropic.Options{}, map[string]string{"ANTHROPIC_API_KEY": "k",
+			"ANTHROPIC_VERTEX_PROJECT_ID": "proj-from-last-week"}, direct},
+		{"a leftover Vertex proxy does not either", anthropic.Options{}, map[string]string{"ANTHROPIC_API_KEY": "k",
+			"ANTHROPIC_VERTEX_BASE_URL": "https://us-east5-aiplatform.googleapis.com"}, direct},
+		{"Options outrank an off flag", anthropic.Options{VertexProject: "proj-1", VertexLocation: "us-east5"},
+			map[string]string{"CLAUDE_CODE_USE_VERTEX": "0", "ANTHROPIC_API_KEY": "k"}, regional},
 	}
-
+	for _, off := range []string{"0", "false", "no", "off", "OFF"} {
+		cases = append(cases, struct {
+			name string
+			opts anthropic.Options
+			env  map[string]string
+			want string
+		}{"the flag set to " + off, anthropic.Options{}, map[string]string{"CLAUDE_CODE_USE_VERTEX": off,
+			"ANTHROPIC_VERTEX_PROJECT_ID": "proj-1", "ANTHROPIC_API_KEY": "k"}, direct})
+	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			r := sent(t, c.opts, c.env)
-			if r == nil {
-				t.Fatal("no request was made")
-			}
-			if got := r.URL.String(); got != c.want {
-				t.Errorf("request URL =\n  %s\nwant\n  %s", got, c.want)
-			}
-		})
-	}
-}
-
-// TestTheFlagVariableSetToZeroDoesNotSelectVertex: a flag's value IS its
-// grammar. Presence would make "turn it off" impossible to write.
-func TestTheFlagVariableSetToZeroDoesNotSelectVertex(t *testing.T) {
-	for _, off := range []string{"0", "false", "no", "off", "OFF"} {
-		env := map[string]string{"CLAUDE_CODE_USE_VERTEX": off, "ANTHROPIC_API_KEY": "sk-ant-x"}
-		if got := sent(t, anthropic.Options{}, env).URL.String(); got !=
-			"https://api.anthropic.com/v1/messages" {
-			t.Errorf("CLAUDE_CODE_USE_VERTEX=%q gave %s, want the direct deployment", off, got)
+		if got := sentTo(t, c.opts, c.env).URL.String(); got != c.want {
+			t.Errorf("%s: sent to\n  %s\nwant\n  %s", c.name, got, c.want)
 		}
 	}
 }
 
-// TestAnAnthropicAPIKeyIsNeverSentToTheVertexEndpoint.
-//
-// A workstation that used to call Anthropic directly still has
-// ANTHROPIC_API_KEY set. Forwarding it hands a first-party credential to a
-// third party in a header they have no use for — a deployment switch that
-// silently exfiltrates the old deployment's key.
-func TestAnAnthropicAPIKeyIsNeverSentToTheVertexEndpoint(t *testing.T) {
-	r := sent(t, anthropic.Options{}, map[string]string{
-		"CLAUDE_CODE_USE_VERTEX":      "1",
-		"ANTHROPIC_VERTEX_PROJECT_ID": "proj-1",
-		"ANTHROPIC_API_KEY":           "sk-ant-leftover-from-the-old-deployment",
-	})
-	if got := r.Header.Get("x-api-key"); got != "" {
-		t.Fatalf("x-api-key = %q; an Anthropic key must never reach a Google endpoint", got)
-	}
-	if got := r.Header.Get("Authorization"); got != "Bearer "+testGoogleToken {
-		t.Fatalf("Authorization = %q; Vertex authorizes with the Google credential, and an "+
-			"x-api-key credential must be dropped, not re-scheme'd into a bearer token", got)
-	}
-
-	// The converse: a bearer token IS the Vertex credential — a gcloud access
-	// token in ANTHROPIC_AUTH_TOKEN is the dependency-free way to authenticate.
-	r = sent(t, anthropic.Options{}, map[string]string{
-		"CLAUDE_CODE_USE_VERTEX":      "1",
-		"ANTHROPIC_VERTEX_PROJECT_ID": "proj-1",
-		"ANTHROPIC_AUTH_TOKEN":        "ya29.access-token",
-	})
-	if got := r.Header.Get("Authorization"); got != "Bearer ya29.access-token" {
-		t.Fatalf("Authorization = %q, want the bearer token to survive", got)
-	}
-}
-
-// TestTheVertexBodyOmitsTheModelAndCarriesTheAnthropicVersion pins the two
-// body-shaped halves of the wire delta, which the SDK's Vertex option applies. Both are 400s when wrong, and the
-// model field is the one an omitempty-style struct would get silently right
-// and a required one would get silently wrong.
-func TestTheVertexBodyOmitsTheModelAndCarriesTheAnthropicVersion(t *testing.T) {
-	r := sent(t, anthropic.Options{VertexProject: "proj-1"}, nil)
-
-	raw, _ := io.ReadAll(r.Body)
-	var body map[string]any
-	if err := json.Unmarshal(raw, &body); err != nil {
-		t.Fatalf("body is not JSON: %v", err)
-	}
-	if _, ok := body["model"]; ok {
-		t.Errorf("body names a model: %s\nVertex names it in the URL and rejects the field", raw)
-	}
-	if got := body["anthropic_version"]; got != anthropic.VertexAPIVersion {
-		t.Errorf("anthropic_version = %v, want %q", got, anthropic.VertexAPIVersion)
-	}
-
-	// The direct deployment is untouched by both changes.
-	r = sent(t, anthropic.Options{}, map[string]string{"ANTHROPIC_API_KEY": "sk-ant-x"})
-	if got := r.Header.Get("anthropic-version"); got != anthropic.APIVersion {
-		t.Errorf("direct anthropic-version = %q, want %q", got, anthropic.APIVersion)
-	}
-	raw, _ = io.ReadAll(r.Body)
-	body = nil
-	_ = json.Unmarshal(raw, &body)
-	if body["model"] != "claude-test" {
-		t.Errorf("direct body model = %v, want claude-test", body["model"])
-	}
-	if _, ok := body["anthropic_version"]; ok {
-		t.Errorf("the direct body must not carry anthropic_version: %s", raw)
-	}
-}
-
-// TestASelectedVertexDeploymentWithNoProjectFailsSaying So. The alternative is
-// the direct path on a Vertex host: a 404 several layers down whose message
-// names neither Vertex nor the missing project.
-func TestASelectedVertexDeploymentWithNoProjectFailsSayingSo(t *testing.T) {
-	none := func(string) string { return "" }
-	_, _, err := anthropic.Resolve(anthropic.MapEnv{"CLAUDE_CODE_USE_VERTEX": "1"})
-	if err == nil {
-		t.Fatal("a selected deployment with no project must be an error")
-	}
-	if !strings.Contains(err.Error(), "ANTHROPIC_VERTEX_PROJECT_ID") {
-		t.Fatalf("error = %q; it must name the variable that fixes it", err)
-	}
-
-	// And the failure reaches the caller through the stream, not as a silent
-	// fallback to api.anthropic.com (REQ-PROV-04).
-	var reached bool
-	msg := stream(anthropic.Provider(*testModel(), anthropic.Options{Getenv: none,
-		VertexTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken}),
-		Env:               map[string]string{"CLAUDE_CODE_USE_VERTEX": "1"},
-		Transport: rtFunc(func(*http.Request) (*http.Response, error) {
-			reached = true
-			return nil, io.EOF
-		}),
-	}), context.Background(), core.Request{}).Result()
-	if reached {
-		t.Fatal("a misconfigured deployment must not send a request")
-	}
-	if msg == nil || msg.ErrorMessage == "" {
-		t.Fatalf("result = %+v, want an error message", msg)
-	}
-}
-
-// TestALeftoverVertexProjectVariableDoesNotHijackAnAPIKeyDeployment is the
-// reported bug, and it is the sticky-variable half of ruling L-12.
-//
-// An operator tries Claude on Vertex, then goes back: they unset
-// CLAUDE_CODE_USE_VERTEX and export ANTHROPIC_API_KEY. The project variable
-// outlives that decision, and while it selected the deployment on its own
-// every request went to aiplatform.googleapis.com — with the Anthropic key
-// correctly withheld and no ADC token to replace it, so a 401 whose Google
-// body mentions nothing the operator had touched.
-func TestALeftoverVertexProjectVariableDoesNotHijackAnAPIKeyDeployment(t *testing.T) {
-	r := sent(t, anthropic.Options{}, map[string]string{
-		"ANTHROPIC_API_KEY":           "sk-ant-x",
-		"ANTHROPIC_VERTEX_PROJECT_ID": "proj-from-last-week",
-	})
-	if got, want := r.URL.String(), "https://api.anthropic.com/v1/messages"; got != want {
-		t.Fatalf("request URL = %s, want %s; a project is coordinates, and an "+
-			"Anthropic key in the same environment is a decision", got, want)
-	}
-	if r.Header.Get("x-api-key") == "" {
-		t.Error("the direct deployment must still carry the key")
-	}
-}
-
-// TestTheFlagVariableSetToZeroVetoesTheOtherEnvironmentSignals.
-//
-// Reading the flag for truth is not enough on its own: it only stops the flag
-// from selecting the deployment, and on the machine that has the other
-// variables there is then no way to spell "not Vertex" at all. An explicit off
-// has to beat them.
-func TestTheFlagVariableSetToZeroVetoesTheOtherEnvironmentSignals(t *testing.T) {
-	for _, off := range []string{"0", "false", "no", "off", "OFF"} {
-		r := sent(t, anthropic.Options{}, map[string]string{
-			"CLAUDE_CODE_USE_VERTEX":      off,
-			"ANTHROPIC_VERTEX_PROJECT_ID": "proj-1",
-			"ANTHROPIC_API_KEY":           "sk-ant-direct",
-		})
-		if r == nil {
-			t.Fatalf("CLAUDE_CODE_USE_VERTEX=%q: no request was made", off)
-		}
-		if got, want := r.URL.String(), "https://api.anthropic.com/v1/messages"; got != want {
-			t.Errorf("CLAUDE_CODE_USE_VERTEX=%q gave %s, want %s", off, got, want)
-		}
-	}
-}
-
-// TestExplicitConfigurationOutranksTheVeto: Options.VertexProject and a base
-// URL that IS a Vertex host are not environment leftovers. The first is a
-// deliberate act of the embedding program; the second is the endpoint itself,
-// and /v1/messages sent there is a 404 whatever the flag says.
-func TestExplicitConfigurationOutranksTheVeto(t *testing.T) {
-	env := map[string]string{
-		"CLAUDE_CODE_USE_VERTEX": "0",
-		"ANTHROPIC_API_KEY":      "sk-ant-x",
-	}
-	const path = "/v1/projects/proj-1/locations/us-east5/publishers/anthropic/" +
-		"models/claude-test:streamRawPredict"
-
-	r := sent(t, anthropic.Options{VertexProject: "proj-1", VertexLocation: "us-east5"}, env)
-	if got, want := r.URL.String(), "https://us-east5-aiplatform.googleapis.com"+path; got != want {
-		t.Errorf("Options.VertexProject gave %s, want %s", got, want)
-	}
-}
-
-// TestAVertexAuthFailureNamesTheDeploymentAndWhatSelectedIt.
-//
-// The body Vertex returns for a missing credential names neither Claude, nor
-// the deployment, nor the setting that routed the request to Google — and
-// under this package's "anthropic:" prefix it reads as an Anthropic outage.
-// The one thing the operator needs is the name of the variable to unset.
-func TestAVertexAuthFailureNamesTheDeploymentAndWhatSelectedIt(t *testing.T) {
-	const body = `{"error":{"code":401,"message":"Request is missing required ` +
-		`authentication credential.","status":"UNAUTHENTICATED"}}`
-	req := core.Request{
-		Messages: core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}},
-	}
-	msg := stream(anthropic.Provider(*testModel(), anthropic.Options{Getenv: func(string) string { return "" },
-		VertexTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken}),
-		Env:               map[string]string{"CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "proj-1"},
-		Transport: rtFunc(func(*http.Request) (*http.Response, error) {
-			return &http.Response{StatusCode: 401, Header: http.Header{},
-				Body: io.NopCloser(strings.NewReader(body))}, nil
-		}),
-	}), context.Background(), req).Result()
-	if msg == nil || msg.ErrorMessage == "" {
-		t.Fatalf("result = %+v, want an error message", msg)
-	}
-	for _, want := range []string{
-		"Vertex AI", "proj-1", "global",
-		"ANTHROPIC_VERTEX_PROJECT_ID", // what selected it, and what to unset
-		"CLAUDE_CODE_USE_VERTEX=0",    // the other way out
-	} {
-		if !strings.Contains(msg.ErrorMessage, want) {
-			t.Errorf("error message does not mention %q:\n%s", want, msg.ErrorMessage)
-		}
-	}
-}
-
-// TestTheDirectDeploymentAddsNoVertexNoteToItsOwnFailures: the note is a
-// diagnosis of one deployment, and pasting it onto an ordinary bad-key 401
-// from api.anthropic.com would send the operator after the wrong thing.
-func TestTheDirectDeploymentAddsNoVertexNoteToItsOwnFailures(t *testing.T) {
-	req := core.Request{
-		Messages: core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}},
-	}
-	msg := stream(anthropic.Provider(*testModel(), anthropic.Options{Getenv: func(string) string { return "" },
-		VertexTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken}),
-		Env:               map[string]string{"ANTHROPIC_API_KEY": "sk-ant-wrong"},
-		Transport: rtFunc(func(*http.Request) (*http.Response, error) {
-			return &http.Response{StatusCode: 401, Header: http.Header{},
-				Body: io.NopCloser(strings.NewReader(`{"error":{"message":"invalid x-api-key"}}`))}, nil
-		}),
-	}), context.Background(), req).Result()
-	if msg == nil {
-		t.Fatal("want a result")
-	}
-	if strings.Contains(msg.ErrorMessage, "Vertex") {
-		t.Fatalf("a direct 401 must not be explained as a Vertex one:\n%s", msg.ErrorMessage)
-	}
-}
-
-// TestAnAPIKeyIsNotEvidenceOfTheDirectDeploymentWhenVertexIsChosenOutright.
-// The key is dropped either way (it is not a Vertex credential); what must not
-// happen is the key silently un-choosing a deployment the operator asked for.
-func TestAnAPIKeyIsNotEvidenceOfTheDirectDeploymentWhenVertexIsChosenOutright(t *testing.T) {
-	_, src, err := anthropic.Resolve(anthropic.MapEnv{
-		"CLAUDE_CODE_USE_VERTEX":      "1",
-		"ANTHROPIC_VERTEX_PROJECT_ID": "proj-1",
-		"ANTHROPIC_API_KEY":           "sk-ant-x",
-	})
-	if err != nil || src != anthropic.SourceVertex {
-		t.Fatalf("source = %q, err = %v: an explicit CLAUDE_CODE_USE_VERTEX=1 must select Vertex regardless of the key", src, err)
-	}
-}
-
-// TestALeftoverVertexProxyDoesNotHijackAnAPIKeyDeploymentEither.
-//
-// ANTHROPIC_VERTEX_BASE_URL is Vertex-ONLY: with the deployment off it names
-// no endpoint at all, because the direct path never reads it. That makes it a
-// sticky leftover of exactly the kind the project variable is, and it is
-// ranked with it rather than with a base URL the direct deployment would also
-// have used.
-func TestALeftoverVertexProxyDoesNotHijackAnAPIKeyDeploymentEither(t *testing.T) {
-	env := map[string]string{
-		"ANTHROPIC_API_KEY":         "sk-ant-x",
-		"ANTHROPIC_VERTEX_BASE_URL": "https://us-east5-aiplatform.googleapis.com",
-	}
-	if got, want := sent(t, anthropic.Options{}, env).URL.String(),
-		"https://api.anthropic.com/v1/messages"; got != want {
-		t.Fatalf("request URL = %s, want %s", got, want)
-	}
-}
-
-// TestAnAnthropicBearerIsNeverSentToTheVertexEndpoint is the bearer half of
-// TestAnAnthropicAPIKeyIsNeverSentToTheVertexEndpoint. ANTHROPIC_OAUTH_TOKEN
-// is always an Anthropic-issued token, and an sk-ant- value is one wherever
-// it came from; a Google access token is neither.
-func TestAnAnthropicBearerIsNeverSentToTheVertexEndpoint(t *testing.T) {
-	vertex := func(extra map[string]string) map[string]string {
+// Vertex authorizes with a Google credential; no Anthropic-issued credential
+// left in the environment ever reaches a Google endpoint.
+func TestAnthropicCredentialsAreNeverSentToVertex(t *testing.T) {
+	vertex := func(kv ...string) map[string]string {
 		env := map[string]string{"CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "proj-1"}
-		for k, v := range extra {
-			env[k] = v
+		for i := 0; i+1 < len(kv); i += 2 {
+			env[kv[i]] = kv[i+1]
 		}
 		return env
 	}
-	for name, env := range map[string]map[string]string{
-		"oauth token":              vertex(map[string]string{"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-SECRET"}),
-		"anthropic token in auth":  vertex(map[string]string{"ANTHROPIC_AUTH_TOKEN": "sk-ant-oat01-SECRET"}),
-		"oauth token and api key":  vertex(map[string]string{"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-SECRET", "ANTHROPIC_API_KEY": "sk-ant-api03-SECRET"}),
-		"options project selected": {"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-SECRET"},
+	for _, c := range []struct {
+		name   string
+		opts   anthropic.Options
+		env    map[string]string
+		bearer string
+	}{
+		{"an API key", anthropic.Options{}, vertex("ANTHROPIC_API_KEY", "sk-ant-api03-SECRET"), testGoogleToken},
+		{"an OAuth token", anthropic.Options{}, vertex("ANTHROPIC_OAUTH_TOKEN", "sk-ant-oat01-SECRET"), testGoogleToken},
+		{"an Anthropic token as the auth token", anthropic.Options{}, vertex("ANTHROPIC_AUTH_TOKEN", "sk-ant-oat01-SECRET"), testGoogleToken},
+		{"Vertex chosen on Options", anthropic.Options{VertexProject: "proj-1"},
+			map[string]string{"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-SECRET"}, testGoogleToken},
+		{"a Google token survives a leftover key", anthropic.Options{},
+			vertex("ANTHROPIC_AUTH_TOKEN", "ya29.access", "ANTHROPIC_API_KEY", "sk-ant-api03-SECRET"), "ya29.access"},
 	} {
-		opts := anthropic.Options{}
-		if name == "options project selected" {
-			opts.VertexProject = "proj-1"
+		r := sentTo(t, c.opts, c.env)
+		if !strings.Contains(r.URL.Host, "aiplatform.googleapis.com") || r.Header.Get("x-api-key") != "" ||
+			r.Header.Get("Authorization") != "Bearer "+c.bearer {
+			t.Errorf("%s: sent to %s with x-api-key %q, Authorization %q", c.name, r.URL.Host,
+				r.Header.Get("x-api-key"), r.Header.Get("Authorization"))
 		}
-		r := sent(t, opts, env)
-		if !strings.Contains(r.URL.Host, "aiplatform.googleapis.com") {
-			t.Fatalf("%s: sent to %s, want the Vertex host", name, r.URL)
-		}
-		for _, h := range []string{"Authorization", "x-api-key"} {
-			if got := r.Header.Get(h); strings.Contains(got, "SECRET") {
-				t.Errorf("%s: %s = %q; an Anthropic credential must never reach a Google endpoint", name, h, got)
-			}
-		}
-	}
-
-	// A Google access token in ANTHROPIC_AUTH_TOKEN survives a leftover API
-	// key, whichever the direct deployment would prefer.
-	r := sent(t, anthropic.Options{}, vertex(map[string]string{
-		"ANTHROPIC_AUTH_TOKEN": "ya29.access-token", "ANTHROPIC_API_KEY": "sk-ant-api03-SECRET"}))
-	if got := r.Header.Get("Authorization"); got != "Bearer ya29.access-token" {
-		t.Fatalf("Authorization = %q, want the Google token to survive the leftover API key", got)
 	}
 }
 
-// TestAVertex401NamesTheCredentialsItWithheld: the note says which
-// Anthropic-issued variables are set and were kept off the Google endpoint,
-// and claims nothing about one that is not set.
-func TestAVertex401NamesTheCredentialsItWithheld(t *testing.T) {
-	env := map[string]string{"CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "proj-1",
-		"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x"}
-	msg, _, _ := run(t, testModel(), core.Request{},
-		anthropic.Options{Getenv: func(string) string { return "" }, Env: env,
-			VertexTokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: testGoogleToken})}, 401, `{}`)
-	if !strings.Contains(msg.ErrorMessage, "ANTHROPIC_OAUTH_TOKEN") ||
-		!strings.Contains(msg.ErrorMessage, "never sent to a Google endpoint") {
-		t.Fatalf("error = %q, want it to name ANTHROPIC_OAUTH_TOKEN as withheld", msg.ErrorMessage)
+// A Vertex body names the model in the URL, not the body, and carries the
+// Vertex version; the direct body is untouched by either.
+func TestTheVertexBodyNamesNoModelAndCarriesItsVersion(t *testing.T) {
+	for _, c := range []struct {
+		opts           anthropic.Options
+		env            map[string]string
+		model, version any
+	}{
+		{anthropic.Options{VertexProject: "proj-1"}, nil, nil, anthropic.VertexAPIVersion},
+		{anthropic.Options{}, map[string]string{"ANTHROPIC_API_KEY": "k"}, "claude-test", nil},
+	} {
+		c.opts.Env = c.env
+		x := run(t, testModel(), core.Request{Messages: core.Messages{user("hi")}}, c.opts, 200, streamFixture())
+		body := x.sent(t)
+		if body["model"] != c.model || body["anthropic_version"] != c.version {
+			t.Errorf("Vertex project %q: model %v, anthropic_version %v", c.opts.VertexProject, body["model"], body["anthropic_version"])
+		}
 	}
-	if strings.Contains(msg.ErrorMessage, "ANTHROPIC_API_KEY — which is set") {
-		t.Fatalf("error = %q claims ANTHROPIC_API_KEY is set; it is not", msg.ErrorMessage)
+}
+
+// A Vertex selection that cannot be resolved fails the turn with the reason
+// and sends nothing, rather than falling back to the direct API.
+func TestAnUnresolvableVertexDeploymentFailsWithoutSending(t *testing.T) {
+	x := run(t, testModel(), core.Request{}, anthropic.Options{Env: map[string]string{"CLAUDE_CODE_USE_VERTEX": "1"}}, 200, streamFixture())
+	if x.req != nil || !strings.Contains(x.msg.ErrorMessage, anthropic.VertexProjectVar) || x.msg.StopReason != core.StopReasonError {
+		t.Fatalf("sent %v, result %+v", x.req != nil, x.msg)
+	}
+
+	// With no Google credential configured, Application Default Credentials
+	// are looked for on the first request, and their absence fails it.
+	testutil.Hermetic(t)
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "missing.json"))
+	reached := false
+	p := anthropic.Provider(*testModel(), anthropic.Options{VertexProject: "proj-1", Getenv: func(string) string { return "" }, MaxRetries: new(0),
+		Transport: rtFunc(func(*http.Request) (*http.Response, error) { reached = true; return nil, io.EOF })})
+	msg := core.EventStreamOf(p.Stream(context.Background(), core.Request{})).Result()
+	if reached || msg.StopReason != core.StopReasonError || !strings.Contains(msg.ErrorMessage, "missing.json") {
+		t.Fatalf("sent %v, result %+v", reached, msg)
+	}
+}
+
+// A Vertex 401 or 403 names the deployment, what selected it, the Anthropic
+// credentials it withheld and how to go direct; other failures, and the
+// direct deployment's own, carry no such note.
+func TestAVertexAuthFailureExplainsTheDeployment(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		opts     anthropic.Options
+		status   int
+		want     []string
+		unwanted []string
+	}{
+		{"a 401 with an OAuth token set", anthropic.Options{Env: map[string]string{"CLAUDE_CODE_USE_VERTEX": "1",
+			"ANTHROPIC_VERTEX_PROJECT_ID": "proj-1", "ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x"}}, 401,
+			[]string{"Vertex AI", "project proj-1 (from ANTHROPIC_VERTEX_PROJECT_ID)", "location global",
+				"ANTHROPIC_OAUTH_TOKEN is set, and is never sent to a Google endpoint", "CLAUDE_CODE_USE_VERTEX=0"},
+			[]string{"ANTHROPIC_API_KEY is set", "ANTHROPIC_API_KEY and"}},
+		{"a 403 with both set", anthropic.Options{VertexProject: "proj-1", VertexLocation: "us-east5",
+			Env: map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_OAUTH_TOKEN": "o"}}, 403,
+			[]string{"location us-east5", "ANTHROPIC_API_KEY and ANTHROPIC_OAUTH_TOKEN are set, and are never sent"}, nil},
+		{"a 500 from Vertex", anthropic.Options{VertexProject: "proj-1"}, 500, nil, []string{"Vertex"}},
+		{"a direct 401", anthropic.Options{Env: map[string]string{"ANTHROPIC_API_KEY": "sk-ant-wrong"}}, 401,
+			[]string{"HTTP 401"}, []string{"Vertex"}},
+	} {
+		msg := run(t, testModel(), core.Request{}, c.opts, c.status, `{"error":{"code":401,"message":"missing credential"}}`).msg
+		for _, w := range c.want {
+			if !strings.Contains(msg.ErrorMessage, w) {
+				t.Errorf("%s: error does not say %q:\n%s", c.name, w, msg.ErrorMessage)
+			}
+		}
+		for _, u := range c.unwanted {
+			if strings.Contains(msg.ErrorMessage, u) {
+				t.Errorf("%s: error says %q:\n%s", c.name, u, msg.ErrorMessage)
+			}
+		}
 	}
 }

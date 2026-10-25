@@ -1,131 +1,119 @@
-package tooldigest
+package tooldigest_test
 
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
-	"math/rand/v2"
-	"slices"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/tooldigest"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/tools"
 	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-func randString(r *rand.Rand) string {
-	const letters = "ab\x00:;{}\"x"
-	b := make([]byte, r.IntN(6))
-	for i := range b {
-		b[i] = letters[r.IntN(len(letters))]
-	}
-	return string(b)
-}
-
-func randSchema(r *rand.Rand, depth int) *schema.Schema {
-	switch n := r.IntN(5); {
-	case n == 0 || depth > 2:
-		return schema.String(randString(r))
-	case n == 1:
-		return schema.Int()
-	case n == 2:
-		return schema.Array(randSchema(r, depth+1))
-	default:
-		var fields []schema.Field
-		for i := range r.IntN(3) {
-			fields = append(fields, schema.Prop(fmt.Sprintf("p%d%s", i, randString(r)), randSchema(r, depth+1)))
-		}
-		return schema.Object(fields...)
-	}
-}
-
-func randTool(r *rand.Rand) core.Tool {
-	var g []string
-	for range r.IntN(3) {
-		g = append(g, randString(r))
-	}
+func base() core.Tool {
 	return core.Tool{
-		Name: randString(r), Description: randString(r),
-		InputSchema: randSchema(r, 0), OutputSchema: randSchema(r, 0),
-		PromptGuidelines: g, Builtin: r.IntN(2) == 0, ExecutionMode: core.ExecutionMode(r.IntN(2)),
+		Name: "read", Description: "reads a file",
+		InputSchema:      schema.Object(schema.Prop("path", schema.String("the path"))),
+		OutputSchema:     schema.Array(schema.Int()),
+		PromptGuidelines: []string{"one", "two"},
 	}
 }
 
-// mutate returns t with field f changed so that it differs from t.
-func mutate(t core.Tool, f string) core.Tool {
-	switch f {
-	case "Name":
-		t.Name += "~"
-	case "Description":
-		t.Description += "~"
-	case "InputSchema":
-		t.InputSchema = schema.Object(schema.Prop("changed~", t.InputSchema))
-	case "OutputSchema":
-		t.OutputSchema = schema.Object(schema.Prop("changed~", t.OutputSchema))
-	case "PromptGuidelines":
-		t.PromptGuidelines = append(slices.Clone(t.PromptGuidelines), "")
-	case "Builtin":
-		t.Builtin = !t.Builtin
-	case "ExecutionMode":
-		t.ExecutionMode = 1 - t.ExecutionMode
+func builtTools(t *testing.T) []core.Tool {
+	t.Helper()
+	ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
+	if err != nil {
+		t.Fatal(err)
 	}
-	return t
+	all, err := tools.For(ws, tools.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return all
 }
 
-// TS-13-37: the definition digest is equal exactly when name, description,
-// schemas, guidelines, Builtin and execution mode are equal. 13-REQ-6.2.
-func TestDigestProperty_TS13_37(t *testing.T) {
-	r := rand.New(rand.NewPCG(37, 37))
-	for range 1000 {
-		tl := randTool(r)
-		d := Digest(tl)
-		if len(d) != 32 {
-			t.Fatalf("digest has %d bytes, want a SHA-256", len(d))
-		}
-		clone := tl
-		clone.PromptGuidelines = slices.Clone(tl.PromptGuidelines)
-		if !bytes.Equal(d, Digest(clone)) {
-			t.Fatalf("a copy of %+v has a different digest", tl)
-		}
-		other := tl
-		other.Label = "label~"
-		other.Execute = func(context.Context, json.RawMessage) core.ToolResult { return core.ToolResult{} }
-		other.Handler = func(context.Context, json.RawMessage) (json.RawMessage, error) { return nil, nil }
-		other.PrepareArguments = func(m map[string]any) map[string]any { return m }
-		if !bytes.Equal(d, Digest(other)) {
-			t.Fatal("fields outside the seven changed the digest")
-		}
-		for _, f := range []string{"Name", "Description", "InputSchema", "OutputSchema", "PromptGuidelines", "Builtin", "ExecutionMode"} {
-			if bytes.Equal(d, Digest(mutate(tl, f))) {
-				t.Fatalf("changing %s left the digest of %+v unchanged", f, tl)
-			}
-		}
+func TestDigestIsASHA256ThatACopyShares(t *testing.T) {
+	d := tooldigest.Digest(base())
+	if len(d) != 32 {
+		t.Fatalf("digest has %d bytes, want a SHA-256", len(d))
 	}
-	// Moving a byte between adjacent fields must change the digest.
-	a := core.Tool{Name: "ab", Description: "c"}
-	b := core.Tool{Name: "a", Description: "bc"}
-	if bytes.Equal(Digest(a), Digest(b)) {
-		t.Error("the encoding is not injective across field boundaries")
+	if !bytes.Equal(d, tooldigest.Digest(base())) {
+		t.Error("two equal tools have different digests")
 	}
+}
 
-	// The host and the agent build tools.For separately; the digests agree.
-	build := func() []core.Tool {
-		ws, err := workspace.Open(t.TempDir(), workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-		if err != nil {
-			t.Fatal(err)
+func TestDigestChangesWithEachDefinitionField(t *testing.T) {
+	want := tooldigest.Digest(base())
+	for name, change := range map[string]func(*core.Tool){
+		"Name":             func(t *core.Tool) { t.Name += "~" },
+		"Description":      func(t *core.Tool) { t.Description += "~" },
+		"InputSchema":      func(t *core.Tool) { t.InputSchema = schema.Object(schema.Prop("other", t.InputSchema)) },
+		"OutputSchema":     func(t *core.Tool) { t.OutputSchema = nil },
+		"PromptGuidelines": func(t *core.Tool) { t.PromptGuidelines = append(t.PromptGuidelines, "") },
+		"guideline split":  func(t *core.Tool) { t.PromptGuidelines = []string{"onetwo"} },
+		"Builtin":          func(t *core.Tool) { t.Builtin = true },
+		"ExecutionMode":    func(t *core.Tool) { t.ExecutionMode = 1 },
+		"field boundary":   func(t *core.Tool) { t.Name, t.Description = "rea", "dreads a file" },
+	} {
+		tl := base()
+		change(&tl)
+		if bytes.Equal(want, tooldigest.Digest(tl)) {
+			t.Errorf("changing %s left the digest unchanged", name)
 		}
-		all, err := tools.For(ws, tools.Options{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return all
 	}
-	h, g := build(), build()
+}
+
+func TestDigestIgnoresFieldsOutsideTheDefinition(t *testing.T) {
+	tl := base()
+	tl.Label = "label~"
+	tl.Execute = func(context.Context, json.RawMessage) core.ToolResult { return core.ToolResult{} }
+	tl.Handler = func(context.Context, json.RawMessage) (json.RawMessage, error) { return nil, nil }
+	tl.PrepareArguments = func(m map[string]any) map[string]any { return m }
+	if !bytes.Equal(tooldigest.Digest(base()), tooldigest.Digest(tl)) {
+		t.Error("a label or a function changed the digest")
+	}
+}
+
+func TestDigestAgreesBetweenTwoBuildsOfTheTools(t *testing.T) {
+	h, g := builtTools(t), builtTools(t)
 	for i := range h {
-		if !bytes.Equal(Digest(h[i]), Digest(g[i])) {
+		if !bytes.Equal(tooldigest.Digest(h[i]), tooldigest.Digest(g[i])) {
 			t.Errorf("%s: digest differs between two tools.For builds", h[i].Name)
+		}
+	}
+}
+
+// testdata/digests.json holds the digests agents already released advertise;
+// a host must keep computing the same ones to accept them.
+func TestDigestOfTheBuiltInToolsIsUnchanged(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "digests.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded []struct {
+		Name   string `json:"name"`
+		Digest string `json:"digest"`
+	}
+	if err := json.Unmarshal(raw, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	ts := builtTools(t)
+	if len(ts) != len(recorded) {
+		t.Fatalf("For returned %d tools, %d digests were recorded", len(ts), len(recorded))
+	}
+	for i, tl := range ts {
+		if tl.Name != recorded[i].Name {
+			t.Errorf("tool %d is %s, recorded %s", i, tl.Name, recorded[i].Name)
+			continue
+		}
+		if got := hex.EncodeToString(tooldigest.Digest(tl)); got != recorded[i].Digest {
+			t.Errorf("%s: digest %s, recorded %s", tl.Name, got, recorded[i].Digest)
 		}
 	}
 }

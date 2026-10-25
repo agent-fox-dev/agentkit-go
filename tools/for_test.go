@@ -1,67 +1,21 @@
-package tools_test
+package tools
 
 import (
-	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/tools"
-	"github.com/agent-fox-dev/agentkit-go/workspace"
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
+	"github.com/agent-fox-dev/agentkit-go/internal/toolconformance"
 )
 
-// openForDir opens a workspace over dir with no global excludes.
-func openForDir(t *testing.T, dir string) *workspace.Workspace {
-	t.Helper()
-	ws, err := workspace.Open(dir, workspace.Options{Ignore: workspace.NoGlobalExcludes()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return ws
-}
-
-// builtinNames is the order tools.For returns the built-ins in.
 var builtinNames = []string{"read_file", "write_file", "edit_file", "list_files", "find_files", "search_files",
 	"file_outline", "find_symbol", "find_references", "execute", "run_command"}
 
-// definition is what a tool declares to a model and to a sandbox host: the
-// fields sandbox/internal/tooldigest hashes.
-type definition struct {
-	Name             string          `json:"name"`
-	Description      string          `json:"description"`
-	InputSchema      json.RawMessage `json:"input_schema"`
-	OutputSchema     json.RawMessage `json:"output_schema"`
-	PromptGuidelines []string        `json:"prompt_guidelines"`
-	Builtin          bool            `json:"builtin"`
-	ExecutionMode    int             `json:"execution_mode"`
-}
-
-func definitionsOf(t *testing.T, ts []core.Tool) []byte {
-	t.Helper()
-	var defs []definition
-	for _, tl := range ts {
-		in, err := json.Marshal(tl.InputSchema)
-		if err != nil {
-			t.Fatal(err)
-		}
-		out, err := json.Marshal(tl.OutputSchema)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defs = append(defs, definition{tl.Name, tl.Description, in, out, tl.PromptGuidelines, tl.Builtin, int(tl.ExecutionMode)})
-	}
-	b, err := json.MarshalIndent(defs, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return append(b, '\n')
-}
-
-func namesOf(ts []core.Tool) []string {
+func names(ts []core.Tool) []string {
 	var out []string
 	for _, tl := range ts {
 		out = append(out, tl.Name)
@@ -69,164 +23,124 @@ func namesOf(ts []core.Tool) []string {
 	return out
 }
 
-func toolIn(t *testing.T, ts []core.Tool, name string) core.Tool {
-	t.Helper()
+// TestForReturnsTheBuiltinsAsTheModelSeesThem pins the order and the
+// model-visible definitions: they head every cached prompt prefix.
+func TestForReturnsTheBuiltinsAsTheModelSeesThem(t *testing.T) {
+	ts, err := For(newWS(t, nil), Options{})
+	if err != nil || !slices.Equal(names(ts), builtinNames) {
+		t.Fatalf("For = %v, %v; want %v", names(ts), err, builtinNames)
+	}
+	type definition struct {
+		Name             string          `json:"name"`
+		Description      string          `json:"description"`
+		InputSchema      json.RawMessage `json:"input_schema"`
+		OutputSchema     json.RawMessage `json:"output_schema"`
+		PromptGuidelines []string        `json:"prompt_guidelines"`
+		Builtin          bool            `json:"builtin"`
+		ExecutionMode    int             `json:"execution_mode"`
+	}
+	var defs []definition
 	for _, tl := range ts {
-		if tl.Name == name {
-			return tl
+		if (tl.Handler == nil) == (tl.Execute == nil) || !tl.Builtin {
+			t.Errorf("%s: a built-in sets exactly one of Handler and Execute, and Builtin", tl.Name)
 		}
+		defs = append(defs, definition{tl.Name, tl.Description, json.RawMessage(testutil.MustJSON(t, tl.InputSchema)),
+			json.RawMessage(testutil.MustJSON(t, tl.OutputSchema)), tl.PromptGuidelines, tl.Builtin, int(tl.ExecutionMode)})
 	}
-	t.Fatalf("%s is not in the tool set %v", name, namesOf(ts))
-	return core.Tool{}
+	b, err := json.MarshalIndent(defs, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.Golden(t, filepath.Join("testdata", "definitions.json"), append(b, '\n'))
+	if nav := FileNavigationTools(); len(nav) != 6 || !slices.Contains(nav, "find_references") {
+		t.Errorf("FileNavigationTools = %v", nav)
+	}
 }
 
-// TS-20-14: The file tools fail with result code path_not_allowed for a refused
-// path and leave the file untouched.
-func TestFileToolsRefuseAPathTheWorkspaceRefuses_TS20_14(t *testing.T) {
-	root := t.TempDir()
-	outsideDir := t.TempDir()
-	outside := filepath.Join(outsideDir, "o.txt")
-	if err := os.WriteFile(outside, []byte("original"), 0o644); err != nil {
-		t.Fatal(err)
+func TestForRefusesANilWorkspace(t *testing.T) {
+	if ts, err := For(nil, Options{}); ts != nil || err == nil || !strings.Contains(err.Error(), "workspace.Open") {
+		t.Fatalf("For(nil) = %v, %v", ts, err)
 	}
-	before, err := os.Stat(outside)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ws := openForDir(t, root)
-	if err := os.Symlink(outsideDir, filepath.Join(ws.Root(), "out")); err != nil {
-		t.Skipf("symlinks unavailable here: %v", err)
-	}
-	ts, err := tools.For(ws, tools.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+}
 
-	for _, path := range []string{outside, "out/o.txt"} {
-		quoted, _ := json.Marshal(path)
-		calls := map[string]string{
-			"read_file":  `{"path":` + string(quoted) + `}`,
-			"write_file": `{"path":` + string(quoted) + `,"content":"x"}`,
-			"edit_file":  `{"path":` + string(quoted) + `,"edits":[{"old_string":"original","new_string":"x"}]}`,
+func TestForAppendsTheIndexsToolsAfterTheBuiltins(t *testing.T) {
+	ws := newWS(t, nil)
+	ts, err := For(ws, Options{Index: &fakeIndex{tools: []core.Tool{{Name: "code_search"}}}})
+	if err != nil || !slices.Equal(names(ts), append(slices.Clone(builtinNames), "code_search")) {
+		t.Fatalf("For with an index = %v, %v", names(ts), err)
+	}
+	ts, err = For(ws, Options{Index: &fakeIndex{tools: []core.Tool{{Name: "read_file"}}}})
+	if ts != nil || err == nil || err.Error() != `tools: index tool "read_file" duplicates a built-in tool name` {
+		t.Fatalf("a duplicate name: %v, %v", names(ts), err)
+	}
+}
+
+// TestToolsConformToTheSharedCaseTable runs the conformance cases the
+// sandbox's proxy tools also run, so the two cannot drift.
+func TestToolsConformToTheSharedCaseTable(t *testing.T) {
+	build := func(t *testing.T, tree toolconformance.Tree) []core.Tool {
+		ws := newWS(t, nil)
+		tree.Write(t, ws.Root())
+		ts, err := For(ws, Options{})
+		if err != nil {
+			t.Fatal(err)
 		}
-		for name, args := range calls {
-			res := toolIn(t, ts, name).Execute(context.Background(), json.RawMessage(args))
-			if res.OK || res.Error != "path_not_allowed" {
-				t.Errorf("%s %s: OK=%v Error=%q, want an error result with code path_not_allowed", name, path, res.OK, res.Error)
-			}
-			if !strings.HasPrefix(res.Detail, "workspace: path_not_allowed") {
-				t.Errorf("%s %s: detail %q does not start with the workspace error text", name, path, res.Detail)
-			}
-		}
+		return ts
 	}
-
-	// A new file through the outward link must not appear either.
-	res := toolIn(t, ts, "write_file").Execute(context.Background(), json.RawMessage(`{"path":"out/new.txt","content":"x"}`))
-	if res.OK || res.Error != "path_not_allowed" {
-		t.Errorf("write_file out/new.txt: OK=%v Error=%q", res.OK, res.Error)
-	}
-	if _, err := os.Stat(filepath.Join(outsideDir, "new.txt")); err == nil {
-		t.Error("a file was created outside the workspace")
-	}
-	if got, _ := os.ReadFile(outside); string(got) != "original" {
-		t.Errorf("the outside file now reads %q", got)
-	}
-	if after, err := os.Stat(outside); err != nil || !after.ModTime().Equal(before.ModTime()) {
-		t.Errorf("the outside file's mtime changed: %v %v", before.ModTime(), after)
+	for _, name := range toolconformance.CaseNames() {
+		t.Run(name, func(t *testing.T) { toolconformance.RunGroup(t, name, build) })
 	}
 }
 
-// TS-20-33: tools.For returns the eleven built-ins in order with definitions
-// byte-identical to what tools.For returned before this change (recorded in
-// testdata/definitions.json).
-func TestForReturnsTheBuiltinsUnchanged_TS20_33(t *testing.T) {
-	ws := openForDir(t, t.TempDir())
-	ts, err := tools.For(ws, tools.Options{})
-	if err != nil {
-		t.Fatalf("For: %v", err)
-	}
-	if len(ts) != 11 {
-		t.Fatalf("For returned %d tools, want 11: %v", len(ts), namesOf(ts))
-	}
-	if got := namesOf(ts); !slices.Equal(got, builtinNames) {
-		t.Fatalf("tool order = %v, want %v", got, builtinNames)
-	}
-	want, err := os.ReadFile(filepath.Join("testdata", "definitions.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := definitionsOf(t, ts); string(got) != string(want) {
-		t.Errorf("the definitions differ from the ones tools.For returned before the change:\n got  %s\n want %s", got, want)
-	}
-}
-
-// stubIndex is a tools.Index providing one tool.
-type stubIndex struct{ tool string }
-
-func (stubIndex) Symbols(context.Context, tools.SymbolQuery) (tools.SymbolAnswer, bool, error) {
-	return tools.SymbolAnswer{}, false, nil
-}
-func (i stubIndex) Tools() []core.Tool { return []core.Tool{{Name: i.tool}} }
-func (stubIndex) Invalidate(string)    {}
-func (stubIndex) Close() error         { return nil }
-
-// TS-20-35: Index tools are appended after the built-ins and a duplicate name
-// fails.
-func TestForAppendsIndexTools_TS20_35(t *testing.T) {
-	ws := openForDir(t, t.TempDir())
-
-	ts, err := tools.For(ws, tools.Options{Index: stubIndex{"idx_search"}})
-	if err != nil {
-		t.Fatalf("For with an index: %v", err)
-	}
-	if len(ts) != 12 || ts[11].Name != "idx_search" {
-		t.Errorf("For with an index returned %v, want the built-ins then idx_search", namesOf(ts))
-	}
-
-	ts, err = tools.For(ws, tools.Options{Index: stubIndex{"read_file"}})
-	if ts != nil {
-		t.Errorf("a duplicate name returned %v tools, want none", namesOf(ts))
-	}
-	// The text recorded from tools.For before the change.
-	const want = `tools: index tool "read_file" duplicates a built-in tool name`
-	if err == nil || err.Error() != want {
-		t.Errorf("a duplicate name: err = %v, want %q", err, want)
-	}
-}
-
-// TS-20-36: tools.For with a nil workspace returns no tools and an error naming
-// the workspace.
-func TestForRefusesANilWorkspace_TS20_36(t *testing.T) {
-	ts, err := tools.For(nil, tools.Options{})
-	if ts != nil {
-		t.Errorf("For(nil) returned %d tools, want none", len(ts))
-	}
-	if err == nil || !strings.Contains(err.Error(), "workspace") {
-		t.Errorf("For(nil) err = %v, want an error naming the workspace", err)
-	}
-}
-
-// TS-20-38: execute and run_command run in the workspace root.
-func TestShellToolsRunInTheWorkspaceRoot_TS20_38(t *testing.T) {
-	ws := openForDir(t, t.TempDir())
-	if cwd, err := os.Getwd(); err != nil || cwd == ws.Root() {
-		t.Fatalf("test setup: the process working directory %q must differ from the workspace root", cwd)
-	}
-	ts, err := tools.For(ws, tools.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, args := range map[string]string{
-		"execute":     `{"command":"pwd"}`,
-		"run_command": `{"argv":["pwd"]}`,
+// TestChangesInvalidateWhatTheyMayHaveTouched checks what each mutating tool
+// marks, whether it succeeds or fails: the path in the symbol table, the
+// reference cache and the index for write_file and edit_file, everything for
+// a shell command.
+func TestChangesInvalidateWhatTheyMayHaveTouched(t *testing.T) {
+	ws := newWS(t, map[string]string{"sub/a.go": "package sub\n"})
+	idx := &fakeIndex{}
+	ts := toolSet(t, ws, Options{Index: idx})
+	ft := newFT(ws, Options{Index: idx})
+	ft.getTable()
+	rc := ft.getRefCache()
+	for _, c := range []struct {
+		tool, args string
+		ok         bool
+		marked     string // the path marked, or "" for everything
+	}{
+		{"write_file", `{"path":"sub/a.go","content":"package sub\n\nfunc A() {}\n"}`, true, "sub/a.go"},
+		{"write_file", `{"path":"sub","content":"x"}`, false, "sub"},
+		{"edit_file", `{"path":"sub/a.go","edits":[{"old_string":"A()","new_string":"B()"}]}`, true, "sub/a.go"},
+		{"edit_file", `{"path":"sub/a.go","edits":[{"old_string":"nowhere","new_string":"x"}]}`, false, "sub/a.go"},
 	} {
-		res := toolIn(t, ts, name).Execute(context.Background(), json.RawMessage(args))
-		if !res.OK {
-			t.Errorf("%s: %s %s", name, res.Error, res.Detail)
-			continue
+		tl := map[string]core.Tool{"write_file": ft.writeFile(), "edit_file": ft.editFile()}[c.tool]
+		if r := call(tl, c.args); r.OK != c.ok {
+			t.Fatalf("%s %s: %+v", c.tool, c.args, r)
 		}
-		if !slices.Contains(strings.Split(strings.ReplaceAll(res.Text, "\r", ""), "\n"), ws.Root()) {
-			t.Errorf("%s printed %q, want a line that is exactly the workspace root %q", name, res.Text, ws.Root())
+		dirty, _ := marks(ft.table)
+		if !dirty[c.marked] || !rc.isPathDirty(c.marked) || !slices.Equal(idx.take(), []string{c.marked}) {
+			t.Errorf("%s %s: %s is not marked everywhere (table %v)", c.tool, c.args, c.marked, dirty)
 		}
+		ft.table.snapshotMarks()
+		_ = rc.refresh(t.Context())
+	}
+	// An edit of a path that is not there changed nothing and marks nothing.
+	if r := call(ft.editFile(), `{"path":"nope.go","edits":[{"old_string":"a","new_string":"b"}]}`); r.Error != "read_failed" {
+		t.Fatalf("%+v", r)
+	}
+	if dirty, all := marks(ft.table); len(dirty) != 0 || all || len(idx.take()) != 0 {
+		t.Errorf("a missing path marked %v (all %v)", dirty, all)
+	}
+
+	// For's shell tools mark everything, failed or not, and pass the result through.
+	needPOSIX(t)
+	for _, args := range []string{`{"command":"echo out-42"}`, `{"command":"false"}`} {
+		r := call(ts["execute"], args)
+		if (args == `{"command":"false"}`) == r.OK || !slices.Equal(idx.take(), []string{""}) {
+			t.Errorf("execute %s: %+v", args, r)
+		}
+	}
+	if r := call(ts["run_command"], `{"argv":["echo","rc-42"]}`); r.Text != "rc-42\n" || !slices.Equal(idx.take(), []string{""}) {
+		t.Errorf("run_command: %q", r.Text)
 	}
 }

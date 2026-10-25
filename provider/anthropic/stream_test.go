@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -12,1304 +13,289 @@ import (
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 
-	"github.com/agent-fox-dev/agentkit-go/catalog"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 )
 
-// ------------------------------------------------------------------ harness
-
-type rtFunc func(*http.Request) (*http.Response, error)
-
-func (f rtFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-// sseBody renders (event, data) pairs as a text/event-stream body. The API
-// names every event's type in its JSON as well as on the event line, and the
-// SDK reads it from the JSON, so a fixture that leaves it out gets it added.
-func sseBody(pairs ...[2]string) string {
-	var b strings.Builder
-	for _, p := range pairs {
-		data := p[1]
-		if strings.HasPrefix(data, "{") && !strings.Contains(data, `"type":"`+p[0]+`"`) &&
-			!strings.HasPrefix(data, `{"type":`) {
-			data = `{"type":"` + p[0] + `"` + map[bool]string{true: "", false: ","}[data == "{}"] + data[1:]
-		}
-		fmt.Fprintf(&b, "event: %s\ndata: %s\n\n", p[0], data)
-	}
-	return b.String()
-}
-
-func testModel() *core.Model {
-	return &core.Model{
-		ID: "claude-test", ContextWindow: 200000, MaxOutputTokens: 4096,
-		InputCostPerMillion: 3, OutputCostPerMillion: 15,
-		CacheReadCostPerMillion: 0.3, CacheWriteCostPerMillion: 3.75,
-	}
-}
-
-// run drives the provider against a canned body and collects every event.
-func run(t *testing.T, m *core.Model, req core.Request, opts anthropic.Options,
-	status int, body string) (*core.AssistantMessage, []core.Event, *http.Request) {
-	t.Helper()
-
-	var seen *http.Request
-	rt := rtFunc(func(r *http.Request) (*http.Response, error) {
-		seen = r.Clone(r.Context())
-		if r.Body != nil {
-			b, _ := io.ReadAll(r.Body)
-			seen.Body = io.NopCloser(strings.NewReader(string(b)))
-		}
-		return &http.Response{StatusCode: status, Header: http.Header{},
-			Body: io.NopCloser(strings.NewReader(body))}, nil
-	})
-	opts.Transport = rt
-	if opts.Getenv == nil {
-		opts.Getenv = func(k string) string {
-			if k == "ANTHROPIC_API_KEY" {
-				return "sk-ant-test-key-abcdefgh"
-			}
-			return ""
-		}
-	}
-
-	s := stream(anthropic.Provider(*m, opts), context.Background(), req)
-	var events []core.Event
-	for e := range s.Events() {
-		events = append(events, e)
-	}
-	return s.Result(), events, seen
-}
-
-// stream sends req through p and adapts its channel to an EventStream.
-func stream(p core.ProviderClient, ctx context.Context, req core.Request) *core.EventStream {
-	return core.EventStreamOf(p.Stream(ctx, req))
-}
-
-func names(events []core.Event) []string {
-	out := make([]string, 0, len(events))
-	for _, e := range events {
-		out = append(out, string(e.EventType()))
-	}
-	return out
-}
-
-// collapse folds runs of the same event type into one entry, so a sequence
-// with two text deltas compares equal to one with a single delta. Delta counts
-// are an optimization detail (REQ-OBS-06a); their ORDER against the
-// authoritative events is not.
-func collapse(in []string) []string {
+// collapse folds runs of one event type into one: delta counts are a detail,
+// their order against the authoritative events is not.
+func collapse(names string) string {
 	var out []string
-	for _, s := range in {
-		if len(out) == 0 || out[len(out)-1] != s {
-			out = append(out, s)
+	for _, n := range strings.Split(names, ",") {
+		if len(out) == 0 || out[len(out)-1] != n {
+			out = append(out, n)
 		}
 	}
-	return out
+	return strings.Join(out, ",")
 }
 
-// ------------------------------------------------------------------ fixtures
-
-const toolArgs = `{"zebra":1,"apple":2}`
-
-func streamFixture() string {
-	return sseBody(
-		[2]string{"message_start", `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"usage":{"input_tokens":100,"output_tokens":1,"cache_read_input_tokens":900,"cache_creation_input_tokens":50}}}`},
-		[2]string{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
-		[2]string{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}`},
-		[2]string{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}`},
-		[2]string{"content_block_stop", `{"type":"content_block_stop","index":0}`},
-		[2]string{"content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"edit_file","input":{}}}`},
-		[2]string{"content_block_delta", `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"zebra\":"}}`},
-		[2]string{"content_block_delta", `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"1,\"apple\":2}"}}`},
-		[2]string{"content_block_stop", `{"type":"content_block_stop","index":1}`},
-		[2]string{"message_delta", `{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":42}}`},
-		[2]string{"message_stop", `{"type":"message_stop"}`},
-	)
-}
-
-// wholeFixture is the SAME turn as streamFixture, non-streaming.
-const wholeFixture = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test",` +
-	`"content":[{"type":"text","text":"Hello"},` +
-	`{"type":"tool_use","id":"toolu_1","name":"edit_file","input":` + toolArgs + `}],` +
-	`"stop_reason":"tool_use","stop_sequence":null,` +
-	`"usage":{"input_tokens":100,"output_tokens":42,"cache_read_input_tokens":900,"cache_creation_input_tokens":50}}`
-
-// ------------------------------------------------------------------ tests
-
-// TestTheEventOrderMatchesFaux is the conformance test faux's package comment
-// promises: "a real provider that disagrees with it is the one that is wrong".
-//
-// faux is the executable specification of the streaming protocol, so pinning
-// the real decoder against a golden string would pin it against a second
-// opinion. Pinning it against faux pins it against the specification.
+// faux is the executable specification of the event order; the decoder must
+// agree with it, block ends after every delta, once per block.
 func TestTheEventOrderMatchesFaux(t *testing.T) {
-	_, events, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, streamFixture())
-
-	call := faux.FauxToolCall("toolu_1", "edit_file", toolArgs)
-	fp := faux.New(faux.FauxAssistantMessage(core.StopReasonToolUse,
-		faux.FauxText("Hello"), call))
-	fs := stream(fp, context.Background(), core.Request{})
+	x := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, streamFixture())
+	fs := core.EventStreamOf(faux.New(faux.FauxAssistantMessage(core.StopReasonToolUse,
+		faux.FauxText("Hello"), faux.FauxToolCall("toolu_1", "edit_file", toolArgs))).Stream(context.Background(), core.Request{}))
 	var fauxEvents []core.Event
 	for e := range fs.Events() {
 		fauxEvents = append(fauxEvents, e)
 	}
-
-	got := strings.Join(collapse(names(events)), ",")
-	want := strings.Join(collapse(names(fauxEvents)), ",")
-	if got != want {
-		t.Fatalf("event order\n got: %s\nwant: %s\n\nfaux is the normative protocol; a "+
-			"real provider that disagrees with it is the one that is wrong.", got, want)
+	if got, want := collapse(eventNames(x.events)), collapse(faux.EventNames(fauxEvents)); got != want {
+		t.Fatalf("event order\n got %s\nwant %s", got, want)
+	}
+	if ends := strings.Count(eventNames(x.events), "_end,"); ends != 2 {
+		t.Fatalf("%d block ends, want one per block: %s", ends, eventNames(x.events))
+	}
+	if end := x.events[len(x.events)-2].(core.ToolCallEndEvent); string(end.Block.Input) != toolArgs {
+		t.Fatalf("tool call end = %+v", end)
 	}
 }
 
-// TestBlockEndEventsFollowTheWholeStream is REQ-OBS-08.3.
-//
-// Emitting a block end from the per-chunk handler is the obvious
-// implementation. It produces duplicate ends, and — worse — a message end that
-// lacks usage, because usage arrives with the terminal chunk. Both are
-// invisible to a test that only checks the final message.
-func TestBlockEndEventsFollowTheWholeStream(t *testing.T) {
-	_, events, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, streamFixture())
-
-	seq := names(events)
-	lastDelta, firstEnd := -1, len(seq)
-	ends := 0
-	for i, n := range seq {
-		switch n {
-		case string(core.EvTextDelta), string(core.EvToolInputDelta):
-			lastDelta = i
-		case string(core.EvTextEnd), string(core.EvToolCallEnd):
-			ends++
-			if i < firstEnd {
-				firstEnd = i
-			}
-		}
-	}
-	if ends != 2 {
-		t.Fatalf("%d block-end events, want exactly 2 (one per block, once each)", ends)
-	}
-	if firstEnd < lastDelta {
-		t.Fatalf("a block-end at %d precedes the last delta at %d: block ends are emitted "+
-			"after the stream has fully ended, in block order", firstEnd, lastDelta)
-	}
-}
-
-// TestStreamingAndWholeResponseAgreeByteForByte is REQ-PROV-17's per-provider
-// conformance test, which could not be written until a decoder existed.
-//
-// The failure it catches is a decode-and-re-encode round trip on the argument
-// bytes. Go sorts map keys unconditionally, so `{"zebra":1,"apple":2}` comes
-// back as `{"apple":2,"zebra":1}` — semantically identical, and on OpenAI-style
-// wires where arguments ride as a JSON string it changes the text the model is
-// conditioned on and shifts the prompt-cache prefix. The only symptom is the
-// bill.
-func TestStreamingAndWholeResponseAgreeByteForByte(t *testing.T) {
+// The streaming and whole-response paths share one assembler, so a tool call
+// keeps the model's own argument bytes on both.
+func TestStreamingAndWholeResponsesAgreeByteForByte(t *testing.T) {
 	m := testModel()
-	streamed, _, _ := run(t, m, core.Request{}, anthropic.Options{}, 200, streamFixture())
+	streamed := run(t, m, core.Request{}, anthropic.Options{}, 200, streamFixture()).msg
 	whole, err := anthropic.DecodeResponse(m, []byte(wholeFixture), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	sTool := core.ExtractToolUse(streamed)
-	wTool := core.ExtractToolUse(whole)
-	if len(sTool) != 1 || len(wTool) != 1 {
-		t.Fatalf("tool calls: streamed %d, whole %d", len(sTool), len(wTool))
+	var sdkMsg sdk.Message
+	if err := json.Unmarshal([]byte(wholeFixture), &sdkMsg); err != nil {
+		t.Fatal(err)
 	}
-	if string(sTool[0].Input) != string(wTool[0].Input) {
-		t.Fatalf("Input differs between paths:\n streaming: %s\n     whole: %s",
-			sTool[0].Input, wTool[0].Input)
+	translated, err := anthropic.TranslateMessage(m, sdkMsg)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if string(sTool[0].Input) != toolArgs {
-		t.Fatalf("Input = %s, want the provider's own bytes %s. Key order is not "+
-			"cosmetic: re-encoding sorts it and shifts the cache prefix.",
-			sTool[0].Input, toolArgs)
-	}
-	if streamed.Content.Text() != whole.Content.Text() {
-		t.Fatalf("text differs: %q vs %q", streamed.Content.Text(), whole.Content.Text())
-	}
-}
-
-// TestAnthropicInputTokensAreNotNettedAgain is REQ-PROV-05.1 read correctly.
-//
-// The requirement's subtraction is an OPENAI-FAMILY convention: prompt_tokens
-// there includes cached tokens. Anthropic's input_tokens already excludes both
-// cache_read_input_tokens and cache_creation_input_tokens, so applying the
-// subtraction here understates input by the full cached amount — the same
-// magnitude of error as the trap, in the other direction, and just as silent.
-func TestAnthropicInputTokensAreNotNettedAgain(t *testing.T) {
-	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, streamFixture())
-
-	u := msg.Usage
-	if u.InputTokens != 100 {
-		t.Fatalf("input_tokens = %d, want 100 as reported: Anthropic reports input NET "+
-			"of cache reads and writes already", u.InputTokens)
-	}
-	if u.CacheReadTokens != 900 || u.CacheWriteTokens != 50 {
-		t.Fatalf("cache read/write = %d/%d, want 900/50", u.CacheReadTokens, u.CacheWriteTokens)
-	}
-	if u.OutputTokens != 42 {
-		t.Fatalf("output_tokens = %d, want the message_delta value 42 to win over the "+
-			"message_start placeholder of 1", u.OutputTokens)
-	}
-
-	// (3*100 + 15*42 + 0.3*900 + 3.75*50) / 1e6
-	want := (3*100.0 + 15*42.0 + 0.3*900.0 + 3.75*50.0) / 1e6
-	if diff := u.CostUSD - want; diff > 1e-12 || diff < -1e-12 {
-		t.Fatalf("cost = %.10f, want %.10f", u.CostUSD, want)
-	}
-	if !u.Has(core.UsageCostUSD) {
-		t.Fatal("cost must be marked as reported, or the session aggregate cannot tell " +
-			"a computed zero from an absent one")
-	}
-}
-
-// TestAFallbackServedModelIsBilledAtItsOwnRates is REQ-PROV-05.5 end to end.
-func TestAFallbackServedModelIsBilledAtItsOwnRates(t *testing.T) {
-	served := &core.Model{ID: "claude-cheap", InputCostPerMillion: 0.25, OutputCostPerMillion: 1.25}
-	body := strings.Replace(streamFixture(), `"model":"claude-test"`, `"model":"claude-cheap"`, 1)
-
-	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{
-		BillingLookup: func(id string) *core.Model {
-			if id == "claude-cheap" {
-				return served
-			}
-			return nil
-		},
-	}, 200, body)
-
-	if msg.Usage.BilledModel != "claude-cheap" {
-		t.Fatalf("billed_model = %q, want the model that actually served the request",
-			msg.Usage.BilledModel)
-	}
-	want := (0.25*100.0 + 1.25*42.0) / 1e6
-	if diff := msg.Usage.CostUSD - want; diff > 1e-12 || diff < -1e-12 {
-		t.Fatalf("cost = %.10f, want the SERVED model's rates %.10f", msg.Usage.CostUSD, want)
-	}
-	if msg.Model != "claude-test" {
-		t.Fatalf("Model = %q; provenance records the REQUESTED model, or REQ-PROV-11 "+
-			"rule 1 strips this turn's own valid signatures on replay", msg.Model)
-	}
-}
-
-// TestATruncatedStreamKeepsThePartialMessageAndIsRetryable is REQ-PROV-04 and
-// its coupling to REQ-PROV-14.
-//
-// A body that simply stops is a 200 with a complete-looking prefix. The
-// transport layer cannot see it. The partial content must survive onto the
-// message (session persistence reads it) and the error text must be something
-// the semantic classifier recognises (the retry reads that).
-func TestATruncatedStreamKeepsThePartialMessageAndIsRetryable(t *testing.T) {
-	full := streamFixture()
-	cut := full[:strings.Index(full, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1")]
-
-	msg, events, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, cut)
-
-	if msg.StopReason != core.StopReasonError {
-		t.Fatalf("stop reason = %q, want error", msg.StopReason)
-	}
-	if msg.Content.Text() != "Hello" {
-		t.Fatalf("content = %q, want the partial text to survive: half a message and a "+
-			"failure must be ONE value", msg.Content.Text())
-	}
-	if !strings.Contains(msg.ErrorMessage, "stream ended before message_stop") {
-		t.Fatalf("error = %q, want text the semantic retry classifier matches", msg.ErrorMessage)
-	}
-	var sawTerminalError bool
-	for _, e := range events {
-		if ee, ok := e.(core.ErrorEvent); ok && ee.Terminal {
-			sawTerminalError = true
+	for name, msg := range map[string]*core.AssistantMessage{"streamed": streamed, "whole": whole, "translated": &translated} {
+		calls := core.ExtractToolUse(msg)
+		if len(calls) != 1 || string(calls[0].Input) != toolArgs || msg.Content.Text() != "Hello" ||
+			msg.StopReason != core.StopReasonToolUse || msg.RawStopReason != "tool_use" || msg.ResponseID != "msg_1" {
+			t.Errorf("%s: %+v", name, msg)
 		}
-	}
-	if !sawTerminalError {
-		t.Fatal("a failed stream must carry a terminal ErrorEvent (REQ-PROV-04)")
-	}
-}
-
-func TestANon2xxCarriesTheStatusCodeInTheErrorText(t *testing.T) {
-	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 429,
-		`{"type":"error","error":{"type":"rate_limit_error","message":"Number of requests has exceeded your rate limit"}}`)
-
-	if msg.StopReason != core.StopReasonError {
-		t.Fatalf("stop reason = %q, want error", msg.StopReason)
-	}
-	for _, want := range []string{"429", "rate_limit_error", "exceeded your rate limit"} {
-		if !strings.Contains(msg.ErrorMessage, want) {
-			t.Fatalf("error text %q is missing %q; the semantic classifier matches bare "+
-				"status strings AND provider prose, so both must be present",
-				msg.ErrorMessage, want)
+		if msg.Usage.InputTokens != 100 || msg.Usage.OutputTokens != 42 || msg.Usage.Requests != 1 {
+			t.Errorf("%s usage = %+v", name, msg.Usage)
 		}
 	}
 }
 
-// TestAMidStreamErrorEventFailsTheTurn covers the third failure shape: a 200
-// whose body carries an SSE `error` event partway through.
-func TestAMidStreamErrorEventFailsTheTurn(t *testing.T) {
-	body := sseBody(
-		[2]string{"message_start", `{"message":{"id":"m","model":"claude-test","usage":{"input_tokens":5}}}`},
-		[2]string{"content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`},
-		[2]string{"content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"partial"}}`},
-		[2]string{"error", `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`},
-	)
-	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, body)
-
-	if msg.StopReason != core.StopReasonError {
-		t.Fatalf("stop reason = %q, want error", msg.StopReason)
+// Anthropic's input_tokens already exclude cache reads and writes, so usage
+// is reported as sent, a field in message_delta supersedes message_start's,
+// and the cost is priced once at the rates of the model that served.
+func TestUsageIsReportedAsSentAndPricedAtTheServingModel(t *testing.T) {
+	cheap := &core.Model{ID: "claude-cheap", InputCostPerMillion: 0.25, OutputCostPerMillion: 1.25}
+	lookup := func(id string) *core.Model {
+		if id == "claude-cheap" {
+			return cheap
+		}
+		return nil
 	}
-	if !strings.Contains(msg.ErrorMessage, "overloaded_error") {
-		t.Fatalf("error = %q, want the provider's own error type", msg.ErrorMessage)
-	}
-}
-
-// TestATruncatedToolCallIsRepresentableAndFlaggedByTheStopReason pins the two
-// halves of the max_tokens hazard together.
-func TestATruncatedToolCallIsRepresentableAndFlaggedByTheStopReason(t *testing.T) {
-	body := sseBody(
-		[2]string{"message_start", `{"message":{"id":"m","model":"claude-test","usage":{"input_tokens":5}}}`},
-		[2]string{"content_block_start", `{"index":0,"content_block":{"type":"tool_use","id":"toolu_x","name":"edit_file","input":{}}}`},
-		[2]string{"content_block_delta", `{"index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"a.go\",\"new_string\":\"func mai"}}`},
-		[2]string{"content_block_stop", `{"index":0}`},
-		[2]string{"message_delta", `{"delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":4096}}`},
-		[2]string{"message_stop", `{}`},
-	)
-	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, body)
-
-	calls := core.ExtractToolUse(msg)
-	if len(calls) != 1 {
-		t.Fatalf("%d tool calls, want 1", len(calls))
-	}
-	if !json.Valid(calls[0].Input) {
-		t.Fatalf("Input is not valid JSON: %s", calls[0].Input)
-	}
-	if strings.Contains(string(calls[0].Input), "func mai") {
-		t.Fatalf("Input = %s; the truncated member must be DROPPED, not closed. A "+
-			"half-written new_string that parses applies cleanly and corrupts the file.",
-			calls[0].Input)
-	}
-	if msg.StopReason != core.StopReasonLength {
-		t.Fatalf("stop reason = %q, want max_tokens: salvage makes the call "+
-			"representable and only the stop reason makes it unsafe to execute",
-			msg.StopReason)
+	for _, c := range []struct {
+		name, served string
+		billed       string
+		cost         float64
+	}{
+		{"the requested model", "claude-test", "", (3*100 + 15*42 + 0.3*900 + 3.75*50) / 1e6},
+		{"a fallback", "claude-cheap", "claude-cheap", (0.25*100 + 1.25*42) / 1e6},
+		{"an unknown fallback", "claude-new", "claude-new", (3*100 + 15*42 + 0.3*900 + 3.75*50) / 1e6},
+	} {
+		body := strings.Replace(streamFixture(), `"model":"claude-test"`, `"model":"`+c.served+`"`, 1)
+		u := run(t, testModel(), core.Request{}, anthropic.Options{BillingLookup: lookup}, 200, body).msg.Usage
+		if u.InputTokens != 100 || u.OutputTokens != 42 || u.CacheReadTokens != 900 || u.CacheWriteTokens != 50 {
+			t.Errorf("%s: usage = %+v", c.name, u)
+		}
+		if u.BilledModel != c.billed || !u.Has(core.UsageCostUSD) || math.Abs(u.CostUSD-c.cost) > 1e-12 {
+			t.Errorf("%s: billed %q at %.10f, want %q at %.10f", c.name, u.BilledModel, u.CostUSD, c.billed, c.cost)
+		}
 	}
 }
 
-// TestThinkingBlocksRoundTripWithTheirSignatures is what keeps a reasoning
-// turn replayable: REQ-PROV-11 rule 4 demotes an unsigned thinking block, so a
-// decoder that drops the signature silently downgrades every reasoning turn.
-func TestThinkingBlocksRoundTripWithTheirSignatures(t *testing.T) {
-	body := sseBody(
-		[2]string{"message_start", `{"message":{"id":"m","model":"claude-test","usage":{"input_tokens":5}}}`},
-		[2]string{"content_block_start", `{"index":0,"content_block":{"type":"thinking","thinking":""}}`},
-		[2]string{"content_block_delta", `{"index":0,"delta":{"type":"thinking_delta","thinking":"step one"}}`},
-		[2]string{"content_block_delta", `{"index":0,"delta":{"type":"signature_delta","signature":"SIGBYTES"}}`},
-		[2]string{"content_block_stop", `{"index":0}`},
-		[2]string{"content_block_start", `{"index":1,"content_block":{"type":"redacted_thinking","data":"OPAQUE"}}`},
-		[2]string{"content_block_stop", `{"index":1}`},
-		[2]string{"message_delta", `{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}`},
-		[2]string{"message_stop", `{}`},
-	)
-	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, body)
-
-	if len(msg.Content) != 2 {
-		t.Fatalf("%d blocks, want 2", len(msg.Content))
-	}
-	tb, ok := msg.Content[0].(core.ThinkingBlock)
-	if !ok || tb.Thinking != "step one" || tb.Signature != "SIGBYTES" {
-		t.Fatalf("block 0 = %#v, want a SIGNED thinking block", msg.Content[0])
-	}
-	rb, ok := msg.Content[1].(core.ThinkingBlock)
-	if !ok || !rb.Redacted || rb.Signature != "OPAQUE" {
-		t.Fatalf("block 1 = %#v, want a redacted thinking block carrying its payload",
-			msg.Content[1])
-	}
-}
-
-// TestRequestHeadersAndAuth covers REQ-AUTH-03 and REQ-AUTH-02 through the
-// real request path.
-func TestRequestHeadersAndAuth(t *testing.T) {
-	m := testModel()
-	gwKey := "gw-secret"
-
-	_, _, sent := run(t, m, core.Request{}, anthropic.Options{
-		Headers: map[string]*string{"x-api-key": nil, "x-gateway-key": &gwKey},
-	}, 200, streamFixture())
-	if sent == nil {
-		t.Fatal("no request was made")
-	}
-	if got := sent.Header.Get("anthropic-version"); got != anthropic.APIVersion {
-		t.Fatalf("anthropic-version = %q, want %q", got, anthropic.APIVersion)
-	}
-	if got := sent.Header.Get("x-api-key"); got != "" {
-		t.Fatalf("x-api-key = %q; a present-nil in Options.Headers must SUPPRESS "+
-			"the provider default (REQ-AUTH-02) — that is how a gateway turns off the "+
-			"upstream credential", got)
-	}
-	if got := sent.Header.Get("x-gateway-key"); got != gwKey {
-		t.Fatalf("x-gateway-key = %q, want the caller's header to be sent", got)
-	}
-}
-
-func TestAPIKeyIsSentWhenNotSuppressed(t *testing.T) {
-	_, _, sent := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, streamFixture())
-	if got := sent.Header.Get("x-api-key"); got != "sk-ant-test-key-abcdefgh" {
-		t.Fatalf("x-api-key = %q, want the resolved ANTHROPIC_API_KEY", got)
-	}
-	if sent.Header.Get("Authorization") != "" {
-		t.Fatal("an ANTHROPIC_API_KEY must NOT ride as Authorization: Bearer")
-	}
-}
-
-// TestOnPayloadCanRewriteTheEncodedRequest is REQ-PROV-18's post-serialization
-// seam — the one middleware cannot reach because middleware operates on
-// canonical types.
-func TestOnPayloadCanRewriteTheEncodedRequest(t *testing.T) {
-	var captured map[string]any
-	_, _, sent := run(t, testModel(), core.Request{}, anthropic.Options{
-		OnPayload: func(p any, _ *core.Model) (any, error) {
-			b, _ := json.Marshal(p)
-			_ = json.Unmarshal(b, &captured)
-			captured["custom_vendor_field"] = true
-			return captured, nil
-		},
-	}, 200, streamFixture())
-
-	body, _ := io.ReadAll(sent.Body)
-	if !strings.Contains(string(body), "custom_vendor_field") {
-		t.Fatalf("body = %s; OnPayload's replacement must reach the wire", body)
-	}
-}
-
-func TestOnPayloadErrorPropagatesUnmodified(t *testing.T) {
-	sentinel := fmt.Errorf("policy says no")
-	s := stream(anthropic.Provider(*testModel(), anthropic.Options{
-		Getenv: func(k string) string {
-			if k == "ANTHROPIC_API_KEY" {
-				return "sk-ant-test-key-abcdefgh"
-			}
-			return ""
-		},
-		OnPayload: func(any, *core.Model) (any, error) { return nil, sentinel },
-		Transport: rtFunc(func(*http.Request) (*http.Response, error) {
-			t.Fatal("no request may be sent after OnPayload refuses")
-			return nil, nil
-		}),
-	}), context.Background(), core.Request{})
-	if err := s.Wait().Err; err != sentinel {
-		t.Fatalf("err = %v, want the caller's own error UNMODIFIED so errors.Is works "+
-			"on their sentinel (REQ-PROV-18)", err)
-	}
-}
-
-func TestBetaHeaderIsSentWhenRequested(t *testing.T) {
-	const beta = "some-feature-2026-01-01"
-	_, _, sent := run(t, testModel(), core.Request{},
-		anthropic.Options{Betas: []string{beta}}, 200, streamFixture())
-	if got := sent.Header.Get("anthropic-beta"); got != beta {
-		t.Fatalf("anthropic-beta = %q, want %q", got, beta)
-	}
-	// A beta is a header only: the body names no feature of its own.
-	body, _ := io.ReadAll(sent.Body)
-	if strings.Contains(string(body), "context_management") {
-		t.Fatalf("body = %s carries context_management", body)
-	}
-}
-
-// TestAFailedTurnThatReportedUsageIsStillBilled is REQ-PROV-05 on the failure
-// path. message_start reports input and cache tokens before any content, and
-// the provider bills them whether or not the stream finishes; a session
-// aggregate that priced only successful turns under-reported by exactly the
-// turns that went wrong.
-func TestAFailedTurnThatReportedUsageIsStillBilled(t *testing.T) {
-	full := streamFixture()
-	cut := full[:strings.Index(full, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1")]
-
-	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, cut)
-	if msg.StopReason != core.StopReasonError {
-		t.Fatalf("stop reason = %q, want error", msg.StopReason)
-	}
-	if !msg.Usage.Has(core.UsageCostUSD) {
-		t.Fatal("a failed turn with reported usage must carry a cost")
-	}
-	// message_start: input 100, output 1, cache read 900, cache write 50.
-	want := (3*100.0 + 15*1.0 + 0.3*900.0 + 3.75*50.0) / 1e6
-	if diff := msg.Usage.CostUSD - want; diff > 1e-12 || diff < -1e-12 {
-		t.Fatalf("cost = %.10f, want %.10f from the usage message_start reported", msg.Usage.CostUSD, want)
-	}
-
-	// A failure before any usage arrived carries none: a computed zero and
-	// an absent cost must stay distinguishable.
-	msg, _, _ = run(t, testModel(), core.Request{}, anthropic.Options{}, 500, `{"type":"error"}`)
-	if msg.Usage.Has(core.UsageCostUSD) {
-		t.Fatal("a failure with no reported usage must not invent a zero cost")
-	}
-}
-
-// TestOnlyTheLastSystemBlockCarriesABreakpoint is F6: the wire renders tools,
-// then system, then messages, and a marker caches everything before it, so
-// one breakpoint on the LAST system block covers the tool list and the whole
-// prompt. Stamping every block spent one of the four per-request breakpoints
-// per block, and three or more blocks pushed the request over the limit.
-func TestOnlyTheLastSystemBlockCarriesABreakpoint(t *testing.T) {
-	req := core.Request{System: []core.ContentBlock{
-		core.TextBlock{Text: "one"}, core.TextBlock{Text: "two"}, core.TextBlock{Text: "three"},
-	}, Messages: core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}}}
-
-	decode := func(retention core.CacheRetention) (sys []map[string]any, last map[string]any) {
-		t.Helper()
-		body, _, err := anthropic.BuildRequest(testModel(), req, retention)
+func TestCacheWritesAreReadFromTheTotalOrItsBreakdown(t *testing.T) {
+	for _, c := range []struct {
+		usage         string
+		writes, hour  int64
+		reportsAnyway bool
+	}{
+		{`{"cache_creation_input_tokens":50,"cache_creation":{"ephemeral_5m_input_tokens":30,"ephemeral_1h_input_tokens":20}}`, 50, 20, true},
+		{`{"cache_creation":{"ephemeral_5m_input_tokens":30,"ephemeral_1h_input_tokens":20}}`, 50, 20, true},
+		{`{"cache_creation":{"ephemeral_5m_input_tokens":30}}`, 30, 0, true},
+		{`{}`, 0, 0, false},
+	} {
+		msg, err := anthropic.DecodeResponse(testModel(), []byte(`{"id":"m","model":"claude-test","content":[],"usage":`+c.usage+`}`), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		raw, _ := json.Marshal(body)
-		var got struct {
-			System   []map[string]any `json:"system"`
-			Messages []struct {
-				Content []map[string]any `json:"content"`
-			} `json:"messages"`
-		}
-		if err := json.Unmarshal(raw, &got); err != nil {
-			t.Fatal(err)
-		}
-		return got.System, got.Messages[0].Content[0]
-	}
-
-	sys, _ := decode(core.CacheRetentionShort)
-	for i, b := range sys[:2] {
-		if b["cache_control"] != nil {
-			t.Fatalf("system[%d] carries a breakpoint; only the last block may, or three blocks "+
-				"plus tools plus the rolling marker exceed the four-breakpoint limit", i)
-		}
-	}
-	if sys[2]["cache_control"] == nil {
-		t.Fatal("the last system block carries no breakpoint; nothing caches the prompt")
-	}
-
-	// Long retention: 1h on the prefix breakpoints, plain ephemeral on the
-	// rolling one. It is rewritten every turn, a 1h write costs twice a 5m
-	// one, and the wire requires 1h entries to precede 5m entries.
-	sys, last := decode(core.CacheRetentionLong)
-	cc, _ := sys[2]["cache_control"].(map[string]any)
-	if cc == nil || cc["ttl"] != "1h" {
-		t.Fatalf("system breakpoint = %v under long retention, want ttl 1h", sys[2]["cache_control"])
-	}
-	lcc, _ := last["cache_control"].(map[string]any)
-	if lcc == nil || lcc["type"] != "ephemeral" {
-		t.Fatalf("rolling breakpoint = %v, want ephemeral", last["cache_control"])
-	}
-	if _, has := lcc["ttl"]; has {
-		t.Fatalf("rolling breakpoint = %v carries a ttl; the per-turn marker stays at 5m", lcc)
-	}
-}
-
-// TestEmptyTextInsideAToolResultIsDropped is F9, the nested arm of
-// TestAnEmptyToolResultOmitsContent: an empty TextBlock INSIDE a result used
-// to serialize as {"type":"text"} — a 400 — while the top-level empty result
-// was already handled.
-func TestEmptyTextInsideAToolResultIsDropped(t *testing.T) {
-	call, _ := core.NewToolUse("toolu_1", "ls", json.RawMessage(`{}`))
-	req := core.Request{Messages: core.Messages{
-		core.UserMessage{Content: core.Content{core.TextBlock{Text: "list"}}},
-		core.AssistantMessage{Content: core.Content{call}, StopReason: core.StopReasonToolUse,
-			Model: "claude-test"},
-		core.ToolResultMessage{ToolUseID: "toolu_1", ToolName: "ls",
-			Content: core.Content{core.TextBlock{Text: ""}, core.TextBlock{Text: "a.go"}}},
-	}}
-	body, _, err := anthropic.BuildRequest(testModel(), req, core.CacheRetentionNone)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := json.Marshal(body)
-	if strings.Contains(string(raw), `{"type":"text"}`) {
-		t.Fatalf("body carries a text block with no text: %s", raw)
-	}
-	if !strings.Contains(string(raw), `"a.go"`) {
-		t.Fatalf("the non-empty sibling was lost: %s", raw)
-	}
-}
-
-// TestAUserMessageWithNothingLeftIsSkipped is F10: a user message whose every
-// block was dropped (empty text, an unmodelled raw block) rendered as
-// `"content":[]`, which is a 400. Skipping the message keeps role alternation
-// intact wherever its neighbours already alternated.
-func TestAUserMessageWithNothingLeftIsSkipped(t *testing.T) {
-	req := core.Request{Messages: core.Messages{
-		core.UserMessage{Content: core.Content{core.TextBlock{Text: "first"}}},
-		core.AssistantMessage{Content: core.Content{core.TextBlock{Text: "reply"}}, StopReason: core.StopReasonStop,
-			Model: "claude-test"},
-		core.UserMessage{Content: core.Content{core.TextBlock{Text: ""}}},
-		core.AssistantMessage{Content: core.Content{core.TextBlock{Text: "again"}}, StopReason: core.StopReasonStop,
-			Model: "claude-test"},
-		core.UserMessage{Content: core.Content{core.TextBlock{Text: "last"}}},
-	}}
-	body, _, err := anthropic.BuildRequest(testModel(), req, core.CacheRetentionNone)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := json.Marshal(body)
-	if strings.Contains(string(raw), `"content":[]`) {
-		t.Fatalf("body carries an empty content array: %s", raw)
-	}
-	var got struct {
-		Messages []struct {
-			Role string `json:"role"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatal(err)
-	}
-	// With the empty user turn skipped, the two assistant turns become
-	// adjacent and encodeMessages coalesces them, so the wire sees
-	// user/assistant/user — valid alternation, where user/assistant/[]/
-	// assistant/user was a 400 on the empty content.
-	roles := make([]string, 0, len(got.Messages))
-	for _, m := range got.Messages {
-		roles = append(roles, m.Role)
-	}
-	if strings.Join(roles, ",") != "user,assistant,user" {
-		t.Fatalf("roles = %v, want user,assistant,user", roles)
-	}
-}
-
-// TestThinkingIsATriState is REQ-PROV-15's Anthropic arm: undefined omits the
-// key, "off" sends {"type":"disabled"} where the row maps it, a mapped level
-// sends the row's own budget.
-func TestThinkingIsATriState(t *testing.T) {
-	m := testModel()
-	budget := "2048"
-	m.Efforts = map[core.Effort]*string{
-		core.EffortHigh: &budget}
-
-	if got := captureBody(t, m, ""); got["thinking"] != nil {
-		t.Fatalf("thinking = %v with no effort, want the key OMITTED", got["thinking"])
-	}
-	on := captureBody(t, m, core.EffortHigh)["thinking"].(map[string]any)
-	if on["type"] != "enabled" || on["budget_tokens"] != float64(2048) {
-		t.Fatalf("thinking = %v, want the catalog row's own budget", on)
-	}
-
-	// A level the row does not price is OMITTED, never clamped and never
-	// guessed (10-REQ-4.4): max on a row that tops out at high sends nothing.
-	if got := captureBody(t, m, core.EffortMax)["thinking"]; got != nil {
-		t.Fatalf("thinking = %v for max on a row that tops out at high, want the key omitted", got)
-	}
-	// A model with NO map has no reachable level, and the key is omitted:
-	// sending a level the model does not know is a 400, and inventing a
-	// budget is worse than not thinking.
-	m.Efforts = nil
-	if got := captureBody(t, m, core.EffortHigh)["thinking"]; got != nil {
-		t.Fatalf("thinking = %v for a model with no map, want the key omitted", got)
-	}
-}
-
-// captureBody builds and captures the wire body for one thinking level.
-func captureBody(t *testing.T, m *core.Model, effort core.Effort) map[string]any {
-	t.Helper()
-	return captureRequest(t, m, core.Request{Effort: effort})
-}
-
-func captureRequest(t *testing.T, m *core.Model, req core.Request) map[string]any {
-	t.Helper()
-	var got map[string]any
-	run(t, m, req, anthropic.Options{OnPayload: func(p any, _ *core.Model) (any, error) {
-		b, _ := json.Marshal(p)
-		_ = json.Unmarshal(b, &got)
-		return nil, nil
-	}}, 200, streamFixture())
-	return got
-}
-
-// TestAnEffortStyleRowSendsAdaptiveThinkingAndEffort pins the current
-// generation of the control. A catalog row whose wire values are effort
-// tokens ("high") describes a model that takes output_config.effort with
-// {"type":"adaptive"} and REJECTS budget_tokens — every model since Opus 4.7.
-// The previous adapter priced the token into a budget on the ladder the
-// budget rows use, which was a 400 on exactly the rows that carry tokens. A
-// token the adapter does not know omits thinking rather than sending
-// {"type":"enabled"} with no budget, which the API also rejects.
-func TestAnEffortStyleRowSendsAdaptiveThinkingAndEffort(t *testing.T) {
-	assertNeverBudgetless := func(body map[string]any) {
-		t.Helper()
-		th, ok := body["thinking"].(map[string]any)
-		if !ok {
-			return
-		}
-		if th["type"] == "enabled" && th["budget_tokens"] == nil {
-			t.Fatalf("thinking = %v: type enabled with no budget_tokens is rejected by the Messages API", th)
-		}
-	}
-	temp, topP := 0.3, 0.9
-	withSampling := func(m *core.Model, effort core.Effort) map[string]any {
-		return captureRequest(t, m, core.Request{Effort: effort, Temperature: &temp, TopP: &topP})
-	}
-
-	m := testModel()
-	m.MaxOutputTokens = 64000
-	high := "high"
-	m.Efforts = map[core.Effort]*string{core.EffortHigh: &high}
-	body := withSampling(m, core.EffortHigh)
-	assertNeverBudgetless(body)
-	th, _ := body["thinking"].(map[string]any)
-	if th == nil || th["type"] != "adaptive" || th["budget_tokens"] != nil {
-		t.Fatalf("thinking = %v for an effort-style row, want {\"type\":\"adaptive\"} and no budget: "+
-			"budget_tokens is a 400 on every model that speaks effort", th)
-	}
-	oc, _ := body["output_config"].(map[string]any)
-	if oc == nil || oc["effort"] != "high" {
-		t.Fatalf("output_config = %v, want {\"effort\":\"high\"}: the level rides in output_config, not in thinking", body["output_config"])
-	}
-	if body["temperature"] != nil || body["top_p"] != nil {
-		t.Fatalf("temperature/top_p = %v/%v survived alongside thinking; the API rejects the pair",
-			body["temperature"], body["top_p"])
-	}
-
-	// minimal has no Anthropic counterpart and is sent as low; a row that
-	// writes it as "minimal" gets the same treatment as one that writes "low".
-	minimal := "minimal"
-	m.Efforts = map[core.Effort]*string{core.EffortLow: &minimal}
-	body = withSampling(m, core.EffortLow)
-	if oc, _ := body["output_config"].(map[string]any); oc == nil || oc["effort"] != "low" {
-		t.Fatalf("output_config = %v for a \"minimal\" wire value, want effort low", body["output_config"])
-	}
-
-	unknown := "turbo"
-	m.Efforts = map[core.Effort]*string{core.EffortHigh: &unknown}
-	body = withSampling(m, core.EffortHigh)
-	assertNeverBudgetless(body)
-	if body["thinking"] != nil || body["output_config"] != nil {
-		t.Fatalf("thinking/output_config = %v/%v for a wire token that is neither a budget nor an effort, want both omitted",
-			body["thinking"], body["output_config"])
-	}
-	if body["temperature"] == nil {
-		t.Fatal("temperature was dropped although no thinking is being sent")
-	}
-}
-
-// TestAShippedEffortRowReachesTheWireAsEffort runs the real catalog rows
-// through the adapter, because the translation table this replaces was only
-// ever wrong against real rows: a hand-built map cannot fail the way a
-// snapshot that says "high" for Opus 5 did.
-func TestAShippedEffortRowReachesTheWireAsEffort(t *testing.T) {
-	temp := 0.5
-	for _, c := range []struct {
-		id, effort string
-		thinking   string // wire type, or "" for omitted
-		level      core.Effort
-	}{
-		{"anthropic/claude-opus-5", "xhigh", "adaptive", core.EffortXHigh},
-		{"anthropic/claude-fable-5-1", "max", "adaptive", core.EffortMax},
-		{"anthropic/claude-sonnet-4-6", "", "", core.EffortXHigh}, // no xhigh: omitted, never clamped (10-REQ-4.4)
-	} {
-		row, ok := catalog.Lookup(c.id)
-		if !ok {
-			t.Fatalf("%s is not in the catalog", c.id)
-		}
-		m := &row
-		body := captureRequest(t, m, core.Request{Effort: c.level, Temperature: &temp})
-		th, _ := body["thinking"].(map[string]any)
-		if (c.thinking == "") != (th == nil) || (th != nil && th["type"] != c.thinking) {
-			t.Errorf("%s %s: thinking = %v, want type %q", c.id, c.level, body["thinking"], c.thinking)
-		}
-		oc, _ := body["output_config"].(map[string]any)
-		if (c.effort == "") != (oc == nil) || (oc != nil && oc["effort"] != c.effort) {
-			t.Errorf("%s %s: output_config = %v, want effort %q", c.id, c.level, body["output_config"], c.effort)
-		}
-		if _, ok := body["budget_tokens"]; ok {
-			t.Errorf("%s: budget_tokens on the wire; it is a 400 on this generation", c.id)
+		u := msg.Usage
+		if u.CacheWriteTokens != c.writes || u.CacheWrite1hTokens != c.hour || u.Has(core.UsageCostUSD) != c.reportsAnyway {
+			t.Errorf("usage %s: writes %d, 1h %d, cost set %v", c.usage, u.CacheWriteTokens, u.CacheWrite1hTokens, u.Has(core.UsageCostUSD))
 		}
 	}
 
-	// A budget row stays a budget row: Haiku takes budget_tokens and errors
-	// on output_config.effort.
-	row, ok := catalog.Lookup("anthropic/claude-haiku-4-5")
-	if !ok {
-		t.Fatalf("%s is not in the catalog", "anthropic/claude-haiku-4-5")
-	}
-	haiku := &row
-	body := captureBody(t, haiku, core.EffortHigh)
-	th, _ := body["thinking"].(map[string]any)
-	if th == nil || th["type"] != "enabled" || th["budget_tokens"] != float64(32768) {
-		t.Fatalf("haiku high: thinking = %v, want enabled with the row's 32768 budget", body["thinking"])
-	}
-	if body["output_config"] != nil {
-		t.Fatalf("haiku: output_config = %v; effort is an error on this model", body["output_config"])
-	}
-}
-
-// TestARowThatRejectsSamplingDropsTemperatureAndTopP is compat.supports_sampling
-// on the request path. The Claude 4.7+ generation returns a 400 naming the
-// field for any temperature or top_p, thinking or not, and the catalog row
-// says so; the caller's knob simply has no counterpart there.
-func TestARowThatRejectsSamplingDropsTemperatureAndTopP(t *testing.T) {
-	temp, topP := 0.2, 0.9
-	req := core.Request{Temperature: &temp, TopP: &topP}
-
-	m := testModel()
-	m.Compat = json.RawMessage(`{"supports_sampling": false}`)
-	body := captureRequest(t, m, req)
-	if _, ok := body["temperature"]; ok {
-		t.Fatalf("temperature = %v sent to a row with supports_sampling false", body["temperature"])
-	}
-	if _, ok := body["top_p"]; ok {
-		t.Fatalf("top_p = %v sent to a row with supports_sampling false", body["top_p"])
-	}
-
-	// Absent, and an unrelated compat key, both mean the conservative
-	// default: the knobs go through.
-	for _, compat := range []string{``, `{"supports_long_cache_retention": false}`, `{"supports_sampling": true}`} {
-		m.Compat = json.RawMessage(compat)
-		body := captureRequest(t, m, req)
-		if body["temperature"] != 0.2 || body["top_p"] != 0.9 {
-			t.Fatalf("compat %q: temperature/top_p = %v/%v, want 0.2/0.9 forwarded", compat,
-				body["temperature"], body["top_p"])
-		}
-	}
-	// And the shipped rows: Opus 5 rejects, Sonnet 4.6 accepts.
-	for id, want := range map[string]bool{"anthropic/claude-opus-5": false, "anthropic/claude-sonnet-4-6": true} {
-		row, ok := catalog.Lookup(id)
-		if !ok {
-			t.Fatalf("%s is not in the catalog", id)
-		}
-		m := &row
-		_, sent := captureRequest(t, m, req)["temperature"]
-		if sent != want {
-			t.Errorf("%s: temperature sent = %v, want %v", id, sent, want)
-		}
-	}
-}
-
-// TestAnEmptyToolResultOmitsContent is REQ-LOOP-02 on this wire's one
-// optional field. An empty result used to serialize as a placeholder
-// {"type":"text"} — Text is omitzero — and a text block with no text key is a
-// 400 on every successful command that prints nothing.
-func TestAnEmptyToolResultOmitsContent(t *testing.T) {
-	call, _ := core.NewToolUse("toolu_1", "rm", json.RawMessage(`{"path":"x"}`))
-	req := core.Request{Messages: core.Messages{
-		core.UserMessage{Content: core.Content{core.TextBlock{Text: "delete x"}}},
-		core.AssistantMessage{Content: core.Content{call}, StopReason: core.StopReasonToolUse,
-			Model: "claude-test"},
-		core.ToolResultMessage{ToolUseID: "toolu_1", ToolName: "rm"},
-	}}
-	body, _, err := anthropic.BuildRequest(testModel(), req, core.CacheRetentionNone)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := json.Marshal(body)
-	if strings.Contains(string(raw), `{"type":"text"}`) {
-		t.Fatalf("body carries a text block with no text: %s", raw)
-	}
-	var got struct {
-		Messages []struct {
-			Content []map[string]any `json:"content"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatal(err)
-	}
-	tr := got.Messages[len(got.Messages)-1].Content[0]
-	if tr["type"] != "tool_result" {
-		t.Fatalf("last block = %v, want the tool_result", tr)
-	}
-	if _, present := tr["content"]; present {
-		t.Fatalf("tool_result = %v; content must be OMITTED when the result is empty", tr)
-	}
-}
-
-// TestASignedThinkingBlockWithNoTextStillCarriesItsThinkingKey is the same
-// class of bug as TestAnEmptyToolResultOmitsContent, on the other required
-// field of this wire.
-//
-// The model really does send a thinking block whose text is empty and whose
-// signature is not: the summarizer produces nothing for a short thought, and
-// the block still arrives signed and still has to be replayed — REQ-PROV-11
-// rule 4 keeps it precisely because it is signed. Thinking was omitzero, so
-// the replay serialized as {"type":"thinking","signature":"…"} and the
-// Messages API answered `messages.1.content.0.thinking.thinking: Field
-// required`, killing the run on the turn AFTER the first tool call.
-func TestASignedThinkingBlockWithNoTextStillCarriesItsThinkingKey(t *testing.T) {
-	body := sseBody(
-		[2]string{"message_start", `{"message":{"id":"m","model":"claude-test","usage":{"input_tokens":5}}}`},
-		[2]string{"content_block_start", `{"index":0,"content_block":{"type":"thinking","thinking":""}}`},
-		[2]string{"content_block_delta", `{"index":0,"delta":{"type":"signature_delta","signature":"SIGBYTES"}}`},
-		[2]string{"content_block_stop", `{"index":0}`},
-		[2]string{"content_block_start", `{"index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"search_files","input":{}}}`},
-		[2]string{"content_block_delta", `{"index":1,"delta":{"type":"input_json_delta","partial_json":"{\"pattern\":\"x\"}"}}`},
-		[2]string{"content_block_stop", `{"index":1}`},
-		[2]string{"message_delta", `{"delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}`},
-		[2]string{"message_stop", `{}`},
-	)
-	turn, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, body)
-
-	tb, ok := turn.Content[0].(core.ThinkingBlock)
-	if !ok || tb.Thinking != "" || tb.Signature != "SIGBYTES" {
-		t.Fatalf("block 0 = %#v, want an empty but SIGNED thinking block", turn.Content[0])
-	}
-
-	// The next request replays that turn. This is the request that used to be
-	// a 400.
-	req := core.Request{Messages: core.Messages{
-		core.UserMessage{Content: core.Content{core.TextBlock{Text: "which files?"}}},
-		*turn,
-		core.ToolResultMessage{ToolUseID: "toolu_1", ToolName: "search_files",
-			Content: core.Content{core.TextBlock{Text: "policy.go"}}},
-	}}
-	out, rep, err := anthropic.BuildRequest(testModel(), req, core.CacheRetentionNone)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rep.DowngradedThinking != 0 {
-		t.Fatalf("repair downgraded %d thinking blocks; a SIGNED block replayed to its "+
-			"own model must survive rule 4 intact", rep.DowngradedThinking)
-	}
-	raw, _ := json.Marshal(out)
-	var got struct {
-		Messages []struct {
-			Content []map[string]any `json:"content"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatal(err)
-	}
-	think := got.Messages[1].Content[0]
-	if think["type"] != "thinking" {
-		t.Fatalf("first assistant block = %v, want the thinking block", think)
-	}
-	if _, present := think["thinking"]; !present {
-		t.Fatalf("thinking block = %v; the thinking key is REQUIRED even when empty: %s",
-			think, raw)
-	}
-	if think["signature"] != "SIGBYTES" {
-		t.Fatalf("thinking block = %v, want the signature replayed verbatim", think)
-	}
-}
-
-// TestARedactedThinkingBlockAlwaysCarriesItsDataKey is the redacted arm of the
-// same required-field rule: `data` is what the block IS, so a redacted block
-// that lost it is both a 400 and unverifiable state the model expected back.
-func TestARedactedThinkingBlockAlwaysCarriesItsDataKey(t *testing.T) {
-	req := core.Request{Messages: core.Messages{
-		core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}},
-		core.AssistantMessage{
-			Model: "claude-test",
-			Content: core.Content{
-				core.ThinkingBlock{Redacted: true, Signature: "OPAQUE"},
-				core.TextBlock{Text: "done"},
-			},
-		},
-	}}
-	out, _, err := anthropic.BuildRequest(testModel(), req, core.CacheRetentionNone)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := json.Marshal(out)
-	if !strings.Contains(string(raw), `{"type":"redacted_thinking","data":"OPAQUE"}`) {
-		t.Fatalf("body = %s, want the redacted block replayed with its data", raw)
-	}
-}
-
-// TestMaxTokensIsNeverZeroAndMessagesNeverNull: both are hard 400s on this
-// wire, and both used to be reachable — max_tokens from a Model with no cap
-// and no window, messages from a request with no history.
-func TestMaxTokensIsNeverZeroAndMessagesNeverNull(t *testing.T) {
-	m := testModel()
-	m.MaxOutputTokens, m.ContextWindow = 0, 0
-	body, _, err := anthropic.BuildRequest(m, core.Request{}, core.CacheRetentionNone)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := json.Marshal(body)
-	var got map[string]any
-	_ = json.Unmarshal(raw, &got)
-	if mt, _ := got["max_tokens"].(float64); mt <= 0 {
-		t.Fatalf("max_tokens = %v, want a positive number: the field is required and 0 is rejected", got["max_tokens"])
-	}
-	if !strings.Contains(string(raw), `"messages":[]`) {
-		t.Fatalf("body = %s, want \"messages\":[] rather than null", raw)
-	}
-}
-
-// TestAMalformedContentBlockStartFailsTheStream: a content_block that does
-// not decode used to be silently dropped, leaving every later delta for that
-// index with nothing to accumulate into and a turn that ended short with no
-// error saying why (REQ-PROV-04).
-func TestAMalformedContentBlockStartFailsTheStream(t *testing.T) {
-	body := sseBody(
-		[2]string{"message_start", `{"message":{"id":"m","model":"claude-test","usage":{"input_tokens":5}}}`},
-		[2]string{"content_block_start", `{"index":0,"content_block":"not an object"}`},
-		[2]string{"content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"lost"}}`},
-		[2]string{"content_block_stop", `{"index":0}`},
-		[2]string{"message_delta", `{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`},
-		[2]string{"message_stop", `{}`},
-	)
-	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, body)
-	if msg.StopReason != core.StopReasonError {
-		t.Fatalf("stop reason = %q, want error: a block that does not decode is a stream failure, not a block to drop", msg.StopReason)
-	}
-	if !strings.Contains(msg.ErrorMessage, "content_block") {
-		t.Fatalf("error = %q, want it to name the content_block", msg.ErrorMessage)
-	}
-}
-
-func TestThinkingBudgetIsHeldBelowMaxTokens(t *testing.T) {
-	m := testModel()
-	m.MaxOutputTokens = 2048
-	budget := "4096" // larger than max_tokens: Anthropic rejects this outright
-	m.Efforts = map[core.Effort]*string{core.EffortHigh: &budget}
-
-	got := captureBody(t, m, core.EffortHigh)
-	th, _ := got["thinking"].(map[string]any)
-	if th == nil {
-		t.Fatalf("thinking omitted; 2047 is a legal budget below max_tokens %v", got["max_tokens"])
-	}
-	if th["budget_tokens"].(float64) >= got["max_tokens"].(float64) {
-		t.Fatalf("budget_tokens %v is not below max_tokens %v; the BUDGET is the value "+
-			"we may lower, because max_tokens has already been clamped against the "+
-			"context window", th["budget_tokens"], got["max_tokens"])
-	}
-}
-
-// TestASubMinimumBudgetOmitsThinking is the other edge of the clamp above.
-// Holding the budget below max_tokens can push it under the vendor minimum of
-// 1024 — a small max_tokens, or a large one clamped deep into a long session
-// (REQ-CAT-04) — and a sub-minimum budget is a 400 just as an oversized one
-// is. No thinking is the request that still returns.
-func TestASubMinimumBudgetOmitsThinking(t *testing.T) {
-	m := testModel()
-	m.MaxOutputTokens = 1024 // leaves 1023, under the minimum
-	budget := "4096"
-	m.Efforts = map[core.Effort]*string{core.EffortHigh: &budget}
-	temp := 0.4
-
-	got := captureRequest(t, m, core.Request{Effort: core.EffortHigh, Temperature: &temp})
-	if got["thinking"] != nil {
-		t.Fatalf("thinking = %v, want the key omitted: a budget under 1024 is a 400", got["thinking"])
-	}
-	if got["temperature"] != 0.4 {
-		t.Fatalf("temperature = %v; with no thinking on the wire the caller's sampling stands", got["temperature"])
-	}
-
-	// The minimum itself is legal.
-	m.MaxOutputTokens = 1025
-	got = captureBody(t, m, core.EffortHigh)
-	th, _ := got["thinking"].(map[string]any)
-	if th == nil || th["budget_tokens"] != float64(1024) {
-		t.Fatalf("thinking = %v, want the 1024 minimum sent", got["thinking"])
-	}
-}
-
-// TestCancellationProducesAnAbortedTurnNotAnError keeps REQ-LOOP-09's dirty
-// marker distinguishable from a provider failure: an aborted turn is terminal
-// and is never retried (REQ-PROV-14), where an error may be.
-func TestCancellationProducesAnAbortedTurnNotAnError(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	// Cancelled while the request is in flight: a context already done is
-	// refused by Stream itself.
-	s := stream(anthropic.Provider(*testModel(), anthropic.Options{
-		Getenv: func(string) string { return "k" },
-		Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
-			cancel()
-			return nil, r.Context().Err()
-		}),
-	}), ctx, core.Request{})
-
-	msg := s.Result()
-	if msg.StopReason != core.StopReasonAborted {
-		t.Fatalf("stop reason = %q, want aborted", msg.StopReason)
-	}
-}
-
-func TestPerRequestTimeoutIsIndependentOfTheCallerContext(t *testing.T) {
-	done := make(chan *core.AssistantMessage, 1)
-	go func() {
-		done <- stream(anthropic.Provider(*testModel(), anthropic.Options{
-			Getenv:  func(string) string { return "k" },
-			Timeout: time.Millisecond,
-			Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
-				<-r.Context().Done()
-				return nil, r.Context().Err()
-			}),
-		}), context.Background(), core.Request{}).Result()
-	}()
-
-	select {
-	case msg := <-done:
-		if msg.StopReason == core.StopReasonStop {
-			t.Fatal("a timed-out request must not report success")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("RequestOptions.TimeoutMs did not bound a request whose caller context " +
-			"has no deadline")
-	}
-}
-
-// Issue #75 §3: a refusal's stop_details reach the message, streamed and not.
-func TestARefusalCarriesItsStopDetails(t *testing.T) {
-	body := sseBody(
-		[2]string{"message_start", `{"message":{"id":"m","model":"claude-test","usage":{"input_tokens":5}}}`},
-		[2]string{"message_delta", `{"delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"request declined"}},"usage":{"output_tokens":0}}`},
-		[2]string{"message_stop", `{}`},
-	)
-	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, body)
-	if msg.StopReason != core.StopReasonRefusal || msg.StopDetail != "cyber: request declined" {
-		t.Fatalf("StopReason=%q StopDetail=%q", msg.StopReason, msg.StopDetail)
-	}
-}
-
-// TestTheAPIKeyOutranksTheBearerVariables pins the official SDK's order:
-// ANTHROPIC_API_KEY first, so a machine that carries both authenticates the
-// way every first-party client on it does.
-func TestTheAPIKeyOutranksTheBearerVariables(t *testing.T) {
-	r := sent(t, anthropic.Options{}, map[string]string{
-		"ANTHROPIC_API_KEY": "key", "ANTHROPIC_AUTH_TOKEN": "tok", "ANTHROPIC_OAUTH_TOKEN": "oa"})
-	if got := r.Header.Get("x-api-key"); got != "key" {
-		t.Fatalf("x-api-key = %q, want the API key to win", got)
-	}
-	if got := r.Header.Get("Authorization"); got != "" {
-		t.Fatalf("Authorization = %q, want none alongside the API key", got)
-	}
-	r = sent(t, anthropic.Options{}, map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok", "ANTHROPIC_OAUTH_TOKEN": "oa"})
-	if got := r.Header.Get("Authorization"); got != "Bearer tok" {
-		t.Fatalf("Authorization = %q, want ANTHROPIC_AUTH_TOKEN before ANTHROPIC_OAUTH_TOKEN", got)
-	}
-}
-
-// TestAnOAuthTokenCarriesTheOAuthBeta: the Messages API accepts an OAuth
-// bearer only with the oauth beta, and the configured betas ride alongside.
-func TestAnOAuthTokenCarriesTheOAuthBeta(t *testing.T) {
-	r := sent(t, anthropic.Options{}, map[string]string{"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x"})
-	if got := r.Header.Get("anthropic-beta"); got != anthropic.BetaOAuth {
-		t.Fatalf("anthropic-beta = %q, want %q", got, anthropic.BetaOAuth)
-	}
-	r = sent(t, anthropic.Options{Betas: []string{"some-feature-2026-01-01"}},
-		map[string]string{"ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat01-x"})
-	if got := r.Header.Get("anthropic-beta"); got != "some-feature-2026-01-01,"+anthropic.BetaOAuth {
-		t.Fatalf("anthropic-beta = %q, want both betas", got)
-	}
-	r = sent(t, anthropic.Options{}, map[string]string{"ANTHROPIC_API_KEY": "key"})
-	if got := r.Header.Get("anthropic-beta"); got != "" {
-		t.Fatalf("anthropic-beta = %q for an API key, want none", got)
-	}
-}
-
-// TestBuildRequestCarriesTheThinkingConfig: BuildRequest is the capture point
-// for the goldens and the differential harness, so it must produce the body
-// Stream sends — thinking included. Without it the goldens cannot regress the
-// effort logic at all.
-func TestBuildRequestCarriesTheThinkingConfig(t *testing.T) {
-	row, ok := catalog.Lookup("anthropic/claude-opus-4-8")
-	if !ok {
-		t.Fatalf("%s is not in the catalog", "anthropic/claude-opus-4-8")
-	}
-	m := &row
-	out, _, err := anthropic.BuildRequest(m, core.Request{
-		Messages: core.Messages{core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}}},
-		Effort:   core.EffortHigh,
-	}, core.CacheRetentionNone)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := json.Marshal(out)
-	var body struct {
-		Thinking     *struct{ Type string }   `json:"thinking"`
-		OutputConfig *struct{ Effort string } `json:"output_config"`
-	}
-	if err := json.Unmarshal(raw, &body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Thinking == nil || body.Thinking.Type != "adaptive" ||
-		body.OutputConfig == nil || body.OutputConfig.Effort != "high" {
-		t.Fatalf("BuildRequest at high = %s, want thinking adaptive and output_config.effort high", raw)
-	}
-}
-
-// TS-10-26: an SDK Message translates into an assistant message with its
-// thinking, text and tool_use blocks.
-func TestTranslateMessage_TS10_26(t *testing.T) {
-	var msg sdk.Message
-	if err := json.Unmarshal([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-test",
-		"content":[
-			{"type":"thinking","thinking":"plan it","signature":"SIG"},
-			{"type":"text","text":"Looking."},
-			{"type":"tool_use","id":"toolu_1","name":"read_file","input":{"path": "a.go"}}],
-		"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":5}}`), &msg); err != nil {
-		t.Fatal(err)
-	}
-	got, err := anthropic.TranslateMessage(testModel(), msg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Content) != 3 {
-		t.Fatalf("%d blocks, want 3: %#v", len(got.Content), got.Content)
-	}
-	if th, ok := got.Content[0].(core.ThinkingBlock); !ok || th.Thinking != "plan it" || th.Signature != "SIG" {
-		t.Fatalf("block 0 = %#v, want the signed thinking block", got.Content[0])
-	}
-	if tx, ok := got.Content[1].(core.TextBlock); !ok || tx.Text != "Looking." {
-		t.Fatalf("block 1 = %#v, want the text", got.Content[1])
-	}
-	tu, ok := got.Content[2].(core.ToolUseBlock)
-	if !ok || tu.ID != "toolu_1" || tu.Name != "read_file" || string(tu.Input) != `{"path": "a.go"}` {
-		t.Fatalf("block 2 = %#v, want the tool_use with its input as sent", got.Content[2])
-	}
-	if got.StopReason != core.StopReasonToolUse || got.Usage.InputTokens != 10 || got.Usage.OutputTokens != 5 {
-		t.Fatalf("stop %q, usage %+v", got.StopReason, got.Usage)
-	}
-}
-
-// TS-10-27: message_start usage and message_delta usage fold into one usage
-// with input, output, cache read and cache write tokens and one request.
-func TestTranslateUsage_TS10_27(t *testing.T) {
 	var start sdk.Usage
-	if err := json.Unmarshal([]byte(`{"input_tokens":150,"output_tokens":1,
-		"cache_read_input_tokens":100,"cache_creation_input_tokens":50}`), &start); err != nil {
-		t.Fatal(err)
-	}
 	var delta sdk.MessageDeltaUsage
-	if err := json.Unmarshal([]byte(`{"output_tokens":42}`), &delta); err != nil {
-		t.Fatal(err)
-	}
-	u := anthropic.TranslateUsage(start, delta)
-	if u.InputTokens != 150 || u.OutputTokens != 42 || u.CacheReadTokens != 100 ||
-		u.CacheWriteTokens != 50 || u.Requests != 1 {
-		t.Fatalf("usage = %+v, want 150 in, 42 out, 100 read, 50 written, 1 request", u)
-	}
-
-	// A streamed turn reports the same through the provider, and one request.
-	msg, _, _ := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, streamFixture())
-	if msg.Usage.Requests != 1 {
-		t.Fatalf("streamed usage Requests = %d, want 1", msg.Usage.Requests)
+	_ = json.Unmarshal([]byte(`{"input_tokens":150,"output_tokens":1,"cache_read_input_tokens":100,"cache_creation_input_tokens":50}`), &start)
+	_ = json.Unmarshal([]byte(`{"output_tokens":42}`), &delta)
+	if u := anthropic.TranslateUsage(start, delta); u.InputTokens != 150 || u.OutputTokens != 42 ||
+		u.CacheReadTokens != 100 || u.CacheWriteTokens != 50 || u.Requests != 1 {
+		t.Errorf("TranslateUsage = %+v", u)
 	}
 }
 
-// TS-10-28: the provider finishes its stream without waiting for a consumer
-// that has not read a single event.
-func TestStreamingDoesNotWaitForTheConsumer_TS10_28(t *testing.T) {
-	rt := rtFunc(func(r *http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: 200, Header: http.Header{},
-			Body: io.NopCloser(strings.NewReader(streamFixture()))}, nil
-	})
-	p := anthropic.Provider(*testModel(), anthropic.Options{Getenv: func(k string) string {
-		if k == "ANTHROPIC_API_KEY" {
-			return "sk-ant-test"
+// Thinking arrives with its signature, which replay needs, and a redacted
+// block carries its opaque data; an empty thinking block is still signed.
+func TestThinkingBlocksDecodeWithTheirSignatures(t *testing.T) {
+	x := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, sse(
+		"message_start", messageStart("claude-test"),
+		"content_block_start", `{"index":0,"content_block":{"type":"thinking","thinking":""}}`,
+		"content_block_delta", `{"index":0,"delta":{"type":"thinking_delta","thinking":"step one"}}`,
+		"content_block_delta", `{"index":0,"delta":{"type":"signature_delta","signature":"SIG"}}`,
+		"content_block_stop", `{"index":0}`,
+		"content_block_start", `{"index":1,"content_block":{"type":"thinking","thinking":""}}`,
+		"content_block_delta", `{"index":1,"delta":{"type":"signature_delta","signature":"SIG2"}}`,
+		"content_block_stop", `{"index":1}`,
+		"content_block_start", `{"index":2,"content_block":{"type":"redacted_thinking","data":"OPAQUE"}}`,
+		"content_block_stop", `{"index":2}`,
+		"message_delta", `{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}`,
+		"message_stop", `{}`,
+	))
+	want := core.Content{core.ThinkingBlock{Thinking: "step one", Signature: "SIG"}, core.ThinkingBlock{Signature: "SIG2"},
+		core.ThinkingBlock{Redacted: true, Signature: "OPAQUE"}}
+	if got := x.msg.Content; len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("content = %#v", got)
+	}
+	if !strings.HasPrefix(eventNames(x.events), "message_start,thinking_start,thinking_delta,message_update,thinking_start") {
+		t.Errorf("events = %s", eventNames(x.events))
+	}
+}
+
+// Pings, an event whose data names no type, and events for blocks the
+// decoder never saw or cannot model are skipped, and the turn goes on.
+func TestTheDecoderSkipsWhatItCannotPlace(t *testing.T) {
+	body := sse(
+		"ping", `{}`,
+		"message_start", messageStart("claude-test"),
+		"content_block_delta", `{"index":7,"delta":{"type":"text_delta","text":"orphan"}}`,
+		"content_block_stop", `{"index":7}`,
+		"content_block_start", `{"index":0,"content_block":{"type":"server_tool_use","id":"s1","name":"web_search"}}`,
+		"content_block_stop", `{"index":0}`,
+		"content_block_start", `{"index":1,"content_block":{"type":"text","text":"Hi"}}`,
+		"content_block_stop", `{"index":1}`,
+		"message_delta", `{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+	) + "event: content_block_delta\ndata: {\"index\":1}\n\n" + sse("message_stop", `{}`)
+	x := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, body)
+	if x.err != nil || len(x.msg.Content) != 1 || x.msg.Content.Text() != "Hi" || x.msg.StopReason != core.StopReasonStop {
+		t.Fatalf("result = %+v, %v; want the one text block", x.msg, x.err)
+	}
+	if got := eventNames(x.events); got != "message_start,text_start,message_update,text_end,message_end" {
+		t.Errorf("events = %s", got)
+	}
+}
+
+// A call cut off by max_tokens is representable, its truncated member dropped
+// rather than closed, and only the stop reason says it is unsafe to run.
+func TestATruncatedToolCallIsSalvagedAndFlaggedByTheStopReason(t *testing.T) {
+	for args, want := range map[string]string{
+		`{\"path\":\"a.go\",\"new_string\":\"func mai`: `{"path":"a.go"}`,
+		`[1,2]`: `{}`,
+	} {
+		x := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, sse(
+			"message_start", messageStart("claude-test"),
+			"content_block_start", `{"index":0,"content_block":{"type":"tool_use","id":"toolu_x","name":"edit_file","input":{}}}`,
+			"content_block_delta", `{"index":0,"delta":{"type":"input_json_delta","partial_json":"`+args+`"}}`,
+			"content_block_stop", `{"index":0}`,
+			"message_delta", `{"delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":4096}}`,
+			"message_stop", `{}`,
+		))
+		calls := core.ExtractToolUse(x.msg)
+		if len(calls) != 1 || string(calls[0].Input) != want || x.msg.StopReason != core.StopReasonLength {
+			t.Errorf("%s: calls = %+v, stop %q; want input %s and max_tokens", args, calls, x.msg.StopReason, want)
 		}
-		return ""
-	}, Transport: rt})
-	s := stream(p, context.Background(), core.Request{})
-	done := make(chan *core.AssistantMessage, 1)
-	go func() { done <- s.Result() }()
+	}
+}
+
+func TestStopDetailsAndSequencesReachTheMessage(t *testing.T) {
+	x := run(t, testModel(), core.Request{}, anthropic.Options{}, 200, sse(
+		"message_start", messageStart("claude-test"),
+		"message_delta", `{"delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"request declined"}},"usage":{"output_tokens":0}}`,
+		"message_stop", `{}`,
+	))
+	if x.msg.StopReason != core.StopReasonRefusal || x.msg.StopDetail != "cyber: request declined" {
+		t.Errorf("streamed: StopReason=%q StopDetail=%q", x.msg.StopReason, x.msg.StopDetail)
+	}
+	for details, want := range map[string]string{
+		`{"category":"cyber"}`: "cyber", `{"explanation":"declined"}`: "declined", `null`: "",
+	} {
+		msg, err := anthropic.DecodeResponse(testModel(),
+			[]byte(`{"id":"m","content":[],"stop_reason":"refusal","stop_details":`+details+`}`), nil)
+		if err != nil || msg.StopDetail != want || msg.StopReason != core.StopReasonRefusal {
+			t.Errorf("stop_details %s: %+v, %v; want %q", details, msg, err, want)
+		}
+	}
+}
+
+func TestDecodeResponseRefusesWhatItCannotTrust(t *testing.T) {
+	for _, body := range []string{
+		`{"id":"m","id":"n"}`, `not json`, `{"content":[42]}`,
+	} {
+		if _, err := anthropic.DecodeResponse(testModel(), []byte(body), nil); err == nil ||
+			!strings.HasPrefix(err.Error(), "anthropic: decoding response") {
+			t.Errorf("DecodeResponse(%s) err = %v", body, err)
+		}
+	}
+}
+
+// The message records the model that was asked, the one that answered, the
+// effort and the provider's clock, and the repair report goes to Warnf.
+func TestTheMessageCarriesItsProvenance(t *testing.T) {
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	var warned []string
+	body := strings.Replace(streamFixture(), `"model":"claude-test"`, `"model":"claude-test-20260101"`, 1)
+	x := run(t, testModel(), core.Request{Effort: core.EffortLow, Messages: core.Messages{
+		user("go"), core.AssistantMessage{StopReason: core.StopReasonAborted, Content: core.Content{core.TextBlock{Text: "cut"}}},
+		user("again")}},
+		anthropic.Options{Now: func() time.Time { return at },
+			Warnf: func(f string, a ...any) { warned = append(warned, fmt.Sprintf(f, a...)) }},
+		200, body)
+	m := x.msg
+	if m.Model != "claude-test" || m.ResponseModel != "claude-test-20260101" || m.Effort != core.EffortLow || !m.Timestamp.Equal(at) {
+		t.Errorf("message = %+v", m)
+	}
+	if len(warned) != 1 || warned[0] != "anthropic: 1 failed turns dropped" {
+		t.Errorf("warnings = %q", warned)
+	}
+}
+
+type closeFunc struct {
+	io.Reader
+	close func()
+}
+
+func (c closeFunc) Close() error { c.close(); return nil }
+
+// The provider reads its response to the end without waiting for a consumer
+// that has not read a single event, and the events are all there afterwards.
+func TestStreamingDoesNotWaitForTheConsumer(t *testing.T) {
+	closed := make(chan struct{})
+	p := anthropic.Provider(*testModel(), anthropic.Options{Env: map[string]string{anthropic.APIKeyVar: testKey},
+		Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Header: http.Header{},
+				Body: closeFunc{strings.NewReader(streamFixture()), func() { close(closed) }}}, nil
+		})})
+	ch, err := p.Stream(context.Background(), core.Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	select {
-	case msg := <-done:
-		if msg == nil || msg.StopReason == core.StopReasonError {
-			t.Fatalf("result = %+v", msg)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the provider stopped at an unread event; it must not block on its consumer")
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the provider stopped at an unread event")
 	}
-	n := 0
-	for range s.Events() {
-		n++
+	var names []string
+	for ev := range ch {
+		names = append(names, string(ev.Event.EventType()))
 	}
-	if n == 0 {
-		t.Fatal("the buffered events were lost")
+	if len(names) < 10 || names[len(names)-1] != string(core.EvMessageEnd) {
+		t.Fatalf("events = %v", names)
 	}
 }

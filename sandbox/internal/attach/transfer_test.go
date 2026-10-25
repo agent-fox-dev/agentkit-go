@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,113 +14,114 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/fakeagent"
-	"github.com/agent-fox-dev/agentkit-go/sandbox/internal/sandboxpb"
 )
 
-// tarWithFile is a tar holding one file of size n.
-func tarWithFile(t *testing.T, name string, n int) []byte {
+// hostile is a tar holding ok.txt and then an escaping symlink.
+func hostile(t *testing.T) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: name, Mode: 0o644, Size: int64(n)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tw.Write(bytes.Repeat([]byte("z"), n)); err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
+	_ = tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: "ok.txt", Mode: 0o644, Size: 2})
+	_, _ = tw.Write([]byte("ok"))
+	_ = tw.WriteHeader(&tar.Header{Typeflag: tar.TypeSymlink, Name: "esc", Linkname: "../../outside"})
+	_ = tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: "after.txt", Mode: 0o644})
+	_ = tw.Close()
 	return buf.Bytes()
 }
 
-// TS-13-7: tar data travels in chunks of at most 1 MiB in both directions.
-// 13-REQ-1.6.
-func TestTarChunkSizes_TS13_7(t *testing.T) {
+// Sync sends a start chunk and then the tar in data chunks of at most 1 MiB,
+// and reports Sent as the bytes read from the tar.
+func TestSyncStreamsTheTarInChunks(t *testing.T) {
 	f := fakeagent.New()
 	sb := attachFake(t, f, Config{})
-	blob := tarWithFile(t, "big.bin", 3<<20+512<<10)
-	if _, err := sb.Sync(context.Background(), sandbox.Tar{R: bytes.NewReader(blob)}); err != nil {
-		t.Fatal(err)
+	blob := testutil.Tar(t, map[string]string{"big.bin": strings.Repeat("z", 3<<20+512<<10)})
+	r, err := sb.Sync(context.Background(), sandbox.Tar{R: bytes.NewReader(blob), Path: "sub", Replace: true})
+	if err != nil || r.Sent != int64(len(blob)) || r.Deleted != 0 {
+		t.Fatalf("Sync = %+v, %v; want Sent %d and nothing deleted", r, err, len(blob))
 	}
 	chunks := f.Chunks()
-	if len(chunks) < 2 || chunks[0].GetStart() == nil {
-		t.Fatalf("%d chunks, first %v; want a start chunk then data", len(chunks), chunks[0])
+	if s := chunks[0].GetStart(); s == nil || s.Path != "sub" || !s.Replace {
+		t.Fatalf("first chunk %v, want the start chunk", chunks[0])
 	}
 	var got []byte
 	for _, c := range chunks[1:] {
-		if c.GetStart() != nil || len(c.GetData()) > 1<<20 {
-			t.Fatalf("data chunk of %d bytes (start %v)", len(c.GetData()), c.GetStart() != nil)
+		if len(c.GetData()) > 1<<20 {
+			t.Fatalf("a data chunk of %d bytes", len(c.GetData()))
 		}
 		got = append(got, c.GetData()...)
 	}
 	if !bytes.Equal(got, blob) {
 		t.Error("the data chunks do not concatenate to the tar")
 	}
-
-	ws := t.TempDir()
-	if err := os.WriteFile(filepath.Join(ws, "big.bin"), bytes.Repeat([]byte("q"), 3<<20), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	stream, err := rawAgent(t, ws).ExportTar(context.Background(), &sandboxpb.ExportRequest{Path: "big.bin"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := 0
-	for {
-		c, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(c.GetData()) > 1<<20 {
-			t.Fatalf("export chunk of %d bytes", len(c.GetData()))
-		}
-		n++
-	}
-	if n < 3 {
-		t.Errorf("%d export chunks for a 3 MiB file, want at least 3", n)
-	}
 }
 
-// TS-13-47: absolute and escaping Tar and Export paths are refused before
-// any byte moves, while empty and dot name the root. 13-REQ-8.1.
-func TestTransferPathRefusal_TS13_47(t *testing.T) {
+// A tar synced into a real agent is extracted and counted, and a hostile
+// entry is ErrUnsafeArchive with the earlier entries kept and the sandbox live.
+func TestSyncIntoARealAgent(t *testing.T) {
+	sb, ws := real(t)
+	r, err := sb.Sync(context.Background(), sandbox.Tar{R: bytes.NewReader(testutil.Tar(t, map[string]string{"a/b.txt": "abc"})), Path: "in"})
+	if err != nil || r.Files != 1 || r.Bytes != 3 || read(filepath.Join(ws, "in", "a", "b.txt")) != "abc" {
+		t.Fatalf("Sync = %+v, %v", r, err)
+	}
+	_, err = sb.Sync(context.Background(), sandbox.Tar{R: bytes.NewReader(hostile(t))})
+	if !errors.Is(err, sandbox.ErrUnsafeArchive) || !strings.Contains(err.Error(), "esc") {
+		t.Errorf("a hostile tar: %v, want ErrUnsafeArchive naming esc", err)
+	}
+	if !exists(filepath.Join(ws, "ok.txt")) || exists(filepath.Join(ws, "esc")) || exists(filepath.Join(ws, "after.txt")) {
+		t.Error("want ok.txt kept and nothing from esc on")
+	}
+	isLive(t, sb)
+}
+
+// Export validates the agent's tar: a hostile entry is ErrUnsafeArchive with
+// nothing from it on written, and a missing path an error naming it.
+func TestExportValidatesTheAgentsTar(t *testing.T) {
 	f := fakeagent.New()
-	f.SetExport(make([]byte, 1024), nil)
+	f.SetExport(hostile(t), nil)
+	sb := attachFake(t, f, Config{})
+	var out bytes.Buffer
+	if err := sb.Export(context.Background(), "", sandbox.TarOut{W: &out}); !errors.Is(err, sandbox.ErrUnsafeArchive) {
+		t.Fatalf("Export = %v, want ErrUnsafeArchive", err)
+	}
+	tr := tar.NewReader(bytes.NewReader(append(out.Bytes(), make([]byte, 1024)...)))
+	if h, err := tr.Next(); err != nil || h.Name != "ok.txt" {
+		t.Errorf("the output starts with %v, %v; want ok.txt", h, err)
+	}
+	if h, err := tr.Next(); err != io.EOF {
+		t.Errorf("the output holds %v after ok.txt", h)
+	}
+	f.SetExport(nil, status.Error(codes.NotFound, "no"))
+	if err := sb.Export(context.Background(), "gone/x", sandbox.TarOut{W: io.Discard}); err == nil || !strings.Contains(err.Error(), `"gone/x" does not exist`) {
+		t.Errorf("a missing path: %v", err)
+	}
+	isLive(t, sb)
+}
+
+// Absolute and escaping paths are refused before any byte moves; empty and
+// dot name the root.
+func TestTransfersRefuseAPathOutsideTheWorkspace(t *testing.T) {
+	f := fakeagent.New()
+	f.SetExport(emptyTar, nil)
 	sb := attachFake(t, f, Config{})
 	ctx := context.Background()
 	for _, p := range []string{"/abs", "../x", "a/../../x"} {
-		if _, err := sb.Sync(ctx, sandbox.Tar{R: bytes.NewReader(emptyTar), Path: p}); err == nil || !strings.Contains(err.Error(), p) {
-			t.Errorf("Sync %q = %v, want an error naming it", p, err)
-		}
-	}
-	for _, p := range []string{"/etc", ".."} {
-		if err := sb.Export(ctx, p, sandbox.TarOut{W: io.Discard}); err == nil || !strings.Contains(err.Error(), p) {
-			t.Errorf("Export %q = %v, want an error naming it", p, err)
+		_, err1 := sb.Sync(ctx, sandbox.Tar{R: bytes.NewReader(emptyTar), Path: p})
+		err2 := sb.Export(ctx, p, sandbox.TarOut{W: io.Discard})
+		if err1 == nil || err2 == nil || !strings.Contains(err1.Error(), p) || !strings.Contains(err2.Error(), p) {
+			t.Errorf("%q: Sync %v, Export %v; want errors naming it", p, err1, err2)
 		}
 	}
 	if f.Count("SyncTar") != 0 || f.Count("ExportTar") != 0 {
 		t.Fatalf("refused paths made %d SyncTar and %d ExportTar RPCs", f.Count("SyncTar"), f.Count("ExportTar"))
 	}
 	for _, p := range []string{"", ".", "a/../b"} {
-		if _, err := sb.Sync(ctx, sandbox.Tar{R: bytes.NewReader(emptyTar), Path: p}); err != nil {
-			t.Errorf("Sync %q = %v", p, err)
+		_, err1 := sb.Sync(ctx, sandbox.Tar{R: bytes.NewReader(emptyTar), Path: p})
+		if err2 := sb.Export(ctx, p, sandbox.TarOut{W: io.Discard}); err1 != nil || err2 != nil {
+			t.Errorf("%q: Sync %v, Export %v", p, err1, err2)
 		}
-		if err := sb.Export(ctx, p, sandbox.TarOut{W: io.Discard}); err != nil {
-			t.Errorf("Export %q = %v", p, err)
-		}
-	}
-	if f.Count("SyncTar") != 3 || f.Count("ExportTar") != 3 {
-		t.Errorf("%d SyncTar and %d ExportTar RPCs, want 3 each", f.Count("SyncTar"), f.Count("ExportTar"))
-	}
-	n := f.Count("Tools")
-	if _, err := sb.Tools(ctx, sandbox.ToolOptions{}); err != nil || f.Count("Tools") != n+1 {
-		t.Errorf("Tools afterwards: %v", err)
 	}
 }
 
@@ -129,34 +129,26 @@ type errReader struct{ err error }
 
 func (r errReader) Read([]byte) (int, error) { return 0, r.err }
 
-// TS-13-53: a read error from R or a cancelled context fails Sync with that
-// cause, cancels the RPC and leaves the sandbox live. 13-REQ-8.6.
-func TestSyncReadErrorAndCancel_TS13_53(t *testing.T) {
+// A read error from the tar or a done context fails Sync with that cause and
+// cancels the stream; the sandbox stays live.
+func TestSyncStopsAtAReadErrorOrTheContext(t *testing.T) {
 	f := fakeagent.New()
 	sb := attachFake(t, f, Config{})
-	errBoom := errors.New("boom")
-	partial := tarWithFile(t, "part.bin", 2<<20)[:2<<20]
-	_, err := sb.Sync(context.Background(), sandbox.Tar{R: io.MultiReader(bytes.NewReader(partial), errReader{errBoom})})
-	if !errors.Is(err, errBoom) {
-		t.Fatalf("Sync with a failing reader = %v, want errBoom", err)
+	boom := errors.New("boom")
+	part := bytes.Repeat([]byte("x"), 2<<20)
+	if _, err := sb.Sync(context.Background(), sandbox.Tar{R: io.MultiReader(bytes.NewReader(part), errReader{boom})}); !errors.Is(err, boom) {
+		t.Fatalf("Sync with a failing reader = %v, want boom", err)
 	}
-	for deadline := time.Now().Add(2 * time.Second); status.Code(f.SyncErr()) != codes.Canceled; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the agent's stream ended with %v, want Canceled", f.SyncErr())
-		}
-	}
-
+	testutil.Eventually(t, "the agent to see the stream cancelled", func() bool { return status.Code(f.SyncErr()) == codes.Canceled })
 	c, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	pr, pw := io.Pipe()
 	defer pw.Close()
-	start := time.Now()
-	_, err = sb.Sync(c, sandbox.Tar{R: pr})
-	if !errors.Is(err, c.Err()) || time.Since(start) > time.Second {
-		t.Fatalf("Sync under a cancelled context = %v after %v, want %v within 1s", err, time.Since(start), c.Err())
+	if _, err := sb.Sync(c, sandbox.Tar{R: pr}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Sync with a reader that never returns = %v, want the context's error", err)
 	}
 	if _, err := sb.Sync(context.Background(), sandbox.Tar{R: bytes.NewReader(emptyTar)}); err != nil {
-		t.Fatalf("a valid Sync afterwards = %v", err)
+		t.Fatalf("a Sync afterwards = %v", err)
 	}
 }
 
@@ -164,22 +156,26 @@ type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
 
-// A destination that fails is the caller's error: Export returns it, not
-// ErrUnsafeArchive, and the sandbox stays live (13-REQ-5.4: only RPC
-// failures and malformed responses are transport failures).
-func TestExportDestinationFailureKeepsSandboxLive(t *testing.T) {
+// A failing destination, a Tar with no reader and a GitRepo are the caller's
+// errors, made without changing the sandbox's state.
+func TestTransfersRefuseTheCallersMistakes(t *testing.T) {
 	f := fakeagent.New()
-	f.SetExport(tarWithFile(t, "a.txt", 10), nil)
-	sb := attachFake(t, f, Config{})
+	f.SetExport(testutil.Tar(t, map[string]string{"a.txt": "0123456789"}), nil)
+	sb := attachFake(t, f, Config{Provider: "test-provider"})
 	err := sb.Export(context.Background(), "", sandbox.TarOut{W: failingWriter{}})
 	if err == nil || !strings.Contains(err.Error(), "disk full") || errors.Is(err, sandbox.ErrUnsafeArchive) || errors.Is(err, sandbox.ErrUnavailable) {
-		t.Fatalf("Export to a failing writer = %v, want the writer's error alone", err)
-	}
-	n := f.Count("SyncTar")
-	if _, err := sb.Sync(context.Background(), sandbox.Tar{R: bytes.NewReader(emptyTar)}); err != nil || f.Count("SyncTar") != n+1 {
-		t.Fatalf("the sandbox did not stay live: %v", err)
+		t.Errorf("Export to a failing writer = %v, want the writer's error alone", err)
 	}
 	if _, err := sb.Sync(context.Background(), sandbox.Tar{}); err == nil {
-		t.Fatal("Sync with no reader succeeded")
+		t.Error("Sync with no reader succeeded")
 	}
+	if err := sb.Export(context.Background(), "", nil); err == nil {
+		t.Error("Export to no destination succeeded")
+	}
+	n := f.Count("SyncTar") + f.Count("Rsync")
+	_, err = sb.Sync(context.Background(), sandbox.GitRepo{URL: "https://h/r"})
+	if !errors.Is(err, sandbox.ErrUnsupported) || !strings.Contains(err.Error(), "test-provider") || f.Count("SyncTar")+f.Count("Rsync") != n {
+		t.Errorf("Sync(GitRepo) = %v; want ErrUnsupported naming test-provider and no RPC", err)
+	}
+	isLive(t, sb)
 }

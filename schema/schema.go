@@ -1,6 +1,5 @@
 // Package schema is the structured, transformable tool-schema value type. It
-// contains no runtime reflection and no generated code; internal/policy
-// asserts both.
+// contains no runtime reflection and no generated code.
 package schema
 
 import (

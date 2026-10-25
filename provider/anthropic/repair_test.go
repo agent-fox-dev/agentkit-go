@@ -1,32 +1,17 @@
-package anthropic
+package anthropic_test
 
 import (
-	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/provider/anthropic"
 )
 
-func target() Target {
-	return Target{Model: "m1"}
-}
-
-func tu(t *testing.T, id, name string) core.ToolUseBlock {
-	t.Helper()
-	b, err := core.NewToolUse(id, name, json.RawMessage(`{"a":1}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
-}
-
-func sameModelAssistant(blocks ...core.ContentBlock) core.AssistantMessage {
-	return core.AssistantMessage{
-		Content: core.Content(blocks), StopReason: core.StopReasonToolUse,
-		Model: "m1",
-	}
-}
+// self is the target the transcripts below are repaired for; its own turns
+// are reply's, by claude-test.
+var self = anthropic.Target{Model: "claude-test", NormalizeToolCallID: anthropic.NormalizeToolCallID}
 
 func roles(ms core.Messages) string {
 	var out []string
@@ -36,441 +21,218 @@ func roles(ms core.Messages) string {
 	return strings.Join(out, ",")
 }
 
-// TestRepairRule2bDropsResultOrphanedByRule2 is the test for ruling P-1, the
-// hole in REQ-PROV-11 as written.
-//
-// Rule 2 drops the aborted assistant message — and with it the tool_use block.
-// The ToolResultMessage that answered it is a SEPARATE canonical message and
-// survives rule 2 untouched. Every provider rejects a tool result whose
-// tool_use is absent, so without rule 2b the repair pass emits an invalid
-// request on the commonest damaged transcript there is: Ctrl-C during a tool
-// batch, then resume.
-func TestRepairRule2bDropsResultOrphanedByRule2(t *testing.T) {
-	in := core.Messages{
-		core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}},
-		// An aborted turn that nonetheless got one tool result written before
-		// the process died.
-		core.AssistantMessage{
-			Content:    core.Content{tu(t, "call_1", "read")},
-			StopReason: core.StopReasonAborted,
-			Model:      "m1",
-		},
-		core.ToolResultMessage{ToolUseID: "call_1", ToolName: "read",
-			Content: core.Content{core.TextBlock{Text: "file contents"}}},
+func resultIDs(ms core.Messages) string {
+	var out []string
+	for _, m := range ms {
+		if tr, ok := m.(core.ToolResultMessage); ok {
+			out = append(out, tr.ToolUseID)
+		}
 	}
-
-	out, rep := RepairTranscript(in, target())
-
-	if rep.DroppedFailedTurns != 1 {
-		t.Fatalf("DroppedFailedTurns = %d, want 1", rep.DroppedFailedTurns)
-	}
-	if rep.DroppedOrphanResults != 1 {
-		t.Fatalf("DroppedOrphanResults = %d, want 1.\n"+
-			"Rule 2 dropped the assistant turn carrying tool_use call_1, but its result "+
-			"survived. Rule 2b (ruling P-1) must drop it, or the request 400s.", rep.DroppedOrphanResults)
-	}
-	if got := roles(out); got != "user" {
-		t.Fatalf("roles = %q, want %q — the orphaned result is still in the view", got, "user")
-	}
+	return strings.Join(out, ",")
 }
 
-// TestRepairInsertsSyntheticResultForUnansweredToolUse: rule 6. An orphaned
-// tool_use is what every cancellation, crashed tool and killed process leaves
-// behind.
-func TestRepairInsertsSyntheticResultForUnansweredToolUse(t *testing.T) {
-	in := core.Messages{
-		core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}},
-		sameModelAssistant(tu(t, "call_1", "read"), tu(t, "call_2", "write")),
-		core.ToolResultMessage{ToolUseID: "call_1", ToolName: "read"},
-		// call_2 never got a result: the process died mid-batch.
-	}
-	out, rep := RepairTranscript(in, target())
-	if rep.SyntheticResults != 1 {
-		t.Fatalf("SyntheticResults = %d, want 1", rep.SyntheticResults)
-	}
-	var found bool
+// checkSendable fails unless every tool_use in out is answered and every
+// result answers a tool_use: the shape every provider accepts.
+func checkSendable(t *testing.T, in, out core.Messages) {
+	t.Helper()
+	live, answered := map[string]bool{}, map[string]bool{}
 	for _, m := range out {
-		if tr, ok := m.(core.ToolResultMessage); ok && tr.ToolUseID == "call_2" {
-			found = true
-			if !tr.IsError {
-				t.Error("a synthetic result must be an error result")
-			}
-			if tr.Content.Text() != SyntheticResultText {
-				t.Errorf("synthetic text = %q, want %q", tr.Content.Text(), SyntheticResultText)
+		if am, ok := m.(core.AssistantMessage); ok {
+			for _, tu := range core.ExtractToolUse(&am) {
+				live[tu.ID] = true
 			}
 		}
 	}
-	if !found {
-		t.Fatal("no synthetic result was inserted for the unanswered tool_use")
-	}
-}
-
-// TestRepairNeverMutatesInput: the pass produces a VIEW. Mutating history
-// would corrupt the durable record for the sake of one request.
-func TestRepairNeverMutatesInput(t *testing.T) {
-	orig := sameModelAssistant(tu(t, "call_1", "read"))
-	orig.Content = append(orig.Content, core.ThinkingBlock{Thinking: "hmm"}) // unsigned
-	in := core.Messages{orig}
-
-	before := len(orig.Content)
-	beforeKind := orig.Content[1].BlockType()
-
-	_, rep := RepairTranscript(in, target())
-	if rep.DowngradedThinking != 1 {
-		t.Fatalf("expected the unsigned thinking block to be downgraded, got %+v", rep)
-	}
-	am := in[0].(core.AssistantMessage)
-	if len(am.Content) != before || am.Content[1].BlockType() != beforeKind {
-		t.Fatal("RepairTranscript mutated its input; it must produce a view")
-	}
-}
-
-// TestUnsignedThinkingIsDemotedEvenForSameModel: rule 4 is not conditional on
-// cross-model replay. An unsigned block is the residue of an aborted stream
-// and is rejected regardless of who produced it.
-func TestUnsignedThinkingIsDemotedEvenForSameModel(t *testing.T) {
-	in := core.Messages{sameModelAssistant(core.ThinkingBlock{Thinking: "partial"})}
-	out, rep := RepairTranscript(in, target())
-	if rep.DowngradedThinking != 1 {
-		t.Fatalf("DowngradedThinking = %d, want 1", rep.DowngradedThinking)
-	}
-	am := out[0].(core.AssistantMessage)
-	if am.Content[0].BlockType() != core.BlockText {
-		t.Fatalf("block type = %q, want text", am.Content[0].BlockType())
-	}
-}
-
-// TestCrossModelReplayStripsOpaqueMaterial: rule 3. Replaying another vendor's
-// opaque signature is a hard 400, and this is what makes mid-session model
-// switching and per-agent model selection safe.
-func TestCrossModelReplayStripsOpaqueMaterial(t *testing.T) {
-	other := core.AssistantMessage{
-		Content: core.Content{
-			core.ThinkingBlock{Thinking: "reasoned", Signature: "sig-from-another-vendor"},
-			core.ThinkingBlock{Thinking: "hidden", Redacted: true, Signature: "s"},
-			func() core.ToolUseBlock { b := tu(t, "call_1", "read"); b.ThoughtSignature = "ts"; return b }(),
-		},
-		StopReason: core.StopReasonToolUse,
-		Model:      "other-model",
-	}
-	in := core.Messages{other, core.ToolResultMessage{ToolUseID: "call_1", ToolName: "read"}}
-
-	out, rep := RepairTranscript(in, target())
-	if rep.DowngradedThinking != 1 {
-		t.Errorf("DowngradedThinking = %d, want 1 (the signed block becomes text)", rep.DowngradedThinking)
-	}
-	if rep.DroppedRedacted != 1 {
-		t.Errorf("DroppedRedacted = %d, want 1", rep.DroppedRedacted)
-	}
-	if rep.StrippedSignatures != 1 {
-		t.Errorf("StrippedSignatures = %d, want 1", rep.StrippedSignatures)
-	}
-
-	am := out[0].(core.AssistantMessage)
-	for _, b := range am.Content {
-		if tb, ok := b.(core.ThinkingBlock); ok {
-			t.Fatalf("a thinking block survived cross-model replay: %+v", tb)
-		}
-		if ub, ok := b.(core.ToolUseBlock); ok && ub.ThoughtSignature != "" {
-			t.Fatal("thought_signature survived cross-model replay")
-		}
-	}
-}
-
-// TestSameModelReplayKeepsSignedThinking is the negative control: without it,
-// an implementation that simply strips everything always would pass the test
-// above and silently discard reasoning it was entitled to replay.
-func TestSameModelReplayKeepsSignedThinking(t *testing.T) {
-	in := core.Messages{sameModelAssistant(
-		core.ThinkingBlock{Thinking: "reasoned", Signature: "sig"},
-	)}
-	out, rep := RepairTranscript(in, target())
-	if rep.DowngradedThinking != 0 {
-		t.Fatalf("a signed same-model thinking block must be replayed verbatim, got %+v", rep)
-	}
-	am := out[0].(core.AssistantMessage)
-	tb, ok := am.Content[0].(core.ThinkingBlock)
-	if !ok || tb.Signature != "sig" {
-		t.Fatalf("signed thinking block was not preserved: %+v", am.Content[0])
-	}
-}
-
-// TestToolCallIDRewriteAppliesToResultsToo: rule 5's mapping must reach the
-// matching results, or the rewrite orphans every one of them.
-func TestToolCallIDRewriteAppliesToResultsToo(t *testing.T) {
-	tgt := target()
-	tgt.Model = "other" // force cross-model
-	tgt.NormalizeToolCallID = func(s string) string {
-		return strings.Map(func(r rune) rune {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
-				return r
-			}
-			return '_'
-		}, s)
-	}
-	in := core.Messages{
-		sameModelAssistant(tu(t, "call:1", "read")),
-		core.ToolResultMessage{ToolUseID: "call:1", ToolName: "read"},
-	}
-	out, rep := RepairTranscript(in, tgt)
-	if rep.RewrittenIDs != 1 {
-		t.Fatalf("RewrittenIDs = %d, want 1", rep.RewrittenIDs)
-	}
-	am := out[0].(core.AssistantMessage)
-	newID := am.Content[0].(core.ToolUseBlock).ID
-	if newID != "call_1" {
-		t.Fatalf("rewritten id = %q, want %q", newID, "call_1")
-	}
-	tr := out[1].(core.ToolResultMessage)
-	if tr.ToolUseID != newID {
-		t.Fatalf("result id = %q, want %q: the mapping did not reach the result, "+
-			"which orphans it", tr.ToolUseID, newID)
-	}
-	if rep.SyntheticResults != 0 {
-		t.Fatal("rule 6 invented a result for a call that already had one: rule 5 must " +
-			"run before rule 6 (ruling P-26)")
-	}
-}
-
-// TestIDRewriteCollisionsGetDistinctIDs: two distinct calls must not collapse
-// onto one id, which would make their results ambiguous.
-func TestIDRewriteCollisionsGetDistinctIDs(t *testing.T) {
-	tgt := target()
-	tgt.Model = "other"
-	tgt.NormalizeToolCallID = func(string) string { return "same" } // pathological
-	in := core.Messages{sameModelAssistant(tu(t, "a", "read"), tu(t, "b", "read"))}
-	out, _ := RepairTranscript(in, tgt)
-	am := out[0].(core.AssistantMessage)
-	id0 := am.Content[0].(core.ToolUseBlock).ID
-	id1 := am.Content[1].(core.ToolUseBlock).ID
-	if id0 == id1 {
-		t.Fatalf("two calls collapsed onto id %q; their results would be ambiguous", id0)
-	}
-}
-
-// TestRepairIsIdempotent: running the pass on its own output must change
-// nothing further. A pass that keeps finding work has a rule that fights
-// another one.
-func TestRepairIsIdempotent(t *testing.T) {
-	in := core.Messages{
-		core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}},
-		core.AssistantMessage{
-			Content:    core.Content{tu(t, "call_1", "read"), core.ThinkingBlock{Thinking: "x"}},
-			StopReason: core.StopReasonToolUse, Model: "m1",
-		},
-	}
-	once, rep1 := RepairTranscript(in, target())
-	if !rep1.Changed() {
-		t.Fatal("expected the first pass to change something")
-	}
-	twice, rep2 := RepairTranscript(once, target())
-	if rep2.Changed() {
-		t.Fatalf("second pass still made changes (%s): the rules are not idempotent", rep2)
-	}
-	if roles(once) != roles(twice) {
-		t.Fatalf("roles differ between passes: %q vs %q", roles(once), roles(twice))
-	}
-}
-
-// TestEveryToolUseIsAnsweredAfterRepair is the property that actually matters,
-// asserted over a set of damaged transcripts. Whatever the damage, the output
-// must be sendable: every tool_use answered, and no result left orphaned.
-func TestEveryToolUseIsAnsweredAfterRepair(t *testing.T) {
-	cases := map[string]core.Messages{
-		"aborted mid-batch": {
-			sameModelAssistant(tu(t, "a", "x"), tu(t, "b", "y")),
-			core.ToolResultMessage{ToolUseID: "a", ToolName: "x"},
-		},
-		"aborted turn with a surviving result": {
-			core.AssistantMessage{Content: core.Content{tu(t, "a", "x")},
-				StopReason: core.StopReasonAborted, Model: "m1"},
-			core.ToolResultMessage{ToolUseID: "a", ToolName: "x"},
-		},
-		"error turn followed by a fresh user message": {
-			core.AssistantMessage{Content: core.Content{tu(t, "a", "x")},
-				StopReason: core.StopReasonError, Model: "m1"},
-			core.UserMessage{Content: core.Content{core.TextBlock{Text: "try again"}}},
-		},
-		"result with no call at all": {
-			core.ToolResultMessage{ToolUseID: "ghost", ToolName: "x"},
-		},
-	}
-	for name, in := range cases {
-		t.Run(name, func(t *testing.T) {
-			out, _ := RepairTranscript(in, target())
-			live := map[string]bool{}
-			for _, m := range out {
-				if am, ok := m.(core.AssistantMessage); ok {
-					for _, b := range am.Content {
-						if ub, ok := b.(core.ToolUseBlock); ok {
-							live[ub.ID] = true
-						}
-					}
-				}
-			}
-			answered := map[string]bool{}
-			for _, m := range out {
-				if tr, ok := m.(core.ToolResultMessage); ok {
-					if !live[tr.ToolUseID] {
-						t.Errorf("orphaned result %q survived repair", tr.ToolUseID)
-					}
-					answered[tr.ToolUseID] = true
-				}
-			}
-			for id := range live {
-				if !answered[id] {
-					t.Errorf("tool_use %q left unanswered after repair", id)
-				}
-			}
-		})
-	}
-}
-
-// FuzzRepairAlwaysSendable asserts the property over arbitrary structures: the
-// pass never panics, and its output always satisfies the sendability
-// invariant.
-func FuzzRepairAlwaysSendable(f *testing.F) {
-	f.Add(uint16(0x0000))
-	f.Add(uint16(0xFFFF))
-	f.Add(uint16(0xA5A5))
-	f.Fuzz(func(t *testing.T, shape uint16) {
-		// Build a transcript from the bits, so the fuzzer explores orderings
-		// rather than JSON syntax.
-		var in core.Messages
-		for i := 0; i < 8; i++ {
-			switch (shape >> (i * 2)) & 0x3 {
-			case 0:
-				in = append(in, core.UserMessage{Content: core.Content{core.TextBlock{Text: "u"}}})
-			case 1:
-				b, _ := core.NewToolUse("id"+string(rune('a'+i)), "tool", json.RawMessage(`{}`))
-				in = append(in, core.AssistantMessage{Content: core.Content{b},
-					StopReason: core.StopReasonToolUse, Model: "m1"})
-			case 2:
-				in = append(in, core.ToolResultMessage{ToolUseID: "id" + string(rune('a'+i)), ToolName: "tool"})
-			case 3:
-				in = append(in, core.AssistantMessage{Content: core.Content{core.TextBlock{Text: "partial"}},
-					StopReason: core.StopReasonAborted, Model: "m1"})
-			}
-		}
-		out, _ := RepairTranscript(in, target())
-
-		live := map[string]bool{}
-		for _, m := range out {
-			if am, ok := m.(core.AssistantMessage); ok {
-				for _, b := range am.Content {
-					if ub, ok := b.(core.ToolUseBlock); ok {
-						live[ub.ID] = true
-					}
-				}
-			}
-		}
-		answered := map[string]bool{}
-		for _, m := range out {
-			if tr, ok := m.(core.ToolResultMessage); ok {
-				if !live[tr.ToolUseID] {
-					t.Fatalf("orphaned result %q survived repair of %v", tr.ToolUseID, roles(in))
-				}
-				answered[tr.ToolUseID] = true
-			}
-		}
-		for id := range live {
-			if !answered[id] {
-				t.Fatalf("tool_use %q unanswered after repair of %v", id, roles(in))
-			}
-		}
-	})
-}
-
-// TestSameModelToolCallIDsAreNotRewritten is REQ-PROV-11 rule 5 as written:
-// "when not same_model". An id the target itself issued is already in its
-// own format; rewriting it renames a call the model remembers making, for a
-// prompt-cache miss and a confused replay.
-func TestSameModelToolCallIDsAreNotRewritten(t *testing.T) {
-	tgt := target()
-	tgt.NormalizeToolCallID = func(s string) string { return strings.ReplaceAll(s, ":", "_") }
-	in := core.Messages{
-		sameModelAssistant(tu(t, "call:1", "read")),
-		core.ToolResultMessage{ToolUseID: "call:1", ToolName: "read"},
-	}
-	out, rep := RepairTranscript(in, tgt)
-	if rep.RewrittenIDs != 0 {
-		t.Fatalf("RewrittenIDs = %d, want 0 for a same-model transcript", rep.RewrittenIDs)
-	}
-	if id := out[0].(core.AssistantMessage).Content[0].(core.ToolUseBlock).ID; id != "call:1" {
-		t.Fatalf("id = %q, want the target's own id left alone", id)
-	}
-	if id := out[1].(core.ToolResultMessage).ToolUseID; id != "call:1" {
-		t.Fatalf("result id = %q, want untouched", id)
-	}
-
-	// The same transcript from ANOTHER model is rewritten, and its rewrite
-	// cannot collide with an id the target issued itself.
-	foreign := core.AssistantMessage{
-		Content: core.Content{tu(t, "call:1", "read")}, StopReason: core.StopReasonToolUse,
-		Model: "other",
-	}
-	mixed := core.Messages{
-		sameModelAssistant(tu(t, "call_1", "read")),
-		core.ToolResultMessage{ToolUseID: "call_1", ToolName: "read"},
-		foreign,
-		core.ToolResultMessage{ToolUseID: "call:1", ToolName: "read"},
-	}
-	out, rep = RepairTranscript(mixed, tgt)
-	if rep.RewrittenIDs != 1 {
-		t.Fatalf("RewrittenIDs = %d, want 1 (the foreign id only)", rep.RewrittenIDs)
-	}
-	native := out[0].(core.AssistantMessage).Content[0].(core.ToolUseBlock).ID
-	rewritten := out[2].(core.AssistantMessage).Content[0].(core.ToolUseBlock).ID
-	if native != "call_1" || rewritten == native || rewritten == "call:1" {
-		t.Fatalf("ids = %q / %q: the foreign id must be rewritten to something other than the native one", native, rewritten)
-	}
-	if out[3].(core.ToolResultMessage).ToolUseID != rewritten {
-		t.Fatal("the foreign result did not follow its call's rewrite")
-	}
-}
-
-// Issue #75 §2: Ollama and Gemini pair results with calls BY POSITION, so a
-// synthetic result for a middle call must sit in that call's position, not
-// ahead of the real results. For [c1,c2,c3] with results [r1,r3] the
-// repaired order is r1, synth(c2), r3.
-func TestSyntheticResultsTakeTheirCallsPosition(t *testing.T) {
-	in := core.Messages{
-		core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}},
-		sameModelAssistant(tu(t, "c1", "read"), tu(t, "c2", "read"), tu(t, "c3", "read")),
-		core.ToolResultMessage{ToolUseID: "c1", ToolName: "read", Content: core.Content{core.TextBlock{Text: "r1"}}},
-		core.ToolResultMessage{ToolUseID: "c3", ToolName: "read", Content: core.Content{core.TextBlock{Text: "r3"}}},
-		core.UserMessage{Content: core.Content{core.TextBlock{Text: "next"}}},
-	}
-	out, rep := RepairTranscript(in, target())
-	if rep.SyntheticResults != 1 {
-		t.Fatalf("SyntheticResults = %d, want 1", rep.SyntheticResults)
-	}
-	var ids []string
 	for _, m := range out {
 		if tr, ok := m.(core.ToolResultMessage); ok {
-			ids = append(ids, tr.ToolUseID)
+			if !live[tr.ToolUseID] {
+				t.Errorf("orphaned result %q survived the repair of %s", tr.ToolUseID, roles(in))
+			}
+			answered[tr.ToolUseID] = true
 		}
 	}
-	if strings.Join(ids, ",") != "c1,c2,c3" {
-		t.Fatalf("results in order %v, want c1,c2,c3: a positional wire would pair c1 with the synthetic", ids)
-	}
-	if roles(out) != "user,assistant,tool_result,tool_result,tool_result,user" {
-		t.Fatalf("roles = %s", roles(out))
+	for id := range live {
+		if !answered[id] {
+			t.Errorf("tool_use %q unanswered after the repair of %s", id, roles(in))
+		}
 	}
 }
 
-// A turn whose results are all present keeps them in the order they were
-// recorded: the repair pass reorders only a turn it has to complete, so no
-// request body that needed no repair changes.
-func TestCompleteTurnsKeepTheirResultOrder(t *testing.T) {
-	in := core.Messages{
-		core.UserMessage{Content: core.Content{core.TextBlock{Text: "hi"}}},
-		sameModelAssistant(tu(t, "c1", "read"), tu(t, "c2", "read")),
-		core.ToolResultMessage{ToolUseID: "c2", ToolName: "read"},
-		core.ToolResultMessage{ToolUseID: "c1", ToolName: "read"},
+// A failed or aborted turn is dropped, and so is every result it leaves
+// without a call: the commonest damaged transcript is Ctrl-C during a tool
+// batch, then resume.
+func TestRepairDropsFailedTurnsAndTheResultsTheyOrphan(t *testing.T) {
+	aborted := reply(toolUse("c1", "read", `{}`))
+	aborted.StopReason = core.StopReasonAborted
+	errored := reply(core.TextBlock{Text: "half"})
+	errored.StopReason = core.StopReasonError
+	in := core.Messages{user("hi"), aborted, result("c1", "contents"), errored, result("ghost", "x"), user("again")}
+	out, rep := anthropic.RepairTranscript(in, self)
+	if roles(out) != "user,user" || rep.DroppedFailedTurns != 2 || rep.DroppedOrphanResults != 2 {
+		t.Fatalf("roles %s, report %+v", roles(out), rep)
 	}
-	out, _ := RepairTranscript(in, target())
-	if a, b := out[2].(core.ToolResultMessage).ToolUseID, out[3].(core.ToolResultMessage).ToolUseID; a != "c2" || b != "c1" {
-		t.Fatalf("a complete turn was reordered to %s,%s", a, b)
+	checkSendable(t, in, out)
+}
+
+// A call nothing answered gets a synthetic error result, in its call's
+// position among the turn's results, since some wires pair by position; a
+// complete turn keeps the order its results were recorded in.
+func TestRepairAnswersEveryCallInItsPosition(t *testing.T) {
+	calls := reply(toolUse("c1", "read", `{}`), toolUse("c2", "read", `{}`), toolUse("c3", "read", `{}`))
+	cases := []struct {
+		name       string
+		in         core.Messages
+		ids, roles string
+		synthetic  int
+	}{
+		{"a middle call unanswered", core.Messages{user("hi"), calls, result("c3", "r3"), result("c1", "r1"), user("next")},
+			"c1,c2,c3", "user,assistant,tool_result,tool_result,tool_result,user", 1},
+		{"a complete turn out of order", core.Messages{user("hi"), calls, result("c3", "r3"), result("c2", "r2"), result("c1", "r1")},
+			"c3,c2,c1", "user,assistant,tool_result,tool_result,tool_result", 0},
+		{"a call answered later in the transcript", core.Messages{user("hi"), calls, result("c1", "r1"), user("wait"),
+			result("c2", "r2"), result("c3", "r3")}, "c1,c2,c3", "user,assistant,tool_result,user,tool_result,tool_result", 0},
+		{"a turn cut off at the end", core.Messages{user("hi"), calls}, "c1,c2,c3", "user,assistant,tool_result,tool_result,tool_result", 3},
 	}
+	for _, c := range cases {
+		out, rep := anthropic.RepairTranscript(c.in, self)
+		if resultIDs(out) != c.ids || roles(out) != c.roles || rep.SyntheticResults != c.synthetic {
+			t.Errorf("%s: results %s, roles %s, %d synthetic", c.name, resultIDs(out), roles(out), rep.SyntheticResults)
+		}
+		for _, m := range out {
+			if tr, ok := m.(core.ToolResultMessage); ok && strings.HasPrefix(tr.Content.Text(), "No result") &&
+				(!tr.IsError || tr.Content.Text() != anthropic.SyntheticResultText || tr.ToolName != "read") {
+				t.Errorf("%s: synthetic result = %+v", c.name, tr)
+			}
+		}
+	}
+}
+
+// Signed thinking is replayed only to the model that signed it; an unsigned
+// block, another model's thinking and its thought signatures cannot be, and
+// become text, or nothing when there is no text to keep.
+func TestRepairKeepsThinkingOnlyWhereItsSignatureIsValid(t *testing.T) {
+	signed := core.ThinkingBlock{Thinking: "reasoned", Signature: "sig"}
+	redacted := core.ThinkingBlock{Redacted: true, Signature: "opaque"}
+	sigCall := toolUse("c1", "read", `{}`)
+	sigCall.ThoughtSignature = "ts"
+	for _, c := range []struct {
+		name   string
+		model  string
+		blocks core.Content
+		want   core.Content
+		report anthropic.RepairReport
+	}{
+		{"own signed thinking", "claude-test", core.Content{signed, redacted}, core.Content{signed, redacted}, anthropic.RepairReport{}},
+		{"own unsigned thinking", "claude-test", core.Content{core.ThinkingBlock{Thinking: "partial"}, core.ThinkingBlock{}},
+			core.Content{core.TextBlock{Text: "partial"}}, anthropic.RepairReport{DowngradedThinking: 2}},
+		{"another model's", "gpt-x", core.Content{signed, redacted, core.TextBlock{Text: "t"}},
+			core.Content{core.TextBlock{Text: "reasoned"}, core.TextBlock{Text: "t"}},
+			anthropic.RepairReport{DowngradedThinking: 1, DroppedRedacted: 1}},
+		{"another model's thought signature", "gpt-x", core.Content{sigCall}, core.Content{toolUse("c1", "read", `{}`)},
+			anthropic.RepairReport{StrippedSignatures: 1}},
+		{"own thought signature", "claude-test", core.Content{sigCall}, core.Content{sigCall}, anthropic.RepairReport{}},
+	} {
+		am := core.AssistantMessage{Model: c.model, Content: c.blocks, StopReason: core.StopReasonStop}
+		in := core.Messages{am}
+		if len(core.ExtractToolUse(&am)) > 0 {
+			in = append(in, result("c1", "ok"))
+		}
+		out, rep := anthropic.RepairTranscript(in, anthropic.Target{Model: "claude-test"})
+		if got := out[0].(core.AssistantMessage).Content; !reflect.DeepEqual(got, c.want) || rep != c.report {
+			t.Errorf("%s: content %#v, report %+v; want %#v, %+v", c.name, got, rep, c.want, c.report)
+		}
+	}
+}
+
+// Another model's call ids are rewritten into this API's shape, and its
+// results and any synthetic answer follow the rewrite; the target's own ids
+// are left alone, and no two calls ever share an id.
+func TestRepairRewritesOnlyAnotherModelsCallIDs(t *testing.T) {
+	foreign := func(ids ...string) core.AssistantMessage {
+		am := core.AssistantMessage{Model: "gpt-x", StopReason: core.StopReasonToolUse}
+		for _, id := range ids {
+			am.Content = append(am.Content, core.ToolUseBlock{ID: id, Name: "read", Input: []byte(`{}`)})
+		}
+		return am
+	}
+	long := strings.Repeat("x", 64)
+	cases := []struct {
+		name      string
+		in        core.Messages
+		ids       string // every tool_use id, then every result id
+		rewritten int
+	}{
+		{"own ids", core.Messages{reply(toolUse("call:1", "read", `{}`)), result("call:1", "r")}, "call:1 | call:1", 0},
+		{"foreign ids and their results", core.Messages{foreign("call:1"), result("call:1", "r")}, "call_1 | call_1", 1},
+		{"a synthetic answer carries the rewrite", core.Messages{foreign("call:1")}, "call_1 | call_1", 1},
+		{"a rewrite never lands on an own id", core.Messages{reply(toolUse("call_1", "read", `{}`)), result("call_1", "r"),
+			foreign("call:1"), result("call:1", "r")}, "call_1,call_1_2 | call_1,call_1_2", 1},
+		{"two foreign ids that normalize alike", core.Messages{foreign("a:b", "a.b"), result("a:b", "r"), result("a.b", "r")},
+			"a_b,a_b_2 | a_b,a_b_2", 2},
+		{"a suffix stays within 64 bytes", core.Messages{foreign(long+":", long+".")},
+			long + "," + long[:62] + "_2 | " + long + "," + long[:62] + "_2", 2},
+	}
+	for _, c := range cases {
+		out, rep := anthropic.RepairTranscript(c.in, self)
+		var calls []string
+		for _, m := range out {
+			if am, ok := m.(core.AssistantMessage); ok {
+				for _, tu := range core.ExtractToolUse(&am) {
+					calls = append(calls, tu.ID)
+				}
+			}
+		}
+		if got := strings.Join(calls, ",") + " | " + resultIDs(out); got != c.ids || rep.RewrittenIDs != c.rewritten {
+			t.Errorf("%s: ids %s, %d rewritten; want %s, %d", c.name, got, rep.RewrittenIDs, c.ids, c.rewritten)
+		}
+	}
+}
+
+// The repair is a view: its input is untouched, and repairing its output
+// again changes nothing.
+func TestRepairIsAViewAndAFixedPoint(t *testing.T) {
+	build := func() core.Messages {
+		return core.Messages{user("hi"),
+			core.AssistantMessage{Model: "gpt-x", StopReason: core.StopReasonToolUse,
+				Content: core.Content{core.ThinkingBlock{Thinking: "x", Signature: "s"}, core.ToolUseBlock{ID: "a:1", Name: "t", Input: []byte(`{}`)}}},
+			reply(toolUse("b", "t", `{}`), core.ThinkingBlock{Thinking: "unsigned"})}
+	}
+	in := build()
+	once, rep := anthropic.RepairTranscript(in, self)
+	if !reflect.DeepEqual(in, build()) {
+		t.Fatal("RepairTranscript changed its input")
+	}
+	if want := "synthetic results inserted, 2 thinking blocks downgraded, 1 tool-call ids rewritten"; !strings.HasSuffix(rep.String(), want) {
+		t.Errorf("report = %q, want it to end %q", rep, want)
+	}
+	if again, rep2 := anthropic.RepairTranscript(once, self); rep2.Changed() || rep2.String() != "no repairs" || !reflect.DeepEqual(again, once) {
+		t.Fatalf("a second pass made changes: %s", rep2)
+	}
+}
+
+// Over every interleaving of user turns, calls, results and aborted turns the
+// fuzzer builds, the repaired transcript is sendable.
+func FuzzRepairAlwaysSendable(f *testing.F) {
+	for _, seed := range []uint16{0x0000, 0xFFFF, 0xA5A5, 0x1964, 0x2486} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, shape uint16) {
+		var in core.Messages
+		for i := range 8 {
+			id := "id" + string(rune('a'+i%4))
+			switch (shape >> (i * 2)) & 0x3 {
+			case 0:
+				in = append(in, user("u"))
+			case 1:
+				in = append(in, reply(toolUse(id, "tool", `{}`)))
+			case 2:
+				in = append(in, core.ToolResultMessage{ToolUseID: id, ToolName: "tool"})
+			case 3:
+				in = append(in, core.AssistantMessage{Content: core.Content{toolUse(id, "tool", `{}`)},
+					StopReason: core.StopReasonAborted, Model: "claude-test"})
+			}
+		}
+		out, _ := anthropic.RepairTranscript(in, self)
+		checkSendable(t, in, out)
+	})
 }

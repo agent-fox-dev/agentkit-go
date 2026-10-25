@@ -1,78 +1,41 @@
 package agentkit
 
 import (
-	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/guard"
+	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 )
 
-func shellWrapper() core.Tool {
-	shell := core.Tool{Name: "execute", Handler: noopHandler}
-	return core.Tool{Name: "code_mode", ReachableTools: []core.Tool{shell}, Handler: noopHandler}
-}
-
-// TS-07-7: Agent.ReachableTools is the closure of the policy-resolved set.
-func TestAgentReachableToolsResolvesPolicy_TS07_7(t *testing.T) {
-	sub1 := core.Tool{Name: "sub1", Handler: noopHandler}
-	sub2 := core.Tool{Name: "sub2", Handler: noopHandler}
-	wrap := core.Tool{Name: "wrap", ReachableTools: []core.Tool{sub1, sub2}, Handler: noopHandler}
-	leaf := core.Tool{Name: "leaf", Handler: noopHandler}
-	cfg := agentCfg(wrap, leaf)
-	cfg.Toolset.Policy.ExcludeTools = []string{"sub2"}
-	ag, err := New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got []string
-	for _, tl := range ag.ReachableTools() {
-		got = append(got, tl.Name)
-	}
-	if strings.Join(got, ",") != "wrap,sub1,leaf" {
-		t.Fatalf("ReachableTools = %v, want [wrap sub1 leaf]", got)
-	}
-}
-
-// TS-07-11: with no Guard, New looks through wrappers.
-func TestExecuteGuardInspectsReachableTools_TS07_11(t *testing.T) {
-	if _, err := New(agentCfg(shellWrapper())); err == nil {
-		t.Fatal("a shell tool behind a wrapper passed the guard")
-	}
-	// Deeper: the shell tool two wrappers down is still found, and the
-	// top-level wrapper is the one named.
-	outer := core.Tool{Name: "outer", ReachableTools: []core.Tool{shellWrapper()}, Handler: noopHandler}
-	if _, err := New(agentCfg(outer)); err == nil ||
-		!strings.Contains(err.Error(), `wrapper "outer" reached shell tool "execute"`) {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-// TS-07-12: the error wraps ErrUnguardedExecute and names wrapper and shell.
-func TestExecuteGuardNamesWrapperAndShell_TS07_12(t *testing.T) {
-	_, err := New(agentCfg(shellWrapper()))
-	if !errors.Is(err, core.ErrUnguardedExecute) {
-		t.Fatalf("err = %v, want ErrUnguardedExecute", err)
-	}
-	if !strings.Contains(err.Error(), `wrapper "code_mode" reached shell tool "execute"`) {
-		t.Fatalf("err = %v, want the wrapper and the shell tool named", err)
-	}
-	// A wrapper the policy reduces to nothing reaches no shell tool.
-	cfg := agentCfg(shellWrapper())
-	cfg.Toolset.Policy.ExcludeTools = []string{"execute"}
-	if _, err := New(cfg); err != nil {
-		t.Fatalf("an excluded shell tool still tripped the guard: %v", err)
-	}
-}
-
-// TS-07-13: with a Guard, a reachable shell tool is allowed.
-func TestExecuteGuardAllowsInterceptedShell_TS07_13(t *testing.T) {
-	cfg := agentCfg(shellWrapper())
-	cfg.Toolset.Guard = func(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
-		return core.BeforeToolCallDecision{}
-	}
-	if _, err := New(cfg); err != nil {
-		t.Fatalf("err = %v, want nil with an interceptor", err)
+func TestNew_RefusesAShellToolNoGuardAuthorizesBeforeAnyRequest(t *testing.T) {
+	excluded := Toolset{Tools: []core.Tool{named("code_mode", named("execute"))}, Policy: core.ToolPolicy{ExcludeTools: []string{"execute"}}}
+	for _, c := range []struct {
+		name string
+		ts   Toolset
+		want string // empty: accepted
+	}{
+		{"execute", Toolset{Tools: []core.Tool{named("execute")}}, core.ErrUnguardedExecute.Error() + ` (tool "execute")`},
+		{"run_command", Toolset{Tools: []core.Tool{named("run_command")}}, core.ErrUnguardedExecute.Error() + ` (tool "run_command")`},
+		{"behind a wrapper", Toolset{Tools: []core.Tool{named("code_mode", named("execute"))}},
+			core.ErrUnguardedExecute.Error() + ` (wrapper "code_mode" reached shell tool "execute")`},
+		{"two wrappers down", Toolset{Tools: []core.Tool{named("outer", named("code_mode", named("run_command")))}},
+			core.ErrUnguardedExecute.Error() + ` (wrapper "outer" reached shell tool "run_command")`},
+		{"with a guard", Toolset{Tools: []core.Tool{named("code_mode", named("execute"))}, Guard: guard.AllowAll}, ""},
+		{"excluded by the policy", excluded, ""},
+	} {
+		fp := faux.New()
+		a, err := New(Config{Client: fp, Model: testModel, Toolset: c.ts})
+		_, rerr := NewRunner(c.ts)
+		switch {
+		case c.want == "" && (err != nil || rerr != nil):
+			t.Errorf("%s: New = %v, NewRunner = %v; want both to accept it", c.name, err, rerr)
+		case c.want != "" && (a != nil || !errors.Is(err, core.ErrUnguardedExecute) || err.Error() != c.want || rerr == nil || rerr.Error() != c.want):
+			t.Errorf("%s: New = %v, NewRunner = %v; want %q", c.name, err, rerr, c.want)
+		}
+		if fp.Calls() != 0 {
+			t.Errorf("%s: New sent a request", c.name)
+		}
 	}
 }

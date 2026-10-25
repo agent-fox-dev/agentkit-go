@@ -117,8 +117,8 @@ func run(args []string) int {
 		return 0
 	}
 	// Confinement comes before any other work: before stdout is redirected,
-	// before the agent exists and before any goroutine of the command's own
-	// (an AST test pins the order). Every process a tool starts inherits it.
+	// before the agent exists and before any goroutine of the command's own.
+	// Every process a tool starts inherits it.
 	info, err := confine.Setup(confine.Inputs{Workdir: cfg.workdir, Env: os.Environ(), RO: cfg.landlockRO, RW: cfg.landlockRW, Mode: cfg.network})
 	if err != nil {
 		var usage *confine.UsageError

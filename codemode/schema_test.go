@@ -1,91 +1,53 @@
-package codemode_test
+package codemode
 
 import (
-	"fmt"
-	"math/rand"
-	"regexp"
-	"strings"
 	"testing"
 
-	"github.com/agent-fox-dev/agentkit-go/codemode"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
-// TS-08-10: input properties map to Starlark types, and optional ones
-// default to None, for any schema.
-func TestRenderSignatureTypes_TS08_10(t *testing.T) {
-	kinds := []struct {
-		s    func() *schema.Schema
+// A tool is declared as the function a script calls: required keyword
+// parameters before optional ones defaulting to None, each with its Starlark
+// type, the output schema as the returned dict's shape, and the descriptions
+// as a docstring that cannot be ended early.
+func TestRenderSignature(t *testing.T) {
+	obj := func(fields ...schema.Field) *schema.Schema { return schema.Object(fields...) }
+	unordered := obj(schema.Prop("z", schema.Int()))
+	unordered.Properties["a"] = schema.String()
+	for _, tc := range []struct {
+		name string
+		tool core.Tool
 		want string
 	}{
-		{func() *schema.Schema { return schema.String("a string") }, "str"},
-		{func() *schema.Schema { return schema.Int() }, "int"},
-		{func() *schema.Schema { return schema.Number() }, "float"},
-		{func() *schema.Schema { return schema.Bool() }, "bool"},
-		{func() *schema.Schema { return schema.Array(schema.String()) }, "list"},
-		{func() *schema.Schema { return schema.Object(schema.Prop("k", schema.Int())) }, "dict"},
-	}
-	r := rand.New(rand.NewSource(10))
-	for i := range 50 {
-		var fields []schema.Field
-		want := map[string]string{}
-		required := map[string]bool{}
-		for j := range 1 + r.Intn(5) {
-			k := kinds[r.Intn(len(kinds))]
-			name := fmt.Sprintf("p%d", j)
-			want[name] = k.want
-			if r.Intn(2) == 0 {
-				fields = append(fields, schema.Prop(name, k.s()))
-				required[name] = true
-			} else {
-				fields = append(fields, schema.Opt(name, k.s()))
+		{"no schemas", core.Tool{Name: "ping"}, "def ping() -> Any:\n    \"\"\"\"\"\""},
+		{"parameter types", core.Tool{Name: "f", Description: "Fetch\n a   URL.", InputSchema: obj(
+			schema.Opt("o", schema.Bool()), schema.Prop("s", schema.String("The URL")), schema.Prop("i", schema.Int()),
+			schema.Prop("n", schema.Number()), schema.Prop("l", schema.Array(schema.String())),
+			schema.Prop("lo", schema.Array(obj())), schema.Prop("d", obj()), schema.Prop("u", &schema.Schema{}),
+			schema.Prop("z", &schema.Schema{Type: schema.TypeNull}), schema.Prop("nil", nil))},
+			"def f(s: str, i: int, n: float, l: list[str], lo: list, d: dict, u: Any, z: None, nil: Any, o: bool = None) -> Any:\n" +
+				"    \"\"\"Fetch a URL.\n    s: The URL\"\"\""},
+		{"unordered properties come last, sorted", core.Tool{Name: "u", InputSchema: unordered},
+			"def u(z: int, a: str = None) -> Any:\n    \"\"\"\"\"\""},
+		{"the returned shape", core.Tool{Name: "r", OutputSchema: obj(
+			schema.Prop("status", schema.Int()), schema.Opt("binary", schema.Bool()),
+			schema.Prop("headers", obj()), schema.Prop("lines", schema.Array(schema.String())),
+			schema.Prop("items", schema.Array(obj(schema.Prop("k", schema.String())))),
+			schema.Prop("deep", obj(schema.Prop("a", obj(schema.Prop("b", obj(schema.Prop("c", schema.Int())))))))),
+		}, "def r() -> {status: int, binary: bool | None, headers: dict, lines: list[str], items: list[{k: str}], " +
+			"deep: {a: {b: dict}}}:\n    \"\"\"\"\"\""},
+		{"a union", core.Tool{Name: "o", OutputSchema: &schema.Schema{OneOf: []*schema.Schema{
+			obj(schema.Prop("a", schema.Int())), schema.String()}}}, "def o() -> {a: int} | str:\n    \"\"\"\"\"\""},
+		{"an anyOf", core.Tool{Name: "a", OutputSchema: schema.AnyOf(schema.Int(), schema.Bool())},
+			"def a() -> int | bool:\n    \"\"\"\"\"\""},
+		{"quotes in a docstring", core.Tool{Name: "q", Description: `says """hi"""`},
+			"def q() -> Any:\n    \"\"\"says \\\"\\\"\\\"hi\\\"\\\"\\\"\"\"\""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RenderSignature(tc.tool); got != tc.want {
+				t.Fatalf("got\n%s\nwant\n%s", got, tc.want)
 			}
-		}
-		tl := core.Tool{Name: fmt.Sprintf("tool_%d", i), Description: "d", InputSchema: schema.Object(fields...)}
-		sig := codemode.RenderSignature(tl)
-		head := strings.SplitN(sig, "\n", 2)[0]
-		for name, typ := range want {
-			// A list may name its item type: list[str].
-			decl := `\b` + name + `: ` + typ + `(\[[a-z]+\])?`
-			if required[name] && !regexp.MustCompile(decl+`[,)]`).MatchString(head) {
-				t.Fatalf("iteration %d: %q lacks required %s: %s", i, head, name, typ)
-			}
-			if !required[name] && !regexp.MustCompile(decl+` = None`).MatchString(head) {
-				t.Fatalf("iteration %d: %q lacks %s: %s = None", i, head, name, typ)
-			}
-		}
-		// Required parameters come before optional ones, as Python requires.
-		if idx := strings.Index(head, "= None"); idx >= 0 {
-			for name := range required {
-				if strings.Index(head, name+":") > idx {
-					t.Fatalf("iteration %d: required %s after an optional parameter: %q", i, name, head)
-				}
-			}
-		}
-	}
-}
-
-// TS-08-11: the return type is the output schema's fields, or Any.
-func TestRenderSignatureReturnType_TS08_11(t *testing.T) {
-	with := core.Tool{Name: "fetch", Description: "Fetch a URL.",
-		InputSchema: schema.Object(schema.Prop("url", schema.String("The URL"))),
-		OutputSchema: schema.Object(schema.Prop("status", schema.Int()), schema.Prop("url", schema.String()),
-			schema.Prop("body", schema.String()), schema.Opt("binary", schema.Bool()),
-			schema.Prop("headers", schema.Object()), schema.Prop("lines", schema.Array(schema.String())))}
-	sig := codemode.RenderSignature(with)
-	for _, want := range []string{"def fetch(url: str)", "status: int", "url: str", "binary: bool", "headers: dict",
-		"lines: list[str]", "Fetch a URL.", "url: The URL"} {
-		if !strings.Contains(sig, want) {
-			t.Errorf("signature lacks %q:\n%s", want, sig)
-		}
-	}
-	without := core.Tool{Name: "ping", InputSchema: schema.Object()}
-	if sig := codemode.RenderSignature(without); !strings.Contains(sig, "def ping() -> Any") {
-		t.Fatalf("signature = %q, want an Any return", sig)
-	}
-	status := core.Tool{Name: "s", OutputSchema: schema.Object(schema.Prop("status", schema.String()))}
-	if sig := codemode.RenderSignature(status); !strings.Contains(sig, "status: str") {
-		t.Fatalf("signature = %q", sig)
+		})
 	}
 }

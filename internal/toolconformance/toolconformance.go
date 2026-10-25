@@ -139,7 +139,7 @@ var groups = map[string]group{
 	// Every built-in tool's successful Data conforms to its declared
 	// OutputSchema, across the result shapes each one has: empty results,
 	// truncation notes.
-	"TS-06-22": {
+	"data_conforms_to_the_output_schema": {
 		tree: func() Tree { return append(BaseTree(), Entry{Path: "empty", Dir: true}) },
 		run: func(t *testing.T, all map[string]core.Tool) {
 			type call struct{ tool, args string }
@@ -191,7 +191,7 @@ var groups = map[string]group{
 	},
 
 	// Malformed JSON is invalid_arguments for every built-in tool.
-	"TS-06-23": {run: func(t *testing.T, all map[string]core.Tool) {
+	"malformed_arguments_are_invalid": {run: func(t *testing.T, all map[string]core.Tool) {
 		for _, name := range []string{"read_file", "write_file", "edit_file", "list_files", "find_files",
 			"search_files", "file_outline", "find_symbol", "find_references",
 			"execute", "run_command"} {
@@ -208,7 +208,7 @@ var groups = map[string]group{
 	}},
 
 	// A path outside the workspace is path_not_allowed.
-	"TS-06-24": {run: func(t *testing.T, all map[string]core.Tool) {
+	"paths_outside_the_workspace_are_refused": {run: func(t *testing.T, all map[string]core.Tool) {
 		for name, args := range map[string]string{
 			"read_file":    `{"path":"../outside/secret.txt"}`,
 			"write_file":   `{"path":"../outside/secret.txt","content":"x"}`,
@@ -225,7 +225,7 @@ var groups = map[string]group{
 	}},
 
 	// A directory is not_a_file for the tools that read one file.
-	"TS-06-25": {run: func(t *testing.T, all map[string]core.Tool) {
+	"a_directory_is_not_a_file": {run: func(t *testing.T, all map[string]core.Tool) {
 		for name, args := range map[string]string{
 			"read_file":    `{"path":"dir"}`,
 			"edit_file":    `{"path":"dir","edits":[{"old_string":"a","new_string":"b"}]}`,
@@ -237,7 +237,7 @@ var groups = map[string]group{
 
 	// A cancelled context is aborted for the tools that walk or index the
 	// workspace.
-	"TS-06-26": {run: func(t *testing.T, all map[string]core.Tool) {
+	"a_cancelled_walk_is_aborted": {run: func(t *testing.T, all map[string]core.Tool) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		for name, args := range map[string]string{
@@ -254,7 +254,7 @@ var groups = map[string]group{
 	// A failed subprocess still returns Data that conforms to the shared
 	// subprocess schema: a non-zero exit is command_exit, a binary that
 	// cannot start is exec_failed.
-	"TS-06-27": {run: func(t *testing.T, all map[string]core.Tool) {
+	"a_failed_subprocess_still_has_conforming_data": {run: func(t *testing.T, all map[string]core.Tool) {
 		if !posix() {
 			t.Skip("POSIX shell commands")
 		}
@@ -275,7 +275,7 @@ var groups = map[string]group{
 	}},
 
 	// Reading past the end of a file is offset_past_end.
-	"TS-06-28": {run: func(t *testing.T, all map[string]core.Tool) {
+	"reading_past_the_end_of_a_file": {run: func(t *testing.T, all map[string]core.Tool) {
 		expectError(t, context.Background(), all["read_file"], `{"path":"f.txt","offset":999}`, "offset_past_end")
 	}},
 
@@ -284,7 +284,7 @@ var groups = map[string]group{
 	// edit_failed is not induced: ApplyEdits returns only *EditError, which
 	// edit_file reports as edit_<phase> (see
 	// docs/adr/04-describe-the-tools-as-they-behave.md).
-	"TS-06-29": {
+	"io_failures_have_their_documented_codes": {
 		tree: func() Tree {
 			tree := BaseTree()
 			if unreadable() {
@@ -315,7 +315,7 @@ var groups = map[string]group{
 	// Smoke: a caller runs the real read_file and list_files on a real
 	// workspace, marshals Data, decodes it ordered and validates it with
 	// schema.Validate.
-	"TS-06-30": {run: func(t *testing.T, all map[string]core.Tool) {
+	"read_and_list_data_validates": {run: func(t *testing.T, all map[string]core.Tool) {
 		ran := 0
 		for name, args := range map[string]string{"read_file": `{"path":"main.go"}`, "list_files": `{"path":"."}`} {
 			tl, ok := all[name]
@@ -336,7 +336,7 @@ var groups = map[string]group{
 
 	// Smoke: the real execute and run_command exit 2; Data carries output,
 	// exit_code 2 and outcome exit, and conforms to the subprocess schema.
-	"TS-06-33": {run: func(t *testing.T, all map[string]core.Tool) {
+	"exit_status_two_is_reported_as_data": {run: func(t *testing.T, all map[string]core.Tool) {
 		if !posix() {
 			t.Skip("POSIX shell commands")
 		}

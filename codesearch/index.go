@@ -1024,13 +1024,3 @@ func langFor(path string, content []byte) string {
 	}
 	return docLangs[strings.ToLower(filepath.Ext(path))]
 }
-
-// langForExt maps a file extension to the language name zoekt filters on:
-// outline's table, which is the one source for the languages it knows, then
-// docLangs. It returns "" for an unknown extension.
-func langForExt(ext string) string {
-	if lang := outline.LangForExt(ext); lang != "" {
-		return lang
-	}
-	return docLangs[strings.ToLower(ext)]
-}

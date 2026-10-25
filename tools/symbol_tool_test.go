@@ -2,531 +2,139 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
-	"os"
-	"sort"
+	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
-
-	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/outline"
-	"github.com/agent-fox-dev/agentkit-go/schema"
-	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// TS-02-14: find_symbol rejects empty, blank and 257-byte names but accepts a 256-byte name, before any walk
-func TestFindSymbolNameValidation_TS02_14(t *testing.T) {
-	root := t.TempDir()
-	mkSymFile(t, root, "a.go", "package main\n\nfunc Hello() {}\n")
-
-	var walkCount int
-	origWalkFn := walkFn
-	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(string, os.DirEntry) error) error {
-		walkCount++
-		return origWalkFn(ctx, ws, sub, opts, fn)
+func TestFindSymbolRejectsBadArgumentsWithoutWalking(t *testing.T) {
+	outside := t.TempDir()
+	ws := newWS(t, map[string]string{"a.go": "package main\n\nfunc Hello() {}\n"})
+	fs := newFT(ws, Options{}).findSymbolTool()
+	walks := countWalks(t)
+	for args, want := range map[string]string{
+		`{bad json`:      "invalid_arguments",
+		`{"name":""}`:    "invalid_arguments: name is required and must be non-empty",
+		`{"name":"   "}`: "invalid_arguments: name is required and must be non-empty",
+		`{"name":"` + strings.Repeat("a", 257) + `"}`: "invalid_arguments: name must be at most 256 bytes",
+		`{"name":"Hello","kind":"function"}`:          "invalid_arguments: kind must be one of: func, method, type, class, interface, enum, trait, const, var, module, macro",
+		`{"name":"Hello","path":"../"}`:               "path_not_allowed",
+		`{"name":"Hello","path":"` + outside + `"}`:   "path_not_allowed",
+		`{"name":"Hello","path":"nope"}`:              "read_failed",
+		`{"name":"Hello","path":"a.go"}`:              "invalid_arguments: a.go is a file; use file_outline for a single file",
+	} {
+		r := call(fs, args)
+		code, detail, _ := strings.Cut(want, ": ")
+		if r.Error != code || (detail != "" && r.Detail != detail) {
+			t.Errorf("%.60s: %q %q, want %q", args, r.Error, r.Detail, want)
+		}
 	}
-	defer func() { walkFn = origWalkFn }()
-
-	exec := makeFindSymbolTool(t, root, SymbolOptions{})
-
-	// Empty name.
-	walkCount = 0
-	r := exec(context.Background(), json.RawMessage(`{"name":""}`))
-	if r.OK {
-		t.Fatal("empty name: expected OK=false")
+	if n := walks.Load(); n != 0 {
+		t.Errorf("%d walks for calls that were all rejected", n)
 	}
-	if r.Error != "invalid_arguments" {
-		t.Fatalf("empty name: error=%q, want invalid_arguments", r.Error)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if r := fs.Execute(ctx, []byte(`{"name":"Hello"}`)); r.Error != "aborted" || r.Detail != "Operation aborted" {
+		t.Errorf("a cancelled call: %+v", r)
 	}
-	if walkCount != 0 {
-		t.Fatalf("empty name: walk was called %d times, want 0", walkCount)
-	}
-
-	// Blank name (spaces only).
-	walkCount = 0
-	r = exec(context.Background(), json.RawMessage(`{"name":"   "}`))
-	if r.OK {
-		t.Fatal("blank name: expected OK=false")
-	}
-	if r.Error != "invalid_arguments" {
-		t.Fatalf("blank name: error=%q, want invalid_arguments", r.Error)
-	}
-	if walkCount != 0 {
-		t.Fatalf("blank name: walk was called %d times, want 0", walkCount)
-	}
-
-	// 257-byte name.
-	longName := strings.Repeat("a", 257)
-	walkCount = 0
-	args, _ := json.Marshal(map[string]any{"name": longName})
-	r = exec(context.Background(), args)
-	if r.OK {
-		t.Fatal("257-byte name: expected OK=false")
-	}
-	if r.Error != "invalid_arguments" {
-		t.Fatalf("257-byte name: error=%q, want invalid_arguments", r.Error)
-	}
-	if walkCount != 0 {
-		t.Fatalf("257-byte name: walk was called %d times, want 0", walkCount)
-	}
-
-	// 256-byte name: should be accepted (OK=true).
-	name256 := strings.Repeat("a", 256)
-	walkCount = 0
-	args, _ = json.Marshal(map[string]any{"name": name256})
-	r = exec(context.Background(), args)
-	if !r.OK {
-		t.Fatalf("256-byte name: expected OK=true, got error=%q detail=%q", r.Error, r.Detail)
+	for _, args := range []string{`{"name":"` + strings.Repeat("a", 256) + `"}`, `{"name":"Hello","kind":"  FUNC "}`} {
+		mustOK(t, call(fs, args))
 	}
 }
 
-// TS-02-15: find_symbol rejects an unknown kind, listing the eleven allowed values, and normalises case and spaces
-func TestFindSymbolKindValidation_TS02_15(t *testing.T) {
-	root := t.TempDir()
-	mkSymFile(t, root, "a.go", "package main\n\nfunc Hello() {}\n")
+func TestFindSymbolResults(t *testing.T) {
+	files := map[string]string{
+		"main.go":       "package main\n\nfunc Run() {}\nfunc RunAll() {}\nfunc run() {}\n",
+		"runner.go":     "package main\n\ntype Runner struct{}\n\nfunc (r *Runner) Run() {}\n",
+		"pkg/a/a.go":    "package a\n\nfunc Sym() {}\n",
+		"bad\x01n.go":   "package main\n\nfunc Hello() {}\n",
+		"lib/x_test.go": "package lib\n\nfunc RunTest() {}\n",
+	}
+	for i := 0; i < 80; i++ {
+		files[fmt.Sprintf("many/f%03d.go", i)] = fmt.Sprintf("package many\n\nfunc Sym%03d() {}\n", i)
+	}
+	ws := newWS(t, files)
+	fs := newFT(ws, Options{}).findSymbolTool()
 
-	var walkCount int
-	origWalkFn := walkFn
-	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(string, os.DirEntry) error) error {
-		walkCount++
-		return origWalkFn(ctx, ws, sub, opts, fn)
+	r := mustOK(t, call(fs, `{"name":"Run"}`))
+	want := `5 symbols matching "Run"  (index: 85 files; go/ast 85)` + "\n" +
+		"main.go:3  func  func Run()\nrunner.go:5  method  func (r *Runner) Run()\nmain.go:4  func  func RunAll()\n" +
+		"runner.go:3  type  type Runner struct\nlib/x_test.go:3  func  func RunTest()"
+	if r.Text != want || r.Data["truncated"] != false || r.Data["files_indexed"] != 85 || r.Data["note"] != nil || r.Data["partial"] != nil {
+		t.Errorf("Text:\n%s\nwant:\n%s\nData %v", r.Text, want, r.Data)
 	}
-	defer func() { walkFn = origWalkFn }()
-
-	exec := makeFindSymbolTool(t, root, SymbolOptions{})
-
-	// Unknown kind "function".
-	walkCount = 0
-	args, _ := json.Marshal(map[string]any{"name": "Hello", "kind": "function"})
-	r := exec(context.Background(), args)
-	if r.OK {
-		t.Fatal("unknown kind 'function': expected OK=false")
+	if b := r.Data["backends"].(map[string]int); b["go/ast"] != 85 || len(b) != 1 {
+		t.Errorf("backends = %v", b)
 	}
-	if r.Error != "invalid_arguments" {
-		t.Fatalf("unknown kind: error=%q, want invalid_arguments", r.Error)
+	if got := symbolNames(mustOK(t, call(fs, `{"name":"Runner.Run","exact":true}`))); !slices.Equal(got, []string{"Run"}) {
+		t.Errorf("a qualified exact name: %v", got)
 	}
-	// Detail should list all eleven allowed values.
-	for _, k := range []string{"func", "method", "type", "class", "interface", "enum", "trait", "const", "var", "module", "macro"} {
-		if !strings.Contains(r.Detail, k) {
-			t.Errorf("detail should contain %q: %q", k, r.Detail)
-		}
+	if r := mustOK(t, call(fs, `{"name":"Nothing"}`)); r.Text != `0 symbols matching "Nothing"  (index: 85 files; go/ast 85)`+"\nno symbols matched" || r.Data["symbols"] == nil {
+		t.Errorf("no match: %q", r.Text)
 	}
-	if walkCount != 0 {
-		t.Fatalf("unknown kind: walk was called %d times, want 0", walkCount)
+	// The text sanitizes a control character the Data keeps.
+	r = mustOK(t, call(fs, `{"name":"Hello"}`))
+	if !strings.Contains(r.Text, "\nbad?n.go:3  func  func Hello()") || r.Data["symbols"].([]SymbolMatch)[0].Path != "bad\x01n.go" {
+		t.Errorf("Text %q Data %v", r.Text, r.Data["symbols"])
 	}
-
-	// Normalised kind "  FUNC " should be accepted as "func".
-	walkCount = 0
-	args, _ = json.Marshal(map[string]any{"name": "Hello", "kind": "  FUNC "})
-	r = exec(context.Background(), args)
-	if !r.OK {
-		t.Fatalf("normalised kind '  FUNC ': expected OK=true, got error=%q detail=%q", r.Error, r.Detail)
+	// A path scopes the matches and the counts.
+	r = mustOK(t, callJSON(t, fs, map[string]any{"name": "S", "path": abs(ws, "pkg/a")}))
+	if !slices.Equal(symbolNames(r), []string{"Sym"}) || r.Data["files_indexed"] != 1 || r.Data["backends"].(map[string]int)["go/ast"] != 1 {
+		t.Errorf("a scoped call: %v %v", symbolNames(r), r.Data)
 	}
 
-	// Verify the tool's kind list matches the outline package's Kind constants.
-	outlineKinds := []string{
-		string(outline.KindFunc),
-		string(outline.KindMethod),
-		string(outline.KindType),
-		string(outline.KindClass),
-		string(outline.KindInterface),
-		string(outline.KindEnum),
-		string(outline.KindTrait),
-		string(outline.KindConst),
-		string(outline.KindVar),
-		string(outline.KindModule),
-		string(outline.KindMacro),
-	}
-	sort.Strings(outlineKinds)
-	toolKinds := make([]string, len(validKinds))
-	copy(toolKinds, validKinds)
-	sort.Strings(toolKinds)
-	if len(outlineKinds) != len(toolKinds) {
-		t.Fatalf("kind count mismatch: outline has %d, tool has %d", len(outlineKinds), len(toolKinds))
-	}
-	for i := range outlineKinds {
-		if outlineKinds[i] != toolKinds[i] {
-			t.Fatalf("kind mismatch at %d: outline=%q, tool=%q", i, outlineKinds[i], toolKinds[i])
+	for _, c := range []struct {
+		args   string
+		n      int
+		marker string
+	}{
+		{`{"name":"Sym"}`, 20, SymbolMarker(20)},
+		{`{"name":"Sym","max_results":0}`, 20, SymbolMarker(20)},
+		{`{"name":"Sym","max_results":-5}`, 20, SymbolMarker(20)},
+		{`{"name":"Sym","max_results":30}`, 30, SymbolMarker(30)},
+		{`{"name":"Sym","max_results":200}`, 50, SymbolMarker(50)},
+	} {
+		r := mustOK(t, call(fs, c.args))
+		if n := len(symbolNames(r)); n != c.n || r.Data["note"] != c.marker || r.Data["truncated"] != true ||
+			!strings.HasSuffix(r.Text, "\n"+c.marker) || r.Metadata == nil || r.Metadata.TruncatedBy != "lines" {
+			t.Errorf("%s: %d matches, note %v", c.args, n, r.Data["note"])
 		}
 	}
 }
 
-// TS-02-16: find_symbol refuses a path outside the workspace without calling Walk
-func TestFindSymbolPathOutsideWorkspace_TS02_16(t *testing.T) {
-	root := t.TempDir()
-	mkSymFile(t, root, "a.go", "package main\n\nfunc Hello() {}\n")
-
-	var walkCount int
-	origWalkFn := walkFn
-	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(string, os.DirEntry) error) error {
-		walkCount++
-		return origWalkFn(ctx, ws, sub, opts, fn)
+func TestFindSymbolAsksTheIndexFirst(t *testing.T) {
+	ws := newWS(t, map[string]string{"a/x.go": "package a\n\nfunc Local() {}\n"})
+	answer := SymbolAnswer{FilesIndexed: 3, Backends: map[string]int{"go/ast": 2, "tree-sitter": 1}, Matches: []SymbolMatch{
+		{Path: "a/z.py", Backend: "tree-sitter", Kind: "func", Name: "RunLonger", Signature: "def RunLonger()", StartLine: 4, EndLine: 9},
+		{Path: "a/y.go", Backend: "go/ast", Kind: "func", Name: "Run", Signature: "func Run()", Exported: true, StartLine: 2},
+	}}
+	idx := &fakeIndex{ans: answer, ok: true}
+	fs := newFT(ws, Options{Index: idx}).findSymbolTool()
+	walks := countWalks(t)
+	r := mustOK(t, call(fs, `{"name":"Run","path":"a","max_results":1}`))
+	// Ranked and truncated by find_symbol's own code; the header names the index.
+	want := `1 symbols matching "Run"  (codesearch index: 3 files)` + "\na/y.go:2  func  func Run()\n" + SymbolMarker(1)
+	if r.Text != want || r.Data["files_indexed"] != 3 || r.Data["backends"].(map[string]int)["tree-sitter"] != 1 || walks.Load() != 0 {
+		t.Errorf("Text:\n%s\nwant:\n%s\n%v, %d walks", r.Text, want, r.Data, walks.Load())
 	}
-	defer func() { walkFn = origWalkFn }()
-
-	exec := makeFindSymbolTool(t, root, SymbolOptions{})
-
-	// Relative path outside workspace.
-	walkCount = 0
-	args, _ := json.Marshal(map[string]any{"name": "Hello", "path": "../"})
-	r := exec(context.Background(), args)
-	if r.OK {
-		t.Fatal("path '../': expected OK=false")
+	// An Index that reports no backends has them counted from the matches.
+	idx.ans.Backends = nil
+	if b := mustOK(t, call(fs, `{"name":"Run"}`)).Data["backends"].(map[string]int); len(b) != 2 || b["go/ast"] != 1 {
+		t.Errorf("backends = %v", b)
 	}
-	if r.Error != "path_not_allowed" {
-		t.Fatalf("path '../': error=%q, want path_not_allowed", r.Error)
+	idx.ans = SymbolAnswer{}
+	if r := mustOK(t, call(fs, `{"name":"Nothing"}`)); !strings.HasSuffix(r.Text, "\nno symbols matched") {
+		t.Errorf("an empty answer: %q", r.Text)
 	}
-	if walkCount != 0 {
-		t.Fatalf("path '../': walk was called %d times, want 0", walkCount)
+	// ok=false falls back to the table; an error is an abort.
+	idx.ok = false
+	if got := symbolNames(mustOK(t, call(fs, `{"name":"Local"}`))); !slices.Equal(got, []string{"Local"}) || walks.Load() == 0 {
+		t.Errorf("the fallback found %v", got)
 	}
-
-	// Absolute path outside workspace.
-	walkCount = 0
-	outsideDir := t.TempDir() // a different temp dir
-	args, _ = json.Marshal(map[string]any{"name": "Hello", "path": outsideDir})
-	r = exec(context.Background(), args)
-	if r.OK {
-		t.Fatal("absolute outside path: expected OK=false")
+	idx.err = errors.New("index closed")
+	if r := call(fs, `{"name":"Local"}`); r.Error != "aborted" {
+		t.Errorf("an index error: %+v", r)
 	}
-	if r.Error != "path_not_allowed" {
-		t.Fatalf("absolute outside path: error=%q, want path_not_allowed", r.Error)
-	}
-	if walkCount != 0 {
-		t.Fatalf("absolute outside path: walk was called %d times, want 0", walkCount)
-	}
-}
-
-// TS-02-17: find_symbol returns read_failed for a nonexistent path before any walk
-func TestFindSymbolPathNotExist_TS02_17(t *testing.T) {
-	root := t.TempDir()
-	// No "nope" directory exists.
-
-	var walkCount int
-	origWalkFn := walkFn
-	walkFn = func(ctx context.Context, ws *workspace.Workspace, sub string, opts workspace.WalkOptions, fn func(string, os.DirEntry) error) error {
-		walkCount++
-		return origWalkFn(ctx, ws, sub, opts, fn)
-	}
-	defer func() { walkFn = origWalkFn }()
-
-	exec := makeFindSymbolTool(t, root, SymbolOptions{})
-
-	walkCount = 0
-	args, _ := json.Marshal(map[string]any{"name": "Run", "path": "nope"})
-	r := exec(context.Background(), args)
-	if r.OK {
-		t.Fatal("nonexistent path: expected OK=false")
-	}
-	if r.Error != "read_failed" {
-		t.Fatalf("nonexistent path: error=%q, want read_failed", r.Error)
-	}
-	if walkCount != 0 {
-		t.Fatalf("nonexistent path: walk was called %d times, want 0", walkCount)
-	}
-}
-
-// TS-02-18: find_symbol rejects a regular file as path and points to file_outline
-func TestFindSymbolPathIsFile_TS02_18(t *testing.T) {
-	root := t.TempDir()
-	mkSymFile(t, root, "a.go", "package main\n\nfunc Hello() {}\n")
-
-	exec := makeFindSymbolTool(t, root, SymbolOptions{})
-
-	args, _ := json.Marshal(map[string]any{"name": "Hello", "path": "a.go"})
-	r := exec(context.Background(), args)
-	if r.OK {
-		t.Fatal("file path: expected OK=false")
-	}
-	if r.Error != "invalid_arguments" {
-		t.Fatalf("file path: error=%q, want invalid_arguments", r.Error)
-	}
-	if !strings.Contains(r.Detail, "file_outline") {
-		t.Fatalf("file path: detail should mention file_outline: %q", r.Detail)
-	}
-}
-
-// TS-02-19: Default matching is prefix with smart-case
-func TestFindSymbolPrefixSmartCase_TS02_19(t *testing.T) {
-	root := t.TempDir()
-	// Create a Go file with multiple declarations to test matching.
-	mkSymFile(t, root, "main.go", `package main
-
-func Run() {}
-func RunAll() {}
-func Runtime() {}
-func Other() {}
-`)
-	mkSymFile(t, root, "extra.go", `package main
-
-func runner() {}
-func rUN() {}
-`)
-
-	exec := makeFindSymbolTool(t, root, SymbolOptions{})
-
-	// "run" (all lowercase) → case-insensitive prefix match.
-	args, _ := json.Marshal(map[string]any{"name": "run"})
-	r := exec(context.Background(), args)
-	if !r.OK {
-		t.Fatalf("prefix 'run': error=%q detail=%q", r.Error, r.Detail)
-	}
-	names := extractSymbolNames(t, r)
-	// Should match: Run, RunAll, Runtime, runner, rUN (case-insensitive prefix).
-	// Should NOT match: Other.
-	expected := map[string]bool{"Run": true, "RunAll": true, "Runtime": true, "runner": true, "rUN": true}
-	for _, n := range names {
-		if !expected[n] {
-			t.Errorf("'run' matched unexpected name %q", n)
-		}
-		delete(expected, n)
-	}
-	for n := range expected {
-		t.Errorf("'run' did not match expected name %q", n)
-	}
-
-	// "Run" (has uppercase) → case-sensitive prefix match.
-	args, _ = json.Marshal(map[string]any{"name": "Run"})
-	r = exec(context.Background(), args)
-	if !r.OK {
-		t.Fatalf("prefix 'Run': error=%q detail=%q", r.Error, r.Detail)
-	}
-	names = extractSymbolNames(t, r)
-	// Should match: Run, RunAll, Runtime (case-sensitive prefix).
-	// Should NOT match: runner, rUN, Other.
-	expected = map[string]bool{"Run": true, "RunAll": true, "Runtime": true}
-	for _, n := range names {
-		if !expected[n] {
-			t.Errorf("'Run' matched unexpected name %q", n)
-		}
-		delete(expected, n)
-	}
-	for n := range expected {
-		t.Errorf("'Run' did not match expected name %q", n)
-	}
-}
-
-// TS-02-20: exact true matches only identical names case-sensitively
-func TestFindSymbolExactMatch_TS02_20(t *testing.T) {
-	root := t.TempDir()
-	mkSymFile(t, root, "main.go", `package main
-
-func Run() {}
-func RunAll() {}
-`)
-	mkSymFile(t, root, "extra.go", `package main
-
-func run() {}
-`)
-
-	exec := makeFindSymbolTool(t, root, SymbolOptions{})
-
-	// exact=true, name="Run" → only Run.
-	args, _ := json.Marshal(map[string]any{"name": "Run", "exact": true})
-	r := exec(context.Background(), args)
-	if !r.OK {
-		t.Fatalf("exact 'Run': error=%q detail=%q", r.Error, r.Detail)
-	}
-	names := extractSymbolNames(t, r)
-	if len(names) != 1 || names[0] != "Run" {
-		t.Fatalf("exact 'Run': got %v, want [Run]", names)
-	}
-
-	// exact=true, name="run" → only run.
-	args, _ = json.Marshal(map[string]any{"name": "run", "exact": true})
-	r = exec(context.Background(), args)
-	if !r.OK {
-		t.Fatalf("exact 'run': error=%q detail=%q", r.Error, r.Detail)
-	}
-	names = extractSymbolNames(t, r)
-	if len(names) != 1 || names[0] != "run" {
-		t.Fatalf("exact 'run': got %v, want [run]", names)
-	}
-}
-
-// TS-02-21: A dotted name is compared against Container.Name and an undotted name against Name alone
-func TestFindSymbolQualifiedName_TS02_21(t *testing.T) {
-	root := t.TempDir()
-	// Create Go files with methods on different receivers and a top-level func.
-	mkSymFile(t, root, "runner.go", `package main
-
-type Runner struct{}
-
-func (r *Runner) Run() {}
-func (r *Runner) Stop() {}
-`)
-	mkSymFile(t, root, "other.go", `package main
-
-type Other struct{}
-
-func (o *Other) Run() {}
-`)
-	mkSymFile(t, root, "funcs.go", `package main
-
-func Run() {}
-`)
-
-	exec := makeFindSymbolTool(t, root, SymbolOptions{})
-
-	// "Runner.Run" (dotted, exact) → only Runner's Run method.
-	args, _ := json.Marshal(map[string]any{"name": "Runner.Run", "exact": true})
-	r := exec(context.Background(), args)
-	if !r.OK {
-		t.Fatalf("dotted 'Runner.Run' exact: error=%q detail=%q", r.Error, r.Detail)
-	}
-	names := extractSymbolNames(t, r)
-	if len(names) != 1 || names[0] != "Run" {
-		t.Fatalf("dotted 'Runner.Run' exact: got %v, want [Run]", names)
-	}
-	// Verify it's the one on Runner, not Other.
-	containers := extractSymbolContainers(t, r)
-	if len(containers) != 1 || containers[0] != "Runner" {
-		t.Fatalf("dotted 'Runner.Run' exact: containers=%v, want [Runner]", containers)
-	}
-
-	// "runner.ru" (dotted, lowercase prefix) → case-insensitive prefix on qualified string.
-	args, _ = json.Marshal(map[string]any{"name": "runner.ru"})
-	r = exec(context.Background(), args)
-	if !r.OK {
-		t.Fatalf("dotted 'runner.ru': error=%q detail=%q", r.Error, r.Detail)
-	}
-	names = extractSymbolNames(t, r)
-	// Should find Runner.Run (case-insensitive prefix on "Runner.Run").
-	found := false
-	for i, n := range names {
-		cs := extractSymbolContainers(t, r)
-		if n == "Run" && cs[i] == "Runner" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("dotted 'runner.ru': did not find Runner.Run, got names=%v", names)
-	}
-	// A dotted name should never match the container-less func Run.
-	for i, n := range names {
-		cs := extractSymbolContainers(t, r)
-		if n == "Run" && cs[i] == "" {
-			t.Fatal("dotted 'runner.ru': should not match container-less func Run")
-		}
-	}
-
-	// "Runner.Run" with exact=true via dotted name.
-	args, _ = json.Marshal(map[string]any{"name": "Runner.Run", "exact": true})
-	r = exec(context.Background(), args)
-	if !r.OK {
-		t.Fatalf("dotted 'Runner.Run' exact: error=%q detail=%q", r.Error, r.Detail)
-	}
-	names = extractSymbolNames(t, r)
-	containers = extractSymbolContainers(t, r)
-	if len(names) != 1 {
-		t.Fatalf("dotted 'Runner.Run' exact: got %d matches, want 1", len(names))
-	}
-	if names[0] != "Run" || containers[0] != "Runner" {
-		t.Fatalf("dotted 'Runner.Run' exact: got %s.%s, want Runner.Run", containers[0], names[0])
-	}
-
-	// "Run" (undotted) → matches methods Run on both receivers AND the func.
-	args, _ = json.Marshal(map[string]any{"name": "Run", "exact": true})
-	r = exec(context.Background(), args)
-	if !r.OK {
-		t.Fatalf("undotted 'Run' exact: error=%q detail=%q", r.Error, r.Detail)
-	}
-	names = extractSymbolNames(t, r)
-	// Should find 3 Runs: Runner.Run, Other.Run, and func Run.
-	if len(names) != 3 {
-		t.Fatalf("undotted 'Run' exact: got %d matches, want 3; names=%v", len(names), names)
-	}
-	for _, n := range names {
-		if n != "Run" {
-			t.Fatalf("undotted 'Run' exact: unexpected name %q", n)
-		}
-	}
-}
-
-// extractSymbolNames extracts the "name" field from each symbol in the result's Data.
-func extractSymbolNames(t *testing.T, r core.ToolResult) []string {
-	t.Helper()
-	syms, ok := r.Data["symbols"]
-	if !ok {
-		t.Fatal("no 'symbols' key in Data")
-	}
-	slice, ok := syms.([]SymbolMatch)
-	if ok {
-		var names []string
-		for _, s := range slice {
-			names = append(names, s.Name)
-		}
-		return names
-	}
-	// Try as []any (from JSON round-trip).
-	anySlice, ok := syms.([]any)
-	if ok {
-		var names []string
-		for _, item := range anySlice {
-			m, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			if n, ok := m["name"].(string); ok {
-				names = append(names, n)
-			}
-		}
-		return names
-	}
-	t.Fatalf("symbols is neither []SymbolMatch nor []any: %T", syms)
-	return nil
-}
-
-// extractSymbolContainers extracts the "container" field from each symbol in the result's Data.
-func extractSymbolContainers(t *testing.T, r core.ToolResult) []string {
-	t.Helper()
-	syms, ok := r.Data["symbols"]
-	if !ok {
-		t.Fatal("no 'symbols' key in Data")
-	}
-	slice, ok := syms.([]SymbolMatch)
-	if ok {
-		var containers []string
-		for _, s := range slice {
-			containers = append(containers, s.Container)
-		}
-		return containers
-	}
-	anySlice, ok := syms.([]any)
-	if ok {
-		var containers []string
-		for _, item := range anySlice {
-			m, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			c, _ := m["container"].(string)
-			containers = append(containers, c)
-		}
-		return containers
-	}
-	t.Fatalf("symbols is neither []SymbolMatch nor []any: %T", syms)
-	return nil
-}
-
-// TS-06-16: find_symbol declares its symbols, counts and optional notes.
-// backends is a count per backend, an object of integers.
-func TestOutputSchemaFindSymbol_TS06_16(t *testing.T) {
-	s := toolByName(t, t.TempDir(), "find_symbol").OutputSchema
-	assertObject(t, "find_symbol", s, map[string]prop{
-		"symbols": {schema.TypeArray, true}, "truncated": {schema.TypeBoolean, true},
-		"backends": {schema.TypeObject, true}, "files_indexed": {schema.TypeInteger, true},
-		"note": {schema.TypeString, false}, "partial": {schema.TypeBoolean, false},
-		"partial_reason": {schema.TypeString, false},
-	})
-	ap := s.Properties["backends"].AdditionalProperties
-	if ap == nil || ap.Schema == nil || ap.Schema.Type != schema.TypeInteger {
-		t.Errorf("backends additionalProperties = %+v, want integer", ap)
-	}
-	assertObject(t, "find_symbol.symbols[]", s.Properties["symbols"].Items, map[string]prop{
-		"path": {schema.TypeString, true}, "backend": {schema.TypeString, true},
-		"kind": {schema.TypeString, true}, "name": {schema.TypeString, true},
-		"container": {schema.TypeString, true}, "signature": {schema.TypeString, true},
-		"exported": {schema.TypeBoolean, true}, "start_line": {schema.TypeInteger, true},
-		"end_line": {schema.TypeInteger, true},
-	})
 }

@@ -1,242 +1,82 @@
-package tools_test
+package tools
 
 import (
-	"strings"
+	"errors"
 	"testing"
-
-	"github.com/agent-fox-dev/agentkit-go/tools"
 )
 
-// REQ-TOOL-04d's whitespace-tolerant fallback.
-
-// TestAnExactMatchIsNeverOverriddenByAFoldedOne.
-//
-// The fallback runs only after exact matching fails for the batch. If a folded
-// match could beat an exact one, an edit naming a real ASCII line would
-// suddenly apply to a different line that merely folds the same — the tool
-// would get less predictable the more Unicode a file contains.
-func TestAnExactMatchIsNeverOverriddenByAFoldedOne(t *testing.T) {
-	// Two lines that fold identically: one ASCII, one curly.
-	content := "a = 'x'\nb\na = ‘x’\n"
-	out, n, err := tools.ApplyEdits(content, []tools.Edit{
-		{OldString: "a = 'x'", NewString: "a = 'y'"},
-	})
-	if err != nil {
-		t.Fatalf("the exact match must apply: %v", err)
-	}
-	if n != 1 {
-		t.Fatalf("applied %d edits", n)
-	}
-	if !strings.HasPrefix(out, "a = 'y'\n") {
-		t.Fatalf("the ASCII line should have changed; got %q", out)
-	}
-	// The curly line is untouched, bytes intact.
-	if !strings.Contains(out, "a = ‘x’") {
-		t.Fatalf("the curly line must survive verbatim; got %q", out)
-	}
-}
-
-// TestSmartQuotesMatchTheirASCIIForm is the case the requirement is about: a
-// model saw the file through a lossy render and typed straight quotes.
-func TestSmartQuotesMatchTheirASCIIForm(t *testing.T) {
-	content := "func f() {\n\tname := “hello”\n}\n"
-	out, n, err := tools.ApplyEdits(content, []tools.Edit{
-		{OldString: "\tname := \"hello\"", NewString: "\tname := \"goodbye\""},
-	})
-	if err != nil {
-		t.Fatalf("the folded match should have applied: %v", err)
-	}
-	if n != 1 {
-		t.Fatalf("applied %d edits", n)
-	}
-	if !strings.Contains(out, `name := "goodbye"`) {
-		t.Fatalf("got %q", out)
-	}
-}
-
-// TestTrailingWhitespaceIsToleratedButLeadingIsNot.
-//
-// Leading whitespace is indentation, and it is semantic in Go, Python, YAML
-// and Makefiles alike. Trimming it would let an edit match a line at the wrong
-// nesting level — silently applying to the wrong block, which is exactly what
-// REQ-TOOL-04c's uniqueness rule exists to prevent.
-func TestTrailingWhitespaceIsToleratedButLeadingIsNot(t *testing.T) {
-	// Trailing spaces in the file, none in the edit: must match.
-	trailing := "if x {\n\tdoIt()   \n}\n"
-	if _, _, err := tools.ApplyEdits(trailing, []tools.Edit{
-		{OldString: "\tdoIt()", NewString: "\tdoThat()"},
-	}); err != nil {
-		t.Fatalf("trailing whitespace must be tolerated: %v", err)
-	}
-
-	// Different LEADING whitespace must not match. The curly quote is what
-	// forces this through the fold path at all: without it the exact,
-	// substring-based matcher would find "\tdoIt()" inside "\t\tdoIt()" and
-	// the fold would never run.
-	indented := "if x {\n\t\tval := \u2018a\u2019\n}\n"
-	if _, _, err := tools.ApplyEdits(indented, []tools.Edit{
-		{OldString: "    val := 'a'", NewString: "    val := 'b'"},
-	}); err == nil {
-		t.Fatal("leading whitespace must not be folded away: an edit that matched at " +
-			"the wrong nesting level would apply silently to the wrong block")
-	}
-}
-
-// TestUntouchedLinesKeepTheirExactBytes is the rule that makes the fold safe.
-//
-// The fold is a MATCH KEY, never an output. A pass that rewrote the file to
-// its folded form would silently ASCII-ify every quote and dash in it —
-// turning a one-line edit into a whole-file reformat nobody asked for.
-func TestUntouchedLinesKeepTheirExactBytes(t *testing.T) {
+func TestTheWhitespaceTolerantFallback(t *testing.T) {
 	const curly = "// “quoted” — dash … ellipsis"
-	content := curly + "\n" + "target := ‘v’\n" + curly + "\n"
-
-	out, _, err := tools.ApplyEdits(content, []tools.Edit{
-		{OldString: "target := 'v'", NewString: "target := 'w'"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Count(out, curly) != 2 {
-		t.Fatalf("the untouched lines were rewritten to their fold.\ngot:\n%s", out)
-	}
-	if !strings.Contains(out, "target := 'w'") {
-		t.Fatalf("the edit did not apply: %q", out)
-	}
-}
-
-// TestANonUniqueFoldedMatchIsRejected. Uniqueness is REQ-TOOL-04c and the
-// fallback does not get to relax it: multiplicity means the model has not
-// identified a site.
-func TestANonUniqueFoldedMatchIsRejected(t *testing.T) {
-	content := "x := ‘a’\ny\nx := ‘a’\n"
-	if _, _, err := tools.ApplyEdits(content, []tools.Edit{
-		{OldString: "x := 'a'", NewString: "x := 'b'"},
-	}); err == nil {
-		t.Fatal("two folded matches must be a rejection, not a replace-all")
-	}
-}
-
-// TestTheFallbackReportsTheOriginalRejection.
-//
-// When the fold cannot help either, the caller must see the phase-ordered
-// "not found" it would have seen anyway. A second, differently-worded error
-// from a fallback the model never asked for tells it to fix the wrong thing.
-func TestTheFallbackReportsTheOriginalRejection(t *testing.T) {
-	_, _, err := tools.ApplyEdits("hello\n", []tools.Edit{
-		{OldString: "nothing like this", NewString: "x"},
-	})
-	if err == nil {
-		t.Fatal("expected a rejection")
-	}
-	var ee *tools.EditError
-	if !asEditError(err, &ee) {
-		t.Fatalf("want *tools.EditError, got %T", err)
-	}
-	if ee.Phase != "not_found" {
-		t.Fatalf("phase = %q, want not_found", ee.Phase)
-	}
-}
-
-// TestAPartiallyRescuedBatchIsRejected.
-//
-// A batch where the fold saves some edits and not others is not the batch the
-// model meant. Applying the subset is the silent partial application the
-// phase rules exist to prevent.
-func TestAPartiallyRescuedBatchIsRejected(t *testing.T) {
-	content := "a := ‘x’\nb := 2\n"
-	_, _, err := tools.ApplyEdits(content, []tools.Edit{
-		{OldString: "a := 'x'", NewString: "a := 'y'"}, // rescuable
-		{OldString: "no such line", NewString: "boom"}, // not
-	})
-	if err == nil {
-		t.Fatal("a partially rescuable batch must be rejected whole")
-	}
-}
-
-// TestFoldConfusablesCoversTheRenderedSet.
-func TestFoldConfusablesCoversTheRenderedSet(t *testing.T) {
-	for _, tc := range []struct{ in, want string }{
-		{"‘a’", "'a'"},
-		{"“a”", `"a"`},
-		{"a–b", "a-b"},
-		{"a—b", "a-b"},
-		{"a−b", "a-b"},
-		{"a b", "a b"},
-		{"a　b", "a b"},
-		{"a\u200bb", "ab"}, // zero-width folds to nothing
-		{"a\ufeffb", "ab"}, // BOM mid-string
-		{"…", "..."},       // ellipsis
-		{"ﬁx", "fix"},      // fi ligature
-		{"ａｂ", "ab"},       // fullwidth
-		{"plain ascii", "plain ascii"},
-	} {
-		if got := tools.FoldConfusables(tc.in); got != tc.want {
-			t.Errorf("FoldConfusables(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
-// TestFoldLeavesUnlistedRunesAlone. A fold that guessed at characters outside
-// the confusable set would start changing meaning rather than presentation.
-func TestFoldLeavesUnlistedRunesAlone(t *testing.T) {
-	for _, s := range []string{"café", "naïve", "日本語", "Ω", "emoji 🙂"} {
-		if got := tools.FoldConfusables(s); got != s {
-			t.Errorf("FoldConfusables(%q) = %q; unlisted runes must be left alone", s, got)
-		}
-	}
-}
-
-func asEditError(err error, target **tools.EditError) bool {
-	for err != nil {
-		if e, ok := err.(*tools.EditError); ok {
-			*target = e
-			return true
-		}
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-	return false
-}
-
-// TestFoldLineTrimsATrailingCarriageReturn is B1's fold half: a line copied
-// from a CRLF file with its CR intact is the same line.
-func TestFoldLineTrimsATrailingCarriageReturn(t *testing.T) {
-	if got := tools.FoldLine("x := 1 \r"); got != "x := 1" {
-		t.Fatalf("FoldLine = %q, want the CR trimmed with the trailing space", got)
-	}
-}
-
-// TestAFoldedEditKeepsTheBytesOfAnAdjacentBlankLine (issue #89): a needle
-// that ends — or begins — with a newline ends at the START of the next line
-// (or begins at the END of the previous one). The empty piece the split
-// leaves is not a line, and it must not match a whitespace-only line and
-// splice it away.
-func TestAFoldedEditKeepsTheBytesOfAnAdjacentBlankLine(t *testing.T) {
-	cases := []struct{ content, old, new, want string }{
-		// The report's case: "line2 " differs from the file only in trailing
-		// space, so the fold is needed; "   " must survive.
-		{"a\nline2\n   \nline3\n", "line2 \n", "new\n", "a\nnew\n   \nline3\n"},
-		// The same at the front of the needle.
-		{"a\n   \nline2\nline3\n", "\nline2 ", "\nnew", "a\n   \nnew\nline3\n"},
-		// A needle ending in a newline still matches when the next line has
-		// content: it ends at that line's start.
-		{"a\nline2\nline3\n", "line2 \n", "new\n", "a\nnew\nline3\n"},
+	cases := []struct {
+		name, content string
+		edits         []Edit
+		want          string // "" for a rejection
+	}{
+		{"an exact match is never overridden by a folded one", "a = 'x'\nb\na = ‘x’\n",
+			[]Edit{{OldString: "a = 'x'", NewString: "a = 'y'"}}, "a = 'y'\nb\na = ‘x’\n"},
+		{"smart quotes match their ASCII form", "func f() {\n\tname := “hello”\n}\n",
+			[]Edit{{OldString: "\tname := \"hello\"", NewString: "\tname := \"bye\""}}, "func f() {\n\tname := \"bye\"\n}\n"},
+		{"trailing whitespace is tolerated", "if x {\n\tdoIt()   \n}\n",
+			[]Edit{{OldString: "\tdoIt() \n}", NewString: "\tdoThat()\n}"}}, "if x {\n\tdoThat()\n}\n"},
+		{"leading whitespace is not", "if x {\n\t\tval := ‘a’\n}\n",
+			[]Edit{{OldString: "    val := 'a'", NewString: "    val := 'b'"}}, ""},
+		{"untouched lines keep their exact bytes", curly + "\ntarget := ‘v’\n" + curly + "\n",
+			[]Edit{{OldString: "target := 'v'", NewString: "target := 'w'"}}, curly + "\ntarget := 'w'\n" + curly + "\n"},
+		{"a non-unique folded match is rejected", "x := ‘a’\ny\nx := ‘a’\n",
+			[]Edit{{OldString: "x := 'a'", NewString: "x := 'b'"}}, ""},
+		{"a partially rescued batch is rejected whole", "a := ‘x’\nb := 2\n",
+			[]Edit{{OldString: "a := 'x'", NewString: "a := 'y'"}, {OldString: "no such line", NewString: "boom"}}, ""},
+		{"an exact edit in a folded batch must still be unique", "a := “q”\nreturn nil\nif x {\n\treturn nil // again\n}\n",
+			[]Edit{{OldString: `a := "q"`, NewString: `a := "f"`}, {OldString: "return nil", NewString: "return err"}}, ""},
+		{"an exact edit in a folded batch replaces only its bytes", "a := “q”\nreturn nil\nif x {\n\treturn nil // again\n}\n",
+			[]Edit{{OldString: `a := "q"`, NewString: `a := "f"`}, {OldString: "nil // again", NewString: "err // again"}},
+			"a := \"f\"\nreturn nil\nif x {\n\treturn err // again\n}\n"},
+		{"folded edits that overlap are rejected", "a := ‘x’\nb := ‘y’\n",
+			[]Edit{{OldString: "a := 'x'\nb := 'y'", NewString: "1"}, {OldString: "b := 'y'", NewString: "2"}}, ""},
+		{"a folded no-op is rejected", "a := ‘x’\n", []Edit{{OldString: "a := 'x'", NewString: "a := ‘x’"}}, ""},
+		// A needle that starts or ends with a newline must not claim the
+		// bytes of a whitespace-only neighbour.
+		{"a trailing newline keeps the next blank line", "a\nline2\n   \nline3\n",
+			[]Edit{{OldString: "line2 \n", NewString: "new\n"}}, "a\nnew\n   \nline3\n"},
+		{"a leading newline keeps the previous blank line", "a\n   \nline2\nline3\n",
+			[]Edit{{OldString: "\nline2 ", NewString: "\nnew"}}, "a\n   \nnew\nline3\n"},
+		{"a whitespace-only needle does not match by fold", "a\n \nb\n", []Edit{{OldString: " \n\n", NewString: "x"}}, ""},
 	}
 	for _, c := range cases {
-		out, _, err := tools.ApplyEdits(c.content, []tools.Edit{{OldString: c.old, NewString: c.new}})
-		if err != nil {
-			t.Fatalf("ApplyEdits(%q, %q): %v", c.content, c.old, err)
-		}
-		if out != c.want {
-			t.Errorf("ApplyEdits(%q, %q -> %q) = %q, want %q", c.content, c.old, c.new, out, c.want)
+		t.Run(c.name, func(t *testing.T) {
+			out, _, err := ApplyEdits(c.content, c.edits)
+			if c.want == "" {
+				var ee *EditError
+				if !errors.As(err, &ee) {
+					t.Fatalf("ApplyEdits = %q, %v; want a rejection", out, err)
+				}
+				return
+			}
+			if err != nil || out != c.want {
+				t.Fatalf("ApplyEdits = %q, %v; want %q", out, err, c.want)
+			}
+		})
+	}
+	// The fallback reports the exact path's rejection, not one of its own.
+	_, _, err := ApplyEdits("hello\n", []Edit{{OldString: "nothing like this", NewString: "x"}})
+	if ee := (*EditError)(nil); !errors.As(err, &ee) || ee.Phase != "not_found" {
+		t.Fatalf("err = %v, want the not_found rejection", err)
+	}
+}
+
+func TestFoldConfusablesFoldsOnlyTheRenderedSet(t *testing.T) {
+	for in, want := range map[string]string{
+		"‘a’": "'a'", "“a”": `"a"`, "a–b": "a-b", "a—b": "a-b", "a−b": "a-b",
+		"a\u00a0b": "a b", "a\u3000b": "a b", "a\u200bb": "ab", "a\ufeffb": "ab",
+		"…": "...", "ﬁx": "fix", "ａｂ": "ab", "plain ascii": "plain ascii",
+		// Unlisted runes are left alone: folding them would change meaning.
+		"café": "café", "日本語": "日本語", "emoji 🙂": "emoji 🙂",
+	} {
+		if got := FoldConfusables(in); got != want {
+			t.Errorf("FoldConfusables(%q) = %q, want %q", in, got, want)
 		}
 	}
-	// A needle that is only newlines carries no line to match.
-	if _, _, err := tools.ApplyEdits("a\n \nb\n", []tools.Edit{{OldString: " \n\n", NewString: "x"}}); err == nil {
-		t.Error("a whitespace-only needle matched by fold; want not_found")
+	if got := FoldLine("x := ‘1’ \t\r"); got != "x := '1'" || FoldLine("  x") != "  x" {
+		t.Errorf("FoldLine trims trailing whitespace and a CR, and only trailing: %q", got)
 	}
 }

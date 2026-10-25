@@ -2,7 +2,7 @@ package faux_test
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,124 +12,161 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
 )
 
-// TS-22-10: ToolCall equals the one-block tool_use literal it replaces.
-// 22-REQ-3.1.
-func TestToolCallEqualsTheLiteral_TS22_10(t *testing.T) {
-	const id, name, args = "c1", "read_file", `{"path":"a"}`
-	got := faux.ToolCall(id, name, args)
-	want := faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall(id, name, args)}, StopReason: core.StopReasonToolUse}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ToolCall = %+v, want %+v", got, want)
+// streamOne runs one request through p and returns its events and result.
+func streamOne(t *testing.T, ctx context.Context, p *faux.Provider) ([]core.Event, core.StreamResult) {
+	t.Helper()
+	s := core.EventStreamOf(p.Stream(ctx, core.Request{}))
+	var events []core.Event
+	for e := range s.Events() {
+		events = append(events, e)
 	}
-	if got.RawStopReason != "" || got.ErrorMessage != "" || got.Usage != (core.Usage{}) || got.Err != nil || got.Delay != 0 {
-		t.Errorf("ToolCall left a field set besides Blocks and StopReason: %+v", got)
-	}
+	return events, s.Wait()
 }
 
-// TS-22-11: Text equals the one-block text literal it replaces. 22-REQ-3.2.
-func TestTextEqualsTheLiteral_TS22_11(t *testing.T) {
-	for _, s := range []string{"", "hello", "two\nlines\n"} {
-		got := faux.Text(s)
-		want := faux.Turn{Blocks: []core.ContentBlock{core.TextBlock{Text: s}}, StopReason: core.StopReasonStop}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("Text(%q) = %+v, want %+v", s, got, want)
+func TestTurnHelpersEqualTheLiteralsTheyReplace(t *testing.T) {
+	call := faux.FauxToolCall("c1", "read_file", `{"path":"a"}`)
+	cases := []struct {
+		name      string
+		got, want faux.Turn
+	}{
+		{"ToolCall", faux.ToolCall("c1", "read_file", `{"path":"a"}`),
+			faux.Turn{Blocks: []core.ContentBlock{call}, StopReason: core.StopReasonToolUse}},
+		{"Text", faux.Text("two\nlines"),
+			faux.Turn{Blocks: []core.ContentBlock{core.TextBlock{Text: "two\nlines"}}, StopReason: core.StopReasonStop}},
+		{"FauxAssistantMessage", faux.FauxAssistantMessage(core.StopReasonLength, faux.FauxText("a"), faux.FauxThinking("t", "sig")),
+			faux.Turn{Blocks: []core.ContentBlock{core.TextBlock{Text: "a"}, core.ThinkingBlock{Thinking: "t", Signature: "sig"}},
+				StopReason: core.StopReasonLength}},
+	}
+	for _, c := range cases {
+		if !reflect.DeepEqual(c.got, c.want) {
+			t.Errorf("%s = %+v, want %+v", c.name, c.got, c.want)
 		}
 	}
-}
-
-// TS-22-12: ToolCall turns empty or whitespace args into the object {}.
-// 22-REQ-3.3.
-func TestToolCallEmptyArgs_TS22_12(t *testing.T) {
 	for _, args := range []string{"", "  ", "\n\t"} {
-		turn := faux.ToolCall("c", "t", args)
-		if len(turn.Blocks) != 1 {
-			t.Fatalf("ToolCall(%q) has %d blocks, want 1", args, len(turn.Blocks))
-		}
-		b, ok := turn.Blocks[0].(core.ToolUseBlock)
-		if !ok {
-			t.Fatalf("ToolCall(%q) block is %T, want core.ToolUseBlock", args, turn.Blocks[0])
-		}
-		if string(b.Input) != "{}" {
+		if b := faux.ToolCall("c", "t", args).Blocks[0].(core.ToolUseBlock); string(b.Input) != "{}" {
 			t.Errorf("ToolCall(%q) input = %q, want {}", args, b.Input)
 		}
 	}
 }
 
-// TS-22-13: ToolCall panics, naming faux.ToolCall, the id and the tool, when
-// args is not an object. 22-REQ-3.4.
-func TestToolCallPanicsOnANonObject_TS22_13(t *testing.T) {
-	for _, args := range []string{`[1]`, `"s"`, `12`, `{bad`} {
-		msg, panicked := recoverString(func() { faux.ToolCall("id7", "my_tool", args) })
-		if !panicked {
-			t.Errorf("ToolCall with args %s did not panic", args)
-			continue
-		}
-		for _, want := range []string{"faux.ToolCall", `"id7"`, `"my_tool"`} {
-			if !strings.Contains(msg, want) {
-				t.Errorf("panic for args %s is %q, which lacks %s", args, msg, want)
-			}
+func TestToolCallHelpersPanicNamingTheCallOnANonObject(t *testing.T) {
+	for name, f := range map[string]func(string){
+		"faux.ToolCall":     func(a string) { faux.ToolCall("id7", "my_tool", a) },
+		"faux.FauxToolCall": func(a string) { faux.FauxToolCall("id7", "my_tool", a) },
+	} {
+		for _, args := range []string{`[1]`, `"s"`, `12`, `{bad`} {
+			func() {
+				defer func() {
+					msg, _ := recover().(string)
+					for _, want := range []string{name + "(", `"id7"`, `"my_tool"`} {
+						if !strings.Contains(msg, want) {
+							t.Errorf("%s(%s) panicked with %q, which lacks %s", name, args, msg, want)
+						}
+					}
+				}()
+				f(args)
+			}()
 		}
 	}
 }
 
-// recoverString runs f and returns the string it panicked with.
-func recoverString(f func()) (msg string, panicked bool) {
-	defer func() {
-		if r := recover(); r != nil {
-			s, ok := r.(string)
-			if !ok {
-				s = fmt.Sprintf("non-string panic %T: %v", r, r)
-			}
-			msg, panicked = s, true
-		}
-	}()
-	f()
-	return "", false
+// The event order is the protocol's specification: every block streams, then
+// every block ends in order, then the message ends.
+func TestTheProviderEmitsTheNormativeEventOrder(t *testing.T) {
+	p := faux.New(faux.FauxAssistantMessage(core.StopReasonToolUse,
+		faux.FauxThinking("plan", "sig"), faux.FauxText("Hello"), faux.FauxToolCall("c1", "edit", `{"a":1}`)))
+	p.ModelID = "faux-1"
+	events, res := streamOne(t, context.Background(), p)
+
+	const want = "message_start," +
+		"thinking_start,thinking_delta,message_update," +
+		"text_start,text_delta,message_update," +
+		"tool_call_start,tool_input_delta,message_update," +
+		"thinking_end,text_end,tool_call_end,message_end"
+	if got := faux.EventNames(events); got != want {
+		t.Fatalf("events\n got %s\nwant %s", got, want)
+	}
+	if res.Err != nil || res.Message.StopReason != core.StopReasonToolUse || res.Message.RawStopReason != "tool_use" ||
+		res.Message.Model != "faux-1" || len(res.Message.Content) != 3 {
+		t.Fatalf("result = %+v, %v", res.Message, res.Err)
+	}
+	if end := events[11].(core.TextEndEvent); end.Text != "Hello" {
+		t.Errorf("text end = %+v, want the whole text", end)
+	}
 }
 
-// collect streams one request from p and returns every item, with the
-// message timestamps zeroed: the provider stamps the time it ran, and nothing
-// else in a turn varies between two providers scripted alike.
-func collect(t *testing.T, p *faux.Provider) []core.StreamEvent {
-	t.Helper()
-	ch, err := p.Stream(context.Background(), core.Request{})
+func TestChunkSizeSplitsTextAndArgumentsIntoDeltas(t *testing.T) {
+	p := faux.New(faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxText("abcde"), faux.FauxToolCall("c", "t", `{"k":1}`)))
+	p.ChunkSize = 2
+	events, _ := streamOne(t, context.Background(), p)
+	var text, args []string
+	for _, e := range events {
+		switch d := e.(type) {
+		case core.TextDeltaEvent:
+			text = append(text, d.Delta)
+		case core.ToolInputDeltaEvent:
+			args = append(args, d.Delta)
+		}
+	}
+	if strings.Join(text, "|") != "ab|cd|e" || strings.Join(args, "|") != `{"|k"|:1|}` {
+		t.Errorf("deltas = %q / %q", text, args)
+	}
+}
+
+func TestTheProviderReplaysItsScriptThenAnswersEmptyStops(t *testing.T) {
+	p := faux.New(faux.Text("one"), faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("two")}, RawStopReason: "end_turn"})
+	var got []string
+	for range 3 {
+		_, res := streamOne(t, context.Background(), p)
+		got = append(got, res.Message.Content.Text()+"/"+string(res.Message.StopReason)+"/"+res.Message.RawStopReason)
+	}
+	if want := "one/stop/stop two/stop/end_turn /stop/stop"; strings.Join(got, " ") != want {
+		t.Errorf("turns = %q, want %q", strings.Join(got, " "), want)
+	}
+	if p.Calls() != 3 || len(p.Requests()) != 3 {
+		t.Errorf("Calls = %d, Requests = %d, want 3", p.Calls(), len(p.Requests()))
+	}
+
+	var zero faux.Provider
+	if _, res := streamOne(t, context.Background(), &zero); res.Message.StopReason != core.StopReasonStop {
+		t.Errorf("the zero provider answered %+v", res.Message)
+	}
+	if m := faux.Model(); m.ID == "" || m.ContextWindow <= 0 || m.MaxOutputTokens <= 0 {
+		t.Errorf("Model() = %+v", m)
+	}
+}
+
+func TestAScriptedErrorEndsTheTurnAfterItsBlocks(t *testing.T) {
+	boom := errors.New("connection reset")
+	p := faux.New(faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("half")}, Err: boom})
+	events, res := streamOne(t, context.Background(), p)
+	if !errors.Is(res.Err, boom) || res.Message.StopReason != core.StopReasonError ||
+		res.Message.ErrorMessage != "connection reset" || res.Message.Content.Text() != "half" {
+		t.Fatalf("result = %+v, %v", res.Message, res.Err)
+	}
+	if !strings.HasSuffix(faux.EventNames(events), "text_end,error,message_end") {
+		t.Errorf("events = %s", faux.EventNames(events))
+	}
+}
+
+func TestCancellationAbortsTheTurn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p := faux.New(faux.Text("never"))
+	if _, err := p.Stream(ctx, core.Request{}); !errors.Is(err, context.Canceled) || p.Calls() != 0 {
+		t.Errorf("a done context: err = %v, calls = %d; want it refused before it counts", err, p.Calls())
+	}
+
+	// Cancelled during the scripted delay: the turn ends aborted.
+	ctx, cancel = context.WithCancel(context.Background())
+	p = faux.New(faux.Turn{Blocks: []core.ContentBlock{faux.FauxText("late")}, Delay: time.Hour})
+	ch, err := p.Stream(ctx, core.Request{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out []core.StreamEvent
-	for item := range ch {
-		switch e := item.Event.(type) {
-		case core.MessageStartEvent:
-			e.Message.Timestamp = time.Time{}
-			item.Event = e
-		case core.MessageUpdateEvent:
-			e.Message.Timestamp = time.Time{}
-			item.Event = e
-		case core.MessageEndEvent:
-			e.Message.Timestamp = time.Time{}
-			item.Event = e
-		}
-		out = append(out, item)
-	}
-	return out
-}
-
-// TS-22-14 (integration): a Provider scripted with the helpers emits the same
-// events as one scripted with the literals. 22-REQ-3.5.
-func TestProviderEmitsTheSameEvents_TS22_14(t *testing.T) {
-	const args = `{"path":"a"}`
-	withHelpers := faux.New(faux.ToolCall("c1", "read_file", args), faux.Text("done"))
-	withLiterals := faux.New(
-		faux.Turn{Blocks: []core.ContentBlock{faux.FauxToolCall("c1", "read_file", args)}, StopReason: core.StopReasonToolUse},
-		faux.Turn{Blocks: []core.ContentBlock{core.TextBlock{Text: "done"}}, StopReason: core.StopReasonStop},
-	)
-	for turn := 1; turn <= 2; turn++ {
-		a, b := collect(t, withHelpers), collect(t, withLiterals)
-		if len(a) < 6 {
-			t.Fatalf("turn %d: only %d items were collected: %+v", turn, len(a), a)
-		}
-		if !reflect.DeepEqual(a, b) {
-			t.Errorf("turn %d: the helpers emitted\n%+v\nthe literals emitted\n%+v", turn, a, b)
-		}
+	cancel()
+	res := core.EventStreamOf(ch, nil).Wait()
+	if !errors.Is(res.Err, context.Canceled) || res.Message.StopReason != core.StopReasonAborted || len(res.Message.Content) != 0 {
+		t.Errorf("result = %+v, %v; want an aborted, empty turn", res.Message, res.Err)
 	}
 }
