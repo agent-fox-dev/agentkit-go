@@ -9,7 +9,7 @@ import (
 )
 
 // setProcessGroup puts the child in its own process group so the whole tree
-// can be killed as a unit (REQ-TOOL-17.1).
+// can be killed as a unit.
 func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
@@ -31,9 +31,8 @@ func killGroup(cmd *exec.Cmd) {
 }
 
 // signalExitCode reports a signal-killed child as 128+signum, the convention
-// every unix shell uses for $? (NFR-COMPAT-06). Go's ExitCode() returns -1 for
-// the same case, which no shell script, CI matcher or human reads as "killed
-// by SIGKILL".
+// every unix shell uses for $?. Go's ExitCode() returns -1 for the same case,
+// which no shell script, CI matcher or human reads as "killed by SIGKILL".
 func signalExitCode(ee *exec.ExitError) (int, bool) {
 	ws, ok := ee.Sys().(syscall.WaitStatus)
 	if !ok || !ws.Signaled() {

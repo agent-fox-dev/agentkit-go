@@ -1,6 +1,6 @@
-// Command imageref is an embedder program for TS-16-54: it prints the
-// published base image reference for its build's version, or the error and
-// exits 1.
+// Command imageref is an embedder program for the sandbox module's image
+// reference smoke test: it prints the published base image reference for its
+// build's version, or the error and exits 1.
 package main
 
 import (

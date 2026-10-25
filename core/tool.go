@@ -15,24 +15,25 @@ type ExecutionMode uint8
 
 const (
 	// Parallel is the zero value, so every custom tool defaults correctly with
-	// no field set (REQ-LOOP-05a).
+	// no field set.
 	Parallel ExecutionMode = iota
 	Sequential
 )
 
-// ToolHandler is REQ-GO-03's pinned signature.
+// ToolHandler is the plain form of a tool's handler: JSON arguments in, JSON
+// result out.
 type ToolHandler func(ctx context.Context, input json.RawMessage) (json.RawMessage, error)
 
-// ResultHandler is the richer form. It exists because REQ-GO-03's signature
-// cannot express REQ-TOOL-08: ToolResult.Terminate is `json:"-"` and Metadata
-// is stripped by ToLLMMap, so there is no channel through json.RawMessage for
-// either. Without it, REQ-TOOL-13's own stated use cases (finish,
+// ResultHandler is the richer form. It exists because ToolHandler's signature
+// cannot express a full ToolResult: ToolResult.Terminate is `json:"-"` and
+// Metadata is stripped by ToLLMMap, so there is no channel through
+// json.RawMessage for either. Without it, the tools that end a run (finish,
 // submit_answer, exit_plan_mode) are unimplementable by a consumer, and every
 // built-in tool that truncates cannot report metadata.
 type ResultHandler func(ctx context.Context, input json.RawMessage) ToolResult
 
-// Tool is the registry + loop type (REQ-TOOL-01). Exactly one of Handler and
-// Execute must be set.
+// Tool is the registry + loop type. Exactly one of Handler and Execute must
+// be set.
 type Tool struct {
 	Name        string
 	Description string
@@ -41,7 +42,7 @@ type Tool struct {
 	// callers (a script runner binding results, a wrapper tool, generated
 	// documentation). It is optional and never enforced at runtime: a nil
 	// schema means the tool makes no promise. It is NOT part of ToolWire, so
-	// no provider request body carries it (06-REQ-1.3).
+	// no provider request body carries it.
 	OutputSchema *schema.Schema
 
 	// ReachableTools are the tools this tool can call on the model's behalf
@@ -62,7 +63,7 @@ type Tool struct {
 	Label string // display name, never sent
 	// Builtin marks a first-party tool. It exists so ToolPolicy.NoTools can
 	// mean "builtin" without the resolver keeping a hardcoded name list that
-	// silently stops matching when a tool is renamed (REQ-TOOL-10).
+	// silently stops matching when a tool is renamed.
 	Builtin          bool
 	ExecutionMode    ExecutionMode
 	PrepareArguments func(map[string]any) map[string]any
@@ -72,12 +73,12 @@ type Tool struct {
 // ToolWire is the projection a provider is allowed to see — the name,
 // description and input schema, and nothing else.
 //
-// The PRD sketches `func (t Tool) wire() wireTool`, unexported. That is
-// unimplementable once providers live in their own packages, which REQ-PROV-02
-// requires. Exported, the invariant is STRONGER than unexported-ness:
-// Request.Tools is []ToolWire, so no provider can name a Handler,
-// PromptGuidelines or PrepareArguments at all, and a new Tool field cannot
-// widen a request body without a compile error at the boundary.
+// It is exported because providers live in their own packages, where an
+// unexported projection would be out of reach. Exported, the invariant is
+// STRONGER than unexported-ness: Request.Tools is []ToolWire, so no provider
+// can name a Handler, PromptGuidelines or PrepareArguments at all, and a new
+// Tool field cannot widen a request body without a compile error at the
+// boundary.
 //
 // ToolWire carries no json tags on purpose: each provider encodes it into its
 // own dialect (Anthropic input_schema, OpenAI parameters).
@@ -99,13 +100,14 @@ func ToolWires(ts []Tool) []ToolWire {
 	return out
 }
 
-// ToolResult is REQ-TOOL-08's output envelope.
+// ToolResult is a tool call's output envelope.
 type ToolResult struct {
 	OK     bool           `json:"ok"`
 	Data   map[string]any `json:"data"`
 	Error  string         `json:"error,omitzero"`
 	Detail string         `json:"detail,omitzero"`
-	// Terminate never reaches the model; it is the REQ-TOOL-13 batch vote.
+	// Terminate never reaches the model; it is this result's vote to end the
+	// run (see BatchTerminates).
 	Terminate bool          `json:"-"`
 	Metadata  *ToolMetadata `json:"metadata,omitzero"`
 	// Blocks are extra content blocks appended after the text the model
@@ -132,10 +134,10 @@ type ToolResult struct {
 func OKResult(data map[string]any) ToolResult { return ToolResult{OK: true, Data: data} }
 
 // LLMText is the text the model sees for this result: Text when the tool
-// rendered one, otherwise the REQ-TOOL-08 envelope (ToLLMMap) as JSON. A
-// marshal failure — a Data value that is not JSON-representable — yields a
-// fixed error envelope rather than an empty result, so the transcript never
-// carries a tool_result with no content.
+// rendered one, otherwise the envelope (ToLLMMap) as JSON. A marshal failure
+// — a Data value that is not JSON-representable — yields a fixed error
+// envelope rather than an empty result, so the transcript never carries a
+// tool_result with no content.
 func (r ToolResult) LLMText() string {
 	if r.Text != "" {
 		return r.Text
@@ -220,8 +222,8 @@ const (
 	NoToolsAll     NoToolsMode = "all"
 )
 
-// ToolPolicy is REQ-TOOL-10's five-field resolution, applied uniformly to
-// built-in and caller-supplied tools.
+// ToolPolicy is the five-field tool exposure policy Resolve applies,
+// uniformly to built-in and caller-supplied tools.
 type ToolPolicy struct {
 	// Tools, when non-nil (INCLUDING empty), is used verbatim and bypasses
 	// everything below. Non-nil-but-empty is distinct from nil.
@@ -234,19 +236,19 @@ type ToolPolicy struct {
 
 // ------------------------------------------------------------ interception
 
-// BeforeToolCallContext is handed to the single tool-authorization boundary
-// (REQ-SEC-03). Arguments are already validated and coerced.
+// BeforeToolCallContext is handed to the single tool-authorization boundary.
+// Arguments are already validated and coerced.
 type BeforeToolCallContext struct {
 	ToolName  string
 	ToolUseID string
 	// ParentToolUseID and ParentToolName identify the wrapper call that made
 	// this call through CallNested. Both are empty for a call the model made
-	// directly (07-REQ-5.1).
+	// directly.
 	ParentToolUseID string
 	ParentToolName  string
 	Tool            Tool
 	Arguments       map[string]any
-	// RawInput is the model's own bytes, key order intact (REQ-TOOL-12).
+	// RawInput is the model's own bytes, key order intact.
 	RawInput  json.RawMessage
 	Assistant *AssistantMessage
 	Batch     []ToolUseBlock
@@ -256,11 +258,11 @@ type BeforeToolCallContext struct {
 
 type BeforeToolCallDecision struct {
 	Block bool
-	// Terminate is honoured ONLY when Block is set (REQ-TOOL-13.2).
+	// Terminate is honoured ONLY when Block is set.
 	Terminate bool
 	Reason    string
 	// Arguments, when non-nil, replaces Arguments. The interceptor may widen
-	// as well as narrow (REQ-SEC-03.5).
+	// as well as narrow.
 	Arguments map[string]any
 }
 
@@ -282,7 +284,7 @@ type AfterToolCallContext struct {
 }
 
 type AfterToolCallDecision struct {
-	// Terminate is *bool because nil means "no opinion" (REQ-TOOL-13.3).
+	// Terminate is *bool because nil means "no opinion".
 	Terminate *bool
 }
 
@@ -291,10 +293,10 @@ type AfterToolCall func(ctx context.Context, in AfterToolCallContext) AfterToolC
 
 const BlockErrorCode = "blocked_by_policy"
 
-// BatchTerminates is REQ-TOOL-13.1's vote: an AND over finalized results. An
-// empty batch never terminates. OR semantics are the obvious-but-wrong
-// default: the model emits N parallel calls, and a unilateral finish would
-// compute N-1 results it never sees.
+// BatchTerminates is a batch's vote to end the run: an AND over finalized
+// results. An empty batch never terminates. OR semantics are the
+// obvious-but-wrong default: the model emits N parallel calls, and a
+// unilateral finish would compute N-1 results it never sees.
 func BatchTerminates(votes []bool) bool {
 	if len(votes) == 0 {
 		return false
@@ -310,7 +312,7 @@ func BatchTerminates(votes []bool) bool {
 // ReachableTools returns tools and everything they reach through
 // ReachableTools, transitively, each name once, in order of first appearance
 // (depth first). It is the one answer to "what can this tool set call",
-// however deeply wrappers nest (07-REQ-2.1).
+// however deeply wrappers nest.
 func ReachableTools(tools []Tool) []Tool {
 	var out []Tool
 	seen := map[string]bool{}
@@ -378,7 +380,7 @@ func Named(ts []Tool, names ...string) ([]Tool, error) {
 // NestedCaller runs tool calls on behalf of a wrapper tool — one that
 // declares ReachableTools — through the same pipeline as a call the model
 // makes: argument preparation and validation, BeforeToolCall, the handler,
-// AfterToolCall and the execution events (07-REQ-4.1).
+// AfterToolCall and the execution events.
 //
 // Call returns one result per call, in the order of calls. A call that fails
 // — unknown to the wrapper, invalid, blocked, aborted, a handler error — is
@@ -400,7 +402,7 @@ func WithNestedCaller(ctx context.Context, c NestedCaller) context.Context {
 // CallNested runs calls through the NestedCaller on ctx. With none attached
 // — the tool declares no ReachableTools, or is invoked by something that is
 // neither an agent run nor a Runner — it runs nothing and returns
-// ErrNoNestedCaller (07-REQ-4.2).
+// ErrNoNestedCaller.
 func CallNested(ctx context.Context, calls ...ToolUseBlock) ([]ToolResult, error) {
 	c, ok := ctx.Value(nestedCallerKey{}).(NestedCaller)
 	if !ok || c == nil {

@@ -19,8 +19,8 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// UnresolvedVariableError is NFR-SEC-03's configuration error: a server's env
-// or headers referenced a ${VAR} that resolved to nothing.
+// UnresolvedVariableError is a configuration error: a server's env or headers
+// referenced a ${VAR} that resolved to nothing.
 //
 // It is an ERROR, not a warning with a blank substituted, because the two
 // outcomes of substituting a blank are both worse than refusing. The child
@@ -46,12 +46,12 @@ func (e *UnresolvedVariableError) Error() string {
 		"references are a configuration error (NFR-SEC-03)", e.Server, strings.Join(names, ", "))
 }
 
-// Pool is REQ-MCP-CLIENT-04: server_name -> connection, built during session
-// initialization and torn down when the session ends.
+// Pool maps server_name -> connection, built during session initialization
+// and torn down when the session ends.
 type Pool struct {
-	// NativeTools names the host's OWN tools, which no MCP server may shadow
-	// (REQ-MCP-CLIENT-06). The embedder populates it before connecting —
-	// it is the only party that knows what its native tool set is called.
+	// NativeTools names the host's OWN tools, which no MCP server may
+	// shadow. The embedder populates it before connecting — it is the only
+	// party that knows what its native tool set is called.
 	//
 	// It exists because the check in Tools is not enough on its own: a host
 	// that connects its servers and never calls Tools would ship a server
@@ -72,7 +72,7 @@ func NewPool(opts ConnectionOptions) *Pool {
 
 // Diagnostics returns the non-fatal reports collected so far across every
 // connection and tool import, such as an output schema a server declared that
-// could not be read (06-REQ-2.4). The slice is a copy.
+// could not be read. The slice is a copy.
 func (p *Pool) Diagnostics() []Diagnostic {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -101,20 +101,20 @@ func (p *Pool) Add(c *ServerConnection) error {
 	return nil
 }
 
-// Connect opens a server and initializes it (REQ-MCP-CLIENT-02).
+// Connect opens a server and initializes it.
 //
 // A `command` server is spawned as a subprocess over stdio; a `url` server is
 // opened over Streamable HTTP (or HTTP+SSE, see ServerConfig.Transport), and
 // the protocol version is negotiated either way. env is the reduced
-// environment for a child (REQ-MCP-CLIENT-10), and secrets resolves ${VAR}
-// references at CONNECT time — so a credential lives in the child's
-// environment or in a request header, and never in the config file, the
-// process table, or a log of the command line. A reference that resolves to
-// nothing is an *UnresolvedVariableError and nothing is spawned (NFR-SEC-03).
+// environment for a child, and secrets resolves ${VAR} references at CONNECT
+// time — so a credential lives in the child's environment or in a request
+// header, and never in the config file, the process table, or a log of the
+// command line. A reference that resolves to nothing is an
+// *UnresolvedVariableError and nothing is spawned.
 //
-// The connection it returns reconnects on its own (NFR-REL-03): a server that
-// died is re-spawned or re-opened at the next call, at most
-// PerSessionReconnectLimit times.
+// The connection it returns reconnects on its own: a server that died is
+// re-spawned or re-opened at the next call, at most PerSessionReconnectLimit
+// times.
 func (p *Pool) Connect(ctx context.Context, cfg ServerConfig, env []string, secrets func(string) string) (*ServerConnection, error) {
 	dial, err := p.dialer(cfg, env, secrets)
 	if err != nil {
@@ -210,7 +210,7 @@ func (p *Pool) Names() []string {
 	return append([]string(nil), p.order...)
 }
 
-// Close tears down every connection (REQ-MCP-CLIENT-04).
+// Close tears down every connection.
 //
 // It closes ALL of them even when one fails, and returns the failures joined.
 // Stopping at the first error would leave the remaining subprocesses running
@@ -236,7 +236,8 @@ func (p *Pool) Close() error {
 	return nil
 }
 
-// refuseShadowedNames is REQ-MCP-CLIENT-06 raised at CONNECTION time.
+// refuseShadowedNames refuses a server whose tools would shadow a native tool,
+// at CONNECTION time.
 //
 // A shadowed native tool is a misconfiguration, and the cost of noticing it
 // late is the WRONG TOOL having run. So the server's tool list is pulled once,
@@ -279,13 +280,13 @@ func (p *Pool) nativeNames() map[string]bool {
 }
 
 // Tools adapts every connected server's tools into core.Tools with qualified
-// names (REQ-MCP-CLIENT-05).
+// names.
 //
 // existing is the native tool set. A qualified name that collides with one —
 // or with a name in NativeTools, or with another server's — is
-// ErrNameCollision (REQ-MCP-CLIENT-06). This is the BACKSTOP for the native
-// tools a host registers after connecting and the tools a server grows during
-// the session, neither of which a connect-time check can see.
+// ErrNameCollision. This is the BACKSTOP for the native tools a host registers
+// after connecting and the tools a server grows during the session, neither of
+// which a connect-time check can see.
 func (p *Pool) Tools(ctx context.Context, existing []core.Tool) ([]core.Tool, error) {
 	taken := make(map[string]string, len(existing))
 	for name := range p.nativeNames() {
@@ -328,7 +329,7 @@ func (p *Pool) adapt(c *ServerConnection, d *Tool, qualified string) core.Tool {
 		var err error
 		if output, err = outputSchemaFrom(d.OutputSchema); err != nil {
 			// The tool stays usable without output typing; only the schema
-			// is lost, and the embedder is told which one (06-REQ-2.2).
+			// is lost, and the embedder is told which one.
 			p.report(Diagnostic{Severity: diag.SeverityError, Message: fmt.Sprintf(
 				"mcp: server %q tool %q: output schema dropped: %v", c.Name(), d.Name, err)})
 		}
@@ -374,10 +375,9 @@ func (p *Pool) adapt(c *ServerConnection, d *Tool, qualified string) core.Tool {
 
 // resultData is what an MCP result exposes as ToolResult.Data. The server's
 // outputSchema describes its structuredContent, so an object is Data itself
-// and Data then matches the imported OutputSchema (06-REQ-3.1); any other
-// JSON value sits under "value", as outputSchemaFrom wraps its schema
-// (06-REQ-3.2). With no structuredContent, Data is the joined text and the
-// raw content blocks (06-REQ-3.3).
+// and Data then matches the imported OutputSchema; any other JSON value sits
+// under "value", as outputSchemaFrom wraps its schema. With no
+// structuredContent, Data is the joined text and the raw content blocks.
 func resultData(structured any, text string, content []json.RawMessage) map[string]any {
 	switch v := structured.(type) {
 	case nil:
@@ -571,7 +571,9 @@ func convertSchema(v wire.Value, depth int) *schema.Schema {
 	return schema.String(desc)
 }
 
-// resolveEnv builds the child's environment (REQ-MCP-CLIENT-10).
+// resolveEnv builds the child's environment: base, the reduced environment,
+// then the declared Env with its ${VAR} references expanded. missing names the
+// references that resolved to nothing.
 func resolveEnv(declared map[string]string, base []string, secrets func(string) string) ([]string, []string) {
 	lookup := envLookup(base, secrets)
 
@@ -594,8 +596,8 @@ func resolveEnv(declared map[string]string, base []string, secrets func(string) 
 // then the reduced environment. Sharing it is what keeps a header and a child
 // environment from resolving the same reference differently.
 //
-// It reports presence separately from value, because NFR-SEC-03 makes an
-// unresolved reference an error and a variable set to "" is not unresolved.
+// It reports presence separately from value, because an unresolved reference
+// is an error and a variable set to "" is not unresolved.
 // The secrets function cannot express absence, so a store answering "" falls
 // through to the environment, where an explicitly empty variable counts as
 // set.
@@ -618,7 +620,7 @@ func envLookup(base []string, secrets func(string) string) func(string) (string,
 // resolveHeaders expands ${VAR} in header values.
 //
 // missing names the references that resolved to nothing; the caller makes
-// that a configuration error (NFR-SEC-03). dropped names the headers whose
+// that a configuration error. dropped names the headers whose
 // RESOLVED value could not be sent: blank, or carrying a control byte. A
 // control byte in a header is a request-splitting attempt, and it can arrive
 // through an interpolated secret rather than through the config file — so

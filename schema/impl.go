@@ -15,7 +15,7 @@ import (
 	"unicode/utf8"
 )
 
-// forbiddenStrict is REQ-TOOL-03's rejection list. It is checked against
+// forbiddenStrict is the strict subset's rejection list. It is checked against
 // modelled fields AND against Extra keys, because Extra is exactly how $ref
 // gets in.
 var forbiddenStrict = []string{
@@ -828,7 +828,7 @@ func isName(dec *jsontext.Decoder) bool {
 }
 
 // renderValidationError echoes the model's OWN arguments in the model's own
-// key order, which is what makes the correction self-serving (REQ-TOOL-12.3).
+// key order, which is what makes the correction self-serving.
 // Long string values are abbreviated: the error is about the arguments'
 // shape, and echoing a kilobyte of edit text back buries the one line that
 // says what was wrong — once per failed call.

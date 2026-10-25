@@ -12,9 +12,9 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
-// PreparedArguments is the output of the argument pipeline (REQ-TOOL-11).
+// PreparedArguments is the output of the argument pipeline.
 //
-//	Raw   the bytes handed to the handler (REQ-GO-03's pinned signature)
+//	Raw   the bytes handed to the handler
 //	Args  the decoded map, for interceptors and policies to read
 //
 // Raw is the model's own bytes whenever the pipeline changed nothing, so the
@@ -22,7 +22,7 @@ import (
 // did change the value, Raw is rebuilt from the original bytes: every key the
 // change left alone keeps its position and its bytes, and only changed or new
 // keys are re-encoded. A map has no order, and re-encoding it whole would sort
-// the keys (REQ-TOOL-12).
+// the keys.
 type PreparedArguments struct {
 	Raw  json.RawMessage
 	Args map[string]any
@@ -31,7 +31,7 @@ type PreparedArguments struct {
 	Coercions []schema.Coercion
 }
 
-// WithArgs replaces the arguments, as an interceptor may do (REQ-SEC-03.5),
+// WithArgs replaces the arguments, as an interceptor may do,
 // rebuilding Raw so the keys the interceptor kept keep their positions.
 //
 // It panics if a value is not representable in JSON (NaN, a channel);
@@ -55,7 +55,7 @@ func (p PreparedArguments) TryWithArgs(args map[string]any) (PreparedArguments, 
 	return PreparedArguments{Raw: raw, Args: args, Coercions: p.Coercions}, nil
 }
 
-// PrepareArguments runs REQ-TOOL-11's fixed pipeline before the handler. Every
+// PrepareArguments runs the fixed argument pipeline before the handler. Every
 // stage runs inside the caller's panic-recover boundary.
 //
 //  1. Tool.PrepareArguments — per-tool shape repair, runs FIRST, on a copy.
@@ -102,8 +102,7 @@ func PrepareArguments(t Tool, c ToolUseBlock) (PreparedArguments, error) {
 		// ---- 4. Validate.
 		if err := schema.Validate(t.InputSchema, args); err != nil {
 			// The error echoes the arguments, and it echoes the model's own
-			// bytes, so the keys are in the order the model wrote them
-			// (REQ-TOOL-12.3).
+			// bytes, so the keys are in the order the model wrote them.
 			var ve *schema.ValidationError
 			if errors.As(err, &ve) {
 				ve.Args = c.Input
@@ -126,8 +125,7 @@ func PrepareArguments(t Tool, c ToolUseBlock) (PreparedArguments, error) {
 //
 // json.Indent is byte-preserving, so key order and numeric literals come free.
 // Re-marshalling a decoded map here would sort the keys and show the model
-// something it did not write, defeating the point of a self-correcting error
-// (REQ-TOOL-12.3).
+// something it did not write, defeating the point of a self-correcting error.
 func echoArguments(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return "{}"

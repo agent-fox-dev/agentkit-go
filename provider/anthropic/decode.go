@@ -11,11 +11,11 @@ import (
 
 // This file is the DECODE half of the Anthropic wire API.
 //
-// Streaming and whole-response decoding share one block assembler, and that
-// sharing is REQ-PROV-17: "a streaming provider must produce byte-identical
-// Input to what its non-streaming path produces for the same tool call". Two
-// assemblers is two chances to disagree, and the disagreement is invisible
-// until a replayed transcript quietly misses the prompt cache.
+// Streaming and whole-response decoding share one block assembler, so the
+// streaming path produces byte-identical Input to what the non-streaming path
+// produces for the same tool call. Two assemblers is two chances to disagree,
+// and the disagreement is invisible until a replayed transcript quietly
+// misses the prompt cache.
 
 // TranslateMessage translates a whole (non-streamed) SDK Message for m into
 // an assistant message: thinking, text and tool_use blocks, the stop reason,
@@ -48,8 +48,8 @@ func TranslateUsage(start sdk.Usage, delta sdk.MessageDeltaUsage) core.Usage {
 
 type wireUsage struct {
 	// Every field is a pointer: an explicit 0 from the provider must beat any
-	// SDK fallback (REQ-PROV-16.4), and a wholly unreported usage must stay
-	// distinguishable from a reported all-zero one (REQ-GO-15).
+	// SDK fallback, and a wholly unreported usage must stay distinguishable
+	// from a reported all-zero one.
 	InputTokens              *int64 `json:"input_tokens"`
 	OutputTokens             *int64 `json:"output_tokens"`
 	CacheReadInputTokens     *int64 `json:"cache_read_input_tokens"`
@@ -62,13 +62,13 @@ type wireUsage struct {
 
 // Into folds an Anthropic usage onto the canonical one.
 //
-// REQ-PROV-05.1's subtraction is NOT applied here, and that is the correct
-// reading rather than an omission: the trap it describes is an OpenAI-family
+// Cached tokens are NOT subtracted from input here, and that is correct
+// rather than an omission: the subtraction belongs to the OpenAI-family
 // convention, where prompt_tokens INCLUDES cached tokens. Anthropic reports
 // input_tokens EXCLUSIVE of both cache_read_input_tokens and
 // cache_creation_input_tokens. Subtracting here would understate input by the
-// full cached amount — the same magnitude of error as the trap, in the other
-// direction, and just as silent.
+// full cached amount — the same magnitude of error as not subtracting there,
+// in the other direction, and just as silent.
 func (w wireUsage) Into(u *core.Usage) {
 	cw := core.UsageWire{
 		InputTokens:      w.InputTokens,
@@ -80,7 +80,7 @@ func (w wireUsage) Into(u *core.Usage) {
 		cw.CacheWrite1hTokens = w.CacheCreation.Ephemeral1h
 		if cw.CacheWriteTokens == nil && w.CacheCreation.Ephemeral5m != nil {
 			// Some responses carry only the breakdown. Total writes is the sum
-			// of the two buckets; 1h remains a SUBSET of it (REQ-PROV-05.3).
+			// of the two buckets; 1h remains a SUBSET of it.
 			total := *w.CacheCreation.Ephemeral5m
 			if w.CacheCreation.Ephemeral1h != nil {
 				total += *w.CacheCreation.Ephemeral1h
@@ -176,7 +176,7 @@ type blockAcc struct {
 	id, name string
 	// input is the concatenation of the streamed partial_json fragments,
 	// VERBATIM. It is never decoded and re-encoded on the way to
-	// core.NewToolUse (REQ-PROV-17).
+	// core.NewToolUse.
 	input []byte
 
 	// salvaged records that the argument bytes had to be repaired, so the
@@ -200,7 +200,7 @@ func startFrom(raw json.RawMessage, seedInput bool) (*blockAcc, error) {
 		// A content_block that does not decode is a stream error, not a block
 		// to drop: a discarded start leaves every later delta for that index
 		// with nothing to accumulate into, and the turn ends short with no
-		// message saying why (REQ-PROV-04).
+		// message saying why.
 		return nil, fmt.Errorf("content_block: %w", err)
 	}
 	acc := &blockAcc{typ: wb.Type, id: wb.ID, name: wb.Name,
@@ -254,16 +254,15 @@ func (a *blockAcc) block() core.ContentBlock {
 
 // endEvent produces the block's AUTHORITATIVE event.
 //
-// It is a method rather than inline emission because REQ-OBS-08.3 requires
-// every block-end to be emitted after the stream has fully ended, in block
-// order, once each — so these are buffered and replayed, never pushed from the
-// per-chunk handler.
+// It is a method rather than inline emission because every block-end is
+// emitted after the stream has fully ended, in block order, once each — so
+// these are buffered and replayed, never pushed from the per-chunk handler.
 func (a *blockAcc) endEvent(index int, b core.ContentBlock) core.Event {
 	switch v := b.(type) {
 	case core.TextBlock:
 		// The end event carries the WHOLE text, not a final delta: a consumer
-		// obeying REQ-OBS-06a discards its accumulator on the authoritative
-		// event, which is impossible if that event carries only a fragment.
+		// may discard its accumulator on the authoritative event, which is
+		// impossible if that event carries only a fragment.
 		return core.TextEndEvent{BlockIndex: index, Text: v.Text}
 	case core.ThinkingBlock:
 		return core.ThinkingEndEvent{BlockIndex: index, Thinking: v.Thinking,

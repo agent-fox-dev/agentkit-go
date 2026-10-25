@@ -23,7 +23,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
-// SearchMatch is one hit (REQ-TOOL-05).
+// SearchMatch is one hit.
 type SearchMatch struct {
 	File   string   `json:"file"`
 	Line   int      `json:"line"`
@@ -53,7 +53,7 @@ type SearchResult struct {
 	Truncated     bool          `json:"truncated"`
 	FilesSearched int           `json:"files_searched"`
 	// TruncatedBy names which limit fired when Truncated is set: the match
-	// cap ("lines") or the 50 KB byte cap ("bytes") (REQ-TOOL-09).
+	// cap ("lines") or the 50 KB byte cap ("bytes").
 	TruncatedBy TruncatedBy `json:"truncated_by,omitzero"`
 }
 
@@ -68,10 +68,10 @@ const binarySniffBytes = 64 << 10
 // 10,000 lines the model pays for and did not ask for.
 const MaxSearchContextLines = 20
 
-// searchFiles is REQ-TOOL-05.
+// searchFiles builds the search_files tool.
 //
-// Declared semantics. The search is native Go (a ripgrep backend was removed
-// by PRD 09 step 5; codesearch is the large-repository path):
+// Declared semantics. The search is native Go (there is no ripgrep backend;
+// codesearch is the large-repository path):
 //
 //   - case_sensitive absent means SMART-CASE: an all-lowercase pattern matches
 //     insensitively, anything with an uppercase rune matches sensitively.
@@ -208,7 +208,7 @@ func (f *fileTools) searchFiles() core.Tool {
 			note := ""
 			if res.Truncated {
 				// The marker names THIS tool's parameter, max_matches, and its
-				// cap of 100 — not find_files' `limit` (REQ-TOOL-09b).
+				// cap of 100 — not find_files' `limit`.
 				note = SearchMarker(effectiveMax(a.MaxMatches))
 				if res.TruncatedBy == TruncatedByBytes {
 					note = SearchBytesMarker(len(res.Matches), DefaultByteLimit)
@@ -335,16 +335,16 @@ func Search(ctx context.Context, root string, p SearchParams) (SearchResult, err
 	return SearchIn(ctx, root, p, workspace.IgnoreOptions{})
 }
 
-// SearchIn is Search with an injected ignore environment (NFR-TEST-04), so a
-// test can pin an empty global excludes layer instead of inheriting the
-// developer's.
+// SearchIn is Search with an injected ignore environment, so a test can pin
+// an empty global excludes layer instead of inheriting the developer's.
 func SearchIn(ctx context.Context, root string, p SearchParams, ig workspace.IgnoreOptions) (SearchResult, error) {
 	res, err := searchNative(ctx, root, p, ig)
 	if err != nil {
 		return res, err
 	}
-	// REQ-TOOL-09: the 50 KB byte limit composes with the match cap. 100 matches with 20 lines of context either side at 500
-	// chars a line is two megabytes; without this the model paid for it.
+	// The 50 KB byte limit composes with the match cap. 100 matches with 20
+	// lines of context either side at 500 chars a line is two megabytes;
+	// without this the model paid for it.
 	capSearchBytes(&res, DefaultByteLimit)
 	return res, nil
 }
@@ -701,7 +701,7 @@ func readWholeLine(br *bufio.Reader, buf []byte) ([]byte, error) {
 	}
 }
 
-// capLine bounds one returned line (REQ-TOOL-09's per-line cap).
+// capLine bounds one returned line: the per-line cap of the output limits.
 //
 // The cap is 500 CHARACTERS, cut on a rune boundary. A byte slice at 500
 // lands inside a multi-byte rune one time in a few, and the result is

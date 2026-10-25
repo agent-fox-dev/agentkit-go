@@ -11,17 +11,17 @@ import (
 	"time"
 )
 
-// This file is REQ-TOOL-05.2 and .3: the ignore SOURCES and their precedence,
-// and nested-repository boundaries.
+// This file holds the ignore SOURCES and their precedence, and
+// nested-repository boundaries.
 //
-// The requirement is blunt about why this matters: the absence of a real
-// ignore engine "is the difference between a tool that returns the project's
-// files and one that returns node_modules". A single root .gitignore — which
+// Why this matters, bluntly: the absence of a real ignore engine is the
+// difference between a tool that returns the project's files and one that
+// returns node_modules. A single root .gitignore — which
 // is what this was — gets the common case right and every layered case wrong,
 // and the wrongness is a wall of noise in the model's context rather than an
 // error anyone sees.
 //
-// DECLARED SEMANTICS (REQ-TOOL-05.4 asks for a documented answer):
+// DECLARED SEMANTICS:
 //
 //   - A git repository is NOT required. Ignore files are honoured wherever
 //     they are found. A scan root outside any repository still gets the user's
@@ -38,8 +38,8 @@ import (
 
 // ignorePattern is one parsed gitignore line, matched with the same
 // doublestar call as tools.MatchGlob. go-git's plumbing/format/gitignore was
-// considered (PRD 09) and rejected: its segment matcher is filepath.Match, so
-// `[!x]` stops negating, and its `**` does not backtrack (`a/**/b/c` misses
+// considered and rejected: its segment matcher is filepath.Match, so `[!x]`
+// stops negating, and its `**` does not backtrack (`a/**/b/c` misses
 // a/b/x/b/c).
 type ignorePattern struct {
 	glob    string
@@ -61,8 +61,8 @@ type ignoreLayer struct {
 }
 
 // IgnoreOptions injects the environment the ignore engine reads, so the whole
-// thing is testable without mutating process state or requiring a git binary
-// (NFR-TEST-04). The zero value reads the real environment.
+// thing is testable without mutating process state or requiring a git
+// binary. The zero value reads the real environment.
 //
 // It is given once, to Open: without it a tool-level test reads the
 // developer's own global excludes, and passes or fails depending on whose
@@ -89,7 +89,7 @@ func NoGlobalExcludes() IgnoreOptions {
 // memoized returns o with the `git config` lookup memoized. The global
 // excludes path does not change within a session, and a walk used to spawn git
 // on EVERY call — a subprocess per tool call for a value that is the same each
-// time (NFR-TEST-04's hidden global dependency, paid over and over). The
+// time (a hidden global dependency, paid over and over). The
 // lookup is lazy: nothing runs until the rules are first used.
 func (o IgnoreOptions) memoized() IgnoreOptions {
 	lookup := o.GitConfig
@@ -164,9 +164,9 @@ func (e *ignoreEngine) enter(rel, abs string) {
 // match reports whether rel (slash-relative to the scan root) is ignored.
 //
 // Evaluation runs shallowest to deepest with LAST MATCH WINNING, which
-// delivers both halves of REQ-TOOL-05.2 in one pass: deeper files override
-// shallower ones because they are evaluated later, and `!` re-includes within
-// a file for the same reason.
+// delivers both precedence rules in one pass: deeper files override shallower
+// ones because they are evaluated later, and `!` re-includes within a file
+// for the same reason.
 func (e *ignoreEngine) match(rel string, isDir bool) bool {
 	rel = filepath.ToSlash(rel)
 	if hasGitComponent(rel) {
@@ -212,10 +212,10 @@ func hasGitComponent(rel string) bool {
 // repoBoundary returns the index of the innermost repository-root layer
 // containing rel, or 0.
 //
-// This is REQ-TOOL-05.3. Without it, a vendored dependency that is itself a
-// git checkout inherits the outer project's .gitignore — so a rule the outer
-// project wrote about its own build output silently deletes files from the
-// listing of a repository that has never heard of it.
+// This is the nested-repository boundary. Without it, a vendored dependency
+// that is itself a git checkout inherits the outer project's .gitignore — so
+// a rule the outer project wrote about its own build output silently deletes
+// files from the listing of a repository that has never heard of it.
 func (e *ignoreEngine) repoBoundary(rel string) int {
 	best := 0
 	for i, l := range e.layers {
@@ -293,7 +293,7 @@ func parseIgnoreFile(path string) []ignorePattern {
 	return out
 }
 
-// globalExcludesPath resolves REQ-TOOL-05.2's first source, in order:
+// globalExcludesPath resolves the global excludes file, in order:
 // `git config --path --get core.excludesFile`, then $XDG_CONFIG_HOME/git/ignore,
 // then ~/.config/git/ignore.
 //

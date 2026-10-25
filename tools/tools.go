@@ -1,10 +1,10 @@
 // Package tools provides AgentKit's built-in tool set.
 //
-// The file tool set is deliberately minimal (REQ-TOOL-04): read, write, edit,
-// find and list. A tool earns a slot only when it has semantics `execute`
-// cannot express — truncation, unique-match editing, deterministic ignore
-// handling. Deletion, renaming, appending and stat are one shell word each and
-// ship no tool. Their absence is the requirement.
+// The file tool set is deliberately minimal: read, write, edit, find and list.
+// A tool earns a slot only when it has semantics `execute` cannot express —
+// truncation, unique-match editing, deterministic ignore handling. Deletion,
+// renaming, appending and stat are one shell word each and ship no tool. Their
+// absence is deliberate.
 //
 // The tools are built for a workspace: open one with workspace.Open, which owns
 // the containment boundary, the ignore rules and the directory walk, and pass
@@ -48,23 +48,21 @@ type SymbolOptions struct {
 // Options configures the built-in tool set. The workspace, and with it the
 // ignore rules, is the argument of For, not an option.
 type Options struct {
-	// SpillDir is where oversized subprocess output is streamed in full
-	// (REQ-TOOL-09d). Empty means a per-workspace subdirectory of
-	// os.TempDir(), created on first spill. Spill files are the EMBEDDER'S to
-	// clean up: the SDK never deletes one, because the path is handed to the
-	// model and to the audit trail, and either may still need it after the
-	// call that produced it has returned.
+	// SpillDir is where oversized subprocess output is streamed in full. Empty
+	// means a per-workspace subdirectory of os.TempDir(), created on first
+	// spill. Spill files are the EMBEDDER'S to clean up: the SDK never deletes
+	// one, because the path is handed to the model and to the audit trail, and
+	// either may still need it after the call that produced it has returned.
 	SpillDir string
 	// DisableSpill turns spilling off entirely, for a caller that wants no
-	// file left behind. Without it the requirement's "additionally streamed
-	// to a temp file" is on by default, since a default that silently
-	// dropped the full output would make the marker name a file that does
-	// not exist.
+	// file left behind. Without it spilling is on by default, since a default
+	// that silently dropped the full output would make the marker name a file
+	// that does not exist.
 	DisableSpill bool
-	// Env replaces the subprocess environment. Nil means ReducedEnv(nil)
-	// (REQ-SEC-08) — for every constructor here, not only For(): a tool built
-	// by hand with a nil Env must not inherit the parent's credentials just
-	// because it skipped the aggregate.
+	// Env replaces the subprocess environment. Nil means ReducedEnv(nil) — for
+	// every constructor here, not only For(): a tool built by hand with a nil
+	// Env must not inherit the parent's credentials just because it skipped the
+	// aggregate.
 	Env []string
 	// Symbols configures the symbol table.
 	Symbols SymbolOptions
@@ -93,31 +91,30 @@ func (o Options) withDefaults(ws *workspace.Workspace) Options {
 // defaultSpillDir names the per-workspace spill directory under os.TempDir().
 // The workspace is identified by a hash rather than its basename so two
 // checkouts called "app" do not share a directory, and so the name is safe on
-// every platform in the NFR-COMPAT-06 matrix.
+// every supported platform.
 func defaultSpillDir(root string) string {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(root))
 	return filepath.Join(os.TempDir(), fmt.Sprintf("agentkit-spill-%08x", h.Sum32()))
 }
 
-// FileNavigationTools names REQ-TOOL-04e's opt-in set of six.
+// FileNavigationTools names the six file navigation tools.
 //
-// They are in For() because For() is the DEFAULT set, and the requirement's
-// "opt-in" is about the tool policy of REQ-TOOL-10 rather than about this
-// constructor: an embedder scopes a run down with ToolPolicy, and a set that
-// omitted them by default would make the common case the one you have to
-// remember. What the requirement actually turns on is their ABSENCE from the
-// resolved set, which is the prompt builder's business, not this list's.
+// They are in For() because For() is the DEFAULT set: an embedder scopes a run
+// down with ToolPolicy, and a set that omitted them by default would make the
+// common case the one you have to remember. What their ABSENCE from the
+// resolved set changes is the prompt, which is the prompt builder's business,
+// not this list's.
 func FileNavigationTools() []string {
 	return []string{"list_files", "find_files", "search_files", "file_outline", "find_symbol", "find_references"}
 }
 
-// ExecuteFallbackGuideline is REQ-TOOL-04e's sentence, verbatim.
+// ExecuteFallbackGuideline is the guideline for a run that has a shell but
+// none of the FileNavigationTools.
 //
 // It is not a PromptGuidelines entry on any tool, because its condition is
 // that those tools are MISSING — a per-tool field can only fire when its tool
-// is present, which is the opposite of what the requirement asks for. The
-// prompt builder emits it.
+// is present, which is the opposite. The prompt builder emits it.
 const ExecuteFallbackGuideline = "Use execute for file operations like ls, rg, find."
 
 // SearchOverExecuteGuideline compares search_files with execute, so it is only
@@ -128,8 +125,8 @@ const SearchOverExecuteGuideline = "Prefer search_files over execute+grep: it re
 
 // ---------------------------------------------------------------- path locks
 
-// pathLocks is REQ-LOOP-12's file mutation queue: a REFCOUNTED per-path mutex
-// keyed on the SYMLINK-RESOLVED absolute path.
+// pathLocks is the file mutation queue: a REFCOUNTED per-path mutex keyed on
+// the SYMLINK-RESOLVED absolute path.
 //
 // Keying on the resolved path is what makes two spellings of one file share a
 // lock — `./x.go`, `x.go` and a symlink pointing at it are one file and must
@@ -173,14 +170,12 @@ func (p *pathLocks) acquire(path string) func() {
 
 // lockKey resolves a path for locking. For a file that does not exist yet it
 // resolves the PARENT and rejoins the base, so a not-yet-created file under a
-// symlinked directory still shares a lock with its other spellings (ruling
-// P-48).
+// symlinked directory still shares a lock with its other spellings.
 //
-// Only NOT-EXIST falls back to the absolute path (REQ-LOOP-12). Any other
-// resolution error — permission denied, a link loop, an I/O fault — is
-// returned, because a key computed from a path that could not be resolved is
-// a key two spellings of one file might not share, which is the lost update
-// the lock exists to prevent.
+// Only NOT-EXIST falls back to the absolute path. Any other resolution error —
+// permission denied, a link loop, an I/O fault — is returned, because a key
+// computed from a path that could not be resolved is a key two spellings of one
+// file might not share, which is the lost update the lock exists to prevent.
 func lockKey(path string) (string, error) {
 	r, err := filepath.EvalSymlinks(path)
 	if err == nil {
@@ -332,7 +327,7 @@ func (f *fileTools) readFile() core.Tool {
 					"%s is a %s image: reading images is not supported", f.ws.Rel(abs), format))
 			}
 
-			// 1-based, with 0 aliased to 1 (ruling P-21).
+			// 1-based, with 0 aliased to 1.
 			from := a.Offset
 			if from <= 0 {
 				from = 1
@@ -356,11 +351,10 @@ func (f *fileTools) readFile() core.Tool {
 			body := make([]string, 0, len(page.lines)+2)
 			for _, l := range page.lines {
 				if l.long {
-					// REQ-TOOL-09c: a single line over the byte limit is
-					// replaced IN PLACE by a marker naming the shell
-					// workaround, and the read continues past it. Cutting the
-					// line would hand the model a fragment with no way to tell
-					// where it ended.
+					// A single line over the byte limit is replaced IN PLACE by
+					// a marker naming the shell workaround, and the read
+					// continues past it. Cutting the line would hand the model
+					// a fragment with no way to tell where it ended.
 					body = append(body, LongLineMarker(l.n, l.size, DefaultByteLimit, shown))
 					continue
 				}
@@ -373,8 +367,8 @@ func (f *fileTools) readFile() core.Tool {
 			}
 			if page.to < page.total {
 				// One marker, carrying the REAL continuation offset, whichever
-				// limit fired (REQ-TOOL-09b). The byte cut is taken on whole
-				// lines, so the offset it names is the next unseen line.
+				// limit fired. The byte cut is taken on whole lines, so the
+				// offset it names is the next unseen line.
 				body = append(body, ReadOffsetMarker(from, page.to, page.total))
 			}
 			// A file that is not valid UTF-8 (Latin-1, CP1252, Shift-JIS…)
@@ -459,7 +453,7 @@ type readLine struct {
 	n    int
 	text string
 	// long marks a line whose size alone exceeds the byte budget. Its text is
-	// not kept; the caller emits REQ-TOOL-09c's marker in its place.
+	// not kept; the caller emits LongLineMarker in its place.
 	long bool
 	size int64
 }
@@ -472,13 +466,13 @@ type readLine struct {
 //
 // Lines are counted the way an editor counts them: "a\nb\n" is two lines,
 // not three. strings.Split's trailing empty element used to inflate every
-// total by one and reject offset=N for an N-line file (REQ-TOOL-09b's marker
-// named a line that did not exist).
+// total by one and reject offset=N for an N-line file (the continuation
+// marker named a line that did not exist).
 //
 // The byte budget is applied on WHOLE lines, so no line is ever cut mid-rune
 // and the continuation offset the marker names is exactly the first unseen
 // line. A single line over the budget is reported as `long` rather than
-// shown; the caller replaces it with REQ-TOOL-09c's marker and continues.
+// shown; the caller replaces it with LongLineMarker and continues.
 func readLines(br *bufio.Reader, from, limit, maxBytes int) (readPage, error) {
 	var (
 		page readPage
@@ -573,7 +567,7 @@ func (f *fileTools) writeFile() core.Tool {
 			"Prefer edit_file for an existing file; write_file replaces the whole file.",
 		},
 		// Sequential: a write has workspace-wide side effects, and one
-		// Sequential tool demotes the whole batch (REQ-LOOP-05a).
+		// Sequential tool demotes the whole batch.
 		ExecutionMode: core.Sequential,
 		InputSchema: schema.Object(
 			schema.Prop("path", schema.String("Path to write")),
@@ -598,11 +592,11 @@ func (f *fileTools) writeFile() core.Tool {
 			release := f.locks.acquire(key)
 			defer release()
 
-			// Re-checked under the lock, BEFORE MkdirAll and the open
-			// (REQ-SEC-01): a link planted since Resolve — on the leaf or on
-			// any parent — would otherwise be followed first by MkdirAll,
-			// which builds the missing directories wherever the link points,
-			// and then by WriteFile.
+			// Re-checked under the lock, BEFORE MkdirAll and the open: a link
+			// planted since Resolve — on the leaf or on any parent — would
+			// otherwise be followed first by MkdirAll, which builds the
+			// missing directories wherever the link points, and then by
+			// WriteFile.
 			if err := f.ws.CheckWriteTarget(abs); err != nil {
 				return core.ErrResult("path_not_allowed", err.Error())
 			}
@@ -611,7 +605,7 @@ func (f *fileTools) writeFile() core.Tool {
 			}
 			// Mark the path dirty after the write attempt, whether it
 			// succeeds or fails, while still holding the per-path lock
-			// (before the deferred release runs). 02-REQ-6.2.
+			// (before the deferred release runs).
 			rel := filepath.ToSlash(f.ws.Rel(abs))
 			if err := writeFileAtomic(abs, []byte(a.Content)); err != nil {
 				f.markTableDirty(rel)
@@ -650,8 +644,8 @@ func (f *fileTools) editFile() core.Tool {
 					schema.Prop("new_string", schema.String("Replacement text")),
 				), "Edits to apply, all matched against the original content")),
 		),
-		// PrepareArguments repairs the three shapes models actually emit
-		// (REQ-TOOL-11.1). Each was observed, not imagined.
+		// PrepareArguments repairs the three shapes models actually emit.
+		// Each was observed, not imagined.
 		PrepareArguments: repairEditArgs,
 		Execute: func(ctx context.Context, in json.RawMessage) core.ToolResult {
 			var a struct {
@@ -682,7 +676,7 @@ func (f *fileTools) editFile() core.Tool {
 
 			// Mark the path dirty after the edit attempt, whether it
 			// succeeds or fails, while still holding the per-path lock
-			// (before the deferred release runs). 02-REQ-6.2, 03-REQ-2.6.
+			// (before the deferred release runs).
 			// Only once the file is known to exist: an edit of a mistyped
 			// path changed nothing, and marking it would cost the symbol
 			// table and the code index a revalidation for nothing.
@@ -712,7 +706,7 @@ func (f *fileTools) editFile() core.Tool {
 				}
 				return core.ErrResult("edit_failed", err.Error())
 			}
-			// Same re-check as write_file, for the same reason (REQ-SEC-01).
+			// Same re-check as write_file, for the same reason.
 			if err := f.ws.CheckWriteTarget(abs); err != nil {
 				return core.ErrResult("path_not_allowed", err.Error())
 			}
@@ -735,8 +729,7 @@ func asEditError(err error, out **EditError) bool {
 	return false
 }
 
-// repairEditArgs handles the three malformed shapes models emit for edit_file
-// (REQ-TOOL-11.1):
+// repairEditArgs handles the three malformed shapes models emit for edit_file:
 //
 //  1. edits delivered as a JSON STRING instead of an array
 //  2. a bare {old_string, new_string} object instead of a one-element array
@@ -934,7 +927,7 @@ func (f *fileTools) listFiles() core.Tool {
 				r.Data["entries"] = entries
 				// The marker is a separate key, as in find_files. Appended to
 				// `entries` it was indistinguishable from a file called
-				// "[500 entries limit reached...]" (REQ-TOOL-09b).
+				// "[500 entries limit reached...]".
 				note = ListMarker(limit)
 				r.Data["note"] = note
 				r.Metadata = &core.ToolMetadata{Truncated: true, TruncatedBy: string(TruncatedByLines)}
@@ -975,7 +968,7 @@ func (f *fileTools) findFiles() core.Tool {
 			if a.Path == "" {
 				a.Path = "."
 			}
-			// REQ-TOOL-04's table: file_type string (default "file").
+			// file_type is a string, default "file".
 			// "directory" is accepted as a spelling of "dir" because models
 			// emit both.
 			wantFiles, wantDirs := true, false
@@ -994,7 +987,7 @@ func (f *fileTools) findFiles() core.Tool {
 				return core.ErrResult("path_not_allowed", err.Error())
 			}
 			limit := clampLimit(a.Limit, FindResultDefault, FindResultCap)
-			// Never nil: no match is "files": [], not null (06-REQ-4.5).
+			// Never nil: no match is "files": [], not null.
 			found := []string{}
 			truncated := false
 			err = f.ws.Walk(ctx, root, workspace.WalkOptions{IncludeHidden: true}, func(rel string, d fs.DirEntry) error {
@@ -1097,9 +1090,8 @@ func executeTool(ws *workspace.Workspace, opts Options) core.Tool {
 			if err != nil {
 				return core.ErrResult("invalid_arguments", err.Error())
 			}
-			// Stdin, LogPath and KeepHead are deliberately unset:
-			// REQ-TOOL-06 null-device stdin, tail truncation at
-			// DefaultByteLimit, spill to SpillDir.
+			// Stdin, LogPath and KeepHead are deliberately unset: null-device
+			// stdin, tail truncation at DefaultByteLimit, spill to SpillDir.
 			res, err := Run(ctx, a.Command, ExecOptions{
 				Dir:      ws.Root(),
 				Timeout:  timeout,
@@ -1115,11 +1107,11 @@ func executeTool(ws *workspace.Workspace, opts Options) core.Tool {
 	}
 }
 
-// timeoutArg validates REQ-TOOL-06's timeout_s: optional with NO default, and
-// when supplied it must be POSITIVE. The argument is a pointer so that a
-// supplied 0 is distinguishable from an absent one; with a plain int a model
-// that sent timeout_s=0 — or a negative number — silently got "no timeout",
-// which is the one thing a caller who typed a timeout did not ask for.
+// timeoutArg validates timeout_s: optional with NO default, and when supplied
+// it must be POSITIVE. The argument is a pointer so that a supplied 0 is
+// distinguishable from an absent one; with a plain int a model that sent
+// timeout_s=0 — or a negative number — silently got "no timeout", which is the
+// one thing a caller who typed a timeout did not ask for.
 func timeoutArg(s *int) (time.Duration, error) {
 	if s == nil {
 		return 0, nil
@@ -1132,7 +1124,7 @@ func timeoutArg(s *int) (time.Duration, error) {
 
 // execOutputSchema is the one schema of execResultToTool's Data, shared by
 // execute and run_command so the two cannot drift apart. Data
-// carries it on a failed outcome as well as on success (06-REQ-7.2).
+// carries it on a failed outcome as well as on success.
 var execOutputSchema = schema.Object(
 	schema.Prop("output", schema.String()),
 	schema.Prop("exit_code", schema.Int()),
@@ -1144,7 +1136,7 @@ var execOutputSchema = schema.Object(
 // one value, not a fresh copy per tool; callers must not modify it.
 func execResultOutputSchema() *schema.Schema { return execOutputSchema }
 
-// execResultToTool is the REQ-TOOL-08 envelope for a subprocess result.
+// execResultToTool builds the tool result envelope for a subprocess result.
 //
 // Shared by execute and run_command: the envelope is a property of having run
 // a subprocess, not of how the command was spelled, and two copies would drift on the next field added to ToolMetadata.
@@ -1155,7 +1147,7 @@ func execResultOutputSchema() *schema.Schema { return execOutputSchema }
 // adds nothing — "exit_code":0,"outcome":"ok" on every successful call is
 // pure cost. Data keeps exit_code and outcome for programmatic readers.
 //
-// IOErr is deliberately not rendered into the tool result (04-REQ-6.4):
+// IOErr is deliberately not rendered into the tool result:
 // only Output, Outcome, ExitCode, Truncated, TotalBytes, SpillPath and
 // Duration are read from the ExecResult.
 func execResultToTool(res ExecResult, timeout time.Duration) core.ToolResult {
@@ -1211,7 +1203,7 @@ func execStatusLine(res ExecResult, timeout time.Duration) string {
 	return ""
 }
 
-// runCommandTool is REQ-TOOL-06's structured variant.
+// runCommandTool is execute's structured variant.
 //
 // The model picks between this and `execute` by NAME, which is the point: a
 // shell-features argument on one tool would be a choice the model gets wrong
@@ -1252,9 +1244,8 @@ func runCommandTool(ws *workspace.Workspace, opts Options) core.Tool {
 			if err != nil {
 				return core.ErrResult("invalid_arguments", err.Error())
 			}
-			// Stdin, LogPath and KeepHead are deliberately unset:
-			// REQ-TOOL-06 null-device stdin, tail truncation at
-			// DefaultByteLimit, spill to SpillDir.
+			// Stdin, LogPath and KeepHead are deliberately unset: null-device
+			// stdin, tail truncation at DefaultByteLimit, spill to SpillDir.
 			res, err := RunArgv(ctx, a.Argv, ExecOptions{
 				Dir:      ws.Root(),
 				Timeout:  timeout,

@@ -2,11 +2,11 @@ package tools // import "github.com/agent-fox-dev/agentkit-go/tools"
 
 Package tools provides AgentKit's built-in tool set.
 
-The file tool set is deliberately minimal (REQ-TOOL-04): read, write, edit,
-find and list. A tool earns a slot only when it has semantics `execute` cannot
-express — truncation, unique-match editing, deterministic ignore handling.
-Deletion, renaming, appending and stat are one shell word each and ship no tool.
-Their absence is the requirement.
+The file tool set is deliberately minimal: read, write, edit, find and list.
+A tool earns a slot only when it has semantics `execute` cannot express —
+truncation, unique-match editing, deterministic ignore handling. Deletion,
+renaming, appending and stat are one shell word each and ship no tool. Their
+absence is deliberate.
 
 The tools are built for a workspace: open one with workspace.Open, which owns
 the containment boundary, the ignore rules and the directory walk, and pass it
@@ -31,14 +31,14 @@ const (
 	// The DEFAULTS for find_files and list_files sit well under their caps.
 	// A model that asks for "everything" almost never wants a thousand paths
 	// in its context; it wants enough to orient and a marker that names the
-	// call for more. The PRD's table puts the default at the cap; the cap is
-	// kept, and a caller that wants it asks for it (limit=1000 / limit=500).
+	// call for more. The cap is kept, and a caller that wants it asks for it
+	// (limit=1000 / limit=500).
 	FindResultDefault = 200
 	ListEntryDefault  = 200
 )
-    REQ-TOOL-09's two-limit table. Two limits compose on every result — a
-    line/entry limit and a byte limit — and the result records WHICH one fired,
-    because "truncated" alone does not tell the model what to change.
+    The tools' output limits. Two limits compose on every result — a line/entry
+    limit and a byte limit — and the result records WHICH one fired, because
+    "truncated" alone does not tell the model what to change.
 
 const EditFileMaxBytes = 16 << 20
     EditFileMaxBytes is the largest file edit_file will load. The tool holds
@@ -46,12 +46,12 @@ const EditFileMaxBytes = 16 << 20
     what exact-match editing is for, and the message names what is.
 
 const ExecuteFallbackGuideline = "Use execute for file operations like ls, rg, find."
-    ExecuteFallbackGuideline is REQ-TOOL-04e's sentence, verbatim.
+    ExecuteFallbackGuideline is the guideline for a run that has a shell but
+    none of the FileNavigationTools.
 
     It is not a PromptGuidelines entry on any tool, because its condition is
-    that those tools are MISSING — a per-tool field can only fire when its
-    tool is present, which is the opposite of what the requirement asks for.
-    The prompt builder emits it.
+    that those tools are MISSING — a per-tool field can only fire when its tool
+    is present, which is the opposite. The prompt builder emits it.
 
 const MaxSearchContextLines = 20
     MaxSearchContextLines bounds context_lines.
@@ -71,20 +71,20 @@ FUNCTIONS
 func ApplyEdits(content string, edits []Edit) (string, int, error)
     ApplyEdits applies a batch of edits to content, or rejects the whole batch.
 
-    The contract, from REQ-TOOL-04a-d:
+    The contract:
 
       - Every old_string matches against the ORIGINAL content, never against the
         result of an earlier edit in the same call. This is what makes a batch
         reviewable: the model reasoned about one file, not about a moving one.
-      - A non-unique old_string is a REJECTION, not a replace-all
-        (REQ-TOOL-04c). Multiplicity means the model has not identified a site;
-        replacing all of them is how an agent corrupts a file it was asked to
-        touch once. There is deliberately no {replaced: N} success shape.
-      - Rejections are evaluated in GLOBAL PHASE ORDER, not per edit (ruling
-        P-22). Phases 4 and 5 are inherently global, and per-edit ordering
-        is a real behavioural fork: it would report "not found" for edit 2
-        while a phase-ordered implementation reports "not unique" for edit 1,
-        showing the model a different problem to fix.
+      - A non-unique old_string is a REJECTION, not a replace-all. Multiplicity
+        means the model has not identified a site; replacing all of them is
+        how an agent corrupts a file it was asked to touch once. There is
+        deliberately no {replaced: N} success shape.
+      - Rejections are evaluated in GLOBAL PHASE ORDER, not per edit. Phases 4
+        and 5 are inherently global, and per-edit ordering is a real behavioural
+        fork: it would report "not found" for edit 2 while a phase-ordered
+        implementation reports "not unique" for edit 1, showing the model a
+        different problem to fix.
 
     Returns the new content and the number of edits applied.
 
@@ -105,23 +105,21 @@ func ExpandBraces(p string) []string
     ExpandBraces expands {a,b} alternations, including nested ones.
 
 func FileNavigationTools() []string
-    FileNavigationTools names REQ-TOOL-04e's opt-in set of six.
+    FileNavigationTools names the six file navigation tools.
 
-    They are in For() because For() is the DEFAULT set, and the requirement's
-    "opt-in" is about the tool policy of REQ-TOOL-10 rather than about this
-    constructor: an embedder scopes a run down with ToolPolicy, and a set that
-    omitted them by default would make the common case the one you have to
-    remember. What the requirement actually turns on is their ABSENCE from the
-    resolved set, which is the prompt builder's business, not this list's.
+    They are in For() because For() is the DEFAULT set: an embedder scopes a
+    run down with ToolPolicy, and a set that omitted them by default would make
+    the common case the one you have to remember. What their ABSENCE from the
+    resolved set changes is the prompt, which is the prompt builder's business,
+    not this list's.
 
 func FindMarker(limit int) string
     FindMarker is emitted when a find hits its result cap.
 
-    REQ-TOOL-09b: the marker must name a call that WORKS. The tool clamps
-    `limit` to FindResultCap, so "Use limit=2000" at a limit of 1000 names a
-    call the tool would clamp straight back to the same result — a truncation
-    the model cannot act on, which is the thing the requirement exists to
-    prevent. At the cap the marker says so and advises narrowing instead.
+    The marker must name a call that WORKS. The tool clamps `limit` to
+    FindResultCap, so "Use limit=2000" at a limit of 1000 names a call the tool
+    would clamp straight back to the same result — a truncation the model cannot
+    act on. At the cap the marker says so and advises narrowing instead.
 
 func FoldConfusables(s string) string
     FoldConfusables rewrites a string to its ASCII fold.
@@ -139,7 +137,7 @@ func FoldLine(s string) string
     Trailing only. Leading whitespace is indentation and is semantic in Go,
     Python, YAML and Makefiles alike; trimming it would let an edit match a
     line at the wrong nesting level, which is precisely the kind of silent
-    mis-application REQ-TOOL-04c's uniqueness rule exists to prevent.
+    mis-application the edit tool's uniqueness rule exists to prevent.
 
 func For(ws *workspace.Workspace, opts Options) ([]core.Tool, error)
     For returns the built-in tools for ws: read_file, write_file, edit_file,
@@ -160,11 +158,10 @@ func ListMarker(limit int) string
 
 func LongLineMarker(line int, size int64, limit int, path string) string
     LongLineMarker names a shell workaround for a single line too large to
-    return, rather than failing opaquely (REQ-TOOL-09c).
+    return, rather than failing opaquely.
 
-    It names `execute` deliberately: `execute` is not path-contained
-    (REQ-SEC-01), so it can reach a line — or a spill file — that the file tools
-    cannot (ruling P-45).
+    It names `execute` deliberately: `execute` is not path-contained, so it can
+    reach a line — or a spill file — that the file tools cannot.
 
     The path is single-quoted for the shell: a file called `my file.txt` or
     `$HOME.txt` would otherwise name a command that does not read that file.
@@ -185,22 +182,21 @@ func MatchGlob(pattern, path string) bool
 func ReadMarker(shown, total int) string
     ReadMarker is emitted when a read is line-truncated.
 
-    The offsets are 1-BASED (ruling P-21). The PRD's parameter table says
-    "offset int (default 0)" while its own example marker says "Use offset=2001"
-    after showing lines 1-2000 — which is only correct if offsets are 1-based.
-    A 0-based reading re-reads line 2000 on every continuation.
+    The offsets are 1-BASED: after showing lines 1-2000 the marker says
+    "Use offset=2001". A 0-based reading would re-read line 2000 on every
+    continuation.
 
 func ReadOffsetMarker(from, to, total int) string
     ReadOffsetMarker is the continuation form.
 
 func ReducedEnv(base []string, extraPrefixes ...string) []string
     ReducedEnv strips credentials from the inherited environment while KEEPING
-    PATH verbatim (ruling P-47).
+    PATH verbatim.
 
     Dropping PATH is the obvious reading of "reduced environment" and it breaks
     every command, so it is not what this does. What it removes is credentials,
-    which a subprocess has no business reading and which would otherwise be one
-    `env` away from any command the model writes (REQ-SEC-08). Three rules,
+    which a subprocess has no business reading and which would otherwise
+    be one `env` away from any command the model writes. Three rules,
     all matched on the UPPER-CASED name so `anthropic_api_key` is as gone as
     `ANTHROPIC_API_KEY`:
 
@@ -248,7 +244,7 @@ func RenderSearchText(res SearchResult, marker string) string
     and another match's context is shown as the match.
 
 func ResolveShell() (string, []string, error)
-    ResolveShell is REQ-TOOL-06's fixed ladder.
+    ResolveShell resolves the shell Run uses, down a fixed ladder.
 
     It never consults $SHELL and never falls back to cmd.exe. $SHELL is the
     user's INTERACTIVE shell — fish, nushell, zsh with a custom rc — and a
@@ -264,13 +260,13 @@ func Restore(s string, bom bool, ending LineEnding) string
 
 func SearchBytesMarker(shown int, limit int) string
     SearchBytesMarker is emitted when a search hits the 50 KB byte cap before
-    its match cap (REQ-TOOL-09). There is no offset to continue from, so the
-    call it names is a narrower one.
+    its match cap. There is no offset to continue from, so the call it names is
+    a narrower one.
 
 func SearchMarker(limit int) string
     SearchMarker is emitted when a search hits its match cap. It names the
     parameter search_files actually takes, `max_matches`, not find_files'
-    `limit` (REQ-TOOL-09b).
+    `limit`.
 
 func ShellQuote(s string) string
     ShellQuote wraps s in single quotes, the one quoting form under which a
@@ -300,7 +296,7 @@ type Accumulator struct {
 
 	// Has unexported fields.
 }
-    Accumulator is REQ-TOOL-15's bounded rolling accumulator.
+    Accumulator is a bounded rolling accumulator for subprocess output.
 
     It retains a bounded HEAD and a bounded TAIL, discarding the middle as bytes
     arrive, so peak memory is roughly 2×cap regardless of how much a subprocess
@@ -310,7 +306,7 @@ type Accumulator struct {
 
     It also lazily spills the COMPLETE output to a file on first overflow,
     so the full text stays available to the caller and the audit trail while
-    only the bounded window reaches the model (REQ-TOOL-15.2).
+    only the bounded window reaches the model.
 
 func NewAccumulator(capBytes int, mode TruncateMode) *Accumulator
     NewAccumulator returns an accumulator with the given budget and mode.
@@ -326,10 +322,10 @@ func (a *Accumulator) SpillPath() string
 func (a *Accumulator) String() string
     String renders the retained window, with a marker naming what was elided.
 
-    REQ-TOOL-09b: a truncation the model cannot act on costs a turn. Every
-    marker therefore names the number of bytes elided and, where one exists,
-    the spill path — which is reachable through `execute`, because `execute` is
-    not path-contained (ruling P-45).
+    A truncation the model cannot act on costs a turn. Every marker therefore
+    names the number of bytes elided and, where one exists, the spill
+    path — which is reachable through `execute`, because `execute` is not
+    path-contained.
 
 func (a *Accumulator) Total() int64
     Total reports every byte written, including discarded ones.
@@ -352,18 +348,18 @@ type EditError struct {
 	Index int
 	Text  string
 }
-    EditError is a rejection with the exact model-visible text the PRD pins.
-    The strings are part of the contract: two conforming implementations that
-    worded them differently would show the model different messages and get
-    different self-correction behaviour.
+    EditError is a rejection with exact, pinned model-visible text. The strings
+    are part of the contract: two conforming implementations that worded them
+    differently would show the model different messages and get different
+    self-correction behaviour.
 
 func (e *EditError) Error() string
 
 type ExecOptions struct {
 	Dir string
-	// Timeout of zero means no timeout. REQ-TOOL-06 makes timeout_s optional
-	// with NO default: a default wall clock silently kills long builds, and
-	// safety comes from process control rather than from a clock.
+	// Timeout of zero means no timeout. The tools' timeout_s is optional with
+	// NO default: a default wall clock silently kills long builds, and safety
+	// comes from process control rather than from a clock.
 	Timeout time.Duration
 	// MaxBytes bounds the window that reaches the model.
 	MaxBytes int
@@ -384,18 +380,18 @@ type ExecOptions struct {
 	LogPath string
 	// Stdin, when non-nil, is copied into the child's standard input through
 	// a pipe the runner owns. The child's stdin is closed when the reader
-	// returns io.EOF. Nil keeps the null device (REQ-TOOL-06).
+	// returns io.EOF. Nil keeps the null device.
 	Stdin io.Reader
-	// Env sets the child's environment. Nil means ReducedEnv(nil)
-	// (REQ-SEC-08, same rule as tools.Options.Env): credentials are stripped
-	// and PATH, HOME, LANG, TMPDIR and TERM are kept verbatim. A non-nil
-	// slice, including an empty one, is used verbatim with no variable added
-	// or removed. Pass os.Environ() for the full inherited environment.
+	// Env sets the child's environment. Nil means ReducedEnv(nil) (the same
+	// rule as tools.Options.Env): credentials are stripped and PATH, HOME,
+	// LANG, TMPDIR and TERM are kept verbatim. A non-nil slice, including an
+	// empty one, is used verbatim with no variable added or removed. Pass
+	// os.Environ() for the full inherited environment.
 	Env []string
 	// DrainIdle is how long the output pipe must stay QUIET after the child
-	// has exited before draining stops (REQ-TOOL-17.5). Zero means
-	// defaultDrainIdle. It is an idle interval, not a deadline: every read
-	// re-arms it, so a descendant that keeps writing keeps being drained.
+	// has exited before draining stops. Zero means defaultDrainIdle. It is an
+	// idle interval, not a deadline: every read re-arms it, so a descendant
+	// that keeps writing keeps being drained.
 	DrainIdle time.Duration
 	// DrainCeiling bounds the whole post-exit drain, so a descendant writing
 	// forever cannot hold the tool open forever. Zero means
@@ -425,7 +421,7 @@ func Run(ctx context.Context, command string, opts ExecOptions) (ExecResult, err
     Run executes a command through a bash-family shell with full process-group
     lifecycle control.
 
-    The pieces that are not obvious, each from REQ-TOOL-17:
+    The pieces that are not obvious:
 
       - The command runs in its OWN PROCESS GROUP, and both timeout and context
         cancellation kill the whole group. Killing only the direct child leaves
@@ -436,10 +432,10 @@ func Run(ctx context.Context, command string, opts ExecOptions) (ExecResult, err
         which the error appears before the line that caused it.
       - The pipe is OURS (os.Pipe), not one exec created, and after the child
         exits output is drained on a RE-ARMING idle timer rather than a fixed
-        post-exit deadline (REQ-TOOL-17.5). exec closes the pipes it made as
-        soon as Wait returns, which truncates a detached descendant's output at
-        a constant — losing precisely the tail of a background job's log.
-      - Output is truncated from the TAIL unless KeepHead is set (REQ-TOOL-09a).
+        post-exit deadline. exec closes the pipes it made as soon as Wait
+        returns, which truncates a detached descendant's output at a constant —
+        losing precisely the tail of a background job's log.
+      - Output is truncated from the TAIL unless KeepHead is set.
 
     When ExecOptions.Stdin is non-nil, the reader is copied into the child's
     standard input through a pipe the runner owns. The child's stdin is closed
@@ -447,8 +443,8 @@ func Run(ctx context.Context, command string, opts ExecOptions) (ExecResult, err
     in ExecResult.IOErr. Nil keeps the null device.
 
 func RunArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, error)
-    RunArgv is REQ-TOOL-06's structured variant: an argv vector, executed with
-    NO SHELL between the caller and the program.
+    RunArgv is Run's structured variant: an argv vector, executed with NO SHELL
+    between the caller and the program.
 
     The difference is the entire point. `Run` hands a string to bash, so `;`,
     `$(…)`, backticks, globs and redirection all mean something. Here they do
@@ -498,32 +494,30 @@ const (
 func NormalizeForEdit(s string) (normalized string, bom bool, ending LineEnding)
     NormalizeForEdit strips a leading BOM and converts CRLF to LF so matching
     works against what the model actually saw, and reports what it removed so
-    Restore can put it back (REQ-TOOL-04d).
+    Restore can put it back.
 
     The CRLF restoration is LOSSY for a mixed-ending file: if the original
-    contains ANY CRLF the output is CRLF throughout (ruling P-24). That is a
-    deliberate, reported choice — preserving per-line endings would require
-    tracking them through every splice, and a file with mixed endings is already
-    in a state no editor preserves faithfully.
+    contains ANY CRLF the output is CRLF throughout. That is a deliberate,
+    reported choice — preserving per-line endings would require tracking them
+    through every splice, and a file with mixed endings is already in a state no
+    editor preserves faithfully.
 
 type Options struct {
-	// SpillDir is where oversized subprocess output is streamed in full
-	// (REQ-TOOL-09d). Empty means a per-workspace subdirectory of
-	// os.TempDir(), created on first spill. Spill files are the EMBEDDER'S to
-	// clean up: the SDK never deletes one, because the path is handed to the
-	// model and to the audit trail, and either may still need it after the
-	// call that produced it has returned.
+	// SpillDir is where oversized subprocess output is streamed in full. Empty
+	// means a per-workspace subdirectory of os.TempDir(), created on first
+	// spill. Spill files are the EMBEDDER'S to clean up: the SDK never deletes
+	// one, because the path is handed to the model and to the audit trail, and
+	// either may still need it after the call that produced it has returned.
 	SpillDir string
 	// DisableSpill turns spilling off entirely, for a caller that wants no
-	// file left behind. Without it the requirement's "additionally streamed
-	// to a temp file" is on by default, since a default that silently
-	// dropped the full output would make the marker name a file that does
-	// not exist.
+	// file left behind. Without it spilling is on by default, since a default
+	// that silently dropped the full output would make the marker name a file
+	// that does not exist.
 	DisableSpill bool
-	// Env replaces the subprocess environment. Nil means ReducedEnv(nil)
-	// (REQ-SEC-08) — for every constructor here, not only For(): a tool built
-	// by hand with a nil Env must not inherit the parent's credentials just
-	// because it skipped the aggregate.
+	// Env replaces the subprocess environment. Nil means ReducedEnv(nil) — for
+	// every constructor here, not only For(): a tool built by hand with a nil
+	// Env must not inherit the parent's credentials just because it skipped the
+	// aggregate.
 	Env []string
 	// Symbols configures the symbol table.
 	Symbols SymbolOptions
@@ -539,8 +533,8 @@ type Options struct {
 type Outcome string
     Outcome classifies how a command ended. It is a distinct type because the
     classification is a PURE FUNCTION with a pinned precedence, unit-tested on
-    its own (REQ-TOOL-17.6): mixing it into the run path is how "the command
-    timed out" ends up reported as "exit status 1".
+    its own: mixing it into the run path is how "the command timed out" ends up
+    reported as "exit status 1".
 
 const (
 	OutcomeOK      Outcome = "ok"
@@ -550,7 +544,7 @@ const (
 	OutcomeAbort   Outcome = "abort"
 )
 func ClassifyOutcome(aborted, timedOut bool, exitCode int, signaled bool) Outcome
-    ClassifyOutcome is REQ-TOOL-17.6's pure function. Precedence is part of the
+    ClassifyOutcome classifies how a command ended. Precedence is part of the
     contract and is deliberately NOT the order the events happened in:
 
         abort > timeout > exit status
@@ -604,7 +598,7 @@ type SearchMatch struct {
 	Before []string `json:"before,omitzero"`
 	After  []string `json:"after,omitzero"`
 }
-    SearchMatch is one hit (REQ-TOOL-05).
+    SearchMatch is one hit.
 
 type SearchParams struct {
 	Pattern      string `json:"pattern"`
@@ -635,7 +629,7 @@ type SearchResult struct {
 	Truncated     bool          `json:"truncated"`
 	FilesSearched int           `json:"files_searched"`
 	// TruncatedBy names which limit fired when Truncated is set: the match
-	// cap ("lines") or the 50 KB byte cap ("bytes") (REQ-TOOL-09).
+	// cap ("lines") or the 50 KB byte cap ("bytes").
 	TruncatedBy TruncatedBy `json:"truncated_by,omitzero"`
 }
     SearchResult is the returned envelope.
@@ -648,9 +642,8 @@ func Search(ctx context.Context, root string, p SearchParams) (SearchResult, err
     one.
 
 func SearchIn(ctx context.Context, root string, p SearchParams, ig workspace.IgnoreOptions) (SearchResult, error)
-    SearchIn is Search with an injected ignore environment (NFR-TEST-04),
-    so a test can pin an empty global excludes layer instead of inheriting the
-    developer's.
+    SearchIn is Search with an injected ignore environment, so a test can pin an
+    empty global excludes layer instead of inheriting the developer's.
 
 type SymbolAnswer struct {
 	Matches      []SymbolMatch
@@ -709,9 +702,9 @@ const (
 	// TruncateHead keeps the BEGINNING. Right for a file read or a listing,
 	// where the interesting part is at the top.
 	TruncateHead TruncateMode = iota
-	// TruncateTail keeps the END. Right for `execute` (REQ-TOOL-09a): a
-	// failing build puts its error at the end of the log, and head-truncation
-	// preserves the banner and discards the failure.
+	// TruncateTail keeps the END. Right for `execute`: a failing build puts
+	// its error at the end of the log, and head-truncation preserves the
+	// banner and discards the failure.
 	TruncateTail
 	// TruncateMiddle keeps both ends and elides the centre.
 	TruncateMiddle
@@ -719,8 +712,7 @@ const (
 type TruncatedBy string
     TruncatedBy names which limit fired. It is a closed enum: the 500-char
     per-line cap in search gets its OWN marker rather than a third value,
-    so the enum stays closed and a consumer switching on it cannot miss a case
-    (ruling P-44).
+    so the enum stays closed and a consumer switching on it cannot miss a case.
 
 const (
 	TruncatedByLines TruncatedBy = "lines"

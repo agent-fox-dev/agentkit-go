@@ -1,11 +1,10 @@
-// Package prompt assembles the system prompt the loop sends (NFR-TEST-08a,
-// REQ-TOOL-04e).
+// Package prompt assembles the system prompt the loop sends.
 //
 // Until this existed, core.Tool.PromptGuidelines was a field nothing read and
 // the loop sent the system prompt verbatim — so a tool could declare
-// guidance the model never saw. NFR-TEST-08(a) asks for a golden of the
-// assembled prompt "built through the real tool resolver", which needs a real
-// assembler to build it. Build is that assembler.
+// guidance the model never saw. A golden of the assembled prompt built
+// through the real tool resolver needs a real assembler to build it. Build is
+// that assembler.
 package prompt
 
 import (
@@ -38,8 +37,7 @@ Work from evidence: read before you edit, and verify a change rather than
 assuming it worked. When a tool reports an error, read the error — it names
 what to do differently. Prefer one correct call to several speculative ones.`
 
-// UniversalGuidelines are appended after the per-tool ones (NFR-TEST-08a:
-// "appends the universal guidelines last").
+// UniversalGuidelines are appended after the per-tool ones.
 //
 // Last because they are the weakest: a per-tool guideline is specific advice
 // about a tool the model is looking at, and burying it under general
@@ -55,10 +53,10 @@ var UniversalGuidelines = []string{
 //
 // A non-empty system prompt replaces the built-in base and the built-in
 // UNIVERSAL guidelines, and nothing else. The tools' guidelines are not
-// built-in text: they travel with the tool (NFR-TEST-08a) and describe how to
-// use what the model has been given, so they follow a custom prompt as they
-// follow the built-in one — otherwise every embedder with its own prompt has
-// to re-render them by hand.
+// built-in text: they travel with the tool and describe how to use what the
+// model has been given, so they follow a custom prompt as they follow the
+// built-in one — otherwise every embedder with its own prompt has to
+// re-render them by hand.
 func Build(system string, active []core.Tool) string {
 	var blocks []string
 	if system != "" {
@@ -75,8 +73,8 @@ func Build(system string, active []core.Tool) string {
 	return strings.Join(blocks, "\n\n")
 }
 
-// guidelinesBlock is NFR-TEST-08a's collection. universal adds the built-in
-// UniversalGuidelines, which a custom prompt replaces.
+// guidelinesBlock collects the guidelines section. universal adds the
+// built-in UniversalGuidelines, which a custom prompt replaces.
 //
 // Deduplicated while PRESERVING FIRST-SEEN ORDER. Sorting would be tidier and
 // wrong: the order tools were resolved in is the order the model reads them,
@@ -100,13 +98,13 @@ func guidelinesBlock(active []core.Tool, universal bool) string {
 			add(g)
 		}
 	}
-	// REQ-TOOL-04e: emitted when the file-navigation tools are ABSENT and a
-	// shell is present. It cannot be a PromptGuidelines entry on any tool,
-	// because a per-tool field can only fire when its tool is there — which is
-	// the opposite of the condition. The shell is whichever of execute and
-	// run_command is active, and the guideline names it: a
-	// guideline about `execute` given to a model that has `run_command` points
-	// at a tool it cannot call.
+	// The execute fallback guideline is emitted when the file-navigation
+	// tools are ABSENT and a shell is present. It cannot be a
+	// PromptGuidelines entry on any tool, because a per-tool field can only
+	// fire when its tool is there — which is the opposite of the condition.
+	// The shell is whichever of execute and run_command is active, and the
+	// guideline names it: a guideline about `execute` given to a model that
+	// has `run_command` points at a tool it cannot call.
 	if shell := activeShell(active); shell != "" {
 		if !anyPresent(active, tools.FileNavigationTools()) {
 			add(shellGuideline(tools.ExecuteFallbackGuideline, shell))

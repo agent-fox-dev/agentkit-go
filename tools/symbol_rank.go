@@ -17,7 +17,7 @@ func isExactMatch(query, target string, caseSensitive bool) bool {
 	return strings.EqualFold(query, target)
 }
 
-// rankSymbols sorts matches by the ranking tiers defined in 02-REQ-4.1:
+// rankSymbols sorts matches by these ranking tiers:
 //  1. exact before prefix (smart-case equality counts as exact)
 //  2. exported before unexported
 //  3. non-test files before test files

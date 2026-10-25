@@ -19,20 +19,21 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// The SDK owns the protocol; this file owns the three trust boundaries where
-// bytes AgentKit did not write enter the process (REQ-SEC-11). The SDK's own
-// decoder accepts duplicate keys (last wins) and its bounds are not ours, so
-// every inbound message is held to wire's rules BEFORE the SDK decodes it:
-// stdio frames here, inbound HTTP bodies in Server.HTTPHandler, and HTTP
-// response bodies (JSON or SSE) in strictRoundTripper.
+// The SDK owns the protocol; AgentKit owns the three trust boundaries where
+// bytes it did not write enter the process. The SDK's own decoder accepts
+// duplicate keys (last wins) and its bounds are not ours, so every inbound
+// message is held to wire's rules BEFORE the SDK decodes it: stdio frames in
+// strictConn and HTTP response bodies (JSON or SSE) in strictRoundTripper,
+// both here, and inbound HTTP request bodies in the mcpserve module's
+// loopback handler.
 
 // strictConn is an sdk.Connection speaking newline-delimited JSON, whose
 // inbound frames are bounded by wire.FrameReader and checked by wire.Guard.
 //
 // A rejected frame is a Read error, and the SDK closes a connection whose Read
-// fails: REQ-SEC-11.4's "poisoned by the first malformed message" holds,
-// because there is no safe place in a stream with untrustworthy framing to
-// resume from.
+// fails: the connection is poisoned by the first malformed message, because
+// there is no safe place in a stream with untrustworthy framing to resume
+// from.
 type strictConn struct {
 	frames *wire.FrameReader
 	limits wire.Limits
@@ -99,8 +100,8 @@ func (c *strictConn) drain(ctx context.Context) error {
 }
 
 // Write honours ctx even when the peer has stopped draining its pipe: the
-// write runs on its own goroutine, so REQ-MCP-CLIENT-07's timeout_s is a
-// timeout on returning and not only on the response. An abandoned write keeps
+// write runs on its own goroutine, so a server's timeout_s is a timeout on
+// returning and not only on the response. An abandoned write keeps
 // the lock until it completes or Close unblocks it, so frames never interleave.
 func (c *strictConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	data, err := jsonrpc.EncodeMessage(msg)
@@ -175,9 +176,9 @@ const maxStderrLine = 1 << 20
 // commandTransport runs an MCP server as a subprocess.
 //
 // It replaces the SDK's CommandTransport for three reasons: the child gets
-// exactly Env and never the parent's environment (REQ-MCP-CLIENT-10); it runs
-// in its own process group and Close kills the GROUP, so helpers it spawned do
-// not outlive it holding the pipe; and its frames go through strictConn.
+// exactly Env and never the parent's environment; it runs in its own process
+// group and Close kills the GROUP, so helpers it spawned do not outlive it
+// holding the pipe; and its frames go through strictConn.
 type commandTransport struct {
 	command string
 	args    []string
@@ -191,7 +192,7 @@ func (t *commandTransport) Connect(context.Context) (sdk.Connection, error) {
 	cmd := exec.Command(t.command, t.args...)
 	cmd.Dir = t.dir
 	// An explicit empty slice, never nil: exec treats a nil Env as "inherit
-	// the parent's", which is the one behaviour REQ-MCP-CLIENT-10 forbids.
+	// the parent's", which would hand the child every credential we hold.
 	cmd.Env = append([]string{}, t.env...)
 	setProcessGroup(cmd)
 
@@ -396,13 +397,13 @@ func isHeaderSafe(s string) bool {
 	return s != ""
 }
 
-// interpolate expands ${VAR} and $VAR against a lookup (REQ-MCP-CLIENT-07).
+// interpolate expands ${VAR} and $VAR against a lookup.
 //
 // The lookup reports PRESENCE as well as value, and only an ABSENT variable
 // is returned as missing. A variable deliberately set to the empty string is
 // a value the operator chose, not a reference that failed to resolve — and
-// NFR-SEC-03 makes the latter a configuration error, so the two must not be
-// confused. The literal `${VAR}` is never handed to the child either way.
+// the latter is a configuration error, so the two must not be confused. The
+// literal `${VAR}` is never handed to the child either way.
 func interpolate(s string, lookup func(string) (string, bool)) (string, []string) {
 	var missing []string
 	var b strings.Builder

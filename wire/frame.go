@@ -9,11 +9,11 @@ import (
 )
 
 // FrameReader reads one untrusted message at a time, bounded before it
-// allocates (REQ-SEC-11).
+// allocates.
 //
-// It is POISONED by its first malformed message (REQ-SEC-11.4): once a frame
-// is rejected, every later call returns the same error and no attempt is made
-// to resynchronize. Resynchronizing a framed stream after a parse error means
+// It is POISONED by its first malformed message: once a frame is rejected,
+// every later call returns the same error and no attempt is made to
+// resynchronize. Resynchronizing a framed stream after a parse error means
 // guessing where the next frame starts, using framing that has already proved
 // untrustworthy — and a peer that can desynchronize the framing can then
 // choose what AgentKit reads as a message boundary.
@@ -131,10 +131,10 @@ func (f *FrameReader) nextHeaderFramed() ([]byte, error) {
 		return nil, failf(RuleSyntax, "$", "frame has no Content-Length header")
 	}
 
-	// REQ-SEC-11.2: the buffer is NOT sized to the declared length. A peer
-	// announcing 16 MiB and sending one byte must cost one byte, not 16 MiB —
-	// otherwise the declared number is a free allocation primitive. Buffer's
-	// ReadFrom grows geometrically as bytes actually arrive.
+	// The buffer is NOT sized to the declared length. A peer announcing
+	// 16 MiB and sending one byte must cost one byte, not 16 MiB — otherwise
+	// the declared number is a free allocation primitive. Buffer's ReadFrom
+	// grows geometrically as bytes actually arrive.
 	var buf bytes.Buffer
 	if _, err := io.CopyN(&buf, f.br, length); err != nil {
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
@@ -165,7 +165,8 @@ func (f *FrameReader) readHeaderLine() (string, error) {
 	}
 }
 
-// parseDeclaredLength is REQ-SEC-11.1.
+// parseDeclaredLength parses a frame's Content-Length, rejecting one over
+// max.
 //
 // The value is parsed as UINT64 and range-checked BEFORE it is narrowed. Parse
 // it as int on a 32-bit build and a declared 2^31 wraps negative, sails past a

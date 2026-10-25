@@ -25,17 +25,17 @@ type fileWriter interface {
 
 // wrapExecFile wraps the *os.File used for the spill or log file. In
 // production it returns the file unchanged. Tests replace it to inject write
-// failures (TS-04-15).
+// failures.
 var wrapExecFile = func(w *os.File) fileWriter { return w }
 
 // waitCmd calls cmd.Wait. Tests replace it to inject non-ExitError Wait
-// errors (TS-04-27).
+// errors.
 var waitCmd = func(c *exec.Cmd) error { return c.Wait() }
 
 // Outcome classifies how a command ended. It is a distinct type because the
 // classification is a PURE FUNCTION with a pinned precedence, unit-tested on
-// its own (REQ-TOOL-17.6): mixing it into the run path is how "the command
-// timed out" ends up reported as "exit status 1".
+// its own: mixing it into the run path is how "the command timed out" ends
+// up reported as "exit status 1".
 type Outcome string
 
 const (
@@ -46,7 +46,7 @@ const (
 	OutcomeAbort   Outcome = "abort"
 )
 
-// ClassifyOutcome is REQ-TOOL-17.6's pure function. Precedence is part of the
+// ClassifyOutcome classifies how a command ended. Precedence is part of the
 // contract and is deliberately NOT the order the events happened in:
 //
 //	abort > timeout > exit status
@@ -90,9 +90,9 @@ type ExecResult struct {
 // ExecOptions configures Run.
 type ExecOptions struct {
 	Dir string
-	// Timeout of zero means no timeout. REQ-TOOL-06 makes timeout_s optional
-	// with NO default: a default wall clock silently kills long builds, and
-	// safety comes from process control rather than from a clock.
+	// Timeout of zero means no timeout. The tools' timeout_s is optional with
+	// NO default: a default wall clock silently kills long builds, and safety
+	// comes from process control rather than from a clock.
 	Timeout time.Duration
 	// MaxBytes bounds the window that reaches the model.
 	MaxBytes int
@@ -113,18 +113,18 @@ type ExecOptions struct {
 	LogPath string
 	// Stdin, when non-nil, is copied into the child's standard input through
 	// a pipe the runner owns. The child's stdin is closed when the reader
-	// returns io.EOF. Nil keeps the null device (REQ-TOOL-06).
+	// returns io.EOF. Nil keeps the null device.
 	Stdin io.Reader
-	// Env sets the child's environment. Nil means ReducedEnv(nil)
-	// (REQ-SEC-08, same rule as tools.Options.Env): credentials are stripped
-	// and PATH, HOME, LANG, TMPDIR and TERM are kept verbatim. A non-nil
-	// slice, including an empty one, is used verbatim with no variable added
-	// or removed. Pass os.Environ() for the full inherited environment.
+	// Env sets the child's environment. Nil means ReducedEnv(nil) (the same
+	// rule as tools.Options.Env): credentials are stripped and PATH, HOME,
+	// LANG, TMPDIR and TERM are kept verbatim. A non-nil slice, including an
+	// empty one, is used verbatim with no variable added or removed. Pass
+	// os.Environ() for the full inherited environment.
 	Env []string
 	// DrainIdle is how long the output pipe must stay QUIET after the child
-	// has exited before draining stops (REQ-TOOL-17.5). Zero means
-	// defaultDrainIdle. It is an idle interval, not a deadline: every read
-	// re-arms it, so a descendant that keeps writing keeps being drained.
+	// has exited before draining stops. Zero means defaultDrainIdle. It is an
+	// idle interval, not a deadline: every read re-arms it, so a descendant
+	// that keeps writing keeps being drained.
 	DrainIdle time.Duration
 	// DrainCeiling bounds the whole post-exit drain, so a descendant writing
 	// forever cannot hold the tool open forever. Zero means
@@ -132,10 +132,10 @@ type ExecOptions struct {
 	DrainCeiling time.Duration
 }
 
-// The post-exit drain defaults (REQ-TOOL-17.5). The idle interval matches the
-// old fixed WaitDelay, so a command with no surviving descendant is bounded
-// exactly as before; the difference is that output ARRIVING inside the window
-// now re-arms it instead of racing a constant.
+// The post-exit drain defaults. The idle interval matches the old fixed
+// WaitDelay, so a command with no surviving descendant is bounded exactly as
+// before; the difference is that output ARRIVING inside the window now
+// re-arms it instead of racing a constant.
 const (
 	defaultDrainIdle    = 2 * time.Second
 	defaultDrainCeiling = 10 * time.Second
@@ -144,7 +144,7 @@ const (
 // Run executes a command through a bash-family shell with full process-group
 // lifecycle control.
 //
-// The pieces that are not obvious, each from REQ-TOOL-17:
+// The pieces that are not obvious:
 //
 //   - The command runs in its OWN PROCESS GROUP, and both timeout and context
 //     cancellation kill the whole group. Killing only the direct child leaves
@@ -155,10 +155,10 @@ const (
 //     which the error appears before the line that caused it.
 //   - The pipe is OURS (os.Pipe), not one exec created, and after the child
 //     exits output is drained on a RE-ARMING idle timer rather than a fixed
-//     post-exit deadline (REQ-TOOL-17.5). exec closes the pipes it made as
-//     soon as Wait returns, which truncates a detached descendant's output at
-//     a constant — losing precisely the tail of a background job's log.
-//   - Output is truncated from the TAIL unless KeepHead is set (REQ-TOOL-09a).
+//     post-exit deadline. exec closes the pipes it made as soon as Wait
+//     returns, which truncates a detached descendant's output at a constant
+//     — losing precisely the tail of a background job's log.
+//   - Output is truncated from the TAIL unless KeepHead is set.
 //
 // When ExecOptions.Stdin is non-nil, the reader is copied into the child's
 // standard input through a pipe the runner owns. The child's stdin is closed
@@ -173,8 +173,8 @@ func Run(ctx context.Context, command string, opts ExecOptions) (ExecResult, err
 	return runArgv(ctx, append(append([]string{shell}, args...), command), opts)
 }
 
-// RunArgv is REQ-TOOL-06's structured variant: an argv vector, executed with
-// NO SHELL between the caller and the program.
+// RunArgv is Run's structured variant: an argv vector, executed with NO SHELL
+// between the caller and the program.
 //
 // The difference is the entire point. `Run` hands a string to bash, so `;`,
 // `$(…)`, backticks, globs and redirection all mean something. Here they do
@@ -287,8 +287,8 @@ func classifyWait(cmd *exec.Cmd, waitErr error) (exitCode int, signaled bool, wa
 	var ee *exec.ExitError
 	if errors.As(waitErr, &ee) {
 		exitCode = ee.ExitCode()
-		// NFR-COMPAT-06: a signal-killed child reports 128+signum on unix,
-		// the convention every shell uses, rather than Go's -1 placeholder.
+		// A signal-killed child reports 128+signum on unix, the convention
+		// every shell uses, rather than Go's -1 placeholder.
 		// On Windows the wait status carries no signal and signalExitCode
 		// never claims one.
 		if code, ok := signalExitCode(ee); ok {
@@ -299,8 +299,7 @@ func classifyWait(cmd *exec.Cmd, waitErr error) (exitCode int, signaled bool, wa
 	} else if waitErr != nil {
 		// A Wait error that is neither an *exec.ExitError nor nil is an I/O
 		// completion failure (e.g. exec.ErrWaitDelay). Record it in IOErr
-		// and derive the exit status from ProcessState when available
-		// (04-REQ-5.8).
+		// and derive the exit status from ProcessState when available.
 		waitIOErr = waitErr
 		if cmd.ProcessState != nil {
 			exitCode = cmd.ProcessState.ExitCode()
@@ -369,14 +368,13 @@ func copyStdin(src io.Reader, w *os.File, closeOnce *sync.Once, state *stdinCopi
 			_, writeErr := w.Write(buf[:n])
 			if writeErr != nil {
 				// EPIPE or os.ErrClosed: child closed stdin or
-				// exited. Not an error (04-REQ-1.3).
+				// exited. Not an error.
 				break
 			}
 		}
 		if readErr != nil {
 			if readErr != io.EOF {
-				// Record the read error BEFORE closing the pipe
-				// (04-REQ-1.4).
+				// Record the read error BEFORE closing the pipe.
 				state.recordErr(readErr)
 			}
 			break
@@ -390,7 +388,7 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 	cmd.Dir = opts.Dir
 	cmd.Env = opts.Env
 	setProcessGroup(cmd)
-	cmd.WaitDelay = 2 * time.Second // REQ-TOOL-17.3 backstop
+	cmd.WaitDelay = 2 * time.Second // backstop
 
 	acc, err := setupAccumulator(opts)
 	if err != nil {
@@ -398,7 +396,7 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 	}
 	defer acc.Close()
 
-	pr, pw, err := os.Pipe() // our pipe for both streams (REQ-TOOL-17.4)
+	pr, pw, err := os.Pipe() // our pipe for both streams
 	if err != nil {
 		return ExecResult{}, err
 	}
@@ -424,7 +422,7 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 	// The timeout's clock starts after the Duration's. The other order lets the
 	// setup above, which a slow log file can stretch, use up part of the
 	// Timeout without counting toward the Duration, and a timed-out call would
-	// report less than its Timeout (04-REQ-5.3).
+	// report less than its Timeout.
 	runCtx := ctx
 	if opts.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -466,7 +464,7 @@ func runArgv(ctx context.Context, argv []string, opts ExecOptions) (ExecResult, 
 	timedOut := !aborted && runCtx.Err() != nil
 	drainAfterExit(runCtx, pr, copyDone, sink, opts.DrainIdle, opts.DrainCeiling)
 
-	if stdinW != nil { // close stdin write end (04-REQ-1.5)
+	if stdinW != nil { // close stdin write end
 		stdinClose.Do(func() { _ = stdinW.Close() })
 	}
 
@@ -498,8 +496,8 @@ type drainSink struct {
 	acc     *Accumulator
 	stopped bool
 	// lastWrite is the UnixNano of the most recent byte. It is what re-arms
-	// the idle timer (REQ-TOOL-17.5), so it is written on every read even when
-	// the sink has stopped accumulating.
+	// the idle timer, so it is written on every read even when the sink has
+	// stopped accumulating.
 	lastWrite atomic.Int64
 }
 
@@ -524,12 +522,12 @@ func (s *drainSink) stop() {
 	s.mu.Unlock()
 }
 
-// drainAfterExit is REQ-TOOL-17.5's re-arming idle drain.
+// drainAfterExit is the re-arming idle drain that runs after the child exits.
 //
 // The child has exited, but a DETACHED DESCENDANT inherited the write end of
 // the pipe and can keep writing for as long as it likes. A fixed post-exit
-// deadline cuts that output off at a constant — which is why the requirement
-// rules one out — and loses exactly the tail of a background job's log.
+// deadline cuts that output off at a constant and loses exactly the tail of a
+// background job's log.
 //
 // So: keep copying while output keeps arriving, re-arming the idle timer at
 // every read, and stop only once the pipe has been QUIET for idle. The ceiling
@@ -607,7 +605,7 @@ func (s *stdinCopier) finish() error {
 	return s.err
 }
 
-// ResolveShell is REQ-TOOL-06's fixed ladder.
+// ResolveShell resolves the shell Run uses, down a fixed ladder.
 //
 // It never consults $SHELL and never falls back to cmd.exe. $SHELL is the
 // user's INTERACTIVE shell — fish, nushell, zsh with a custom rc — and a
@@ -648,13 +646,13 @@ func effectiveEnv(env []string) []string {
 }
 
 // ReducedEnv strips credentials from the inherited environment while KEEPING
-// PATH verbatim (ruling P-47).
+// PATH verbatim.
 //
 // Dropping PATH is the obvious reading of "reduced environment" and it breaks
 // every command, so it is not what this does. What it removes is credentials,
 // which a subprocess has no business reading and which would otherwise be one
-// `env` away from any command the model writes (REQ-SEC-08). Three rules, all
-// matched on the UPPER-CASED name so `anthropic_api_key` is as gone as
+// `env` away from any command the model writes. Three rules, all matched on
+// the UPPER-CASED name so `anthropic_api_key` is as gone as
 // `ANTHROPIC_API_KEY`:
 //
 //   - provider PREFIXES, for the keys the SDK itself knows about;
@@ -701,7 +699,7 @@ func ReducedEnv(base []string, extraPrefixes ...string) []string {
 	return out
 }
 
-// credentialSuffixes is the generic half of REQ-SEC-08's rule, matched
+// credentialSuffixes is the generic half of ReducedEnv's rule, matched
 // case-insensitively: `github_token` is as much a token as `GITHUB_TOKEN`.
 // `_KEY` subsumes `_API_KEY` and `_PRIVATE_KEY`; they are listed anyway so
 // the intent survives someone narrowing `_KEY` later.

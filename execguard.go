@@ -21,7 +21,7 @@ func checkShellGuard(g core.BeforeToolCall, resolved []core.Tool) error {
 		}
 	}
 	// A shell tool behind a wrapper is as unguarded as one the model calls
-	// directly (07-REQ-3): the wrapper calls it through the same pipeline,
+	// directly: the wrapper calls it through the same pipeline,
 	// and with no interceptor nothing stands in its way.
 	for _, t := range resolved {
 		for _, r := range core.ReachableTools(t.ReachableTools) {

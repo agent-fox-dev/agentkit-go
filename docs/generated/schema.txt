@@ -1,8 +1,8 @@
 package schema // import "github.com/agent-fox-dev/agentkit-go/schema"
 
-Package schema is the structured, transformable tool-schema value type of
-REQ-TOOL-02 / REQ-GO-07. It contains no runtime reflection and no generated
-code; internal/policy asserts both.
+Package schema is the structured, transformable tool-schema value type.
+It contains no runtime reflection and no generated code; internal/policy asserts
+both.
 
 VARIABLES
 
@@ -12,19 +12,20 @@ var ErrInvalidSchema = errors.New("agentkit: schema cannot be converted")
 FUNCTIONS
 
 func DeleteOptionalNulls(s *Schema, in map[string]any) map[string]any
-    DeleteOptionalNulls is REQ-TOOL-11 step 2. Constrained sampling forces the
-    model to emit every declared property, so optional fields arrive as explicit
-    nulls; treating them as present is a validation failure on well-formed
-    output. Returns a copy.
+    DeleteOptionalNulls is step 2 of the argument pipeline
+    (core.PrepareArguments). Constrained sampling forces the model to emit
+    every declared property, so optional fields arrive as explicit nulls;
+    treating them as present is a validation failure on well-formed output.
+    Returns a copy.
 
 func StrictSubsetOK(s *Schema) bool
-    StrictSubsetOK is the pre-send probe REQ-TOOL-03 requires.
+    StrictSubsetOK is the pre-send probe: whether s has a strict subset.
 
 func Validate(s *Schema, v any) error
-    Validate is REQ-TOOL-11 step 4. It reports ALL issues, not the first, so
-    one round trip fixes the whole call. v is a value as encoding/json decodes
-    it (an object is a map[string]any); numbers may be json.Number or any Go
-    number.
+    Validate is step 4 of the argument pipeline. It reports ALL issues, not the
+    first, so one round trip fixes the whole call. v is a value as encoding/json
+    decodes it (an object is a map[string]any); numbers may be json.Number or
+    any Go number.
 
 
 TYPES
@@ -41,11 +42,11 @@ type Coercion struct {
 }
 
 func Coerce(s *Schema, in map[string]any) (map[string]any, []Coercion)
-    Coerce is REQ-TOOL-11 step 3: string->number, string->bool, number->string,
-    against the declared schema only. Never guesses without a declared type.
-    A string becomes a number only when it is a JSON number literal ("NaN",
-    "+5", ".5", "5." and "1_0" stay strings for Validate to refuse); a number
-    coerced to integer is an int64, to number a float64.
+    Coerce is step 3 of the argument pipeline: string->number, string->bool,
+    number->string, against the declared schema only. Never guesses without
+    a declared type. A string becomes a number only when it is a JSON number
+    literal ("NaN", "+5", ".5", "5." and "1_0" stay strings for Validate to
+    refuse); a number coerced to integer is an int64, to number a float64.
 
 type Extra []Keyword
     Extra is a schema's passthrough keywords, in authored order.
@@ -92,14 +93,14 @@ type Schema struct {
 	// Enum values are verbatim bytes in declaration order.
 	Enum []json.RawMessage
 	// Const + HasConst distinguish `const: null` from an absent const. This is
-	// the case reflection cannot express, and it is REQ-TOOL-02's stated
-	// reason for rejecting reflection.
+	// the case reflection cannot express, and it is the reason the package
+	// builds schemas without reflection.
 	Const    json.RawMessage
 	HasConst bool
 
 	// Nullable on a concrete type marshals as a type array, e.g.
 	// "type":["string","null"]. JSON Schema has no `nullable` keyword (that is
-	// OpenAPI 3.0) and the PRD does not pin this; it is pinned by a golden.
+	// OpenAPI 3.0) and nothing else fixes this form; it is pinned by a golden.
 	Nullable bool
 
 	AnyOf []*Schema
@@ -129,8 +130,8 @@ type Schema struct {
 }
     Schema is a JSON Schema value AgentKit can rewrite, not a blob it can only
     forward. PropertyOrder is authoritative for emission order: a bare map
-    cannot carry it because Go marshals maps with sorted keys unconditionally
-    (REQ-PROV-16.5), and property order is model-visible.
+    cannot carry it because Go marshals maps with sorted keys unconditionally,
+    and property order is model-visible.
 
 func AnyOf(alts ...*Schema) *Schema
 
@@ -166,12 +167,12 @@ func StrictSubset(s *Schema) (*Schema, error)
     so a probe never mutates the tool's shared schema.
 
 func String(desc ...string) *Schema
-    desc is variadic so both String() and String("...") read well; the §7
-    sketches use both spellings. Only the first element is used.
+    desc is variadic so both String() and String("...") read well. Only the
+    first element is used.
 
 func (s *Schema) Clone() *Schema
     Clone is a full deep copy. It is mandatory rather than convenient: the
-    strict rewrite, per-provider dialect translation and the REQ-CACHE-06 schema
+    strict rewrite, per-provider dialect translation and the per-session schema
     cache all operate on a copy, and a Tool's schema is shared across turns and
     across agents.
 
@@ -215,8 +216,8 @@ type StrictRewriteError struct {
 	Reason string
 }
     StrictRewriteError names the keyword that made a schema unconvertible.
-    REQ-TOOL-03's "require" mode must fail the request WITH the specific
-    rejection reason, so the reason is a value, not a log line.
+    The reason is a value, not a log line, so a caller can tell an unconvertible
+    schema from any other failure and say exactly why.
 
 func (e *StrictRewriteError) Error() string
 
@@ -238,10 +239,10 @@ type ValidationError struct {
 	Issues []Issue
 	Args   json.RawMessage
 }
-    ValidationError carries the arguments as JSON so Error() can echo them and
-    the message is self-correcting (REQ-TOOL-11.4). Validate fills Args from
-    the value; a caller holding the model's own bytes (core.PrepareArguments)
-    replaces them, so the echo is in the order the model wrote.
+    ValidationError carries the arguments as JSON so Error() can echo them
+    and the message is self-correcting. Validate fills Args from the value; a
+    caller holding the model's own bytes (core.PrepareArguments) replaces them,
+    so the echo is in the order the model wrote.
 
 func (e *ValidationError) Error() string
 

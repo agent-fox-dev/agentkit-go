@@ -2,8 +2,8 @@
 // assistant turns.
 //
 // It ships as exported, supported API in the same place as the real providers,
-// not as test-only code inside the module (NFR-TEST-05). That placement is the
-// requirement, not a convenience: consumers use it to test their own tool
+// not as test-only code inside the module. That placement is deliberate, not a
+// convenience: consumers use it to test their own tool
 // handlers, middleware and interceptors, and an SDK whose double is internal
 // forces every consumer to write one against their own guesses about the loop.
 //
@@ -12,7 +12,7 @@
 // one that is wrong — so its golden test is the protocol's conformance test.
 //
 // It is a functional double for the loop only. It does not substitute for
-// wire-level differential testing (NFR-TEST-06).
+// wire-level differential testing.
 package faux
 
 import (
@@ -34,14 +34,14 @@ type Turn struct {
 	Blocks     []core.ContentBlock
 	StopReason core.StopReason
 	// RawStopReason is the provider's own finish string. Scripting it lets a
-	// test reproduce the case REQ-LOOP-01 exists for: a STOP-family canonical
-	// reason arriving alongside tool calls.
+	// test reproduce a STOP-family canonical reason arriving alongside tool
+	// calls.
 	RawStopReason string
 	ErrorMessage  string
 	Usage         core.Usage
 	// Err, when set, ends the stream with an error after emitting whatever
-	// blocks were produced — the half-a-message-then-fail case REQ-PROV-04
-	// requires to be representable in one value.
+	// blocks were produced — the half-a-message-then-fail case, which must be
+	// representable in one value.
 	Err error
 	// Delay is inserted before the turn is produced, for tests that need a
 	// window in which to Steer, Abort or observe a Phase.
@@ -52,8 +52,9 @@ type Turn struct {
 func FauxText(s string) core.ContentBlock { return core.TextBlock{Text: s} }
 
 // FauxThinking scripts a thinking block. A signature is required for the block
-// to survive REQ-PROV-11 rule 4 on replay; passing "" is the deliberate way to
-// script the residue of an aborted stream.
+// to survive transcript repair on replay, which demotes an unsigned thinking
+// block to plain text; passing "" is the deliberate way to script the residue
+// of an aborted stream.
 func FauxThinking(thinking, signature string) core.ContentBlock {
 	return core.ThinkingBlock{Thinking: thinking, Signature: signature}
 }
@@ -170,14 +171,14 @@ func (p *Provider) Stream(ctx context.Context, req core.Request) (<-chan core.St
 //	End(result)
 //
 // Block-end events are emitted AFTER the stream has fully ended, once each, in
-// block order — never from inside the per-chunk handler (REQ-OBS-08.2).
+// block order — never from inside the per-chunk handler.
 // Emitting them from the chunk handler produces duplicate end events and, in a
 // real provider, a message end that lacks usage, because usage arrives with
 // the terminal chunk.
 //
-// Every incremental event for an item precedes that item's authoritative event
-// (REQ-OBS-08.1), so a consumer that discards accumulated deltas on the
-// authoritative event never double-applies.
+// Every incremental event for an item precedes that item's authoritative
+// event, so a consumer that discards accumulated deltas on the authoritative
+// event never double-applies.
 func (p *Provider) produce(ctx context.Context, s *core.EventStream, model string, turn Turn, chunk int) {
 	partial := core.AssistantMessage{
 		Model:     model,
@@ -232,7 +233,7 @@ func (p *Provider) produce(ctx context.Context, s *core.EventStream, model strin
 		case core.TextBlock:
 			// The end event carries the WHOLE text, not a final delta, so a
 			// consumer can discard its accumulator and take the authoritative
-			// payload (REQ-OBS-06a).
+			// payload.
 			s.Push(core.TextEndEvent{BlockIndex: i, Text: v.Text})
 		case core.ThinkingBlock:
 			s.Push(core.ThinkingEndEvent{BlockIndex: i, Thinking: v.Thinking,
@@ -267,7 +268,7 @@ func (p *Provider) produce(ctx context.Context, s *core.EventStream, model strin
 	s.End(core.StreamResult{Message: &final})
 }
 
-// finishAborted produces the terminal marker of REQ-LOOP-09: the partial
+// finishAborted produces the terminal marker of an aborted run: the partial
 // content accumulated so far, with an aborted stop reason. History after an
 // abort is recoverable, not clean, and this is what makes it so.
 func (p *Provider) finishAborted(s *core.EventStream, partial core.AssistantMessage) {

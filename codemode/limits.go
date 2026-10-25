@@ -9,8 +9,8 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
-// The halts for the four limits (08-REQ-7). Each detail names the limit and
-// its value, so the model knows what to change.
+// The halts for the four limits. Each detail names the limit and its value,
+// so the model knows what to change.
 
 func (r *runner) stepHalt() *halt {
 	return &halt{code: "step_limit_exceeded",
@@ -49,7 +49,7 @@ func (r *runner) takeCalls(n int) error {
 
 // failure is the result of a script that did not finish: the error, what it
 // printed before it stopped and the calls it completed, whose side effects
-// stand (08-REQ-7.5).
+// stand.
 func (r *runner) failure(code, detail string, terminate bool) core.ToolResult {
 	res := core.ErrResult(code, detail)
 	res.Terminate = terminate

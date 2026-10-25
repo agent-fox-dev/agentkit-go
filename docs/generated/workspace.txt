@@ -45,8 +45,8 @@ type IgnoreOptions struct {
 	GitConfig func() string
 }
     IgnoreOptions injects the environment the ignore engine reads, so the whole
-    thing is testable without mutating process state or requiring a git binary
-    (NFR-TEST-04). The zero value reads the real environment.
+    thing is testable without mutating process state or requiring a git binary.
+    The zero value reads the real environment.
 
     It is given once, to Open: without it a tool-level test reads the
     developer's own global excludes, and passes or fails depending on whose
@@ -76,15 +76,15 @@ type WalkOptions struct {
 type Workspace struct {
 	// Has unexported fields.
 }
-    Workspace is the containment boundary for the built-in FILE tools
-    (REQ-SEC-01), with the ignore rules that apply under its root.
+    Workspace is the containment boundary for the built-in FILE tools, with the
+    ignore rules that apply under its root.
 
     On a host it does NOT constrain `execute`. That is not an oversight,
     and it is stated here rather than left to be discovered: a shell command can
     read and write anything the process can, and pretending otherwise would be
     worse than admitting it. The boundary for `execute` is the BeforeToolCall
-    interceptor (REQ-SEC-03). See TestExecuteIsNotPathContained in package
-    tools, whose name is the documentation.
+    interceptor. See TestExecuteIsNotPathContained in package tools, whose name
+    is the documentation.
 
     Inside a sandbox whose agent reports a Landlock ABI
     (sandbox.AgentInfo.Landlock), the agent's kernel ruleset confines `execute`,
@@ -106,10 +106,10 @@ func Open(root string, opts Options) (*Workspace, error)
     determined.
 
 func (w *Workspace) CheckWriteTarget(abs string) error
-    CheckWriteTarget re-checks abs IMMEDIATELY before a write touches it
-    (REQ-SEC-01). Resolve already returned a contained path, but a link created
-    between the check and the open — by a concurrent command, or by a hostile
-    repository's own build step — would be followed by the open.
+    CheckWriteTarget re-checks abs IMMEDIATELY before a write touches it.
+    Resolve already returned a contained path, but a link created between the
+    check and the open — by a concurrent command, or by a hostile repository's
+    own build step — would be followed by the open.
 
     The WHOLE path is re-resolved, not only its last component.
     An earlier version looked at the leaf alone, and the leaf is not where
@@ -150,8 +150,8 @@ func (w *Workspace) Resolve(p string) (string, error)
 
     ORDER IS LOAD-BEARING. Normalization — `~` expansion, `file://` unwrapping,
     stripping a leading `@` or quote the model sometimes emits — happens BEFORE
-    canonicalization, never after (REQ-SEC-01). A guard that canonicalizes first
-    and expands later checks a string that is not the string it will open.
+    canonicalization, never after. A guard that canonicalizes first and expands
+    later checks a string that is not the string it will open.
 
     Symlinks are resolved against the deepest existing ancestor, so a path whose
     final component does not exist yet is still contained by its parent — the

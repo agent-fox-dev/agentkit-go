@@ -7,8 +7,8 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/outline"
 )
 
-// confidenceRank maps a confidence string to an integer rank.
-// 05-REQ-6.1: resolved < lexical < text.
+// confidenceRank maps a confidence string to an integer rank: resolved <
+// lexical < text, and anything else after text.
 func confidenceRank(confidence string) int {
 	switch confidence {
 	case "resolved":
@@ -23,7 +23,7 @@ func confidenceRank(confidence string) int {
 }
 
 // siteOrderLess reports whether reference site a should precede reference site b
-// according to the 4-tier ranking rules (05-REQ-6.1):
+// according to the 4-tier ranking rules:
 //  1. Confidence tier: resolved < lexical < text
 //  2. Non-test files before test files (per outline.IsTestFile)
 //  3. Alphabetical workspace-relative path
@@ -52,7 +52,6 @@ func sortReferenceSites(sites []ReferenceSite) {
 }
 
 // filterTestSites removes reference sites in test files or directories when includeTests is false.
-// Verifies 05-REQ-6.2.
 func filterTestSites(sites []ReferenceSite, includeTests bool) []ReferenceSite {
 	if includeTests {
 		return sites
@@ -67,7 +66,7 @@ func filterTestSites(sites []ReferenceSite, includeTests bool) []ReferenceSite {
 }
 
 // applyResultLimits truncates sites to maxResults, clamped per
-// clampMaxResults (05-REQ-6.3, 05-REQ-6.5), and reports whether it did.
+// clampMaxResults, and reports whether it did.
 func applyResultLimits(sites []ReferenceSite, maxResults int) ([]ReferenceSite, bool) {
 	if limit := clampMaxResults(maxResults); len(sites) > limit {
 		return sites[:limit], true
@@ -76,7 +75,7 @@ func applyResultLimits(sites []ReferenceSite, maxResults int) ([]ReferenceSite, 
 }
 
 // refBudget bounds one reference pass by SymbolOptions.MaxFiles and
-// SymbolOptions.MaxDuration (05-REQ-6.4). A nil *refBudget is unbounded.
+// SymbolOptions.MaxDuration. A nil *refBudget is unbounded.
 type refBudget struct {
 	maxFiles int
 	deadline time.Time

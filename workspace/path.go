@@ -25,8 +25,8 @@ var (
 //
 // ORDER IS LOAD-BEARING. Normalization — `~` expansion, `file://` unwrapping,
 // stripping a leading `@` or quote the model sometimes emits — happens BEFORE
-// canonicalization, never after (REQ-SEC-01). A guard that canonicalizes first
-// and expands later checks a string that is not the string it will open.
+// canonicalization, never after. A guard that canonicalizes first and expands
+// later checks a string that is not the string it will open.
 //
 // Symlinks are resolved against the deepest existing ancestor, so a path whose
 // final component does not exist yet is still contained by its parent — the
@@ -58,13 +58,13 @@ func (w *Workspace) Resolve(p string) (string, error) {
 // containment correct for a file that does not exist yet, including one whose
 // parent directory is a symlink out of the workspace.
 //
-// A DANGLING symlink is the case the naive walk gets wrong (REQ-SEC-01,
-// NFR-SEC-02): EvalSymlinks fails on `ws/link -> /outside/newfile` exactly as
-// it fails on a missing file, and resolving the parent and rejoining the base
-// yields `ws/link` — inside the root — while os.WriteFile then follows the link
-// and creates /outside/newfile. So when EvalSymlinks fails, the component is
-// Lstat'ed; if it is a link its target is substituted and containment
-// continues on the TARGET, which is the path the write would actually reach.
+// A DANGLING symlink is the case the naive walk gets wrong: EvalSymlinks fails
+// on `ws/link -> /outside/newfile` exactly as it fails on a missing file, and
+// resolving the parent and rejoining the base yields `ws/link` — inside the
+// root — while os.WriteFile then follows the link and creates
+// /outside/newfile. So when EvalSymlinks fails, the component is Lstat'ed; if
+// it is a link its target is substituted and containment continues on the
+// TARGET, which is the path the write would actually reach.
 func resolveExistingPrefix(abs string) (string, error) {
 	tail := ""
 	cur := abs
@@ -101,10 +101,10 @@ func resolveExistingPrefix(abs string) (string, error) {
 // maxSymlinkHops bounds resolveExistingPrefix's link following.
 const maxSymlinkHops = 40
 
-// CheckWriteTarget re-checks abs IMMEDIATELY before a write touches it
-// (REQ-SEC-01). Resolve already returned a contained path, but a link created
-// between the check and the open — by a concurrent command, or by a hostile
-// repository's own build step — would be followed by the open.
+// CheckWriteTarget re-checks abs IMMEDIATELY before a write touches it.
+// Resolve already returned a contained path, but a link created between the
+// check and the open — by a concurrent command, or by a hostile repository's
+// own build step — would be followed by the open.
 //
 // The WHOLE path is re-resolved, not only its last component. An earlier
 // version looked at the leaf alone, and the leaf is not where the swap

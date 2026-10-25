@@ -70,8 +70,8 @@ func TargetFor(m *core.Model, normalize func(string) string) Target {
 	return Target{Model: m.ID, NormalizeToolCallID: normalize}
 }
 
-// RepairTranscript is REQ-PROV-11: the shared, unconditional pass every
-// provider runs on every request, before wire-format conversion.
+// RepairTranscript is the unconditional pass this provider runs on every
+// request, before wire-format conversion.
 //
 // It is part of the provider contract and not the loop's, because the loop is
 // not running when a transcript is loaded from disk and no caller may be able
@@ -90,16 +90,16 @@ func TargetFor(m *core.Model, normalize func(string) string) Target {
 //	5  cross-model: rewrite tool-call ids, remembering the mapping
 //	6  insert a synthetic result for any tool_use still unanswered
 //
-// # Rule 2b, which the PRD does not have
+// # Rule 2b
 //
 // Rule 2 drops an aborted assistant message — including its tool_use blocks.
 // But the ToolResultMessages that answered those blocks are SEPARATE canonical
 // messages and survive rule 2 untouched. Every provider rejects a tool result
-// whose tool_use is absent, so the seven rules as written produce an INVALID
+// whose tool_use is absent, so the other rules alone produce an INVALID
 // request on the single commonest damaged transcript: Ctrl-C during a tool
 // batch, then resume.
 //
-// Rule 2b closes that hole (ruling P-1). Without it the repair pass creates
+// Rule 2b closes that hole. Without it the repair pass creates
 // the exact failure it exists to prevent, and only on the resume path — which
 // no single-process test exercises.
 func RepairTranscript(in core.Messages, t Target) (core.Messages, RepairReport) {
@@ -167,8 +167,8 @@ func RepairTranscript(in core.Messages, t Target) (core.Messages, RepairReport) 
 
 	// ---- Rule 6: a synthetic result for every tool_use still unanswered.
 	// This runs AFTER rule 5 so the synthetic carries the rewritten id; the
-	// stated rule order gives that, but only by accident, so it is stated
-	// explicitly here (ruling P-26).
+	// rule numbering gives that, but only by accident, so it is stated
+	// explicitly here.
 	out = insertSyntheticResults(out, &rep)
 
 	return out, rep
@@ -219,7 +219,7 @@ func repairAssistantContent(c core.Content, sameModel bool, t Target, rep *Repai
 // rewriteToolCallIDs applies rule 5 and carries the mapping to every matching
 // result. Collisions get a deterministic suffix inside the target's budget:
 // two distinct calls must not collapse onto one id, which would make the
-// results ambiguous (ruling P-26).
+// results ambiguous.
 func rewriteToolCallIDs(in core.Messages, t Target, foreign map[string]bool, rep *RepairReport) core.Messages {
 	mapping := make(map[string]string)
 	used := make(map[string]bool)

@@ -1,7 +1,7 @@
 // Package anthropic implements the Anthropic Messages wire API.
 //
-// It is keyed by WIRE API, not by vendor (REQ-PROV-02): the same
-// implementation serves Anthropic direct and any gateway that speaks Messages.
+// It is keyed by WIRE API, not by vendor: the same implementation serves
+// Anthropic direct and any gateway that speaks Messages.
 package anthropic
 
 import (
@@ -25,15 +25,14 @@ const API core.API = "anthropic-messages"
 
 // DefaultMaxTokens is sent when neither the request nor the model bounds the
 // output. max_tokens is REQUIRED on this wire and 0 is rejected, so a
-// hand-built Model with no cap and no window still needs a positive number;
-// this is the floor REQ-CAT-04 leaves for an unknown window, sized so a
-// normal answer fits rather than the literal 1 the formula's max(1, ·) yields.
+// hand-built Model with no output cap still needs a positive number; this one
+// is sized so a normal answer fits.
 const DefaultMaxTokens = 4096
 
 // ---------------------------------------------------------------- wire types
 //
 // Every struct below uses `omitzero` with pointers for optional scalars, never
-// `omitempty` on a bare value (REQ-PROV-16). The difference is not cosmetic:
+// `omitempty` on a bare value. The difference is not cosmetic:
 // `omitempty` on a bare float64 DROPS an explicit temperature of 0, turning
 // "be deterministic" into "use the provider default".
 
@@ -54,7 +53,7 @@ type request struct {
 	Temperature      *float64    `json:"temperature,omitzero"`
 	TopP             *float64    `json:"top_p,omitzero"`
 	// StopSequences is core.Request.StopSequences. Dropping it silently, as
-	// this did until the NFR-TEST-08 request golden showed the field missing
+	// this did until the request golden test showed the field missing
 	// from the body, means a caller's stop condition never takes effect and
 	// nothing says so.
 	StopSequences []string  `json:"stop_sequences,omitzero"`
@@ -142,21 +141,21 @@ type tool struct {
 	Description string          `json:"description,omitzero"`
 	InputSchema json.RawMessage `json:"input_schema"`
 	// Strict is true for every tool that fits strict mode's limits and is not
-	// named in Options.NonStrictTools: the API
-	// then guarantees the model's arguments match the input schema
-	// (10-REQ-5.1; see strictTools for the limits). A tool's output schema,
-	// reachable tools and terminating flag are not on core.ToolWire, so they
-	// cannot reach this struct (10-REQ-5.2).
+	// named in Options.NonStrictTools: the API then guarantees the model's
+	// arguments match the input schema (see strictTools for the limits). A
+	// tool's output schema, reachable tools and terminating flag are not on
+	// core.ToolWire, so they cannot reach this struct.
 	Strict       bool          `json:"strict"`
 	CacheControl *cacheControl `json:"cache_control,omitzero"`
-	// There is deliberately no defer_loading here. REQ-CACHE-10's Anthropic
-	// arm is ORDER alone: a tool that appeared mid-session is appended after
-	// the established ones so the cached prefix stays byte-identical, and it
-	// carries no cache_control because a breakpoint there would sit past the
-	// prefix it exists to preserve. `defer_loading: true` is a different
-	// feature — it HIDES the tool from the model until a tool-search server
-	// tool finds it — and sending it without declaring that server tool made
-	// every late-added tool invisible for the rest of the session.
+	// There is deliberately no defer_loading here. Deferred tool loading on
+	// this wire is ORDER alone: a tool that appeared mid-session is appended
+	// after the established ones so the cached prefix stays byte-identical,
+	// and it carries no cache_control because a breakpoint there would sit
+	// past the prefix it exists to preserve. `defer_loading: true` is a
+	// different feature — it HIDES the tool from the model until a
+	// tool-search server tool finds it — and sending it without declaring that
+	// server tool made every late-added tool invisible for the rest of the
+	// session.
 }
 
 // wireSchema marshals a tool's schema for the wire: in the strict subset
@@ -337,8 +336,8 @@ type toolChoice struct {
 
 // NormalizeToolCallID rewrites an id into Anthropic's accepted shape:
 // characters outside [A-Za-z0-9_-] become '_', truncated to 64. It is the
-// function REQ-PROV-11 rule 5 uses when replaying a transcript produced by
-// another provider.
+// function RepairTranscript's rule 5 uses when replaying a transcript produced
+// by another provider.
 func NormalizeToolCallID(s string) string {
 	if s == "" {
 		return s
@@ -358,13 +357,6 @@ func NormalizeToolCallID(s string) string {
 
 // ------------------------------------------------------------ request building
 
-// BuildRequest converts a canonical request into the Anthropic wire body. It
-// is exported so the golden tests can capture the exact bytes without a
-// network call or an API key; BuildRequestJSON returns them as sent.
-//
-// It runs the shared repair pass first (REQ-PROV-11) — that is part of the
-// provider contract, not the loop's, because the loop is not running when a
-// transcript is loaded from disk.
 // BuildRequestJSON is the request body for req on m, byte for byte as it is
 // sent, with the short cache retention. Replayed tool_use input and replayed
 // raw blocks keep the exact bytes they arrived with; json.Marshal of a
@@ -389,9 +381,8 @@ func BuildRequestJSONWith(req core.Request, m core.Model, opts Options) ([]byte,
 }
 
 // encodeExact marshals r, splicing every tool_use input's raw bytes back in
-// after marshalling: encoding/json compacts the
-// output of a json.RawMessage, and those bytes must reach the wire unchanged
-// (10-REQ-6.1). r is not modified.
+// after marshalling: encoding/json compacts the output of a json.RawMessage,
+// and those bytes must reach the wire unchanged. r is not modified.
 func encodeExact(r *request) ([]byte, error) {
 	var nonce [8]byte
 	_, _ = rand.Read(nonce[:])
@@ -423,20 +414,27 @@ func encodeExact(r *request) ([]byte, error) {
 	return out, nil
 }
 
+// BuildRequest converts a canonical request into the Anthropic wire body. It
+// is exported so the golden tests can capture the exact bytes without a
+// network call or an API key; BuildRequestJSON returns them as sent.
+//
+// It runs the transcript repair pass (RepairTranscript) first — that is part
+// of the provider contract, not the loop's, because the loop is not running
+// when a transcript is loaded from disk.
 func BuildRequest(m *core.Model, req core.Request, retention core.CacheRetention) (*request, RepairReport, error) {
 	out, rep, _, err := BuildRequestCached(m, req, retention, nil)
 	return out, rep, err
 }
 
-// BuildRequestCached is BuildRequest with REQ-CACHE-06's per-session schema
-// cache attached. A nil prefix marshals every schema, which is what
-// BuildRequest does and what a one-shot caller wants.
+// BuildRequestCached is BuildRequest with a per-session schema cache
+// attached. A nil prefix marshals every schema, which is what BuildRequest
+// does and what a one-shot caller wants.
 //
-// NFR-PERF-03 is why this exists rather than being an internal detail: tool
-// schema serialization "must be computed once per session and cached, not
-// recomputed on every model call", and at 128 tools that recomputation is
-// ~0.9 ms of the ~1.5 ms it takes to build a request — the dominant term, paid
-// on every turn, for bytes that did not change.
+// It exists rather than being an internal detail because tool schema
+// serialization must be computed once per session and cached, not recomputed
+// on every model call: at 128 tools that recomputation is ~0.9 ms of the
+// ~1.5 ms it takes to build a request — the dominant term, paid on every
+// turn, for bytes that did not change.
 func BuildRequestCached(m *core.Model, req core.Request, retention core.CacheRetention,
 	prefix *provider.ToolPrefix) (*request, RepairReport, provider.SyncReport, error) {
 	return buildRequest(m, req, retention, prefix, nil)
@@ -496,7 +494,7 @@ func buildRequest(m *core.Model, req core.Request, retention core.CacheRetention
 		}
 	}
 
-	// REQ-CACHE-10: immediate tools first, deferred tools after. The ORDER is
+	// Immediate tools first, deferred tools after. The ORDER is
 	// the mechanism — appending late arrivals keeps the cached prefix byte-
 	// identical, where inserting them anywhere else rewrites it and costs the
 	// whole provider-side cache over one added tool.
@@ -529,9 +527,9 @@ func buildRequest(m *core.Model, req core.Request, retention core.CacheRetention
 	appendTools(split.Deferred)
 
 	// ToolChoice absent is NOT auto: a provider must not invent a selection
-	// when the field is empty (REQ-TOOL-16). A forced choice — any, or one
-	// named tool — is never sent: current models reject it with a 400
-	// (10-REQ-5.3), so only auto and none reach the wire.
+	// when the field is empty. A forced choice — any, or one named tool — is
+	// never sent: current models reject it with a 400, so only auto and none
+	// reach the wire.
 	switch req.ToolChoice {
 	case core.ToolChoiceAuto:
 		out.ToolChoice = &toolChoice{Type: "auto"}
@@ -572,9 +570,10 @@ func encodeWithPrefix(prefix, history core.Messages, m *core.Model) ([]message, 
 	return append(out, rest...), end
 }
 
-// StampCacheControl places the §6.2a Level 1 breakpoints.
+// StampCacheControl places the prompt-cache breakpoints.
 //
-// Exactly three placements, recomputed on EVERY request:
+// Three placements, and a fourth when the request carries a Prefix, all
+// recomputed on EVERY request:
 //
 //  1. the LAST system block only — a marker caches everything rendered
 //     before it, and the wire renders tools, then system, then messages, so
@@ -587,6 +586,9 @@ func encodeWithPrefix(prefix, history core.Messages, m *core.Model) ([]message, 
 //  3. the last content block of the last message, when that message is a user
 //     message and the block is text, image or tool_result.
 //
+// The fourth is the last block of the encoded Prefix: the prefix is the same
+// on every request, so its end is a stable breakpoint.
+//
 // Placement 3 is a ROLLING breakpoint: it moves forward every turn, extending
 // the cached prefix to include the previous turn's tool results. That is the
 // whole point. The "optimization" of recomputing only when the system prompt
@@ -594,11 +596,12 @@ func encodeWithPrefix(prefix, history core.Messages, m *core.Model) ([]message, 
 // full input price on the entire growing transcript — the dominant cost in
 // exactly the multi-turn agent workload this SDK exists for.
 //
-// Under CacheRetentionLong the 1h TTL goes on placements 1 and 2 only. The
-// rolling breakpoint stays at the default 5-minute TTL: it is rewritten every
-// turn anyway, a 1h write bills at twice the 5m rate, and the wire requires
-// every 1h entry to precede every 5m one — which tools -> system -> messages
-// order satisfies exactly when the message breakpoint is the short one.
+// Under CacheRetentionLong the 1h TTL goes on every placement but the rolling
+// one. The rolling breakpoint stays at the default 5-minute TTL: it is
+// rewritten every turn anyway, a 1h write bills at twice the 5m rate, and the
+// wire requires every 1h entry to precede every 5m one — which tools ->
+// system -> messages order satisfies exactly when the last breakpoint is the
+// short one.
 func StampCacheControl(r *request, retention core.CacheRetention, m *core.Model) {
 	if retention == core.CacheRetentionNone {
 		return
@@ -613,7 +616,7 @@ func StampCacheControl(r *request, retention core.CacheRetention, m *core.Model)
 		r.System[n-1].CacheControl = prefix
 	}
 	// The breakpoint goes on the last IMMEDIATE tool, not the last tool.
-	// A deferred tool sits after the prefix by construction (REQ-CACHE-10);
+	// A deferred tool sits after the prefix by construction;
 	// stamping it would place the breakpoint past the very content the
 	// deferral exists to keep cached.
 	if n := r.immediateTools; n > 0 && n <= len(r.Tools) {
@@ -666,20 +669,19 @@ func supportsLongRetention(m *core.Model) bool {
 	return c.SupportsLongCacheRetention == nil || *c.SupportsLongCacheRetention
 }
 
-// encodeMessages is where REQ-LOOP-02's Anthropic half lives.
+// encodeMessages converts the canonical transcript into this wire's messages.
 //
 // Consecutive ToolResultMessages are COALESCED into ONE {"role":"user"}
 // message holding all their tool_result blocks. Splitting them across messages
-// silently degrades parallel tool call quality — that part of the PRD is
-// right. What the PRD got wrong is calling it a LOOP invariant: it is a wire
-// rule, true here and false for OpenAI, which mandates one message per result.
+// silently degrades parallel tool call quality. That is a wire rule, not a
+// loop invariant: true here and false for OpenAI, which mandates one message
+// per result.
 //
-// Consecutive USER messages are also coalesced. Nothing in the PRD asks for
-// that, and nothing in it forbids the state that needs it: compaction prepends
-// a summary UserMessage to a suffix that, when the cut lands on a user message
-// (which REQ-GO-14's turn-splitting actively tries to produce), begins with
-// another UserMessage. Anthropic rejects two adjacent user turns, so without
-// this the first compacted request 400s (ruling P-5).
+// Consecutive USER messages are also coalesced, because compaction produces
+// them: it prepends a summary UserMessage to a suffix that, when the cut lands
+// on a user message (which compaction's turn splitting actively tries to
+// produce), begins with another UserMessage. Anthropic rejects two adjacent
+// user turns, so without this the first compacted request 400s.
 func encodeMessages(ms core.Messages) []message {
 	var out []message
 
@@ -719,7 +721,7 @@ func encodeMessages(ms core.Messages) []message {
 			// Ordinary content on the result nests inside the tool_result
 			// block when it is text or image, and is displaced into siblings
 			// positioned AFTER every tool_result block otherwise — Anthropic
-			// rejects the interleaved mix (ruling P-42).
+			// rejects the interleaved mix.
 			inner, displaced := splitResultContent(v.Content)
 			tr := block{
 				Type:      "tool_result",
@@ -763,7 +765,7 @@ func splitResultContent(c core.Content) (inner []block, displaced []block) {
 	// the block's own omitzero drops the key. The previous placeholder,
 	// {Type:"text", Text:""}, serialized as {"type":"text"} — Text is omitzero
 	// too — and a text block with no text key is a 400 on every empty tool
-	// output, which is what a successful `rm` produces (REQ-LOOP-02).
+	// output, which is what a successful `rm` produces.
 	return inner, displaced
 }
 
@@ -809,7 +811,7 @@ func encodeBlock(b core.ContentBlock) block {
 	case core.ToolUseBlock:
 		// The model's own argument bytes are written into the input position
 		// UNCHANGED — no decode-and-re-encode round trip, which would sort the
-		// keys and shift the prompt-cache prefix (REQ-PROV-17, REQ-TOOL-12).
+		// keys and shift the prompt-cache prefix.
 		return block{Type: "tool_use", ID: v.ID, Name: v.Name, Input: v.Input}
 	}
 	return block{}
@@ -817,7 +819,7 @@ func encodeBlock(b core.ContentBlock) block {
 
 // MapStopReason normalizes an Anthropic stop_reason. The provider's own string
 // is preserved verbatim by the caller in RawStopReason; this mapping is lossy
-// on purpose and never drives control flow (REQ-LOOP-01).
+// on purpose and never drives control flow.
 func MapStopReason(s string) core.StopReason {
 	switch s {
 	case "end_turn":

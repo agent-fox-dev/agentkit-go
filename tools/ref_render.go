@@ -9,7 +9,6 @@ import (
 )
 
 // renderReferencesText formats the human-readable result text for find_references.
-// Verifies 05-REQ-7.1, 05-REQ-7.2, 05-REQ-7.3, 05-REQ-7.5.
 func renderReferencesText(name string, res ReferenceResult) string {
 	files := make(map[string]struct{})
 	textMatches := 0
@@ -21,9 +20,9 @@ func renderReferencesText(name string, res ReferenceResult) string {
 	}
 
 	var b strings.Builder
-	// 05-REQ-7.1: 'find_references <name>  (<backend>, <N> references in <M> files; <K> text matches)'
+	// The header: 'find_references <name>  (<backend>, <N> references in <M> files; <K> text matches)'
 	fmt.Fprintf(&b, "find_references %s  (%s, %d references in %d files; %d text matches)", name, res.Backend, len(res.Sites), len(files), textMatches)
-	// 05-REQ-2.4: a zero Target means no declaration matched the name.
+	// A zero Target means no declaration matched the name.
 	if res.Target == (outline.Decl{}) {
 		b.WriteString(" [0 declarations matched]")
 	}
@@ -31,8 +30,8 @@ func renderReferencesText(name string, res ReferenceResult) string {
 		b.WriteString(" [partial]")
 	}
 
-	// 05-REQ-7.2: group by file, in order of first appearance, under a
-	// path header with the enclosing labels padded to align.
+	// Group by file, in order of first appearance, under a path header with
+	// the enclosing labels padded to align.
 	var order []string
 	groups := make(map[string][]ReferenceSite)
 	for _, site := range res.Sites {
@@ -58,7 +57,7 @@ func renderReferencesText(name string, res ReferenceResult) string {
 		}
 	}
 
-	// 05-REQ-7.3: truncation and partial markers on distinct lines at the end.
+	// Truncation and partial markers on distinct lines at the end.
 	if res.Truncated {
 		b.WriteString("\n")
 		b.WriteString(CapMarker("references", "max_results", clampMaxResults(len(res.Sites)), 100, "narrow with path or kind"))
@@ -71,7 +70,6 @@ func renderReferencesText(name string, res ReferenceResult) string {
 }
 
 // renderReferencesResult formats ReferenceResult into a core.ToolResult.
-// Verifies 05-REQ-7.4, 05-REQ-7.5.
 func renderReferencesResult(name string, res ReferenceResult) core.ToolResult {
 	if res.Sites == nil {
 		res.Sites = []ReferenceSite{}

@@ -11,8 +11,7 @@ import (
 )
 
 // setProcessGroup starts the child in a new process group. Windows has no
-// process groups in the POSIX sense; the tree is killed via taskkill instead
-// (REQ-TOOL-17.2).
+// process groups in the POSIX sense; the tree is killed via taskkill instead.
 func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
 }
@@ -39,9 +38,8 @@ func killGroup(cmd *exec.Cmd) {
 }
 
 // signalExitCode never claims a signal on Windows: a wait status there carries
-// none, and tool output must not report what it cannot observe
-// (NFR-COMPAT-06). A tree killed by taskkill reports the exit code Windows
-// assigns it.
+// none, and tool output must not report what it cannot observe. A tree killed
+// by taskkill reports the exit code Windows assigns it.
 func signalExitCode(*exec.ExitError) (int, bool) { return 0, false }
 
 func resolveShell() (string, []string, error) {

@@ -482,7 +482,7 @@ func newRunID() string {
 
 // touchRunDir sets the modification time of this index's own run directory to
 // now, at most once per touchInterval, so that a sibling index's sweep sees a
-// directory in use as young (03-REQ-5.6). It never touches another run's
+// directory in use as young. It never touches another run's
 // directory. A failure is ignored and retried by the next query.
 func (idx *Index) touchRunDir() {
 	idx.mu.RLock()
@@ -722,10 +722,10 @@ func (idx *Index) doBuild(buildCtx, callerCtx context.Context, runDir string) (*
 	// timeCut is set when the deadline stopped the outlining. The files
 	// already walked are still indexed — the ones not yet outlined without
 	// symbols — for a GRACE WINDOW of a quarter of MaxBuildTime, so a bounded
-	// build keeps what it has (spec 03 §4) and the bound stays a bound
-	// (03-REQ-5.7). Cutting the list to the files outlined so far discarded
-	// the whole walk when the deadline fired during it, and a partial index is
-	// never retried: a slow filesystem got a permanently empty index.
+	// build keeps what it has and the bound stays a bound. Cutting the list
+	// to the files outlined so far discarded the whole walk when the deadline
+	// fired during it, and a partial index is never retried: a slow
+	// filesystem got a permanently empty index.
 	timeCut := false
 
 	for i := 0; i < len(files); i += outlineBatchSize {

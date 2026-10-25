@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Accumulator is REQ-TOOL-15's bounded rolling accumulator.
+// Accumulator is a bounded rolling accumulator for subprocess output.
 //
 // It retains a bounded HEAD and a bounded TAIL, discarding the middle as bytes
 // arrive, so peak memory is roughly 2×cap regardless of how much a subprocess
@@ -16,7 +16,7 @@ import (
 //
 // It also lazily spills the COMPLETE output to a file on first overflow, so
 // the full text stays available to the caller and the audit trail while only
-// the bounded window reaches the model (REQ-TOOL-15.2).
+// the bounded window reaches the model.
 type Accumulator struct {
 	// Cap is the byte budget for the retained window.
 	Cap int
@@ -45,9 +45,9 @@ const (
 	// TruncateHead keeps the BEGINNING. Right for a file read or a listing,
 	// where the interesting part is at the top.
 	TruncateHead TruncateMode = iota
-	// TruncateTail keeps the END. Right for `execute` (REQ-TOOL-09a): a
-	// failing build puts its error at the end of the log, and head-truncation
-	// preserves the banner and discards the failure.
+	// TruncateTail keeps the END. Right for `execute`: a failing build puts
+	// its error at the end of the log, and head-truncation preserves the
+	// banner and discards the failure.
 	TruncateTail
 	// TruncateMiddle keeps both ends and elides the centre.
 	TruncateMiddle
@@ -131,8 +131,8 @@ func (a *Accumulator) writeSpill(p []byte) {
 		}
 		// Lazily created on FIRST write, so a command producing nothing leaves
 		// no file behind. The directory is created here for the same reason:
-		// the default per-workspace directory (REQ-TOOL-09d) should not
-		// exist until something spills into it.
+		// the default per-workspace directory should not exist until
+		// something spills into it.
 		if err := os.MkdirAll(a.SpillDir, 0o700); err != nil {
 			a.spillErr = err
 			return
@@ -180,10 +180,10 @@ func (a *Accumulator) Close() error {
 
 // String renders the retained window, with a marker naming what was elided.
 //
-// REQ-TOOL-09b: a truncation the model cannot act on costs a turn. Every
-// marker therefore names the number of bytes elided and, where one exists, the
-// spill path — which is reachable through `execute`, because `execute` is not
-// path-contained (ruling P-45).
+// A truncation the model cannot act on costs a turn. Every marker therefore
+// names the number of bytes elided and, where one exists, the spill path —
+// which is reachable through `execute`, because `execute` is not
+// path-contained.
 func (a *Accumulator) String() string {
 	if !a.Truncated() {
 		return string(a.head) + string(a.tail)

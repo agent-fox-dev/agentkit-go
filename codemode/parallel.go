@@ -74,7 +74,7 @@ func (r *runner) boundTool(v starlark.Value) (*starlark.Builtin, error) {
 // {"tool": tool, "args": kwargs}. Every call is checked before any runs.
 // They are dispatched in batches of at most MaxConcurrentCalls, each batch
 // one core.CallNested that runs its calls concurrently, and the results come
-// back as a list in the order of calls (08-REQ-6).
+// back as a list in the order of calls.
 func (r *runner) parallel(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var seq starlark.Value
 	if err := starlark.UnpackPositionalArgs(b.Name(), args, kwargs, 1, &seq); err != nil {

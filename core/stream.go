@@ -7,11 +7,10 @@ import (
 
 // MinMaxPendingBytes is the floor for StreamOptions.MaxPendingBytes.
 //
-// OQ-7 says the floor is "the largest single event AgentKit can emit", but
-// that is not computable: the largest event is a ToolResultEvent bounded only
-// by REQ-TOOL-09's output cap, which is configured elsewhere and can be raised
-// after the stream is created. A documented constant is a promise something
-// can keep.
+// A floor of "the largest single event AgentKit can emit" is not computable:
+// the largest event is a ToolResultEvent bounded only by the tool output cap,
+// which is configured elsewhere and can be raised after the stream is
+// created. A documented constant is a promise something can keep.
 const MinMaxPendingBytes int64 = 1 << 20
 
 type StreamOptions struct {
@@ -26,15 +25,14 @@ type StreamOptions struct {
 // StreamResult is what End records.
 type StreamResult struct {
 	// Message is non-nil once the stream has ended, always — including on a
-	// pre-flight failure (REQ-PROV-04): partial content plus the failure must
-	// be one value.
+	// pre-flight failure: partial content plus the failure must be one value.
 	Message *AssistantMessage
 	// Result is set on agent-level streams and nil on provider-level ones.
 	Result *RunResult
 	Err    error
 }
 
-// EventStream is REQ-GO-08's unbounded mutex + condition-variable queue. It is
+// EventStream is an unbounded mutex + condition-variable queue. It is
 // not a channel: the producer is a paid model call holding an HTTP connection
 // open, and blocking it on a slow consumer stalls the SSE body read, trips the
 // provider's stream idle timeout and kills the request. A slow consumer costs
@@ -64,7 +62,7 @@ func NewEventStream(opts StreamOptions) *EventStream {
 	return s
 }
 
-// Push never blocks. It deep-copies e before enqueueing (REQ-OBS-06b) —
+// Push never blocks. It deep-copies e before enqueueing —
 // centralizing the copy here is what makes the guarantee hold for producers
 // that forget. Pushes after End, and after an overrun, are dropped silently.
 func (s *EventStream) Push(e Event) {
@@ -128,7 +126,7 @@ func (s *EventStream) Next() (Event, bool) {
 	}
 }
 
-// Events is the range-over-func iterator of REQ-GO-08. Breaking out early is
+// Events is a range-over-func iterator over the stream. Breaking out early is
 // safe: the producer is never blocked on this consumer.
 func (s *EventStream) Events() iter.Seq[Event] {
 	return func(yield func(Event) bool) {
@@ -153,13 +151,13 @@ func (s *EventStream) Wait() StreamResult {
 
 // Result blocks until End and returns the assistant message. It works even if
 // no event was ever read — the result is fed by End, not by consumption, and
-// that is what makes abandoning a stream safe (REQ-GO-08).
+// that is what makes abandoning a stream safe.
 func (s *EventStream) Result() *AssistantMessage { return s.Wait().Message }
 
 // RunResult blocks until End and returns the agent-level result. It is the
-// run-facing accessor; on a provider-level stream Result is zero and the error
-// explains why. §7's sketch conflates the two — Result() there is written as
-// though it yields both an AssistantMessage and a RunResult.
+// run-facing accessor; on a provider-level stream the RunResult is zero and
+// the error is the stream's own. It is separate from Result because one
+// accessor cannot yield both an AssistantMessage and a RunResult.
 func (s *EventStream) RunResult() (RunResult, error) {
 	r := s.Wait()
 	if r.Result == nil {
@@ -180,14 +178,13 @@ func (s *EventStream) Err() error {
 }
 
 // ErrorStream returns an already-ended stream carrying one ErrorEvent. This is
-// REQ-PROV-04's pre-closed error stream, for failures raised before any bytes
-// are sent — an unregistered Api, an unusable option, an OnPayload abort.
+// the pre-closed error stream, for failures raised before any bytes are sent
+// — an unregistered Api, an unusable option, an OnPayload abort.
 //
 // The original error is retrievable unwrapped through Err, so errors.Is and
-// errors.As still work on the caller's own sentinel. That is how REQ-PROV-04
-// ("failures are encoded in the stream") and REQ-PROV-18 ("an OnPayload error
-// must propagate to the caller unmodified") are both satisfied by a function
-// whose only return is *EventStream.
+// errors.As still work on the caller's own sentinel. That is how a function
+// whose only return is *EventStream both encodes failures in the stream and
+// propagates an OnPayload error to the caller unmodified.
 func ErrorStream(msg *AssistantMessage, err error) *EventStream {
 	s := NewEventStream(StreamOptions{})
 	s.Push(ErrorEvent{Message: err.Error(), Err: err, Terminal: true})

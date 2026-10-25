@@ -4,10 +4,10 @@ import (
 	"context"
 )
 
-// UsageField is a presence bit. REQ-PROV-16 permits "a pointer OR an explicit
-// presence flag"; a mask is chosen over nine *int64 because Usage is summed on
-// every turn, and pointer arithmetic across a summation is where the
-// double-counting of REQ-PROV-05.1 actually happens.
+// UsageField is a presence bit. Presence could be a pointer or an explicit
+// flag; a mask is chosen over eight pointers because Usage is summed on every
+// turn, and pointer arithmetic across a summation is where double-counting
+// actually happens.
 type UsageField uint32
 
 const (
@@ -22,20 +22,20 @@ const (
 )
 
 type Usage struct {
-	// InputTokens is NET of cache reads and writes (REQ-PROV-05.1).
+	// InputTokens is NET of cache reads and writes.
 	InputTokens  int64
 	OutputTokens int64
 	// ReasoningTokens is a SUBSET of OutputTokens, not an addend.
 	ReasoningTokens  int64
 	CacheReadTokens  int64
 	CacheWriteTokens int64
-	// CacheWrite1hTokens is a SUBSET of CacheWriteTokens (REQ-PROV-05.3).
+	// CacheWrite1hTokens is a SUBSET of CacheWriteTokens.
 	CacheWrite1hTokens int64
 	TotalTokens        int64
 	// Requests is how many model requests the usage covers.
 	Requests int64
 	CostUSD  float64
-	// BilledModel is the model that actually served the request (REQ-PROV-05.5).
+	// BilledModel is the model that actually served the request.
 	BilledModel string
 	// Unpriced is true when at least one request the usage covers had a cost
 	// that neither the vendor reported nor the catalog priced, so CostUSD
@@ -43,8 +43,8 @@ type Usage struct {
 	Unpriced bool
 
 	// Set records which fields the provider actually reported, so an explicit
-	// 0 beats an SDK fallback (REQ-PROV-16.4) and a wholly unreported usage is
-	// distinguishable from a reported all-zero one (REQ-GO-15).
+	// 0 beats an SDK fallback and a wholly unreported usage is
+	// distinguishable from a reported all-zero one.
 	Set UsageField
 }
 
@@ -72,8 +72,7 @@ func (u *Usage) SetCost(v float64)    { u.CostUSD = v; u.Set |= UsageCostUSD }
 func (u Usage) Has(f UsageField) bool { return u.Set&f != 0 }
 
 // Add sums two usages field-wise and ORs their presence masks and their
-// Unpriced flags. The session layer only sums; it never recomputes cost
-// (REQ-PROV-05).
+// Unpriced flags. The session layer only sums; it never recomputes cost.
 func (u Usage) Add(o Usage) Usage {
 	u.InputTokens += o.InputTokens
 	u.OutputTokens += o.OutputTokens
@@ -91,8 +90,8 @@ func (u Usage) Add(o Usage) Usage {
 	return u
 }
 
-// ContextTokens implements REQ-GO-15's definition exactly: TotalTokens when
-// non-zero, else Input+Output+CacheRead+CacheWrite.
+// ContextTokens is TotalTokens when non-zero, else
+// Input+Output+CacheRead+CacheWrite.
 func (u Usage) ContextTokens() int64 {
 	if u.TotalTokens != 0 {
 		return u.TotalTokens
@@ -104,11 +103,11 @@ func (u Usage) ContextTokens() int64 {
 func (u Usage) Reported() bool { return u.Set != 0 }
 
 // IsZero is true when nothing was reported OR everything reported was zero —
-// the "all-zero-usage response" REQ-GO-15 forbids as an anchor.
+// an "all-zero-usage response", which must never serve as an anchor.
 func (u Usage) IsZero() bool { return u.ContextTokens() == 0 }
 
 // UsageWire is the decode-side helper providers use: every numeric is a
-// pointer so an explicit 0 is distinguishable from absent (REQ-PROV-16.4).
+// pointer so an explicit 0 is distinguishable from absent.
 // Into folds it onto a Usage, setting presence bits for exactly the non-nil
 // fields.
 type UsageWire struct {

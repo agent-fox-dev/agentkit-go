@@ -1,12 +1,10 @@
 package core
 
 // StopReason is the canonical, lossy normalization of a provider finish
-// reason (§5). RawStopReason on AssistantMessage keeps the provider's own
-// string.
+// reason. RawStopReason on AssistantMessage keeps the provider's own string.
 //
-// NAMING RULING: §5 names this enum member "Length"; REQ-LOOP-10 and REQ-GO-16
-// use the wire string "max_tokens". The Go identifier follows §5 and the wire
-// value follows REQ-LOOP-10. They are the same thing.
+// NAMING: the Go identifier of an output-cap stop is StopReasonLength and its
+// wire string is "max_tokens". They are the same thing.
 type StopReason string
 
 const (
@@ -20,17 +18,15 @@ const (
 )
 
 // ShortCircuits reports the two reasons that terminate a turn BEFORE tool
-// extraction (REQ-LOOP-01). Every other reason, recognized or not, is
-// control-flow-identical.
+// extraction. Every other reason, recognized or not, is control-flow-identical.
 func (r StopReason) ShortCircuits() bool {
 	return r == StopReasonError || r == StopReasonAborted
 }
 
 // RunStopReason is why a RUN ended. It is a distinct type from StopReason
-// because REQ-LOOP-07's "max_turns" is not something any model can say, and
-// because RunResult.StopReason == StopReasonLength would otherwise be
-// ambiguous between "the model hit its output cap" and "the run hit its turn
-// cap".
+// because "max_turns" is not something any model can say, and because
+// RunResult.StopReason == StopReasonLength would otherwise be ambiguous
+// between "the model hit its output cap" and "the run hit its turn cap".
 type RunStopReason string
 
 const (
@@ -49,9 +45,8 @@ const (
 	RunStopRefusal RunStopReason = "refusal"
 )
 
-// ExtractToolUse is the continuation predicate of REQ-LOOP-01, by name. It
-// scans Content for ToolUseBlock and reads no stop reason. This is the whole
-// of the fix for Appendix A correction #1.
+// ExtractToolUse is the loop's continuation predicate, by name. It scans
+// Content for ToolUseBlock and reads no stop reason.
 func ExtractToolUse(m *AssistantMessage) []ToolUseBlock {
 	if m == nil {
 		return nil
@@ -69,9 +64,9 @@ func ExtractToolUse(m *AssistantMessage) []ToolUseBlock {
 // in the loop compares a StopReason to decide whether to continue.
 func ShouldIterate(m *AssistantMessage) bool { return len(ExtractToolUse(m)) > 0 }
 
-// API identifies a wire protocol (REQ-PROV-02). Providers are keyed by this,
-// never by vendor: Model.Provider is a vendor id used only for credential
-// resolution and catalog lookup.
+// API identifies a wire protocol. Providers are keyed by this, never by
+// vendor: Model.Provider is a vendor id used only for credential resolution
+// and catalog lookup.
 type API string
 
 const (
@@ -80,7 +75,7 @@ const (
 	APIOpenAIResponses   API = "openai-responses"
 	APIGoogleGenerative  API = "google-generative-ai"
 	APIOllamaChat        API = "ollama-chat"
-	APIFaux              API = "faux" // NFR-TEST-05, shipped and supported
+	APIFaux              API = "faux" // shipped and supported
 )
 
 // Effort is how much thinking a model puts into a turn: on an adaptive model
@@ -96,8 +91,8 @@ const (
 	EffortMax    Effort = "max"
 )
 
-// ToolChoice is REQ-TOOL-16's provider-neutral tri-state. The zero value is
-// Unset, so absent cannot be confused with auto and needs no pointer.
+// ToolChoice is a provider-neutral tri-state. The zero value is Unset, so
+// absent cannot be confused with auto and needs no pointer.
 type ToolChoice string
 
 const (
@@ -108,7 +103,8 @@ const (
 
 func (c ToolChoice) IsSet() bool { return c != ToolChoiceUnset }
 
-// CacheRetention is §6.2a Level 1's tri-state.
+// CacheRetention is a provider-neutral tri-state: how long a provider keeps
+// the prompt cache.
 type CacheRetention string
 
 const (

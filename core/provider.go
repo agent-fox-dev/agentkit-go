@@ -7,7 +7,7 @@ import (
 )
 
 // Request is the canonical, provider-independent model call. Messages are the
-// RAW canonical history: REQ-PROV-11 repair happens inside the provider, never
+// RAW canonical history: transcript repair happens inside the provider, never
 // here, because the loop is not running when a transcript is loaded from disk
 // and no caller may be able to skip it. The model is the provider's: a
 // ProviderClient is built for one.
@@ -17,11 +17,12 @@ type Request struct {
 	// request, with a cache breakpoint on its last block.
 	Prefix   Messages
 	Messages Messages
-	// Tools is []ToolWire, not []Tool. That is the enforcement of REQ-TOOL-01.
+	// Tools is []ToolWire, not []Tool, so no provider can reach a handler or
+	// any other field a request body must not carry.
 	Tools         []ToolWire
 	ToolChoice    ToolChoice
 	MaxTokens     *int     // upper bound; capped at the model's output cap
-	Temperature   *float64 // REQ-PROV-16 presence
+	Temperature   *float64 // nil is absent; an explicit 0 is sent
 	TopP          *float64
 	StopSequences []string
 	// Effort is the thinking effort; empty sends none.

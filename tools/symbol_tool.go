@@ -118,7 +118,7 @@ func (f *fileTools) findSymbolTool() core.Tool {
 			}
 
 			// --- Index branch: try the codesearch index first. ---
-			// 03-REQ-7: When Options.Index is set, call Index.Symbols.
+			// When Options.Index is set, call Index.Symbols.
 			// On ok=true, rank and truncate with find_symbol's own code
 			// and name the index in the header. On ok=false, fall back
 			// to the symbol table. find_symbol never triggers a build.

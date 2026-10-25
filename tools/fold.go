@@ -2,7 +2,7 @@ package tools
 
 import "strings"
 
-// REQ-TOOL-04d's whitespace-tolerant fallback.
+// The edit tool's whitespace-tolerant fallback.
 //
 // The problem it solves: a model often sees a file through a lossy render —
 // a web UI that curls quotes, a terminal that pads lines, a paste that turned
@@ -19,11 +19,10 @@ import "strings"
 //     smart quotes and trailing spaces that made the fold necessary. The fold
 //     is a matching key, never an output.
 //
-// The requirement flags the cost explicitly: NFKC is not in the standard
-// library, so this is a hand-rolled fold restricted to the confusable set
-// rather than the full normal form. That is the deliberate payment against
-// REQ-GO-11 — the alternative is a nested module for one function, and the
-// characters below are the ones that actually appear in rendered text.
+// The fold is hand-rolled and restricted to the confusable set rather than a
+// Unicode normal form: NFKC does not fold smart quotes or dashes to ASCII,
+// which is most of what a lossy render changes. The characters below are the
+// ones that actually appear in rendered text.
 
 // confusables maps a character to its ASCII fold. Anything absent is left
 // alone: a fold that guessed at unlisted runes would start changing meaning
@@ -121,7 +120,7 @@ func isPlainASCII(s string) bool {
 // Trailing only. Leading whitespace is indentation and is semantic in Go,
 // Python, YAML and Makefiles alike; trimming it would let an edit match a line
 // at the wrong nesting level, which is precisely the kind of silent
-// mis-application REQ-TOOL-04c's uniqueness rule exists to prevent.
+// mis-application the edit tool's uniqueness rule exists to prevent.
 func FoldLine(s string) string {
 	return strings.TrimRight(FoldConfusables(s), " \t\r")
 }

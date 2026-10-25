@@ -36,18 +36,17 @@ func (k Kind) String() string {
 // Value is one decoded JSON value.
 //
 // Numbers are held as json.Number — the VERBATIM literal — so 1, 1.0 and 1e3
-// stay distinguishable. REQ-SEC-12.2 needs that distinction to implement
-// cross-language number semantics correctly, and NFR-TEST-06.4 needs it to
-// diff a request body without laundering it through a float64.
+// stay distinguishable. Cross-language number semantics need that
+// distinction, and so does diffing a request body without laundering it
+// through a float64.
 type Value struct {
 	Kind   Kind
 	Bool   bool
 	Number json.Number
 	String string
 	Array  []Value
-	// Object holds members. Duplicate keys are REJECTED at decode
-	// (REQ-SEC-11.3), so a map is safe here: there is never a second value to
-	// lose.
+	// Object holds members. Duplicate keys are REJECTED at decode, so a map
+	// is safe here: there is never a second value to lose.
 	Object map[string]Value
 	// Keys is insertion order, for deterministic error messages and for a
 	// caller that needs to know what the peer actually sent.

@@ -122,7 +122,7 @@ func (r *runner) dispatch(blocks ...core.ToolUseBlock) ([]core.ToolResult, error
 func (r *runner) value(res core.ToolResult) (starlark.Value, error) {
 	if !res.OK {
 		// A failure is a value the script inspects, never an exception
-		// it cannot catch (08-REQ-5.1). Starlark has no try.
+		// it cannot catch. Starlark has no try.
 		return NewToolError(res), nil
 	}
 	if res.Data == nil {

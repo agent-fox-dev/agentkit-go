@@ -27,7 +27,7 @@ func TestModel() *core.Model {
 // Scripted is a provider that replays a predetermined sequence of assistant
 // messages, one per turn, and answers "done" once the script is exhausted.
 // It is the executable double the loop is tested against; provider/faux is
-// the shipped, supported form of the same idea (NFR-TEST-05).
+// the shipped, supported form of the same idea.
 type Scripted struct {
 	mu    sync.Mutex
 	Turns []core.AssistantMessage

@@ -11,7 +11,7 @@ import (
 
 // ledgerEntry is one nested call a script made and how it ended. Its side
 // effects are not undone when the script fails later, so the model needs to
-// know it happened (08-REQ-9.3).
+// know it happened.
 type ledgerEntry struct {
 	tool  string
 	args  map[string]any

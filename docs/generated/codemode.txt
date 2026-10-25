@@ -46,9 +46,9 @@ FUNCTIONS
 
 func FormatResultText(printed string, returnValue any) string
     FormatResultText is the text the model reads for a script that finished:
-    what it printed, then "Return value: <value>" when it returned one,
-    or a note that there was neither (08-REQ-8.3). A Starlark value is rendered
-    as Starlark writes it; any other value as JSON.
+    what it printed, then "Return value: <value>" when it returned one, or a
+    note that there was neither. A Starlark value is rendered as Starlark writes
+    it; any other value as JSON.
 
 func RenderSignature(t core.Tool) string
     RenderSignature declares t as the Starlark function a script calls:

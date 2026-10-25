@@ -1,7 +1,7 @@
 package core
 
 // RunResult is the flattened ACTIVE BRANCH — a view, not the durable
-// representation, and not what a caller should persist (§5, NFR-REL-04).
+// representation, and not what a caller should persist.
 type RunResult struct {
 	Messages   Messages
 	StopReason RunStopReason

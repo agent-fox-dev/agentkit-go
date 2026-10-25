@@ -38,9 +38,8 @@ const bomPrefix = diag.BOMPrefix
 // plus tables and arrays of tables.
 //
 // Every other well-formed value is a DIAGNOSTIC THAT SKIPS THE KEY rather than
-// a failure of the file. REQ-SKILL-10: a manifest is authored content whose
-// consumer is a language model, and a value form we do not read must not
-// delete the whole skill.
+// a failure of the file. A manifest is authored content, and a value form we
+// do not read must not throw away everything else in the file.
 //   - dates, times and datetimes
 //   - multi-line strings (""" and ''')
 //   - inline tables { }
@@ -79,7 +78,7 @@ type Value struct {
 }
 
 // Table is a TOML table. It preserves key insertion order, which is what makes
-// the unknown-key diagnostics of REQ-SKILL-10 deterministic: a map iteration
+// the unknown-key diagnostics deterministic: a map iteration
 // would reorder the warnings between runs and turn a golden test into a flake.
 type Table struct {
 	name      string
@@ -214,7 +213,7 @@ func (e *SyntaxError) Error() string { return fmt.Sprintf("line %d: %s", e.Line,
 // skipped, and an error only for a grammar failure.
 func ParseTOML(src []byte) (*Table, []Diagnostic, error) {
 	// A BOM at the head of a manifest is common on Windows editors and is not
-	// a key (REQ-CTX-02 requires the same strip for context files).
+	// a key.
 	src = []byte(strings.TrimPrefix(string(src), bomPrefix))
 
 	var p unstable.Parser

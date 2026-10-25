@@ -13,11 +13,10 @@ const BlockErrorCode = "blocked_by_policy"
 const MinMaxPendingBytes int64 = 1 << 20
     MinMaxPendingBytes is the floor for StreamOptions.MaxPendingBytes.
 
-    OQ-7 says the floor is "the largest single event AgentKit can emit", but
-    that is not computable: the largest event is a ToolResultEvent bounded only
-    by REQ-TOOL-09's output cap, which is configured elsewhere and can be raised
-    after the stream is created. A documented constant is a promise something
-    can keep.
+    A floor of "the largest single event AgentKit can emit" is not computable:
+    the largest event is a ToolResultEvent bounded only by the tool output cap,
+    which is configured elsewhere and can be raised after the stream is created.
+    A documented constant is a promise something can keep.
 
 
 VARIABLES
@@ -28,10 +27,11 @@ var (
 	ErrToolRejected   = errors.New("agentkit: tool call rejected")
 	ErrRefusal        = errors.New("agentkit: model refused the request")
 	// ErrBusy: a conflicting operation was attempted while a turn was in
-	// flight (REQ-LOOP-15). The caller may retry; it is never queued.
+	// flight. The caller may retry; it is never queued.
 	ErrBusy = errors.New("agentkit: agent is busy")
-	// ErrAborted: stopped by Agent.Abort(), deliberately distinguishable from
-	// context.Canceled, which signals the caller's own ctx (REQ-GO-09).
+	// ErrAborted: the run stopped on a cancelled context, or a provider ended
+	// its stream as aborted. On a cancellation the run's error wraps it
+	// beside the context's own error, so errors.Is matches either.
 	ErrAborted       = errors.New("agentkit: run aborted")
 	ErrStreamOverrun = errors.New("agentkit: stream consumer overrun")
 
@@ -50,32 +50,31 @@ var (
 	ErrSessionExists  = errors.New("agentkit: session log already exists at path")
 	// ErrSessionNotEmpty makes the forbidden "construct, then patch the model
 	// onto it" resume a runtime failure on the first line rather than a style
-	// violation (REQ-SESS-02).
+	// violation.
 	ErrSessionNotEmpty = errors.New(
 		"agentkit: session store is not empty; resume with LoadSession + NewAgentFromSession")
 
-	// ErrUnguardedExecute is OQ-8's resolution: a toolset that reaches a shell
-	// tool (execute, run_command) with no Guard is refused by
-	// agentkit.NewRunner, and so by agentkit.New, before any request. A
-	// headless embedder with no policy would otherwise hand the model an
-	// unrestricted shell by omission. Supply an interceptor — RestrictedPolicy
-	// is the shipped starting point — or pass AllowAllToolCalls to say so
-	// explicitly.
+	// ErrUnguardedExecute: a toolset that reaches a shell tool (execute,
+	// run_command) with no Guard is refused by agentkit.NewRunner, and so by
+	// agentkit.New, before any request. A headless embedder with no policy
+	// would otherwise hand the model an unrestricted shell by omission.
+	// Supply an interceptor — guard.Restricted is the shipped starting point
+	// — or pass guard.AllowAll to say so explicitly.
 	ErrUnguardedExecute = errors.New(
 		"agentkit: a shell tool is reachable but Toolset.Guard is nil; " +
 			"supply an interceptor (guard.Restricted is the shipped starting point) " +
 			"or guard.AllowAll to opt out explicitly (OQ-8)")
 )
-    Sentinel errors of REQ-GO-09, all comparable with errors.Is.
+    Sentinel errors, all comparable with errors.Is.
 
 
 FUNCTIONS
 
 func BatchTerminates(votes []bool) bool
-    BatchTerminates is REQ-TOOL-13.1's vote: an AND over finalized results.
-    An empty batch never terminates. OR semantics are the obvious-but-wrong
-    default: the model emits N parallel calls, and a unilateral finish would
-    compute N-1 results it never sees.
+    BatchTerminates is a batch's vote to end the run: an AND over finalized
+    results. An empty batch never terminates. OR semantics are the
+    obvious-but-wrong default: the model emits N parallel calls, and a
+    unilateral finish would compute N-1 results it never sees.
 
 func MarshalEvent(e Event, enc MessageEncoder) ([]byte, error)
     MarshalEvent encodes e as its discriminated JSON form.
@@ -110,9 +109,9 @@ func WithUsageReporter(ctx context.Context, report func(Usage)) context.Context
 TYPES
 
 type API string
-    API identifies a wire protocol (REQ-PROV-02). Providers are keyed by this,
-    never by vendor: Model.Provider is a vendor id used only for credential
-    resolution and catalog lookup.
+    API identifies a wire protocol. Providers are keyed by this, never by
+    vendor: Model.Provider is a vendor id used only for credential resolution
+    and catalog lookup.
 
 const (
 	APIAnthropicMessages API = "anthropic-messages"
@@ -120,7 +119,7 @@ const (
 	APIOpenAIResponses   API = "openai-responses"
 	APIGoogleGenerative  API = "google-generative-ai"
 	APIOllamaChat        API = "ollama-chat"
-	APIFaux              API = "faux" // NFR-TEST-05, shipped and supported
+	APIFaux              API = "faux" // shipped and supported
 )
 type AfterToolCall func(ctx context.Context, in AfterToolCallContext) AfterToolCallDecision
 
@@ -142,7 +141,7 @@ type AfterToolCallContext struct {
 }
 
 type AfterToolCallDecision struct {
-	// Terminate is *bool because nil means "no opinion" (REQ-TOOL-13.3).
+	// Terminate is *bool because nil means "no opinion".
 	Terminate *bool
 }
 
@@ -171,7 +170,7 @@ type AssistantMessage struct {
 
 	// StopReason is the canonical enum; RawStopReason is the provider's own
 	// finish string, verbatim. Neither may be read by the continuation check
-	// (REQ-LOOP-01) — use ExtractToolUse.
+	// — use ExtractToolUse.
 	StopReason    StopReason
 	RawStopReason string
 	// StopDetail is the provider's own account of why it stopped, when it
@@ -204,28 +203,28 @@ type BeforeToolCallContext struct {
 	ToolUseID string
 	// ParentToolUseID and ParentToolName identify the wrapper call that made
 	// this call through CallNested. Both are empty for a call the model made
-	// directly (07-REQ-5.1).
+	// directly.
 	ParentToolUseID string
 	ParentToolName  string
 	Tool            Tool
 	Arguments       map[string]any
-	// RawInput is the model's own bytes, key order intact (REQ-TOOL-12).
+	// RawInput is the model's own bytes, key order intact.
 	RawInput  json.RawMessage
 	Assistant *AssistantMessage
 	Batch     []ToolUseBlock
 	Index     int
 	TurnCount int
 }
-    BeforeToolCallContext is handed to the single tool-authorization boundary
-    (REQ-SEC-03). Arguments are already validated and coerced.
+    BeforeToolCallContext is handed to the single tool-authorization boundary.
+    Arguments are already validated and coerced.
 
 type BeforeToolCallDecision struct {
 	Block bool
-	// Terminate is honoured ONLY when Block is set (REQ-TOOL-13.2).
+	// Terminate is honoured ONLY when Block is set.
 	Terminate bool
 	Reason    string
 	// Arguments, when non-nil, replaces Arguments. The interceptor may widen
-	// as well as narrow (REQ-SEC-03.5).
+	// as well as narrow.
 	Arguments map[string]any
 }
 
@@ -237,7 +236,8 @@ const (
 	BlockToolUse  BlockType = "tool_use"
 )
 type CacheRetention string
-    CacheRetention is §6.2a Level 1's tri-state.
+    CacheRetention is a provider-neutral tri-state: how long a provider keeps
+    the prompt cache.
 
 const (
 	CacheRetentionNone  CacheRetention = "none"
@@ -257,9 +257,8 @@ type ContentBlock interface {
 	// Has unexported methods.
 }
     ContentBlock is a sealed union: TextBlock | ThinkingBlock | ToolUseBlock.
-    Sealed because every provider adapter switches exhaustively over it
-    (REQ-PROV-03) and a third-party variant would make that switch silently
-    incomplete.
+    Sealed because every provider adapter switches exhaustively over it and a
+    third-party variant would make that switch silently incomplete.
 
 type Effort string
     Effort is how much thinking a model puts into a turn: on an adaptive model
@@ -291,19 +290,18 @@ type Event interface {
 	// Has unexported methods.
 }
     Event is a sealed union. clone and size are unexported so the union cannot
-    be extended from outside and so EventStream.Push can enforce REQ-OBS-06b
+    be extended from outside and so EventStream.Push can deep-copy every event
     centrally, rather than trusting every producer to remember.
 
 type EventClass uint8
-    EventClass is REQ-OBS-06a's split, with a third member the requirement needs
-    and does not have.
+    EventClass splits events into deltas, snapshots and authoritative events.
 
-    06a defines authoritative as "complete and final for the item it names,
-    exactly one per item, always emitted" and then places everything that is not
-    a delta into that class. But MessageUpdateEvent is by construction repeated
-    and non-final, and 06b explicitly wants many of them. A consumer following
-    06a literally would treat the first MessageUpdateEvent as final and stop
-    rendering.
+    A split into deltas and authoritative events alone ("complete and final
+    for the item it names, exactly one per item, always emitted") would
+    place everything that is not a delta into the authoritative class. But
+    MessageUpdateEvent is by construction repeated and non-final, and a stream
+    carries many of them. A consumer treating it as authoritative would treat
+    the first MessageUpdateEvent as final and stop rendering.
 
 const (
 	// ClassIncremental is an optimization. It may be coalesced, may be absent
@@ -320,9 +318,9 @@ const (
 type EventStream struct {
 	// Has unexported fields.
 }
-    EventStream is REQ-GO-08's unbounded mutex + condition-variable queue. It is
-    not a channel: the producer is a paid model call holding an HTTP connection
-    open, and blocking it on a slow consumer stalls the SSE body read, trips the
+    EventStream is an unbounded mutex + condition-variable queue. It is not a
+    channel: the producer is a paid model call holding an HTTP connection open,
+    and blocking it on a slow consumer stalls the SSE body read, trips the
     provider's stream idle timeout and kills the request. A slow consumer costs
     memory and nothing else.
 
@@ -330,14 +328,13 @@ type EventStream struct {
 
 func ErrorStream(msg *AssistantMessage, err error) *EventStream
     ErrorStream returns an already-ended stream carrying one ErrorEvent. This is
-    REQ-PROV-04's pre-closed error stream, for failures raised before any bytes
-    are sent — an unregistered Api, an unusable option, an OnPayload abort.
+    the pre-closed error stream, for failures raised before any bytes are sent —
+    an unregistered Api, an unusable option, an OnPayload abort.
 
     The original error is retrievable unwrapped through Err, so errors.Is and
-    errors.As still work on the caller's own sentinel. That is how REQ-PROV-04
-    ("failures are encoded in the stream") and REQ-PROV-18 ("an OnPayload error
-    must propagate to the caller unmodified") are both satisfied by a function
-    whose only return is *EventStream.
+    errors.As still work on the caller's own sentinel. That is how a function
+    whose only return is *EventStream both encodes failures in the stream and
+    propagates an OnPayload error to the caller unmodified.
 
 func EventStreamOf(ch <-chan StreamEvent, err error) *EventStream
     EventStreamOf adapts a provider's channel to an EventStream, so a consumer
@@ -358,7 +355,7 @@ func (s *EventStream) Err() error
     when the run itself succeeded.
 
 func (s *EventStream) Events() iter.Seq[Event]
-    Events is the range-over-func iterator of REQ-GO-08. Breaking out early is
+    Events is a range-over-func iterator over the stream. Breaking out early is
     safe: the producer is never blocked on this consumer.
 
 func (s *EventStream) Next() (Event, bool)
@@ -369,20 +366,20 @@ func (s *EventStream) Next() (Event, bool)
     the caller's concern.
 
 func (s *EventStream) Push(e Event)
-    Push never blocks. It deep-copies e before enqueueing (REQ-OBS-06b) —
-    centralizing the copy here is what makes the guarantee hold for producers
-    that forget. Pushes after End, and after an overrun, are dropped silently.
+    Push never blocks. It deep-copies e before enqueueing — centralizing the
+    copy here is what makes the guarantee hold for producers that forget.
+    Pushes after End, and after an overrun, are dropped silently.
 
 func (s *EventStream) Result() *AssistantMessage
     Result blocks until End and returns the assistant message. It works even
     if no event was ever read — the result is fed by End, not by consumption,
-    and that is what makes abandoning a stream safe (REQ-GO-08).
+    and that is what makes abandoning a stream safe.
 
 func (s *EventStream) RunResult() (RunResult, error)
     RunResult blocks until End and returns the agent-level result. It is the
-    run-facing accessor; on a provider-level stream Result is zero and the error
-    explains why. §7's sketch conflates the two — Result() there is written as
-    though it yields both an AssistantMessage and a RunResult.
+    run-facing accessor; on a provider-level stream the RunResult is zero
+    and the error is the stream's own. It is separate from Result because one
+    accessor cannot yield both an AssistantMessage and a RunResult.
 
 func (s *EventStream) Wait() StreamResult
     Wait blocks until End and returns the terminal result.
@@ -407,10 +404,10 @@ const (
 	EvThinkingDelta EventType = "thinking_delta"
 	EvThinkingEnd   EventType = "thinking_end"
 
-	// Model-stream decode events (REQ-OBS-06). Distinct from the execution
-	// triple below: REQ-LOOP-05 and REQ-LOOP-11.3 say "ToolCallStartEvent" for
-	// tool EXECUTION, which would produce two events of that name per call
-	// with different payloads. The loop emits the execution triple.
+	// Model-stream decode events: the model writing a tool call. Distinct
+	// from the execution triple below, which reports the tool RUNNING; one
+	// name for both would produce two events of that name per call with
+	// different payloads. The loop emits the execution triple.
 	EvToolCallStart  EventType = "tool_call_start"
 	EvToolInputDelta EventType = "tool_input_delta"
 	EvToolCallEnd    EventType = "tool_call_end"
@@ -426,7 +423,7 @@ type ExecutionMode uint8
 
 const (
 	// Parallel is the zero value, so every custom tool defaults correctly with
-	// no field set (REQ-LOOP-05a).
+	// no field set.
 	Parallel ExecutionMode = iota
 	Sequential
 )
@@ -438,12 +435,12 @@ type Message interface {
     Message is a sealed union: UserMessage | AssistantMessage |
     ToolResultMessage.
 
-    An interface, not a Role-discriminated fat struct. REQ-LOOP-02 makes
-    ToolResultMessage a first-class role whose ToolUseID, IsError, ToolName
-    and Usage exist on no other role. A fat struct puts those fields on every
-    message and makes "flatten results into a shared user message" — the mistake
-    REQ-LOOP-02 and Appendix A#2 name — a one-line accident instead of a type
-    error. Sealed by isMessage() so provider adapters' role switches stay total.
+    An interface, not a Role-discriminated fat struct. ToolResultMessage is
+    a first-class role whose ToolUseID, IsError, ToolName and Usage exist on
+    no other role. A fat struct puts those fields on every message and makes
+    "flatten results into a shared user message" a one-line accident instead of
+    a type error. Sealed by isMessage() so provider adapters' role switches stay
+    total.
 
 type MessageEncoder func(Message) (json.RawMessage, error)
     MessageEncoder renders one canonical message as JSON.
@@ -500,7 +497,7 @@ type NestedCaller interface {
     NestedCaller runs tool calls on behalf of a wrapper tool — one that declares
     ReachableTools — through the same pipeline as a call the model makes:
     argument preparation and validation, BeforeToolCall, the handler,
-    AfterToolCall and the execution events (07-REQ-4.1).
+    AfterToolCall and the execution events.
 
     Call returns one result per call, in the order of calls. A call that fails
     — unknown to the wrapper, invalid, blocked, aborted, a handler error — is
@@ -521,9 +518,9 @@ type PreparedArguments struct {
 	// Coercions records what step 3 changed, for diagnostics.
 	Coercions []schema.Coercion
 }
-    PreparedArguments is the output of the argument pipeline (REQ-TOOL-11).
+    PreparedArguments is the output of the argument pipeline.
 
-        Raw   the bytes handed to the handler (REQ-GO-03's pinned signature)
+        Raw   the bytes handed to the handler
         Args  the decoded map, for interceptors and policies to read
 
     Raw is the model's own bytes whenever the pipeline changed nothing,
@@ -531,10 +528,10 @@ type PreparedArguments struct {
     When a step did change the value, Raw is rebuilt from the original bytes:
     every key the change left alone keeps its position and its bytes, and only
     changed or new keys are re-encoded. A map has no order, and re-encoding it
-    whole would sort the keys (REQ-TOOL-12).
+    whole would sort the keys.
 
 func PrepareArguments(t Tool, c ToolUseBlock) (PreparedArguments, error)
-    PrepareArguments runs REQ-TOOL-11's fixed pipeline before the handler.
+    PrepareArguments runs the fixed argument pipeline before the handler.
     Every stage runs inside the caller's panic-recover boundary.
 
      1. Tool.PrepareArguments — per-tool shape repair, runs FIRST, on a copy.
@@ -553,8 +550,8 @@ func (p PreparedArguments) TryWithArgs(args map[string]any) (PreparedArguments, 
     embedder's code: one that produces NaN fails that call, not the run.
 
 func (p PreparedArguments) WithArgs(args map[string]any) PreparedArguments
-    WithArgs replaces the arguments, as an interceptor may do (REQ-SEC-03.5),
-    rebuilding Raw so the keys the interceptor kept keep their positions.
+    WithArgs replaces the arguments, as an interceptor may do, rebuilding Raw so
+    the keys the interceptor kept keep their positions.
 
     It panics if a value is not representable in JSON (NaN, a channel);
     TryWithArgs reports that as an error instead.
@@ -574,27 +571,28 @@ type Request struct {
 	// request, with a cache breakpoint on its last block.
 	Prefix   Messages
 	Messages Messages
-	// Tools is []ToolWire, not []Tool. That is the enforcement of REQ-TOOL-01.
+	// Tools is []ToolWire, not []Tool, so no provider can reach a handler or
+	// any other field a request body must not carry.
 	Tools         []ToolWire
 	ToolChoice    ToolChoice
 	MaxTokens     *int     // upper bound; capped at the model's output cap
-	Temperature   *float64 // REQ-PROV-16 presence
+	Temperature   *float64 // nil is absent; an explicit 0 is sent
 	TopP          *float64
 	StopSequences []string
 	// Effort is the thinking effort; empty sends none.
 	Effort Effort
 }
     Request is the canonical, provider-independent model call. Messages are
-    the RAW canonical history: REQ-PROV-11 repair happens inside the provider,
+    the RAW canonical history: transcript repair happens inside the provider,
     never here, because the loop is not running when a transcript is loaded from
     disk and no caller may be able to skip it. The model is the provider's:
     a ProviderClient is built for one.
 
 type ResultHandler func(ctx context.Context, input json.RawMessage) ToolResult
-    ResultHandler is the richer form. It exists because REQ-GO-03's signature
-    cannot express REQ-TOOL-08: ToolResult.Terminate is `json:"-"` and Metadata
-    is stripped by ToLLMMap, so there is no channel through json.RawMessage
-    for either. Without it, REQ-TOOL-13's own stated use cases (finish,
+    ResultHandler is the richer form. It exists because ToolHandler's signature
+    cannot express a full ToolResult: ToolResult.Terminate is `json:"-"`
+    and Metadata is stripped by ToLLMMap, so there is no channel through
+    json.RawMessage for either. Without it, the tools that end a run (finish,
     submit_answer, exit_plan_mode) are unimplementable by a consumer, and every
     built-in tool that truncates cannot report metadata.
 
@@ -616,16 +614,15 @@ type RunResult struct {
 	Error      error
 }
     RunResult is the flattened ACTIVE BRANCH — a view, not the durable
-    representation, and not what a caller should persist (§5, NFR-REL-04).
+    representation, and not what a caller should persist.
 
 func (r RunResult) FinalText() string
 
 type RunStopReason string
     RunStopReason is why a RUN ended. It is a distinct type from StopReason
-    because REQ-LOOP-07's "max_turns" is not something any model can say,
-    and because RunResult.StopReason == StopReasonLength would otherwise be
-    ambiguous between "the model hit its output cap" and "the run hit its turn
-    cap".
+    because "max_turns" is not something any model can say, and because
+    RunResult.StopReason == StopReasonLength would otherwise be ambiguous
+    between "the model hit its output cap" and "the run hit its turn cap".
 
 const (
 	RunStopEndTurn        RunStopReason = "end_turn"
@@ -643,12 +640,11 @@ const (
 	RunStopRefusal RunStopReason = "refusal"
 )
 type StopReason string
-    StopReason is the canonical, lossy normalization of a provider finish reason
-    (§5). RawStopReason on AssistantMessage keeps the provider's own string.
+    StopReason is the canonical, lossy normalization of a provider finish
+    reason. RawStopReason on AssistantMessage keeps the provider's own string.
 
-    NAMING RULING: §5 names this enum member "Length"; REQ-LOOP-10 and REQ-GO-16
-    use the wire string "max_tokens". The Go identifier follows §5 and the wire
-    value follows REQ-LOOP-10. They are the same thing.
+    NAMING: the Go identifier of an output-cap stop is StopReasonLength and its
+    wire string is "max_tokens". They are the same thing.
 
 const (
 	StopReasonStop         StopReason = "stop"
@@ -660,9 +656,9 @@ const (
 	StopReasonAborted      StopReason = "aborted"
 )
 func (r StopReason) ShortCircuits() bool
-    ShortCircuits reports the two reasons that terminate a turn BEFORE
-    tool extraction (REQ-LOOP-01). Every other reason, recognized or not,
-    is control-flow-identical.
+    ShortCircuits reports the two reasons that terminate a turn
+    BEFORE tool extraction. Every other reason, recognized or not, is
+    control-flow-identical.
 
 type StreamEvent struct {
 	Event Event
@@ -684,8 +680,7 @@ type StreamOptions struct {
 
 type StreamResult struct {
 	// Message is non-nil once the stream has ended, always — including on a
-	// pre-flight failure (REQ-PROV-04): partial content plus the failure must
-	// be one value.
+	// pre-flight failure: partial content plus the failure must be one value.
 	Message *AssistantMessage
 	// Result is set on agent-level streams and nil on provider-level ones.
 	Result *RunResult
@@ -695,9 +690,9 @@ type StreamResult struct {
 
 type TextBlock struct{ Text string }
     TextBlock holds a Go string, not []byte, deliberately: strings are
-    immutable, so the deep copy REQ-OBS-06b demands at every Push is a header
-    copy rather than a byte copy. Cloning a partial assistant message is
-    therefore O(blocks), not O(streamed characters).
+    immutable, so the deep copy EventStream takes at every Push is a header copy
+    rather than a byte copy. Cloning a partial assistant message is therefore
+    O(blocks), not O(streamed characters).
 
 func (TextBlock) BlockType() BlockType
 
@@ -716,10 +711,9 @@ type TextEndEvent struct {
 	BlockIndex int
 	Text       string
 }
-    TextEndEvent carries the WHOLE text, not just a final delta. REQ-OBS-06's
-    payload table says "block_index, delta", but REQ-OBS-06a requires a consumer
-    to discard accumulated deltas and take the authoritative payload whole,
-    which is impossible if the end event carries only a delta. 06a wins.
+    TextEndEvent carries the WHOLE text, not just a final delta. It is
+    authoritative: a consumer discards the deltas it accumulated and takes the
+    payload whole, which is impossible if the end event carries only a delta.
 
 func (TextEndEvent) Class() EventClass
 
@@ -734,7 +728,8 @@ func (TextStartEvent) EventType() EventType
 type ThinkingBlock struct {
 	Thinking string
 	// Signature is provider-issued and opaque; it may be empty on an aborted
-	// stream, which REQ-PROV-11 rule 4 keys on. Never inspected.
+	// stream, and transcript repair downgrades an unsigned block to text.
+	// Never inspected.
 	Signature string
 	Redacted  bool
 }
@@ -788,7 +783,7 @@ type Tool struct {
 	// callers (a script runner binding results, a wrapper tool, generated
 	// documentation). It is optional and never enforced at runtime: a nil
 	// schema means the tool makes no promise. It is NOT part of ToolWire, so
-	// no provider request body carries it (06-REQ-1.3).
+	// no provider request body carries it.
 	OutputSchema *schema.Schema
 
 	// ReachableTools are the tools this tool can call on the model's behalf
@@ -809,14 +804,14 @@ type Tool struct {
 	Label string // display name, never sent
 	// Builtin marks a first-party tool. It exists so ToolPolicy.NoTools can
 	// mean "builtin" without the resolver keeping a hardcoded name list that
-	// silently stops matching when a tool is renamed (REQ-TOOL-10).
+	// silently stops matching when a tool is renamed.
 	Builtin          bool
 	ExecutionMode    ExecutionMode
 	PrepareArguments func(map[string]any) map[string]any
 	PromptGuidelines []string
 }
-    Tool is the registry + loop type (REQ-TOOL-01). Exactly one of Handler and
-    Execute must be set.
+    Tool is the registry + loop type. Exactly one of Handler and Execute must be
+    set.
 
 func Named(ts []Tool, names ...string) ([]Tool, error)
     Named returns the tools of ts called names, in the order of names,
@@ -836,7 +831,7 @@ func ReachableTools(tools []Tool) []Tool
     ReachableTools returns tools and everything they reach through
     ReachableTools, transitively, each name once, in order of first appearance
     (depth first). It is the one answer to "what can this tool set call",
-    however deeply wrappers nest (07-REQ-2.1).
+    however deeply wrappers nest.
 
 func (t Tool) Wire() ToolWire
 
@@ -845,8 +840,8 @@ type ToolCallEndEvent struct {
 	Block      ToolUseBlock
 }
     ToolCallEndEvent carries the finalized block, Input bytes included, so the
-    consumer needs no salvage parser of its own. REQ-OBS-08.4: it AUGMENTS the
-    accumulated call and never replaces state later events read.
+    consumer needs no salvage parser of its own. It AUGMENTS the accumulated
+    call and never replaces state later events read.
 
 func (ToolCallEndEvent) Class() EventClass
 
@@ -863,8 +858,8 @@ func (ToolCallStartEvent) Class() EventClass
 func (ToolCallStartEvent) EventType() EventType
 
 type ToolChoice string
-    ToolChoice is REQ-TOOL-16's provider-neutral tri-state. The zero value is
-    Unset, so absent cannot be confused with auto and needs no pointer.
+    ToolChoice is a provider-neutral tri-state. The zero value is Unset,
+    so absent cannot be confused with auto and needs no pointer.
 
 const (
 	ToolChoiceUnset ToolChoice = ""
@@ -892,9 +887,9 @@ type ToolExecutionStartEvent struct {
 	ParentToolUseID string
 }
     ParentToolUseID, on the three execution events, is the wrapper call a
-    nested call was made through, empty for a call the model made directly
-    (07-REQ-8.2). A nested call emits these events and no ToolResultEvent:
-    its result goes to the wrapper, not into the transcript.
+    nested call was made through, empty for a call the model made directly.
+    A nested call emits these events and no ToolResultEvent: its result goes to
+    the wrapper, not into the transcript.
 
 func (ToolExecutionStartEvent) Class() EventClass
 
@@ -912,7 +907,8 @@ func (ToolExecutionUpdateEvent) Class() EventClass
 func (ToolExecutionUpdateEvent) EventType() EventType
 
 type ToolHandler func(ctx context.Context, input json.RawMessage) (json.RawMessage, error)
-    ToolHandler is REQ-GO-03's pinned signature.
+    ToolHandler is the plain form of a tool's handler: JSON arguments in,
+    JSON result out.
 
 type ToolInputDeltaEvent struct {
 	BlockIndex int
@@ -954,14 +950,14 @@ type ToolPolicy struct {
 	NoTools      NoToolsMode
 	CustomTools  []Tool
 }
-    ToolPolicy is REQ-TOOL-10's five-field resolution, applied uniformly to
-    built-in and caller-supplied tools.
+    ToolPolicy is the five-field tool exposure policy Resolve applies, uniformly
+    to built-in and caller-supplied tools.
 
 func (p ToolPolicy) Resolve(registered []Tool) []Tool
-    Resolve is REQ-TOOL-10's five-field resolution over a registered set. It
-    applies UNIFORMLY to built-in and caller-supplied tools — that uniformity is
-    the requirement, and it is what makes four otherwise surprising consequences
-    true. Each is normative and each has a test:
+    Resolve is the five-field resolution over a registered set. It applies
+    UNIFORMLY to built-in and caller-supplied tools — that uniformity is the
+    point, and it is what makes four otherwise surprising consequences true.
+    Each is intended and each has a test:
 
         NoTools "all"     disables CUSTOM tools too, not just built-ins.
         NoTools "builtin" leaves the allowlist unset, so custom tools SURVIVE.
@@ -972,16 +968,17 @@ func (p ToolPolicy) Resolve(registered []Tool) []Tool
     CustomTools merged in before name-based selection so the selectors see one
     undifferentiated set.
 
-    This is what REQ-MULTI-05's per-agent "tool allowlist" resolves to, and it
-    is what lets an agent be scoped to read-and-search-only without rebuilding
-    the tool set by hand.
+    This is what a per-agent tool allowlist resolves to, and it is what lets an
+    agent be scoped to read-and-search-only without rebuilding the tool set by
+    hand.
 
 type ToolResult struct {
 	OK     bool           `json:"ok"`
 	Data   map[string]any `json:"data"`
 	Error  string         `json:"error,omitzero"`
 	Detail string         `json:"detail,omitzero"`
-	// Terminate never reaches the model; it is the REQ-TOOL-13 batch vote.
+	// Terminate never reaches the model; it is this result's vote to end the
+	// run (see BatchTerminates).
 	Terminate bool          `json:"-"`
 	Metadata  *ToolMetadata `json:"metadata,omitzero"`
 	// Blocks are extra content blocks appended after the text the model
@@ -1004,13 +1001,13 @@ type ToolResult struct {
 	// envelope is used.
 	Text string `json:"-"`
 }
-    ToolResult is REQ-TOOL-08's output envelope.
+    ToolResult is a tool call's output envelope.
 
 func CallNested(ctx context.Context, calls ...ToolUseBlock) ([]ToolResult, error)
     CallNested runs calls through the NestedCaller on ctx. With none attached
     — the tool declares no ReachableTools, or is invoked by something that
     is neither an agent run nor a Runner — it runs nothing and returns
-    ErrNoNestedCaller (07-REQ-4.2).
+    ErrNoNestedCaller.
 
 func ErrResult(code, detail string) ToolResult
 
@@ -1018,10 +1015,10 @@ func OKResult(data map[string]any) ToolResult
 
 func (r ToolResult) LLMText() string
     LLMText is the text the model sees for this result: Text when the tool
-    rendered one, otherwise the REQ-TOOL-08 envelope (ToLLMMap) as JSON.
-    A marshal failure — a Data value that is not JSON-representable — yields a
-    fixed error envelope rather than an empty result, so the transcript never
-    carries a tool_result with no content.
+    rendered one, otherwise the envelope (ToLLMMap) as JSON. A marshal failure —
+    a Data value that is not JSON-representable — yields a fixed error envelope
+    rather than an empty result, so the transcript never carries a tool_result
+    with no content.
 
 func (r ToolResult) ToLLMMap() map[string]any
     ToLLMMap strips Metadata and Terminate. Providers receive only the payload.
@@ -1039,9 +1036,9 @@ type ToolResultMessage struct {
 	IsError   bool
 	Timestamp time.Time
 	// AddedToolNames marks tools that became available at this point in the
-	// transcript (REQ-CACHE-10). Opaque to the loop.
+	// transcript. Opaque to the loop.
 	AddedToolNames []string
-	Usage          *Usage // optional (§5); a pointer, never omitempty
+	Usage          *Usage // optional; a pointer, never omitempty
 	// Metadata is the producing handler's structured metadata (exit code,
 	// outcome, truncation, spill path, totals, duration, line ending).
 	// Persisted by the session codec, never sent to a provider. Nil for
@@ -1058,19 +1055,18 @@ type ToolUseBlock struct {
 	ID   string
 	Name string
 	// Input is the provider's own argument bytes, verbatim and AUTHORITATIVE
-	// for every replay, fingerprint and serialization path (§5, REQ-PROV-17).
+	// for every replay, fingerprint and serialization path.
 	// Invariant: always syntactically valid JSON object bytes; NewToolUse
 	// normalizes nil/empty to {}.
 	Input json.RawMessage
-	// ThoughtSignature is opaque and provider-issued; stripped on cross-model
-	// replay by REQ-PROV-11 rule 3. Never inspected.
+	// ThoughtSignature is opaque and provider-issued; transcript repair strips
+	// it on cross-model replay. Never inspected.
 	ThoughtSignature string
 }
 
 func ExtractToolUse(m *AssistantMessage) []ToolUseBlock
-    ExtractToolUse is the continuation predicate of REQ-LOOP-01, by name.
-    It scans Content for ToolUseBlock and reads no stop reason. This is the
-    whole of the fix for Appendix A correction #1.
+    ExtractToolUse is the loop's continuation predicate, by name. It scans
+    Content for ToolUseBlock and reads no stop reason.
 
 func NewToolUse(id, name string, raw json.RawMessage) (ToolUseBlock, error)
     NewToolUse checks raw is a JSON object and keeps its bytes. A nil, empty or
@@ -1082,11 +1078,11 @@ func (b ToolUseBlock) CloneBlock() ContentBlock
 
 func (b ToolUseBlock) InputMap() map[string]any
     InputMap decodes lazily for handler and interceptor convenience. The result
-    is NEVER re-encoded back into a request (§5).
+    is NEVER re-encoded back into a request.
 
-    Numbers come back as json.Number, not float64, because NFR-TEST-03(d)
-    requires numeric literals to survive verbatim. Handlers doing
-    args["limit"].(float64) will fail their type assertion; use ArgInt/ArgFloat.
+    Numbers come back as json.Number, not float64, because numeric literals must
+    survive verbatim. Handlers doing args["limit"].(float64) will fail their
+    type assertion; assert json.Number and call its Int64 or Float64.
 
 type ToolWire struct {
 	Name        string
@@ -1096,12 +1092,12 @@ type ToolWire struct {
     ToolWire is the projection a provider is allowed to see — the name,
     description and input schema, and nothing else.
 
-    The PRD sketches `func (t Tool) wire() wireTool`, unexported. That is
-    unimplementable once providers live in their own packages, which REQ-PROV-02
-    requires. Exported, the invariant is STRONGER than unexported-ness:
-    Request.Tools is []ToolWire, so no provider can name a Handler,
-    PromptGuidelines or PrepareArguments at all, and a new Tool field cannot
-    widen a request body without a compile error at the boundary.
+    It is exported because providers live in their own packages, where an
+    unexported projection would be out of reach. Exported, the invariant
+    is STRONGER than unexported-ness: Request.Tools is []ToolWire, so no
+    provider can name a Handler, PromptGuidelines or PrepareArguments at all,
+    and a new Tool field cannot widen a request body without a compile error at
+    the boundary.
 
     ToolWire carries no json tags on purpose: each provider encodes it into its
     own dialect (Anthropic input_schema, OpenAI parameters).
@@ -1111,7 +1107,7 @@ func ToolWires(ts []Tool) []ToolWire
 type TurnEndEvent struct {
 	TurnIndex int
 	Message   AssistantMessage
-	// ToolResults is always non-nil; [] for a no-tool turn (REQ-OBS-06).
+	// ToolResults is always non-nil; [] for a no-tool turn.
 	ToolResults []ToolResultMessage
 	Usage       Usage
 }
@@ -1127,20 +1123,20 @@ func (TurnStartEvent) Class() EventClass
 func (TurnStartEvent) EventType() EventType
 
 type Usage struct {
-	// InputTokens is NET of cache reads and writes (REQ-PROV-05.1).
+	// InputTokens is NET of cache reads and writes.
 	InputTokens  int64
 	OutputTokens int64
 	// ReasoningTokens is a SUBSET of OutputTokens, not an addend.
 	ReasoningTokens  int64
 	CacheReadTokens  int64
 	CacheWriteTokens int64
-	// CacheWrite1hTokens is a SUBSET of CacheWriteTokens (REQ-PROV-05.3).
+	// CacheWrite1hTokens is a SUBSET of CacheWriteTokens.
 	CacheWrite1hTokens int64
 	TotalTokens        int64
 	// Requests is how many model requests the usage covers.
 	Requests int64
 	CostUSD  float64
-	// BilledModel is the model that actually served the request (REQ-PROV-05.5).
+	// BilledModel is the model that actually served the request.
 	BilledModel string
 	// Unpriced is true when at least one request the usage covers had a cost
 	// that neither the vendor reported nor the catalog priced, so CostUSD
@@ -1148,25 +1144,24 @@ type Usage struct {
 	Unpriced bool
 
 	// Set records which fields the provider actually reported, so an explicit
-	// 0 beats an SDK fallback (REQ-PROV-16.4) and a wholly unreported usage is
-	// distinguishable from a reported all-zero one (REQ-GO-15).
+	// 0 beats an SDK fallback and a wholly unreported usage is
+	// distinguishable from a reported all-zero one.
 	Set UsageField
 }
 
 func (u Usage) Add(o Usage) Usage
     Add sums two usages field-wise and ORs their presence masks and their
-    Unpriced flags. The session layer only sums; it never recomputes cost
-    (REQ-PROV-05).
+    Unpriced flags. The session layer only sums; it never recomputes cost.
 
 func (u Usage) ContextTokens() int64
-    ContextTokens implements REQ-GO-15's definition exactly: TotalTokens when
-    non-zero, else Input+Output+CacheRead+CacheWrite.
+    ContextTokens is TotalTokens when non-zero, else
+    Input+Output+CacheRead+CacheWrite.
 
 func (u Usage) Has(f UsageField) bool
 
 func (u Usage) IsZero() bool
     IsZero is true when nothing was reported OR everything reported was zero —
-    the "all-zero-usage response" REQ-GO-15 forbids as an anchor.
+    an "all-zero-usage response", which must never serve as an anchor.
 
 func (u Usage) Reported() bool
     Reported is false when the provider reported nothing at all.
@@ -1176,10 +1171,10 @@ func (u *Usage) SetCost(v float64)
 func (u *Usage) SetField(f UsageField, v int64)
 
 type UsageField uint32
-    UsageField is a presence bit. REQ-PROV-16 permits "a pointer OR an explicit
-    presence flag"; a mask is chosen over nine *int64 because Usage is summed
-    on every turn, and pointer arithmetic across a summation is where the
-    double-counting of REQ-PROV-05.1 actually happens.
+    UsageField is a presence bit. Presence could be a pointer or an explicit
+    flag; a mask is chosen over eight pointers because Usage is summed on every
+    turn, and pointer arithmetic across a summation is where double-counting
+    actually happens.
 
 const (
 	UsageInputTokens UsageField = 1 << iota
@@ -1205,10 +1200,9 @@ type UsageJSON struct {
 	Unpriced           bool    `json:"unpriced"`
 }
     UsageJSON is Usage's wire shape for events. Every field is present — a
-    consumer reads the same keys whether or not the provider reported them
-    — and `reported` says which ones the provider actually set (REQ-GO-15).
-    `unpriced` says the cost counts at least one request as zero because no one
-    could price it.
+    consumer reads the same keys whether or not the provider reported them — and
+    `reported` says which ones the provider actually set. `unpriced` says the
+    cost counts at least one request as zero because no one could price it.
 
 type UsageWire struct {
 	InputTokens        *int64
@@ -1220,9 +1214,8 @@ type UsageWire struct {
 	TotalTokens        *int64
 }
     UsageWire is the decode-side helper providers use: every numeric is a
-    pointer so an explicit 0 is distinguishable from absent (REQ-PROV-16.4).
-    Into folds it onto a Usage, setting presence bits for exactly the non-nil
-    fields.
+    pointer so an explicit 0 is distinguishable from absent. Into folds it onto
+    a Usage, setting presence bits for exactly the non-nil fields.
 
 func (w UsageWire) Into(u *Usage)
 

@@ -1,5 +1,5 @@
-// Package wire is REQ-SEC-11 and REQ-SEC-12: the bounded, strict decoder for
-// bytes AgentKit did not produce.
+// Package wire is the bounded, strict decoder for bytes AgentKit did not
+// produce.
 //
 // Every other decoder in this module reads data we or the model authored — a
 // tool's arguments, a catalog file — and can afford to be lenient. This one
@@ -8,11 +8,11 @@
 // a malformed message into an allocation the peer chose, a duplicate key into
 // a value the peer chose, and a deep nest into a stack the peer chose.
 //
-// WHY encoding/json/v2, NOT v1. REQ-SEC-11.5 states it plainly: encoding/json
-// satisfies none of rules 1-4 and silently accepts duplicate keys, and it
-// matches field names case-insensitively. jsontext rejects duplicate names
-// itself and exposes a token stream, so the bounds are a loop over it, each
-// checked before the token that would exceed it is read.
+// WHY encoding/json/v2, NOT v1. encoding/json enforces none of these bounds,
+// silently accepts duplicate keys, and matches field names
+// case-insensitively. jsontext rejects duplicate names itself and exposes a
+// token stream, so the bounds are a loop over it, each checked before the
+// token that would exceed it is read.
 package wire
 
 import (
@@ -20,7 +20,7 @@ import (
 	"fmt"
 )
 
-// Limits are REQ-SEC-11's bounds. The zero value means Defaults.
+// Limits are the decoder's bounds. The zero value means Defaults.
 type Limits struct {
 	// MaxMessageBytes rejects the whole message. Default 16 MiB.
 	MaxMessageBytes int64
@@ -40,7 +40,7 @@ type Limits struct {
 	MaxNodes int
 }
 
-// Defaults are the table in REQ-SEC-11.
+// Defaults returns the default bounds.
 func Defaults() Limits {
 	return Limits{MaxMessageBytes: 16 << 20, MaxContainerLen: 1_000_000, MaxDepth: 64,
 		MaxNodes: 2_000_000}
@@ -103,7 +103,7 @@ func (e *Error) Error() string {
 func (e *Error) Unwrap() error { return e.Err }
 
 // ErrRejected matches every rejection this package produces, so a transport
-// can implement REQ-SEC-11.4's poisoning without enumerating rules.
+// can poison itself on the first rejection without enumerating rules.
 var ErrRejected = errors.New("wire: message rejected")
 
 func (e *Error) Is(target error) bool { return target == ErrRejected }
