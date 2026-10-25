@@ -15,6 +15,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func secretsOf(m map[string]string) func(string) string {
@@ -95,6 +96,22 @@ func TestARemoteServersHeadersCarryTheResolvedSecret(t *testing.T) {
 	res, err := conn.Call(context.Background(), "echo", map[string]any{"message": "over http"})
 	must(t, err)
 	if firstText(t, res) != "echo: over http" {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+// A server on the HTTP+SSE transport connects and answers calls.
+func TestAnSSEServerConnectsAndAnswers(t *testing.T) {
+	srv := echoServer()
+	hs := httptest.NewServer(sdk.NewSSEHandler(func(*http.Request) *sdk.Server { return srv }, nil))
+	t.Cleanup(hs.Close)
+	p := NewPool(ConnectionOptions{})
+	t.Cleanup(func() { _ = p.Close() })
+	conn, err := p.Connect(context.Background(), ServerConfig{Name: "legacy", URL: hs.URL, Transport: "sse"}, nil, nil)
+	must(t, err)
+	res, err := conn.Call(context.Background(), "echo", map[string]any{"message": "over sse"})
+	must(t, err)
+	if firstText(t, res) != "echo: over sse" {
 		t.Fatalf("result = %+v", res)
 	}
 }
