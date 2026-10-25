@@ -372,7 +372,7 @@ func DeleteOptionalNulls(s *Schema, in map[string]any) map[string]any {
 // literal ("NaN", "+5", ".5", "5." and "1_0" stay strings for Validate to
 // refuse); a number coerced to integer is an int64, to number a float64.
 func Coerce(s *Schema, in map[string]any) (map[string]any, []Coercion) {
-	return coerce(s, in)
+	return coerce(s, in, "")
 }
 
 // Validate is step 4 of the argument pipeline. It reports ALL issues, not the
