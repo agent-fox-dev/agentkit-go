@@ -83,8 +83,13 @@ func (v *Validator) Check(hdr *tar.Header) (*tar.Header, error) {
 	if clean == "." && hdr.Typeflag != tar.TypeDir {
 		return refuse("names the target directory itself")
 	}
+	// realDir is the entry's directory with every symlink in it followed: a
+	// link's target is relative to where the link really is, which is not its
+	// lexical directory when that directory runs through a link.
+	var realDir []string
 	if dir := path.Dir(clean); dir != "." {
-		if _, ok := v.resolve(nil, dir, 0); !ok {
+		var ok bool
+		if realDir, ok = v.resolve(nil, dir, 0); !ok {
 			return refuse("path resolves through a symlink to outside the target")
 		}
 	}
@@ -104,7 +109,7 @@ func (v *Validator) Check(hdr *tar.Header) (*tar.Header, error) {
 		case SymlinkEscapes(clean, target):
 			return refuse("symlink target %q leaves the target directory", target)
 		}
-		if _, ok := v.resolve(strings.Split(path.Dir(clean), "/"), target, 0); !ok {
+		if _, ok := v.resolve(realDir, target, 0); !ok {
 			return refuse("symlink target %q leaves the target directory", target)
 		}
 	}

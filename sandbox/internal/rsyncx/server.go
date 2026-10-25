@@ -4,6 +4,7 @@ package rsyncx
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"io/fs"
 	"sync/atomic"
@@ -45,7 +46,24 @@ func NewServer(fsys fs.FS) (*Server, error) {
 // args (ServerArgs). The declared --delete is dropped: deletion is
 // AgentKit's own.
 func (s *Server) Serve(ctx context.Context, conn io.ReadWriteCloser, args []string) error {
-	return s.srv.HandleConnArgs(ctx, rsyncd.NewConnection(conn, conn, "sandbox"), &s.mod, withoutDelete(args))
+	return contained(func() error {
+		return s.srv.HandleConnArgs(ctx, rsyncd.NewConnection(conn, conn, "sandbox"), &s.mod, withoutDelete(args))
+	})
+}
+
+// contained runs one transfer of the rsync library and turns a panic in it
+// into an error. The library panics on some malformed input from the other
+// side (a filter list with an impossible length, for one), and the other side
+// is untrusted: on a Sync the host serves the agent's requests inside the
+// embedder's process, so a malformed stream must fail the transfer, not end
+// the process.
+func contained(transfer func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("rsync: malformed stream from the other side: %v", r)
+		}
+	}()
+	return transfer()
 }
 
 // discard swallows the library's log output.
