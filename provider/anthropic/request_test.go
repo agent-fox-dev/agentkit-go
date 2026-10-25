@@ -106,6 +106,10 @@ func TestToolResultContentIsEncodedAsTheWireRequires(t *testing.T) {
 			core.ToolResultMessage{ToolUseID: "c1", Content: core.Content{core.ThinkingBlock{Thinking: "x", Signature: "s"}}},
 			core.ToolResultMessage{ToolUseID: "c2", Content: core.Content{core.TextBlock{Text: "b"}, toolUse("c9", "t", `{}`)}},
 		}, "tool_result() tool_result(text) thinking() tool_use()"},
+		{"content that cannot nest follows a later result that displaces nothing", core.Messages{
+			core.ToolResultMessage{ToolUseID: "c1", Content: core.Content{core.ThinkingBlock{Thinking: "x", Signature: "s"}}},
+			core.ToolResultMessage{ToolUseID: "c2", Content: core.Content{core.TextBlock{Text: "b"}}},
+		}, "tool_result() tool_result(text) thinking()"},
 	}
 	for _, c := range cases {
 		msgs := append(core.Messages{user("go"), reply(toolUse("c1", "t", `{}`), toolUse("c2", "t", `{}`))}, c.results...)
