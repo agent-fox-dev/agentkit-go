@@ -118,7 +118,7 @@ type resolveOptions struct {
 type deployment struct {
 	source     Source
 	project    string
-	projectVar string // the variable the project came from
+	projectVar string // where the project came from: a variable, or Options.VertexProject
 	region     string
 }
 

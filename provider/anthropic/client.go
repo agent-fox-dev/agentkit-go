@@ -54,5 +54,10 @@ func (c *client) sdkClient(override map[string]string, transport http.RoundTripp
 		ro.httpClient = &http.Client{Transport: transport}
 	}
 	sc, d, err := resolve(env, ro)
+	if c.opts.VertexProject != "" && d.source == SourceVertex {
+		// The option reached resolve under the variable's name; the project
+		// is the option's, and a note naming the variable would mislead.
+		d.projectVar = "Options.VertexProject"
+	}
 	return sc, d, env, err
 }
