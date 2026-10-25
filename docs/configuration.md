@@ -436,7 +436,7 @@ channel as a `core.EventStream`.
 | `ToolPrefix`, `OnToolPrefixSync` | The per-session tool-schema cache (`*provider.ToolPrefix`; nil means the provider owns one) and its reconciliation reports. |
 | `Now` | Injectable clock for timestamps. |
 | `CacheRetention` | `core.CacheRetentionNone`, `CacheRetentionShort` (empty means short) or `CacheRetentionLong` (1-hour TTL on the system and tool breakpoints). |
-| `NonStrictTools` | Names of tools never declared strict (`strict: true`), however well they fit. The API totals its strict-mode limits over a request (20 tools, 16 union parameters, and a compiled-grammar size it does not publish) and refuses the whole request past any. Name the simple tools, a file read, to leave the budget to the complex ones; a named tool spends none of it, and its arguments are still validated before it runs. See errata 10. |
+| `NonStrictTools` | Names of tools never declared strict (`strict: true`), however well they fit. The API totals its strict-mode limits over a request (20 tools, 16 union parameters, and a compiled-grammar size it does not publish) and refuses the whole request past any. Name the simple tools, a file read, to leave the budget to the complex ones; a named tool spends none of it, and its arguments are still validated before it runs. See [ADR 03](adr/03-follow-the-vendor-sdks-and-wires-where-the-specs-disagree.md). |
 | `Headers` | `map[string]*string` merged into every request; a nil value deletes that header. |
 | `Timeout` | Bounds each request, independently of the caller's context; zero is none. |
 | `Env` | `map[string]string` consulted before `Getenv` when resolving the deployment. |
@@ -676,7 +676,7 @@ wrapping `ErrInvalidHost`: a scheme other than exactly `http` or `https`; a port
 that is not a number from 1 to 65535; a value that cannot be split into a host
 and a port, or has a query or a fragment; user information (`user:pw@h`);
 `ollama.com` and any subdomain of it, which is Ollama's hosted service and is not
-supported. `docs/errata/28_ollama_provider.md` lists each difference.
+supported. [ADR 03](adr/03-follow-the-vendor-sdks-and-wires-where-the-specs-disagree.md) lists each rule.
 
 | Field | Meaning |
 |---|---|

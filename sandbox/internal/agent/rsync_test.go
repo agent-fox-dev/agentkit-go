@@ -140,7 +140,7 @@ func TestRsyncFrameOrder_TS14_7(t *testing.T) {
 // TS-14-31: a second Rsync stream while one is running gets
 // FailedPrecondition and the first completes with its own result.
 // 14-REQ-6.2. Stream 1 is driven as the host drives it: a server sending a
-// filtered source tree (D-3; docs/errata/14_sandbox_rsync_sync.md).
+// filtered source tree (docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md).
 func TestRsyncOneStream_TS14_31(t *testing.T) {
 	ctx := context.Background()
 	ws := t.TempDir()

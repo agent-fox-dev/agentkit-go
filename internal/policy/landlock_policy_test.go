@@ -95,7 +95,7 @@ func checkConfinement(root string, files []string) (violations []string, llImpor
 // TS-15-39: go-landlock is imported only by Linux-only confine files,
 // confine only by agentkit-sandboxd, and no file calls BestEffort.
 // 15-REQ-7.1, 15-REQ-7.2, 15-REQ-7.3. The walk covers every module: the
-// sandbox code is a nested module (docs/errata/15_sandbox_landlock_agent.md).
+// sandbox code is a nested module (docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md).
 func TestHostNeverConfined_TS15_39(t *testing.T) {
 	root := repoRoot(t)
 	v, ll, conf := checkConfinement(root, repoGoFiles(t, root))

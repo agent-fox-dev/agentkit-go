@@ -33,7 +33,7 @@ Rules:
 4. Implement the task's steps, in order, until the tests pass. Follow the conventions the files you edit already use.
 5. Check, narrowly, then run the spec's test_commands (linter, then all_tests) as the gate. Compare with the baseline in the task prompt: a task lands only when nothing regressed.
 6. Documentation. Update what the change makes wrong, from the code.
-7. Never edit the spec package, except to set this task's "state" in tasks.json to "done" once the gate passed. A spec that is wrong gets an erratum under docs/errata/ and a declared deviation, not a quiet fix.
+7. Never edit the spec package, except to set this task's "state" in tasks.json to "done" once the gate passed. A spec that is wrong gets a declared deviation, recorded as a rule in the feature's ADR under docs/adr/, not a quiet fix.
 8. Do not commit, push or branch: the embedder exports the workspace and lands the work.
 
 Never skip, delete or weaken a test to get green. Never claim a check you did not run; report what each command returned.

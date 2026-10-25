@@ -14,7 +14,7 @@ import (
 // go-landlock in sandbox/landlock's graph: gokrazy/rsync's rsyncd, which
 // every provider reaches through attach and rsyncx, applies it only when an
 // rsync module asks, and nothing on the host does
-// (docs/errata/18_sandbox_landlock_provider.md).
+// (docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md).
 const restrictPkg = "github.com/gokrazy/rsync/internal/restrict"
 
 // TS-18-62: sandbox/landlock never reaches confine, no package in its graph

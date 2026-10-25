@@ -3,8 +3,7 @@
 // It imports zoekt for trigram-based code search. zoekt's graph is large
 // (gRPC, Prometheus and sentry arrive transitively), and a nested module is the
 // only mechanism in Go that keeps a dependency out of the root's graph. No
-// embedder that does not import codesearch pays for it. See docs/DEPS.md R7 and
-// docs/errata/03_forbidden_imports_direct_only.md.
+// embedder that does not import codesearch pays for it. See docs/DEPS.md.
 module github.com/agent-fox-dev/agentkit-go/codesearch
 
 go 1.27

@@ -141,8 +141,8 @@ func TestMissingAPIDirectoryChild_TS24_6(t *testing.T) {
 }
 
 // TS-24-7: TS-17-61 keeps its own guard list, with Allow in it, and every
-// entry of it is among guard's exported lines. 24-REQ-1.5, as amended by
-// docs/errata/24_embedder_contract_docs.md. TS-17-61 itself compares the
+// entry of it is among guard's exported lines. 24-REQ-1.5, as amended when
+// guard.Commands was exported. TS-17-61 itself compares the
 // lists.
 func TestPreSpec17GuardIsKept_TS24_7(t *testing.T) {
 	if want := "func Allow(programs ...string) core.BeforeToolCall"; !slices.Contains(preSpec17Guard, want) {

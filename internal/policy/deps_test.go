@@ -287,7 +287,7 @@ var sandboxModules = []string{
 // TS-13-65: grpc and protobuf are direct requirements at the go.sum
 // versions, approved with reasons, with x/net indirect and the root module's
 // graph unchanged. 13-REQ-10.5. Since spec 14 the sandbox tree is its own
-// module (docs/errata/14_sandbox_rsync_sync.md): grpc and protobuf are direct
+// module (docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md): grpc and protobuf are direct
 // requirements of sandbox/go.mod, and the root module's direct set is back to
 // the pre-spec-13 set.
 func TestSandboxDepsPromoted_TS13_65(t *testing.T) {
@@ -350,7 +350,7 @@ func TestSandboxDepsPromoted_TS13_65(t *testing.T) {
 
 // d1Upgrades are the versions D-1 accepted: minimum version selection raises
 // these when gokrazy/rsync v0.3.8 enters the sandbox module's graph
-// (docs/errata/14_sandbox_rsync_sync.md).
+// graph.
 var d1Upgrades = map[string]string{
 	"github.com/BurntSushi/toml": "v1.6.0",
 	"golang.org/x/crypto":        "v0.46.0",

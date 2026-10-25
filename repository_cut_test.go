@@ -197,11 +197,11 @@ func TestDeletedPackagesAbsent_TS09_1(t *testing.T) {
 		"plugins", "skills", "_skills/code-review", "cmd/validate-plugins", "session", "subagent",
 		"difftest", "imagex", "compaction", "middleware", "stop")
 	// provider/ollama left this list when spec 28 gave the repository a new
-	// provider under that name (docs/errata/28_ollama_provider.md); the
+	// provider under that name; the
 	// hand-written NDJSON one PRD 9 deleted is still gone.
 	// provider/repair.go and provider/repair_test.go left this list when spec 27
 	// gave package provider a new, shared tool-pairing repair under those names
-	// (docs/errata/27_openrouter_provider.md); the multi-wire repair they once
+	// (docs/adr/03-follow-the-vendor-sdks-and-wires-where-the-specs-disagree.md); the multi-wire repair they once
 	// held is still gone.
 	assertAbsent(t, "provider/credentials.go", "provider/credentials_test.go", "provider/salvage.go",
 		"provider/salvage_test.go",

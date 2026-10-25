@@ -270,7 +270,7 @@ var groups = map[string]group{
 		}
 		// A process that never started has no output, exit code or outcome:
 		// exec_failed carries no Data, and there is nothing to validate. See
-		// docs/errata/06_tool_output_schemas.md.
+		// docs/adr/04-describe-the-tools-as-they-behave.md.
 		res := expectError(t, context.Background(), all["run_command"], `{"argv":["/nonexistent_bin_xyz"]}`, "exec_failed")
 		if res.Data != nil {
 			t.Fatalf("exec_failed Data = %+v, want none", res.Data)
@@ -286,7 +286,7 @@ var groups = map[string]group{
 	//
 	// edit_failed is not induced: ApplyEdits returns only *EditError, which
 	// edit_file reports as edit_<phase>; see
-	// docs/errata/06_tool_output_schemas.md.
+	// docs/adr/04-describe-the-tools-as-they-behave.md.
 	"TS-06-29": {
 		tree: func() Tree {
 			tree := BaseTree()

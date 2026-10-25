@@ -11,7 +11,7 @@ import (
 
 // chatBody is the request body: OpenRouter's Chat Completions request, written
 // by AgentKit and not by the SDK, which would re-encode tool schemas and
-// replayed reasoning (docs/errata/27_openrouter_provider.md).
+// replayed reasoning (docs/adr/03-follow-the-vendor-sdks-and-wires-where-the-specs-disagree.md).
 type chatBody struct {
 	Model               string         `json:"model"`
 	Messages            []bodyMessage  `json:"messages"`

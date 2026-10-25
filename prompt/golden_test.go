@@ -87,7 +87,7 @@ func TestGoldenDefaultSystemPrompt(t *testing.T) {
 // assembly order, and the assertion that built-in blocks are ABSENT. The
 // built-in blocks are the base instructions and the universal guidelines; the
 // tools' own guidelines are not built-in and follow a custom prompt
-// (NFR-TEST-08a; docs/errata/custom_prompt_keeps_tool_guidelines.md).
+// (NFR-TEST-08a).
 //
 // PROVENANCE (NFR-TEST-08.1)
 //

@@ -63,7 +63,7 @@ func resolveDir(p string) (string, error) {
 
 // syncLocalDir fills the workspace from a host directory: the host serves a
 // filtered view of the directory, the agent's client receives it, and the
-// agent reports what changed (D-3, docs/errata/14_sandbox_rsync_sync.md).
+// agent reports what changed (docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md).
 func (s *sb) syncLocalDir(ctx context.Context, ld sandbox.LocalDir) (sandbox.SyncResult, error) {
 	if err := s.rsyncCheck(); err != nil {
 		return sandbox.SyncResult{}, err
@@ -128,7 +128,7 @@ func (s *sb) syncLocalDir(ctx context.Context, ld sandbox.LocalDir) (sandbox.Syn
 // exportLocalDir writes a workspace path into a host directory: the agent
 // serves a filtered, read-only view of the path, the host's client receives
 // into the destination, and the host deletes what the agent's transfer set
-// lacks when asked (D-3, docs/errata/14_sandbox_rsync_sync.md).
+// lacks when asked (docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md).
 func (s *sb) exportLocalDir(ctx context.Context, path string, ld sandbox.LocalDir) error {
 	if err := s.rsyncCheck(); err != nil {
 		return err

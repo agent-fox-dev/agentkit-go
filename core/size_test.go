@@ -36,7 +36,7 @@ const exportedTypeLimit = 50
 // TS-12-13: core declares at most 50 exported types.
 //
 // Skipped, and reported: the event vocabulary was kept by decision, and with
-// it core is over the budget (docs/errata/12_core_schema_guard.md). The test
+// it core is over the budget. The test
 // still counts, so the skip message says by how much.
 func TestExportedTypeBudget_TS12_13(t *testing.T) {
 	types, _ := coreDecls(t)
@@ -47,7 +47,7 @@ func TestExportedTypeBudget_TS12_13(t *testing.T) {
 		}
 	}
 	if n > exportedTypeLimit {
-		t.Skipf("core declares %d exported types, over the budget of %d; kept by decision, see docs/errata/12_core_schema_guard.md", n, exportedTypeLimit)
+		t.Skipf("core declares %d exported types, over the budget of %d; kept by decision", n, exportedTypeLimit)
 	}
 }
 
@@ -62,8 +62,7 @@ func codeLines(t *testing.T, dir string, recurse bool) int {
 // budgetLines is what TS-12-14 holds to 30,000: codeLines over the module
 // without generated files (Go's "Code generated ... DO NOT EDIT." marker)
 // and without internal packages that only test files import. Neither is
-// hand-maintained library code; docs/errata/13_sandbox_core.md records the
-// decision.
+// hand-maintained library code.
 func budgetLines(t *testing.T, root string) int {
 	t.Helper()
 	testOnly := testOnlyPackages(t, root)
@@ -182,7 +181,7 @@ func countCode(t *testing.T, dir string, recurse bool, skip func(path string) bo
 }
 
 // TS-12-14, TS-21-56: core is at most 1,600 lines of code and the root module
-// at most 30,000 (spec 28 raised it from 20,000, docs/errata/28_ollama_provider.md); spec 21 adds the runner and holds both budgets. A line of code is a non-blank line that is not a comment. The
+// at most 30,000 (spec 28 raised it from 20,000); spec 21 adds the runner and holds both budgets. A line of code is a non-blank line that is not a comment. The
 // module budget leaves out generated files and test-only internal packages
 // (budgetLines).
 func TestLineBudgets_TS12_14(t *testing.T) {
@@ -283,7 +282,7 @@ func TestNoJSONXImportsAnywhere_TS12_17(t *testing.T) {
 // the sandbox tree is its own nested module, as spec 13's design decision 5
 // prescribes when the root module would not fit: sandbox/go.mod exists, the
 // counter skips the tree, and the root module's own count holds the budget
-// (docs/errata/14_sandbox_rsync_sync.md). 13-REQ-10.6, 14-REQ-9.4.
+// (docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md). 13-REQ-10.6, 14-REQ-9.4.
 func TestSandboxCountedInBudget_TS13_66(t *testing.T) {
 	root := moduleRoot(t)
 	if _, err := os.Stat(filepath.Join(root, "sandbox", "go.mod")); err != nil {

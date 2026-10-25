@@ -26,7 +26,7 @@ var addedBySpec28 = []string{
 // package began to import provider/openrouter and provider/ollama: the sandbox
 // module compiles the root package in its tests, so its go.mod now requires the
 // two SDK modules itself, and listing them there brings in the modules their own
-// go.mod files name (docs/DEPS.md, docs/errata/29_provider_selection.md). None
+// go.mod files name (docs/DEPS.md). None
 // is compiled into the sandbox agent.
 var addedBySpec29 = []string{
 	"github.com/TheTitanrain/w32", "github.com/agnivade/levenshtein",
@@ -60,7 +60,7 @@ var addedBySpec29 = []string{
 // (restated by 27-REQ-9.5 from whole-file equality). 15-REQ-8.1, 15-REQ-8.2. The
 // requirement is the nested sandbox module's (14's D-2), and the version is
 // the pseudo-version 14 selected, not the v0.10.1 the spec expected
-// (docs/errata/15_sandbox_landlock_agent.md).
+// (docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md).
 func TestLandlockPromoted_TS15_40(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go is not on PATH")

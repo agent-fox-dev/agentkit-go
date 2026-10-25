@@ -32,8 +32,8 @@ func moduleRoot(t *testing.T) string {
 // spec allows — pull in google.golang.org/grpc, the Prometheus client and
 // sentry-go themselves, so a check over the transitive graph could never pass
 // and zoekt could not be used at all. The project owner accepted that graph
-// instead of recording a no-go; see docs/errata/03_forbidden_imports_direct_only.md
-// for the decision and the list of accepted packages. What this still stops is
+// instead of recording a no-go; see docs/DEPS.md
+// for the decision. What this still stops is
 // codesearch's own code reaching for a server stack: that would be a choice made
 // here, not one inherited from zoekt.
 func TestForbiddenImports(t *testing.T) {
@@ -85,8 +85,7 @@ func TestForbiddenImports(t *testing.T) {
 
 // TestForbiddenImportsDetectsSynthetic proves the forbidden-import matcher
 // can actually detect a violation, so TestForbiddenImports passing means
-// something. Like that test it concerns direct imports only; see
-// docs/errata/03_forbidden_imports_direct_only.md.
+// something. Like that test it concerns direct imports only.
 // Verifies 03-REQ-9.3, 03-REQ-10.1.
 func TestForbiddenImportsDetectsSynthetic(t *testing.T) {
 	forbidden := []string{

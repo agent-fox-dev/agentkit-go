@@ -224,8 +224,8 @@ Some files are generated and committed. Never edit them by hand:
   push and open a pull request.
 - New work starts from a specification in `.specs/NN_name/` (`prd.md`,
   `requirements.json`, `test_spec.json`, `tasks.json`). Product requirements
-  live in `docs/prd/`, and where the code deliberately differs from a spec the
-  reason is recorded in `docs/errata/`.
+  live in `docs/prd/`, and the decisions the code follows, where it differs
+  from a spec among them, in the ADRs under [`docs/adr/`](adr/).
 - Coding agents also follow [`AGENTS.md`](../AGENTS.md) and
   [`.specs/steering.md`](../.specs/steering.md).
 

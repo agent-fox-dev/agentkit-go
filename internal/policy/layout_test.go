@@ -20,8 +20,7 @@ const modulePath = "github.com/agent-fox-dev/agentkit-go"
 // contract (the root, core, tools, codemode) and the packages PRD 12 changed or
 // added. The golden is a change detector over this list, not a freeze: a change
 // to one of these surfaces is deliberate, made with AGENTKIT_UPDATE_API_GOLDEN=1
-// and reviewed in the diff of the golden (docs/errata/13_sandbox_core.md says
-// what it covers and how it may change). New entries go at the end, so the
+// and reviewed in the diff of the golden. New entries go at the end, so the
 // existing sections do not move.
 var apiPackages = []string{".", "core", "tools", "codemode", "workspace", "guard", "provider/faux", "sandbox", "codesearch", "mcpserve"}
 

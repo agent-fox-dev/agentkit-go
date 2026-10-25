@@ -97,7 +97,7 @@ func TestBuildNeedsNoProtoc_TS13_2(t *testing.T) {
 			t.Fatalf("%s sits beside the go binary; the test cannot hide it", tool)
 		}
 	}
-	// The sandbox tree is its own module (docs/errata/14_sandbox_rsync_sync.md),
+	// The sandbox tree is its own module (docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md),
 	// so its build and vet run there.
 	for _, c := range []struct {
 		dir  string

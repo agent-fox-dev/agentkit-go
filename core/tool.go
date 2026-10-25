@@ -126,9 +126,6 @@ type ToolResult struct {
 	// of escaping it then has to undo when it writes an edit. Every built-in
 	// tool sets Text on success; an error result leaves it empty and the
 	// envelope is used.
-	//
-	// See docs/errata/tool_result_rendering.md for the divergence from
-	// REQ-TOOL-08's literal reading.
 	Text string `json:"-"`
 }
 

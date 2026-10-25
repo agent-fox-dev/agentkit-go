@@ -14,7 +14,7 @@ import (
 // the snapshot, and every non-standard dependency of the new packages is in
 // the sandbox module, the root module or an already-required module.
 // 17-REQ-10.2. The snapshot is the whole graph, so the direct set is
-// compared with the set TS-14-42 pins (docs/errata/17_sandbox_podman.md).
+// compared with the set TS-14-42 pins.
 func TestPodmanAddsNoDependency_TS17_60(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go is not on PATH")

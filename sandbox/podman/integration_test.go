@@ -236,7 +236,7 @@ func TestRealEnvironment_TS17_55(t *testing.T) {
 	}
 	// Both engines add HOSTNAME, the container's own hostname: docker
 	// always, podman from version 6 even with --unsetenv-all
-	// (docs/errata/17_sandbox_podman.md).
+	// (docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md).
 	want := []string{"FOO", "HOME", "LANG", "PATH", "TERM", "TMPDIR"}
 	if h, ok := vars["HOSTNAME"]; ok {
 		if hostHost, _ := os.Hostname(); h == hostHost {
