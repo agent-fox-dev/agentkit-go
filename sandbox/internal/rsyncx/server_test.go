@@ -3,7 +3,9 @@
 package rsyncx
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -109,4 +111,40 @@ func TestRunClientRefusesAnUnknownOption(t *testing.T) {
 	if err := RunClient(context.Background(), cEnd, []string{"--bogus"}, t.TempDir()); err == nil {
 		t.Error("RunClient accepted --bogus")
 	}
+}
+
+// The other side of a transfer is untrusted: bytes that are no rsync stream
+// fail the transfer, on either side, and never panic the process.
+func TestATransferFromAMalformedPeerFailsWithoutAPanic(t *testing.T) {
+	garbage := func(peer *end) {
+		go func() { _, _ = io.Copy(io.Discard, peer) }()
+		go func() {
+			_, _ = peer.Write(bytes.Repeat([]byte{0xff}, 4096))
+			_ = peer.WriteCloser.Close()
+		}()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	t.Run("serving", func(t *testing.T) {
+		srv, err := NewServer(Filtered(openRoot(t, t.TempDir()), ".", NewMatcher(nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		args, err := ServerArgs(ClientArgs(false), true, ".")
+		if err != nil {
+			t.Fatal(err)
+		}
+		mine, peer := osPipe(t)
+		garbage(peer)
+		if err := srv.Serve(ctx, mine, args); err == nil {
+			t.Error("Serve accepted a malformed stream")
+		}
+	})
+	t.Run("receiving", func(t *testing.T) {
+		mine, peer := osPipe(t)
+		garbage(peer)
+		if err := RunClient(ctx, mine, ClientArgs(false), t.TempDir()); err == nil {
+			t.Error("RunClient accepted a malformed stream")
+		}
+	})
 }

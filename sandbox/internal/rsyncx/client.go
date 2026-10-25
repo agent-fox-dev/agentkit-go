@@ -45,8 +45,10 @@ func RunClient(ctx context.Context, conn io.ReadWriteCloser, args []string, dest
 	if err != nil {
 		return err
 	}
-	_, err = c.Run(ctx, conn, []string{dest})
-	return err
+	return contained(func() error {
+		_, err := c.Run(ctx, conn, []string{dest})
+		return err
+	})
 }
 
 // withoutDelete is args without --delete.

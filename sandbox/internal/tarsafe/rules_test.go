@@ -12,7 +12,7 @@ func TestCheckAllowsFilesDirectoriesAndInsideSymlinks(t *testing.T) {
 	for _, e := range []entry{
 		folder("d/"), folder("./"), reg("d/f", "x", 0o644), reg("plain", "", 0o600),
 		symlink("d/up", "../plain"), symlink("ld", "d"), reg("ld/through", "", 0o644),
-		symlink("d/self", "."), folder("ld/sub/"),
+		symlink("d/self", "."), folder("ld/sub/"), symlink("d/self/top", ".."),
 	} {
 		if _, err := v.Check(&e.hdr); err != nil {
 			t.Errorf("Check(%q) = %v, want it allowed", e.hdr.Name, err)
@@ -59,6 +59,8 @@ func TestCheckRefusesAPathThatResolvesThroughASymlinkToOutside(t *testing.T) {
 			return "..", true, nil
 		case "loop":
 			return "loop", true, nil
+		case "dot":
+			return ".", true, nil
 		case "broken":
 			return "", false, errors.New("cannot inspect")
 		}
@@ -75,6 +77,11 @@ func TestCheckRefusesAPathThatResolvesThroughASymlinkToOutside(t *testing.T) {
 		{nil, reg("broken/x", "", 0o644)},
 		{nil, symlink("t", "up/x")},
 		{[]entry{folder("q/"), symlink("q/p", "..")}, symlink("q/p2", "p/..")},
+		// A link's target is relative to where the link really is: through a
+		// link to the root, ".." leaves the target.
+		{[]entry{symlink("ok", ".")}, symlink("ok/dd", "..")},
+		{nil, symlink("dot/dd", "..")},
+		{[]entry{folder("a/"), folder("a/b/"), symlink("a/b/up", "../..")}, symlink("a/b/up/x", "..")},
 	} {
 		v := NewValidator(disk)
 		for _, e := range c.earlier {
