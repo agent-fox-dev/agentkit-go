@@ -51,7 +51,7 @@ func goIn(goBin, dir string, env []string, args ...string) (string, error) {
 
 // TS-16-27: the offline sandbox tests pass while podman and docker stubs
 // record that no container engine was invoked. 16-REQ-8.4. They run in
-// the nested sandbox module (docs/errata/16_sandbox_images.md).
+// the nested sandbox module (docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md).
 func TestOfflineTestsInvokeNoEngine_TS16_27(t *testing.T) {
 	skipInMakeCheck(t)
 	goBin := skipHeavy(t)

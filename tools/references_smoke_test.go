@@ -194,7 +194,7 @@ func TestReferencesSmoke_PythonLexical_TS05_56(t *testing.T) {
 
 	if !pythonOutlined(t, ws, "billing/shop.py") {
 		// Without cgo there is no Python outline: no declaration is found
-		// and every hit is text (docs/errata/05_find_references.md).
+		// and every hit is text (docs/adr/04-describe-the-tools-as-they-behave.md).
 		if data.Backend != "text" {
 			t.Fatalf("Backend = %q without a Python outline, want text", data.Backend)
 		}

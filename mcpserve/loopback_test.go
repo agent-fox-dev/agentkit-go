@@ -243,7 +243,7 @@ func rawSend(t *testing.T, ep *Endpoint, method, path, auth string) reply {
 // or method. 23-REQ-5.4. The spec also lists "Bearer <token> " with a trailing
 // space; net/http strips trailing whitespace from a header value, so the handler
 // receives exactly "Bearer <token>" and the request is authorized
-// (docs/errata/23_mcp_serve.md).
+// (docs/adr/07-give-mcp-serving-call-lifetimes-of-its-own.md).
 func TestUnauthorizedRequestsAreRefusedFirst_TS23_30(t *testing.T) {
 	n := countSDK(t)
 	s, rec := echoServer(t, Options{})

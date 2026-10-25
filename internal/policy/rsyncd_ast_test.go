@@ -14,8 +14,8 @@ import (
 
 // rsyncConstructors are the gokrazy/rsync constructors that confine the whole
 // process unless given their package's DontRestrict option: the server
-// always (14-REQ-7.2), the client as a receiver (D-4 in
-// docs/errata/14_sandbox_rsync_sync.md).
+// always (14-REQ-7.2), the client as a receiver (see
+// docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md).
 var rsyncConstructors = []struct{ pkg, fn string }{
 	{"github.com/gokrazy/rsync/rsyncd", "NewServer"},
 	{"github.com/gokrazy/rsync/rsyncclient", "New"},

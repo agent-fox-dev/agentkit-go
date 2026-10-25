@@ -197,7 +197,7 @@ func TestSyncPastTTL_TS14_35(t *testing.T) {
 // the stream, returns the wrapped library error and keeps the sandbox live.
 // 14-REQ-8.5. With -p the receiver makes a read-only dst/out writable before
 // filling it, so the write failure here is a non-empty directory where
-// out/new.txt must land (docs/errata/14_sandbox_rsync_sync.md).
+// out/new.txt must land.
 func TestHostClientFailure_TS14_40(t *testing.T) {
 	isolate(t)
 	sb := newLocal(t)

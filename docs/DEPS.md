@@ -116,8 +116,8 @@ server URL and the SSE framing.
   the `HTTPClient` the provider hands the SDK (`WithClient`), the way
   `provider/anthropic` sends its body through `option.WithRequestBody`. That
   client also records each response's status, `Retry-After` and error body for
-  the retry loop. The differences from the SDK the spec assumed are in
-  [`docs/errata/27_openrouter_provider.md`](errata/27_openrouter_provider.md).
+  the retry loop. The rules the provider follows where the SDK differs from what its spec
+  assumed are in [ADR 03](adr/03-follow-the-vendor-sdks-and-wires-where-the-specs-disagree.md).
 
 **What is pulled in.** `go mod why -m` reports these modules for the root
 module:
@@ -170,8 +170,8 @@ tool call's arguments and the `think` value.
   so a 404, 5xx or 401 with an empty body returns `nil` with no chunk; a 401
   is an `api.AuthorizationError`, not an `api.StatusError`. The transport
   records each response's status so the provider can tell those from a
-  truncated stream. The differences from the API the spec assumed are in
-  [`docs/errata/28_ollama_provider.md`](errata/28_ollama_provider.md).
+  truncated stream. The rules the provider follows where the API differs from what its spec
+  assumed are in [ADR 03](adr/03-follow-the-vendor-sdks-and-wires-where-the-specs-disagree.md).
 
 **What is pulled in.** `go list -deps ./provider/ollama` reaches these
 non-standard modules besides the Ollama module itself (`api`, `auth`,
@@ -224,8 +224,7 @@ linked (`go list -deps -test ./...` in the module), and the sandbox agent
 binary links neither SDK. `upgradesBySpec29` in `deps_test.go` and
 `addedBySpec29` in `landlock_dep_test.go` record the raised versions and the
 added modules, and `sandbox-go-list-m-all.txt` is regenerated. The root
-module's `go.mod` and graph snapshot do not change. See
-[`docs/errata/29_provider_selection.md`](errata/29_provider_selection.md).
+module's `go.mod` and graph snapshot do not change.
 
 **The SDK's line limit.** `Client.Chat` reads the response with a
 `bufio.Scanner` whose largest line is 8,000,000 bytes (`maxBufferSize =
@@ -444,7 +443,7 @@ and delta transfer); and the bytes travel over the agent protocol's own
 **How it is used, and why so narrowly.** v0.3.8's exclude rules are unusable
 here: a pattern with `*`, `?` or `[` panics, matching is not anchored, an
 excluded file drops its later siblings, and `--delete` ignores every rule
-(`docs/errata/14_sandbox_rsync_sync.md`). AgentKit therefore never passes it
+([ADR 05](adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md)). AgentKit therefore never passes it
 a rule or `--delete`: the sending side serves a filtered, read-only `fs.FS`
 through an `rsyncd` server, the receiving side runs an `rsyncclient`
 receiver, and AgentKit decides what to delete.

@@ -19,8 +19,7 @@ func repoRoot(t *testing.T) string {
 
 // TS-03-6: the module's design record holds the go/no-go figures and the
 // pinned-zoekt answers. They lived in codesearch/README.md until the README was
-// rewritten for users; they are now in docs/codesearch.md
-// (docs/errata/03_codesearch_design_record.md).
+// rewritten for users; they are now in docs/codesearch.md.
 // Verifies: 03-REQ-1.2, 03-REQ-9.1, 03-REQ-10.5.
 func TestReadmeContent_TS03_6(t *testing.T) {
 	path := filepath.Join(repoRoot(t), "docs", "codesearch.md")

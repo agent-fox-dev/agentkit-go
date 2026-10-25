@@ -302,7 +302,7 @@ func hasSeq(args, want []string) bool {
 // nested caller; mcpserve serves the tools, and the example's own files call
 // Runner.Call and nothing like it. Before spec 23 this parsed server.go, which
 // held the MCP server; its remaining files are the ones that could regrow a
-// pipeline (docs/errata/23_mcp_serve.md).
+// pipeline.
 func TestExampleHoldsNoToolCallPipeline_TS21_51(t *testing.T) {
 	banned := map[string]bool{"core.NewToolUse": true, "core.PrepareArguments": true, "core.WithNestedCaller": true}
 	for name, f := range parseNonTest(t) {

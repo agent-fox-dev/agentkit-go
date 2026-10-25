@@ -2,7 +2,7 @@
 // The host's attach code and the agent share it.
 //
 // The library can neither apply exclude rules safely nor keep a rule's paths
-// from deletion (docs/errata/14_sandbox_rsync_sync.md), so it is used for one
+// from deletion (see docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md), so it is used for one
 // thing only: moving the files of a tree that already holds exactly the
 // transfer set. The sending side runs a server over a filtered, read-only view
 // of its tree; the receiving side runs a client that writes into its

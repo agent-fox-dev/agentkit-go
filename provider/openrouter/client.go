@@ -131,7 +131,7 @@ type attemptKey struct{}
 // order, and reasoning_details is a union that drops fields it does not model.
 // The SDK is given a placeholder request, and the transport replaces the body
 // it serialized with the one the request's context carries
-// (docs/errata/27_openrouter_provider.md).
+// (docs/adr/03-follow-the-vendor-sdks-and-wires-where-the-specs-disagree.md).
 type transport struct{ inner *http.Client }
 
 // Do sends the request, with the body of the attempt its context carries when

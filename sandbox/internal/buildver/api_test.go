@@ -13,7 +13,7 @@ import (
 // TS-16-2: buildver gains only an unexported, uninitialised string stamp
 // that no source assigns, and its exported API is unchanged. 16-REQ-4.1.
 // Build, which reports the link-time commit and build time, is the one
-// addition (docs/errata/16_sandbox_images.md).
+// addition (docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md).
 func TestStampAPI_TS16_2(t *testing.T) {
 	ents, err := os.ReadDir(".")
 	if err != nil {

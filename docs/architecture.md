@@ -791,7 +791,7 @@ ordering guarantee with tool calls running at the same time.
 rsync protocol, `github.com/gokrazy/rsync` behind `sandbox/internal/rsyncx`,
 the only package that imports it. That library can neither apply exclude
 rules safely nor keep excluded paths from deletion
-(`docs/errata/14_sandbox_rsync_sync.md`), so it only ever moves the files of
+([ADR 05](adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md)), so it only ever moves the files of
 a tree that already is the transfer set: the sending side serves a filtered,
 read-only `fs.FS` view of its tree (`rsyncx.Filtered`) with an `rsyncd`
 server, and the receiving side runs an `rsyncclient` receiver into its
@@ -1166,7 +1166,7 @@ anything is made) and its agent reports ABI 0 with the note
   (`internal/policy/testdata/exported-api.golden`): one section for each package in
   `apiPackages`, compared by TS-13-67, TS-14-44, TS-15-42 and TS-17-61. It is a
   change detector, regenerated and committed with any deliberate change to
-  those surfaces (`docs/errata/13_sandbox_core.md`).
+  those surfaces.
 - `provider/faux` scripts a model offline; the root tests and the examples run
   against it.
 - `internal/providerconformance` runs the same seven logical turns through each
