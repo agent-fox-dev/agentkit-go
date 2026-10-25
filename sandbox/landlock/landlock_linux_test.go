@@ -280,6 +280,23 @@ func reapChild() error {
 
 // A sandbox left by a killed embedder is reaped with its background
 // process, while a live sandbox is left alone.
+// A process that has exited is gone even while it waits to be reaped: under
+// an init that never reaps orphans, a killed agent stays a zombie for good.
+func TestLookupCountsAZombieAsGone(t *testing.T) {
+	cmd := exec.Command("true")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Wait() })
+	testutil.Eventually(t, "the child to exit", func() bool {
+		e, err := readStat(cmd.Process.Pid)
+		return err == nil && e.State == 'Z'
+	})
+	if _, ok, err := (linuxTable{}).lookup(cmd.Process.Pid); ok || err != nil {
+		t.Errorf("lookup of a zombie = %v, %v; want gone", ok, err)
+	}
+}
+
 func TestReapRemovesASandboxLeftByAKilledEmbedder(t *testing.T) {
 	needABI4(t)
 	root := t.TempDir()

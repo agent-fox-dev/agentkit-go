@@ -40,6 +40,11 @@ func (linuxTable) lookup(pid int) (uint64, bool, error) {
 	if err != nil {
 		return 0, false, err
 	}
+	// A zombie has exited: its entry stays only until its parent reaps it,
+	// and under an init that does not reap orphans that is never.
+	if p.State == 'Z' {
+		return 0, false, nil
+	}
 	return p.Start, true, nil
 }
 

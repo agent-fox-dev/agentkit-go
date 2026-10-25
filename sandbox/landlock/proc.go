@@ -34,7 +34,8 @@ type procEntry struct {
 // offline tests replace.
 type procTable interface {
 	list() ([]procEntry, error)
-	// lookup is pid's start time, and whether it exists.
+	// lookup is pid's start time, and whether it exists as a live process
+	// (a zombie does not).
 	lookup(pid int) (start uint64, ok bool, err error)
 	bootID() (string, error)
 	kill(pid int, sig syscall.Signal) error
