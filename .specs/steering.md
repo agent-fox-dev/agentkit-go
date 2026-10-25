@@ -167,3 +167,7 @@ testing, make targets) and `docs/releasing.md`; a change to a feature's usage
 updates its section of the guide, and a change to the make targets or the
 test setup updates `docs/development.md`. The nested modules are listed in `MODULES` in the `Makefile`;
 `make test`, `make vet`, `make lint` and `make tidy` run in each of them.
+The shared test helpers are `internal/testutil` (file trees, the hermetic git
+environment, polling, JSON, tar, golden files, `go run`; standard library only,
+so every module's tests can import it) and, for doubles over `core`,
+`internal/testkit`.

@@ -136,6 +136,12 @@ golden and commit it with the change.
 ## Tests
 
 - Unit and property tests sit beside their package.
+- `internal/testutil` holds the helpers many packages' tests share: file trees,
+  a git environment that ignores the machine's configuration, polling with a
+  deadline, JSON, tar and golden files, the repository root, and `go run` with a
+  controlled environment. It imports only the standard library, so the nested modules'
+  tests use it too. `internal/testkit` holds the scripted provider and tool
+  doubles over `core`.
 - `provider/faux` scripts a model offline; the root tests and the examples run
   against it.
 - `testdata/golden/` holds the exact request bodies sent to Anthropic. It pins
