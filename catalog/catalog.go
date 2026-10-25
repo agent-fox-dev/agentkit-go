@@ -232,11 +232,10 @@ func Parse(data []byte) (*Catalog, error) {
 			return nil, badf(vpath, "vendor id may not contain a slash or whitespace")
 		}
 		if len(v.Models) == 0 {
-			return nil, badf(vpath+".models", "vendor declares no models; it can never be\n"+
-				"a clone template, so a known-vendor id under it would resolve to nothing")
+			return nil, badf(vpath+".models", "vendor declares no models, so it has no default model")
 		}
 		if v.DefaultModel == "" {
-			return nil, badf(vpath+".default_model", "missing; REQ-CAT-03 has no sibling to clone without it")
+			return nil, badf(vpath+".default_model", "missing; every vendor names its most representative model")
 		}
 		if _, ok := v.Models[v.DefaultModel]; !ok {
 			return nil, badf(vpath+".default_model", "names %q, which is not a model of this vendor", v.DefaultModel)
