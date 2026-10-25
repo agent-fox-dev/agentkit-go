@@ -96,7 +96,7 @@ func (p ToolPolicy) Resolve(registered []Tool) []Tool {
 		}
 		return (allow == nil || allow[t.Name]) && !deny[t.Name]
 	}
-	return pruneReachable(set, admit)
+	return pruneReachable(set, admit, map[string]bool{})
 }
 
 // pruneReachable filters each tool's ReachableTools by admit, recursively,
@@ -104,17 +104,23 @@ func (p ToolPolicy) Resolve(registered []Tool) []Tool {
 // that reached something and is left reaching nothing is dropped: it would
 // be a dead tool in the model's prompt. A tool that never reached anything is
 // kept.
-func pruneReachable(ts []Tool, admit func(Tool) bool) []Tool {
+//
+// onPath holds the wrappers being pruned above ts. A tool already on it is a
+// reachability cycle: it is kept as it is, not descended into, so the walk
+// ends and the caller's own check refuses the cycle by name.
+func pruneReachable(ts []Tool, admit func(Tool) bool, onPath map[string]bool) []Tool {
 	out := ts[:0]
 	for _, t := range ts {
-		if len(t.ReachableTools) > 0 {
+		if len(t.ReachableTools) > 0 && !onPath[t.Name] {
 			var kept []Tool
 			for _, r := range t.ReachableTools {
 				if admit(r) {
 					kept = append(kept, r)
 				}
 			}
-			kept = pruneReachable(kept, admit)
+			onPath[t.Name] = true
+			kept = pruneReachable(kept, admit, onPath)
+			delete(onPath, t.Name)
 			if len(kept) == 0 {
 				continue
 			}

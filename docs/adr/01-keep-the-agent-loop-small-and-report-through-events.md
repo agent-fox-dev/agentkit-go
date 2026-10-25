@@ -100,12 +100,11 @@ gone; the settlements that still bind the code are here.
   a `BeforeToolCall` terminate vote does. Edits it makes to the result message
   do not reach the wrapper, which receives a `core.ToolResult`.
 
-**A limit left open.** A reachability cycle that enters only through
-`Policy.CustomTools` reaches `ToolPolicy.Resolve` unchecked, and
-`pruneReachable` recurses on it until the stack overflows. A cycle in
-`Toolset.Tools`, or in a non-nil `Policy.Tools`, is refused at construction.
-Closing the gap is a change to `ToolPolicy.Resolve` or to the order of the
-checks.
+**Reachability cycles are refused at construction**, wherever they enter: in
+`Toolset.Tools`, in a non-nil `Policy.Tools` or in `Policy.CustomTools`.
+`ToolPolicy.Resolve` does not descend into a tool already on the path it is
+pruning, so a cycle reaches the resolved set as it is and `NewRunner`'s check
+of that set refuses it by name.
 
 ## Consequences
 
