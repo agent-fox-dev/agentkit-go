@@ -21,7 +21,7 @@ func TestParseRejectsACorruptCatalogAtThePathThatFailed(t *testing.T) {
 		{"empty vendor id", `{"schema_version":1,"vendors":{"":{"default_model":"m","models":{"m":{}}}}}`, "vendors", "empty vendor id"},
 		{"vendor id with a slash", `{"schema_version":1,"vendors":{"a/b":{"api":"faux","base_url":"x","default_model":"m","models":{"m":{}}}}}`, "vendors.a/b", "may not contain a slash"},
 		{"vendor with no models", oneVendor(`"models":{}`), "vendors.v.models", "declares no models"},
-		{"missing default_model", `{"schema_version":1,"vendors":{"v":{"api":"faux","base_url":"x","models":{"m":{}}}}}`, "vendors.v.default_model", "missing"},
+		{"missing default_model", `{"schema_version":1,"vendors":{"v":{"api":"faux","base_url":"x","models":{"m":{}}}}}`, "vendors.v.default_model", "missing; every vendor names its most representative model"},
 		{"dangling default_model", `{"schema_version":1,"vendors":{"v":{"api":"faux","base_url":"x","default_model":"nope","models":{"m":{}}}}}`, "vendors.v.default_model", "not a model of this vendor"},
 		{"null model row", oneVendor(`"models":{"m":{},"n":null}`), "vendors.v.models.n", "null model row"},
 		{"empty model id", oneVendor(`"models":{"m":{},"":{}}`), "vendors.v.models", "empty model id"},

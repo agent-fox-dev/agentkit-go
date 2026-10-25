@@ -84,7 +84,8 @@ func TestCoerceDescendsIntoArraysAndObjects(t *testing.T) {
 	if got := marshal(t, out); got != `{"free":"9","l":[true,"x",false],"o":{"n":3}}` {
 		t.Fatalf("Coerce = %s", got)
 	}
-	if len(log) != 3 || log[0].Path != "l/0" || log[1].Path != "l/2" {
+	// Each coercion is recorded at its full path, as Validate names it.
+	if len(log) != 3 || log[0].Path != "l/0" || log[1].Path != "l/2" || log[2].Path != "o/n" {
 		t.Fatalf("coercions = %+v", log)
 	}
 	if out, log := Coerce(nil, map[string]any{"a": "1"}); out["a"] != "1" || log != nil {

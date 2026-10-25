@@ -223,7 +223,8 @@ func TestTheSearchTool(t *testing.T) {
 			t.Errorf("%s: %q %q\nwant %q", args, r.Error, r.Detail, detail)
 		}
 	}
-	if r := call(st, `{"pattern":"foo("}`); r.Error != "invalid_arguments" || !strings.HasPrefix(r.Detail, "invalid pattern: error parsing regexp: missing closing )") ||
+	// The error quotes the pattern the model wrote, not the smart-case form.
+	if r := call(st, `{"pattern":"foo("}`); r.Error != "invalid_arguments" || !strings.HasPrefix(r.Detail, "invalid pattern: error parsing regexp: missing closing ): `foo(`") ||
 		!strings.HasSuffix(r.Detail, `The pattern is a regular expression (RE2): write a literal metacharacter with a backslash, for example \( for a literal ( or \. for a literal .`) {
 		t.Errorf("a bad pattern: %q %q", r.Error, r.Detail)
 	}

@@ -306,9 +306,11 @@ func (t *strictRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) 
 	return resp, nil
 }
 
-// sseGuard passes an event stream through unchanged, but releases each event
-// only once its joined data lines pass wire.Guard. An event longer than the
-// message bound is an error before it is buffered whole.
+// sseGuard passes an event stream through unchanged, but releases each
+// message event only once its joined data lines pass wire.Guard. Other events
+// pass unguarded: the HTTP+SSE transport's endpoint event carries a URL, not
+// JSON. An event longer than the message bound is an error before it is
+// buffered whole, whatever its type.
 type sseGuard struct {
 	src    *bufio.Reader
 	body   io.Closer
@@ -316,6 +318,7 @@ type sseGuard struct {
 	max    int64
 
 	event, data, out []byte
+	kind             []byte // the event's "event:" field; empty means message
 	err              error
 }
 
@@ -365,7 +368,12 @@ func (g *sseGuard) next() error {
 }
 
 func (g *sseGuard) addData(line []byte) {
-	v, ok := bytes.CutPrefix(bytes.TrimRight(line, "\r\n"), []byte("data:"))
+	line = bytes.TrimRight(line, "\r\n")
+	if v, ok := bytes.CutPrefix(line, []byte("event:")); ok {
+		g.kind = bytes.TrimPrefix(v, []byte(" "))
+		return
+	}
+	v, ok := bytes.CutPrefix(line, []byte("data:"))
 	if !ok {
 		return
 	}
@@ -376,12 +384,13 @@ func (g *sseGuard) addData(line []byte) {
 }
 
 func (g *sseGuard) release() error {
-	if len(g.data) > 0 {
+	isMessage := len(g.kind) == 0 || string(g.kind) == "message"
+	if isMessage && len(g.data) > 0 {
 		if err := wire.Guard(g.data, g.limits); err != nil {
 			return fmt.Errorf("mcp: server-sent event rejected: %w", err)
 		}
 	}
-	g.out, g.event, g.data = g.event, nil, nil
+	g.out, g.event, g.data, g.kind = g.event, nil, nil, nil
 	return nil
 }
 

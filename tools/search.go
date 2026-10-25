@@ -381,6 +381,10 @@ func compilePattern(p SearchParams) (*regexp.Regexp, error) {
 	}
 	re, err := regexp.Compile(pat)
 	if err != nil {
+		// Report the pattern the model wrote, not the smart-case prefix.
+		if _, own := regexp.Compile(p.Pattern); own != nil {
+			err = own
+		}
 		return nil, &SearchPatternError{Err: err}
 	}
 	return re, nil

@@ -68,6 +68,14 @@ func (s *landlockSandbox) syncGitRepo(ctx context.Context, repo sandbox.GitRepo)
 	return sandbox.SyncResult{}, nil
 }
 
+// expired reports whether the clone ran into the sandbox's expiry: ictx's
+// deadline is the expiry, but ictx reports it only once its timer has fired,
+// and the init agent, whose TTL is the expiry rounded up to a second, can end
+// the clone's connection a moment before that. The clock decides as well.
+func expired(ictx context.Context, expiry time.Time) bool {
+	return ictx.Err() != nil || !time.Now().Before(expiry)
+}
+
 // runInit starts the init agent, checks its report, runs the clone through
 // its run_command tool and always closes it. started reports whether the
 // init agent was started.
@@ -103,7 +111,7 @@ func (s *landlockSandbox) runInit(ctx context.Context, repo sandbox.GitRepo, ttl
 	switch {
 	case ctx.Err() != nil:
 		return true, fmt.Errorf("landlock: GitRepo clone of %s: %w", repo.URL, ctx.Err())
-	case ictx.Err() != nil:
+	case expired(ictx, expiry):
 		return true, fmt.Errorf("%w: the sandbox expired during the GitRepo clone of %s", sandbox.ErrUnavailable, repo.URL)
 	case res.OK:
 		return true, nil

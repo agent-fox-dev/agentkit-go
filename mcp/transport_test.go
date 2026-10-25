@@ -105,6 +105,26 @@ func TestTheSSEGuardReleasesWholeEvents(t *testing.T) {
 	}
 }
 
+// Only message events carry JSON: the endpoint event of the HTTP+SSE transport
+// carries a URL and passes, while a message event that is not JSON is still
+// refused.
+func TestTheSSEGuardChecksOnlyMessageEvents(t *testing.T) {
+	for _, c := range []struct {
+		src string
+		ok  bool
+	}{
+		{"event: endpoint\ndata: /?sessionid=1\n\ndata: {\"a\":1}\n\n", true},
+		{"event: message\ndata: /not-json\n\n", false},
+		{"data: /not-json\n\n", false},
+	} {
+		g := &sseGuard{src: bufio.NewReader(strings.NewReader(c.src)), body: io.NopCloser(nil), max: 1 << 20}
+		out, err := io.ReadAll(g)
+		if c.ok && (err != nil || string(out) != c.src) || !c.ok && err == nil {
+			t.Errorf("%q: out = %q, err = %v", c.src, out, err)
+		}
+	}
+}
+
 // eofSignal closes hit the first time its reader reports EOF.
 type eofSignal struct {
 	r    io.Reader

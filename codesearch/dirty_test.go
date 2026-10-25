@@ -399,3 +399,41 @@ func containsValue(m map[string]string, sub string) bool {
 	}
 	return false
 }
+
+// A file a revalidation walk found gone, and a later walk finds again with
+// changed content, is searchable again.
+func TestAFileTheWalkFoundGoneIsFoundAgainWhenItComesBack(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		hide, show func(idx *Index)
+	}{
+		{"deleted then recreated by a shell",
+			func(idx *Index) { remove(t, idx, "b.go"); idx.Invalidate("") },
+			func(idx *Index) {
+				write(t, idx, "b.go", "package pkg\n// bAgain, recreated\nfunc B() {}\n")
+				idx.Invalidate("")
+			}},
+		{"edited, then ignored and un-ignored",
+			func(idx *Index) {
+				write(t, idx, "b.go", "package pkg\n// bAgain, edited\nfunc B() {}\n")
+				idx.Invalidate("b.go")
+				write(t, idx, ".gitignore", "b.go\n")
+				idx.Invalidate(".gitignore")
+			},
+			func(idx *Index) { write(t, idx, ".gitignore", "nothing.txt\n"); idx.Invalidate(".gitignore") }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			idx := newFixture(t, with(filler(100), map[string]string{"b.go": "package pkg\n// bToken\nfunc B() {}\n"}), Options{})
+			find(t, idx, "bToken")
+			backdate(idx)
+			c.hide(idx)
+			if got := paths(find(t, idx, "bToken bAgain")); len(got) != 0 {
+				t.Fatalf("hidden b.go still found: %v", got)
+			}
+			c.show(idx)
+			if got := paths(find(t, idx, "bAgain")); !slices.Equal(got, []string{"b.go"}) {
+				t.Errorf("bAgain found in %v, want [b.go]", got)
+			}
+		})
+	}
+}

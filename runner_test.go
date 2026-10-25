@@ -44,6 +44,8 @@ func TestNewRunner_RefusesAToolsetItCannotRunAndNewAgrees(t *testing.T) {
 		{"one the policy adds", Toolset{Tools: []core.Tool{named("ok")}, Policy: core.ToolPolicy{CustomTools: []core.Tool{both}}}, `agentkit: tool "u" sets both Handler and Execute; exactly one`},
 		{"one behind a wrapper", Toolset{Tools: []core.Tool{named("w", neither)}}, `agentkit: tool "t" has neither Handler nor Execute`},
 		{"a cycle", Toolset{Tools: []core.Tool{cyclic()}}, "agentkit: reachable tools cycle detected: a -> b -> a"},
+		{"a cycle the policy adds", Toolset{Tools: []core.Tool{named("ok")}, Policy: core.ToolPolicy{CustomTools: []core.Tool{cyclic()}}},
+			"agentkit: reachable tools cycle detected: a -> b -> a"},
 		{"a tool reaching itself", Toolset{Tools: []core.Tool{self}}, "agentkit: reachable tools cycle detected: self -> self"},
 		{"a terminating tool behind a wrapper", Toolset{Tools: []core.Tool{named("outer", named("code_mode", finish))}},
 			`agentkit: terminating tool "finish" cannot be reached through wrapper "code_mode"`},

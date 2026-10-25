@@ -316,7 +316,9 @@ func descendNulls(s *Schema, v any) any {
 	return v
 }
 
-func coerce(s *Schema, in map[string]any) (map[string]any, []Coercion) {
+// coerce coerces the object in, whose path in the arguments is path ("" for
+// the root): each coercion is recorded at its full path, as Validate names it.
+func coerce(s *Schema, in map[string]any, path string) (map[string]any, []Coercion) {
 	var log []Coercion
 	out := make(map[string]any, len(in))
 	for _, k := range sortedKeys(in) {
@@ -324,7 +326,7 @@ func coerce(s *Schema, in map[string]any) (map[string]any, []Coercion) {
 		if s != nil {
 			sub = s.Properties[k]
 		}
-		v, l := coerceValue(sub, in[k], k)
+		v, l := coerceValue(sub, in[k], join(path, k))
 		log = append(log, l...)
 		out[k] = v
 	}
@@ -344,7 +346,7 @@ func coerceValue(s *Schema, v any, path string) (any, []Coercion) {
 	}
 	switch t := v.(type) {
 	case map[string]any:
-		return coerce(s, t)
+		return coerce(s, t, path)
 	case []any:
 		var log []Coercion
 		arr := make([]any, len(t))

@@ -43,7 +43,7 @@ func (e *UnresolvedVariableError) Error() string {
 		names[i] = "${" + v + "}"
 	}
 	return fmt.Sprintf("mcp: server %q references unset variable(s) %s; unexpanded "+
-		"references are a configuration error (NFR-SEC-03)", e.Server, strings.Join(names, ", "))
+		"references are a configuration error", e.Server, strings.Join(names, ", "))
 }
 
 // Pool maps server_name -> connection, built during session initialization

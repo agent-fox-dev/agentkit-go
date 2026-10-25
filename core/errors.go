@@ -45,5 +45,5 @@ var (
 	ErrUnguardedExecute = errors.New(
 		"agentkit: a shell tool is reachable but Toolset.Guard is nil; " +
 			"supply an interceptor (guard.Restricted is the shipped starting point) " +
-			"or guard.AllowAll to opt out explicitly (OQ-8)")
+			"or guard.AllowAll to opt out explicitly")
 )

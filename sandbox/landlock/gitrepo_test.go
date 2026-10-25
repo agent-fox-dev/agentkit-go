@@ -250,10 +250,25 @@ func TestGitRepoEndsWithItsContextOrTheExpiry(t *testing.T) {
 	if _, err := gitSandbox(t, p, sandbox.Spec{}).Sync(ctx, testRepo); !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "GitRepo clone of "+testRepo.URL) {
 		t.Errorf("cancelled: %v", err)
 	}
-	// At 2.5 s the init agent's TTL, rounded up to 3 s, outlasts the expiry.
-	if _, err := gitSandbox(t, p, sandbox.Spec{TTL: 2500 * time.Millisecond}).Sync(context.Background(), testRepo); !errors.Is(err, sandbox.ErrUnavailable) ||
+	// At a whole second the init agent's TTL ends with the expiry, so its
+	// connection may close before the clone's context reports the deadline.
+	if _, err := gitSandbox(t, p, sandbox.Spec{TTL: time.Second}).Sync(context.Background(), testRepo); !errors.Is(err, sandbox.ErrUnavailable) ||
 		!strings.Contains(err.Error(), "the sandbox expired during the GitRepo clone") {
 		t.Errorf("expiry: %v", err)
+	}
+}
+
+// The expiry is decided by the clock as well as by the clone's context, which
+// reports its deadline only once its timer has fired.
+func TestAClonePastTheExpiryHasExpired(t *testing.T) {
+	live := context.Background()
+	if !expired(live, time.Now().Add(-time.Millisecond)) || expired(live, time.Now().Add(time.Hour)) {
+		t.Error("expired does not follow the clock")
+	}
+	done, cancel := context.WithCancel(live)
+	cancel()
+	if !expired(done, time.Now().Add(time.Hour)) {
+		t.Error("expired ignores a context whose deadline has passed")
 	}
 }
 

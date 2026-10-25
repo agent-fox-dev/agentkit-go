@@ -730,15 +730,14 @@ func encodeMessages(ms core.Messages) []message {
 				IsError:   v.IsError,
 			}
 			appendTo("user", tr)
-			if len(displaced) > 0 {
-				// Displaced blocks must come after ALL tool_result blocks in
-				// the message, so they are appended once the run of results
-				// ends. Appending here is correct because a later result in
-				// the same run appends its tool_result after them only if we
-				// keep tool_result blocks first — so hold them to the end.
-				n := len(out) - 1
-				out[n].Content = reorderToolResultsFirst(append(out[n].Content, displaced...))
-			}
+			// Displaced blocks must come after ALL tool_result blocks in the
+			// message, and a later result of the same run is appended after
+			// an earlier result's displaced blocks, so the message is put
+			// back in that order after every result, not only after one that
+			// displaced something. For a message of results alone it is the
+			// identity.
+			n := len(out) - 1
+			out[n].Content = reorderToolResultsFirst(append(out[n].Content, displaced...))
 		}
 	}
 	return out

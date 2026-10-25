@@ -127,7 +127,7 @@ func demoStreamingLoop() {
 // ---------------------------------------------------------------------------
 
 func demoStopReasonTrap() {
-	rule("2. Why the loop ignores stop_reason (REQ-LOOP-01)")
+	rule("2. Why the loop ignores stop_reason")
 	fmt.Println("Gemini and several OpenAI-compatible gateways return a STOP-family finish")
 	fmt.Println("reason ALONGSIDE tool calls. A loop that gates iteration on stop_reason")
 	fmt.Print("drops them silently — and passes every Anthropic-only test.\n\n")
@@ -164,7 +164,7 @@ func demoStopReasonTrap() {
 // ---------------------------------------------------------------------------
 
 func demoTruncatedToolCalls() {
-	rule("3. A truncated tool call is never executed (REQ-LOOP-10)")
+	rule("3. A truncated tool call is never executed")
 	fmt.Println("Streamed arguments are salvage-repaired into valid JSON, so a truncated")
 	fmt.Println("edit passes schema validation and would apply cleanly — corrupting a file.")
 	fmt.Print("Only the stop reason can catch it, so max_tokens + tool calls runs NOTHING.\n\n")
@@ -238,7 +238,7 @@ func printRoles(body any) {
 // ---------------------------------------------------------------------------
 
 func demoTranscriptRepair() {
-	rule("4. Repairing what an aborted turn leaves behind (REQ-PROV-11)")
+	rule("4. Repairing what an aborted turn leaves behind")
 	fmt.Println("Ctrl-C during a tool batch leaves an aborted assistant turn whose tool_use")
 	fmt.Println("blocks have no results — and, worse, results whose tool_use was dropped.")
 	fmt.Println("Both are 400s. The provider repairs the view at send time; history stays")
