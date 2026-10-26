@@ -556,7 +556,7 @@
         },
         "path": {
           "type": "string",
-          "description": "Directory path to scope the reference search within"
+          "description": "Directory path to scope the reference search within. Also limits where the declaration itself is looked up: a path holding only callers, not the declaration, falls back to a text search"
         },
         "kind": {
           "type": "string",
