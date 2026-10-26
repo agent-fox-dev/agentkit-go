@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -40,15 +39,6 @@ func TestClassifyOutcomePrecedence(t *testing.T) {
 			t.Errorf("ClassifyOutcome(%v, %v, %d, %v) = %q, want %q", c.aborted, c.timedOut, c.code, c.signaled, got, c.want)
 		}
 	}
-}
-
-// alive reports whether pid is a running process; a zombie is not.
-func alive(pid int) bool {
-	if syscall.Kill(pid, 0) != nil {
-		return false
-	}
-	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	return err != nil || !strings.Contains(string(stat), ") Z ")
 }
 
 // TestEveryStartedCallEndsInExactlyOneOutcome runs each scenario through both
@@ -513,7 +503,7 @@ func TestATimedOutCallsDurationCoversItsSetup(t *testing.T) {
 	// its setup until the reader below opens the log; that time is inside the
 	// Timeout and so must be inside the Duration.
 	log := filepath.Join(t.TempDir(), "log")
-	if err := syscall.Mkfifo(log, 0o600); err != nil {
+	if err := mkfifo(log); err != nil {
 		t.Skipf("no named pipes here: %v", err)
 	}
 	done := make(chan struct{})

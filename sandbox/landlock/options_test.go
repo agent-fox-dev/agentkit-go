@@ -18,6 +18,11 @@ func TestResolveRootGivesAnAbsoluteResolvedDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// On Darwin, UserCacheDir ignores XDG_CACHE_HOME and always resolves to
+	// $HOME/Library/Caches, which a bare HOME from t.TempDir() does not have.
+	if err := os.MkdirAll(ucd, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	base := evalSymlinks(t, t.TempDir())
 	if err := os.Mkdir(filepath.Join(base, "rel"), 0o700); err != nil {
 		t.Fatal(err)
