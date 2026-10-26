@@ -84,6 +84,7 @@ func TestBuildRulesSkipsAnUnusableHomeOrTempDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	x := filepath.Join(d["base"], "missing")
+	etc := resolved("/etc")[0] // a symlink to /private/etc on macOS, /etc itself on Linux
 	for _, c := range []struct {
 		env         []string
 		note, other string
@@ -92,7 +93,7 @@ func TestBuildRulesSkipsAnUnusableHomeOrTempDir(t *testing.T) {
 		{[]string{"HOME=rel/home", "TMPDIR=" + d["t"]}, `HOME="rel/home" is relative; not writable`, d["t"]},
 		{[]string{"HOME=/", "TMPDIR=" + d["t"]}, `HOME="/" resolves to /, which is or contains the system directory /usr; not writable`, d["t"]},
 		{[]string{"HOME=" + usr, "TMPDIR=" + d["t"]}, `HOME="` + usr + `" resolves to /usr, which is or contains the system directory /usr; not writable`, d["t"]},
-		{[]string{"HOME=" + d["h"], "TMPDIR=/etc"}, `TMPDIR="/etc" resolves to /etc, which is or contains the system directory /etc; not writable`, d["h"]},
+		{[]string{"HOME=" + d["h"], "TMPDIR=/etc"}, `TMPDIR="/etc" resolves to ` + etc + `, which is or contains the system directory /etc; not writable`, d["h"]},
 		{[]string{"HOME=" + d["h"], "TEMP=" + x}, `TEMP="` + x + `" does not exist; not writable`, d["h"]},
 	} {
 		p, err := buildRules(Inputs{Workdir: d["w"], Env: c.env}, 3)

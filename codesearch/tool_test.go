@@ -91,6 +91,7 @@ func TestMaxFilesAndContextLinesDefaultAndClamp(t *testing.T) {
 // path is a case-sensitive conjunction with the query: a directory is a
 // prefix with its slash, a file is itself, and the root adds nothing.
 func TestPathConfinesTheQuery(t *testing.T) {
+	needCaseSensitiveFS(t)
 	const body = "package p\n// retry fetch\n"
 	idx := newFixture(t, map[string]string{
 		"pkg/a/x.go": body, "pkg/ab/y.go": body, "other/z.go": body, "c++[1]/w.go": body, "src/s.go": body, "Src/S.go": body,

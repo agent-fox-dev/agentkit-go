@@ -63,7 +63,7 @@ func TestGitRepoClonesThroughAnInitAgent(t *testing.T) {
 		func(s *seams) { s.resolver = func(string) string { return "/run/systemd/resolve" } })
 	fakeGit := filepath.Dir(script(t, t.TempDir(), "git", "exit 0"))
 	start := time.Now()
-	s := gitSandbox(t, p, sandbox.Spec{TTL: 10 * time.Minute, Env: map[string]string{"SPEC_SENTINEL": "s-1", "PATH": fakeGit + ":/usr/bin"}})
+	s := gitSandbox(t, p, sandbox.Spec{TTL: 10 * time.Minute, Env: map[string]string{"SPEC_SENTINEL": "s-1", "PATH": fakeGit + ":/usr/bin:/bin"}})
 	if res, err := s.Sync(context.Background(), testRepo); err != nil || res != (sandbox.SyncResult{}) {
 		t.Fatalf("Sync = %+v, %v", res, err)
 	}
@@ -74,7 +74,7 @@ func TestGitRepoClonesThroughAnInitAgent(t *testing.T) {
 	}
 	want := append(sandbox.AgentArgs(sandbox.Spec{TTL: ttl, Network: sandbox.Network{Mode: sandbox.NetworkUnrestricted}, Workdir: s.ws}),
 		"--landlock-ro", p.extraRO[0], "--landlock-ro", "/run/systemd/resolve", "--landlock-rw", p.extraRW[0])
-	wantEnv := []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "HOME=" + s.dir + "/home", "PATH=" + fakeGit + ":/usr/bin", "TMPDIR=" + s.dir + "/tmp"}
+	wantEnv := []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "HOME=" + s.dir + "/home", "PATH=" + fakeGit + ":/usr/bin:/bin", "TMPDIR=" + s.dir + "/tmp"}
 	if !slices.Equal(rec.args, want) || !slices.Equal(rec.env, wantEnv) || rec.dir != s.ws {
 		t.Errorf("the init agent started as %+v,\nwant %q and %q", rec, want, wantEnv)
 	}

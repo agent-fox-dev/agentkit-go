@@ -50,6 +50,20 @@ func newFixture(t *testing.T, files map[string]string, o Options) *Index {
 	return indexFor(t, openWorkspace(t, testutil.Tree(t, files)), o)
 }
 
+// needCaseSensitiveFS skips a test whose fixture relies on paths that differ
+// only in case, which a case-insensitive filesystem (macOS's default APFS)
+// collapses into one file.
+func needCaseSensitiveFS(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "case"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "CASE")); err == nil {
+		t.Skip("the filesystem is case-insensitive")
+	}
+}
+
 // numbered is n files named by format from their number, each holding body
 // with every verb in it formatting the number too.
 func numbered(n int, format, body string) map[string]string {
