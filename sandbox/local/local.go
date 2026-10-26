@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net"
 	"os"
@@ -93,6 +94,7 @@ func (p provider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandbo
 		case <-ctx.Done():
 		}
 		localtest.Deregister(id)
+		_ = unlock(dir)
 		return os.RemoveAll(dir)
 	}
 	return attach.Dial(ctx, hostConn, attach.Config{ID: id, Spec: eff, Destroy: destroy, Provider: "local"})
@@ -126,6 +128,33 @@ func makeDirs(dir string) error {
 		}
 	}
 	return nil
+}
+
+// unlock adds the owner write bit to dir and every entry beneath it, so a
+// later os.RemoveAll can unlink entries Go's module cache leaves read-only
+// (0444 files, 0555 directories) when a build inside the box populates HOME:
+// unlinking an entry needs write permission on its parent directory, which
+// RemoveAll cannot grant itself.
+func unlock(dir string) error {
+	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info.Mode()&0o200 != 0 {
+			return nil
+		}
+		return os.Chmod(path, info.Mode()|0o200)
+	})
 }
 
 // pipes joins a host and an agent connection with two os.Pipe pairs.
@@ -162,6 +191,7 @@ func (provider) Reap(context.Context) ([]string, error) {
 		if !e.IsDir() || err != nil || alive(m.PID) {
 			continue
 		}
+		_ = unlock(dir)
 		if err := os.RemoveAll(dir); err == nil {
 			ids = append(ids, e.Name())
 		}

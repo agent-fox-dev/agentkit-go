@@ -133,6 +133,35 @@ func TestCreateLaysOutAPrivateSandboxThatCloseRemoves(t *testing.T) {
 	}
 }
 
+// Close removes the sandbox directory even when a build inside it left
+// read-only entries under home/, the permissions Go gives extracted module
+// cache entries (0444 files, 0555 directories) — the case in issue #182
+// where a plain os.RemoveAll fails with "permission denied" because
+// unlinking an entry needs write permission on its parent directory.
+func TestCloseRemovesAHomeDirWithReadOnlyModuleCacheEntries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits")
+	}
+	isolate(t)
+	sb := create(t, sandbox.Spec{Network: unrestricted})
+	d := dirOf(sb)
+	mod := filepath.Join(d, "home", "go", "pkg", "mod", "golang.org", "x", "sys@v0.48.0")
+	if err := os.MkdirAll(mod, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mod, "go.mod"), []byte("module golang.org/x/sys\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	for p := mod; p != d; p = filepath.Dir(p) {
+		if err := os.Chmod(p, 0o555); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := sb.Close(context.Background()); err != nil || exists(d) {
+		t.Errorf("Close = %v; the directory exists %v", err, exists(d))
+	}
+}
+
 // The tools see Spec.Env, the host's PATH, LANG and TERM where Spec.Env lacks
 // them, the sandbox's own HOME and TMPDIR, and the host's files.
 func TestToolsRunWithTheSpecEnvPrivateDirsAndNoConfinement(t *testing.T) {
