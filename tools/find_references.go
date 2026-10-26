@@ -48,8 +48,11 @@ func (f *fileTools) ensureSymbolTable(ctx context.Context) error {
 // referenceTarget picks the declaration name refers to from the symbol
 // table, read under its lock: the top-ranked match of kind under the
 // workspace-relative directory relPath, the file declaring it, and the
-// backend that searches for it. With no declaration the name is searched
-// as text. ok is false when ctx ends waiting for the table.
+// backend that searches for it. relPath filters candidate declarations the
+// same way it later filters reported sites, so a relPath holding only
+// callers, not the declaration, finds no candidate here. With no declaration
+// the name is searched as text. ok is false when ctx ends waiting for the
+// table.
 func (f *fileTools) referenceTarget(ctx context.Context, name, kind, relPath string) (target outline.Decl, targetPath, backend string, ok bool) {
 	st := f.getTable()
 	if !st.lock(ctx) {
@@ -110,7 +113,9 @@ func (f *fileTools) findReferencesTool() core.Tool {
 		ExecutionMode: core.Parallel,
 		InputSchema: schema.Object(
 			schema.Prop("name", schema.String("Declaration name to find references for. May be unqualified or qualified with container.")),
-			schema.Opt("path", schema.String("Directory path to scope the reference search within")),
+			schema.Opt("path", schema.String("Directory path to scope the reference search within. "+
+				"Also limits where the declaration itself is looked up: a path holding only callers, "+
+				"not the declaration, falls back to a text search")),
 			schema.Opt("kind", schema.String("Declaration kind filter (func, method, type, class, interface, enum, trait, const, var, module, macro)")),
 			schema.Opt("include_tests", schema.Bool("When false, reference sites in test files are omitted (default true)")),
 			schema.Opt("max_results", schema.Int("Maximum reference sites to return (default 30, cap 100)")),

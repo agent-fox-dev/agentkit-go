@@ -642,7 +642,11 @@ Constants: `DefaultCallLimit` 1000 per session, `DefaultReconnectLimit` 3,
   the target, and `lexical` when its type comes from a stubbed import. Other
   languages use outline-attributed lexical matching: a hit is `lexical`
   outside the comments and strings tree-sitter finds, and `text` in a build
-  without cgo. Each site is attributed to its enclosing declaration.
+  without cgo. Each site is attributed to its enclosing declaration. The
+  tool's `path` argument scopes both the reported sites and the declaration
+  lookup itself: a `path` holding only callers, not the declaration, matches
+  no candidate and falls back to a workspace-wide text search, reporting
+  `[0 declarations matched]`.
 - **Caching.** The tool keeps a reference cache (`referenceCache`) for the
   life of the tool set: the last Go type-check, parsed files, outlines and
   per-name candidate file lists. `write_file` and `edit_file` mark the file

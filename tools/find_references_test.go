@@ -99,6 +99,24 @@ func TestFindReferencesResolvesAGoMethodsCallers(t *testing.T) {
 	}
 }
 
+// A path scopes declaration lookup the same way it scopes reported sites: a
+// path holding only callers, not the declaration, finds no candidate and
+// falls back to a workspace-wide text search. Documented at
+// docs/architecture.md's "Symbol and reference navigation" section.
+func TestFindReferencesPathExcludingTheDeclarationFallsBackToText(t *testing.T) {
+	ws := newWS(t, goRunner)
+	ft := newFT(ws, Options{})
+	// "cmd" calls Runner.Run but does not declare it; "runner" does.
+	res := refResult(t, ft, `{"name":"Runner.Run","path":"cmd"}`)
+	if res.Target != (outline.Decl{}) || res.Backend != "text" {
+		t.Fatalf("target %+v backend %q, want a zero target and backend text", res.Target, res.Backend)
+	}
+	// The whole-workspace lookup the same name without path resolves via go/types.
+	if unscoped := refResult(t, ft, `{"name":"Runner.Run"}`); unscoped.Backend != "go/types" || unscoped.Target.Name != "Run" {
+		t.Fatalf("unscoped target %+v backend %q", unscoped.Target, unscoped.Backend)
+	}
+}
+
 func TestFindReferencesOfANameNothingDeclaresIsText(t *testing.T) {
 	ft := newFT(newWS(t, map[string]string{
 		"config/settings.py": "ENABLED = NONEXISTENT_FLAG or False\n",
