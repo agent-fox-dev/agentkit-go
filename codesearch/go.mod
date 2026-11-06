@@ -11,7 +11,7 @@ module github.com/agent-fox-dev/agentkit-go/codesearch
 go 1.27
 
 require (
-	github.com/agent-fox-dev/agentkit-go v0.0.0
+	github.com/agent-fox-dev/agentkit-go v0.9.0
 	github.com/sourcegraph/zoekt v0.0.0-20260911061844-153817f643cd
 )
 
